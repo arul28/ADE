@@ -61,12 +61,6 @@ function splitTrimmed(value: string): string[] {
     .filter(Boolean);
 }
 
-function summarizeText(value: string | null | undefined, fallback: string): string {
-  const normalized = value?.trim();
-  if (!normalized) return fallback;
-  return normalized.length > 180 ? `${normalized.slice(0, 177).trimEnd()}...` : normalized;
-}
-
 function statusDotCls(status: AgentStatus): string {
   switch (status) {
     case "running": return "bg-info animate-pulse";

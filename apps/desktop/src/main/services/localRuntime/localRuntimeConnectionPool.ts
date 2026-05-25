@@ -196,21 +196,24 @@ function openSocketTransport(socketPath: string, timeoutMs = 3_000): Promise<Run
 function readRuntimeInfo(value: unknown): {
   version: string | null;
   buildHash: string | null;
+  defaultRole: string | null;
   pid: number | null;
 } {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { version: null, buildHash: null, pid: null };
+    return { version: null, buildHash: null, defaultRole: null, pid: null };
   }
   const runtimeInfo = (value as { runtimeInfo?: unknown }).runtimeInfo;
   if (!runtimeInfo || typeof runtimeInfo !== "object" || Array.isArray(runtimeInfo)) {
-    return { version: null, buildHash: null, pid: null };
+    return { version: null, buildHash: null, defaultRole: null, pid: null };
   }
   const version = (runtimeInfo as { version?: unknown }).version;
   const buildHash = (runtimeInfo as { buildHash?: unknown }).buildHash;
+  const defaultRole = (runtimeInfo as { defaultRole?: unknown }).defaultRole;
   const pid = (runtimeInfo as { pid?: unknown }).pid;
   return {
     version: typeof version === "string" && version.trim() ? version.trim() : null,
     buildHash: typeof buildHash === "string" && buildHash.trim() ? buildHash.trim() : null,
+    defaultRole: typeof defaultRole === "string" && defaultRole.trim() ? defaultRole.trim() : null,
     pid: typeof pid === "number" && Number.isFinite(pid) && pid > 0 ? Math.floor(pid) : null,
   };
 }
@@ -808,6 +811,19 @@ export class LocalRuntimeConnectionPool {
       closeRuntimeClient(client);
       throw new LocalRuntimeCompatibilityError(
         "ADE service build does not match the packaged desktop runtime.",
+        runtimeInfo.pid,
+      );
+    }
+    if (runtimeInfo.defaultRole !== "cto") {
+      this.logger.info("local_runtime.role_mismatch_detected", {
+        socketPath,
+        runtimeDefaultRole: runtimeInfo.defaultRole,
+        expectedDefaultRole: "cto",
+        runtimePid: runtimeInfo.pid,
+      });
+      closeRuntimeClient(client);
+      throw new LocalRuntimeCompatibilityError(
+        `ADE service default role ${runtimeInfo.defaultRole ?? "missing"} does not match desktop role cto.`,
         runtimeInfo.pid,
       );
     }

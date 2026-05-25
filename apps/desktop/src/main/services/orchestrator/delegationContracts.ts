@@ -9,7 +9,7 @@ import type {
   OrchestratorRunGraph,
   OrchestratorStep,
 } from "../../../shared/types";
-import { asRecord, TERMINAL_STEP_STATUSES } from "./orchestratorContext";
+import { asRecord } from "./orchestratorContext";
 import { nowIso } from "../shared/utils";
 
 type DelegationFailure = NonNullable<DelegationContract["failure"]>;

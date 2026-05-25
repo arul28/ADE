@@ -31,7 +31,7 @@ import {
   DEFAULT_INTEGRATION_PR_POLICY
 } from "./orchestratorConstants";
 
-import { getDefaultModelDescriptor, getModelById, resolveModelDescriptor, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
+import { getDefaultModelDescriptor, resolveModelDescriptor, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 import { TERMINAL_STEP_STATUSES, filterExecutionSteps, isDisplayOnlyTaskStep } from "./orchestratorContext";
 
 // ─────────────────────────────────────────────────────

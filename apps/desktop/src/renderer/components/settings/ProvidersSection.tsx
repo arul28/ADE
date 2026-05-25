@@ -120,19 +120,6 @@ const groupLabelStyle: React.CSSProperties = {
   color: COLORS.textSecondary,
 };
 
-const sectionLabelStyle: React.CSSProperties = {
-  ...LABEL_STYLE,
-  fontSize: 11,
-  marginBottom: 10,
-};
-
-function CliLogo({ cli }: { cli: CliName }) {
-  if (cli === "claude") return <ClaudeLogo size={24} />;
-  if (cli === "cursor") return <CursorAgentLogo size={24} />;
-  if (cli === "droid") return <ProviderLogo family="factory" size={24} />;
-  return <CodexLogo size={24} className="text-zinc-100" />;
-}
-
 const SOURCE_BADGE_MAP: Record<ApiKeySource, { color: string; label: string }> = {
   store: { color: COLORS.success, label: "Local Store" },
   env: { color: COLORS.info, label: "Environment" },

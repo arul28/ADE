@@ -314,16 +314,6 @@ export function ProxyAndPreviewSection() {
   // Initial data fetch
   // -----------------------------------------------------------------------
 
-  const fetchProxyStatus = useCallback(async () => {
-    try {
-      const status = await window.ade.lanes.proxyGetStatus();
-      setProxyStatus(status);
-      setProxyError(status.error ?? null);
-    } catch (err) {
-      setProxyError(err instanceof Error ? err.message : String(err));
-    }
-  }, []);
-
   const fetchOAuthStatus = useCallback(async () => {
     try {
       const status = await window.ade.lanes.oauthGetStatus();
@@ -335,23 +325,10 @@ export function ProxyAndPreviewSection() {
     }
   }, [syncAdvancedDrafts]);
 
-  const fetchOAuthSessions = useCallback(async () => {
-    try {
-      const nextSessions = await window.ade.lanes.oauthListSessions();
-      setSessions(
-        [...nextSessions].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-      );
-    } catch (err) {
-      setOAuthError(err instanceof Error ? err.message : String(err));
-    }
-  }, []);
-
   useEffect(() => {
     let cancelled = false;
 
     // Fetch initial data with cancellation awareness.
-    // We inline the fetch logic here rather than calling fetchProxyStatus() etc.
-    // because those functions always call setState and don't check cancellation.
     void Promise.all([
       window.ade.lanes.proxyGetStatus().then((status) => {
         if (cancelled) return;

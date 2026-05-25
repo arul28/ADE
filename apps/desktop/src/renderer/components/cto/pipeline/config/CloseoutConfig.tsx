@@ -3,7 +3,6 @@ import type { LinearWorkflowCloseoutPolicy } from "../../../../../shared/types/l
 import { selectCls, labelCls, inputCls, textareaCls } from "../../shared/designTokens";
 import {
   ISSUE_STATE_LABELS,
-  ARTIFACT_MODE_LABELS,
   REVIEW_READY_WHEN_LABELS,
   fieldLabel,
   fieldDescription,

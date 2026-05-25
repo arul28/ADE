@@ -2350,7 +2350,6 @@ export function createMissionService({
         }
       );
       if (metadata.warning) warnings.push(metadata.warning);
-      const launchMetadata = isRecord(metadata.value?.launch) ? metadata.value.launch : null;
       const plannerPlan = isRecord(metadata.value?.plannerPlan)
         ? (metadata.value.plannerPlan as PlannerPlan)
         : null;
@@ -4031,12 +4030,20 @@ export function createMissionService({
       });
 
       if (next === "failed") {
+        const stepMetadata = safeParseRecord(step.metadata_json);
+        const stepKey = typeof stepMetadata?.stepKey === "string" && stepMetadata.stepKey.trim()
+          ? stepMetadata.stepKey.trim()
+          : null;
         const intervention = insertIntervention({
           missionId,
           interventionType: "failed_step",
           title: `Step failed: ${step.title}`,
           body: note ?? "A mission step was marked as failed and needs attention.",
-          requestedAction: "Review the failure and decide whether to continue, retry, or cancel."
+          requestedAction: "Review the failure and decide whether to continue, retry, or cancel.",
+          metadata: {
+            stepId,
+            ...(stepKey ? { stepKey } : {}),
+          },
         });
 
         db.run(

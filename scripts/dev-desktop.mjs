@@ -3,8 +3,10 @@
 import fs from "node:fs";
 import {
   buildRuntimeCliForDevClient,
+  assertRuntimeFresh,
   canConnectToSocket,
   devRuntimeEnv,
+  ensureRuntime,
   npmCommand,
   resolveDevSocketPath,
   resolveProjectRoot,
@@ -98,6 +100,11 @@ async function main() {
     throw new Error(`No dev runtime is listening at ${options.socketPath}. Start it with npm run dev:runtime.`);
   }
   await buildRuntimeCliForDevClient(options.skipRuntimeBuild, options.socketPath);
+  if (options.mode === "attach") {
+    await assertRuntimeFresh(options.socketPath, options.projectRoot);
+  } else {
+    await ensureRuntime(options.socketPath, options.projectRoot);
+  }
   const desktopScript = options.clean ? "dev:clean" : "dev";
   await run(
     npmCommand,

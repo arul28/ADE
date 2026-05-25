@@ -23,7 +23,7 @@
 
 - Desktop checks:
   - `npm --prefix apps/desktop run typecheck`
-  - `npm --prefix apps/desktop run test`
+  - `npm run test:desktop:sharded`
   - `npm --prefix apps/desktop run build`
   - `npm --prefix apps/desktop run lint`
 - ADE CLI checks:
@@ -31,7 +31,7 @@
   - `npm --prefix apps/ade-cli run test`
   - `npm --prefix apps/ade-cli run build`
 - Run the smallest relevant subset first when iterating, then finish with the broader checks that cover the touched surfaces.
-- If even running the full desktop test suit, u ahve to shard like ci
+- Run full desktop tests with the root `npm run test:desktop:sharded` command; use single-file or single-shard Vitest commands for iteration.
 
 ## Terminology
 
@@ -81,7 +81,7 @@ Desktop release:
 - **Node.js 22.x** is required (`node:sqlite` is used as the primary database engine).
 - Each app under `apps/` has its own independent `node_modules` and `package-lock.json` (no npm workspaces).
 - Validation commands are documented in the "Validation" section above.
-- The desktop test suite (265 test files) is large; CI shards it. For local iteration, run targeted tests (e.g. `npm --prefix apps/desktop run test:unit`) or a single file rather than the full suite.
+- The desktop test suite is large; CI shards it. For local iteration, run a single file or one CI-style shard rather than the full suite.
 
 ### Inspecting the local Electron desktop app with Codex Computer Use on macOS
 
@@ -111,7 +111,7 @@ Desktop release:
 - The `ADE_PROJECT_ROOT=/workspace` env var tells the main process to auto-open a project at startup. However, there is a timing race: the renderer's initial `getProject()` call may return null before the async project switch completes, causing the welcome screen to appear even though the backend loaded the project. A workaround is to open the project manually via the "Open a project" button in the top bar.
 - Computer-use features (screenshot, video capture, GUI automation) are macOS-only (`screencapture`, `osascript`). On Linux these gracefully degrade — the app returns `blocked_by_capability`.
 - `electron-builder` config only defines a `mac` target. Distributable Linux builds (deb/AppImage) are not configured, but dev mode works fine.
-- The `test:unit` script (`npm --prefix apps/desktop run test:unit`) uses `--project unit` which the pinned vitest 0.34.6 doesn't support. Use `npx vitest run <specific-test-file>` in `apps/desktop` for targeted tests, or `npm --prefix apps/desktop run test` for the full suite.
+- The pinned Vitest 0.34.6 does not support `--project`. Use `npx vitest run <specific-test-file>` in `apps/desktop` for targeted tests, `npx vitest run --shard=<n>/8` for a CI-style shard, or `npm run test:desktop:sharded` from the repo root for the full desktop unit workspace.
 - In the Cursor Cloud VM the active X display is `:1`, not `:99`. When launching Electron set `DISPLAY=:1`.
 - To launch the desktop dev app quickly when the CLI is already built: `npm run dev:desktop -- --skip-runtime-build`.
 - To launch the TUI against an already-running dev runtime: `npm run dev:code -- --skip-runtime-build --attach --project-root <path> --workspace-root <path>`.

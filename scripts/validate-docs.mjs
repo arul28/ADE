@@ -7,7 +7,6 @@ const ignoredTopLevel = new Set([
   ".github",
   ".ade",
   "apps",
-  "docs",
   "node_modules",
   "plans",
   "dist",
@@ -31,7 +30,12 @@ async function walkDocs(dir) {
       continue;
     }
 
-    if (relPath === "README.md" || relPath.endsWith(".mdx")) {
+    if (
+      relPath === "README.md" ||
+      relPath === "AGENTS.md" ||
+      relPath.endsWith(".mdx") ||
+      (relPath.startsWith("docs/") && relPath.endsWith(".md"))
+    ) {
       docFiles.push(relPath);
     }
   }
@@ -53,6 +57,7 @@ const errors = [];
 
 function normalizeTarget(rawTarget, fromFile) {
   const stripped = rawTarget.split("#")[0]?.split("?")[0] ?? "";
+  if (stripped === "…" || stripped === "...") return null;
   if (!stripped || stripped.startsWith("http://") || stripped.startsWith("https://") || stripped.startsWith("mailto:") || stripped.startsWith("tel:")) {
     return null;
   }
@@ -150,4 +155,3 @@ if (errors.length > 0) {
 }
 
 console.log(`Documentation validation passed for ${docFiles.length} files.`);
-

@@ -20,7 +20,9 @@
     "runtime:build": "npm --prefix apps/ade-cli run build",
     "setup": "npm run install:apps",
     "stop": "node scripts/dev-runtime-stop.mjs",
-    "test": "npm run test --prefix apps/desktop && npm run test --prefix apps/ade-cli",
-    "test:ci": "npm run test:coverage --prefix apps/desktop && npm run test --prefix apps/ade-cli"
+    "test": "npm run test:desktop:sharded && npm --prefix apps/ade-cli run test",
+    "test:ci": "npm run test:desktop:sharded && npm --prefix apps/ade-cli run test",
+    "test:coverage": "npm --prefix apps/desktop run test:coverage && npm --prefix apps/ade-cli run test",
+    "test:desktop:sharded": "node scripts/run-desktop-test-shards.mjs"
   }
 }

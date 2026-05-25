@@ -143,7 +143,10 @@ Renderer — onboarding:
   `waitForSelector` from `target`, and — for any step that has a
   `requires` gate without its own `fallbackAfterMs` — injects a
   default 30 s `Skip` fallback so the tutorial can never get
-  permanently stuck waiting on state that doesn't appear. The acts
+  permanently stuck waiting on state that doesn't appear. Wrapped
+  steps keep their original hooks; for example `ctoTour` still
+  dispatches `ade:tour-cto-tab` before the Team and Workflows steps
+  after `firstJourneyTour` wraps them. The acts
   themselves are intentionally streamlined: act 1 only borrows the
   base-branch / status-chip / lane-work-pane bits (since the user has
   just created a lane interactively); acts 2 + 3 inline ctx-aware
@@ -151,8 +154,9 @@ Renderer — onboarding:
   the per-act "tab handoff" reminder steps were collapsed into the
   single act 12 finale.
 - `apps/desktop/src/renderer/components/cto/...` — CTO first-run is a
-  separate lightweight wizard covering identity, project context, and
-  optional Linear (see `apps/desktop/src/renderer/components/cto/`).
+  separate lightweight wizard covering minimal identity/personality
+  setup only. Model selection, Linear, and worker hiring are deferred
+  to Settings or the relevant CTO tabs.
 
 Renderer — settings:
 
@@ -302,12 +306,10 @@ the General settings tab via `AdeCliSection`:
    compares the runtime's `buildHash` against the desktop's expected
    value). A dev build that reports the placeholder version `0.0.0` is
    accepted when its build hash matches the bundled CLI. Mismatches
-   are surfaced as a `LocalRuntimeCompatibilityError` and the **existing
-   daemon is left running** so the user's active work is preserved —
-   the previous behaviour of force-shutting the daemon and reconnecting
-   has been retired because it killed live PTYs / chats during a stale
-   reattach window. The desktop reports the incompatibility back to the
-   user instead.
+   are surfaced as a `LocalRuntimeCompatibilityError`; the pool
+   terminates the stale runtime process when the handshake reported a
+   pid, unlinks the stale socket, and then lets the normal spawn path
+   start a compatible daemon.
 2. Register the runtime as a per-user login service so it survives
    reboots. `installServiceBestEffort()` runs `ade serve --install-service`
    once per session; the implementation lives in

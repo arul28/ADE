@@ -59,6 +59,18 @@ describe("ADE CLI", () => {
     ]);
   });
 
+  it("defaults ordinary CLI calls to the agent runtime role", () => {
+    const previousRole = process.env.ADE_DEFAULT_ROLE;
+    delete process.env.ADE_DEFAULT_ROLE;
+    try {
+      const parsed = parseCliArgs(["lanes", "list"]);
+      expect(parsed.options.role).toBe("agent");
+    } finally {
+      if (previousRole === undefined) delete process.env.ADE_DEFAULT_ROLE;
+      else process.env.ADE_DEFAULT_ROLE = previousRole;
+    }
+  });
+
   it("maps ade code to the terminal Work chat launcher", () => {
     const parsed = parseCliArgs([
       "--project-root",

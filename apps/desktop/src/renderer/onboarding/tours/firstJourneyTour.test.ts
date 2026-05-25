@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
+/* @vitest-environment jsdom */
+
+import { describe, expect, it, vi } from "vitest";
 import { firstJourneyTour } from "./firstJourneyTour";
+import type { StepAction, TourStep } from "../registry";
 
 const SECTION_PREFIXES = [
   "act1.laneWorkPane.",
@@ -82,5 +85,45 @@ describe("firstJourneyTour tutorialSection wrapping", () => {
     expect(welcome!.fallbackAfterMs).toBeUndefined();
     expect(welcome!.fallbackNextLabel).toBeUndefined();
     expect(welcome!.fallbackNotice).toBeUndefined();
+  });
+
+  it("keeps CTO tab switches on wrapped Team and Linear steps", async () => {
+    const findCtoStep = (target: string): TourStep | undefined =>
+      firstJourneyTour.steps.find((step) => step.target === target);
+    const teamStep = findCtoStep('[data-tour="cto.teamPanel"]');
+    const linearStep = findCtoStep('[data-tour="cto.linearPanel"]');
+
+    expect(teamStep?.beforeEnter, "Team step should switch to the Team tab").toBeTruthy();
+    expect(linearStep?.beforeEnter, "Linear step should switch to the Workflows tab").toBeTruthy();
+
+    const teamActions = await teamStep!.beforeEnter!();
+    const linearActions = await linearStep!.beforeEnter!();
+    expect(Array.isArray(teamActions)).toBe(true);
+    expect(Array.isArray(linearActions)).toBe(true);
+    const [teamAction] = teamActions as StepAction[];
+    const [linearAction] = linearActions as StepAction[];
+    expect(teamAction).toMatchObject({ type: "ipc" });
+    expect(linearAction).toMatchObject({ type: "ipc" });
+
+    const ctoTabListener = vi.fn();
+    window.addEventListener("ade:tour-cto-tab", ctoTabListener);
+    try {
+      if (teamAction?.type !== "ipc" || linearAction?.type !== "ipc") {
+        throw new Error("CTO tab switch actions must be IPC actions.");
+      }
+      await teamAction.call();
+      await linearAction.call();
+    } finally {
+      window.removeEventListener("ade:tour-cto-tab", ctoTabListener);
+    }
+
+    expect(ctoTabListener).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ detail: "team" }),
+    );
+    expect(ctoTabListener).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ detail: "workflows" }),
+    );
   });
 });

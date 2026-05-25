@@ -15,7 +15,6 @@ import {
 } from "../../desktop/src/main/services/computerUse/localComputerUse";
 import { loadAgentBrowserArtifactPayloadFromFile, parseAgentBrowserArtifactPayload } from "../../desktop/src/main/services/proof/agentBrowserArtifactAdapter";
 import {
-  ADE_ACTION_ALLOWLIST,
   ADE_ACTION_DOMAIN_NAMES,
   type AdeActionDomain,
   callerHasRoleAtLeast,
@@ -43,9 +42,8 @@ import {
 } from "../../desktop/src/shared/prIssueResolution";
 import {
   type LinearWorkflowConfig,
+  type ComputerUseBackendStyle,
   type ComputerUseArtifactOwner,
-  type DockLayout,
-  type GraphPersistedState,
   type LaneLinearIssue,
   type MergeMethod,
   type AppNavigationRequest,
@@ -69,6 +67,7 @@ import {
 import type { AgentChatPermissionMode, TerminalSessionSummary } from "../../desktop/src/shared/types";
 import type { AdeRuntime } from "./bootstrap";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
+import { normalizeAdeRuntimeRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 
 // Cross-surface (desktop + TUI + iOS) model picker favorites & recents.
@@ -2101,12 +2100,6 @@ const MACOS_VM_TOOL_NAMES = new Set([
   "macos_vm_type",
 ]);
 
-const ALL_TOOL_SPECS: ToolSpec[] = [
-  ...TOOL_SPECS,
-  ...CTO_OPERATOR_TOOL_SPECS,
-  ...CTO_LINEAR_SYNC_TOOL_SPECS,
-  ...COORDINATOR_TOOL_SPECS,
-];
 const COORDINATOR_TOOL_NAMES = new Set(COORDINATOR_TOOL_SPECS.map((tool) => tool.name));
 const READ_ONLY_TOOLS = new Set([
   "check_conflicts",
@@ -2323,13 +2316,6 @@ function asOptionalTrimmedString(value: unknown): string | null {
   return text.length ? text : null;
 }
 
-function parseEnvBoolean(value: string | undefined): boolean | null {
-  const normalized = value?.trim().toLowerCase() ?? "";
-  if (normalized === "1" || normalized === "true" || normalized === "yes") return true;
-  if (normalized === "0" || normalized === "false" || normalized === "no") return false;
-  return null;
-}
-
 function asBoolean(value: unknown, fallback = false): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
@@ -2453,6 +2439,14 @@ function assertNonEmptyString(value: unknown, field: string): string {
     throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${field} is required`);
   }
   return text;
+}
+
+function assertComputerUseBackendStyle(value: unknown, field: string): ComputerUseBackendStyle {
+  const style = assertNonEmptyString(value, field);
+  if (style === "external_cli" || style === "manual" || style === "local_fallback") {
+    return style;
+  }
+  throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${field} must be one of: external_cli, manual, local_fallback`);
 }
 
 function parseCliSessionProvider(value: unknown): LaunchProfile {
@@ -2924,52 +2918,6 @@ function resolveRunContextLaneId(runtime: AdeRuntime, callerCtx: CallerContext):
   return asOptionalTrimmedString(mission?.laneId) ?? asOptionalTrimmedString(mission?.lane_id);
 }
 
-function resolveAuthorizedWorkspaceRoot(
-  runtime: AdeRuntime,
-  session: SessionState,
-  toolArgs?: Record<string, unknown>,
-): string {
-  const requestedLaneId = toolArgs ? extractLaneId(toolArgs) : null;
-  if (requestedLaneId) {
-    const laneWorktreePath = resolveLaneWorktreePath(runtime, requestedLaneId);
-    if (!laneWorktreePath) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.invalidParams,
-        `Requested lane '${requestedLaneId}' does not have an available worktree.`,
-      );
-    }
-    return laneWorktreePath;
-  }
-
-  const sessionLaneId = resolveChatSessionLaneId(runtime, session);
-  if (sessionLaneId) {
-    const laneWorktreePath = resolveLaneWorktreePath(runtime, sessionLaneId);
-    if (!laneWorktreePath) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.invalidParams,
-        `Chat session lane '${sessionLaneId}' does not have an available worktree.`,
-      );
-    }
-    return laneWorktreePath;
-  }
-
-  const runContextLaneId = resolveRunContextLaneId(runtime, resolveCallerContext(session));
-  if (runContextLaneId) {
-    const laneWorktreePath = resolveLaneWorktreePath(runtime, runContextLaneId);
-    if (!laneWorktreePath) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.invalidParams,
-        `Run context lane '${runContextLaneId}' does not have an available worktree.`,
-      );
-    }
-    return laneWorktreePath;
-  }
-
-  const fallbackWorkspaceRoot = typeof runtime.workspaceRoot === "string" ? runtime.workspaceRoot.trim() : "";
-  if (fallbackWorkspaceRoot.length > 0) return fallbackWorkspaceRoot;
-  return runtime.projectRoot;
-}
-
 function resolveRequestedOrSessionLaneId(
   runtime: AdeRuntime,
   session: SessionState,
@@ -3364,15 +3312,7 @@ type CallerContext = {
 };
 
 function resolveEnvCallerContext(): CallerContext {
-  const envRoleRaw = process.env.ADE_DEFAULT_ROLE?.trim() ?? "";
-  const envRole: SessionIdentity["role"] | null =
-    envRoleRaw === "cto"
-    || envRoleRaw === "orchestrator"
-    || envRoleRaw === "agent"
-    || envRoleRaw === "external"
-    || envRoleRaw === "evaluator"
-      ? envRoleRaw
-      : null;
+  const envRole = normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE);
   const envChatSessionId = process.env.ADE_CHAT_SESSION_ID?.trim() || null;
   const envMissionId = process.env.ADE_MISSION_ID?.trim() || null;
   const envRunId = process.env.ADE_RUN_ID?.trim() || null;
@@ -3464,6 +3404,30 @@ function isLocalComputerUseAllowed(callerCtx: CallerContext): boolean {
     || callerCtx.role === "agent";
 }
 
+function canDefaultRoleServeRequestedRole(
+  defaultRole: SessionIdentity["role"] | null,
+  requestedRole: SessionIdentity["role"],
+): boolean {
+  if (requestedRole === "external") return true;
+  if (!defaultRole) return false;
+  if (defaultRole === "cto") return true;
+  if (defaultRole === "orchestrator") return requestedRole !== "cto";
+  if (defaultRole === "agent") return requestedRole === "agent";
+  if (defaultRole === "evaluator") return requestedRole === "evaluator";
+  return false;
+}
+
+function resolveSessionRole(
+  defaultRole: SessionIdentity["role"] | null,
+  requestedRole: SessionIdentity["role"] | null,
+): SessionIdentity["role"] {
+  if (!defaultRole) return "external";
+  if (!requestedRole) return defaultRole;
+  return canDefaultRoleServeRequestedRole(defaultRole, requestedRole)
+    ? requestedRole
+    : defaultRole;
+}
+
 async function listToolSpecsForSession(runtime: AdeRuntime, session: SessionState): Promise<ToolSpec[]> {
   const callerCtx = await resolveEffectiveCallerContext(runtime, session);
   const externalComputerUseAvailable = runtime.computerUseArtifactBrokerService
@@ -3498,12 +3462,10 @@ function parseInitializeIdentity(runtime: AdeRuntime, params: unknown): SessionI
   const data = safeObject(params);
   const identity = safeObject(data.identity);
   const envContext = resolveEnvCallerContext();
-  const identityRole = asOptionalTrimmedString(identity.role);
-  const parsedIdentityRole: SessionIdentity["role"] | null =
-    identityRole === "cto" || identityRole === "orchestrator" || identityRole === "agent" || identityRole === "external" || identityRole === "evaluator"
-      ? identityRole
-      : null;
-  const validRole: SessionIdentity["role"] = envContext.role ?? "external";
+  const validRole = resolveSessionRole(
+    envContext.role,
+    normalizeAdeRuntimeRole(identity.role),
+  );
   const requestedChatSessionId = asOptionalTrimmedString(identity.chatSessionId);
   const resolvedChatSessionId = envContext.chatSessionId ?? requestedChatSessionId;
   const resolvedRunId = envContext.runId ?? asOptionalTrimmedString(identity.runId);
@@ -4740,6 +4702,7 @@ async function runTool(args: {
     const result = runtime.computerUseArtifactBrokerService.ingest({
       backend: {
         name: "screencapture",
+        style: "local_fallback",
         toolName: args.toolName,
       },
       inputs: [
@@ -4809,6 +4772,7 @@ async function runTool(args: {
     const result = runtime.computerUseArtifactBrokerService.ingest({
       backend: {
         name: "macos-vm",
+        style: "local_fallback",
         toolName: args.toolName,
       },
       inputs: [
@@ -5968,7 +5932,7 @@ async function runTool(args: {
   }
 
   if (name === "ingest_computer_use_artifacts") {
-    const backendStyle = assertNonEmptyString(toolArgs.backendStyle, "backendStyle") as "external_cli" | "manual" | "local_fallback";
+    const backendStyle = assertComputerUseBackendStyle(toolArgs.backendStyle, "backendStyle");
     const backendName = assertNonEmptyString(toolArgs.backendName, "backendName");
     const manifestPath = asOptionalTrimmedString(toolArgs.manifestPath);
     let inputs = Array.isArray(toolArgs.inputs) ? toolArgs.inputs.map((entry) => safeObject(entry)) : [];
@@ -6007,6 +5971,7 @@ async function runTool(args: {
     const result = runtime.computerUseArtifactBrokerService.ingest({
       backend: {
         name: backendName,
+        style: backendStyle,
         toolName: asOptionalTrimmedString(toolArgs.toolName),
         command: asOptionalTrimmedString(toolArgs.command),
       },
@@ -7402,9 +7367,8 @@ const APP_NAVIGATE_SUPPORTED_KINDS = new Set([
 export function createAdeRpcRequestHandler(args: {
   runtime: AdeRuntime;
   serverVersion: string;
-  onActionsListChanged?: (() => void) | null;
 }): JsonRpcHandler & { dispose: () => void } {
-  const { runtime, serverVersion, onActionsListChanged } = args;
+  const { runtime, serverVersion } = args;
 
   const session: SessionState = {
     initialized: false,
@@ -7477,13 +7441,16 @@ export function createAdeRpcRequestHandler(args: {
     }
   };
 
-  const listActions = async (): Promise<Record<string, unknown>> => ({
-    actions: (await listToolSpecsForSession(runtime, session)).map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: sanitizeToolSchema(tool.inputSchema),
-    })),
-  });
+  const listActions = async (): Promise<Record<string, unknown>> => {
+    const actionSpecs = await listToolSpecsForSession(runtime, session);
+    return {
+      actions: actionSpecs.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: sanitizeToolSchema(tool.inputSchema),
+      })),
+    };
+  };
 
   const callAction = async (actionName: string, actionArgs: Record<string, unknown>): Promise<unknown> => {
     return await auditActionCall(actionName, actionArgs, async () => {
@@ -7518,7 +7485,17 @@ export function createAdeRpcRequestHandler(args: {
         protocolVersion: session.protocolVersion,
         runtimeInfo: {
           name: "ade-rpc",
-          version: serverVersion
+          version: serverVersion,
+          buildHash:
+            typeof process.env.ADE_RUNTIME_BUILD_HASH === "string" &&
+            process.env.ADE_RUNTIME_BUILD_HASH.trim()
+              ? process.env.ADE_RUNTIME_BUILD_HASH.trim()
+              : null,
+          defaultRole:
+            normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
+          projectRoot: runtime.projectRoot,
+          workspaceRoot: runtime.workspaceRoot ?? null,
+          pid: process.pid
         },
         capabilities: {
           actions: {

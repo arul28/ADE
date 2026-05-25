@@ -657,7 +657,8 @@ describe("createMacosVmService", () => {
     const runCommand = vi.fn(async (command: string, args: string[]) => {
       commands.push({ command, args });
       if (command === "/usr/bin/curl") {
-        const outputPath = args.at(args.indexOf("--output") + 1);
+        const outputIndex = args.indexOf("--output");
+        const outputPath = outputIndex >= 0 ? args.at(outputIndex + 1) : null;
         if (outputPath) fs.writeFileSync(outputPath, Buffer.from("ipsw"));
         return { exitCode: 0, signal: null, stdout: "", stderr: "" };
       }
@@ -728,7 +729,8 @@ describe("createMacosVmService", () => {
     const runCommand = vi.fn(async (command: string, args: string[]) => {
       commands.push({ command, args });
       if (command === "/usr/bin/curl") {
-        const outputPath = args.at(args.indexOf("--output") + 1);
+        const outputIndex = args.indexOf("--output");
+        const outputPath = outputIndex >= 0 ? args.at(outputIndex + 1) : null;
         if (outputPath) fs.writeFileSync(outputPath, Buffer.from("partial"));
         return { exitCode: 56, signal: null, stdout: "", stderr: "network reset" };
       }

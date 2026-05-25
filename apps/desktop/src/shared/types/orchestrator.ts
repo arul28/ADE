@@ -4,7 +4,6 @@
 
 import type { AgentChatFileRef } from "./chat";
 import type { ModelId } from "./core";
-import type { ModelConfig } from "./models";
 import type { PrDepth, QueueWaitReason } from "./prs";
 import type { MissionDetail, MissionStepHandoff, PhaseCard } from "./missions";
 import type {

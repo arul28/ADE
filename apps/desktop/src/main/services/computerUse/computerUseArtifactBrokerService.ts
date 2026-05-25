@@ -16,6 +16,7 @@ import type {
   ComputerUseArtifactReviewState,
   ComputerUseArtifactRouteArgs,
   ComputerUseArtifactView,
+  ComputerUseBackendStyle,
   ComputerUseBackendStatus,
   ComputerUseExternalBackendStatus,
   ComputerUseArtifactWorkflowState,
@@ -70,6 +71,10 @@ const ARTIFACT_PREVIEW_MIME_BY_EXTENSION: Record<string, string> = {
   png: "image/png",
   svg: "image/svg+xml",
   webp: "image/webp",
+};
+
+type ComputerUseArtifactRecordInsert = Omit<ComputerUseArtifactRecord, "id" | "createdAt" | "backendStyle"> & {
+  backendStyle?: ComputerUseBackendStyle | null;
 };
 
 type StoredLinkRow = {
@@ -221,6 +226,10 @@ function defaultTitleForKind(kind: ComputerUseArtifactKind): string {
   return kind.replace(/_/g, " ");
 }
 
+function normalizeBackendStyle(style: unknown): ComputerUseBackendStyle {
+  return style === "manual" || style === "local_fallback" ? style : "external_cli";
+}
+
 function normalizeInputKind(input: ComputerUseArtifactInput): ComputerUseArtifactKind {
   const normalized = normalizeComputerUseArtifactKind(input.kind ?? input.rawType ?? input.title ?? null);
   if (normalized) return normalized;
@@ -313,10 +322,13 @@ export function createComputerUseArtifactBrokerService(args: {
     };
   };
 
-  const insertArtifactRecord = (record: Omit<ComputerUseArtifactRecord, "id" | "createdAt">): ComputerUseArtifactRecord => {
+  const insertArtifactRecord = (record: ComputerUseArtifactRecordInsert): ComputerUseArtifactRecord => {
+    const { backendStyle: rawBackendStyle, ...artifactRecord } = record;
+    const backendStyle = normalizeBackendStyle(rawBackendStyle);
     const next: ComputerUseArtifactRecord = {
       id: randomUUID(),
-      ...record,
+      backendStyle,
+      ...artifactRecord,
       createdAt: nowIso(),
     };
     db.run(
@@ -330,7 +342,7 @@ export function createComputerUseArtifactBrokerService(args: {
         next.id,
         projectId,
         next.kind,
-        "external_cli",
+        backendStyle,
         next.backendName,
         next.sourceToolName,
         next.originalType,
@@ -462,6 +474,7 @@ export function createComputerUseArtifactBrokerService(args: {
         laneId,
         metadata: {
           brokerArtifactId: record.id,
+          backendStyle: record.backendStyle,
           backendName: record.backendName,
           sourceToolName: record.sourceToolName,
           originalType: record.originalType,
@@ -489,6 +502,7 @@ export function createComputerUseArtifactBrokerService(args: {
           brokerArtifactId: record.id,
           title: record.title,
           description: record.description,
+          backendStyle: record.backendStyle,
           backendName: record.backendName,
           sourceToolName: record.sourceToolName,
           uri: record.uri,
@@ -503,6 +517,7 @@ export function createComputerUseArtifactBrokerService(args: {
     db.all<StoredArtifactRow>(query, params).map((row) => ({
       id: row.id,
       kind: row.artifact_kind as ComputerUseArtifactKind,
+      backendStyle: normalizeBackendStyle(row.backend_style),
       backendName: row.backend_name,
       sourceToolName: row.source_tool_name,
       originalType: row.original_type,
@@ -606,6 +621,7 @@ export function createComputerUseArtifactBrokerService(args: {
         };
         const record = insertArtifactRecord({
           kind,
+          backendStyle: normalizeBackendStyle(request.backend.style),
           backendName: request.backend.name,
           sourceToolName: toOptionalString(request.backend.toolName) ?? toOptionalString(request.backend.command),
           originalType: toOptionalString(input.rawType) ?? toOptionalString(input.kind),

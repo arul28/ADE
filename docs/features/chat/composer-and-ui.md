@@ -138,7 +138,20 @@ and a footer that contains the composer.
   "force", refreshProvider? })` and only triggers a runtime probe when
   the user actually opens the corresponding rail and the per-provider
   freshness TTL has lapsed (`runtimeCatalogCache.ts`: 30 min for
-  Cursor / Droid / OpenCode, 30 s for `lmstudio` / `ollama`).
+  Cursor / Droid / OpenCode, 30 s for `lmstudio` / `ollama`). When a
+  caller passes `availableModelIdsOverride`, `AgentChatPane` constrains
+  selection to exactly those ids: `filterChatModelIdsForSession({
+  includeActiveSessionModel: false })` skips the usual "preserve the
+  active model even if it's not in the list" rule, the runtime-catalog
+  merge is bypassed, and `AgentChatComposer` is rendered with
+  `constrainModelSelection={true}` so the `ModelPicker` opens with
+  `constrainToAvailableModelIds`. The picker drops registry expansion
+  (no "Show all models" suggestion) and the picker rail and the
+  composer both refuse to commit a value outside the allowlist. A
+  matching `constrainedModelSelectionError` blocks submit, draft
+  auto-create, and parallel launches if the current model or any
+  parallel-slot model fell off the allowlist — main and slot setters
+  also no-op on out-of-list ids instead of silently bouncing.
 - **Reasoning effort.** A standalone `ReasoningEffortPicker` (extracted
   from the model row) is rendered next to the model trigger when the
   active descriptor exposes `reasoningTiers`. The picker remembers the
@@ -478,8 +491,8 @@ surface's visual treatment:
 
 | Field | Effect |
 |---|---|
-| `mode` | `standard | resolver | mission-thread | mission-feed`. |
-| `profile` | `standard | persistent_identity` -- persistent identity adjusts accent color, chips, title, and some layouts. |
+| `mode` | `standard \| resolver \| mission-thread \| mission-feed`. |
+| `profile` | `standard \| persistent_identity` -- persistent identity adjusts accent color, chips, title, and some layouts. |
 | `modelSwitchPolicy` | Overrides the default switch policy for the session. |
 | `title`, `subtitle`, `assistantLabel`, `messagePlaceholder` | Text overrides. |
 | `accentColor` | Accent color used in header, chips, and active-turn indicators. |

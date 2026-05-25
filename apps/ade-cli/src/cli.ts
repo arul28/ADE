@@ -43,6 +43,9 @@ import type {
   SyncProjectSwitchResultPayload,
 } from "../../desktop/src/shared/types/sync";
 import { MACOS_VM_PHASES } from "../../desktop/src/shared/types/macosVm";
+import type { AdeServiceCommand } from "./serviceManager/common";
+import { normalizeAdeRuntimeRole, resolveAdeDefaultRole } from "./runtimeRoles";
+import type { AdeRuntime } from "./bootstrap";
 
 type JsonObject = Record<string, unknown>;
 
@@ -2055,10 +2058,7 @@ function parseCliArgs(argv: string[]): ParsedCli {
   const options: GlobalOptions = {
     projectRoot: null,
     workspaceRoot: null,
-    role:
-      (asString(process.env.ADE_DEFAULT_ROLE) as
-        | GlobalOptions["role"]
-        | null) ?? "agent",
+    role: resolveAdeDefaultRole(process.env.ADE_DEFAULT_ROLE, "agent"),
     headless: parseBooleanEnv(process.env.ADE_CLI_HEADLESS),
     requireSocket: false,
     pretty: true,
@@ -2172,15 +2172,8 @@ function parseCliArgs(argv: string[]): ParsedCli {
 }
 
 function parseRole(value: string): GlobalOptions["role"] {
-  if (
-    value === "cto" ||
-    value === "orchestrator" ||
-    value === "agent" ||
-    value === "external" ||
-    value === "evaluator"
-  ) {
-    return value;
-  }
+  const role = normalizeAdeRuntimeRole(value);
+  if (role) return role;
   throw new CliUsageError(
     "--role must be one of cto, orchestrator, agent, external, or evaluator.",
   );
@@ -10609,61 +10602,95 @@ async function createConnection(
   }
 
   const previousRole = process.env.ADE_DEFAULT_ROLE;
-  process.env.ADE_DEFAULT_ROLE = options.role;
-  const [{ createAdeRuntime }, { createAdeRpcRequestHandler }] =
-    await Promise.all([import("./bootstrap"), import("./adeRpcServer")]);
-  const runtime = await createAdeRuntime({
-    projectRoot: roots.projectRoot,
-    workspaceRoot: roots.workspaceRoot,
-  });
-  const createHandler = () =>
-    createAdeRpcRequestHandler({
-      runtime,
-      serverVersion: VERSION,
-      onActionsListChanged: () => {},
-    });
-  const handler = createHandler();
   const previousRpcUrl = process.env.ADE_RPC_URL;
+  let roleOwnedByConnection = false;
+  process.env.ADE_DEFAULT_ROLE = options.role;
+  const restoreRole = () => {
+    if (roleOwnedByConnection) return;
+    if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
+    else process.env.ADE_DEFAULT_ROLE = previousRole;
+  };
+  const restoreRpcUrl = () => {
+    if (previousRpcUrl == null) delete process.env.ADE_RPC_URL;
+    else process.env.ADE_RPC_URL = previousRpcUrl;
+  };
+  let runtime: AdeRuntime | null = null;
+  let handler: (JsonRpcHandler & { dispose?: () => void }) | null = null;
   let stopHeadlessSocket: (() => void) | null = null;
   let stopHeadlessTcp: (() => void) | null = null;
   try {
-    const tcp = await startHeadlessRpcTcpServer({ createHandler });
-    process.env.ADE_RPC_URL = tcp.url;
-    stopHeadlessTcp = tcp.stop;
-  } catch {
-    stopHeadlessTcp = null;
-  }
-  try {
-    stopHeadlessSocket = await startHeadlessRpcSocketServers({
+    const [{ createAdeRuntime }, { createAdeRpcRequestHandler }] =
+      await Promise.all([import("./bootstrap"), import("./adeRpcServer")]);
+    runtime = await createAdeRuntime({
       projectRoot: roots.projectRoot,
-      socketPath: legacySocketPath,
-      createHandler,
+      workspaceRoot: roots.workspaceRoot,
     });
-  } catch {
-    stopHeadlessSocket = null;
-  }
+    const createHandler = () =>
+      createAdeRpcRequestHandler({
+        runtime: runtime!,
+        serverVersion: VERSION,
+      });
+    handler = createHandler();
+    try {
+      const tcp = await startHeadlessRpcTcpServer({ createHandler });
+      process.env.ADE_RPC_URL = tcp.url;
+      stopHeadlessTcp = tcp.stop;
+    } catch {
+      stopHeadlessTcp = null;
+    }
+    try {
+      stopHeadlessSocket = await startHeadlessRpcSocketServers({
+        projectRoot: roots.projectRoot,
+        socketPath: legacySocketPath,
+        createHandler,
+      });
+    } catch {
+      stopHeadlessSocket = null;
+    }
 
-  const inProcess = new InProcessJsonRpcClient(handler, runtime, previousRole);
-  const connection: CliConnection = {
-    mode: "headless",
-    projectRoot: roots.projectRoot,
-    workspaceRoot: roots.workspaceRoot,
-    socketPath: legacySocketPath,
-    request: (method, params) => inProcess.request(method, params),
-    close: () => {
-      try {
-        stopHeadlessSocket?.();
-      } catch {}
-      try {
-        stopHeadlessTcp?.();
-      } catch {}
-      if (previousRpcUrl == null) delete process.env.ADE_RPC_URL;
-      else process.env.ADE_RPC_URL = previousRpcUrl;
-      inProcess.close();
-    },
-  };
-  await initializeConnection(connection, options);
-  return connection;
+    const inProcess = new InProcessJsonRpcClient(handler, runtime, previousRole);
+    const connection: CliConnection = {
+      mode: "headless",
+      projectRoot: roots.projectRoot,
+      workspaceRoot: roots.workspaceRoot,
+      socketPath: legacySocketPath,
+      request: (method, params) => inProcess.request(method, params),
+      close: () => {
+        try {
+          stopHeadlessSocket?.();
+        } catch {}
+        try {
+          stopHeadlessTcp?.();
+        } catch {}
+        restoreRpcUrl();
+        inProcess.close();
+      },
+    };
+    roleOwnedByConnection = true;
+    try {
+      await initializeConnection(connection, options);
+      return connection;
+    } catch (error) {
+      connection.close();
+      throw error;
+    }
+  } catch (error) {
+    try {
+      stopHeadlessSocket?.();
+    } catch {}
+    try {
+      stopHeadlessTcp?.();
+    } catch {}
+    try {
+      handler?.dispose?.();
+    } catch {}
+    try {
+      runtime?.dispose();
+    } catch {}
+    restoreRpcUrl();
+    restoreRole();
+    throw error;
+  }
 }
 
 function buildInitializeParams(
@@ -10726,14 +10753,82 @@ async function resolveMachineRuntimeSocketPath(
   return normalizeRuntimeSocketPath(rawSocketPath);
 }
 
-function readRuntimeInfoVersion(value: unknown): string | null {
-  if (!isRecord(value) || !isRecord(value.runtimeInfo)) return null;
-  return asString(value.runtimeInfo.version);
+type MachineRuntimeInfo = {
+  version: string | null;
+  buildHash: string | null;
+  defaultRole: string | null;
+  projectRoot: string | null;
+  pid: number | null;
+};
+
+function readMachineRuntimeInfo(value: unknown): MachineRuntimeInfo {
+  if (!isRecord(value) || !isRecord(value.runtimeInfo)) {
+    return {
+      version: null,
+      buildHash: null,
+      defaultRole: null,
+      projectRoot: null,
+      pid: null,
+    };
+  }
+  const pid = value.runtimeInfo.pid;
+  return {
+    version: asString(value.runtimeInfo.version)?.trim() || null,
+    buildHash: asString(value.runtimeInfo.buildHash)?.trim() || null,
+    defaultRole: normalizeAdeRuntimeRole(value.runtimeInfo.defaultRole),
+    projectRoot: asString(value.runtimeInfo.projectRoot)?.trim() || null,
+    pid:
+      typeof pid === "number" && Number.isFinite(pid) && pid > 0
+        ? Math.floor(pid)
+        : null,
+  };
 }
 
-function shouldReplaceMachineRuntimeVersion(runtimeVersion: string | null): boolean {
-  if (VERSION === PLACEHOLDER_VERSION) return false;
-  return runtimeVersion == null || runtimeVersion !== VERSION;
+function canRuntimeDefaultRoleServe(
+  defaultRole: MachineRuntimeInfo["defaultRole"],
+  requestedRole: GlobalOptions["role"],
+): boolean {
+  if (requestedRole === "external") return true;
+  if (!defaultRole) return false;
+  if (defaultRole === "cto") return true;
+  if (defaultRole === "orchestrator") return requestedRole !== "cto";
+  if (defaultRole === "agent") return requestedRole === "agent";
+  if (defaultRole === "evaluator") return requestedRole === "evaluator";
+  return false;
+}
+
+function machineRuntimeMismatchReason(
+  runtimeInfo: MachineRuntimeInfo,
+  expectedBuildHash: string | null,
+  expectedDefaultRole: GlobalOptions["role"],
+): string | null {
+  const runtimeVersion = runtimeInfo.version;
+  const sourceCliTalkingToReleasedRuntime =
+    VERSION === PLACEHOLDER_VERSION &&
+    Boolean(runtimeVersion) &&
+    runtimeVersion !== PLACEHOLDER_VERSION;
+  if (VERSION !== PLACEHOLDER_VERSION) {
+    const versionMatches = runtimeVersion === VERSION;
+    const placeholderBuildMatches =
+      runtimeVersion === PLACEHOLDER_VERSION &&
+      expectedBuildHash != null &&
+      runtimeInfo.buildHash === expectedBuildHash;
+    if (!versionMatches && !placeholderBuildMatches) {
+      return `version ${runtimeVersion ?? "missing"} does not match CLI version ${VERSION}`;
+    }
+  }
+
+  if (
+    !sourceCliTalkingToReleasedRuntime &&
+    expectedBuildHash &&
+    runtimeInfo.buildHash !== expectedBuildHash
+  ) {
+    return runtimeInfo.buildHash ? "build hash changed" : "build hash missing";
+  }
+  if (!canRuntimeDefaultRoleServe(runtimeInfo.defaultRole, expectedDefaultRole)) {
+    return `default role ${runtimeInfo.defaultRole ?? "missing"} cannot serve CLI role ${expectedDefaultRole}`;
+  }
+  return null;
 }
 
 function computeRuntimeBuildHash(filePath: string): string | null {
@@ -10744,15 +10839,42 @@ function computeRuntimeBuildHash(filePath: string): string | null {
   }
 }
 
+function prepareMachineRuntimeDaemonCommand(serviceCommand: AdeServiceCommand): {
+  args: string[];
+  buildHash: string | null;
+} {
+  const args = [...serviceCommand.args];
+  let buildHash: string | null = null;
+  if (
+    serviceCommand.command === process.execPath &&
+    args.length === 1 &&
+    args[0] === "serve" &&
+    fs.existsSync(CLI_DIST_PATH)
+  ) {
+    args.splice(0, 1, CLI_DIST_PATH, "serve");
+    buildHash = computeRuntimeBuildHash(CLI_DIST_PATH);
+  } else if (serviceCommand.command === process.execPath && args[0]) {
+    buildHash = computeRuntimeBuildHash(path.resolve(args[0]));
+  } else if (fs.existsSync(serviceCommand.command)) {
+    buildHash = computeRuntimeBuildHash(path.resolve(serviceCommand.command));
+  }
+  return { args, buildHash };
+}
+
+async function resolveExpectedMachineRuntimeBuildHash(): Promise<string | null> {
+  const { resolveAdeServeCommand } = await import("./serviceManager/common");
+  return prepareMachineRuntimeDaemonCommand(resolveAdeServeCommand()).buildHash;
+}
+
 async function initializeMachineRuntimeDaemon(
   client: SocketJsonRpcClient,
   options: GlobalOptions,
-): Promise<string | null> {
+): Promise<MachineRuntimeInfo> {
   const result = await client.request(
     "ade/initialize",
     buildInitializeParams(options, "ade-rpc-stdio-proxy"),
   );
-  return readRuntimeInfoVersion(result);
+  return readMachineRuntimeInfo(result);
 }
 
 async function shutdownMachineRuntimeDaemon(
@@ -10778,19 +10900,8 @@ async function spawnMachineRuntimeDaemon(
 
   const { resolveAdeServeCommand } = await import("./serviceManager/common");
   const serviceCommand = resolveAdeServeCommand();
-  const args = [...serviceCommand.args];
-  let runtimeBuildHash: string | null = null;
-  if (
-    serviceCommand.command === process.execPath &&
-    args.length === 1 &&
-    args[0] === "serve" &&
-    fs.existsSync(CLI_DIST_PATH)
-  ) {
-    args.splice(0, 1, CLI_DIST_PATH, "serve");
-    runtimeBuildHash = computeRuntimeBuildHash(CLI_DIST_PATH);
-  } else if (serviceCommand.command === process.execPath && args[0]) {
-    runtimeBuildHash = computeRuntimeBuildHash(path.resolve(args[0]));
-  }
+  const { args, buildHash: runtimeBuildHash } =
+    prepareMachineRuntimeDaemonCommand(serviceCommand);
   args.push("--socket", socketPath);
 
   const env: NodeJS.ProcessEnv = {
@@ -10822,28 +10933,37 @@ async function connectMachineRuntimeDaemon(
   const socketPath = await resolveMachineRuntimeSocketPath(socketPathOverride);
   const label = "ADE runtime daemon socket";
   const allowSpawn = connectOptions.allowSpawn ?? !options.requireSocket;
+  const isTcpSocket = socketPath.startsWith("tcp://");
+  const expectedBuildHash = isTcpSocket
+    ? null
+    : await resolveExpectedMachineRuntimeBuildHash();
   try {
     const client = await SocketJsonRpcClient.connect(
       socketPath,
       options.timeoutMs,
       label,
     );
-    const runtimeVersion = await initializeMachineRuntimeDaemon(
+    const runtimeInfo = await initializeMachineRuntimeDaemon(
       client,
       options,
     );
-    if (shouldReplaceMachineRuntimeVersion(runtimeVersion)) {
-      if (!allowSpawn) {
+    const mismatch = machineRuntimeMismatchReason(
+      runtimeInfo,
+      expectedBuildHash,
+      options.role,
+    );
+    if (mismatch) {
+      if (!allowSpawn || isTcpSocket) {
         client.close();
         throw new Error(
-          `ADE runtime daemon version ${runtimeVersion} does not match CLI version ${VERSION}.`,
+          `ADE runtime daemon ${mismatch}.`,
         );
       }
       await shutdownMachineRuntimeDaemon(client);
       const spawned = await spawnMachineRuntimeDaemon(socketPath, options);
       if (!spawned) {
         throw new Error(
-          `ADE runtime daemon version ${runtimeVersion} does not match CLI version ${VERSION}.`,
+          `ADE runtime daemon ${mismatch}.`,
         );
       }
       const restarted = await SocketJsonRpcClient.connect(
@@ -10851,14 +10971,19 @@ async function connectMachineRuntimeDaemon(
         options.timeoutMs,
         label,
       );
-      const restartedVersion = await initializeMachineRuntimeDaemon(
+      const restartedInfo = await initializeMachineRuntimeDaemon(
         restarted,
         options,
       );
-      if (shouldReplaceMachineRuntimeVersion(restartedVersion)) {
+      const restartedMismatch = machineRuntimeMismatchReason(
+        restartedInfo,
+        expectedBuildHash,
+        options.role,
+      );
+      if (restartedMismatch) {
         await shutdownMachineRuntimeDaemon(restarted);
         throw new Error(
-          `ADE runtime daemon version ${restartedVersion} does not match CLI version ${VERSION}.`,
+          `ADE runtime daemon ${restartedMismatch}.`,
         );
       }
       return restarted;
@@ -10874,14 +10999,19 @@ async function connectMachineRuntimeDaemon(
         options.timeoutMs,
         label,
       );
-      const runtimeVersion = await initializeMachineRuntimeDaemon(
+      const runtimeInfo = await initializeMachineRuntimeDaemon(
         client,
         options,
       );
-      if (shouldReplaceMachineRuntimeVersion(runtimeVersion)) {
+      const mismatch = machineRuntimeMismatchReason(
+        runtimeInfo,
+        expectedBuildHash,
+        options.role,
+      );
+      if (mismatch) {
         await shutdownMachineRuntimeDaemon(client);
         throw new Error(
-          `ADE runtime daemon version ${runtimeVersion} does not match CLI version ${VERSION}.`,
+          `ADE runtime daemon ${mismatch}.`,
         );
       }
       return client;
@@ -10916,7 +11046,7 @@ async function runRuntimeCommand(
         "ADE runtime daemon socket",
       );
       try {
-        const runtimeVersion = await initializeMachineRuntimeDaemon(
+        const runtimeInfo = await initializeMachineRuntimeDaemon(
           client,
           options,
         );
@@ -10924,7 +11054,11 @@ async function runRuntimeCommand(
           ok: true,
           running: true,
           socketPath,
-          version: runtimeVersion,
+          version: runtimeInfo.version,
+          buildHash: runtimeInfo.buildHash,
+          defaultRole: runtimeInfo.defaultRole,
+          projectRoot: runtimeInfo.projectRoot,
+          pid: runtimeInfo.pid,
           message: "ADE runtime daemon is running.",
         };
       } finally {
@@ -10945,7 +11079,7 @@ async function runRuntimeCommand(
       allowSpawn: true,
     });
     try {
-      const runtimeVersion = await initializeMachineRuntimeDaemon(
+      const runtimeInfo = await initializeMachineRuntimeDaemon(
         client,
         options,
       ).catch(() => null);
@@ -10953,7 +11087,11 @@ async function runRuntimeCommand(
         ok: true,
         running: true,
         socketPath,
-        version: runtimeVersion,
+        version: runtimeInfo?.version ?? null,
+        buildHash: runtimeInfo?.buildHash ?? null,
+        defaultRole: runtimeInfo?.defaultRole ?? null,
+        projectRoot: runtimeInfo?.projectRoot ?? null,
+        pid: runtimeInfo?.pid ?? null,
         message: "ADE runtime daemon is running.",
       };
     } finally {
@@ -11317,6 +11455,7 @@ async function runServe(
   });
   const previousRole = process.env.ADE_DEFAULT_ROLE;
   process.env.ADE_DEFAULT_ROLE = options.role;
+  try {
 
   const states: HeadlessRpcServerState[] = [];
   let done = false;
@@ -11414,9 +11553,11 @@ async function runServe(
       fs.unlinkSync(socketPath);
     } catch {}
   }
-  if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
-  else process.env.ADE_DEFAULT_ROLE = previousRole;
   return null;
+  } finally {
+    if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
+    else process.env.ADE_DEFAULT_ROLE = previousRole;
+  }
 }
 
 function isFailedServiceManagerResult(value: unknown): boolean {
@@ -13324,7 +13465,7 @@ function summarizeExecution(args: {
         connection.mode === "desktop-socket"
           ? "local-desktop-socket"
           : "local-headless-project",
-      role: process.env.ADE_DEFAULT_ROLE ?? "agent",
+      role: resolveAdeDefaultRole(process.env.ADE_DEFAULT_ROLE, "agent"),
       projectRoot: connection.projectRoot,
       workspaceRoot: connection.workspaceRoot,
       socketPath: connection.socketPath,

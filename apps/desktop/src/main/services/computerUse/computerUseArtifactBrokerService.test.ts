@@ -177,6 +177,38 @@ describe("computerUseArtifactBrokerService", () => {
     }
   });
 
+  it("persists the declared backend style for ingested artifacts", () => {
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      missionService: { addArtifact: vi.fn() } as any,
+      orchestratorService: { registerArtifact: vi.fn() } as any,
+      logger: createLogger(),
+    });
+
+    const ingested = broker.ingest({
+      backend: {
+        name: "ade-cli",
+        style: "manual",
+      },
+      inputs: [
+        {
+          kind: "console_logs",
+          title: "Manual note",
+          text: "Looks good.",
+        },
+      ],
+    });
+
+    expect(ingested.artifacts[0]?.backendStyle).toBe("manual");
+    const row = db.get<{ backend_style: string }>(
+      `select backend_style from computer_use_artifacts where id = ?`,
+      [ingested.artifacts[0]!.id],
+    );
+    expect(row?.backend_style).toBe("manual");
+  });
+
   it("rejects symlinked artifact paths that escape the project artifact directory", () => {
     const missionService = { addArtifact: vi.fn() } as any;
     const orchestratorService = { registerArtifact: vi.fn() } as any;

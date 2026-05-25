@@ -13,6 +13,12 @@ export const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 export const defaultDevSocketPath = process.platform === "win32"
   ? path.join(os.tmpdir(), "ade-runtime-dev.sock")
   : "/tmp/ade-runtime-dev.sock";
+const validDefaultRoles = new Set(["cto", "orchestrator", "agent", "external", "evaluator"]);
+
+function normalizeDefaultRole(value, fallback = null) {
+  const candidate = typeof value === "string" ? value.trim() : "";
+  return validDefaultRoles.has(candidate) ? candidate : fallback;
+}
 
 export function resolveDevSocketPath(rawSocketPath = null) {
   const candidate = rawSocketPath?.trim()
@@ -181,12 +187,40 @@ export async function buildRuntimeCliForDevClient(skipRuntimeBuild, socketPath) 
   await buildRuntimeCli(false);
 }
 
+export async function assertRuntimeFresh(socketPath, projectRoot = null) {
+  const info = await getRuntimeInfo(socketPath);
+  const mismatch = runtimeMismatchReason(info, { projectRoot });
+  if (!mismatch) return;
+  throw new Error(
+    `The dev runtime at ${socketPath} is stale (${mismatch}). Restart it with npm run dev:runtime or use auto mode so ADE can restart it.`,
+  );
+}
+
 function createSocket(socketPath) {
   if (socketPath.startsWith("tcp://")) {
     const parsed = new URL(socketPath);
     return net.createConnection({ host: parsed.hostname, port: Number(parsed.port) });
   }
   return net.createConnection(socketPath);
+}
+
+function isTcpSocketPath(socketPath) {
+  return socketPath.startsWith("tcp://");
+}
+
+function canAutoStartRuntime(socketPath) {
+  if (!isTcpSocketPath(socketPath)) return true;
+  try {
+    const parsed = new URL(socketPath);
+    const host = parsed.hostname.toLowerCase();
+    return host === "localhost"
+      || host === "127.0.0.1"
+      || host === "::1"
+      || host === "[::1]"
+      || host === "0.0.0.0";
+  } catch {
+    return false;
+  }
 }
 
 function readRuntimeInfo(value) {
@@ -203,7 +237,13 @@ function readRuntimeInfo(value) {
   const buildHash = typeof runtimeInfo.buildHash === "string" && runtimeInfo.buildHash.trim()
     ? runtimeInfo.buildHash.trim()
     : null;
-  return { version, buildHash };
+  const defaultRole = typeof runtimeInfo.defaultRole === "string" && runtimeInfo.defaultRole.trim()
+    ? runtimeInfo.defaultRole.trim()
+    : null;
+  const projectRoot = typeof runtimeInfo.projectRoot === "string" && runtimeInfo.projectRoot.trim()
+    ? path.resolve(runtimeInfo.projectRoot.trim())
+    : null;
+  return { version, buildHash, defaultRole, projectRoot };
 }
 
 function jsonRpcRequestSequence(socketPath, requests, options = {}) {
@@ -324,9 +364,11 @@ async function getRuntimeInfo(socketPath) {
   return readRuntimeInfo(result);
 }
 
-function runtimeMismatchReason(info) {
+function runtimeMismatchReason(info, expected = {}) {
   const expectedVersion = resolveDevAppVersion();
   const expectedBuildHash = computeRuntimeBuildHash();
+  const expectedDefaultRole = normalizeDefaultRole(process.env.ADE_DEFAULT_ROLE, "cto");
+  const expectedProjectRoot = expected.projectRoot ? path.resolve(expected.projectRoot) : null;
   if (info.version && info.version !== expectedVersion) {
     return `version ${info.version} != ${expectedVersion}`;
   }
@@ -334,6 +376,12 @@ function runtimeMismatchReason(info) {
     return info.buildHash
       ? "build hash changed"
       : "build hash missing";
+  }
+  if (info.defaultRole !== expectedDefaultRole) {
+    return `default role ${info.defaultRole ?? "missing"} != ${expectedDefaultRole}`;
+  }
+  if (expectedProjectRoot && info.projectRoot !== expectedProjectRoot) {
+    return `project root ${info.projectRoot ?? "missing"} != ${expectedProjectRoot}`;
   }
   return null;
 }
@@ -395,11 +443,14 @@ async function shutdownRuntime(socketPath) {
   await waitForSocketToClose(socketPath);
 }
 
-export async function ensureRuntime(socketPath) {
+export async function ensureRuntime(socketPath, projectRoot = null) {
   try {
     const info = await getRuntimeInfo(socketPath);
-    const mismatch = runtimeMismatchReason(info);
+    const mismatch = runtimeMismatchReason(info, { projectRoot });
     if (!mismatch) return false;
+    if (!canAutoStartRuntime(socketPath)) {
+      throw new Error(`ADE dev runtime at ${socketPath} is stale (${mismatch}), and only local TCP or Unix-socket runtimes can be auto-started.`);
+    }
     process.stdout.write(`[ade] restarting stale dev runtime at ${socketPath} (${mismatch})\n`);
     await shutdownRuntime(socketPath);
   } catch (error) {
@@ -407,19 +458,15 @@ export async function ensureRuntime(socketPath) {
       throw error;
     }
   }
-  if (socketPath.startsWith("tcp://")) {
-    throw new Error(`Cannot auto-start ADE dev runtime on TCP socket ${socketPath}.`);
+  if (!canAutoStartRuntime(socketPath)) {
+    throw new Error(`Cannot auto-start ADE dev runtime on remote TCP socket ${socketPath}. Start it with npm run dev:runtime, or use a local TCP/Unix socket for auto mode.`);
   }
   process.stdout.write(`[ade] starting dev runtime at ${socketPath}\n`);
   const child = spawn(process.execPath, [cliPath(), "serve", "--socket", socketPath], {
     cwd: repoRoot,
     env: {
       ...process.env,
-      ADE_CLI_VERSION: resolveDevAppVersion(),
-      ADE_DEV_RUNTIME_SOCKET_PATH: socketPath,
-      ADE_RUNTIME_SOCKET_PATH: socketPath,
-      ADE_RPC_SOCKET_PATH: socketPath,
-      ...runtimeBuildEnv(),
+      ...devRuntimeEnv(socketPath, projectRoot),
     },
     detached: true,
     stdio: "ignore",
@@ -433,6 +480,7 @@ export async function ensureRuntime(socketPath) {
 export function devRuntimeEnv(socketPath, projectRoot) {
   return {
     ADE_CLI_VERSION: resolveDevAppVersion(),
+    ADE_DEFAULT_ROLE: normalizeDefaultRole(process.env.ADE_DEFAULT_ROLE, "cto"),
     ADE_DEV_RUNTIME_SOCKET_PATH: socketPath,
     ADE_RUNTIME_SOCKET_PATH: socketPath,
     ADE_RPC_SOCKET_PATH: socketPath,

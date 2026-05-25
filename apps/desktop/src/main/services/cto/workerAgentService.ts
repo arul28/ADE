@@ -22,7 +22,6 @@ import {
   hasEnvRefToken,
   looksSensitiveKey,
   looksSensitiveValue,
-  stableStringify,
 } from "../shared/utils";
 import { createLogIntegrityService } from "../projects/logIntegrityService";
 

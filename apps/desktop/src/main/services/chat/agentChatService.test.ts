@@ -15411,3 +15411,297 @@ describe("createAgentChatService", () => {
     });
   });
 });
+
+describe("suggestLaneNameFromPrompt", () => {
+  function createProjectConfigServiceWithTitleOptions(
+    options: { titleGenerationEnabled?: boolean; titleModelId?: string } = {},
+  ) {
+    const titleOptions: Record<string, unknown> = {};
+    if (typeof options.titleGenerationEnabled === "boolean") titleOptions.enabled = options.titleGenerationEnabled;
+    if (options.titleModelId) titleOptions.modelId = options.titleModelId;
+    const sessionIntelligence = Object.keys(titleOptions).length ? { titles: titleOptions } : {};
+    return {
+      get: vi.fn(() => ({
+        effective: {
+          ai: {
+            permissions: {
+              cli: { mode: "edit" },
+              inProcess: { mode: "edit" },
+            },
+            chat: {},
+            sessionIntelligence,
+          },
+        },
+      })),
+      getAll: vi.fn(() => ({})),
+      set: vi.fn(),
+    } as any;
+  }
+
+  function createSuggestService(options: { titleGenerationEnabled?: boolean; titleModelId?: string } = {}) {
+    return createService({
+      projectConfigService: createProjectConfigServiceWithTitleOptions(options),
+    });
+  }
+
+  it("returns 'parallel-task' for an empty prompt", async () => {
+    const { service } = createSuggestService();
+    const result = await service.suggestLaneNameFromPrompt({
+      prompt: "",
+      modelId: "anthropic/claude-haiku-4-5",
+      laneId: "lane-1",
+    });
+    expect(result).toBe("parallel-task");
+  });
+
+  it("returns 'parallel-task' for a whitespace-only prompt", async () => {
+    const { service } = createSuggestService();
+    const result = await service.suggestLaneNameFromPrompt({
+      prompt: "   \t\n  ",
+      modelId: "anthropic/claude-haiku-4-5",
+      laneId: "lane-1",
+    });
+    expect(result).toBe("parallel-task");
+  });
+
+  it("returns a slug from a short prompt via fallback (no auth = no models)", async () => {
+    const { service } = createSuggestService();
+    const result = await service.suggestLaneNameFromPrompt({
+      prompt: "Fix the login bug",
+      modelId: "anthropic/claude-haiku-4-5",
+      laneId: "lane-1",
+    });
+    expect(result).toBe("fix-the-login-bug");
+  });
+
+  it("takes only first 4 words of a long prompt", async () => {
+    const { service } = createSuggestService();
+    const result = await service.suggestLaneNameFromPrompt({
+      prompt: "Refactor the authentication service to use JWT tokens",
+      modelId: "anthropic/claude-haiku-4-5",
+      laneId: "lane-1",
+    });
+    expect(result).toBe("refactor-the-authentication-service");
+  });
+
+  it("strips special characters from the prompt slug", async () => {
+    const { service } = createSuggestService();
+    const result = await service.suggestLaneNameFromPrompt({
+      prompt: "Fix bug #123 in module!",
+      modelId: "anthropic/claude-haiku-4-5",
+      laneId: "lane-1",
+    });
+    expect(result).toBe("fix-bug-123-in");
+  });
+
+  it("truncates the fallback slug to 48 characters", async () => {
+    const { service } = createSuggestService();
+    const result = await service.suggestLaneNameFromPrompt({
+      prompt: "superlongwordthatexceedsfortyeightcharacterswhenalone secondword thirdword fourthword",
+      modelId: "anthropic/claude-haiku-4-5",
+      laneId: "lane-1",
+    });
+    expect(result.length).toBeLessThanOrEqual(48);
+  });
+
+  it("collapses multiple whitespace in the prompt", async () => {
+    const { service } = createSuggestService();
+    const result = await service.suggestLaneNameFromPrompt({
+      prompt: "  fix   the   bug   now   please  ",
+      modelId: "anthropic/claude-haiku-4-5",
+      laneId: "lane-1",
+    });
+    expect(result).toBe("fix-the-bug-now");
+  });
+
+  it("falls back when the model runtime throws an error", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
+    ]);
+
+    const { service, logger, aiIntegrationService } = createSuggestService();
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockRejectedValue(new Error("API rate limited"));
+    const result = await service.suggestLaneNameFromPrompt({
+      prompt: "Write a test suite",
+      modelId: "anthropic/claude-haiku-4-5",
+      laneId: "lane-1",
+    });
+
+    expect(result).toBe("write-a-test-suite");
+    expect(logger.warn).toHaveBeenCalledWith(
+      "agent_chat.suggest_lane_name_failed",
+      expect.objectContaining({ error: "API rate limited" }),
+    );
+  });
+
+  it("keeps the prompt fallback readable while adding the temporary suffix when title generation is disabled", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
+    ]);
+
+    const { service, aiIntegrationService } = createSuggestService({ titleGenerationEnabled: false });
+    const result = await service.suggestLaneNameFromPrompt({
+      prompt: "Fix the authentication login failure in the dashboard",
+      modelId: "anthropic/claude-haiku-4-5",
+      laneId: "lane-1",
+      fallbackName: "chat-20260514-010203",
+    });
+
+    expect(result).toBe("fix-the-authentication-login-20260514-010203");
+    expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+  });
+
+  it("uses the explicit fallback directly when the prompt fallback is generic", async () => {
+    const { service } = createSuggestService();
+    const result = await service.suggestLaneNameFromPrompt({
+      prompt: "!!!",
+      modelId: "anthropic/claude-haiku-4-5",
+      laneId: "lane-1",
+      fallbackName: "chat-20260514-010203",
+    });
+
+    expect(result).toBe("chat-20260514-010203");
+  });
+
+  it("uses AI-generated name when the model runtime succeeds", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
+    ]);
+    const { service, aiIntegrationService } = createSuggestService();
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValue({
+      text: "Login Bug Fix",
+      inputTokens: 10,
+      outputTokens: 5,
+    } as any);
+
+    const result = await service.suggestLaneNameFromPrompt({
+      prompt: "Fix the authentication login failure in the dashboard",
+      modelId: "anthropic/claude-haiku-4-5",
+      laneId: "lane-1",
+    });
+
+    expect(result).toBe("login-bug-fix");
+  });
+
+  it("retries the configured title model when the requested Codex model cannot name the lane", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
+    ]);
+    const { service, aiIntegrationService } = createSuggestService({ titleModelId: "openai/gpt-5.4-mini" });
+    vi.mocked(aiIntegrationService.summarizeTerminal)
+      .mockRejectedValueOnce(new Error("GPT-5.5 unavailable for title task"))
+      .mockResolvedValueOnce({
+        text: "Auto Create Lane Fix",
+        inputTokens: 10,
+        outputTokens: 5,
+      } as any);
+
+    const result = await service.suggestLaneNameFromPrompt({
+      prompt: "Fix auto create lane routing and naming",
+      modelId: "openai/gpt-5.5",
+      laneId: "lane-1",
+      fallbackName: "chat-20260514-010203",
+    });
+
+    expect(result).toBe("auto-create-lane-fix");
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      model: "openai/gpt-5.5",
+      taskType: "session_title",
+    }));
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      model: "openai/gpt-5.4-mini",
+      taskType: "session_title",
+    }));
+  });
+
+  it("normalizes AI-generated name: strips special chars and lowercases", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
+    ]);
+    const { service, aiIntegrationService } = createSuggestService();
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValue({
+      text: "JWT Auth Refactor!",
+      inputTokens: 10,
+      outputTokens: 5,
+    } as any);
+
+    const result = await service.suggestLaneNameFromPrompt({
+      prompt: "Refactor auth to use JWT",
+      modelId: "anthropic/claude-haiku-4-5",
+      laneId: "lane-1",
+    });
+
+    expect(result).toBe("jwt-auth-refactor");
+  });
+
+  it("normalizes AI-generated name: truncates to 60 characters", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
+    ]);
+    const longName = "a".repeat(70);
+    const { service, aiIntegrationService } = createSuggestService();
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValue({
+      text: longName,
+      inputTokens: 10,
+      outputTokens: 5,
+    } as any);
+
+    const result = await service.suggestLaneNameFromPrompt({
+      prompt: "Do a very long task",
+      modelId: "anthropic/claude-haiku-4-5",
+      laneId: "lane-1",
+    });
+
+    expect(result.length).toBeLessThanOrEqual(60);
+  });
+
+  it("trims edge hyphens after AI title truncation", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
+    ]);
+    const { service, aiIntegrationService } = createSuggestService();
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValue({
+      text: `${"a".repeat(55)}- tail`,
+      inputTokens: 10,
+      outputTokens: 5,
+    } as any);
+
+    const result = await service.suggestLaneNameFromPrompt({
+      prompt: "Trim the generated lane name",
+      modelId: "anthropic/claude-haiku-4-5",
+      laneId: "lane-1",
+    });
+
+    expect(result).toBe("a".repeat(55));
+  });
+
+  it("falls back when AI returns empty text after sanitization", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
+    ]);
+    const { service, aiIntegrationService } = createSuggestService();
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValue({
+      text: "!!!",
+      inputTokens: 10,
+      outputTokens: 5,
+    } as any);
+
+    const result = await service.suggestLaneNameFromPrompt({
+      prompt: "Something useful",
+      modelId: "anthropic/claude-haiku-4-5",
+      laneId: "lane-1",
+    });
+
+    expect(result).toBe("something-useful");
+  });
+
+  it("handles null/undefined args fields gracefully", async () => {
+    const { service } = createSuggestService();
+    const result = await service.suggestLaneNameFromPrompt({
+      prompt: null as any,
+      modelId: null as any,
+      laneId: null as any,
+    });
+    expect(result).toBe("parallel-task");
+  });
+});

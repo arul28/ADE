@@ -46,7 +46,6 @@ import type {
   AgentChatEventEnvelope,
   TeamManifest,
   ExecutionPlanPreview,
-  OrchestratorStep,
   OrchestratorWorkerRole,
   RecoveryLoopPolicy,
   RecoveryLoopState,
@@ -927,7 +926,6 @@ export function deriveMissionStatusFromRun(graph: OrchestratorRunGraph, mission:
   if (graph.run.status === "succeeded") {
     return "completed";
   }
-  if (graph.run.status === "failed") return "failed";
   if (graph.run.status === "canceled") return "canceled";
 
   const hasBlockingIntervention = mission.interventions.some((entry) => {
@@ -937,6 +935,7 @@ export function deriveMissionStatusFromRun(graph: OrchestratorRunGraph, mission:
     return metadata?.canProceedWithoutAnswer !== true;
   });
   if (hasBlockingIntervention) return "intervention_required";
+  if (graph.run.status === "failed") return "failed";
   if (
     graph.run.status === "active"
     || graph.run.status === "bootstrapping"

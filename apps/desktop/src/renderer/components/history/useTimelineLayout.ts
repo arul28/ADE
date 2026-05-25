@@ -8,7 +8,6 @@ import type {
   TimelineEvent,
   WIPNode,
 } from "./timelineTypes";
-import type { NodeShape } from "./eventTaxonomy";
 import { getLaneTrackColor } from "./eventTaxonomy";
 
 // ── Constants ────────────────────────────────────────────────────

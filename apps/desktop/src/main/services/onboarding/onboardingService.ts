@@ -435,35 +435,6 @@ export function createOnboardingService(args: {
   const coerceVariant = (variant: OnboardingTourVariant | undefined): OnboardingTourVariant =>
     variant === "highlights" ? "highlights" : "full";
 
-  const updateTourEntry = (
-    tourId: string,
-    patch: Partial<OnboardingTourEntry>,
-  ): OnboardingTourProgress => {
-    const id = tourId.trim();
-    if (!id) return getTourProgress();
-    const current = getTourProgress();
-    const entry = current.tours[id] ?? { ...EMPTY_TOUR_ENTRY };
-    const nextEntry: OnboardingTourEntry = { ...entry, ...patch };
-    // Mirror legacy writes onto the "full" variant so variant-aware readers
-    // stay in sync without requiring every call site to migrate at once.
-    const existingVariant = current.tourVariants[id] ?? emptyTourEntryV2();
-    const mirrored: OnboardingTourEntryV2 = {
-      full: { ...nextEntry },
-      highlights: existingVariant.highlights,
-    };
-    return writeTourProgress({
-      ...current,
-      tours: {
-        ...current.tours,
-        [id]: nextEntry,
-      },
-      tourVariants: {
-        ...current.tourVariants,
-        [id]: mirrored,
-      },
-    });
-  };
-
   const updateTourVariantEntry = (
     tourId: string,
     variant: OnboardingTourVariant,

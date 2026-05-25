@@ -32,7 +32,7 @@ Caveats that follow from "runtime owns missions":
 - `orchestrator/executionPolicy.ts` — default `MissionExecutionPolicy`, merge rules (mission > project > fallback), completion evaluation, run/step validation.
 - `orchestrator/adaptiveRuntime.ts` — `classifyTaskComplexity` (trivial/simple/moderate/complex), parallelism scaling, model downgrade.
 - `orchestrator/workerDeliveryService.ts` — message delivery pipeline between coordinator and worker chats; retry, idempotency, in-flight leases.
-- `orchestrator/workerTracking.ts` — post-attempt artifact extraction and the planning-question intervention path. Only `planner_natural_question` opens a `manual_input` intervention now; the planning-question "required before exit" enforcement has been retired (see [Planning question handling](#planning-question-handling)).
+- `orchestrator/workerTracking.ts` — post-attempt artifact extraction and the planning-question intervention path. `planner_natural_question` opens a `manual_input` intervention, and `planningQuestionPolicy.ts` still gates required planning clarification with `planner_required_question_missing` when configured.
 - `orchestrator/delegationContracts.ts` — contracts between coordinator and workers (scope, allowed tools, handoff shape).
 - `orchestrator/runtimeEventRouter.ts` — routes events from worker sessions and CLI output into the coordinator.
 - `orchestrator/metaReasoner.ts` — higher-level reasoning for coordinator choices.
@@ -114,23 +114,42 @@ When a mission reaches terminal status (`completed`, `failed`, `cancelled`), `tr
 
 ### Planning question handling
 
-A planner can pause the run by emitting an `awaiting_user_input` step with
-`source === "planner_natural_question"` and a non-empty `question`.
-`workerTracking.extractAndRegisterArtifacts` translates that into a single
-`manual_input` intervention (`reasonCode: "planner_natural_question"`) and a
-matching `pauseRun` so the coordinator stops until the user answers. There is
-no longer a separate `planner_required_question_missing` reason code or a
-phase-level "questions required before exit" gate — the legacy
-`planningQuestionPolicy.ts` module was removed, and the worker prompt no longer
-mentions an ADE-blocking-question prerequisite. If a phase wants the planner to
-ask clarifying questions, that intent is conveyed by the planner itself
-through the `ask_user` tool (or `awaiting_user_input` with the natural-question
-source); the orchestrator never refuses to exit planning just because no
-question was asked.
+A planner can pause the run by emitting an `awaiting_user_input` step
+with `source === "planner_natural_question"` and a non-empty
+`question`. `workerTracking.extractAndRegisterArtifacts` translates
+that into a single `manual_input` intervention (`reasonCode:
+"planner_natural_question"`) and a matching `pauseRun` so the
+coordinator stops until the user answers.
+
+Required planning clarification is still enforced separately by
+`planningQuestionPolicy.ts`: if a planning phase exits without a
+required answer, ADE records `planner_required_question_missing` and
+keeps the run paused. Both `planner_natural_question` and
+`planner_required_question_missing` are valid intervention reason codes.
 
 ### Mission step bidirectional sync
 
 `syncRunStepsFromMission()` pulls user-initiated mutations (cancel, skip) from the mission state back into orchestrator run state. The orchestrator picks the change up on its next tick.
+
+`syncMissionStepsFromRun()` is the other direction. It pairs orchestrator
+run steps to mission steps via `runStep.missionStepId`, falling back to
+`metadata.orchestratorStepId` / `metadata.stepKey` / matching titles so
+steps recorded before the explicit join column was populated still
+synchronize.
+
+After step/phase sync, `syncMissionFromRun()` must re-read mission
+detail before deriving a non-terminal mission status. Sync can add or
+resolve interventions, so deriving status from a stale mission snapshot
+can overwrite `intervention_required` back to `in_progress`. Only an
+explicit `nextMissionStatus` bypasses that re-derive.
+
+`ensureTerminalFailedRunIntervention()` then guarantees a terminal
+`failed` run cannot leave the mission in a clean `failed` status without
+a matching `failed_step` intervention: if no open `failed_step` row
+exists, it adds one (with reason code `terminal_run_failed_step`),
+moves the mission to `intervention_required` even though the run itself
+is terminal, and `deriveMissionStatusFromRun` checks blocking
+interventions before honouring `run.status === "failed"`.
 
 ### Cascade cleanup
 
@@ -206,7 +225,7 @@ Preflight warnings surface in the launch dialog but do not block launch unless t
 ## Gotchas and fragile areas
 
 - **`missionLifecycle.ts` uses the deps-injection pattern** because the extraction from `aiOrchestratorService.ts` is partial — many functions re-declare type contracts and get their implementations via the deps arg. Don't assume the file contains the full logic; follow the imports back to `aiOrchestratorService`.
-- **Dual intervention creation paths** — `orchestratorService.completeAttempt()` and `runtimeEventRouter.routeEventToCoordinator()` both used to create interventions. `VAL-INTV-001` / `VAL-INTV-002` assert that they now dedupe. Any new code path that creates `failed_step` interventions must re-check existing-open-intervention.
+- **Dual intervention creation paths** — `orchestratorService.completeAttempt()`, `runtimeEventRouter.routeEventToCoordinator()`, and `ensureTerminalFailedRunIntervention()` (called from `syncMissionFromRun`) all open `failed_step` interventions. `VAL-INTV-001` / `VAL-INTV-002` assert that they dedupe. Any new code path that creates `failed_step` interventions must re-check existing-open-intervention.
 - **Budget pause consistency** — token budget in `completeAttempt` and hard cap in `spawn_worker` must both flow through `pauseMissionWithIntervention`. See `VAL-BUDGET-001`.
 - **`tickRun` must skip budget-paused runs** — `VAL-BUDGET-002`. Any refactor that replaces the skip check must preserve the invariant.
 - **`finalizationPolicyKind` is always `"result_lane"`** for newly created missions. Don't re-introduce PR-strategy UI without coordinating with the closeout contract.

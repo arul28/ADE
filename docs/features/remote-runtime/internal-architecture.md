@@ -128,7 +128,7 @@ The renderer's command palette needs to know which action domains a target suppo
 `LocalRuntimeConnectionPool` handles the desktop side of the local runtime binding:
 
 - `connect()` first tries an existing `~/.ade/sock/ade.sock`. If that fails, it spawns `ade serve --socket <path>` detached (using the bundled CLI from `process.resourcesPath/ade-cli/cli.cjs` or the dev path), waits for the socket, and reconnects.
-- `initialize` is called immediately after connect; if `runtimeInfo.version` does not match the desktop app version, the pool shuts the connection down and lets the next call respawn the daemon at the right version.
+- `initialize` is called immediately after connect. The pool compares `runtimeInfo.version` and `runtimeInfo.buildHash` with the expected desktop runtime; a mismatch closes that client and lets the next attach/spawn path choose the right daemon.
 - `installServiceBestEffort()` runs `ade serve --install-service` once per session to register the per-user login service; the result feeds `LocalRuntimeStatus.serviceInstall`.
 - `getStatus()` periodically refreshes `serviceHealth` (`unsupported | not_installed | installed | running | error | unknown`) by calling `getRuntimeServiceStatus()` from the service manager.
 - The pool exposes typed entry points for action calls (`callActionForRoot`), sync calls (`callSyncForRoot`), event polling (`streamEventsForRoot`), and event subscription (`subscribeEventsForRoot`). All of them register the project with `projects.add` once and then carry `projectId` on every project-scoped request.

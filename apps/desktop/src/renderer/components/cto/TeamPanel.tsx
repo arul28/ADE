@@ -1,6 +1,5 @@
 import React, { useState } from "react";
 import {
-  PencilSimple,
   Trash,
   ArrowCounterClockwise,
   Lightning,
@@ -12,12 +11,10 @@ import type {
   AdapterType,
   AgentConfigRevision,
   AgentSessionLogEntry,
-  HeartbeatPolicy,
   WorkerAgentRun,
 } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { PaneHeader } from "../ui/PaneHeader";
-import { cn } from "../ui/cn";
 import { AgentStatusBadge } from "./shared/AgentStatusBadge";
 import { WorkerActivityFeed } from "./WorkerActivityFeed";
 

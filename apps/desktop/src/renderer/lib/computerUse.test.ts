@@ -66,6 +66,7 @@ describe("computerUse renderer helpers", () => {
       artifacts: [{
         id: "artifact-1",
         kind: "screenshot",
+        backendStyle: "external_cli",
         backendName: "agent-browser",
         sourceToolName: null,
         originalType: null,

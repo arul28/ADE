@@ -33,6 +33,8 @@ const sharedResolveAlias = [
   { find: "lottie-react", replacement: lottieReactStub },
 ];
 
+const unitExcludes = ["**/*.integration.test.{ts,tsx}"];
+
 export default defineWorkspace([
   {
     resolve: { alias: sharedResolveAlias },
@@ -40,6 +42,7 @@ export default defineWorkspace([
       ...shared,
       name: "unit-main",
       include: ["src/main/**/*.test.{ts,tsx}"],
+      exclude: unitExcludes,
     },
   },
   {
@@ -48,6 +51,7 @@ export default defineWorkspace([
       ...shared,
       name: "unit-renderer",
       include: ["src/renderer/**/*.test.{ts,tsx}"],
+      exclude: unitExcludes,
     },
   },
   {
@@ -59,6 +63,7 @@ export default defineWorkspace([
         "src/shared/**/*.test.{ts,tsx}",
         "src/preload/**/*.test.{ts,tsx}",
       ],
+      exclude: unitExcludes,
     },
   },
 ]);
