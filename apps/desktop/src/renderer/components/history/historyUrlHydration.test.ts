@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { shouldHydrateCommitShaFromUrl } from "./historyUrlHydration";
 
 /**
  * Documents History URL hydration ordering: setFocusLaneId clears commit selection,
@@ -38,5 +39,18 @@ describe("history URL hydration ordering", () => {
     state = setSelectedCommitSha(state, commitSha);
     state = setFocusLaneId(state, laneFromUrl);
     expect(state.selectedCommitSha).toBeNull();
+  });
+
+  it("reapplies commitSha when the URL lane becomes known after initial lane load", () => {
+    const commitSha = "abc123";
+
+    expect(
+      shouldHydrateCommitShaFromUrl({
+        commitSha,
+        requestedSurface: "commits",
+        selectedCommitSha: commitSha,
+        focusLaneChanged: true,
+      }),
+    ).toBe(true);
   });
 });

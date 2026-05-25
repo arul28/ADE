@@ -550,6 +550,87 @@ describe("registerRuntimeBridge", () => {
     });
   });
 
+  it("does not bind a stale remote project after overlapping opens resolve out of order", async () => {
+    const projectA = {
+      projectId: "project-a",
+      rootPath: "/srv/a",
+      displayName: "Project A",
+      addedAt: 1,
+      lastOpenedAt: 2,
+      gitOriginUrl: null,
+    };
+    const projectB = {
+      projectId: "project-b",
+      rootPath: "/srv/b",
+      displayName: "Project B",
+      addedAt: 1,
+      lastOpenedAt: 2,
+      gitOriginUrl: null,
+    };
+    type ConnectResult = {
+      target: RemoteRuntimeTarget;
+      arch: string;
+      version: string | null;
+      projects: typeof projectA[];
+    };
+    let resolveFirst!: (value: ConnectResult) => void;
+    let resolveSecond!: (value: ConnectResult) => void;
+    const firstConnect = new Promise<ConnectResult>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const secondConnect = new Promise<ConnectResult>((resolve) => {
+      resolveSecond = resolve;
+    });
+    const bindRemoteProject = vi.fn();
+    remoteRegistryGetMock.mockReturnValue(target);
+    remoteConnectMock
+      .mockReturnValueOnce(firstConnect)
+      .mockReturnValueOnce(secondConnect);
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+      bindRemoteProject,
+    });
+
+    const handler = ipcHandlers.get(IPC.remoteRuntimeOpenProject)!;
+    const first = handler(eventForSender(sender(303)), {
+      id: "target-1",
+      projectId: "project-a",
+    }) as Promise<OpenProjectBinding & { kind: "remote" }>;
+    const second = handler(eventForSender(sender(303)), {
+      id: "target-1",
+      projectId: "project-b",
+    }) as Promise<OpenProjectBinding & { kind: "remote" }>;
+
+    resolveSecond({
+      target,
+      arch: "darwin-arm64",
+      version: "1.0.0",
+      projects: [projectB],
+    });
+    await expect(second).resolves.toMatchObject({
+      projectId: "project-b",
+      rootPath: "/srv/b",
+    });
+    expect(bindRemoteProject).toHaveBeenCalledTimes(1);
+    expect(bindRemoteProject).toHaveBeenLastCalledWith(
+      7,
+      expect.objectContaining({ projectId: "project-b" }),
+    );
+
+    resolveFirst({
+      target,
+      arch: "darwin-arm64",
+      version: "1.0.0",
+      projects: [projectA],
+    });
+    await expect(first).resolves.toMatchObject({
+      projectId: "project-a",
+      rootPath: "/srv/a",
+    });
+    expect(bindRemoteProject).toHaveBeenCalledTimes(1);
+  });
+
   it("forwards a one-shot local GitHub auth header for remote clones", async () => {
     remoteRegistryGetMock.mockReturnValue(target);
     remoteCallMachineForTargetMock.mockResolvedValue({

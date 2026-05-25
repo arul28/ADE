@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AppNavigationRequest } from "../../../shared/types";
+import { selectWindowForProjectNavigation } from "./projectNavigationWindowSelection";
 
 /**
  * Regression guard for iOS sync deeplink routing: navigation must target the
@@ -73,15 +74,21 @@ describe("project-scoped deeplink dispatch contract", () => {
     });
 
     const deliverToProject = async (targetProjectRoot: string): Promise<number> => {
-      const activeWindow = [...activeProjectRoots].find(([, root]) => root === targetProjectRoot)?.[0] ?? null;
-      if (activeWindow != null) return activeWindow;
-      const tabWindow =
-        [...openProjectTabRoots].find(([, roots]) => roots.has(targetProjectRoot))?.[0] ?? null;
-      if (tabWindow != null) {
-        activateProjectTab(tabWindow, targetProjectRoot);
-        return tabWindow;
+      const selection = selectWindowForProjectNavigation(
+        targetProjectRoot,
+        [...activeProjectRoots].map(([id, root]) => ({
+          id,
+          activeProjectRoot: root,
+          openProjectRoots: openProjectTabRoots.get(id) ?? new Set<string>(),
+        })),
+      );
+      if (selection) {
+        if (selection.activateProjectRoot) {
+          activateProjectTab(selection.windowId, targetProjectRoot);
+        }
+        return selection.windowId;
       }
-      return openWindow(targetProjectRoot);
+      return await openWindow(targetProjectRoot);
     };
 
     await expect(deliverToProject("/projects/beta")).resolves.toBe(1);

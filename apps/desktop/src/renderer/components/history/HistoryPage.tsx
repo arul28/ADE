@@ -18,6 +18,7 @@ import {
   useTimelineStore,
   type TimelineStoreApi,
 } from "./useTimelineStore";
+import { shouldHydrateCommitShaFromUrl } from "./historyUrlHydration";
 import type { TimelineEvent } from "./timelineTypes";
 import type { GitCommitSummary } from "../../../shared/types";
 
@@ -116,8 +117,12 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
 
     const laneFromUrl = searchParams.get("laneId");
     const laneIsKnown = laneFromUrl != null && lanes.some((l) => l.id === laneFromUrl);
+    let focusLaneChanged = false;
     if (laneFromUrl && laneIsKnown) {
-      if (focusLaneId !== laneFromUrl) setFocusLaneId(laneFromUrl);
+      if (focusLaneId !== laneFromUrl) {
+        setFocusLaneId(laneFromUrl);
+        focusLaneChanged = true;
+      }
     } else {
       if (laneFromUrl && !laneIsKnown && lanes.length > 0) {
         // Lane referenced in URL no longer exists — strip it and the dependent commit hash.
@@ -157,7 +162,14 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     if (commitSha && requestedSurface === "activity") {
       cleanedParams.delete("commitSha");
       cleanedUrl = true;
-    } else if (commitSha && commitSha !== selectedCommitSha) {
+    } else if (
+      shouldHydrateCommitShaFromUrl({
+        commitSha,
+        requestedSurface,
+        selectedCommitSha,
+        focusLaneChanged,
+      })
+    ) {
       setSelectedCommitSha(commitSha);
       setSurface("commits");
     }

@@ -296,7 +296,7 @@ describe("gitOperationsService undo and redo head changes", () => {
         status: "succeeded",
         preHeadSha: "before",
         postHeadSha: "after",
-        metadataJson: "{}",
+        metadataJson: JSON.stringify({ branchRef: "feature/stash-test" }),
       },
     ]);
 
@@ -368,16 +368,11 @@ describe("gitOperationsService undo and redo head changes", () => {
     ]);
 
     await expect(service.undoLastHeadChange({ laneId: "lane-1" }))
-      .rejects.toThrow("No undoable head-changing git operation found for this lane.");
+      .rejects.toThrow("No undoable head-changing git operation found for this branch.");
     expect(mockGit.runGitOrThrow).not.toHaveBeenCalled();
   });
 
-  it("skips branch checkout when undoing the latest head change", async () => {
-    mockGit.getHeadSha
-      .mockResolvedValueOnce("after")
-      .mockResolvedValueOnce("after")
-      .mockResolvedValueOnce("before");
-    mockGit.runGitOrThrow.mockResolvedValue(undefined);
+  it("does not look past branch checkout into another branch when undoing", async () => {
     const { service, mockListHeadChanges } = createTestGitOperationsService();
     mockListHeadChanges.mockReturnValue([
       {
@@ -390,7 +385,7 @@ describe("gitOperationsService undo and redo head changes", () => {
         status: "succeeded",
         preHeadSha: "before",
         postHeadSha: "after",
-        metadataJson: "{}",
+        metadataJson: JSON.stringify({ branchRef: "feature/old" }),
       },
       {
         id: "op-pick",
@@ -402,16 +397,14 @@ describe("gitOperationsService undo and redo head changes", () => {
         status: "succeeded",
         preHeadSha: "before",
         postHeadSha: "after",
-        metadataJson: "{}",
+        metadataJson: JSON.stringify({ branchRef: "feature/old" }),
       },
     ]);
 
-    await service.undoLastHeadChange({ laneId: "lane-1" });
+    await expect(service.undoLastHeadChange({ laneId: "lane-1" }))
+      .rejects.toThrow("No undoable head-changing git operation found for this branch.");
 
-    expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
-      ["reset", "--hard", "before"],
-      { cwd: "/tmp/ade-lane", timeoutMs: 60_000 },
-    );
+    expect(mockGit.runGitOrThrow).not.toHaveBeenCalled();
     expect(mockListHeadChanges).toHaveBeenCalledWith({ laneId: "lane-1", limit: 100 });
   });
 });

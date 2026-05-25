@@ -10,6 +10,7 @@ import {
   handleDeeplinkUrl,
   registerAdeProtocolHandler,
 } from "./services/deeplinks/protocolHandler";
+import { selectWindowForProjectNavigation } from "./services/deeplinks/projectNavigationWindowSelection";
 import { registerIpc } from "./services/ipc/registerIpc";
 import { createFileLogger } from "./services/logging/logger";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
@@ -5476,16 +5477,26 @@ app.whenReady().then(async () => {
     request: AppNavigationRequest,
   ): Promise<{ ok: true; windowId: number } | { ok: false; message: string }> => {
     const normalizedRoot = normalizeProjectRoot(targetProjectRoot);
-    let targetWindow =
-      BrowserWindow.getAllWindows()
-        .find((win) => !win.isDestroyed() && windowProjectRoots.get(win.id) === normalizedRoot) ?? null;
-    if (!targetWindow) {
-      targetWindow =
-        BrowserWindow.getAllWindows()
-          .find((win) => !win.isDestroyed() && windowProjectTabRoots.get(win.id)?.has(normalizedRoot) === true) ?? null;
-      if (targetWindow) {
-        bindWindowToProject(targetWindow.id, normalizedRoot, { emit: true, foreground: true });
-      }
+    const candidateWindows = BrowserWindow.getAllWindows().filter(
+      (win) => !win.isDestroyed(),
+    );
+    const selection = selectWindowForProjectNavigation(
+      normalizedRoot,
+      candidateWindows.map((win) => ({
+        id: win.id,
+        activeProjectRoot: windowProjectRoots.get(win.id) ?? null,
+        openProjectRoots: windowProjectTabRoots.get(win.id) ?? new Set<string>(),
+      })),
+    );
+
+    let targetWindow = selection
+      ? candidateWindows.find((win) => win.id === selection.windowId) ?? null
+      : null;
+    if (targetWindow && selection?.activateProjectRoot) {
+      bindWindowToProject(targetWindow.id, normalizedRoot, {
+        emit: true,
+        foreground: true,
+      });
     }
     if (!targetWindow) {
       const opened = await openAdeWindow({ projectRoot: normalizedRoot });

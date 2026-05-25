@@ -579,15 +579,31 @@ export function createGitOperationsService({
     "git_checkout_branch",
   ]);
 
-  function getLatestUndoableHeadChange(laneId: string): OperationRecord & {
+  function getOperationBranchRef(operation: OperationRecord): string | null {
+    const parsed = safeJsonParse<unknown>(operation.metadataJson, null);
+    if (!isRecord(parsed)) return null;
+    const branchRef = parsed.branchRef;
+    return typeof branchRef === "string" && branchRef.trim()
+      ? localBranchNameForConfig(branchRef)
+      : null;
+  }
+
+  function getLatestUndoableHeadChange(
+    laneId: string,
+    currentBranchRef: string,
+  ): OperationRecord & {
     preHeadSha: string;
     postHeadSha: string;
   } {
+    const normalizedCurrentBranch = localBranchNameForConfig(currentBranchRef);
     const operation = operationService
       .listHeadChanges({ laneId, limit: 100 })
-      .find((entry) => !NON_UNDOABLE_HEAD_CHANGE_KINDS.has(entry.kind));
+      .find((entry) => {
+        if (NON_UNDOABLE_HEAD_CHANGE_KINDS.has(entry.kind)) return false;
+        return getOperationBranchRef(entry) === normalizedCurrentBranch;
+      });
     if (!operation) {
-      throw new Error("No undoable head-changing git operation found for this lane.");
+      throw new Error("No undoable head-changing git operation found for this branch.");
     }
     return operation;
   }
@@ -1350,7 +1366,9 @@ export function createGitOperationsService({
     },
 
     async undoLastHeadChange(args: GitHeadChangeActionArgs): Promise<GitActionResult> {
-      const operation = getLatestUndoableHeadChange(args.laneId);
+      const laneAtSelection = laneService.getLaneBaseAndBranch(args.laneId);
+      const selectedBranchRef = localBranchNameForConfig(laneAtSelection.branchRef);
+      const operation = getLatestUndoableHeadChange(args.laneId, selectedBranchRef);
       const { action } = await runLaneOperation({
         laneId: args.laneId,
         kind: "git_undo_head_change",
@@ -1362,6 +1380,9 @@ export function createGitOperationsService({
           targetHeadSha: operation.preHeadSha,
         },
         fn: async (lane) => {
+          if (localBranchNameForConfig(lane.branchRef) !== selectedBranchRef) {
+            throw new Error("Cannot undo because the lane branch has changed since that operation was selected.");
+          }
           const currentHead = await getHeadSha(lane.worktreePath);
           if (currentHead !== operation.postHeadSha) {
             throw new Error("Cannot undo because the lane head has changed since that operation.");

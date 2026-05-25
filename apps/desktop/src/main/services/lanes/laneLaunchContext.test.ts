@@ -600,5 +600,31 @@ describe("resolveLaneLaunchContext", () => {
       });
       expect(result.sshTarget?.ip).toBe("192.168.64.11");
     });
+
+    it("invalidates cached SSH target when a disruptive VM operation starts", async () => {
+      const provider = makeVmProvider({
+        status: makeVmStatus({ laneId: "lane-vm", ipAddress: "192.168.64.11" }),
+      });
+      setMacosVmLaunchProvider(provider);
+      await refreshVmLaneLaunchCache({ laneId: "lane-vm", provider });
+
+      syncMacosVmLaunchCacheFromEvent({
+        type: "operation",
+        operation: "restart",
+        state: "started",
+        laneId: "lane-vm",
+        vmName: "ade-vm",
+        message: "restarting",
+        occurredAt: new Date().toISOString(),
+      });
+
+      expect(() =>
+        resolveLaneLaunchContext({
+          laneService: makeLaneService("/projects/my-lane", "macos-vm"),
+          laneId: "lane-vm",
+          purpose: "start agent",
+        }),
+      ).toThrow(VmNotReadyError);
+    });
   });
 });

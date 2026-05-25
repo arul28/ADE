@@ -325,6 +325,16 @@ const MACOS_VM_LAUNCH_CACHE_REFRESH_OPERATIONS = new Set([
   "wipe",
 ]);
 
+const MACOS_VM_LAUNCH_CACHE_INVALIDATE_ON_START_OPERATIONS = new Set([
+  "provision",
+  "start",
+  "stop",
+  "restart",
+  "set-credentials",
+  "delete",
+  "wipe",
+]);
+
 /**
  * Keep the synchronous VM launch cache aligned with macosVmService lifecycle
  * events. Without this, agent/PTY launches can keep a stale SSH target for up
@@ -345,6 +355,13 @@ export function syncMacosVmLaunchCacheFromEvent(
   })();
   if (!laneId) return;
 
+  const shouldInvalidate = (() => {
+    if (payload.type !== "operation") return false;
+    return (
+      payload.state === "started"
+      && MACOS_VM_LAUNCH_CACHE_INVALIDATE_ON_START_OPERATIONS.has(payload.operation)
+    );
+  })();
   const shouldRefresh = (() => {
     if (payload.type === "vm-updated") return true;
     if (payload.type === "operation") {
@@ -355,9 +372,11 @@ export function syncMacosVmLaunchCacheFromEvent(
     }
     return false;
   })();
-  if (!shouldRefresh) return;
+  if (!shouldInvalidate && !shouldRefresh) return;
 
   invalidateVmLaneLaunchCache(laneId);
+  if (!shouldRefresh) return;
+
   void refreshVmLaneLaunchCache({ laneId }).catch((error) => {
     log?.("lane.vm_launch_cache_refresh_failed", {
       laneId,

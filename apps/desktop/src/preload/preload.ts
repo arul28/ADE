@@ -993,6 +993,7 @@ let projectBindingGeneration = 0;
 let projectBindingVersion = 0;
 let projectBindingRefreshPromise: Promise<OpenProjectBinding | null> | null = null;
 let projectRuntimeTransitionDepth = 0;
+let remoteProjectOpenTransitionDepth = 0;
 
 function rememberProjectBinding(binding: OpenProjectBinding | null): void {
   const previousKey = currentProjectBinding?.key ?? null;
@@ -1278,7 +1279,7 @@ function shouldBypassProjectRuntimeDuringTransition(domain: string, action: stri
         : "changing project state";
     throw new Error(PROJECT_SWITCHING_MESSAGE.replace("changing project state", label));
   }
-  return true;
+  return remoteProjectOpenTransitionDepth > 0;
 }
 
 async function callProjectRuntimeActionIfBound<T>(
@@ -3374,6 +3375,7 @@ contextBridge.exposeInMainWorld("ade", {
       projectId: string,
     ): Promise<OpenProjectBinding> => {
       return runProjectRuntimeTransition(async () => {
+        remoteProjectOpenTransitionDepth += 1;
         const generation = ++openRemoteProjectGeneration;
         rememberProjectBinding(null);
         try {
@@ -3390,6 +3392,11 @@ contextBridge.exposeInMainWorld("ade", {
             await refreshProjectBinding().catch(() => {});
           }
           throw error;
+        } finally {
+          remoteProjectOpenTransitionDepth = Math.max(
+            0,
+            remoteProjectOpenTransitionDepth - 1,
+          );
         }
       });
     },
