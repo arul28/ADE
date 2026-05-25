@@ -9,10 +9,17 @@ The wire transport is the same JSON-RPC the local daemon answers. The remote-run
 - `apps/desktop/src/main/services/remoteRuntime/` — SSH transport (multi-route
   fallback, ssh2 keepalive), runtime bootstrap, target registry (saved routes +
   per-route `lastSucceededAt`), runtime RPC client (timeouts treated as fatal),
-  remote connection pool (eviction listeners, retryable read-only actions),
-  remote connection service (`powerMonitor`-driven `probeSavedConnections`),
-  `runtimeDiscovery.ts` (Bonjour + Tailscale with `discoverLanRuntimes`
-  returning `{ machines, diagnostics }`).
+  remote connection pool (eviction listeners, retryable read-only actions and
+  selected retryable sync reads), remote connection service
+  (`powerMonitor`-driven `probeSavedConnections`), `runtimeDiscovery.ts`
+  (Bonjour + Tailscale with `discoverLanRuntimes` returning
+  `{ machines, diagnostics }`).
+- `apps/desktop/src/main/services/ipc/runtimeBridge.ts` — runtime IPC boundary:
+  remote target registry, connect / projects / project-open channels, remote
+  action/sync/event dispatch, local-runtime project action/sync/event routing,
+  per-target action registry lookups, and per-window remote-open generation
+  guards so a slow earlier remote-project open cannot overwrite the latest
+  window binding.
 - `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts` —
   the local daemon connection used by desktop IPC, event streaming, sync
   Settings, and local-work checks. Spawns `ade serve` if the machine socket is
@@ -37,7 +44,10 @@ The wire transport is the same JSON-RPC the local daemon answers. The remote-run
   project switch, preload records a pending local binding for the target root
   and includes `rootPath` on local runtime action/sync/event calls so early
   renderer requests hit the destination daemon project instead of the previous
-  window session binding.
+  window session binding. During remote project opens, preload clears the
+  current binding, tracks the newest open generation, blocks mutating
+  action/sync calls with the "Project is switching" error, and lets read-only
+  calls fall through instead of refreshing a stale runtime binding.
 - `apps/ade-cli/src/multiProjectRpcServer.ts` — runtime-level project catalog
   and sync methods plus project-scoped action dispatch.
 - `apps/ade-cli/src/services/projects/` — machine project registry and
@@ -62,7 +72,10 @@ When opening a remote project, ADE checks local projects with the same git origi
 2. Enter a display name, hostname, SSH user, port, and optionally a private key path. If no key path is provided, ADE uses the user's local ssh-agent when `SSH_AUTH_SOCK` is available and reads matching `HostName` / `IdentityFile` entries from `~/.ssh/config`.
 3. Connect. ADE opens an SSH session (15 s keepalive, 3 strikes), detects the remote platform with `uname -sm`, and starts `ade rpc --stdio`. If the primary host is unreachable, ADE walks alternate `routes` ranked by most-recent success and records the route that wins.
 4. If the bundled ADE runtime for that platform is present and the remote ADE binary is missing or stale, ADE uploads `ade-<platform-arch>` to `~/.ade/bin/ade`, uploads native dependencies to `~/.ade/runtime/<platform-arch>/`, and verifies `~/.ade/bin/ade --version`.
-5. Pick an existing remote project or register a new remote path; the desktop calls `projects.add { rootPath }` against the remote runtime to bind it.
+5. Pick an existing remote project or register a new remote path; the desktop
+   calls `projects.add { rootPath }` against the remote runtime to bind it.
+   If the same window starts multiple remote opens concurrently, both preload
+   and the main IPC bridge keep only the latest open as the durable binding.
 
 After connecting, the desktop persists the active remote project to `globalState.lastRemoteProjectBinding`. When the app relaunches with no startup project path, the first window restores that binding and reconnects to the same target / project automatically.
 

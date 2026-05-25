@@ -33,6 +33,12 @@ import { createOAuthRedirectService } from "../../desktop/src/main/services/lane
 import { createRuntimeDiagnosticsService } from "../../desktop/src/main/services/lanes/runtimeDiagnosticsService";
 import { createRebaseSuggestionService } from "../../desktop/src/main/services/lanes/rebaseSuggestionService";
 import { createAutoRebaseService } from "../../desktop/src/main/services/lanes/autoRebaseService";
+import {
+  invalidateVmLaneLaunchCache,
+  refreshVmLaneLaunchCache,
+  setMacosVmLaunchProvider,
+  syncMacosVmLaunchCacheFromEvent,
+} from "../../desktop/src/main/services/lanes/laneLaunchContext";
 import { createProcessService } from "../../desktop/src/main/services/processes/processService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
 import { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
@@ -440,6 +446,18 @@ export async function createAdeRuntime(args: {
       }
     },
     onDeleteEvent: (event) => pushEvent("runtime", { type: "lane_delete_event", event }),
+    onPlacementChanged: (event) => {
+      pushEvent("runtime", { type: "lane_placement_changed", event });
+      invalidateVmLaneLaunchCache(event.laneId);
+      if (event.to === "macos-vm") {
+        void refreshVmLaneLaunchCache({ laneId: event.laneId }).catch((error) => {
+          logger.warn("lane.placement_changed_refresh_failed", {
+            laneId: event.laneId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
+    },
     logger,
   });
   await laneService.ensurePrimaryLane();
@@ -750,12 +768,23 @@ export async function createAdeRuntime(args: {
         projectRoot,
         logger,
         resolveLanes: async () => laneService.list({ includeArchived: false }),
-        onEvent: (event) => pushEvent("runtime", {
-          ...(event as unknown as Record<string, unknown>),
-          type: "macos_vm",
-          eventType: event.type,
-        }),
+        onEvent: (event) => {
+          syncMacosVmLaunchCacheFromEvent(event, (name, fields) => {
+            logger.warn(name, fields);
+          });
+          pushEvent("runtime", {
+            ...(event as unknown as Record<string, unknown>),
+            type: "macos_vm",
+            eventType: event.type,
+          });
+        },
       });
+  if (macosVmService) {
+    setMacosVmLaunchProvider({
+      getStatus: macosVmService.getStatus.bind(macosVmService),
+      getCredentials: macosVmService.getCredentials.bind(macosVmService),
+    });
+  }
 
   // `built_in_browser` is hosted by the desktop's Electron main process (the
   // browser pane owns a WebContentsView). The runtime daemon proxies calls
@@ -1121,6 +1150,8 @@ export async function createAdeRuntime(args: {
       swallow(() => appControlService?.dispose());
       swallow(() => builtInBrowserBridge?.dispose());
       swallow(() => macosVmService?.dispose());
+      swallow(() => setMacosVmLaunchProvider(null));
+      swallow(() => invalidateVmLaneLaunchCache());
       swallow(() => linearOAuthService.dispose());
       swallow(() => headlessLinearServices.dispose());
       swallow(() => agentChatService?.forceDisposeAll?.());

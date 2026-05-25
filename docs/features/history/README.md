@@ -47,8 +47,8 @@ Main process / runtime services:
 | Path | Role |
 |---|---|
 | `apps/desktop/src/main/services/history/operationService.ts` | CRUD for `operations` rows; the canonical entry point for `record`, `start`, `finish`, `list`, `get`, and `listHeadChanges`. Same source backs the runtime daemon and the desktop fallback path. |
-| `apps/desktop/src/main/services/state/kvDb.ts` | Schema for `operations`, `checkpoints`, `pack_events`, `pack_versions`, `pack_heads`, `terminal_sessions`. |
-| `apps/desktop/src/main/services/git/gitOperationsService.ts` | Brackets every git operation with `operationService.start` / `finish`, captures pre/post HEAD SHAs, and owns the per-lane undo/redo head-change pipeline (`undoLastHeadChange`, `redoLastHeadChange`, `createTag`, `resetToCommit`, `pull` with `ff-only` / `rebase` / `merge` modes). |
+| `apps/desktop/src/main/services/state/kvDb.ts` | Schema for `operations`, `checkpoints`, `pack_events`, `pack_versions`, `pack_heads`, `terminal_sessions`, `orchestrator_chat_threads`, `orchestrator_chat_messages`. |
+| `apps/desktop/src/main/services/git/gitOperationsService.ts` | Brackets every git operation with `operationService.start` / `finish`, captures pre/post HEAD SHAs, and owns the per-lane undo/redo head-change pipeline (`undoLastHeadChange`, `redoLastHeadChange`, `createTag`, `resetToCommit`, `pull` with `ff-only` / `rebase` / `merge` modes). Undo selection is branch-aware: it ignores checkout/undo rows, requires the recorded operation's `metadata.branchRef` to match the lane's current branch, and rechecks the branch before running `reset --hard`. |
 | `apps/desktop/src/main/services/lanes/laneService.ts` | Lane CRUD now accepts `CreateLaneArgs.startPoint`, used by the Commits view's "Create lane here" affordance to fork a new lane from a specific commit. |
 | `apps/desktop/src/main/services/prs/prService.ts` | Records PR creation as an operation. |
 | `apps/desktop/src/main/services/conflicts/conflictService.ts` | Records rebase operations. |
@@ -59,7 +59,7 @@ Renderer components (`apps/desktop/src/renderer/components/history/`):
 
 | File | Responsibility |
 |---|---|
-| `HistoryPage.tsx` | Hosts the `TimelineStoreProvider`, the two-pane `PaneTilingLayout` (timeline ~60%, detail ~40%), URL ↔ store hydration for `surface` / `laneId` / `eventId` / `commitSha`, and the auto-refresh poll for running activity events. Surface defaults to `commits`. |
+| `HistoryPage.tsx` | Hosts the `TimelineStoreProvider`, the two-pane `PaneTilingLayout` (timeline ~60%, detail ~40%), URL ↔ store hydration for `surface` / `laneId` / `eventId` / `commitSha`, selected-lane mirroring when the URL is not driving lane state, commit-on-lane tracking for destructive action gates, and the auto-refresh poll for running activity events. Surface defaults to `commits`. |
 | `useTimelineStore.ts` | Zustand store: raw + enriched events, WIP-by-lane nodes, surface, focus lane, selected commit/event, view mode, scope level, filters, lane visibility, columns. `fetchEvents` merges `history.listOperations` with `fetchSupplementalTimelineRecords` and sorts/dedupes via `sortTimelineRecords`. |
 | `timelineTypes.ts` | `HistorySurface = "activity" \| "commits"`, `ViewMode = "graph" \| "list" \| "compact"`, `TimelineEvent` (enriched `OperationRecord`), `LaneTrack`, `GraphLayout`, `TimelineFilters`, `LaneVisibility`, `ColumnConfig`, `WIPNode`, `MinimapBucket`. `DEFAULT_COLUMNS` order is timestamp → graph → event → lane → author → status → duration → sha. |
 | `eventTaxonomy.ts` | Source of truth for event categories, importance levels, node shapes, and the per-kind `EVENT_KIND_META` table that every renderer (graph, list, compact, detail panel) consults. Adds taxonomy entries for the new git head-change kinds (`git_undo_head_change`, `git_redo_head_change`, `git_tag_create`, `git_reset_soft`/`_mixed`/`_hard`) and the unified-feed kinds (`chat.session`, `cto.session`, `worker.run`, `worker.activity`). |
@@ -67,9 +67,10 @@ Renderer components (`apps/desktop/src/renderer/components/history/`):
 | `historySearch.ts` | Tokenizer + matcher behind the Commits view search input. Supports bare full-text, quoted phrases, and the `message:` / `msg:` / `=` / `author:` / `@` / `commit:` / `sha:` / `#` / `branch:` / `ref:` / `parent:` / `is:` / `type:` keys (e.g. `is:merge`, `is:local`, `type:pushed`). |
 | `commitGraphLayout.ts` | Pure `buildCommitGraphLayout(commitsNewestFirst)` that assigns DAG columns first-parent style, then exposes `commitEdgePath`, `columnCenterX`, `rowCenterY`, and the `COMMIT_ROW_HEIGHT` / `COMMIT_GRAPH_COL_WIDTH` / `COMMIT_GRAPH_PAD_LEFT` constants the SVG layer in `CommitHistoryView` consumes. |
 | `CommitHistoryView.tsx` | Virtualized GitKraken-style commit graph for the focused lane. Loads commits via `git.listRecentCommits` (initial limit 120, expands to 500 on scroll-to-bottom and on non-empty search), `git.listBranches` for ref pills, draws nodes + edges as an SVG layer overlaid on `@tanstack/react-virtual` rows, and dispatches right-click commit actions via `HistoryGitContextMenu`. |
-| `CommitDetailPanel.tsx` | Right pane for the Commits surface: subject, author, full message (lazy via `git.getCommitMessage`), changed file list (`git.listCommitFiles`), related operations (any `OperationRecord` whose `preHeadSha` or `postHeadSha` matches the commit), and the same git action set the context menu exposes. |
+| `CommitDetailPanel.tsx` | Right pane for the Commits surface: subject, author, full message (lazy via `git.getCommitMessage`), changed file list (`git.listCommitFiles`), related operations (any `OperationRecord` whose `preHeadSha` or `postHeadSha` matches the commit), and the same git action set the context menu exposes. Destructive lane mutations are disabled when the lane has no worktree or the commit was resolved only through a targeted lookup outside that lane's visible history. |
 | `HistoryGitContextMenu.tsx` | Reusable right-click menu shared by `CommitHistoryView` rows and the `CommitDetailPanel` actions strip; built from `buildCommitContextActions` + `groupCommitContextActions`. |
-| `historyGitActions.ts` | Per-commit action catalogue and dispatcher: `Inspect` (checkout, open in Lanes git pane, compare-with-parent, view files), `Create` (branch, lane, tag), `Apply` (cherry-pick, revert, soft/mixed/hard reset), `Share` (open/copy GitHub link, copy patch via `git.listCommitFiles` + `diff.getFilePatch`, copy SHA, copy subject). Calls `window.ade.git.*` + `window.ade.lanes.create({ startPoint })`. |
+| `historyGitActions.ts` | Per-commit action catalogue and dispatcher: `Inspect` (checkout, open in Lanes git pane, compare-with-parent, view files), `Create` (branch, lane, tag), `Apply` (cherry-pick, revert, soft/mixed/hard reset), `Share` (open/copy GitHub link, copy patch via `git.listCommitFiles` + `diff.getFilePatch`, copy SHA, copy subject). Calls `window.ade.git.*` + `window.ade.lanes.create({ startPoint })` and centralizes disabled reasons for missing worktrees or commits not on the focused lane history. |
+| `historyUrlHydration.ts` | Pure URL-hydration helper used by `HistoryPage` tests and effects. Re-applies `commitSha` when a URL-driven lane focus change clears the store selection, while refusing to hydrate commit selections on the Activity surface. |
 | `historyLaneActions.ts` | Lane-level action catalogue surfaced through the Commits toolbar's "Lane git actions" menu: `Remote` (fetch, pull ff-only/rebase/merge, push, force-push-with-lease), `Recover` (undo/redo last head change), `Branch and PR` (copy branch name, open/copy branch link, open/copy PR link), `Lane` (rename, archive, delete worktree, delete + branch), `Integrate` (merge/rebase onto base), `Stash`, `Conflict` (rebase/merge continue + abort, only when a conflict is in progress), `Open` (jump to Lanes git pane). |
 | `TimelineToolbar.tsx` | The shared toolbar above both surfaces. Renders the surface toggle (`Commits` / `Activity`), the lane selector + `LaneGitActionsMenu` on the Commits surface, and the activity controls (view-mode toggle, scope selector, search, export-to-JSON, column gear, category/status/time-range/lane filter chips). |
 | `TimelineGraph.tsx` (lazy) | SVG-based per-lane swimlane graph for the Activity surface — used when `viewMode === "graph"`. |
@@ -226,15 +227,17 @@ is requested via the toolbar.
 ### SHA transitions
 
 Every git operation records `preHeadSha` and `postHeadSha`. The undo
-and redo paths in `gitOperationsService` rely on this: `undoLastHeadChange`
-finds the most recent `succeeded` operation whose kind starts with
-`git_` (excluding `git_undo_head_change`) where `pre_head_sha !=
-post_head_sha`, verifies the current HEAD matches that operation's
-`postHeadSha`, then runs `git reset --hard preHeadSha`. `redoLastHeadChange`
-inverts that, reading the `redoHeadSha` stamped into the latest undo's
-metadata. The `CommitDetailPanel.relatedEvents` view also keys off
-this pair: any operation whose `preHeadSha` or `postHeadSha` matches
-the focused commit is surfaced alongside the commit.
+and redo paths in `gitOperationsService` rely on this. `undoLastHeadChange`
+searches recent head changes for the current lane, skips
+`git_undo_head_change` and `git_checkout_branch`, requires the stored
+`metadata.branchRef` to match the lane's current branch, rechecks that
+the lane branch has not changed after selection, verifies current HEAD
+still equals the selected operation's `postHeadSha`, then runs
+`git reset --hard preHeadSha`. `redoLastHeadChange` inverts that,
+reading the `redoHeadSha` stamped into the latest undo's metadata. The
+`CommitDetailPanel.relatedEvents` view also keys off this pair: any
+operation whose `preHeadSha` or `postHeadSha` matches the focused
+commit is surfaced alongside the commit.
 
 ## Other history-adjacent tables
 

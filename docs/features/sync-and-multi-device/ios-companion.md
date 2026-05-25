@@ -257,7 +257,10 @@ Bootstrap flow on first launch:
 
 1. Create `Application Support/ADE/ade.db`.
 2. Load `DatabaseBootstrap.sql` (checked in, generated from desktop
-   `kvDb.ts`).
+   `kvDb.ts`). Bootstrap SQL includes CRR-safe cleanup for replicated
+   tables whose desktop schema dropped secondary UNIQUE indexes, such as
+   deduping `lane_linear_issue_links` and dropping the legacy
+   `uq_lane_linear_issue_links_role` index before triggers are installed.
 3. Register custom SQLite functions (`ade_next_db_version`,
    `ade_local_site_id`, `ade_capture_local_changes`).
 4. Call `enableCrr(for:)` on every discovered non-internal table to

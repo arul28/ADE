@@ -203,6 +203,14 @@ tables because two devices can legitimately write conflicting values
 to a unique column before syncing. Upserts that relied on a secondary
 UNIQUE must fall back to explicit select-then-update.
 
+Legacy secondary unique indexes also need to be removed on upgrade
+before CRR conversion. `lane_linear_issue_links` is the current model:
+startup drops the old `(project_id, lane_id, issue_id, role)` unique
+index, deduplicates to the newest row per tuple, and keeps non-unique
+lookup indexes only. The iOS bootstrap SQL mirrors that cleanup so a
+fresh phone database can enable CRR for the table without hitting a
+unique-index constraint.
+
 ### Rule 2: `ALTER TABLE ADD COLUMN` is safe; `DROP COLUMN` is not
 
 The adapter wraps `ADD COLUMN` with `crsql_begin_alter` /
@@ -241,6 +249,14 @@ Wrapped in `AdeDb.sync.applyChanges(rows)`. cr-sqlite and the iOS
 emulation both handle conflict resolution inside the insert trigger
 (accept newer `col_version`, tombstone semantics for deletes, last
 writer wins on ties by `site_id`).
+
+Before apply, `kvDb.ts` filters inbound rows whose target table has
+been intentionally removed locally (`unified_memories` and related FTS
+tables) or does not exist in the current schema. This filter runs
+before the SQL transaction starts; a batch containing only ignored rows
+returns `appliedCount: 0`, preserves the local database version, and
+emits no touched tables. Mixed batches remain transactional for the
+actionable rows.
 
 After apply, ADE runs post-hooks:
 

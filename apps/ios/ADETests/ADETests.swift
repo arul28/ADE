@@ -2922,6 +2922,27 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(decoded.changes.isEmpty)
   }
 
+  func testDatabaseIgnoresDroppedIncomingSyncTables() throws {
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    XCTAssertNil(database.initializationError)
+
+    let initialVersion = database.currentDbVersion()
+    let siteId = "b00e9b92c864a27958669c1595fcb2c3"
+    let changes: [CrsqlChangeRow] = [
+      CrsqlChangeRow(table: "unified_memories", pk: .string("memory-1"), cid: "content", val: .string("legacy"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 0),
+      CrsqlChangeRow(table: "unified_memories_fts", pk: .string("memory-1"), cid: "content", val: .string("legacy"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 1),
+      CrsqlChangeRow(table: "missing_future_table", pk: .string("row-1"), cid: "name", val: .string("future"), colVersion: 1, dbVersion: 3, siteId: siteId, cl: 1, seq: 2),
+    ]
+
+    let result = try database.applyChanges(changes)
+
+    XCTAssertEqual(result.appliedCount, 0)
+    XCTAssertEqual(result.dbVersion, initialVersion)
+    XCTAssertTrue(result.touchedTables.isEmpty)
+    XCTAssertTrue(database.exportChangesSince(version: initialVersion).isEmpty)
+    database.close()
+  }
+
   func testDatabaseAppliesPackedTextPrimaryKeysFromDesktopChanges() throws {
     let database = makeDatabase(baseURL: makeTemporaryDirectory())
     XCTAssertNil(database.initializationError)

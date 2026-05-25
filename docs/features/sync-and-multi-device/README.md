@@ -212,6 +212,15 @@ which:
 3. Only as a final fallback (and only when the desktop in-process host
    was actually started) does the call hit the in-process IPC handler.
 
+During project transitions, mutating sync methods (`sync.setPin`,
+`sync.clearPin`, `sync.connectToBrain`, lane-presence updates, model-picker
+favorites/recents writes, and similar state changes) fail with the same
+"Project is switching" guard used by project runtime actions. Read/status
+calls can still fall through to safe fallbacks. Remote sync calls replay only
+for the explicit retry-safe allowlist (status/discovery/device/PIN reads,
+lane-presence announce, and model-picker reads); other sync mutations surface
+connection errors rather than being replayed after reconnect.
+
 The shared protocol DTOs (`SyncEnvelope`, controller-originated
 `terminal_input` / `terminal_resize`, the mobile CLI launcher payload —
 `SyncCliLaunchProvider`, `SyncStartCliSessionArgs`,
@@ -648,6 +657,12 @@ project scope split.
   into the matching `packedCrsqlPrimaryKey` byte layout the native
   cr-sqlite extension expects. Skipping this step is how phone-side
   edits silently fail to apply on the desktop.
+- **Rolling schema removals are filtered before apply.** Peers on older
+  builds may still export changes for dropped local tables such as
+  `unified_memories` and its FTS side tables. `kvDb.ts` filters those
+  rows, plus rows for tables that no longer exist locally, before
+  opening the apply transaction. A batch that contains only ignored
+  tables is a no-op and preserves the local database version.
 - **Controller command queues replay on reconnect.** If the host
   advertises `chat.send` as queueable and the user sends while the
   desktop is reconnecting, the iOS app stores the command locally with
