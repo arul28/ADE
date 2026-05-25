@@ -218,6 +218,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listRebaseSuggestions",
     "listTemplates",
     "listUnregisteredWorktrees",
+    "linkLinearIssues",
     "oauthDecodeState",
     "oauthEncodeState",
     "oauthGenerateRedirectUris",

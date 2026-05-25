@@ -11,6 +11,12 @@ import { fetchRemoteTrackingBranch, resolveQueueRebaseOverride, type QueueRebase
 import { detectConflictKind } from "../git/gitConflictState";
 import { shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
 import { linearIssueBranchName, sanitizeLinearIssueBranchName } from "../../../shared/linearIssueBranch";
+import {
+  finalizeLaneLinearIssue,
+  isLinkableLaneLinearIssue,
+  laneLinearIssueMissingFields,
+  parseLaneLinearIssueJson,
+} from "../../../shared/laneLinearIssue";
 import type { createOperationService } from "../history/operationService";
 import type { Logger } from "../logging/logger";
 import type {
@@ -317,64 +323,6 @@ function parseSummaryRecord(raw: string | null): Record<string, unknown> | null 
   }
 }
 
-function parseLaneLinearIssue(raw: string | null): LaneLinearIssue | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    const record = parsed as Record<string, unknown>;
-    const id = typeof record.id === "string" ? record.id : "";
-    const identifier = typeof record.identifier === "string" ? record.identifier : "";
-    const title = typeof record.title === "string" ? record.title : "";
-    const projectId = typeof record.projectId === "string" ? record.projectId : "";
-    const projectSlug = typeof record.projectSlug === "string" ? record.projectSlug : "";
-    const teamId = typeof record.teamId === "string" ? record.teamId : "";
-    const teamKey = typeof record.teamKey === "string" ? record.teamKey : "";
-    const stateId = typeof record.stateId === "string" ? record.stateId : "";
-    const stateName = typeof record.stateName === "string" ? record.stateName : "";
-    const stateType = typeof record.stateType === "string" ? record.stateType : "";
-    const createdAt = typeof record.createdAt === "string" ? record.createdAt : "";
-    const updatedAt = typeof record.updatedAt === "string" ? record.updatedAt : "";
-    if (!id || !identifier || !title || !projectId || !projectSlug || !teamId || !teamKey || !stateId || !stateName || !stateType || !createdAt || !updatedAt) {
-      return null;
-    }
-    const priority = typeof record.priority === "number" && Number.isFinite(record.priority) ? record.priority : 0;
-    const priorityLabel = record.priorityLabel === "urgent" || record.priorityLabel === "high" || record.priorityLabel === "normal" || record.priorityLabel === "low"
-      ? record.priorityLabel
-      : "none";
-    return {
-      id,
-      identifier,
-      title,
-      description: typeof record.description === "string" ? record.description : null,
-      url: typeof record.url === "string" ? record.url : null,
-      projectId,
-      projectSlug,
-      projectName: typeof record.projectName === "string" ? record.projectName : null,
-      teamId,
-      teamKey,
-      teamName: typeof record.teamName === "string" ? record.teamName : null,
-      stateId,
-      stateName,
-      stateType,
-      priority,
-      priorityLabel,
-      labels: Array.isArray(record.labels) ? record.labels.filter((entry): entry is string => typeof entry === "string") : [],
-      assigneeId: typeof record.assigneeId === "string" ? record.assigneeId : null,
-      assigneeName: typeof record.assigneeName === "string" ? record.assigneeName : null,
-      creatorId: typeof record.creatorId === "string" ? record.creatorId : null,
-      creatorName: typeof record.creatorName === "string" ? record.creatorName : null,
-      dueDate: typeof record.dueDate === "string" ? record.dueDate : null,
-      estimate: typeof record.estimate === "number" && Number.isFinite(record.estimate) ? record.estimate : null,
-      branchName: typeof record.branchName === "string" ? record.branchName : null,
-      createdAt,
-      updatedAt,
-    };
-  } catch {
-    return null;
-  }
-}
-
 const LANE_LINEAR_ISSUE_LINK_ROLES: ReadonlySet<LaneLinearIssueLinkRole> = new Set([
   "primary",
   "worked",
@@ -421,7 +369,7 @@ function parseIssueLinkEvidence(raw: string | null | undefined): LaneLinearIssue
 
 function parseLaneLinearIssueLink(row: LaneLinearIssueLinkRow | null | undefined): LaneLinearIssueLink | null {
   if (!row) return null;
-  const issue = parseLaneLinearIssue(row.issue_json);
+  const issue = parseLaneLinearIssueJson(row.issue_json);
   if (!issue) return null;
   return {
     id: row.id,
@@ -1058,7 +1006,7 @@ export function createLaneService({
         `,
         [projectId, laneId],
       );
-      return parseLaneLinearIssue(row?.issue_json ?? null);
+      return parseLaneLinearIssueJson(row?.issue_json ?? null);
     } catch {
       return null;
     }
@@ -1283,47 +1231,9 @@ export function createLaneService({
     return toLaneBranchProfile(profile);
   };
 
-  const normalizeLaneLinearIssue = (issue: LaneLinearIssue, branchName: string): LaneLinearIssue => ({
-    ...issue,
-    id: issue.id.trim(),
-    identifier: issue.identifier.trim(),
-    title: issue.title.trim(),
-    description: issue.description ?? null,
-    url: issue.url ?? null,
-    projectId: issue.projectId.trim(),
-    projectSlug: issue.projectSlug.trim(),
-    projectName: issue.projectName ?? null,
-    teamId: issue.teamId.trim(),
-    teamKey: issue.teamKey.trim(),
-    teamName: issue.teamName ?? null,
-    stateId: issue.stateId.trim(),
-    stateName: issue.stateName.trim(),
-    stateType: issue.stateType.trim(),
-    labels: issue.labels.map((entry) => entry.trim()).filter(Boolean).slice(0, 24),
-    assigneeId: issue.assigneeId ?? null,
-    assigneeName: issue.assigneeName ?? null,
-    creatorId: issue.creatorId ?? null,
-    creatorName: issue.creatorName ?? null,
-    dueDate: issue.dueDate ?? null,
-    estimate: issue.estimate ?? null,
-    branchName,
-  });
-
   const upsertLaneLinearIssue = (laneId: string, issue: LaneLinearIssue, branchName: string): LaneLinearIssue => {
-    const normalized = normalizeLaneLinearIssue(issue, branchName);
-    const missing: string[] = [];
-    if (!normalized.id) missing.push("id");
-    if (!normalized.identifier) missing.push("identifier");
-    if (!normalized.title) missing.push("title");
-    if (!normalized.projectId) missing.push("projectId");
-    if (!normalized.projectSlug) missing.push("projectSlug");
-    if (!normalized.teamId) missing.push("teamId");
-    if (!normalized.teamKey) missing.push("teamKey");
-    if (!normalized.stateId) missing.push("stateId");
-    if (!normalized.stateName) missing.push("stateName");
-    if (!normalized.stateType) missing.push("stateType");
-    if (!issue.createdAt || typeof issue.createdAt !== "string" || !issue.createdAt.trim()) missing.push("createdAt");
-    if (!issue.updatedAt || typeof issue.updatedAt !== "string" || !issue.updatedAt.trim()) missing.push("updatedAt");
+    const normalized = finalizeLaneLinearIssue(issue, branchName);
+    const missing = laneLinearIssueMissingFields(normalized);
     if (missing.length > 0) {
       throw new Error(`Linear issue attachment is missing required fields: ${missing.join(", ")}.`);
     }
@@ -1928,7 +1838,7 @@ export function createLaneService({
       );
       for (const linearRow of linearRows) {
         if (!linearRow?.lane_id || linearIssueByLaneId.has(linearRow.lane_id)) continue;
-        const parsed = parseLaneLinearIssue(linearRow.issue_json ?? null);
+        const parsed = parseLaneLinearIssueJson(linearRow.issue_json ?? null);
         if (parsed) linearIssueByLaneId.set(linearRow.lane_id, parsed);
       }
     } catch {
@@ -2433,15 +2343,8 @@ export function createLaneService({
       const links: LaneLinearIssueLink[] = [];
       const seen = new Set<string>();
       for (const issue of args.issues) {
-        const normalized = normalizeLaneLinearIssue(issue, issue.branchName ?? row.branch_ref);
-        if (
-          !normalized.id
-          || !normalized.identifier
-          || !normalized.title
-          || !normalized.projectId
-          || !normalized.teamKey
-          || seen.has(normalized.id)
-        ) {
+        const normalized = finalizeLaneLinearIssue(issue, issue.branchName ?? row.branch_ref);
+        if (!isLinkableLaneLinearIssue(normalized) || seen.has(normalized.id)) {
           continue;
         }
         seen.add(normalized.id);

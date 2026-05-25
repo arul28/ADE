@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import { cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, latestGoal, latestTokenStats, listLaneDiffStats, listPrsByLane, listTerminalSessions, sendChatMessage, signalTerminal, startClaudeTerminalSession, steerChatMessage } from "../adeApi";
+import { cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, getAvailableModels, latestGoal, latestTokenStats, listLaneDiffStats, listPrsByLane, listTerminalSessions, sendChatMessage, signalTerminal, startClaudeTerminalSession, steerChatMessage } from "../adeApi";
 import type { AdeCodeConnection } from "../types";
 
 const tmpPaths: string[] = [];
@@ -231,6 +231,51 @@ describe("discoverProjectSlashCommands", () => {
     expect(commands).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: "/ship" }),
     ]));
+  });
+
+  it("includes Cursor command files and subagents", () => {
+    const projectRoot = makeTmpRoot("ade-code-cursor-command-");
+    const commandsDir = path.join(projectRoot, ".cursor", "commands");
+    const agentsDir = path.join(projectRoot, ".cursor", "agents");
+    fs.mkdirSync(commandsDir, { recursive: true });
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(path.join(commandsDir, "review-code.md"), "Review code.\n");
+    fs.writeFileSync(path.join(agentsDir, "verifier.md"), [
+      "---",
+      "description: Verify the change",
+      "---",
+      "",
+      "Verify.",
+      "",
+    ].join("\n"));
+
+    const commands = discoverProjectSlashCommands(projectRoot);
+    expect(commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "/review-code", description: "Review code." }),
+      expect.objectContaining({ name: "/verifier", description: "Verify the change" }),
+    ]));
+  });
+});
+
+describe("getAvailableModels", () => {
+  it("activates dynamic Cursor model discovery for TUI model lists", async () => {
+    const calls: Array<{ domain: string; action: string; args?: Record<string, unknown> }> = [];
+    const connection = {
+      action: vi.fn(async (domain: string, action: string, args?: Record<string, unknown>) => {
+        calls.push({ domain, action, args });
+        return [];
+      }),
+    } as any;
+
+    await getAvailableModels(connection, "cursor");
+
+    expect(calls).toEqual([
+      {
+        domain: "chat",
+        action: "getAvailableModels",
+        args: { provider: "cursor", activateRuntime: true },
+      },
+    ]);
   });
 });
 

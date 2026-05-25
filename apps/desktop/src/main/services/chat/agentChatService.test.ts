@@ -4444,6 +4444,64 @@ describe("createAgentChatService", () => {
       ]));
     });
 
+    it("returns Cursor commands, subagents, skills, and /clear for a Cursor lane", async () => {
+      const commandDir = path.join(tmpRoot, ".cursor", "commands");
+      const agentsDir = path.join(tmpRoot, ".cursor", "agents");
+      const skillDir = path.join(tmpRoot, ".cursor", "skills", "sdk-audit");
+      fs.mkdirSync(commandDir, { recursive: true });
+      fs.mkdirSync(agentsDir, { recursive: true });
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(path.join(commandDir, "write-tests.md"), [
+        "---",
+        "description: Write Cursor-backed tests",
+        "---",
+        "",
+        "Write tests.",
+        "",
+      ].join("\n"));
+      fs.writeFileSync(path.join(agentsDir, "verifier.md"), [
+        "---",
+        "description: Verify the implementation",
+        "---",
+        "",
+        "Verify work.",
+        "",
+      ].join("\n"));
+      fs.writeFileSync(path.join(skillDir, "SKILL.md"), [
+        "---",
+        "name: sdk-audit",
+        "description: Audit the Cursor SDK wiring",
+        "---",
+        "",
+        "Audit Cursor.",
+        "",
+      ].join("\n"));
+      const { service } = createService();
+
+      const commands = service.getSlashCommands({ laneId: "lane-1", provider: "cursor" });
+      const names = commands.map((command) => command.name);
+
+      expect(names).toContain("/clear");
+      expect(names).toContain("/explore");
+      expect(commands).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: "/write-tests",
+          description: "Write Cursor-backed tests",
+          source: "sdk",
+        }),
+        expect.objectContaining({
+          name: "/verifier",
+          description: "Verify the implementation",
+          source: "sdk",
+        }),
+        expect.objectContaining({
+          name: "/sdk-audit",
+          description: "Audit the Cursor SDK wiring",
+          source: "sdk",
+        }),
+      ]));
+    });
+
     it("returns the same slash command set for a live droid session", async () => {
       const codexPromptsDir = path.join(tmpRoot, ".codex", "prompts");
       fs.mkdirSync(codexPromptsDir, { recursive: true });
