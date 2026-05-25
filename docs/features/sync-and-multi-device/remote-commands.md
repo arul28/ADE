@@ -168,11 +168,23 @@ both via `SyncService.dispatchChatSteer` /
   `discardFile`, `restoreStagedFile`
 - `commit`, `generateCommitMessage`, `listRecentCommits`,
   `listCommitFiles`, `getCommitMessage`, `getFileHistory`
-- `revertCommit`, `cherryPickCommit`
+- `revertCommit`, `cherryPickCommit`, `createTag`, `resetToCommit`
 - `stashPush`, `stashList`, `stashApply`, `stashPop`, `stashDrop`
 - `fetch`, `pull`, `sync`, `push`, `getSyncStatus`
+- `undoLastHeadChange`, `redoLastHeadChange` — paired recovery
+  actions that re-read HEAD before acting and refuse when the lane
+  has moved since the operation they target
 - `getConflictState`, `rebaseContinue`, `rebaseAbort`
 - `listBranches`, `checkoutBranch`
+
+`git.pull` accepts an optional `mode` argument
+(`"ff-only" | "rebase" | "merge"`, default `ff-only`) so controllers
+can pick the strategy without having to send three separate actions.
+`git.resetToCommit` takes `{ laneId, commitSha, mode }` where `mode`
+is one of `soft | mixed | hard`; ADE records the operation as
+`git_reset_<mode>` so undo/redo lookups can pair it up later.
+`git.createTag` takes `{ laneId, commitSha, tagName, message? }`;
+omitting `message` creates a lightweight tag.
 
 **Files**
 - `files.writeTextAtomic`

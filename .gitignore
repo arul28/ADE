@@ -23,6 +23,7 @@ __pycache__/
 
 # Build outputs
 /apps/ade-cli/dist/
+/apps/ade-cli/dist-static/
 /apps/ade-code/dist/
 /apps/desktop/release/
 /apps/desktop/dist/

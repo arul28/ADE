@@ -236,8 +236,15 @@ ade --role cto linear quick-view --text
 ade --role cto linear search-issues --query "auth" --state-type started,unstarted --first 50
 ade git commit --lane lane-id
 ade git push --lane lane-id
+ade git pull --lane lane-id --rebase
+ade git undo --lane lane-id
+ade git redo --lane lane-id
 ade git branches --lane lane-id --text
 ade git user-identity --lane lane-id --text
+ade history list --lane lane-id --status succeeded --text
+ade history show --id operation-id --text
+ade history commits --lane lane-id --text
+ade history export --lane lane-id --out history.json
 ade diff patch --lane lane-id --path src/file.ts --text
 ade prs create --lane lane-id --base main --title "Fix checkout flow" --text  # prints GitHub + ADE PR URLs
 ade prs create --lane lane-id --base main --close-linear-issue-on-merge

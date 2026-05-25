@@ -290,6 +290,8 @@ function createRuntime() {
       fetch: vi.fn(async () => ({ success: true })),
       pull: vi.fn(async () => ({ success: true })),
       push: vi.fn(async () => ({ success: true })),
+      undoLastHeadChange: vi.fn(async () => ({ success: true })),
+      redoLastHeadChange: vi.fn(async () => ({ success: true })),
       listBranches: vi.fn(async () => [{ name: "main", current: true, ahead: 0, behind: 0, hasUpstream: true, upstream: "origin/main" }]),
       checkoutBranch: vi.fn(async () => ({ success: true })),
       stashPush: vi.fn(async () => ({ success: true })),
@@ -1439,6 +1441,31 @@ describe("adeRpcServer", () => {
     }
   });
 
+  it("allows trusted runtimes to serve lower-privilege requested roles", async () => {
+    await withEnv({ ADE_DEFAULT_ROLE: "cto" }, async () => {
+      const { runtime } = createRuntime();
+      const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+
+      await handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/initialize",
+        params: {
+          identity: {
+            callerId: "agent-client",
+            role: "agent",
+          },
+        },
+      });
+      const result = (await handler({ jsonrpc: "2.0", id: 3, method: "ade/actions/list" })) as any;
+
+      const names = (result.actions ?? []).map((tool: any) => tool.name);
+      expect(names).toContain("delegate_to_subagent");
+      expect(names).not.toContain("get_cto_state");
+      expect(names).not.toContain("getLinearSyncDashboard");
+    });
+  });
+
   it("lists the full tool surface including coordinator orchestration tools for orchestrator callers", async () => {
     const { runtime } = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
@@ -1590,6 +1617,32 @@ describe("adeRpcServer", () => {
     );
   });
 
+  it("reflects backend availability changes in the action list", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-1",
+      attemptId: "attempt-1",
+    });
+    const before = (await handler({ jsonrpc: "2.0", id: 3, method: "ade/actions/list" })) as any;
+    const beforeNames = (before.actions ?? []).map((tool: any) => tool.name);
+    expect(beforeNames).toContain("screenshot_environment");
+
+    fixture.runtime.computerUseArtifactBrokerService.getBackendStatus.mockReturnValue({
+      backends: [{ id: "external-proof", available: true }],
+    });
+
+    const after = (await handler({ jsonrpc: "2.0", id: 4, method: "ade/actions/list" })) as any;
+    const afterNames = (after.actions ?? []).map((tool: any) => tool.name);
+    expect(afterNames).not.toContain("screenshot_environment");
+    expect(fixture.runtime.computerUseArtifactBrokerService.getBackendStatus).toHaveBeenCalledTimes(2);
+  });
+
   it("routes macOS VM computer-use tools and ingests screenshots as proof artifacts", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -1606,7 +1659,7 @@ describe("adeRpcServer", () => {
     });
     expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
       expect.objectContaining({
-        backend: { name: "macos-vm", toolName: "macos_vm_screenshot" },
+        backend: { name: "macos-vm", style: "local_fallback", toolName: "macos_vm_screenshot" },
         owners: expect.arrayContaining([
           expect.objectContaining({ kind: "lane", id: "lane-1" }),
           expect.objectContaining({ kind: "chat_session", id: "chat-session-1" }),
@@ -1629,7 +1682,7 @@ describe("adeRpcServer", () => {
     });
     expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
       expect.objectContaining({
-        backend: { name: "macos-vm", toolName: "macos_vm_select" },
+        backend: { name: "macos-vm", style: "local_fallback", toolName: "macos_vm_select" },
       }),
     );
 
@@ -1669,7 +1722,7 @@ describe("adeRpcServer", () => {
     });
     expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
       expect.objectContaining({
-        backend: { name: "macos-vm", toolName: "screenshot_environment" },
+        backend: { name: "macos-vm", style: "local_fallback", toolName: "screenshot_environment" },
       }),
     );
 
@@ -1965,6 +2018,10 @@ describe("adeRpcServer", () => {
 
     expect(runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
       expect.objectContaining({
+        backend: expect.objectContaining({
+          name: "agent-browser",
+          style: "external_cli",
+        }),
         owners: expect.arrayContaining([
           expect.objectContaining({
             kind: "chat_session",
@@ -2358,7 +2415,7 @@ describe("adeRpcServer", () => {
         params: { identity: { callerId: "coord-1", role: "orchestrator" } }
       }) as any;
 
-      expect(response.capabilities?.actions).toBeTruthy();
+      expect(response.capabilities?.actions).toEqual({ listChanged: true });
       expect(response.capabilities?.resources).toBeUndefined();
     } finally {
       if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
@@ -4214,9 +4271,21 @@ describe("adeRpcServer", () => {
     expect(syncStatus?.isError).toBeUndefined();
     expect(fixture.runtime.gitService.getSyncStatus).toHaveBeenCalledWith({ laneId: "lane-1" });
 
+    const pull = await callTool(handler, "git_pull", { laneId: "lane-1", mode: "merge" });
+    expect(pull?.isError).toBeUndefined();
+    expect(fixture.runtime.gitService.pull).toHaveBeenCalledWith({ laneId: "lane-1", mode: "merge" });
+
     const push = await callTool(handler, "git_push", { laneId: "lane-1", force: true, setUpstream: false });
     expect(push?.isError).toBeUndefined();
     expect(fixture.runtime.gitService.push).toHaveBeenCalledWith({ laneId: "lane-1", forceWithLease: true });
+
+    const undo = await callTool(handler, "git_undo_last_head_change", { laneId: "lane-1" });
+    expect(undo?.isError).toBeUndefined();
+    expect(fixture.runtime.gitService.undoLastHeadChange).toHaveBeenCalledWith({ laneId: "lane-1" });
+
+    const redo = await callTool(handler, "git_redo_last_head_change", { laneId: "lane-1" });
+    expect(redo?.isError).toBeUndefined();
+    expect(fixture.runtime.gitService.redoLastHeadChange).toHaveBeenCalledWith({ laneId: "lane-1" });
   });
 
   it("supports create/update/comment PR actions via ADE RPC", async () => {

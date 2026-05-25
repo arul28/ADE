@@ -119,6 +119,7 @@ export type ModelPickerContentProps = {
   hidePermissionRail?: boolean;
   refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
   onOpenSignIn?: () => void;
+  allowRegistryExpansion?: boolean;
 };
 
 export const ModelPickerContent = memo(function ModelPickerContent({
@@ -133,6 +134,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   refreshingProvider,
   onOpenSignIn,
   hidePermissionRail = false,
+  allowRegistryExpansion = true,
 }: ModelPickerContentProps) {
   // hidePermissionRail is currently a forward-compat hook (see prop docs).
   // Reference it so unused-var lint stays quiet, and so future code paths
@@ -181,7 +183,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   );
 
   const expandedModels = useMemo<readonly ModelDescriptor[]>(() => {
-    if (authOnly) return models;
+    if (authOnly || !allowRegistryExpansion) return models;
     const merged = new Map<string, ModelDescriptor>();
     for (const m of models) merged.set(m.id, m);
     for (const m of MODEL_REGISTRY) {
@@ -189,7 +191,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       if (!merged.has(m.id)) merged.set(m.id, m);
     }
     return [...merged.values()];
-  }, [authOnly, models]);
+  }, [allowRegistryExpansion, authOnly, models]);
 
   const providersPresent = useMemo<ProviderFamily[]>(() => {
     const set = new Set<ProviderFamily>();

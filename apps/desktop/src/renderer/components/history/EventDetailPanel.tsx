@@ -8,13 +8,11 @@ import {
   Copy,
   GitBranch,
   Hash,
-  Tag,
   X,
   ArrowSquareOut,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
-import { Chip } from "../ui/Chip";
 import type { TimelineEvent } from "./timelineTypes";
 import { getStatusClasses, getEventMeta, CATEGORY_META } from "./eventTaxonomy";
 import { relativeWhen, formatDate, formatDurationMs } from "../../lib/format";
@@ -28,6 +26,15 @@ function shortSha(sha: string | null): string {
 
 function copyToClipboard(text: string) {
   navigator.clipboard.writeText(text);
+}
+
+function metadataId(
+  metadata: Record<string, unknown> | null,
+  key: "missionId" | "sessionId",
+): string | null {
+  if (!metadata) return null;
+  const value = metadata[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
 /* ─── sub-components ──────────────────────────────────────────────── */
@@ -74,12 +81,14 @@ type EventDetailPanelProps = {
   event: TimelineEvent | null;
   onClose: () => void;
   onNavigateToLane?: (laneId: string) => void;
+  navigate?: (path: string) => void;
 };
 
 export function EventDetailPanel({
   event,
   onClose,
   onNavigateToLane,
+  navigate,
 }: EventDetailPanelProps) {
   const [metadataExpanded, setMetadataExpanded] = useState(false);
 
@@ -98,6 +107,7 @@ export function EventDetailPanel({
             event={event}
             onClose={onClose}
             onNavigateToLane={onNavigateToLane}
+            navigate={navigate}
             metadataExpanded={metadataExpanded}
             setMetadataExpanded={setMetadataExpanded}
           />
@@ -113,18 +123,22 @@ function PanelContent({
   event,
   onClose,
   onNavigateToLane,
+  navigate,
   metadataExpanded,
   setMetadataExpanded,
 }: {
   event: TimelineEvent;
   onClose: () => void;
   onNavigateToLane?: (laneId: string) => void;
+  navigate?: (path: string) => void;
   metadataExpanded: boolean;
   setMetadataExpanded: (v: boolean) => void;
 }) {
   const meta = getEventMeta(event.kind);
   const catMeta = CATEGORY_META[event.category];
   const statusClasses = getStatusClasses(event.status);
+  const missionId = metadataId(event.metadata, "missionId");
+  const sessionId = metadataId(event.metadata, "sessionId");
 
   return (
     <>
@@ -240,6 +254,42 @@ function PanelContent({
               </span>
             )}
           </MetaCell>
+
+          {missionId ? (
+            <MetaCell label="Mission ID">
+              <button
+                type="button"
+                onClick={() => copyToClipboard(missionId)}
+                className="group inline-flex max-w-full items-center gap-1 text-left"
+                title={`Copy ${missionId}`}
+              >
+                <span className="truncate font-mono text-[11px] text-accent">{missionId}</span>
+                <Copy
+                  size={10}
+                  weight="bold"
+                  className="shrink-0 text-muted-fg opacity-0 transition-opacity group-hover:opacity-100"
+                />
+              </button>
+            </MetaCell>
+          ) : null}
+
+          {sessionId ? (
+            <MetaCell label="Session ID">
+              <button
+                type="button"
+                onClick={() => copyToClipboard(sessionId)}
+                className="group inline-flex max-w-full items-center gap-1 text-left"
+                title={`Copy ${sessionId}`}
+              >
+                <span className="truncate font-mono text-[11px] text-accent">{sessionId}</span>
+                <Copy
+                  size={10}
+                  weight="bold"
+                  className="shrink-0 text-muted-fg opacity-0 transition-opacity group-hover:opacity-100"
+                />
+              </button>
+            </MetaCell>
+          ) : null}
         </div>
       </div>
 
@@ -328,6 +378,50 @@ function PanelContent({
 
       {/* ── Action buttons ────────────────────────────────────── */}
       <div className="mt-auto flex flex-wrap items-center gap-2 p-3 pt-4">
+        {event.postHeadSha && event.laneId && navigate ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              navigate(
+                `/history?surface=commits&laneId=${encodeURIComponent(event.laneId!)}&commitSha=${encodeURIComponent(event.postHeadSha!)}`,
+              )
+            }
+          >
+            <span className="inline-flex items-center gap-1">
+              <GitBranch size={10} weight="bold" />
+              View commit
+            </span>
+          </Button>
+        ) : null}
+        {event.category === "pr" && navigate ? (
+          <Button variant="outline" size="sm" onClick={() => navigate("/prs")}>
+            <span className="inline-flex items-center gap-1">
+              <ArrowSquareOut size={10} weight="bold" />
+              Open PRs
+            </span>
+          </Button>
+        ) : null}
+        {event.category === "mission" && navigate ? (
+          <Button variant="outline" size="sm" onClick={() => navigate("/missions")}>
+            <span className="inline-flex items-center gap-1">
+              <ArrowSquareOut size={10} weight="bold" />
+              Open missions
+            </span>
+          </Button>
+        ) : null}
+        {event.category === "session" && event.laneId && navigate ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => navigate(`/work?laneId=${encodeURIComponent(event.laneId!)}`)}
+          >
+            <span className="inline-flex items-center gap-1">
+              <ArrowSquareOut size={10} weight="bold" />
+              Open work
+            </span>
+          </Button>
+        ) : null}
         {event.laneId && onNavigateToLane && (
           <Button
             variant="outline"

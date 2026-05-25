@@ -154,7 +154,10 @@ type FilesPageSessionState = {
 
 const filesPageSessionByScope = new Map<string, FilesPageSessionState>();
 const filesPageSessionLru: string[] = [];
+const filesWorkspaceCacheByProject = new Map<string, FilesWorkspace[]>();
+const filesRootTreeCacheByWorkspace = new Map<string, FileTreeNode[]>();
 const MAX_FILES_PAGE_CACHED_SCOPES = 8;
+const MAX_FILES_TREE_CACHED_WORKSPACES = 32;
 const MAX_CACHED_CLEAN_TAB_CHARS = 256 * 1024;
 const MAX_CACHED_DIRTY_TAB_CHARS = 8 * 1024 * 1024;
 const MAX_QUEUED_TREE_PARENT_REFRESHES = 24;
@@ -162,6 +165,41 @@ const FILES_WATCH_START_DELAY_MS = import.meta.env.MODE === "test" || (window as
 
 function filesSessionKey(projectRoot: string, laneId: string | null): string {
   return `${projectRoot}::${laneId ?? "__primary__"}`;
+}
+
+function filesWorkspaceTreeCacheKey(projectRoot: string, workspaceId: string): string {
+  return `${projectRoot}::${workspaceId}`;
+}
+
+function readCachedFilesWorkspaces(projectRoot: string): FilesWorkspace[] {
+  const cached = filesWorkspaceCacheByProject.get(projectRoot);
+  return cached ? cached.map((workspace) => ({ ...workspace })) : [];
+}
+
+function writeCachedFilesWorkspaces(projectRoot: string, workspaces: FilesWorkspace[]): void {
+  filesWorkspaceCacheByProject.set(projectRoot, workspaces.map((workspace) => ({ ...workspace })));
+}
+
+function readCachedFilesRootTree(projectRoot: string, workspaceId: string): FileTreeNode[] {
+  if (!workspaceId) return [];
+  const key = filesWorkspaceTreeCacheKey(projectRoot, workspaceId);
+  const cached = filesRootTreeCacheByWorkspace.get(key);
+  if (!cached) return [];
+  filesRootTreeCacheByWorkspace.delete(key);
+  filesRootTreeCacheByWorkspace.set(key, cached);
+  return cached;
+}
+
+function writeCachedFilesRootTree(projectRoot: string, workspaceId: string, nodes: FileTreeNode[]): void {
+  if (!workspaceId) return;
+  const key = filesWorkspaceTreeCacheKey(projectRoot, workspaceId);
+  filesRootTreeCacheByWorkspace.delete(key);
+  filesRootTreeCacheByWorkspace.set(key, nodes);
+  while (filesRootTreeCacheByWorkspace.size > MAX_FILES_TREE_CACHED_WORKSPACES) {
+    const oldest = filesRootTreeCacheByWorkspace.keys().next().value;
+    if (!oldest) break;
+    filesRootTreeCacheByWorkspace.delete(oldest);
+  }
 }
 
 function defaultFilesWorkspaceId(
@@ -538,12 +576,15 @@ export function FilesPage({
   const selectedLaneId = preferredLaneId ?? selectedLaneIdFromStore;
   const sessionKey = filesSessionKey(projectRootPath, selectedLaneId);
   const initialSession = getFilesPageSession(sessionKey);
+  const initialCachedWorkspaces = readCachedFilesWorkspaces(projectRootPath);
+  const initialWorkspaceId = initialSession?.workspaceId
+    ?? defaultFilesWorkspaceId(initialCachedWorkspaces, selectedLaneId);
 
-  const [workspaces, setWorkspaces] = useState<FilesWorkspace[]>([]);
-  const [workspaceId, setWorkspaceId] = useState<string>(initialSession?.workspaceId ?? "");
+  const [workspaces, setWorkspaces] = useState<FilesWorkspace[]>(initialCachedWorkspaces);
+  const [workspaceId, setWorkspaceId] = useState<string>(initialWorkspaceId);
   const [unavailableWorkspaceIds, setUnavailableWorkspaceIds] = useState<Set<string>>(() => new Set());
   const [allowPrimaryEdit, setAllowPrimaryEdit] = useState(initialSession?.allowPrimaryEdit ?? false);
-  const [tree, setTree] = useState<FileTreeNode[]>([]);
+  const [tree, setTree] = useState<FileTreeNode[]>(() => readCachedFilesRootTree(projectRootPath, initialWorkspaceId));
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedNodePath, setSelectedNodePath] = useState<string | null>(initialSession?.selectedNodePath ?? null);
   const pendingOpenRef = useRef<{
@@ -697,7 +738,14 @@ export function FilesPage({
     prevSessionKeyRef.current = sessionKey;
     // Restore state for the new scope (project + lane)
     const session = getFilesPageSession(sessionKey);
-    setWorkspaceId(session?.workspaceId ?? "");
+    const cachedWorkspaces = readCachedFilesWorkspaces(projectRootPath);
+    if (cachedWorkspaces.length) {
+      setWorkspaces(cachedWorkspaces);
+    }
+    const nextWorkspaceId = session?.workspaceId
+      ?? defaultFilesWorkspaceId(cachedWorkspaces.length ? cachedWorkspaces : workspaces, selectedLaneId, unavailableWorkspaceIds);
+    setWorkspaceId(nextWorkspaceId);
+    setTree(readCachedFilesRootTree(projectRootPath, nextWorkspaceId));
     setAllowPrimaryEdit(session?.allowPrimaryEdit ?? false);
     setSelectedNodePath(session?.selectedNodePath ?? null);
     setOpenTabs(session?.openTabs.map((tab) => ({ ...tab })) ?? []);
@@ -941,6 +989,7 @@ export function FilesPage({
         });
       }
       if (!parentPath) {
+        writeCachedFilesRootTree(projectRootPath, workspaceId, nodes);
         setTree(nodes);
         setError(null);
         setUnavailableWorkspaceIds((prev) => {
@@ -983,7 +1032,7 @@ export function FilesPage({
       }
       setError(message);
     }
-  }, [activeWorkspace?.kind, hasUnsavedTabs, workspaceId, workspaces]);
+  }, [activeWorkspace?.kind, hasUnsavedTabs, projectRootPath, workspaceId, workspaces]);
 
   refreshTreeNowRef.current = refreshTreeNow;
 
@@ -1296,6 +1345,7 @@ export function FilesPage({
           durationMs: Math.round(performance.now() - startedAt),
           workspaceCount: items.length,
         });
+        writeCachedFilesWorkspaces(projectRootPath, items);
         setWorkspaces(items);
         setWorkspaceId((current) => {
           if (current && items.some((workspace) => workspace.id === current)) return current;
@@ -1348,13 +1398,15 @@ export function FilesPage({
     logRendererDebugEvent("renderer.files.workspace_effect.begin", {
       workspaceId,
     });
+    const cachedTree = readCachedFilesRootTree(projectRootPath, workspaceId);
+    setTree(cachedTree);
     setExpanded(new Set());
     setContextMenu(null);
     treeRefreshStateRef.current.inFlight = false;
     treeRefreshStateRef.current.queuedFull = false;
     treeRefreshStateRef.current.queuedParents.clear();
     void refreshTree();
-  }, [active, workspaceId, refreshTree]);
+  }, [active, projectRootPath, workspaceId, refreshTree]);
 
   useEffect(() => {
     if (!workspaceId) return;

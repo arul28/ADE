@@ -30,6 +30,7 @@ import type { createWorkerTaskSessionService } from "../../desktop/src/main/serv
 import type { createWorkerHeartbeatService } from "../../desktop/src/main/services/cto/workerHeartbeatService";
 import type { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
 import type { ComputerUseArtifactBrokerService } from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
+import type { LinearWorkflowEventPayload } from "../../desktop/src/shared/types/linearSync";
 import {
   getModelById,
   getRuntimeModelRefForDescriptor,
@@ -227,6 +228,8 @@ type HeadlessLinearDeps = {
   workerBudgetService: ReturnType<typeof createWorkerBudgetService>;
   computerUseArtifactBrokerService: ComputerUseArtifactBrokerService;
   openExternal?: (url: string) => Promise<void>;
+  onGitHubStatusChanged?: (status: HeadlessGitHubStatus) => void;
+  onLinearWorkflowEvent?: (event: LinearWorkflowEventPayload) => void;
 };
 
 type HeadlessLinearServices = {
@@ -422,6 +425,9 @@ async function fetchGitHub(input: string | URL, init: RequestInit): Promise<Resp
 export function createHeadlessGitHubService(
   projectRoot: string,
   logger: Logger,
+  options: {
+    onStatusChanged?: (status: HeadlessGitHubStatus) => void;
+  } = {},
 ): HeadlessGitHubService {
   const credentialStore = new EncryptedFileCredentialStore();
   const tokenKey = "github.token.v1";
@@ -675,7 +681,21 @@ export function createHeadlessGitHubService(
     };
   };
 
-  return {
+  let service: HeadlessGitHubService;
+  const emitStatusChanged = (): void => {
+    const onStatusChanged = options.onStatusChanged;
+    if (!onStatusChanged) return;
+    void service
+      .getStatus({ forceRefresh: true })
+      .then(onStatusChanged)
+      .catch((error) => {
+        logger.warn("github.status_change_emit_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  };
+
+  service = {
     async getStatus(opts: { forceRefresh?: boolean } = {}) {
       if (opts.forceRefresh) {
         cachedStatus = null;
@@ -824,6 +844,7 @@ export function createHeadlessGitHubService(
       tokenDecryptionFailed = false;
       cachedStatus = null;
       cachedAt = 0;
+      emitStatusChanged();
     },
     clearToken() {
       tokenOverride = "";
@@ -831,6 +852,7 @@ export function createHeadlessGitHubService(
       tokenDecryptionFailed = false;
       cachedStatus = null;
       cachedAt = 0;
+      emitStatusChanged();
     },
     apiRequest,
     async listRepoLabels(owner, name) {
@@ -1028,6 +1050,7 @@ export function createHeadlessGitHubService(
       ).data;
     },
   };
+  return service;
 }
 
 function createHeadlessLinearCredentialService(): HeadlessLinearCredentialService {
@@ -1537,6 +1560,7 @@ export function createHeadlessLinearServices(
   const githubService = createHeadlessGitHubService(
     args.projectRoot,
     args.logger,
+    { onStatusChanged: args.onGitHubStatusChanged },
   );
   const linearClient = createLinearClientImpl({
     credentials: linearCredentialService as any,
@@ -1647,7 +1671,7 @@ export function createHeadlessLinearServices(
     outboundService,
     workerTaskSessionService,
     prService,
-    onEvent: () => {},
+    onEvent: args.onLinearWorkflowEvent ?? (() => {}),
   });
   const syncService = createLinearSyncServiceImpl({
     db: args.db,

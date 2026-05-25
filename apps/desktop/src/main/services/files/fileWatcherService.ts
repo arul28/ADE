@@ -1,12 +1,13 @@
 import path from "node:path";
-import chokidar, { type FSWatcher } from "chokidar";
+import chokidar, { type ChokidarOptions, type FSWatcher } from "chokidar";
 import type { FileChangeEvent } from "../../../shared/types";
+import { withMacosSafeChokidarOptions } from "../shared/chokidarOptions";
 import { normalizeRelative } from "../shared/utils";
 
 type WatchCallback = (event: FileChangeEvent) => void;
 
 type WatchSubscription = {
-  watcher: FSWatcher | null;
+  watcher: ManagedWatcher | null;
   workspaceId: string;
   senderId: number;
   rootPath: string;
@@ -14,6 +15,14 @@ type WatchSubscription = {
   includeIgnored: boolean;
   defaultRefCount: number;
   includeIgnoredRefCount: number;
+};
+
+type ManagedWatcher = {
+  watcher: FSWatcher;
+  active: boolean;
+  ready: boolean;
+  closeAfterReady: boolean;
+  closing: boolean;
 };
 
 const EVENT_DEBOUNCE_MS = 140;
@@ -27,6 +36,7 @@ const VOLATILE_ADE_PREFIXES = [
   ".ade/logs/",
   ".ade/tmp/",
   ".ade/runtime/",
+  ".ade/worktrees/",
 ] as const;
 const VOLATILE_ADE_EXACT_PATHS = new Set([
   ".ade/ade.db",
@@ -36,7 +46,19 @@ const VOLATILE_ADE_EXACT_PATHS = new Set([
 function isVolatileAdePath(relPath: string): boolean {
   if (VOLATILE_ADE_EXACT_PATHS.has(relPath)) return true;
   if (relPath.startsWith(".ade/ade.db-")) return true;
-  return VOLATILE_ADE_PREFIXES.some((prefix) => relPath.startsWith(prefix));
+  return VOLATILE_ADE_PREFIXES.some((prefix) => relPath === prefix.slice(0, -1) || relPath.startsWith(prefix));
+}
+
+function isVolatileAdePathAtAnyDepth(relPath: string): boolean {
+  if (isVolatileAdePath(relPath)) return true;
+  const marker = "/.ade/";
+  let index = relPath.indexOf(marker);
+  while (index >= 0) {
+    const nestedRelPath = relPath.slice(index + 1);
+    if (isVolatileAdePath(nestedRelPath)) return true;
+    index = relPath.indexOf(marker, index + marker.length);
+  }
+  return false;
 }
 
 function mapEventType(kind: "add" | "change" | "unlink" | "addDir" | "unlinkDir"): FileChangeEvent["type"] {
@@ -67,13 +89,27 @@ export function createFileWatcherService() {
     pendingCloseBySub.delete(key);
   };
 
-  const closeWatcher = (subscription: WatchSubscription | undefined): void => {
-    if (!subscription?.watcher) return;
-    const watcher = subscription.watcher;
-    subscription.watcher = null;
-    void watcher.close().catch(() => {
+  const closeManagedWatcher = (managed: ManagedWatcher | null): void => {
+    if (!managed || managed.closing) return;
+    managed.active = false;
+
+    if (!managed.ready) {
+      // On macOS, closing chokidar while FSEvents is still starting can block Node's main loop.
+      managed.closeAfterReady = true;
+      return;
+    }
+
+    managed.closing = true;
+    void managed.watcher.close().catch(() => {
       // ignore close errors
     });
+  };
+
+  const closeWatcher = (subscription: WatchSubscription | undefined): void => {
+    if (!subscription?.watcher) return;
+    const managed = subscription.watcher;
+    subscription.watcher = null;
+    closeManagedWatcher(managed);
   };
 
   const scheduleIdleClose = (key: string, subscription: WatchSubscription): void => {
@@ -95,7 +131,7 @@ export function createFileWatcherService() {
     /(^|[/\\])node_modules($|[/\\])/,
   ];
   const VOLATILE_ADE_IGNORED_PATTERNS: RegExp[] = [
-    /(^|[/\\])\.ade[/\\](artifacts|cache|agent-configs|secrets|transcripts|logs|tmp|runtime)($|[/\\])/,
+    /(^|[/\\])\.ade[/\\](artifacts|cache|agent-configs|secrets|transcripts|logs|tmp|runtime|worktrees)($|[/\\])/,
     /(^|[/\\])\.ade[/\\]ade\.db($|-)/,
     /(^|[/\\])\.ade[/\\]ade\.sock$/,
   ];
@@ -104,24 +140,42 @@ export function createFileWatcherService() {
     /(^|[/\\])\.ade($|[/\\])/,
   ];
 
-  const ignoredPatternsFor = (includeIgnored: boolean): RegExp[] =>
-    includeIgnored
-      ? [...ALWAYS_IGNORED_PATTERNS, ...VOLATILE_ADE_IGNORED_PATTERNS]
-      : DEFAULT_IGNORED_PATTERNS;
+  const ignoredPatternsFor = (rootPath: string, includeIgnored: boolean): ChokidarOptions["ignored"] => [
+    ...(includeIgnored ? ALWAYS_IGNORED_PATTERNS : DEFAULT_IGNORED_PATTERNS),
+    (candidatePath: string) => {
+      const relPath = normalizeRelative(path.relative(rootPath, candidatePath));
+      if (!relPath || relPath.startsWith("../") || path.isAbsolute(relPath)) return false;
+      return isVolatileAdePathAtAnyDepth(relPath);
+    },
+  ];
 
   const startWatcher = (key: string, subscription: WatchSubscription): void => {
     closeWatcher(subscription);
 
-    const watcher = chokidar.watch(subscription.rootPath, {
+    const watcher = chokidar.watch(subscription.rootPath, withMacosSafeChokidarOptions({
       ignoreInitial: true,
       awaitWriteFinish: {
         stabilityThreshold: 120,
-        pollInterval: 50
+        pollInterval: 50,
       },
-      ignored: ignoredPatternsFor(subscription.includeIgnored)
+      ignored: ignoredPatternsFor(subscription.rootPath, subscription.includeIgnored),
+    }));
+    const managed: ManagedWatcher = {
+      watcher,
+      active: true,
+      ready: false,
+      closeAfterReady: false,
+      closing: false,
+    };
+
+    watcher.once("ready", () => {
+      managed.ready = true;
+      if (!managed.closeAfterReady) return;
+      setImmediate(() => closeManagedWatcher(managed));
     });
 
     const forward = (kind: "add" | "change" | "unlink" | "addDir" | "unlinkDir", absPath: string) => {
+      if (!managed.active || subscription.watcher !== managed) return;
       const relRaw = path.relative(subscription.rootPath, absPath);
       const relPath = normalizeRelative(relRaw);
       if (!relPath || relPath.startsWith(".git/") || relPath === ".git") return;
@@ -133,7 +187,7 @@ export function createFileWatcherService() {
           workspaceId: subscription.workspaceId,
           type: mapEventType(kind),
           path: relPath,
-          ts: new Date().toISOString()
+          ts: new Date().toISOString(),
         });
       });
     };
@@ -154,7 +208,7 @@ export function createFileWatcherService() {
     watcher.on("addDir", (absPath) => forward("addDir", absPath));
     watcher.on("unlinkDir", (absPath) => forward("unlinkDir", absPath));
 
-    subscription.watcher = watcher;
+    subscription.watcher = managed;
   };
 
   const stop = (workspaceId: string, senderId: number, includeIgnored = false): void => {

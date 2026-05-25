@@ -310,6 +310,23 @@ describe("ModelPicker", () => {
     expect(visibleIds).not.toContain(SONNET.id);
   });
 
+  it("filters provided models when constrained to available ids", async () => {
+    const user = userEvent.setup();
+    renderPicker({
+      constrainToAvailableModelIds: true,
+      availableModelIds: [SONNET.id],
+    });
+
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    const visibleIds = screen
+      .getAllByRole("option")
+      .map((el) => el.getAttribute("data-model-id"));
+    expect(visibleIds).toContain(SONNET.id);
+    expect(visibleIds).not.toContain(OPUS.id);
+    expect(visibleIds).not.toContain(GPT.id);
+  });
+
   it("toggles favorites when the star button is clicked", async () => {
     const user = userEvent.setup();
     renderPicker();

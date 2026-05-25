@@ -38,7 +38,6 @@ import {
   getLocalProviderDefaultEndpoint,
   resolveModelDescriptor,
   resolveProviderGroupForModel,
-  type LocalProviderFamily,
 } from "../../../shared/modelRegistry";
 import { inspectLocalProvider } from "../ai/localModelDiscovery";
 import type { DiscoveredLocalModelEntry } from "../opencode/openCodeRuntime";

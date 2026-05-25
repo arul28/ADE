@@ -183,6 +183,8 @@ import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService
 import type { Logger } from "./services/logging/logger";
 import { resolveDesktopUserDataPath, resolveElectronAppDataPath } from "./desktopUserDataPath";
 
+type RemoteOpenProjectBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
+
 const AUTO_UPDATER_CACHE_DIR_NAME = "ade-desktop-updater";
 const ADE_BROWSER_WEBVIEW_PARTITION = "persist:ade-browser";
 type AdePackageChannel = "alpha" | "beta";
@@ -336,19 +338,6 @@ const defaultEnabledBackgroundTaskFlags = new Set<string>([
   "ADE_ENABLE_PORT_ALLOCATION_RECOVERY",
   "ADE_ENABLE_SYNC_INIT",
 ]);
-
-function isBackgroundTaskEnabled(enableFlag?: string): boolean {
-  if (!devStabilityMode || enableAllBackgroundTasks) {
-    return true;
-  }
-  if (!enableFlag) {
-    return false;
-  }
-  return (
-    process.env[enableFlag] === "1" ||
-    defaultEnabledBackgroundTaskFlags.has(enableFlag)
-  );
-}
 
 function readString(source: Record<string, unknown> | null | undefined, key: string): string | undefined {
   const value = source?.[key];
@@ -1044,6 +1033,49 @@ app.whenReady().then(async () => {
       fs.existsSync(path.join(resolved, ".git"))
     );
   };
+  const parseSavedRemoteProjectBinding = (
+    value: unknown,
+  ): RemoteOpenProjectBinding | null => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    const targetId =
+      typeof record.targetId === "string" ? record.targetId.trim() : "";
+    const projectId =
+      typeof record.projectId === "string" ? record.projectId.trim() : "";
+    const rootPath =
+      typeof record.rootPath === "string" ? record.rootPath.trim() : "";
+    if (record.kind !== "remote" || !targetId || !projectId || !rootPath) {
+      return null;
+    }
+    const runtimeName =
+      typeof record.runtimeName === "string" && record.runtimeName.trim()
+        ? record.runtimeName.trim()
+        : "Remote";
+    const displayName =
+      typeof record.displayName === "string" && record.displayName.trim()
+        ? record.displayName.trim()
+        : path.basename(rootPath);
+    const key =
+      typeof record.key === "string" && record.key.trim()
+        ? record.key.trim()
+        : `remote:${targetId}:${projectId}`;
+    return {
+      kind: "remote",
+      key,
+      targetId,
+      runtimeName,
+      projectId,
+      rootPath,
+      displayName,
+    };
+  };
+  const savedRemoteProjectBinding = parseSavedRemoteProjectBinding(
+    saved.lastRemoteProjectBinding,
+  );
+  const readLastRemoteProjectBinding = (): RemoteOpenProjectBinding | null =>
+    parseSavedRemoteProjectBinding(
+      readGlobalState(globalStatePath).lastRemoteProjectBinding,
+    );
 
   const machineAdeLayout = resolveMachineAdeLayout();
   const startupState = normalizeStartupProjectState({
@@ -1142,7 +1174,7 @@ app.whenReady().then(async () => {
   const closeContextPromises = new Map<string, Promise<void>>();
   const windowProjectRoots = new Map<number, string | null>();
   const windowProjectTabRoots = new Map<number, Set<string>>();
-  const windowProjectBindings = new Map<number, OpenProjectBinding & { kind: "remote" }>();
+  const windowProjectBindings = new Map<number, RemoteOpenProjectBinding>();
   const ipcWindowScope = new AsyncLocalStorage<number | null>();
   const rpcSocketCleanupByRoot = new Map<string, () => void>();
   const projectLastActivatedAt = new Map<string, number>();
@@ -1397,14 +1429,38 @@ app.whenReady().then(async () => {
     }
   };
 
+  const persistLastRemoteProjectBinding = (
+    binding: RemoteOpenProjectBinding,
+  ): void => {
+    const state = readGlobalState(globalStatePath);
+    const next = {
+      ...state,
+      lastRemoteProjectBinding: {
+        ...binding,
+        updatedAt: new Date().toISOString(),
+      },
+    };
+    delete next.lastProjectRoot;
+    writeGlobalState(globalStatePath, next);
+  };
+
+  const clearLastRemoteProjectBinding = (): void => {
+    const state = readGlobalState(globalStatePath);
+    if (!state.lastRemoteProjectBinding) return;
+    const next = { ...state };
+    delete next.lastRemoteProjectBinding;
+    writeGlobalState(globalStatePath, next);
+  };
+
   const bindWindowToRemoteProject = (
     windowId: number | null,
-    binding: OpenProjectBinding & { kind: "remote" },
+    binding: RemoteOpenProjectBinding,
   ): void => {
     if (windowId != null) {
       windowProjectRoots.set(windowId, null);
       windowProjectBindings.set(windowId, binding);
     }
+    persistLastRemoteProjectBinding(binding);
     // Binding this window to a remote project must not tear down local
     // foreground services that other windows depend on. Only drop the
     // foreground if no other window is still working in a local project.
@@ -3974,9 +4030,6 @@ app.whenReady().then(async () => {
         const rpcHandler = createAdeRpcRequestHandler({
           runtime: rpcRuntime,
           serverVersion: app.getVersion(),
-          onActionsListChanged: () => {
-            stop?.notify("ade/actions/list_changed", {});
-          },
         });
         stop = startJsonRpcServer(rpcHandler, transport, { nonFatal: true });
         const unsubscribeChatEvents = rpcRuntime.agentChatService?.subscribeToEvents((event) => {
@@ -4896,6 +4949,7 @@ app.whenReady().then(async () => {
       project,
       options,
     );
+    delete state.lastRemoteProjectBinding;
     writeGlobalState(globalStatePath, state);
   };
 
@@ -5536,14 +5590,29 @@ app.whenReady().then(async () => {
     return null;
   };
 
-  const registerWindowSession = (win: BrowserWindow, projectRoot: string | null = null): void => {
-    const normalizedRoot = projectRoot ? normalizeProjectRoot(projectRoot) : null;
+  const registerWindowSession = (
+    win: BrowserWindow,
+    projectRoot: string | null = null,
+    remoteBinding: RemoteOpenProjectBinding | null = null,
+  ): void => {
+    let normalizedRoot: string | null = null;
+    if (!remoteBinding && projectRoot) {
+      normalizedRoot = normalizeProjectRoot(projectRoot);
+    }
     windowProjectRoots.set(win.id, normalizedRoot);
     windowProjectTabRoots.set(win.id, normalizedRoot ? new Set([normalizedRoot]) : new Set());
-    windowProjectBindings.delete(win.id);
+    if (remoteBinding) {
+      windowProjectBindings.set(win.id, remoteBinding);
+    } else {
+      windowProjectBindings.delete(win.id);
+    }
     win.on("focus", () => {
+      const focusedRemoteBinding = windowProjectBindings.get(win.id) ?? null;
       const focusedRoot = windowProjectRoots.get(win.id) ?? null;
-      if (focusedRoot != null) {
+      if (focusedRemoteBinding) {
+        persistLastRemoteProjectBinding(focusedRemoteBinding);
+      } else if (focusedRoot != null) {
+        clearLastRemoteProjectBinding();
         setForegroundProject(focusedRoot);
       } else if (!activeProjectRoot || !rootsBoundToWindows().has(activeProjectRoot)) {
         // Focusing an unscoped window (e.g. a brand-new File > New Window) must
@@ -5590,9 +5659,17 @@ app.whenReady().then(async () => {
   const openAdeWindow = async (
     args: { projectRoot?: string | null } = {},
   ): Promise<{ windowId: number | null; project: ProjectInfo | null }> => {
+    const openWindows = BrowserWindow.getAllWindows().filter(
+      (win) => !win.isDestroyed(),
+    );
+    const restoredRemoteBinding =
+      args.projectRoot || openWindows.length > 0
+        ? null
+        : readLastRemoteProjectBinding();
     const win = await createWindow({
       logger: getActiveContext().logger,
-      onCreated: (createdWindow) => registerWindowSession(createdWindow, null),
+      onCreated: (createdWindow) =>
+        registerWindowSession(createdWindow, null, restoredRemoteBinding),
       onCloseRequested: handleMainWindowCloseRequested,
     });
     builtInBrowserService.attachToWindow(win);
@@ -5600,6 +5677,9 @@ app.whenReady().then(async () => {
       await ipcWindowScope.run(win.id, async () => {
         await switchProjectFromDialog(args.projectRoot!);
       });
+    } else if (restoredRemoteBinding) {
+      emitProjectChangedToWindow(win.id, null);
+      emitProjectBindingChangedToWindow(win.id, restoredRemoteBinding);
     } else {
       emitProjectChangedToWindow(win.id, null);
       emitProjectBindingChangedToWindow(win.id, null);
@@ -5795,10 +5875,17 @@ app.whenReady().then(async () => {
     }
   }
 
+  const initialRemoteProjectBinding =
+    shouldOpenStartupProject ? null : savedRemoteProjectBinding;
   const initialWindowProjectRoot = shouldOpenStartupProject ? activeProjectRoot : null;
   const initialWindow = await createWindow({
     logger: getActiveContext().logger,
-    onCreated: (createdWindow) => registerWindowSession(createdWindow, initialWindowProjectRoot),
+    onCreated: (createdWindow) =>
+      registerWindowSession(
+        createdWindow,
+        initialWindowProjectRoot,
+        initialRemoteProjectBinding,
+      ),
     onCloseRequested: handleMainWindowCloseRequested,
   });
   builtInBrowserService.attachToWindow(initialWindow);

@@ -1,5 +1,3 @@
-import type { ComponentType } from "react";
-
 // ── Event Categories ─────────────────────────────────────────────
 export type EventCategory =
   | "git"
@@ -119,6 +117,30 @@ export const EVENT_KIND_META: Record<string, EventKindMeta> = {
   "git.stage":        { label: "Stage",         category: "git", iconName: "Plus",                   description: "Files staged",             importance: "low" },
   "git.unstage":      { label: "Unstage",       category: "git", iconName: "Minus",                  description: "Files unstaged",           importance: "low" },
   "git.discard":      { label: "Discard",       category: "git", iconName: "Trash",                  description: "Changes discarded",        importance: "medium" },
+  "git_fetch":                 { label: "Fetch",                category: "git", iconName: "CloudArrowDown",        description: "Fetched from remote",          importance: "medium" },
+  "git_pull":                  { label: "Pull",                 category: "git", iconName: "ArrowDown",             description: "Pulled from remote",           importance: "high" },
+  "git_undo_head_change":      { label: "Undo Head Change",     category: "git", iconName: "ArrowCounterClockwise", description: "Reset to previous HEAD",        importance: "high" },
+  "git_redo_head_change":      { label: "Redo Head Change",     category: "git", iconName: "ArrowClockwise",        description: "Restored undone HEAD",         importance: "high" },
+  "git_push":                  { label: "Push",                 category: "git", iconName: "ArrowUp",               description: "Pushed to remote",             importance: "high" },
+  "git_push_force_with_lease": { label: "Force Push",           category: "git", iconName: "ArrowFatUp",            description: "Force-pushed with lease",      importance: "high" },
+  "git_sync_merge":            { label: "Merge Base",           category: "git", iconName: "GitMerge",              description: "Merged the lane base",         importance: "high" },
+  "git_sync_rebase":           { label: "Rebase Onto Base",     category: "git", iconName: "GitBranch",             description: "Rebased onto the lane base",   importance: "high" },
+  "git_checkout_branch":       { label: "Checkout Branch",      category: "git", iconName: "ArrowBendUpRight",      description: "Branch checkout",              importance: "high" },
+  "git_tag_create":            { label: "Tag Created",          category: "git", iconName: "Tag",                   description: "Git tag created",              importance: "medium" },
+  "git_reset_soft":            { label: "Soft Reset",           category: "git", iconName: "ArrowCounterClockwise", description: "Lane soft reset",               importance: "high" },
+  "git_reset_mixed":           { label: "Mixed Reset",          category: "git", iconName: "ArrowCounterClockwise", description: "Lane mixed reset",              importance: "high" },
+  "git_reset_hard":            { label: "Hard Reset",           category: "git", iconName: "Trash",                 description: "Lane hard reset",               importance: "high" },
+  "git_stash_push":            { label: "Stash",                category: "git", iconName: "Archive",               description: "Changes stashed",              importance: "medium" },
+  "git_stash_apply":           { label: "Stash Apply",          category: "git", iconName: "ArchiveBox",            description: "Stash applied",                importance: "medium" },
+  "git_stash_pop":             { label: "Stash Pop",            category: "git", iconName: "ArchiveBox",            description: "Stash popped",                 importance: "medium" },
+  "git_stash_drop":            { label: "Stash Drop",           category: "git", iconName: "Trash",                 description: "Stash deleted",                importance: "medium" },
+  "git_stash_clear":           { label: "Stashes Cleared",      category: "git", iconName: "Trash",                 description: "Branch stashes deleted",       importance: "medium" },
+  "git_cherry_pick":           { label: "Cherry Pick",          category: "git", iconName: "TreeStructure",         description: "Cherry-pick applied",          importance: "high" },
+  "git_revert":                { label: "Revert",               category: "git", iconName: "ArrowCounterClockwise", description: "Commit reverted",              importance: "high" },
+  "git_rebase_continue":       { label: "Rebase Continued",     category: "git", iconName: "GitBranch",             description: "Interrupted rebase continued", importance: "high" },
+  "git_rebase_abort":          { label: "Rebase Aborted",       category: "git", iconName: "XCircle",               description: "Interrupted rebase aborted",   importance: "high" },
+  "git_merge_continue":        { label: "Merge Continued",      category: "git", iconName: "GitMerge",              description: "Interrupted merge continued",  importance: "high" },
+  "git_merge_abort":           { label: "Merge Aborted",        category: "git", iconName: "XCircle",               description: "Interrupted merge aborted",    importance: "high" },
 
   // ── Lane Lifecycle ──────────────────────────────────────────
   "lane.created":           { label: "Lane Created",      category: "lane", iconName: "PlusCircle",      description: "New lane created",                  importance: "high" },
@@ -169,6 +191,7 @@ export const EVENT_KIND_META: Record<string, EventKindMeta> = {
 
   // ── Mission & Orchestrator ──────────────────────────────────
   "mission.started":        { label: "Mission Started",     category: "mission", iconName: "Rocket",      description: "Mission launched",         importance: "high" },
+  "mission.update":         { label: "Mission Update",      category: "mission", iconName: "ListChecks",  description: "Mission state changed",    importance: "medium" },
   "mission.completed":      { label: "Mission Done",        category: "mission", iconName: "Trophy",      description: "Mission completed",        importance: "high" },
   "mission.failed":         { label: "Mission Failed",      category: "mission", iconName: "XCircle",     description: "Mission failed",           importance: "high" },
   "mission.step_progress":  { label: "Step Progress",       category: "mission", iconName: "Spinner",     description: "Step in progress",         importance: "low" },
@@ -195,6 +218,12 @@ export const EVENT_KIND_META: Record<string, EventKindMeta> = {
   "config.changed":        { label: "Config Changed",     category: "system", iconName: "Sliders",        description: "Configuration changed",   importance: "medium" },
   "budget.warning":        { label: "Budget Warning",     category: "system", iconName: "CurrencyDollar", description: "Budget threshold warning", importance: "high" },
   "budget.exceeded":       { label: "Budget Exceeded",    category: "system", iconName: "Warning",        description: "Budget exceeded",          importance: "high" },
+
+  // ── Unified ADE work feed ─────────────────────────────────
+  "chat.session":     { label: "Chat Session",    category: "session", iconName: "ChatCircleText", description: "ADE chat session activity",      importance: "medium" },
+  "cto.session":      { label: "CTO Session",     category: "session", iconName: "Strategy",       description: "CTO coordinator session update", importance: "medium" },
+  "worker.run":       { label: "Worker Run",      category: "mission", iconName: "Robot",          description: "Worker task run",                importance: "medium" },
+  "worker.activity":  { label: "Worker Activity", category: "mission", iconName: "Users",          description: "Worker activity update",         importance: "low" },
 
   // ── Noise-level events (hidden by default) ─────────────────
   "tool_call":         { label: "Tool Call",         category: "system", iconName: "Wrench",          description: "Tool invocation",              importance: "noise" },

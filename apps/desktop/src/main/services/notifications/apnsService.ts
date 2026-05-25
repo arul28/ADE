@@ -187,12 +187,26 @@ type KeyStoreArgs = {
     encryptString(plainText: string): Buffer;
     decryptString(buffer: Buffer): string;
   };
+  credentialStore?: {
+    getSync(key: string): string | null;
+    setSync(key: string, value: string): void;
+    deleteSync(key: string): void;
+  };
+  credentialKey?: string;
 };
 
 export class ApnsKeyStore {
-  constructor(private readonly args: KeyStoreArgs) {}
+  private readonly credentialKey: string;
+
+  constructor(private readonly args: KeyStoreArgs) {
+    this.credentialKey = args.credentialKey ?? "notifications.apns.keyP8Pem";
+  }
 
   save(p8Pem: string): void {
+    if (this.args.credentialStore) {
+      this.args.credentialStore.setSync(this.credentialKey, p8Pem);
+      return;
+    }
     if (!this.args.safeStorage || !this.args.safeStorage.isEncryptionAvailable()) {
       throw new Error("safeStorage is unavailable; refusing to persist .p8 in plaintext.");
     }
@@ -202,6 +216,9 @@ export class ApnsKeyStore {
   }
 
   load(): string | null {
+    if (this.args.credentialStore) {
+      return this.args.credentialStore.getSync(this.credentialKey);
+    }
     if (!fs.existsSync(this.args.encryptedKeyPath)) return null;
     if (!this.args.safeStorage || !this.args.safeStorage.isEncryptionAvailable()) {
       throw new Error("safeStorage is unavailable; cannot decrypt .p8.");
@@ -211,12 +228,19 @@ export class ApnsKeyStore {
   }
 
   clear(): void {
+    if (this.args.credentialStore) {
+      this.args.credentialStore.deleteSync(this.credentialKey);
+      return;
+    }
     if (fs.existsSync(this.args.encryptedKeyPath)) {
       fs.rmSync(this.args.encryptedKeyPath);
     }
   }
 
   has(): boolean {
+    if (this.args.credentialStore) {
+      return this.args.credentialStore.getSync(this.credentialKey) != null;
+    }
     return fs.existsSync(this.args.encryptedKeyPath);
   }
 }

@@ -13,7 +13,9 @@ export type BuiltinCommand = {
 export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/commit", description: "Commit lane changes", placement: "inline", argumentHint: "[message]" },
   { name: "/push", description: "Push the active lane branch", placement: "inline" },
-  { name: "/pull", description: "Pull the active lane branch", placement: "inline" },
+  { name: "/pull", description: "Pull the active lane branch (default ff-only)", placement: "inline", argumentHint: "[--ff-only|--rebase|--merge]" },
+  { name: "/undo", description: "Undo the last recorded HEAD change on the active lane", placement: "inline" },
+  { name: "/redo", description: "Redo the most recently undone HEAD change on the active lane", placement: "inline" },
   { name: "/stage all", description: "Stage all changes in the active lane", placement: "inline" },
   { name: "/clear", description: "Clear the local terminal transcript view", placement: "inline" },
   { name: "/login", description: "Sign in to the active CLI-backed provider from this terminal", placement: "inline" },

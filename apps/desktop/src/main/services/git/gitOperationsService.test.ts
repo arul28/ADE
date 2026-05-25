@@ -22,6 +22,8 @@ function createTestGitOperationsService(
 ) {
   const mockStart = vi.fn().mockReturnValue({ operationId: "op-1" });
   const mockFinish = vi.fn();
+  const mockList = vi.fn().mockReturnValue([]);
+  const mockListHeadChanges = vi.fn().mockReturnValue([]);
   const mockInvalidateListCache = vi.fn();
   const mockLogger = {
     info: vi.fn(),
@@ -43,6 +45,8 @@ function createTestGitOperationsService(
     operationService: {
       start: mockStart,
       finish: mockFinish,
+      list: mockList,
+      listHeadChanges: mockListHeadChanges,
     } as any,
     projectConfigService: {
       get: () => ({ effective: { ai: {} } }),
@@ -59,6 +63,8 @@ function createTestGitOperationsService(
     service,
     mockStart,
     mockFinish,
+    mockList,
+    mockListHeadChanges,
     mockInvalidateListCache,
     mockLogger,
   };
@@ -204,6 +210,166 @@ describe("gitOperationsService.getSyncStatus", () => {
       diverged: false,
       recommendedAction: "push",
     });
+  });
+});
+
+describe("gitOperationsService.pull", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("runs the requested pull mode and records it in operation metadata", async () => {
+    mockGit.getHeadSha.mockResolvedValue("abc123");
+    mockGit.runGitOrThrow.mockResolvedValue(undefined);
+    const { service, mockStart } = createTestGitOperationsService();
+
+    await service.pull({ laneId: "lane-1" });
+    await service.pull({ laneId: "lane-1", mode: "rebase" });
+    await service.pull({ laneId: "lane-1", mode: "merge" });
+
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      1,
+      ["pull", "--ff-only"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 60_000 },
+    );
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      2,
+      ["pull", "--rebase"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 60_000 },
+    );
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      3,
+      ["pull", "--no-rebase", "--no-edit"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 60_000 },
+    );
+    expect(mockStart).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        laneId: "lane-1",
+        kind: "git_pull",
+        metadata: expect.objectContaining({ reason: "pull_ff_only", mode: "ff-only" }),
+      }),
+    );
+    expect(mockStart).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        metadata: expect.objectContaining({ reason: "pull_rebase", mode: "rebase" }),
+      }),
+    );
+    expect(mockStart).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        metadata: expect.objectContaining({ reason: "pull_merge", mode: "merge" }),
+      }),
+    );
+  });
+
+  it("rejects unknown pull modes before running git", async () => {
+    const { service } = createTestGitOperationsService();
+
+    await expect(service.pull({ laneId: "lane-1", mode: "squash" } as any))
+      .rejects.toThrow("git.pull mode must be ff-only, rebase, or merge.");
+    expect(mockGit.runGitOrThrow).not.toHaveBeenCalled();
+  });
+});
+
+describe("gitOperationsService undo and redo head changes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("undoes the latest recorded head-changing operation with a guarded hard reset", async () => {
+    mockGit.getHeadSha
+      .mockResolvedValueOnce("after")
+      .mockResolvedValueOnce("after")
+      .mockResolvedValueOnce("before");
+    mockGit.runGitOrThrow.mockResolvedValue(undefined);
+    const { service, mockStart, mockList, mockListHeadChanges } = createTestGitOperationsService();
+    mockListHeadChanges.mockReturnValue([
+      {
+        id: "op-pick",
+        laneId: "lane-1",
+        laneName: "Lane",
+        kind: "git_cherry_pick",
+        startedAt: "2026-05-22T00:00:00.000Z",
+        endedAt: "2026-05-22T00:00:01.000Z",
+        status: "succeeded",
+        preHeadSha: "before",
+        postHeadSha: "after",
+        metadataJson: "{}",
+      },
+    ]);
+
+    await service.undoLastHeadChange({ laneId: "lane-1" });
+
+    expect(mockListHeadChanges).toHaveBeenCalledWith({ laneId: "lane-1", limit: 100 });
+    expect(mockList).not.toHaveBeenCalled();
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
+      ["reset", "--hard", "before"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 60_000 },
+    );
+    expect(mockStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "git_undo_head_change",
+        metadata: expect.objectContaining({
+          undoneOperationId: "op-pick",
+          redoHeadSha: "after",
+          targetHeadSha: "before",
+        }),
+      }),
+    );
+  });
+
+  it("redoes the latest undo operation only when it is still the latest head change", async () => {
+    mockGit.getHeadSha
+      .mockResolvedValueOnce("before")
+      .mockResolvedValueOnce("before")
+      .mockResolvedValueOnce("after");
+    mockGit.runGitOrThrow.mockResolvedValue(undefined);
+    const { service, mockListHeadChanges } = createTestGitOperationsService();
+    mockListHeadChanges.mockReturnValue([
+      {
+        id: "op-undo",
+        laneId: "lane-1",
+        laneName: "Lane",
+        kind: "git_undo_head_change",
+        startedAt: "2026-05-22T00:00:00.000Z",
+        endedAt: "2026-05-22T00:00:01.000Z",
+        status: "succeeded",
+        preHeadSha: "after",
+        postHeadSha: "before",
+        metadataJson: JSON.stringify({ redoHeadSha: "after" }),
+      },
+    ]);
+
+    await service.redoLastHeadChange({ laneId: "lane-1" });
+
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
+      ["reset", "--hard", "after"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 60_000 },
+    );
+  });
+
+  it("does not undo an already-undone head change through the undo command", async () => {
+    const { service, mockListHeadChanges } = createTestGitOperationsService();
+    mockListHeadChanges.mockReturnValue([
+      {
+        id: "op-undo",
+        laneId: "lane-1",
+        laneName: "Lane",
+        kind: "git_undo_head_change",
+        startedAt: "2026-05-22T00:00:00.000Z",
+        endedAt: "2026-05-22T00:00:01.000Z",
+        status: "succeeded",
+        preHeadSha: "after",
+        postHeadSha: "before",
+        metadataJson: JSON.stringify({ redoHeadSha: "after" }),
+      },
+    ]);
+
+    await expect(service.undoLastHeadChange({ laneId: "lane-1" }))
+      .rejects.toThrow("Latest head change is already an undo. Use redo to restore it.");
+    expect(mockGit.runGitOrThrow).not.toHaveBeenCalled();
   });
 });
 
@@ -592,6 +758,85 @@ describe("gitOperationsService.commit", () => {
   });
 });
 
+describe("gitOperationsService commit graph actions", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("creates annotated and lightweight tags at a selected commit", async () => {
+    mockGit.getHeadSha.mockResolvedValue("head");
+    mockGit.runGitOrThrow.mockResolvedValue(undefined);
+    const { service, mockStart } = createTestGitOperationsService();
+
+    await service.createTag({
+      laneId: "lane-1",
+      commitSha: "abc123",
+      tagName: "v1.2.3",
+      message: "release",
+    });
+    await service.createTag({
+      laneId: "lane-1",
+      commitSha: "def456",
+      tagName: "checkpoint",
+    });
+
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      1,
+      ["tag", "-a", "v1.2.3", "abc123", "-m", "release"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
+    );
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      2,
+      ["tag", "checkpoint", "def456"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
+    );
+    expect(mockStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "git_tag_create",
+        metadata: expect.objectContaining({ tagName: "v1.2.3", annotated: true }),
+      }),
+    );
+  });
+
+  it("resets the lane branch to a selected commit with the chosen mode", async () => {
+    mockGit.getHeadSha.mockResolvedValue("head");
+    mockGit.runGitOrThrow.mockResolvedValue(undefined);
+    const { service, mockStart } = createTestGitOperationsService();
+
+    await service.resetToCommit({
+      laneId: "lane-1",
+      commitSha: "abc123",
+      mode: "hard",
+    });
+
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
+      ["reset", "--hard", "abc123"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 60_000 },
+    );
+    expect(mockStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "git_reset_hard",
+        metadata: expect.objectContaining({ commitSha: "abc123", mode: "hard" }),
+      }),
+    );
+  });
+
+  it("rejects empty or option-like tag names", async () => {
+    const { service } = createTestGitOperationsService();
+
+    await expect(service.createTag({
+      laneId: "lane-1",
+      commitSha: "abc123",
+      tagName: "  ",
+    })).rejects.toThrow("Tag name is required");
+    await expect(service.createTag({
+      laneId: "lane-1",
+      commitSha: "abc123",
+      tagName: "-bad",
+    })).rejects.toThrow("Invalid tag name");
+  });
+});
+
 describe("gitOperationsService.generateCommitMessage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -924,5 +1169,325 @@ describe("gitOperationsService cached lane reads", () => {
         changeType: "modified",
       },
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// branchSwitch (merged from gitOperationsService.branchSwitch.test.ts)
+// ---------------------------------------------------------------------------
+
+function makeStubLogger() {
+  return {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  } as any;
+}
+
+function makeServiceWithLanes(opts: {
+  branchProfiles?: Array<{ branchRef: string }>;
+  lanes?: Array<{ id: string; name: string; branchRef: string; laneType: string }>;
+  switchBranch?: ReturnType<typeof vi.fn>;
+  listBranchProfilesThrows?: boolean;
+  listThrows?: boolean;
+}) {
+  const switchBranchMock = opts.switchBranch ?? vi.fn().mockResolvedValue({ lane: { id: "lane-1" }, previousBranchRef: "feature/old", activeWork: [] });
+
+  const listBranchProfiles = opts.listBranchProfilesThrows
+    ? vi.fn(() => { throw new Error("profile lookup failed"); })
+    : vi.fn().mockReturnValue(opts.branchProfiles ?? []);
+
+  const lanes = opts.lanes ?? [];
+  const listBranchOwners = opts.listThrows
+    ? vi.fn(() => { throw new Error("owner lookup failed"); })
+    : vi.fn(({ excludeLaneId }: { excludeLaneId?: string } = {}) =>
+        lanes
+          .filter((l) => l.laneType !== "primary" && l.id !== excludeLaneId)
+          .map((l) => ({ id: l.id, name: l.name, branchRef: l.branchRef })),
+      );
+
+  const service = createGitOperationsService({
+    laneService: {
+      getLaneBaseAndBranch: vi.fn().mockReturnValue({
+        baseRef: "main",
+        branchRef: "feature/source",
+        worktreePath: "/tmp/ade-lane",
+        laneType: "worktree",
+      }),
+      listBranchProfiles,
+      listBranchOwners,
+      switchBranch: switchBranchMock,
+    } as any,
+    operationService: {
+      start: vi.fn().mockReturnValue({ operationId: "op-1" }),
+      finish: vi.fn(),
+    } as any,
+    projectConfigService: {
+      get: () => ({ effective: { ai: {} } }),
+    } as any,
+    aiIntegrationService: {
+      getFeatureFlag: () => false,
+      getStatus: vi.fn(async () => ({ availableModelIds: [] })),
+      generateCommitMessage: vi.fn(),
+    } as any,
+    logger: makeStubLogger(),
+  });
+
+  return { service, switchBranchMock, listBranchProfiles, listBranchOwners };
+}
+
+describe("gitOperationsService.listBranches annotations", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("annotates branches with profile-in-lane and active owner metadata", async () => {
+    mockGit.runGitOrThrow.mockResolvedValue(
+      [
+        "refs/heads/main\tmain\t \torigin/main",
+        "refs/heads/feature/source\tfeature/source\t*\t",
+        "refs/heads/feature/owned\tfeature/owned\t \t",
+        "refs/remotes/origin/feature/remote-only\torigin/feature/remote-only\t \t",
+        "refs/remotes/origin/main\torigin/main\t \t",
+      ].join("\n"),
+    );
+
+    const { service, listBranchProfiles, listBranchOwners } = makeServiceWithLanes({
+      branchProfiles: [
+        { branchRef: "feature/source" },
+        { branchRef: "feature/profiled-but-no-local" },
+      ],
+      lanes: [
+        { id: "lane-1", name: "Source", branchRef: "feature/source", laneType: "worktree" },
+        { id: "lane-2", name: "Owner Lane", branchRef: "feature/owned", laneType: "worktree" },
+        { id: "lane-primary", name: "Primary", branchRef: "main", laneType: "primary" },
+      ],
+    });
+
+    const branches = await service.listBranches({ laneId: "lane-1" });
+    expect(listBranchProfiles).toHaveBeenCalledWith("lane-1");
+    expect(listBranchOwners).toHaveBeenCalledWith({ excludeLaneId: "lane-1" });
+
+    const byName = new Map(branches.map((b) => [b.name, b]));
+
+    const source = byName.get("feature/source");
+    expect(source).toBeDefined();
+    expect(source!.profiledInCurrentLane).toBe(true);
+    expect(source!.ownedByLaneId).toBeNull();
+    expect(source!.ownedByLaneName).toBeNull();
+    expect(source!.isCurrent).toBe(true);
+
+    const owned = byName.get("feature/owned");
+    expect(owned).toBeDefined();
+    expect(owned!.ownedByLaneId).toBe("lane-2");
+    expect(owned!.ownedByLaneName).toBe("Owner Lane");
+    expect(owned!.profiledInCurrentLane).toBe(false);
+
+    const main = byName.get("main");
+    expect(main).toBeDefined();
+    expect(main!.ownedByLaneId).toBeNull();
+    expect(main!.profiledInCurrentLane).toBe(false);
+
+    const remoteOnly = byName.get("origin/feature/remote-only");
+    expect(remoteOnly).toBeDefined();
+    expect(remoteOnly!.isRemote).toBe(true);
+    expect(remoteOnly!.profiledInCurrentLane).toBe(false);
+  });
+
+  it("still returns branches when listing lanes throws (best-effort owner lookup)", async () => {
+    mockGit.runGitOrThrow.mockResolvedValue(
+      "refs/heads/main\tmain\t*\t\nrefs/heads/feature/x\tfeature/x\t \t",
+    );
+    const { service } = makeServiceWithLanes({ listThrows: true });
+
+    const branches = await service.listBranches({ laneId: "lane-1" });
+    expect(branches.length).toBeGreaterThan(0);
+    for (const branch of branches) {
+      expect(branch.ownedByLaneId).toBeNull();
+    }
+  });
+
+  it("dedupes a remote ref when its local counterpart already exists", async () => {
+    mockGit.runGitOrThrow.mockResolvedValue(
+      [
+        "refs/heads/feature/dup\tfeature/dup\t*\t",
+        "refs/remotes/origin/feature/dup\torigin/feature/dup\t \t",
+      ].join("\n"),
+    );
+    const { service } = makeServiceWithLanes({});
+
+    const branches = await service.listBranches({ laneId: "lane-1" });
+    expect(branches.filter((b) => b.name === "feature/dup")).toHaveLength(1);
+    expect(branches.find((b) => b.name === "origin/feature/dup")).toBeUndefined();
+  });
+
+  it("filters refs/remotes/.../HEAD entries out of the result", async () => {
+    mockGit.runGitOrThrow.mockResolvedValue(
+      [
+        "refs/heads/main\tmain\t*\t",
+        "refs/remotes/origin/HEAD\torigin/HEAD\t \t",
+      ].join("\n"),
+    );
+    const { service } = makeServiceWithLanes({});
+
+    const branches = await service.listBranches({ laneId: "lane-1" });
+    expect(branches.find((b) => b.name === "origin/HEAD")).toBeUndefined();
+  });
+
+  it("attaches last-commit metadata and rejoins tab-containing subjects", async () => {
+    mockGit.runGitOrThrow.mockResolvedValue(
+      [
+        [
+          "refs/heads/feat/widget",
+          "feat/widget",
+          "*",
+          "origin/feat/widget",
+          "abc1234",
+          "2026-04-30T10:00:00+00:00",
+          "Arul Sharma",
+          "tweak\twidget alignment",
+        ].join("\t"),
+        [
+          "refs/remotes/origin/feat/sidebar",
+          "origin/feat/sidebar",
+          " ",
+          "",
+          "def5678",
+          "2026-04-29T08:00:00+00:00",
+          "Jamie Lee",
+          "rebuild sidebar nav",
+        ].join("\t"),
+      ].join("\n"),
+    );
+
+    const { service } = makeServiceWithLanes({});
+    const branches = await service.listBranches({ laneId: "lane-1" });
+    const local = branches.find((b) => b.name === "feat/widget");
+    expect(local).toBeDefined();
+    expect(local!.lastCommitSha).toBe("abc1234");
+    expect(local!.lastCommitDate).toBe("2026-04-30T10:00:00+00:00");
+    expect(local!.lastCommitAuthor).toBe("Arul Sharma");
+    expect(local!.lastCommitMessage).toBe("tweak\twidget alignment");
+
+    const remote = branches.find((b) => b.name === "origin/feat/sidebar");
+    expect(remote).toBeDefined();
+    expect(remote!.lastCommitSha).toBe("def5678");
+    expect(remote!.lastCommitAuthor).toBe("Jamie Lee");
+    expect(remote!.lastCommitMessage).toBe("rebuild sidebar nav");
+  });
+});
+
+describe("gitOperationsService.checkoutBranch", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("rejects empty branch names", async () => {
+    const { service } = makeServiceWithLanes({});
+    await expect(service.checkoutBranch({ laneId: "lane-1", branchName: "  " }))
+      .rejects.toThrow(/Branch name is required/);
+  });
+
+  it("delegates to laneService.switchBranch and forwards mode/startPoint/baseRef in op metadata", async () => {
+    mockGit.getHeadSha.mockResolvedValue("sha-pre");
+    const operationStart = vi.fn().mockReturnValue({ operationId: "op-99" });
+    const operationFinish = vi.fn();
+    const switchBranch = vi.fn().mockResolvedValue({ lane: { id: "lane-1" }, previousBranchRef: "feature/old", activeWork: [] });
+
+    const service = createGitOperationsService({
+      laneService: {
+        getLaneBaseAndBranch: vi.fn().mockReturnValue({
+          baseRef: "main",
+          branchRef: "feature/old",
+          worktreePath: "/tmp/ade-lane",
+          laneType: "worktree",
+        }),
+        listBranchProfiles: vi.fn().mockReturnValue([]),
+        listBranchOwners: vi.fn().mockReturnValue([]),
+        switchBranch,
+      } as any,
+      operationService: { start: operationStart, finish: operationFinish } as any,
+      projectConfigService: { get: () => ({ effective: { ai: {} } }) } as any,
+      aiIntegrationService: {
+        getFeatureFlag: () => false,
+        getStatus: vi.fn(async () => ({ availableModelIds: [] })),
+        generateCommitMessage: vi.fn(),
+      } as any,
+      logger: makeStubLogger(),
+    });
+
+    await service.checkoutBranch({
+      laneId: "lane-1",
+      branchName: "feature/new",
+      mode: "create",
+      startPoint: "main",
+      baseRef: "main",
+      acknowledgeActiveWork: true,
+    });
+
+    expect(switchBranch).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      branchName: "feature/new",
+      mode: "create",
+      startPoint: "main",
+      baseRef: "main",
+      acknowledgeActiveWork: true,
+    });
+
+    expect(operationStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        laneId: "lane-1",
+        kind: "git_checkout_branch",
+        metadata: expect.objectContaining({
+          reason: "checkout_branch",
+          branchName: "feature/new",
+          mode: "create",
+          startPoint: "main",
+          baseRef: "main",
+        }),
+      }),
+    );
+    expect(operationFinish).toHaveBeenCalledWith(
+      expect.objectContaining({ operationId: "op-99", status: "succeeded" }),
+    );
+  });
+
+  it("defaults mode to 'existing' and nulls metadata for omitted optional args", async () => {
+    mockGit.getHeadSha.mockResolvedValue("sha-pre");
+    const operationStart = vi.fn().mockReturnValue({ operationId: "op-1" });
+    const switchBranch = vi.fn().mockResolvedValue({ lane: { id: "lane-1" }, previousBranchRef: "main", activeWork: [] });
+
+    const service = createGitOperationsService({
+      laneService: {
+        getLaneBaseAndBranch: vi.fn().mockReturnValue({
+          baseRef: "main", branchRef: "main", worktreePath: "/tmp/ade-lane", laneType: "worktree",
+        }),
+        listBranchProfiles: vi.fn().mockReturnValue([]),
+        listBranchOwners: vi.fn().mockReturnValue([]),
+        switchBranch,
+      } as any,
+      operationService: { start: operationStart, finish: vi.fn() } as any,
+      projectConfigService: { get: () => ({ effective: { ai: {} } }) } as any,
+      aiIntegrationService: {
+        getFeatureFlag: () => false,
+        getStatus: vi.fn(async () => ({ availableModelIds: [] })),
+        generateCommitMessage: vi.fn(),
+      } as any,
+      logger: makeStubLogger(),
+    });
+
+    await service.checkoutBranch({ laneId: "lane-1", branchName: "feature/foo" });
+
+    expect(operationStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          mode: "existing",
+          startPoint: null,
+          baseRef: null,
+        }),
+      }),
+    );
+    expect(switchBranch).toHaveBeenCalledWith({ laneId: "lane-1", branchName: "feature/foo" });
   });
 });

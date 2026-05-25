@@ -3,11 +3,14 @@ import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { StateCreator } from "zustand";
 import type { OperationRecord } from "../../../shared/types";
+import type { GitCommitSummary } from "../../../shared/types";
 import type {
   ColumnConfig,
+  HistorySurface,
   LaneVisibility,
   TimelineEvent,
   TimelineFilters,
+  TimelineColumn,
   TimeRange,
   ViewMode,
   WIPNode,
@@ -15,8 +18,26 @@ import type {
 import { DEFAULT_COLUMNS } from "./timelineTypes";
 import { getEventMeta } from "./eventTaxonomy";
 import type { EventCategory, EventImportance } from "./eventTaxonomy";
+import {
+  fetchSupplementalTimelineRecords,
+  sortTimelineRecords,
+} from "./historyActivitySources";
 
 // ── Helpers ──────────────────────────────────────────────────────
+
+function metadataDisplayLabel(
+  metadata: Record<string, unknown> | null,
+  fallback: string,
+): string {
+  if (!metadata) return fallback;
+  for (const key of ["eventLabel", "title", "summary", "message", "subject"]) {
+    const value = metadata[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return fallback;
+}
 
 /** Enrich a raw OperationRecord into a TimelineEvent with resolved metadata. */
 export function enrichEvent(op: OperationRecord): TimelineEvent {
@@ -36,7 +57,7 @@ export function enrichEvent(op: OperationRecord): TimelineEvent {
   }
   return {
     ...op,
-    label: meta.label,
+    label: metadataDisplayLabel(parsed, meta.label),
     category: meta.category,
     iconName: meta.iconName,
     color: meta.categoryMeta.color,
@@ -103,7 +124,12 @@ function passesFilters(
   // Search query
   if (filters.searchQuery) {
     const q = filters.searchQuery.toLowerCase();
-    const haystack = `${event.label} ${event.kind} ${event.laneName ?? ""} ${event.status}`.toLowerCase();
+    const metadataText = event.metadata
+      ? Object.values(event.metadata)
+          .filter((value) => typeof value === "string" || typeof value === "number" || typeof value === "boolean")
+          .join(" ")
+      : "";
+    const haystack = `${event.label} ${event.kind} ${event.laneName ?? ""} ${event.status} ${metadataText}`.toLowerCase();
     if (!haystack.includes(q)) return false;
   }
 
@@ -125,6 +151,10 @@ export type TimelineStore = {
   error: string | null;
 
   // ── View state ──────────────────────────────────────────────
+  surface: HistorySurface;
+  focusLaneId: string | null;
+  selectedCommitSha: string | null;
+  selectedCommit: GitCommitSummary | null;
   viewMode: ViewMode;
   selectedEventId: string | null;
   hoveredLaneId: string | null;
@@ -143,6 +173,10 @@ export type TimelineStore = {
   uniqueCategories: EventCategory[];
 
   // ── Actions ─────────────────────────────────────────────────
+  setSurface: (surface: HistorySurface) => void;
+  setFocusLaneId: (laneId: string | null) => void;
+  setSelectedCommitSha: (sha: string | null) => void;
+  setSelectedCommit: (commit: GitCommitSummary | null) => void;
   setViewMode: (mode: ViewMode) => void;
   setSelectedEventId: (id: string | null) => void;
   setHoveredLaneId: (id: string | null) => void;
@@ -162,10 +196,16 @@ export type TimelineStore = {
   clearSolo: () => void;
 
   // Column actions
-  toggleColumn: (columnId: string) => void;
+  toggleColumn: (columnId: TimelineColumn) => void;
 
   // Data actions
-  fetchEvents: (opts?: { laneId?: string; kind?: string; limit?: number; silent?: boolean }) => Promise<void>;
+  fetchEvents: (opts?: {
+    laneId?: string;
+    kind?: string;
+    limit?: number;
+    silent?: boolean;
+    skipSupplemental?: boolean;
+  }) => Promise<void>;
   setRawEvents: (events: OperationRecord[]) => void;
 };
 
@@ -233,6 +273,10 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
     wipNodes: [],
     loading: false,
     error: null,
+    surface: "commits",
+    focusLaneId: null,
+    selectedCommitSha: null,
+    selectedCommit: null,
     viewMode: "graph",
     selectedEventId: null,
     hoveredLaneId: null,
@@ -244,6 +288,27 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
     uniqueCategories: [],
 
     // ── View actions ────────────────────────────────────────
+    setSurface: (surface) =>
+      set((state) => ({
+        surface,
+        ...(surface === "activity"
+          ? { selectedCommit: null, selectedCommitSha: null }
+          : state.selectedEventId
+            ? { selectedEventId: null }
+            : {}),
+      })),
+    setFocusLaneId: (laneId) =>
+      set({
+        focusLaneId: laneId,
+        selectedCommit: null,
+        selectedCommitSha: null,
+      }),
+    setSelectedCommitSha: (sha) => set({ selectedCommitSha: sha }),
+    setSelectedCommit: (commit) =>
+      set({
+        selectedCommit: commit,
+        selectedCommitSha: commit?.sha ?? null,
+      }),
     setViewMode: (mode) => set({ viewMode: mode }),
     setSelectedEventId: (id) => set({ selectedEventId: id }),
     setHoveredLaneId: (id) => set({ hoveredLaneId: id }),
@@ -319,12 +384,40 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
         set({ error: null });
       }
       try {
-        const raw = await window.ade.history.listOperations({
-          laneId: opts?.laneId,
-          kind: opts?.kind,
-          limit: opts?.limit ?? 350,
-        });
-        set({ rawEvents: raw, loading: false });
+        const limit = opts?.limit ?? 500;
+        const skipSupplemental = Boolean(opts?.skipSupplemental) || Boolean(opts?.kind);
+        const [raw, supplemental] = await Promise.all([
+          window.ade.history.listOperations({
+            laneId: opts?.laneId,
+            kind: opts?.kind,
+            limit,
+          }),
+          skipSupplemental ? Promise.resolve([]) : fetchSupplementalTimelineRecords(limit),
+        ]);
+        if (skipSupplemental) {
+          // Merge raw with whatever supplemental records are already in state so we
+          // don't drop them while polling for in-progress operations.
+          const existing = get().rawEvents;
+          const rawIds = new Set(raw.map((r) => r.id));
+          const existingSupplemental = existing.filter((r) => !rawIds.has(r.id));
+          const scopedExisting = opts?.laneId
+            ? existingSupplemental.filter(
+                (record) => record.laneId == null || record.laneId === opts.laneId,
+              )
+            : existingSupplemental;
+          const combined = sortTimelineRecords([...raw, ...scopedExisting]).slice(0, limit);
+          set({ rawEvents: combined, loading: false });
+          refilter();
+          return;
+        }
+        const scopedSupplemental = opts?.laneId
+          ? supplemental.filter((record) => record.laneId == null || record.laneId === opts.laneId)
+          : supplemental;
+        const combined = sortTimelineRecords([
+          ...raw,
+          ...scopedSupplemental,
+        ]).slice(0, limit);
+        set({ rawEvents: combined, loading: false });
         refilter();
       } catch (err) {
         set({

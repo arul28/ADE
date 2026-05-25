@@ -104,19 +104,25 @@ describe("RuntimeRpcClient", () => {
     await expect(client.call("projects.list", {})).rejects.toThrow("broken pipe");
   });
 
-  it("honors per-call timeout overrides", async () => {
+  it("fails the connection when a call times out", async () => {
     vi.useFakeTimers();
     try {
       const transport = new MockTransport();
       const client = new RuntimeRpcClient(transport, 60_000);
+      const onDisconnect = vi.fn();
+      client.onDisconnect(onDisconnect);
 
       const pending = client.call("projects.list", {}, { timeoutMs: 25 });
       const assertion = expect(pending).rejects.toThrow(
-        "Timed out waiting for remote ADE service method projects.list.",
+        "Remote ADE service connection failed: timed out waiting for method projects.list.",
       );
       await vi.advanceTimersByTimeAsync(25);
 
       await assertion;
+      expect(onDisconnect).toHaveBeenCalledTimes(1);
+      await expect(client.call("projects.list", {})).rejects.toThrow(
+        "Remote ADE service connection failed: timed out waiting for method projects.list.",
+      );
     } finally {
       vi.useRealTimers();
     }

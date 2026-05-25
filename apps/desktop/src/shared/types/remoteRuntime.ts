@@ -1,3 +1,15 @@
+export type RemoteRuntimeTargetRouteSource =
+  | "manual"
+  | "bonjour"
+  | "tailscale";
+
+export type RemoteRuntimeTargetRoute = {
+  hostname: string;
+  port: number | null;
+  source: RemoteRuntimeTargetRouteSource;
+  lastSucceededAt: number | null;
+};
+
 export type RemoteRuntimeTarget = {
   id: string;
   name: string;
@@ -5,6 +17,7 @@ export type RemoteRuntimeTarget = {
   sshUser: string | null;
   port: number | null;
   sshKeyPath: string | null;
+  routes?: RemoteRuntimeTargetRoute[];
   lastSeenArch: string | null;
   runtimeBinaryVersion: string | null;
   lastConnectedAt: number | null;
@@ -16,6 +29,7 @@ export type RemoteRuntimeTargetInput = {
   sshUser?: string | null;
   port?: number | null;
   sshKeyPath?: string | null;
+  routes?: RemoteRuntimeTargetRoute[] | null;
 };
 
 export type RemoteRuntimeDiscoveredMachine = {
@@ -33,6 +47,19 @@ export type RemoteRuntimeDiscoveredMachine = {
   projectIds: string[];
   projectCount: number | null;
   lastSeenAt: number;
+};
+
+export type RemoteRuntimeDiscoveryDiagnostic = {
+  source: "bonjour" | "tailscale";
+  severity: "warning";
+  code: string;
+  message: string;
+  detail: string | null;
+};
+
+export type RemoteRuntimeDiscoveryResult = {
+  machines: RemoteRuntimeDiscoveredMachine[];
+  diagnostics: RemoteRuntimeDiscoveryDiagnostic[];
 };
 
 export type RemoteRuntimeProjectRecord = {
@@ -113,6 +140,7 @@ export type RemoteRuntimeStreamEventsResult = {
   events: RemoteRuntimeBufferedEvent[];
   nextCursor: number;
   hasMore: boolean;
+  eventEpoch?: string | null;
 };
 
 export type RemoteRuntimeEventNotificationPayload = {

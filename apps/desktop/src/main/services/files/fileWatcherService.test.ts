@@ -1,28 +1,50 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { FileChangeEvent } from "../../../shared/types";
 
 const chokidarState = vi.hoisted(() => {
   const watchers: Array<{
-    handlers: Map<string, (absPath: string) => void>;
+    handlers: Map<string, (...args: unknown[]) => void>;
+    emitReady: () => void;
     close: ReturnType<typeof vi.fn>;
   }> = [];
+  let autoReady = true;
   const watchMock = vi.fn((_rootPath: string, _options: unknown) => {
-    const handlers = new Map<string, (absPath: string) => void>();
+    const handlers = new Map<string, (...args: unknown[]) => void>();
     const close = vi.fn(async () => undefined);
+    let readyHandler: (() => void) | null = null;
     const watcher: {
       on: ReturnType<typeof vi.fn>;
+      once: ReturnType<typeof vi.fn>;
       close: ReturnType<typeof vi.fn>;
     } = {
-      on: vi.fn((event: string, cb: (absPath: string) => void) => {
+      on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
         handlers.set(event, cb);
+        return watcher;
+      }),
+      once: vi.fn((event: string, cb: () => void) => {
+        if (event === "ready") {
+          readyHandler = cb;
+          if (autoReady) cb();
+        }
         return watcher;
       }),
       close,
     };
-    watchers.push({ handlers, close });
+    watchers.push({
+      handlers,
+      emitReady: () => {
+        readyHandler?.();
+      },
+      close,
+    });
     return watcher;
   });
-  return { watchMock, watchers };
+  return {
+    watchMock,
+    watchers,
+    setAutoReady(value: boolean) {
+      autoReady = value;
+    },
+  };
 });
 
 vi.mock("chokidar", () => ({
@@ -37,6 +59,7 @@ describe("fileWatcherService", () => {
   beforeEach(() => {
     chokidarState.watchMock.mockClear();
     chokidarState.watchers.length = 0;
+    chokidarState.setAutoReady(true);
     vi.useFakeTimers();
   });
 
@@ -50,21 +73,57 @@ describe("fileWatcherService", () => {
     service.watch({ workspaceId: "ws-1", rootPath: "/repo", senderId: 1 }, vi.fn());
     service.watch({ workspaceId: "ws-2", rootPath: "/repo", senderId: 2, includeIgnored: true }, vi.fn());
 
-    const defaultIgnored = chokidarState.watchMock.mock.calls[0]?.[1] as { ignored: RegExp[] };
-    const includeIgnored = chokidarState.watchMock.mock.calls[1]?.[1] as { ignored: RegExp[] };
+    const defaultIgnored = chokidarState.watchMock.mock.calls[0]?.[1] as { ignored: Array<RegExp | ((path: string) => boolean)> };
+    const includeIgnored = chokidarState.watchMock.mock.calls[1]?.[1] as { ignored: Array<RegExp | ((path: string) => boolean)> };
 
-    expect(defaultIgnored.ignored.map((pattern) => String(pattern))).toEqual([
+    expect(defaultIgnored.ignored.filter((pattern) => pattern instanceof RegExp).map((pattern) => String(pattern))).toEqual([
       "/(^|[/\\\\])\\.git($|[/\\\\])/",
       "/(^|[/\\\\])node_modules($|[/\\\\])/",
       "/(^|[/\\\\])\\.ade($|[/\\\\])/",
     ]);
-    expect(includeIgnored.ignored.map((pattern) => String(pattern))).toEqual([
+    expect(includeIgnored.ignored.filter((pattern) => pattern instanceof RegExp).map((pattern) => String(pattern))).toEqual([
       "/(^|[/\\\\])\\.git($|[/\\\\])/",
       "/(^|[/\\\\])node_modules($|[/\\\\])/",
       "/(^|[/\\\\])\\.ade[/\\\\](artifacts|cache|agent-configs|secrets|transcripts|logs|tmp|runtime)($|[/\\\\])/",
       "/(^|[/\\\\])\\.ade[/\\\\]ade\\.db($|-)/",
       "/(^|[/\\\\])\\.ade[/\\\\]ade\\.sock$/",
     ]);
+  });
+
+  it("filters volatile ADE runtime paths at the watcher level", () => {
+    const service = createFileWatcherService();
+
+    service.watch({ workspaceId: "ws-1", rootPath: "/repo", senderId: 1, includeIgnored: true }, vi.fn());
+
+    const options = chokidarState.watchMock.mock.calls[0]?.[1] as {
+      ignored: Array<RegExp | ((path: string) => boolean)>;
+    };
+    const ignoredFn = options.ignored.find((pattern): pattern is (path: string) => boolean => typeof pattern === "function");
+
+    expect(ignoredFn?.("/repo/.ade/transcripts")).toBe(true);
+    expect(ignoredFn?.("/repo/.ade/transcripts/logs/main.jsonl")).toBe(true);
+    expect(ignoredFn?.("/repo/.ade/worktrees")).toBe(true);
+    expect(ignoredFn?.("/repo/.ade/worktrees/lane/src/file.ts")).toBe(true);
+    expect(ignoredFn?.("/repo/.ade/notes/project.md")).toBe(false);
+  });
+
+  it("uses polling on macOS so watcher close cannot block inside native FSEvents", () => {
+    const service = createFileWatcherService();
+
+    service.watch({ workspaceId: "ws-1", rootPath: "/repo", senderId: 1 }, vi.fn());
+
+    const options = chokidarState.watchMock.mock.calls[0]?.[1] as {
+      usePolling?: boolean;
+      interval?: number;
+      binaryInterval?: number;
+    };
+    if (process.platform === "darwin") {
+      expect(options.usePolling).toBe(true);
+      expect(options.interval).toBe(1_000);
+      expect(options.binaryInterval).toBe(2_000);
+    } else {
+      expect(options.usePolling).toBeUndefined();
+    }
   });
 
   it("forwards ignored-path events when includeIgnored is true but still filters .git", () => {
@@ -200,5 +259,21 @@ describe("fileWatcherService", () => {
     service.watch({ workspaceId: "ws-1", rootPath: "/repo", senderId: 1 }, vi.fn());
 
     expect(chokidarState.watchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("defers closing a watcher until chokidar reports ready", () => {
+    chokidarState.setAutoReady(false);
+    const service = createFileWatcherService();
+
+    service.watch({ workspaceId: "ws-1", rootPath: "/repo", senderId: 1 }, vi.fn());
+    service.stop("ws-1", 1, false);
+
+    vi.runOnlyPendingTimers();
+    expect(chokidarState.watchers[0]?.close).not.toHaveBeenCalled();
+
+    chokidarState.watchers[0]?.emitReady();
+    vi.runOnlyPendingTimers();
+
+    expect(chokidarState.watchers[0]?.close).toHaveBeenCalledTimes(1);
   });
 });

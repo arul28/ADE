@@ -153,7 +153,10 @@ describe("multi-project RPC server", () => {
     });
     expect(init).toMatchObject({
       runtimeInfo: { multiProject: true },
-      capabilities: { projects: true },
+      capabilities: {
+        actions: { listChanged: true },
+        projects: true,
+      },
     });
 
     const actions = await handler({

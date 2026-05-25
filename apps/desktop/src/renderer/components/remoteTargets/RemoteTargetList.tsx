@@ -28,6 +28,8 @@ import type {
   RemoteRuntimeDiscoveredMachine,
   RemoteRuntimeTarget,
   RemoteRuntimeTargetInput,
+  RemoteRuntimeTargetRoute,
+  RemoteRuntimeTargetRouteSource,
 } from "../../../shared/types";
 import {
   RemoteTargetForm,
@@ -99,12 +101,62 @@ function discoveredRoute(
   machine: RemoteRuntimeDiscoveredMachine,
 ): string | null {
   return (
-    machine.primaryRoute ??
     machine.tailscaleAddress ??
+    machine.primaryRoute ??
     machine.hostName ??
     machine.addresses[0] ??
     null
   );
+}
+
+function isTailscaleRoute(hostname: string | null | undefined): boolean {
+  const normalized = hostname?.trim().toLowerCase().replace(/\.$/, "") ?? "";
+  if (normalized.endsWith(".ts.net")) return true;
+  const match = /^100\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(normalized);
+  if (!match) return false;
+  const second = Number.parseInt(match[1] ?? "", 10);
+  return second >= 64 && second <= 127;
+}
+
+function discoveredRouteSource(
+  machine: RemoteRuntimeDiscoveredMachine,
+  hostname: string,
+): RemoteRuntimeTargetRouteSource {
+  if (
+    (machine.runtimeKind ?? "").startsWith("tailscale-peer") ||
+    hostname === machine.tailscaleAddress ||
+    isTailscaleRoute(hostname)
+  ) {
+    return "tailscale";
+  }
+  return "bonjour";
+}
+
+function discoveredSshRoutes(
+  machine: RemoteRuntimeDiscoveredMachine,
+): RemoteRuntimeTargetRoute[] {
+  const hostnames = [
+    machine.tailscaleAddress,
+    machine.primaryRoute,
+    machine.hostName,
+    ...machine.addresses,
+  ];
+  const routes: RemoteRuntimeTargetRoute[] = [];
+  const seen = new Set<string>();
+  for (const value of hostnames) {
+    const hostname = value?.trim().replace(/\.$/, "");
+    if (!hostname) continue;
+    const key = hostname.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    routes.push({
+      hostname,
+      port: null,
+      source: discoveredRouteSource(machine, hostname),
+      lastSucceededAt: null,
+    });
+  }
+  return routes;
 }
 
 function targetFormPrefill(
@@ -118,6 +170,7 @@ function targetFormPrefill(
     sshUser: target.sshUser,
     port: target.port,
     sshKeyPath: target.sshKeyPath,
+    routes: target.routes ?? null,
   };
 }
 
@@ -132,7 +185,17 @@ function targetConnectionLabel(target: RemoteRuntimeTarget): string {
   } else if (!target.port) {
     defaultHint = " (default port)";
   }
-  return `${userPrefix}${target.hostname}${portSuffix}${defaultHint}`;
+  const targetHostKey = target.hostname.toLowerCase().replace(/\.$/, "");
+  const fallbackRoutes = (target.routes ?? []).filter(
+    (route) =>
+      route.hostname.toLowerCase().replace(/\.$/, "") !== targetHostKey ||
+      route.port !== target.port,
+  ).length;
+  const fallbackHint =
+    fallbackRoutes > 0
+      ? ` + ${fallbackRoutes} route${fallbackRoutes === 1 ? "" : "s"}`
+      : "";
+  return `${userPrefix}${target.hostname}${portSuffix}${defaultHint}${fallbackHint}`;
 }
 
 function connectionStateLabel(
@@ -255,8 +318,12 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
     setLoadingDiscovered(true);
     try {
       const next = await window.ade.remoteRuntime.listDiscoveredMachines();
-      setDiscoveredMachines(next);
-      setDiscoveryError(null);
+      setDiscoveredMachines(next.machines);
+      setDiscoveryError(
+        next.diagnostics.length > 0
+          ? next.diagnostics.map((entry) => entry.message).join(" ")
+          : null,
+      );
     } catch (err) {
       setDiscoveryError(extractError(err));
     } finally {
@@ -280,6 +347,7 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
         sshUser: null,
         port: null,
         sshKeyPath: null,
+        routes: discoveredSshRoutes(machine),
       });
     },
     [],

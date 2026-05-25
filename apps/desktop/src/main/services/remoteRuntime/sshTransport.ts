@@ -2,8 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Client, type ConnectConfig } from "ssh2";
-import type { RemoteRuntimeTarget } from "../../../shared/types/remoteRuntime";
+import type {
+  RemoteRuntimeTarget,
+  RemoteRuntimeTargetRoute,
+} from "../../../shared/types/remoteRuntime";
 import type { RuntimeRpcTransport } from "./runtimeRpcClient";
+import { routeKey } from "./routeUtils";
 
 export type SshExecResult = {
   stdout: string;
@@ -26,6 +30,8 @@ type BuildSshConfigOptions = {
   homeDir?: string;
   usernameOverride?: string;
 };
+
+export type ConnectedSshRoute = RemoteRuntimeTargetRoute;
 
 const DEFAULT_IDENTITY_FILES = [
   "id_ed25519",
@@ -141,6 +147,8 @@ export function buildSshConfig(target: RemoteRuntimeTarget, options: BuildSshCon
     port,
     username,
     readyTimeout: 20_000,
+    keepaliveInterval: 15_000,
+    keepaliveCountMax: 3,
   };
   const identityFile = target.sshKeyPath
     ?? (hostConfig.identityFile ? expandSshPath(hostConfig.identityFile, { host, username, port }) : null)
@@ -167,6 +175,91 @@ function uniqueUsernames(values: Array<string | null | undefined>): string[] {
   return result;
 }
 
+
+function normalizeTargetRoute(
+  value: unknown,
+): RemoteRuntimeTargetRoute | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const hostname =
+    typeof record.hostname === "string" ? record.hostname.trim() : "";
+  if (!hostname) return null;
+  const port =
+    typeof record.port === "number" && Number.isFinite(record.port)
+      ? Math.max(1, Math.min(65_535, Math.floor(record.port)))
+      : null;
+  return {
+    hostname,
+    port,
+    source:
+      record.source === "bonjour" || record.source === "tailscale"
+        ? record.source
+        : "manual",
+    lastSucceededAt:
+      typeof record.lastSucceededAt === "number" &&
+      Number.isFinite(record.lastSucceededAt)
+        ? record.lastSucceededAt
+        : null,
+  };
+}
+
+export function buildSshRouteCandidates(
+  target: RemoteRuntimeTarget,
+): RemoteRuntimeTargetRoute[] {
+  const primary: RemoteRuntimeTargetRoute = {
+    hostname: target.hostname,
+    port: target.port,
+    source: "manual",
+    lastSucceededAt: null,
+  };
+  const routes: RemoteRuntimeTargetRoute[] = [primary];
+  for (const route of target.routes ?? []) {
+    const normalized = normalizeTargetRoute(route);
+    if (normalized) routes.push(normalized);
+  }
+
+  const unique: RemoteRuntimeTargetRoute[] = [];
+  const seen = new Set<string>();
+  for (const route of routes) {
+    const key = routeKey(route);
+    if (seen.has(key)) {
+      const existing = unique.find((entry) => routeKey(entry) === key);
+      if (existing) {
+        if (existing.source === "manual" && route.source !== "manual") {
+          existing.source = route.source;
+        }
+        if (
+          route.lastSucceededAt != null &&
+          (existing.lastSucceededAt == null ||
+            route.lastSucceededAt > existing.lastSucceededAt)
+        ) {
+          existing.lastSucceededAt = route.lastSucceededAt;
+        }
+      }
+      continue;
+    }
+    seen.add(key);
+    unique.push(route);
+  }
+
+  const hasLastSuccess = unique.some((route) => route.lastSucceededAt != null);
+  if (!hasLastSuccess) return unique;
+  return unique.sort(
+    (a, b) => (b.lastSucceededAt ?? 0) - (a.lastSucceededAt ?? 0),
+  );
+}
+
+function targetForRoute(
+  target: RemoteRuntimeTarget,
+  route: RemoteRuntimeTargetRoute,
+): RemoteRuntimeTarget {
+  return {
+    ...target,
+    hostname: route.hostname,
+    port: route.port ?? target.port,
+  };
+}
+
 export function buildSshUsernameCandidates(target: RemoteRuntimeTarget, options: BuildSshConfigOptions = {}): string[] {
   const hostConfig = readOpenSshHostConfig(target, options);
   const explicitUser = target.sshUser?.trim() || hostConfig.user;
@@ -176,8 +269,9 @@ export function buildSshUsernameCandidates(target: RemoteRuntimeTarget, options:
 }
 
 export function buildSshConfigCandidates(target: RemoteRuntimeTarget, options: BuildSshConfigOptions = {}): ConnectConfig[] {
-  return buildSshUsernameCandidates(target, options).map((username) =>
-    buildSshConfig(target, { ...options, usernameOverride: username }));
+  return buildSshConnectionCandidates(target, options).map(
+    (candidate) => candidate.config,
+  );
 }
 
 function isSshAuthenticationFailure(error: unknown): boolean {
@@ -196,18 +290,50 @@ function connectSshWithConfig(config: ConnectConfig): Promise<Client> {
   });
 }
 
-export async function connectSsh(target: RemoteRuntimeTarget): Promise<Client> {
-  const configs = buildSshConfigCandidates(target);
+function buildSshConnectionCandidates(
+  target: RemoteRuntimeTarget,
+  options: BuildSshConfigOptions = {},
+): Array<{ config: ConnectConfig; route: ConnectedSshRoute }> {
+  return buildSshRouteCandidates(target).flatMap((route) => {
+    const routeTarget = targetForRoute(target, route);
+    return buildSshUsernameCandidates(routeTarget, options).map((username) => ({
+      config: buildSshConfig(routeTarget, {
+        ...options,
+        usernameOverride: username,
+      }),
+      route,
+    }));
+  });
+}
+
+export async function connectSshWithRoute(
+  target: RemoteRuntimeTarget,
+): Promise<{ client: Client; route: ConnectedSshRoute }> {
+  const configs = buildSshConnectionCandidates(target);
   let lastError: unknown = null;
-  for (const [index, config] of configs.entries()) {
+  for (let index = 0; index < configs.length; index += 1) {
+    const candidate = configs[index]!;
     try {
-      return await connectSshWithConfig(config);
+      const client = await connectSshWithConfig(candidate.config);
+      return { client, route: candidate.route };
     } catch (error) {
       lastError = error;
-      if (index >= configs.length - 1 || !isSshAuthenticationFailure(error)) throw error;
+      if (index >= configs.length - 1) break;
+      if (!isSshAuthenticationFailure(error)) {
+        while (
+          index + 1 < configs.length &&
+          routeKey(configs[index + 1]!.route) === routeKey(candidate.route)
+        ) {
+          index += 1;
+        }
+      }
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError ?? "SSH connection failed."));
+}
+
+export async function connectSsh(target: RemoteRuntimeTarget): Promise<Client> {
+  return (await connectSshWithRoute(target)).client;
 }
 
 export function execSsh(client: Client, command: string): Promise<SshExecResult> {

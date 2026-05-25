@@ -288,7 +288,7 @@ describe("App Work route keep-alive", () => {
     expect(workLifecycle.mounts).toBe(0);
   });
 
-  it("keeps the Lanes page mounted after visiting it and leaving for another tab", async () => {
+  it("unmounts the Lanes page after leaving so hidden lane panes do not keep doing work", async () => {
     window.history.replaceState({}, "", "/lanes");
     const { App } = await import("./App");
 
@@ -305,11 +305,9 @@ describe("App Work route keep-alive", () => {
     fireEvent.click(screen.getByRole("button", { name: "Lanes open files" }));
     await screen.findByTestId("files-page");
 
-    const parkedLanesSurface = screen.getByTestId("lanes-page").closest("[aria-hidden='true']");
-    expect(parkedLanesSurface).not.toBeNull();
-    expect(screen.getByTestId("lanes-page").getAttribute("data-active")).toBe("false");
+    expect(screen.queryByTestId("lanes-page")).toBeNull();
     expect(lanesLifecycle.mounts).toBe(1);
-    expect(lanesLifecycle.unmounts).toBe(0);
+    expect(lanesLifecycle.unmounts).toBe(1);
   });
 
   it("covers the old project surface while a cold project switch is pending", async () => {
@@ -331,7 +329,7 @@ describe("App Work route keep-alive", () => {
     );
   });
 
-  it("does not mount Lanes until the user first navigates to /lanes", async () => {
+  it("does not mount the Lanes page while Work is active", async () => {
     const { App } = await import("./App");
 
     render(<App />);
@@ -339,6 +337,7 @@ describe("App Work route keep-alive", () => {
     await screen.findByTestId("work-page");
     expect(screen.queryByTestId("lanes-page")).toBeNull();
     expect(lanesLifecycle.mounts).toBe(0);
+    expect(lanesLifecycle.unmounts).toBe(0);
   });
 
   it("converts legacy hash app routes into BrowserRouter paths", async () => {

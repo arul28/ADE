@@ -1,6 +1,7 @@
 import chokidar, { type FSWatcher } from "chokidar";
 import type { Logger } from "../logging/logger";
 import type { AdeProjectEvent } from "../../../shared/types";
+import { withMacosSafeChokidarOptions } from "../shared/chokidarOptions";
 import { nowIso } from "../shared/utils";
 
 type ConfigReloadServiceArgs = {
@@ -88,13 +89,13 @@ export function createConfigReloadService(args: ConfigReloadServiceArgs) {
       if (watcher) return;
       watcher = chokidar.watch(
         [args.paths.sharedPath, args.paths.localPath, args.paths.secretPath],
-        {
+        withMacosSafeChokidarOptions({
           ignoreInitial: true,
           awaitWriteFinish: {
             stabilityThreshold: 150,
             pollInterval: 50,
           },
-        },
+        }),
       );
 
       watcher.on("error", () => {

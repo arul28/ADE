@@ -496,43 +496,6 @@ const act6Intro: TourStep = {
   docUrl: docs.welcome,
 };
 
-const act6Entries: TourStep = {
-  id: "act6.entries",
-  target: '[data-tour="history.entries"]',
-  title: "What just happened",
-  body: "The newest events sit at the top — making a lane, saving work, sharing changes. The list grows as you do things. If you haven't done it yet, it won't show up here.",
-  placement: "right",
-  requires: PROJECT_OPEN_REQUIRES,
-  waitForSelector: '[data-tour="history.entries"]',
-  docUrl: docs.welcome,
-};
-
-const act6Filter: TourStep = {
-  id: "act6.filter",
-  target: '[data-tour="history.filter"]',
-  title: "Find specific moments",
-  body: "When the list gets long, filter to just the big stuff — \"lane created\", \"shipped\", \"deleted\" — or just one type of event. Saves scrolling.",
-  placement: "bottom",
-  requires: PROJECT_OPEN_REQUIRES,
-  waitForSelector: '[data-tour="history.filter"]',
-  ghostCursor: {
-    from: '[data-tour="history.entries"]',
-    to: '[data-tour="history.filter"]',
-  },
-  docUrl: docs.welcome,
-};
-
-const act6ColumnSettings: TourStep = {
-  id: "act6.columnSettings",
-  target: '[data-tour="history.export"]',
-  title: "Show what matters to you",
-  body: "Choose which details show up next to each event — like timestamps, who did it, or which lane it was in. Hide the noise, keep what's useful.",
-  placement: "bottom",
-  requires: PROJECT_OPEN_REQUIRES,
-  waitForSelector: '[data-tour="history.export"]',
-  docUrl: docs.welcome,
-};
-
 // --- Act 7: PRs -------------------------------------------------------------
 const act7Intro: TourStep = {
   id: "act7.intro",
@@ -639,32 +602,6 @@ const act8Intro: TourStep = {
   docUrl: docs.projectHome,
 };
 
-const act8AddCommand: TourStep = {
-  id: "act8.addCommand",
-  target: '[data-tour="run.addCommand"]',
-  title: "Add a command",
-  body: "Add a dev server, test watcher, or any script. Give it a name and a command string — nothing saves during this walkthrough.",
-  placement: "bottom",
-  requires: PROJECT_OPEN_REQUIRES,
-  waitForSelector: '[data-tour="run.addCommand"]',
-  ghostCursor: {
-    from: '[data-tour="run.header"]',
-    to: '[data-tour="run.addCommand"]',
-  },
-  docUrl: docs.projectHome,
-};
-
-const act8ProcessMonitor: TourStep = {
-  id: "act8.processMonitor",
-  target: '[data-tour="run.commandCards"]',
-  title: "Watch what's running",
-  body: "Each saved command card shows **status**, **lane**, **uptime**, and **when it ended** in the runtime strip at the bottom — plus force-stop while a run is active.",
-  placement: "top",
-  requires: PROJECT_OPEN_REQUIRES,
-  waitForSelector: '[data-tour="run.commandCards"]',
-  docUrl: docs.projectHome,
-};
-
 // --- Bonus Act 9: Automations -----------------------------------------------
 const act9Intro: TourStep = {
   id: "act9.intro",
@@ -674,39 +611,6 @@ const act9Intro: TourStep = {
   actIntro: { title: "Make things happen automatically", variant: "particles" },
   requires: PROJECT_OPEN_REQUIRES,
   beforeEnter: async () => [{ type: "navigate", to: "/automations" }],
-  docUrl: docs.automationsOverview,
-};
-
-const act9Triggers: TourStep = {
-  id: "act9.triggers",
-  target: '[data-tour="automations.createTrigger"]',
-  title: "Triggers",
-  body: "Pick what starts the automation — a webhook, a schedule, a git event, or a file watch. One automation can wire up several.",
-  placement: "right",
-  requires: PROJECT_OPEN_REQUIRES,
-  waitForSelector: '[data-tour="automations.createTrigger"]',
-  docUrl: docs.automationsOverview,
-};
-
-const act9Actions: TourStep = {
-  id: "act9.actions",
-  target: '[data-tour="automations.createTrigger"]',
-  title: "Actions",
-  body: "What happens when a trigger fires — run a command, dispatch a mission, ping a worker. Chain them in order.",
-  placement: "right",
-  requires: PROJECT_OPEN_REQUIRES,
-  waitForSelector: '[data-tour="automations.createTrigger"]',
-  docUrl: docs.automationsOverview,
-};
-
-const act9Guardrails: TourStep = {
-  id: "act9.guardrails",
-  target: '[data-tour="automations.createTrigger"]',
-  title: "Guardrails",
-  body: "Rate limits, concurrency caps, quiet hours. Guardrails stop an automation from going rogue — set them before you save.",
-  placement: "right",
-  requires: PROJECT_OPEN_REQUIRES,
-  waitForSelector: '[data-tour="automations.createTrigger"]',
   docUrl: docs.automationsOverview,
 };
 
@@ -722,45 +626,6 @@ const act10Intro: TourStep = {
   docUrl: docs.ctoOverview,
 };
 
-const act10Sidebar: TourStep = {
-  id: "act10.sidebar",
-  target: '[data-tour="cto.sidebar"]',
-  title: "Your agents",
-  body: "The sidebar lists every agent the CTO manages. Identities persist — each one remembers who they are between sessions.",
-  placement: "right",
-  requires: PROJECT_OPEN_REQUIRES,
-  waitForSelector: '[data-tour="cto.sidebar"]',
-  docUrl: docs.ctoOverview,
-};
-
-const act10Team: TourStep = {
-  id: "act10.team",
-  target: '[data-tour="cto.teamPanel"]',
-  title: "Team panel",
-  body: "Inspect, edit, or archive agents. Budget caps and heartbeat intervals live here too — set them low while you're learning.",
-  placement: "left",
-  requires: PROJECT_OPEN_REQUIRES,
-  waitForSelector: '[data-tour="cto.teamPanel"]',
-  docUrl: docs.ctoOverview,
-};
-
-const act10Linear: TourStep = {
-  id: "act10.linear",
-  target: '[data-tour="cto.linearPanel"]',
-  title: "Linear sync",
-  body: "Hook the CTO up to Linear and it auto-dispatches missions from tickets, posting results back to the issue. Skip if you don't use Linear.",
-  placement: "left",
-  requires: PROJECT_OPEN_REQUIRES,
-  beforeEnter: async () => [{
-    type: "ipc",
-    call: async () => {
-      window.dispatchEvent(new CustomEvent("ade:tour-cto-tab", { detail: "workflows" }));
-    },
-  }],
-  waitForSelector: '[data-tour="cto.linearPanel"]',
-  docUrl: docs.ctoOverview,
-};
-
 // --- Bonus Act 11: Settings --------------------------------------------------
 const act11Intro: TourStep = {
   id: "act11.intro",
@@ -770,39 +635,6 @@ const act11Intro: TourStep = {
   actIntro: { title: "Make it yours", variant: "drift" },
   requires: PROJECT_OPEN_REQUIRES,
   beforeEnter: async () => [{ type: "navigate", to: "/settings" }],
-  docUrl: docs.settingsGeneral,
-};
-
-const act11Appearance: TourStep = {
-  id: "act11.appearance",
-  target: '[data-tour="settings.appearance"]',
-  title: "Appearance",
-  body: "Theme, density, accent color. Dark mode is the default — light mode and high-contrast live right here.",
-  placement: "right",
-  requires: PROJECT_OPEN_REQUIRES,
-  waitForSelector: '[data-tour="settings.appearance"]',
-  docUrl: docs.settingsGeneral,
-};
-
-const act11Ai: TourStep = {
-  id: "act11.ai",
-  target: '[data-tour="settings.ai"]',
-  title: "AI providers",
-  body: "Plug in Claude, OpenAI, local models, or point at your own endpoint. Workers pick per-session; you set defaults here.",
-  placement: "right",
-  requires: PROJECT_OPEN_REQUIRES,
-  waitForSelector: '[data-tour="settings.ai"]',
-  docUrl: docs.settingsGeneral,
-};
-
-const act11Templates: TourStep = {
-  id: "act11.templates",
-  target: '[data-tour="settings.laneTemplates"]',
-  title: "Lane templates",
-  body: "Pre-baked lane recipes — a fixed stack of runtimes and commands that any new lane can inherit. Save a template, apply it in one click.",
-  placement: "right",
-  requires: PROJECT_OPEN_REQUIRES,
-  waitForSelector: '[data-tour="settings.laneTemplates"]',
   docUrl: docs.settingsGeneral,
 };
 

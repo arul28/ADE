@@ -6024,8 +6024,45 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         addNotice("No active lane is selected.", "error");
         return;
       }
-      const result = await conn.action("git", "pull", { laneId });
+      const tokens = args.split(/\s+/).filter(Boolean);
+      const modeFlags = tokens.filter((token) => token === "--ff-only" || token === "--rebase" || token === "--merge");
+      if (modeFlags.length > 1) {
+        addNotice("Choose only one pull mode: --ff-only, --rebase, or --merge.", "error");
+        return;
+      }
+      const flagMode = modeFlags[0]?.slice(2);
+      const explicitModeIdx = tokens.indexOf("--mode");
+      const explicitMode = explicitModeIdx === -1 ? undefined : tokens[explicitModeIdx + 1];
+      if (explicitMode && flagMode) {
+        addNotice("Choose pull mode with either --mode or a mode flag, not both.", "error");
+        return;
+      }
+      const rawMode = flagMode ?? explicitMode;
+      const mode = rawMode === "ff_only" ? "ff-only" : rawMode;
+      if (mode && mode !== "ff-only" && mode !== "rebase" && mode !== "merge") {
+        addNotice("Pull mode must be ff-only, rebase, or merge.", "error");
+        return;
+      }
+      const result = await conn.action("git", "pull", { laneId, ...(mode ? { mode } : {}) });
       addNotice(`Pull complete: ${renderObject(result, 4).replace(/\n/g, " ")}`, "success");
+      return;
+    }
+    if (name === "/undo") {
+      if (!laneId) {
+        addNotice("No active lane is selected.", "error");
+        return;
+      }
+      const result = await conn.action("git", "undoLastHeadChange", { laneId });
+      addNotice(`Undo complete: ${renderObject(result, 4).replace(/\n/g, " ")}`, "success");
+      return;
+    }
+    if (name === "/redo") {
+      if (!laneId) {
+        addNotice("No active lane is selected.", "error");
+        return;
+      }
+      const result = await conn.action("git", "redoLastHeadChange", { laneId });
+      addNotice(`Redo complete: ${renderObject(result, 4).replace(/\n/g, " ")}`, "success");
       return;
     }
     if (name === "/stage all") {

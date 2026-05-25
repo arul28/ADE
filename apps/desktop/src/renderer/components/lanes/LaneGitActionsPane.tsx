@@ -65,6 +65,68 @@ const EMPTY_LANE_GIT_ACTION_RUNTIME_STATE: LaneGitActionRuntimeState = {
 const laneGitActionRuntimeByLaneId = new Map<string, LaneGitActionRuntimeState>();
 const laneGitActionRuntimeListeners = new Set<() => void>();
 
+type LaneGitActionsCachedState = {
+  changes: DiffChanges;
+  stashes: GitStashSummary[];
+  syncStatus: GitUpstreamSyncStatus | null;
+  forcePushSuggested: boolean;
+  autoRebaseStatus: AutoRebaseLaneStatus | null;
+  conflictState: GitConflictState | null;
+  stuckRebase: GitConflictState | null;
+  updatedAtMs: number;
+};
+
+const EMPTY_CHANGES: DiffChanges = { unstaged: [], staged: [] };
+const MAX_LANE_GIT_ACTIONS_CACHE_ENTRIES = 96;
+const laneGitActionsStateByScope = new Map<string, LaneGitActionsCachedState>();
+
+function laneGitActionsStateKey(projectRoot: string | null | undefined, laneId: string | null): string | null {
+  if (!laneId) return null;
+  return `${projectRoot?.trim() || "__project__"}::${laneId}`;
+}
+
+function readLaneGitActionsCachedState(
+  projectRoot: string | null | undefined,
+  laneId: string | null,
+): LaneGitActionsCachedState | null {
+  const key = laneGitActionsStateKey(projectRoot, laneId);
+  if (!key) return null;
+  const cached = laneGitActionsStateByScope.get(key) ?? null;
+  if (!cached) return null;
+  laneGitActionsStateByScope.delete(key);
+  laneGitActionsStateByScope.set(key, cached);
+  return cached;
+}
+
+function patchLaneGitActionsCachedState(
+  projectRoot: string | null | undefined,
+  laneId: string | null,
+  patch: Partial<Omit<LaneGitActionsCachedState, "updatedAtMs">>,
+): LaneGitActionsCachedState | null {
+  const key = laneGitActionsStateKey(projectRoot, laneId);
+  if (!key) return null;
+  const previous = laneGitActionsStateByScope.get(key);
+  const next: LaneGitActionsCachedState = {
+    changes: previous?.changes ?? EMPTY_CHANGES,
+    stashes: previous?.stashes ?? [],
+    syncStatus: previous?.syncStatus ?? null,
+    forcePushSuggested: previous?.forcePushSuggested ?? false,
+    autoRebaseStatus: previous?.autoRebaseStatus ?? null,
+    conflictState: previous?.conflictState ?? null,
+    stuckRebase: previous?.stuckRebase ?? null,
+    ...patch,
+    updatedAtMs: Date.now(),
+  };
+  laneGitActionsStateByScope.delete(key);
+  laneGitActionsStateByScope.set(key, next);
+  while (laneGitActionsStateByScope.size > MAX_LANE_GIT_ACTIONS_CACHE_ENTRIES) {
+    const oldest = laneGitActionsStateByScope.keys().next().value;
+    if (!oldest) break;
+    laneGitActionsStateByScope.delete(oldest);
+  }
+  return next;
+}
+
 function emitLaneGitActionRuntimeChange(): void {
   for (const listener of laneGitActionRuntimeListeners) {
     listener();
@@ -314,16 +376,6 @@ function getPullModeSummary(mode: GitSyncMode): string {
     : "Rebase replays your local commits on top of the remote branch for a cleaner history.";
 }
 
-function getPushSummary(syncStatus: GitUpstreamSyncStatus | null): string {
-  if (syncStatus?.upstreamState === "missing") {
-    return "The configured remote branch is missing. Push only if you need to recreate it.";
-  }
-  if (syncStatus?.hasUpstream === false) {
-    return "Publish lane creates the remote branch and connects this lane to it.";
-  }
-  return "Push sends your local commits to the tracked remote branch.";
-}
-
 function getAmendSummary(amendCommit: boolean): string {
   return amendCommit
     ? "Amend is on. Your next commit will replace the latest commit instead of creating a new one."
@@ -563,24 +615,27 @@ export function LaneGitActionsPane({
   const rootRef = useRef<HTMLDivElement>(null);
   const currentLaneIdRef = useRef<string | null>(laneId);
   const [paneWidth, setPaneWidth] = useState(1024);
+  const initialCachedGitState = readLaneGitActionsCachedState(projectRoot, laneId);
 
   const [loading, setLoading] = useState(false);
-  const [changes, setChanges] = useState<DiffChanges>({ unstaged: [], staged: [] });
+  const [changes, setChanges] = useState<DiffChanges>(initialCachedGitState?.changes ?? EMPTY_CHANGES);
   const [commitMessage, setCommitMessage] = useState("");
   const [commitMessageAi, setCommitMessageAi] = useState<CommitMessageAiState>({ enabled: false, modelId: null });
   const [syncMode, setSyncMode] = useState<GitSyncMode>("merge");
-  const [stashes, setStashes] = useState<GitStashSummary[]>([]);
-  const [syncStatus, setSyncStatus] = useState<GitUpstreamSyncStatus | null>(null);
-  const [forcePushSuggested, setForcePushSuggested] = useState(false);
+  const [stashes, setStashes] = useState<GitStashSummary[]>(initialCachedGitState?.stashes ?? []);
+  const [syncStatus, setSyncStatus] = useState<GitUpstreamSyncStatus | null>(initialCachedGitState?.syncStatus ?? null);
+  const [forcePushSuggested, setForcePushSuggested] = useState(initialCachedGitState?.forcePushSuggested ?? false);
   const [textPrompt, setTextPrompt] = useState<LaneTextPromptState | null>(null);
   const [textPromptError, setTextPromptError] = useState<string | null>(null);
   const [commitTimelineKey, setCommitTimelineKey] = useState(0);
   const [amendCommit, setAmendCommit] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [autoRebaseStatus, setAutoRebaseStatus] = useState<AutoRebaseLaneStatus | null>(autoRebaseStatusSnapshot ?? null);
+  const [autoRebaseStatus, setAutoRebaseStatus] = useState<AutoRebaseLaneStatus | null>(
+    autoRebaseStatusSnapshot ?? initialCachedGitState?.autoRebaseStatus ?? null,
+  );
   const autoRebaseStatusSnapshotRef = useRef<AutoRebaseLaneStatus | null | undefined>(autoRebaseStatusSnapshot);
-  const [conflictState, setConflictState] = useState<GitConflictState | null>(null);
-  const [stuckRebase, setStuckRebase] = useState<GitConflictState | null>(null);
+  const [conflictState, setConflictState] = useState<GitConflictState | null>(initialCachedGitState?.conflictState ?? null);
+  const [stuckRebase, setStuckRebase] = useState<GitConflictState | null>(initialCachedGitState?.stuckRebase ?? null);
   const laneGitActionRuntime = useLaneGitActionRuntimeState(laneId);
   const busyAction = laneGitActionRuntime.busyAction;
   const notice = laneGitActionRuntime.notice;
@@ -607,8 +662,6 @@ export function LaneGitActionsPane({
   const hiddenUnstagedChangeCount = Math.max(0, changes.unstaged.length - visibleUnstagedChanges.length);
   const responsiveMode = getResponsiveMode(paneWidth);
   const maxVisibleStashes = responsiveMode === "wide" ? 2 : 3;
-  const actionGridColumns =
-    responsiveMode === "wide" ? "repeat(3, minmax(0, 1fr))" : responsiveMode === "medium" ? "repeat(2, minmax(0, 1fr))" : "1fr";
   currentLaneIdRef.current = laneId;
 
   const isViewingLane = useCallback((targetLaneId: string | null) => currentLaneIdRef.current === targetLaneId, []);
@@ -679,14 +732,16 @@ export function LaneGitActionsPane({
 
   const refreshChanges = async (targetLaneId: string | null = laneId) => {
     if (!targetLaneId) return;
-    if (isViewingLane(targetLaneId)) setLoading(true);
+    const hasCachedState = Boolean(readLaneGitActionsCachedState(projectRoot, targetLaneId));
+    if (isViewingLane(targetLaneId) && !hasCachedState) setLoading(true);
     try {
       const next = await window.ade.diff.getChanges({ laneId: targetLaneId });
+      patchLaneGitActionsCachedState(projectRoot, targetLaneId, { changes: next });
       if (isViewingLane(targetLaneId)) {
         setChanges(next);
       }
     } finally {
-      if (isViewingLane(targetLaneId)) {
+      if (isViewingLane(targetLaneId) && !hasCachedState) {
         setLoading(false);
       }
     }
@@ -700,22 +755,23 @@ export function LaneGitActionsPane({
       window.ade.git.getConflictState(targetLaneId)
     ]);
 
+    const stashes = stashesResult.status === "fulfilled" ? stashesResult.value : undefined;
+    const nextSyncStatus = syncStatusResult.status === "fulfilled" ? syncStatusResult.value : null;
+    const nextConflictState = conflictResult.status === "fulfilled" ? conflictResult.value : null;
+    patchLaneGitActionsCachedState(projectRoot, targetLaneId, {
+      ...(stashes ? { stashes } : {}),
+      syncStatus: nextSyncStatus,
+      conflictState: nextConflictState,
+      stuckRebase: nextConflictState?.kind === "rebase" && nextConflictState.inProgress ? nextConflictState : null,
+    });
+
     if (!isViewingLane(targetLaneId)) return;
 
     if (stashesResult.status === "fulfilled") setStashes(stashesResult.value);
-    if (syncStatusResult.status === "fulfilled") {
-      setSyncStatus(syncStatusResult.value);
-    } else {
-      setSyncStatus(null);
-    }
-    if (conflictResult.status === "fulfilled") {
-      const cs = conflictResult.value;
-      setConflictState(cs);
-      setStuckRebase(cs.kind === "rebase" && cs.inProgress ? cs : null);
-    } else {
-      setConflictState(null);
-      setStuckRebase(null);
-    }
+    setSyncStatus(syncStatusResult.status === "fulfilled" ? syncStatusResult.value : null);
+    const cs = conflictResult.status === "fulfilled" ? conflictResult.value : null;
+    setConflictState(cs);
+    setStuckRebase(cs?.kind === "rebase" && cs.inProgress ? cs : null);
   };
 
   const refreshLaneGitState = useCallback(async (targetLaneId: string | null) => {
@@ -749,15 +805,17 @@ export function LaneGitActionsPane({
     }
     try {
       const statuses = await window.ade.lanes.listAutoRebaseStatuses();
+      const nextStatus = statuses.find((entry) => entry.laneId === targetLaneId) ?? null;
+      patchLaneGitActionsCachedState(projectRoot, targetLaneId, { autoRebaseStatus: nextStatus });
       if (isViewingLane(targetLaneId)) {
-        setAutoRebaseStatus(statuses.find((entry) => entry.laneId === targetLaneId) ?? null);
+        setAutoRebaseStatus(nextStatus);
       }
     } catch {
       if (isViewingLane(targetLaneId)) {
         setAutoRebaseStatus(null);
       }
     }
-  }, [isViewingLane, laneId]);
+  }, [isViewingLane, laneId, projectRoot]);
 
   const refreshCommitMessageAiState = useCallback(async () => {
     try {
@@ -822,6 +880,9 @@ export function LaneGitActionsPane({
       if (isRemoteAction && isViewingLane(actionLaneId)) {
         setForcePushSuggested(false);
       }
+      if (isRemoteAction) {
+        patchLaneGitActionsCachedState(projectRoot, actionLaneId, { forcePushSuggested: false });
+      }
       patchLaneGitActionRuntimeStateIfCurrent(actionLaneId, actionVersion, {
         busyAction: null,
         notice: `${actionName} completed`,
@@ -840,8 +901,11 @@ export function LaneGitActionsPane({
         });
         return;
       }
-      if (actionName === "push" && isNonFastForwardError(message) && isViewingLane(actionLaneId)) {
-        setForcePushSuggested(true);
+      if (actionName === "push" && isNonFastForwardError(message)) {
+        patchLaneGitActionsCachedState(projectRoot, actionLaneId, { forcePushSuggested: true });
+        if (isViewingLane(actionLaneId)) {
+          setForcePushSuggested(true);
+        }
       }
       patchLaneGitActionRuntimeStateIfCurrent(actionLaneId, actionVersion, {
         busyAction: null,
@@ -911,17 +975,18 @@ export function LaneGitActionsPane({
   ]);
 
   useEffect(() => {
+    const cached = readLaneGitActionsCachedState(projectRoot, laneId);
     setLoading(false);
-    setChanges({ staged: [], unstaged: [] });
-    setStashes([]);
-    setSyncStatus(null);
-    setForcePushSuggested(false);
+    setChanges(cached?.changes ?? EMPTY_CHANGES);
+    setStashes(cached?.stashes ?? []);
+    setSyncStatus(cached?.syncStatus ?? null);
+    setForcePushSuggested(cached?.forcePushSuggested ?? false);
     setCollapsedChangeFolders(new Set());
     setAmendCommit(false);
     setCommitMessageAi({ enabled: false, modelId: null });
-    setAutoRebaseStatus(autoRebaseStatusSnapshotRef.current ?? null);
-    setConflictState(null);
-    setStuckRebase(null);
+    setAutoRebaseStatus(autoRebaseStatusSnapshotRef.current ?? cached?.autoRebaseStatus ?? null);
+    setConflictState(cached?.conflictState ?? null);
+    setStuckRebase(cached?.stuckRebase ?? null);
     if (!laneId) return;
     Promise.all([refreshChanges(laneId), refreshGitMeta(laneId)]).catch((err) => {
       patchLaneGitActionRuntimeState(laneId, {
@@ -930,7 +995,7 @@ export function LaneGitActionsPane({
       });
     });
     void refreshCommitMessageAiState();
-  }, [laneId, lane?.branchRef, refreshCommitMessageAiState]);
+  }, [laneId, lane?.branchRef, projectRoot, refreshCommitMessageAiState]);
 
   useEffect(() => {
     if (!laneId) return;
@@ -952,6 +1017,7 @@ export function LaneGitActionsPane({
       void window.ade.git
         .getSyncStatus({ laneId: effectLaneId })
         .then((nextStatus) => {
+          patchLaneGitActionsCachedState(projectRoot, effectLaneId, { syncStatus: nextStatus });
           if (isViewingLane(effectLaneId)) {
             setSyncStatus(nextStatus);
           }
@@ -986,7 +1052,7 @@ export function LaneGitActionsPane({
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [isViewingLane, laneId]);
+  }, [isViewingLane, laneId, projectRoot]);
 
   useEffect(() => {
     const unsubscribe = window.ade.lanes.onAutoRebaseEvent((event) => {
@@ -995,10 +1061,12 @@ export function LaneGitActionsPane({
         setAutoRebaseStatus(null);
         return;
       }
-      setAutoRebaseStatus(event.statuses.find((entry) => entry.laneId === laneId) ?? null);
+      const nextStatus = event.statuses.find((entry) => entry.laneId === laneId) ?? null;
+      patchLaneGitActionsCachedState(projectRoot, laneId, { autoRebaseStatus: nextStatus });
+      setAutoRebaseStatus(nextStatus);
     });
     return unsubscribe;
-  }, [laneId]);
+  }, [laneId, projectRoot]);
 
   const changedFileCount = useMemo(() => {
     const paths = new Set<string>();
@@ -1317,12 +1385,9 @@ export function LaneGitActionsPane({
   const mergeConflictState = conflictState?.inProgress && conflictState.kind === "merge" ? conflictState : null;
   const pullBlockedByConflict = Boolean(conflictState?.inProgress);
   const headerDotColor = getLaneHeaderDotColor(lane);
-  const pushButtonTitle = upstreamMissing ? "Recreate remote branch" : syncStatus?.hasUpstream === false ? "Publish lane" : "Push to remote";
   const rebaseConflictParentLaneId = autoRebaseStatus?.parentLaneId ?? lane?.parentLaneId ?? null;
-  const isGeneratingCommitMessage = busyAction === AUTO_GENERATE_COMMIT_ACTION;
   const commitButtonLabel = getCommitButtonLabel({ busyAction, amendCommit });
   const commitHelperText = getCommitHelperText({ commitMessage, commitMessageAi });
-  const primaryPushLabel = upstreamMissing ? "Recreate remote" : syncStatus?.hasUpstream === false ? "Publish lane" : "Push to remote";
   const syncButtonDisabled = !laneId || busyAction != null || lane?.status.behind === 0 || lane?.status.dirty;
   const syncButtonTitle = useMemo(() => {
     if (!laneId) return "Sync is unavailable until you select a child lane.";

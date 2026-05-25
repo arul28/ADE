@@ -766,6 +766,8 @@ export function AgentChatComposer({
   sdkSlashCommands = [],
   modelId,
   availableModelIds,
+  constrainModelSelection = false,
+  modelUnavailableMessage,
   providerAuthStatus,
   onRuntimeCatalogRefreshed,
   reasoningEffort,
@@ -790,13 +792,10 @@ export function AgentChatComposer({
   opencodePermissionMode,
   droidPermissionMode,
   cursorModeSnapshot,
-  executionMode,
-  computerUseSnapshot,
   iosElementContextItems = [],
   appControlContextItems = [],
   builtInBrowserContextItems = [],
   macosVmContextItems = [],
-  executionModeOptions = [],
   modelSelectionLocked = false,
   permissionModeLocked = false,
   hideNativeControls = false,
@@ -819,7 +818,6 @@ export function AgentChatComposer({
   onAddContextAttachment,
   onRemoveContextAttachment,
   onSearchAttachments,
-  onExecutionModeChange,
   onInteractionModeChange,
   onClaudeModeChange,
   onClaudePermissionModeChange,
@@ -837,7 +835,6 @@ export function AgentChatComposer({
   onRemoveMacosVmContext,
   onClearEvents,
   promptSuggestion,
-  chatHasMessages = false,
   pendingSteers = [],
   onCancelSteer,
   onEditSteer,
@@ -892,6 +889,8 @@ export function AgentChatComposer({
   sdkSlashCommands?: AgentChatSlashCommand[];
   modelId: string;
   availableModelIds?: string[];
+  constrainModelSelection?: boolean;
+  modelUnavailableMessage?: string;
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
   onRuntimeCatalogRefreshed?: (provider: AgentChatModelCatalogRefreshProvider) => void;
   reasoningEffort: string | null;
@@ -1064,8 +1063,6 @@ export function AgentChatComposer({
   const [selectedBuiltInBrowserContextId, setSelectedBuiltInBrowserContextId] = useState<string | null>(null);
   const [selectedMacosVmContextId, setSelectedMacosVmContextId] = useState<string | null>(null);
 
-  const [hoveredClaudeMode, setHoveredClaudeMode] = useState<AgentChatClaudePermissionMode | null>(null);
-  const [hoveredCodexPreset, setHoveredCodexPreset] = useState<Exclude<CodexPermissionPreset, "custom"> | null>(null);
   const [claudeModePickerOpen, setClaudeModePickerOpen] = useState(false);
   const claudeModePickerRef = useRef<HTMLDivElement | null>(null);
   const [codexPresetPickerOpen, setCodexPresetPickerOpen] = useState(false);
@@ -1143,15 +1140,16 @@ export function AgentChatComposer({
     textareaRef.current?.focus({ preventScroll: true });
   }, [resizeTextarea, shouldAutofocus, useRichComposer]);
   useEffect(() => {
+    const objectPreviewUrls = objectPreviewUrlsRef.current;
     return () => {
       if (clipboardImagePasteFallbackTimerRef.current != null) {
         window.clearTimeout(clipboardImagePasteFallbackTimerRef.current);
         clipboardImagePasteFallbackTimerRef.current = null;
       }
       if (typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") {
-        for (const url of objectPreviewUrlsRef.current) URL.revokeObjectURL(url);
+        for (const url of objectPreviewUrls) URL.revokeObjectURL(url);
       }
-      objectPreviewUrlsRef.current.clear();
+      objectPreviewUrls.clear();
     };
   }, []);
   useEffect(() => {
@@ -1924,12 +1922,10 @@ export function AgentChatComposer({
       const target = event.target as Element | null;
       if (target?.closest?.("[data-codex-preset-picker-dropdown]")) return;
       setCodexPresetPickerOpen(false);
-      setHoveredCodexPreset(null);
     };
     const handleKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setCodexPresetPickerOpen(false);
-        setHoveredCodexPreset(null);
       }
     };
     window.addEventListener("mousedown", handleClick);
@@ -1948,12 +1944,10 @@ export function AgentChatComposer({
       const target = event.target as Element | null;
       if (target?.closest?.("[data-claude-mode-picker-dropdown]")) return;
       setClaudeModePickerOpen(false);
-      setHoveredClaudeMode(null);
     };
     const handleKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setClaudeModePickerOpen(false);
-        setHoveredClaudeMode(null);
       }
     };
     window.addEventListener("mousedown", handleClick);
@@ -2113,12 +2107,7 @@ export function AgentChatComposer({
                               onClick={() => {
                                 applyClaudeMode(option.value);
                                 setClaudeModePickerOpen(false);
-                                setHoveredClaudeMode(null);
                               }}
-                              onMouseEnter={() => setHoveredClaudeMode(option.value)}
-                              onMouseLeave={() => setHoveredClaudeMode(null)}
-                              onFocus={() => setHoveredClaudeMode(option.value)}
-                              onBlur={() => setHoveredClaudeMode(null)}
                               className={cn(
                                 "flex w-full items-center gap-2 px-3 py-1.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors",
                                 active ? cn(tone.activeBg, tone.activeText) : "text-fg/72",
@@ -2217,12 +2206,7 @@ export function AgentChatComposer({
                             onClick={() => {
                               applyCodexPreset(option.value as Exclude<CodexPermissionPreset, "custom">);
                               setCodexPresetPickerOpen(false);
-                              setHoveredCodexPreset(null);
                             }}
-                            onMouseEnter={() => setHoveredCodexPreset(option.value as Exclude<CodexPermissionPreset, "custom">)}
-                            onMouseLeave={() => setHoveredCodexPreset(null)}
-                            onFocus={() => setHoveredCodexPreset(option.value as Exclude<CodexPermissionPreset, "custom">)}
-                            onBlur={() => setHoveredCodexPreset(null)}
                             className={cn(
                               "flex w-full items-center gap-2 px-3 py-1.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors",
                               active ? `${colors.activeBg} text-fg/88` : "text-fg/72 hover:bg-white/[0.04]",
@@ -2441,15 +2425,12 @@ export function AgentChatComposer({
     );
   }, [
     claudeSelectionMode,
-    claudePermissionMode,
     claudeModePickerOpen,
     codexPresetPickerOpen,
     applyCodexPreset,
     codexPreset,
     codexPresetOptions,
     codexCustomSummary,
-    hoveredClaudeMode,
-    hoveredCodexPreset,
     nativeControlsDisabled,
     hideNativeControls,
     orchestrationRole,
@@ -2710,6 +2691,11 @@ export function AgentChatComposer({
     captureRichSelection();
   }, [captureRichSelection, getRichCursorTextOffset, onDraftChange, serializeRichEditor]);
 
+  const singleModelBlockedMessage = (modelUnavailableMessage?.trim() ?? "").length > 0
+    ? modelUnavailableMessage
+    : null;
+  const singleModelReady = Boolean(modelId) && !singleModelBlockedMessage;
+
   const submitComposerDraft = useCallback(() => {
     if (pendingInput?.blocking) {
       return;
@@ -2752,12 +2738,12 @@ export function AgentChatComposer({
       });
       return;
     }
-    if (busy || !modelId || (!draft.trim().length && !hasContextSelection && contextAttachmentCount === 0)) {
-      if (!busy && !modelId) onSubmitBlocked?.("Select a model first");
+    if (busy || !singleModelReady || (!draft.trim().length && !hasContextSelection && contextAttachmentCount === 0)) {
+      if (!busy && !singleModelReady) onSubmitBlocked?.(singleModelBlockedMessage ?? "Select a model first");
       return;
     }
     onSubmit();
-  }, [appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, contextAttachmentCount, contextAttachments, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, macosVmContextItems.length, modelId, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
+  }, [appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, contextAttachmentCount, contextAttachments, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, macosVmContextItems.length, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
 
   const pendingQuestionCount = getPendingInputQuestionCount(pendingInput);
   const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
@@ -2819,7 +2805,7 @@ export function AgentChatComposer({
   const hasAppControlContext = appControlContextItems.length > 0;
   const hasBuiltInBrowserContext = builtInBrowserContextItems.length > 0;
   const hasMacosVmContext = macosVmContextItems.length > 0;
-  const singleReady = !parallelChatMode && Boolean(modelId) && (
+  const singleReady = !parallelChatMode && singleModelReady && (
     draft.trim().length > 0
     || (allowAttachmentOnlySubmit && attachments.length > 0)
     || hasIosElementContext
@@ -2846,7 +2832,8 @@ export function AgentChatComposer({
       if (draft.trim().length === 0 && attachments.length === 0 && contextAttachmentCount === 0) return "Add a message or at least one attachment";
       return "Send to all lanes";
     }
-    if (!modelId) return "Select a model first";
+    if (!modelId) return singleModelBlockedMessage ?? "Select a model first";
+    if (singleModelBlockedMessage) return singleModelBlockedMessage;
     if (!draft.trim().length && allowAttachmentOnlySubmit && attachments.length > 0) return "Send attached files";
     if (!draft.trim().length && contextAttachmentCount > 0) return "Send attached issue context";
     if (!draft.trim().length && hasAppControlContext) return "Send selected App Control context";
@@ -3533,6 +3520,7 @@ export function AgentChatComposer({
                   onChange={(next) => onParallelSlotModelChange?.(parallelConfiguringIndex, next)}
                   surfaceKey={`chat-composer-parallel-${parallelConfiguringIndex}`}
                   {...(availableModelIds ? { availableModelIds } : {})}
+                  constrainToAvailableModelIds={constrainModelSelection}
                   {...(providerAuthStatus ? { providerAuthStatus } : {})}
                   {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
                   {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
@@ -3558,6 +3546,7 @@ export function AgentChatComposer({
                   onChange={onModelChange}
                   surfaceKey="chat-composer"
                   {...(availableModelIds ? { availableModelIds } : {})}
+                  constrainToAvailableModelIds={constrainModelSelection}
                   {...(providerAuthStatus ? { providerAuthStatus } : {})}
                   {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
                   {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}

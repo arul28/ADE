@@ -154,7 +154,7 @@ Daily desktop dev:
 npm run dev
 ```
 
-That aliases to `npm run dev:desktop`: it rebuilds `apps/ade-cli`, launches the Electron desktop app, and points it at the dev runtime socket `/tmp/ade-runtime-dev.sock`. If no dev runtime is listening, desktop is allowed to create it. This is the normal desktop-dev flow.
+That aliases to `npm run dev:desktop`: it rebuilds `apps/ade-cli`, refreshes the shared dev runtime at `/tmp/ade-runtime-dev.sock` when needed, launches the Electron desktop app, and points desktop at that runtime. This is the normal desktop-dev flow.
 
 When these commands are run from an ADE lane worktree under `.ade/worktrees/`,
 they still run code from that lane checkout, but they open the primary checkout's
@@ -165,7 +165,7 @@ and uses the lane path as the workspace root for `dev:code`.
 Dev command matrix:
 
 ```bash
-npm run dev:desktop          # desktop only; dev socket; desktop may auto-create runtime
+npm run dev:desktop          # refresh shared dev runtime, then launch desktop
 npm run dev:desktop:attach   # desktop only; fail if dev runtime is not already running
 npm run dev:desktop:clean    # desktop only; clear Vite cache before launch
 npm run dev:code:web          # `ade code` in the browser (PTY + inspector WebSocket)
@@ -192,11 +192,11 @@ ADE_DEV_RUNTIME_SOCKET_PATH=/tmp/my-ade-dev.sock npm run dev:runtime
 ADE_DESKTOP_BRIDGE_SOCKET_PATH=/tmp/my-bridge.sock npm run dev:desktop
 ```
 
-To test auto-runtime creation, use the `:auto`/default commands after stopping the dev runtime:
+To test auto-runtime creation, use the default dev commands after stopping the dev runtime:
 
 ```bash
 npm run dev:stop
-npm run dev:desktop          # tests desktop creating the dev runtime
+npm run dev:desktop          # tests the desktop wrapper creating the dev runtime
 npm run dev:stop
 npm run dev:code             # tests TUI wrapper creating the dev runtime
 ```
@@ -211,7 +211,7 @@ npm run package:beta         # origin/main -> ADE Beta.app, ade-beta, ~/.ade-bet
 These are unsigned local macOS app builds under `apps/desktop/release-alpha` and `apps/desktop/release-beta`. Beta fetches `origin/main`, fast-forwards the local `main` checkout when possible, and builds that checkout as `ADE Beta`. It does not create a packaging worktree. These builds do not replace the production `ADE.app`, production `ade`, or `~/.ade` runtime/state. Alpha and Beta also use separate Electron profile directories (`ade-desktop-alpha` / `ade-desktop-beta`) so their browser storage and window state do not collide with dev or stable.
 Local channel packages include the host runtime binary for this Mac. Release builds still require the full cross-platform runtime artifact set used by remote runtime bootstrap.
 
-Validate with `npm --prefix apps/desktop run typecheck` and `run test`. The desktop test suite is large — run the smallest relevant subset first.
+Validate with `npm --prefix apps/desktop run typecheck` and `npm run test:desktop:sharded` for the full desktop suite. The desktop test suite is large, so run the smallest relevant subset first.
 
 ## Links
 

@@ -70,7 +70,6 @@ const rpcSocketServer = net.createServer((conn) => {
   const rpcHandler = createAdeRpcRequestHandler({
     runtime: rpcRuntime,
     serverVersion: app.getVersion(),
-    onActionsListChanged: () => stop?.notify("ade/actions/list_changed", {}),
   });
   const stop = startJsonRpcServer(rpcHandler, transport, { nonFatal: true });
   // ... cleanup wiring
@@ -87,8 +86,9 @@ Key properties:
   `unlink` the socket in case a prior crash left it.
 - **Active connection tracking.** Each connection is registered so the
   service can destroy it cleanly on shutdown.
-- **Live action-list updates.** `onActionsListChanged` notifies clients
-  via `ade/actions/list_changed` when the action surface changes.
+- **Static action-list capability.** The action surface is resolved during
+  initialization and action listing; live action-list notifications are not
+  advertised until there is a concrete change source to publish.
 
 ### Identity propagation
 
@@ -120,10 +120,31 @@ Roles:
 - `external` -- External callers. Gets only the base action set.
 - `evaluator` -- Evaluation runs.
 
-The role is locked to what the env context reports; the
-`identity.role` field in the payload is honored only when the env
-context agrees. This prevents a rogue client from claiming elevated
-access by forging `identity.role`.
+The trusted server role comes from `ADE_DEFAULT_ROLE` and the other ADE
+context environment variables. The `identity.role` field in
+`ade/initialize` is compatibility metadata for older clients; it does
+not grant access by itself. Direct headless CLI mode sets
+`ADE_DEFAULT_ROLE` from `--role`, and socket-backed launchers restart
+stale daemons when the daemon's reported `runtimeInfo.defaultRole`
+does not match the requested role.
+
+The initialize response advertises the runtime contract used by clients
+to detect stale daemons:
+
+```json
+{
+  "runtimeInfo": {
+    "version": "0.0.0",
+    "buildHash": "<sha256-or-null>",
+    "defaultRole": "cto",
+    "projectRoot": "/path/to/project",
+    "pid": 12345
+  },
+  "capabilities": {
+    "actions": { "listChanged": false }
+  }
+}
+```
 
 ## Tool filtering
 
@@ -192,8 +213,8 @@ For a tool call:
    - `LINEAR_SYNC_TOOL_SPECS` -> Linear tool implementations.
 6. Result is returned as structured JSON.
 7. If the tool mutates resources visible to other clients, the
-   server may fire `ade/resources/list_changed` or
-   `ade/actions/list_changed`.
+   server may fire `ade/resources/list_changed`. Action-list changes are
+   currently not advertised as live notifications.
 
 ## External CLI detection
 

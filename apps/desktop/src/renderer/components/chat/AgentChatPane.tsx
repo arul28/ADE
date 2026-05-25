@@ -482,6 +482,55 @@ export function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
   };
 }
 
+type AgentChatSessionViewCache = {
+  events: AgentChatEventEnvelope[];
+  turnActive: boolean;
+  pendingInputs: DerivedPendingInput[];
+  pendingSteers: PendingSteerEntry[];
+  cachedAtMs: number;
+};
+
+const MAX_AGENT_CHAT_VIEW_CACHE_ENTRIES = 32;
+const AGENT_CHAT_VIEW_CACHE_ENABLED = import.meta.env.MODE !== "test";
+const agentChatSessionViewCacheBySessionId = new Map<string, AgentChatSessionViewCache>();
+
+function readAgentChatSessionViewCache(sessionId: string | null | undefined): AgentChatSessionViewCache | null {
+  if (!AGENT_CHAT_VIEW_CACHE_ENABLED) return null;
+  if (!sessionId) return null;
+  const cached = agentChatSessionViewCacheBySessionId.get(sessionId) ?? null;
+  if (!cached) return null;
+  agentChatSessionViewCacheBySessionId.delete(sessionId);
+  agentChatSessionViewCacheBySessionId.set(sessionId, cached);
+  return cached;
+}
+
+function writeAgentChatSessionViewCache(
+  sessionId: string,
+  events: AgentChatEventEnvelope[],
+  derived = deriveRuntimeState(events),
+): void {
+  if (!AGENT_CHAT_VIEW_CACHE_ENABLED) return;
+  const trimmed = trimChatEventHistory(events, MAX_SELECTED_CHAT_SESSION_EVENTS);
+  agentChatSessionViewCacheBySessionId.delete(sessionId);
+  agentChatSessionViewCacheBySessionId.set(sessionId, {
+    events: trimmed,
+    turnActive: derived.turnActive,
+    pendingInputs: derived.pendingInputs,
+    pendingSteers: derived.pendingSteers,
+    cachedAtMs: Date.now(),
+  });
+  while (agentChatSessionViewCacheBySessionId.size > MAX_AGENT_CHAT_VIEW_CACHE_ENTRIES) {
+    const oldest = agentChatSessionViewCacheBySessionId.keys().next().value;
+    if (!oldest) break;
+    agentChatSessionViewCacheBySessionId.delete(oldest);
+  }
+}
+
+function deleteAgentChatSessionViewCache(sessionId: string): void {
+  if (!AGENT_CHAT_VIEW_CACHE_ENABLED) return;
+  agentChatSessionViewCacheBySessionId.delete(sessionId);
+}
+
 type NativeControlState = {
   interactionMode: AgentChatInteractionMode;
   claudePermissionMode: AgentChatClaudePermissionMode;
@@ -1158,6 +1207,8 @@ const CODEX_CONFIG_SOURCES: readonly AgentChatCodexConfigSource[] = ["flags", "c
 const OPENCODE_PERMISSION_MODES: readonly AgentChatOpenCodePermissionMode[] = ["plan", "edit", "full-auto"];
 const DROID_PERMISSION_MODES: readonly AgentChatDroidPermissionMode[] = ["read-only", "auto-low", "auto-medium", "auto-high"];
 const EXECUTION_MODES: readonly AgentChatExecutionMode[] = ["focused", "parallel", "subagents", "teams"];
+const EMPTY_CHAT_EVENTS: AgentChatEventEnvelope[] = [];
+const EMPTY_REASONING_TIERS: string[] = [];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === "object" && !Array.isArray(value);
@@ -2114,6 +2165,7 @@ export function AgentChatPane({
   const effectiveIosSimulatorOpen = !hideLaneToolDrawers && iosSimulatorOpen;
   const effectiveAppControlOpen = !hideLaneToolDrawers && appControlOpen;
   const laneToolsVisible = Boolean(showWorkspaceChrome && !hideLaneToolDrawers && laneId);
+  const chatTerminalVisible = Boolean(showWorkspaceChrome && laneId);
   const laneDisplayLabel = useMemo(() => {
     const normalized = laneLabel?.trim();
     return normalized?.length ? normalized : laneId;
@@ -2247,7 +2299,7 @@ export function AgentChatPane({
     return lane?.worktreePath ?? projectRoot;
   }, [laneId, lanes, projectRoot]);
 
-  const selectedEvents = selectedSessionId ? eventsBySession[selectedSessionId] ?? [] : [];
+  const selectedEvents = selectedSessionId ? eventsBySession[selectedSessionId] ?? EMPTY_CHAT_EVENTS : EMPTY_CHAT_EVENTS;
   const optimisticOutgoingMessageRef = useRef<typeof optimisticOutgoingMessage>(null);
   const selectedEventsForDisplay = useMemo(() => {
     const shouldRenderOptimistic =
@@ -2686,7 +2738,7 @@ export function AgentChatPane({
   }, [pendingInputsBySession, selectedSessionId]);
   const pendingSteers = selectedSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : [];
   const selectedModelDesc = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
-  const reasoningTiers = selectedModelDesc?.reasoningTiers ?? [];
+  const reasoningTiers = selectedModelDesc?.reasoningTiers ?? EMPTY_REASONING_TIERS;
   const localRuntimeState = useMemo(() => {
     const provider = selectedModelDesc?.authTypes.includes("local")
       ? (selectedModelDesc.family as LocalProviderFamily)
@@ -3020,15 +3072,20 @@ export function AgentChatPane({
   const chipsJson = JSON.stringify(presentation?.chips ?? []);
   const resolvedChips = useMemo(() => JSON.parse(chipsJson) as ChatSurfaceChip[], [chipsJson]);
 
-  // Keep all configured models selectable, and always include the active session model.
-  // All models are available regardless of surface — the runtime handles provider transitions.
+  // Keep configured models selectable unless a caller explicitly constrains
+  // this surface. Unconstrained sessions keep their active model visible even
+  // when it has fallen out of the discovered catalog.
+  const modelSelectionConstrained = availableModelIdsOverride != null;
   const effectiveAvailableModelIds = useMemo(() => {
+    const sourceAvailableModelIds = availableModelIdsOverride ?? availableModelIds;
     const base = filterChatModelIdsForSession({
-      availableModelIds,
+      availableModelIds: sourceAvailableModelIds,
       activeSessionModelId: selectedSessionModelId,
       hasConversation: selectedEvents.length > 0,
+      includeActiveSessionModel: !modelSelectionConstrained,
       policy: modelSwitchPolicy,
     });
+    if (modelSelectionConstrained) return base;
     const catalog = getSharedRuntimeCatalog();
     if (!catalog) return base;
     const runtimeIds = descriptorsFromAgentChatModelCatalog(catalog).availableModelIds;
@@ -3036,7 +3093,7 @@ export function AgentChatPane({
     const merged = new Set(base);
     for (const id of runtimeIds) merged.add(id);
     return [...merged];
-  }, [availableModelIds, modelSwitchPolicy, selectedSessionModelId, selectedEvents.length, runtimeCatalogVersion]);
+  }, [availableModelIds, availableModelIdsOverride, modelSelectionConstrained, modelSwitchPolicy, selectedSessionModelId, selectedEvents.length, runtimeCatalogVersion]);
   const modelPickerProviderAuthStatus = useMemo(
     () => (aiStatus ? familiesFromStatus(aiStatus) : undefined),
     [aiStatus],
@@ -3045,6 +3102,16 @@ export function AgentChatPane({
     () => effectiveAvailableModelIds.filter((id) => id.startsWith("cursor/")),
     [effectiveAvailableModelIds],
   );
+  const constrainedModelSelectionError = useMemo(() => {
+    if (!modelSelectionConstrained) return null;
+    if (!effectiveAvailableModelIds.length) {
+      return "No models are available for this chat surface.";
+    }
+    if (modelId && !effectiveAvailableModelIds.includes(modelId)) {
+      return "Select an available model for this chat surface before sending.";
+    }
+    return null;
+  }, [effectiveAvailableModelIds, modelId, modelSelectionConstrained]);
   const cursorCloudAvailable = Boolean(laneId)
     && (selectedSession?.provider === "cursor" || (typeof modelId === "string" && modelId.startsWith("cursor/")));
   // Launch-to-cloud is only allowed for a fresh chat: no events yet AND not already promoted to a
@@ -3504,11 +3571,24 @@ export function AgentChatPane({
   }, []);
 
   const clearSessionView = useCallback((sessionId: string) => {
+    deleteAgentChatSessionViewCache(sessionId);
     eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: [] };
     setEventsBySession((prev) => ({ ...prev, [sessionId]: [] }));
     setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: false }));
     setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: [] }));
     setPendingSteersBySession((prev) => ({ ...prev, [sessionId]: [] }));
+  }, []);
+
+  const applyCachedSessionView = useCallback((sessionId: string): boolean => {
+    const cached = readAgentChatSessionViewCache(sessionId);
+    if (!cached) return false;
+    eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: cached.events };
+    loadedHistoryRef.current.add(sessionId);
+    setEventsBySession((prev) => ({ ...prev, [sessionId]: cached.events }));
+    setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: cached.turnActive }));
+    setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: cached.pendingInputs }));
+    setPendingSteersBySession((prev) => ({ ...prev, [sessionId]: cached.pendingSteers }));
+    return true;
   }, []);
 
   const loadHistory = useCallback(async (sessionId: string, options?: { force?: boolean }) => {
@@ -3592,6 +3672,7 @@ export function AgentChatPane({
       const sessionSummary = sessionsRef.current.find((entry) => entry.sessionId === sessionId)
         ?? (initialSessionSummary?.sessionId === sessionId ? initialSessionSummary : null);
       const allowRunningFromSummary = sessionSummary?.status === "active" && sessionSummary.awaitingInput !== true;
+      writeAgentChatSessionViewCache(sessionId, merged, derived);
       eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: merged };
       setEventsBySession((prev) => ({ ...prev, [sessionId]: merged }));
       setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: allowRunningFromSummary ? derived.turnActive : false }));
@@ -3735,7 +3816,8 @@ export function AgentChatPane({
     let cancelled = false;
 
     const boot = async () => {
-      setLoading(true);
+      const hasRenderableSession = Boolean(selectedSessionIdRef.current || lockSessionId || initialSessionSummary);
+      setLoading(!hasRenderableSession);
       setPreferencesReady(false);
       try {
         const snapshot = await window.ade.projectConfig.get();
@@ -3748,13 +3830,19 @@ export function AgentChatPane({
         // fall back to defaults.
       }
 
+      const sessionsRefresh = refreshSessions().catch(() => undefined);
+      const modelsRefresh = refreshAvailableModels().catch(() => []);
       try {
-        await Promise.all([refreshAvailableModels(), refreshSessions()]);
-      } catch {
-        // boot-time refresh errors are swallowed here; individual callbacks fall back to empty state
+        await sessionsRefresh;
       } finally {
         if (!cancelled) {
           setLoading(false);
+        }
+      }
+      try {
+        await modelsRefresh;
+      } finally {
+        if (!cancelled) {
           setPreferencesReady(true);
         }
       }
@@ -3764,26 +3852,28 @@ export function AgentChatPane({
     return () => {
       cancelled = true;
     };
-  }, [refreshAvailableModels, refreshSessions]);
+  }, [initialSessionSummary, lockSessionId, refreshAvailableModels, refreshSessions]);
 
   useEffect(() => {
-    if (loading || !availableModelIds.length) return;
+    const selectableModelIds = modelSelectionConstrained ? effectiveAvailableModelIds : availableModelIds;
+    if (loading || !selectableModelIds.length) return;
     // If the user hasn't picked a model yet, don't auto-select one.
     if (!modelId) return;
-    if (availableModelIds.includes(modelId)) return;
+    if (selectableModelIds.includes(modelId)) return;
+    if (modelSelectionConstrained) return;
     // Runtime catalog can surface Cursor/Droid SDK models before ai status catches up.
     if (isKnownSelectableChatModelId(modelId) || resolveModelDescriptorWithRuntimeCatalog(modelId)) return;
-    if (selectedSessionModelId) {
+    if (selectedSessionModelId && selectableModelIds.includes(selectedSessionModelId)) {
       setModelId(selectedSessionModelId);
       return;
     }
     const preferred = readLastUsedModelId();
-    if (preferred && availableModelIds.includes(preferred)) {
+    if (preferred && selectableModelIds.includes(preferred)) {
       setModelId(preferred);
     } else {
-      setModelId(availableModelIds[0]!);
+      setModelId(selectableModelIds[0]!);
     }
-  }, [loading, availableModelIds, modelId, selectedSessionModelId]);
+  }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, selectedSessionModelId]);
 
   useEffect(() => {
     if (!reasoningTiers.length) {
@@ -3810,7 +3900,7 @@ export function AgentChatPane({
 
   useEffect(() => {
     const sessionsApi = window.ade?.sessions;
-    if (!sessionsApi?.onChanged || !sessionsApi.get || !showWorkspaceChrome || hideLaneToolDrawers || !laneId) return undefined;
+    if (!sessionsApi?.onChanged || !sessionsApi.get || !chatTerminalVisible) return undefined;
 
     let disposed = false;
     const revealCreatedTerminal = async (sessionId: string) => {
@@ -3844,7 +3934,7 @@ export function AgentChatPane({
       disposed = true;
       unsubscribe();
     };
-  }, [hideLaneToolDrawers, laneId, showWorkspaceChrome]);
+  }, [chatTerminalVisible, laneId]);
 
   useEffect(() => {
     const api = window.ade?.iosSimulator;
@@ -3934,12 +4024,18 @@ export function AgentChatPane({
   useEffect(() => {
     if (!isTileVisible) return;
     if (!selectedSessionId) return;
+    const restoredFromCache = applyCachedSessionView(selectedSessionId);
+    const refreshOptions = { force: !restoredFromCache };
     if (!lockedSingleSessionMode) {
       // Re-read the selected transcript on every tab switch so the selected
       // chat can recover from any background event loss instead of relying
       // solely on the in-memory background buffer.
-      void loadHistory(selectedSessionId, { force: true });
-      return;
+      void loadHistory(selectedSessionId, refreshOptions);
+      if (!restoredFromCache) return;
+      const refreshHandle = window.setTimeout(() => {
+        void loadHistory(selectedSessionId, { force: true });
+      }, 650);
+      return () => window.clearTimeout(refreshHandle);
     }
     // Locked-single-session mode (Work tab tile). Force-reload on every mount
     // so that when the pane is unmounted and remounted (tab switch, project
@@ -3947,13 +4043,22 @@ export function AgentChatPane({
     // rather than short-circuiting on a stale loadedHistoryRef from the
     // previous component instance.
     const hydrateDelayMs = isTileActive
-      ? 120
+      ? 0
       : 220 + (stableSessionDelayOffset(selectedSessionId) % 260);
     const handle = window.setTimeout(() => {
-      void loadHistory(selectedSessionId, { force: true });
+      void loadHistory(selectedSessionId, refreshOptions);
     }, hydrateDelayMs);
-    return () => window.clearTimeout(handle);
-  }, [isTileActive, isTileVisible, loadHistory, lockedSingleSessionMode, selectedSessionId]);
+    let refreshHandle: number | null = null;
+    if (restoredFromCache) {
+      refreshHandle = window.setTimeout(() => {
+        void loadHistory(selectedSessionId, { force: true });
+      }, Math.max(650, hydrateDelayMs + 650));
+    }
+    return () => {
+      window.clearTimeout(handle);
+      if (refreshHandle != null) window.clearTimeout(refreshHandle);
+    };
+  }, [applyCachedSessionView, isTileActive, isTileVisible, loadHistory, lockedSingleSessionMode, selectedSessionId]);
 
   useEffect(() => {
     if (!isTileVisible || !selectedSessionId) return undefined;
@@ -4119,6 +4224,7 @@ export function AgentChatPane({
     const pendingSteerPatch: Record<string, PendingSteerEntry[]> = {};
     for (const sessionId of touchedSessionIds) {
       const derived = deriveRuntimeState(next[sessionId] ?? []);
+      writeAgentChatSessionViewCache(sessionId, next[sessionId] ?? [], derived);
       activePatch[sessionId] = derived.turnActive;
       pendingInputPatch[sessionId] = derived.pendingInputs;
       pendingSteerPatch[sessionId] = derived.pendingSteers;
@@ -4714,6 +4820,9 @@ export function AgentChatPane({
     targetLaneId: string,
     options: { select?: boolean; notify?: boolean; notifyOptions?: AgentChatSessionCreatedOptions } = {},
   ): Promise<AgentChatSession> => {
+      if (constrainedModelSelectionError) {
+        throw new Error(constrainedModelSelectionError);
+      }
       const desc = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
       const permissionDesc = getModelDescriptorForPermissionMode(modelId);
       const provider = resolveChatRuntimeProvider(desc);
@@ -4828,13 +4937,17 @@ export function AgentChatPane({
       if (options.notify) notifySessionCreated(created, options.notifyOptions);
       if (targetLaneId === laneId) void refreshSessions().catch(() => {});
       return created;
-  }, [buildNativeControlPayload, codexFastMode, currentNativeControls, executionMode, initialNativeControls, iosSimulatorOpen, laneId, modelId, notifySessionCreated, patchSessionSummary, reasoningEffort, refreshSessions, touchSession, workDraftKind]);
+  }, [buildNativeControlPayload, codexFastMode, constrainedModelSelectionError, currentNativeControls, executionMode, initialNativeControls, iosSimulatorOpen, laneId, modelId, notifySessionCreated, patchSessionSummary, reasoningEffort, refreshSessions, touchSession, workDraftKind]);
 
   const createSession = useCallback(async (): Promise<string | null> => {
     if (createSessionPromiseRef.current) {
       return createSessionPromiseRef.current;
     }
     if (!laneId) return null;
+    if (constrainedModelSelectionError) {
+      setError(constrainedModelSelectionError);
+      throw new Error(constrainedModelSelectionError);
+    }
     const createPromise = createSessionForLane(laneId, { select: true, notify: true })
       .then((created) => created.id);
     createSessionPromiseRef.current = createPromise;
@@ -4845,7 +4958,7 @@ export function AgentChatPane({
         createSessionPromiseRef.current = null;
       }
     }
-  }, [createSessionForLane, laneId]);
+  }, [constrainedModelSelectionError, createSessionForLane, laneId]);
 
   const buildDraftLaunchSnapshotForCurrentState = useCallback((): DraftLaunchSnapshot | null => {
     const text = draft.trim();
@@ -4999,6 +5112,10 @@ export function AgentChatPane({
       return;
     }
     if (selectedSessionId || (workDraftKind !== "chat" && workDraftKind !== "chat-orchestrator")) return;
+    if (constrainedModelSelectionError) {
+      setError(constrainedModelSelectionError);
+      return;
+    }
     if (!modelId) {
       setError("Select a model first");
       return;
@@ -5094,6 +5211,7 @@ export function AgentChatPane({
     backgroundLaunchBusy,
     buildDraftLaunchSnapshotForCurrentState,
     busy,
+    constrainedModelSelectionError,
     createSessionForLane,
     draftLaunchTargetIsAutoCreate,
     executionMode,
@@ -5247,7 +5365,9 @@ export function AgentChatPane({
     if (selectedSessionId || lockSessionId || initialSessionId) return;
     if (forceDraft) return;
     eagerCreateFiredRef.current = true;
-    void createSession();
+    void createSession().catch(() => {
+      eagerCreateFiredRef.current = false;
+    });
   }, [preferencesReady, laneId, modelId, selectedSessionId, lockSessionId, initialSessionId, forceDraft, createSession]);
 
   const handleApproval = useCallback(async (
@@ -5339,6 +5459,17 @@ export function AgentChatPane({
       if (emptySlot) {
         setError("All parallel lanes must have a model selected.");
         return;
+      }
+      if (modelSelectionConstrained) {
+        if (!effectiveAvailableModelIds.length) {
+          setError("No models are available for this chat surface.");
+          return;
+        }
+        const unavailableSlot = parallelModelSlots.find((slot) => !effectiveAvailableModelIds.includes(slot.modelId));
+        if (unavailableSlot) {
+          setError("Each parallel lane must use an available model for this chat surface.");
+          return;
+        }
       }
       const modelKeys = parallelModelSlots.map((s) => s.modelId);
       if (new Set(modelKeys).size !== modelKeys.length) {
@@ -5535,6 +5666,10 @@ export function AgentChatPane({
     }
 
     if (draftLaunchTargetIsAutoCreate && selectedSessionId == null && workDraftKind === "chat") {
+      if (constrainedModelSelectionError) {
+        setError(constrainedModelSelectionError);
+        return;
+      }
       if (!modelId) {
         setError("Select a model first");
         return;
@@ -5551,6 +5686,10 @@ export function AgentChatPane({
       && !lockSessionId
       && !draftLaunchTargetIsAutoCreate
     ) {
+      if (constrainedModelSelectionError) {
+        setError(constrainedModelSelectionError);
+        return;
+      }
       if (!modelId) {
         setError("Select a model first");
         return;
@@ -5559,6 +5698,10 @@ export function AgentChatPane({
       return;
     }
 
+    if (constrainedModelSelectionError) {
+      setError(constrainedModelSelectionError);
+      return;
+    }
     if (!modelId) {
       setError("Select a model first");
       return;
@@ -5910,11 +6053,13 @@ export function AgentChatPane({
     buildNativeControlPayload,
     busy,
     codexFastMode,
+    constrainedModelSelectionError,
     createSession,
     currentNativeControls,
     contextAttachments,
     draft,
     draftLaunchTargetIsAutoCreate,
+    effectiveAvailableModelIds,
     executionMode,
     handleApproval,
     hasComputerUseSelectionChanged,
@@ -5922,6 +6067,7 @@ export function AgentChatPane({
     laneId,
     launchDraftChat,
     launchModeEditable,
+    modelSelectionConstrained,
     modelId,
     patchSessionSummary,
     projectTransitionBlocksChat,
@@ -6648,7 +6794,7 @@ export function AgentChatPane({
               </button>
             </SmartTooltip>
           ) : null}
-          {laneToolsVisible ? <ChatTerminalToggle open={terminalDrawerOpen} onToggle={() => setTerminalDrawerOpen((v) => !v)} /> : null}
+          {chatTerminalVisible ? <ChatTerminalToggle open={terminalDrawerOpen} onToggle={() => setTerminalDrawerOpen((v) => !v)} /> : null}
           {selectedSession?.provider === "codex"
             && selectedSession.surface !== "mission"
             && selectedSessionId
@@ -7050,6 +7196,8 @@ export function AgentChatPane({
             sdkSlashCommands={sdkSlashCommands}
             modelId={modelId}
             availableModelIds={effectiveAvailableModelIds}
+            constrainModelSelection={modelSelectionConstrained}
+            modelUnavailableMessage={constrainedModelSelectionError ?? undefined}
             providerAuthStatus={modelPickerProviderAuthStatus}
             onRuntimeCatalogRefreshed={() => {
               setRuntimeCatalogVersion((version) => version + 1);
@@ -7138,11 +7286,15 @@ export function AgentChatPane({
             orchestrationRole={activeOrchestrationRole}
             onModelChange={(nextModelId) => {
               const modelAllowed =
-                !effectiveAvailableModelIds.length
-                || effectiveAvailableModelIds.includes(nextModelId)
-                || isKnownSelectableChatModelId(nextModelId)
-                || Boolean(resolveModelDescriptorWithRuntimeCatalog(nextModelId));
-              if (selectedSessionModelId && !modelAllowed) {
+                modelSelectionConstrained
+                  ? effectiveAvailableModelIds.includes(nextModelId)
+                  : (
+                      !effectiveAvailableModelIds.length
+                      || effectiveAvailableModelIds.includes(nextModelId)
+                      || isKnownSelectableChatModelId(nextModelId)
+                      || Boolean(resolveModelDescriptorWithRuntimeCatalog(nextModelId))
+                    );
+              if (!modelAllowed) {
                 return;
               }
               if (isPersistentIdentitySurface && sessionMutationKind) {
@@ -7390,6 +7542,7 @@ export function AgentChatPane({
               });
             }}
             onParallelSlotModelChange={(index, nextModelId) => {
+              if (modelSelectionConstrained && !effectiveAvailableModelIds.includes(nextModelId)) return;
               const desc = resolveModelDescriptorWithRuntimeCatalog(nextModelId) ?? getModelById(nextModelId);
               const tiers = desc?.reasoningTiers ?? [];
               const preferred = readLastUsedReasoningEffort({ laneId, modelId: nextModelId });
@@ -7659,7 +7812,7 @@ export function AgentChatPane({
                   key="chat-view"
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
-                  transition={{ duration: 0.25, ease: "easeOut", delay: 0.15 }}
+                  transition={{ duration: 0.12, ease: "easeOut" }}
                   className="absolute inset-0 flex min-h-0 overflow-hidden"
                 >
                   {/* Chat column */}
@@ -7838,7 +7991,7 @@ export function AgentChatPane({
                         sessionId={selectedSessionId}
                       />
                     ) : null}
-                    {laneToolsVisible ? (
+                    {chatTerminalVisible ? (
                       <ChatTerminalDrawer
                         open={terminalDrawerOpen}
                         onToggle={() => setTerminalDrawerOpen((v) => !v)}

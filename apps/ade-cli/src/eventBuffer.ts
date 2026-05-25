@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 export type BufferedEvent = {
   id: number;
   timestamp: string;
@@ -5,9 +7,16 @@ export type BufferedEvent = {
   payload: Record<string, unknown>;
 };
 
+export type EventBufferDrainResult = {
+  events: BufferedEvent[];
+  nextCursor: number;
+  hasMore: boolean;
+  eventEpoch: string;
+};
+
 export type EventBuffer = {
   push(event: Omit<BufferedEvent, "id">): void;
-  drain(cursor: number, limit?: number): { events: BufferedEvent[]; nextCursor: number; hasMore: boolean };
+  drain(cursor: number, limit?: number): EventBufferDrainResult;
   subscribe(listener: (event: BufferedEvent) => void): () => void;
   size(): number;
 };
@@ -15,6 +24,7 @@ export type EventBuffer = {
 export function createEventBuffer(capacity = 10_000): EventBuffer {
   const events: BufferedEvent[] = [];
   const listeners = new Set<(event: BufferedEvent) => void>();
+  const eventEpoch = randomUUID();
   let nextId = 1;
 
   return {
@@ -36,7 +46,7 @@ export function createEventBuffer(capacity = 10_000): EventBuffer {
       const clamped = Math.max(1, Math.min(1000, limit));
       const startIdx = events.findIndex((e) => e.id > cursor);
       if (startIdx === -1) {
-        return { events: [], nextCursor: cursor, hasMore: false };
+        return { events: [], nextCursor: cursor, hasMore: false, eventEpoch };
       }
       const slice = events.slice(startIdx, startIdx + clamped);
       const lastId = slice.length > 0 ? slice[slice.length - 1]!.id : cursor;
@@ -44,6 +54,7 @@ export function createEventBuffer(capacity = 10_000): EventBuffer {
         events: slice,
         nextCursor: lastId,
         hasMore: startIdx + clamped < events.length,
+        eventEpoch,
       };
     },
     subscribe(listener) {

@@ -11,6 +11,7 @@ import type {
   RemoteRuntimeProjectRecord,
   RemoteRuntimeTarget,
 } from "../../../shared/types/remoteRuntime";
+import type { AdeActionRegistryEntry } from "../../../shared/types/automations";
 import type { RuntimeRpcClient } from "./runtimeRpcClient";
 import { bootstrapRemoteRuntime, ensureRemoteProject } from "./remoteBootstrap";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
@@ -19,7 +20,7 @@ type PoolEntry = {
   client: RuntimeRpcClient;
   ssh: Client;
   result: RemoteRuntimeConnectResult;
-  dispose?: (closeClient: boolean) => void;
+  dispose?: (closeClient: boolean, notify?: boolean) => void;
 };
 
 type RuntimeEventNotification = {
@@ -35,8 +36,44 @@ function isRemoteRuntimeConnectionError(error: unknown): boolean {
   );
 }
 
+const RETRYABLE_REMOTE_ACTION_PREFIXES = [
+  "diagnosticsGet",
+  "get",
+  "list",
+  "oauthGet",
+  "oauthList",
+  "portGet",
+  "portList",
+  "proxyGet",
+  "read",
+  "search",
+] as const;
+
+const RETRYABLE_REMOTE_ACTIONS = new Set([
+  "chat.codexFuzzyFileSearch",
+  "chat.fileSearch",
+  "chat.modelCatalog",
+  "file.quickOpen",
+  "terminal.activeForChat",
+  "terminal.preview",
+]);
+
+function shouldRetryRemoteRuntimeAction(
+  request: RemoteRuntimeActionRequest,
+): boolean {
+  if (RETRYABLE_REMOTE_ACTIONS.has(`${request.domain}.${request.action}`)) {
+    return true;
+  }
+  return RETRYABLE_REMOTE_ACTION_PREFIXES.some((prefix) =>
+    request.action.startsWith(prefix),
+  );
+}
+
 export class RemoteConnectionPool {
   private readonly entries = new Map<string, Promise<PoolEntry>>();
+  private readonly evictionListeners = new Set<
+    (targetId: string, error: Error) => void
+  >();
 
   constructor(
     private readonly registry: RemoteTargetRegistry,
@@ -47,6 +84,13 @@ export class RemoteConnectionPool {
     target: RemoteRuntimeTarget,
   ): Promise<RemoteRuntimeConnectResult> {
     return (await this.connectEntry(target)).result;
+  }
+
+  onEntryEvicted(listener: (targetId: string, error: Error) => void): () => void {
+    this.evictionListeners.add(listener);
+    return () => {
+      this.evictionListeners.delete(listener);
+    };
   }
 
   /**
@@ -118,11 +162,14 @@ export class RemoteConnectionPool {
     target: RemoteRuntimeTarget,
     method: string,
     params: Record<string, unknown> = {},
-    options: { retryOnConnectionError?: boolean } = {},
+    options: { retryOnConnectionError?: boolean; timeoutMs?: number } = {},
   ): Promise<unknown> {
     return await this.withEntryForTarget(
       target,
-      (entry) => entry.client.call(method, params),
+      (entry) =>
+        options.timeoutMs
+          ? entry.client.call(method, params, { timeoutMs: options.timeoutMs })
+          : entry.client.call(method, params),
       { retryOnConnectionError: options.retryOnConnectionError ?? true },
     );
   }
@@ -160,7 +207,7 @@ export class RemoteConnectionPool {
     return await this.withEntryForTarget(
       target,
       (entry) => this.callActionWithEntry(entry, projectId, request),
-      { retryOnConnectionError: false },
+      { retryOnConnectionError: shouldRetryRemoteRuntimeAction(request) },
     );
   }
 
@@ -176,6 +223,24 @@ export class RemoteConnectionPool {
         ...params,
         projectId,
       }),
+      { retryOnConnectionError: true },
+    );
+  }
+
+  async listActionRegistryForTarget(
+    target: RemoteRuntimeTarget,
+    projectId: string,
+  ): Promise<AdeActionRegistryEntry[]> {
+    return await this.withEntryForTarget(
+      target,
+      async (entry) => {
+        const value = await entry.client.call("ade/actions/call", {
+          projectId,
+          name: "list_ade_actions",
+          arguments: { domain: "all" },
+        });
+        return normalizeAdeActionRegistry(value);
+      },
       { retryOnConnectionError: true },
     );
   }
@@ -293,6 +358,10 @@ export class RemoteConnectionPool {
         );
       }
 
+      const eventEpoch =
+        typeof record.eventEpoch === "string" && record.eventEpoch.trim()
+          ? record.eventEpoch.trim()
+          : null;
       return {
         events: Array.isArray(record.events)
           ? record.events
@@ -307,6 +376,7 @@ export class RemoteConnectionPool {
             ? Math.max(0, Math.floor(record.nextCursor))
             : clampCursor(request.cursor),
         hasMore: record.hasMore === true,
+        ...(eventEpoch ? { eventEpoch } : {}),
       };
     }
 
@@ -373,7 +443,7 @@ export class RemoteConnectionPool {
     void existing
       ?.then((entry) => {
         if (entry.dispose) {
-          entry.dispose(true);
+          entry.dispose(true, false);
           return;
         }
         try {
@@ -409,7 +479,8 @@ export class RemoteConnectionPool {
     } catch (error) {
       if (!isRemoteRuntimeConnectionError(error)) throw error;
       this.disconnect(target.id);
-      const nextEntry = await this.connectEntry(target);
+      const reconnectTarget = this.registry.get(target.id) ?? target;
+      const nextEntry = await this.connectEntry(reconnectTarget);
       if (options.retryOnConnectionError) {
         return await operation(nextEntry);
       }
@@ -426,7 +497,20 @@ export class RemoteConnectionPool {
     entry: PoolEntry,
   ): void {
     let cleanedUp = false;
-    const evict = (closeClient: boolean) => {
+    const notifyEvicted = (error: Error) => {
+      for (const listener of [...this.evictionListeners]) {
+        try {
+          listener(targetId, error);
+        } catch {
+          // Lifecycle notifications are best-effort.
+        }
+      }
+    };
+    const evict = (
+      closeClient: boolean,
+      notify = true,
+      error = new Error("Remote ADE service connection was interrupted."),
+    ) => {
       if (this.entries.get(targetId) === entryPromise) {
         this.entries.delete(targetId);
       }
@@ -440,11 +524,12 @@ export class RemoteConnectionPool {
       try {
         entry.ssh.end();
       } catch {}
+      if (notify) notifyEvicted(error);
     };
 
-    entry.client.onDisconnect(() => evict(false));
+    entry.client.onDisconnect((error) => evict(false, true, error));
     entry.ssh.once("close", () => evict(true));
-    entry.ssh.once("error", () => evict(true));
+    entry.ssh.once("error", (error) => evict(true, true, error instanceof Error ? error : new Error(String(error))));
     entry.dispose = evict;
   }
 }
@@ -493,6 +578,60 @@ function normalizeBufferedEvent(
     category: record.category,
     payload,
   };
+}
+
+function normalizeAdeActionRegistry(value: unknown): AdeActionRegistryEntry[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Remote ADE service did not return an action registry.");
+  }
+  const record = value as Record<string, unknown>;
+  if (record.ok === false) {
+    const error =
+      record.error &&
+      typeof record.error === "object" &&
+      !Array.isArray(record.error)
+        ? (record.error as Record<string, unknown>)
+        : {};
+    throw new Error(
+      typeof error.message === "string"
+        ? error.message
+        : "Remote ADE service action registry lookup failed.",
+    );
+  }
+  const rawActions = Array.isArray(record.actions) ? record.actions : null;
+  if (!rawActions) {
+    throw new Error("Remote ADE service did not return an action registry.");
+  }
+
+  const grouped = new Map<string, Map<string, { name: string; description?: string }>>();
+  for (const raw of rawActions) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const actionRecord = raw as Record<string, unknown>;
+    const domain =
+      typeof actionRecord.domain === "string" ? actionRecord.domain.trim() : "";
+    const action =
+      typeof actionRecord.action === "string" ? actionRecord.action.trim() : "";
+    if (!domain || !action) continue;
+    const description =
+      typeof actionRecord.description === "string" && actionRecord.description.trim()
+        ? actionRecord.description.trim()
+        : undefined;
+    const domainActions = grouped.get(domain) ?? new Map<string, { name: string; description?: string }>();
+    domainActions.set(action, {
+      name: action,
+      ...(description ? { description } : {}),
+    });
+    grouped.set(domain, domainActions);
+  }
+
+  return [...grouped.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([domain, actions]) => ({
+      domain,
+      actions: [...actions.values()].sort((left, right) =>
+        left.name.localeCompare(right.name),
+      ),
+    }));
 }
 
 async function subscribeToRuntimeEvents(

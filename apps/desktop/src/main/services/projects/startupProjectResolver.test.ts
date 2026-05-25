@@ -99,4 +99,31 @@ describe("normalizeStartupProjectState", () => {
     ]);
     expect(result.changed).toBe(true);
   });
+
+  it("preserves the last remote project binding across startup cleanup", () => {
+    const lastRemoteProjectBinding = {
+      kind: "remote" as const,
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Studio",
+      projectId: "project-1",
+      rootPath: "/Users/arul/ADE",
+      displayName: "ADE",
+      updatedAt: "2026-05-10T00:00:00.000Z",
+    };
+
+    const result = normalizeStartupProjectState({
+      saved: {
+        lastProjectRoot: "lost-project",
+        lastRemoteProjectBinding,
+        recentProjects: [],
+      },
+      isLikelyRepoRoot,
+      normalizeProjectPath,
+      nowIso,
+    });
+
+    expect(result.state.lastProjectRoot).toBeUndefined();
+    expect(result.state.lastRemoteProjectBinding).toEqual(lastRemoteProjectBinding);
+  });
 });

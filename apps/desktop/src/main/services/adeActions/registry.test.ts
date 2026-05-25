@@ -151,6 +151,13 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     }
   });
 
+  it("exposes mobile push settings through runtime APNs actions", () => {
+    const actions = ADE_ACTION_ALLOWLIST.notifications_apns ?? [];
+    for (const name of ["getStatus", "saveConfig", "uploadKey", "clearKey", "sendTestPush"]) {
+      expect(actions).toContain(name);
+    }
+  });
+
   it("exposes lane.listSnapshots for runtime-backed lane snapshot parity", () => {
     const actions = ADE_ACTION_ALLOWLIST.lane ?? [];
     expect(actions).toContain("listSnapshots");
@@ -199,6 +206,7 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(chatActions).toContain("ensureCtoSession");
     expect(chatActions).toContain("ensureAgentIdentitySession");
     expect(chatActions).toContain("modelCatalog");
+    expect(chatActions).toContain("codexOpenInCli");
     expect(ADE_ACTION_ALLOWLIST.cto_state ?? []).toContain("runProjectScan");
   });
 
@@ -702,10 +710,37 @@ describe("runtime AI actions", () => {
     } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
     const aiService = getAdeActionDomainServices(runtime).ai as Record<string, unknown>;
 
-    for (const action of ["getStatus", "getOpenCodeRuntimeDiagnostics", "storeApiKey", "deleteApiKey", "listApiKeys"]) {
+    for (const action of [
+      "getStatus",
+      "getOpenCodeRuntimeDiagnostics",
+      "isOpenCodeInstalled",
+      "cursorCloudStreamRun",
+      "storeApiKey",
+      "deleteApiKey",
+      "listApiKeys",
+    ]) {
       expect(aiService[action]).toEqual(expect.any(Function));
       expect(listAllowedAdeActionNames("ai", aiService)).toContain(action);
     }
+  });
+
+  it("exposes Cursor Cloud stream subscription tokens through the runtime AI service", () => {
+    const runtime = {
+      aiIntegrationService: {
+        getDailyUsageBatch: vi.fn(() => new Map()),
+        getFeatureFlag: vi.fn(),
+        getDailyBudgetLimit: vi.fn(),
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const aiService = getAdeActionDomainServices(runtime).ai as {
+      cursorCloudStreamRun(args?: { agentId?: string; runId?: string }): {
+        subscriptionId: string;
+      };
+    };
+
+    expect(
+      aiService.cursorCloudStreamRun({ agentId: "agent-1", runId: "run-1" }),
+    ).toEqual({ subscriptionId: "cursor-cloud-stream-agent-1-run-1" });
   });
 
   it("returns IPC-shaped AI status rows from the runtime AI service", async () => {

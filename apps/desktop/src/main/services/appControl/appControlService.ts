@@ -1548,13 +1548,17 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     // A backgrounded or slow renderer can sit on this for 15s otherwise, and
     // the caller (getSnapshot) almost always has the option to fall back to a
     // live frame on the next tick.
+    let captureTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
     const captureTimeout = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error("Page.captureScreenshot timed out after 3000ms.")), 3000);
+      captureTimeoutHandle = setTimeout(() => reject(new Error("Page.captureScreenshot timed out after 3000ms.")), 3000);
+      captureTimeoutHandle.unref?.();
     });
     const response = await Promise.race([
       client.send<CdpScreenshotResponse>("Page.captureScreenshot", { format: "png", fromSurface: true }),
       captureTimeout,
-    ]);
+    ]).finally(() => {
+      if (captureTimeoutHandle) clearTimeout(captureTimeoutHandle);
+    });
     const buffer = Buffer.from(response.data, "base64");
     const dimensions = pngDimensions(buffer) ?? { width: 0, height: 0 };
     return {

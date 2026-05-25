@@ -13,6 +13,7 @@ import net from "node:net";
 import path from "node:path";
 import {
   buildRuntimeCliForDevClient,
+  assertRuntimeFresh,
   canConnectToSocket,
   cliPath,
   devRuntimeEnv,
@@ -438,9 +439,10 @@ async function main() {
       throw new Error(`No dev runtime is listening at ${options.socketPath}. Start it with npm run dev:runtime.`);
     }
     await buildRuntimeCliForDevClient(options.skipRuntimeBuild, options.socketPath);
+    await assertRuntimeFresh(options.socketPath, options.projectRoot);
   } else {
     await buildRuntimeCliForDevClient(options.skipRuntimeBuild, options.socketPath);
-    await ensureRuntime(options.socketPath);
+    await ensureRuntime(options.socketPath, options.projectRoot);
   }
 
   let pty;

@@ -136,6 +136,7 @@ import type {
   GitActionResult,
   GitCherryPickArgs,
   GitCommitArgs,
+  GitCreateTagArgs,
   GitGenerateCommitMessageArgs,
   GitGenerateCommitMessageResult,
   GitCommitSummary,
@@ -150,7 +151,10 @@ import type {
   GitGetUserIdentityArgs,
   GitUserIdentity,
   GitCheckoutBranchArgs,
+  GitHeadChangeActionArgs,
+  GitPullArgs,
   GitPushArgs,
+  GitResetCommitArgs,
   GitUpstreamSyncStatus,
   GitRevertArgs,
   GitStashPushArgs,
@@ -614,7 +618,6 @@ import type {
   CursorCloudRepository,
   CursorCloudOpenChatRequest,
   CursorCloudOpenChatResult,
-  CursorCloudStreamRunRequest,
   CursorCloudStreamRunResult,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
@@ -8138,6 +8141,14 @@ export function registerIpc({
     return await ctx.gitService.getCommitMessage(arg);
   });
 
+  ipcMain.handle(
+    IPC.gitGetCommit,
+    async (_event, arg: { laneId: string; commitSha: string }): Promise<GitCommitSummary | null> => {
+      const ctx = getCtx();
+      return await ctx.gitService.getCommit(arg);
+    },
+  );
+
   ipcMain.handle(IPC.gitRevertCommit, async (_event, arg: GitRevertArgs): Promise<GitActionResult> => {
     const ctx = getCtx();
     return ctx.gitService.revertCommit(arg);
@@ -8146,6 +8157,16 @@ export function registerIpc({
   ipcMain.handle(IPC.gitCherryPickCommit, async (_event, arg: GitCherryPickArgs): Promise<GitActionResult> => {
     const ctx = getCtx();
     return ctx.gitService.cherryPickCommit(arg);
+  });
+
+  ipcMain.handle(IPC.gitCreateTag, async (_event, arg: GitCreateTagArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.createTag(arg);
+  });
+
+  ipcMain.handle(IPC.gitResetToCommit, async (_event, arg: GitResetCommitArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.resetToCommit(arg);
   });
 
   ipcMain.handle(IPC.gitStashPush, async (_event, arg: GitStashPushArgs): Promise<GitActionResult> => {
@@ -8183,9 +8204,19 @@ export function registerIpc({
     return ctx.gitService.fetch(arg);
   });
 
-  ipcMain.handle(IPC.gitPull, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
+  ipcMain.handle(IPC.gitPull, async (_event, arg: GitPullArgs): Promise<GitActionResult> => {
     const ctx = getCtx();
     return ctx.gitService.pull(arg);
+  });
+
+  ipcMain.handle(IPC.gitUndoLastHeadChange, async (_event, arg: GitHeadChangeActionArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.undoLastHeadChange(arg);
+  });
+
+  ipcMain.handle(IPC.gitRedoLastHeadChange, async (_event, arg: GitHeadChangeActionArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.redoLastHeadChange(arg);
   });
 
   ipcMain.handle(IPC.gitGetSyncStatus, async (_event, arg: { laneId: string }): Promise<GitUpstreamSyncStatus> => {
@@ -9519,6 +9550,7 @@ export function registerIpc({
       : ctx.operationService.list({
           laneId,
           kind,
+          ...(status && status !== "all" ? { status } : {}),
           limit: typeof arg?.limit === "number" ? arg.limit : 1000
         });
     const filteredRows =
@@ -10264,31 +10296,6 @@ export function registerIpc({
       },
       local: snapshot.local ?? {},
     });
-  };
-
-  // Re-run ApnsService.configure when we have both a stored key and valid config.
-  const reconfigureApnsIfReady = (): void => {
-    const ctx = getCtx();
-    const effective = ctx.projectConfigService?.get?.()?.effective;
-    const apnsConfig = effective?.notifications?.apns ?? null;
-    if (!ctx.apnsService || !ctx.apnsKeyStore) return;
-    if (!apnsConfig?.enabled) return;
-    if (!apnsConfig.keyId || !apnsConfig.teamId || !apnsConfig.bundleId) return;
-    if (!ctx.apnsKeyStore.has()) return;
-    try {
-      const pem = ctx.apnsKeyStore.load();
-      if (!pem) return;
-      ctx.apnsService.configure({
-        keyP8Pem: pem,
-        keyId: apnsConfig.keyId,
-        teamId: apnsConfig.teamId,
-        bundleId: apnsConfig.bundleId,
-        env: apnsConfig.env === "production" ? "production" : "sandbox",
-      });
-    } catch (error) {
-      // Surface to the caller via status; don't crash the handler.
-      console.warn("apns.reconfigure_failed", error);
-    }
   };
 
   ipcMain.handle(IPC.notificationsApnsGetStatus, async (): Promise<ApnsBridgeStatus> => {

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -28,7 +29,7 @@ vi.mock("node:child_process", () => ({
 }));
 
 const embedded = vi.hoisted(() => {
-  const requests: Array<{ jsonrpc: string; id: number; method: string; params?: unknown }> = [];
+  const requests: Array<{ jsonrpc: string; id: number; method: string; params?: unknown; envRole?: string }> = [];
   const runtime = {
     dispose: vi.fn(),
     agentChatService: {
@@ -37,7 +38,7 @@ const embedded = vi.hoisted(() => {
   };
   const handler = Object.assign(
     vi.fn(async (message: { jsonrpc: string; id: number; method: string; params?: unknown }) => {
-      requests.push(message);
+      requests.push({ ...message, envRole: process.env.ADE_DEFAULT_ROLE });
       return { ok: true, method: message.method };
     }),
     { dispose: vi.fn() },
@@ -70,6 +71,7 @@ const project: ProjectLaunchContext = {
 const originalArgv1 = process.argv[1];
 const originalAdeHome = process.env.ADE_HOME;
 const originalAdeRpcSocketPath = process.env.ADE_RPC_SOCKET_PATH;
+const originalAdeDefaultRole = process.env.ADE_DEFAULT_ROLE;
 
 function restoreEnv(): void {
   process.argv[1] = originalArgv1;
@@ -78,6 +80,8 @@ function restoreEnv(): void {
   if (originalAdeRpcSocketPath === undefined)
     delete process.env.ADE_RPC_SOCKET_PATH;
   else process.env.ADE_RPC_SOCKET_PATH = originalAdeRpcSocketPath;
+  if (originalAdeDefaultRole === undefined) delete process.env.ADE_DEFAULT_ROLE;
+  else process.env.ADE_DEFAULT_ROLE = originalAdeDefaultRole;
 }
 
 function useMissingMachineSocket(): string {
@@ -92,9 +96,16 @@ function mockAttachedClient(): {
   onNotification: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
 } {
+  const runtimeBuildHash = (() => {
+    const entrypoint = process.argv[1];
+    if (!entrypoint || !fs.existsSync(entrypoint)) return null;
+    return createHash("sha256").update(fs.readFileSync(entrypoint)).digest("hex");
+  })();
   const client = {
     request: vi.fn(async (method: string) => {
-      if (method === "ade/initialize") return {};
+      if (method === "ade/initialize") return {
+        runtimeInfo: { defaultRole: "cto", projectRoot: project.projectRoot, buildHash: runtimeBuildHash },
+      };
       if (method === "ade/initialized") return null;
       return { ok: true };
     }),
@@ -151,6 +162,53 @@ describe("connectToAde embedded mode", () => {
     expect(new Set(embedded.requests.map((request) => request.id)).size).toBe(4);
   });
 
+  it("injects a trusted CTO role while initializing the direct embedded runtime", async () => {
+    delete process.env.ADE_DEFAULT_ROLE;
+
+    const connection = await connectToAde({
+      project,
+      forceEmbedded: true,
+    });
+    await connection.close();
+
+    const initializeRequest = embedded.requests.find((request) => request.method === "ade/initialize");
+    expect(initializeRequest?.envRole).toBe("cto");
+    expect(initializeRequest?.params).toMatchObject({
+      identity: {
+        role: "cto",
+      },
+    });
+    expect(process.env.ADE_DEFAULT_ROLE).toBeUndefined();
+  });
+
+  it("treats an invalid embedded default role as missing during initialization", async () => {
+    process.env.ADE_DEFAULT_ROLE = "not-a-role";
+
+    const connection = await connectToAde({
+      project,
+      forceEmbedded: true,
+    });
+    await connection.close();
+
+    const initializeRequest = embedded.requests.find((request) => request.method === "ade/initialize");
+    expect(initializeRequest?.envRole).toBe("cto");
+    expect(process.env.ADE_DEFAULT_ROLE).toBe("not-a-role");
+  });
+
+  it("treats a non-CTO embedded default role as stale during initialization", async () => {
+    process.env.ADE_DEFAULT_ROLE = "agent";
+
+    const connection = await connectToAde({
+      project,
+      forceEmbedded: true,
+    });
+    await connection.close();
+
+    const initializeRequest = embedded.requests.find((request) => request.method === "ade/initialize");
+    expect(initializeRequest?.envRole).toBe("cto");
+    expect(process.env.ADE_DEFAULT_ROLE).toBe("agent");
+  });
+
   it("does not silently fall back to embedded mode when socket attach fails", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-missing-socket-"));
     const socketPath = path.join(tmpDir, "missing.sock");
@@ -161,6 +219,41 @@ describe("connectToAde embedded mode", () => {
     })).rejects.toThrow(/ade code --embedded/);
 
     expect(embedded.createAdeRuntime).not.toHaveBeenCalled();
+  });
+
+  it("rejects a direct socket whose runtime role is stale", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-stale-role-"));
+    const socketPath = path.join(tmpDir, "ade.sock");
+    const requests: string[] = [];
+    const server = net.createServer((socket) => {
+      let buffer = "";
+      socket.on("data", (chunk) => {
+        buffer += chunk.toString("utf8");
+        while (true) {
+          const newline = buffer.indexOf("\n");
+          if (newline < 0) return;
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (!line) continue;
+          const request = JSON.parse(line) as { id: number; method: string };
+          requests.push(request.method);
+          const result = request.method === "ade/initialize"
+            ? { runtimeInfo: { defaultRole: "agent", projectRoot: project.projectRoot, pid: 123 } }
+            : null;
+          socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result })}\n`);
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+
+    await expect(connectToAde({
+      project,
+      socketPath,
+    })).rejects.toThrow(/stale .*default role agent is not cto/);
+
+    expect(requests).toEqual(["ade/initialize", "ade/initialized"]);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it("registers the project and injects projectId when attached to the machine daemon", async () => {
@@ -182,7 +275,7 @@ describe("connectToAde embedded mode", () => {
           const result = (() => {
             if (request.method === "ade/initialize") {
               return {
-                runtimeInfo: { multiProject: true },
+                runtimeInfo: { multiProject: true, defaultRole: "cto" },
                 capabilities: { projects: true },
               };
             }
@@ -242,7 +335,7 @@ describe("connectToAde embedded mode", () => {
           const result = (() => {
             if (request.method === "ade/initialize") {
               return {
-                runtimeInfo: { multiProject: true },
+                runtimeInfo: { multiProject: true, defaultRole: "cto" },
                 capabilities: { projects: true },
               };
             }
@@ -330,8 +423,12 @@ describe("connectToAde embedded mode", () => {
     expect(spawnCall?.[2]).toMatchObject({
       detached: true,
       stdio: "ignore",
-      env: expect.objectContaining({ ADE_RPC_SOCKET_PATH: socketPath }),
+      env: expect.objectContaining({
+        ADE_DEFAULT_ROLE: "cto",
+        ADE_RPC_SOCKET_PATH: socketPath,
+      }),
     });
+    expect((spawnCall?.[2] as { env?: Record<string, string> } | undefined)?.env?.ADE_RUNTIME_BUILD_HASH).toBeUndefined();
     expect(childProcess.child.unref).toHaveBeenCalledTimes(1);
     expect(client.close).toHaveBeenCalledTimes(1);
   });
@@ -343,6 +440,7 @@ describe("connectToAde embedded mode", () => {
     );
     const entrypoint = path.join(entrypointDir, "cli.cjs");
     fs.writeFileSync(entrypoint, "#!/usr/bin/env node\n");
+    const expectedBuildHash = createHash("sha256").update(fs.readFileSync(entrypoint)).digest("hex");
     process.argv[1] = entrypoint;
     mockAttachedClient();
 
@@ -358,6 +456,13 @@ describe("connectToAde embedded mode", () => {
       "--socket",
       socketPath,
     ]);
+    expect(spawnCall?.[2]).toMatchObject({
+      env: expect.objectContaining({
+        ADE_DEFAULT_ROLE: "cto",
+        ADE_RPC_SOCKET_PATH: socketPath,
+        ADE_RUNTIME_BUILD_HASH: expectedBuildHash,
+      }),
+    });
   });
 });
 

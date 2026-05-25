@@ -245,8 +245,17 @@ iOS service files (`apps/ios/ADE/Services/`):
 Notification services (`apps/desktop/src/main/services/notifications/`):
 
 - `apnsService.ts` — HTTP/2 APNs client, ES256 JWT signing,
-  `ApnsKeyStore` (encrypted `.p8` via Electron `safeStorage`),
+  `ApnsKeyStore` (`.p8` persisted via Electron `safeStorage` in the
+  desktop process or an `EncryptedFileCredentialStore` rooted at
+  `.ade/secrets/` when the daemon runs headless on a remote machine),
   `Http2ApnsTransport` (injectable via `ApnsTransport` for tests).
+- `apnsBridgeService.ts` — exposes the `notifications_apns` ADE action
+  domain (`getStatus`, `saveConfig`, `uploadKey`, `clearKey`,
+  `sendTestPush`) so a desktop window bound to a remote runtime
+  configures APNs against the remote daemon instead of the local
+  Electron process. ade-cli `bootstrap.ts` constructs the service +
+  key store and re-applies any persisted config on startup so push
+  works without a desktop attached.
 - `notificationMapper.ts` — pure domain-event → `MappedNotification`
   mapping across 13 categories in 4 families (chat, cto, pr, system).
 - `notificationEventBus.ts` — `publishChatEvent`, `publishPrEvent`,

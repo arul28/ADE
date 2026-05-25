@@ -44,6 +44,9 @@ import type {
   SyncProjectSwitchResultPayload,
 } from "../../desktop/src/shared/types/sync";
 import { MACOS_VM_PHASES } from "../../desktop/src/shared/types/macosVm";
+import type { AdeServiceCommand } from "./serviceManager/common";
+import { normalizeAdeRuntimeRole, resolveAdeDefaultRole } from "./runtimeRoles";
+import type { AdeRuntime } from "./bootstrap";
 
 type JsonObject = Record<string, unknown>;
 
@@ -120,6 +123,9 @@ type FormatterId =
   | "macos-vm-selection"
   | "terminal-list"
   | "terminal-read"
+  | "history-list"
+  | "history-commits"
+  | "history-show"
   | "actions-list"
   | "action-result"
   | "automation-run-detail";
@@ -134,6 +140,14 @@ type CliPlan =
       summary?: "status" | "doctor" | "auth";
       formatter?: FormatterId;
       preferHeadless?: boolean;
+      historyOperationId?: string;
+      historyStatusFilter?: string;
+      historyListFilters?: {
+        laneId?: string | null;
+        kind?: string | null;
+        status?: string;
+      };
+      writeResultPath?: string;
     }
   | { kind: "ade-code"; rest: string[] }
   | { kind: "desktop"; rest: string[] }
@@ -390,6 +404,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | read | write | signal     Control the active in-chat terminal
+    $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
     $ ade agent spawn --lane <id> --prompt <text>   Launch an agent session in ADE
     $ ade cto state | chats                         Operate CTO state and Work chats
@@ -954,6 +969,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade git status --full --lane <lane> --text    Show full lane status, diff, and conflict state
     $ ade git fetch --lane <lane>                   Fetch remote refs
     $ ade git pull --lane <lane>                    Pull with ADE's ff-only lane operation
+    $ ade git pull --lane <lane> --rebase           Pull and replay local commits on upstream
+    $ ade git pull --lane <lane> --merge            Pull and merge upstream into the lane
+    $ ade git undo --lane <lane>                    Reset to the previous recorded HEAD
+    $ ade git redo --lane <lane>                    Restore the last undone HEAD
     $ ade git sync --lane <lane> --rebase --base main
                                                     Sync the lane with its base branch
     $ ade git stage --lane <lane> src/file.ts       Stage one file
@@ -985,6 +1004,29 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Generic operation logs are not persisted by the operation table. Use
   "ade tests logs", "ade run logs", or terminal/app-control log commands for
   surfaces that own logs.
+`,
+  history: `${ADE_BANNER}
+  History
+
+  Inspect ADE's persisted operation timeline and lane commit history.
+
+    $ ade history list --text                        List recent operations (default limit 50)
+    $ ade history list --lane <lane> --kind push     Filter operations by lane and kind
+    $ ade history list --status succeeded --text     Filter by terminal status
+    $ ade history show --id <operation-id> --text    Show one operation record
+    $ ade history commits --lane <lane> --text       List recent git commits for a lane
+    $ ade history export --out history.json          Export filtered operations as JSON
+    $ ade history export --lane <lane>               Print export JSON to stdout
+
+  Flags:
+    --lane, --lane-id       Filter or scope to one lane
+    --kind                  Filter operations by kind (push, commit, merge, ...)
+    --status                Filter operations: running|succeeded|failed|canceled|all
+    --limit                 Max rows (default 50; export default 1000)
+    --id                    Operation id for show
+    --out                   Write export JSON to a file instead of stdout
+    --text                  Human-readable table output when a formatter exists
+    --json                  Machine-readable JSON (default; pretty unless --no-pretty)
 `,
   diff: `${ADE_BANNER}
   Diffs
@@ -2020,10 +2062,7 @@ function parseCliArgs(argv: string[]): ParsedCli {
   const options: GlobalOptions = {
     projectRoot: null,
     workspaceRoot: null,
-    role:
-      (asString(process.env.ADE_DEFAULT_ROLE) as
-        | GlobalOptions["role"]
-        | null) ?? "agent",
+    role: resolveAdeDefaultRole(process.env.ADE_DEFAULT_ROLE, "agent"),
     headless: parseBooleanEnv(process.env.ADE_CLI_HEADLESS),
     requireSocket: false,
     pretty: true,
@@ -2137,15 +2176,8 @@ function parseCliArgs(argv: string[]): ParsedCli {
 }
 
 function parseRole(value: string): GlobalOptions["role"] {
-  if (
-    value === "cto" ||
-    value === "orchestrator" ||
-    value === "agent" ||
-    value === "external" ||
-    value === "evaluator"
-  ) {
-    return value;
-  }
+  const role = normalizeAdeRuntimeRole(value);
+  if (role) return role;
   throw new CliUsageError(
     "--role must be one of cto, orchestrator, agent, external, or evaluator.",
   );
@@ -2845,11 +2877,40 @@ function buildGitPlan(args: string[]): CliPlan {
       label: "git fetch",
       steps: [actionCallStep("result", "git_fetch", withLane())],
     };
-  if (sub === "pull")
+  if (sub === "pull") {
+    const explicitMode = readValue(args, ["--mode"]);
+    const flagModes: Array<"ff-only" | "rebase" | "merge"> = [];
+    if (readFlag(args, ["--ff-only"])) flagModes.push("ff-only");
+    if (readFlag(args, ["--rebase"])) flagModes.push("rebase");
+    if (readFlag(args, ["--merge"])) flagModes.push("merge");
+    if (flagModes.length > 1) {
+      throw new CliUsageError("Choose only one pull mode: --ff-only, --rebase, or --merge.");
+    }
+    if (explicitMode && flagModes.length > 0) {
+      throw new CliUsageError("Choose pull mode with either --mode or a mode flag, not both.");
+    }
+    const rawMode: string | undefined = flagModes[0] ?? explicitMode;
+    const mode = rawMode === "ff_only" ? "ff-only" : rawMode;
+    if (mode && mode !== "ff-only" && mode !== "rebase" && mode !== "merge") {
+      throw new CliUsageError("--mode must be ff-only, rebase, or merge.");
+    }
     return {
       kind: "execute",
       label: "git pull",
-      steps: [actionCallStep("result", "git_pull", withLane())],
+      steps: [actionCallStep("result", "git_pull", withLane(mode ? { mode } : {}))],
+    };
+  }
+  if (sub === "undo")
+    return {
+      kind: "execute",
+      label: "git undo",
+      steps: [actionCallStep("result", "git_undo_last_head_change", withLane())],
+    };
+  if (sub === "redo")
+    return {
+      kind: "execute",
+      label: "git redo",
+      steps: [actionCallStep("result", "git_redo_last_head_change", withLane())],
     };
   if (sub === "sync") {
     const explicitMode = readValue(args, ["--mode"]);
@@ -5022,6 +5083,112 @@ function buildCliSessionStartPlan(
     label: "shell start cli",
     steps: [actionCallStep("result", "start_cli_session", input)],
   };
+}
+
+function collectHistoryListArgs(
+  args: string[],
+  filters: { laneId?: string | null; kind?: string | null; status?: string | null } = {},
+): JsonObject {
+  return collectGenericObjectArgs(args, {
+    ...(filters.laneId ? { laneId: filters.laneId } : {}),
+    ...(filters.kind ? { kind: filters.kind } : {}),
+    ...(filters.status && filters.status !== "all" ? { status: filters.status } : {}),
+    limit: readIntOption(args, ["--limit"], 50),
+  });
+}
+
+function buildHistoryPlan(args: string[]): CliPlan {
+  const sub = firstPositional(args) ?? "list";
+  if (sub === "actions")
+    return {
+      kind: "execute",
+      label: "history actions",
+      steps: [listActionsStep("actions", "operation")],
+    };
+  const laneId = readLaneId(args);
+  const kind = readValue(args, ["--kind"]);
+  const statusFilter = readValue(args, ["--status"]) ?? undefined;
+  const historyListFilters = {
+    laneId: laneId ?? null,
+    kind: kind ?? null,
+    status: statusFilter ?? "all",
+  };
+  const historyMeta = {
+    historyListFilters,
+    ...(statusFilter ? { historyStatusFilter: statusFilter } : {}),
+  };
+  const listFilters = { laneId, kind, status: statusFilter };
+  if (sub === "list" || sub === "ls")
+    return {
+      kind: "execute",
+      label: "history list",
+      formatter: "history-list",
+      steps: [
+        actionStep(
+          "result",
+          "operation",
+          "list",
+          collectHistoryListArgs(args, listFilters),
+        ),
+      ],
+      ...historyMeta,
+    };
+  if (sub === "show" || sub === "get" || sub === "view") {
+    const operationId = requireValue(
+      readValue(args, ["--id", "--operation", "--operation-id"]) ??
+        firstPositional(args),
+      "id",
+    );
+    return {
+      kind: "execute",
+      label: "history show",
+      formatter: "history-show",
+      historyOperationId: operationId,
+      steps: [
+        actionStep("result", "operation", "get", {
+          operationId,
+        }),
+      ],
+    };
+  }
+  if (sub === "commits" || sub === "log") {
+    const commitsLaneId = requireValue(laneId, "laneId");
+    return {
+      kind: "execute",
+      label: "history commits",
+      formatter: "history-commits",
+      steps: [
+        actionStep(
+          "result",
+          "git",
+          "listRecentCommits",
+          collectGenericObjectArgs(args, {
+            laneId: commitsLaneId,
+            limit: readIntOption(args, ["--limit"], 50),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "export") {
+    const outPath = readValue(args, ["--out", "--output"]);
+    const exportLimit = Math.max(
+      1,
+      Math.min(1000, readIntOption(args, ["--limit"], 1000) ?? 1000),
+    );
+    const listArgs = collectHistoryListArgs(args, listFilters);
+    listArgs.limit = exportLimit;
+    return {
+      kind: "execute",
+      label: "history export",
+      steps: [actionStep("result", "operation", "list", listArgs)],
+      ...(outPath ? { writeResultPath: outPath } : {}),
+      ...historyMeta,
+    };
+  }
+  throw new CliUsageError(
+    "history supports list, show, commits, export, or actions.",
+  );
 }
 
 function buildTerminalPlan(args: string[]): CliPlan {
@@ -9043,6 +9210,7 @@ function buildCliPlan(command: string[]): CliPlan {
   if (primary === "shell" || primary === "pty") return buildShellPlan(args);
   if (primary === "terminal" || primary === "term")
     return buildTerminalPlan(args);
+  if (primary === "history") return buildHistoryPlan(args);
   if (primary === "chat" || primary === "chats" || primary === "work")
     return buildChatPlan(args);
   if (primary === "agent" || primary === "agents") return buildAgentPlan(args);
@@ -10438,61 +10606,95 @@ async function createConnection(
   }
 
   const previousRole = process.env.ADE_DEFAULT_ROLE;
-  process.env.ADE_DEFAULT_ROLE = options.role;
-  const [{ createAdeRuntime }, { createAdeRpcRequestHandler }] =
-    await Promise.all([import("./bootstrap"), import("./adeRpcServer")]);
-  const runtime = await createAdeRuntime({
-    projectRoot: roots.projectRoot,
-    workspaceRoot: roots.workspaceRoot,
-  });
-  const createHandler = () =>
-    createAdeRpcRequestHandler({
-      runtime,
-      serverVersion: VERSION,
-      onActionsListChanged: () => {},
-    });
-  const handler = createHandler();
   const previousRpcUrl = process.env.ADE_RPC_URL;
+  let roleOwnedByConnection = false;
+  process.env.ADE_DEFAULT_ROLE = options.role;
+  const restoreRole = () => {
+    if (roleOwnedByConnection) return;
+    if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
+    else process.env.ADE_DEFAULT_ROLE = previousRole;
+  };
+  const restoreRpcUrl = () => {
+    if (previousRpcUrl == null) delete process.env.ADE_RPC_URL;
+    else process.env.ADE_RPC_URL = previousRpcUrl;
+  };
+  let runtime: AdeRuntime | null = null;
+  let handler: (JsonRpcHandler & { dispose?: () => void }) | null = null;
   let stopHeadlessSocket: (() => void) | null = null;
   let stopHeadlessTcp: (() => void) | null = null;
   try {
-    const tcp = await startHeadlessRpcTcpServer({ createHandler });
-    process.env.ADE_RPC_URL = tcp.url;
-    stopHeadlessTcp = tcp.stop;
-  } catch {
-    stopHeadlessTcp = null;
-  }
-  try {
-    stopHeadlessSocket = await startHeadlessRpcSocketServers({
+    const [{ createAdeRuntime }, { createAdeRpcRequestHandler }] =
+      await Promise.all([import("./bootstrap"), import("./adeRpcServer")]);
+    runtime = await createAdeRuntime({
       projectRoot: roots.projectRoot,
-      socketPath: legacySocketPath,
-      createHandler,
+      workspaceRoot: roots.workspaceRoot,
     });
-  } catch {
-    stopHeadlessSocket = null;
-  }
+    const createHandler = () =>
+      createAdeRpcRequestHandler({
+        runtime: runtime!,
+        serverVersion: VERSION,
+      });
+    handler = createHandler();
+    try {
+      const tcp = await startHeadlessRpcTcpServer({ createHandler });
+      process.env.ADE_RPC_URL = tcp.url;
+      stopHeadlessTcp = tcp.stop;
+    } catch {
+      stopHeadlessTcp = null;
+    }
+    try {
+      stopHeadlessSocket = await startHeadlessRpcSocketServers({
+        projectRoot: roots.projectRoot,
+        socketPath: legacySocketPath,
+        createHandler,
+      });
+    } catch {
+      stopHeadlessSocket = null;
+    }
 
-  const inProcess = new InProcessJsonRpcClient(handler, runtime, previousRole);
-  const connection: CliConnection = {
-    mode: "headless",
-    projectRoot: roots.projectRoot,
-    workspaceRoot: roots.workspaceRoot,
-    socketPath: legacySocketPath,
-    request: (method, params) => inProcess.request(method, params),
-    close: () => {
-      try {
-        stopHeadlessSocket?.();
-      } catch {}
-      try {
-        stopHeadlessTcp?.();
-      } catch {}
-      if (previousRpcUrl == null) delete process.env.ADE_RPC_URL;
-      else process.env.ADE_RPC_URL = previousRpcUrl;
-      inProcess.close();
-    },
-  };
-  await initializeConnection(connection, options);
-  return connection;
+    const inProcess = new InProcessJsonRpcClient(handler, runtime, previousRole);
+    const connection: CliConnection = {
+      mode: "headless",
+      projectRoot: roots.projectRoot,
+      workspaceRoot: roots.workspaceRoot,
+      socketPath: legacySocketPath,
+      request: (method, params) => inProcess.request(method, params),
+      close: () => {
+        try {
+          stopHeadlessSocket?.();
+        } catch {}
+        try {
+          stopHeadlessTcp?.();
+        } catch {}
+        restoreRpcUrl();
+        inProcess.close();
+      },
+    };
+    roleOwnedByConnection = true;
+    try {
+      await initializeConnection(connection, options);
+      return connection;
+    } catch (error) {
+      connection.close();
+      throw error;
+    }
+  } catch (error) {
+    try {
+      stopHeadlessSocket?.();
+    } catch {}
+    try {
+      stopHeadlessTcp?.();
+    } catch {}
+    try {
+      handler?.dispose?.();
+    } catch {}
+    try {
+      runtime?.dispose();
+    } catch {}
+    restoreRpcUrl();
+    restoreRole();
+    throw error;
+  }
 }
 
 function buildInitializeParams(
@@ -10580,14 +10782,82 @@ async function resolveMachineRuntimeSocketPath(
   return normalizeRuntimeSocketPath(rawSocketPath);
 }
 
-function readRuntimeInfoVersion(value: unknown): string | null {
-  if (!isRecord(value) || !isRecord(value.runtimeInfo)) return null;
-  return asString(value.runtimeInfo.version);
+type MachineRuntimeInfo = {
+  version: string | null;
+  buildHash: string | null;
+  defaultRole: string | null;
+  projectRoot: string | null;
+  pid: number | null;
+};
+
+function readMachineRuntimeInfo(value: unknown): MachineRuntimeInfo {
+  if (!isRecord(value) || !isRecord(value.runtimeInfo)) {
+    return {
+      version: null,
+      buildHash: null,
+      defaultRole: null,
+      projectRoot: null,
+      pid: null,
+    };
+  }
+  const pid = value.runtimeInfo.pid;
+  return {
+    version: asString(value.runtimeInfo.version)?.trim() || null,
+    buildHash: asString(value.runtimeInfo.buildHash)?.trim() || null,
+    defaultRole: normalizeAdeRuntimeRole(value.runtimeInfo.defaultRole),
+    projectRoot: asString(value.runtimeInfo.projectRoot)?.trim() || null,
+    pid:
+      typeof pid === "number" && Number.isFinite(pid) && pid > 0
+        ? Math.floor(pid)
+        : null,
+  };
 }
 
-function shouldReplaceMachineRuntimeVersion(runtimeVersion: string | null): boolean {
-  if (VERSION === PLACEHOLDER_VERSION) return false;
-  return runtimeVersion == null || runtimeVersion !== VERSION;
+function canRuntimeDefaultRoleServe(
+  defaultRole: MachineRuntimeInfo["defaultRole"],
+  requestedRole: GlobalOptions["role"],
+): boolean {
+  if (requestedRole === "external") return true;
+  if (!defaultRole) return false;
+  if (defaultRole === "cto") return true;
+  if (defaultRole === "orchestrator") return requestedRole !== "cto";
+  if (defaultRole === "agent") return requestedRole === "agent";
+  if (defaultRole === "evaluator") return requestedRole === "evaluator";
+  return false;
+}
+
+function machineRuntimeMismatchReason(
+  runtimeInfo: MachineRuntimeInfo,
+  expectedBuildHash: string | null,
+  expectedDefaultRole: GlobalOptions["role"],
+): string | null {
+  const runtimeVersion = runtimeInfo.version;
+  const sourceCliTalkingToReleasedRuntime =
+    VERSION === PLACEHOLDER_VERSION &&
+    Boolean(runtimeVersion) &&
+    runtimeVersion !== PLACEHOLDER_VERSION;
+  if (VERSION !== PLACEHOLDER_VERSION) {
+    const versionMatches = runtimeVersion === VERSION;
+    const placeholderBuildMatches =
+      runtimeVersion === PLACEHOLDER_VERSION &&
+      expectedBuildHash != null &&
+      runtimeInfo.buildHash === expectedBuildHash;
+    if (!versionMatches && !placeholderBuildMatches) {
+      return `version ${runtimeVersion ?? "missing"} does not match CLI version ${VERSION}`;
+    }
+  }
+
+  if (
+    !sourceCliTalkingToReleasedRuntime &&
+    expectedBuildHash &&
+    runtimeInfo.buildHash !== expectedBuildHash
+  ) {
+    return runtimeInfo.buildHash ? "build hash changed" : "build hash missing";
+  }
+  if (!canRuntimeDefaultRoleServe(runtimeInfo.defaultRole, expectedDefaultRole)) {
+    return `default role ${runtimeInfo.defaultRole ?? "missing"} cannot serve CLI role ${expectedDefaultRole}`;
+  }
+  return null;
 }
 
 function computeRuntimeBuildHash(filePath: string): string | null {
@@ -10598,15 +10868,42 @@ function computeRuntimeBuildHash(filePath: string): string | null {
   }
 }
 
+function prepareMachineRuntimeDaemonCommand(serviceCommand: AdeServiceCommand): {
+  args: string[];
+  buildHash: string | null;
+} {
+  const args = [...serviceCommand.args];
+  let buildHash: string | null = null;
+  if (
+    serviceCommand.command === process.execPath &&
+    args.length === 1 &&
+    args[0] === "serve" &&
+    fs.existsSync(CLI_DIST_PATH)
+  ) {
+    args.splice(0, 1, CLI_DIST_PATH, "serve");
+    buildHash = computeRuntimeBuildHash(CLI_DIST_PATH);
+  } else if (serviceCommand.command === process.execPath && args[0]) {
+    buildHash = computeRuntimeBuildHash(path.resolve(args[0]));
+  } else if (fs.existsSync(serviceCommand.command)) {
+    buildHash = computeRuntimeBuildHash(path.resolve(serviceCommand.command));
+  }
+  return { args, buildHash };
+}
+
+async function resolveExpectedMachineRuntimeBuildHash(): Promise<string | null> {
+  const { resolveAdeServeCommand } = await import("./serviceManager/common");
+  return prepareMachineRuntimeDaemonCommand(resolveAdeServeCommand()).buildHash;
+}
+
 async function initializeMachineRuntimeDaemon(
   client: SocketJsonRpcClient,
   options: GlobalOptions,
-): Promise<string | null> {
+): Promise<MachineRuntimeInfo> {
   const result = await client.request(
     "ade/initialize",
     buildInitializeParams(options, "ade-rpc-stdio-proxy"),
   );
-  return readRuntimeInfoVersion(result);
+  return readMachineRuntimeInfo(result);
 }
 
 async function shutdownMachineRuntimeDaemon(
@@ -10632,19 +10929,8 @@ async function spawnMachineRuntimeDaemon(
 
   const { resolveAdeServeCommand } = await import("./serviceManager/common");
   const serviceCommand = resolveAdeServeCommand();
-  const args = [...serviceCommand.args];
-  let runtimeBuildHash: string | null = null;
-  if (
-    serviceCommand.command === process.execPath &&
-    args.length === 1 &&
-    args[0] === "serve" &&
-    fs.existsSync(CLI_DIST_PATH)
-  ) {
-    args.splice(0, 1, CLI_DIST_PATH, "serve");
-    runtimeBuildHash = computeRuntimeBuildHash(CLI_DIST_PATH);
-  } else if (serviceCommand.command === process.execPath && args[0]) {
-    runtimeBuildHash = computeRuntimeBuildHash(path.resolve(args[0]));
-  }
+  const { args, buildHash: runtimeBuildHash } =
+    prepareMachineRuntimeDaemonCommand(serviceCommand);
   args.push("--socket", socketPath);
 
   const env: NodeJS.ProcessEnv = {
@@ -10682,28 +10968,37 @@ async function connectMachineRuntimeDaemon(
   const socketPath = await resolveMachineRuntimeSocketPath(socketPathOverride);
   const label = "ADE runtime daemon socket";
   const allowSpawn = connectOptions.allowSpawn ?? !options.requireSocket;
+  const isTcpSocket = socketPath.startsWith("tcp://");
+  const expectedBuildHash = isTcpSocket
+    ? null
+    : await resolveExpectedMachineRuntimeBuildHash();
   try {
     const client = await SocketJsonRpcClient.connect(
       socketPath,
       options.timeoutMs,
       label,
     );
-    const runtimeVersion = await initializeMachineRuntimeDaemon(
+    const runtimeInfo = await initializeMachineRuntimeDaemon(
       client,
       options,
     );
-    if (shouldReplaceMachineRuntimeVersion(runtimeVersion)) {
-      if (!allowSpawn) {
+    const mismatch = machineRuntimeMismatchReason(
+      runtimeInfo,
+      expectedBuildHash,
+      options.role,
+    );
+    if (mismatch) {
+      if (!allowSpawn || isTcpSocket) {
         client.close();
         throw new Error(
-          `ADE runtime daemon version ${runtimeVersion} does not match CLI version ${VERSION}.`,
+          `ADE runtime daemon ${mismatch}.`,
         );
       }
       await shutdownMachineRuntimeDaemon(client);
       const spawned = await spawnMachineRuntimeDaemon(socketPath, options);
       if (!spawned) {
         throw new Error(
-          `ADE runtime daemon version ${runtimeVersion} does not match CLI version ${VERSION}.`,
+          `ADE runtime daemon ${mismatch}.`,
         );
       }
       const restarted = await SocketJsonRpcClient.connect(
@@ -10711,14 +11006,19 @@ async function connectMachineRuntimeDaemon(
         options.timeoutMs,
         label,
       );
-      const restartedVersion = await initializeMachineRuntimeDaemon(
+      const restartedInfo = await initializeMachineRuntimeDaemon(
         restarted,
         options,
       );
-      if (shouldReplaceMachineRuntimeVersion(restartedVersion)) {
+      const restartedMismatch = machineRuntimeMismatchReason(
+        restartedInfo,
+        expectedBuildHash,
+        options.role,
+      );
+      if (restartedMismatch) {
         await shutdownMachineRuntimeDaemon(restarted);
         throw new Error(
-          `ADE runtime daemon version ${restartedVersion} does not match CLI version ${VERSION}.`,
+          `ADE runtime daemon ${restartedMismatch}.`,
         );
       }
       return restarted;
@@ -10734,14 +11034,19 @@ async function connectMachineRuntimeDaemon(
         options.timeoutMs,
         label,
       );
-      const runtimeVersion = await initializeMachineRuntimeDaemon(
+      const runtimeInfo = await initializeMachineRuntimeDaemon(
         client,
         options,
       );
-      if (shouldReplaceMachineRuntimeVersion(runtimeVersion)) {
+      const mismatch = machineRuntimeMismatchReason(
+        runtimeInfo,
+        expectedBuildHash,
+        options.role,
+      );
+      if (mismatch) {
         await shutdownMachineRuntimeDaemon(client);
         throw new Error(
-          `ADE runtime daemon version ${runtimeVersion} does not match CLI version ${VERSION}.`,
+          `ADE runtime daemon ${mismatch}.`,
         );
       }
       return client;
@@ -10776,7 +11081,7 @@ async function runRuntimeCommand(
         "ADE runtime daemon socket",
       );
       try {
-        const runtimeVersion = await initializeMachineRuntimeDaemon(
+        const runtimeInfo = await initializeMachineRuntimeDaemon(
           client,
           options,
         );
@@ -10784,7 +11089,11 @@ async function runRuntimeCommand(
           ok: true,
           running: true,
           socketPath,
-          version: runtimeVersion,
+          version: runtimeInfo.version,
+          buildHash: runtimeInfo.buildHash,
+          defaultRole: runtimeInfo.defaultRole,
+          projectRoot: runtimeInfo.projectRoot,
+          pid: runtimeInfo.pid,
           message: "ADE runtime daemon is running.",
         };
       } finally {
@@ -10805,7 +11114,7 @@ async function runRuntimeCommand(
       allowSpawn: true,
     });
     try {
-      const runtimeVersion = await initializeMachineRuntimeDaemon(
+      const runtimeInfo = await initializeMachineRuntimeDaemon(
         client,
         options,
       ).catch(() => null);
@@ -10813,7 +11122,11 @@ async function runRuntimeCommand(
         ok: true,
         running: true,
         socketPath,
-        version: runtimeVersion,
+        version: runtimeInfo?.version ?? null,
+        buildHash: runtimeInfo?.buildHash ?? null,
+        defaultRole: runtimeInfo?.defaultRole ?? null,
+        projectRoot: runtimeInfo?.projectRoot ?? null,
+        pid: runtimeInfo?.pid ?? null,
         message: "ADE runtime daemon is running.",
       };
     } finally {
@@ -11177,6 +11490,7 @@ async function runServe(
   });
   const previousRole = process.env.ADE_DEFAULT_ROLE;
   process.env.ADE_DEFAULT_ROLE = options.role;
+  try {
 
   const states: HeadlessRpcServerState[] = [];
   let done = false;
@@ -11285,9 +11599,11 @@ async function runServe(
       fs.unlinkSync(socketPath);
     } catch {}
   }
-  if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
-  else process.env.ADE_DEFAULT_ROLE = previousRole;
   return null;
+  } finally {
+    if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
+    else process.env.ADE_DEFAULT_ROLE = previousRole;
+  }
 }
 
 function readRuntimeParentPid(env: NodeJS.ProcessEnv = process.env): number | null {
@@ -12739,6 +13055,68 @@ function formatAppControlSnapshot(value: unknown): string {
     .join("\n");
 }
 
+function asOperationRows(value: unknown): JsonObject[] {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function filterHistoryOperations(
+  rows: JsonObject[],
+  statusFilter: string | undefined,
+): JsonObject[] {
+  if (!statusFilter || statusFilter === "all") return rows;
+  return rows.filter((row) => row.status === statusFilter);
+}
+
+function formatHistoryList(value: unknown): string {
+  const operations = asOperationRows(value);
+  return renderTable(
+    ["id", "lane", "kind", "status", "started", "ended", "pre", "post"],
+    operations.map((operation) => [
+      operation.id,
+      operation.laneName ?? operation.laneId,
+      operation.kind,
+      operation.status,
+      operation.startedAt,
+      operation.endedAt,
+      operation.preHeadSha,
+      operation.postHeadSha,
+    ]),
+    "ADE operation history\n(no operations found)",
+  );
+}
+
+function formatHistoryCommits(value: unknown): string {
+  const commits = Array.isArray(value)
+    ? value.filter(isRecord)
+    : firstArray(value, ["commits", "items"]);
+  return renderTable(
+    ["sha", "subject", "author", "authored", "pushed"],
+    commits.map((commit) => [
+      commit.shortSha ?? commit.sha,
+      commit.subject,
+      commit.authorName,
+      commit.authoredAt,
+      commit.pushed,
+    ]),
+    "ADE lane commits\n(no commits found)",
+  );
+}
+
+function formatHistoryShow(value: unknown): string {
+  const operation = isRecord(value) ? value : {};
+  return renderKeyValues("ADE operation", [
+    ["id", operation.id],
+    ["lane", operation.laneName ?? operation.laneId],
+    ["kind", operation.kind],
+    ["status", operation.status],
+    ["started", operation.startedAt],
+    ["ended", operation.endedAt],
+    ["pre head", operation.preHeadSha],
+    ["post head", operation.postHeadSha],
+    ["metadata", operation.metadataJson],
+  ]);
+}
+
 function formatTerminalList(value: unknown): string {
   const terminals = Array.isArray(value)
     ? value.filter(isRecord)
@@ -13056,6 +13434,12 @@ function formatTextOutput(
       return formatTerminalList(value);
     case "terminal-read":
       return formatTerminalRead(value);
+    case "history-list":
+      return formatHistoryList(value);
+    case "history-commits":
+      return formatHistoryCommits(value);
+    case "history-show":
+      return formatHistoryShow(value);
     case "actions-list":
       return formatActionsList(value);
     case "automation-run-detail":
@@ -13167,6 +13551,9 @@ function inferFormatter(
   if (label === "terminal list" || label === "terminal active")
     return "terminal-list";
   if (label === "terminal read") return "terminal-read";
+  if (label === "history list") return "history-list";
+  if (label === "history commits") return "history-commits";
+  if (label === "history show") return "history-show";
   if (label === "actions list") return "actions-list";
   if (label.endsWith("actions")) return "actions-list";
   return "action-result";
@@ -13207,7 +13594,7 @@ function summarizeExecution(args: {
         connection.mode === "desktop-socket"
           ? "local-desktop-socket"
           : "local-headless-project",
-      role: process.env.ADE_DEFAULT_ROLE ?? "agent",
+      role: resolveAdeDefaultRole(process.env.ADE_DEFAULT_ROLE, "agent"),
       projectRoot: connection.projectRoot,
       workspaceRoot: connection.workspaceRoot,
       socketPath: connection.socketPath,
@@ -13272,6 +13659,44 @@ function summarizeExecution(args: {
 
   if (plan.label === "PR create") {
     return summarizePrCreateResult(values.result ?? values);
+  }
+
+  if (
+    plan.label === "history list" ||
+    plan.label === "history export" ||
+    plan.label === "history show"
+  ) {
+    const raw = unwrapActionEnvelope(values.result);
+    if (plan.label === "history show") {
+      const match = isRecord(raw) ? raw : null;
+      if (!match) {
+        const operationId = plan.historyOperationId;
+        throw new CliExecutionError(
+          operationId
+            ? `Operation '${operationId}' was not found.`
+            : "Operation id is required.",
+          { operationId: operationId ?? null },
+        );
+      }
+      return match;
+    }
+    const rows = filterHistoryOperations(
+      asOperationRows(raw),
+      plan.historyStatusFilter,
+    );
+    if (plan.label === "history export") {
+      return {
+        exportedAt: new Date().toISOString(),
+        filters: plan.historyListFilters ?? {
+          laneId: null,
+          kind: null,
+          status: plan.historyStatusFilter ?? "all",
+        },
+        rowCount: rows.length,
+        rows,
+      };
+    }
+    return rows;
   }
 
   const result = values.result ?? values;
@@ -13616,6 +14041,23 @@ async function runCli(
       return await runAdeCode(plan.rest, parsed.options);
     }
     const result = await executePlan(plan, parsed.options);
+    if (plan.writeResultPath) {
+      const payload = JSON.stringify(
+        result,
+        null,
+        parsed.options.pretty ? 2 : 0,
+      );
+      fs.writeFileSync(plan.writeResultPath, `${payload}\n`, "utf8");
+      const saved = {
+        savedPath: plan.writeResultPath,
+        rowCount: isRecord(result) ? result.rowCount : null,
+        exportedAt: isRecord(result) ? result.exportedAt : null,
+      };
+      return {
+        output: formatOutput(saved, parsed.options, undefined),
+        exitCode: 0,
+      };
+    }
     return {
       output: formatOutput(result, parsed.options, inferFormatter(plan)),
       exitCode: 0,

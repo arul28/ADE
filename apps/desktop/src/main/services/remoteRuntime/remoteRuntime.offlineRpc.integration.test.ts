@@ -277,7 +277,7 @@ describe("remote runtime offline RPC integration", () => {
         projects: [project],
       },
     });
-    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.2.3");
+    const pool = new RemoteConnectionPool({ get: () => target, list: () => [target] } as unknown as RemoteTargetRegistry, "1.2.3");
 
     await expect(pool.callActionForTarget(target, project.projectId, {
       domain: "lane",
@@ -333,7 +333,7 @@ describe("remote runtime offline RPC integration", () => {
         ssh: createSsh(),
         result: { target, arch: "linux-x64", version: "1.2.4", projects: [project] },
       });
-    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.2.4");
+    const pool = new RemoteConnectionPool({ get: () => target, list: () => [target] } as unknown as RemoteTargetRegistry, "1.2.4");
 
     await expect(pool.projectsForTarget(target)).resolves.toEqual([project]);
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
@@ -371,7 +371,7 @@ describe("remote runtime offline RPC integration", () => {
         ssh: createSsh(),
         result: { target, arch: "linux-x64", version: "1.2.4", projects: [project] },
       });
-    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.2.4");
+    const pool = new RemoteConnectionPool({ get: () => target, list: () => [target] } as unknown as RemoteTargetRegistry, "1.2.4");
 
     await expect(pool.callActionForTarget(target, project.projectId, {
       domain: "orchestrator_core",
@@ -415,7 +415,7 @@ describe("remote runtime offline RPC integration", () => {
         ssh: createSsh(),
         result: { target, arch: "linux-x64", version: "1.2.4", projects: [project] },
       });
-    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.2.4");
+    const pool = new RemoteConnectionPool({ get: () => target, list: () => [target] } as unknown as RemoteTargetRegistry, "1.2.4");
 
     const initialEvents = await pool.streamEventsForTarget(target, project.projectId, {
       cursor: 0,

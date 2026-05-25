@@ -15,7 +15,7 @@ function usage() {
     "Then run npm run dev:desktop:attach and npm run dev:code:attach in separate terminals.",
     "",
     "Options:",
-    "  --project-root <path>      Project root. Defaults to this checkout.",
+    "  --project-root <path>      Project root. Defaults to the primary checkout for ADE worktrees.",
     "  --socket <path>            Dev runtime socket. Defaults to /tmp/ade-runtime-dev.sock.",
     "  --skip-runtime-build       Launch without rebuilding apps/ade-cli.",
     "  -h, --help                 Show this help.",
@@ -70,7 +70,7 @@ async function main() {
   process.stdout.write(`[ade] project root: ${options.projectRoot}\n`);
   process.stdout.write(`[ade] runtime socket: ${options.socketPath}\n`);
   await buildRuntimeCliForDevClient(options.skipRuntimeBuild, options.socketPath);
-  await ensureRuntime(options.socketPath);
+  await ensureRuntime(options.socketPath, options.projectRoot);
   process.stdout.write("[ade] dev runtime is ready.\n");
   process.stdout.write("[ade] terminal 1: npm run dev:desktop:attach\n");
   process.stdout.write("[ade] terminal 2: npm run dev:code:attach\n");

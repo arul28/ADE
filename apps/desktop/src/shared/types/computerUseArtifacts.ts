@@ -21,8 +21,14 @@ export type ComputerUseArtifactLinkRelation =
   | "produced_by"
   | "published_to";
 
+export type ComputerUseBackendStyle =
+  | "external_cli"
+  | "manual"
+  | "local_fallback";
+
 export type ComputerUseBackendDescriptor = {
   name: string;
+  style?: ComputerUseBackendStyle | null;
   toolName?: string | null;
   command?: string | null;
   metadata?: Record<string, unknown> | null;
@@ -51,6 +57,7 @@ export type ComputerUseArtifactInput = {
 export type ComputerUseArtifactRecord = {
   id: string;
   kind: ComputerUseArtifactKind;
+  backendStyle: ComputerUseBackendStyle;
   backendName: string;
   sourceToolName: string | null;
   originalType: string | null;

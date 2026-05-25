@@ -91,6 +91,10 @@ function makeLaneDeleteProgress(laneId: string) {
   } as any;
 }
 
+function laneCacheKey(projectRoot: string): string {
+  return `ade.laneCache.v1:${encodeURIComponent(projectRoot)}`;
+}
+
 describe("appStore", () => {
   beforeEach(() => {
     mockStorage.clear();
@@ -251,6 +255,22 @@ describe("appStore", () => {
       expect(useAppStore.getState().project).toBe(project);
     });
 
+    it("setProject restores a persisted lane cache before the first refresh", () => {
+      const project = { id: "p1", name: "Test", rootPath: "/tmp/test", gitRemoteUrl: null, gitDefaultBranch: "main", createdAt: "" } as any;
+      const persistedLane = { id: "lane-cached", name: "Cached lane" } as any;
+      mockStorage.set(laneCacheKey(project.rootPath), JSON.stringify({
+        savedAt: Date.now(),
+        lanes: [persistedLane],
+      }));
+
+      useAppStore.getState().setProject(project);
+
+      expect(useAppStore.getState().lanes).toEqual([persistedLane]);
+      expect(useAppStore.getState().laneSnapshots).toEqual([]);
+      expect(useAppStore.getState().lanesLoading).toBe(false);
+      expect(useAppStore.getState().laneCacheByProject[project.rootPath]?.lanes).toEqual([persistedLane]);
+    });
+
     it("setProjectHydrated tracks whether startup project hydration finished", () => {
       useAppStore.getState().setProjectHydrated(true);
       expect(useAppStore.getState().projectHydrated).toBe(true);
@@ -331,6 +351,7 @@ describe("appStore", () => {
 
     it("refreshLanes can request the cheaper lane-list path while preserving prior git status", async () => {
       useAppStore.setState({
+        project: { rootPath: "/p/lite", displayName: "Lite", baseRef: "main" } as any,
         lanes: [{ id: "lane-lite", name: "Lane lite", status: { dirty: true }, parentStatus: { ahead: 1 } }] as any[],
       });
       (window.ade.lanes.list as any).mockResolvedValueOnce([{ id: "lane-lite", name: "Lane lite", color: "#7dd3fc" }] as any[]);
@@ -349,6 +370,9 @@ describe("appStore", () => {
           status: { dirty: true },
           parentStatus: { ahead: 1 },
         }),
+      );
+      expect(JSON.parse(mockStorage.get(laneCacheKey("/p/lite")) ?? "{}").lanes[0]).toEqual(
+        expect.objectContaining({ id: "lane-lite", color: "#7dd3fc" }),
       );
     });
 

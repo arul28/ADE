@@ -20,15 +20,46 @@ import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
 import { GlossaryPage } from "../onboarding/GlossaryPage";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 
-const LanesPage = React.lazy(() =>
+function createPreloadableRoute<TProps extends object>(
+  loadModule: () => Promise<{ default: React.ComponentType<TProps> }>,
+) {
+  let resolved: React.ComponentType<TProps> | null = null;
+  let loadPromise: Promise<{ default: React.ComponentType<TProps> }> | null = null;
+  const load = () => {
+    if (!loadPromise) {
+      loadPromise = loadModule().then((module) => {
+        resolved = module.default;
+        return module;
+      });
+    }
+    return loadPromise;
+  };
+  const LazyComponent = React.lazy(load);
+  const Component = (props: TProps) => {
+    const Resolved = resolved;
+    const routeProps = props as object;
+    return Resolved
+      ? React.createElement(Resolved as React.ComponentType<object>, routeProps)
+      : React.createElement(LazyComponent as unknown as React.ComponentType<object>, routeProps);
+  };
+  return { Component, preload: load };
+}
+
+const lanesRoute = createPreloadableRoute<{ active?: boolean }>(() =>
   import("../lanes/LanesPage").then((m) => ({ default: m.LanesPage }))
 );
-const FilesPage = React.lazy(() =>
+const LanesPage = lanesRoute.Component;
+const preloadLanesPage = lanesRoute.preload;
+const filesRoute = createPreloadableRoute<{ active?: boolean }>(() =>
   import("../files/FilesPage").then((m) => ({ default: m.FilesPage }))
 );
-const TerminalsPage = React.lazy(() =>
+const FilesPage = filesRoute.Component;
+const preloadFilesPage = filesRoute.preload;
+const workRoute = createPreloadableRoute<{ active?: boolean }>(() =>
   import("../terminals/TerminalsPage").then((m) => ({ default: m.TerminalsPage }))
 );
+const TerminalsPage = workRoute.Component;
+const preloadTerminalsPage = workRoute.preload;
 const PRsPage = React.lazy(() =>
   import("../prs/PRsPage").then((m) => ({ default: m.PRsPage }))
 );
@@ -53,9 +84,11 @@ const WorkspaceGraphPage = React.lazy(() =>
 const MissionsPage = React.lazy(() =>
   import("../missions/MissionsPage").then((m) => ({ default: m.MissionsPage }))
 );
-const CtoPage = React.lazy(() =>
+const ctoRoute = createPreloadableRoute<{ active?: boolean }>(() =>
   import("../cto/CtoPage").then((m) => ({ default: m.CtoPage }))
 );
+const CtoPage = ctoRoute.Component;
+const preloadCtoPage = ctoRoute.preload;
 const MacVmPage = React.lazy(() =>
   import("../vm/MacVmPage").then((m) => ({ default: m.MacVmPage }))
 );
@@ -168,7 +201,44 @@ function PageErrorBoundary({ children }: { children: React.ReactNode }) {
   );
 }
 
-const LazyFallback = GuardLoadingFallback;
+const RouteLoadingFallback = (
+  <div
+    className="flex h-full min-h-0 w-full flex-col"
+    style={{ background: "var(--color-bg)" }}
+    aria-label="Loading tab"
+  >
+    <div
+      className="flex h-14 shrink-0 items-center gap-3 px-5"
+      style={{ borderBottom: "1px solid var(--color-border)", background: "color-mix(in srgb, var(--color-fg) 3%, transparent)" }}
+    >
+      <div className="h-4 w-28 animate-pulse rounded bg-muted/40" />
+      <div className="h-4 w-16 animate-pulse rounded bg-muted/30" />
+      <div className="ml-auto h-7 w-24 animate-pulse rounded-md bg-muted/30" />
+    </div>
+    <div className="grid min-h-0 flex-1 grid-cols-[minmax(180px,260px)_minmax(0,1fr)]">
+      <div className="min-h-0 space-y-2 border-r border-border p-3">
+        {[0, 1, 2, 3, 4].map((index) => (
+          <div
+            key={`route-fallback-list-${index}`}
+            className="h-10 animate-pulse rounded-md"
+            style={{ background: "color-mix(in srgb, var(--color-fg) 5%, transparent)" }}
+          />
+        ))}
+      </div>
+      <div className="grid min-h-0 grid-cols-2 gap-3 p-4">
+        {[0, 1, 2, 3].map((index) => (
+          <div
+            key={`route-fallback-panel-${index}`}
+            className="animate-pulse rounded-lg border border-border"
+            style={{ background: "color-mix(in srgb, var(--color-fg) 4%, transparent)" }}
+          />
+        ))}
+      </div>
+    </div>
+  </div>
+);
+
+const LazyFallback = RouteLoadingFallback;
 
 function isWorkRoutePath(pathname: string): boolean {
   return pathname === "/work" || pathname.startsWith("/work/");
@@ -261,10 +331,9 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   const [workRoute, setWorkRoute] = React.useState(() => isWorkRoute ? route : "/work");
   const [workMounted, setWorkMounted] = React.useState(isWorkRoute);
   const [lanesRoute, setLanesRoute] = React.useState(() => isLanesRoute ? route : "/lanes");
-  const [lanesMounted, setLanesMounted] = React.useState(isLanesRoute);
   const routeProps = { active } as { active?: boolean };
   const shouldRenderWork = workMounted || isWorkRoute;
-  const shouldRenderLanes = lanesMounted || isLanesRoute;
+  const shouldRenderLanes = isLanesRoute;
   const visibleWorkRoute = isWorkRoute ? route : workRoute;
   const visibleLanesRoute = isLanesRoute ? route : lanesRoute;
 
@@ -277,7 +346,6 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   React.useEffect(() => {
     if (!isLanesRoute) return;
     setLanesRoute(route);
-    setLanesMounted(true);
   }, [isLanesRoute, route]);
 
   React.useEffect(() => {
@@ -548,6 +616,26 @@ function ProjectTabHost() {
   }, [activeRoot]);
 
   React.useEffect(() => {
+    if (!activeRoot) return;
+    const preload = () => {
+      void preloadTerminalsPage().catch(() => undefined);
+      void preloadLanesPage().catch(() => undefined);
+      void preloadFilesPage().catch(() => undefined);
+      void preloadCtoPage().catch(() => undefined);
+    };
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    if (typeof idleWindow.requestIdleCallback === "function") {
+      const handle = idleWindow.requestIdleCallback(preload, { timeout: 900 });
+      return () => idleWindow.cancelIdleCallback?.(handle);
+    }
+    const handle = window.setTimeout(preload, 150);
+    return () => window.clearTimeout(handle);
+  }, [activeRoot]);
+
+  React.useEffect(() => {
     const previousRoot = previousActiveRootRef.current;
     if (previousRoot === activeRoot) return;
     const currentRoute = serializeProjectRoute(location);
@@ -661,7 +749,8 @@ function ProjectTabHost() {
       {mountedProjects.map((project) => {
         const store = storesRef.current.get(project.rootPath);
         if (!store) return null;
-        const route = routesByRoot[project.rootPath] ?? readStoredProjectRoute(project.rootPath) ?? "/work";
+        const liveRoute = project.rootPath === activeRoot ? serializeProjectRoute(location) : null;
+        const route = liveRoute ?? routesByRoot[project.rootPath] ?? readStoredProjectRoute(project.rootPath) ?? "/work";
         return (
           <ProjectSurface
             key={project.rootPath}

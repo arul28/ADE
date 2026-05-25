@@ -9,6 +9,7 @@ const mockState = vi.hoisted(() => ({
     dispose: vi.fn(),
   },
   ingressOnEvent: null as ((event: { issueId?: string | null }) => Promise<void>) | null,
+  dispatcherOnEvent: null as ((event: unknown) => void) | null,
 }));
 
 vi.mock("../../desktop/src/main/services/cto/linearClient", () => ({
@@ -48,7 +49,10 @@ vi.mock("../../desktop/src/main/services/cto/linearCloseoutService", () => ({
 }));
 
 vi.mock("../../desktop/src/main/services/cto/linearDispatcherService", () => ({
-  createLinearDispatcherService: vi.fn(() => ({})),
+  createLinearDispatcherService: vi.fn((args: { onEvent?: (event: unknown) => void }) => {
+    mockState.dispatcherOnEvent = args.onEvent ?? null;
+    return {};
+  }),
 }));
 
 vi.mock("../../desktop/src/main/services/cto/linearSyncService", () => ({
@@ -134,6 +138,63 @@ describe("headlessLinearServices", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockState.ingressOnEvent = null;
+    mockState.dispatcherOnEvent = null;
+  });
+
+  it("forwards Linear workflow dispatcher events to the headless runtime callback", () => {
+    const onLinearWorkflowEvent = vi.fn();
+    createHeadlessLinearServices({
+      ...createDeps(),
+      onLinearWorkflowEvent,
+    });
+
+    const event = {
+      type: "linear-workflow-ingress",
+      projectId: "project-1",
+      source: "manual",
+      issueId: "issue-1",
+      issueIdentifier: "ADE-1",
+      summary: "Received Linear issue",
+      createdAt: "now",
+    };
+    expect(mockState.dispatcherOnEvent).toEqual(expect.any(Function));
+    mockState.dispatcherOnEvent?.(event);
+    expect(onLinearWorkflowEvent).toHaveBeenCalledWith(event);
+  });
+
+  it("emits GitHub status changes from the headless shared credential service", async () => {
+    const previousAdeHome = process.env.ADE_HOME;
+    process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-status-"));
+    const onStatusChanged = vi.fn();
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      { onStatusChanged },
+    );
+    try {
+      githubService.setToken("");
+      await vi.waitFor(() => {
+        expect(onStatusChanged).toHaveBeenCalledWith(expect.objectContaining({
+          tokenStored: false,
+          connected: false,
+        }));
+      });
+      onStatusChanged.mockClear();
+
+      githubService.clearToken();
+      await vi.waitFor(() => {
+        expect(onStatusChanged).toHaveBeenCalledWith(expect.objectContaining({
+          tokenStored: false,
+          connected: false,
+        }));
+      });
+    } finally {
+      if (previousAdeHome == null) {
+        delete process.env.ADE_HOME;
+      } else {
+        process.env.ADE_HOME = previousAdeHome;
+      }
+    }
   });
 
   it("reuses identity sessions and exposes desktop-compatible session summaries", async () => {

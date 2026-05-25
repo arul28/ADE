@@ -55,17 +55,6 @@ function readDelegationContract(
   return record as Extract<AgentChatEvent, { type: "delegation_state" }>["contract"];
 }
 
-function normalizeApprovalKind(value: string | null): "command" | "file_change" | "tool_call" {
-  switch (value) {
-    case "command":
-    case "file_change":
-    case "tool_call":
-      return value;
-    default:
-      return "tool_call";
-  }
-}
-
 function normalizeCommandStatus(value: string | null): "running" | "completed" | "failed" {
   switch (value) {
     case "completed":
@@ -73,16 +62,6 @@ function normalizeCommandStatus(value: string | null): "running" | "completed" |
       return value;
     default:
       return "running";
-  }
-}
-
-function normalizeFileChangeKind(value: string | null): "create" | "modify" | "delete" {
-  switch (value) {
-    case "create":
-    case "delete":
-      return value;
-    default:
-      return "modify";
   }
 }
 
@@ -122,8 +101,6 @@ function normalizeDeliveryState(value: unknown): "queued" | "delivered" | "faile
       return undefined;
   }
 }
-
-type UserAttachment = NonNullable<Extract<AgentChatEvent, { type: "user_message" }>["attachments"]>[number];
 
 function resolveSessionId(message: OrchestratorChatMessage, structuredStream: Record<string, unknown> | null): string {
   return (

@@ -6,7 +6,6 @@ import {
   LABEL_STYLE,
   outlineButton,
   primaryButton,
-  dangerButton,
   cardStyle,
   recessedStyle,
 } from "../lanes/laneDesignTokens";

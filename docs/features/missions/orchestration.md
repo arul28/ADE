@@ -25,7 +25,7 @@ All in `apps/desktop/src/main/services/orchestrator/`. Files in this directory a
 - `metaReasoner.ts` — higher-level reasoning helpers for coordinator decisions.
 - `metricsAndUsage.ts` — token and cost accounting; `estimateTokenCost`.
 - `recoveryService.ts` — tracked session state, recovery iteration policy (`DEFAULT_RECOVERY_LOOP_POLICY`).
-- `workerTracking.ts` — worker session tracking, per-attempt artifact extraction (`extractAndRegisterArtifacts`), planning-phase plan-artifact persistence gate, `planner_plan_missing` intervention auto-resolution on successful re-planning, and the `planner_natural_question` `manual_input` intervention path (with matching `pauseRun`) when the planner emits an `awaiting_user_input` step. The legacy `planner_required_question_missing` reason code and its companion `planningQuestionPolicy.ts` module were removed; phases no longer enforce a "required question before exit" gate.
+- `workerTracking.ts` — worker session tracking, per-attempt artifact extraction (`extractAndRegisterArtifacts`), planning-phase plan-artifact persistence gate, `planner_plan_missing` intervention auto-resolution on successful re-planning, and the `planner_natural_question` `manual_input` intervention path (with matching `pauseRun`) when the planner emits an `awaiting_user_input` step. `planningQuestionPolicy.ts` still enforces required planning clarification and can record `planner_required_question_missing`.
 - `stepPolicyResolver.ts` — `ResolvedOrchestratorRuntimeConfig`, step-level policy merging, autopilot config, file-claim scope (`doFileClaimsOverlap`, `doesFileClaimMatchPath`), repo-relative path normalization.
 - `baseOrchestratorAdapter.ts` — `buildFullPrompt` (the worker prompt builder), shell escaping, inline decoding. Worker runtime is now `tracked_session | in_process` only; the legacy `managed_chat` branch was retired with the worker-prompt simplification.
 - `providerOrchestratorAdapter.ts` — provider-specific launchers for Claude CLI, Codex CLI, and managed OpenCode-backed execution.
@@ -177,6 +177,26 @@ a previous run. Without the `planArtifactPersisted` gate the resolver
 could clear the intervention when the plan was never actually
 written, so the persistence check is load-bearing — do not relax it
 to just checking `report_result.plan`.
+
+After step/phase sync, `syncMissionFromRun()` re-reads mission detail
+before deriving any non-terminal mission status. Sync can add or
+resolve interventions, so deriving status from the stale pre-sync
+mission snapshot can overwrite `intervention_required` back to
+`in_progress`. Only an explicit `nextMissionStatus` skips that
+re-derive.
+
+`ensureTerminalFailedRunIntervention()` runs right after
+`syncMissionStepsFromRun()` for terminal-`failed` runs. When no open
+`failed_step` row exists it adds one (reason
+`terminal_run_failed_step`) and flips the mission to
+`intervention_required` even though the run is terminal. The change in
+`deriveMissionStatusFromRun()` reflects the same priority: blocking
+interventions are checked **before** `run.status === "failed"`, so a
+terminal run with an open intervention surfaces as
+`intervention_required` rather than `failed`. The `else if
+(nextMissionStatus === "failed")` branch in `syncMissionFromRun()`
+re-derives once more against the latest mission snapshot before
+committing the transition, so newly-opened interventions still win.
 
 ## Runtime event routing
 

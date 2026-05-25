@@ -7,6 +7,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import type {
   AgentChatEventEnvelope,
   AgentChatEventHistorySnapshot,
+  AgentChatModelCatalog,
   AgentChatParallelLaunchState,
   AgentChatSession,
   AgentChatSessionSummary,
@@ -18,13 +19,17 @@ import { getModelById } from "../../../shared/modelRegistry";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { useAppStore } from "../../state/appStore";
 import {
+  rememberRuntimeCatalog,
+  resetModelPickerRuntimeCatalogForTests,
+} from "../shared/ModelPicker/runtimeCatalogCache";
+import {
   AgentChatPane,
   isMatchingOptimisticUserMessage,
   type AgentChatSessionCreatedOptions,
 } from "./AgentChatPane";
 
 vi.mock("../terminals/TerminalView", () => {
-  const ReactMod = require("react") as typeof import("react");
+  const ReactMod = require("react") as typeof React;
   return {
     TerminalView: (props: { sessionId: string; ptyId: string }) =>
       ReactMod.createElement("div", { "data-testid": "terminal-view" }, `${props.sessionId}:${props.ptyId}`),
@@ -32,14 +37,14 @@ vi.mock("../terminals/TerminalView", () => {
 });
 
 vi.mock("./ChatIosSimulatorPanel", () => {
-  const ReactMod = require("react") as typeof import("react");
+  const ReactMod = require("react") as typeof React;
   return {
     ChatIosSimulatorPanel: () => ReactMod.createElement("div", { "data-testid": "ios-panel" }, "iOS panel mounted"),
   };
 });
 
 vi.mock("./ChatAppControlPanel", () => {
-  const ReactMod = require("react") as typeof import("react");
+  const ReactMod = require("react") as typeof React;
   return {
     ChatAppControlPanel: () => ReactMod.createElement("div", { "data-testid": "app-control-panel" }, "App Control panel mounted"),
   };
@@ -157,6 +162,62 @@ function buildStatusStartedTranscript(sessionId: string): string {
       turnId: "turn-1",
     },
   })}\n`;
+}
+
+function seedRuntimeModelCatalog(): void {
+  rememberRuntimeCatalog({
+    fetchedAt: "2026-05-22T00:00:00.000Z",
+    groups: [
+      {
+        key: "codex",
+        displayName: "Codex",
+        providers: [{
+          key: "codex",
+          displayName: "Codex",
+          badgeColor: "#60A5FA",
+          modelCount: 1,
+          subsections: [{
+            key: "default",
+            label: "Codex",
+            models: [{
+              id: "openai/gpt-5.4",
+              runtimeModelId: "gpt-5.4",
+              provider: "codex",
+              providerKey: "codex",
+              groupKey: "codex",
+              displayName: "GPT-5.4",
+              isDefault: false,
+              isAvailable: true,
+            }],
+          }],
+        }],
+      },
+      {
+        key: "claude",
+        displayName: "Claude",
+        providers: [{
+          key: "claude",
+          displayName: "Claude",
+          badgeColor: "#D97706",
+          modelCount: 1,
+          subsections: [{
+            key: "default",
+            label: "Claude",
+            models: [{
+              id: "anthropic/claude-sonnet-4-6",
+              runtimeModelId: "claude-sonnet-4-6",
+              provider: "claude",
+              providerKey: "claude",
+              groupKey: "claude",
+              displayName: "Claude Sonnet 4.6",
+              isDefault: true,
+              isAvailable: true,
+            }],
+          }],
+        }],
+      },
+    ],
+  } as AgentChatModelCatalog, { mode: "cached" });
 }
 
 function buildPendingInputTranscript(sessionId: string): string {
@@ -449,6 +510,7 @@ let iosEventListener: ((event: { type: string; chatSessionId?: string; laneId?: 
 
 beforeEach(() => {
   invalidateAiDiscoveryCache();
+  resetModelPickerRuntimeCatalogForTests();
   window.localStorage.clear();
   window.sessionStorage.clear();
   iosEventListener = null;
@@ -476,6 +538,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   invalidateAiDiscoveryCache();
+  resetModelPickerRuntimeCatalogForTests();
   Object.defineProperty(window.navigator, "platform", {
     configurable: true,
     value: originalNavigatorPlatform,
@@ -818,6 +881,100 @@ describe("AgentChatPane companion drawers", () => {
 });
 
 describe("AgentChatPane submit recovery", () => {
+  it("uses the model override as the constrained draft picker list", async () => {
+    installAdeMocks({ sessions: [] });
+    seedRuntimeModelCatalog();
+
+    renderParallelDraftPane({
+      availableModelIdsOverride: ["anthropic/claude-sonnet-4-6"],
+    });
+
+    expect(await screen.findByText("Start a new conversation")).toBeTruthy();
+    const includedModelLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
+    const includedModel = await screen.findByRole("option", { name: new RegExp(escapeRegExp(includedModelLabel), "i") });
+    expect(includedModel.getAttribute("aria-disabled")).not.toBe("true");
+
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    const excludedModelLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    expect(screen.queryByRole("option", { name: new RegExp(escapeRegExp(excludedModelLabel), "i") })).toBeNull();
+  });
+
+  it("blocks draft submit when the constrained model list no longer contains the selected model", async () => {
+    const { create, send } = installAdeMocks({ sessions: [] });
+    const launchConfigKey = [
+      "ade.chat.lastLaunchConfig.v1",
+      "/tmp/project-under-test",
+      "lane-1",
+      "standard",
+      "chat",
+    ].map(encodeURIComponent).join(":");
+    window.localStorage.setItem(launchConfigKey, JSON.stringify({
+      version: 1,
+      modelId: "openai/gpt-5.4",
+      updatedAt: "2026-05-20T12:00:00.000Z",
+      controls: {
+        interactionMode: "default",
+        claudePermissionMode: "default",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+        opencodePermissionMode: "edit",
+        droidPermissionMode: "auto-low",
+        cursorModeId: "agent",
+        cursorConfigValues: {},
+      },
+    }));
+
+    renderParallelDraftPane({
+      availableModelIdsOverride: [],
+    });
+
+    const modelLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(modelLabel)}`, "i") })).toBeTruthy();
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "This must not launch with a stale model." } });
+    expect((await screen.findByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(textbox, { key: "Enter" });
+
+    expect(await screen.findByText("No models are available for this chat surface.")).toBeTruthy();
+    expect(create).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("blocks active session submit when a constrained list excludes the current model", async () => {
+    const session = buildSession("stale-model-session", {
+      title: "Stale model chat",
+      model: "gpt-5.4",
+      modelId: "openai/gpt-5.4",
+    });
+    const { send } = installAdeMocks({ sessions: [session] });
+    seedDrawerStore();
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId="lane-1"
+          initialSessionId={session.sessionId}
+          initialSessionSummary={session}
+          availableModelIdsOverride={["anthropic/claude-sonnet-4-6"]}
+        />
+      </MemoryRouter>,
+    );
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "This should not send with a stale model." } });
+    expect((await screen.findByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(textbox, { key: "Enter" });
+
+    expect(await screen.findByText("Select an available model for this chat surface before sending.")).toBeTruthy();
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("hydrates a draft chat from the last launched config before first send", async () => {
     const { create } = installAdeMocks({ sessions: [] });
     const launchConfigKey = [
@@ -1131,6 +1288,62 @@ describe("AgentChatPane submit recovery", () => {
     expect(await screen.findByText("CLI run")).toBeTruthy();
     expect(screen.getByTestId("terminal-view").textContent).toBe("terminal-1:pty-1");
     expect(window.ade.pty.create).not.toHaveBeenCalled();
+  });
+
+  it("keeps the chat terminal drawer wired when Work hides lane tool drawers", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const { emitSessionChanged } = installAdeMocks({ sessions: [session] });
+    const terminalSession: TerminalSessionDetail = {
+      id: "terminal-1",
+      laneId: "lane-1",
+      laneName: "Lane 1",
+      ptyId: "pty-1",
+      tracked: true,
+      pinned: false,
+      manuallyNamed: false,
+      goal: null,
+      title: "Work shell",
+      startedAt: "2026-03-24T05:57:45.700Z",
+      endedAt: null,
+      exitCode: null,
+      transcriptPath: "/tmp/terminal-1.log",
+      headShaStart: null,
+      headShaEnd: null,
+      status: "running",
+      lastOutputPreview: null,
+      summary: null,
+      toolType: "shell",
+      runtimeState: "running",
+      resumeCommand: null,
+      resumeMetadata: null,
+      archivedAt: null,
+      chatSessionId: session.sessionId,
+    };
+    vi.mocked(window.ade.sessions.get).mockResolvedValue(terminalSession);
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={session.laneId}
+          lockSessionId={session.sessionId}
+          hideSessionTabs
+          hideLaneToolDrawers
+          initialSessionSummary={session}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole("textbox");
+    expect(screen.getByRole("button", { name: /^Terminal$/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Open iOS simulator drawer" })).toBeNull();
+
+    act(() => {
+      emitSessionChanged({ sessionId: terminalSession.id, reason: "created" });
+    });
+
+    expect(await screen.findByText("Work shell")).toBeTruthy();
+    expect(screen.getByTestId("terminal-view").textContent).toBe("terminal-1:pty-1");
   });
 
   it("reveals rapid CLI-created terminals independently", async () => {

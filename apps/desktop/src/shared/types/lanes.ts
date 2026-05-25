@@ -197,6 +197,7 @@ export type CreateLaneArgs = {
   parentLaneId?: string;
   baseBranch?: string;
   branchName?: string;
+  startPoint?: string;
   linearIssue?: LaneLinearIssue | null;
   runtimePlacement?: LaneRuntimePlacement;
 };

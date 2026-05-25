@@ -259,6 +259,7 @@ import type {
   GitCherryPickArgs,
   GitCommitArgs,
   GitCommitSummary,
+  GitCreateTagArgs,
   GitConflictState,
   GitGetCommitMessageArgs,
   GitGenerateCommitMessageArgs,
@@ -270,7 +271,10 @@ import type {
   BranchPullRequest,
   GitFileActionArgs,
   GitBatchFileActionArgs,
+  GitHeadChangeActionArgs,
+  GitPullArgs,
   GitPushArgs,
+  GitResetCommitArgs,
   GitRevertArgs,
   GitStashPushArgs,
   GitStashRefArgs,
@@ -726,7 +730,7 @@ import type {
   RemoteRuntimeActionResult,
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectResult,
-  RemoteRuntimeDiscoveredMachine,
+  RemoteRuntimeDiscoveryResult,
   RemoteRuntimeLocalWorkCheckResult,
   RemoteRuntimeProjectRecord,
   RemoteRuntimeStreamEventsRequest,
@@ -851,7 +855,7 @@ declare global {
         onConnectionSnapshotChanged: (
           cb: (snapshot: RemoteRuntimeConnectionSnapshot) => void,
         ) => () => void;
-        listDiscoveredMachines: () => Promise<RemoteRuntimeDiscoveredMachine[]>;
+        listDiscoveredMachines: () => Promise<RemoteRuntimeDiscoveryResult>;
         saveTarget: (
           input: RemoteRuntimeTargetInput,
         ) => Promise<RemoteRuntimeTarget>;
@@ -1950,8 +1954,14 @@ declare global {
         }) => Promise<GitCommitSummary[]>;
         listCommitFiles: (args: GitListCommitFilesArgs) => Promise<string[]>;
         getCommitMessage: (args: GitGetCommitMessageArgs) => Promise<string>;
+        getCommit: (args: {
+          laneId: string;
+          commitSha: string;
+        }) => Promise<GitCommitSummary | null>;
         revertCommit: (args: GitRevertArgs) => Promise<GitActionResult>;
         cherryPickCommit: (args: GitCherryPickArgs) => Promise<GitActionResult>;
+        createTag: (args: GitCreateTagArgs) => Promise<GitActionResult>;
+        resetToCommit: (args: GitResetCommitArgs) => Promise<GitActionResult>;
         stashPush: (args: GitStashPushArgs) => Promise<GitActionResult>;
         stashList: (args: { laneId: string }) => Promise<GitStashSummary[]>;
         stashApply: (args: GitStashRefArgs) => Promise<GitActionResult>;
@@ -1959,7 +1969,9 @@ declare global {
         stashDrop: (args: GitStashRefArgs) => Promise<GitActionResult>;
         stashClear: (args: { laneId: string }) => Promise<GitActionResult>;
         fetch: (args: { laneId: string }) => Promise<GitActionResult>;
-        pull: (args: { laneId: string }) => Promise<GitActionResult>;
+        pull: (args: GitPullArgs) => Promise<GitActionResult>;
+        undoLastHeadChange: (args: GitHeadChangeActionArgs) => Promise<GitActionResult>;
+        redoLastHeadChange: (args: GitHeadChangeActionArgs) => Promise<GitActionResult>;
         getSyncStatus: (args: {
           laneId: string;
         }) => Promise<GitUpstreamSyncStatus>;
@@ -1978,10 +1990,10 @@ declare global {
         sync: (args: GitSyncArgs) => Promise<GitActionResult>;
         push: (args: GitPushArgs) => Promise<GitActionResult>;
         getConflictState: (laneId: string) => Promise<GitConflictState>;
-        rebaseContinue: (laneId: string) => Promise<GitActionResult>;
-        rebaseAbort: (laneId: string) => Promise<GitActionResult>;
-        mergeContinue: (laneId: string) => Promise<GitActionResult>;
-        mergeAbort: (laneId: string) => Promise<GitActionResult>;
+        rebaseContinue: (args: string | { laneId: string }) => Promise<GitActionResult>;
+        rebaseAbort: (args: string | { laneId: string }) => Promise<GitActionResult>;
+        mergeContinue: (args: string | { laneId: string }) => Promise<GitActionResult>;
+        mergeAbort: (args: string | { laneId: string }) => Promise<GitActionResult>;
         listBranches: (
           args: GitListBranchesArgs,
         ) => Promise<GitBranchSummary[]>;

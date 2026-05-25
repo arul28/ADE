@@ -47,17 +47,18 @@ const TABS: { id: TabId; label: string; icon: React.ElementType; color: string; 
   { id: "settings", label: "Settings", icon: Gear, color: "#F472B6", tooltip: "CTO identity, project brief, and integration settings." },
 ];
 
+const CTO_PRIMARY_SESSION_CACHE_KEY = "__cto_primary__";
+const ctoChatSessionCacheByScope = new Map<string, AgentChatSession>();
+
+function ctoChatSessionCacheKey(agentId: string | null): string {
+  return agentId ?? CTO_PRIMARY_SESSION_CACHE_KEY;
+}
+
 function splitTrimmed(value: string): string[] {
   return value
     .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean);
-}
-
-function summarizeText(value: string | null | undefined, fallback: string): string {
-  const normalized = value?.trim();
-  if (!normalized) return fallback;
-  return normalized.length > 180 ? `${normalized.slice(0, 177).trimEnd()}...` : normalized;
 }
 
 function statusDotCls(status: AgentStatus): string {
@@ -75,7 +76,9 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   const lanes = useAppStore((s) => s.lanes);
 
   const [activeTab, setActiveTab] = useState<TabId>("chat");
-  const [session, setSession] = useState<AgentChatSession | null>(null);
+  const [session, setSession] = useState<AgentChatSession | null>(
+    () => ctoChatSessionCacheByScope.get(ctoChatSessionCacheKey(null)) ?? null,
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -285,12 +288,22 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     }
     if (!primaryLaneId) { setSession(null); return; }
     let cancelled = false;
-    setLoading(true); setError(null);
+    const sessionCacheKey = ctoChatSessionCacheKey(selectedAgentId);
+    const cachedSession = ctoChatSessionCacheByScope.get(sessionCacheKey) ?? null;
+    if (cachedSession) {
+      setSession(cachedSession);
+    } else {
+      setSession(null);
+    }
+    setLoading(!cachedSession); setError(null);
     const promise = selectedAgentId
       ? window.ade.cto.ensureAgentSession({ agentId: selectedAgentId })
       : window.ade.cto.ensureSession();
     void promise
-      .then((next) => { if (!cancelled) setSession(next); })
+      .then((next) => {
+        ctoChatSessionCacheByScope.set(sessionCacheKey, next);
+        if (!cancelled) setSession(next);
+      })
       .catch((err) => { if (!cancelled) { setError(err instanceof Error ? err.message : String(err)); setSession(null); } })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };

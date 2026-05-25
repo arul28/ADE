@@ -2550,7 +2550,7 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
       // 2. Sweep stale share entries so the next start mounts a clean share set.
       const beforeStart = loadRecords().find((entry) => entry.laneId === lane.id) ?? record;
       const liveEntries = (beforeStart.shareEntries ?? []).filter((entry) => entry.state === "live");
-      const sweptRecord = upsertRecord({
+      upsertRecord({
         ...beforeStart,
         shareEntries: liveEntries,
       });
