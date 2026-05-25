@@ -796,6 +796,9 @@ const deeplinkClaimAsDefault =
 
 const pendingAppNavigationRequests: AppNavigationRequest[] = [];
 let dispatchAppNavigationRequest: ((request: AppNavigationRequest) => void) | null = null;
+let dispatchAppNavigationForProjectRoot:
+  | ((targetProjectRoot: string, request: AppNavigationRequest) => void)
+  | null = null;
 
 const dispatchOrQueueAppNavigationRequest = (request: AppNavigationRequest): void => {
   if (!dispatchAppNavigationRequest) {
@@ -3277,7 +3280,14 @@ app.whenReady().then(async () => {
       // / InboundDeeplinkModal / CrossRepoPrBanner all fire normally.
       dispatchDeeplinkUrl: async (rawUrl) => {
         try {
-          handleDeeplinkUrl(rawUrl, "sync:ios", dispatchOrQueueAppNavigationRequest);
+          // Route to this sync host's project window, not whichever window is focused.
+          handleDeeplinkUrl(rawUrl, "sync:ios", (request) => {
+            if (dispatchAppNavigationForProjectRoot) {
+              dispatchAppNavigationForProjectRoot(projectRoot, request);
+              return;
+            }
+            dispatchOrQueueAppNavigationRequest(request);
+          });
           return { ok: true };
         } catch (error) {
           return {
@@ -3746,28 +3756,18 @@ app.whenReady().then(async () => {
       autoUpdateService,
       appNavigationService: {
         navigate: async (request) => {
-          const normalizedRoot = normalizeProjectRoot(projectRoot);
-          let targetWindow = BrowserWindow.getAllWindows()
-            .find((win) => !win.isDestroyed() && windowProjectRoots.get(win.id) === normalizedRoot) ?? null;
-          if (!targetWindow) {
-            const opened = await openAdeWindow({ projectRoot });
-            targetWindow = opened.windowId != null ? BrowserWindow.fromId(opened.windowId) : null;
-          }
-          if (!targetWindow || targetWindow.isDestroyed()) {
+          const result = await deliverAppNavigationToProject(projectRoot, request);
+          if (!result.ok) {
             return {
               ok: false,
               mode: "unavailable" as const,
-              message: "No ADE window is available for this project.",
+              message: result.message,
             };
           }
-          if (targetWindow.isMinimized()) targetWindow.restore();
-          targetWindow.show();
-          targetWindow.focus();
-          targetWindow.webContents.send(IPC.appNavigate, request);
           return {
             ok: true,
             mode: "desktop" as const,
-            windowId: targetWindow.id,
+            windowId: result.windowId,
           };
         },
       },
@@ -5469,6 +5469,37 @@ app.whenReady().then(async () => {
       emitProjectBindingChangedToWindow(win.id, null);
     }
     return getWindowSession(win.id);
+  };
+
+  const deliverAppNavigationToProject = async (
+    targetProjectRoot: string,
+    request: AppNavigationRequest,
+  ): Promise<{ ok: true; windowId: number } | { ok: false; message: string }> => {
+    const normalizedRoot = normalizeProjectRoot(targetProjectRoot);
+    let targetWindow =
+      BrowserWindow.getAllWindows()
+        .find((win) => !win.isDestroyed() && windowProjectRoots.get(win.id) === normalizedRoot) ?? null;
+    if (!targetWindow) {
+      const opened = await openAdeWindow({ projectRoot: normalizedRoot });
+      targetWindow = opened.windowId != null ? BrowserWindow.fromId(opened.windowId) : null;
+    }
+    if (!targetWindow || targetWindow.isDestroyed()) {
+      return { ok: false, message: "No ADE window is available for this project." };
+    }
+    if (targetWindow.isMinimized()) targetWindow.restore();
+    targetWindow.show();
+    targetWindow.focus();
+    targetWindow.webContents.send(IPC.appNavigate, request);
+    return { ok: true, windowId: targetWindow.id };
+  };
+
+  dispatchAppNavigationForProjectRoot = (targetProjectRoot, request) => {
+    void deliverAppNavigationToProject(targetProjectRoot, request).catch((error: unknown) => {
+      getActiveContext().logger.warn("deeplink.dispatch_window_failed", {
+        projectRoot: normalizeProjectRoot(targetProjectRoot),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   };
 
   let initialWindowNavigationReady = false;

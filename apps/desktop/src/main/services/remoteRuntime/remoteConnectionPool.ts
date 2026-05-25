@@ -58,6 +58,18 @@ const RETRYABLE_REMOTE_ACTIONS = new Set([
   "terminal.preview",
 ]);
 
+/** Project-scoped sync RPCs that are safe to replay after a reconnect. */
+const RETRYABLE_REMOTE_SYNC_METHODS = new Set([
+  "sync.getStatus",
+  "sync.refreshDiscovery",
+  "sync.listDevices",
+  "sync.getTransferReadiness",
+  "sync.getPin",
+  "sync.setActiveLanePresence",
+  "modelPicker.getFavorites",
+  "modelPicker.getRecents",
+]);
+
 function shouldRetryRemoteRuntimeAction(
   request: RemoteRuntimeActionRequest,
 ): boolean {
@@ -67,6 +79,10 @@ function shouldRetryRemoteRuntimeAction(
   return RETRYABLE_REMOTE_ACTION_PREFIXES.some((prefix) =>
     request.action.startsWith(prefix),
   );
+}
+
+function shouldRetryRemoteSyncMethod(method: string): boolean {
+  return RETRYABLE_REMOTE_SYNC_METHODS.has(method);
 }
 
 export class RemoteConnectionPool {
@@ -223,7 +239,7 @@ export class RemoteConnectionPool {
         ...params,
         projectId,
       }),
-      { retryOnConnectionError: true },
+      { retryOnConnectionError: shouldRetryRemoteSyncMethod(method) },
     );
   }
 
