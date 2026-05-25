@@ -6,9 +6,9 @@ import {
   normalizeChatContextAttachments,
   removeChatContextAttachment,
 } from "./chatContextAttachments";
-import type { AgentChatContextAttachment } from "./types";
+import type { AgentChatContextAttachment, LaneLinearIssue } from "./types";
 
-const SAMPLE_ISSUE = {
+const SAMPLE_ISSUE: LaneLinearIssue = {
   id: "ADE-45",
   identifier: "ADE-45",
   title: "Run Cursor SDK audit",

@@ -345,7 +345,7 @@ export function resolveSkillCommandFile(skillsDir: string, commandName: string):
       const fmNormalized = normalizeSlashCommandName(declaredName);
       if (fmNormalized) candidateNames.add(fmNormalized.toLowerCase());
     }
-    if (candidateNames.has(`/${target}`) || candidateNames.has(target)) {
+    if (candidateNames.has(`/${target}`)) {
       return skillPath;
     }
   }

@@ -295,7 +295,7 @@ export async function getAvailableModels(
 ): Promise<AgentChatModelInfo[]> {
   return await connection.action<AgentChatModelInfo[]>("chat", "getAvailableModels", {
     provider,
-    activateRuntime: provider === "cursor" || provider === "droid",
+    activateRuntime: provider === "cursor",
   });
 }
 
