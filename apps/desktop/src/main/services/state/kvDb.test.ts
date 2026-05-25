@@ -221,7 +221,36 @@ describe("openKvDb SQL binding", () => {
   });
 });
 
+describe("lane_linear_issue_links schema", () => {
+  it("does not keep a non-PK unique index that blocks crsql_as_crr", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-linear-issue-links-index-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => db.close());
+
+    expect(
+      db.get<{ present: number }>(
+        "select 1 as present from sqlite_master where type = 'index' and name = 'uq_lane_linear_issue_links_role' limit 1",
+      ),
+    ).toBeNull();
+  });
+});
+
 describe.skipIf(!isCrsqliteAvailable())("openKvDb CRR repair", () => {
+  it("enables CRR on lane_linear_issue_links without a blocking unique index", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-linear-issue-links-crr-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => db.close());
+
+    expect(() => db.get("select crsql_as_crr(?) as ok", ["lane_linear_issue_links"])).not.toThrow();
+    expect(
+      db.get<{ present: number }>(
+        "select 1 as present from sqlite_master where type = 'table' and name = 'lane_linear_issue_links__crsql_clock' limit 1",
+      )?.present,
+    ).toBe(1);
+  });
+
   it("keeps composite-key PR AI summary cache local-only", async () => {
     const projectRoot = makeProjectRoot("ade-kvdb-ai-summary-local-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
