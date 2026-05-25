@@ -1551,6 +1551,10 @@ declare global {
           laneId: string;
           commitSha: string;
         }) => Promise<GitCommitSummary | null>;
+        isCommitInLaneHistory: (args: {
+          laneId: string;
+          commitSha: string;
+        }) => Promise<boolean>;
         revertCommit: (args: GitRevertArgs) => Promise<GitActionResult>;
         cherryPickCommit: (args: GitCherryPickArgs) => Promise<GitActionResult>;
         createTag: (args: GitCreateTagArgs) => Promise<GitActionResult>;

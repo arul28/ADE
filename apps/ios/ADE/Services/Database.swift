@@ -353,6 +353,7 @@ final class DatabaseService {
         if shouldIgnoreIncomingSyncTable(rawChange.table) {
           continue
         }
+        try validateIncomingSyncTableExists(rawChange.table)
         let change = normalizeIncomingChange(rawChange)
         let changed = try execute(sql) { statement in
           try bindText(change.table, to: statement, index: 1)
@@ -2735,7 +2736,12 @@ final class DatabaseService {
     if tableName.hasPrefix("unified_memories_") {
       return true
     }
-    return !hasTable(named: tableName)
+    return false
+  }
+
+  private func validateIncomingSyncTableExists(_ tableName: String) throws {
+    if hasTable(named: tableName) { return }
+    throw sqliteError("Unsupported incoming sync table '\(tableName)'. Update ADE before applying this changeset.")
   }
 
   private func listEligibleCrrTables() -> [String] {

@@ -2061,6 +2061,23 @@ export function createLaneService({
       : null;
     invalidateLaneListCache();
 
+    if (runtimePlacement === "macos-vm") {
+      try {
+        await wireMacosVmLanePlacement({
+          laneId,
+          previousPlacement: "local",
+          rollbackPlacementOnLinkFailure: true,
+        });
+      } catch (error) {
+        await cleanupCreatedWorktreeLaneAfterVmWireFailure({
+          laneId,
+          branchRef,
+          worktreePath,
+          cause: error,
+        });
+      }
+    }
+
     // Best-effort initial push to establish upstream tracking
     try {
       await runGit(["push", "-u", "origin", branchRef], { cwd: worktreePath, timeoutMs: 60_000 });
@@ -2093,14 +2110,6 @@ export function createLaneService({
       linearIssue,
       linearIssueLinks: getLaneLinearIssueLinks(laneId),
     });
-    if (runtimePlacement === "macos-vm") {
-      await wireMacosVmLanePlacement({
-        laneId,
-        previousPlacement: "local",
-        rollbackPlacementOnLinkFailure: true,
-      });
-    }
-
     if (linearIssue) notifyLinearIssueLinked(summary, linearIssue);
     return summary;
   };
@@ -2147,15 +2156,15 @@ export function createLaneService({
       }
     }
 
-    const fromPlacement =
-      args.previousPlacement === "macos-vm" ? "local" : args.previousPlacement;
-    emitPlacementChanged({
-      type: "lane-placement-changed",
-      laneId,
-      from: fromPlacement,
-      to: "macos-vm",
-      changedAt: new Date().toISOString(),
-    });
+    if (args.previousPlacement !== "macos-vm") {
+      emitPlacementChanged({
+        type: "lane-placement-changed",
+        laneId,
+        from: args.previousPlacement,
+        to: "macos-vm",
+        changedAt: new Date().toISOString(),
+      });
+    }
   };
 
   const getRowsById = (includeArchived = true): Map<string, LaneRow> =>
@@ -2320,6 +2329,65 @@ export function createLaneService({
     db.run("delete from lane_linear_issue_links where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("delete from lanes where id = ? and project_id = ?", [laneId, projectId]);
   };
+
+  async function cleanupCreatedWorktreeLaneAfterVmWireFailure(args: {
+    laneId: string;
+    branchRef: string;
+    worktreePath: string;
+    cause: unknown;
+  }): Promise<never> {
+    const cleanupErrors: string[] = [];
+    const originalMessage = args.cause instanceof Error ? args.cause.message : String(args.cause);
+
+    try {
+      cleanupLaneDatabaseRows(args.laneId);
+      invalidateLaneListCache();
+    } catch (error) {
+      cleanupErrors.push(`database cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    try {
+      await runGitWorktreeMutation(async () => {
+        try {
+          await runGitOrThrow(
+            ["worktree", "remove", "--force", args.worktreePath],
+            { cwd: projectRoot, timeoutMs: 60_000 },
+          );
+        } catch {
+          await removeWorktreeDirectoryWithRecovery(args.worktreePath);
+          await runGit(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
+        }
+      });
+    } catch (error) {
+      cleanupErrors.push(`worktree cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    try {
+      const result = await runGit(
+        ["branch", "-D", args.branchRef],
+        { cwd: projectRoot, timeoutMs: 30_000 },
+      );
+      if (result.exitCode !== 0) {
+        const message = (result.stderr || result.stdout).trim();
+        cleanupErrors.push(`branch cleanup failed: ${message || `git branch -D exited ${result.exitCode}`}`);
+      }
+    } catch (error) {
+      cleanupErrors.push(`branch cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    if (cleanupErrors.length > 0) {
+      logger.error("laneService.vm_lane_create_cleanup_failed", {
+        laneId: args.laneId,
+        branchRef: args.branchRef,
+        worktreePath: args.worktreePath,
+        error: originalMessage,
+        cleanupErrors,
+      });
+      throw new Error(`${originalMessage} Cleanup after failed VM lane creation also failed: ${cleanupErrors.join("; ")}`);
+    }
+
+    throw args.cause instanceof Error ? args.cause : new Error(originalMessage);
+  }
 
   return {
     async ensurePrimaryLane(): Promise<void> {

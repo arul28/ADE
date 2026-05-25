@@ -263,6 +263,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "fetch",
     "generateCommitMessage",
     "getCommitMessage",
+    "isCommitInLaneHistory",
     "getConflictState",
     "getFileHistory",
     "getOpenPrForBranch",

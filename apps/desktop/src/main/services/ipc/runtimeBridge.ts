@@ -178,6 +178,17 @@ function resolveAuthorizedLocalRuntimeRootPath(
     : null;
 }
 
+function canBindRemoteProjectToSender(
+  windowId: number | null,
+  sender: WebContents,
+): boolean {
+  if (sender.isDestroyed()) return false;
+  if (windowId == null) return true;
+  const window = BrowserWindow.fromId(windowId);
+  if (!window || window.isDestroyed()) return false;
+  return !window.webContents.isDestroyed();
+}
+
 function normalizeGitRemoteForComparison(
   value: string | null | undefined,
 ): string | null {
@@ -588,7 +599,10 @@ export function registerRuntimeBridge({
           rootPath: project.rootPath,
           displayName: project.displayName || path.basename(project.rootPath),
         };
-        if (isLatestOpenRequest()) {
+        if (
+          isLatestOpenRequest() &&
+          canBindRemoteProjectToSender(windowId, event.sender)
+        ) {
           bindRemoteProject?.(windowId, binding);
         }
         return binding;

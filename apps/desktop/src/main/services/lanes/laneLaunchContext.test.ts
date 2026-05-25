@@ -452,6 +452,52 @@ describe("resolveLaneLaunchContext", () => {
       expect(result.sshTarget).toEqual({ ip: "192.168.64.11", username: "ade", vmName: "ade-vm" });
     });
 
+    it("keeps ready VM launch cache entries scoped by project root", async () => {
+      setupDirectoryExists("/real/lane/root");
+      const providerA = makeVmProvider({
+        status: makeVmStatus({ laneId: "lane-vm", ipAddress: "192.168.64.11", vmName: "ade-a" }),
+      });
+      const providerB = makeVmProvider({
+        status: makeVmStatus({ laneId: "lane-vm", ipAddress: "192.168.64.22", vmName: "ade-b" }),
+      });
+      setMacosVmLaunchProvider(providerA);
+      await refreshVmLaneLaunchCache({ laneId: "lane-vm", projectRoot: "/projects/a", provider: providerA });
+      await refreshVmLaneLaunchCache({ laneId: "lane-vm", projectRoot: "/projects/b", provider: providerB });
+
+      const resultA = resolveLaneLaunchContext({
+        laneService: makeLaneService("/projects/my-lane", "macos-vm"),
+        laneId: "lane-vm",
+        projectRoot: "/projects/a",
+        purpose: "start agent",
+      });
+      const resultB = resolveLaneLaunchContext({
+        laneService: makeLaneService("/projects/my-lane", "macos-vm"),
+        laneId: "lane-vm",
+        projectRoot: "/projects/b",
+        purpose: "start agent",
+      });
+
+      expect(resultA.sshTarget).toEqual({ ip: "192.168.64.11", username: "ade", vmName: "ade-a" });
+      expect(resultB.sshTarget).toEqual({ ip: "192.168.64.22", username: "ade", vmName: "ade-b" });
+    });
+
+    it("does not reuse a ready VM record from another lane", async () => {
+      const status = makeVmStatus({ laneId: "lane-other", ipAddress: "192.168.64.44" });
+      status.laneVm = null;
+      const provider = makeVmProvider({ status });
+      setMacosVmLaunchProvider(provider);
+      const cache = await refreshVmLaneLaunchCache({ laneId: "lane-vm", provider });
+      expect(cache.kind).toBe("not-ready");
+
+      expect(() =>
+        resolveLaneLaunchContext({
+          laneService: makeLaneService("/projects/my-lane", "macos-vm"),
+          laneId: "lane-vm",
+          purpose: "start agent",
+        }),
+      ).toThrow(VmNotReadyError);
+    });
+
     it("throws VmNotReadyError with phase when VM is still in setup_required", async () => {
       const provider = makeVmProvider({
         status: makeVmStatus({ laneId: "lane-vm", readinessState: "setup_required", phase: 6 }),

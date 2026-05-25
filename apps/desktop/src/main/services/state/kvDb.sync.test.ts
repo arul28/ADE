@@ -201,4 +201,23 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
     db2.close();
   });
 
+  it("rejects CRDT changes for unknown future tables", async () => {
+    const db2 = await openKvDb(makeDbPath("ade-kvdb-sync-future-table-"), createLogger() as any);
+    const futureChange = {
+      table: "missing_future_table",
+      pk: "row-1",
+      cid: "name",
+      val: "future",
+      col_version: 1,
+      db_version: 1,
+      site_id: "a".repeat(32),
+      cl: 1,
+      seq: 1,
+    };
+
+    expect(() => db2.sync.applyChanges([futureChange as any])).toThrow(/missing_future_table/);
+
+    db2.close();
+  });
+
 });

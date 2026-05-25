@@ -26,6 +26,7 @@ import {
 import { createLaneService, type LaneDeleteTeardownDeps } from "./services/lanes/laneService";
 import {
   invalidateVmLaneLaunchCache,
+  type MacosVmLaunchProvider,
   refreshVmLaneLaunchCache,
   setMacosVmLaunchProvider,
   syncMacosVmLaunchCacheFromEvent,
@@ -1921,6 +1922,7 @@ app.whenReady().then(async () => {
     };
 
     const laneTeardownDeps: LaneDeleteTeardownDeps = {};
+    let macosVmLaunchProviderForProject: MacosVmLaunchProvider | null = null;
     const laneService = createLaneService({
       db,
       projectRoot,
@@ -1950,9 +1952,13 @@ app.whenReady().then(async () => {
         // TODO(mac-vm-onboarding): emit a renderer-facing IPC event so the
         // CreateLaneDialog re-gate + Work-tab banner can react without
         // polling. Requires adding a new IPC channel in shared/ipc.ts.
-        invalidateVmLaneLaunchCache(event.laneId);
+        invalidateVmLaneLaunchCache(event.laneId, projectRoot);
         if (event.to === "macos-vm") {
-          void refreshVmLaneLaunchCache({ laneId: event.laneId }).catch((error) => {
+          void refreshVmLaneLaunchCache({
+            laneId: event.laneId,
+            projectRoot,
+            provider: macosVmLaunchProviderForProject,
+          }).catch((error) => {
             logger.warn("lane.placement_changed_refresh_failed", {
               laneId: event.laneId,
               error: error instanceof Error ? error.message : String(error),
@@ -3126,6 +3132,9 @@ app.whenReady().then(async () => {
       onEvent: (payload) => {
         syncMacosVmLaunchCacheFromEvent(payload, (event, fields) => {
           logger.warn(event, fields);
+        }, {
+          projectRoot,
+          provider: macosVmLaunchProviderForProject,
         });
         emitProjectEvent(projectRoot, IPC.macosVmEvent, payload);
       },
@@ -3148,8 +3157,12 @@ app.whenReady().then(async () => {
         logger.info("macos_vm.runtime_ready", { vmName, ipAddress, username });
         const vmLane = laneService.findExistingVmLane();
         if (!vmLane) return;
-        invalidateVmLaneLaunchCache(vmLane.id);
-        void refreshVmLaneLaunchCache({ laneId: vmLane.id }).catch((error) => {
+        invalidateVmLaneLaunchCache(vmLane.id, projectRoot);
+        void refreshVmLaneLaunchCache({
+          laneId: vmLane.id,
+          projectRoot,
+          provider: macosVmLaunchProviderForProject,
+        }).catch((error) => {
           logger.warn("macos_vm.runtime_ready_cache_refresh_failed", {
             laneId: vmLane.id,
             error: error instanceof Error ? error.message : String(error),
@@ -3200,10 +3213,11 @@ app.whenReady().then(async () => {
     // Register the launch-context provider so resolveLaneLaunchContext can
     // synthesize an SSH launch context for VM lanes.
     if (typeof macosVmSvcAny.getStatus === "function" && typeof macosVmSvcAny.getCredentials === "function") {
-      setMacosVmLaunchProvider({
+      macosVmLaunchProviderForProject = {
         getStatus: macosVmSvcAny.getStatus.bind(macosVmService),
         getCredentials: macosVmSvcAny.getCredentials.bind(macosVmService),
-      });
+      };
+      setMacosVmLaunchProvider(macosVmLaunchProviderForProject);
     }
     // Phone sync is owned by the per-machine ADE service. The desktop
     // keeps a non-host sync service for legacy viewer state and explicit
@@ -4048,6 +4062,7 @@ app.whenReady().then(async () => {
     const project = toProjectInfo(projectRoot, baseRef);
     const runtimeProject = await localRuntimePool.ensureProject(projectRoot);
     const shellContext = createDormantProjectContext(projectRoot);
+    let macosVmLaunchProviderForProject: MacosVmLaunchProvider | null = null;
     const macosVmService = createMacosVmService({
       projectRoot,
       logger,
@@ -4067,6 +4082,9 @@ app.whenReady().then(async () => {
       onEvent: (payload) => {
         syncMacosVmLaunchCacheFromEvent(payload, (event, fields) => {
           logger.warn(event, fields);
+        }, {
+          projectRoot,
+          provider: macosVmLaunchProviderForProject,
         });
         emitProjectEvent(projectRoot, IPC.macosVmEvent, payload);
       },
@@ -4095,8 +4113,12 @@ app.whenReady().then(async () => {
           const lanes = Array.isArray(response.result) ? response.result as LaneSummary[] : [];
           const vmLane = lanes.find((lane) => lane.runtimePlacement === "macos-vm") ?? null;
           if (!vmLane) return;
-          invalidateVmLaneLaunchCache(vmLane.id);
-          await refreshVmLaneLaunchCache({ laneId: vmLane.id });
+          invalidateVmLaneLaunchCache(vmLane.id, projectRoot);
+          await refreshVmLaneLaunchCache({
+            laneId: vmLane.id,
+            projectRoot,
+            provider: macosVmLaunchProviderForProject,
+          });
         })().catch((error) => {
           logger.warn("macos_vm.runtime_ready_cache_refresh_failed", {
             error: error instanceof Error ? error.message : String(error),
@@ -4104,6 +4126,21 @@ app.whenReady().then(async () => {
         });
       },
     });
+    const macosVmSvcAny = macosVmService as unknown as {
+      getStatus?: typeof macosVmService.getStatus;
+      getCredentials?: (args: { vmName: string }) => Promise<{
+        vmName: string;
+        username: string | null;
+        hasPassword: boolean;
+      }>;
+    };
+    if (typeof macosVmSvcAny.getStatus === "function" && typeof macosVmSvcAny.getCredentials === "function") {
+      macosVmLaunchProviderForProject = {
+        getStatus: macosVmSvcAny.getStatus.bind(macosVmService),
+        getCredentials: macosVmSvcAny.getCredentials.bind(macosVmService),
+      };
+      setMacosVmLaunchProvider(macosVmLaunchProviderForProject);
+    }
     logger.info("project.runtime_bound", {
       projectRoot,
       projectId: runtimeProject.projectId,

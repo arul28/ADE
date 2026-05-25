@@ -250,13 +250,16 @@ emulation both handle conflict resolution inside the insert trigger
 (accept newer `col_version`, tombstone semantics for deletes, last
 writer wins on ties by `site_id`).
 
-Before apply, `kvDb.ts` filters inbound rows whose target table has
-been intentionally removed locally (`unified_memories` and related FTS
-tables) or does not exist in the current schema. This filter runs
-before the SQL transaction starts; a batch containing only ignored rows
-returns `appliedCount: 0`, preserves the local database version, and
-emits no touched tables. Mixed batches remain transactional for the
-actionable rows.
+Before apply, `kvDb.ts` filters inbound rows only for explicitly retired
+tables (`unified_memories` and related FTS tables). iOS also ignores
+its hydration-owned snapshot tables, which are intentionally not part
+of the desktop CRDT schema. Arbitrary unknown tables are rejected rather
+than ACKed: a peer that receives future-schema rows must upgrade before
+it can advance its sync cursor. This filter runs before the SQL
+transaction starts; a batch containing only ignored retired rows returns
+`appliedCount: 0`, preserves the local database version, and emits no
+touched tables. Mixed batches remain transactional for the actionable
+rows.
 
 After apply, ADE runs post-hooks:
 

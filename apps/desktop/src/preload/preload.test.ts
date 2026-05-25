@@ -4627,6 +4627,9 @@ describe("preload remote project binding", () => {
       if (channel === IPC.remoteRuntimeCallSync) {
         return { ok: true };
       }
+      if (channel === IPC.remoteRuntimeCallAction) {
+        return { result: [{ id: "lane-b" }] };
+      }
       throw new Error(`unexpected IPC: ${channel}`);
     });
     const on = vi.fn();
@@ -4650,6 +4653,12 @@ describe("preload remote project binding", () => {
 
     const slowOpen = bridge.remoteRuntime.openProject("target-1", "project-a");
     await bridge.remoteRuntime.openProject("target-1", "project-b");
+    await expect(bridge.lanes.list()).resolves.toEqual([{ id: "lane-b" }]);
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-b",
+      request: { domain: "lane", action: "list", args: {} },
+    });
     resolveSlowOpen(bindingA);
     await slowOpen;
 
@@ -4771,6 +4780,64 @@ describe("preload remote project binding", () => {
         request: expect.objectContaining({
           domain: "file",
           action: "writeWorkspaceText",
+        }),
+      }),
+    );
+
+    resolveOpen(binding);
+    await pendingOpen;
+  });
+
+  it("blocks lane port lease allocation while a remote project switch is in flight", async () => {
+    let resolveOpen: (value: unknown) => void = () => {};
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeOpenProject) {
+        return await new Promise((resolve) => {
+          resolveOpen = resolve as (value: unknown) => void;
+        });
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+
+    const pendingOpen = bridge.remoteRuntime.openProject("target-1", "project-2");
+    await expect(bridge.lanes.portGetLease({ laneId: "lane-1", port: 5173 }))
+      .rejects.toThrow(/Project is switching/i);
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.remoteRuntimeCallAction,
+      expect.objectContaining({
+        request: expect.objectContaining({
+          domain: "lane",
+          action: "portGetLease",
         }),
       }),
     );

@@ -572,7 +572,7 @@ export function createGitOperationsService({
     throw new Error((res.stderr || res.stdout).trim() || "Failed to merge");
   };
 
-  const NON_UNDOABLE_HEAD_CHANGE_KINDS = new Set([
+  const HEAD_CHANGE_UNDO_BOUNDARY_KINDS = new Set([
     "git_undo_head_change",
     // Branch checkout updates lane branch_ref via switchBranch; reset --hard alone
     // would move the wrong ref (see History "Create branch here" → undo).
@@ -596,16 +596,20 @@ export function createGitOperationsService({
     postHeadSha: string;
   } {
     const normalizedCurrentBranch = localBranchNameForConfig(currentBranchRef);
-    const operation = operationService
-      .listHeadChanges({ laneId, limit: 100 })
-      .find((entry) => {
-        if (NON_UNDOABLE_HEAD_CHANGE_KINDS.has(entry.kind)) return false;
-        return getOperationBranchRef(entry) === normalizedCurrentBranch;
-      });
-    if (!operation) {
-      throw new Error("No undoable head-changing git operation found for this branch.");
+    for (const operation of operationService.listHeadChanges({ laneId, limit: 100 })) {
+      if (operation.kind === "git_undo_head_change") {
+        throw new Error("Latest head change is already an undo. Use redo to restore it.");
+      }
+      if (HEAD_CHANGE_UNDO_BOUNDARY_KINDS.has(operation.kind)) {
+        break;
+      }
+      const operationBranch = getOperationBranchRef(operation);
+      if (operationBranch !== null && operationBranch !== normalizedCurrentBranch) {
+        continue;
+      }
+      return operation;
     }
-    return operation;
+    throw new Error("No undoable head-changing git operation found for this branch.");
   }
 
   function getLatestRedoableUndo(laneId: string): {
@@ -623,6 +627,15 @@ export function createGitOperationsService({
       throw new Error("No redoable git undo operation found for this lane.");
     }
     return { operation: latest, redoHeadSha };
+  }
+
+  function normalizeCommitShaArg(commitSha: string): string {
+    const normalized = commitSha.trim();
+    if (!normalized.length) throw new Error("Commit SHA is required");
+    if (normalized.includes("\0") || normalized.startsWith("-") || /\s/.test(normalized)) {
+      throw new Error("Invalid commit SHA");
+    }
+    return normalized;
   }
 
   return {
@@ -836,11 +849,7 @@ export function createGitOperationsService({
 
     async getCommit(args: { laneId: string; commitSha: string }): Promise<GitCommitSummary | null> {
       const laneId = args.laneId.trim();
-      const commitSha = args.commitSha.trim();
-      if (!commitSha.length) throw new Error("Commit SHA is required");
-      if (commitSha.includes("\0") || commitSha.startsWith("-") || /\s/.test(commitSha)) {
-        throw new Error("Invalid commit SHA");
-      }
+      const commitSha = normalizeCommitShaArg(args.commitSha);
       return readLaneCached(`commit:${laneId}:${commitSha}`, 2_000, async () => {
         const lane = laneService.getLaneBaseAndBranch(laneId);
         let out: string;
@@ -895,6 +904,24 @@ export function createGitOperationsService({
           subject: subject ?? "",
           pushed,
         };
+      });
+    },
+
+    async isCommitInLaneHistory(args: { laneId: string; commitSha: string }): Promise<boolean> {
+      const laneId = args.laneId.trim();
+      const commitSha = normalizeCommitShaArg(args.commitSha);
+      return readLaneCached(`commit-in-lane-history:${laneId}:${commitSha}`, 2_000, async () => {
+        const lane = laneService.getLaneBaseAndBranch(laneId);
+        const result = await runGit(
+          ["merge-base", "--is-ancestor", commitSha, "HEAD"],
+          { cwd: lane.worktreePath, timeoutMs: 10_000 },
+        );
+        if (result.exitCode === 0) return true;
+        if (result.exitCode === 1) return false;
+        if (isMissingWorktreeError(new Error(result.stderr || result.stdout))) {
+          throw laneWorktreeMissingError(lane);
+        }
+        return false;
       });
     },
 

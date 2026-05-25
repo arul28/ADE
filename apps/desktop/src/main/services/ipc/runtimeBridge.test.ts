@@ -9,6 +9,7 @@ const ipcHandlers = vi.hoisted(
   () => new Map<string, (...args: any[]) => unknown>(),
 );
 const browserWindowFromWebContents = vi.hoisted(() => vi.fn());
+const browserWindowFromId = vi.hoisted(() => vi.fn());
 const browserWindowGetAllWindows = vi.hoisted(() => vi.fn(() => []));
 const remoteRegistryGetMock = vi.hoisted(() => vi.fn());
 const remoteRegistryListMock = vi.hoisted(() => vi.fn(() => []));
@@ -30,6 +31,7 @@ vi.mock("electron", () => ({
   },
   BrowserWindow: {
     fromWebContents: browserWindowFromWebContents,
+    fromId: browserWindowFromId,
     getAllWindows: browserWindowGetAllWindows,
   },
   clipboard: {
@@ -134,6 +136,11 @@ describe("registerRuntimeBridge", () => {
     delete process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON;
     ipcHandlers.clear();
     browserWindowFromWebContents.mockReset();
+    browserWindowFromId.mockReset().mockReturnValue({
+      id: 7,
+      isDestroyed: vi.fn(() => false),
+      webContents: { isDestroyed: vi.fn(() => false) },
+    });
     browserWindowGetAllWindows.mockReset().mockReturnValue([]);
     remoteRegistryGetMock.mockReset();
     remoteRegistryListMock.mockReset().mockReturnValue([]);
@@ -548,6 +555,56 @@ describe("registerRuntimeBridge", () => {
       rootPath: "/srv/ade",
       displayName: "ADE",
     });
+  });
+
+  it("does not bind a remote project after the sender window is gone", async () => {
+    const project = {
+      projectId: "project-1",
+      rootPath: "/srv/ade",
+      displayName: "ADE",
+      addedAt: 1,
+      lastOpenedAt: 2,
+      gitOriginUrl: null,
+    };
+    type ConnectResult = {
+      target: RemoteRuntimeTarget;
+      arch: string;
+      version: string | null;
+      projects: typeof project[];
+    };
+    let resolveConnect!: (value: ConnectResult) => void;
+    const pendingConnect = new Promise<ConnectResult>((resolve) => {
+      resolveConnect = resolve;
+    });
+    const bindRemoteProject = vi.fn();
+    remoteRegistryGetMock.mockReturnValue(target);
+    remoteConnectMock.mockReturnValue(pendingConnect);
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+      bindRemoteProject,
+    });
+
+    const promise = ipcHandlers.get(IPC.remoteRuntimeOpenProject)?.(
+      eventForSender(sender(303)),
+      {
+        id: "target-1",
+        projectId: "project-1",
+      },
+    ) as Promise<OpenProjectBinding & { kind: "remote" }>;
+    browserWindowFromId.mockReturnValue(null);
+    resolveConnect({
+      target,
+      arch: "linux-x64",
+      version: "1.0.0",
+      projects: [project],
+    });
+
+    await expect(promise).resolves.toMatchObject({
+      projectId: "project-1",
+      rootPath: "/srv/ade",
+    });
+    expect(bindRemoteProject).not.toHaveBeenCalled();
   });
 
   it("does not bind a stale remote project after overlapping opens resolve out of order", async () => {

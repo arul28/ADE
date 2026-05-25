@@ -350,8 +350,43 @@ describe("gitOperationsService undo and redo head changes", () => {
     );
   });
 
+  it("undoes legacy head change records without branch metadata", async () => {
+    mockGit.getHeadSha.mockResolvedValue("after");
+    mockGit.runGitOrThrow.mockResolvedValue(undefined);
+    const { service, mockListHeadChanges, mockStart } = createTestGitOperationsService();
+    mockListHeadChanges.mockReturnValue([
+      {
+        id: "op-legacy",
+        laneId: "lane-1",
+        laneName: "Lane",
+        kind: "git_cherry_pick",
+        startedAt: "2026-05-22T00:00:00.000Z",
+        endedAt: "2026-05-22T00:00:01.000Z",
+        status: "succeeded",
+        preHeadSha: "before",
+        postHeadSha: "after",
+        metadataJson: "{}",
+      },
+    ]);
+
+    await service.undoLastHeadChange({ laneId: "lane-1" });
+
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
+      ["reset", "--hard", "before"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 60_000 },
+    );
+    expect(mockStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "git_undo_head_change",
+        metadata: expect.objectContaining({
+          undoneOperationId: "op-legacy",
+        }),
+      }),
+    );
+  });
+
   it("does not undo an already-undone head change through the undo command", async () => {
-    const { service, mockListHeadChanges } = createTestGitOperationsService();
+    const { service, mockListHeadChanges, mockStart } = createTestGitOperationsService();
     mockListHeadChanges.mockReturnValue([
       {
         id: "op-undo",
@@ -368,8 +403,44 @@ describe("gitOperationsService undo and redo head changes", () => {
     ]);
 
     await expect(service.undoLastHeadChange({ laneId: "lane-1" }))
-      .rejects.toThrow("No undoable head-changing git operation found for this branch.");
+      .rejects.toThrow("Latest head change is already an undo.");
     expect(mockGit.runGitOrThrow).not.toHaveBeenCalled();
+    expect(mockStart).not.toHaveBeenCalled();
+  });
+
+  it("does not look past an undo boundary into an older head change", async () => {
+    const { service, mockListHeadChanges, mockStart } = createTestGitOperationsService();
+    mockListHeadChanges.mockReturnValue([
+      {
+        id: "op-undo",
+        laneId: "lane-1",
+        laneName: "Lane",
+        kind: "git_undo_head_change",
+        startedAt: "2026-05-22T00:00:02.000Z",
+        endedAt: "2026-05-22T00:00:03.000Z",
+        status: "succeeded",
+        preHeadSha: "after",
+        postHeadSha: "before",
+        metadataJson: JSON.stringify({ redoHeadSha: "after" }),
+      },
+      {
+        id: "op-pick",
+        laneId: "lane-1",
+        laneName: "Lane",
+        kind: "git_cherry_pick",
+        startedAt: "2026-05-22T00:00:00.000Z",
+        endedAt: "2026-05-22T00:00:01.000Z",
+        status: "succeeded",
+        preHeadSha: "before",
+        postHeadSha: "after",
+        metadataJson: JSON.stringify({ branchRef: "feature/stash-test" }),
+      },
+    ]);
+
+    await expect(service.undoLastHeadChange({ laneId: "lane-1" }))
+      .rejects.toThrow("Latest head change is already an undo.");
+    expect(mockGit.runGitOrThrow).not.toHaveBeenCalled();
+    expect(mockStart).not.toHaveBeenCalled();
   });
 
   it("does not look past branch checkout into another branch when undoing", async () => {
@@ -1138,6 +1209,29 @@ describe("gitOperationsService cached lane reads", () => {
     expect(first).toEqual(second);
     expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(1);
     expect(mockGit.runGit).toHaveBeenCalledTimes(1);
+  });
+
+  it("checks whether a commit is reachable from the lane head", async () => {
+    mockGit.runGit.mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" });
+    const { service } = createTestGitOperationsService();
+
+    await expect(
+      service.isCommitInLaneHistory({ laneId: "lane-1", commitSha: "abc123" }),
+    ).resolves.toBe(true);
+
+    expect(mockGit.runGit).toHaveBeenCalledWith(
+      ["merge-base", "--is-ancestor", "abc123", "HEAD"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 10_000 },
+    );
+  });
+
+  it("reports commits outside the lane head history as not reachable", async () => {
+    mockGit.runGit.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "" });
+    const { service } = createTestGitOperationsService();
+
+    await expect(
+      service.isCommitInLaneHistory({ laneId: "lane-1", commitSha: "abc123" }),
+    ).resolves.toBe(false);
   });
 
   it("reports a missing lane worktree as lane state for commit history", async () => {

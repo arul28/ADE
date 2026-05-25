@@ -6564,6 +6564,7 @@ export function createAgentChatService(args: {
     try {
       ({ laneWorktreePath: cwd } = resolveLaneLaunchContext({
         laneService,
+        projectRoot,
         laneId: sourceLaneId,
         purpose: "name a lane from prompt",
       }));
@@ -6631,6 +6632,7 @@ export function createAgentChatService(args: {
     try {
       ({ laneWorktreePath: cwd } = resolveLaneLaunchContext({
         laneService,
+        projectRoot,
         laneId,
         purpose: "inspect lane git state",
       }));
@@ -6680,6 +6682,7 @@ export function createAgentChatService(args: {
       try {
         ({ laneWorktreePath: cwd } = resolveLaneLaunchContext({
           laneService,
+          projectRoot,
           laneId,
           purpose: "turn diff summary",
         }));
@@ -6745,6 +6748,7 @@ export function createAgentChatService(args: {
     const laneId = resolveManagedExecutionLaneId(managed);
     const launchContext = resolveLaneLaunchContext({
       laneService,
+      projectRoot,
       laneId,
       purpose: args.purpose,
       requestedCwd: args.requestedCwd,
@@ -14939,6 +14943,7 @@ export function createAgentChatService(args: {
   }: AgentChatCreateArgs): Promise<AgentChatSession> => {
     const launchContext = resolveLaneLaunchContext({
       laneService,
+      projectRoot,
       laneId,
       purpose: "start this chat",
       requestedCwd,
@@ -21180,6 +21185,7 @@ export function createAgentChatService(args: {
       try {
         return resolveLaneLaunchContext({
           laneService,
+          projectRoot,
           laneId,
           purpose: "list slash commands",
         }).laneWorktreePath;
@@ -21344,6 +21350,7 @@ export function createAgentChatService(args: {
     }
     const launchContext = resolveLaneLaunchContext({
       laneService,
+      projectRoot,
       laneId: normalizedLaneId,
       purpose: "read Claude sessions",
     });
@@ -21740,6 +21747,7 @@ export function createAgentChatService(args: {
       if (args.laneId?.trim()) {
         const { laneWorktreePath } = resolveLaneLaunchContext({
           laneService,
+          projectRoot,
           laneId: args.laneId.trim(),
           purpose: "list Claude output styles",
         });

@@ -64,8 +64,9 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   const syncingFromUrlRef = useRef(false);
   const lastWrittenUrlRef = useRef<string>("");
   const [commitRefreshToken, setCommitRefreshToken] = useState(0);
-  /** False when the selected commit was resolved only via cross-repo getCommit, not lane history. */
+  /** False when the selected commit object exists but is not reachable from the lane head. */
   const [commitOnLaneHistory, setCommitOnLaneHistory] = useState(true);
+  const [selectedCommitLaneId, setSelectedCommitLaneId] = useState<string | null>(null);
 
   const events = useTimelineStore((s) => s.events);
   const rawEvents = useTimelineStore((s) => s.rawEvents);
@@ -241,8 +242,14 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   }, [active, surface, events, fetchEvents]);
 
   useEffect(() => {
-    if (!active || !focusLaneId || !selectedCommitSha || selectedCommit?.sha === selectedCommitSha) {
-      if (!selectedCommitSha) setCommitOnLaneHistory(true);
+    const selectedCommitIsCurrentLane =
+      selectedCommit?.sha === selectedCommitSha &&
+      selectedCommitLaneId === focusLaneId;
+    if (!active || !focusLaneId || !selectedCommitSha || selectedCommitIsCurrentLane) {
+      if (!selectedCommitSha) {
+        setCommitOnLaneHistory(true);
+        setSelectedCommitLaneId(null);
+      }
       return;
     }
     let cancelled = false;
@@ -253,6 +260,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
         const found = rows.find((r) => r.sha === selectedCommitSha);
         if (found) {
           setCommitOnLaneHistory(true);
+          setSelectedCommitLaneId(focusLaneId);
           setSelectedCommit(found);
           return;
         }
@@ -267,20 +275,34 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
             commitSha: selectedCommitSha,
           });
           if (!cancelled) {
-            setCommitOnLaneHistory(false);
+            const isOnLane = targeted
+              ? await window.ade.git.isCommitInLaneHistory({
+                laneId: focusLaneId,
+                commitSha: selectedCommitSha,
+              }).catch(() => false)
+              : false;
+            if (cancelled) return;
+            setCommitOnLaneHistory(isOnLane);
+            setSelectedCommitLaneId(focusLaneId);
             if (targeted) setSelectedCommit(targeted);
           }
         } catch {
-          if (!cancelled) setCommitOnLaneHistory(false);
+          if (!cancelled) {
+            setCommitOnLaneHistory(false);
+            setSelectedCommitLaneId(focusLaneId);
+          }
         }
       })
       .catch(() => {
-        if (!cancelled) setCommitOnLaneHistory(false);
+        if (!cancelled) {
+          setCommitOnLaneHistory(false);
+          setSelectedCommitLaneId(focusLaneId);
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [active, focusLaneId, selectedCommitSha, selectedCommit?.sha, setSelectedCommit]);
+  }, [active, focusLaneId, selectedCommitLaneId, selectedCommitSha, selectedCommit?.sha, setSelectedCommit]);
 
   useEffect(() => {
     if (!active || syncingFromUrlRef.current) return;

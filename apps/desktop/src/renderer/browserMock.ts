@@ -4624,6 +4624,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       ]),
       listCommitFiles: resolvedArg([]),
       getCommitMessage: resolvedArg(""),
+      getCommit: resolvedArg(null),
+      isCommitInLaneHistory: resolvedArg(true),
       revertCommit: resolvedArg({ ok: true }),
       cherryPickCommit: resolvedArg({ ok: true }),
       createTag: resolvedArg({ ok: true }),

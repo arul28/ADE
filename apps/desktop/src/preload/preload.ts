@@ -993,7 +993,6 @@ let projectBindingGeneration = 0;
 let projectBindingVersion = 0;
 let projectBindingRefreshPromise: Promise<OpenProjectBinding | null> | null = null;
 let projectRuntimeTransitionDepth = 0;
-let remoteProjectOpenTransitionDepth = 0;
 
 function rememberProjectBinding(binding: OpenProjectBinding | null): void {
   const previousKey = currentProjectBinding?.key ?? null;
@@ -1217,7 +1216,6 @@ const READ_ONLY_RUNTIME_ACTION_PREFIXES = [
   "list",
   "oauthGet",
   "oauthList",
-  "portGet",
   "portList",
   "proxyGet",
   "read",
@@ -1252,6 +1250,7 @@ const PROJECT_SWITCHING_MESSAGE =
   "Project is switching. Wait for the current project to finish loading before changing project state.";
 
 let openRemoteProjectGeneration = 0;
+let activeRemoteProjectOpenGeneration: number | null = null;
 
 function isReadOnlyRuntimeAction(domain: string, action: string): boolean {
   const key = `${domain}.${action}`;
@@ -1279,7 +1278,7 @@ function shouldBypassProjectRuntimeDuringTransition(domain: string, action: stri
         : "changing project state";
     throw new Error(PROJECT_SWITCHING_MESSAGE.replace("changing project state", label));
   }
-  return remoteProjectOpenTransitionDepth > 0;
+  return activeRemoteProjectOpenGeneration !== null;
 }
 
 async function callProjectRuntimeActionIfBound<T>(
@@ -3375,8 +3374,8 @@ contextBridge.exposeInMainWorld("ade", {
       projectId: string,
     ): Promise<OpenProjectBinding> => {
       return runProjectRuntimeTransition(async () => {
-        remoteProjectOpenTransitionDepth += 1;
         const generation = ++openRemoteProjectGeneration;
+        activeRemoteProjectOpenGeneration = generation;
         rememberProjectBinding(null);
         try {
           const binding = (await ipcRenderer.invoke(IPC.remoteRuntimeOpenProject, {
@@ -3385,18 +3384,19 @@ contextBridge.exposeInMainWorld("ade", {
           })) as OpenProjectBinding;
           if (generation === openRemoteProjectGeneration) {
             rememberProjectBinding(binding);
+            activeRemoteProjectOpenGeneration = null;
           }
           return binding;
         } catch (error) {
           if (generation === openRemoteProjectGeneration) {
             await refreshProjectBinding().catch(() => {});
+            activeRemoteProjectOpenGeneration = null;
           }
           throw error;
         } finally {
-          remoteProjectOpenTransitionDepth = Math.max(
-            0,
-            remoteProjectOpenTransitionDepth - 1,
-          );
+          if (activeRemoteProjectOpenGeneration === generation) {
+            activeRemoteProjectOpenGeneration = null;
+          }
         }
       });
     },
@@ -6265,6 +6265,18 @@ contextBridge.exposeInMainWorld("ade", {
       return runtime.handled
         ? runtime.result
         : ipcRenderer.invoke(IPC.gitGetCommit, args);
+    },
+    isCommitInLaneHistory: async (
+      args: { laneId: string; commitSha: string },
+    ): Promise<boolean> => {
+      const runtime = await callProjectRuntimeActionIfBound<boolean>(
+        "git",
+        "isCommitInLaneHistory",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.gitIsCommitInLaneHistory, args);
     },
     revertCommit: async (args: GitRevertArgs): Promise<GitActionResult> => {
       clearGitReadCaches();

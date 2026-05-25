@@ -888,6 +888,13 @@ function parseGitGetCommitMessageArgs(value: Record<string, unknown>): GitGetCom
   };
 }
 
+function parseGitCommitReachabilityArgs(value: Record<string, unknown>): { laneId: string; commitSha: string } {
+  return {
+    laneId: requireString(value.laneId, "git.isCommitInLaneHistory requires laneId."),
+    commitSha: requireString(value.commitSha, "git.isCommitInLaneHistory requires commitSha."),
+  };
+}
+
 function parseGitGetFileHistoryArgs(value: Record<string, unknown>): GitGetFileHistoryArgs {
   return {
     laneId: requireString(value.laneId, "git.getFileHistory requires laneId."),
@@ -2514,6 +2521,8 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     requireService(args.gitService, "Git service not available.").getFileHistory(parseGitGetFileHistoryArgs(payload)));
   register("git.getCommitMessage", { viewerAllowed: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").getCommitMessage(parseGitGetCommitMessageArgs(payload)));
+  register("git.isCommitInLaneHistory", { viewerAllowed: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").isCommitInLaneHistory(parseGitCommitReachabilityArgs(payload)));
   register("git.revertCommit", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").revertCommit(parseGitRevertArgs(payload)));
   register("git.cherryPickCommit", { viewerAllowed: true, queueable: true }, async (payload) =>

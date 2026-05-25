@@ -78,6 +78,7 @@ export function resolveLaneLaunchContext(args: {
   laneId: string;
   requestedCwd?: string | null;
   allowExternalCwd?: boolean;
+  projectRoot?: string | null;
   purpose: string;
 }): LaneLaunchContext {
   const laneId = String(args.laneId ?? "").trim();
@@ -89,6 +90,7 @@ export function resolveLaneLaunchContext(args: {
       laneId,
       purpose,
       worktreePath: lane.worktreePath,
+      projectRoot: args.projectRoot,
     });
   }
 
@@ -162,9 +164,9 @@ export function setMacosVmLaunchProvider(provider: MacosVmLaunchProvider | null)
   macosVmLaunchProvider = provider;
 }
 
-function pickActiveVmRecord(status: MacosVmStatus) {
-  if (status.laneVm) return status.laneVm;
-  return status.vms.find((vm) => vm.guestReadiness?.state === "runtime_ready") ?? status.vms[0] ?? null;
+function pickActiveVmRecord(status: MacosVmStatus, laneId: string) {
+  if (status.laneVm?.laneId === laneId) return status.laneVm;
+  return status.vms.find((vm) => vm.laneId === laneId) ?? null;
 }
 
 // VM lanes don't strictly require a host worktree dir to exist for SSH
@@ -187,6 +189,7 @@ function resolveVmLaneLaunchContext(args: {
   laneId: string;
   purpose: string;
   worktreePath: string;
+  projectRoot?: string | null;
 }): LaneLaunchContext {
   const provider = macosVmLaunchProvider;
   const laneRoot = resolveVmLaneRootPath(args.laneId, args.worktreePath);
@@ -202,7 +205,7 @@ function resolveVmLaneLaunchContext(args: {
   // The provider exposes async methods, but the lane launch context API is
   // synchronous. We deopt to throwing for now and require callers to prime
   // the provider state via the placement-changed event subscription.
-  const cached = getCachedVmLaunchContextSync(args.laneId);
+  const cached = getCachedVmLaunchContextSync(args.projectRoot, args.laneId);
   if (!cached) {
     throw new VmNotReadyError(
       `Mac VM lane '${args.laneId}' cannot ${args.purpose}: VM status has not been fetched yet. Open the VM tab to start it.`,
@@ -248,12 +251,36 @@ const vmLaunchContextCache = new Map<string, CachedVmLaunchContext>();
 // the cache was primed — agentChatService / ptyService call this sync helper
 // on every turn, and there was no background refresh path.
 const VM_LAUNCH_CONTEXT_TTL_MS = 30 * 60_000;
+const DEFAULT_VM_LAUNCH_CACHE_PROJECT_ROOT = "__default__";
 
-function getCachedVmLaunchContextSync(laneId: string): CachedVmLaunchContext | null {
-  const entry = vmLaunchContextCache.get(laneId);
+function normalizeVmLaunchCacheProjectRoot(projectRoot: string | null | undefined): string {
+  const trimmed = typeof projectRoot === "string" ? projectRoot.trim() : "";
+  if (!trimmed) return DEFAULT_VM_LAUNCH_CACHE_PROJECT_ROOT;
+  const resolved = path.resolve(trimmed);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function vmLaunchContextCacheKey(
+  projectRoot: string | null | undefined,
+  laneId: string,
+): string {
+  return `${normalizeVmLaunchCacheProjectRoot(projectRoot)}\0${laneId}`;
+}
+
+function laneIdFromVmLaunchContextCacheKey(cacheKey: string): string {
+  const separatorIndex = cacheKey.indexOf("\0");
+  return separatorIndex >= 0 ? cacheKey.slice(separatorIndex + 1) : cacheKey;
+}
+
+function getCachedVmLaunchContextSync(
+  projectRoot: string | null | undefined,
+  laneId: string,
+): CachedVmLaunchContext | null {
+  const cacheKey = vmLaunchContextCacheKey(projectRoot, laneId);
+  const entry = vmLaunchContextCache.get(cacheKey);
   if (!entry) return null;
   if (Date.now() - entry.cachedAt > VM_LAUNCH_CONTEXT_TTL_MS) {
-    vmLaunchContextCache.delete(laneId);
+    vmLaunchContextCache.delete(cacheKey);
     return null;
   }
   return entry;
@@ -267,10 +294,12 @@ function getCachedVmLaunchContextSync(laneId: string): CachedVmLaunchContext | n
  */
 export async function refreshVmLaneLaunchCache(args: {
   laneId: string;
+  projectRoot?: string | null;
   provider?: MacosVmLaunchProvider | null;
 }): Promise<CachedVmLaunchContext> {
+  const cacheKey = vmLaunchContextCacheKey(args.projectRoot, args.laneId);
   function cache(entry: CachedVmLaunchContext): CachedVmLaunchContext {
-    vmLaunchContextCache.set(args.laneId, entry);
+    vmLaunchContextCache.set(cacheKey, entry);
     return entry;
   }
   function notReady(
@@ -284,7 +313,7 @@ export async function refreshVmLaneLaunchCache(args: {
   if (!provider) return notReady(null, null);
 
   const status = await provider.getStatus({ laneId: args.laneId });
-  const record = pickActiveVmRecord(status);
+  const record = pickActiveVmRecord(status, args.laneId);
   const readinessState = record?.guestReadiness?.state ?? null;
   const phase = record?.currentPhase ?? null;
   const ip = record?.ipAddress ?? null;
@@ -307,9 +336,20 @@ export async function refreshVmLaneLaunchCache(args: {
   });
 }
 
-export function invalidateVmLaneLaunchCache(laneId?: string): void {
+export function invalidateVmLaneLaunchCache(
+  laneId?: string,
+  projectRoot?: string | null,
+): void {
   if (laneId) {
-    vmLaunchContextCache.delete(laneId);
+    if (projectRoot !== undefined) {
+      vmLaunchContextCache.delete(vmLaunchContextCacheKey(projectRoot, laneId));
+      return;
+    }
+    for (const cacheKey of [...vmLaunchContextCache.keys()]) {
+      if (laneIdFromVmLaunchContextCacheKey(cacheKey) === laneId) {
+        vmLaunchContextCache.delete(cacheKey);
+      }
+    }
     return;
   }
   vmLaunchContextCache.clear();
@@ -333,6 +373,10 @@ const MACOS_VM_LAUNCH_CACHE_STATE_CHANGING_OPERATIONS = new Set([
 export function syncMacosVmLaunchCacheFromEvent(
   payload: MacosVmEventPayload,
   log?: (event: string, fields: Record<string, unknown>) => void,
+  options: {
+    projectRoot?: string | null;
+    provider?: MacosVmLaunchProvider | null;
+  } = {},
 ): void {
   const laneId = (() => {
     if (payload.type === "vm-updated") {
@@ -364,10 +408,14 @@ export function syncMacosVmLaunchCacheFromEvent(
   })();
   if (!shouldInvalidate && !shouldRefresh) return;
 
-  invalidateVmLaneLaunchCache(laneId);
+  invalidateVmLaneLaunchCache(laneId, options.projectRoot);
   if (!shouldRefresh) return;
 
-  void refreshVmLaneLaunchCache({ laneId }).catch((error) => {
+  void refreshVmLaneLaunchCache({
+    laneId,
+    projectRoot: options.projectRoot,
+    provider: options.provider,
+  }).catch((error) => {
     log?.("lane.vm_launch_cache_refresh_failed", {
       laneId,
       eventType: payload.type,
