@@ -1198,7 +1198,7 @@ describe("adeRpcServer", () => {
       const result = (await handler({ jsonrpc: "2.0", id: 3, method: "ade/actions/list" })) as any;
 
       const names = (result.actions ?? []).map((tool: any) => tool.name);
-      expect(names).toContain("delegate_to_subagent");
+      expect(names).toContain("spawn_agent");
       expect(names).not.toContain("get_cto_state");
       expect(names).not.toContain("getLinearSyncDashboard");
     });

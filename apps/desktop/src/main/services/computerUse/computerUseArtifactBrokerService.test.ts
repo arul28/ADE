@@ -163,8 +163,6 @@ describe("computerUseArtifactBrokerService", () => {
       db,
       projectId: "project-1",
       projectRoot,
-      missionService: { addArtifact: vi.fn() } as any,
-      orchestratorService: { registerArtifact: vi.fn() } as any,
       logger: createLogger(),
     });
 
