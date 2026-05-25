@@ -573,4 +573,63 @@ describe("ade rpc --stdio daemon bridge", () => {
       if (!realDaemon.killed) realDaemon.kill();
     }
   }, 45_000);
+
+  itUnix("restarts an incompatible-role daemon even when the proxy has only the placeholder version", async () => {
+    const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const cliPath = path.join(packageRoot, "src", "cli.ts");
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-placeholder-role-"));
+    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const baseEnv = {
+      ...process.env,
+      ADE_HOME: adeHome,
+      ADE_RUNTIME_SOCKET_PATH: socketPath,
+      NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
+    };
+    const realDaemon = startServeProcess({
+      cliPath,
+      cwd: packageRoot,
+      env: {
+        ...baseEnv,
+        ADE_CLI_VERSION: "2.0.0",
+        ADE_DEFAULT_ROLE: "agent",
+      },
+      socketPath,
+    });
+
+    let proxy: StdioRpcProcess | null = null;
+    try {
+      await waitForSocket(socketPath);
+
+      const placeholderEnv: NodeJS.ProcessEnv = {
+        ...baseEnv,
+        ADE_DEFAULT_ROLE: "cto",
+      };
+      delete placeholderEnv.ADE_CLI_VERSION;
+      proxy = StdioRpcProcess.start({
+        cliPath,
+        cwd: packageRoot,
+        env: placeholderEnv,
+      });
+      const initialize = await proxy.request("ade/initialize", {
+        protocolVersion: "2025-06-18",
+        clientName: "stdio-daemon-placeholder-role-test",
+        identity: { role: "external", callerId: "stdio-daemon-placeholder-role-test" },
+      });
+
+      expect(initialize).toMatchObject({
+        runtimeInfo: {
+          defaultRole: "cto",
+          multiProject: true,
+        },
+      });
+      expect((initialize as { runtimeInfo?: { pid?: number | null } }).runtimeInfo?.pid).not.toBe(realDaemon.pid);
+
+      await expect(proxy.request("shutdown")).resolves.toEqual({});
+      proxy.closeInput();
+      await expect(proxy.waitForExit()).resolves.toMatchObject({ code: 0, signal: null });
+    } finally {
+      proxy?.kill();
+      if (!realDaemon.killed) realDaemon.kill();
+    }
+  }, 45_000);
 });

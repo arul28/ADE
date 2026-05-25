@@ -10803,6 +10803,10 @@ function machineRuntimeMismatchReason(
   expectedDefaultRole: GlobalOptions["role"],
 ): string | null {
   const runtimeVersion = runtimeInfo.version;
+  const sourceCliTalkingToReleasedRuntime =
+    VERSION === PLACEHOLDER_VERSION &&
+    Boolean(runtimeVersion) &&
+    runtimeVersion !== PLACEHOLDER_VERSION;
   if (VERSION !== PLACEHOLDER_VERSION) {
     const versionMatches = runtimeVersion === VERSION;
     const placeholderBuildMatches =
@@ -10812,11 +10816,13 @@ function machineRuntimeMismatchReason(
     if (!versionMatches && !placeholderBuildMatches) {
       return `version ${runtimeVersion ?? "missing"} does not match CLI version ${VERSION}`;
     }
-  } else if (runtimeVersion && runtimeVersion !== PLACEHOLDER_VERSION) {
-    return null;
   }
 
-  if (expectedBuildHash && runtimeInfo.buildHash !== expectedBuildHash) {
+  if (
+    !sourceCliTalkingToReleasedRuntime &&
+    expectedBuildHash &&
+    runtimeInfo.buildHash !== expectedBuildHash
+  ) {
     return runtimeInfo.buildHash ? "build hash changed" : "build hash missing";
   }
   if (!canRuntimeDefaultRoleServe(runtimeInfo.defaultRole, expectedDefaultRole)) {
