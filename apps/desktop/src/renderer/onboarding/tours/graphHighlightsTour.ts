@@ -11,7 +11,7 @@ export const graphHighlightsTour: Tour = {
       id: "h.graph.what",
       target: "",
       title: "Workspace graph",
-      body: "Every lane, mission, and PR as a node. Edges show parent and child branches and stack relationships.",
+      body: "Every lane and PR as a node. Edges show parent and child branches and stack relationships.",
       docUrl: docs.workspaceGraph,
     },
     {

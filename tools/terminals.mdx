@@ -65,15 +65,15 @@ ADE categorizes terminal sessions into three types. The type determines how the 
     When you start a managed process from Project Home, ADE creates a managed session in the correct lane automatically — you do not need to manually create it.
   </Accordion>
   <Accordion title="Agent Sessions" icon="robot">
-    When an AI agent (running inside a Mission, Chat, or Automation) executes terminal commands as part of its task, those commands run in an **Agent Session**. Agent sessions are:
+    When an AI agent (running inside a Worker run, Chat, or Automation) executes terminal commands as part of its task, those commands run in an **Agent Session**. Agent sessions are:
 
     - **Visually distinct**: The terminal panel has a blue tint and the tab label shows the agent's name (e.g., "Agent: claude-3-7-sonnet")
     - **Read-only for humans**: You can watch the agent's terminal in real time but cannot type into it while the agent is active. This prevents accidental interference.
-    - **Fully captured**: Every command and every line of output is captured in the session transcript and linked to the mission or chat turn that spawned it.
-    - **Attributable**: The session metadata records which agent model, which mission/chat ID, and which task step spawned this session.
+    - **Fully captured**: Every command and every line of output is captured in the session transcript and linked to the worker run or chat turn that spawned it.
+    - **Attributable**: The session metadata records which agent model, which worker run/chat ID, and which task step spawned this session.
 
     <Warning>
-    Do not kill an agent session manually while a mission is running — this will cause the mission to fail with a terminal error. Use the mission's **Stop** button in the Mission Run panel instead, which handles cleanup gracefully.
+    Do not kill an agent session manually while a worker run is running — this will cause the worker run to fail with a terminal error. Use the worker run's **Stop** button in the worker detail panel instead, which handles cleanup gracefully.
     </Warning>
   </Accordion>
 </AccordionGroup>
@@ -95,7 +95,7 @@ Every session — regardless of type — has a complete metadata record:
 | **Working directory** | The working directory at session start |
 | **Environment snapshot** | The environment variables at session start (sensitive values masked) |
 | **Command count** | Total number of commands run in this session |
-| **Agent ID** | For Agent sessions: the agent/mission that spawned it |
+| **Agent ID** | For Agent sessions: the agent/worker run that spawned it |
 
 View session metadata by clicking the **i** icon in the terminal tab header.
 
@@ -270,7 +270,7 @@ The dialog shows the full content to be pasted. You can confirm, edit it, or can
   <Accordion title="Agent sessions and permission gates" icon="shield-check">
     Agent sessions respect ADE's permission system. If an agent tries to run a command that requires explicit permission (e.g., running `sudo`, modifying files outside the worktree, or making network calls to non-whitelisted hosts), the command is held at a permission gate.
 
-    A prompt appears in the terminal panel and in the Mission Run panel asking you to approve or deny the command. The agent waits for your decision before proceeding.
+    A prompt appears in the terminal panel and in the worker detail panel asking you to approve or deny the command. The agent waits for your decision before proceeding.
   </Accordion>
   <Accordion title="Sessions in the Primary Lane" icon="house">
     The Primary lane's terminal sessions run in the main repository root directory, not in a worktree. Changes made via Primary lane sessions affect the main working tree directly. If you have agents running in Worktree lanes simultaneously, their changes are invisible to the Primary lane until merged.
@@ -291,7 +291,7 @@ The dialog shows the full content to be pasted. You can confirm, edit it, or can
   <Card title="Project Home" icon="house" href="/tools/project-home">
     Managed process configuration — where you define the processes that create Managed Sessions.
   </Card>
-  <Card title="Missions" icon="bullseye" href="/missions/overview">
-    Understand how missions spawn and manage Agent Sessions during execution.
+  <Card title="Workers" icon="bullseye" href="/cto/workers">
+    Understand how worker runs spawn and manage Agent Sessions during execution.
   </Card>
 </CardGroup>

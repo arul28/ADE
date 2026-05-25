@@ -20,7 +20,7 @@ A Karpathy-style autoresearch loop for ADE perf. You (the agent) ARE the loop ru
 
 ## Inputs
 
-- `<tab>`: the tab to optimize. Must be one of: `boot`, `lanes`, `missions`, `prs`, `work`, `files`, `run`, `graph`, `review`, `history`, `automations`, `cto`, `settings`. (`boot` = cold launch + welcome + project open + remote runtime + iOS pairing — the "main ADE screen" surface above any specific tab.)
+- `<tab>`: the tab to optimize. Must be one of: `boot`, `lanes`, `prs`, `work`, `files`, `run`, `graph`, `review`, `history`, `automations`, `cto`, `settings`. (`boot` = cold launch + welcome + project open + remote runtime + iOS pairing — the "main ADE screen" surface above any specific tab.)
 - `<perf-pass-dir>`: throwaway git repo path. Defaults to `/Users/admin/Projects/perf pass` (note the space — quote it). Must exist, must be a git repo, must have a `perf-pass-seed` tag (or you create one on first run). Override via `ADE_PERF_PASS_DIR` env var.
 
 ## Real UI audit is the primary loop

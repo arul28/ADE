@@ -46,8 +46,6 @@ import {
   sortLanesForStackGraph,
   mergeUnique,
   laneMatchesFilter,
-  isMissionLaneHiddenByDefault,
-  isMissionResultLane,
   LANES_TILING_TREE,
   LANES_TILING_WORK_FOCUS_TREE,
   LANES_TILING_LAYOUT_VERSION,
@@ -770,8 +768,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const branchLaneSwitchDisabledReason = useMemo<string | null>(() => {
     if (!branchLane) return null;
     if (branchLane.laneType === "attached") return "Branch switching is disabled for attached lanes — manage this worktree with your own tools.";
-    if (isMissionResultLane(branchLane)) return "Branch switching is disabled for mission result lanes to keep their output stable.";
-    if (isMissionLaneHiddenByDefault(branchLane)) return "Branch switching isn't available on mission worker lanes.";
     return null;
   }, [branchLane]);
   const canSwitchBranchLane = branchLane !== null && branchLaneSwitchDisabledReason === null;

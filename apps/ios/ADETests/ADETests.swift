@@ -1649,7 +1649,7 @@ final class ADETests: XCTestCase {
       "event": {
         "type": "user_message",
         "text": "INTERNAL_RUNTIME_PROMPT",
-        "displayText": "ADE coordinator tick: review mission state and route the next action.",
+        "displayText": "ADE coordinator tick: review agent state and route the next action.",
         "turnId": "turn-1"
       }
     }
@@ -1659,7 +1659,7 @@ final class ADETests: XCTestCase {
     guard case .userMessage(let userText, _, let userTurnId, _, _, _) = userMessageEnvelope.event else {
       return XCTFail("Expected user message event.")
     }
-    XCTAssertEqual(userText, "ADE coordinator tick: review mission state and route the next action.")
+    XCTAssertEqual(userText, "ADE coordinator tick: review agent state and route the next action.")
     XCTAssertEqual(userTurnId, "turn-1")
 
     let resolvedJSON = """
@@ -3701,7 +3701,6 @@ final class ADETests: XCTestCase {
           stateSnapshot: LaneStateSnapshotSummary(
             laneId: "lane-child",
             agentSummary: ["summary": .string("Codex running")],
-            missionSummary: ["summary": .string("Ship W6")],
             updatedAt: "2026-03-18T00:14:00.000Z"
           ),
           adoptableAttached: false
@@ -3810,7 +3809,6 @@ final class ADETests: XCTestCase {
       stateSnapshot: LaneStateSnapshotSummary(
         laneId: "lane-primary",
         agentSummary: ["summary": .string("Awaiting review")],
-        missionSummary: nil,
         updatedAt: "2026-03-18T00:20:00.000Z"
       ),
       rebaseSuggestion: nil,
@@ -4836,7 +4834,6 @@ final class ADETests: XCTestCase {
         stateSnapshot: LaneStateSnapshotSummary(
           laneId: "lane-attached-active",
           agentSummary: ["summary": .string("Agent waiting on approval")],
-          missionSummary: ["summary": .string("Ship the cleanup")],
           updatedAt: nil
         ),
         createdAt: "2026-03-20T00:00:00.000Z",
@@ -4855,8 +4852,7 @@ final class ADETests: XCTestCase {
         runtime: LaneRuntimeSummary(bucket: "awaiting-input", runningCount: 0, awaitingInputCount: 1, endedCount: 0, sessionCount: 1),
         stateSnapshot: LaneStateSnapshotSummary(
           laneId: "lane-worktree",
-          agentSummary: ["title": .string("Codex")],
-          missionSummary: ["objective": .string("Handle OAuth redirects")],
+          agentSummary: ["title": .string("Codex"), "objective": .string("Handle OAuth redirects")],
           updatedAt: nil
         ),
         createdAt: "2026-03-10T00:00:00.000Z",
@@ -6818,7 +6814,7 @@ final class ADETests: XCTestCase {
 
   func testParseWorkChatTranscriptPrefersUserMessageDisplayText() {
     let raw = """
-    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"user_message","text":"INTERNAL_RUNTIME_PROMPT","displayText":"ADE coordinator start: initialize the mission.","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"user_message","text":"INTERNAL_RUNTIME_PROMPT","displayText":"ADE coordinator start: initialize the session.","turnId":"turn-1"}}
     """
 
     let transcript = parseWorkChatTranscript(raw)
@@ -6827,7 +6823,7 @@ final class ADETests: XCTestCase {
     guard case .userMessage(let text, let turnId, _, _, _) = transcript[0].event else {
       return XCTFail("Expected user_message event.")
     }
-    XCTAssertEqual(text, "ADE coordinator start: initialize the mission.")
+    XCTAssertEqual(text, "ADE coordinator start: initialize the session.")
     XCTAssertEqual(turnId, "turn-1")
   }
 
@@ -8488,7 +8484,6 @@ final class ADETests: XCTestCase {
         remote_behind integer not null default -1,
         rebase_in_progress integer not null default 0,
         agent_summary_json text,
-        mission_summary_json text,
         updated_at text not null default ''
       );
     """)
@@ -8643,7 +8638,6 @@ final class ADETests: XCTestCase {
         remote_behind integer not null default -1,
         rebase_in_progress integer not null default 0,
         agent_summary_json text,
-        mission_summary_json text,
         updated_at text not null
       );
     """)
@@ -8687,7 +8681,6 @@ final class ADETests: XCTestCase {
         remote_behind integer not null default -1,
         rebase_in_progress integer not null default 0,
         agent_summary_json text,
-        mission_summary_json text,
         updated_at text not null
       );
       create table if not exists terminal_sessions (
@@ -8778,9 +8771,9 @@ final class ADETests: XCTestCase {
         'active', '2026-03-17T00:00:00.000Z', null
       );
       insert into lane_state_snapshots (
-        lane_id, dirty, ahead, behind, remote_behind, rebase_in_progress, agent_summary_json, mission_summary_json, updated_at
+        lane_id, dirty, ahead, behind, remote_behind, rebase_in_progress, agent_summary_json, updated_at
       ) values (
-        'lane-primary', 0, 0, 0, 0, 0, null, null, '2026-03-17T00:00:00.000Z'
+        'lane-primary', 0, 0, 0, 0, 0, null, '2026-03-17T00:00:00.000Z'
       );
     """)
   }
@@ -9486,7 +9479,7 @@ final class ADETests: XCTestCase {
             "allowsFreeform": true,
             "options": [
               {"label":"Chat / Messaging","value":"chat","description":"Testing the chat composer, message sending, or conversation flow"},
-              {"label":"Lanes / Missions","value":"lanes","description":"Testing lane creation, mission management, or task flow"},
+              {"label":"Lanes","value":"lanes","description":"Testing lane creation, branch management, or task flow"},
               {"label":"Sync / Connectivity","value":"sync","description":"Testing device sync, WebSocket connection, or host pairing"},
               {"label":"Something else","value":"other","description":"A different part of the app not listed above"}
             ]

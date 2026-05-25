@@ -2,7 +2,7 @@
 
 Agents exposed through chat get three tiers of tools: **universal**,
 **workflow**, and **coordinator**. Each tier is scoped to a role so a
-regular chat session cannot, for example, start a mission or force a
+regular chat session cannot, for example, start a run or force a
 worker to respawn.
 
 ## Source file map
@@ -66,7 +66,7 @@ through the same pending-input abstraction (see
 ## Tier 2: workflow tools
 
 Available to chat agents (CTO, named employees, regular chat sessions).
-Not exposed to headless mission workers. Built by `createWorkflowTools()`
+Not exposed to headless run workers. Built by `createWorkflowTools()`
 in `workflowTools.ts`.
 
 | Tool | Purpose |
@@ -102,13 +102,6 @@ a platform without a supported capture backend (Linux/Windows); the
 agent can fall back to `ade proof attach <path>` with a headless-browser
 or Playwright-produced PNG in that case.
 
-## Tier 3: coordinator tools
-
-Available only to the mission orchestrator agent. Not covered in this
-doc; see the missions area. Chat agents do not receive these, and
-`agentChatService` filters them out when provisioning a chat session
-that happens to share a provider runtime with orchestrator code.
-
 ## CTO operator tools
 
 Sessions with `identityKey: "cto"` additionally receive the CTO operator
@@ -122,7 +115,6 @@ uses to act on ADE itself:
 | `createTerminal`, `runCommand` | Create untracked shells or run fire-and-forget commands. |
 | `listLanes`, `createLane`, `renameLane`, `archiveLane`, `inspectLane` | Lane management. |
 | `listWorkers`, `createAgent`, `updateAgent`, `triggerAgentWakeup` | Worker agent management. |
-| `listMissions`, `startMission`, `pauseMission`, `resumeMission`, `cancelMission` | Mission control. |
 | Linear tools (when connected) | Intake, dispatch, reply, close. |
 | `getPipelineSettings`, `updatePipelineSettings` | Pipeline/flow policy. |
 | `getIssueInventory`, `refreshIssueInventory` | Issue tracking. |
@@ -135,11 +127,10 @@ renders only the sections the agent can act on.
 ## Standalone-chat restrictions
 
 Chat sessions connected to the ADE CLI with a `chatSessionId` but
-no mission/run/step/attempt context are classified as "standalone". The
-ADE action bridge hides `spawn_agent` and all coordinator tools from both
-the action-list response and the execution path. This prevents an interactive
-chat user from invoking orchestration primitives that only function
-inside a mission.
+no worker context are classified as "standalone". The
+ADE action bridge hides `spawn_agent` from both the action-list
+response and the execution path. This prevents an interactive chat
+user from invoking elevated primitives reserved for managed sessions.
 
 ## Tool exposure policy
 

@@ -1,9 +1,6 @@
 import type {
   ModelConfig,
   ModelProvider,
-  MissionModelProfile,
-  OrchestratorCallType,
-  OrchestratorIntelligenceConfig,
   ThinkingLevel
 } from "./types";
 import {
@@ -34,7 +31,7 @@ function providerFromFamily(family: ModelDescriptor["family"]): ModelProvider {
   return family;
 }
 
-/** Map a registry descriptor to a ModelEntry for the missions UI */
+/** Map a registry descriptor to a model picker entry. */
 function descriptorToEntry(d: ModelDescriptor, overrides?: { recommended?: boolean }): ModelEntry {
   const provider: ModelProvider = providerFromFamily(d.family);
   return {
@@ -104,176 +101,6 @@ export function getThinkingLevels(provider: ModelProvider): ThinkingOption[] {
     { value: "medium", label: "Medium" },
     { value: "high", label: "High" },
   ];
-}
-
-// ─────────────────────────────────────────────────────
-// Orchestrator call type metadata (for UI)
-// ─────────────────────────────────────────────────────
-
-export type CallTypeInfo = {
-  key: OrchestratorCallType;
-  label: string;
-  description: string;
-  defaultProvider: ModelProvider;
-};
-
-export const ORCHESTRATOR_CALL_TYPES: CallTypeInfo[] = [
-  {
-    key: "coordinator",
-    label: "Coordinator",
-    description: "Persistent AI session that manages the mission — spawns workers, makes decisions, handles failures",
-    defaultProvider: "claude",
-  },
-  {
-    key: "chat_response",
-    label: "Chat Response",
-    description: "Handles user chat messages when no coordinator is active",
-    defaultProvider: "claude",
-  },
-];
-
-// ─────────────────────────────────────────────────────
-// Built-in model profiles
-// ─────────────────────────────────────────────────────
-
-const CLAUDE_SONNET: ModelConfig = { provider: "claude", modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" };
-const CLAUDE_HAIKU: ModelConfig = { provider: "claude", modelId: "anthropic/claude-haiku-4-5", thinkingLevel: "low" };
-const CLAUDE_OPUS: ModelConfig = { provider: "claude", modelId: "anthropic/claude-opus-4-7", thinkingLevel: "high" };
-const CODEX_STANDARD: ModelConfig = { provider: "codex", modelId: DEFAULT_CODEX_MODEL_ID, thinkingLevel: "medium" };
-const CODEX_MINI: ModelConfig = { provider: "codex", modelId: "openai/gpt-5.4-mini", thinkingLevel: "low" };
-
-export const BUILT_IN_PROFILES: MissionModelProfile[] = [
-  {
-    id: "standard",
-    name: "Standard",
-    description: "Balanced setup: Codex for implementation/review/verification, Claude for orchestration and planning.",
-    isBuiltIn: true,
-    orchestratorModel: CLAUDE_SONNET,
-    decisionTimeoutCapHours: 24,
-    phaseDefaults: {
-      planning: CLAUDE_SONNET,
-      implementation: CODEX_STANDARD,
-      testing: CODEX_STANDARD,
-      validation: CODEX_STANDARD,
-      codeReview: CLAUDE_SONNET,
-      testReview: CODEX_STANDARD,
-      prReview: CODEX_STANDARD,
-    },
-    intelligenceConfig: {
-      coordinator: CLAUDE_SONNET,
-      chat_response: CLAUDE_SONNET,
-    }
-  },
-  {
-    id: "fast-cheap",
-    name: "Fast & Cheap",
-    description: "Minimizes cost and latency. Uses lightweight models everywhere. Good for simple tasks.",
-    isBuiltIn: true,
-    orchestratorModel: CLAUDE_HAIKU,
-    decisionTimeoutCapHours: 24,
-    phaseDefaults: {
-      planning: CLAUDE_HAIKU,
-      implementation: CODEX_MINI,
-      testing: CODEX_MINI,
-      validation: CODEX_MINI,
-      codeReview: CLAUDE_HAIKU,
-      testReview: CODEX_MINI,
-      prReview: CODEX_MINI,
-    },
-    intelligenceConfig: {
-      coordinator: CLAUDE_HAIKU,
-      chat_response: CLAUDE_HAIKU,
-    },
-    smartBudget: {
-      enabled: true,
-      fiveHourThresholdUsd: 5,
-      weeklyThresholdUsd: 25,
-    }
-  },
-  {
-    id: "max-quality",
-    name: "Maximum Quality",
-    description: "Uses the most capable models for every task. Higher cost, best results for complex projects.",
-    isBuiltIn: true,
-    orchestratorModel: CLAUDE_OPUS,
-    decisionTimeoutCapHours: 24,
-    phaseDefaults: {
-      planning: CLAUDE_OPUS,
-      implementation: { provider: "codex", modelId: DEFAULT_CODEX_MODEL_ID, thinkingLevel: "high" },
-      testing: CODEX_STANDARD,
-      validation: CLAUDE_OPUS,
-      codeReview: CLAUDE_OPUS,
-      testReview: CLAUDE_SONNET,
-      prReview: CODEX_STANDARD,
-    },
-    intelligenceConfig: {
-      coordinator: CLAUDE_OPUS,
-      chat_response: CLAUDE_SONNET,
-    }
-  },
-  {
-    id: "codex-only",
-    name: "Codex Only",
-    description: "Uses Codex (OpenAI) for everything. No Claude API calls. Good if you only have OpenAI access.",
-    isBuiltIn: true,
-    orchestratorModel: CODEX_STANDARD,
-    decisionTimeoutCapHours: 24,
-    phaseDefaults: {
-      planning: CODEX_STANDARD,
-      implementation: CODEX_STANDARD,
-      testing: CODEX_STANDARD,
-      validation: CODEX_STANDARD,
-      codeReview: CODEX_STANDARD,
-      testReview: CODEX_STANDARD,
-      prReview: CODEX_STANDARD,
-    },
-    intelligenceConfig: {
-      coordinator: CODEX_STANDARD,
-      chat_response: CODEX_STANDARD,
-    }
-  },
-  {
-    id: "claude-only",
-    name: "Claude Only",
-    description: "Uses Claude for everything. No Codex/OpenAI API calls. Good if you only have Anthropic access.",
-    isBuiltIn: true,
-    orchestratorModel: CLAUDE_SONNET,
-    decisionTimeoutCapHours: 24,
-    phaseDefaults: {
-      planning: CLAUDE_SONNET,
-      implementation: CLAUDE_SONNET,
-      testing: CLAUDE_SONNET,
-      validation: CLAUDE_SONNET,
-      codeReview: CLAUDE_SONNET,
-      testReview: CLAUDE_HAIKU,
-      prReview: CLAUDE_SONNET,
-    },
-    intelligenceConfig: {
-      coordinator: CLAUDE_SONNET,
-      chat_response: CLAUDE_SONNET,
-    }
-  }
-];
-
-export function getProfileById(id: string): MissionModelProfile | undefined {
-  return BUILT_IN_PROFILES.find((p) => p.id === id);
-}
-
-// ─────────────────────────────────────────────────────
-// Resolution helpers
-// ─────────────────────────────────────────────────────
-
-/** Resolve the model config for a specific orchestrator call type */
-export function resolveCallTypeModel(
-  callType: OrchestratorCallType,
-  intelligenceConfig?: OrchestratorIntelligenceConfig | null,
-  fallbackModel?: ModelConfig | null
-): ModelConfig {
-  const explicit = intelligenceConfig?.[callType];
-  if (explicit) return explicit;
-  if (fallbackModel) return fallbackModel;
-  // Ultimate fallback: Claude Sonnet
-  return CLAUDE_SONNET;
 }
 
 /** Convert a ModelConfig to the model string used by aiIntegrationService */

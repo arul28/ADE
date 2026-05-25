@@ -426,7 +426,7 @@ describe("flowPolicyService", () => {
           enabled: true,
           priority: 100,
           triggers: { assignees: ["CTO"] },
-          target: { type: "mission" },
+          target: { type: "worker_run" },
           steps: [{ id: "launch", type: "launch_target" }],
         },
         {

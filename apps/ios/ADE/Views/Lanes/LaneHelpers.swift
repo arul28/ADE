@@ -25,9 +25,6 @@ func laneActivitySummary(_ snapshot: LaneListSnapshot) -> String? {
   if let agentText = summarizeState(snapshot.stateSnapshot?.agentSummary) {
     return agentText
   }
-  if let missionText = summarizeState(snapshot.stateSnapshot?.missionSummary) {
-    return missionText
-  }
   return nil
 }
 
@@ -162,7 +159,6 @@ func matchesLaneToken(snapshot: LaneListSnapshot, isPinned: Bool, token: String)
     snapshot.runtime.bucket,
     "\(snapshot.runtime.sessionCount)",
     summarizeState(snapshot.stateSnapshot?.agentSummary) ?? "",
-    summarizeState(snapshot.stateSnapshot?.missionSummary) ?? "",
     isPinned ? "pinned" : "",
   ].joined(separator: " ").lowercased()
   return indexed.contains(token)

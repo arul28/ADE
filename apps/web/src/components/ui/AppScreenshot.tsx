@@ -75,7 +75,7 @@ export function AppScreenshot() {
                                 <div className="text-purple-400">import</div> <span className="text-white">{"{"} Page {"}"}</span> <div className="text-purple-400">from</div> <span className="text-green-400">"../../components/Page"</span>;<br />
                                 <br />
                                 <div className="text-purple-400">export function</div> <span className="text-yellow-300">HomePage</span>() {"{"}<br />
-                                &nbsp;&nbsp;<span className="text-blue-400">useDocumentTitle</span>(<span className="text-green-400">"Mission Control"</span>);<br />
+                                &nbsp;&nbsp;<span className="text-blue-400">useDocumentTitle</span>(<span className="text-green-400">"ADE"</span>);<br />
                                 <br />
                                 &nbsp;&nbsp;<div className="text-purple-400">return</div> (<br />
                                 &nbsp;&nbsp;&nbsp;&nbsp;&lt;<span className="text-yellow-300">Page</span> <span className="text-blue-300">className</span>=<span className="text-green-400">"overflow-hidden"</span>&gt;<br />

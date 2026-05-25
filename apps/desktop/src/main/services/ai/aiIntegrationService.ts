@@ -91,7 +91,6 @@ export type AiTaskType =
   | "handoff_summary"
   | "continuity_summary"
   | "context_compaction"
-  | "mission_planning"
   | "initial_context";
 
 export type AiFeatureKey =
@@ -100,7 +99,6 @@ export type AiFeatureKey =
   | "commit_messages"
   | "pr_descriptions"
   | "terminal_summaries"
-  | "mission_planning"
   | "orchestrator"
   | "initial_context";
 
@@ -197,7 +195,6 @@ const DEFAULT_AI_FEATURE_FLAGS: Record<AiFeatureKey, boolean> = {
   commit_messages: false,
   pr_descriptions: true,
   terminal_summaries: true,
-  mission_planning: true,
   orchestrator: true,
   initial_context: true,
 };
@@ -257,10 +254,6 @@ const TASK_DEFAULTS: Record<AiTaskType, RuntimeTaskDefaults> = {
   context_compaction: {
     modelId: "anthropic/claude-haiku-4-5",
     timeoutMs: 120_000
-  },
-  mission_planning: {
-    modelId: DEFAULT_CLAUDE_TASK_MODEL_ID,
-    timeoutMs: 300_000
   },
   initial_context: {
     modelId: DEFAULT_CLAUDE_TASK_MODEL_ID,

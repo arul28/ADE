@@ -47,7 +47,7 @@ Detailed wiring lives in [`../linear-integration/README.md`](../linear-integrati
 
 ### Runtime daemon
 
-- `apps/ade-cli/src/headlessLinearServices.ts` — instantiates the full Linear service stack inside the `ade serve` runtime daemon. The daemon is first-class for Linear, not a read-only stub: it can intake issues, dispatch worker runs / missions / employee sessions, and close out tickets with the same code path the desktop renderer drives.
+- `apps/ade-cli/src/headlessLinearServices.ts` — instantiates the full Linear service stack inside the `ade serve` runtime daemon. The daemon is first-class for Linear, not a read-only stub: it can intake issues, dispatch worker runs / runs / employee sessions, and close out tickets with the same code path the desktop renderer drives.
 
 ## Connection model
 
@@ -80,8 +80,7 @@ The dispatcher handles five target types:
 | --- | --- | --- |
 | `employee_session` | Direct CTO or employee chat with issue context | Uses `agentChatService.createSession`. Honors `sessionReuse` (fresh vs continue). |
 | `worker_run` | Delegated isolated worker run | Uses `workerAgentService` + `workerTaskSessionService`. Fresh lane by default. |
-| `mission` | Full mission via `aiOrchestratorService` | Uses `missionService.createMission` + mission run start. |
-| `pr_resolution` | PR-focused automation | Can spin up a worker or mission depending on config. Applies PR convergence policy. |
+| `pr_resolution` | PR-focused automation | Can spin up a worker depending on config. Applies PR convergence policy. |
 | `review_gate` | Manual gate | No work launched; surfaces review request and waits on human decision. |
 
 The dispatcher supports chained stages via `downstreamTarget` — e.g. a worker run feeding into a PR resolution. `getTargetStages(target)` walks the chain (mirror of `flattenTargetChain` in the pipeline builder).
@@ -92,7 +91,7 @@ The dispatcher supports chained stages via `downstreamTarget` — e.g. a worker 
 
 - workflow id/name/version/source, target type, status.
 - current step index + id.
-- `execution_lane_id`, `linked_mission_id`, `linked_session_id`, `linked_worker_run_id`, `linked_pr_id`.
+- `execution_lane_id`, `linked_session_id`, `linked_worker_run_id`, `linked_pr_id`.
 - review state, supervisor identity key, review-ready reason.
 - PR state, checks status, review status.
 - retry count + next-retry timestamp.
@@ -204,5 +203,4 @@ Workflows support a simulation mode for testing triggers against real issues wit
 - `pipeline-builder.md` — editing workflows visually.
 - `workers.md` — how `worker_run` targets actually execute.
 - `../automations/README.md` — why Automations don't duplicate Linear intake.
-- `../missions/README.md` — how `mission` targets dispatch to the mission runtime.
 - `../computer-use/README.md` — proof artifacts attached during closeout.

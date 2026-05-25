@@ -10,8 +10,6 @@ struct LaneAdvancedScreen: View {
   let laneId: String
   let branchRef: String?
   let laneType: String?
-  let missionId: String?
-  let laneRole: String?
   let onOpenManageSheet: () -> Void
   let onSwitchBranch: () -> Void
   let onStash: () -> Void
@@ -194,16 +192,6 @@ struct LaneAdvancedScreen: View {
   private var branchSwitchDisabledReason: String? {
     if laneType == "attached" {
       return "Branch switching is disabled for attached lanes."
-    }
-    if missionId != nil {
-      // Mission lanes default to disabled. Only the explicit "result" role
-      // gets the result-specific copy; every other role (or a missing role)
-      // falls into the worker-lane bucket so we never accidentally allow
-      // branch switching on a mission lane with an unknown role.
-      if laneRole == "result" {
-        return "Branch switching is disabled for mission result lanes."
-      }
-      return "Branch switching isn't available on mission worker lanes."
     }
     return nil
   }

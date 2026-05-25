@@ -19,7 +19,6 @@ type EnsureTaskSessionArgs = {
 type DeriveTaskKeyArgs = {
   agentId: string;
   laneId?: string | null;
-  missionId?: string | null;
   workflowRunId?: string | null;
   linearIssueId?: string | null;
   chatSessionId?: string | null;
@@ -75,7 +74,6 @@ export function createWorkerTaskSessionService(args: WorkerTaskSessionServiceArg
   const deriveTaskKey = (input: DeriveTaskKeyArgs): string => {
     const contextParts = [
       `agent:${input.agentId.trim()}`,
-      input.missionId ? `mission:${input.missionId.trim()}` : "",
       input.workflowRunId ? `workflowRun:${input.workflowRunId.trim()}` : "",
       input.linearIssueId ? `linear:${input.linearIssueId.trim()}` : "",
       input.chatSessionId ? `chat:${input.chatSessionId.trim()}` : "",

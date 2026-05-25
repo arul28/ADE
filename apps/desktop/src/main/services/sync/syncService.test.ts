@@ -144,7 +144,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       sessionService: { list: () => [] } as any,
       ptyService: {} as any,
       computerUseArtifactBrokerService: {} as any,
-      missionService: { list: () => [] } as any,
       agentChatService: { listSessions: async () => [] } as any,
       processService: { listRuntime: () => [] } as any,
       hostStartupEnabled: true,
@@ -241,12 +240,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       } as any,
       ptyService: {} as any,
       computerUseArtifactBrokerService: {} as any,
-      missionService: {
-        list: ({ status }: { status?: string } = {}) =>
-          status === "active"
-            ? [{ id: "mission-1", title: "Ship W3", status: "active" }]
-            : [],
-      } as any,
       agentChatService: {
         listSessions: async () => [
           {
@@ -287,7 +280,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(readiness.ready).toBe(false);
     expect(readiness.blockers).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ kind: "mission_run", id: "mission-1" }),
         expect.objectContaining({
           kind: "chat_runtime",
           id: "chat-1",
@@ -302,7 +294,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     );
     expect(readiness.survivableState).toEqual(
       expect.arrayContaining([
-        "Paused missions remain paused and can resume on the new host.",
         "CTO history and idle threads remain available on the new host.",
         "Idle and ended agent chats remain available and resumable on the new host.",
       ]),
@@ -342,7 +333,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       sessionService: { list: () => [] } as any,
       ptyService: {} as any,
       computerUseArtifactBrokerService: {} as any,
-      missionService: { list: () => [] } as any,
       agentChatService: { listSessions: async () => [] } as any,
       processService: { listRuntime: () => [] } as any,
     });
@@ -428,7 +418,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       sessionService: { list: () => [] } as any,
       ptyService: {} as any,
       computerUseArtifactBrokerService: {} as any,
-      missionService: { list: () => [] } as any,
       agentChatService: { listSessions: async () => [] } as any,
       processService: { listRuntime: () => [] } as any,
     });
@@ -532,7 +521,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       sessionService: { list: () => [] } as any,
       ptyService: {} as any,
       computerUseArtifactBrokerService: {} as any,
-      missionService: { list: () => [] } as any,
       agentChatService: { listSessions: async () => [] } as any,
       processService: { listRuntime: () => [] } as any,
       forceHostRole: true,
@@ -584,7 +572,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       sessionService: { list: () => [] } as any,
       ptyService: {} as any,
       computerUseArtifactBrokerService: {} as any,
-      missionService: { list: () => [] } as any,
       agentChatService: { listSessions: async () => [] } as any,
       processService: { listRuntime: () => [] } as any,
       hostStartupEnabled: false,
@@ -630,7 +617,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       sessionService: { list: () => [] } as any,
       ptyService: {} as any,
       computerUseArtifactBrokerService: {} as any,
-      missionService: { list: () => [] } as any,
       agentChatService: { listSessions: async () => [] } as any,
       processService: { listRuntime: () => [] } as any,
       hostStartupEnabled: false,
@@ -694,7 +680,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       sessionService: { list: () => [] } as any,
       ptyService: {} as any,
       computerUseArtifactBrokerService: {} as any,
-      missionService: { list: () => [] } as any,
       agentChatService: { listSessions: async () => [] } as any,
       processService: { listRuntime: () => [] } as any,
       hostStartupEnabled: true,
@@ -751,7 +736,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       sessionService: { list: () => [] } as any,
       ptyService: {} as any,
       computerUseArtifactBrokerService: {} as any,
-      missionService: { list: () => [] } as any,
       agentChatService: { listSessions: async () => [] } as any,
       processService: { listRuntime: () => [] } as any,
     } as any);
@@ -853,7 +837,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       sessionService: { list: () => [] } as any,
       ptyService: {} as any,
       computerUseArtifactBrokerService: {} as any,
-      missionService: { list: () => [] } as any,
       agentChatService: { listSessions: async () => [] } as any,
       processService: { listRuntime: () => [] } as any,
     });
@@ -904,7 +887,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
         sessionService: { list: () => [] } as any,
         ptyService: {} as any,
         computerUseArtifactBrokerService: {} as any,
-        missionService: { list: () => [] } as any,
         agentChatService: { listSessions: async () => [] } as any,
         processService: { listRuntime: () => [] } as any,
         hostStartupEnabled: true,
@@ -966,7 +948,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
         sessionService: { list: () => [] } as any,
         ptyService: {} as any,
         computerUseArtifactBrokerService: {} as any,
-        missionService: { list: () => [] } as any,
         agentChatService: { listSessions: async () => [] } as any,
         processService: { listRuntime: () => [] } as any,
         forceHostRole: true,
@@ -1004,7 +985,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
         sessionService: { list: () => [] } as any,
         ptyService: {} as any,
         computerUseArtifactBrokerService: {} as any,
-        missionService: { list: () => [] } as any,
         agentChatService: { listSessions: async () => [] } as any,
         processService: { listRuntime: () => [] } as any,
       });
@@ -1048,7 +1028,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
         sessionService: { list: () => [] } as any,
         ptyService: {} as any,
         computerUseArtifactBrokerService: {} as any,
-        missionService: { list: () => [] } as any,
         agentChatService: { listSessions: async () => [] } as any,
         processService: { listRuntime: () => [] } as any,
         hostStartupEnabled: false,

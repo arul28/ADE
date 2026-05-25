@@ -45,7 +45,6 @@ export type AdeLayoutPaths = {
   agentContextDir: string;
   agentConfigsDir: string;
   workerPromptsDir: string;
-  missionStateDir: string;
   githubSecretsDir: string;
 };
 
@@ -124,7 +123,6 @@ export function resolveAdeLayout(projectRoot: string): AdeLayoutPaths {
     agentContextDir: path.join(orchestratorCacheDir, "agent-context"),
     agentConfigsDir: path.join(orchestratorCacheDir, "agent-configs"),
     workerPromptsDir: path.join(orchestratorCacheDir, "worker-prompts"),
-    missionStateDir: path.join(cacheDir, "mission-state"),
     githubSecretsDir: path.join(secretsDir, "github"),
   };
   _layoutCache.set(projectRoot, result);

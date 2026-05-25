@@ -26,7 +26,7 @@ The runtime is organized around one contract: the CTO tab should be usable as a 
 - `linearRoutingService.ts` — match a normalized issue against the workflow list and produce a `LinearWorkflowMatchResult`.
 - `linearIngressService.ts` — optional realtime webhook/relay ingress; auto-starts only if configured.
 - `linearSyncService.ts` — background polling loop; short-circuits when idle/disconnected.
-- `linearDispatcherService.ts` — launches target runs (employee_session, worker_run, mission, pr_resolution, review_gate), tracks run state, emits events.
+- `linearDispatcherService.ts` — launches target runs (employee_session, worker_run, run, pr_resolution, review_gate), tracks run state, emits events.
 - `linearCloseoutService.ts` — success/failure Linear state transitions, comments, proof attachment.
 - `linearOutboundService.ts` — outbound Linear writes (state, comments, assignees).
 
@@ -76,7 +76,7 @@ The runtime is organized around one contract: the CTO tab should be usable as a 
 1. **Immutable doctrine** — `IMMUTABLE_CTO_DOCTRINE` in `ctoStateService.ts`. Defines the CTO role, ADE environment, precision rules. Always injected. Not user-editable. Not compacted away. Runs even after context compaction via `refreshReconstructionContext()`.
 2. **Personality overlay** — one of six presets (`strategic`, `professional`, `hands_on`, `casual`, `minimal`, `custom`). Only the `custom` preset reads `customPersonality` from the identity record.
 3. **CTO continuity model** — the runtime describes doctrine, current context, and compaction/recovery rules.
-4. **Environment knowledge** — `CTO_ENVIRONMENT_KNOWLEDGE` is a glossary of ADE entities (lanes, chats vs terminals vs subprocess agents, missions, workers, convergence, conflicts) plus the intent-to-tool routing guide. Distinguishes `spawnChat` from `createTerminal` from `spawn_agent` explicitly.
+4. **Environment knowledge** — `CTO_ENVIRONMENT_KNOWLEDGE` is a glossary of ADE entities (lanes, chats vs terminals vs subprocess agents, runs, workers, convergence, conflicts) plus the intent-to-tool routing guide. Distinguishes `spawnChat` from `createTerminal` from `spawn_agent` explicitly.
 5. **Capability manifest** — `CTO_CAPABILITY_MANIFEST` lists the complete operator tool surface. It is intentionally kept in sync with `ctoOperatorTools.ts` tool registrations, not auto-generated.
 
 These layers combine into `CtoSystemPromptPreview` which the onboarding and settings surfaces render verbatim, so the UI matches the runtime.
@@ -117,7 +117,7 @@ Linear poll / webhook
    -> linearSyncService (reconciliation loop)
    -> linearRoutingService (match triggers against LinearWorkflowConfig)
    -> linearDispatcherService (launch target; emit linear-workflow-run events)
-   -> workerAgentService / missionService / agentChatService / prService (target-specific launch)
+   -> workerAgentService / agentChatService / prService (target-specific launch)
    -> linearCloseoutService (on completion)
    -> renderer via emitRunEvent + ipc channel
    -> LinearSyncPanel dashboard / run timeline
@@ -125,7 +125,7 @@ Linear poll / webhook
 
 ## CTO operator tools
 
-Registered in `ctoOperatorTools.ts` and exposed as ADE CLI actions to the CTO chat session. Organized by domain: lanes, chats, missions, workers, git, PRs, convergence, conflicts, files, context, processes, tests, terminals, Linear, automations, events, project health, computer use, budget, and CTO continuity. When the CTO wants to surface something in the UI it returns an `OperatorNavigationSuggestion` instead of silently switching tabs.
+Registered in `ctoOperatorTools.ts` and exposed as ADE CLI actions to the CTO chat session. Organized by domain: lanes, chats, workers, git, PRs, convergence, conflicts, files, context, processes, tests, terminals, Linear, automations, events, project health, computer use, budget, and CTO continuity. When the CTO wants to surface something in the UI it returns an `OperatorNavigationSuggestion` instead of silently switching tabs.
 
 The environment knowledge block inside the system prompt teaches intent-to-tool routing (e.g. "start a chat" -> `spawnChat`, "open a terminal" -> `createTerminal`). The capability manifest is injected in full, not summarized, so the CTO can pick the right tool even for less common actions.
 
@@ -136,7 +136,6 @@ The environment knowledge block inside the system prompt teaches intent-to-tool 
 - `linear-integration.md` — connection model, workflow engine, dispatcher, sync loop, ingress, headless parity.
 - `workers.md` — worker creation wizard, team panel, adapter types, budgets.
 - `onboarding.md` — `OnboardingBanner`, `OnboardingWizard`, identity editor.
-- `../missions/README.md` — missions as a dispatch target.
 - `../automations/README.md` — automations as event-driven rules; note CTO owns Linear intake, Automations never duplicate it.
 - `../computer-use/README.md` — computer-use proof appears in workflow closeout.
 

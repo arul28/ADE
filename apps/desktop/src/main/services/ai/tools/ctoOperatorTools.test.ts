@@ -48,8 +48,6 @@ function buildDeps(overrides: Partial<CtoOperatorToolDeps> = {}): CtoOperatorToo
       list: vi.fn().mockResolvedValue([]),
       create: vi.fn(),
     } as any,
-    missionService: null,
-    aiOrchestratorService: null,
     workerAgentService: null,
     workerHeartbeatService: null,
     linearDispatcherService: null,
@@ -114,18 +112,6 @@ describe("createCtoOperatorTools", () => {
     expect(toolKeys).toContain("cancelLinearRun");
     expect(toolKeys).toContain("rerouteLinearRun");
 
-    // Mission tools
-    expect(toolKeys).toContain("listMissions");
-    expect(toolKeys).toContain("startMission");
-    expect(toolKeys).toContain("getMissionStatus");
-    expect(toolKeys).toContain("updateMission");
-    expect(toolKeys).toContain("launchMissionRun");
-    expect(toolKeys).toContain("resolveMissionIntervention");
-    expect(toolKeys).toContain("getMissionRunView");
-    expect(toolKeys).toContain("getMissionLogs");
-    expect(toolKeys).toContain("listMissionWorkerDigests");
-    expect(toolKeys).toContain("steerMission");
-
     // Worker tools
     expect(toolKeys).toContain("listWorkers");
     expect(toolKeys).toContain("createWorker");
@@ -147,7 +133,6 @@ describe("createCtoOperatorTools", () => {
 
     // Linear issue routing / issue tools
     expect(toolKeys).toContain("routeLinearIssueToCto");
-    expect(toolKeys).toContain("routeLinearIssueToMission");
     expect(toolKeys).toContain("routeLinearIssueToWorker");
     expect(toolKeys).toContain("commentOnLinearIssue");
     expect(toolKeys).toContain("updateLinearIssueState");
@@ -441,27 +426,18 @@ describe("createCtoOperatorTools", () => {
       expect(result).toMatchObject({ success: true, lane });
     });
 
-    it("returns lane and mission navigation suggestions for operator-created ADE objects", async () => {
+    it("returns lane navigation suggestions for operator-created ADE objects", async () => {
       const lane = { id: "lane-2", name: "ops", branchRef: "refs/heads/ops" };
-      const mission = { id: "mission-7", title: "Mission", laneId: "lane-2" };
       const deps = buildDeps({
         laneService: {
           list: vi.fn().mockResolvedValue([lane]),
           create: vi.fn().mockResolvedValue(lane),
-        } as any,
-        missionService: {
-          create: vi.fn().mockReturnValue(mission),
         } as any,
       });
       const tools = createCtoOperatorTools(deps);
 
       const createdLane = await (tools.createLane as any).execute({
         name: "ops",
-      });
-      const startedMission = await (tools.startMission as any).execute({
-        prompt: "Investigate the failing deploy path.",
-        laneId: "lane-2",
-        launch: false,
       });
 
       expect(createdLane).toMatchObject({
@@ -472,16 +448,6 @@ describe("createCtoOperatorTools", () => {
           sessionId: null,
           href: "/lanes?laneId=lane-2",
           label: "Open lane",
-        },
-      });
-      expect(startedMission).toMatchObject({
-        success: true,
-        navigation: {
-          surface: "missions",
-          laneId: "lane-2",
-          missionId: "mission-7",
-          href: "/missions?missionId=mission-7&laneId=lane-2",
-          label: "Open mission",
         },
       });
     });
@@ -498,177 +464,6 @@ describe("createCtoOperatorTools", () => {
       const result = await (tools.createLane as any).execute({ name: "conflict-lane" });
 
       expect(result).toMatchObject({ success: false, error: "Branch conflict" });
-    });
-  });
-
-  // ── Mission tools ───────────────────────────────────────────────
-
-  describe("mission tools", () => {
-    it("updates missions, relaunches runs, and resolves interventions through stable services", async () => {
-      const mission = { id: "mission-1", title: "Mission" };
-      const intervention = { id: "int-1", status: "resolved" };
-      const deps = buildDeps({
-        missionService: {
-          update: vi.fn().mockReturnValue(mission),
-          get: vi.fn().mockReturnValue(mission),
-          resolveIntervention: vi.fn().mockReturnValue(intervention),
-        } as any,
-        aiOrchestratorService: {
-          startMissionRun: vi.fn().mockResolvedValue({ started: { run: { id: "run-1" } }, mission }),
-        } as any,
-      });
-      const tools = createCtoOperatorTools(deps);
-
-      const updated = await (tools.updateMission as any).execute({
-        missionId: "mission-1",
-        title: "Updated title",
-        status: "in_progress",
-        outcomeSummary: "Working",
-      });
-      const launched = await (tools.launchMissionRun as any).execute({
-        missionId: "mission-1",
-        runMode: "manual",
-      });
-      const resolved = await (tools.resolveMissionIntervention as any).execute({
-        missionId: "mission-1",
-        interventionId: "int-1",
-        status: "resolved",
-        resolutionKind: "answer_provided",
-        note: "Use the existing implementation.",
-      });
-
-      expect((deps.missionService as any).update).toHaveBeenCalledWith({
-        missionId: "mission-1",
-        title: "Updated title",
-        status: "in_progress",
-        outcomeSummary: "Working",
-      });
-      expect((deps.aiOrchestratorService as any).startMissionRun).toHaveBeenCalledWith(
-        expect.objectContaining({
-          missionId: "mission-1",
-          runMode: "manual",
-          metadata: { launchSource: "cto_operator_tools.launchMissionRun" },
-        }),
-      );
-      expect((deps.missionService as any).resolveIntervention).toHaveBeenCalledWith({
-        missionId: "mission-1",
-        interventionId: "int-1",
-        status: "resolved",
-        resolutionKind: "answer_provided",
-        note: "Use the existing implementation.",
-      });
-      expect(updated).toMatchObject({ success: true, mission });
-      expect(launched).toMatchObject({ success: true, mission });
-      expect(resolved).toMatchObject({ success: true, intervention });
-    });
-
-    it("returns error when mission service is not available for listMissions", async () => {
-      const deps = buildDeps({ missionService: null });
-      const tools = createCtoOperatorTools(deps);
-
-      const result = await (tools.listMissions as any).execute({});
-
-      expect(result).toMatchObject({ success: false, error: expect.stringContaining("Mission service") });
-    });
-
-    it("lists missions with filters", async () => {
-      const missions = [{ id: "m-1", status: "in_progress" }];
-      const deps = buildDeps({
-        missionService: {
-          list: vi.fn().mockReturnValue(missions),
-        } as any,
-      });
-      const tools = createCtoOperatorTools(deps);
-
-      const result = await (tools.listMissions as any).execute({ status: "in_progress" });
-
-      expect(result).toMatchObject({ success: true, count: 1, missions });
-    });
-
-    it("returns error when mission not found for getMissionStatus", async () => {
-      const deps = buildDeps({
-        missionService: {
-          get: vi.fn().mockReturnValue(null),
-        } as any,
-      });
-      const tools = createCtoOperatorTools(deps);
-
-      const result = await (tools.getMissionStatus as any).execute({ missionId: "nonexistent" });
-
-      expect(result).toMatchObject({ success: false, error: expect.stringContaining("Mission not found") });
-    });
-
-    it("returns error when mission not found for launchMissionRun", async () => {
-      const deps = buildDeps({
-        missionService: {
-          get: vi.fn().mockReturnValue(null),
-        } as any,
-        aiOrchestratorService: {} as any,
-      });
-      const tools = createCtoOperatorTools(deps);
-
-      const result = await (tools.launchMissionRun as any).execute({ missionId: "nonexistent" });
-
-      expect(result).toMatchObject({ success: false, error: expect.stringContaining("Mission not found") });
-    });
-
-    it("surfaces mission runtime view, logs, worker digests, and steering through aiOrchestratorService", async () => {
-      const runView = { missionId: "mission-1", displayStatus: "running" };
-      const logs = { entries: [{ id: "log-1" }], nextCursor: null, total: 1 };
-      const digests = [{ id: "digest-1" }];
-      const steerResult = { acknowledged: true, appliedAt: "2026-03-16T00:00:00.000Z" };
-      const deps = buildDeps({
-        aiOrchestratorService: {
-          getRunView: vi.fn().mockResolvedValue(runView),
-          getMissionLogs: vi.fn().mockResolvedValue(logs),
-          listWorkerDigests: vi.fn().mockReturnValue(digests),
-          steerMission: vi.fn().mockReturnValue(steerResult),
-        } as any,
-      });
-      const tools = createCtoOperatorTools(deps);
-
-      const view = await (tools.getMissionRunView as any).execute({ missionId: "mission-1" });
-      const missionLogs = await (tools.getMissionLogs as any).execute({
-        missionId: "mission-1",
-        channels: ["runtime"],
-        limit: 25,
-      });
-      const workerDigests = await (tools.listMissionWorkerDigests as any).execute({
-        missionId: "mission-1",
-        limit: 10,
-      });
-      const steered = await (tools.steerMission as any).execute({
-        missionId: "mission-1",
-        directive: "Pause on migration cleanup and summarize the risk.",
-        priority: "override",
-      });
-
-      expect(view).toMatchObject({ success: true, view: runView });
-      expect(missionLogs).toMatchObject({ success: true, total: 1 });
-      expect(workerDigests).toMatchObject({ success: true, count: 1, digests });
-      expect(steered).toMatchObject({ success: true, result: steerResult });
-    });
-
-    it("returns error when aiOrchestratorService is null for getMissionRunView", async () => {
-      const deps = buildDeps({ aiOrchestratorService: null });
-      const tools = createCtoOperatorTools(deps);
-
-      const result = await (tools.getMissionRunView as any).execute({ missionId: "m-1" });
-
-      expect(result).toMatchObject({ success: false, error: expect.stringContaining("Mission runtime service") });
-    });
-
-    it("returns error when run view is null for getMissionRunView", async () => {
-      const deps = buildDeps({
-        aiOrchestratorService: {
-          getRunView: vi.fn().mockResolvedValue(null),
-        } as any,
-      });
-      const tools = createCtoOperatorTools(deps);
-
-      const result = await (tools.getMissionRunView as any).execute({ missionId: "m-1" });
-
-      expect(result).toMatchObject({ success: false, error: expect.stringContaining("Mission run view not found") });
     });
   });
 
@@ -1350,49 +1145,6 @@ describe("createCtoOperatorTools", () => {
       expect(result).toMatchObject({ success: false, error: expect.stringContaining("Workflow run not found") });
     });
 
-    it("reroutes active Linear runs by cancelling first and then routing to a mission", async () => {
-      const mission = { id: "mission-9" };
-      const deps = buildDeps({
-        issueTracker: {
-          fetchIssueById: vi.fn().mockResolvedValue(issueFixture),
-        } as any,
-        missionService: {
-          create: vi.fn().mockReturnValue(mission),
-        } as any,
-        aiOrchestratorService: {
-          startMissionRun: vi.fn().mockResolvedValue({ started: { run: { id: "run-2" } }, mission }),
-        } as any,
-        flowPolicyService: { getPolicy: vi.fn().mockReturnValue({ workflows: [] }) } as any,
-        linearDispatcherService: {
-          getRunDetail: vi.fn().mockResolvedValue({
-            run: { id: "run-1", issueId: "issue-1", status: "awaiting_delegation" },
-            issue: { id: "issue-1" },
-          }),
-          cancelRun: vi.fn().mockResolvedValue(undefined),
-        } as any,
-      });
-      const tools = createCtoOperatorTools(deps);
-
-      const result = await (tools.rerouteLinearRun as any).execute({
-        runId: "run-1",
-        target: "mission",
-        reason: "Delegate through mission planning instead.",
-        runMode: "autopilot",
-      });
-
-      expect((deps.linearDispatcherService as any).cancelRun).toHaveBeenCalledWith(
-        "run-1",
-        "Delegate through mission planning instead. (rerouted by CTO)",
-        { workflows: [] },
-      );
-      expect((deps.missionService as any).create).toHaveBeenCalled();
-      expect(result).toMatchObject({
-        success: true,
-        cancelledExistingRun: true,
-        rerouted: { success: true, mission },
-      });
-    });
-
     it("reroutes terminal Linear runs without cancelling and can hand them back to the CTO session", async () => {
       const deps = buildDeps({
         issueTracker: {
@@ -1491,28 +1243,6 @@ describe("createCtoOperatorTools", () => {
 
       expect(result).toMatchObject({ success: true });
       expect(deps.ensureCtoSession).toHaveBeenCalled();
-    });
-
-    it("routes a Linear issue to a mission", async () => {
-      const mission = { id: "m-1", laneId: "lane-1" };
-      const deps = buildDeps({
-        issueTracker: {
-          fetchIssueById: vi.fn().mockResolvedValue(issueFixture),
-        } as any,
-        missionService: {
-          create: vi.fn().mockReturnValue(mission),
-        } as any,
-        aiOrchestratorService: {
-          startMissionRun: vi.fn().mockResolvedValue({ mission }),
-        } as any,
-      });
-      const tools = createCtoOperatorTools(deps);
-
-      const result = await (tools.routeLinearIssueToMission as any).execute({
-        issueId: "issue-1",
-      });
-
-      expect(result).toMatchObject({ success: true, mission });
     });
 
     it("returns error when issue tracker is not available for routing", async () => {

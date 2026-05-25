@@ -34,7 +34,7 @@ describe("deriveChatSubagentSnapshots", () => {
         event: {
           type: "subagent_started",
           taskId: "task-running",
-          description: "Check mission transcript path",
+          description: "Check transcript path",
         },
       },
     ];
@@ -42,7 +42,7 @@ describe("deriveChatSubagentSnapshots", () => {
     expect(deriveChatSubagentSnapshots(events)).toEqual([
       expect.objectContaining({
         taskId: "task-running",
-        description: "Check mission transcript path",
+        description: "Check transcript path",
         status: "running",
       }),
       expect.objectContaining({

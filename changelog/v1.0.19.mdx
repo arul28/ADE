@@ -9,7 +9,7 @@ New AI backends, iOS push notifications, smarter PR and rebase tooling, and a di
 
 ## Mobile push notifications (APNS)
 
-ADE can now send push notifications to your iPhone when agents complete tasks or need your input. Notifications fire for mission complete, mission failed, and intervention required events — so you no longer have to keep the desktop app visible to stay aware of long-running work.
+ADE can now send push notifications to your iPhone when agents complete tasks or need your input. Notifications fire for run complete, run failed, and intervention required events — so you no longer have to keep the desktop app visible to stay aware of long-running work.
 
 Setup takes about 30 seconds: open **Settings → Notifications → Mobile Push**, scan the QR code with the ADE iOS app, and choose which events trigger a push. Multiple devices can be registered.
 
@@ -27,7 +27,7 @@ See [Cursor integration](/ai-tools/cursor) for setup details.
 
 ## OpenCode runtime integration
 
-ADE now supports [OpenCode](https://opencode.ai) as a managed AI backend. ADE downloads and manages the OpenCode binary, starts it as a local server process, and routes chat and mission requests through its OpenAI-compatible endpoint.
+ADE now supports [OpenCode](https://opencode.ai) as a managed AI backend. ADE downloads and manages the OpenCode binary, starts it as a local server process, and routes chat and run requests through its OpenAI-compatible endpoint.
 
 OpenCode supports three backend modes: Anthropic API key, OpenRouter, or a fully local model via Ollama. This makes it useful when you want a local-first agent without a separate Claude or Cursor subscription.
 

@@ -6,7 +6,7 @@ icon: "arrow-right-arrow-left"
 
 ## How the CTO Uses Linear
 
-The CTO owns ADE's bidirectional Linear integration. It monitors your workspace for issue changes, routes them to the right execution target (worker, mission, or PR convergence), and pushes updates back when work completes — tracking the full lifecycle from intake to closeout based on configurable workflow definitions.
+The CTO owns ADE's bidirectional Linear integration. It monitors your workspace for issue changes, routes them to the right execution target (worker, worker run, or PR convergence), and pushes updates back when work completes — tracking the full lifecycle from intake to closeout based on configurable workflow definitions.
 
 ---
 
@@ -27,7 +27,7 @@ The CTO owns ADE's bidirectional Linear integration. It monitors your workspace 
   <Step title="Configure workflow definitions">
     Set up workflow rules that map Linear events to ADE actions. Each workflow definition specifies:
     - **Trigger conditions** — which issues match (assignee, labels, priority, team, state transitions)
-    - **Execution target** — what ADE does (launch a mission, start a worker session, open a PR convergence run)
+    - **Execution target** — what ADE does (launch a worker run, start a worker session, open a PR convergence run)
     - **Lane selection** — where the work happens (primary lane, fresh issue-specific lane, or operator-prompted)
     - **Closeout policy** — what happens when the work completes (update issue state, add comments, apply labels)
   </Step>
@@ -59,7 +59,7 @@ When a workflow triggers, the CTO dispatches work to one of these targets:
 
 | Target | When to use |
 |--------|-------------|
-| **Mission** | Complex issues that need a structured plan, multiple steps, and validation |
+| **Worker run** | Complex issues that need a structured plan, multiple steps, and validation |
 | **Employee session** | Issues where a single agent chat session can handle the work |
 | **Worker run** | Background worker execution managed by the CTO |
 | **PR resolution** | Issues that map directly to an existing PR that needs convergence work |
@@ -111,7 +111,7 @@ When a Linear issue changes and matches a workflow trigger, the CTO processes it
     The CTO's routing service evaluates which workflow to apply, resolves the execution target and lane selection, and prepares the dispatch context.
   </Step>
   <Step title="Dispatch">
-    The dispatcher creates the execution target — starts a mission, opens a chat session, or launches a worker run. The issue's description, comments, and attachments are injected as context.
+    The dispatcher creates the execution target — starts a worker run, opens a chat session, or launches a worker run. The issue's description, comments, and attachments are injected as context.
   </Step>
   <Step title="Tracking">
     A workflow run is created with per-step status tracking. The CTO monitors the run and updates Linear as milestones are reached.
@@ -132,7 +132,7 @@ The CTO pushes updates back to Linear through the outbound service:
 - **Workpad comments** — maintain a persistent "workpad" comment on each issue that the CTO updates with progress notes, PR links, and analysis results. The workpad uses content hashing to avoid duplicate updates.
 - **New sub-issues** — when the CTO discovers additional scope during implementation, it can create child issues in Linear
 - **Label management** — apply or remove labels based on workflow outcomes
-- **Proof artifacts** — attach mission artifacts, test reports, or screenshots as Linear attachments or comment links
+- **Proof artifacts** — attach worker run artifacts, test reports, or screenshots as Linear attachments or comment links
 
 ---
 

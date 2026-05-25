@@ -5,7 +5,6 @@ import { openExternalUrl } from "../../lib/openExternal";
 import {
   WelcomeIllustration,
   LanesIllustration,
-  MissionsIllustration,
   HelpIllustration,
 } from "./illustrations/WelcomeIllustrations";
 import { docs } from "../../onboarding/docsLinks";
@@ -37,13 +36,6 @@ export const WELCOME_SCREENS: Screen[] = [
     body: "A Lane is a Git worktree — a real folder on disk with its own branch — that ADE watches over for you.",
     learnMoreHref: docs.lanesOverview,
     Illustration: LanesIllustration,
-  },
-  {
-    eyebrow: "Hand work to AI",
-    title: "Missions & Workers",
-    body: "Describe a job in plain words and a Worker does it on its own Lane. Your main branch stays untouched.",
-    learnMoreHref: docs.keyConcepts,
-    Illustration: MissionsIllustration,
   },
   {
     eyebrow: "Always within reach",

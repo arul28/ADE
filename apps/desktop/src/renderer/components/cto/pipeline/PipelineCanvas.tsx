@@ -155,7 +155,7 @@ export function PipelineCanvas({ workflow, onUpdateWorkflow, onSave, saving, age
         {showAddPopover !== null && (
           <div className="flex items-center justify-center gap-2 py-2 px-4 border-t border-white/[0.04]">
             <span className="text-[10px] text-muted-fg/35 mr-2">Add stage:</span>
-            {(["worker_run", "employee_session", "mission", "pr_resolution", "review_gate"] as const).map((type) => (
+            {(["worker_run", "employee_session", "pr_resolution", "review_gate"] as const).map((type) => (
               <button
                 key={type}
                 type="button"

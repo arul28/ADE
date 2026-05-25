@@ -149,7 +149,7 @@ Screens (TBD, no UI work yet):
 - **Home**: registered repo count, your contribution stats, agents currently running, recent PRs.
 - **Browse repos / issues**: filter by language, label, repo, claimed/unclaimed.
 - **Launch agent**: pick repo(s) or "anything I'm qualified for", budget cap (token / dollar / PR count), claim policy, which CLI to wrap, dry-run vs auto-submit.
-- **Running agents**: live list (analogous to ADE Code's running missions), with current step, tokens consumed, current issue.
+- **Running agents**: live list with current step, tokens consumed, and current issue.
 - **Settings**: GitHub OAuth, default CLI, default budgets, banned-repo personal allowlist.
 
 Reuses from ADE Code: chat surface, lane/worktree model (each agent run = one lane), PR creation flow, model/sub detection, budget metering.

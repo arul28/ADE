@@ -617,8 +617,6 @@ final class DatabaseService {
             icon = excluded.icon,
             tags_json = excluded.tags_json,
             folder = excluded.folder,
-            mission_id = null,
-            lane_role = null,
             status = excluded.status,
             created_at = excluded.created_at,
             archived_at = excluded.archived_at
@@ -678,8 +676,8 @@ final class DatabaseService {
         _ = try execute("""
           insert into lane_state_snapshots (
             lane_id, dirty, ahead, behind, remote_behind, rebase_in_progress,
-            agent_summary_json, mission_summary_json, updated_at
-          ) values (?, ?, ?, ?, ?, ?, null, null, ?)
+            agent_summary_json, updated_at
+          ) values (?, ?, ?, ?, ?, ?, null, ?)
           on conflict(lane_id) do update set
             dirty = excluded.dirty,
             ahead = excluded.ahead,
@@ -687,7 +685,6 @@ final class DatabaseService {
             remote_behind = excluded.remote_behind,
             rebase_in_progress = excluded.rebase_in_progress,
             agent_summary_json = excluded.agent_summary_json,
-            mission_summary_json = excluded.mission_summary_json,
             updated_at = excluded.updated_at
         """) { statement in
           try bindText(lane.id, to: statement, index: 1)
@@ -2117,7 +2114,6 @@ final class DatabaseService {
           permissionMode: nil,
           confidenceThreshold: nil,
           originSurface: nil,
-          originMissionId: nil,
           originRunId: nil,
           originLabel: nil
         ),
@@ -2262,16 +2258,6 @@ final class DatabaseService {
     try ensureColumn(
       tableName: "lanes",
       columnName: "folder",
-      definition: "text"
-    )
-    try ensureColumn(
-      tableName: "lanes",
-      columnName: "mission_id",
-      definition: "text"
-    )
-    try ensureColumn(
-      tableName: "lanes",
-      columnName: "lane_role",
       definition: "text"
     )
     try ensureColumn(
@@ -2424,14 +2410,6 @@ final class DatabaseService {
     try ensureColumn(tableName: "queue_landing_state", columnName: "updated_at", definition: "text")
     try exec("create index if not exists idx_pull_requests_project_updated on pull_requests(project_id, updated_at desc)")
     try exec("create index if not exists idx_queue_landing_state_project_updated on queue_landing_state(project_id, updated_at desc, started_at desc)")
-
-    try ensureColumn(tableName: "missions", columnName: "mission_lane_id", definition: "text")
-    try ensureColumn(tableName: "missions", columnName: "result_lane_id", definition: "text")
-    try ensureColumn(tableName: "missions", columnName: "queue_claim_token", definition: "text")
-    try ensureColumn(tableName: "missions", columnName: "queue_claimed_at", definition: "text")
-    try ensureColumn(tableName: "missions", columnName: "archived_at", definition: "text")
-
-    try ensureColumn(tableName: "mission_interventions", columnName: "resolution_kind", definition: "text")
     try ensureColumn(tableName: "worker_agents", columnName: "linear_identity_json", definition: "text not null default '{}'")
   }
 

@@ -281,7 +281,7 @@ struct LaneListRow: View, Equatable {
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
-          laneRoleBadge
+          laneTypeBadge
           Spacer(minLength: 0)
         }
 
@@ -362,7 +362,7 @@ struct LaneListRow: View, Equatable {
   }
 
   @ViewBuilder
-  private var laneRoleBadge: some View {
+  private var laneTypeBadge: some View {
     if snapshot.lane.laneType == "primary" {
       LaneTypeBadge(text: "Primary", tint: ADEColor.accent)
     } else if snapshot.lane.laneType == "attached" {
@@ -543,7 +543,7 @@ struct LaneStackCard: View, Equatable {
           .lineLimit(1)
           .adeMatchedGeometry(id: isSelectedTransitionSource ? "lane-title-\(snapshot.lane.id)" : nil, in: transitionNamespace)
 
-        laneRoleBadge
+        laneTypeBadge
 
         Spacer(minLength: 4)
 
@@ -642,7 +642,7 @@ struct LaneStackCard: View, Equatable {
   }
 
   @ViewBuilder
-  private var laneRoleBadge: some View {
+  private var laneTypeBadge: some View {
     if snapshot.lane.laneType == "attached" {
       LaneTypeBadge(text: "Attached", tint: ADEColor.textMuted)
     } else if snapshot.lane.archivedAt != nil {

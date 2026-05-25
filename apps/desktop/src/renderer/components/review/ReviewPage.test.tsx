@@ -213,7 +213,7 @@ describe("ReviewPage", () => {
             title: "Provenance brief",
             mimeType: "application/json",
             contentText: "{\"summary\":\"Lane history and prior review signals\"}",
-            metadata: { provenanceCount: 4, missionCount: 1, workerDigestCount: 3, sessionDeltaCount: 2, priorReviewCount: 1 },
+            metadata: { provenanceCount: 4, workerDigestCount: 3, sessionDeltaCount: 2, priorReviewCount: 1 },
             createdAt: "2026-04-03T12:01:00.000Z",
           } as any,
           {

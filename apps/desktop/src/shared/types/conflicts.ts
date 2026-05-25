@@ -159,7 +159,7 @@ export type ConflictProposalProvider = "subscription";
 
 export type ExternalConflictResolverProvider = "codex" | "claude";
 
-export type ConflictResolverOriginSurface = "mission" | "integration" | "rebase" | "queue" | "graph" | "manual";
+export type ConflictResolverOriginSurface = "integration" | "rebase" | "queue" | "graph" | "manual";
 
 export type ConflictResolverPermissionMode = "read_only" | "guarded_edit" | "full_edit";
 
@@ -204,7 +204,6 @@ export type ConflictExternalResolverRunSummary = {
   permissionMode: PrAgentPermissionMode | null;
   command: string[];
   originSurface: ConflictResolverOriginSurface;
-  originMissionId: string | null;
   originRunId: string | null;
   originLabel: string | null;
   resolverContextKey?: string | null;
@@ -227,7 +226,6 @@ export type RunExternalConflictResolverArgs = {
   reasoningEffort?: string | null;
   permissionMode?: PrAgentPermissionMode | null;
   originSurface?: ConflictResolverOriginSurface;
-  originMissionId?: string | null;
   originRunId?: string | null;
   originLabel?: string | null;
 };
@@ -405,7 +403,6 @@ export type PrepareResolverSessionArgs = {
   reasoningEffort?: string | null;
   permissionMode?: PrAgentPermissionMode | null;
   originSurface?: ConflictResolverOriginSurface;
-  originMissionId?: string | null;
   originRunId?: string | null;
   originLabel?: string | null;
   additionalInstructions?: string | null;

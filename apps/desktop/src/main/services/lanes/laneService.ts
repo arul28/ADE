@@ -40,7 +40,6 @@ import type {
   LaneLinearIssueLinkRole,
   LaneLinearIssueLinkSource,
   LaneRuntimePlacement,
-  MissionLaneRole,
   LaneStateSnapshotSummary,
   LaneStatus,
   LaneSummary,
@@ -81,8 +80,6 @@ type LaneRow = {
   icon: string | null;
   tags_json: string | null;
   folder: string | null;
-  mission_id: string | null;
-  lane_role: MissionLaneRole | null;
   runtime_placement: LaneRuntimePlacement | null;
   created_at: string;
   archived_at: string | null;
@@ -92,7 +89,6 @@ type LaneRow = {
 type LaneStateSnapshotRow = {
   lane_id: string;
   agent_summary_json: string | null;
-  mission_summary_json: string | null;
   updated_at: string | null;
 };
 
@@ -508,8 +504,6 @@ function toLaneSummary(args: {
     icon: parseLaneIcon(row.icon),
     tags: parseLaneTags(row.tags_json),
     folder: row.folder,
-    missionId: row.mission_id,
-    laneRole: row.lane_role,
     runtimePlacement: normalizeRuntimePlacement(row.runtime_placement),
     createdAt: row.created_at,
     archivedAt: row.archived_at,
@@ -1018,15 +1012,14 @@ export function createLaneService({
     laneId: string;
     status: LaneStatus;
     agentSummary?: Record<string, unknown> | null;
-    missionSummary?: Record<string, unknown> | null;
     updatedAt?: string;
   }): void => {
     db.run(
       `
         insert into lane_state_snapshots(
           lane_id, dirty, ahead, behind, remote_behind, rebase_in_progress,
-          agent_summary_json, mission_summary_json, updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          agent_summary_json, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?)
         on conflict(lane_id) do update set
           dirty = excluded.dirty,
           ahead = excluded.ahead,
@@ -1034,7 +1027,6 @@ export function createLaneService({
           remote_behind = excluded.remote_behind,
           rebase_in_progress = excluded.rebase_in_progress,
           agent_summary_json = excluded.agent_summary_json,
-          mission_summary_json = excluded.mission_summary_json,
           updated_at = excluded.updated_at
       `,
       [
@@ -1045,7 +1037,6 @@ export function createLaneService({
         args.status.remoteBehind,
         args.status.rebaseInProgress ? 1 : 0,
         args.agentSummary == null ? null : JSON.stringify(args.agentSummary),
-        args.missionSummary == null ? null : JSON.stringify(args.missionSummary),
         args.updatedAt ?? new Date().toISOString(),
       ],
     );
@@ -2108,8 +2099,6 @@ export function createLaneService({
     startPoint: string;
     parentLaneId: string | null;
     folder?: string;
-    missionId?: string | null;
-    laneRole?: MissionLaneRole | null;
     branchName?: string | null;
     linearIssue?: LaneLinearIssue | null;
     runtimePlacement?: LaneRuntimePlacement | null;
@@ -2139,9 +2128,9 @@ export function createLaneService({
       `
         insert into lanes(
           id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder, mission_id, lane_role, runtime_placement, status, created_at, archived_at
+          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder, runtime_placement, status, created_at, archived_at
         )
-        values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, null, null, null, ?, ?, ?, ?, 'active', ?, null)
+        values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, null, null, null, ?, ?, 'active', ?, null)
       `,
       [
         laneId,
@@ -2153,8 +2142,6 @@ export function createLaneService({
         worktreePath,
         args.parentLaneId,
         args.folder ?? null,
-        args.missionId ?? null,
-        args.laneRole ?? null,
         runtimePlacement,
         now
       ]
@@ -2316,25 +2303,6 @@ export function createLaneService({
     db.run("update lane_branch_profiles set parent_lane_id = null where parent_lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("update pr_convergence_state set active_lane_id = null where active_lane_id = ?", [laneId]);
     db.run("update linear_workflow_runs set execution_lane_id = null where execution_lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run(
-      `
-        update missions
-        set lane_id = case when lane_id = ? then null else lane_id end,
-            mission_lane_id = case when mission_lane_id = ? then null else mission_lane_id end,
-            result_lane_id = case when result_lane_id = ? then null else result_lane_id end
-        where project_id = ?
-          and (lane_id = ? or mission_lane_id = ? or result_lane_id = ?)
-      `,
-      [laneId, laneId, laneId, projectId, laneId, laneId, laneId],
-    );
-    db.run("update mission_steps set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("update mission_artifacts set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("update mission_interventions set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("update orchestrator_steps set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("update orchestrator_chat_threads set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("update orchestrator_chat_messages set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("update orchestrator_worker_digests set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("update orchestrator_lane_decisions set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("update integration_proposals set integration_lane_id = null where integration_lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("update integration_proposals set preferred_integration_lane_id = null where preferred_integration_lane_id = ? and project_id = ?", [laneId, projectId]);
 
@@ -2398,7 +2366,7 @@ export function createLaneService({
     getStateSnapshot(laneId: string): LaneStateSnapshotSummary | null {
       const row = db.get<LaneStateSnapshotRow>(
         `
-          select s.lane_id, s.agent_summary_json, s.mission_summary_json, s.updated_at
+          select s.lane_id, s.agent_summary_json, s.updated_at
           from lane_state_snapshots s
           join lanes l on l.id = s.lane_id
           where s.lane_id = ?
@@ -2411,7 +2379,6 @@ export function createLaneService({
       return {
         laneId: row.lane_id,
         agentSummary: parseSummaryRecord(row.agent_summary_json),
-        missionSummary: parseSummaryRecord(row.mission_summary_json),
         updatedAt: row.updated_at ?? null,
       };
     },
@@ -2419,7 +2386,7 @@ export function createLaneService({
     listStateSnapshots(): LaneStateSnapshotSummary[] {
       return db.all<LaneStateSnapshotRow>(
         `
-          select s.lane_id, s.agent_summary_json, s.mission_summary_json, s.updated_at
+          select s.lane_id, s.agent_summary_json, s.updated_at
           from lane_state_snapshots s
           join lanes l on l.id = s.lane_id
           where l.project_id = ?
@@ -2428,7 +2395,6 @@ export function createLaneService({
       ).map((row) => ({
         laneId: row.lane_id,
         agentSummary: parseSummaryRecord(row.agent_summary_json),
-        missionSummary: parseSummaryRecord(row.mission_summary_json),
         updatedAt: row.updated_at ?? null,
       }));
     },
@@ -2628,8 +2594,6 @@ export function createLaneService({
           startPoint,
           parentLaneId: parent.id,
           folder: args.folder,
-          missionId: args.missionId ?? null,
-          laneRole: args.laneRole ?? null,
           branchName: args.branchName,
           linearIssue: args.linearIssue ?? null,
           runtimePlacement: args.runtimePlacement,
@@ -2650,8 +2614,6 @@ export function createLaneService({
           startPoint,
           parentLaneId: null,
           folder: args.folder,
-          missionId: args.missionId ?? null,
-          laneRole: args.laneRole ?? null,
           branchName: args.branchName,
           linearIssue: args.linearIssue ?? null,
           runtimePlacement: args.runtimePlacement,
@@ -2667,34 +2629,10 @@ export function createLaneService({
         startPoint: parentHeadSha,
         parentLaneId: parent.id,
         folder: args.folder,
-        missionId: args.missionId ?? null,
-        laneRole: args.laneRole ?? null,
         branchName: args.branchName,
         linearIssue: args.linearIssue ?? null,
         runtimePlacement: args.runtimePlacement,
       });
-    },
-
-    setMissionOwnership(args: {
-      laneId: string;
-      missionId?: string | null;
-      laneRole?: MissionLaneRole | null;
-    }): void {
-      const laneId = args.laneId.trim();
-      if (!laneId.length) throw new Error("laneId is required.");
-      const existing = getLaneRow(laneId);
-      if (!existing) throw new Error(`Lane not found: ${laneId}`);
-      db.run(
-        `
-          update lanes
-          set mission_id = ?,
-              lane_role = ?
-          where id = ?
-            and project_id = ?
-        `,
-        [args.missionId?.trim() || null, args.laneRole ?? null, laneId, projectId]
-      );
-      invalidateLaneListCache();
     },
 
     async createFromUnstaged(args: CreateLaneFromUnstagedArgs): Promise<LaneSummary> {

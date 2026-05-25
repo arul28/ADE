@@ -91,11 +91,6 @@ type FormatterId =
   | "pr-detail"
   | "pr-checks"
   | "pr-comments"
-  | "mission-list"
-  | "mission-detail"
-  | "mission-runs"
-  | "mission-graph"
-  | "mission-watch"
   | "run-defs"
   | "run-runtime"
   | "chat-list"
@@ -207,19 +202,6 @@ const CLI_ENTRY_PATH =
   typeof process.argv[1] === "string" ? path.resolve(process.argv[1]) : "";
 const CLI_PACKAGE_ROOT = resolveCliPackageRoot(CLI_ENTRY_PATH);
 const CLI_DIST_PATH = path.join(CLI_PACKAGE_ROOT, "dist", "cli.cjs");
-const WORKER_MISSION_TOOL_CLI_NAMES = new Set([
-  "get_mission",
-  "get_run_graph",
-  "get_worker_states",
-  "get_timeline",
-  "get_pending_messages",
-  "stream_events",
-  "message_worker",
-  "report_status",
-  "report_result",
-  "report_validation",
-]);
-
 function resolveCliPackageRoot(entryPath: string): string {
   const seen = new Set<string>();
   const starts = [entryPath ? path.dirname(entryPath) : null, process.cwd()];
@@ -392,10 +374,9 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade doctor                                    Inspect project, socket, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
-    $ ade operations status | wait                  Poll operation/test/chat/run/mission status
+    $ ade operations status | wait                  Poll operation/test/chat/run status
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
-    $ ade missions launch | watch | graph           Create, start, and inspect mission runs
     $ ade prs list | create | path-to-merge         Manage PRs, queues, and Path to Merge repair rounds
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
@@ -439,7 +420,6 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade git sync --lane <lane> --rebase --base main
     $ ade git stage --lane <lane> src/index.ts
     $ ade git commit --lane <lane> -m "Fix login redirect"
-    $ ade missions launch --prompt "Fix onboarding" --manual --text
     $ ade prs create --lane <lane> --base main --draft
     $ ade prs path-to-merge <pr-id-or-number-or-url> --model <model> --max-rounds 3 --no-auto-merge
     $ ade proof record --seconds 20
@@ -459,9 +439,6 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
       $ ade actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
     Multi-parameter service call:
       $ ade actions run issue_inventory.savePipelineSettings --args-list-json '["pr-1",{"maxRounds":3}]'
-    Single scalar parameter:
-      $ ade actions run mission.get --scalar mission-1
-
     $ ade actions list --text
     $ ade actions list --domain pr --text
     $ ade actions run <domain.action> --input-json '{"key":"value"}'
@@ -991,7 +968,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Operations
 
   Poll status for long-running ADE operations that returned an operation,
-  test run, chat session, run graph, mission, or PR id.
+  test run, chat session, run graph, or PR id.
 
     $ ade operations status --operation <id> --text
     $ ade operations wait --operation <id> --wait-ms 30000 --text
@@ -1056,36 +1033,6 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs resolve-thread <pr> --thread <id>     Resolve a review thread
     $ ade prs labels set <pr> ready-to-merge        Replace labels
     $ ade prs reviewers request <pr> alice bob      Request reviewers
-`,
-  missions: `${ADE_BANNER}
-  Missions
-
-  Mission commands are the typed CLI surface for backend mission launch,
-  monitoring, and run inspection. They work in --headless mode for local
-  service checks, or --socket when you intentionally want the live desktop
-  drawer/session state.
-
-    $ ade missions list --text                      List missions
-    $ ade missions create --prompt "Fix login"      Create a mission without starting a run
-    $ ade missions launch --prompt "Fix login" --manual --text
-                                                    Create and start a mission run
-    $ ade missions launch --prompt "..." --wait-ms 30000 --text
-                                                    Keep headless runtime alive and return graph
-    $ ade missions start <mission-id> --manual      Start an existing mission
-    $ ade missions resume <run-id> --text           Resume an active/paused run and restart coordinator control
-    $ ade missions resume <run-id> --wait-ms 30000 --text
-                                                    Keep resumed coordinator alive and return graph
-    $ ade missions show <mission-id> --text         Inspect mission detail
-    $ ade missions runs <mission-id> --text         List run attempts for a mission
-    $ ade missions graph <run-id> --text            Inspect one run graph
-    $ ade missions watch <mission-id> --text        Snapshot mission + newest run graph
-    $ ade missions watch <mission-id> --wait-ms 5000 --text
-                                                    Wait before taking the snapshot
-
-  Phase and planner payloads:
-    $ ade missions create --prompt "..." --phase-override-file phases.json
-    $ ade missions create --prompt "..." --planned-steps-file steps.json
-    $ ade missions create --input-json '{"prompt":"...","phaseOverride":[...]}'
 `,
   run: `${ADE_BANNER}
   Run tab
@@ -1454,9 +1401,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
   coordinator: `${ADE_BANNER}
   Coordinator runtime tools
 
-  Coordinator tools expose orchestration operations used by mission agents.
-  List tool names with:
-    $ ade actions call list_ade_actions --input-json '{"domain":"orchestrator_core"}'
+  Coordinator tools expose orchestration operations used by agent runtimes.
+  List available tool names with:
+    $ ade actions list --text
 
     $ ade coordinator <tool-name> --input-json '{"key":"value"}'
 `,
@@ -1474,9 +1421,6 @@ const HELP_BY_COMMAND: Record<string, string> = {
       $ ade actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
     argsList is for service methods with multiple positional parameters:
       $ ade actions run issue_inventory.savePipelineSettings --args-list-json '["pr-1",{"maxRounds":3}]'
-    scalar is for one non-object parameter:
-      $ ade actions run mission.get --scalar mission-1
-
     $ ade actions list --text                       Domain-grouped action catalog
     $ ade actions list --domain git --text          Narrow the catalog
     $ ade actions run <domain.action> --input-json '{"key":"value"}'
@@ -2225,30 +2169,6 @@ function actionScalarStep(
   return actionCallStep(key, "run_ade_action", { domain, action, arg });
 }
 
-function waitRunGraphStep(args: {
-  key: string;
-  runId: string | ((values: JsonObject) => string);
-  waitMs: number | undefined;
-  timelineLimit: number;
-  untilTerminal: boolean;
-}): InvocationStep | null {
-  if ((args.waitMs == null || args.waitMs <= 0) && !args.untilTerminal)
-    return null;
-  const waitMs = Math.min(
-    30 * 60 * 1000,
-    Math.max(0, Math.floor(args.waitMs ?? 30 * 60 * 1000)),
-  );
-  return {
-    key: args.key,
-    method: "ade-cli/wait-run-graph",
-    params: (values) => ({
-      runId: typeof args.runId === "function" ? args.runId(values) : args.runId,
-      waitMs,
-      untilTerminal: args.untilTerminal,
-      timelineLimit: args.timelineLimit,
-    }),
-  };
-}
 
 function listActionsStep(key: string, domain?: string): InvocationStep {
   return actionCallStep(key, "list_ade_actions", domain ? { domain } : {});
@@ -2303,103 +2223,6 @@ function buildActionRunStep(args: string[]): InvocationStep {
   }
 
   return actionStep("result", domain, action, collectGenericObjectArgs(args));
-}
-
-function buildWorkerMissionToolPlan(name: string, args: string[]): CliPlan {
-  const input = (() => {
-    if (name === "get_mission") {
-      return collectGenericObjectArgs(args, {
-        missionId: readValue(args, ["--mission", "--mission-id"]),
-      });
-    }
-    if (name === "get_run_graph") {
-      return collectGenericObjectArgs(args, {
-        runId: readValue(args, ["--run", "--run-id"]),
-        timelineLimit: readIntOption(args, ["--timeline-limit"], 300),
-      });
-    }
-    if (name === "get_worker_states") {
-      return collectGenericObjectArgs(args, {
-        runId: readValue(args, ["--run", "--run-id"]),
-      });
-    }
-    if (name === "get_timeline") {
-      return collectGenericObjectArgs(args, {
-        runId: readValue(args, ["--run", "--run-id"]),
-        limit: readIntOption(args, ["--limit"], 300),
-        stepId: readValue(args, ["--step", "--step-id"]),
-      });
-    }
-    if (name === "get_pending_messages") {
-      return collectGenericObjectArgs(args, {
-        since_cursor: readValue(args, ["--since-cursor", "--since"]),
-        limit: readIntOption(args, ["--limit"], 50),
-      });
-    }
-    if (name === "stream_events") {
-      return collectGenericObjectArgs(args, {
-        cursor: readIntOption(args, ["--cursor"], 0),
-        limit: readIntOption(args, ["--limit"], 100),
-        category: readValue(args, ["--category"]),
-      });
-    }
-    if (name === "message_worker") {
-      const toWorkerId =
-        readValue(args, [
-          "--to-worker",
-          "--to-worker-id",
-          "--worker",
-          "--worker-id",
-          "--to",
-        ]) ?? firstPositional(args);
-      const content =
-        readValue(args, ["--content", "--message", "--body"]) ??
-        args
-          .filter((entry) => entry !== "--" && !entry.startsWith("-"))
-          .join(" ")
-          .trim();
-      return collectGenericObjectArgs(args, {
-        fromWorkerId: readValue(args, [
-          "--from-worker",
-          "--from-worker-id",
-          "--from",
-        ]),
-        toWorkerId,
-        content,
-        priority: readValue(args, ["--priority"]) ?? "normal",
-      });
-    }
-    if (name === "report_status") {
-      const explicitMessage = readValue(args, ["--text", "--message", "--summary"]);
-      const status = readValue(args, ["--status"]) ?? "running";
-      const positionalParts: string[] = [];
-      while (true) {
-        const part = firstStandalonePositional(args);
-        if (part == null) break;
-        positionalParts.push(part);
-      }
-      const message = explicitMessage ?? positionalParts.join(" ").trim();
-      const input: JsonObject = { status };
-      if (message) {
-        input.summary = message;
-        input.nextAction = message;
-        input.details = message;
-      }
-      return collectGenericObjectArgs(args, input);
-    }
-    if (name === "report_result" || name === "report_validation") {
-      return collectGenericObjectArgs(args, {
-        summary: readValue(args, ["--text", "--message", "--summary"]),
-      });
-    }
-    return collectGenericObjectArgs(args);
-  })();
-  return {
-    kind: "execute",
-    label: `worker mission tool ${name}`,
-    formatter: "action-result",
-    steps: [actionCallStep("result", name, input)],
-  };
 }
 
 function buildLanePlan(args: string[]): CliPlan {
@@ -4277,503 +4100,6 @@ function buildPrPlan(args: string[]): CliPlan {
     kind: "execute",
     label: `PR ${sub}`,
     steps: [actionStep("result", "pr", sub, withPr())],
-  };
-}
-
-function collectMissionCreateArgs(
-  args: string[],
-  base: JsonObject = {},
-): JsonObject {
-  const noAutostart = readFlag(args, ["--no-autostart", "--no-start"]);
-  const autostartFlag = readFlag(args, ["--autostart"]);
-  const manual = readFlag(args, ["--manual"]);
-  const prompt = readValue(args, ["--prompt", "--message"]);
-  const createBase: JsonObject = { ...base };
-  if (noAutostart) createBase.autostart = false;
-  if (autostartFlag) createBase.autostart = true;
-  if (manual) createBase.launchMode = "manual";
-  const input = collectGenericObjectArgs(args, {
-    ...createBase,
-    ...(prompt ? { prompt } : {}),
-    title: readValue(args, ["--title"]),
-    laneId: readLaneId(args),
-    priority: readValue(args, ["--priority"]),
-    executionMode: readValue(args, ["--execution-mode"]),
-    targetMachineId: readValue(args, [
-      "--target-machine",
-      "--target-machine-id",
-    ]),
-    plannerEngine: readValue(args, ["--planner", "--planner-engine"]),
-    planningTimeoutMs: readIntOption(args, ["--planning-timeout-ms"]),
-    launchMode:
-      readValue(args, ["--launch-mode", "--run-mode"]) ?? createBase.launchMode,
-    autopilotExecutor: readValue(args, [
-      "--executor",
-      "--autopilot-executor",
-      "--default-executor",
-    ]),
-    autostart: createBase.autostart,
-    phaseProfileId: readValue(args, ["--phase-profile", "--phase-profile-id"]),
-    employeeAgentId: readValue(args, [
-      "--employee-agent",
-      "--employee-agent-id",
-    ]),
-  });
-
-  const phaseOverride = readJsonPayloadOption(
-    args,
-    ["--phase-override-json"],
-    ["--phase-override-file"],
-    "--phase-override-json",
-  );
-  if (phaseOverride !== undefined) {
-    if (!Array.isArray(phaseOverride))
-      throw new CliUsageError("--phase-override-json must be a JSON array.");
-    input.phaseOverride = phaseOverride;
-  }
-
-  const plannedSteps = readJsonPayloadOption(
-    args,
-    ["--planned-steps-json"],
-    ["--planned-steps-file"],
-    "--planned-steps-json",
-  );
-  if (plannedSteps !== undefined) {
-    if (!Array.isArray(plannedSteps))
-      throw new CliUsageError("--planned-steps-json must be a JSON array.");
-    input.plannedSteps = plannedSteps;
-  }
-
-  const jsonObjects: Array<[string, string[], string[], string]> = [
-    [
-      "modelConfig",
-      ["--model-config-json"],
-      ["--model-config-file"],
-      "--model-config-json",
-    ],
-    [
-      "executionPolicy",
-      ["--execution-policy-json"],
-      ["--execution-policy-file"],
-      "--execution-policy-json",
-    ],
-    [
-      "recoveryLoop",
-      ["--recovery-loop-json"],
-      ["--recovery-loop-file"],
-      "--recovery-loop-json",
-    ],
-    [
-      "teamRuntime",
-      ["--team-runtime-json"],
-      ["--team-runtime-file"],
-      "--team-runtime-json",
-    ],
-    [
-      "agentRuntime",
-      ["--agent-runtime-json"],
-      ["--agent-runtime-file"],
-      "--agent-runtime-json",
-    ],
-    [
-      "permissionConfig",
-      ["--permission-config-json"],
-      ["--permission-config-file"],
-      "--permission-config-json",
-    ],
-  ];
-  for (const [key, inlineNames, fileNames, label] of jsonObjects) {
-    const value = readJsonPayloadOption(args, inlineNames, fileNames, label);
-    if (value === undefined) continue;
-    if (!isRecord(value))
-      throw new CliUsageError(`${label} must be a JSON object.`);
-    input[key] = value;
-  }
-
-  if (!asString(input.prompt)) {
-    const positionalPrompt = args
-      .filter((entry) => entry !== "--" && !entry.startsWith("-"))
-      .join(" ")
-      .trim();
-    if (positionalPrompt.length > 0) input.prompt = positionalPrompt;
-  }
-  input.prompt = requireValue(asString(input.prompt) ?? null, "prompt");
-  return input;
-}
-
-function collectMissionStartArgs(
-  args: string[],
-  base: JsonObject = {},
-): JsonObject {
-  const manual = readFlag(args, ["--manual"]);
-  const runMode = manual
-    ? "manual"
-    : readValue(args, ["--run-mode", "--launch-mode"]);
-  const executor = readValue(args, [
-    "--executor",
-    "--default-executor",
-    "--executor-kind",
-  ]);
-  const owner = readValue(args, ["--owner", "--owner-id", "--autopilot-owner"]);
-  const input: JsonObject = { ...base };
-  if (runMode) input.runMode = runMode;
-  if (executor ?? base.defaultExecutorKind)
-    input.defaultExecutorKind = executor ?? base.defaultExecutorKind;
-  if (owner) input.autopilotOwnerId = owner;
-  return collectGenericObjectArgs(args, input);
-}
-
-function buildMissionsPlan(args: string[]): CliPlan {
-  const sub = firstPositional(args) ?? "list";
-  if (sub === "actions")
-    return {
-      kind: "execute",
-      label: "mission actions",
-      steps: [listActionsStep("actions", "mission")],
-    };
-  if (sub === "action")
-    return {
-      kind: "execute",
-      label: "mission action",
-      steps: [buildActionRunStep(["mission", ...args])],
-    };
-
-  if (sub === "list" || sub === "ls") {
-    return {
-      kind: "execute",
-      label: "mission list",
-      formatter: "mission-list",
-      steps: [
-        actionStep(
-          "result",
-          "mission",
-          "list",
-          collectGenericObjectArgs(args, {
-            status: readValue(args, ["--status"]),
-            laneId: readLaneId(args),
-            limit: readIntOption(args, ["--limit"]),
-            includeArchived: readFlag(args, ["--include-archived"]),
-          }),
-        ),
-      ],
-    };
-  }
-
-  if (sub === "create" || sub === "new") {
-    return {
-      kind: "execute",
-      label: "mission create",
-      formatter: "mission-detail",
-      steps: [
-        actionStep(
-          "result",
-          "mission",
-          "create",
-          collectMissionCreateArgs(args),
-        ),
-      ],
-    };
-  }
-
-  if (sub === "launch") {
-    const waitUntilTerminal = readFlag(args, [
-      "--wait",
-      "--until-terminal",
-      "--wait-until-terminal",
-    ]);
-    const waitMs = readIntOption(
-      args,
-      ["--wait-ms", "--hold-ms", "--wait-for-ms"],
-      waitUntilTerminal ? 30 * 60 * 1000 : undefined,
-    );
-    const timelineLimit = readIntOption(args, ["--timeline-limit"], 120) ?? 120;
-    const createArgs = collectMissionCreateArgs(args, { autostart: false });
-    const startArgs = collectMissionStartArgs(args, {
-      runMode: createArgs.launchMode === "manual" ? "manual" : undefined,
-      defaultExecutorKind: createArgs.autopilotExecutor,
-    });
-    const waitGraphStep = waitRunGraphStep({
-      key: "graph",
-      runId: (values) =>
-        requireValue(
-          asString(runFromStartResult(values.started)?.id) ?? null,
-          "run id",
-        ),
-      waitMs,
-      untilTerminal: waitUntilTerminal,
-      timelineLimit,
-    });
-    const steps: InvocationStep[] = [
-      actionStep("created", "mission", "create", createArgs),
-      {
-        ...actionStep("started", "orchestrator", "startMissionRun", {}),
-        params: (values) => ({
-          name: "run_ade_action",
-          arguments: {
-            domain: "orchestrator",
-            action: "startMissionRun",
-            args: {
-              ...startArgs,
-              missionId: missionIdFromCreateResult(values.created),
-            },
-          },
-        }),
-      },
-    ];
-    if (waitGraphStep) {
-      steps.push({
-        ...actionScalarStep("mission", "mission", "get", ""),
-        optional: true,
-        params: (values) => ({
-          name: "run_ade_action",
-          arguments: {
-            domain: "mission",
-            action: "get",
-            arg: missionIdFromCreateResult(values.created),
-          },
-        }),
-      });
-      steps.push(waitGraphStep);
-    }
-    return {
-      kind: "execute",
-      label: "mission launch",
-      formatter: "mission-watch",
-      steps,
-    };
-  }
-
-  if (sub === "start" || sub === "run") {
-    const missionId = requireValue(
-      readValue(args, ["--mission", "--mission-id"]) ?? firstPositional(args),
-      "missionId",
-    );
-    return {
-      kind: "execute",
-      label: "mission start",
-      formatter: "mission-watch",
-      steps: [
-        actionStep(
-          "result",
-          "orchestrator",
-          "startMissionRun",
-          collectMissionStartArgs(args, { missionId }),
-        ),
-      ],
-    };
-  }
-
-  if (sub === "show" || sub === "get" || sub === "view") {
-    const missionId = requireValue(
-      readValue(args, ["--mission", "--mission-id"]) ?? firstPositional(args),
-      "missionId",
-    );
-    return {
-      kind: "execute",
-      label: "mission show",
-      formatter: "mission-detail",
-      steps: [actionScalarStep("result", "mission", "get", missionId)],
-    };
-  }
-
-  if (sub === "runs" || sub === "attempts") {
-    const missionId =
-      readValue(args, ["--mission", "--mission-id"]) ?? firstPositional(args);
-    return {
-      kind: "execute",
-      label: "mission runs",
-      formatter: "mission-runs",
-      steps: [
-        actionStep(
-          "result",
-          "orchestrator_core",
-          "listRuns",
-          collectGenericObjectArgs(args, {
-            missionId: missionId ?? undefined,
-            status: readValue(args, ["--status"]),
-            limit: readIntOption(args, ["--limit"], 20),
-          }),
-        ),
-      ],
-    };
-  }
-
-  if (sub === "graph" || sub === "run-graph") {
-    const runId = requireValue(
-      readValue(args, ["--run", "--run-id"]) ?? firstPositional(args),
-      "runId",
-    );
-    return {
-      kind: "execute",
-      label: "mission graph",
-      formatter: "mission-graph",
-      steps: [
-        actionStep(
-          "result",
-          "orchestrator_core",
-          "getRunGraph",
-          collectGenericObjectArgs(args, {
-            runId,
-            timelineLimit: readIntOption(args, ["--timeline-limit"], 80),
-          }),
-        ),
-      ],
-    };
-  }
-
-  if (sub === "watch" || sub === "monitor") {
-    const waitUntilTerminal = readFlag(args, [
-      "--wait",
-      "--until-terminal",
-      "--wait-until-terminal",
-    ]);
-    const waitMs = readIntOption(
-      args,
-      ["--wait-ms", "--hold-ms", "--wait-for-ms"],
-      waitUntilTerminal ? 30 * 60 * 1000 : undefined,
-    );
-    const runId = readValue(args, ["--run", "--run-id"]);
-    const missionId =
-      readValue(args, ["--mission", "--mission-id"]) ??
-      (runId ? null : firstPositional(args));
-    const timelineLimit = readIntOption(args, ["--timeline-limit"], 80) ?? 80;
-    const steps: InvocationStep[] = [];
-    if (missionId) {
-      steps.push(actionScalarStep("mission", "mission", "get", missionId));
-      steps.push(
-        actionStep("runs", "orchestrator_core", "listRuns", {
-          missionId,
-          limit: readIntOption(args, ["--limit"], 20),
-        }),
-      );
-    }
-    const waitGraphStep = waitRunGraphStep({
-      key: "graph",
-      runId: (values) => runId ?? runIdFromWatchValues(values),
-      waitMs,
-      untilTerminal: waitUntilTerminal,
-      timelineLimit,
-    });
-    if (waitGraphStep) {
-      steps.push(waitGraphStep);
-    } else {
-      steps.push({
-        ...actionStep("graph", "orchestrator_core", "getRunGraph", {}),
-        optional: !runId,
-        params: (values) => ({
-          name: "run_ade_action",
-          arguments: {
-            domain: "orchestrator_core",
-            action: "getRunGraph",
-            args: {
-              runId: runId ?? runIdFromWatchValues(values),
-              timelineLimit,
-            },
-          },
-        }),
-      });
-    }
-    return {
-      kind: "execute",
-      label: "mission watch",
-      formatter: "mission-watch",
-      steps,
-    };
-  }
-
-  if (sub === "pause") {
-    const runId = requireValue(
-      readValue(args, ["--run", "--run-id"]) ?? firstPositional(args),
-      "runId",
-    );
-    return {
-      kind: "execute",
-      label: "mission pause",
-      formatter: "mission-graph",
-      steps: [
-        actionStep(
-          "result",
-          "orchestrator_core",
-          "pauseRun",
-          collectGenericObjectArgs(args, {
-            runId,
-            reason: readValue(args, ["--reason"]),
-          }),
-        ),
-      ],
-    };
-  }
-
-  if (sub === "resume") {
-    const runId = requireValue(
-      readValue(args, ["--run", "--run-id"]) ?? firstPositional(args),
-      "runId",
-    );
-    const waitUntilTerminal = readFlag(args, [
-      "--wait",
-      "--until-terminal",
-      "--wait-until-terminal",
-    ]);
-    const waitMs = readIntOption(
-      args,
-      ["--wait-ms", "--hold-ms", "--wait-for-ms"],
-      waitUntilTerminal ? 30 * 60 * 1000 : undefined,
-    );
-    const steps: InvocationStep[] = [
-      actionStep(
-        "result",
-        "orchestrator",
-        "resumeRun",
-        collectGenericObjectArgs(args, { runId }),
-      ),
-    ];
-    const waitGraphStep = waitRunGraphStep({
-      key: "graph",
-      runId,
-      waitMs,
-      untilTerminal: waitUntilTerminal,
-      timelineLimit: readIntOption(args, ["--timeline-limit"], 120) ?? 120,
-    });
-    if (waitGraphStep) steps.push(waitGraphStep);
-    return {
-      kind: "execute",
-      label: "mission resume",
-      formatter: waitGraphStep ? "mission-watch" : "mission-graph",
-      steps,
-    };
-  }
-
-  if (sub === "cancel") {
-    const runId = requireValue(
-      readValue(args, ["--run", "--run-id"]) ??
-        readValue(args, ["--mission", "--mission-id"]) ??
-        firstPositional(args),
-      "runId",
-    );
-    return {
-      kind: "execute",
-      label: "mission cancel",
-      formatter: "mission-detail",
-      steps: [
-        actionStep(
-          "result",
-          "orchestrator",
-          "cancelRunGracefully",
-          collectGenericObjectArgs(args, {
-            runId,
-            reason: readValue(args, ["--reason"]),
-          }),
-        ),
-      ],
-    };
-  }
-
-  return {
-    kind: "execute",
-    label: `mission ${sub}`,
-    steps: [
-      actionStep("result", "mission", sub, collectGenericObjectArgs(args)),
-    ],
   };
 }
 
@@ -7801,7 +7127,6 @@ function buildActionStatusArgs(
     readValue(args, ["--chat-session", "--chat-session-id"]),
   );
   maybePut(input, "runId", readValue(args, ["--run", "--run-id"]));
-  maybePut(input, "missionId", readValue(args, ["--mission", "--mission-id"]));
   maybePut(input, "prId", readValue(args, ["--pr", "--pr-id"]));
   maybePut(input, "previousHash", readValue(args, ["--previous-hash"]));
   maybePut(
@@ -8589,12 +7914,11 @@ function buildLinearPlan(args: string[]): CliPlan {
     const mode = firstPositional(args) ?? "cto";
     const toolByMode: Record<string, string> = {
       cto: "routeLinearIssueToCto",
-      mission: "routeLinearIssueToMission",
       worker: "routeLinearIssueToWorker",
     };
     const tool = toolByMode[mode];
     if (!tool)
-      throw new CliUsageError("linear route supports cto, mission, or worker.");
+      throw new CliUsageError("linear route supports cto or worker.");
     return {
       kind: "execute",
       label: `Linear route ${mode}`,
@@ -9032,7 +8356,6 @@ function buildCliPlan(command: string[]): CliPlan {
     diff: "diff",
     diffs: "diff",
     file: "files",
-    mission: "missions",
     pr: "prs",
     process: "run",
     processes: "run",
@@ -9191,15 +8514,10 @@ function buildCliPlan(command: string[]): CliPlan {
       ],
     };
   }
-  if (WORKER_MISSION_TOOL_CLI_NAMES.has(primary)) {
-    return buildWorkerMissionToolPlan(primary, args);
-  }
   if (primary === "lanes" || primary === "lane") return buildLanePlan(args);
   if (primary === "git") return buildGitPlan(args);
   if (primary === "diff" || primary === "diffs") return buildDiffPlan(args);
   if (primary === "files" || primary === "file") return buildFilesPlan(args);
-  if (primary === "missions" || primary === "mission")
-    return buildMissionsPlan(args);
   if (primary === "prs" || primary === "pr") return buildPrPlan(args);
   if (primary === "run" || primary === "process" || primary === "processes")
     return buildRunPlan(args);
@@ -10698,7 +10016,6 @@ function buildInitializeParams(
   clientName: string,
 ): JsonObject {
   const envChatSessionId = asString(process.env.ADE_CHAT_SESSION_ID);
-  const envMissionId = asString(process.env.ADE_MISSION_ID);
   const envRunId = asString(process.env.ADE_RUN_ID);
   const envStepId = asString(process.env.ADE_STEP_ID);
   const envAttemptId = asString(process.env.ADE_ATTEMPT_ID);
@@ -10711,7 +10028,6 @@ function buildInitializeParams(
         envChatSessionId ?? envAttemptId ?? `${clientName}:${process.pid}`,
       role: options.role,
       ...(envChatSessionId ? { chatSessionId: envChatSessionId } : {}),
-      ...(envMissionId ? { missionId: envMissionId } : {}),
       ...(envRunId ? { runId: envRunId } : {}),
       ...(envStepId ? { stepId: envStepId } : {}),
       ...(envAttemptId ? { attemptId: envAttemptId } : {}),
@@ -11619,47 +10935,6 @@ function unwrapActionEnvelope(value: unknown): unknown {
   return value;
 }
 
-function missionIdFromCreateResult(value: unknown): string {
-  const result = unwrapActionEnvelope(value);
-  const mission = firstRecord(result, ["mission"]);
-  const id =
-    asString(mission?.id) ?? (isRecord(result) ? asString(result.id) : null);
-  return requireValue(id ?? null, "created mission id");
-}
-
-function newestRunFromListResult(value: unknown): JsonObject | null {
-  const result = unwrapActionEnvelope(value);
-  const runs = firstArray(result, ["runs", "items", "results"]);
-  if (runs.length === 0) return null;
-  return (
-    [...runs].sort((left, right) => {
-      const leftAt = asString(left.startedAt) ?? asString(left.createdAt) ?? "";
-      const rightAt =
-        asString(right.startedAt) ?? asString(right.createdAt) ?? "";
-      return rightAt.localeCompare(leftAt);
-    })[0] ?? null
-  );
-}
-
-function runFromStartResult(value: unknown): JsonObject | null {
-  const result = unwrapActionEnvelope(value);
-  const direct = firstRecord(result, ["run"]);
-  if (direct && asString(direct.id)) return direct;
-  const started = firstRecord(result, ["started"]);
-  const nested = firstRecord(started, ["run"]);
-  if (nested && asString(nested.id)) return nested;
-  if (started && asString(started.id)) return started;
-  return null;
-}
-
-function missionFromResult(value: unknown): JsonObject | null {
-  const result = unwrapActionEnvelope(value);
-  const mission = firstRecord(result, ["mission"]);
-  if (mission && asString(mission.id)) return mission;
-  if (isRecord(result) && asString(result.id)) return result;
-  return null;
-}
-
 function graphFromResult(value: unknown): JsonObject | null {
   const result = unwrapActionEnvelope(value);
   if (!isRecord(result)) return null;
@@ -11694,8 +10969,7 @@ function runIdFromWatchValues(values: JsonObject): string {
     const graphRunId = asString(graphRun?.id);
     if (graphRunId) return graphRunId;
   }
-  const run = newestRunFromListResult(values.runs);
-  return requireValue(asString(run?.id) ?? null, "run id");
+  return requireValue(null, "run id");
 }
 
 function renderLaneGraph(result: unknown): string {
@@ -12105,184 +11379,6 @@ function formatPrComments(value: unknown): string {
   if (threads.length === 0 && comments.length === 0)
     lines.push("(no comments)");
   return lines.join("\n");
-}
-
-function phaseKeysFromMission(mission: JsonObject): string {
-  const metadata = isRecord(mission.metadata) ? mission.metadata : {};
-  const phaseConfiguration = isRecord(metadata.phaseConfiguration)
-    ? metadata.phaseConfiguration
-    : {};
-  const phaseKeys = Array.isArray(phaseConfiguration.phaseKeys)
-    ? phaseConfiguration.phaseKeys
-    : Array.isArray(phaseConfiguration.phases)
-      ? phaseConfiguration.phases
-          .filter(isRecord)
-          .map((phase) => phase.phaseKey)
-      : [];
-  return phaseKeys
-    .map((key) => cell(key, 24))
-    .filter(Boolean)
-    .join(" -> ");
-}
-
-function formatMissionDetail(value: unknown): string {
-  const result = unwrapActionEnvelope(value);
-  const mission =
-    firstRecord(result, ["mission"]) ?? (isRecord(result) ? result : {});
-  const steps = firstArray(mission, ["steps"]);
-  const phaseKeys = phaseKeysFromMission(mission);
-  return [
-    renderKeyValues("ADE mission", [
-      ["id", mission.id],
-      ["title", mission.title],
-      ["status", mission.status],
-      ["priority", mission.priority],
-      ["lane", mission.laneId ?? mission.laneName],
-      ["mission lane", mission.missionLaneId ?? mission.missionLaneName],
-      ["result lane", mission.resultLaneId ?? mission.resultLaneName],
-      ["steps", steps.length || mission.totalSteps],
-      ["phases", phaseKeys],
-      ["error", mission.lastError],
-    ]),
-    steps.length
-      ? `\nSteps\n${renderTable(
-          ["#", "status", "phase", "title"],
-          steps.map((step) => [
-            step.index ?? step.stepIndex,
-            step.status,
-            step.phaseKey ??
-              (isRecord(step.metadata) ? step.metadata.phaseKey : null),
-            step.title,
-          ]),
-          "(no steps)",
-        )}`
-      : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
-function formatMissionList(value: unknown): string {
-  const result = unwrapActionEnvelope(value);
-  const missions = firstArray(result, ["missions", "items", "results"]);
-  return `ADE missions\n${renderTable(
-    ["mission", "status", "lane", "steps", "title"],
-    missions.map((mission) => [
-      mission.id,
-      mission.status,
-      mission.laneId ?? mission.laneName ?? mission.missionLaneId,
-      `${cell(mission.completedSteps, 8)}/${cell(mission.totalSteps, 8)}`,
-      mission.title,
-    ]),
-    "(no missions)",
-  )}`;
-}
-
-function formatMissionRuns(value: unknown): string {
-  const result = unwrapActionEnvelope(value);
-  const runs = firstArray(result, ["runs", "items", "results"]);
-  return `ADE mission runs\n${renderTable(
-    ["run", "status", "mission", "mode", "started"],
-    runs.map((run) => {
-      const metadata = isRecord(run.metadata) ? run.metadata : {};
-      return [
-        run.id,
-        run.status,
-        run.missionId,
-        metadata.runMode ?? run.runMode,
-        run.startedAt ?? run.createdAt,
-      ];
-    }),
-    "(no runs)",
-  )}`;
-}
-
-function formatMissionGraph(value: unknown): string {
-  const result = unwrapActionEnvelope(value);
-  const graph =
-    isRecord(result) && isRecord(result.graph) ? result.graph : result;
-  const run = firstRecord(graph, ["run"]) ?? {};
-  const steps = firstArray(graph, ["steps"]);
-  const attempts = firstArray(graph, ["attempts"]);
-  const timeline = firstArray(graph, ["timeline", "events"]);
-  return [
-    renderKeyValues("ADE mission run graph", [
-      ["run", run.id],
-      ["mission", run.missionId],
-      ["status", run.status],
-      ["steps", steps.length],
-      ["attempts", attempts.length],
-      ["timeline events", timeline.length],
-      ["started", run.startedAt ?? run.createdAt],
-      ["error", run.lastError],
-    ]),
-    steps.length
-      ? `\nSteps\n${renderTable(
-          ["step", "status", "phase", "title"],
-          steps.map((step) => [
-            step.id ?? step.stepKey,
-            step.status,
-            step.phaseKey ??
-              (isRecord(step.metadata) ? step.metadata.phaseKey : null),
-            step.title,
-          ]),
-          "(no steps)",
-        )}`
-      : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
-function formatMissionWatch(value: unknown): string {
-  const result = isRecord(value) ? value : {};
-  const created = unwrapActionEnvelope(result.created);
-  const started = unwrapActionEnvelope(result.started ?? result.result);
-  const mission =
-    missionFromResult(result.mission) ??
-    missionFromResult(created) ??
-    missionFromResult(started) ??
-    {};
-  const runsResult = unwrapActionEnvelope(result.runs);
-  const newestRun =
-    newestRunFromListResult(runsResult) ?? runFromStartResult(started);
-  const graphResult = unwrapActionEnvelope(result.graph);
-  const graph = graphFromResult(graphResult) ?? {};
-  const wait = firstRecord(graphResult, ["wait"]);
-  const graphRun = runFromGraphResult(graphResult) ?? newestRun ?? {};
-  const graphSteps = firstArray(graph, ["steps"]);
-  const parts = [
-    renderKeyValues("ADE mission watch", [
-      ["mission", mission.id],
-      ["title", mission.title],
-      ["mission status", mission.status],
-      ["run", graphRun.id],
-      ["run status", graphRun.status],
-      ["steps", graphSteps.length || mission.totalSteps],
-      ["mission lane", mission.missionLaneId ?? mission.missionLaneName],
-      ["result lane", mission.resultLaneId ?? mission.resultLaneName],
-      ["wait timed out", wait?.timedOut],
-      ["wait extended", wait?.extendedForActiveHeadlessWork],
-      ["error", mission.lastError ?? graphRun.lastError],
-    ]),
-  ];
-  if (graphSteps.length > 0) {
-    parts.push(
-      "",
-      renderTable(
-        ["step", "status", "phase", "title"],
-        graphSteps.map((step) => [
-          step.id ?? step.stepKey,
-          step.status,
-          step.phaseKey ??
-            (isRecord(step.metadata) ? step.metadata.phaseKey : null),
-          step.title,
-        ]),
-        "(no steps)",
-      ),
-    );
-  }
-  return parts.join("\n");
 }
 
 function formatFileTree(value: unknown): string {
@@ -13249,16 +12345,6 @@ function formatTextOutput(
       return formatPrChecks(value);
     case "pr-comments":
       return formatPrComments(value);
-    case "mission-list":
-      return formatMissionList(value);
-    case "mission-detail":
-      return formatMissionDetail(value);
-    case "mission-runs":
-      return formatMissionRuns(value);
-    case "mission-graph":
-      return formatMissionGraph(value);
-    case "mission-watch":
-      return formatMissionWatch(value);
     case "run-defs":
       return formatRunTable(value, "ADE run definitions");
     case "run-runtime":
@@ -13485,49 +12571,6 @@ function summarizeExecution(args: {
     };
   }
 
-  if (plan.label === "mission launch") {
-    const created = unwrapActionEnvelope(values.created);
-    const started = unwrapActionEnvelope(values.started);
-    const refreshedMission = missionFromResult(values.mission);
-    const graph = unwrapActionEnvelope(values.graph);
-    return {
-      created,
-      started,
-      mission:
-        refreshedMission ??
-        missionFromResult(started) ??
-        missionFromResult(created) ??
-        created,
-      run: runFromGraphResult(graph) ?? runFromStartResult(started),
-      graph,
-    };
-  }
-
-  if (plan.label === "mission watch") {
-    return {
-      mission: unwrapActionEnvelope(values.mission),
-      runs: unwrapActionEnvelope(values.runs),
-      graph: unwrapActionEnvelope(values.graph),
-    };
-  }
-
-  if (plan.label === "mission resume") {
-    const graph = unwrapActionEnvelope(values.graph);
-    if (graph) {
-      return {
-        run: runFromGraphResult(graph),
-        graph,
-      };
-    }
-    const resumed = unwrapActionEnvelope(values.result);
-    return {
-      run: resumed,
-      steps: [],
-      attempts: [],
-      timeline: [],
-    };
-  }
-
   if (plan.label === "PR create") {
     return summarizePrCreateResult(values.result ?? values);
   }
@@ -13590,14 +12633,6 @@ function summarizeExecution(args: {
   return result;
 }
 
-const TERMINAL_MISSION_RUN_STATUSES = new Set([
-  "succeeded",
-  "failed",
-  "canceled",
-  "cancelled",
-]);
-const HEADLESS_ACTIVE_ATTEMPT_DRAIN_MS = 30 * 60 * 1000;
-
 function graphWaitState(value: unknown): {
   status: string;
   activeCount: number;
@@ -13619,98 +12654,13 @@ function graphWaitState(value: unknown): {
   };
 }
 
-async function requestRunGraph(args: {
-  connection: CliConnection;
-  runId: string;
-  timelineLimit: number;
-}): Promise<unknown> {
-  return await args.connection.request("ade/actions/call", {
-    name: "run_ade_action",
-    arguments: {
-      domain: "orchestrator_core",
-      action: "getRunGraph",
-      args: {
-        runId: args.runId,
-        timelineLimit: args.timelineLimit,
-      },
-    },
-  });
-}
-
-async function waitForRunGraph(args: {
-  connection: CliConnection;
-  runId: string;
-  waitMs: number;
-  timelineLimit: number;
-  untilTerminal: boolean;
-}): Promise<JsonObject> {
-  const startedAt = Date.now();
-  const deadline = startedAt + Math.max(0, args.waitMs);
-  const headlessDrainDeadline = deadline + HEADLESS_ACTIVE_ATTEMPT_DRAIN_MS;
-  let raw: unknown = null;
-  let timedOut = false;
-  let extendedForActiveHeadlessWork = false;
-
-  while (true) {
-    raw = await requestRunGraph({
-      connection: args.connection,
-      runId: args.runId,
-      timelineLimit: args.timelineLimit,
-    });
-    const unwrapped = unwrapActionEnvelope(raw);
-    const waitState = graphWaitState(unwrapped);
-    const terminal = TERMINAL_MISSION_RUN_STATUSES.has(waitState.status);
-    if (terminal) break;
-
-    const now = Date.now();
-    const pastDeadline = now >= deadline;
-    if (pastDeadline) {
-      timedOut = true;
-      const shouldDrainActiveHeadlessWork =
-        args.connection.mode === "headless" &&
-        waitState.activeCount > 0 &&
-        now < headlessDrainDeadline;
-      if (!shouldDrainActiveHeadlessWork) break;
-      extendedForActiveHeadlessWork = true;
-    }
-
-    await sleep(1_000);
-  }
-
-  const graph = graphFromResult(raw) ?? {};
-  const waitState = graphWaitState(raw);
-  return {
-    graph,
-    wait: {
-      runId: args.runId,
-      waitedMs: Math.max(0, Date.now() - startedAt),
-      requestedWaitMs: args.waitMs,
-      untilTerminal: args.untilTerminal,
-      timedOut,
-      extendedForActiveHeadlessWork,
-      mode: args.connection.mode,
-      runStatus: waitState.status || null,
-      activeCount: waitState.activeCount,
-    },
-  };
-}
-
 async function executePlan(
   plan: CliPlan & { kind: "execute" },
   options: GlobalOptions,
 ): Promise<unknown> {
   let connection: CliConnection;
-  const isWorkerMissionToolPlan = plan.label.startsWith("worker mission tool ");
-  const workerRpcUrl = process.env.ADE_RPC_URL?.trim();
-  const workerSocketOverride = process.env.ADE_RPC_SOCKET_PATH?.trim();
   const connectionOptions =
-    isWorkerMissionToolPlan && !options.requireSocket
-      ? {
-          ...options,
-          headless: false,
-          requireSocket: Boolean(workerRpcUrl || workerSocketOverride),
-        }
-      : plan.preferHeadless && !options.requireSocket
+    plan.preferHeadless && !options.requireSocket
         ? { ...options, headless: true }
         : options;
   try {
@@ -13756,29 +12706,6 @@ async function executePlan(
       try {
         const params =
           typeof step.params === "function" ? step.params(values) : step.params;
-        if (step.method === "ade-cli/wait-run-graph") {
-          const runId = requireValue(asString(params?.runId) ?? null, "run id");
-          const waitMs = Math.max(
-            0,
-            Math.floor(typeof params?.waitMs === "number" ? params.waitMs : 0),
-          );
-          const timelineLimit = Math.max(
-            0,
-            Math.floor(
-              typeof params?.timelineLimit === "number"
-                ? params.timelineLimit
-                : 120,
-            ),
-          );
-          values[step.key] = await waitForRunGraph({
-            connection,
-            runId,
-            waitMs,
-            timelineLimit,
-            untilTerminal: params?.untilTerminal === true,
-          });
-          continue;
-        }
         const raw = await connection.request(step.method, params);
         values[step.key] = step.unwrapToolResult ? unwrapToolResult(raw) : raw;
       } catch (error) {

@@ -1,18 +1,15 @@
-import React, { useCallback, useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import type { ModelConfig, ModelProvider, ThinkingLevel } from "../../../shared/types";
 import { getModelById, resolveModelDescriptor } from "../../../shared/modelRegistry";
-import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
-import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
+import { ModelPicker } from "./ModelPicker/ModelPicker";
+import { ReasoningEffortPicker } from "./ModelPicker/ReasoningEffortPicker";
 
 type ModelSelectorProps = {
   value: ModelConfig;
   onChange: (config: ModelConfig) => void;
   compact?: boolean;
-  showRecommendedBadge?: boolean;
-  /** When provided, only models whose registry id is in this set are shown. */
   availableModelIds?: string[];
   onOpenAiSettings?: () => void;
-  /** Stable id used by the picker to remember per-surface defaults. */
   surfaceKey?: string;
   fastModeActive?: boolean;
   onFastModeToggle?: (next: boolean) => void;
@@ -41,10 +38,9 @@ export function ModelSelector({
   value,
   onChange,
   compact,
-  showRecommendedBadge: _showRecommendedBadge,
   availableModelIds,
   onOpenAiSettings,
-  surfaceKey = "missions/phase-or-action",
+  surfaceKey = "automations/model",
   fastModeActive,
   onFastModeToggle,
   fastModeSupported,

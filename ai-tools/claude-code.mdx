@@ -1,6 +1,6 @@
 ---
 title: "Claude Code"
-description: "Use Claude Code as a CLI coding agent inside ADE lanes — launch sessions, connect ADE CLI tools, configure permissions, and track work across agent chat, missions, and CTO delegations."
+description: "Use Claude Code as a CLI coding agent inside ADE lanes — launch sessions, connect ADE CLI tools, configure permissions, and track work across agent chat, worker runs, and CTO delegations."
 icon: "terminal"
 ---
 
@@ -8,7 +8,7 @@ icon: "terminal"
 
 ADE integrates with [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Anthropic's CLI agent for coding tasks. When Claude Code is installed on your machine, ADE can launch it as a managed session inside any lane.
 
-Claude Code is one of ADE's deepest integrations — it serves as both a chat provider (for Agent Chat) and an execution backend (for missions, CTO workers, and automations). ADE manages the Claude Code process lifecycle, exposes the `ade` CLI so the agent can reach ADE's lane, git, and PR tools, forwards environment variables, and tracks every session in the History view.
+Claude Code is one of ADE's deepest integrations — it serves as both a chat provider (for Agent Chat) and an execution backend (for worker runs, CTO workers, and automations). ADE manages the Claude Code process lifecycle, exposes the `ade` CLI so the agent can reach ADE's lane, git, and PR tools, forwards environment variables, and tracks every session in the History view.
 
 ---
 
@@ -32,7 +32,7 @@ Claude Code sessions are used in several places:
 | Surface | How Claude Code is used |
 |---------|------------------------|
 | **Agent Chat** | Select Claude as the provider in the model selector. ADE starts a Claude Code session with the `ade` CLI on `PATH`. |
-| **Missions** | Used as a worker executor (`claude_cli`) during mission execution phases. Each worker gets its own Claude Code process. |
+| **Workers** | Used as a worker executor (`claude_cli`) during worker run execution phases. Each worker gets its own Claude Code process. |
 | **CTO Workers** | When the CTO delegates a task to an employee agent, it can use Claude Code as the execution backend. |
 | **Automations** | Automation rules with `agent-session` execution kind can use Claude Code as the underlying agent. |
 
@@ -77,7 +77,7 @@ ADE supports several permission modes for Claude Code sessions:
 | `acceptEdits` | Auto-accept file edits — the agent can write files without asking, but still asks for terminal commands |
 | `bypassPermissions` | Skip all permission prompts — full autonomy. Use with caution. |
 
-Configure the default permission mode in **Settings > AI Providers** or per-mission in the mission creation dialog. For CTO-delegated workers, the CTO sets the permission mode based on the task's risk level.
+Configure the default permission mode in **Settings > AI Providers** or per-worker run in the worker run creation dialog. For CTO-delegated workers, the CTO sets the permission mode based on the task's risk level.
 
 ---
 

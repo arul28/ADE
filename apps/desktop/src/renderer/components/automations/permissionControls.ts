@@ -1,6 +1,8 @@
 import { resolveModelDescriptor } from "../../../shared/modelRegistry";
-import type { AgentChatPermissionMode, MissionPermissionConfig } from "../../../shared/types";
+import type { AgentChatPermissionMode, AutomationRuleDraft } from "../../../shared/types";
 import { familyToPermissionKey, getPermissionOptions } from "../shared/permissionOptions";
+
+type AutomationPermissionConfig = NonNullable<AutomationRuleDraft["permissionConfig"]>;
 
 export function permissionControlsForModel(modelId: string) {
   const descriptor = resolveModelDescriptor(modelId);
@@ -22,23 +24,23 @@ function codexSandboxForMode(mode: AgentChatPermissionMode) {
 }
 
 export function patchPermissionConfig(
-  permissionConfig: MissionPermissionConfig | undefined,
+  permissionConfig: AutomationPermissionConfig | undefined,
   modelId: string,
   rawMode: string,
-): MissionPermissionConfig | undefined {
+): AutomationPermissionConfig | undefined {
   const meta = permissionControlsForModel(modelId);
   if (!meta) return permissionConfig;
   const providers: Record<string, unknown> = { ...(permissionConfig?.providers ?? {}) };
   if (!rawMode) {
     delete providers[meta.key];
     if (meta.key === "codex") delete providers.codexSandbox;
-    return { ...(permissionConfig ?? {}), providers: providers as MissionPermissionConfig["providers"] };
+    return { ...(permissionConfig ?? {}), providers: providers as AutomationPermissionConfig["providers"] };
   }
   const mode = rawMode as AgentChatPermissionMode;
   return {
     ...(permissionConfig ?? {}),
     providers: {
-      ...(providers as MissionPermissionConfig["providers"]),
+      ...(providers as AutomationPermissionConfig["providers"]),
       [meta.key]: mode,
       ...(meta.key === "codex" && mode !== "config-toml" ? { codexSandbox: codexSandboxForMode(mode) } : {}),
     },

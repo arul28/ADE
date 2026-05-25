@@ -63,7 +63,6 @@ const DEFAULT_QUEUE_CONFIG: QueueAutomationConfig = {
     },
   },
   originSurface: "manual",
-  originMissionId: null,
   originRunId: null,
   originLabel: null,
   // Legacy mirrors (retained for back-compat with iOS sync, RPC, older UI).
@@ -346,7 +345,6 @@ export function createQueueLandingService({
       permissionMode: args.permissionMode ?? prior.permissionMode ?? "guarded_edit",
       confidenceThreshold: args.confidenceThreshold ?? prior.confidenceThreshold ?? null,
       originSurface: args.originSurface ?? prior.originSurface ?? "manual",
-      originMissionId: args.originMissionId ?? prior.originMissionId ?? null,
       originRunId: args.originRunId ?? prior.originRunId ?? null,
       originLabel: args.originLabel ?? prior.originLabel ?? null,
     };
@@ -561,7 +559,6 @@ export function createQueueLandingService({
       reasoningEffort: state.config.reasoningEffort,
       permissionMode: state.config.permissionMode,
       originSurface: state.config.originSurface,
-      originMissionId: state.config.originMissionId,
       originRunId: state.config.originRunId,
       originLabel: state.config.originLabel ?? `queue:${state.groupId}`,
     });

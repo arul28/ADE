@@ -12,8 +12,7 @@ export function isWorkerBootstrapNoiseLine(line: string): boolean {
   const lower = normalized.toLowerCase();
 
   return (
-    lower.startsWith("ade_mission_id=")
-    || lower.startsWith("-p \"$(cat ")
+    lower.startsWith("-p \"$(cat ")
     || WORKER_PROMPT_PATH_PATTERN.test(normalized)
     || lower.includes("exec claude --model")
     || /\bexec codex\b/i.test(normalized)

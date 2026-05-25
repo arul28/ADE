@@ -77,7 +77,7 @@ describe("linearIntakeService (file group)", () => {
         enabled: true,
         priority: 100,
         triggers: { assignees: ["CTO"], projectSlugs: ["acme-platform"] },
-        target: { type: "mission" },
+        target: { type: "worker_run" },
         steps: [{ id: "launch", type: "launch_target" }],
       },
     ],
@@ -154,7 +154,7 @@ describe("linearIntakeService (file group)", () => {
             enabled: true,
             priority: 100,
             triggers: { projectSlugs: ["extra-project"] },
-            target: { type: "mission" },
+            target: { type: "worker_run" },
             steps: [{ id: "launch", type: "launch_target" }],
           },
         ],
@@ -573,7 +573,7 @@ describe("linearCloseoutService (file group)", () => {
     enabled: true,
     priority: 100,
     triggers: { projectSlugs: ["acme-platform"] },
-    target: { type: "mission" },
+    target: { type: "worker_run" },
     steps: [],
     closeout: {
       successState: "done",
@@ -600,14 +600,13 @@ describe("linearCloseoutService (file group)", () => {
     workflowName: workflowFixture.name,
     workflowVersion: "2026-03-12T00:00:00.000Z",
     source: "repo",
-    targetType: "mission",
+    targetType: "worker_run",
     status: "in_progress",
     currentStepIndex: 0,
     currentStepId: null,
     executionLaneId: null,
-    linkedMissionId: "mission-1",
     linkedSessionId: null,
-    linkedWorkerRunId: null,
+    linkedWorkerRunId: "worker-run-1",
     linkedPrId: null,
     reviewState: null,
     supervisorIdentityKey: null,
@@ -627,96 +626,7 @@ describe("linearCloseoutService (file group)", () => {
   };
 
   describe("linearCloseoutService", () => {
-    it("merges mission and orchestrator proof artifacts into Linear closeout payload", async () => {
-      const publishMissionCloseout = vi.fn(async () => {});
-      const issueTracker = {
-        fetchWorkflowStates: vi.fn(async () => [
-          { id: "state-done", name: "Done", type: "completed" },
-          { id: "state-blocked", name: "Blocked", type: "started" },
-        ]),
-        updateIssueState: vi.fn(async () => {}),
-        addLabel: vi.fn(async () => {}),
-        createComment: vi.fn(async () => ({ commentId: "comment-1" })),
-      };
-
-      const service = createLinearCloseoutService({
-        issueTracker: issueTracker as any,
-        outboundService: {
-          publishMissionCloseout,
-        } as any,
-        missionService: {
-          get: vi.fn(() => ({
-            id: "mission-1",
-            artifacts: [
-              { id: "art-1", artifactType: "pr", uri: "https://github.com/acme/repo/pull/42" },
-              { id: "art-2", artifactType: "note", uri: "https://example.com/mission-note" },
-            ],
-          })),
-        } as any,
-        orchestratorService: {
-          getArtifactsForMission: vi.fn(() => [
-            {
-              id: "orch-1",
-              kind: "screenshot",
-              value: ".ade/artifacts/computer-use/shot.png",
-              metadata: {},
-            },
-            {
-              id: "orch-2",
-              kind: "pr",
-              value: "https://github.com/acme/repo/pull/43",
-              metadata: {},
-            },
-            {
-              id: "orch-3",
-              kind: "file",
-              value: "",
-              metadata: { uri: "https://example.com/browser-trace.zip" },
-            },
-          ]),
-        } as any,
-        prService: {
-          listAll: vi.fn(() => []),
-          getForLane: vi.fn(() => null),
-        } as any,
-        computerUseArtifactBrokerService: {
-          listArtifacts: vi.fn(() => []),
-        } as any,
-      });
-
-      await service.applyOutcome({
-        run: runFixture,
-        workflow: workflowFixture,
-        issue: issueFixture,
-        outcome: "completed",
-        summary: "Validation evidence captured and closeout completed.",
-      });
-
-      expect(issueTracker.updateIssueState).toHaveBeenCalledWith(issueFixture.id, "state-done");
-      expect(issueTracker.addLabel).toHaveBeenCalledWith(issueFixture.id, "ade");
-      expect(issueTracker.createComment).toHaveBeenCalledWith(issueFixture.id, "Closeout applied.");
-      expect(publishMissionCloseout).toHaveBeenCalledWith(expect.objectContaining({
-        issue: issueFixture,
-        missionId: "mission-1",
-        status: "completed",
-        summary: "Validation evidence captured and closeout completed.",
-        prLinks: [
-          "https://github.com/acme/repo/pull/42",
-          "https://github.com/acme/repo/pull/43",
-        ],
-        artifactPaths: [
-          "https://github.com/acme/repo/pull/42",
-          "https://example.com/mission-note",
-          ".ade/artifacts/computer-use/shot.png",
-          "https://github.com/acme/repo/pull/43",
-          "https://example.com/browser-trace.zip",
-        ],
-        artifactMode: "links",
-        commentTemplate: null,
-      }));
-    });
-
-    it("publishes non-mission PR links and broker artifacts to the generic Linear closeout", async () => {
+    it("publishes PR links and broker artifacts to the generic Linear closeout", async () => {
       const publishWorkflowCloseout = vi.fn(async () => {});
       const service = createLinearCloseoutService({
         issueTracker: {
@@ -726,14 +636,7 @@ describe("linearCloseoutService (file group)", () => {
           createComment: vi.fn(async () => ({ commentId: "comment-1" })),
         } as any,
         outboundService: {
-          publishMissionCloseout: vi.fn(async () => {}),
           publishWorkflowCloseout,
-        } as any,
-        missionService: {
-          get: vi.fn(() => null),
-        } as any,
-        orchestratorService: {
-          getArtifactsForMission: vi.fn(() => []),
         } as any,
         prService: {
           listAll: vi.fn(() => [{ id: "pr-99", githubUrl: "https://github.com/acme/repo/pull/99" }]),
@@ -759,8 +662,8 @@ describe("linearCloseoutService (file group)", () => {
         run: {
           ...runFixture,
           targetType: "employee_session",
-          linkedMissionId: null,
           linkedSessionId: "session-1",
+          linkedWorkerRunId: null,
           linkedPrId: "pr-99",
           executionLaneId: "lane-1",
         },

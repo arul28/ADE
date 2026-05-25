@@ -42,13 +42,12 @@ Translation happens in `pipelineHelpers.ts`:
 
 Insertion at index 0 replaces the primary target and pushes everything down — this is intentional because the "primary" target in the backend is always the first stage. `removeStageAt` refuses to remove the only remaining stage.
 
-`createDefaultStage(type)` provides sensible defaults for each of the five target types:
+`createDefaultStage(type)` provides sensible defaults for each target type:
 
 | Target type | Default runMode | Default lane | Default sessionReuse / PR |
 | --- | --- | --- | --- |
 | `employee_session` | `assisted` | `fresh_issue_lane` | `fresh_session`, `prTiming: "none"` |
 | `worker_run` | `autopilot` | `fresh_issue_lane` | `prTiming: "none"` |
-| `mission` | `autopilot` | n/a | `missionTemplate: "default"` |
 | `pr_resolution` | `autopilot` | `fresh_issue_lane` | `prStrategy: per-lane+draft`, `prTiming: "after_target_complete"` |
 | `review_gate` | `manual` | n/a | none |
 
@@ -114,7 +113,7 @@ Every field in `FIELD_LABELS` carries a `tier` (`essential`, `advanced`, `expert
 - **Don't edit `workflow.steps` directly** from the UI. Use `rebuildWorkflowSteps(workflow, patch)` so managed steps stay in sync and non-managed steps are preserved. Manual step edits are the most common way to drop the wait/review/notify sequencing.
 - **Don't mutate `target.downstreamTarget` in place.** Use `insertStageAt` / `removeStageAt` / `updateStageAt` which rebuild the chain.
 - **Stage 0 is primary.** Inserting at index 0 reassigns the primary target. Some call sites assume that and pass `afterIndex: -1` semantics via `handleAddStage`. If you change `insertStageAt` to accept negative indices, audit callers.
-- **Preset ids are stable.** Don't rename them (`assigned-employee-session`, `assigned-mission-run`, etc.) — downstream repo YAML pins to them.
+- **Preset ids are stable.** Don't rename them (`assigned-employee-session`, etc.) — downstream repo YAML pins to them.
 - **`STAGE_COLORS` keys must cover every target type.** Missing entries silently fall back to purple; add new types to both `STAGE_COLORS` and `TYPE_ICONS` in `StageCard.tsx`.
 - **`visualManagedStepTypes` is the contract boundary.** Adding a new step type that should be rebuilt from the visual plan requires adding it to the set in `linearWorkflowPresets.ts` or it will be preserved-but-not-regenerated (often leading to stale steps after a plan change).
 - **Tests in `pipelineHelpers.test.ts` and `linearWorkflowPresets.test.ts`** cover the translation invariants. Keep them green — they are the regression net for this surface.
@@ -126,4 +125,3 @@ Every field in `FIELD_LABELS` carries a `tier` (`essential`, `advanced`, `expert
 - `README.md` — overall CTO architecture and the source file map that includes this surface.
 - `linear-integration.md` — how these workflow definitions drive dispatcher, routing, and sync.
 - `../agents/identity-and-personas.md` — `supervisorIdentityKey` ties into the same identity model used by CTO and worker chat sessions.
-- `../missions/README.md` — `target.type === "mission"` dispatches through the mission runtime.

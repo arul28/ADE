@@ -11,7 +11,7 @@ delegation queue, and outbound API client — runs inside the runtime
 daemon (`ade serve`) that owns the project. For local projects the
 local daemon hosts them; for remote projects the remote runtime hosts
 them. The headless ADE CLI in `headlessLinearServices.ts` constructs
-the same services so Linear can drive missions / chats / PRs without
+the same services so Linear can drive chats / PRs without
 the desktop UI running. PR creation paths are local-by-default because
 they shell out to git; they still execute on the runtime host.
 
@@ -181,14 +181,13 @@ A run's steps advance via `currentStepIndex`. For each step type:
   outbound calls are wrapped in try/catch; failures log a warning and
   the run advances so transient Linear API errors do not derail the run.
 - `launch_target` — creates the target artifact. Dispatches to
-  `missionService` (mission), `agentChatService.createSession` /
-  `ensureIdentitySession` (employee session), `workerAgentService`
-  (worker run), or `prService` (PR resolution). The target id is
-  stored on the run (`linkedMissionId`, `linkedSessionId`,
-  `linkedWorkerRunId`, `linkedPrId`).
+  `agentChatService.createSession` / `ensureIdentitySession`
+  (employee session), `workerAgentService` (worker run), or
+  `prService` (PR resolution). The target id is stored on the run
+  (`linkedSessionId`, `linkedWorkerRunId`, `linkedPrId`).
 - `wait_for_target_status` — the run parks in `waiting_for_target`.
-  `runtime_completed` accepts a missionService/workerAgent runtime
-  success; `explicit_completion` requires the target to call back with
+  `runtime_completed` accepts worker runtime success;
+  `explicit_completion` requires the target to call back with
   an explicit completion (agent chat session end, worker run
   finalization).
 - `wait_for_pr` — the run parks in `waiting_for_pr` until the linked PR
@@ -347,7 +346,7 @@ ADE CLI action surface from `apps/ade-cli/src/adeRpcServer.ts`:
 
 - `listLinearWorkflows`, `getLinearRunStatus`, `resolveLinearRunAction`,
   `cancelLinearRun`, `routeLinearIssueToCto`,
-  `routeLinearIssueToMission`, `routeLinearIssueToWorker`,
+  `routeLinearIssueToWorker`,
   `rerouteLinearRun`
 - `getLinearSyncDashboard`, `runLinearSyncNow`, `listLinearSyncQueue`,
   `resolveLinearSyncQueueItem`, `getLinearWorkflowRunDetail`
@@ -374,7 +373,7 @@ ADE CLI action surface from `apps/ade-cli/src/adeRpcServer.ts`:
   headless `workerHeartbeatService` always returns
   `status: "failed"` with the message *"Headless ADE CLI mode does not
   support worker-backed Linear targets yet."* Design headless
-  workflows around `mission`, `employee_session`, or `pr_resolution`
+  workflows around `employee_session` or `pr_resolution`
   targets.
 - **`fresh_issue_lane` requires a lane-safe base ref.** When the target
   wants a fresh lane per issue, lane creation uses the base branch

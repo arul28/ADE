@@ -1,6 +1,6 @@
 ---
 title: "ADE — Agentic Development Environment"
-description: "Orchestrate parallel AI coding agents from a unified desktop control plane. Lanes, missions, context packs, and conflict detection — all local-first."
+description: "Orchestrate parallel AI coding agents from a unified desktop control plane. Lanes, worker runs, context packs, and conflict detection — all local-first."
 ---
 
 <CardGroup cols={2}>
@@ -8,7 +8,7 @@ description: "Orchestrate parallel AI coding agents from a unified desktop contr
     New to ADE? Start here. Learn what it does, install the app, and set up your first project in 5 minutes.
   </Card>
   <Card title="App Guide" icon="grid-2" href="/tools/project-home" color="#2563EB">
-    Explore every tab — Run, Lanes, Chat, Files, Graph, PRs, Missions, CTO, and more.
+    Explore every tab — Run, Lanes, Chat, Files, Graph, PRs, Workers, CTO, and more.
   </Card>
   <Card title="Settings & Config" icon="gear" href="/configuration/settings" color="#059669">
     AI providers, integrations, permissions, budgets, and project configuration.
@@ -40,7 +40,7 @@ AI coding agents are fast individually. Running them **in parallel** is where th
 </CardGroup>
 
 <Check>
-**ADE solves this** with isolated lanes, durable context packs, structured missions, a coordinator agent (CTO), and a workspace-wide view of branch state and merge risk.
+**ADE solves this** with isolated lanes, durable context packs, structured worker runs, a coordinator agent (CTO), and a workspace-wide view of branch state and merge risk.
 </Check>
 
 ---
@@ -58,13 +58,13 @@ AI coding agents are fast individually. Running them **in parallel** is where th
 
     [Explore CTO →](/cto/overview)
   </Accordion>
-  <Accordion title="Missions — Structured AI execution" icon="bullseye">
+  <Accordion title="Workers — Structured AI execution" icon="bullseye">
     Multi-step execution with planning, approval, validation, cost tracking, and full audit trails.
 
-    [Explore Missions →](/missions/overview)
+    [Explore Workers →](/cto/workers)
   </Accordion>
   <Accordion title="Automations — Background AI workers" icon="bolt">
-    Trigger-driven rules that launch agent sessions or missions in response to git events, schedules, and webhooks.
+    Trigger-driven rules that launch agent sessions or worker runs in response to git events, schedules, and webhooks.
 
     [Explore Automations →](/automations/overview)
   </Accordion>
@@ -74,7 +74,7 @@ AI coding agents are fast individually. Running them **in parallel** is where th
     [Explore Graph →](/tools/workspace-graph)
   </Accordion>
   <Accordion title="Proof — Intentional evidence capture" icon="camera">
-    Agents capture screenshots, short recordings, and ingested browser traces through the `ade proof` CLI. ADE normalizes and routes each artifact to its mission, chat session, PR, or Linear issue.
+    Agents capture screenshots, short recordings, and ingested browser traces through the `ade proof` CLI. ADE normalizes and routes each artifact to its worker run, chat session, PR, or Linear issue.
 
     [Explore Proof →](/computer-use/overview)
   </Accordion>

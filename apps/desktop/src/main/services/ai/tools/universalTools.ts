@@ -11,7 +11,7 @@ import { createGlobSearchTool } from "./globSearch";
 import { webFetchTool } from "./webFetch";
 import { webSearchTool } from "./webSearch";
 import type { AgentChatApprovalDecision, AgentChatEvent, WorkerSandboxConfig } from "../../../../shared/types";
-import { DEFAULT_WORKER_SANDBOX_CONFIG } from "../../orchestrator/orchestratorConstants";
+import { DEFAULT_WORKER_SANDBOX_CONFIG } from "./workerSandboxDefaults";
 import { getErrorMessage, isEnoentError, isWithinDir, resolvePathWithinRoot } from "../../shared/utils";
 import { terminateProcessTree } from "../../shared/processExecution";
 

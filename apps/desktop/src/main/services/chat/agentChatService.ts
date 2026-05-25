@@ -316,8 +316,6 @@ import { promises as fsPromises } from "node:fs";
 import { mapStopReasonToTerminalEvents } from "./stopReasonEvents";
 import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { getApiKey } from "../ai/apiKeyStore";
-import type { createMissionService } from "../missions/missionService";
-import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 
 const CLAUDE_AGENT_SDK_VERSION = "0.2.139";
@@ -3129,7 +3127,7 @@ function buildExecutionModeDirective(
   if (provider === "droid" && (mode === "parallel" || mode === "subagents" || mode === "teams")) {
     return [
       "[ADE launch directive]",
-      "Use Droid's available delegation or mission-style tools for independent subtasks when they will materially improve latency or coverage.",
+      "Use Droid's available delegation tools for independent subtasks when they will materially improve latency or coverage.",
       "Split bounded work into narrowly scoped delegates, let them complete independently, then reconcile the results before the final answer.",
       "If the task is tightly coupled, stay focused instead of forcing delegation.",
     ].join("\n");
@@ -3288,12 +3286,10 @@ function activityForToolName(
   return { activity: "tool_calling", detail: normalized };
 }
 
-// Permission mapping functions are shared with the orchestrator/mission system.
-// Delegate to the single source of truth in permissionMapping.ts.
 import {
   mapPermissionToClaude,
   mapPermissionToCodex
-} from "../orchestrator/permissionMapping";
+} from "./permissionMapping";
 
 function codexSandboxPolicyType(sandbox: AgentChatCodexSandbox): string {
   switch (sandbox) {
@@ -3827,18 +3823,15 @@ function buildCodexDeveloperInstructions(args: {
 }
 
 function resolveCodexInstructionCollaborationMode(
-  session: Pick<AgentChatSession, "permissionMode" | "interactionMode" | "surface">,
+  session: Pick<AgentChatSession, "permissionMode" | "interactionMode">,
 ): "default" | "plan" {
-  return (session.interactionMode === "plan" || session.permissionMode === "plan")
-    && session.surface !== "mission"
-    ? "plan"
-    : "default";
+  return (session.interactionMode === "plan" || session.permissionMode === "plan") ? "plan" : "default";
 }
 
 function buildCodexCollaborationMode(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "model" | "reasoningEffort" | "codexConfigSource" | "surface"
+    "provider" | "permissionMode" | "interactionMode" | "model" | "reasoningEffort" | "codexConfigSource"
   >,
   supportedModes: Set<string> | null,
   laneWorktreePath: string,
@@ -3872,7 +3865,7 @@ function buildCodexCollaborationMode(
 function resolveRequestedCodexCollaborationMode(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "codexConfigSource" | "surface"
+    "provider" | "permissionMode" | "interactionMode" | "codexConfigSource"
   >,
 ): "default" | "plan" | null {
   if (session.provider !== "codex") return null;
@@ -4303,8 +4296,6 @@ export function createAgentChatService(args: {
   workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
   linearIssueTracker?: IssueTracker | null;
   flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
-  getMissionService?: () => ReturnType<typeof createMissionService> | null;
-  getAiOrchestratorService?: () => ReturnType<typeof createAiOrchestratorService> | null;
   getLinearDispatcherService?: () => ReturnType<typeof createLinearDispatcherService> | null;
   linearClient?: LinearClient | null;
   linearCredentials?: LinearCredentialService | null;
@@ -4317,7 +4308,6 @@ export function createAgentChatService(args: {
   getGitService?: () => CtoOperatorToolDeps["gitService"];
   conflictService?: CtoOperatorToolDeps["conflictService"];
   getWorkerBudgetService?: () => CtoOperatorToolDeps["workerBudgetService"];
-  getMissionBudgetService?: () => CtoOperatorToolDeps["missionBudgetService"];
   computerUseArtifactBrokerService?: ComputerUseArtifactBrokerService | null;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
@@ -4341,8 +4331,6 @@ export function createAgentChatService(args: {
     workerHeartbeatService,
     linearIssueTracker,
     flowPolicyService,
-    getMissionService,
-    getAiOrchestratorService,
     getLinearDispatcherService,
     linearClient: linearClientRef,
     linearCredentials: linearCredentialsRef,
@@ -4355,7 +4343,6 @@ export function createAgentChatService(args: {
     getGitService,
     conflictService,
     getWorkerBudgetService,
-    getMissionBudgetService,
     computerUseArtifactBrokerService,
     laneService,
     sessionService,
@@ -4386,48 +4373,6 @@ export function createAgentChatService(args: {
     ADE_PROJECT_ROOT: projectRoot,
     ADE_WORKSPACE_ROOT: managed.laneWorktreePath,
   });
-
-  const tomlString = (value: string): string => JSON.stringify(value);
-
-  const ensureMissionCodexHome = (managed: ManagedChatSession): string => {
-    const safeSessionId = managed.session.id.replace(/[^a-zA-Z0-9_.-]/g, "_");
-    const codexHome = path.join(os.tmpdir(), "ade-mission-codex-home", safeSessionId);
-    fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
-
-    const sourceAuthPath = path.join(os.homedir(), ".codex", "auth.json");
-    const targetAuthPath = path.join(codexHome, "auth.json");
-    if (fs.existsSync(sourceAuthPath) && !fs.existsSync(targetAuthPath)) {
-      try {
-        fs.symlinkSync(sourceAuthPath, targetAuthPath);
-      } catch {
-        // If symlinks are unavailable, leave auth resolution to other Codex mechanisms.
-      }
-    }
-
-    const reasoningEffort = managed.session.reasoningEffort ?? "medium";
-    const configToml = [
-      `model = ${tomlString(managed.session.model || "gpt-5.5")}`,
-      `model_reasoning_effort = ${tomlString(reasoningEffort)}`,
-      `sandbox_mode = "danger-full-access"`,
-      `approval_policy = "never"`,
-      ``,
-      `[projects.${tomlString(managed.laneWorktreePath)}]`,
-      `trust_level = "trusted"`,
-      ``,
-      `[features]`,
-      `apps = false`,
-      `browser_use = false`,
-      `computer_use = false`,
-      `multi_agent = false`,
-      `enable_mcp_apps = false`,
-      `plugins = false`,
-      `tool_search_always_defer_mcp_tools = false`,
-      ``,
-      `[plugins]`,
-    ].join("\n");
-    fs.writeFileSync(path.join(codexHome, "config.toml"), configToml, { mode: 0o600 });
-    return codexHome;
-  };
 
   const eventSubscribers = new Set<(event: AgentChatEventEnvelope) => void>();
 
@@ -5209,8 +5154,6 @@ export function createAgentChatService(args: {
         defaultReasoningEffort: null,
         resolveExecutionLane: async ({ requestedLaneId }) => requestedLaneId?.trim() || laneId,
         laneService,
-        missionService: getMissionService?.() ?? null,
-        aiOrchestratorService: getAiOrchestratorService?.() ?? null,
         workerAgentService: workerAgentService ?? null,
         workerHeartbeatService: workerHeartbeatService ?? null,
         linearDispatcherService: getLinearDispatcherService?.() ?? null,
@@ -5226,7 +5169,6 @@ export function createAgentChatService(args: {
         conflictService: conflictService ?? null,
         computerUseArtifactBrokerService: computerUseArtifactBrokerRef ?? null,
         workerBudgetService: getWorkerBudgetService?.() ?? null,
-        missionBudgetService: getMissionBudgetService?.() ?? null,
         steerChat: undefined,
         cancelSteer: undefined,
         handoffChat: undefined,
@@ -5458,7 +5400,6 @@ export function createAgentChatService(args: {
     sessionId: string;
     threadId: string;
     laneWorktreePath: string;
-    isMission: boolean;
     provider: AgentChatProvider;
   } | null => {
     const managed = managedSessions.get(sessionId);
@@ -5470,7 +5411,6 @@ export function createAgentChatService(args: {
       sessionId,
       threadId,
       laneWorktreePath,
-      isMission: session.surface === "mission",
       provider: session.provider,
     };
   };
@@ -6254,7 +6194,6 @@ export function createAgentChatService(args: {
     args: { stage: "initial" | "final"; latestUserText?: string | null; summary?: string | null }
   ): Promise<void> => {
     if (managed.deleted) return;
-    if (managed.session.surface === "mission") return;
     const config = resolveChatConfig();
     if (!config.titleGenerationEnabled) return;
     if (sessionIsManuallyNamed(managed)) return;
@@ -7172,7 +7111,7 @@ export function createAgentChatService(args: {
           : undefined;
       const cursorConfigValues = normalizeCursorConfigValueRecord(record.cursorConfigValues);
       const identityKey = normalizeIdentityKey(record.identityKey);
-      const surface = record.surface === "automation" || record.surface === "mission" ? record.surface : "work";
+      const surface = record.surface === "automation" ? record.surface : "work";
       const capabilityMode = normalizeCapabilityMode(record.capabilityMode);
       const completion = normalizePersistedCompletion(record.completion);
       if (!laneId || !model) return null;
@@ -8199,8 +8138,6 @@ export function createAgentChatService(args: {
     if (deterministicText && !session.summary) {
       sessionService.setSummary(managed.session.id, deterministicText);
     }
-
-    if (managed.session.surface === "mission") return;
 
     // Fire-and-forget AI summary enhancement
     const auth = await detectAuth();
@@ -13111,9 +13048,6 @@ export function createAgentChatService(args: {
       const next = `${runtime.commandOutputByItemId.get(itemId) ?? ""}${delta}`;
       runtime.commandOutputByItemId.set(itemId, next);
       evictOldestEntries(runtime.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);
-      if (managed.session.surface === "mission") {
-        return;
-      }
       emitChatEvent(managed, {
         type: "activity",
         activity: "running_command",
@@ -13139,9 +13073,6 @@ export function createAgentChatService(args: {
       const next = `${runtime.fileDeltaByItemId.get(itemId) ?? ""}${delta}`;
       runtime.fileDeltaByItemId.set(itemId, next);
       evictOldestEntries(runtime.fileDeltaByItemId, MAX_SESSION_MAP_ENTRIES);
-      if (managed.session.surface === "mission") {
-        return;
-      }
       emitChatEvent(managed, {
         type: "activity",
         activity: "editing_file",
@@ -13427,9 +13358,6 @@ export function createAgentChatService(args: {
       const next = `${runtime.planTextByItemId.get(itemId) ?? ""}${delta}`;
       runtime.planTextByItemId.set(itemId, next);
       evictOldestEntries(runtime.planTextByItemId, MAX_SESSION_MAP_ENTRIES);
-      if (managed.session.surface === "mission") {
-        return;
-      }
       emitChatEvent(managed, {
         type: "plan",
         steps: [],
@@ -13510,7 +13438,6 @@ export function createAgentChatService(args: {
       });
       throw error;
     }
-    const missionCodexHome = managed.session.surface === "mission" ? ensureMissionCodexHome(managed) : null;
     const appServerArgs = ["app-server"];
     if (sessionSupportsReasoning(managed.session)) {
       const descriptor = resolveSessionModelDescriptor(managed.session);
@@ -13522,13 +13449,10 @@ export function createAgentChatService(args: {
       managed.session.reasoningEffort = reasoningEffort;
       appServerArgs.push("-c", `model_reasoning_effort="${reasoningEffort}"`);
     }
-    if (missionCodexHome) {
-      appServerArgs.push("-c", "mcp_servers={}");
-    }
     const invocation = resolveCliSpawnInvocation(codexExecutable, appServerArgs);
     const proc = spawn(invocation.command, invocation.args, {
       cwd: managed.laneWorktreePath,
-      env: missionCodexHome ? { ...spawnEnv, CODEX_HOME: missionCodexHome } : spawnEnv,
+      env: spawnEnv,
       stdio: ["pipe", "pipe", "pipe"],
       detached: process.platform !== "win32",
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,
@@ -13697,9 +13621,6 @@ export function createAgentChatService(args: {
       const message = `Codex app-server exited (code=${code ?? "null"}, signal=${signal ?? "null"}).`;
       const hadPendingRequests = pending.size > 0;
       const cleanExit = code === 0 && signal == null && !hadPendingRequests;
-      if (missionCodexHome) {
-        fs.rm(missionCodexHome, { recursive: true, force: true }, () => {});
-      }
       if (runtime.killTimer) {
         clearTimeout(runtime.killTimer);
         runtime.killTimer = null;
@@ -13749,26 +13670,22 @@ export function createAgentChatService(args: {
       }
     });
 
-    if (managed.session.surface === "mission") {
-      runtime.collaborationModesReady = Promise.resolve();
-    } else {
-      const collaborationModesRequest = runtime.request<unknown>("collaborationMode/list", {})
-        .then((res) => {
-          const modes = parseCodexCollaborationModes(res);
-          if (modes) {
-            runtime.collaborationModes = modes;
-          }
-        })
-        .catch(() => { /* collaborationMode/list not supported — ignore */ });
-      runtime.collaborationModesReady = Promise.race([
-        collaborationModesRequest,
-        new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, DEFAULT_COLLABORATION_MODES_LIST_TIMEOUT_MS);
-          timer.unref?.();
-          collaborationModesRequest.finally(() => clearTimeout(timer)).catch(() => {});
-        }),
-      ]).then(() => undefined);
-    }
+    const collaborationModesRequest = runtime.request<unknown>("collaborationMode/list", {})
+      .then((res) => {
+        const modes = parseCodexCollaborationModes(res);
+        if (modes) {
+          runtime.collaborationModes = modes;
+        }
+      })
+      .catch(() => { /* collaborationMode/list not supported — ignore */ });
+    runtime.collaborationModesReady = Promise.race([
+      collaborationModesRequest,
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, DEFAULT_COLLABORATION_MODES_LIST_TIMEOUT_MS);
+        timer.unref?.();
+        collaborationModesRequest.finally(() => clearTimeout(timer)).catch(() => {});
+      }),
+    ]).then(() => undefined);
 
     runtime.notify("initialized");
     return runtime;
@@ -13861,31 +13778,29 @@ export function createAgentChatService(args: {
     runtime.canAttachResumedTurnStart = false;
     persistChatState(managed);
 
-    if (managed.session.surface !== "mission") {
-      // Fetch available skills and populate slash commands.
-      runtime.request<{ skills?: Array<{ name?: string; description?: string }> }>("skills/list", {})
-        .then((res) => {
-          if (Array.isArray(res?.skills)) {
-            runtime.slashCommands = res.skills
-              .filter((s): s is { name: string; description?: string } => typeof s?.name === "string" && s.name.length > 0)
-              .map((s) => ({ name: s.name.startsWith("/") ? s.name : `/${s.name}`, description: s.description ?? "" }));
-          }
-        })
-        .catch(() => { /* skills/list not supported — ignore */ });
+    // Fetch available skills and populate slash commands.
+    runtime.request<{ skills?: Array<{ name?: string; description?: string }> }>("skills/list", {})
+      .then((res) => {
+        if (Array.isArray(res?.skills)) {
+          runtime.slashCommands = res.skills
+            .filter((s): s is { name: string; description?: string } => typeof s?.name === "string" && s.name.length > 0)
+            .map((s) => ({ name: s.name.startsWith("/") ? s.name : `/${s.name}`, description: s.description ?? "" }));
+        }
+      })
+      .catch(() => { /* skills/list not supported — ignore */ });
 
-      // Fetch initial rate limits.
-      runtime.request<{ rateLimits?: { remaining?: number; limit?: number; resetAt?: string } }>("account/rateLimits/read", {})
-        .then((res) => {
-          if (res?.rateLimits) {
-            runtime.rateLimits = {
-              remaining: typeof res.rateLimits.remaining === "number" ? res.rateLimits.remaining : null,
-              limit: typeof res.rateLimits.limit === "number" ? res.rateLimits.limit : null,
-              resetAt: typeof res.rateLimits.resetAt === "string" ? res.rateLimits.resetAt : null,
-            };
-          }
-        })
-        .catch(() => { /* account/rateLimits/read not supported — ignore */ });
-    }
+    // Fetch initial rate limits.
+    runtime.request<{ rateLimits?: { remaining?: number; limit?: number; resetAt?: string } }>("account/rateLimits/read", {})
+      .then((res) => {
+        if (res?.rateLimits) {
+          runtime.rateLimits = {
+            remaining: typeof res.rateLimits.remaining === "number" ? res.rateLimits.remaining : null,
+            limit: typeof res.rateLimits.limit === "number" ? res.rateLimits.limit : null,
+            resetAt: typeof res.rateLimits.resetAt === "string" ? res.rateLimits.resetAt : null,
+          };
+        }
+      })
+      .catch(() => { /* account/rateLimits/read not supported — ignore */ });
   };
 
   const stringifyClaudeToolOutput = (output: unknown): string => {
@@ -22064,8 +21979,7 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Create a blocking pending-input request for a chat session (used by ADE ask_user
-   * when no missionId is available).  Returns the user's answer.
+   * Create a blocking pending-input request for a chat session. Returns the user's answer.
    */
   const requestChatInput = async (args: {
     chatSessionId: string;

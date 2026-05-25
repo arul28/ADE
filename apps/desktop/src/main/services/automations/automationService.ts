@@ -35,12 +35,10 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { createConflictService } from "../conflicts/conflictService";
 import { withMacosSafeChokidarOptions } from "../shared/chokidarOptions";
 import type { createTestService } from "../tests/testService";
-import type { createMissionService } from "../missions/missionService";
-import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createBudgetCapService } from "../usage/budgetCapService";
 import type { BudgetCapProvider } from "../../../shared/types/usage";
-import { buildClaudeReadOnlyWorkerAllowedTools } from "../orchestrator/providerOrchestratorAdapter";
+import { buildClaudeReadOnlyWorkerAllowedTools } from "../ai/tools/workerSandboxDefaults";
 import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService";
 import { isRecord, matchesGlob, normalizeSet, nowIso, resolvePathWithinRoot, safeJsonParse } from "../shared/utils";
 import { terminateProcessTree } from "../shared/processExecution";
@@ -143,7 +141,6 @@ type AutomationRunRow = {
   id: string;
   automation_id: string;
   chat_session_id: string | null;
-  mission_id: string | null;
   worker_run_id: string | null;
   worker_agent_id: string | null;
   queue_item_id: string | null;
@@ -182,7 +179,6 @@ type AutomationQueueItemRow = {
   id: string;
   automation_id: string;
   run_id: string | null;
-  mission_id: string | null;
   position: number | null;
   title: string;
   mode: string;
@@ -250,16 +246,6 @@ const TOOL_FAMILY_ALLOWED_TOOLS: Record<AutomationToolFamily, string[]> = {
     "browser_fill_form",
     "browser_type",
     "browser_take_screenshot",
-  ],
-  mission: [
-    "get_mission",
-    "get_run_graph",
-    "stream_events",
-    "get_timeline",
-    "get_pending_messages",
-    "report_status",
-    "report_result",
-    "ask_user",
   ],
 };
 
@@ -615,7 +601,7 @@ export function normalizeRuntimeRule(rule: AutomationRule): AutomationRule {
   const includeProjectContext = deriveIncludeProjectContext(rule);
   const rawExecution = rule.execution ?? (legacyActions.length > 0
     ? { kind: "built-in" as const, builtIn: { actions: legacyActions } }
-    : { kind: "mission" as const });
+    : { kind: "agent-session" as const, session: {} });
   const laneMode = normalizeAutomationLaneMode(rawExecution.laneMode);
   const sharedLaneFields = {
     ...(laneMode ? { laneMode } : {}),
@@ -633,19 +619,12 @@ export function normalizeRuntimeRule(rule: AutomationRule): AutomationRule {
           actions: rawExecution.builtIn?.actions?.length ? rawExecution.builtIn.actions : legacyActions,
         },
       }
-    : rawExecution.kind === "agent-session"
-      ? {
-          kind: "agent-session",
-          ...sharedLaneFields,
-          ...(rawExecution.targetLaneId ? { targetLaneId: rawExecution.targetLaneId } : {}),
-          ...(rawExecution.session ? { session: rawExecution.session } : {}),
-        }
-      : {
-          kind: "mission",
-          ...sharedLaneFields,
-          ...(rawExecution.targetLaneId ? { targetLaneId: rawExecution.targetLaneId } : {}),
-          ...(rawExecution.mission ? { mission: rawExecution.mission } : {}),
-        };
+    : {
+        kind: "agent-session",
+        ...sharedLaneFields,
+        ...(rawExecution.targetLaneId ? { targetLaneId: rawExecution.targetLaneId } : {}),
+        ...(rawExecution.session ? { session: rawExecution.session } : {}),
+      };
   const outputDisposition = rule.outputs?.disposition ?? "comment-only";
   // Per-rule budget fields are deprecated in favor of global usage caps. We
   // keep them in YAML for downgrade compatibility, but do not let runtime
@@ -665,7 +644,7 @@ export function normalizeRuntimeRule(rule: AutomationRule): AutomationRule {
     trigger: primary,
     executor: { mode: "automation-bot" },
     reviewProfile: rule.reviewProfile ?? "quick",
-    toolPalette: rule.toolPalette?.length ? rule.toolPalette : ["repo", "mission"],
+    toolPalette: rule.toolPalette?.length ? rule.toolPalette : ["repo"],
     contextSources: includeProjectContext && rule.contextSources?.length ? rule.contextSources : [],
     guardrails: sanitizedGuardrails,
     includeProjectContext,
@@ -688,11 +667,11 @@ export function normalizeRuntimeRule(rule: AutomationRule): AutomationRule {
 }
 
 function resolveExecutionKind(rule: AutomationRule): AutomationExecution["kind"] {
-  return rule.execution?.kind ?? ((rule.legacy?.actions?.length ?? 0) > 0 ? "built-in" : "mission");
+  return rule.execution?.kind ?? ((rule.legacy?.actions?.length ?? 0) > 0 ? "built-in" : "agent-session");
 }
 
 function summarizeLegacyActions(actions: AutomationAction[]): string {
-  if (!actions.length) return "mission dispatch";
+  if (!actions.length) return "agent session";
   return actions.map((action) => action.type).join(", ");
 }
 
@@ -721,26 +700,6 @@ function resolveTemplateString(template: string | undefined | null, trigger: Tri
     return JSON.stringify(resolved).trim();
   } catch {
     return String(resolved).trim();
-  }
-}
-
-function mapMissionStatus(status: string, _verificationRequired: boolean): AutomationRunStatus {
-  switch (status) {
-    case "queued":
-    case "planning":
-      return "queued";
-    case "in_progress":
-      return "running";
-    case "intervention_required":
-      return "paused";
-    case "completed":
-      return "succeeded";
-    case "failed":
-      return "failed";
-    case "canceled":
-      return "cancelled";
-    default:
-      return "running";
   }
 }
 
@@ -827,12 +786,11 @@ function toRun(row: AutomationRunRow): AutomationRun {
     id: row.id,
     automationId: row.automation_id,
     chatSessionId: row.chat_session_id ?? null,
-    missionId: row.mission_id ?? null,
     triggerType: (row.trigger_type as AutomationTriggerType) ?? "manual",
     startedAt: row.started_at,
     endedAt: row.ended_at ?? null,
     status: normalizeRunStatus(row.status, "failed"),
-    executionKind: (row.execution_kind as AutomationExecution["kind"]) ?? "mission",
+    executionKind: (row.execution_kind as AutomationExecution["kind"]) ?? "agent-session",
     actionsCompleted: row.actions_completed ?? 0,
     actionsTotal: row.actions_total ?? 0,
     errorMessage: row.error_message ?? null,
@@ -868,8 +826,6 @@ export function createAutomationService({
   conflictService,
   testService,
   agentChatService,
-  missionService,
-  aiOrchestratorService,
   budgetCapService,
   adeActionRegistry,
   onEvent
@@ -883,8 +839,6 @@ export function createAutomationService({
   conflictService?: ReturnType<typeof createConflictService>;
   testService?: ReturnType<typeof createTestService>;
   agentChatService?: ReturnType<typeof createAgentChatService>;
-  missionService?: ReturnType<typeof createMissionService>;
-  aiOrchestratorService?: ReturnType<typeof createAiOrchestratorService>;
   budgetCapService?: ReturnType<typeof createBudgetCapService>;
   /**
    * Registry that resolves `ade-action` automation steps to a concrete
@@ -903,8 +857,6 @@ export function createAutomationService({
     githubRelay?: Partial<AutomationIngressStatus["githubRelay"]>;
     localWebhook?: Partial<AutomationIngressStatus["localWebhook"]>;
   };
-  let missionServiceRef = missionService;
-  let aiOrchestratorServiceRef = aiOrchestratorService;
   let agentChatServiceRef = agentChatService;
   let budgetCapServiceRef = budgetCapService;
   let workerHeartbeatServiceRef: ReturnType<typeof createWorkerHeartbeatService> | null = null;
@@ -968,7 +920,6 @@ export function createAutomationService({
   const ensureSchema = () => {
     const runColumns = [
       ["chat_session_id", "alter table automation_runs add column chat_session_id text"],
-      ["mission_id", "alter table automation_runs add column mission_id text"],
       ["worker_run_id", "alter table automation_runs add column worker_run_id text"],
       ["worker_agent_id", "alter table automation_runs add column worker_agent_id text"],
       ["queue_item_id", "alter table automation_runs add column queue_item_id text"],
@@ -993,7 +944,6 @@ export function createAutomationService({
         project_id text not null,
         automation_id text not null,
         run_id text,
-        mission_id text,
         position integer not null default 0,
         title text not null,
         mode text not null,
@@ -1234,7 +1184,6 @@ export function createAutomationService({
     summary?: string | null;
     queueItemId?: string | null;
     chatSessionId?: string | null;
-    missionId?: string | null;
     workerRunId?: string | null;
     workerAgentId?: string | null;
     ingressEventId?: string | null;
@@ -1253,7 +1202,6 @@ export function createAutomationService({
           project_id,
           automation_id,
           chat_session_id,
-          mission_id,
           worker_run_id,
           worker_agent_id,
           queue_item_id,
@@ -1274,14 +1222,13 @@ export function createAutomationService({
           summary,
           confidence_json,
           billing_code
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, ?, ?, ?, ?, ?, ?, null, ?, ?, ?, ?, ?, ?)
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, ?, ?, ?, ?, ?, ?, null, ?, ?, ?, ?, ?, ?)
       `,
       [
         runId,
         projectId,
         args.rule.id,
         args.chatSessionId ?? null,
-        args.missionId ?? null,
         args.workerRunId ?? null,
         args.workerAgentId ?? null,
         args.queueItemId ?? null,
@@ -1306,7 +1253,6 @@ export function createAutomationService({
       id: runId,
       automation_id: args.rule.id,
       chat_session_id: args.chatSessionId ?? null,
-      mission_id: args.missionId ?? null,
       worker_run_id: args.workerRunId ?? null,
       worker_agent_id: args.workerAgentId ?? null,
       queue_item_id: args.queueItemId ?? null,
@@ -1394,7 +1340,7 @@ export function createAutomationService({
   const loadRunRow = (runId: string): AutomationRunRow | null => db.get<AutomationRunRow>(
     `
       select
-        id, automation_id, chat_session_id, mission_id, worker_run_id, worker_agent_id, queue_item_id, ingress_event_id, trigger_type, started_at, ended_at, status, execution_kind, queue_status,
+        id, automation_id, chat_session_id, worker_run_id, worker_agent_id, queue_item_id, ingress_event_id, trigger_type, started_at, ended_at, status, execution_kind, queue_status,
         executor_mode, actions_completed, actions_total, error_message, verification_required, spend_usd,
         trigger_metadata, summary, confidence_json, billing_code
       from automation_runs
@@ -1407,7 +1353,7 @@ export function createAutomationService({
   const loadQueueItemRow = (queueItemId: string): AutomationQueueItemRow | null => db.get<AutomationQueueItemRow>(
     `
       select
-        id, automation_id, run_id, mission_id, position, title, mode, queue_status, trigger_type, summary, severity_summary,
+        id, automation_id, run_id, position, title, mode, queue_status, trigger_type, summary, severity_summary,
         confidence_json, file_count, spend_usd, verification_required, suggested_actions_json,
         created_at, updated_at
       from automation_queue_items
@@ -1489,7 +1435,6 @@ export function createAutomationService({
     id?: string | null;
     rule: AutomationRule;
     runId: string | null;
-    missionId: string | null;
     queueStatus: AutomationRunQueueStatus;
     triggerType: AutomationTriggerType;
     summary: string | null;
@@ -1506,13 +1451,12 @@ export function createAutomationService({
       db.run(
         `
           update automation_queue_items
-          set run_id = ?, mission_id = ?, queue_status = ?, summary = ?, severity_summary = ?, confidence_json = ?,
+          set run_id = ?, queue_status = ?, summary = ?, severity_summary = ?, confidence_json = ?,
               spend_usd = ?, verification_required = ?, updated_at = ?
           where id = ? and project_id = ?
         `,
         [
           args.runId,
-          args.missionId,
           args.queueStatus,
           args.summary,
           args.severitySummary ?? null,
@@ -1528,17 +1472,16 @@ export function createAutomationService({
       db.run(
         `
           insert into automation_queue_items(
-            id, project_id, automation_id, run_id, mission_id, position, title, mode, queue_status, trigger_type, summary,
+            id, project_id, automation_id, run_id, position, title, mode, queue_status, trigger_type, summary,
             severity_summary, confidence_json, file_count, spend_usd, verification_required, suggested_actions_json,
             created_at, updated_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
         `,
         [
           queueItemId,
           projectId,
           args.rule.id,
           args.runId,
-          args.missionId,
           getNextNightShiftPosition(),
           title,
           args.rule.mode,
@@ -1565,7 +1508,7 @@ export function createAutomationService({
     );
   };
 
-  const buildMissionPrompt = (args: {
+  const buildAutomationPrompt = (args: {
     rule: AutomationRule;
     trigger: TriggerContext;
     executionLaneId?: string | null;
@@ -1806,7 +1749,7 @@ export function createAutomationService({
     if (action.type === "agent-session") {
       // Spawn a scoped agent chat session as one step in a built-in chain.
       // The prompt on the action wins over the rule-level prompt; placeholders
-      // inside the prompt are substituted the same way buildMissionPrompt does.
+      // inside the prompt are substituted the same way buildAutomationPrompt does.
       if (!agentChatServiceRef) {
         return { status: "failed", output: "Agent chat service is unavailable." };
       }
@@ -1829,7 +1772,7 @@ export function createAutomationService({
       const permissionMode = resolveProviderPermissionMode(providerGroup, permissionConfig);
       const reasoningEffort = action.modelConfig?.thinkingLevel
         ?? rule.execution?.session?.reasoningEffort
-        ?? rule.modelConfig?.orchestratorModel?.thinkingLevel
+        ?? rule.modelConfig?.thinkingLevel
         ?? null;
       const timeoutMs = Math.max(
         15_000,
@@ -1868,36 +1811,6 @@ export function createAutomationService({
       } catch (err) {
         return { status: "failed", output: err instanceof Error ? err.message : String(err) };
       }
-    }
-    if (action.type === "launch-mission") {
-      const laneMode = rule.execution?.laneMode;
-      const actionTargetLaneId = trimToNull(action.targetLaneId);
-      const ruleTargetLaneId = trimToNull(rule.execution?.targetLaneId);
-      const missionRule: AutomationRule = {
-        ...rule,
-        execution: {
-          kind: "mission",
-          ...(laneMode ? { laneMode } : {}),
-          ...(laneMode === "create" && rule.execution?.laneNamePreset ? { laneNamePreset: rule.execution.laneNamePreset } : {}),
-          ...(laneMode === "create" && rule.execution?.laneNameTemplate ? { laneNameTemplate: rule.execution.laneNameTemplate } : {}),
-          ...(laneMode !== "require-on-trigger" && (actionTargetLaneId ?? ruleTargetLaneId)
-            ? { targetLaneId: actionTargetLaneId ?? ruleTargetLaneId }
-            : {}),
-          mission: { title: action.sessionTitle?.trim() || rule.execution?.mission?.title || null },
-        },
-      };
-      const missionRun = await dispatchMissionRun({
-        rule: missionRule,
-        trigger,
-        existingRunId: runId,
-        recordDispatchAction: false,
-      });
-      return {
-        status: "succeeded",
-        output: missionRun.missionId
-          ? `Mission ${missionRun.missionId} started for automation dispatch.`
-          : "Mission started for automation dispatch.",
-      };
     }
     if (action.type === "run-command") {
       const command = (action.command ?? "").trim();
@@ -1949,7 +1862,6 @@ export function createAutomationService({
     let runStatus: AutomationRunStatus = "succeeded";
     let runError: string | null = null;
     let finalQueueStatus: AutomationRunQueueStatus = "pending-review";
-    let keepRunOpen = false;
     try {
       for (let index = 0; index < actions.length; index += 1) {
         const action = actions[index]!;
@@ -1963,10 +1875,6 @@ export function createAutomationService({
               lastOutput = result.output ?? null;
               if (result.status === "failed") throw new Error(result.output ?? "Action failed");
               finishAction({ id: actionId, status: result.status, output: result.output ?? null });
-              if (action.type === "launch-mission") {
-                runStatus = "running";
-                keepRunOpen = true;
-              }
               break;
             } catch (error) {
               if (attempt >= maxRetry) throw error;
@@ -1994,7 +1902,7 @@ export function createAutomationService({
         summary: runError,
       });
       updateRun(run.id, {
-        ended_at: keepRunOpen ? null : nowIso(),
+        ended_at: nowIso(),
         status: runStatus,
         error_message: runError,
         queue_status: finalQueueStatus,
@@ -2005,7 +1913,6 @@ export function createAutomationService({
       id: run.id,
       automation_id: rule.id,
       chat_session_id: null,
-      mission_id: null,
       worker_run_id: null,
       worker_agent_id: null,
       queue_item_id: null,
@@ -2145,7 +2052,7 @@ export function createAutomationService({
   };
 
   const resolveAutomationModelDescriptor = (rule: AutomationRule, action?: AutomationAction | null) => {
-    const requestedModelId = action?.modelConfig?.modelId ?? rule.modelConfig?.orchestratorModel?.modelId;
+    const requestedModelId = action?.modelConfig?.modelId ?? rule.modelConfig?.modelId;
     if (requestedModelId && !getModelById(requestedModelId)) {
       throw new Error(`Unknown model '${requestedModelId}'.`);
     }
@@ -2211,7 +2118,7 @@ export function createAutomationService({
       emit({ type: "runs-updated", automationId: args.rule.id, runId: run.id });
       throw new Error(message);
     }
-    const prompt = buildMissionPrompt({ rule: args.rule, trigger: args.trigger, executionLaneId: laneId });
+    const prompt = buildAutomationPrompt({ rule: args.rule, trigger: args.trigger, executionLaneId: laneId });
 
     const actionId = insertAction(run.id, 0, "agent-session");
     const permissionConfig = buildPermissionConfig(args.rule, { publishPhase: false });
@@ -2220,7 +2127,7 @@ export function createAutomationService({
     const permissionMode = verificationRequired || dryRun
       ? "plan"
       : resolveProviderPermissionMode(providerGroup, permissionConfig);
-    const reasoningEffort = args.rule.execution?.session?.reasoningEffort ?? args.rule.modelConfig?.orchestratorModel?.thinkingLevel ?? null;
+    const reasoningEffort = args.rule.execution?.session?.reasoningEffort ?? args.rule.modelConfig?.thinkingLevel ?? null;
     const codexFastMode = providerGroup === "codex"
       && args.rule.execution?.session?.codexFastMode === true
       && modelSupportsFastMode(modelDescriptor);
@@ -2316,7 +2223,6 @@ export function createAutomationService({
       id: run.id,
       automation_id: args.rule.id,
       chat_session_id: sessionId,
-      mission_id: null,
       worker_run_id: null,
       worker_agent_id: null,
       queue_item_id: null,
@@ -2335,189 +2241,6 @@ export function createAutomationService({
       spend_usd: 0,
       trigger_metadata: JSON.stringify(buildTriggerMetadata(args.trigger)),
       summary: args.rule.prompt?.trim() || `${args.rule.name} completed`,
-      confidence_json: JSON.stringify(confidence),
-      billing_code: args.rule.billingCode,
-    });
-  };
-
-  const dispatchMissionRun = async (args: {
-    rule: AutomationRule;
-    trigger: TriggerContext;
-    existingRunId?: string | null;
-    existingQueueItemId?: string | null;
-    queuedFromNightShift?: boolean;
-    publishPhase?: boolean;
-    recordDispatchAction?: boolean;
-  }): Promise<AutomationRun> => {
-    if (!missionServiceRef || !aiOrchestratorServiceRef) {
-      throw new Error("Mission automation services are unavailable");
-    }
-    const confidence = computeConfidence(args.rule);
-    const permissionConfig = buildPermissionConfig(args.rule, { publishPhase: Boolean(args.publishPhase) });
-    const budgetScope = AUTOMATION_SCOPE;
-    const { budgetProvider } = resolveAutomationModelDescriptor(args.rule);
-    const budgetCheck = budgetCapServiceRef?.checkBudget(
-      budgetScope as Parameters<NonNullable<typeof budgetCapServiceRef>["checkBudget"]>[0],
-      args.rule.id,
-      budgetProvider,
-    );
-    if (budgetCheck && !budgetCheck.allowed) {
-      throw new Error(budgetCheck.reason ?? "Budget cap blocked automation run.");
-    }
-
-    const existingRunRowEarly = args.existingRunId ? loadRunRow(args.existingRunId) : null;
-    const earlyRun = existingRunRowEarly
-      ? toRun(existingRunRowEarly)
-      : insertRun({
-          rule: args.rule,
-          trigger: args.trigger,
-          actionsTotal: 1,
-          queueStatus: "pending-review",
-          confidence,
-          summary: args.rule.prompt?.trim() || `${args.rule.mode} automation dispatched`,
-          queueItemId: args.existingQueueItemId ?? null,
-          ingressEventId: args.trigger.ingressEventId ?? null,
-        });
-
-    let laneId: string | null;
-    try {
-      laneId = await resolveExecutionLaneId(args.rule, args.trigger, null, earlyRun.id);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      updateRun(earlyRun.id, { ended_at: nowIso(), status: "failed", error_message: message });
-      emit({ type: "runs-updated", automationId: args.rule.id, runId: earlyRun.id });
-      throw error;
-    }
-    const prompt = buildMissionPrompt({ rule: args.rule, trigger: args.trigger, executionLaneId: laneId });
-    const mission = missionServiceRef.create({
-      title: `${args.rule.name} · ${args.rule.mode}`,
-      prompt,
-      laneId,
-      autostart: false,
-      launchMode: "autopilot",
-      autopilotExecutor: "opencode",
-      priority: args.rule.mode === "fix" ? "high" : "normal",
-      employeeAgentId: null,
-      ...(args.rule.modelConfig ? { modelConfig: args.rule.modelConfig } : {}),
-      permissionConfig,
-    });
-
-    missionServiceRef.patchMetadata(mission.id, {
-      automation: {
-        ruleId: args.rule.id,
-        mode: args.rule.mode,
-        reviewProfile: args.trigger.reviewProfileOverride ?? args.rule.reviewProfile,
-        executorMode: "automation-bot",
-        billingCode: args.rule.billingCode,
-        trigger: buildTriggerMetadata(args.trigger),
-        outputs: args.rule.outputs,
-        verification: args.rule.verification,
-        toolPalette: args.rule.toolPalette,
-        allowedTools: computeAllowedToolList(args.rule, { publishPhase: Boolean(args.publishPhase) }),
-        contextSources: args.rule.contextSources,
-        confidence,
-        publishPhase: Boolean(args.publishPhase),
-      },
-      launch: {
-        automation: {
-          ruleId: args.rule.id,
-          executorMode: "automation-bot",
-          reviewProfile: args.trigger.reviewProfileOverride ?? args.rule.reviewProfile,
-          verboseTrace: Boolean(args.trigger.verboseTrace),
-          queueStatus: "pending-review",
-        }
-      }
-    });
-
-    const run = earlyRun;
-    updateRun(run.id, { mission_id: mission.id });
-
-    if (args.existingRunId) {
-      updateRun(args.existingRunId, {
-        mission_id: mission.id,
-        status: "running",
-        queue_status: "pending-review",
-        summary: args.rule.prompt?.trim() || `${args.rule.mode} automation dispatched`,
-        confidence_json: JSON.stringify(confidence),
-        verification_required: requiresPublishGate(args.rule) && !args.publishPhase ? 1 : 0,
-        billing_code: args.rule.billingCode,
-      });
-    }
-
-    if (args.recordDispatchAction !== false) {
-      const dispatchActionId = insertAction(run.id, 0, "launch-mission");
-      finishAction({
-        id: dispatchActionId,
-        status: "succeeded",
-        output: `Mission ${mission.id} started for automation dispatch.`,
-      });
-    }
-    updateRun(run.id, {
-      actions_completed: 1,
-      mission_id: mission.id,
-      queue_item_id: args.existingQueueItemId ?? null,
-    });
-
-    const queueItemId = upsertQueueItem({
-      id: args.existingQueueItemId ?? null,
-      rule: args.rule,
-      runId: run.id,
-      missionId: mission.id,
-      queueStatus: "pending-review",
-      triggerType: args.trigger.triggerType,
-      summary: args.rule.prompt?.trim() || `${args.rule.mode} automation dispatched`,
-      severitySummary: args.rule.mode === "review" ? "Awaiting review output" : "Awaiting mission completion",
-      confidence,
-      spendUsd: 0,
-      verificationRequired: requiresPublishGate(args.rule) && !args.publishPhase,
-    });
-    updateRun(run.id, { queue_item_id: queueItemId });
-
-    if (requiresPublishGate(args.rule) && !args.publishPhase) {
-      upsertPendingPublish({
-        runId: run.id,
-        automationId: args.rule.id,
-        queueItemId,
-        summary: args.trigger.summary?.trim() || `Review ${args.rule.name} before enabling publish-capable tools.`,
-        toolPalette: args.rule.toolPalette.filter((family) => PUBLISH_CAPABLE_TOOL_FAMILIES.has(family)),
-      });
-      updateQueueItemStatus(queueItemId, "verification-required");
-      updateRun(run.id, { queue_status: "verification-required" });
-    } else if (args.publishPhase) {
-      resolvePendingPublish(run.id);
-    }
-
-    await aiOrchestratorServiceRef.startMissionRun({
-      missionId: mission.id,
-      runMode: "autopilot",
-      defaultExecutorKind: "opencode",
-      autopilotOwnerId: "automation-bot",
-    });
-
-    emit({ type: "runs-updated", automationId: args.rule.id, runId: run.id });
-    return toRun(loadRunRow(run.id) ?? {
-      id: run.id,
-      automation_id: args.rule.id,
-      chat_session_id: null,
-      mission_id: mission.id,
-      worker_run_id: null,
-      worker_agent_id: null,
-      queue_item_id: queueItemId,
-      ingress_event_id: args.trigger.ingressEventId ?? null,
-      trigger_type: args.trigger.triggerType,
-      started_at: run.startedAt,
-      ended_at: null,
-      status: "running",
-      execution_kind: resolveExecutionKind(args.rule),
-      queue_status: "pending-review",
-      executor_mode: args.rule.executor.mode,
-      actions_completed: 1,
-      actions_total: 1,
-      error_message: null,
-      verification_required: requiresPublishGate(args.rule) && !args.publishPhase ? 1 : 0,
-      spend_usd: 0,
-      trigger_metadata: JSON.stringify(buildTriggerMetadata(args.trigger)),
-      summary: args.rule.prompt?.trim() || `${args.rule.mode} automation dispatched`,
       confidence_json: JSON.stringify(confidence),
       billing_code: args.rule.billingCode,
     });
@@ -2556,7 +2279,6 @@ export function createAutomationService({
       id: run.id,
       automation_id: rule.id,
       chat_session_id: null,
-      mission_id: null,
       worker_run_id: null,
       worker_agent_id: null,
       queue_item_id: null,
@@ -2591,7 +2313,7 @@ export function createAutomationService({
     if (inFlightByAutomationId.has(rule.id)) {
       const existing = db.get<AutomationRunRow>(
         `select
-          id, automation_id, chat_session_id, mission_id, worker_run_id, worker_agent_id, queue_item_id, ingress_event_id, trigger_type, started_at, ended_at, status, execution_kind, queue_status,
+          id, automation_id, chat_session_id, worker_run_id, worker_agent_id, queue_item_id, ingress_event_id, trigger_type, started_at, ended_at, status, execution_kind, queue_status,
           executor_mode, actions_completed, actions_total, error_message, verification_required, spend_usd,
           trigger_metadata, summary, confidence_json, billing_code
          from automation_runs
@@ -2610,7 +2332,7 @@ export function createAutomationService({
       const executionKind = resolveExecutionKind(rule);
       if (executionKind === "agent-session") return await dispatchAgentSessionRun({ rule, trigger });
       if (executionKind === "built-in") return await runLegacyRule(rule, trigger);
-      return await dispatchMissionRun({ rule, trigger });
+      throw new Error(`Unsupported automation execution kind: ${executionKind}`);
     } finally {
       inFlightByAutomationId.delete(rule.id);
     }
@@ -2778,88 +2500,12 @@ export function createAutomationService({
     });
   };
 
-  const syncMissionRun = async (missionId: string) => {
-    if (!missionServiceRef) return;
-    const runRow = db.get<AutomationRunRow>(
-      `
-        select
-          id, automation_id, chat_session_id, mission_id, worker_run_id, worker_agent_id, queue_item_id, ingress_event_id, trigger_type, started_at, ended_at, status, execution_kind, queue_status,
-          executor_mode, actions_completed, actions_total, error_message, verification_required, spend_usd,
-          trigger_metadata, summary, confidence_json, billing_code
-        from automation_runs
-        where project_id = ? and mission_id = ?
-        order by started_at desc
-        limit 1
-      `,
-      [projectId, missionId]
-    );
-    if (!runRow) return;
-    const mission = missionServiceRef.get(missionId);
-    if (!mission) return;
-    const verificationRequired = Boolean(runRow.verification_required ?? 0);
-    const nextStatus = mapMissionStatus(mission.status, verificationRequired);
-    const nextSummary = mission.outcomeSummary?.trim() || runRow.summary || null;
-    const rule = findRule(runRow.automation_id);
-    const nextQueueStatus = deriveQueueStatus({
-      current: normalizeQueueStatus(runRow.queue_status, "pending-review"),
-      runStatus: nextStatus,
-      verificationRequired,
-      mode: rule?.mode ?? "review",
-      summary: nextSummary,
-    });
-    if (
-      nextStatus !== normalizeRunStatus(runRow.status, "running") ||
-      nextQueueStatus !== normalizeQueueStatus(runRow.queue_status, "pending-review") ||
-      nextSummary !== (runRow.summary ?? null)
-    ) {
-      updateRun(runRow.id, {
-        status: nextStatus,
-        queue_status: nextQueueStatus,
-        summary: nextSummary,
-        ended_at: nextStatus === "running" || nextStatus === "queued" ? null : (mission.completedAt ?? nowIso()),
-        error_message: mission.lastError ?? runRow.error_message,
-      });
-      if (runRow.queue_item_id) {
-        upsertQueueItem({
-          id: runRow.queue_item_id,
-          rule: rule ?? {
-            id: runRow.automation_id,
-            name: runRow.automation_id,
-            enabled: true,
-            mode: "review",
-            triggers: [{ type: runRow.trigger_type as AutomationTriggerType }],
-            trigger: { type: runRow.trigger_type as AutomationTriggerType },
-            executor: { mode: "automation-bot" },
-            reviewProfile: "quick",
-            toolPalette: ["repo", "mission"],
-            contextSources: [],
-            guardrails: {},
-            outputs: { disposition: "comment-only", createArtifact: true },
-            verification: { verifyBeforePublish: verificationRequired, mode: "intervention" },
-            billingCode: `auto:${runRow.automation_id}`,
-            actions: [],
-          },
-          runId: runRow.id,
-          missionId,
-          queueStatus: nextQueueStatus,
-          triggerType: runRow.trigger_type as AutomationTriggerType,
-          summary: nextSummary,
-          severitySummary: mission.lastError ? mission.lastError : nextStatus === "succeeded" ? "Mission completed" : "Mission paused",
-          confidence: normalizeConfidence(safeJsonParse(runRow.confidence_json ?? "null", null)),
-          spendUsd: Number(runRow.spend_usd ?? 0),
-          verificationRequired,
-        });
-      }
-      emit({ type: "runs-updated", automationId: runRow.automation_id, runId: runRow.id });
-    }
-  };
-
   const syncWorkerRun = async (workerRunId: string) => {
     if (!workerHeartbeatServiceRef) return;
     const runRow = db.get<AutomationRunRow>(
       `
         select
-          id, automation_id, chat_session_id, mission_id, worker_run_id, worker_agent_id, queue_item_id, ingress_event_id, trigger_type, started_at, ended_at, status, execution_kind, queue_status,
+          id, automation_id, chat_session_id, worker_run_id, worker_agent_id, queue_item_id, ingress_event_id, trigger_type, started_at, ended_at, status, execution_kind, queue_status,
           executor_mode, actions_completed, actions_total, error_message, verification_required, spend_usd,
           trigger_metadata, summary, confidence_json, billing_code
         from automation_runs
@@ -2908,7 +2554,7 @@ export function createAutomationService({
           trigger: { type: runRow.trigger_type as AutomationTriggerType },
           executor: { mode: "automation-bot" },
           reviewProfile: "quick",
-          toolPalette: ["repo", "mission"],
+          toolPalette: ["repo"],
           contextSources: [],
           guardrails: {},
           outputs: { disposition: "comment-only", createArtifact: true },
@@ -2917,7 +2563,6 @@ export function createAutomationService({
           actions: [],
         },
         runId: runRow.id,
-        missionId: null,
         queueStatus: nextQueueStatus,
         triggerType: runRow.trigger_type as AutomationTriggerType,
         summary: nextSummary,
@@ -3087,14 +2732,10 @@ export function createAutomationService({
   return {
     syncFromConfig,
 
-    bindMissionRuntime(args: {
-      missionService?: ReturnType<typeof createMissionService>;
-      aiOrchestratorService?: ReturnType<typeof createAiOrchestratorService>;
+    bindRuntime(args: {
       budgetCapService?: ReturnType<typeof createBudgetCapService>;
       workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
     }) {
-      missionServiceRef = args.missionService ?? missionServiceRef;
-      aiOrchestratorServiceRef = args.aiOrchestratorService ?? aiOrchestratorServiceRef;
       budgetCapServiceRef = args.budgetCapService ?? budgetCapServiceRef;
       workerHeartbeatServiceRef = args.workerHeartbeatService ?? workerHeartbeatServiceRef;
     },
@@ -3108,12 +2749,6 @@ export function createAutomationService({
       const snapshot = projectConfigService.get();
       const localRuleIds = new Set((snapshot.local?.automations ?? []).map((rule) => rule?.id).filter((id): id is string => typeof id === "string" && id.trim().length > 0));
       const sharedRuleIds = new Set((snapshot.shared?.automations ?? []).map((rule) => rule?.id).filter((id): id is string => typeof id === "string" && id.trim().length > 0));
-      for (const row of db.all<{ mission_id: string | null }>(
-        `select distinct mission_id from automation_runs where project_id = ? and mission_id is not null`,
-        [projectId]
-      )) {
-        if (row.mission_id) void syncMissionRun(row.mission_id);
-      }
       for (const row of db.all<{ worker_run_id: string | null }>(
         `select distinct worker_run_id from automation_runs where project_id = ? and worker_run_id is not null`,
         [projectId]
@@ -3124,7 +2759,7 @@ export function createAutomationService({
         const runRow = db.get<AutomationRunRow>(
           `
             select
-              id, automation_id, chat_session_id, mission_id, worker_run_id, worker_agent_id, queue_item_id, ingress_event_id, trigger_type, started_at, ended_at, status, execution_kind, queue_status,
+              id, automation_id, chat_session_id, worker_run_id, worker_agent_id, queue_item_id, ingress_event_id, trigger_type, started_at, ended_at, status, execution_kind, queue_status,
               executor_mode, actions_completed, actions_total, error_message, verification_required, spend_usd,
               trigger_metadata, summary, confidence_json, billing_code
             from automation_runs
@@ -3229,7 +2864,7 @@ export function createAutomationService({
       const rows = db.all<AutomationRunRow>(
         `
           select
-            id, automation_id, chat_session_id, mission_id, worker_run_id, worker_agent_id, queue_item_id, ingress_event_id, trigger_type, started_at, ended_at, status, execution_kind, queue_status,
+            id, automation_id, chat_session_id, worker_run_id, worker_agent_id, queue_item_id, ingress_event_id, trigger_type, started_at, ended_at, status, execution_kind, queue_status,
             executor_mode, actions_completed, actions_total, error_message, verification_required, spend_usd,
             trigger_metadata, summary, confidence_json, billing_code
           from automation_runs
@@ -3240,7 +2875,6 @@ export function createAutomationService({
         [projectId, id, limit]
       );
       for (const row of rows) {
-        if (row.mission_id) void syncMissionRun(row.mission_id);
         if (row.worker_run_id) void syncWorkerRun(row.worker_run_id);
       }
       return rows.map((row) => toRun(loadRunRow(row.id) ?? row));
@@ -3262,7 +2896,7 @@ export function createAutomationService({
       const rows = db.all<AutomationRunRow>(
         `
           select
-            id, automation_id, chat_session_id, mission_id, worker_run_id, worker_agent_id, queue_item_id, ingress_event_id, trigger_type, started_at, ended_at, status, execution_kind, queue_status,
+            id, automation_id, chat_session_id, worker_run_id, worker_agent_id, queue_item_id, ingress_event_id, trigger_type, started_at, ended_at, status, execution_kind, queue_status,
             executor_mode, actions_completed, actions_total, error_message, verification_required, spend_usd,
             trigger_metadata, summary, confidence_json, billing_code
           from automation_runs
@@ -3280,7 +2914,6 @@ export function createAutomationService({
       if (!runId) return null;
       const runRow = loadRunRow(runId);
       if (!runRow) return null;
-      if (runRow.mission_id) void syncMissionRun(runRow.mission_id);
       if (runRow.worker_run_id) void syncWorkerRun(runRow.worker_run_id);
       const refreshed = loadRunRow(runId) ?? runRow;
       const actions = db.all<AutomationActionRow>(
@@ -3522,11 +3155,6 @@ export function createAutomationService({
       if (changedFields.length > 0) {
         void dispatchTrigger({ triggerType: "linear.issue_updated", ...common });
       }
-    },
-
-    onMissionUpdated(args: { missionId: string }) {
-      if (!args.missionId.trim()) return;
-      void syncMissionRun(args.missionId.trim());
     },
 
     onWorkerRunUpdated(args: { workerRunId: string }) {

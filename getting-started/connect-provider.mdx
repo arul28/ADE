@@ -1,6 +1,6 @@
 ---
 title: "Connect an AI provider"
-description: "Add a provider credential so ADE can start agents and missions."
+description: "Add a provider credential so ADE can start agents and worker runs."
 icon: "key"
 ---
 
@@ -20,7 +20,7 @@ ADE works best once you have at least one verified provider configured. There ar
 
     <CardGroup cols={3}>
       <Card title="Anthropic (Claude)" icon="sparkles" color="#7C3AED">
-        Best default — works with chat, missions, CTO, and automations. Keys start with `sk-ant-`.
+        Best default — works with chat, worker runs, CTO, and automations. Keys start with `sk-ant-`.
       </Card>
       <Card title="OpenAI (GPT)" icon="circle" color="#059669">
         Good for structured output and GPT-family models. Keys start with `sk-`.
@@ -71,7 +71,7 @@ ADE works best once you have at least one verified provider configured. There ar
 
 | If you want... | Use this | Why |
 |----------------|----------|-----|
-| The most complete ADE experience | **Anthropic (Claude)** | Works everywhere — chat, missions, CTO, automations |
+| The most complete ADE experience | **Anthropic (Claude)** | Works everywhere — chat, worker runs, CTO, automations |
 | You already use Cursor daily | **Cursor** | ADE integrates through the Cursor SDK with a Cursor API key |
 | Cost flexibility | **OpenRouter** | Route different agent roles to different models |
 | Privacy / offline work | **Ollama (local)** | No API key, runs entirely on your machine |

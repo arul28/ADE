@@ -18,8 +18,6 @@ import { createProjectConfigService } from "../../desktop/src/main/services/conf
 import { createConflictService } from "../../desktop/src/main/services/conflicts/conflictService";
 import { createGitOperationsService } from "../../desktop/src/main/services/git/gitOperationsService";
 import { createDiffService } from "../../desktop/src/main/services/diffs/diffService";
-import { createMissionService } from "../../desktop/src/main/services/missions/missionService";
-import { createMissionPreflightService } from "../../desktop/src/main/services/missions/missionPreflightService";
 import { createPtyService } from "../../desktop/src/main/services/pty/ptyService";
 import { createTestService } from "../../desktop/src/main/services/tests/testService";
 import { createKeybindingsService } from "../../desktop/src/main/services/keybindings/keybindingsService";
@@ -57,11 +55,8 @@ import type { createLinearIssueTracker } from "../../desktop/src/main/services/c
 import type { createLinearIngressService } from "../../desktop/src/main/services/cto/linearIngressService";
 import type { createLinearRoutingService } from "../../desktop/src/main/services/cto/linearRoutingService";
 import type { createLinearSyncService } from "../../desktop/src/main/services/cto/linearSyncService";
-import { createOrchestratorService } from "../../desktop/src/main/services/orchestrator/orchestratorService";
-import { createAiOrchestratorService } from "../../desktop/src/main/services/orchestrator/aiOrchestratorService";
 import { createAiIntegrationService } from "../../desktop/src/main/services/ai/aiIntegrationService";
 import { initApiKeyStore } from "../../desktop/src/main/services/ai/apiKeyStore";
-import { createMissionBudgetService } from "../../desktop/src/main/services/orchestrator/missionBudgetService";
 import type { createSyncService } from "./services/sync/syncService";
 import type { createSyncHostService, SyncRuntimeKind } from "./services/sync/syncHostService";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
@@ -138,7 +133,6 @@ export type AdeRuntimePaths = {
   chatSessionsDir: string;
   chatTranscriptsDir: string;
   orchestratorCacheDir: string;
-  missionStateDir: string;
 };
 
 export type AdeRuntimeSyncOptions = {
@@ -186,8 +180,6 @@ export type AdeRuntime = {
   conflictService: ReturnType<typeof createConflictService>;
   gitService: ReturnType<typeof createGitOperationsService>;
   diffService: ReturnType<typeof createDiffService>;
-  missionService: ReturnType<typeof createMissionService>;
-  missionPreflightService?: ReturnType<typeof createMissionPreflightService> | null;
   ptyService: ReturnType<typeof createPtyService>;
   testService: ReturnType<typeof createTestService>;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
@@ -221,9 +213,6 @@ export type AdeRuntime = {
   appControlService?: AppControlService | null;
   builtInBrowserService?: BuiltInBrowserService | null;
   macosVmService?: ReturnType<typeof createMacosVmService> | null;
-  orchestratorService: ReturnType<typeof createOrchestratorService>;
-  aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;
-  missionBudgetService?: ReturnType<typeof createMissionBudgetService> | null;
   syncHostService?: ReturnType<typeof createSyncHostService> | null;
   syncService?: ReturnType<typeof createSyncService> | null;
   apnsService?: ApnsService | null;
@@ -259,7 +248,6 @@ export function ensureAdePaths(projectRoot: string): AdeRuntimePaths {
     chatSessionsDir: paths.chatSessionsDir,
     chatTranscriptsDir: paths.chatTranscriptsDir,
     orchestratorCacheDir: paths.orchestratorCacheDir,
-    missionStateDir: paths.missionStateDir,
   };
 }
 
@@ -621,12 +609,6 @@ export async function createAdeRuntime(args: {
 
   const diffService = createDiffService({ laneService });
 
-  const missionService = createMissionService({
-    db,
-    projectId,
-    onEvent: (event) => pushEvent("mission", event as unknown as Record<string, unknown>)
-  });
-
   const ptyService = createPtyService({
     projectRoot,
     transcriptsDir: paths.transcriptsDir,
@@ -682,31 +664,6 @@ export async function createAdeRuntime(args: {
     broadcastEvent: (event) => pushEvent("runtime", event as unknown as Record<string, unknown>),
   });
 
-  // Ensure evaluation tables exist for headless runtime checks.
-  db.run(`
-    CREATE TABLE IF NOT EXISTS orchestrator_evaluations (
-      id TEXT PRIMARY KEY,
-      project_id TEXT NOT NULL,
-      run_id TEXT NOT NULL,
-      mission_id TEXT NOT NULL,
-      evaluator_id TEXT NOT NULL,
-      scores_json TEXT NOT NULL,
-      issues_json TEXT NOT NULL,
-      summary TEXT NOT NULL,
-      improvements_json TEXT,
-      metadata_json TEXT,
-      evaluated_at TEXT NOT NULL
-    )
-  `);
-  db.run(`
-    CREATE INDEX IF NOT EXISTS idx_orchestrator_evaluations_mission
-    ON orchestrator_evaluations(mission_id, evaluated_at)
-  `);
-  db.run(`
-    CREATE INDEX IF NOT EXISTS idx_orchestrator_evaluations_run
-    ON orchestrator_evaluations(run_id, evaluated_at)
-  `);
-
   const ctoStateService = createCtoStateService({
     db,
     projectId,
@@ -737,79 +694,13 @@ export async function createAdeRuntime(args: {
     projectId,
     workerAgentService,
   });
-  const missionBudgetService = createMissionBudgetService({
-    db,
-    logger,
-    projectId,
-    projectRoot,
-    missionService,
-    aiIntegrationService,
-    projectConfigService,
-  });
-
-  let aiOrchestratorServiceRef: ReturnType<typeof createAiOrchestratorService> | null = null;
-  const aiCoordinatorWakeReasons = new Set([
-    "attempt_completed",
-    "completed",
-    "failed",
-    "skipped",
-    "finalized",
-    "intervention_resolved",
-    "question_answered_resume",
-    "resume_recovered",
-    "validation_contract_unfulfilled",
-    "validation_self_check_reminder",
-    "validation_auto_spawned",
-    "validation_gate_blocked",
-  ]);
-  const orchestratorService = createOrchestratorService({
-    db,
-    projectId,
-    projectRoot,
-    conflictService,
-    ptyService,
-    prService: undefined,
-    projectConfigService,
-    onEvent: (e) => {
-      pushEvent("orchestrator", e as unknown as Record<string, unknown>);
-      if (aiCoordinatorWakeReasons.has(e.reason)) {
-        aiOrchestratorServiceRef?.onOrchestratorRuntimeEvent(e);
-      }
-      if (
-        e.reason === "validation_contract_unfulfilled" ||
-        e.reason === "validation_self_check_reminder" ||
-        e.reason === "validation_auto_spawned" ||
-        e.reason === "validation_gate_blocked"
-      ) {
-        pushEvent("runtime", {
-          type: e.reason,
-          runId: e.runId ?? null,
-          stepId: e.stepId ?? null,
-          attemptId: e.attemptId ?? null,
-        });
-      }
-    }
-  });
-
   const computerUseArtifactBrokerService = createComputerUseArtifactBrokerService({
     db,
     projectId,
     projectRoot,
-    missionService,
-    orchestratorService,
     logger,
     onEvent: (event) => pushEvent("runtime", { type: "computer_use_event", event }),
-  });
-  const missionPreflightService = createMissionPreflightService({
-    logger,
-    projectRoot,
-    missionService,
-    laneService,
-    aiIntegrationService,
-    projectConfigService,
-    missionBudgetService,
-    computerUseArtifactBrokerService,
-  });
+  } as Parameters<typeof createComputerUseArtifactBrokerService>[0]);
   const iosSimulatorService = chatOnlyRuntime
     ? null
     : createIosSimulatorService({
@@ -881,22 +772,6 @@ export async function createAdeRuntime(args: {
         logger,
       });
 
-  const aiOrchestratorService = createAiOrchestratorService({
-    db,
-    logger,
-    missionService,
-    orchestratorService,
-    agentChatService: null,
-    laneService,
-    projectConfigService,
-    aiIntegrationService,
-    prService: undefined,
-    projectRoot,
-    onThreadEvent: (e) => pushEvent("runtime", e as unknown as Record<string, unknown>),
-    onDagMutation: (e) => pushEvent("dag_mutation", e as unknown as Record<string, unknown>)
-  });
-  aiOrchestratorServiceRef = aiOrchestratorService;
-
   const headlessLinearServices = createHeadlessLinearServices({
     projectRoot,
     adeDir: paths.adeDir,
@@ -908,12 +783,9 @@ export async function createAdeRuntime(args: {
     laneService,
     operationService,
     conflictService,
-    missionService,
-    aiOrchestratorService,
     workerAgentService,
     workerBudgetService,
     computerUseArtifactBrokerService,
-    orchestratorService,
     openExternal: async () => {},
     onGitHubStatusChanged: (status) =>
       pushEvent("runtime", { type: "github_status_changed", event: status }),
@@ -946,8 +818,6 @@ export async function createAdeRuntime(args: {
       workerHeartbeatService: headlessLinearServices.workerHeartbeatService,
       linearIssueTracker: headlessLinearServices.linearIssueTracker,
       flowPolicyService: headlessLinearServices.flowPolicyService,
-      getMissionService: () => missionService,
-      getAiOrchestratorService: () => aiOrchestratorService,
       getLinearDispatcherService: () => headlessLinearServices.linearDispatcherService,
       linearClient: headlessLinearServices.linearClient,
       linearCredentials: headlessLinearServices.linearCredentialService as never,
@@ -960,7 +830,6 @@ export async function createAdeRuntime(args: {
       getGitService: () => gitService,
       conflictService,
       getWorkerBudgetService: () => workerBudgetService,
-      getMissionBudgetService: () => missionBudgetService,
       computerUseArtifactBrokerService,
       laneService,
       sessionService,
@@ -972,7 +841,6 @@ export async function createAdeRuntime(args: {
       appVersion: "ade-cli",
       getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
       onEvent: (event) => {
-        aiOrchestratorService.onAgentChatEvent(event);
         pushEvent("runtime", event as unknown as Record<string, unknown>);
       },
       onSessionEnded: (event) => {
@@ -985,22 +853,8 @@ export async function createAdeRuntime(args: {
     }
   }
   agentChatServiceHolder.current = agentChatService;
-  if (typeof (aiOrchestratorService as { setAgentChatService?: (svc: typeof agentChatService) => void }).setAgentChatService === "function") {
-    (aiOrchestratorService as { setAgentChatService: (svc: typeof agentChatService) => void }).setAgentChatService(agentChatService);
-  }
   if (resolvedArgs.chatRuntime === "agent" && !agentChatService) {
     throw new Error("Agent chat runtime was requested but the agent chat service was not initialized.");
-  }
-  if (resolvedArgs.chatRuntime === "agent" && agentChatService) {
-    setImmediate(() => {
-      try {
-        aiOrchestratorService.resumeActiveTeamRuntimes();
-      } catch (error) {
-        logger.warn("bootstrap.resume_active_team_runtimes_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    });
   }
   const reviewService = agentChatService
     ? createReviewService({
@@ -1043,8 +897,6 @@ export async function createAdeRuntime(args: {
     conflictService,
     testService,
     agentChatService: agentChatService ?? undefined,
-    missionService,
-    aiOrchestratorService,
     onEvent: (event) => pushEvent("runtime", { ...event, source: "automations" }),
   });
   automationServiceRef = automationService;
@@ -1117,13 +969,6 @@ export async function createAdeRuntime(args: {
       error: error instanceof Error ? error.message : String(error),
     });
   }
-  automationService.bindMissionRuntime({
-    missionService,
-    aiOrchestratorService,
-    budgetCapService,
-    workerHeartbeatService: headlessLinearServices.workerHeartbeatService,
-  });
-
   let syncService: ReturnType<typeof createSyncService> | null = null;
   if (resolvedArgs.syncRuntime?.enabled && agentChatService) {
     const { createSyncService } = await import("./services/sync/syncService");
@@ -1153,7 +998,6 @@ export async function createAdeRuntime(args: {
       rebaseSuggestionService,
       autoRebaseService,
       computerUseArtifactBrokerService,
-      missionService,
       agentChatService,
       workerAgentService,
       workerBudgetService,
@@ -1218,9 +1062,6 @@ export async function createAdeRuntime(args: {
     conflictService,
     gitService,
     diffService,
-    missionService,
-    missionPreflightService,
-    missionBudgetService,
     syncService,
     syncHostService: syncService?.getHostService() ?? null,
     apnsService,
@@ -1262,8 +1103,6 @@ export async function createAdeRuntime(args: {
     appControlService,
     builtInBrowserService: builtInBrowserBridge as unknown as BuiltInBrowserService | null,
     macosVmService,
-    orchestratorService,
-    aiOrchestratorService,
     eventBuffer,
     dispose: () => {
       const swallow = (fn: () => void) => { try { fn(); } catch { /* ignore */ } };
@@ -1284,7 +1123,6 @@ export async function createAdeRuntime(args: {
       swallow(() => macosVmService?.dispose());
       swallow(() => linearOAuthService.dispose());
       swallow(() => headlessLinearServices.dispose());
-      swallow(() => aiOrchestratorService.dispose());
       swallow(() => agentChatService?.forceDisposeAll?.());
       swallow(() => testService.disposeAll());
       swallow(() => ptyService.disposeAll());

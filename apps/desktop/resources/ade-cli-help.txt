@@ -18,6 +18,9 @@ _    ____  _____
     $ ade auth status                               Check local ADE CLI readiness
     $ ade code                                      Open ADE Work chat in the terminal
     $ ade desktop                                   Launch the installed desktop app
+    $ ade open <url>                                Open an ade:// or ade.app deeplink via the OS
+    $ ade link lane | branch | pr | linear-issue    Build a shareable deeplink (copies to clipboard)
+    $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
     $ ade runtime start | stop | status             Manage the machine runtime daemon
     $ ade serve                                     Run the ADE runtime daemon in foreground
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
@@ -27,14 +30,14 @@ _    ____  _____
     $ ade doctor                                    Inspect project, socket, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
-    $ ade operations status | wait                  Poll operation/test/chat/run/mission status
+    $ ade operations status | wait                  Poll operation/test/chat/run status
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
-    $ ade missions launch | watch | graph           Create, start, and inspect mission runs
     $ ade prs list | create | path-to-merge         Manage PRs, queues, and Path to Merge repair rounds
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | read | write | signal     Control the active in-chat terminal
+    $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
     $ ade agent spawn --lane <id> --prompt <text>   Launch an agent session in ADE
     $ ade cto state | chats                         Operate CTO state and Work chats
@@ -45,7 +48,8 @@ _    ____  _____
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
     $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
-    $ ade macos-vm status | start | guide          Run lane-tied macOS VMs for agent work
+    $ ade macos-vm status | start | restart | wipe | install-runtime | set-credentials | get-credentials | storage | display-session | detach
+                                                    Run ADE's singleton Apple silicon macOS VM
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade usage snapshot | refresh | budget         Read provider quota usage and edit automation guardrails
     $ ade settings action <method>                  Call project config actions
@@ -72,7 +76,6 @@ _    ____  _____
     $ ade git sync --lane <lane> --rebase --base main
     $ ade git stage --lane <lane> src/index.ts
     $ ade git commit --lane <lane> -m "Fix login redirect"
-    $ ade missions launch --prompt "Fix onboarding" --manual --text
     $ ade prs create --lane <lane> --base main --draft
     $ ade prs path-to-merge <pr-id-or-number-or-url> --model <model> --max-rounds 3 --no-auto-merge
     $ ade proof record --seconds 20
@@ -92,9 +95,6 @@ _    ____  _____
       $ ade actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
     Multi-parameter service call:
       $ ade actions run issue_inventory.savePipelineSettings --args-list-json '["pr-1",{"maxRounds":3}]'
-    Single scalar parameter:
-      $ ade actions run mission.get --scalar mission-1
-
     $ ade actions list --text
     $ ade actions list --domain pr --text
     $ ade actions run <domain.action> --input-json '{"key":"value"}'
@@ -118,6 +118,9 @@ _    ____  _____
     $ ade auth status                               Check local ADE CLI readiness
     $ ade code                                      Open ADE Work chat in the terminal
     $ ade desktop                                   Launch the installed desktop app
+    $ ade open <url>                                Open an ade:// or ade.app deeplink via the OS
+    $ ade link lane | branch | pr | linear-issue    Build a shareable deeplink (copies to clipboard)
+    $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
     $ ade runtime start | stop | status             Manage the machine runtime daemon
     $ ade serve                                     Run the ADE runtime daemon in foreground
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
@@ -127,14 +130,14 @@ _    ____  _____
     $ ade doctor                                    Inspect project, socket, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
-    $ ade operations status | wait                  Poll operation/test/chat/run/mission status
+    $ ade operations status | wait                  Poll operation/test/chat/run status
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
-    $ ade missions launch | watch | graph           Create, start, and inspect mission runs
     $ ade prs list | create | path-to-merge         Manage PRs, queues, and Path to Merge repair rounds
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | read | write | signal     Control the active in-chat terminal
+    $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
     $ ade agent spawn --lane <id> --prompt <text>   Launch an agent session in ADE
     $ ade cto state | chats                         Operate CTO state and Work chats
@@ -145,7 +148,8 @@ _    ____  _____
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
     $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
-    $ ade macos-vm status | start | guide          Run lane-tied macOS VMs for agent work
+    $ ade macos-vm status | start | restart | wipe | install-runtime | set-credentials | get-credentials | storage | display-session | detach
+                                                    Run ADE's singleton Apple silicon macOS VM
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade usage snapshot | refresh | budget         Read provider quota usage and edit automation guardrails
     $ ade settings action <method>                  Call project config actions
@@ -172,7 +176,6 @@ _    ____  _____
     $ ade git sync --lane <lane> --rebase --base main
     $ ade git stage --lane <lane> src/index.ts
     $ ade git commit --lane <lane> -m "Fix login redirect"
-    $ ade missions launch --prompt "Fix onboarding" --manual --text
     $ ade prs create --lane <lane> --base main --draft
     $ ade prs path-to-merge <pr-id-or-number-or-url> --model <model> --max-rounds 3 --no-auto-merge
     $ ade proof record --seconds 20
@@ -192,9 +195,6 @@ _    ____  _____
       $ ade actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
     Multi-parameter service call:
       $ ade actions run issue_inventory.savePipelineSettings --args-list-json '["pr-1",{"maxRounds":3}]'
-    Single scalar parameter:
-      $ ade actions run mission.get --scalar mission-1
-
     $ ade actions list --text
     $ ade actions list --domain pr --text
     $ ade actions run <domain.action> --input-json '{"key":"value"}'
@@ -218,6 +218,9 @@ _    ____  _____
     $ ade auth status                               Check local ADE CLI readiness
     $ ade code                                      Open ADE Work chat in the terminal
     $ ade desktop                                   Launch the installed desktop app
+    $ ade open <url>                                Open an ade:// or ade.app deeplink via the OS
+    $ ade link lane | branch | pr | linear-issue    Build a shareable deeplink (copies to clipboard)
+    $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
     $ ade runtime start | stop | status             Manage the machine runtime daemon
     $ ade serve                                     Run the ADE runtime daemon in foreground
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
@@ -227,14 +230,14 @@ _    ____  _____
     $ ade doctor                                    Inspect project, socket, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
-    $ ade operations status | wait                  Poll operation/test/chat/run/mission status
+    $ ade operations status | wait                  Poll operation/test/chat/run status
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
-    $ ade missions launch | watch | graph           Create, start, and inspect mission runs
     $ ade prs list | create | path-to-merge         Manage PRs, queues, and Path to Merge repair rounds
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | read | write | signal     Control the active in-chat terminal
+    $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
     $ ade agent spawn --lane <id> --prompt <text>   Launch an agent session in ADE
     $ ade cto state | chats                         Operate CTO state and Work chats
@@ -245,7 +248,8 @@ _    ____  _____
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
     $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
-    $ ade macos-vm status | start | guide          Run lane-tied macOS VMs for agent work
+    $ ade macos-vm status | start | restart | wipe | install-runtime | set-credentials | get-credentials | storage | display-session | detach
+                                                    Run ADE's singleton Apple silicon macOS VM
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade usage snapshot | refresh | budget         Read provider quota usage and edit automation guardrails
     $ ade settings action <method>                  Call project config actions
@@ -272,7 +276,6 @@ _    ____  _____
     $ ade git sync --lane <lane> --rebase --base main
     $ ade git stage --lane <lane> src/index.ts
     $ ade git commit --lane <lane> -m "Fix login redirect"
-    $ ade missions launch --prompt "Fix onboarding" --manual --text
     $ ade prs create --lane <lane> --base main --draft
     $ ade prs path-to-merge <pr-id-or-number-or-url> --model <model> --max-rounds 3 --no-auto-merge
     $ ade proof record --seconds 20
@@ -292,9 +295,6 @@ _    ____  _____
       $ ade actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
     Multi-parameter service call:
       $ ade actions run issue_inventory.savePipelineSettings --args-list-json '["pr-1",{"maxRounds":3}]'
-    Single scalar parameter:
-      $ ade actions run mission.get --scalar mission-1
-
     $ ade actions list --text
     $ ade actions list --domain pr --text
     $ ade actions run <domain.action> --input-json '{"key":"value"}'
@@ -323,6 +323,9 @@ _    ____  _____
     $ ade lanes archive <lane>                      Archive a lane in ADE
     $ ade lanes unarchive <lane>                    Restore an archived lane
     $ ade lanes attach --path <worktree> --name <n> Attach an external worktree
+    $ ade lanes reparent <lane> --parent <parent>   Move lane onto a new parent (runs git rebase)
+    $ ade lanes reparent <lane> --parent <parent> --stack-base-branch <branch>
+                                                    Reparent and stack onto a specific branch (e.g. origin/main)
     $ ade lanes actions --text                      List callable lane service methods
 
 ## ade git --help
@@ -341,6 +344,10 @@ _    ____  _____
     $ ade git status --full --lane <lane> --text    Show full lane status, diff, and conflict state
     $ ade git fetch --lane <lane>                   Fetch remote refs
     $ ade git pull --lane <lane>                    Pull with ADE's ff-only lane operation
+    $ ade git pull --lane <lane> --rebase           Pull and replay local commits on upstream
+    $ ade git pull --lane <lane> --merge            Pull and merge upstream into the lane
+    $ ade git undo --lane <lane>                    Reset to the previous recorded HEAD
+    $ ade git redo --lane <lane>                    Restore the last undone HEAD
     $ ade git sync --lane <lane> --rebase --base main
                                                     Sync the lane with its base branch
     $ ade git stage --lane <lane> src/file.ts       Stage one file
@@ -351,7 +358,8 @@ _    ____  _____
     $ ade git push --lane <lane> --force-with-lease Force-push through ADE with lease
     $ ade git branches --lane <lane> --text         List branches with last-commit metadata
     $ ade git user-identity --lane <lane> --text    Read lane checkout's git user.name/email
-    $ ade git stash push|list|apply|pop             Use ADE lane stash actions
+    $ ade git stash push|list|apply|pop|drop        Use ADE lane stash actions
+                                                    pop/drop resolve the saved stash OID before changing it
     $ ade git rebase --lane <lane> --ai             Rebase with ADE conflict support
     $ ade git rebase continue --lane <lane>         Continue an in-progress rebase
     $ ade git conflict show --lane <lane> --text    Inspect merge/rebase conflict state
@@ -408,11 +416,13 @@ _    ____  _____
 
     $ ade prs list --text                           List PRs known to ADE
     $ ade prs list-open --text                      List every open GitHub PR in the repo, keyed by head branch
-    $ ade prs create --lane <lane> --base main      Open and map a GitHub PR from a lane
+    $ ade prs create --lane <lane> --base main      Open and map a GitHub PR; prints GitHub + ADE URLs
     $ ade prs create --lane <lane> --close-linear-issue-on-merge
     $ ade prs link --lane <lane> --url <pr-url>     Map an existing GitHub PR to a lane
     $ ade prs checks <pr> --text                    Show check status
     $ ade prs comments <pr> --text                  Show unresolved review work
+    $ ade prs github-snapshot --include-external-closed
+                                                    Include closed external PR history in the GitHub snapshot
     $ ade prs inventory <pr>                        Refresh ADE issue inventory
     $ ade prs path-to-merge <pr> --model <model> --max-rounds 3 --no-auto-merge
     $ ade prs path-to-merge <pr> --model <model> --conflict-strategy auto --force-finalize conditional
@@ -549,6 +559,8 @@ _    ____  _____
     $ ade linear sync queue --text                  List sync queue items
     $ ade linear sync resolve --queue-item <id> --action approve
     $ ade linear route worker --input-json '{"issueId":"LIN-123","workerId":"worker-1"}'
+    $ ade linear install                            Register ADE as the "Open in coding tool" target
+    $ ade linear install --dry-run                  Preview the ~/.linear/coding-tools.json write
 
 ## ade automations --help
 _    ____  _____
@@ -607,9 +619,9 @@ _    ____  _____
 
   Coordinator runtime tools
 
-  Coordinator tools expose orchestration operations used by mission agents.
-  List tool names with:
-    $ ade actions call list_ade_actions --input-json '{"domain":"orchestrator_core"}'
+  Coordinator tools expose orchestration operations used by agent runtimes.
+  List available tool names with:
+    $ ade actions list --text
 
     $ ade coordinator <tool-name> --input-json '{"key":"value"}'
 
@@ -832,6 +844,9 @@ _    ____  _____
     $ ade auth status                               Check local ADE CLI readiness
     $ ade code                                      Open ADE Work chat in the terminal
     $ ade desktop                                   Launch the installed desktop app
+    $ ade open <url>                                Open an ade:// or ade.app deeplink via the OS
+    $ ade link lane | branch | pr | linear-issue    Build a shareable deeplink (copies to clipboard)
+    $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
     $ ade runtime start | stop | status             Manage the machine runtime daemon
     $ ade serve                                     Run the ADE runtime daemon in foreground
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
@@ -841,14 +856,14 @@ _    ____  _____
     $ ade doctor                                    Inspect project, socket, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
-    $ ade operations status | wait                  Poll operation/test/chat/run/mission status
+    $ ade operations status | wait                  Poll operation/test/chat/run status
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
-    $ ade missions launch | watch | graph           Create, start, and inspect mission runs
     $ ade prs list | create | path-to-merge         Manage PRs, queues, and Path to Merge repair rounds
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | read | write | signal     Control the active in-chat terminal
+    $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
     $ ade agent spawn --lane <id> --prompt <text>   Launch an agent session in ADE
     $ ade cto state | chats                         Operate CTO state and Work chats
@@ -859,7 +874,8 @@ _    ____  _____
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
     $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
-    $ ade macos-vm status | start | guide          Run lane-tied macOS VMs for agent work
+    $ ade macos-vm status | start | restart | wipe | install-runtime | set-credentials | get-credentials | storage | display-session | detach
+                                                    Run ADE's singleton Apple silicon macOS VM
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade usage snapshot | refresh | budget         Read provider quota usage and edit automation guardrails
     $ ade settings action <method>                  Call project config actions
@@ -886,7 +902,6 @@ _    ____  _____
     $ ade git sync --lane <lane> --rebase --base main
     $ ade git stage --lane <lane> src/index.ts
     $ ade git commit --lane <lane> -m "Fix login redirect"
-    $ ade missions launch --prompt "Fix onboarding" --manual --text
     $ ade prs create --lane <lane> --base main --draft
     $ ade prs path-to-merge <pr-id-or-number-or-url> --model <model> --max-rounds 3 --no-auto-merge
     $ ade proof record --seconds 20
@@ -906,9 +921,6 @@ _    ____  _____
       $ ade actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
     Multi-parameter service call:
       $ ade actions run issue_inventory.savePipelineSettings --args-list-json '["pr-1",{"maxRounds":3}]'
-    Single scalar parameter:
-      $ ade actions run mission.get --scalar mission-1
-
     $ ade actions list --text
     $ ade actions list --domain pr --text
     $ ade actions run <domain.action> --input-json '{"key":"value"}'
@@ -961,9 +973,6 @@ _    ____  _____
       $ ade actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
     argsList is for service methods with multiple positional parameters:
       $ ade actions run issue_inventory.savePipelineSettings --args-list-json '["pr-1",{"maxRounds":3}]'
-    scalar is for one non-object parameter:
-      $ ade actions run mission.get --scalar mission-1
-
     $ ade actions list --text                       Domain-grouped action catalog
     $ ade actions list --domain git --text          Narrow the catalog
     $ ade actions run <domain.action> --input-json '{"key":"value"}'

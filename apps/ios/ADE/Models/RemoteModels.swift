@@ -254,8 +254,6 @@ struct LaneSummary: Codable, Identifiable, Equatable {
   var createdAt: String
   var archivedAt: String?
   var devicesOpen: [DeviceMarker]?
-  var missionId: String?
-  var laneRole: String?
 }
 
 struct DeviceMarker: Codable, Identifiable, Equatable, Hashable {
@@ -341,7 +339,6 @@ struct LaneRuntimeSummary: Codable, Equatable {
 struct LaneStateSnapshotSummary: Codable, Equatable {
   var laneId: String
   var agentSummary: [String: RemoteJSONValue]?
-  var missionSummary: [String: RemoteJSONValue]?
   var updatedAt: String?
 }
 
@@ -946,8 +943,8 @@ struct LinearWorkflowDefinition: Codable, Hashable, Identifiable {
 
   private static func describeTarget(_ value: Any?) -> String {
     guard let dict = value as? [String: Any] else { return "—" }
-    // LinearWorkflowTarget typically has: { kind: "mission" | "worker_run" | ...,
-    // workerId?, missionTemplateId?, ... }
+    // LinearWorkflowTarget typically has: { kind: "worker_run" | ...,
+    // workerId?, ... }
     if let kind = dict["kind"] as? String {
       if let workerId = dict["workerId"] as? String, kind == "worker_run" {
         return "worker run · \(workerId)"
@@ -2774,7 +2771,6 @@ struct QueueAutomationConfig: Codable, Equatable {
   var permissionMode: String?
   var confidenceThreshold: Double?
   var originSurface: String?
-  var originMissionId: String?
   var originRunId: String?
   var originLabel: String?
 }

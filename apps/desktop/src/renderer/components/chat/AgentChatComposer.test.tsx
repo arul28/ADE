@@ -1219,11 +1219,11 @@ describe("AgentChatComposer", () => {
     renderComposer({
       draft: "",
       turnActive: true,
-      messagePlaceholder: "Message the mission orchestrator...",
+      messagePlaceholder: "Message the active coordinator...",
     });
 
     const textarea = screen.getByRole("textbox", {
-      name: "Steer active turn: Message the mission orchestrator",
+      name: "Steer active turn: Message the active coordinator",
     }) as HTMLTextAreaElement;
     expect(textarea.placeholder).toBe("Steer the active turn...");
   });
@@ -1232,7 +1232,7 @@ describe("AgentChatComposer", () => {
     renderComposer({
       draft: "",
       turnActive: true,
-      messagePlaceholder: "Message this mission worker...",
+      messagePlaceholder: "Message this worker...",
       iosElementContextItems: [
         {
           kind: "ios_element",
@@ -1248,7 +1248,7 @@ describe("AgentChatComposer", () => {
     });
 
     expect(screen.getByRole("textbox", {
-      name: "Steer active turn: Message this mission worker",
+      name: "Steer active turn: Message this worker",
     })).toBeTruthy();
   });
 

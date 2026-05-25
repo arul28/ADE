@@ -137,7 +137,6 @@ type ExternalResolverRunRecord = {
   reasoningEffort: string | null;
   permissionMode: PrAgentPermissionMode | null;
   originSurface: ConflictResolverOriginSurface;
-  originMissionId: string | null;
   originRunId: string | null;
   originLabel: string | null;
   resolverContextKey: string | null;
@@ -1058,7 +1057,6 @@ export function createConflictService({
     contextGaps: run.contextGaps,
     warnings: run.warnings,
     originSurface: run.originSurface,
-    originMissionId: run.originMissionId ?? null,
     originRunId: run.originRunId ?? null,
     originLabel: run.originLabel ?? null,
     resolverContextKey: run.resolverContextKey ?? null,
@@ -3490,7 +3488,6 @@ export function createConflictService({
       reasoningEffort: args.reasoningEffort ?? null,
       permissionMode: args.permissionMode ?? null,
       originSurface: args.originSurface ?? "manual",
-      originMissionId: args.originMissionId ?? null,
       originRunId: args.originRunId ?? null,
       originLabel: args.originLabel ?? null,
     });
@@ -4070,7 +4067,6 @@ export function createConflictService({
       reasoningEffort: args.reasoningEffort ?? null,
       permissionMode: args.permissionMode ?? null,
       originSurface: args.originSurface ?? "manual",
-      originMissionId: args.originMissionId ?? null,
       originRunId: args.originRunId ?? null,
       originLabel: args.originLabel ?? null,
       resolverContextKey,

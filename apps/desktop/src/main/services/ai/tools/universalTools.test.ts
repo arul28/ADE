@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WorkerSandboxConfig } from "../../../../shared/types";
-import { DEFAULT_WORKER_SANDBOX_CONFIG } from "../../orchestrator/orchestratorConstants";
+import { DEFAULT_WORKER_SANDBOX_CONFIG } from "./workerSandboxDefaults";
 import {
   checkWorkerSandbox,
   createUniversalToolSet,

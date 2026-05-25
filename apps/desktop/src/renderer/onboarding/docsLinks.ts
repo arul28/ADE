@@ -32,7 +32,6 @@ export const docs = {
 
   // Higher-level product areas
   projectHome: `${DOCS_BASE}/tools/project-home`,
-  missionsOverview: `${DOCS_BASE}/missions/overview`,
   ctoOverview: `${DOCS_BASE}/cto/overview`,
   automationsOverview: `${DOCS_BASE}/automations/overview`,
   workspaceGraph: `${DOCS_BASE}/tools/workspace-graph`,

@@ -55,7 +55,7 @@ export function MentionInput({
   disabled = false,
   autoFocus = false,
   footerHint = "Press Enter to send. Shift+Enter keeps a newline.",
-  surfaceMode = "mission-thread",
+  surfaceMode = "standard",
 }: MentionInputProps) {
   const [showDropdown, setShowDropdown] = useState(false);
   const [dropdownFilter, setDropdownFilter] = useState("");

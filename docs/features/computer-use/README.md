@@ -1,6 +1,6 @@
 # Computer Use
 
-ADE does not run computer-use itself. Agents drive computer use through whatever tool they already have — Claude's `computer_use`, Codex shell, a scripted browser, a headless Playwright run. ADE's only job is to **ingest** the resulting artifact (screenshot, video, trace, verification output, console log), link it to an owner (chat, mission, lane, PR, Linear issue), and render it in the review drawer.
+ADE does not run computer-use itself. Agents drive computer use through whatever tool they already have — Claude's `computer_use`, Codex shell, a scripted browser, a headless Playwright run. ADE's only job is to **ingest** the resulting artifact (screenshot, video, trace, verification output, console log), link it to an owner (chat, lane, PR, Linear issue), and render it in the review drawer.
 
 The previous control-plane model — policy modes (`off`/`auto`/`enabled`), readiness gates, per-phase evidence requirements, a passive proof observer — is gone. What remains is a thin broker backed by a single table.
 
@@ -48,7 +48,6 @@ The `ade-cli` headless surface registers the same broker and exposes the equival
 ### Renderer
 
 - `apps/desktop/src/renderer/components/chat/ChatComputerUsePanel.tsx` — proof drawer mounted under the chat composer. Shows the `ComputerUseOwnerSnapshot` scoped to the active chat session.
-- `apps/desktop/src/renderer/components/missions/MissionComputerUsePanel.tsx` and `MissionProofPanel.tsx` — mission-detail Proof tab.
 - `apps/desktop/src/renderer/lib/computerUse.ts`, `renderer/lib/proof.ts` — renderer helpers that call `window.ade.proof.*`.
 
 `ComputerUseSection.tsx` (Settings > Computer Use) was removed in this rebuild; its readiness display was folded into `IntegrationsSettingsSection`.
@@ -63,9 +62,9 @@ The `ade-cli` headless surface registers the same broker and exposes the equival
 
 - `id`, `artifact_id`, `owner_kind`, `owner_id`, `relation`, `metadata_json`, `created_at`.
 
-Owner kinds: `lane`, `mission`, `orchestrator_run`, `orchestrator_step`, `orchestrator_attempt`, `chat_session`, `automation_run`, `github_pr`, `linear_issue`.
+Owner kinds: `lane`, `chat_session`, `automation_run`, `github_pr`, `linear_issue`.
 
-One artifact can link to multiple owners — evidence flows from an exploratory chat to a mission artifact to a PR comment without losing provenance.
+One artifact can link to multiple owners — evidence flows from an exploratory chat to a PR comment without losing provenance.
 
 ## Proof kinds
 
@@ -105,7 +104,7 @@ Other paths are rejected.
 
 - `proofObserver.ts` and its test.
 - `ComputerUsePolicy` (`off`/`auto`/`enabled`, `allowLocalFallback`, `retainProof`, `preferredBackend`) — and the helpers `createDefaultComputerUsePolicy`, `normalizeComputerUsePolicy`, `isComputerUseModeEnabled`, `summarizePolicy`.
-- Per-phase `evidenceRequirements` math and the mission preflight coverage/readiness gate.
+- Per-phase `evidenceRequirements` math and preflight coverage/readiness gates.
 - Settings > Computer Use panel.
 - Ghost OS-specific readiness probes (`ghost status` / `ghost doctor` shelling and regex parsing).
 - Separate tool delivery for computer use.
@@ -209,7 +208,6 @@ Current audit coverage for the tab lives in
 ## Cross-links
 
 - [`../proof.md`](../proof.md) — `ade proof` CLI and the drawer UI contract.
-- [`../missions/README.md`](../missions/README.md) — mission detail renders the Proof tab from the same broker.
 - [`../cto/linear-integration.md`](../cto/linear-integration.md) — Linear closeout can attach broker-managed artifacts as proof.
 - [`../automations/README.md`](../automations/README.md) — automations that dispatch agent work rely on the agent's own `ade proof` calls; no automation-level proof policy exists.
 

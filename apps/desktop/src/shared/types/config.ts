@@ -3,11 +3,9 @@
 // ---------------------------------------------------------------------------
 
 import type { ProviderMode, ModelId } from "./core";
-import type { AgentChatModelInfo, AgentChatSession } from "./chat";
+import type { AgentChatModelInfo, AgentChatPermissionMode, AgentChatSession } from "./chat";
 import type { LaneType } from "./lanes";
-import type { MissionExecutionPolicy, MissionPermissionConfig, MissionProviderPermissions } from "./missions";
-import type { MissionModelConfig, ModelConfig } from "./models";
-import type { SmartBudgetConfig } from "./budget";
+import type { ModelConfig } from "./models";
 import type { LinearSyncConfig } from "./linearSync";
 import type { LocalProviderFamily } from "../modelRegistry";
 
@@ -605,7 +603,6 @@ export const LEGACY_GITHUB_PR_TRIGGER_ALIASES: Readonly<Record<string, Automatio
 export type AutomationActionType =
   | "create-lane"
   | "agent-session"
-  | "launch-mission"
   | "predict-conflicts"
   | "run-tests"
   | "run-command"
@@ -651,8 +648,7 @@ export type AutomationToolFamily =
   | "tests"
   | "github"
   | "linear"
-  | "browser"
-  | "mission";
+  | "browser";
 
 export type AutomationContextSourceType =
   | "linked-doc"
@@ -729,7 +725,7 @@ export type AutomationAction = {
   /** Optional Codex fast-mode override for agent-session actions inside a built-in chain. */
   codexFastMode?: boolean;
   /** Optional permission override for agent-session actions inside a built-in chain. */
-  permissionConfig?: MissionPermissionConfig;
+  permissionConfig?: AiPermissionSettings;
   /** Configuration payload for actions of kind `ade-action`. */
   adeAction?: RunAdeActionConfig;
   /**
@@ -741,7 +737,7 @@ export type AutomationAction = {
   sessionTitle?: string;
 };
 
-export type AutomationExecutionKind = "agent-session" | "mission" | "built-in";
+export type AutomationExecutionKind = "agent-session" | "built-in";
 
 export type AutomationLaneMode = "create" | "reuse" | "require-on-trigger";
 
@@ -784,12 +780,6 @@ export type AutomationExecution = {
     title?: string | null;
     reasoningEffort?: string | null;
     codexFastMode?: boolean;
-  };
-  /**
-   * Mission-specific launch hints reused by the automation mission launcher.
-   */
-  mission?: {
-    title?: string | null;
   };
   /**
    * Built-in deterministic tasks such as run-command and run-tests.
@@ -846,8 +836,8 @@ export type AutomationRule = {
   trigger: AutomationTrigger;
   execution?: AutomationExecution;
   executor: AutomationExecutor;
-  modelConfig?: MissionModelConfig;
-  permissionConfig?: MissionPermissionConfig;
+  modelConfig?: ModelConfig;
+  permissionConfig?: AiPermissionSettings;
   templateId?: string;
   prompt?: string;
   reviewProfile: AutomationReviewProfile;
@@ -879,8 +869,8 @@ export type ConfigAutomationRule = {
   triggers?: AutomationTrigger[];
   execution?: AutomationExecution;
   executor?: AutomationExecutor;
-  modelConfig?: MissionModelConfig;
-  permissionConfig?: MissionPermissionConfig;
+  modelConfig?: ModelConfig;
+  permissionConfig?: AiPermissionSettings;
   templateId?: string;
   prompt?: string;
   reviewProfile?: AutomationReviewProfile;
@@ -919,7 +909,6 @@ export type AiTaskRoutingKey =
   | "handoff_summary"
   | "continuity_summary"
   | "context_compaction"
-  | "mission_planning"
   | "initial_context";
 
 export type AiTaskRoutingRule = {
@@ -936,7 +925,6 @@ export type AiFeatureKey =
   | "commit_messages"
   | "pr_descriptions"
   | "terminal_summaries"
-  | "mission_planning"
   | "orchestrator"
   | "initial_context";
 
@@ -1228,11 +1216,22 @@ export type AiInProcessPermissionSettings = {
   mode?: AiInProcessPermissionMode;
 };
 
+export type AiProviderPermissions = {
+  claude?: AgentChatPermissionMode;
+  codex?: AgentChatPermissionMode;
+  cursor?: AgentChatPermissionMode;
+  droid?: AgentChatPermissionMode;
+  opencode?: AgentChatPermissionMode;
+  codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
+  writablePaths?: string[];
+  allowedTools?: string[];
+};
+
 export type AiPermissionSettings = {
   cli?: AiCliPermissionSettings;
   inProcess?: AiInProcessPermissionSettings;
-  /** Per-provider permission config (preferred over cli/inProcess for missions). */
-  providers?: MissionProviderPermissions;
+  /** Per-provider permission config, preferred over legacy cli/inProcess knobs. */
+  providers?: AiProviderPermissions;
 };
 
 export type WorkerSafetyPolicy = {
@@ -1284,13 +1283,10 @@ export type AiOrchestratorConfig = {
   progressiveLoading?: boolean;
   maxTotalTokenBudget?: number;
   maxPerStepTokenBudget?: number;
-  defaultExecutionPolicy?: Partial<MissionExecutionPolicy>;
   defaultOrchestratorModel?: ModelConfig;
-  smartBudget?: SmartBudgetConfig;
   autoResolveInterventions?: boolean;
   interventionConfidenceThreshold?: number;
   hooks?: Partial<Record<AiOrchestratorHookEvent, AiOrchestratorHookConfig>>;
-  maxConcurrentMissions?: number;
   laneExclusivity?: boolean;
 };
 
@@ -1341,7 +1337,7 @@ export type AiConfig = {
   apiKeys?: Record<string, string>;
   localProviders?: AiLocalProviderConfigs;
   workerSafety?: WorkerSafetyPolicy;
-  /** Per-feature model overrides, e.g. { mission_planning: "claude-sonnet-4-6" } */
+  /** Per-feature model overrides, e.g. { pr_descriptions: "claude-sonnet-4-6" } */
   featureModelOverrides?: Partial<Record<AiFeatureKey, string>>;
   /** Per-feature reasoning effort overrides */
   featureReasoningOverrides?: Partial<Record<AiFeatureKey, string | null>>;

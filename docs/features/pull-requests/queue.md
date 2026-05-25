@@ -52,7 +52,6 @@ type QueueAutomationConfig = {
   permissionMode: ConflictResolverPermissionMode;
   confidenceThreshold: number | null;
   originSurface: ConflictResolverOriginSurface;
-  originMissionId: string | null;
   originRunId: string | null;
   originLabel: string | null;
 };

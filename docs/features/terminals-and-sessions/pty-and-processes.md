@@ -314,8 +314,8 @@ registry under `terminal.reattachChatCli`.
 `ptyService.hasLiveSessions()` walks the PTY map and returns true if
 any entry is not disposed. `main.ts`'s
 `hasActiveProjectWorkloads(ctx)` calls it (alongside
-`agentChatService.hasRetainableSessions()` and the mission active-list
-check) so a project context with running CLIs / agents / shells is
+`agentChatService.hasRetainableSessions()` and managed-process
+checks) so a project context with running CLIs / agents / shells is
 never evicted by the warm-idle cap.
 
 ### Send-or-continue (`sendToSession`)

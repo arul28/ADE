@@ -6,9 +6,6 @@ import type { createLaneService } from "../../desktop/src/main/services/lanes/la
 import type { createOperationService } from "../../desktop/src/main/services/history/operationService";
 import type { createProjectConfigService } from "../../desktop/src/main/services/config/projectConfigService";
 import type { createConflictService } from "../../desktop/src/main/services/conflicts/conflictService";
-import type { createMissionService } from "../../desktop/src/main/services/missions/missionService";
-import type { createAiOrchestratorService } from "../../desktop/src/main/services/orchestrator/aiOrchestratorService";
-import type { createOrchestratorService } from "../../desktop/src/main/services/orchestrator/orchestratorService";
 import type { createWorkerAgentService } from "../../desktop/src/main/services/cto/workerAgentService";
 import type { createWorkerBudgetService } from "../../desktop/src/main/services/cto/workerBudgetService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
@@ -221,9 +218,6 @@ type HeadlessLinearDeps = {
   laneService: ReturnType<typeof createLaneService>;
   operationService: ReturnType<typeof createOperationService>;
   conflictService: ReturnType<typeof createConflictService>;
-  missionService: ReturnType<typeof createMissionService>;
-  orchestratorService: ReturnType<typeof createOrchestratorService>;
-  aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;
   workerAgentService: ReturnType<typeof createWorkerAgentService>;
   workerBudgetService: ReturnType<typeof createWorkerBudgetService>;
   computerUseArtifactBrokerService: ComputerUseArtifactBrokerService;
@@ -1651,19 +1645,15 @@ export function createHeadlessLinearServices(
   const closeoutService = createLinearCloseoutServiceImpl({
     issueTracker,
     outboundService,
-    missionService: args.missionService,
-    orchestratorService: args.orchestratorService,
     prService,
     computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
-  });
+  } as Parameters<typeof createLinearCloseoutServiceImpl>[0]);
   const dispatcherService = createLinearDispatcherServiceImpl({
     db: args.db,
     projectId: args.projectId,
     issueTracker,
     workerAgentService: args.workerAgentService,
     workerHeartbeatService,
-    missionService: args.missionService,
-    aiOrchestratorService: args.aiOrchestratorService,
     agentChatService: agentChatService as never,
     laneService: args.laneService,
     templateService,
@@ -1672,7 +1662,7 @@ export function createHeadlessLinearServices(
     workerTaskSessionService,
     prService,
     onEvent: args.onLinearWorkflowEvent ?? (() => {}),
-  });
+  } as Parameters<typeof createLinearDispatcherServiceImpl>[0]);
   const syncService = createLinearSyncServiceImpl({
     db: args.db,
     logger: args.logger,

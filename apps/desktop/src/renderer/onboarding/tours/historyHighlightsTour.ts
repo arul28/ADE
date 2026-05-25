@@ -11,7 +11,7 @@ export const historyHighlightsTour: Tour = {
       id: "h.history.what",
       target: "",
       title: "History",
-      body: "A timeline of everything that happened: lane created, commit, push, PR opened, mission step — every event, forever.",
+      body: "A timeline of everything that happened: lane created, commit, push, PR opened — every event, forever.",
       docUrl: docs.home,
     },
     {

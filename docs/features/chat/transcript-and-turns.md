@@ -31,9 +31,9 @@ Type definitions live in `apps/desktop/src/shared/types/chat.ts`. The
 envelope carries transport metadata; the actual payload is the
 discriminated `AgentChatEvent` union.
 
-`provenance` is populated for mission-scoped chat, where messages can
+`provenance` is populated for delegated worker chat, where messages can
 originate from orchestrator, worker, or user threads and must be routed
-back to the correct mission feed.
+back to the correct activity feed.
 
 ## Parsing
 
@@ -51,7 +51,7 @@ Two helpers summarise a parsed stream:
 
 - `hasMaterialWorkerChatEvent(events)` -- returns true when any event
   type in `{ text, reasoning, tool_call, tool_result, command,
-  file_change }` is present. Used to gate mission-chat activity badges.
+  file_change }` is present. Used to gate worker-chat activity badges.
 - `hasWorkerChatLifecycleEvent(events)` -- returns true when any event
   other than `user_message` is present.
 - `deriveAgentChatTranscriptSummary(events, maxChars = 280)` -- returns
@@ -82,12 +82,12 @@ Two helpers summarise a parsed stream:
 | `todo_update` | Task-list snapshot; consumed by `ChatTasksPanel`. |
 | `subagent_started` / `subagent_progress` / `subagent_result` | Legacy Claude background subagent lifecycle. Each envelope carries `taskId`, `parentToolUseId`, `description`, and optional `agentId` + `agentType`: for Claude / ade-code `agentType` is the Task tool's `subagent_type` (stashed at the `tool_use` boundary and joined on `parentToolUseId`); for Codex parallel agents it is a per-turn `Agent #N` label assigned at first announcement and the raw threadId is mirrored as `agentId`; for OpenCode subagents `agentType` is omitted so the row falls back to the `description` (taken from `session.title`). Claude SDK runs also stash `taskType` (`subagent` / `background` / `local_workflow` / `cron` / `other`) and `workflowName` at spawn so the renderer can label rows by workflow without re-deriving them per event; ambient/housekeeping tasks (the SDK's `skip_transcript=true` flag — e.g. session-title generation) are filtered out symmetrically across spawn, progress, and completion notifications so the subagent panel never flashes them. The service also emits canonical `subagent.started` / `subagent.progress` / `subagent.completed` rows from `runtimeEvents.ts` so all runtimes can converge on the same envelope. |
 | `tool_use_start` / `tool_use_complete` / `tool_use_summary` | Claude SDK tool lifecycle tracking (see [Claude tool-use tracking](#claude-tool-use-tracking)). |
-| `step_boundary` | Mission step boundary marker. |
+| `step_boundary` | Workflow step boundary marker. |
 | `system_notice` | Non-transcript chrome: auth errors, rate limits, and file persistence hints. |
 | `session_meta_updated` | Runtime-native session metadata update (title / manual-name state). The renderer treats it as a local-touch event so Work lists and grid tiles refresh when a provider renames a session. |
 | `completion_report` | Structured closeout produced by the `reportCompletion` workflow tool. |
 | `turn_diff_summary` | Git-level before/after SHA + per-file stats for a completed turn. |
-| `delegation_state` | Mission orchestrator delegation contract updates. |
+| `delegation_state` | Delegated worker state updates. |
 | `context_compact` | Emitted before the provider compacts context (manual or auto). |
 | `web_search` | Web-search tool lifecycle; renderers group these with other tool calls instead of showing them as standalone event cards. |
 | `auto_approval_review` | When auto-approval policy kicks in, this event carries the review text. |

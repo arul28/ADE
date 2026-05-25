@@ -241,7 +241,7 @@ describe("buildCodingAgentSystemPrompt", () => {
     expect(result).toContain("## Editing Rules");
     expect(result).toContain("## Verification Rules");
     expect(result).toContain("## User-Facing Progress");
-    expect(result).toContain("## Mission");
+    expect(result).toContain("## Task");
   });
 
   it("uses the active cwd when describing ADE skill roots", () => {

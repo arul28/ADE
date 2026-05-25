@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
-import type { MissionCloseoutRequirementKey, ValidationEvidenceRequirement } from "../../../shared/types";
+import type { ComputerUseArtifactKind } from "../../../shared/types";
 import { commandExists } from "../ai/utils";
 
 export type LocalComputerUseCapabilityState = "present" | "missing" | "blocked_by_capability";
@@ -114,7 +114,7 @@ export function getLocalComputerUseCapabilities(): LocalComputerUseCapabilities 
 }
 
 export function getCapabilityForRequirement(
-  requirement: MissionCloseoutRequirementKey | ValidationEvidenceRequirement | string,
+  requirement: ComputerUseArtifactKind | string,
 ): LocalComputerUseCapability | null {
   const capabilities = getLocalComputerUseCapabilities();
   switch (requirement) {

@@ -8,7 +8,6 @@ import { TARGET_TYPE_LABELS, STAGE_COLORS, PRESET_TEMPLATE_DESCRIPTIONS } from "
 
 const PRESET_TEMPLATES: ReadonlyArray<{ type: LinearWorkflowTargetType; label: string; color: string; description: string }> = [
   { type: "employee_session", label: "Employee", color: STAGE_COLORS.employee_session, description: PRESET_TEMPLATE_DESCRIPTIONS.employee_session },
-  { type: "mission", label: "Mission", color: STAGE_COLORS.mission, description: PRESET_TEMPLATE_DESCRIPTIONS.mission },
   { type: "worker_run", label: "Worker Run", color: STAGE_COLORS.worker_run, description: PRESET_TEMPLATE_DESCRIPTIONS.worker_run },
   { type: "pr_resolution", label: "PR Resolution", color: STAGE_COLORS.pr_resolution, description: PRESET_TEMPLATE_DESCRIPTIONS.pr_resolution },
   { type: "review_gate", label: "Review Gate", color: STAGE_COLORS.review_gate, description: PRESET_TEMPLATE_DESCRIPTIONS.review_gate },

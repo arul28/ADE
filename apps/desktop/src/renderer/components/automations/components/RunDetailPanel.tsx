@@ -1,7 +1,6 @@
-import { ArrowSquareOut, GitBranch } from "@phosphor-icons/react";
+import { GitBranch } from "@phosphor-icons/react";
 import type { AutomationRunDetail } from "../../../../shared/types";
 import { AgentChatPane } from "../../chat/AgentChatPane";
-import { Button } from "../../ui/Button";
 import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
 import { statusToneAutomation as statusTone } from "../../../lib/format";
@@ -25,11 +24,9 @@ function MetaCard({
 export function RunDetailPanel({
   detail,
   loading,
-  onOpenMission,
 }: {
   detail: AutomationRunDetail | null;
   loading: boolean;
-  onOpenMission?: (missionId: string) => void;
 }) {
   if (loading) {
     return <div className="p-5 text-sm text-muted-fg/60">Loading run detail...</div>;
@@ -62,13 +59,6 @@ export function RunDetailPanel({
                 <div className="mt-2 text-sm text-error">{detail.run.errorMessage}</div>
               ) : null}
             </div>
-
-            {detail.run.missionId && onOpenMission ? (
-              <Button size="sm" variant="outline" onClick={() => onOpenMission(detail.run.missionId!)}>
-                <ArrowSquareOut size={12} weight="regular" />
-                Open mission
-              </Button>
-            ) : null}
           </div>
         </section>
 
@@ -79,7 +69,6 @@ export function RunDetailPanel({
           <MetaCard label="Started" value={detail.run.startedAt} />
           <MetaCard label="Ended" value={detail.run.endedAt ?? "still running"} />
           <MetaCard label="Automation" value={detail.run.automationId} />
-          <MetaCard label="Mission" value={detail.run.missionId ?? "none"} />
           <MetaCard label="Chat session" value={detail.run.chatSessionId ?? "none"} />
         </section>
 
@@ -106,15 +95,6 @@ export function RunDetailPanel({
                   messagePlaceholder: "Continue the automation thread...",
                 }}
               />
-            </div>
-          </section>
-        ) : null}
-
-        {detail.run.missionId && !detail.chatSession ? (
-          <section className={cardCls}>
-            <div className="text-sm font-semibold text-fg">Mission-backed run</div>
-            <div className="mt-1 text-sm text-muted-fg/70">
-              This automation launched a mission instead of an automation chat thread. Open the mission to inspect the live transcript, steps, and artifacts.
             </div>
           </section>
         ) : null}

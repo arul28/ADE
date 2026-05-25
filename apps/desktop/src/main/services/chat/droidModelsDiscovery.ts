@@ -40,7 +40,7 @@ export function parseDroidExecHelpModels(stdout: string): DroidExecHelpModelRow[
     if (!inModelSection) continue;
     if (!trimmed.length) continue;
     if (
-      /^(Model details|Authentication|Examples|Autonomy Levels|Mission Mode|Session Flags|Tool Controls):$/i.test(trimmed)
+      /^(Model details|Authentication|Examples|Autonomy Levels|Session Flags|Tool Controls):$/i.test(trimmed)
       || /^[-A-Z][\w -]+:$/i.test(trimmed)
     ) {
       break;

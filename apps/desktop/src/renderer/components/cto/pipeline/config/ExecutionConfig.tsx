@@ -34,9 +34,9 @@ function toOptions(labels: Record<string, { displayName: string; description?: s
 export function ExecutionConfig({ stage, agents, onUpdate }: Props) {
   const accent = STAGE_COLORS[stage.type] ?? "#A78BFA";
   const showSessionHandling = stage.type === "employee_session";
-  const showWorkerSelector = stage.type === "worker_run" || stage.type === "mission" || stage.type === "pr_resolution";
+  const showWorkerSelector = stage.type === "worker_run" || stage.type === "pr_resolution";
   const showPrStrategy = stage.type !== "review_gate";
-  const showLane = stage.type !== "mission" && stage.type !== "review_gate";
+  const showLane = stage.type !== "review_gate";
 
   return (
     <div className="space-y-5">

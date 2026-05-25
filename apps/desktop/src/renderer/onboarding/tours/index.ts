@@ -12,7 +12,6 @@ import "./graphTour";
 import "./prsTour";
 import "./historyTour";
 import "./automationsTour";
-import "./missionsTour";
 import "./ctoTour";
 import "./settingsTour";
 import "./lanesHighlightsTour";

@@ -128,15 +128,15 @@ ADE's default model applies to all agents unless you set role-specific overrides
 
 | Role | Description | Recommended Model |
 |------|-------------|-----------------|
-| Orchestrator | Mission planning and worker coordination | `claude-opus-4-7` |
-| Worker | Mission execution tasks | `claude-sonnet-4-6` |
-| Validator | Mission validation and review | `claude-sonnet-4-6` |
+| Orchestrator | Worker run planning and worker coordination | `claude-opus-4-7` |
+| Worker | Worker run execution tasks | `claude-sonnet-4-6` |
+| Validator | Worker run validation and review | `claude-sonnet-4-6` |
 | Automation | Event-driven automation runs | `claude-haiku-4-5` |
 | Chat | Interactive chat sessions | `claude-sonnet-4-6` |
 | CTO | Project-level leadership and delegation | `claude-opus-4-7` |
 
 <Tip>
-Routing automation runs to `claude-haiku-4-5` while keeping `claude-opus-4-7` for mission planning is the single most impactful cost optimization for users running frequent automations. Most PR-review and routine triage tasks do not require Opus-level reasoning.
+Routing automation runs to `claude-haiku-4-5` while keeping `claude-opus-4-7` for worker run planning is the single most impactful cost optimization for users running frequent automations. Most PR-review and routine triage tasks do not require Opus-level reasoning.
 </Tip>
 
 ### Context Management
@@ -175,7 +175,7 @@ Mobile Push is local to the desktop install (it manages device registration on t
     Open the ADE iOS app and scan the registration QR code. The device is registered to your ADE install within a few seconds.
   </Step>
   <Step title="Choose which events trigger a push">
-    Toggle individual event types. The most useful defaults: mission complete, mission failed, and intervention required.
+    Toggle individual event types. The most useful defaults: worker run complete, worker run failed, and intervention required.
   </Step>
 </Steps>
 
@@ -204,7 +204,7 @@ The pairing panel also surfaces everything the old Sync section managed:
 | Sync history | Per-domain last-synced timestamps | — |
 
 <Note>
-Sync uses cr-sqlite for CRDT replication. Missions, lanes, and session history all replicate. `.ade/artifacts/` blobs are fetched on demand by the requesting device.
+Sync uses cr-sqlite for CRDT replication. Workers, lanes, and session history all replicate. `.ade/artifacts/` blobs are fetched on demand by the requesting device.
 </Note>
 
 ---
@@ -222,7 +222,7 @@ ADE uses GitHub OAuth for PR management. A GitHub token can also be supplied in 
 | OAuth connection | Connect or disconnect your GitHub account |
 | Organization access | Manage which GitHub orgs ADE can access |
 | Default branch | Branch ADE opens PRs against (default: `main`) |
-| PR auto-link | Automatically link PRs to ADE missions and lanes when the PR branch matches a lane |
+| PR auto-link | Automatically link PRs to ADE worker runs and lanes when the PR branch matches a lane |
 | Draft PRs by default | Create PRs as drafts until explicitly marked ready |
 
 ### Linear
@@ -234,7 +234,7 @@ ADE connects to Linear for bidirectional issue sync.
 | API key | Linear API key (stored in `local.secret.yaml`) |
 | Sync direction | `bidirectional`, `read-only` (ADE reads Linear), `disabled` |
 | Default team | Linear team for issue creation |
-| Label mappings | Map ADE mission states to Linear issue labels |
+| Label mappings | Map ADE worker run states to Linear issue labels |
 | Issue → Lane auto-create | Automatically create a lane when a Linear issue is assigned to you |
 
 ### Proof Backends
@@ -267,7 +267,7 @@ The usage panel shows three graph views, each switchable between bar and line ch
 - **Weekly**: Per-week totals for the last 12 weeks, broken down by agent role
 - **Monthly**: Per-month totals for the last 12 months, broken down by lane
 
-Click any bar segment to drill into the individual sessions or missions that contributed to that spend.
+Click any bar segment to drill into the individual sessions or worker runs that contributed to that spend.
 
 ### Monthly Cap
 
@@ -278,7 +278,7 @@ Click any bar segment to drill into the individual sessions or missions that con
 | Hard stop | Pause all agent activity when the cap is reached | On |
 
 <Warning>
-The monthly cap is a hard stop. Once reached, all agent activity (chat, missions, automations, CTO heartbeats) pauses until either the cap is raised or the calendar month rolls over. ADE sends a notification when you reach 80% and again at 100%.
+The monthly cap is a hard stop. Once reached, all agent activity (chat, worker runs, automations, CTO heartbeats) pauses until either the cap is raised or the calendar month rolls over. ADE sends a notification when you reach 80% and again at 100%.
 </Warning>
 
 ---
@@ -293,7 +293,7 @@ The monthly cap is a hard stop. Once reached, all agent activity (chat, missions
     - **Orchestrator model**: `claude-opus-4-7`
     - **Automation model**: `claude-haiku-4-5`
     - **Monthly cap**: $50.00
-    - **Auto-refresh events**: On PR create + On mission start
+    - **Auto-refresh events**: On PR create + On worker run start
   </Tab>
   <Tab title="Small Team">
     Emphasize observability and shared standards:
@@ -310,7 +310,7 @@ The monthly cap is a hard stop. Once reached, all agent activity (chat, missions
     - Configure per-role model routing (Opus for planning, Sonnet for execution, Haiku for automation)
     - Set a high monthly cap and lean on the Usage panel to spot runaway spend
     - Set compaction threshold to 60% for earlier and more frequent compaction
-    - Pair an iPhone from **Mobile Push** so pages land on your phone when a mission needs intervention
+    - Pair an iPhone from **Mobile Push** so pages land on your phone when a worker run needs intervention
   </Tab>
 </Tabs>
 

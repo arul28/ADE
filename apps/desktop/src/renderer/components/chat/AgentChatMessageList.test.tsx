@@ -172,24 +172,24 @@ describe("AgentChatMessageList operator navigation suggestions", () => {
     expect(screen.getByTestId("location").textContent).toBe("/work?sessionId=chat-1::null");
   });
 
-  it("renders mission suggestions from tool results and navigates by deeplink", () => {
+  it("renders lane suggestions from tool results and navigates by deeplink", () => {
     renderMessageList([
       {
         sessionId: "session-1",
         timestamp: "2026-03-17T10:00:00.000Z",
         event: {
           type: "tool_result",
-          tool: "startMission",
+          tool: "openLane",
           itemId: "tool-2",
           status: "completed",
           result: {
             success: true,
             navigationSuggestions: [
               {
-                surface: "missions",
-                label: "Open mission",
-                href: "/missions?missionId=mission-1",
-                missionId: "mission-1",
+                surface: "lanes",
+                label: "Open lane",
+                href: "/lanes?laneId=lane-1",
+                laneId: "lane-1",
               },
             ],
           },
@@ -198,9 +198,9 @@ describe("AgentChatMessageList operator navigation suggestions", () => {
     ]);
 
     fireEvent.click(screen.getByRole("button", { name: /Tool calls/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Open mission" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open lane" }));
 
-    expect(screen.getByTestId("location").textContent).toBe("/missions?missionId=mission-1::null");
+    expect(screen.getByTestId("location").textContent).toBe("/lanes?laneId=lane-1::null");
   });
 
 });
@@ -1697,7 +1697,7 @@ describe("AgentChatMessageList transcript rendering", () => {
           event: {
             type: "subagent_started",
             taskId: "bg-1",
-            description: "Check mission thread renderer",
+            description: "Check chat thread renderer",
             turnId: "turn-7",
             background: true,
           },

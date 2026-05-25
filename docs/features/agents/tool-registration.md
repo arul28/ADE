@@ -16,7 +16,6 @@ filtering before exposing the final list.
 | `apps/ade-cli/src/jsonrpc.ts` | JSON-RPC server and socket transport helpers. |
 | `apps/desktop/src/main/main.ts` | Creates the per-project ADE RPC socket server and binds `createAdeRpcRequestHandler`. |
 | `apps/desktop/src/main/services/ai/tools/` | In-process tool implementations (universal, workflow, CTO operator, Linear). |
-| `apps/desktop/src/main/services/orchestrator/coordinatorTools.ts` | Coordinator tool set for the mission orchestrator. |
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | External CLI detection (Claude Code, Codex, Cursor, Aider, Continue). |
 | `apps/desktop/src/main/services/cli/adeCliService.ts` | Desktop-side CLI install / status / uninstall. Resolves the launcher target (`$HOME/.local/bin/ade` on POSIX, `%LOCALAPPDATA%\ADE\bin\ade.cmd` on Windows) and, on POSIX install, appends a marked `export PATH=...` block to the user's shell rc when the install dir isn't already on `$PATH`. |
 | `apps/desktop/src/shared/adeCliGuidance.ts` | ADE guidance builders injected into agent system prompts and inline CLI preambles. Tells the agent how to find `ade` (PATH → `$ADE_CLI_PATH` → `$ADE_CLI_BIN_DIR/ade` → `node apps/ade-cli/dist/cli.cjs ...`), which bundled ADE skills exist, how Agent Skills are shaped (`<skill>/SKILL.md` plus optional `references/`, `scripts/`, `assets/`), which ADE-hosted surfaces receive the guidance, to try `ade doctor` / typed commands / `ade actions list` before reporting an ADE task as blocked, and to track and clean up stale or finished processes it starts. |
@@ -96,8 +95,8 @@ ADE identity now flows through environment variables and CLI flags:
 
 - The desktop app sets ADE context env vars when it launches managed
   shells or agents.
-- The CLI reads `ADE_CHAT_SESSION_ID`, `ADE_MISSION_ID`, `ADE_RUN_ID`,
-  `ADE_STEP_ID`, `ADE_ATTEMPT_ID`, `ADE_OWNER_ID`, and
+- The CLI reads `ADE_CHAT_SESSION_ID`, `ADE_RUN_ID`,
+  `ADE_OWNER_ID`, and
   `ADE_DEFAULT_ROLE`.
 - The private RPC handler merges those values into its caller context
   before action filtering.
@@ -115,7 +114,6 @@ await connection.request("ade/initialize", { caller: callerCtx });
 Roles:
 
 - `cto` -- CTO session. Gets CTO operator + Linear tools.
-- `orchestrator` -- Mission coordinator. Gets coordinator tools.
 - `agent` -- Worker agent. Gets agent-visible coordinator subset.
 - `external` -- External callers. Gets only the base action set.
 - `evaluator` -- Evaluation runs.
@@ -150,31 +148,30 @@ to detect stale daemons:
 
 `listAdeActionsForSession` builds the visible action list:
 
-```ts
-async function listAdeActionsForSession(runtime, session): Promise<AdeActionSpec[]> {
-  const callerCtx = await resolveEffectiveCallerContext(runtime, session);
-  const baseActions = listBaseAdeActions(runtime);
-  const coordinatorActions = callerCtx.role === "orchestrator"
-    ? listCoordinatorActions(runtime)
-    : listAgentCoordinatorActions(runtime, callerCtx);
-  return filterActionsForCaller([...baseActions, ...coordinatorActions], callerCtx);
-}
-```
+`listToolSpecsForSession` builds the visible action list by resolving
+the caller context and then branching on role:
+
+- `cto` — base tools + CTO operator tools + Linear sync tools.
+- `agent`, `external`, `orchestrator`, `evaluator` — base tools only.
+
+A visibility filter removes computer-use and macOS VM tools when those
+backends are unavailable or when the caller lacks local-computer-use
+permission.
 
 The final `.filter(...)` applies standalone-chat restrictions: if the
-session has `chatSessionId` but no mission/run/step/attempt context,
-`STANDALONE_CHAT_HIDDEN_TOOL_NAMES` (including `spawn_agent` and
-coordinator tools) are stripped from the list.
+session has `chatSessionId` but no worker context,
+`STANDALONE_CHAT_HIDDEN_TOOL_NAMES` (`spawn_agent`) is stripped from
+the list.
 
 ### Role-to-toolset summary
 
-| Role | Base tools | Coordinator access |
+| Role | Base tools | Elevated access |
 |---|---|---|
 | `external` | Yes | No |
-| `agent` | Yes | Agent-visible subset (tools with run/step/attempt context) |
-| `cto` | Yes | No; has CTO operator + Linear sync instead |
-| `orchestrator` | Yes | Full coordinator tool set |
-| `evaluator` | Yes (limited; case-by-case) | No |
+| `agent` | Yes | No |
+| `cto` | Yes | CTO operator + Linear sync tools |
+| `orchestrator` | Yes | No (base tools only) |
+| `evaluator` | Yes | No |
 
 ## Rate limits
 
@@ -258,7 +255,7 @@ and bundled ADE resources appear before inherited environment,
 packaged app, and source-fallback roots. The same full root list is
 joined into `ADE_AGENT_SKILLS_DIRS` for ADE-launched CLI sessions,
 headless worker launches, Work-tab CLI launches, ADE Code/TUI
-sessions, CTO/mission worker prompts, and mobile-started work that
+sessions, CTO worker prompts, and mobile-started work that
 runs through ADE's runtime.
 
 The guidance tells the agent that `ade` *should* be available, and

@@ -81,9 +81,6 @@ const SettingsPage = React.lazy(() =>
 const WorkspaceGraphPage = React.lazy(() =>
   import("../graph/WorkspaceGraphPage").then((m) => ({ default: m.WorkspaceGraphPage }))
 );
-const MissionsPage = React.lazy(() =>
-  import("../missions/MissionsPage").then((m) => ({ default: m.MissionsPage }))
-);
 const ctoRoute = createPreloadableRoute<{ active?: boolean }>(() =>
   import("../cto/CtoPage").then((m) => ({ default: m.CtoPage }))
 );
@@ -270,7 +267,6 @@ function serializeProjectRoute(location: ReturnType<typeof useLocation>): string
     "/review",
     "/history",
     "/automations",
-    "/missions",
     "/cto",
     "/settings",
     "/onboarding",
@@ -459,11 +455,6 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
           <Route path="/automations/templates" element={
             <PageErrorBoundary>
               <React.Suspense fallback={LazyFallback}>{React.createElement(AutomationsTemplatesPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
-            </PageErrorBoundary>
-          } />
-          <Route path="/missions" element={
-            <PageErrorBoundary>
-              <React.Suspense fallback={LazyFallback}>{React.createElement(MissionsPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
             </PageErrorBoundary>
           } />
           <Route path="/cto" element={

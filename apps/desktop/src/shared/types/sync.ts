@@ -120,7 +120,6 @@ export type SyncClientStatus = {
 };
 
 export type SyncTransferBlockerKind =
-  | "mission_run"
   | "chat_runtime"
   | "terminal_session"
   | "managed_process";
@@ -140,8 +139,8 @@ export type SyncTransferReadiness = {
 
 export type SyncGetStatusArgs = {
   /**
-   * Transfer readiness scans active missions, chats, terminal sessions, and
-   * managed run processes. Top-level chrome can skip it when it only needs the
+   * Transfer readiness scans active chats, terminal sessions, and managed run
+   * processes. Top-level chrome can skip it when it only needs the
    * connection label.
    */
   includeTransferReadiness?: boolean;
@@ -859,7 +858,6 @@ export type NotificationPreferences = {
   cto: {
     subagentStarted: boolean;
     subagentFinished: boolean;
-    missionPhaseChanged: boolean;
   };
   prs: {
     ciFailing: boolean;
@@ -1017,7 +1015,6 @@ export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
   cto: {
     subagentStarted: false,
     subagentFinished: true,
-    missionPhaseChanged: true,
   },
   prs: {
     ciFailing: true,

@@ -5,9 +5,15 @@ import type {
   ComputerUseArtifactView,
   ComputerUseBackendStatus,
   ComputerUseOwnerSnapshot,
-  PhaseCard,
 } from "../../../shared/types";
 import type { ComputerUseArtifactBrokerService } from "./computerUseArtifactBrokerService";
+
+type ProofPhaseConfig = {
+  validationGate: {
+    required?: boolean;
+    evidenceRequirements?: string[];
+  };
+};
 
 const COMPUTER_USE_KINDS: ComputerUseArtifactKind[] = [
   "screenshot",
@@ -22,7 +28,7 @@ export function getComputerUseArtifactKinds(): ComputerUseArtifactKind[] {
 }
 
 export function collectRequiredComputerUseKindsFromPhases(
-  phases: PhaseCard[],
+  phases: ProofPhaseConfig[],
 ): ComputerUseArtifactKind[] {
   const required = new Set<ComputerUseArtifactKind>();
   const supported = new Set<ComputerUseArtifactKind>(COMPUTER_USE_KINDS);

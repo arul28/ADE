@@ -514,7 +514,7 @@ vi.mock("../orchestrator/providerOrchestratorAdapter", () => ({
   resolveOpenCodeRuntimeRoot: vi.fn(() => process.cwd()),
 }));
 
-vi.mock("../orchestrator/permissionMapping", () => ({
+vi.mock("./permissionMapping", () => ({
   mapPermissionToClaude: vi.fn(() => "plan"),
   mapPermissionToCodex: vi.fn(() => ({
     approvalPolicy: "on-request",
@@ -675,7 +675,7 @@ import { detectAllAuth } from "../ai/authDetector";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
 import { runGit } from "../git/git";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
-import { mapPermissionToCodex } from "../orchestrator/permissionMapping";
+import { mapPermissionToCodex } from "./permissionMapping";
 import { acquireCursorSdkConnection } from "./cursorSdkPool";
 import { acquireDroidSdkConnection } from "./droidSdkPool";
 import type { AgentChatEventEnvelope, ComputerUseBackendStatus, LaneLinearIssue, PendingInputRequest } from "../../../shared/types";
@@ -2683,58 +2683,6 @@ describe("createAgentChatService", () => {
       expect(startParams?.effort).toBe("low");
       expect(startParams?.reasoningEffort).toBeUndefined();
       expect(startParams?.reasoning_effort).toBeUndefined();
-    });
-
-    it("starts mission Codex app-server sessions without global MCP servers", async () => {
-      const laneRootPath = path.join(tmpRoot, "lane-2");
-      fs.mkdirSync(laneRootPath, { recursive: true });
-
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-2",
-        provider: "codex",
-        model: "gpt-5.4",
-        reasoningEffort: "low",
-        surface: "mission",
-      });
-
-      await service.sendMessage({
-        sessionId: session.id,
-        text: "Plan this mission without loading desktop MCP helpers.",
-      });
-
-      await vi.waitFor(() => {
-        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
-      });
-
-      expect(spawn).toHaveBeenCalledWith(
-        "codex",
-        [
-          "app-server",
-          "-c",
-          "model_reasoning_effort=\"low\"",
-          "-c",
-          "mcp_servers={}",
-        ],
-        expect.any(Object),
-      );
-      const spawnCall = vi.mocked(spawn).mock.calls.find((call) =>
-        call[0] === "codex" && Array.isArray(call[1]) && call[1].includes("app-server")
-      );
-      const spawnArgs = spawnCall?.[1] as string[] | undefined;
-      expect(spawnArgs).toBeDefined();
-      expect(spawnArgs).not.toContain("--disable");
-      expect(spawnArgs).not.toContain("browser_use");
-      expect(spawnArgs).not.toContain("computer_use");
-      const spawnOptions = spawnCall?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
-      const codexHome = spawnOptions?.env?.CODEX_HOME;
-      expect(codexHome).toContain("ade-mission-codex-home");
-      const configToml = fs.readFileSync(path.join(String(codexHome), "config.toml"), "utf8");
-      expect(configToml).toContain("enable_mcp_apps = false");
-      expect(configToml).toContain("multi_agent = false");
-      expect(configToml).toContain("plugins = false");
-      expect(configToml).toContain("apps = false");
-      expect(configToml).not.toContain("[mcp_servers");
     });
 
     it("spawns Codex with ADE CLI agent env injected", async () => {
@@ -5138,46 +5086,6 @@ describe("createAgentChatService", () => {
     expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
   });
 
-  it("keeps mission-surface sessions on deterministic titles and summaries", async () => {
-    vi.mocked(detectAllAuth).mockResolvedValue([
-      { type: "cli-subscription", cli: "claude", authenticated: true },
-      { type: "cli-subscription", cli: "codex", authenticated: true },
-    ] as any);
-    const { service, aiIntegrationService } = createService();
-    const session = await service.createSession({
-      laneId: "lane-1",
-      provider: "codex",
-      model: "gpt-5.5",
-      surface: "mission",
-    });
-
-    await service.sendMessage({
-      sessionId: session.id,
-      text: "Execute worker step \"Run targeted throwaway score tests\".",
-    }, { awaitDispatch: true });
-    mockState.emitCodexPayload({
-      jsonrpc: "2.0",
-      method: "item/completed",
-      params: {
-        turnId: "turn-1",
-        item: {
-          id: "assistant-1",
-          type: "assistant_message",
-          text: "Both targeted tests passed.",
-        },
-      },
-    });
-    mockState.emitCodexPayload({
-      jsonrpc: "2.0",
-      method: "turn/completed",
-      params: { turnId: "turn-1" },
-    });
-
-    await service.dispose({ sessionId: session.id });
-
-    expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
-  });
-
   describe("runtime-native chat titles", () => {
     it("adopts Codex app-server thread names from lifecycle responses", async () => {
       mockState.codexResponseOverrides.set("thread/start", () => ({
@@ -7013,7 +6921,7 @@ describe("createAgentChatService", () => {
 
       const firstTurn = service.runSessionTurn({
         sessionId: session.id,
-        text: "Start mission coordination.",
+        text: "Start coordination.",
       });
       await vi.waitFor(() => {
         expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start")).toHaveLength(1);
@@ -7046,7 +6954,7 @@ describe("createAgentChatService", () => {
 
       const secondTurn = service.runSessionTurn({
         sessionId: session.id,
-        text: "Continue mission coordination.",
+        text: "Continue coordination.",
       });
       await vi.waitFor(() => {
         expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start")).toHaveLength(2);
@@ -7157,7 +7065,7 @@ describe("createAgentChatService", () => {
 
       const firstTurn = service.runSessionTurn({
         sessionId: session.id,
-        text: "Start mission coordination.",
+        text: "Start coordination.",
       });
       await vi.waitFor(() => {
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
@@ -7221,7 +7129,7 @@ describe("createAgentChatService", () => {
 
       const firstTurn = service.runSessionTurn({
         sessionId: session.id,
-        text: "Start mission coordination.",
+        text: "Start coordination.",
       });
       await vi.waitFor(() => {
         expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start")).toHaveLength(1);
@@ -7253,7 +7161,7 @@ describe("createAgentChatService", () => {
 
       const secondTurn = service.runSessionTurn({
         sessionId: session.id,
-        text: "Continue mission coordination.",
+        text: "Continue coordination.",
       });
       await vi.waitFor(() => {
         expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start")).toHaveLength(2);
@@ -9439,42 +9347,6 @@ describe("createAgentChatService", () => {
           runtime: "codex-app-server",
         }),
       );
-    });
-
-    it("keeps mission-surface Codex coordinator sessions out of native plan collaboration", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "codex",
-        model: "gpt-5.5",
-        codexApprovalPolicy: "on-request",
-        codexSandbox: "read-only",
-        codexConfigSource: "flags",
-        surface: "mission",
-      });
-      expect(session.permissionMode).toBe("plan");
-      expect(session.surface).toBe("mission");
-
-      await service.sendMessage({
-        sessionId: session.id,
-        text: "Coordinate the mission without provider-native plan approval.",
-      });
-
-      await vi.waitFor(() => {
-        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
-      });
-      const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
-      const params = turnStartRequest?.params as {
-        approvalPolicy?: unknown;
-        sandboxPolicy?: { type?: unknown };
-        collaborationMode?: { mode?: unknown };
-      } | undefined;
-
-      expect(params?.approvalPolicy).toBe("on-request");
-      expect(params?.sandboxPolicy?.type).toBe("readOnly");
-      expect(params?.collaborationMode?.mode).toBe("default");
-      expect(await service.listSessions()).toHaveLength(0);
-      expect(await service.listSessions(undefined, { includeAutomation: true })).toHaveLength(1);
     });
 
     it("turns native Codex plan items into an implementation approval request", async () => {

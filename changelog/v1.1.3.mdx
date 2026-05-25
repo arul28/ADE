@@ -9,7 +9,7 @@ v1.1.3 is a feature-weight release: automations get a ground-up rewrite, the reb
 
 ## Automations
 
-The automations page is now a proper rules engine. Triggers are modelled as `github.*` / `linear.*` / `schedule.*` / `local-git.*` families; actions can be ADE Actions, agent sessions, or launch-mission runs; and each rule has its own per-rule history panel instead of a shared feed.
+The automations page is now a proper rules engine. Triggers are modelled as `github.*` / `linear.*` / `schedule.*` / `local-git.*` families; actions can be ADE Actions, agent sessions, or launch-run runs; and each rule has its own per-rule history panel instead of a shared feed.
 
 - **GitHub polling triggers.** A new `githubPollingService` watches issues, PRs, comments, and reviews on every configured repo. Comment cursors use `created_at#id` for stable ordering, and review cursors use `submitted_at#review.id` — two reviews submitted in the same ISO second no longer race each other off the cursor and get dropped.
 - **ADE Actions registry.** `apps/desktop/src/main/services/adeActions/registry.ts` is the single source of truth for what an automation is allowed to invoke. Domains are exported as `ADE_ACTION_DOMAIN_NAMES`, and `adeRpcServer` derives its `list_ade_actions` / `run_ade_action` enums from that list — we no longer advertise ~25 domains that had no registry backing, and the actually-implemented `automations` and `issue` domains are now visible.

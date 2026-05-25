@@ -68,7 +68,6 @@ The executor determines how the triggered work runs. Choose one:
 | Executor | Best for | Output location |
 |---|---|---|
 | **Agent Session** | Quick, focused tasks (linting, reviews, small fixes) | Automations > History |
-| **Mission** | Multi-step work requiring planning, validation, and artifacts | Missions tab |
 | **Built-in Task** | Predefined ADE operations (pack refresh, conflict scan) | Automations > History |
 
 For agent sessions, you provide a **prompt template** — the instruction the agent receives when the trigger fires. Use `{{branch}}`, `{{files}}`, and `{{event}}` placeholders to inject trigger context into the prompt.
@@ -137,7 +136,7 @@ Check **Automations > History** to see past runs. Each entry shows:
 - Trigger event that fired the rule
 - Executor type and run duration
 - Status (completed, failed, budget-exceeded)
-- Link to the full output (agent session transcript or mission)
+- Link to the full output (agent session transcript or automation log)
 
 ---
 

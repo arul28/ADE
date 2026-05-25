@@ -20,15 +20,15 @@ Use screenshots for lightweight visual confirmation, recordings for flow review,
 
 ## Ownership Model
 
-Every proof is a canonical record in ADE's SQLite database. Proofs can have multiple owners simultaneously — the same screenshot can be linked to a mission, a PR, and a Linear issue.
+Every proof is a canonical record in ADE's SQLite database. Proofs can have multiple owners simultaneously — the same screenshot can be linked to a worker run, a PR, and a Linear issue.
 
 **Ownership types:**
 - **Lane** — the lane where the proof was captured
-- **Mission** — the mission the agent was working on, if any
+- **Worker run** — the worker run the agent was working on, if any
 - **Chat Session** — the chat session the agent was in, if any
 - **Pull Request** — if the proof is linked to an open PR
 - **Linear Issue** — if the proof is published to a Linear issue as an attachment
-- **Orchestrator run / step / attempt** — finer-grained mission subdivisions
+- **Orchestrator run / step / attempt** — finer-grained worker run subdivisions
 - **Automation run** — when the proof was captured inside an automation
 
 Agents attach owners when they call `ade proof`, and you can add or remove owners later from the proof's detail view.
@@ -51,7 +51,7 @@ Each proof carries two orthogonal state fields:
 | State | Meaning |
 |---|---|
 | `evidence_only` | Captured but not yet promoted anywhere |
-| `promoted` | Moved into a mission's artifacts pool |
+| `promoted` | Moved into a worker run's artifacts pool |
 | `published` | Routed to an external owner (PR attachment, Linear attachment) |
 | `dismissed` | Removed from the active pool |
 
@@ -59,13 +59,13 @@ A typical proof starts as `pending` / `evidence_only`, moves to `accepted` / `pr
 
 ---
 
-## Reviewing Proofs in Missions
+## Reviewing Proofs in Workers
 
-Missions surface proofs in the **Artifacts tab** on the mission detail view. Each row shows the kind, title, source backend, owner, and a thumbnail.
+Workers surface proofs in the **Artifacts tab** on the worker run detail view. Each row shows the kind, title, source backend, owner, and a thumbnail.
 
 <Steps>
   <Step title="Open the Artifacts tab">
-    On a mission detail view, switch to the **Artifacts** tab.
+    On a worker run detail view, switch to the **Artifacts** tab.
   </Step>
   <Step title="Click the proof you want to review">
     A side panel opens with the full media, the capture metadata, and any existing owners.
@@ -74,7 +74,7 @@ Missions surface proofs in the **Artifacts tab** on the mission detail view. Eac
     Choose **Accept**, **Needs more**, or **Dismiss**. Your reviewer note is stored alongside the state.
   </Step>
   <Step title="Publish to owners (optional)">
-    Select one or more targets — the PR from this mission, a Linear issue, a chat session — and click **Publish**. ADE routes the proof to each target and updates the workflow state to `published`.
+    Select one or more targets — the PR from this worker run, a Linear issue, a chat session — and click **Publish**. ADE routes the proof to each target and updates the workflow state to `published`.
   </Step>
 </Steps>
 
@@ -85,7 +85,7 @@ Missions surface proofs in the **Artifacts tab** on the mission detail view. Eac
 When a chat agent captures a proof during a session, it appears in the session's artifact panel. From there you can:
 
 - Promote the proof to the lane's durable context
-- Attach it to an existing mission's artifact pool
+- Attach it to an existing worker run's artifact pool
 - Attach it to a PR or Linear issue
 - Dismiss it
 
@@ -102,6 +102,6 @@ capture → pending / evidence_only
         → dismissed              (excluded from the active pool)
 ```
 
-Every state transition is append-only: the original record is never overwritten. The History tab on each mission reflects every review and publish action, giving you a full audit trail.
+Every state transition is append-only: the original record is never overwritten. The History tab on each worker run reflects every review and publish action, giving you a full audit trail.
 </content>
 </invoke>

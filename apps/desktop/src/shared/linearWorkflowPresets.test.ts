@@ -31,7 +31,6 @@ describe("linearWorkflowPresets", () => {
     const targetTypes: LinearWorkflowTargetType[] = [
       "employee_session",
       "worker_run",
-      "mission",
       "pr_resolution",
       "review_gate",
     ];
@@ -51,7 +50,6 @@ describe("linearWorkflowPresets", () => {
 
 describe("defaultCompletionContract", () => {
   it("returns correct contracts for each target type", () => {
-    expect(defaultCompletionContract("mission")).toBe("wait_for_runtime_success");
     expect(defaultCompletionContract("pr_resolution")).toBe("wait_for_pr_created");
     expect(defaultCompletionContract("employee_session")).toBe("wait_for_explicit_completion");
     expect(defaultCompletionContract("worker_run")).toBe("wait_for_explicit_completion");
@@ -85,7 +83,6 @@ describe("reviewReadyWhenForContract", () => {
 describe("defaultWorkflowName", () => {
   it("returns human-readable names for each target type", () => {
     expect(defaultWorkflowName("employee_session")).toContain("employee");
-    expect(defaultWorkflowName("mission")).toContain("Mission");
     expect(defaultWorkflowName("worker_run")).toContain("Worker");
     expect(defaultWorkflowName("pr_resolution")).toContain("PR");
     expect(defaultWorkflowName("review_gate")).toContain("review");
@@ -94,20 +91,14 @@ describe("defaultWorkflowName", () => {
 
 describe("resolveWorkflowTargetWaitStatus", () => {
   it("returns undefined for non-wait_for_target_status steps", () => {
-    const workflow = createWorkflowPreset("mission");
+    const workflow = createWorkflowPreset("employee_session");
     const launchStep = workflow.steps.find((s) => s.type === "launch_target")!;
     expect(resolveWorkflowTargetWaitStatus(workflow, launchStep)).toBeUndefined();
   });
 
   it("returns undefined when no step is provided", () => {
-    const workflow = createWorkflowPreset("mission");
+    const workflow = createWorkflowPreset("employee_session");
     expect(resolveWorkflowTargetWaitStatus(workflow, undefined)).toBeUndefined();
-  });
-
-  it("returns runtime_completed for mission wait steps", () => {
-    const workflow = createWorkflowPreset("mission");
-    const waitStep = workflow.steps.find((s) => s.type === "wait_for_target_status")!;
-    expect(resolveWorkflowTargetWaitStatus(workflow, waitStep)).toBe("runtime_completed");
   });
 
   it("returns explicit_completion for employee session wait steps", () => {
@@ -121,7 +112,6 @@ describe("createWorkflowPreset", () => {
   const targetTypes: LinearWorkflowTargetType[] = [
     "employee_session",
     "worker_run",
-    "mission",
     "pr_resolution",
     "review_gate",
   ];
@@ -155,7 +145,7 @@ describe("createWorkflowPreset", () => {
   });
 
   it("accepts custom options", () => {
-    const workflow = createWorkflowPreset("mission", {
+    const workflow = createWorkflowPreset("worker_run", {
       id: "custom-id",
       name: "Custom Name",
       description: "Custom description",
@@ -242,7 +232,7 @@ describe("rebuildWorkflowSteps", () => {
   });
 
   it("always ends with complete_issue step", () => {
-    const targetTypes: LinearWorkflowTargetType[] = ["employee_session", "mission", "worker_run", "pr_resolution", "review_gate"];
+    const targetTypes: LinearWorkflowTargetType[] = ["employee_session", "worker_run", "pr_resolution", "review_gate"];
     for (const targetType of targetTypes) {
       const workflow = createWorkflowPreset(targetType);
       const rebuilt = rebuildWorkflowSteps(workflow, {});

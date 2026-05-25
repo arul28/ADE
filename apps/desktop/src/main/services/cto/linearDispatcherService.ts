@@ -24,8 +24,6 @@ import type {
 import type { AdeDb } from "../state/kvDb";
 import { nowIso, safeJsonParse } from "../shared/utils";
 import type { createAgentChatService } from "../chat/agentChatService";
-import type { createMissionService } from "../missions/missionService";
-import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
 import type { createLaneService } from "../lanes/laneService";
 import type { createPrService } from "../prs/prService";
 import type { createWorkerHeartbeatService } from "./workerHeartbeatService";
@@ -50,7 +48,6 @@ type RunRow = {
   current_step_index: number;
   current_step_id: string | null;
   execution_lane_id: string | null;
-  linked_mission_id: string | null;
   linked_session_id: string | null;
   linked_worker_run_id: string | null;
   linked_pr_id: string | null;
@@ -139,7 +136,6 @@ function toRun(row: RunRow): LinearWorkflowRun {
     currentStepIndex: row.current_step_index,
     currentStepId: row.current_step_id,
     executionLaneId: row.execution_lane_id,
-    linkedMissionId: row.linked_mission_id,
     linkedSessionId: row.linked_session_id,
     linkedWorkerRunId: row.linked_worker_run_id,
     linkedPrId: row.linked_pr_id,
@@ -207,9 +203,6 @@ function resolveWorkflowTargetStatus(
   targetType: LinearWorkflowDefinition["target"]["type"],
   targetStatus?: LinearWorkflowTargetStatus | null,
 ): LinearWorkflowTargetStatus {
-  if (targetType === "mission") {
-    return targetStatus ?? "completed";
-  }
   if (!targetStatus || targetStatus === "completed") {
     return "explicit_completion";
   }
@@ -234,8 +227,6 @@ export function createLinearDispatcherService(args: {
   issueTracker: IssueTracker;
   workerAgentService: WorkerAgentService;
   workerHeartbeatService: ReturnType<typeof createWorkerHeartbeatService>;
-  missionService: ReturnType<typeof createMissionService>;
-  aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;
   agentChatService: ReturnType<typeof createAgentChatService>;
   laneService: ReturnType<typeof createLaneService>;
   templateService: LinearTemplateService;
@@ -357,7 +348,6 @@ export function createLinearDispatcherService(args: {
     currentStepIndex: number;
     currentStepId: string | null;
     executionLaneId: string | null;
-    linkedMissionId: string | null;
     linkedSessionId: string | null;
     linkedWorkerRunId: string | null;
     linkedPrId: string | null;
@@ -385,7 +375,6 @@ export function createLinearDispatcherService(args: {
             current_step_index = ?,
             current_step_id = ?,
             execution_lane_id = ?,
-            linked_mission_id = ?,
             linked_session_id = ?,
             linked_worker_run_id = ?,
             linked_pr_id = ?,
@@ -412,7 +401,6 @@ export function createLinearDispatcherService(args: {
         patch.currentStepIndex ?? existing.current_step_index,
         patch.currentStepId === undefined ? existing.current_step_id : patch.currentStepId,
         patch.executionLaneId === undefined ? existing.execution_lane_id : patch.executionLaneId,
-        patch.linkedMissionId === undefined ? existing.linked_mission_id : patch.linkedMissionId,
         patch.linkedSessionId === undefined ? existing.linked_session_id : patch.linkedSessionId,
         patch.linkedWorkerRunId === undefined ? existing.linked_worker_run_id : patch.linkedWorkerRunId,
         patch.linkedPrId === undefined ? existing.linked_pr_id : patch.linkedPrId,
@@ -487,7 +475,7 @@ export function createLinearDispatcherService(args: {
   };
 
   const hasDurableLaunchMarker = (run: LinearWorkflowRun): boolean =>
-    Boolean(run.linkedMissionId || run.linkedSessionId || run.linkedWorkerRunId || run.linkedPrId);
+    Boolean(run.linkedSessionId || run.linkedWorkerRunId || run.linkedPrId);
 
   const updateStep = (stepId: string, patch: Partial<{
     status: StepRow["status"];
@@ -753,7 +741,6 @@ export function createLinearDispatcherService(args: {
     const payload: Record<string, unknown> = {
       activeTargetType: run.executionContext?.activeTargetType ?? activeTarget.type,
       laneId: run.executionLaneId,
-      missionId: run.linkedMissionId,
       sessionId: run.linkedSessionId,
       workerRunId: run.linkedWorkerRunId,
       prId: run.linkedPrId,
@@ -795,7 +782,7 @@ export function createLinearDispatcherService(args: {
     issue: NormalizedLinearIssue,
   ): string => {
     const rendered = args.templateService.renderTemplate({
-      templateId: target.sessionTemplate ?? target.missionTemplate ?? "default",
+      templateId: target.sessionTemplate ?? "default",
       issue,
       route: {
         workflowId: workflow.id,
@@ -882,7 +869,6 @@ export function createLinearDispatcherService(args: {
       currentStep: currentStep?.name ?? currentStep?.id ?? null,
       delegatedOwner,
       laneId: run.executionLaneId,
-      missionId: run.linkedMissionId,
       sessionId: run.linkedSessionId,
       workerRunId: run.linkedWorkerRunId,
       prId: run.linkedPrId,
@@ -899,7 +885,7 @@ export function createLinearDispatcherService(args: {
         run,
         target: {
           type: run.executionContext?.activeTargetType ?? run.targetType,
-          id: run.linkedSessionId ?? run.linkedWorkerRunId ?? run.linkedMissionId ?? run.linkedPrId ?? run.executionLaneId ?? null,
+          id: run.linkedSessionId ?? run.linkedWorkerRunId ?? run.linkedPrId ?? run.executionLaneId ?? null,
           owner: delegatedOwner,
         },
         pr: {
@@ -997,7 +983,7 @@ export function createLinearDispatcherService(args: {
     target: LinearWorkflowDefinition["target"],
     issue: NormalizedLinearIssue
   ): Promise<string | null> => {
-    if (target.type === "mission" || target.type === "review_gate") {
+    if (target.type === "review_gate") {
       return null;
     }
     if (run.executionLaneId) return run.executionLaneId;
@@ -1140,38 +1126,6 @@ export function createLinearDispatcherService(args: {
       }
     }
 
-    if (target.type === "mission") {
-      if (!run.linkedMissionId) {
-        return { state: "failed", payload: { targetStatus, reason: "missing_mission_link" } };
-      }
-      const mission = args.missionService.get(run.linkedMissionId);
-      if (!mission) {
-        return { state: "failed", payload: { targetStatus, missionId: run.linkedMissionId, reason: "mission_not_found" } };
-      }
-      if (mission.status === "completed") {
-        return {
-          state: targetStatusAllowsTerminalSuccess(targetStatus) ? "completed" : "waiting",
-          payload: { targetStatus, missionId: run.linkedMissionId, missionStatus: mission.status },
-        };
-      }
-      if (mission.status === "failed") {
-        return {
-          state: "failed",
-          payload: { targetStatus, missionId: run.linkedMissionId, missionStatus: mission.status },
-        };
-      }
-      if (mission.status === "canceled") {
-        return {
-          state: "cancelled",
-          payload: { targetStatus, missionId: run.linkedMissionId, missionStatus: mission.status },
-        };
-      }
-      return {
-        state: "waiting",
-        payload: { targetStatus, missionId: run.linkedMissionId, missionStatus: mission.status },
-      };
-    }
-
     if (target.type === "employee_session") {
       const launchContext = getLaunchContext(run.id);
       const identityKey = typeof launchContext.sessionIdentityKey === "string" ? launchContext.sessionIdentityKey.trim() : "";
@@ -1310,57 +1264,6 @@ export function createLinearDispatcherService(args: {
       employeeOverride: override,
       overrideSource,
     });
-
-    if (target.type === "mission") {
-      const rendered = args.templateService.renderTemplate({
-        templateId: target.missionTemplate ?? "default",
-        issue,
-        route: {
-          workflowId: workflow.id,
-          workflowName: workflow.name,
-        },
-        worker: worker ? { id: worker.id, slug: worker.slug } : {},
-      });
-      const mission = args.missionService.create({
-        title: `${issue.identifier}: ${issue.title}`,
-        prompt: rendered.prompt,
-        priority: issue.priorityLabel === "urgent" ? "urgent" : issue.priorityLabel === "high" ? "high" : issue.priorityLabel === "low" ? "low" : "normal",
-        autostart: false,
-        launchMode: target.runMode === "manual" ? "manual" : "autopilot",
-        employeeAgentId: worker?.id,
-        ...(target.prStrategy ? { executionPolicy: { prStrategy: target.prStrategy } } : {}),
-        ...(target.phaseProfile ? { phaseProfileId: target.phaseProfile } : {}),
-      });
-      await args.aiOrchestratorService.startMissionRun({
-        missionId: mission.id,
-        runMode: target.runMode === "manual" ? "manual" : "autopilot",
-        metadata: {
-          source: "linear_workflow",
-          linearIssueId: issue.id,
-          workflowId: workflow.id,
-        },
-      });
-      updateRun(run.id, {
-        linkedMissionId: mission.id,
-        status: "waiting_for_target",
-      });
-      updateExecutionState(run.id, {
-        waitingFor: "delegated work",
-        stalledReason: null,
-        workerId: worker?.id ?? null,
-        workerSlug: worker?.slug ?? null,
-        sessionLabel: null,
-      });
-      const missionPatch: Partial<LinearWorkflowRun> & Record<string, unknown> = {
-        linkedMissionId: mission.id,
-        status: "waiting_for_target",
-        workerId: worker?.id ?? null,
-        workerSlug: worker?.slug ?? null,
-        sessionLabel: null,
-        activeTargetType: target.type,
-      };
-      return missionPatch;
-    }
 
     if (target.type === "employee_session") {
       if (!employeeTarget || !employeeTarget.identityKey) {
@@ -1862,7 +1765,6 @@ export function createLinearDispatcherService(args: {
               || !isEmployeeOverrideCompatibleWithTarget(policy, nextTarget.type, currentOverride)
             );
           updateRun(run.id, {
-            linkedMissionId: null,
             linkedSessionId: null,
             linkedWorkerRunId: null,
           });
@@ -2080,7 +1982,6 @@ export function createLinearDispatcherService(args: {
               currentStepId: workflow.steps[loopIndex]?.id ?? null,
               reviewState: "changes_requested",
               reviewReadyReason: null,
-              linkedMissionId: null,
               linkedSessionId: null,
               linkedWorkerRunId: null,
             });
@@ -2295,11 +2196,11 @@ export function createLinearDispatcherService(args: {
       `
         insert into linear_workflow_runs(
           id, project_id, issue_id, identifier, title, workflow_id, workflow_name, workflow_version, source, target_type,
-          status, current_step_index, current_step_id, execution_lane_id, linked_mission_id, linked_session_id, linked_worker_run_id, linked_pr_id,
+          status, current_step_index, current_step_id, execution_lane_id, linked_session_id, linked_worker_run_id, linked_pr_id,
           review_state, supervisor_identity_key, review_ready_reason, pr_state, pr_checks_status, pr_review_status, latest_review_note,
           retry_count, retry_after, closeout_state, terminal_outcome, route_context_json, execution_context_json, source_issue_snapshot_json, last_error, created_at, updated_at
         )
-        values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, null, null, null, null, null, null, null, null, null, null, null, null, 0, null, 'pending', null, ?, ?, ?, null, ?, ?)
+        values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, null, null, null, null, null, null, null, null, null, null, null, 0, null, 'pending', null, ?, ?, ?, null, ?, ?)
       `,
       [
         id,
@@ -2418,7 +2319,7 @@ export function createLinearDispatcherService(args: {
       });
     }
     if (trimmedLaneId !== undefined) {
-      if (!activeTarget || activeTarget.type === "mission" || activeTarget.type === "review_gate") {
+      if (!activeTarget || activeTarget.type === "review_gate") {
         throw new Error("This workflow target does not use an execution lane.");
       }
       const resolvedLaneId = await resolveOperatorLane(trimmedLaneId);
@@ -2460,7 +2361,6 @@ export function createLinearDispatcherService(args: {
         currentStepIndex: 0,
         currentStepId: null,
         latestReviewNote: note ?? run.latestReviewNote,
-        linkedMissionId: null,
         linkedSessionId: null,
         linkedWorkerRunId: null,
       });
@@ -2535,7 +2435,6 @@ export function createLinearDispatcherService(args: {
         status: reviewContext?.rejectAction === "loop_back" ? "queued" : "in_progress",
         lastError: note ?? "Rejected by reviewer.",
         ...(reviewContext?.rejectAction === "loop_back" ? {
-          linkedMissionId: null,
           linkedSessionId: null,
           linkedWorkerRunId: null,
         } : {}),
@@ -2598,7 +2497,6 @@ export function createLinearDispatcherService(args: {
         currentStepIndex: 0,
         currentStepId: null,
         latestReviewNote: note ?? run.latestReviewNote,
-        linkedMissionId: null,
         linkedSessionId: null,
         linkedWorkerRunId: null,
       });
@@ -2662,7 +2560,6 @@ export function createLinearDispatcherService(args: {
         workerId: delegatedContext.workerId,
         workerSlug: delegatedContext.workerSlug,
         sessionLabel: delegatedContext.sessionLabel,
-        missionId: row.linked_mission_id,
         sessionId: row.linked_session_id,
         workerRunId: row.linked_worker_run_id,
         prId: row.linked_pr_id,

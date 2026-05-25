@@ -647,16 +647,14 @@ describe("conflictService conflict context integrity", () => {
       model: "anthropic/claude-sonnet-4-6",
       reasoningEffort: "high",
       permissionMode: "full_edit",
-      originSurface: "mission",
-      originMissionId: "mission-1",
+      originSurface: "queue",
       originRunId: "run-1",
-      originLabel: "Mission finalization",
+      originLabel: "Queue finalization",
     });
 
     expect(prepared.status).toBe("blocked");
     const preparedSummary = service.listExternalResolverRuns({ laneId: "lane-1" }).find((entry) => entry.runId === prepared.runId);
-    expect(preparedSummary?.originSurface).toBe("mission");
-    expect(preparedSummary?.originMissionId).toBe("mission-1");
+    expect(preparedSummary?.originSurface).toBe("queue");
     expect(preparedSummary?.originRunId).toBe("run-1");
     expect(preparedSummary?.model).toBe("anthropic/claude-sonnet-4-6");
     expect(preparedSummary?.reasoningEffort).toBe("high");

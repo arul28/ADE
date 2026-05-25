@@ -178,7 +178,7 @@ Local models run entirely on your machine. No API key is needed. ADE communicate
 </Steps>
 
 <Warning>
-Local models have significantly smaller context windows than cloud models (typically 4K–32K tokens versus 128K–200K). ADE's context compaction will trigger more frequently. For complex missions or large codebases, cloud models are strongly recommended.
+Local models have significantly smaller context windows than cloud models (typically 4K–32K tokens versus 128K–200K). ADE's context compaction will trigger more frequently. For complex worker runs or large codebases, cloud models are strongly recommended.
 </Warning>
 
 ---
@@ -205,7 +205,7 @@ Local models have significantly smaller context windows than cloud models (typic
 
 ## Permission modes
 
-Chat and Missions share the same permission picker. Each provider exposes a small set of presets that map directly to provider flags.
+Chat and Workers share the same permission picker. Each provider exposes a small set of presets that map directly to provider flags.
 
 ### Claude
 
@@ -227,7 +227,7 @@ Codex presets combine `--approval-policy` and `--sandbox`.
 | `full-auto` (Full access) | `never` | `danger-full-access` | You are running inside a stronger external sandbox. Skips every approval prompt. |
 | `config-toml` (Custom) | — | — | ADE passes no `--approval-policy` or `--sandbox`. Codex honors its own config (`~/.codex/config.toml`). |
 
-There is no separate "Guarded edit" preset anymore. The previous Guarded edit preset is replaced by **Default permissions**, which is the same workspace-write sandbox but with the `on-request` approval policy rather than `on-failure`. The Codex sandbox in Missions is derived from the chosen mode — the separate sandbox dropdown has been removed from the Worker Permissions editor.
+There is no separate "Guarded edit" preset anymore. The previous Guarded edit preset is replaced by **Default permissions**, which is the same workspace-write sandbox but with the `on-request` approval policy rather than `on-failure`. The Codex sandbox in Workers is derived from the chosen mode — the separate sandbox dropdown has been removed from the Worker Permissions editor.
 
 ### OpenCode
 
@@ -244,18 +244,18 @@ ADE lets you assign different models to different agent roles. This is the recom
 ai:
   defaultModel: "claude-sonnet-4-6"      # Fallback for all agents
   routingRules:
-    - role: "orchestrator"               # Mission planning agent
+    - role: "orchestrator"               # Worker run planning agent
       model: "claude-opus-4-7"
-    - role: "worker"                     # Mission execution agents
+    - role: "worker"                     # Worker run execution agents
       model: "claude-sonnet-4-6"
     - role: "automation"                 # Automation runs (cost-sensitive)
       model: "claude-haiku-4-5"
-    - role: "validator"                  # Mission validation agent
+    - role: "validator"                  # Worker run validation agent
       model: "claude-sonnet-4-6"
 ```
 
 <Tip>
-For solo developers running many automations, routing automation runs to `claude-haiku-4-5` and reserving `claude-opus-4-7` for mission planning can reduce monthly spend by 60–80% with minimal quality impact on routine tasks.
+For solo developers running many automations, routing automation runs to `claude-haiku-4-5` and reserving `claude-opus-4-7` for worker run planning can reduce monthly spend by 60–80% with minimal quality impact on routine tasks.
 </Tip>
 
 ---
@@ -268,7 +268,7 @@ Budget caps prevent runaway spend from long-running agents or automation loops. 
 # .ade/ade.yaml
 ai:
   defaultBudgetPerSession: 1.00         # USD per chat session
-  defaultBudgetPerMission: 10.00        # USD per mission (all workers combined)
+  defaultBudgetPerWorkerRun: 10.00     # USD per delegated worker run
   defaultBudgetPerAutomation: 0.50      # USD per automation trigger
   monthlyBudgetCap: 100.00              # Hard monthly ceiling across all agents
 ```
@@ -277,8 +277,8 @@ ai:
   <Accordion title="Per-session budget" icon="message">
     Applied to chat sessions in the Agent Chat pane. When the session's cumulative cost reaches this value, the agent receives a stop signal. You can raise the cap for the current session in the chat header without editing config.
   </Accordion>
-  <Accordion title="Per-mission budget" icon="bullseye">
-    Applied to the entire mission run, summing across all workers. If the combined worker spend reaches the cap during execution, the orchestrator suspends remaining tasks and surfaces an intervention request asking whether to extend the budget or abandon the mission.
+  <Accordion title="Per-worker run budget" icon="bullseye">
+    Applied to the entire delegated worker run, summing across all workers. If the combined worker spend reaches the cap during execution, the orchestrator suspends remaining tasks and surfaces an intervention request asking whether to extend the budget or abandon the worker run.
   </Accordion>
   <Accordion title="Per-automation budget" icon="bolt">
     Applied per automation trigger event. Each time an automation fires, it gets a fresh budget for that run. Useful for keeping PR review automations economical.
@@ -360,8 +360,8 @@ API keys are handled according to ADE's trust boundary model:
   <Card title="Permissions" icon="shield-check" href="/configuration/permissions">
     Review the trust boundary model and configure per-agent access rules.
   </Card>
-  <Card title="Missions" icon="bullseye" href="/missions/overview">
-    Learn how model routing rules apply during mission planning and execution phases.
+  <Card title="Workers" icon="bullseye" href="/cto/workers">
+    Learn how model routing rules apply during worker run planning and execution phases.
   </Card>
   <Card title="Permissions" icon="shield-check" href="/configuration/permissions">
     Understand how API keys are protected by ADE's trust boundary architecture.

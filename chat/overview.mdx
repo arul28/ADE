@@ -1,11 +1,11 @@
 ---
 title: "Agent Chat Overview"
-description: "Conversational AI with real project access — read files, run commands, create PRs, spawn missions, and capture proof artifacts, all from a single chat interface."
+description: "Conversational AI with real project access — read files, run commands, create PRs, spawn worker runs, and capture proof artifacts, all from a single chat interface."
 icon: "comments"
 ---
 ## What is Agent Chat?
 
-**Agent Chat** is ADE's conversational interface for AI agents wired into your development environment. The agent reads and writes real files, runs terminal commands, creates branches and PRs, queries your context pack, and can escalate to a Mission when the task outgrows a single session. Every chat session is recorded with a full transcript, tool call log, and timing data.
+**Agent Chat** is ADE's conversational interface for AI agents wired into your development environment. The agent reads and writes real files, runs terminal commands, creates branches and PRs, queries your context pack, and can escalate to a Worker run when the task outgrows a single session. Every chat session is recorded with a full transcript, tool call log, and timing data.
 
 ### Supported providers
 
@@ -24,7 +24,7 @@ ADE detects which providers are available and lets you switch between them per-s
   <Card title="What Chat is for" icon="message">
     Exploratory work, targeted edits, quick Q&A about your codebase, PR creation, test runs, and anything that resolves in a single focused session.
   </Card>
-  <Card title="When to escalate to a Mission" icon="target">
+  <Card title="When to escalate to a Worker run" icon="target">
     Tasks spanning multiple files or agents, work requiring a formal audit trail, or anything you expect to run for more than 15–20 minutes.
   </Card>
 </CardGroup>
@@ -51,19 +51,19 @@ Chat in ADE is always scoped — it operates within a defined context boundary t
 
     - Project-wide context (all lanes, all branches, all pack snapshots)
     - Linear sync — it can read and write issues
-    - Delegation — it can spawn worker agents or new missions
+    - Delegation — it can spawn worker agents or new worker runs
     - Architecture decisions recorded in the project pack
 
     Use CTO chat for cross-cutting questions, planning, and delegation rather than hands-on coding.
   </Tab>
-  <Tab title="Mission Chat">
-    **Mission chat** is embedded inside a Mission's detail view. It is a direct channel to the mission's orchestrator while the mission is running. Use it to:
+  <Tab title="Worker run Chat">
+    **Worker run chat** is embedded inside a Worker run's detail view. It is a direct channel to the worker run's orchestrator while the worker run is running. Use it to:
 
     - Ask the orchestrator for a status summary
-    - Provide additional context mid-mission
+    - Provide additional context mid-worker run
     - Redirect a worker that has gone off course
 
-    Mission chat does not start new work — it communicates with the orchestrator of an already-running mission.
+    Worker run chat does not start new work — it communicates with the orchestrator of an already-running worker run.
   </Tab>
 </Tabs>
 
@@ -112,7 +112,7 @@ Chat in ADE is always scoped — it operates within a defined context boundary t
 
 Chat agents can leave **intentional evidence** of their work by calling the `ade proof` CLI — screenshots, short recordings, or ingested browser traces. There is no per-session policy chip anymore; the agent decides when a step deserves a proof, runs the CLI, and the captured artifact is linked to the chat session automatically.
 
-Captured proofs appear in the session artifact panel and can be promoted to the lane's durable context, attached to a mission, or published to a PR or Linear issue. See [Proof Overview](/computer-use/overview) for the full workflow.
+Captured proofs appear in the session artifact panel and can be promoted to the lane's durable context, attached to a worker run, or published to a PR or Linear issue. See [Proof Overview](/computer-use/overview) for the full workflow.
 
 ---
 
@@ -141,7 +141,7 @@ You can **steer** an in-progress agent by sending a follow-up message before the
 
 ### Context integration
 
-Chat sessions receive lane, session, artifact, mission, and explicit user context. For product or architecture knowledge, agents inspect the repository directly through ADE tools.
+Chat sessions receive lane, session, artifact, worker run, and explicit user context. For product or architecture knowledge, agents inspect the repository directly through ADE tools.
 
 ---
 
@@ -149,7 +149,7 @@ Chat sessions receive lane, session, artifact, mission, and explicit user contex
 
 <CardGroup cols={2}>
   <Card title="Chat Capabilities" icon="toolbox" href="/chat/capabilities">
-    What the agent can do — file operations, git, PRs, missions, lane and action tools via the `ade` CLI, and more.
+    What the agent can do — file operations, git, PRs, worker runs, lane and action tools via the `ade` CLI, and more.
   </Card>
   <Card title="Context & Artifacts" icon="database" href="/chat/context">
     Managing context windows, working with artifacts, chat history, and troubleshooting.

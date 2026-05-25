@@ -155,21 +155,6 @@ function createRegistry() {
 
 function createRuntime(projectRoot: string) {
   const operation = { operationId: "op-1" };
-  const runGraph = {
-    run: {
-      id: "run-1",
-      missionId: "mission-1",
-      status: "running",
-      metadata: {},
-    },
-    steps: [],
-    attempts: [],
-    edges: [],
-    timeline: [],
-    contextSnapshots: [],
-    handoffs: [],
-    runtimeEvents: [],
-  };
   return {
     projectRoot,
     workspaceRoot: projectRoot,
@@ -199,10 +184,6 @@ function createRuntime(projectRoot: string) {
       list: vi.fn(() => []),
     },
     eventBuffer: createEventBuffer(),
-    orchestratorService: {
-      listRuns: vi.fn(() => [runGraph.run]),
-      getRunGraph: vi.fn(() => runGraph),
-    },
     dispose: vi.fn(),
   };
 }
@@ -292,7 +273,6 @@ describe("remote runtime offline RPC integration", () => {
         testRunId: null,
         chatSessionId: null,
         runId: null,
-        missionId: null,
       },
     });
 
@@ -374,9 +354,9 @@ describe("remote runtime offline RPC integration", () => {
     const pool = new RemoteConnectionPool({ get: () => target, list: () => [target] } as unknown as RemoteTargetRegistry, "1.2.4");
 
     await expect(pool.callActionForTarget(target, project.projectId, {
-      domain: "orchestrator_core",
-      action: "resumeRun",
-      args: { runId: "run-1" },
+      domain: "operation",
+      action: "finish",
+      args: { operationId: "op-1", status: "cancelled" },
     })).rejects.toThrow(/retry the action/i);
 
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
@@ -396,8 +376,8 @@ describe("remote runtime offline RPC integration", () => {
     });
     runtime.eventBuffer.push({
       timestamp: "2026-05-10T12:00:00.000Z",
-      category: "mission",
-      payload: { type: "mission_started", missionId: "mission-1", runId: "run-1" },
+      category: "runtime",
+      payload: { type: "runtime_started", runId: "run-1" },
     });
     const firstRuntime = startRuntimeClient(handler);
     const secondRuntime = startRuntimeClient(handler);
@@ -421,13 +401,13 @@ describe("remote runtime offline RPC integration", () => {
       cursor: 0,
       limit: 10,
     });
-    expect(initialEvents.events.map((event) => event.payload.type)).toEqual(["mission_started"]);
+    expect(initialEvents.events.map((event) => event.payload.type)).toEqual(["runtime_started"]);
     expect(initialEvents.nextCursor).toBe(1);
 
     runtime.eventBuffer.push({
       timestamp: "2026-05-10T12:00:01.000Z",
-      category: "mission",
-      payload: { type: "mission_resume_recovered", missionId: "mission-1", runId: "run-1" },
+      category: "runtime",
+      payload: { type: "runtime_resume_recovered", runId: "run-1" },
     });
     firstRuntime.serverTransport.fail(new Error("channel closed"));
 
@@ -437,25 +417,23 @@ describe("remote runtime offline RPC integration", () => {
     })).resolves.toMatchObject({
       events: [{
         id: 2,
-        category: "mission",
-        payload: { type: "mission_resume_recovered", missionId: "mission-1", runId: "run-1" },
+        category: "runtime",
+        payload: { type: "runtime_resume_recovered", runId: "run-1" },
       }],
       nextCursor: 2,
       hasMore: false,
     });
 
     await expect(pool.callActionForTarget(target, project.projectId, {
-      domain: "orchestrator_core",
-      action: "getRunGraph",
-      args: { runId: "run-1", timelineLimit: 0 },
+      domain: "operation",
+      action: "list",
+      args: {},
     })).resolves.toMatchObject({
-      domain: "orchestrator_core",
-      action: "getRunGraph",
-      result: {
-        run: { id: "run-1", missionId: "mission-1", status: "running" },
-      },
+      domain: "operation",
+      action: "list",
+      result: [],
     });
-    expect(runtime.orchestratorService.getRunGraph).toHaveBeenCalledWith({ runId: "run-1", timelineLimit: 0 });
+    expect(runtime.operationService.list).toHaveBeenCalledWith(undefined);
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
   });
 });

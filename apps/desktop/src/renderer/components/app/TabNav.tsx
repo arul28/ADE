@@ -10,7 +10,6 @@ import {
   MagnifyingGlass,
   ClockCounterClockwise,
   Robot,
-  Strategy,
   Brain,
   DesktopTower,
   GearSix,
@@ -33,7 +32,6 @@ const mainItems = [
   { to: "/cto", label: "CTO", icon: Brain },
   { to: "/graph", label: "Graph", icon: Graph },
   { to: "/history", label: "History", icon: ClockCounterClockwise },
-  { to: "/missions", label: "Missions", icon: Strategy },
   { to: "/vm", label: "VM", icon: DesktopTower },
 ] as const;
 
@@ -184,14 +182,6 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
                     : "ade-status-dot-warning",
                 )}
               />
-            ) : null}
-            {it.to === "/missions" && isPackaged ? (
-              <span
-                title="Missions are coming soon in production builds"
-                className="absolute -right-2 -top-1 rounded border border-emerald-300/40 bg-emerald-400 px-1 font-mono text-[7px] font-bold uppercase leading-[10px] text-[#07110B]"
-              >
-                Soon
-              </span>
             ) : null}
             {it.to === "/vm" && isPackaged ? (
               <span

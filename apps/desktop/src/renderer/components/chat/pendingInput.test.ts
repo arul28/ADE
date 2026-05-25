@@ -82,7 +82,7 @@ describe("derivePendingInputRequests", () => {
     const structuredRequest = {
       requestId: "req-1",
       itemId: "item-1",
-      source: "mission",
+      source: "ade",
       kind: "approval",
       title: "Approve deploy",
       description: "Deploy to staging",
@@ -218,7 +218,7 @@ describe("derivePendingInputRequests", () => {
     expect(result[0]!.request.questions[0]!.id).toBe("response");
     expect(result[0]!.request.questions[0]!.question).toBe("What color theme do you prefer?");
     expect(result[0]!.request.questions[0]!.allowsFreeform).toBe(true);
-    expect(result[0]!.request.source).toBe("mission");
+    expect(result[0]!.request.source).toBe("ade");
     expect(result[0]!.request.turnId).toBe("turn-1");
   });
 
@@ -637,7 +637,7 @@ describe("derivePendingInputRequests", () => {
   it("option value defaults to label when value is missing", () => {
     const structuredRequest = {
       requestId: "req-opt",
-      source: "mission",
+      source: "ade",
       kind: "structured_question",
       questions: [
         {
@@ -667,7 +667,7 @@ describe("derivePendingInputRequests", () => {
   it("option description is included only when non-empty string", () => {
     const structuredRequest = {
       requestId: "req-desc",
-      source: "mission",
+      source: "ade",
       kind: "structured_question",
       questions: [
         {
@@ -703,7 +703,7 @@ describe("derivePendingInputRequests", () => {
   it("option recommended is included only when true", () => {
     const structuredRequest = {
       requestId: "req-rec",
-      source: "mission",
+      source: "ade",
       kind: "structured_question",
       questions: [
         {
@@ -737,7 +737,7 @@ describe("derivePendingInputRequests", () => {
   it("preserves option previews and preview formats", () => {
     const structuredRequest = {
       requestId: "req-preview",
-      source: "mission",
+      source: "ade",
       kind: "structured_question",
       questions: [
         {
@@ -775,7 +775,7 @@ describe("derivePendingInputRequests", () => {
   it("parses question with all optional fields", () => {
     const structuredRequest = {
       requestId: "req-q",
-      source: "mission",
+      source: "ade",
       kind: "structured_question",
       questions: [
         {
@@ -818,7 +818,7 @@ describe("derivePendingInputRequests", () => {
   it("omits optional question fields when not provided or empty", () => {
     const structuredRequest = {
       requestId: "req-q-min",
-      source: "mission",
+      source: "ade",
       kind: "structured_question",
       questions: [
         {
@@ -855,7 +855,7 @@ describe("derivePendingInputRequests", () => {
   it("filters out questions with missing id or question text", () => {
     const structuredRequest = {
       requestId: "req-filter",
-      source: "mission",
+      source: "ade",
       kind: "structured_question",
       questions: [
         { id: "", question: "no id" },
@@ -929,7 +929,7 @@ describe("derivePendingInputRequests", () => {
   it("blocking defaults to true when not explicitly false", () => {
     const structuredRequest = {
       requestId: "req-block",
-      source: "mission",
+      source: "ade",
       kind: "approval",
       questions: [],
     };
@@ -1012,7 +1012,7 @@ describe("derivePendingInputRequests", () => {
   it("providerMetadata is omitted when not a valid record", () => {
     const structuredRequest = {
       requestId: "req-pm",
-      source: "mission",
+      source: "ade",
       kind: "approval",
       questions: [],
       providerMetadata: "not-an-object",

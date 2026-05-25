@@ -67,7 +67,7 @@ ADE is built on a **local-first, trust boundary model**. Your source code, API k
     ADE monitors `ade.yaml` using filesystem events. Any change — from a `git pull`, a direct edit, or an automated tool — triggers the approval workflow immediately.
   </Step>
   <Step title="Commands suspended">
-    All command execution sourced from `ade.yaml` pauses. This includes: automation triggers, process startup commands, test suite runs, and mission executors defined in the config. Agents that are mid-session continue their current operation but cannot launch new commands from the updated config.
+    All command execution sourced from `ade.yaml` pauses. This includes: automation triggers, process startup commands, test suite runs, and worker run executors defined in the config. Agents that are mid-session continue their current operation but cannot launch new commands from the updated config.
   </Step>
   <Step title="Diff presented">
     ADE shows a structured diff of every changed field in `ade.yaml`. Fields that define commands (`processes[*].command`, `automations[*].executor`, `testSuites[*].run`, `testSuites[*].ci`) are highlighted with a distinct visual treatment — these are the fields that matter most for security review.
@@ -105,8 +105,8 @@ Every agent type in ADE has a default permission level. You can override these a
 | Agent Type | Default Level | Override Location |
 |------------|--------------|------------------|
 | CTO agent | `write-external` | CTO Settings |
-| Mission orchestrator | `write-git` | Mission creation dialog |
-| Mission worker | `write-git` | Mission creation dialog → Per-worker |
+| Worker run orchestrator | `write-git` | Worker run creation dialog |
+| Worker run worker | `write-git` | Worker run creation dialog → Per-worker |
 | Automation bot | `read-only` | Automation config → Tool Palette |
 | Chat agent | `write-local` | Chat header → Session Permissions |
 
@@ -244,7 +244,7 @@ permissions:
 ```
 
 <Warning>
-`allowForcePush: false` is the default and should almost never be changed. Force pushing to shared branches can irrecoverably destroy commit history. If a mission or automation attempts a force push, ADE blocks it and logs the attempt — it is not silently ignored.
+`allowForcePush: false` is the default and should almost never be changed. Force pushing to shared branches can irrecoverably destroy commit history. If a worker run or automation attempts a force push, ADE blocks it and logs the attempt — it is not silently ignored.
 </Warning>
 
 ### Agent-Specific Git Rules
@@ -343,14 +343,14 @@ Every agent action that touches sensitive resources is logged to `.ade/artifacts
 | ADE action call | Agent ID, domain, action name, args (secrets redacted), response summary, timestamp |
 | Permission denied | Agent ID, tool attempted, reason, rule matched, timestamp |
 | Config approval | Approving user, old SHA, new SHA, changed fields, timestamp |
-| Budget cap reached | Agent ID, session/mission, cap type, amount, timestamp |
+| Budget cap reached | Agent ID, session/worker run, cap type, amount, timestamp |
 
 ### Audit Log Format
 
 ```
 2026-03-12T14:23:01.042Z [audit] tool_call agent=worker-3 session=s_abc123
   tool=ade_write_file path=src/components/Button.tsx bytes=2048
-  mission=m_xyz789 lane=lane/feature-auth result=success
+  worker run=m_xyz789 lane=lane/feature-auth result=success
 
 2026-03-12T14:23:05.881Z [audit] permission_denied agent=automation-bot
   tool=ade_run_command command="rm -rf node_modules"
@@ -385,8 +385,8 @@ Every agent action that touches sensitive resources is logged to `.ade/artifacts
   <Accordion title="Monitor the audit log for unexpected activity" icon="magnifying-glass">
     Review `.ade/artifacts/audit.log` periodically — especially the `permission_denied` entries. Frequent denials from a specific agent may indicate a misconfigured automation or an agent that is not working within its expected scope. They may also reveal a mistake in your allow/block rules that is blocking legitimate work.
   </Accordion>
-  <Accordion title="Use mission-level permission overrides for high-risk work" icon="bullseye">
-    For missions that touch critical infrastructure, production configuration, or security-sensitive files, set a restrictive permission profile at mission creation: limit to specific paths, require Ask-First for all terminal commands, and lock the tool palette down to the minimum action set the mission needs. The mission-level override applies to all workers spawned by that mission, regardless of their default permission level.
+  <Accordion title="Use worker run-level permission overrides for high-risk work" icon="bullseye">
+    For worker runs that touch critical infrastructure, production configuration, or security-sensitive files, set a restrictive permission profile at worker run creation: limit to specific paths, require Ask-First for all terminal commands, and lock the tool palette down to the minimum action set the worker run needs. The worker run-level override applies to all workers spawned by that worker run, regardless of their default permission level.
   </Accordion>
 </AccordionGroup>
 

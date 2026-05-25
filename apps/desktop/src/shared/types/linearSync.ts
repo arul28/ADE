@@ -14,7 +14,6 @@ export type LinearWorkflowWorkerSelector =
   | { mode: "none" };
 
 export type LinearWorkflowTargetType =
-  | "mission"
   | "employee_session"
   | "worker_run"
   | "pr_resolution"
@@ -33,7 +32,6 @@ export type LinearWorkflowTarget = {
   workerSelector?: LinearWorkflowWorkerSelector;
   employeeIdentityKey?: AgentChatIdentityKey;
   sessionTemplate?: string | null;
-  missionTemplate?: string | null;
   executorKind?: "cto" | "employee" | "worker" | (string & {});
   runMode?: "autopilot" | "assisted" | "manual" | (string & {});
   phaseProfile?: string | null;
@@ -330,7 +328,6 @@ export type LinearWorkflowRun = {
   currentStepIndex: number;
   currentStepId: string | null;
   executionLaneId: string | null;
-  linkedMissionId: string | null;
   linkedSessionId: string | null;
   linkedWorkerRunId: string | null;
   linkedPrId: string | null;
@@ -661,7 +658,6 @@ export type LinearSyncQueueItem = {
   workerId: string | null;
   workerSlug: string | null;
   sessionLabel?: string | null;
-  missionId: string | null;
   sessionId: string | null;
   workerRunId: string | null;
   prId: string | null;

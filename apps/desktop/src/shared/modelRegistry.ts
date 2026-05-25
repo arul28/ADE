@@ -53,7 +53,7 @@ export type ModelDescriptor = {
   inputPricePer1M?: number;
   /** Price per million output tokens (USD). Used for cost estimation. */
   outputPricePer1M?: number;
-  /** Curated cost tier for UI display (missions model selector) */
+  /** Curated cost tier for UI display. */
   costTier?: "low" | "medium" | "high" | "very_high";
   /** ADE-owned safety/tooling profile for local and experimental models. */
   harnessProfile?: LocalModelHarnessProfile;

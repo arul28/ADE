@@ -27,11 +27,6 @@ import type {
 import type { AutomationRule } from "../../../shared/types/config";
 import { buildPrAiResolutionContextKey } from "../../../shared/types";
 import type {
-  OrchestratorChatMessage,
-  OrchestratorRun,
-  OrchestratorRunGraph,
-} from "../../../shared/types/orchestrator";
-import type {
   AiConfig,
   ApplyLaneTemplateArgs,
   DeleteLaneArgs,
@@ -80,7 +75,6 @@ import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../
 import { launchRebaseResolutionChat } from "../prs/prRebaseResolver";
 import { mapPermissionModeForModelFamily } from "../prs/resolverUtils";
 import { getErrorMessage, isRecord, nowIso } from "../shared/utils";
-import { readCoordinatorCheckpoint } from "../orchestrator/missionStateDoc";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import {
   buildResumeArgv,
@@ -101,10 +95,6 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "ai",
   "onboarding",
   "automation_planner",
-  "mission",
-  "orchestrator",
-  "orchestrator_core",
-  "mission_budget",
   "cto_state",
   "worker_agent",
   "session",
@@ -514,101 +504,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "updateTutorialAct",
   ],
   automation_planner: ["parseNaturalLanguage", "saveDraft", "simulate", "validateDraft"],
-  mission: [
-    "addIntervention",
-    "addArtifact",
-    "archive",
-    "clonePhaseProfile",
-    "create",
-    "delete",
-    "deletePhaseItem",
-    "deletePhaseProfile",
-    "exportPhaseItems",
-    "exportPhaseProfile",
-    "get",
-    "getDashboard",
-    "getFullMissionView",
-    "getPhaseConfiguration",
-    "getRunView",
-    "importPhaseItems",
-    "importPhaseProfile",
-    "list",
-    "listPhaseItems",
-    "listPhaseProfiles",
-    "preflight",
-    "resolveIntervention",
-    "savePhaseItem",
-    "savePhaseProfile",
-    "update",
-    "updateStep",
-  ],
-  orchestrator: [
-    "cancelRunGracefully",
-    "cleanupTeamResources",
-    "finalizeRun",
-    "getActiveAgents",
-    "getAggregatedUsage",
-    "getChat",
-    "getContextCheckpoint",
-    "getExecutionPlanPreview",
-    "getGlobalChat",
-    "getMissionLogs",
-    "getMissionMetrics",
-    "getMissionStateDocument",
-    "getModelCapabilities",
-    "getCheckpointStatus",
-    "getPlanningPromptPreview",
-    "getPromptInspector",
-    "getRunView",
-    "getTeamMembers",
-    "getThreadMessages",
-    "getWorkerDigest",
-    "getWorkerStates",
-    "exportMissionLogs",
-    "listArtifacts",
-    "listChatThreads",
-    "listLaneDecisions",
-    "listWorkerCheckpoints",
-    "listWorkerDigests",
-    "resumeRun",
-    "sendAgentMessage",
-    "sendChat",
-    "sendThreadMessage",
-    "setMissionMetricsConfig",
-    "startMissionRun",
-    "steerMission",
-  ],
-  orchestrator_core: [
-    "addReflection",
-    "addSteps",
-    "appendRuntimeEvent",
-    "appendTimelineEvent",
-    "completeAttempt",
-    "createHandoff",
-    "emitRuntimeUpdate",
-    "finalizeRun",
-    "getLatestGateReport",
-    "getRunGraph",
-    "getRunState",
-    "heartbeatClaims",
-    "listAttempts",
-    "listRetrospectivePatternStats",
-    "listRetrospectiveTrends",
-    "listRetrospectives",
-    "listRuns",
-    "listTimeline",
-    "pauseRun",
-    "resumeRun",
-    "skipStep",
-    "startAttempt",
-    "startRun",
-    "startReadyAutopilotAttempts",
-    "supersedeStep",
-    "tick",
-    "updateStepDependencies",
-    "updateStepMetadata",
-  ],
-  mission_budget: ["getMissionBudgetStatus", "getMissionBudgetTelemetry"],
   cto_state: [
     "completeOnboardingStep",
     "dismissOnboarding",
@@ -1049,9 +944,6 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       if (resumeCtx.provider !== "codex") {
         throw new Error("Open-in-CLI is only supported for Codex sessions");
       }
-      if (resumeCtx.isMission) {
-        throw new Error("Mission sessions cannot be resumed in Codex CLI (ephemeral CODEX_HOME)");
-      }
       const resolved = resolveCodexExecutable();
       const strategy = await detectCodexResumeStrategy(resolved.path);
       const argv = buildResumeArgv(strategy, resumeCtx.threadId);
@@ -1210,335 +1102,6 @@ function buildWorkerAgentDomainService(runtime: AdeRuntime): OpaqueService | nul
         requireNonEmptyString(args?.agentId, "agentId"),
         args?.limit ?? 40,
       ),
-  };
-}
-
-const RUNTIME_CURSOR_DOC_REF_TRANSPORT_LIMIT = 12;
-const PAYLOAD_DOC_REF_TRANSPORT_LIMIT = 12;
-const RUN_GRAPH_CONTEXT_SNAPSHOT_TRANSPORT_LIMIT = 5;
-const CHAT_TOOL_RESULT_STRING_LIMIT = 1_200;
-const CHAT_TOOL_RESULT_ARRAY_PREVIEW_LIMIT = 5;
-const CHAT_TOOL_RESULT_KEY_PREVIEW_LIMIT = 12;
-
-function isAdeInternalDocPath(value: unknown): boolean {
-  if (typeof value !== "string") return false;
-  const normalized = value.replace(/\\/g, "/");
-  return normalized === ".ade" || normalized.startsWith(".ade/") || normalized.includes("/.ade/");
-}
-
-function compactRuntimeCursorForTransport(value: unknown): unknown {
-  if (!isRecord(value)) return value;
-  const rawDocs = Array.isArray(value.docs) ? value.docs : [];
-  const docs = rawDocs
-    .filter((entry) => !isAdeInternalDocPath(isRecord(entry) ? entry.path : null))
-    .slice(0, RUNTIME_CURSOR_DOC_REF_TRANSPORT_LIMIT)
-    .map((entry) => {
-      if (!isRecord(entry)) return entry;
-      return {
-        path: typeof entry.path === "string" ? entry.path : "",
-        bytes: typeof entry.bytes === "number" ? entry.bytes : 0,
-        sha256: typeof entry.sha256 === "string" ? entry.sha256 : "",
-        truncated: entry.truncated === true,
-        mode: typeof entry.mode === "string" ? entry.mode : undefined,
-      };
-    });
-  return {
-    ...value,
-    docs,
-    docsOmittedCount: Math.max(0, rawDocs.length - docs.length),
-  };
-}
-
-function compactDocRefsArrayForTransport(rawDocs: unknown[], limit: number): unknown[] {
-  return rawDocs
-    .filter((entry) => !isAdeInternalDocPath(isRecord(entry) ? entry.path : null))
-    .slice(0, limit);
-}
-
-function compactPayloadForTransport(payload: Record<string, unknown> | null): Record<string, unknown> | null {
-  if (!payload) return payload;
-  const next: Record<string, unknown> = { ...payload };
-  if (Array.isArray(next.docsRefs)) {
-    const rawDocsRefs = next.docsRefs;
-    const docsRefs = compactDocRefsArrayForTransport(rawDocsRefs, PAYLOAD_DOC_REF_TRANSPORT_LIMIT);
-    next.docsRefs = docsRefs;
-    next.docsRefsOmittedCount = Math.max(0, rawDocsRefs.length - docsRefs.length);
-  }
-  return next;
-}
-
-function compactChatToolValueForTransport(value: unknown): unknown {
-  if (value == null || typeof value === "boolean" || typeof value === "number") return value;
-  if (typeof value === "string") {
-    if (value.length <= CHAT_TOOL_RESULT_STRING_LIMIT) return value;
-    return {
-      preview: value.slice(0, CHAT_TOOL_RESULT_STRING_LIMIT),
-      omittedChars: value.length - CHAT_TOOL_RESULT_STRING_LIMIT,
-    };
-  }
-  if (Array.isArray(value)) {
-    return {
-      type: "array",
-      length: value.length,
-      preview: value
-        .slice(0, CHAT_TOOL_RESULT_ARRAY_PREVIEW_LIMIT)
-        .map((entry) => compactChatToolValueForTransport(entry)),
-      omittedItems: Math.max(0, value.length - CHAT_TOOL_RESULT_ARRAY_PREVIEW_LIMIT),
-    };
-  }
-  if (!isRecord(value)) return value;
-
-  const safeKeys = [
-    "ok",
-    "status",
-    "outcome",
-    "summary",
-    "message",
-    "error",
-    "workerId",
-    "stepId",
-    "stepKey",
-    "runId",
-    "missionId",
-    "filesChanged",
-    "testsRun",
-    "artifacts",
-  ];
-  const next: Record<string, unknown> = {};
-  for (const key of safeKeys) {
-    if (Object.prototype.hasOwnProperty.call(value, key)) {
-      next[key] = compactChatToolValueForTransport(value[key]);
-    }
-  }
-  const keys = Object.keys(value);
-  next.__adeTransportCompact = true;
-  next.keys = keys.slice(0, CHAT_TOOL_RESULT_KEY_PREVIEW_LIMIT);
-  next.omittedKeys = Math.max(0, keys.length - CHAT_TOOL_RESULT_KEY_PREVIEW_LIMIT);
-  return next;
-}
-
-function compactChatMessageMetadataForTransport(metadata: OrchestratorChatMessage["metadata"]): OrchestratorChatMessage["metadata"] {
-  if (!isRecord(metadata)) return metadata;
-  const structuredStream = isRecord(metadata.structuredStream) ? metadata.structuredStream : null;
-  if (!structuredStream) return metadata;
-  const nextStructured = { ...structuredStream };
-  if (Object.prototype.hasOwnProperty.call(nextStructured, "result")) {
-    nextStructured.result = compactChatToolValueForTransport(nextStructured.result);
-  }
-  return {
-    ...metadata,
-    structuredStream: nextStructured,
-  };
-}
-
-function compactChatMessageForTransport(message: OrchestratorChatMessage): OrchestratorChatMessage {
-  return {
-    ...message,
-    metadata: compactChatMessageMetadataForTransport(message.metadata),
-  };
-}
-
-function compactRunMetadataForTransport(metadata: OrchestratorRun["metadata"]): OrchestratorRun["metadata"] {
-  if (!isRecord(metadata)) return metadata;
-  const next: Record<string, unknown> = { ...metadata };
-  if (isRecord(next.runtimeCursor)) {
-    next.runtimeCursor = compactRuntimeCursorForTransport(next.runtimeCursor);
-  }
-  return next;
-}
-
-function compactRunForTransport(run: OrchestratorRun): OrchestratorRun {
-  return {
-    ...run,
-    metadata: compactRunMetadataForTransport(run.metadata),
-  };
-}
-
-function compactRunGraphForTransport(graph: OrchestratorRunGraph): OrchestratorRunGraph {
-  return {
-    ...graph,
-    run: compactRunForTransport(graph.run),
-    contextSnapshots: graph.contextSnapshots
-      .slice(0, RUN_GRAPH_CONTEXT_SNAPSHOT_TRANSPORT_LIMIT)
-      .map((snapshot) => ({
-        ...snapshot,
-        cursor: compactRuntimeCursorForTransport(snapshot.cursor) as typeof snapshot.cursor,
-      })),
-    handoffs: graph.handoffs.map((handoff) => ({
-      ...handoff,
-      payload: compactPayloadForTransport(handoff.payload) ?? {},
-    })),
-    timeline: graph.timeline.map((event) => ({
-      ...event,
-      detail: compactPayloadForTransport(event.detail),
-    })),
-    runtimeEvents: graph.runtimeEvents?.map((event) => ({
-      ...event,
-      payload: compactPayloadForTransport(event.payload),
-    })),
-  };
-}
-
-function buildMissionDomainService(runtime: AdeRuntime): OpaqueService | null {
-  const service = runtime.missionService;
-  if (!service) return null;
-  return {
-    ...(service as OpaqueService),
-    async getFullMissionView(args?: unknown): Promise<Record<string, unknown>> {
-      const request = asActionRecord(args);
-      const missionId = typeof request.missionId === "string" ? request.missionId.trim() : "";
-      if (!missionId) {
-        return { mission: null, runGraph: null, artifacts: [], checkpoints: [], dashboard: null };
-      }
-
-      let dashboard: unknown = null;
-      try {
-        dashboard = service.getDashboard();
-      } catch {
-        // Dashboard is supplemental for this composed view.
-      }
-
-      const mission = await service.get(missionId);
-      let runGraph: unknown = null;
-      let artifacts: unknown[] = [];
-      let checkpoints: unknown[] = [];
-
-      const orchestratorService = requireService(runtime.orchestratorService, "Orchestrator service not available.");
-      const aiOrchestratorService = requireService(runtime.aiOrchestratorService, "AI orchestrator service not available.");
-      const runs = await orchestratorService.listRuns({ missionId, limit: 20 });
-      const activeStatuses = new Set(["active", "bootstrapping", "queued", "paused"]);
-      const preferredRun = runs.find((entry) => activeStatuses.has(entry.status)) ?? runs[0];
-      if (preferredRun) {
-        const [graph, arts, cps] = await Promise.all([
-          Promise.resolve(orchestratorService.getRunGraph({ runId: preferredRun.id, timelineLimit: 120 })),
-          Promise.resolve(aiOrchestratorService.listArtifacts({ missionId, runId: preferredRun.id })).catch(() => []),
-          Promise.resolve(aiOrchestratorService.listWorkerCheckpoints({ missionId, runId: preferredRun.id })).catch(() => []),
-        ]);
-        runGraph = compactRunGraphForTransport(graph);
-        artifacts = Array.isArray(arts) ? arts : [];
-        checkpoints = Array.isArray(cps) ? cps : [];
-      }
-
-      return { mission, runGraph, artifacts, checkpoints, dashboard };
-    },
-    preflight(args?: unknown): Promise<unknown> {
-      const missionPreflightService = requireService(runtime.missionPreflightService, "Mission preflight service not available.");
-      return missionPreflightService.runPreflight(asActionRecord(args) as never);
-    },
-    getRunView(args?: unknown): Promise<unknown> {
-      const aiOrchestratorService = requireService(runtime.aiOrchestratorService, "AI orchestrator service not available.");
-      return aiOrchestratorService.getRunView(asActionRecord(args) as never);
-    },
-  };
-}
-
-async function waitForMissionCloseoutAfterFinalize(
-  runtime: AdeRuntime,
-  runId: string,
-  result: unknown,
-): Promise<void> {
-  const finalized = asActionRecord(result).finalized === true;
-  const finalStatus = String(asActionRecord(result).finalStatus ?? "");
-  if (!finalized || finalStatus !== "succeeded" || !runtime.orchestratorService || !runtime.missionService) return;
-
-  let missionId = "";
-  try {
-    const graph = runtime.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
-    missionId = String(graph.run.missionId ?? "").trim();
-  } catch {
-    return;
-  }
-  if (!missionId) return;
-
-  const terminalMissionStatuses = new Set(["completed", "failed", "canceled", "intervention_required"]);
-  const started = Date.now();
-  while (Date.now() - started < 10_000) {
-    let mission: Awaited<ReturnType<typeof runtime.missionService.get>> | null = null;
-    try {
-      mission = await Promise.resolve(runtime.missionService.get(missionId));
-    } catch {
-      return;
-    }
-    const status = typeof mission?.status === "string" ? mission.status : "";
-    if (terminalMissionStatuses.has(status)) return;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-}
-
-function buildOrchestratorCoreDomainService(runtime: AdeRuntime): OpaqueService | null {
-  const service = runtime.orchestratorService;
-  if (!service) return null;
-  return {
-    ...(service as OpaqueService),
-    listRuns: (args?: Parameters<typeof service.listRuns>[0]) =>
-      service.listRuns(args).map(compactRunForTransport),
-    getRunGraph: (args: Parameters<typeof service.getRunGraph>[0]) =>
-      compactRunGraphForTransport(service.getRunGraph(args)),
-    startRun: (args: Parameters<typeof service.startRun>[0]) => {
-      const started = service.startRun(args);
-      return { ...started, run: compactRunForTransport(started.run) };
-    },
-    tick: (args: Parameters<typeof service.tick>[0]) =>
-      compactRunForTransport(service.tick(args)),
-    pauseRun: (args: Parameters<typeof service.pauseRun>[0]) =>
-      compactRunForTransport(service.pauseRun(args)),
-    resumeRun: (args: Parameters<typeof service.resumeRun>[0]) =>
-      compactRunForTransport(service.resumeRun(args)),
-    finalizeRun: async (args: Parameters<typeof service.finalizeRun>[0]) => {
-      const result = await (runtime.aiOrchestratorService?.finalizeRun
-        ? runtime.aiOrchestratorService.finalizeRun(args as never)
-        : service.finalizeRun(args));
-      await waitForMissionCloseoutAfterFinalize(runtime, args.runId, result);
-      return result;
-    },
-  };
-}
-
-function buildAiOrchestratorDomainService(runtime: AdeRuntime): OpaqueService | null {
-  const service = runtime.aiOrchestratorService;
-  if (!service) return null;
-  return {
-    ...(service as OpaqueService),
-    sendChat: async (args: Parameters<typeof service.sendChat>[0]) =>
-      compactChatMessageForTransport(await service.sendChat(args)),
-    getChat: (args: Parameters<typeof service.getChat>[0]) =>
-      service.getChat(args).map(compactChatMessageForTransport),
-    getThreadMessages: (args: Parameters<typeof service.getThreadMessages>[0]) =>
-      service.getThreadMessages(args).map(compactChatMessageForTransport),
-    sendThreadMessage: async (args: Parameters<typeof service.sendThreadMessage>[0]) =>
-      compactChatMessageForTransport(await service.sendThreadMessage(args)),
-    finalizeRun: async (args: Parameters<typeof service.finalizeRun>[0]) => {
-      const result = await service.finalizeRun(args);
-      await waitForMissionCloseoutAfterFinalize(runtime, args.runId, result);
-      return result;
-    },
-    cancelRunGracefully: async (args: Parameters<typeof service.cancelRunGracefully>[0]) =>
-      compactRunForTransport(await service.cancelRunGracefully(args)),
-    resumeRun: async (args: Parameters<typeof service.resumeRun>[0]) =>
-      compactRunForTransport(await service.resumeRun(args)),
-    startMissionRun: async (args: Parameters<typeof service.startMissionRun>[0]) => {
-      const result = await service.startMissionRun(args);
-      return result?.started
-        ? { ...result, started: { ...result.started, run: compactRunForTransport(result.started.run) } }
-        : result;
-    },
-    getGlobalChat: (args: Parameters<typeof service.getGlobalChat>[0]) =>
-      service.getGlobalChat(args).map(compactChatMessageForTransport),
-    sendAgentMessage: async (args: Parameters<typeof service.sendAgentMessage>[0]) =>
-      compactChatMessageForTransport(await service.sendAgentMessage(args)),
-    async getCheckpointStatus(args?: unknown): Promise<Record<string, unknown> | null> {
-      const runId = typeof asActionRecord(args).runId === "string"
-        ? String(asActionRecord(args).runId).trim()
-        : "";
-      if (!runId) return null;
-      const checkpoint = await readCoordinatorCheckpoint(runtime.projectRoot, runId);
-      if (!checkpoint) return null;
-      return {
-        savedAt: checkpoint.savedAt,
-        turnCount: checkpoint.turnCount,
-        compactionCount: checkpoint.compactionCount,
-      };
-    },
   };
 }
 
@@ -2008,7 +1571,6 @@ const AI_SETTINGS_FEATURE_KEYS: AiFeatureKey[] = [
   "commit_messages",
   "pr_descriptions",
   "terminal_summaries",
-  "mission_planning",
   "orchestrator",
   "initial_context",
 ];
@@ -3111,10 +2673,6 @@ export function getAdeActionDomainServices(
     ai: toService(buildAiDomainService(runtime)),
     onboarding: toService(runtime.onboardingService),
     automation_planner: toService(runtime.automationPlannerService),
-    mission: toService(buildMissionDomainService(runtime)),
-    orchestrator: toService(buildAiOrchestratorDomainService(runtime)),
-    orchestrator_core: toService(buildOrchestratorCoreDomainService(runtime)),
-    mission_budget: toService(runtime.missionBudgetService),
     cto_state: toService(buildCtoStateDomainService(runtime)),
     worker_agent: toService(buildWorkerAgentDomainService(runtime)),
     session: toService(buildSessionDomainService(runtime)),

@@ -320,7 +320,6 @@ describe("LinearSyncPanel (file group)", () => {
         currentStepIndex: 0,
         currentStepId: null,
         executionLaneId: null,
-        linkedMissionId: null,
         linkedSessionId: null,
         linkedWorkerRunId: null,
         linkedPrId: null,

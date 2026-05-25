@@ -142,12 +142,6 @@ export function createDefaultStage(
         laneSelection: "fresh_issue_lane",
         prTiming: "none",
       };
-    case "mission":
-      return {
-        type,
-        runMode: "autopilot",
-        missionTemplate: "default",
-      };
     case "pr_resolution":
       return {
         type,
@@ -161,6 +155,14 @@ export function createDefaultStage(
       return {
         type,
         runMode: "manual",
+      };
+    default:
+      return {
+        type: "worker_run",
+        runMode: "autopilot",
+        workerSelector: { mode: "none" },
+        laneSelection: "fresh_issue_lane",
+        prTiming: "none",
       };
   }
 }

@@ -1179,9 +1179,7 @@ function inferFindingClass(args: {
   );
   if (hasStrictMissingRollout) return "incomplete_rollout";
   const hasIntentContext = Boolean(
-    args.context.provenance.payload.missions.length > 0
-    || args.context.provenance.payload.laneSnapshot?.agentSummary
-    || args.context.provenance.payload.laneSnapshot?.missionSummary,
+    args.context.provenance.payload.laneSnapshot?.agentSummary,
   );
   const wordingSuggestsDrift = args.group.some((candidate) =>
     /\b(expected|intent|should|instead|missing|omits?|drift)\b/i.test(`${candidate.title} ${candidate.body}`),

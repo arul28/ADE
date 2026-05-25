@@ -5,7 +5,6 @@ import {
   LANES_TILING_TREE,
   LANES_TILING_WORK_FOCUS_TREE,
   formatBranchCheckoutError,
-  isMissionLaneHiddenByDefault,
   laneMatchesFilter,
   stripRemotePrefix,
   validateBranchName,
@@ -39,8 +38,6 @@ function makeLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
     icon: null,
     tags: [],
     folder: null,
-    missionId: null,
-    laneRole: null,
     createdAt: "2026-03-30T10:00:00.000Z",
     archivedAt: null,
     ...overrides,
@@ -66,17 +63,6 @@ describe("laneUtils tiling defaults", () => {
     expect(LANES_TILING_WORK_FOCUS_TREE.children[1]?.defaultSize).toBeLessThan(
       (LANES_TILING_TREE.children[1]?.defaultSize ?? 0),
     );
-  });
-
-  it("hides non-result mission lanes by default but reveals them with mission filters", () => {
-    const workerLane = makeLane({ missionId: "mission-1", laneRole: "worker", name: "Mission worker" });
-    const resultLane = makeLane({ missionId: "mission-1", laneRole: "result", name: "Mission result" });
-
-    expect(isMissionLaneHiddenByDefault(workerLane)).toBe(true);
-    expect(laneMatchesFilter(workerLane, false, "")).toBe(false);
-    expect(laneMatchesFilter(workerLane, false, "is:mission")).toBe(true);
-    expect(laneMatchesFilter(resultLane, false, "")).toBe(true);
-    expect(laneMatchesFilter(resultLane, false, "is:mission-result")).toBe(true);
   });
 
   describe("validateBranchName", () => {
