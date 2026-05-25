@@ -1255,7 +1255,11 @@ let activeRemoteProjectOpenGeneration: number | null = null;
 function isReadOnlyRuntimeAction(domain: string, action: string): boolean {
   const key = `${domain}.${action}`;
   if (READ_ONLY_RUNTIME_ACTIONS.has(key)) return true;
-  return READ_ONLY_RUNTIME_ACTION_PREFIXES.some((prefix) => action.startsWith(prefix));
+  return READ_ONLY_RUNTIME_ACTION_PREFIXES.some(
+    (prefix) =>
+      action === prefix ||
+      (action.startsWith(prefix) && /^[A-Z]/.test(action.slice(prefix.length))),
+  );
 }
 
 function isMutatingRuntimeAction(domain: string, action: string): boolean {
@@ -3393,10 +3397,6 @@ contextBridge.exposeInMainWorld("ade", {
             activeRemoteProjectOpenGeneration = null;
           }
           throw error;
-        } finally {
-          if (activeRemoteProjectOpenGeneration === generation) {
-            activeRemoteProjectOpenGeneration = null;
-          }
         }
       });
     },

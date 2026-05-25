@@ -809,7 +809,7 @@ function isTerminalLaneDeleteProgress(progress: LaneDeleteProgress): boolean {
 export type LanePlacementChangedEvent = {
   type: "lane-placement-changed";
   laneId: string;
-  from: "macos-vm" | "local";
+  from: "macos-vm" | "local" | "none";
   to: "macos-vm" | "local";
   changedAt: string;
 };
@@ -2065,7 +2065,7 @@ export function createLaneService({
       try {
         await wireMacosVmLanePlacement({
           laneId,
-          previousPlacement: "local",
+          previousPlacement: "none",
           rollbackPlacementOnLinkFailure: true,
         });
       } catch (error) {
@@ -2116,7 +2116,7 @@ export function createLaneService({
 
   const wireMacosVmLanePlacement = async (args: {
     laneId: string;
-    previousPlacement: LaneRuntimePlacement;
+    previousPlacement: LaneRuntimePlacement | "none";
     rollbackPlacementOnLinkFailure: boolean;
   }): Promise<void> => {
     const laneId = String(args.laneId ?? "").trim();

@@ -573,7 +573,6 @@ export function createGitOperationsService({
   };
 
   const HEAD_CHANGE_UNDO_BOUNDARY_KINDS = new Set([
-    "git_undo_head_change",
     // Branch checkout updates lane branch_ref via switchBranch; reset --hard alone
     // would move the wrong ref (see History "Create branch here" → undo).
     "git_checkout_branch",

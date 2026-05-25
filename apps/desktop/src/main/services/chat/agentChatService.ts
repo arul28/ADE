@@ -22199,7 +22199,7 @@ export function createAgentChatService(args: {
    */
   const handleLanePlacementChanged = (event: {
     laneId: string;
-    from: "macos-vm" | "local";
+    from: "macos-vm" | "local" | "none";
     to: "macos-vm" | "local";
   }): void => {
     const laneId = String(event?.laneId ?? "").trim();

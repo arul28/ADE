@@ -901,16 +901,6 @@ function packedCrsqlPrimaryKey(value: SyncScalar): SyncScalar | null {
   return null;
 }
 
-/** Tables removed locally (#329) that older peers may still export via CRDT. */
-const DROPPED_INCOMING_SYNC_TABLES = new Set(["unified_memories"]);
-
-function isIgnoredIncomingSyncTable(table: string): boolean {
-  return (
-    DROPPED_INCOMING_SYNC_TABLES.has(table) ||
-    table.startsWith("unified_memories_")
-  );
-}
-
 function normalizeIncomingCrsqlChange(db: DatabaseSyncType, change: CrsqlChangeRow): CrsqlChangeRow {
   const tableInfo = allRows<{ pk: number }>(
     db,
@@ -2975,22 +2965,11 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     },
     applyChanges: (changes: CrsqlChangeRow[]) => {
       if (!crsqliteLoaded) return { appliedCount: 0, dbVersion: 0, touchedTables: [], rebuiltFts: false };
-      const actionableChanges = changes.filter(
-        (change) => !isIgnoredIncomingSyncTable(change.table),
-      );
-      if (actionableChanges.length === 0) {
-        return {
-          appliedCount: 0,
-          dbVersion: sync.getDbVersion(),
-          touchedTables: [],
-          rebuiltFts: false,
-        };
-      }
       let appliedCount = 0;
       const touchedTables = new Set<string>();
       runStatement(db, "begin");
       try {
-        for (const rawChange of actionableChanges) {
+        for (const rawChange of changes) {
           const change = normalizeIncomingCrsqlChange(db, rawChange);
           const result = runStatement(
             db,
