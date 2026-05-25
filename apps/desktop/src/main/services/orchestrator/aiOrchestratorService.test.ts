@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7014,6 +7015,76 @@ describe("aiOrchestratorService", () => {
       expect(refreshed?.interventions.some((entry) =>
         entry.status === "open" && entry.interventionType === "failed_step"
       )).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("does not sync unlinked run steps onto mission steps already claimed by missionStepId", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Avoid ambiguous stepKey sync collisions.",
+        laneId: fixture.laneId,
+        plannedSteps: [
+          {
+            index: 0,
+            title: "Review change",
+            detail: "Primary review step",
+            kind: "review",
+            metadata: { stepType: "review", stepKey: "review" },
+          },
+        ],
+      });
+      const missionStep = fixture.missionService.get(mission.id)?.steps[0];
+      if (!missionStep) throw new Error("Expected mission step");
+
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [
+          {
+            stepKey: "review",
+            title: missionStep.title,
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            executorKind: "manual",
+            missionStepId: missionStep.id,
+            metadata: { stepType: "review" },
+          },
+        ],
+      });
+      const runId = started.run.id;
+      fixture.missionService.update({
+        missionId: mission.id,
+        status: "in_progress",
+      });
+
+      const spawnedStepId = randomUUID();
+      const now = new Date().toISOString();
+      fixture.db.run(
+        `
+          insert into orchestrator_steps (
+            id,
+            run_id,
+            project_id,
+            mission_step_id,
+            step_key,
+            title,
+            step_index,
+            status,
+            lane_id,
+            metadata_json,
+            created_at,
+            updated_at
+          ) values (?, ?, ?, null, 'review', 'Coordinator review worker', 1, 'failed', ?, '{}', ?, ?)
+        `,
+        [spawnedStepId, runId, fixture.projectId, fixture.laneId, now, now],
+      );
+
+      await fixture.aiOrchestratorService.syncMissionFromRun(runId, "coordinator_worker_failed");
+
+      const refreshed = fixture.missionService.get(mission.id);
+      expect(refreshed?.steps[0]?.status).not.toBe("failed");
     } finally {
       fixture.dispose();
     }

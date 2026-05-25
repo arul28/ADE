@@ -258,6 +258,7 @@ import {
   getMaxCoordinatorRecoveries as getMaxCoordinatorRecoveriesCtx,
   dispatchOrchestratorHookCtx,
   maybeDispatchTeammateIdleHookCtx,
+  resolveMissionStepForRunStep,
 } from "./missionLifecycle";
 import { resolveFirstPostPlanningPhaseKey } from "../missions/phaseEngine";
 import type { HookDispatchDeps } from "./missionLifecycle";
@@ -6970,40 +6971,12 @@ Check all worker statuses and continue managing the mission from here. Read work
     return interventionId;
   };
 
-  const stableString = (value: unknown): string | null => {
-    if (typeof value !== "string") return null;
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  };
-
-  const resolveMissionStepForRunStep = (
-    mission: MissionDetail,
-    runStep: OrchestratorRunGraph["steps"][number],
-    missionStepById: Map<string, MissionDetail["steps"][number]> = new Map(mission.steps.map((step) => [step.id, step])),
-  ): MissionDetail["steps"][number] | null => {
-    if (runStep.missionStepId) {
-      const byId = missionStepById.get(runStep.missionStepId);
-      if (byId) return byId;
-    }
-    const runStepId = stableString(runStep.id);
-    const runStepKey = stableString(runStep.stepKey);
-    return mission.steps.find((step) => {
-      const metadata = isRecord(step.metadata) ? step.metadata : null;
-      if (!metadata) return false;
-      const metadataOrchestratorStepId = stableString(metadata.orchestratorStepId);
-      if (runStepId && metadataOrchestratorStepId === runStepId) return true;
-      const metadataStepKey = stableString(metadata.stepKey);
-      return Boolean(runStepKey && metadataStepKey === runStepKey);
-    }) ?? null;
-  };
-
   const syncMissionStepsFromRun = (graph: OrchestratorRunGraph) => {
     const mission = missionService.get(graph.run.missionId);
     if (!mission) return;
-    const missionStepById = new Map(mission.steps.map((step) => [step.id, step]));
 
     for (const runStep of graph.steps) {
-      const missionStep = resolveMissionStepForRunStep(mission, runStep, missionStepById);
+      const missionStep = resolveMissionStepForRunStep(mission, runStep, graph);
       if (!missionStep) continue;
       const nextStatus = mapOrchestratorStepStatus(runStep.status);
       if (missionStep.status === nextStatus) continue;
@@ -7055,7 +7028,6 @@ Check all worker statuses and continue managing the mission from here. Read work
     const mission = missionService.get(graph.run.missionId);
     if (!mission) return;
 
-    const missionStepById = new Map(mission.steps.map((step) => [step.id, step]));
     const hasMatchingOpenIntervention = (
       failedRunStep: OrchestratorRunGraph["steps"][number] | null,
       failedMissionStep: MissionDetail["steps"][number] | null,
@@ -7070,7 +7042,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       .filter((step) => step.status === "failed")
       .map((runStep) => ({
         runStep,
-        missionStep: resolveMissionStepForRunStep(mission, runStep, missionStepById),
+        missionStep: resolveMissionStepForRunStep(mission, runStep, graph),
       }))
       .find(({ runStep, missionStep }) => !hasMatchingOpenIntervention(runStep, missionStep));
     const fallbackMissionStep = failedRunPair

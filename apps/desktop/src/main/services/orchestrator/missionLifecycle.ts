@@ -33,6 +33,7 @@ import {
 } from "./orchestratorContext";
 import type {
   OrchestratorRunGraph,
+  MissionDetail,
   MissionStatus,
   MissionStepStatus,
   OrchestratorWorkerRole,
@@ -160,6 +161,62 @@ export const TERMINAL_PHASE_STEP_STATUSES = new Set<OrchestratorStepStatus>([
 ]);
 
 
+function stableMissionLinkString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Resolve the mission step that corresponds to an orchestrator run step.
+ * Avoids ambiguous stepKey matches when coordinator-spawned steps reuse a key
+ * already owned by a mission step linked via missionStepId on another run step.
+ */
+export function resolveMissionStepForRunStep(
+  mission: MissionDetail,
+  runStep: OrchestratorRunGraph["steps"][number],
+  graph?: Pick<OrchestratorRunGraph, "steps">,
+): MissionDetail["steps"][number] | null {
+  const missionStepById = new Map(mission.steps.map((step) => [step.id, step]));
+  if (runStep.missionStepId) {
+    const byId = missionStepById.get(runStep.missionStepId);
+    if (byId) return byId;
+  }
+
+  const runStepId = stableMissionLinkString(runStep.id);
+  if (runStepId) {
+    const byOrchestratorId = mission.steps.find((step) => {
+      const metadata = isRecord(step.metadata) ? step.metadata : null;
+      if (!metadata) return false;
+      return stableMissionLinkString(metadata.orchestratorStepId) === runStepId;
+    });
+    if (byOrchestratorId) return byOrchestratorId;
+  }
+
+  const runStepKey = stableMissionLinkString(runStep.stepKey);
+  if (!runStepKey) return null;
+
+  const claimedMissionStepIds = new Set(
+    (graph?.steps ?? [])
+      .map((step) => stableMissionLinkString(step.missionStepId))
+      .filter((id): id is string => Boolean(id)),
+  );
+
+  const stepKeyMatches = mission.steps.filter((step) => {
+    const metadata = isRecord(step.metadata) ? step.metadata : null;
+    if (!metadata) return false;
+    const metadataStepKey = stableMissionLinkString(metadata.stepKey);
+    if (metadataStepKey !== runStepKey) return false;
+    if (claimedMissionStepIds.has(step.id) && runStep.missionStepId !== step.id) {
+      return false;
+    }
+    return true;
+  });
+
+  if (stepKeyMatches.length === 1) return stepKeyMatches[0]!;
+  return null;
+}
+
 /**
  * Sync mission steps from an orchestrator run graph.
  */
@@ -169,10 +226,7 @@ export function syncMissionStepsFromRun(ctx: OrchestratorContext, graph: Orchest
   if (!mission) return;
 
   for (const step of graph.steps) {
-    const missionStep = mission.steps.find((ms) => {
-      const msMeta = isRecord(ms.metadata) ? ms.metadata : {};
-      return msMeta.orchestratorStepId === step.id || msMeta.stepKey === step.stepKey;
-    });
+    const missionStep = resolveMissionStepForRunStep(mission, step, graph);
     if (missionStep) {
       const apply = () => {
         try {
