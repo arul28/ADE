@@ -543,7 +543,7 @@ describe("ADE CLI", () => {
 
   it("reads wait state from run graphs with a nested visual graph", () => {
     const waitState = graphWaitState({
-      domain: "orchestrator_core",
+      domain: "graph_state",
       action: "getRunGraph",
       result: {
         graph: {

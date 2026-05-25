@@ -148,31 +148,30 @@ to detect stale daemons:
 
 `listAdeActionsForSession` builds the visible action list:
 
-```ts
-async function listAdeActionsForSession(runtime, session): Promise<AdeActionSpec[]> {
-  const callerCtx = await resolveEffectiveCallerContext(runtime, session);
-  const baseActions = listBaseAdeActions(runtime);
-  const coordinatorActions = callerCtx.role === "orchestrator"
-    ? listCoordinatorActions(runtime)
-    : listAgentCoordinatorActions(runtime, callerCtx);
-  return filterActionsForCaller([...baseActions, ...coordinatorActions], callerCtx);
-}
-```
+`listToolSpecsForSession` builds the visible action list by resolving
+the caller context and then branching on role:
+
+- `cto` — base tools + CTO operator tools + Linear sync tools.
+- `agent`, `external`, `orchestrator`, `evaluator` — base tools only.
+
+A visibility filter removes computer-use and macOS VM tools when those
+backends are unavailable or when the caller lacks local-computer-use
+permission.
 
 The final `.filter(...)` applies standalone-chat restrictions: if the
 session has `chatSessionId` but no worker context,
-`STANDALONE_CHAT_HIDDEN_TOOL_NAMES` (including `spawn_agent` and
-coordinator tools) are stripped from the list.
+`STANDALONE_CHAT_HIDDEN_TOOL_NAMES` (`spawn_agent`) is stripped from
+the list.
 
 ### Role-to-toolset summary
 
-| Role | Base tools | Coordinator access |
+| Role | Base tools | Elevated access |
 |---|---|---|
 | `external` | Yes | No |
-| `agent` | Yes | Agent-visible subset for delegated worker context |
-| `cto` | Yes | No; has CTO operator + Linear sync instead |
-| `orchestrator` | Yes | Full coordinator tool set |
-| `evaluator` | Yes (limited; case-by-case) | No |
+| `agent` | Yes | No |
+| `cto` | Yes | CTO operator + Linear sync tools |
+| `orchestrator` | Yes | No (base tools only) |
+| `evaluator` | Yes | No |
 
 ## Rate limits
 

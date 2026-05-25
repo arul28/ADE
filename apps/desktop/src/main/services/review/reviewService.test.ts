@@ -1012,7 +1012,7 @@ describe("reviewService", () => {
     const harnessArtifact = detail?.artifacts.find((artifact) => artifact.artifactType === "prompt");
     expect(harnessArtifact?.metadata).toMatchObject({
       matchedRuleCount: 1,
-      provenanceCount: 4,
+      provenanceCount: 3,
       validationSignalCount: 2,
       matchedRuleIds: ["renderer-surface"],
     });

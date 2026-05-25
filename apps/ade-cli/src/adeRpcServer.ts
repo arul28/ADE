@@ -2915,18 +2915,9 @@ async function listToolSpecsForSession(runtime: AdeRuntime, session: SessionStat
     && (macosVmAllowed || !MACOS_VM_TOOL_NAMES.has(tool.name))
   );
   const visibleBaseTools = TOOL_SPECS.filter(keepVisibleTool);
-  const allVisibleTools = (() => {
-    if (callerCtx.role === "external" || !callerCtx.role) {
-      return visibleBaseTools;
-    }
-    if (callerCtx.role === "agent") {
-      return visibleBaseTools;
-    }
-    if (callerCtx.role === "cto") {
-      return [...visibleBaseTools, ...CTO_OPERATOR_TOOL_SPECS, ...CTO_LINEAR_SYNC_TOOL_SPECS];
-    }
-    return visibleBaseTools;
-  })();
+  const allVisibleTools = callerCtx.role === "cto"
+    ? [...visibleBaseTools, ...CTO_OPERATOR_TOOL_SPECS, ...CTO_LINEAR_SYNC_TOOL_SPECS]
+    : visibleBaseTools;
 
   return allVisibleTools.filter((tool) => !isToolHiddenForStandaloneChat(tool.name, callerCtx));
 }

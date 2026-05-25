@@ -620,8 +620,8 @@ _    ____  _____
   Coordinator runtime tools
 
   Coordinator tools expose orchestration operations used by agent runtimes.
-  List tool names with:
-    $ ade actions call list_ade_actions --input-json '{"domain":"orchestrator_core"}'
+  List available tool names with:
+    $ ade actions list --text
 
     $ ade coordinator <tool-name> --input-json '{"key":"value"}'
 

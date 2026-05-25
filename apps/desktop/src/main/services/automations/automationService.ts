@@ -227,7 +227,7 @@ type ProjectConfigService = ReturnType<typeof createProjectConfigService>;
 const AUTOMATION_SCOPE = "automation-rule";
 const AUTOMATION_TOOL_BASELINE = buildClaudeReadOnlyWorkerAllowedTools();
 const PUBLISH_CAPABLE_TOOL_FAMILIES = new Set<AutomationToolFamily>(["github", "linear", "browser"]);
-const TOOL_FAMILY_ALLOWED_TOOLS: Partial<Record<AutomationToolFamily, string[]>> = {
+const TOOL_FAMILY_ALLOWED_TOOLS: Record<AutomationToolFamily, string[]> = {
   repo: ["Read", "Glob", "Grep", "LS"],
   git: ["Bash", "bash"],
   tests: ["Bash", "bash"],

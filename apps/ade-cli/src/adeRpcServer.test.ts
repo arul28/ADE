@@ -786,8 +786,7 @@ async function initialize(handler: ReturnType<typeof createAdeRpcRequestHandler>
     || requestedRole === "external"
     || requestedRole === "evaluator";
   const previousRole = process.env.ADE_DEFAULT_ROLE;
-  const shouldInjectRole = previousRole == null && validRole;
-  if (shouldInjectRole && requestedRole) {
+  if (validRole && requestedRole) {
     process.env.ADE_DEFAULT_ROLE = requestedRole;
   }
   try {
@@ -798,8 +797,12 @@ async function initialize(handler: ReturnType<typeof createAdeRpcRequestHandler>
       params: identity ? { identity } : {}
     });
   } finally {
-    if (shouldInjectRole) {
-      delete process.env.ADE_DEFAULT_ROLE;
+    if (validRole) {
+      if (previousRole != null) {
+        process.env.ADE_DEFAULT_ROLE = previousRole;
+      } else {
+        delete process.env.ADE_DEFAULT_ROLE;
+      }
     }
   }
 }

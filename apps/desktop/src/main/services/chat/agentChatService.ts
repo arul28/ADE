@@ -3823,7 +3823,7 @@ function buildCodexDeveloperInstructions(args: {
 }
 
 function resolveCodexInstructionCollaborationMode(
-  session: Pick<AgentChatSession, "permissionMode" | "interactionMode" | "surface">,
+  session: Pick<AgentChatSession, "permissionMode" | "interactionMode">,
 ): "default" | "plan" {
   return (session.interactionMode === "plan" || session.permissionMode === "plan") ? "plan" : "default";
 }
@@ -3831,7 +3831,7 @@ function resolveCodexInstructionCollaborationMode(
 function buildCodexCollaborationMode(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "model" | "reasoningEffort" | "codexConfigSource" | "surface"
+    "provider" | "permissionMode" | "interactionMode" | "model" | "reasoningEffort" | "codexConfigSource"
   >,
   supportedModes: Set<string> | null,
   laneWorktreePath: string,
@@ -3865,7 +3865,7 @@ function buildCodexCollaborationMode(
 function resolveRequestedCodexCollaborationMode(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "codexConfigSource" | "surface"
+    "provider" | "permissionMode" | "interactionMode" | "codexConfigSource"
   >,
 ): "default" | "plan" | null {
   if (session.provider !== "codex") return null;

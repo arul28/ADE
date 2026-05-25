@@ -47,7 +47,7 @@ Main process / runtime services:
 | Path | Role |
 |---|---|
 | `apps/desktop/src/main/services/history/operationService.ts` | CRUD for `operations` rows; the canonical entry point for `record`, `start`, `finish`, `list`, `get`, and `listHeadChanges`. Same source backs the runtime daemon and the desktop fallback path. |
-| `apps/desktop/src/main/services/state/kvDb.ts` | Schema for `operations`, `checkpoints`, `pack_events`, `pack_versions`, `pack_heads`, `terminal_sessions`, `orchestrator_chat_threads`, `orchestrator_chat_messages`. |
+| `apps/desktop/src/main/services/state/kvDb.ts` | Schema for `operations`, `checkpoints`, `pack_events`, `pack_versions`, `pack_heads`, `terminal_sessions`. |
 | `apps/desktop/src/main/services/git/gitOperationsService.ts` | Brackets every git operation with `operationService.start` / `finish`, captures pre/post HEAD SHAs, and owns the per-lane undo/redo head-change pipeline (`undoLastHeadChange`, `redoLastHeadChange`, `createTag`, `resetToCommit`, `pull` with `ff-only` / `rebase` / `merge` modes). |
 | `apps/desktop/src/main/services/lanes/laneService.ts` | Lane CRUD now accepts `CreateLaneArgs.startPoint`, used by the Commits view's "Create lane here" affordance to fork a new lane from a specific commit. |
 | `apps/desktop/src/main/services/prs/prService.ts` | Records PR creation as an operation. |

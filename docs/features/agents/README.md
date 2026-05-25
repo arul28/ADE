@@ -153,8 +153,8 @@ identity/context prefixes:
 
 `workerHeartbeatService.ts` schedules worker activations. The runtime
 resolves the worker identity, adapter config, and current lane/project
-context, then dispatches through the orchestrator or spawns a chat
-session via the CTO's `spawnChat` tool.
+context, then spawns a chat session via the CTO's `spawnChat` tool or
+the worker adapter runtime.
 
 ## Session logs
 

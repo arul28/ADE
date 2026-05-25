@@ -1402,8 +1402,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Coordinator runtime tools
 
   Coordinator tools expose orchestration operations used by agent runtimes.
-  List tool names with:
-    $ ade actions call list_ade_actions --input-json '{"domain":"orchestrator_core"}'
+  List available tool names with:
+    $ ade actions list --text
 
     $ ade coordinator <tool-name> --input-json '{"key":"value"}'
 `,
@@ -2169,30 +2169,6 @@ function actionScalarStep(
   return actionCallStep(key, "run_ade_action", { domain, action, arg });
 }
 
-function waitRunGraphStep(args: {
-  key: string;
-  runId: string | ((values: JsonObject) => string);
-  waitMs: number | undefined;
-  timelineLimit: number;
-  untilTerminal: boolean;
-}): InvocationStep | null {
-  if ((args.waitMs == null || args.waitMs <= 0) && !args.untilTerminal)
-    return null;
-  const waitMs = Math.min(
-    30 * 60 * 1000,
-    Math.max(0, Math.floor(args.waitMs ?? 30 * 60 * 1000)),
-  );
-  return {
-    key: args.key,
-    method: "ade-cli/wait-run-graph",
-    params: (values) => ({
-      runId: typeof args.runId === "function" ? args.runId(values) : args.runId,
-      waitMs,
-      untilTerminal: args.untilTerminal,
-      timelineLimit: args.timelineLimit,
-    }),
-  };
-}
 
 function listActionsStep(key: string, domain?: string): InvocationStep {
   return actionCallStep(key, "list_ade_actions", domain ? { domain } : {});
@@ -12657,14 +12633,6 @@ function summarizeExecution(args: {
   return result;
 }
 
-const TERMINAL_RUN_STATUSES = new Set([
-  "succeeded",
-  "failed",
-  "canceled",
-  "cancelled",
-]);
-const HEADLESS_ACTIVE_ATTEMPT_DRAIN_MS = 30 * 60 * 1000;
-
 function graphWaitState(value: unknown): {
   status: string;
   activeCount: number;
@@ -12683,82 +12651,6 @@ function graphWaitState(value: unknown): {
   return {
     status,
     activeCount: Math.max(activeStepCount, activeAttemptCount),
-  };
-}
-
-async function requestRunGraph(args: {
-  connection: CliConnection;
-  runId: string;
-  timelineLimit: number;
-}): Promise<unknown> {
-  return await args.connection.request("ade/actions/call", {
-    name: "run_ade_action",
-    arguments: {
-      domain: "orchestrator_core",
-      action: "getRunGraph",
-      args: {
-        runId: args.runId,
-        timelineLimit: args.timelineLimit,
-      },
-    },
-  });
-}
-
-async function waitForRunGraph(args: {
-  connection: CliConnection;
-  runId: string;
-  waitMs: number;
-  timelineLimit: number;
-  untilTerminal: boolean;
-}): Promise<JsonObject> {
-  const startedAt = Date.now();
-  const deadline = startedAt + Math.max(0, args.waitMs);
-  const headlessDrainDeadline = deadline + HEADLESS_ACTIVE_ATTEMPT_DRAIN_MS;
-  let raw: unknown = null;
-  let timedOut = false;
-  let extendedForActiveHeadlessWork = false;
-
-  while (true) {
-    raw = await requestRunGraph({
-      connection: args.connection,
-      runId: args.runId,
-      timelineLimit: args.timelineLimit,
-    });
-    const unwrapped = unwrapActionEnvelope(raw);
-    const waitState = graphWaitState(unwrapped);
-    const terminal = TERMINAL_RUN_STATUSES.has(waitState.status);
-    if (terminal) break;
-
-    const now = Date.now();
-    const pastDeadline = now >= deadline;
-    if (pastDeadline) {
-      timedOut = true;
-      const shouldDrainActiveHeadlessWork =
-        args.connection.mode === "headless" &&
-        waitState.activeCount > 0 &&
-        now < headlessDrainDeadline;
-      if (!shouldDrainActiveHeadlessWork) break;
-      extendedForActiveHeadlessWork = true;
-    }
-
-    await sleep(1_000);
-  }
-
-  const graph = graphFromResult(raw) ?? {};
-  const waitState = graphWaitState(raw);
-  return {
-    graph,
-    wait: {
-      runId: args.runId,
-      waitedMs: Math.max(0, Date.now() - startedAt),
-      requestedWaitMs: args.waitMs,
-      untilTerminal: args.untilTerminal,
-      timedOut,
-      extendedForActiveHeadlessWork,
-      mode: args.connection.mode,
-      runStatus: waitState.status || null,
-      activeCount: waitState.activeCount,
-    },
   };
 }
 
@@ -12814,29 +12706,6 @@ async function executePlan(
       try {
         const params =
           typeof step.params === "function" ? step.params(values) : step.params;
-        if (step.method === "ade-cli/wait-run-graph") {
-          const runId = requireValue(asString(params?.runId) ?? null, "run id");
-          const waitMs = Math.max(
-            0,
-            Math.floor(typeof params?.waitMs === "number" ? params.waitMs : 0),
-          );
-          const timelineLimit = Math.max(
-            0,
-            Math.floor(
-              typeof params?.timelineLimit === "number"
-                ? params.timelineLimit
-                : 120,
-            ),
-          );
-          values[step.key] = await waitForRunGraph({
-            connection,
-            runId,
-            waitMs,
-            timelineLimit,
-            untilTerminal: params?.untilTerminal === true,
-          });
-          continue;
-        }
         const raw = await connection.request(step.method, params);
         values[step.key] = step.unwrapToolResult ? unwrapToolResult(raw) : raw;
       } catch (error) {

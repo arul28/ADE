@@ -153,7 +153,6 @@ function resolveReportArtifactAlias(value: string | null | undefined): ReportArt
   const proofKey = canonicalizeProofArtifactKey(token);
   if (proofKey) return proofKey;
   if (token === "pull_request" || token === "pr" || token === "pr_link") return "implementation_pr";
-  if (token === "planning_document") return "planning_document";
   if (token === "test_results") return "test_report";
   if (token === "branch") return "feature_branch";
   if (REPORT_ARTIFACT_KEY_SET.has(token as ReportArtifactKey)) return token as ReportArtifactKey;
@@ -198,13 +197,9 @@ export function resolveReportArtifactKey(args: {
     args.title,
   ];
   for (const candidate of candidates) {
-    const proofKey = canonicalizeProofArtifactKey(candidate);
-    if (proofKey) return proofKey;
     const artifactKey = resolveReportArtifactAlias(candidate);
     if (artifactKey) return artifactKey;
   }
-  if (normalizeArtifactToken(args.type) === "branch") return "feature_branch";
-  if (normalizeArtifactToken(args.type) === "pull_request") return "implementation_pr";
   const fallbackKey = `reported_artifact_${args.index + 1}`;
   const rawTitle = typeof args.title === "string" ? args.title.trim() : "";
   if (!rawTitle.length) return fallbackKey;

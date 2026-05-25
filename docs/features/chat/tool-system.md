@@ -102,13 +102,6 @@ a platform without a supported capture backend (Linux/Windows); the
 agent can fall back to `ade proof attach <path>` with a headless-browser
 or Playwright-produced PNG in that case.
 
-## Tier 3: coordinator tools
-
-Available only to the run orchestrator agent. Not covered in this
-doc; see the runs area. Chat agents do not receive these, and
-`agentChatService` filters them out when provisioning a chat session
-that happens to share a provider runtime with orchestrator code.
-
 ## CTO operator tools
 
 Sessions with `identityKey: "cto"` additionally receive the CTO operator
@@ -134,11 +127,10 @@ renders only the sections the agent can act on.
 ## Standalone-chat restrictions
 
 Chat sessions connected to the ADE CLI with a `chatSessionId` but
-no run/run/step/attempt context are classified as "standalone". The
-ADE action bridge hides `spawn_agent` and all coordinator tools from both
-the action-list response and the execution path. This prevents an interactive
-chat user from invoking orchestration primitives that only function
-inside a run.
+no worker context are classified as "standalone". The
+ADE action bridge hides `spawn_agent` from both the action-list
+response and the execution path. This prevents an interactive chat
+user from invoking elevated primitives reserved for managed sessions.
 
 ## Tool exposure policy
 
