@@ -4715,4 +4715,67 @@ describe("preload remote project binding", () => {
     resolveOpen(binding);
     await pendingOpen;
   });
+
+  it("blocks file mutations while a remote project switch is in flight", async () => {
+    let resolveOpen: (value: unknown) => void = () => {};
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeOpenProject) {
+        return await new Promise((resolve) => {
+          resolveOpen = resolve as (value: unknown) => void;
+        });
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+
+    const pendingOpen = bridge.remoteRuntime.openProject("target-1", "project-2");
+    await expect(
+      bridge.files.writeText({
+        workspaceId: "workspace-1",
+        path: "README.md",
+        text: "updated",
+      }),
+    ).rejects.toThrow(/Project is switching/i);
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.remoteRuntimeCallAction,
+      expect.objectContaining({
+        request: expect.objectContaining({
+          domain: "file",
+          action: "writeWorkspaceText",
+        }),
+      }),
+    );
+
+    resolveOpen(binding);
+    await pendingOpen;
+  });
 });

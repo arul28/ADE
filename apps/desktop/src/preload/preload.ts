@@ -1111,6 +1111,9 @@ async function callRemoteProjectActionIfBound<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
   options?: { freshBinding?: boolean },
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
+    return { handled: false };
+  }
   const binding = await getRemoteProjectBinding(options?.freshBinding ? { fresh: true } : undefined);
   if (!binding) return { handled: false };
   const response = (await ipcRenderer.invoke(IPC.remoteRuntimeCallAction, {
@@ -1127,6 +1130,9 @@ async function callLocalProjectActionIfBound<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
   options?: { freshBinding?: boolean },
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
+    return { handled: false };
+  }
   if (localRuntimeDaemonDisabled) return { handled: false };
   const binding = await getLocalProjectBinding(options?.freshBinding ? { fresh: true } : undefined);
   if (!binding) return { handled: false };
@@ -1159,6 +1165,9 @@ async function callLocalProjectActionStrictIfBound<T>(
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
+    return { handled: false };
+  }
   if (localRuntimeDaemonDisabled) return { handled: false };
   const binding = await getLocalProjectBinding();
   if (!binding) return { handled: false };
@@ -1258,6 +1267,18 @@ function assertProjectRuntimeNotTransitioningForMutation(label: string): void {
   if (projectRuntimeTransitionDepth > 0) {
     throw new Error(PROJECT_SWITCHING_MESSAGE.replace("changing project state", label));
   }
+}
+
+function shouldBypassProjectRuntimeDuringTransition(domain: string, action: string): boolean {
+  if (projectRuntimeTransitionDepth <= 0) return false;
+  if (isMutatingRuntimeAction(domain, action)) {
+    const label =
+      domain === "chat" && MUTATING_CHAT_ACTIONS.has(action)
+        ? "sending chat messages"
+        : "changing project state";
+    throw new Error(PROJECT_SWITCHING_MESSAGE.replace("changing project state", label));
+  }
+  return true;
 }
 
 async function callProjectRuntimeActionIfBound<T>(
