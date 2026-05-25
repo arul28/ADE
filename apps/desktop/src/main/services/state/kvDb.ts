@@ -902,15 +902,14 @@ function packedCrsqlPrimaryKey(value: SyncScalar): SyncScalar | null {
 }
 
 /** Tables removed locally (#329) that older peers may still export via CRDT. */
-const DROPPED_INCOMING_SYNC_TABLES = new Set([
-  "unified_memories",
-  "unified_memories_fts",
-]);
+const DROPPED_INCOMING_SYNC_TABLES = new Set(["unified_memories"]);
 
 function isIgnoredIncomingSyncTable(db: DatabaseSyncType, table: string): boolean {
-  if (DROPPED_INCOMING_SYNC_TABLES.has(table)) return true;
-  if (table.startsWith("unified_memories_")) return true;
-  return !rawHasTable(db, table);
+  return (
+    DROPPED_INCOMING_SYNC_TABLES.has(table) ||
+    table.startsWith("unified_memories_") ||
+    !rawHasTable(db, table)
+  );
 }
 
 function normalizeIncomingCrsqlChange(db: DatabaseSyncType, change: CrsqlChangeRow): CrsqlChangeRow {

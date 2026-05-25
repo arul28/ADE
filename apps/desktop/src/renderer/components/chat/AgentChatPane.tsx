@@ -2031,7 +2031,6 @@ export function AgentChatPane({
     document.addEventListener("mouseup", onUp);
   }, [rightPaneSplit]);
   const companionStateKey = selectedSessionId ?? (laneId ? `draft:${laneId}` : "draft");
-  const draftStorageKey = companionStateKey;
   const companionHydrationKeyRef = useRef<string | null>(initialCompanionStateKey);
   const [sessionDelta, setSessionDelta] = useState<{ insertions: number; deletions: number } | null>(null);
   const [sessionMutationKind, setSessionMutationKind] = useState<"model" | "permission" | "computer-use" | null>(null);
@@ -2233,17 +2232,17 @@ export function AgentChatPane({
   }, []);
   const updateComposerDraft = useCallback((value: string) => {
     setDraft(value);
-    draftsPerSessionRef.current.set(draftStorageKey, value);
+    draftsPerSessionRef.current.set(companionStateKey, value);
     if (value.length > 0) setPromptSuggestion(null);
-  }, [draftStorageKey]);
+  }, [companionStateKey]);
   const insertComposerDraft = useCallback((value: string) => {
     setDraft((current) => {
       const next = current.trim().length ? `${current.trimEnd()}\n\n${value}` : value;
-      draftsPerSessionRef.current.set(draftStorageKey, next);
+      draftsPerSessionRef.current.set(companionStateKey, next);
       return next;
     });
     setPromptSuggestion(null);
-  }, [draftStorageKey]);
+  }, [companionStateKey]);
 
   const iosSimulatorProjectRoot = useMemo(() => {
     const scopedLaneId = selectedSession?.laneId ?? laneId;
@@ -3431,11 +3430,11 @@ export function AgentChatPane({
     if (prevDraftKeyRef.current !== undefined) {
       draftsPerSessionRef.current.set(prevDraftKeyRef.current, draft);
     }
-    prevDraftKeyRef.current = draftStorageKey;
-    const saved = draftsPerSessionRef.current.get(draftStorageKey) ?? "";
+    prevDraftKeyRef.current = companionStateKey;
+    const saved = draftsPerSessionRef.current.get(companionStateKey) ?? "";
     setDraft(saved);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only trigger on scope switch, not draft edits
-  }, [draftStorageKey]);
+  }, [companionStateKey]);
 
   useEffect(() => {
     if (!isTileActive) return;

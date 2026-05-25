@@ -315,17 +315,7 @@ export function invalidateVmLaneLaunchCache(laneId?: string): void {
   vmLaunchContextCache.clear();
 }
 
-const MACOS_VM_LAUNCH_CACHE_REFRESH_OPERATIONS = new Set([
-  "provision",
-  "start",
-  "stop",
-  "restart",
-  "set-credentials",
-  "delete",
-  "wipe",
-]);
-
-const MACOS_VM_LAUNCH_CACHE_INVALIDATE_ON_START_OPERATIONS = new Set([
+const MACOS_VM_LAUNCH_CACHE_STATE_CHANGING_OPERATIONS = new Set([
   "provision",
   "start",
   "stop",
@@ -359,7 +349,7 @@ export function syncMacosVmLaunchCacheFromEvent(
     if (payload.type !== "operation") return false;
     return (
       payload.state === "started"
-      && MACOS_VM_LAUNCH_CACHE_INVALIDATE_ON_START_OPERATIONS.has(payload.operation)
+      && MACOS_VM_LAUNCH_CACHE_STATE_CHANGING_OPERATIONS.has(payload.operation)
     );
   })();
   const shouldRefresh = (() => {
@@ -367,7 +357,7 @@ export function syncMacosVmLaunchCacheFromEvent(
     if (payload.type === "operation") {
       return (
         payload.state === "completed"
-        && MACOS_VM_LAUNCH_CACHE_REFRESH_OPERATIONS.has(payload.operation)
+        && MACOS_VM_LAUNCH_CACHE_STATE_CHANGING_OPERATIONS.has(payload.operation)
       );
     }
     return false;

@@ -81,10 +81,6 @@ function shouldRetryRemoteRuntimeAction(
   );
 }
 
-function shouldRetryRemoteSyncMethod(method: string): boolean {
-  return RETRYABLE_REMOTE_SYNC_METHODS.has(method);
-}
-
 export class RemoteConnectionPool {
   private readonly entries = new Map<string, Promise<PoolEntry>>();
   private readonly evictionListeners = new Set<
@@ -239,7 +235,7 @@ export class RemoteConnectionPool {
         ...params,
         projectId,
       }),
-      { retryOnConnectionError: shouldRetryRemoteSyncMethod(method) },
+      { retryOnConnectionError: RETRYABLE_REMOTE_SYNC_METHODS.has(method) },
     );
   }
 
