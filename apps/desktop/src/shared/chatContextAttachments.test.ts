@@ -36,7 +36,7 @@ const SAMPLE_ISSUE: LaneLinearIssue = {
   updatedAt: "2026-05-25T20:32:37.271Z",
 };
 
-function makeAttachment(overrides: Partial<typeof SAMPLE_ISSUE> = {}): AgentChatContextAttachment {
+function makeAttachment(overrides: Partial<LaneLinearIssue> = {}): AgentChatContextAttachment {
   return {
     type: "linear_issue",
     source: "manual",

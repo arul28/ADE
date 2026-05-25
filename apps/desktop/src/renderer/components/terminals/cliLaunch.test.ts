@@ -228,7 +228,7 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.args.at(-1)).toContain("/repo/.ade/worktrees/chat-lane/.agents/skills");
       expect(launch.args.at(-1)).toContain("/repo/.ade/worktrees/chat-lane/apps/desktop/resources/agent-skills");
       expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]?.startsWith(
-        "/repo/.ade/worktrees/chat-lane/.claude/skills",
+        "/repo/.ade/worktrees/chat-lane/.cursor/skills",
       )).toBe(true);
     });
 
