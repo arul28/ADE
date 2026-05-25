@@ -465,13 +465,41 @@ function coerceAutomationActiveHours(value: unknown): AutomationActiveHours | un
 
 function coerceModelConfig(value: unknown): ModelConfig | undefined {
   if (!isRecord(value)) return undefined;
-  const modelId = asString(value.modelId)?.trim();
+  const legacyOrchestratorModel = isRecord(value.orchestratorModel) ? value.orchestratorModel : null;
+  const modelId = asString(value.modelId)?.trim() || asString(legacyOrchestratorModel?.modelId)?.trim();
   if (!modelId) return undefined;
   return {
     ...(asString(value.provider)?.trim() ? { provider: asString(value.provider)!.trim() as ModelConfig["provider"] } : {}),
     modelId,
-    ...(asString(value.thinkingLevel)?.trim() ? { thinkingLevel: asString(value.thinkingLevel)!.trim() as ModelConfig["thinkingLevel"] } : {}),
+    ...(asString(value.thinkingLevel)?.trim()
+      ? { thinkingLevel: asString(value.thinkingLevel)!.trim() as ModelConfig["thinkingLevel"] }
+      : asString(legacyOrchestratorModel?.thinkingLevel)?.trim()
+        ? { thinkingLevel: asString(legacyOrchestratorModel?.thinkingLevel)!.trim() as ModelConfig["thinkingLevel"] }
+        : {}),
   };
+}
+
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    const text = asString(value)?.trim();
+    if (text) return text;
+  }
+  return undefined;
+}
+
+function legacyMissionPrompt(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined;
+  const mission = isRecord(value.mission) ? value.mission : null;
+  return firstNonEmptyString(value.prompt, mission?.prompt, value.sessionTitle, value.title, mission?.title);
+}
+
+function findLegacyLaunchMissionAction(values: unknown[]): Record<string, unknown> | null {
+  for (const value of values) {
+    if (!Array.isArray(value)) continue;
+    const match = value.find((entry) => isRecord(entry) && asString(entry.type)?.trim() === "launch-mission");
+    if (isRecord(match)) return match;
+  }
+  return null;
 }
 
 function coerceAutomationAction(value: unknown): AutomationAction | null {
@@ -536,6 +564,8 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
   const kindRaw = asString(value.kind)?.trim() ?? "";
   const kind = kindRaw === "agent-session" || kindRaw === "built-in"
     ? kindRaw
+    : kindRaw === "mission"
+      ? "agent-session"
     : null;
   if (!kind) return undefined;
 
@@ -563,15 +593,22 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
   };
 
   if (kind === "agent-session") {
+    const legacyTitle = kindRaw === "mission" ? legacyMissionPrompt(value) : undefined;
     const session = isRecord(value.session)
       ? {
-          ...(asString(value.session.title)?.trim() ? { title: asString(value.session.title)!.trim() } : {}),
+          ...(asString(value.session.title)?.trim()
+            ? { title: asString(value.session.title)!.trim() }
+            : legacyTitle
+              ? { title: legacyTitle }
+              : {}),
           ...(asString(value.session.reasoningEffort)?.trim()
             ? { reasoningEffort: asString(value.session.reasoningEffort)!.trim() }
             : {}),
           ...(asBool(value.session.codexFastMode) != null ? { codexFastMode: asBool(value.session.codexFastMode) } : {}),
         }
-      : undefined;
+      : legacyTitle
+        ? { title: legacyTitle }
+        : undefined;
     return {
       kind,
       ...sharedLaneFields,
@@ -583,6 +620,18 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
   const actions = isRecord(value.builtIn) && Array.isArray(value.builtIn.actions)
     ? value.builtIn.actions.map(coerceAutomationAction).filter((x): x is AutomationAction => x != null)
     : [];
+  const legacyLaunchMission = findLegacyLaunchMissionAction([
+    isRecord(value.builtIn) ? value.builtIn.actions : undefined,
+  ]);
+  if (legacyLaunchMission && actions.length === 0) {
+    const title = legacyMissionPrompt(legacyLaunchMission);
+    return {
+      kind: "agent-session",
+      ...sharedLaneFields,
+      ...(targetLaneId ? { targetLaneId } : {}),
+      ...(title ? { session: { title } } : {}),
+    };
+  }
   return {
     kind,
     ...sharedLaneFields,
@@ -764,7 +813,11 @@ function coerceAutomationRule(value: unknown): ConfigAutomationRule | null {
   const modelConfig = coerceModelConfig(value.modelConfig);
   const permissionConfig = coerceAutomationPermissionConfig(value.permissionConfig);
   const templateId = asString(value.templateId);
-  const prompt = asString(value.prompt);
+  const legacyLaunchMission = findLegacyLaunchMissionAction([
+    value.actions,
+    isRecord(value.execution) && isRecord(value.execution.builtIn) ? value.execution.builtIn.actions : undefined,
+  ]);
+  const prompt = asString(value.prompt) ?? legacyMissionPrompt(value.execution) ?? legacyMissionPrompt(legacyLaunchMission);
   const reviewProfileRaw = asString(value.reviewProfile)?.trim();
   const reviewProfile: AutomationReviewProfile | undefined =
     reviewProfileRaw === "quick" ||
