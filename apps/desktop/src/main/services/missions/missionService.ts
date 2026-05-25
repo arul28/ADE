@@ -5,6 +5,7 @@ import {
   isValidResolutionKind,
   TERMINAL_MISSION_STATUSES,
 } from "../../../shared/types";
+import { failedStepInterventionsMatch } from "./failedStepInterventionMatching";
 import type {
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
@@ -4034,17 +4035,43 @@ export function createMissionService({
         const stepKey = typeof stepMetadata?.stepKey === "string" && stepMetadata.stepKey.trim()
           ? stepMetadata.stepKey.trim()
           : null;
-        const intervention = insertIntervention({
-          missionId,
-          interventionType: "failed_step",
-          title: `Step failed: ${step.title}`,
-          body: note ?? "A mission step was marked as failed and needs attention.",
-          requestedAction: "Review the failure and decide whether to continue, retry, or cancel.",
-          metadata: {
-            stepId,
-            ...(stepKey ? { stepKey } : {}),
-          },
-        });
+        const failedMetadata = {
+          stepId,
+          ...(stepKey ? { stepKey } : {}),
+        };
+        const existingOpenRows = db.all<MissionInterventionRow>(
+          `select id, mission_id, intervention_type, status, title, body,
+                  requested_action, resolution_kind, resolution_note, lane_id,
+                  created_at, updated_at, resolved_at, metadata_json
+           from mission_interventions
+           where mission_id = ? and project_id = ? and status = 'open'
+             and intervention_type = 'failed_step'`,
+          [missionId, projectId]
+        );
+        const hasMatchingIntervention = existingOpenRows.some((row) =>
+          failedStepInterventionsMatch(safeParseRecord(row.metadata_json), {
+            missionStepId: stepId,
+            stepKey,
+          })
+        );
+        let interventionId =
+          existingOpenRows.find((row) =>
+            failedStepInterventionsMatch(safeParseRecord(row.metadata_json), {
+              missionStepId: stepId,
+              stepKey,
+            })
+          )?.id ?? null;
+        if (!hasMatchingIntervention) {
+          const intervention = insertIntervention({
+            missionId,
+            interventionType: "failed_step",
+            title: `Step failed: ${step.title}`,
+            body: note ?? "A mission step was marked as failed and needs attention.",
+            requestedAction: "Review the failure and decide whether to continue, retry, or cancel.",
+            metadata: failedMetadata,
+          });
+          interventionId = intervention.id;
+        }
 
         db.run(
           `
@@ -4063,7 +4090,7 @@ export function createMissionService({
           updatedAt,
           summary: "Mission paused for intervention after step failure.",
           payload: {
-            interventionId: intervention.id,
+            ...(interventionId ? { interventionId } : {}),
             stepId
           }
         });
@@ -4146,9 +4173,9 @@ export function createMissionService({
       // For failed_step interventions, match by stepId in metadata.
       // For budget_limit_reached / provider_unreachable / unrecoverable_error,
       // match by interventionType alone (at most one open per type).
-      const meta = args.metadata ?? null;
-      const metaStepId = meta && typeof (meta as Record<string, unknown>).stepId === "string"
-        ? ((meta as Record<string, unknown>).stepId as string).trim()
+      const meta = isRecord(args.metadata) ? args.metadata : null;
+      const metaStepId = meta && typeof meta.stepId === "string"
+        ? meta.stepId.trim()
         : null;
 
       const existingOpenRows = db.all<MissionInterventionRow>(
@@ -4162,14 +4189,17 @@ export function createMissionService({
       );
 
       for (const row of existingOpenRows) {
-        if (args.interventionType === "failed_step" && metaStepId) {
-          // Match by stepId in metadata
+        if (args.interventionType === "failed_step" && meta) {
           const rowMeta = safeParseRecord(row.metadata_json);
-          const rowStepId = rowMeta && typeof rowMeta.stepId === "string"
-            ? rowMeta.stepId.trim()
-            : null;
-          if (rowStepId === metaStepId) {
-            // Return existing intervention — skip duplicate creation
+          if (
+            failedStepInterventionsMatch(rowMeta, {
+              missionStepId: metaStepId,
+              orchestratorStepId:
+                typeof meta.orchestratorStepId === "string" ? meta.orchestratorStepId : null,
+              stepKey: typeof meta.stepKey === "string" ? meta.stepKey : null,
+              runId: typeof meta.runId === "string" ? meta.runId : null,
+            })
+          ) {
             return toMissionIntervention(row);
           }
         } else if (

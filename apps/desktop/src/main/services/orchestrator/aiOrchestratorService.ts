@@ -109,6 +109,7 @@ import { isWorkerBootstrapNoiseLine } from "../../../shared/workerRuntimeNoise";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createMissionService } from "../missions/missionService";
+import { failedStepInterventionsMatch } from "../missions/failedStepInterventionMatching";
 import type { createOrchestratorService } from "./orchestratorService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
@@ -7056,15 +7057,25 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (!mission) return;
 
     const missionStepById = new Map(mission.steps.map((step) => [step.id, step]));
+    const readMissionStepKey = (
+      missionStep: MissionDetail["steps"][number] | null,
+    ): string | null => {
+      if (!missionStep) return null;
+      const metadata = isRecord(missionStep.metadata) ? missionStep.metadata : null;
+      return stableString(metadata?.stepKey);
+    };
     const hasMatchingOpenIntervention = (
       failedRunStep: OrchestratorRunGraph["steps"][number] | null,
       failedMissionStep: MissionDetail["steps"][number] | null,
     ) => mission.interventions.some((entry) => {
       if (entry.status !== "open" || entry.interventionType !== "failed_step") return false;
       const metadata = isRecord(entry.metadata) ? entry.metadata : null;
-      if (!metadata) return false;
-      if (failedMissionStep?.id && metadata.stepId === failedMissionStep.id) return true;
-      return Boolean(!failedMissionStep && failedRunStep?.id && metadata.orchestratorStepId === failedRunStep.id);
+      return failedStepInterventionsMatch(metadata, {
+        missionStepId: failedMissionStep?.id ?? null,
+        orchestratorStepId: failedRunStep?.id ?? null,
+        stepKey: stableString(failedRunStep?.stepKey) ?? readMissionStepKey(failedMissionStep),
+        runId: graph.run.id,
+      });
     });
     const failedRunPair = graph.steps
       .filter((step) => step.status === "failed")
@@ -7082,6 +7093,8 @@ Check all worker statuses and continue managing the mission from here. Read work
     const failedMissionStep = failedRunPair?.missionStep ?? fallbackMissionStep;
     if (!failedRunStep && !failedMissionStep) return;
     const failedStepTitle = failedMissionStep?.title ?? failedRunStep?.title ?? "Run step";
+    const failedStepKey =
+      stableString(failedRunStep?.stepKey) ?? readMissionStepKey(failedMissionStep);
 
     missionService.addIntervention({
       missionId: mission.id,
@@ -7092,7 +7105,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       metadata: {
         runId: graph.run.id,
         stepId: failedMissionStep?.id ?? null,
-        stepKey: failedRunStep?.stepKey ?? null,
+        stepKey: failedStepKey,
         orchestratorStepId: failedRunStep?.id ?? null,
         reasonCode: "terminal_run_failed_step",
       }

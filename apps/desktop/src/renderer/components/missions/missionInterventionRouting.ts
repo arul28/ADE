@@ -45,6 +45,9 @@ export function routeMissionIntervention(
   const interventionStepId = typeof metadata.stepId === "string" && metadata.stepId.trim().length > 0
     ? metadata.stepId.trim()
     : null;
+  const interventionOrchestratorStepId = typeof metadata.orchestratorStepId === "string" && metadata.orchestratorStepId.trim().length > 0
+    ? metadata.orchestratorStepId.trim()
+    : null;
   const interventionStepKey = typeof metadata.stepKey === "string" && metadata.stepKey.trim().length > 0
     ? metadata.stepKey.trim()
     : null;
@@ -61,7 +64,11 @@ export function routeMissionIntervention(
     && interventionStepId
     && store.runGraph?.steps.some((step) => step.id === interventionStepId)
       ? interventionStepId
-      : null;
+      : sameRun
+      && interventionOrchestratorStepId
+      && store.runGraph?.steps.some((step) => step.id === interventionOrchestratorStepId)
+        ? interventionOrchestratorStepId
+        : null;
 
   if (reasonCode === "coordinator_unavailable" || reasonCode === "coordinator_recovery_failed") {
     store.setLogsFocusInterventionId(null);
