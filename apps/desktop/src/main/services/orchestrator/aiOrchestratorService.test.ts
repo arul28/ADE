@@ -7063,13 +7063,27 @@ describe("aiOrchestratorService", () => {
           reasonCode: "terminal_run_failed_step",
         },
       });
+      const failedAt = new Date().toISOString();
+      fixture.db.run(
+        `update mission_steps set status = 'failed', completed_at = ?, updated_at = ? where id in (?, ?)`,
+        [failedAt, failedAt, firstStep.id, secondStep.id],
+      );
       const started = fixture.orchestratorService.startRun({
         missionId: mission.id,
         steps: [
           {
+            stepKey: "first-step",
+            title: firstStep.title,
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            executorKind: "manual",
+            missionStepId: firstStep.id,
+            metadata: { stepType: "implementation", stepKey: "first-step" }
+          },
+          {
             stepKey: "second-step",
             title: secondStep.title,
-            stepIndex: 0,
+            stepIndex: 1,
             dependencyStepKeys: [],
             executorKind: "manual",
             missionStepId: secondStep.id,
@@ -7078,7 +7092,6 @@ describe("aiOrchestratorService", () => {
         ]
       });
       const runId = started.run.id;
-      const failedAt = new Date().toISOString();
       fixture.db.run(
         `update orchestrator_runs set status = 'failed', updated_at = ? where id = ?`,
         [failedAt, runId],

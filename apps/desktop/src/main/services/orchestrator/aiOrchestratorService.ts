@@ -7055,20 +7055,32 @@ Check all worker statuses and continue managing the mission from here. Read work
     const mission = missionService.get(graph.run.missionId);
     if (!mission) return;
 
-    const failedRunStep = graph.steps.find((step) => step.status === "failed");
     const missionStepById = new Map(mission.steps.map((step) => [step.id, step]));
-    const failedMissionStep = failedRunStep
-      ? resolveMissionStepForRunStep(mission, failedRunStep, missionStepById)
-      : mission.steps.find((step) => step.status === "failed") ?? null;
-    if (!failedRunStep && !failedMissionStep) return;
-    const hasMatchingOpenIntervention = mission.interventions.some((entry) => {
+    const hasMatchingOpenIntervention = (
+      failedRunStep: OrchestratorRunGraph["steps"][number] | null,
+      failedMissionStep: MissionDetail["steps"][number] | null,
+    ) => mission.interventions.some((entry) => {
       if (entry.status !== "open" || entry.interventionType !== "failed_step") return false;
       const metadata = isRecord(entry.metadata) ? entry.metadata : null;
       if (!metadata) return false;
       if (failedMissionStep?.id && metadata.stepId === failedMissionStep.id) return true;
       return Boolean(!failedMissionStep && failedRunStep?.id && metadata.orchestratorStepId === failedRunStep.id);
     });
-    if (hasMatchingOpenIntervention) return;
+    const failedRunPair = graph.steps
+      .filter((step) => step.status === "failed")
+      .map((runStep) => ({
+        runStep,
+        missionStep: resolveMissionStepForRunStep(mission, runStep, missionStepById),
+      }))
+      .find(({ runStep, missionStep }) => !hasMatchingOpenIntervention(runStep, missionStep));
+    const fallbackMissionStep = failedRunPair
+      ? null
+      : mission.steps.find((step) =>
+          step.status === "failed" && !hasMatchingOpenIntervention(null, step)
+        ) ?? null;
+    const failedRunStep = failedRunPair?.runStep ?? null;
+    const failedMissionStep = failedRunPair?.missionStep ?? fallbackMissionStep;
+    if (!failedRunStep && !failedMissionStep) return;
     const failedStepTitle = failedMissionStep?.title ?? failedRunStep?.title ?? "Run step";
 
     missionService.addIntervention({
