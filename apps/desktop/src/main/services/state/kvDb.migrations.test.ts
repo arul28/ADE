@@ -33,6 +33,16 @@ function makeDbPath(prefix: string): string {
   return path.join(root, ".ade", "kv.sqlite");
 }
 
+function isFts4Available(rawDb: RawDb): boolean {
+  try {
+    rawDb.exec("create virtual table if not exists temp.__ade_fts4_probe using fts4(content)");
+    rawDb.exec("drop table if exists temp.__ade_fts4_probe");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function expectTables(db: Awaited<ReturnType<typeof openKvDb>>, tables: readonly string[]): void {
   for (const table of tables) {
     const hit = db.get<{ name: string }>(
@@ -53,6 +63,555 @@ function expectIndexes(db: Awaited<ReturnType<typeof openKvDb>>, indexes: readon
   }
 }
 
+describe("kvDb migrations - legacy upgrade paths", () => {
+  it("drops legacy unified_memories FTS4 schema before retrofit passes run", async () => {
+    const dbPath = makeDbPath("ade-kvdb-legacy-memory-");
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+
+    const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (path: string) => RawDb };
+    const rawDb = new DatabaseSync(dbPath);
+    if (!isFts4Available(rawDb)) {
+      rawDb.close();
+      return;
+    }
+
+    const now = "2026-05-22T00:00:00.000Z";
+    rawDb.exec(`
+      create table projects (
+        id text primary key,
+        root_path text not null,
+        display_name text not null,
+        default_base_ref text not null,
+        created_at text not null,
+        last_opened_at text not null
+      );
+      insert into projects values ('project-1', '/repo', 'ADE', 'main', '${now}', '${now}');
+
+      create table unified_memories (
+        id text primary key,
+        project_id text not null,
+        scope text not null,
+        scope_owner_id text,
+        tier integer not null default 2,
+        category text not null,
+        content text not null,
+        importance text not null default 'medium',
+        confidence real not null default 1.0,
+        observation_count integer not null default 1,
+        status text not null default 'promoted',
+        source_type text not null default 'agent',
+        source_id text,
+        source_session_id text,
+        source_pack_key text,
+        source_run_id text,
+        file_scope_pattern text,
+        agent_id text,
+        pinned integer not null default 0,
+        access_score real not null default 0,
+        composite_score real not null default 0,
+        write_gate_reason text,
+        dedupe_key text not null default '',
+        created_at text not null,
+        updated_at text not null,
+        last_accessed_at text not null,
+        access_count integer not null default 0,
+        promoted_at text
+      );
+      insert into unified_memories(
+        id, project_id, scope, category, content, created_at, updated_at, last_accessed_at
+      ) values ('mem-1', 'project-1', 'project', 'note', 'hello', '${now}', '${now}', '${now}');
+
+      create virtual table unified_memories_fts using fts4(
+        content,
+        content='unified_memories'
+      );
+      create trigger unified_memories_fts_ai after insert on unified_memories begin
+        insert into unified_memories_fts(rowid, content) values (new.rowid, new.content);
+      end;
+      create trigger unified_memories_fts_au after update on unified_memories begin
+        insert into unified_memories_fts(unified_memories_fts, rowid, content) values ('delete', old.rowid, old.content);
+        insert into unified_memories_fts(rowid, content) values (new.rowid, new.content);
+      end;
+      create trigger unified_memories_fts_bd before delete on unified_memories begin
+        insert into unified_memories_fts(unified_memories_fts, rowid, content) values ('delete', old.rowid, old.content);
+      end;
+      create trigger unified_memories_fts_bu before update on unified_memories begin
+        insert into unified_memories_fts(unified_memories_fts, rowid, content) values ('delete', old.rowid, old.content);
+      end;
+    `);
+    rawDb.close();
+
+    const db = await openKvDb(dbPath, createLogger());
+    try {
+      expect(db.get("select 1 as present from sqlite_master where name = 'unified_memories' limit 1")).toBeNull();
+      expect(db.get("select 1 as present from sqlite_master where name = 'unified_memories_fts' limit 1")).toBeNull();
+      expect(
+        db.get<{ count: number }>(
+          "select count(1) as count from sqlite_master where name like 'unified_memories_fts_%'",
+        )?.count,
+      ).toBe(0);
+      expect(db.get<{ count: number }>("select count(1) as count from projects")?.count).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("coalesces duplicate lane_linear_issue_links rows during migrate", async () => {
+    const dbPath = makeDbPath("ade-kvdb-linear-links-dedupe-");
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+
+    const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (path: string) => RawDb };
+    const rawDb = new DatabaseSync(dbPath);
+    const now = "2026-05-22T00:00:00.000Z";
+    rawDb.exec(`
+      create table projects (
+        id text primary key,
+        root_path text not null,
+        display_name text not null,
+        default_base_ref text not null,
+        created_at text not null,
+        last_opened_at text not null
+      );
+      insert into projects values ('project-1', '/repo', 'ADE', 'main', '${now}', '${now}');
+
+      create table lane_linear_issue_links (
+        id text primary key,
+        project_id text not null,
+        lane_id text not null,
+        issue_id text not null,
+        issue_json text not null,
+        role text not null,
+        source text not null,
+        include_in_pr integer not null default 1,
+        close_on_merge integer not null default 0,
+        created_at text not null,
+        updated_at text not null
+      );
+      insert into lane_linear_issue_links values
+        ('link-old', 'project-1', 'lane-1', 'issue-1', '{}', 'primary', 'linear', 1, 0, '${now}', '2026-01-01T00:00:00.000Z'),
+        ('link-new', 'project-1', 'lane-1', 'issue-1', '{}', 'primary', 'linear', 1, 0, '${now}', '${now}');
+    `);
+    rawDb.close();
+
+    const db = await openKvDb(dbPath, createLogger());
+    try {
+      expect(db.get<{ count: number }>("select count(1) as count from lane_linear_issue_links")?.count).toBe(1);
+      expect(db.get<{ id: string }>("select id from lane_linear_issue_links limit 1")?.id).toBe("link-new");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("drops legacy uq_lane_linear_issue_links_role before CRR conversion", async () => {
+    const dbPath = makeDbPath("ade-kvdb-linear-links-");
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+
+    const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (path: string) => RawDb };
+    const rawDb = new DatabaseSync(dbPath);
+    const now = "2026-05-22T00:00:00.000Z";
+    rawDb.exec(`
+      create table projects (
+        id text primary key,
+        root_path text not null,
+        display_name text not null,
+        default_base_ref text not null,
+        created_at text not null,
+        last_opened_at text not null
+      );
+      insert into projects values ('project-1', '/repo', 'ADE', 'main', '${now}', '${now}');
+
+      create table lane_linear_issue_links (
+        id text primary key,
+        project_id text not null,
+        lane_id text not null,
+        issue_id text not null,
+        issue_json text not null,
+        role text not null,
+        source text not null,
+        include_in_pr integer not null default 1,
+        close_on_merge integer not null default 0,
+        created_at text not null,
+        updated_at text not null
+      );
+      insert into lane_linear_issue_links values
+        ('link-1', 'project-1', 'lane-1', 'issue-1', '{}', 'primary', 'linear', 1, 0, '${now}', '${now}');
+      create unique index uq_lane_linear_issue_links_role
+        on lane_linear_issue_links(project_id, lane_id, issue_id, role);
+    `);
+    rawDb.close();
+
+    const db = await openKvDb(dbPath, createLogger());
+    try {
+      expect(
+        db.get(
+          "select 1 as present from sqlite_master where type = 'index' and name = 'uq_lane_linear_issue_links_role' limit 1",
+        ),
+      ).toBeNull();
+      expect(db.get<{ count: number }>("select count(1) as count from lane_linear_issue_links")?.count).toBe(1);
+      expect(db.get<{ id: string }>("select id from lane_linear_issue_links limit 1")?.id).toBe("link-1");
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("kvDb migrations - orchestrator schema bootstrap", () => {
+  it("creates Phase 1.5 context hardening tables and indexes", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-kvdb-orchestrator-"));
+    const dbPath = path.join(root, "ade.db");
+    const db = await openKvDb(dbPath, createLogger());
+    try {
+
+    const expectedTables = [
+      "orchestrator_runs",
+      "orchestrator_steps",
+      "orchestrator_attempts",
+      "orchestrator_attempt_runtime",
+      "orchestrator_runtime_events",
+      "orchestrator_claims",
+      "orchestrator_context_snapshots",
+      "mission_step_handoffs",
+      "orchestrator_timeline_events",
+      "orchestrator_gate_reports",
+      "orchestrator_reflections",
+      "orchestrator_retrospectives",
+      "orchestrator_retrospective_trends",
+      "orchestrator_reflection_pattern_stats",
+      "orchestrator_reflection_pattern_sources",
+      "orchestrator_lane_decisions",
+      "orchestrator_ai_decisions",
+    ];
+
+    expectTables(db, expectedTables);
+
+    expect(listColumnNames(db, "orchestrator_runs")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "mission_id",
+        "status",
+        "context_profile",
+        "scheduler_state",
+        "runtime_cursor_json",
+        "last_error",
+        "metadata_json",
+        "created_at",
+        "updated_at",
+      ]),
+    );
+
+    expect(listColumnNames(db, "orchestrator_steps")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "run_id",
+        "project_id",
+        "mission_step_id",
+        "step_key",
+        "status",
+        "join_policy",
+        "dependency_step_ids_json",
+        "retry_limit",
+        "retry_count",
+      ]),
+    );
+
+    expect(listColumnNames(db, "orchestrator_attempts")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "run_id",
+        "step_id",
+        "project_id",
+        "attempt_number",
+        "status",
+        "executor_kind",
+        "tracked_session_enforced",
+        "context_profile",
+        "context_snapshot_id",
+        "error_class",
+        "result_envelope_json",
+      ]),
+    );
+
+    expect(listColumnNames(db, "orchestrator_attempt_runtime")).toEqual(
+      expect.arrayContaining([
+        "attempt_id",
+        "session_id",
+        "runtime_state",
+        "last_signal_at",
+        "last_output_preview",
+        "last_preview_digest",
+        "digest_since_ms",
+        "repeat_count",
+        "last_waiting_intervention_at_ms",
+        "last_event_heartbeat_at_ms",
+        "last_waiting_notified_at_ms",
+        "updated_at",
+      ]),
+    );
+
+    expect(listColumnNames(db, "orchestrator_runtime_events")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "run_id",
+        "step_id",
+        "attempt_id",
+        "session_id",
+        "event_type",
+        "event_key",
+        "occurred_at",
+        "payload_json",
+        "created_at",
+      ]),
+    );
+
+    expect(listColumnNames(db, "orchestrator_claims")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "run_id",
+        "step_id",
+        "attempt_id",
+        "owner_id",
+        "scope_kind",
+        "scope_value",
+        "state",
+        "heartbeat_at",
+        "expires_at",
+        "policy_json",
+      ]),
+    );
+
+    expect(listColumnNames(db, "orchestrator_context_snapshots")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "run_id",
+        "step_id",
+        "attempt_id",
+        "snapshot_type",
+        "context_profile",
+        "cursor_json",
+        "created_at",
+      ]),
+    );
+
+    expect(listColumnNames(db, "mission_step_handoffs")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "mission_id",
+        "mission_step_id",
+        "run_id",
+        "step_id",
+        "attempt_id",
+        "handoff_type",
+        "producer",
+        "payload_json",
+        "created_at",
+      ]),
+    );
+
+    expect(listColumnNames(db, "orchestrator_timeline_events")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "run_id",
+        "step_id",
+        "attempt_id",
+        "claim_id",
+        "event_type",
+        "reason",
+        "detail_json",
+        "created_at",
+      ]),
+    );
+
+    expect(listColumnNames(db, "orchestrator_gate_reports")).toEqual(
+      expect.arrayContaining(["id", "project_id", "generated_at", "report_json"]),
+    );
+
+    expect(listColumnNames(db, "orchestrator_reflections")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "mission_id",
+        "run_id",
+        "agent_role",
+        "phase",
+        "signal_type",
+        "observation",
+        "recommendation",
+        "context",
+        "occurred_at",
+        "created_at",
+        "schema_version",
+      ]),
+    );
+
+    expect(listColumnNames(db, "orchestrator_retrospectives")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "mission_id",
+        "run_id",
+        "generated_at",
+        "final_status",
+        "payload_json",
+        "schema_version",
+        "created_at",
+      ]),
+    );
+
+    expect(listColumnNames(db, "orchestrator_retrospective_trends")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "mission_id",
+        "run_id",
+        "retrospective_id",
+        "source_mission_id",
+        "source_run_id",
+        "source_retrospective_id",
+        "pain_point_key",
+        "pain_point_label",
+        "status",
+        "previous_pain_score",
+        "current_pain_score",
+        "created_at",
+      ]),
+    );
+
+    expect(listColumnNames(db, "orchestrator_reflection_pattern_stats")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "pattern_key",
+        "pattern_label",
+        "occurrence_count",
+        "first_seen_retrospective_id",
+        "first_seen_run_id",
+        "last_seen_retrospective_id",
+        "last_seen_run_id",
+        "created_at",
+        "updated_at",
+      ]),
+    );
+
+    expect(listColumnNames(db, "orchestrator_reflection_pattern_sources")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "pattern_stat_id",
+        "retrospective_id",
+        "mission_id",
+        "run_id",
+        "created_at",
+      ]),
+    );
+
+    expect(listColumnNames(db, "orchestrator_lane_decisions")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "mission_id",
+        "run_id",
+        "step_id",
+        "step_key",
+        "lane_id",
+        "decision_type",
+        "validator_outcome",
+        "rule_hits_json",
+        "rationale",
+        "metadata_json",
+        "created_at",
+      ]),
+    );
+
+    expect(listColumnNames(db, "orchestrator_ai_decisions")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "mission_id",
+        "run_id",
+        "step_id",
+        "attempt_id",
+        "call_type",
+        "provider",
+        "model",
+        "timeout_cap_ms",
+        "decision_json",
+        "action_trace_json",
+        "validation_json",
+        "rationale",
+        "fallback_used",
+        "failure_reason",
+        "duration_ms",
+        "prompt_tokens",
+        "completion_tokens",
+        "created_at",
+      ]),
+    );
+
+    const expectedIndexes = [
+      "idx_orchestrator_runs_project_status",
+      "idx_orchestrator_runs_mission",
+      "idx_orchestrator_runs_project_updated",
+      "idx_orchestrator_steps_run_status",
+      "idx_orchestrator_steps_project_status",
+      "idx_orchestrator_steps_run_order",
+      "idx_orchestrator_attempts_run_status",
+      "idx_orchestrator_attempts_step_status",
+      "idx_orchestrator_attempts_project_created",
+      "idx_orchestrator_attempt_runtime_session",
+      "idx_orchestrator_attempt_runtime_updated",
+      "idx_orchestrator_runtime_events_run_occurred",
+      "idx_orchestrator_runtime_events_attempt_occurred",
+      "idx_orchestrator_runtime_events_session_occurred",
+      "idx_orchestrator_runtime_events_project_key",
+      "idx_orchestrator_claims_run_state",
+      "idx_orchestrator_claims_scope_state",
+      "idx_orchestrator_claims_expires",
+      "idx_orchestrator_claims_active_scope",
+      "idx_orchestrator_context_snapshots_run_created",
+      "idx_orchestrator_context_snapshots_attempt",
+      "idx_mission_step_handoffs_mission_created",
+      "idx_mission_step_handoffs_step_created",
+      "idx_mission_step_handoffs_attempt",
+      "idx_orchestrator_timeline_run_created",
+      "idx_orchestrator_timeline_attempt",
+      "idx_orchestrator_timeline_project_created",
+      "idx_orchestrator_gate_reports_project_generated",
+      "idx_orchestrator_reflections_run_occurred",
+      "idx_orchestrator_reflections_mission",
+      "idx_orchestrator_retrospectives_mission_generated",
+      "idx_orchestrator_retrospective_trends_mission_created",
+      "idx_orchestrator_retrospective_trends_run_created",
+      "idx_orchestrator_reflection_pattern_stats_count",
+      "idx_orchestrator_reflection_pattern_sources_pattern",
+      "idx_orchestrator_reflection_pattern_sources_mission",
+      "idx_orchestrator_lane_decisions_mission_created",
+      "idx_orchestrator_lane_decisions_run_created",
+      "idx_orchestrator_lane_decisions_step_created",
+      "idx_orchestrator_lane_decisions_lane_created",
+      "idx_orchestrator_ai_decisions_mission_created",
+      "idx_orchestrator_ai_decisions_run_created",
+      "idx_orchestrator_ai_decisions_step_created",
+      "idx_orchestrator_ai_decisions_project_category_created",
+      "idx_orchestrator_ai_decisions_created",
+    ];
+
+    expectIndexes(db, expectedIndexes);
+
+    const activeScopeSql = db.get<{ sql: string | null }>(
+      "select sql from sqlite_master where type = 'index' and name = 'idx_orchestrator_claims_active_scope' limit 1",
+    );
+    expect((activeScopeSql?.sql ?? "").toLowerCase()).toContain("where state = 'active'");
+    } finally {
+      db.close();
+    }
+  });
+});
 
 describe("kvDb migrations - lane worktree lock schema", () => {
   it("repairs legacy lock tables before lane lock upserts run", async () => {
