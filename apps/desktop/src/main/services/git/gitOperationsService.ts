@@ -572,16 +572,22 @@ export function createGitOperationsService({
     throw new Error((res.stderr || res.stdout).trim() || "Failed to merge");
   };
 
+  const NON_UNDOABLE_HEAD_CHANGE_KINDS = new Set([
+    "git_undo_head_change",
+    // Branch checkout updates lane branch_ref via switchBranch; reset --hard alone
+    // would move the wrong ref (see History "Create branch here" → undo).
+    "git_checkout_branch",
+  ]);
+
   function getLatestUndoableHeadChange(laneId: string): OperationRecord & {
     preHeadSha: string;
     postHeadSha: string;
   } {
-    const operation = operationService.listHeadChanges({ laneId, limit: 100 })[0];
+    const operation = operationService
+      .listHeadChanges({ laneId, limit: 100 })
+      .find((entry) => !NON_UNDOABLE_HEAD_CHANGE_KINDS.has(entry.kind));
     if (!operation) {
       throw new Error("No undoable head-changing git operation found for this lane.");
-    }
-    if (operation.kind === "git_undo_head_change") {
-      throw new Error("Latest head change is already an undo. Use redo to restore it.");
     }
     return operation;
   }

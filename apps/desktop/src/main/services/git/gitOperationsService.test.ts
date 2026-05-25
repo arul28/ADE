@@ -368,8 +368,51 @@ describe("gitOperationsService undo and redo head changes", () => {
     ]);
 
     await expect(service.undoLastHeadChange({ laneId: "lane-1" }))
-      .rejects.toThrow("Latest head change is already an undo. Use redo to restore it.");
+      .rejects.toThrow("No undoable head-changing git operation found for this lane.");
     expect(mockGit.runGitOrThrow).not.toHaveBeenCalled();
+  });
+
+  it("skips branch checkout when undoing the latest head change", async () => {
+    mockGit.getHeadSha
+      .mockResolvedValueOnce("after")
+      .mockResolvedValueOnce("after")
+      .mockResolvedValueOnce("before");
+    mockGit.runGitOrThrow.mockResolvedValue(undefined);
+    const { service, mockListHeadChanges } = createTestGitOperationsService();
+    mockListHeadChanges.mockReturnValue([
+      {
+        id: "op-checkout",
+        laneId: "lane-1",
+        laneName: "Lane",
+        kind: "git_checkout_branch",
+        startedAt: "2026-05-22T00:00:02.000Z",
+        endedAt: "2026-05-22T00:00:03.000Z",
+        status: "succeeded",
+        preHeadSha: "before",
+        postHeadSha: "after",
+        metadataJson: "{}",
+      },
+      {
+        id: "op-pick",
+        laneId: "lane-1",
+        laneName: "Lane",
+        kind: "git_cherry_pick",
+        startedAt: "2026-05-22T00:00:00.000Z",
+        endedAt: "2026-05-22T00:00:01.000Z",
+        status: "succeeded",
+        preHeadSha: "before",
+        postHeadSha: "after",
+        metadataJson: "{}",
+      },
+    ]);
+
+    await service.undoLastHeadChange({ laneId: "lane-1" });
+
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
+      ["reset", "--hard", "before"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 60_000 },
+    );
+    expect(mockListHeadChanges).toHaveBeenCalledWith({ laneId: "lane-1", limit: 100 });
   });
 });
 

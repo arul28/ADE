@@ -676,7 +676,7 @@ import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
 import { runGit } from "../git/git";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { mapPermissionToCodex } from "./permissionMapping";
-import { acquireCursorSdkConnection } from "./cursorSdkPool";
+import { acquireCursorSdkConnection, releaseCursorSdkConnection } from "./cursorSdkPool";
 import { acquireDroidSdkConnection } from "./droidSdkPool";
 import type { AgentChatEventEnvelope, ComputerUseBackendStatus, LaneLinearIssue, PendingInputRequest } from "../../../shared/types";
 import { makeLinearIssueContextAttachment } from "../../../shared/chatContextAttachments";
@@ -12023,6 +12023,68 @@ describe("createAgentChatService", () => {
       await expect(
         service.interrupt({ sessionId: "unknown-session-id" }),
       ).rejects.toThrow(/not found/i);
+    });
+
+    it("cursor interrupt before runtime setup does not create a Claude session", async () => {
+      process.env.CURSOR_API_KEY = "test-cursor-key";
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      vi.mocked(claudeSdkCreateSessionCompat).mockClear();
+      await service.interrupt({ sessionId: session.id });
+      expect(claudeSdkCreateSessionCompat).not.toHaveBeenCalled();
+    });
+
+    it("releases the cursor pool slot when interrupted during SDK setup", async () => {
+      process.env.CURSOR_API_KEY = "test-cursor-key";
+      let unblockAcquire: (() => void) | null = null;
+      const acquireGate = new Promise<void>((resolve) => {
+        unblockAcquire = resolve;
+      });
+      vi.mocked(acquireCursorSdkConnection).mockImplementationOnce(async (args: Record<string, unknown>) => {
+        mockState.cursorSdkAcquireCalls.push(args);
+        await acquireGate;
+        const pooled: any = {
+          process: { exitCode: null, killed: false },
+          bridge: { onEvent: null, onRunStarted: null, onRunResult: null, onHookRequest: null },
+          agentId: "cursor-sdk-agent-setup-interrupt",
+          runId: null,
+          request: vi.fn(async () => ({})),
+          sendPrompt: vi.fn(async () => ({ id: "cursor-sdk-run-setup", status: "finished" })),
+          updatePolicy: vi.fn(async () => {}),
+          cancel: vi.fn(async () => {}),
+          dispose: vi.fn(),
+        };
+        mockState.cursorSdkPooled = pooled;
+        return { generation: 9, pooled };
+      });
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      const turnPromise = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start cursor turn",
+        displayText: "Start cursor turn",
+      });
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkAcquireCalls.length).toBe(1);
+      });
+      await service.interrupt({ sessionId: session.id });
+      unblockAcquire!();
+      await expect(turnPromise).rejects.toThrow(/Cursor session interrupted/i);
+      expect(releaseCursorSdkConnection).toHaveBeenCalledWith(
+        expect.any(String),
+        9,
+      );
     });
 
     it("emits subagent_result stopped for active subagents on claude interrupt", async () => {
