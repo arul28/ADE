@@ -55,7 +55,7 @@ export function LinearIssueBadge({
   onStartChatWithIssue?: () => void;
 }) {
   const [copyState, setCopyState] = React.useState<CopyState>("idle");
-  const project = issue.projectName?.trim() || issue.projectSlug;
+  const project = issue.projectName?.trim() || issue.projectSlug || issue.teamKey;
 
   React.useEffect(() => {
     if (copyState === "idle") return undefined;

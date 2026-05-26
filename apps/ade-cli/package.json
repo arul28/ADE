@@ -25,7 +25,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.139",
-    "@cursor/sdk": "^1.0.9",
+    "@cursor/sdk": "^1.0.13",
     "@linear/sdk": "^84.0.0",
     "@openai/codex": "0.130.0",
     "@opencode-ai/sdk": "^1.15.5",

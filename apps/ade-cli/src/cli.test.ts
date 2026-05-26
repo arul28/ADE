@@ -1919,6 +1919,39 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("maps existing lane Linear issue linking to the lane action", () => {
+    const plan = buildCliPlan([
+      "lanes",
+      "link-linear-issue",
+      "lane-1",
+      "--linear-issue-json",
+      '{"id":"issue-1","identifier":"ADE-123","title":"Linked lane"}',
+      "--source",
+      "manual",
+      "--no-include-in-pr",
+    ]);
+
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "lane",
+        action: "linkLinearIssues",
+        args: {
+          laneId: "lane-1",
+          issues: [{
+            id: "issue-1",
+            identifier: "ADE-123",
+            title: "Linked lane",
+          }],
+          source: "manual",
+          includeInPr: false,
+        },
+      },
+    });
+  });
+
   it("maps Linear quick view to the typed RPC tool", () => {
     const plan = buildCliPlan(["linear", "quick-view", "--text"]);
 

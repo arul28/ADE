@@ -921,6 +921,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade lanes show <lane> --text                  Inspect one lane status
     $ ade lanes create --name <name>                Create a lane from the current project context
     $ ade lanes create --linear-issue-json '{...}'  Create a lane linked to a Linear issue
+    $ ade lanes link-linear-issue <lane> --linear-issue-json '{...}'
+                                                    Link an existing lane to a Linear issue
     $ ade lanes create --branch-name <branch>       Override the auto-generated branch name
     $ ade lanes child --lane <parent> --name <name> Create a child lane under a parent
     $ ade lanes import --branch <branch>            Register an existing branch/worktree
@@ -2377,6 +2379,42 @@ function buildLanePlan(args: string[]): CliPlan {
       kind: "execute",
       label: "lane children",
       steps: [actionArgsListStep("result", "lane", "getChildren", [laneId])],
+    };
+  }
+  if (sub === "link-linear-issue" || sub === "link-linear" || sub === "linear-link") {
+    const laneId = requireValue(
+      readLaneId(args) ?? firstPositional(args),
+      "laneId",
+    );
+    const linearIssueJson = requireValue(
+      readValue(args, ["--linear-issue-json", "--issue-json"]),
+      "--linear-issue-json",
+    );
+    const parsed = parseJson(linearIssueJson, "--linear-issue-json");
+    const issues = Array.isArray(parsed) ? parsed : [parsed];
+    if (issues.length === 0 || issues.some((issue) => !isRecord(issue))) {
+      throw new CliUsageError("--linear-issue-json must decode to an object or array of objects.");
+    }
+    const input: JsonObject = {
+      laneId,
+      issues: issues as JsonObject[],
+    };
+    maybePut(input, "role", readValue(args, ["--role"]));
+    maybePut(input, "source", readValue(args, ["--source"]));
+    if (readFlag(args, ["--no-include-in-pr"])) input.includeInPr = false;
+    if (readFlag(args, ["--include-in-pr"])) input.includeInPr = true;
+    if (readFlag(args, ["--close-on-merge"])) input.closeOnMerge = true;
+    return {
+      kind: "execute",
+      label: "lane link Linear issue",
+      steps: [
+        actionStep(
+          "result",
+          "lane",
+          "linkLinearIssues",
+          collectGenericObjectArgs(args, input),
+        ),
+      ],
     };
   }
   if (sub === "stack") {

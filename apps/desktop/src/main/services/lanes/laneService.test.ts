@@ -198,6 +198,63 @@ describe("laneService createFromUnstaged", () => {
     }));
   });
 
+  it("links Linear issues that do not belong to a Linear project", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-linear-projectless-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-linear-projectless", repoRoot });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-linear-projectless",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    const issue = {
+      ...makeLinearIssue(),
+      id: "issue-projectless",
+      identifier: "ADE-45",
+      title: "Run Cursor SDK audit",
+      url: "https://linear.app/ade-linear/issue/ADE-45/run-cursor-sdk-audit",
+      projectId: "",
+      projectSlug: "",
+      projectName: null,
+      teamId: "team-ade",
+      teamKey: "ADE",
+      teamName: "ADE",
+    };
+
+    const links = service.linkLinearIssues({
+      laneId: "lane-child",
+      issues: [issue],
+      source: "manual",
+    });
+
+    expect(links).toHaveLength(1);
+    expect(links[0]?.issue).toEqual(expect.objectContaining({
+      identifier: "ADE-45",
+      projectId: "",
+      projectSlug: "",
+      teamKey: "ADE",
+    }));
+
+    const lanes = await service.list({ includeStatus: false });
+    const child = lanes.find((lane) => lane.id === "lane-child");
+    expect(child?.linearIssueLinks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "worked",
+        source: "manual",
+        issue: expect.objectContaining({
+          identifier: "ADE-45",
+          projectId: "",
+          projectSlug: "",
+          teamKey: "ADE",
+        }),
+      }),
+    ]));
+  });
+
   it("moves unstaged and untracked changes into a new child lane", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-rescue-success-"));
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());

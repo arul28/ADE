@@ -38,8 +38,10 @@ import {
   writeClaudeOutputStyleSelection,
 } from "./claudeOutputStyles";
 import { createClaudeSubprocessReaper, type ClaudeSubprocessReaper } from "./claudeSubprocessReaper";
-import { discoverClaudeSlashCommands, resolveClaudeSlashCommandInvocation } from "./claudeSlashCommandDiscovery";
-import { discoverCodexSlashCommands, resolveCodexSlashCommandInvocation } from "./codexSlashCommandDiscovery";
+import { discoverClaudeSlashCommands } from "./claudeSlashCommandDiscovery";
+import { discoverCodexSlashCommands } from "./codexSlashCommandDiscovery";
+import { discoverCursorSlashCommands } from "./cursorSlashCommandDiscovery";
+import { resolveProviderSlashCommandPrompt } from "./slashCommandPromptExpansion";
 import { buildCanonicalAgentChatRuntimeEvent } from "./runtimeEvents";
 import { classifyAgentCliError } from "../../../../../ade-cli/src/services/agentRegistry";
 import type {
@@ -15503,33 +15505,23 @@ export function createAgentChatService(args: {
     const codexRuntimeSlashCommandNames = managed.runtime?.kind === "codex"
       ? new Set((managed.runtime as { slashCommands?: Array<{ name: string }> }).slashCommands?.map((command) => slashCommandKey(command.name)) ?? [])
       : new Set<string>();
-    const expandedClaudeSlashCommand = providerSlashCommand
-      && managed.session.provider === "claude"
-      && slashCommand != null
-      && !CLAUDE_BUILT_IN_SLASH_COMMAND_NAMES.has(slashCommand)
-      && !claudeRuntimeSlashCommandNames.has(slashCommand)
-      ? resolveClaudeSlashCommandInvocation(managed.laneWorktreePath, trimmed)
-      : null;
-    const expandedClaudeProjectSlashCommandForCodex = providerSlashCommand
-      && managed.session.provider === "codex"
-      && slashCommand != null
-      && !CODEX_BUILT_IN_SLASH_COMMAND_NAMES.has(slashCommand)
-      && !codexRuntimeSlashCommandNames.has(slashCommand)
-      ? resolveClaudeSlashCommandInvocation(managed.laneWorktreePath, trimmed)
-      : null;
-    const expandedCodexSlashCommand = providerSlashCommand
-      && managed.session.provider === "codex"
-      && slashCommand != null
-      && !CODEX_BUILT_IN_SLASH_COMMAND_NAMES.has(slashCommand)
-      && !codexRuntimeSlashCommandNames.has(slashCommand)
-      && expandedClaudeProjectSlashCommandForCodex == null
-      ? resolveCodexSlashCommandInvocation(managed.laneWorktreePath, trimmed)
+    const expandedSlashCommandPrompt = providerSlashCommand
+      ? resolveProviderSlashCommandPrompt({
+          provider: managed.session.provider,
+          cwd: managed.laneWorktreePath,
+          trimmedInput: trimmed,
+          slashCommand,
+          claudeBuiltInNames: CLAUDE_BUILT_IN_SLASH_COMMAND_NAMES,
+          codexBuiltInNames: CODEX_BUILT_IN_SLASH_COMMAND_NAMES,
+          claudeRuntimeSlashCommandNames,
+          codexRuntimeSlashCommandNames,
+        })
       : null;
     const contextAttachmentPrompt = providerSlashCommand
       ? ""
       : buildChatContextAttachmentPrompt(publicContextAttachments);
     const promptText = providerSlashCommand
-      ? expandedClaudeSlashCommand?.promptText ?? expandedCodexSlashCommand?.promptText ?? expandedClaudeProjectSlashCommandForCodex?.promptText ?? trimmed
+      ? expandedSlashCommandPrompt ?? trimmed
       : composeLaunchDirectives(trimmed, [
           shouldInjectLaneDirective
             ? buildLaneWorktreeDirective({
@@ -15546,7 +15538,7 @@ export function createAgentChatService(args: {
           contextAttachmentPrompt || null,
         ]);
     const autoTitleSeed = providerSlashCommand
-      ? expandedClaudeSlashCommand?.promptText ?? expandedCodexSlashCommand?.promptText ?? expandedClaudeProjectSlashCommandForCodex?.promptText ?? null
+      ? expandedSlashCommandPrompt ?? null
       : visibleText;
     if (!managed.autoTitleSeed && autoTitleSeed) {
       managed.autoTitleSeed = autoTitleSeed;
@@ -21231,8 +21223,19 @@ export function createAgentChatService(args: {
       return mergeSlashCommands([promptCommands, CODEX_BUILT_IN_SLASH_COMMANDS, dynamicCommands]);
     }
 
-    // Droid, Cursor, and OpenCode can all use the same filesystem-backed prompt
-    // and skill list even when their native runtimes do not auto-list it.
+    if (provider === "cursor") {
+      const cursorCommands: AgentChatSlashCommand[] = discoverCursorSlashCommands(laneWorktreePath)
+        .map((cmd) => ({
+          name: cmd.name,
+          description: cmd.description,
+          argumentHint: cmd.argumentHint,
+          source: "sdk" as const,
+        }));
+      return mergeSlashCommands([cursorCommands, localCommands]);
+    }
+
+    // Droid and OpenCode can both use the same filesystem-backed prompt and
+    // skill list even when their native runtimes do not auto-list it.
     return mergeSlashCommands([filesystemBackedCommands(), localCommands]);
   };
 
