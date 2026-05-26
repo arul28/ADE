@@ -936,6 +936,17 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     return runtime.mutex.run(async () => {
       await loadIntoRuntime(runtime);
       const manifest = runtime.manifest!;
+      const registeredAgent = manifest.agents.find(
+        (agent) => agent.sessionId === req.sessionId,
+      );
+      if (!registeredAgent) {
+        return {
+          ok: false,
+          reason: "session not registered as agent",
+          manifest,
+          etag: manifest.etag,
+        };
+      }
       const task = manifest.tasks.find((t) => t.id === req.taskId);
       if (!task) {
         return {
@@ -1413,6 +1424,29 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     return { manifest: next, etag };
   }
 
+  /**
+   * Service-level plan approval — bypasses per-op policy so the approval-gated
+   * paths (/leadState/planApprovedAt, /leadState/planApprovedBySessionId,
+   * /currentPhase) can only be modified through this controlled method, not via
+   * raw manifestPatch from the lead.
+   */
+  async function approvePlan(
+    runId: string,
+    bundlePath: string,
+    patches: readonly ManifestPatchOp[],
+    summary: string,
+  ): Promise<{ ok: true; manifest: OrchestrationManifest; etag: string } | { ok: false; error: string; message: string }> {
+    const runtime = getOrCreateRuntime(runId, bundlePath);
+    return runtime.mutex.run(async () => {
+      await loadIntoRuntime(runtime);
+      if (!runtime.manifest) {
+        return { ok: false, error: "run_not_found", message: `run ${runId} not found` };
+      }
+      const result = await directPatch(runtime, patches, summary);
+      return { ok: true, manifest: result.manifest, etag: result.etag };
+    });
+  }
+
   return {
     runCreate,
     bundleRead,
@@ -1425,6 +1459,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     releaseTask,
     recordValidationRun,
     agentHeartbeat,
+    approvePlan,
     runList,
     subscribe,
     release,

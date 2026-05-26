@@ -354,12 +354,17 @@ function ghAuthToken(): Pick<HeadlessGitHubTokenLookup, "token" | "ghCliPath" | 
 }
 
 function readGitOrigin(projectRoot: string): string | null {
-  const result = spawnSync("git", ["remote", "get-url", "origin"], {
-    cwd: projectRoot,
-    encoding: "utf8",
-  });
-  const remote = typeof result.stdout === "string" ? result.stdout.trim() : "";
-  return remote.length > 0 ? remote : null;
+  try {
+    const result = spawnSync("git", ["remote", "get-url", "origin"], {
+      cwd: projectRoot,
+      encoding: "utf8",
+    });
+    if (result.error) return null;
+    const remote = typeof result.stdout === "string" ? result.stdout.trim() : "";
+    return remote.length > 0 ? remote : null;
+  } catch {
+    return null;
+  }
 }
 
 function runGitHeadless(

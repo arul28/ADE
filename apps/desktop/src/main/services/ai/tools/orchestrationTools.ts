@@ -292,15 +292,20 @@ function createSpawnAgentTool(
           );
         }
         if (!patchRes.ok) {
+          // Clean up the orphaned session since manifest registration failed
+          try {
+            await chat.deleteSession({ sessionId: created.id });
+          } catch (_cleanupErr) {
+            // Best-effort cleanup — log suppressed to avoid masking the root error
+          }
           return {
             ok: false as const,
             error: "manifest_patch_failed",
             message:
-              "Created session but failed to append agent row: " +
+              "Created session but failed to append agent row (session cleaned up): " +
               ("error" in patchRes
                 ? String(patchRes.error)
                 : "unknown"),
-            sessionId: created.id,
           };
         }
         try {
@@ -753,41 +758,28 @@ function createRequestPlanApprovalTool(
       }
 
       const approvedAt = new Date().toISOString();
-      const buildPatchRequest = (manifest: OrchestrationManifest, summary: string) => ({
-        runId: ctx.runId,
-        ifMatchEtag: manifest.etag,
-        actorRole: "lead" as const,
-        actorSessionId: ctx.sessionId,
-        summary,
-        patches: [
-          { op: "add" as const, path: "/leadState/planApprovedAt", value: approvedAt },
-          { op: "add" as const, path: "/leadState/planApprovedBySessionId", value: ctx.sessionId },
-          { op: "add" as const, path: "/leadState/planApprovalSummary", value: input.planSummary },
-          { op: "replace" as const, path: "/currentPhase", value: "developing" },
-          { op: "replace" as const, path: "/phases/{id:planning}/status", value: "done" },
-          { op: "add" as const, path: "/phases/{id:planning}/completedAt", value: approvedAt },
-          { op: "replace" as const, path: "/phases/{id:developing}/status", value: "active" },
-          { op: "add" as const, path: "/phases/{id:developing}/startedAt", value: approvedAt },
-        ] satisfies ManifestPatchOp[],
-      });
-      let manifest = manifestOrThrow(svc, ctx.runId);
-      let patchRes = await svc.manifestPatch(
-        buildPatchRequest(manifest, "plan approved"),
+      const patches: ManifestPatchOp[] = [
+        { op: "add" as const, path: "/leadState/planApprovedAt", value: approvedAt },
+        { op: "add" as const, path: "/leadState/planApprovedBySessionId", value: ctx.sessionId },
+        { op: "add" as const, path: "/leadState/planApprovalSummary", value: input.planSummary },
+        { op: "replace" as const, path: "/currentPhase", value: "developing" },
+        { op: "replace" as const, path: "/phases/{id:planning}/status", value: "done" },
+        { op: "add" as const, path: "/phases/{id:planning}/completedAt", value: approvedAt },
+        { op: "replace" as const, path: "/phases/{id:developing}/status", value: "active" },
+        { op: "add" as const, path: "/phases/{id:developing}/startedAt", value: approvedAt },
+      ];
+      const patchRes = await svc.approvePlan(
+        ctx.runId,
         ctx.bundlePath,
+        patches,
+        "plan approved",
       );
-      if (!patchRes.ok && patchRes.error === "etag_conflict") {
-        manifest = patchRes.manifest;
-        patchRes = await svc.manifestPatch(
-          buildPatchRequest(manifest, "plan approved (retry)"),
-          ctx.bundlePath,
-        );
-      }
       if (!patchRes.ok) {
         return {
           ok: false as const,
           error: "manifest_patch_failed",
           message: "Plan was approved, but ADE could not record approval in the manifest.",
-          detail: "message" in patchRes ? patchRes.message : patchRes.error,
+          detail: patchRes.message,
         };
       }
       return {

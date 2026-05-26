@@ -122,24 +122,18 @@ async function cleanup(s: Setup): Promise<void> {
 }
 
 async function approveRun(setup: Setup): Promise<void> {
-  const manifest = setup.svc.getManifestForRun(setup.runId)!;
   const approvedAt = new Date().toISOString();
-  const res = await setup.svc.manifestPatch(
-    {
-      runId: setup.runId,
-      ifMatchEtag: manifest.etag,
-      actorRole: "lead",
-      actorSessionId: "S-lead",
-      summary: "approve plan",
-      patches: [
-        { op: "add", path: "/leadState/planApprovedAt", value: approvedAt },
-        { op: "add", path: "/leadState/planApprovedBySessionId", value: "S-lead" },
-        { op: "replace", path: "/currentPhase", value: "developing" },
-        { op: "replace", path: "/phases/{id:planning}/status", value: "done" },
-        { op: "replace", path: "/phases/{id:developing}/status", value: "active" },
-      ],
-    },
+  const res = await setup.svc.approvePlan(
+    setup.runId,
     setup.bundlePath,
+    [
+      { op: "add", path: "/leadState/planApprovedAt", value: approvedAt },
+      { op: "add", path: "/leadState/planApprovedBySessionId", value: "S-lead" },
+      { op: "replace", path: "/currentPhase", value: "developing" },
+      { op: "replace", path: "/phases/{id:planning}/status", value: "done" },
+      { op: "replace", path: "/phases/{id:developing}/status", value: "active" },
+    ],
+    "approve plan",
   );
   expect(res.ok).toBe(true);
 }

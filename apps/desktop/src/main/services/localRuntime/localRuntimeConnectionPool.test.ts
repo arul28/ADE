@@ -391,6 +391,10 @@ describe("local runtime connection pool", () => {
       const registered = await firstPool.ensureProject(projectRoot);
       firstPool.dispose();
 
+      // Allow the daemon to fully process the first client's socket teardown before
+      // reconnecting — without this pause the second connect can race and hit EPIPE.
+      await new Promise((resolve) => setTimeout(resolve, 250));
+
       secondPool = new LocalRuntimeConnectionPool("1.2.3", logger as never, { disableSync: true });
       const projects = await secondPool.projects();
 
