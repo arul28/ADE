@@ -97,13 +97,17 @@ type HeadlessLinearCredentialService = {
 
 type HeadlessGitHubStatus = {
   tokenStored: boolean;
+  patTokenStored: boolean;
   tokenDecryptionFailed: boolean;
   storageScope: "app";
-  tokenType?: "classic" | "fine-grained" | "unknown";
+  authSource: "pat" | "environment" | "gh" | "none";
+  tokenType?: "classic" | "fine-grained" | "oauth" | "unknown";
   repo: { owner: string; name: string } | null;
   hasOrigin: boolean;
   userLogin: string | null;
   scopes: string[];
+  ghCliPath: string | null;
+  ghAuthError: string | null;
   checkedAt: string | null;
   repoAccessOk: boolean | null;
   repoAccessError: string | null;
@@ -309,17 +313,43 @@ function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-function ghAuthToken(): string | null {
+type HeadlessGitHubTokenLookup = {
+  token: string | null;
+  source: HeadlessGitHubStatus["authSource"];
+  patTokenStored: boolean;
+  ghCliPath: string | null;
+  ghAuthError: string | null;
+};
+
+function ghAuthToken(): Pick<HeadlessGitHubTokenLookup, "token" | "ghCliPath" | "ghAuthError"> {
+  if (process.env.ADE_DISABLE_GH_AUTH_FALLBACK === "1") {
+    return { token: null, ghCliPath: null, ghAuthError: null };
+  }
   try {
     const result = spawnSync("gh", ["auth", "token"], {
       encoding: "utf8",
       timeout: 5_000,
     });
-    if (result.status !== 0) return null;
+    if (result.status !== 0) {
+      const stderr = typeof result.stderr === "string" ? result.stderr.trim() : "";
+      return {
+        token: null,
+        ghCliPath: "gh",
+        ghAuthError: stderr || "GitHub CLI is installed, but `gh auth token` did not return a token.",
+      };
+    }
     const token = result.stdout?.trim() ?? "";
-    return token.length > 0 ? token : null;
-  } catch {
-    return null;
+    return {
+      token: token.length > 0 ? token : null,
+      ghCliPath: "gh",
+      ghAuthError: token.length > 0 ? null : "GitHub CLI is installed, but `gh auth token` did not return a token.",
+    };
+  } catch (error) {
+    return {
+      token: null,
+      ghCliPath: null,
+      ghAuthError: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
@@ -432,7 +462,7 @@ export function createHeadlessGitHubService(
   let tokenOverride: string | null = null;
   let tokenDecryptionFailed = false;
 
-  const readStoredToken = (): string | null => {
+  const readStoredPatToken = (): string | null => {
     if (tokenOverride != null) return tokenOverride;
     try {
       const stored = credentialStore.getSync(tokenKey);
@@ -443,14 +473,42 @@ export function createHeadlessGitHubService(
     }
     return null;
   };
-  const getToken = (): string =>
-    readStoredToken() ??
-    envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN") ??
-    ghAuthToken() ??
-    "";
+
+  const readToken = (): HeadlessGitHubTokenLookup => {
+    const patToken = readStoredPatToken();
+    if (patToken) {
+      return {
+        token: patToken,
+        source: "pat",
+        patTokenStored: true,
+        ghCliPath: null,
+        ghAuthError: null,
+      };
+    }
+    const env = envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN");
+    if (env) {
+      return {
+        token: env,
+        source: "environment",
+        patTokenStored: false,
+        ghCliPath: null,
+        ghAuthError: null,
+      };
+    }
+    const gh = ghAuthToken();
+    return {
+      ...gh,
+      source: gh.token ? "gh" : "none",
+      patTokenStored: false,
+    };
+  };
+
+  const getToken = (): string => readToken().token ?? "";
+
   const getTokenType = (token: string): HeadlessGitHubStatus["tokenType"] => {
     if (token.startsWith("github_pat_")) return "fine-grained";
     if (token.startsWith("ghp_")) return "classic";
+    if (/^gh[ousr]_/.test(token)) return "oauth";
     return "unknown";
   };
   const readApiMessage = (payload: unknown, fallback: string): string => {
@@ -476,7 +534,7 @@ export function createHeadlessGitHubService(
     if (args.tokenType === "fine-grained") {
       return args.repo ? args.repoAccessOk === true : true;
     }
-    if (args.tokenType === "classic") {
+    if (args.tokenType === "classic" || args.tokenType === "oauth" || args.scopes.length > 0) {
       return getGitHubTokenAccessState(args.scopes).hasRequiredAccess;
     }
     return true;
@@ -548,7 +606,7 @@ export function createHeadlessGitHubService(
     const token = (args.token ?? getToken()).trim();
     if (!token) {
       throw new Error(
-        "GitHub token missing. Set ADE_GITHUB_TOKEN or GITHUB_TOKEN, or run `gh auth login` so `gh auth token` returns a token.",
+        "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
       );
     }
     const url = new URL(`https://api.github.com${args.path}`);
@@ -698,41 +756,53 @@ export function createHeadlessGitHubService(
       const now = Date.now();
       const repo = detectGitHubRepo(projectRoot);
       const hasOrigin = Boolean(readGitOrigin(projectRoot));
+      const tokenLookup = readToken();
       if (cachedStatus && now - cachedAt < 30_000) {
         const repoChanged =
           (cachedStatus.repo?.owner ?? null) !== (repo?.owner ?? null) ||
           (cachedStatus.repo?.name ?? null) !== (repo?.name ?? null);
-        const repoAccessOk = repoChanged ? null : cachedStatus.repoAccessOk;
-        const repoAccessError = repoChanged
-          ? null
-          : cachedStatus.repoAccessError;
-        return {
-          ...cachedStatus,
-          repo,
-          hasOrigin,
-          repoAccessOk,
-          repoAccessError,
-          connected: computeConnected({
-            tokenStored: cachedStatus.tokenStored,
-            userLogin: cachedStatus.userLogin,
-            tokenType: cachedStatus.tokenType,
-            scopes: cachedStatus.scopes,
+        const authSourceChanged =
+          cachedStatus.authSource !== tokenLookup.source ||
+          cachedStatus.patTokenStored !== tokenLookup.patTokenStored;
+        if (!authSourceChanged) {
+          const repoAccessOk = repoChanged ? null : cachedStatus.repoAccessOk;
+          const repoAccessError = repoChanged
+            ? null
+            : cachedStatus.repoAccessError;
+          return {
+            ...cachedStatus,
             repo,
+            hasOrigin,
+            ghCliPath: tokenLookup.ghCliPath ?? cachedStatus.ghCliPath,
+            ghAuthError: tokenLookup.ghAuthError,
             repoAccessOk,
-          }),
-        };
+            repoAccessError,
+            connected: computeConnected({
+              tokenStored: cachedStatus.tokenStored,
+              userLogin: cachedStatus.userLogin,
+              tokenType: cachedStatus.tokenType,
+              scopes: cachedStatus.scopes,
+              repo,
+              repoAccessOk,
+            }),
+          };
+        }
       }
-      const token = getToken();
+      const token = tokenLookup.token;
       if (!token) {
         const status: HeadlessGitHubStatus = {
           tokenStored: false,
+          patTokenStored: tokenLookup.patTokenStored,
           tokenDecryptionFailed,
           storageScope: "app",
+          authSource: "none",
           tokenType: "unknown",
           repo,
           hasOrigin,
           userLogin: null,
           scopes: [],
+          ghCliPath: tokenLookup.ghCliPath,
+          ghAuthError: tokenLookup.ghAuthError,
           checkedAt: null,
           repoAccessOk: null,
           repoAccessError: null,
@@ -761,13 +831,17 @@ export function createHeadlessGitHubService(
         }
         const status: HeadlessGitHubStatus = {
           tokenStored: true,
+          patTokenStored: tokenLookup.patTokenStored,
           tokenDecryptionFailed: false,
           storageScope: "app",
+          authSource: tokenLookup.source,
           tokenType: validated.tokenType,
           repo,
           hasOrigin,
           userLogin: validated.userLogin,
           scopes: validated.scopes,
+          ghCliPath: tokenLookup.ghCliPath,
+          ghAuthError: tokenLookup.ghAuthError,
           checkedAt: new Date(now).toISOString(),
           repoAccessOk,
           repoAccessError,
@@ -789,13 +863,17 @@ export function createHeadlessGitHubService(
         });
         const status: HeadlessGitHubStatus = {
           tokenStored: true,
+          patTokenStored: tokenLookup.patTokenStored,
           tokenDecryptionFailed: false,
           storageScope: "app",
+          authSource: tokenLookup.source,
           tokenType: getTokenType(token),
           repo,
           hasOrigin,
           userLogin: null,
           scopes: [],
+          ghCliPath: tokenLookup.ghCliPath,
+          ghAuthError: tokenLookup.ghAuthError,
           checkedAt: new Date(now).toISOString(),
           repoAccessOk: null,
           repoAccessError: null,
@@ -827,21 +905,26 @@ export function createHeadlessGitHubService(
       const token = getToken();
       if (!token)
         throw new Error(
-          "GitHub token missing. Set ADE_GITHUB_TOKEN or GITHUB_TOKEN, or run `gh auth login`.",
+          "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
         );
       return token;
     },
     parseGitHubRepoFromRemoteUrl,
     setToken(nextToken: string) {
-      tokenOverride = nextToken.trim();
-      credentialStore.setSync(tokenKey, tokenOverride);
+      const clean = nextToken.trim();
+      tokenOverride = clean || null;
+      if (clean) {
+        credentialStore.setSync(tokenKey, clean);
+      } else {
+        credentialStore.deleteSync(tokenKey);
+      }
       tokenDecryptionFailed = false;
       cachedStatus = null;
       cachedAt = 0;
       emitStatusChanged();
     },
     clearToken() {
-      tokenOverride = "";
+      tokenOverride = null;
       credentialStore.deleteSync(tokenKey);
       tokenDecryptionFailed = false;
       cachedStatus = null;
@@ -884,7 +967,7 @@ export function createHeadlessGitHubService(
       const token = getToken();
       if (!token) {
         const err = new Error(
-          "GitHub is not connected. Add a token in Settings.",
+          "GitHub is not connected. Run `gh auth login -h github.com -s repo -s workflow` or add a PAT in Settings.",
         ) as Error & { code?: string };
         err.code = "github_not_connected";
         throw err;

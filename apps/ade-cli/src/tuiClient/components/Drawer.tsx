@@ -32,8 +32,15 @@ export function visibleDrawerLaneCount(panelHeight: number, laneCount: number): 
   return Math.min(laneCount, 12, lanesMaxRows);
 }
 
-export function visibleDrawerChatCount(chatCount: number): number {
-  return Math.min(chatCount, 12);
+export function visibleDrawerChatCount(chatCount: number, availableRows?: number): number {
+  const cap = 12;
+  if (availableRows == null) return Math.min(chatCount, cap);
+  // Each chat row costs 2 rows (content + margin); first row has no margin.
+  // The chat block also has a header ("CHATS · N") and a footer ("+ new chat"),
+  // costing 3 rows of chrome (header + marginTop + footer).
+  const chromeRows = 3;
+  const maxByHeight = Math.max(1, Math.floor((availableRows - chromeRows + 1) / 2));
+  return Math.min(chatCount, cap, maxByHeight);
 }
 
 /** Derive a wireframe-bucket status for a lane from its data + active session. */
@@ -157,8 +164,12 @@ export function Drawer({
 
   const browsing = browsingLaneId ?? activeLaneId;
   const browsingLane = laneRows.find((l) => l.id === browsing) ?? null;
+  // Budget rows for the chat block: panel height minus outer chrome (header 1 +
+  // footer hints 2 + new-lane 1 + borders 2 = 6) minus rows consumed by lane
+  // cards (each non-selected card ~5 rows, selected card ~6 with diff line).
+  const chatRowBudget = resolvedPanelHeight - 6 - laneRows.length * 5;
   const laneSessions = browsingLane
-    ? sessions.filter((s) => s.laneId === browsingLane.id).slice(0, visibleDrawerChatCount(sessions.length))
+    ? sessions.filter((s) => s.laneId === browsingLane.id).slice(0, visibleDrawerChatCount(sessions.length, chatRowBudget))
     : [];
 
   const width = density === "mini"
@@ -202,7 +213,7 @@ export function Drawer({
         </Text>
       </Box>
 
-      <Box flexDirection="column" paddingX={1} flexGrow={1} flexShrink={1}>
+      <Box flexDirection="column" paddingX={1} flexGrow={1} flexShrink={1} overflow="hidden">
         {loading && laneRows.length === 0 ? (
           <Box paddingX={1}>
             <Text dimColor>Loading lanes…</Text>
@@ -215,11 +226,11 @@ export function Drawer({
           const status = deriveLaneStatus(lane, sessions, activeLaneId, unavailableLaneIds);
           const isBrowsing = lane.id === browsing;
           const sessionsInLane = sessions.filter((session) => session.laneId === lane.id);
-          const laneChatSessions = sessionsInLane.slice(0, visibleDrawerChatCount(sessionsInLane.length));
+          const laneChatSessions = sessionsInLane.slice(0, visibleDrawerChatCount(sessionsInLane.length, chatRowBudget));
           const showChatBlock = mode === "chats"
             ? isBrowsing && browsingLane?.id === lane.id
             : isSelected;
-          const cardBorder = cardBorderColor(status, isSelected);
+          const cardBorder = cardBorderColor(isSelected);
           // width - 2 (outer drawer border) - 2 (lane container paddingX) - 2 (card border) - 2 (card paddingX)
           const cardInnerWidth = width - 8;
           return (
@@ -320,19 +331,8 @@ export function Drawer({
   );
 }
 
-/**
- * Pick the rounded-card border color from lane status + selection. Idle gets a
- * dim border so the card still reads as a distinct surface without shouting.
- */
-function cardBorderColor(status: LaneStatusKind, selected: boolean): string {
-  if (selected) return theme.color.violet;
-  switch (status) {
-    case "primary": return theme.color.violet;
-    case "running": return theme.color.running;
-    case "attention": return theme.color.attention;
-    case "failed": return theme.color.error;
-    default: return theme.color.border;
-  }
+function cardBorderColor(selected: boolean): string {
+  return selected ? theme.color.violet : theme.color.border;
 }
 
 /**

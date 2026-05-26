@@ -257,13 +257,21 @@ describe("GitHubTab", () => {
         github: {
           getStatus: vi.fn().mockResolvedValue({
             tokenStored: true,
+            patTokenStored: true,
             tokenDecryptionFailed: false,
             storageScope: "app",
+            authSource: "pat",
+            tokenType: "classic",
             repo: { owner: "ade-dev", name: "ade" },
             hasOrigin: true,
             userLogin: "octocat",
             scopes: [],
+            ghCliPath: null,
+            ghAuthError: null,
             checkedAt: "2026-03-13T12:00:00.000Z",
+            repoAccessOk: null,
+            repoAccessError: null,
+            connected: true,
           }),
         },
         app: {
@@ -359,7 +367,7 @@ describe("GitHubTab", () => {
     renderTab();
 
     await waitFor(() => {
-      expect(screen.getByText("Connect GitHub in Settings to sync pull requests.")).toBeTruthy();
+      expect(screen.getByText("Connect GitHub in Settings with gh auth or a PAT to sync pull requests.")).toBeTruthy();
     });
     expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
     expect(screen.queryByText(/Error invoking remote method/)).toBeNull();

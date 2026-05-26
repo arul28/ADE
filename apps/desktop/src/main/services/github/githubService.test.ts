@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
 // vi.hoisted mock state
@@ -40,6 +40,7 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 const runGitMock = vi.hoisted(() => vi.fn());
+const originalDisableGhAuthFallback = process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
 
 vi.mock("../git/git", () => ({
   runGit: runGitMock,
@@ -67,7 +68,17 @@ function resetMocks() {
   vi.clearAllMocks();
   mockFetch.mockReset();
   runGitMock.mockReset();
+  delete process.env.GH_TOKEN;
+  process.env.ADE_DISABLE_GH_AUTH_FALLBACK = "1";
 }
+
+afterAll(() => {
+  if (originalDisableGhAuthFallback == null) {
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+  } else {
+    process.env.ADE_DISABLE_GH_AUTH_FALLBACK = originalDisableGhAuthFallback;
+  }
+});
 
 class MemoryCredentialStore {
   values = new Map<string, string>();
@@ -97,12 +108,16 @@ class MemoryCredentialStore {
   }
 }
 
-function makeService(options: { credentialStore?: MemoryCredentialStore } = {}) {
+function makeService(options: {
+  credentialStore?: MemoryCredentialStore;
+  ghAuthTokenProvider?: () => { token: string | null; ghCliPath: string | null; ghAuthError: string | null };
+} = {}) {
   return createGithubService({
     logger: makeLogger(),
     projectRoot: "/tmp/test-project",
     appDataDir: "/tmp/test-appdata",
     credentialStore: options.credentialStore as any,
+    ghAuthTokenProvider: options.ghAuthTokenProvider,
   });
 }
 
@@ -244,7 +259,7 @@ describe("githubService.apiRequest", () => {
     const service = makeService();
     await expect(
       service.apiRequest({ method: "GET", path: "/test" }),
-    ).rejects.toThrow("GitHub token missing");
+    ).rejects.toThrow("GitHub auth missing");
   });
 
   it("uses the shared machine credential store token when present", async () => {
@@ -259,7 +274,7 @@ describe("githubService.apiRequest", () => {
     expect((init.headers as Record<string, string>).authorization).toBe("Bearer ghp_machine_token");
   });
 
-  it("stores and clears GitHub tokens in the shared machine credential store", () => {
+  it("stores and clears GitHub PATs in the shared machine credential store", () => {
     const credentialStore = new MemoryCredentialStore();
     const service = makeService({ credentialStore });
 
@@ -612,6 +627,58 @@ describe("githubService.getStatus", () => {
     expect(status.repoAccessOk).toBeNull();
     expect(status.connected).toBe(true);
     expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to gh auth when no PAT or env token is configured", async () => {
+    stubOriginRemote();
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    const ghAuthTokenProvider = vi.fn(() => ({
+      token: "gho_cli_token",
+      ghCliPath: "/opt/homebrew/bin/gh",
+      ghAuthError: null,
+    }));
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(200, { login: "alice" }, { "x-oauth-scopes": "repo, workflow" }),
+    );
+
+    const status = await makeService({ ghAuthTokenProvider }).getStatus();
+
+    expect(ghAuthTokenProvider).toHaveBeenCalled();
+    expect(status.tokenStored).toBe(true);
+    expect(status.patTokenStored).toBe(false);
+    expect(status.authSource).toBe("gh");
+    expect(status.tokenType).toBe("oauth");
+    expect(status.ghCliPath).toBe("/opt/homebrew/bin/gh");
+    expect(status.scopes).toEqual(["repo", "workflow"]);
+    expect(status.connected).toBe(true);
+    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).authorization).toBe("Bearer gho_cli_token");
+  });
+
+  it("clearing a stored PAT falls back to gh auth", async () => {
+    stubOriginRemote();
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.token.v1", "ghp_saved_token");
+    const service = makeService({
+      credentialStore,
+      ghAuthTokenProvider: () => ({
+        token: "gho_cli_token",
+        ghCliPath: "/opt/homebrew/bin/gh",
+        ghAuthError: null,
+      }),
+    });
+    service.clearToken();
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(200, { login: "alice" }, { "x-oauth-scopes": "repo, workflow" }),
+    );
+
+    const status = await service.getStatus({ forceRefresh: true });
+
+    expect(credentialStore.getSync("github.token.v1")).toBeNull();
+    expect(status.authSource).toBe("gh");
+    expect(status.patTokenStored).toBe(false);
+    expect(status.connected).toBe(true);
   });
 
   it("fine-grained token that authenticates but cannot read the repo is NOT connected", async () => {

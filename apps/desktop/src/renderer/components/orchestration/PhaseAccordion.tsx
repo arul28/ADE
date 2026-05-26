@@ -35,6 +35,28 @@ import {
 } from "./orchestrationTokens";
 
 /* ──────────────────────────────────────────────────────────────────────────
+   PhaseStatusChip
+   ────────────────────────────────────────────────────────────────────────── */
+
+function PhaseStatusChip({ status, isCurrent }: { status: string; isCurrent: boolean }) {
+  if (status === "active" || isCurrent) {
+    return (
+      <span className="ml-1 inline-flex items-center rounded-full border border-violet-300/30 bg-violet-300/10 px-1.5 py-[1px] font-mono text-[9px] uppercase tracking-[0.16em] text-violet-100/90">
+        active
+      </span>
+    );
+  }
+  if (status === "done") {
+    return (
+      <span className="ml-1 inline-flex items-center rounded-full border border-emerald-300/30 bg-emerald-300/10 px-1.5 py-[1px] font-mono text-[9px] uppercase tracking-[0.16em] text-emerald-100/90">
+        done
+      </span>
+    );
+  }
+  return null;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
    PhaseAccordion
    ────────────────────────────────────────────────────────────────────────── */
 
@@ -103,19 +125,7 @@ export function PhaseAccordion({
           {PHASE_ICON_MAP[phase.id]}
           {phase.title || PHASE_LABEL[phase.id]}
         </span>
-        {phase.status === "active" || isCurrent ? (
-          <span
-            className="ml-1 inline-flex items-center rounded-full border border-violet-300/30 bg-violet-300/10 px-1.5 py-[1px] font-mono text-[9px] uppercase tracking-[0.16em] text-violet-100/90"
-          >
-            active
-          </span>
-        ) : phase.status === "done" ? (
-          <span
-            className="ml-1 inline-flex items-center rounded-full border border-emerald-300/30 bg-emerald-300/10 px-1.5 py-[1px] font-mono text-[9px] uppercase tracking-[0.16em] text-emerald-100/90"
-          >
-            done
-          </span>
-        ) : null}
+        <PhaseStatusChip status={phase.status} isCurrent={isCurrent} />
         <span className="ml-auto inline-flex items-center gap-1.5 font-mono text-[10px] tabular-nums text-muted-fg/55">
           {tasks.length > 0 ? (
             <span>
@@ -135,14 +145,12 @@ export function PhaseAccordion({
 
       {open ? (
         <div className="space-y-1.5 px-2 pb-2">
-          {tasks.length === 0 ? (
-            phase.id === "planning" ? (
-              <PlanningEmptyState decisions={decisions} />
-            ) : (
-              <div className="px-2 py-3 font-sans text-[11px] text-muted-fg/55">
-                No tasks here yet.
-              </div>
-            )
+          {tasks.length === 0 && phase.id === "planning" ? (
+            <PlanningEmptyState decisions={decisions} />
+          ) : tasks.length === 0 ? (
+            <div className="px-2 py-3 font-sans text-[11px] text-muted-fg/55">
+              No tasks here yet.
+            </div>
           ) : (
             tasks.map((task) => (
               <TaskCard

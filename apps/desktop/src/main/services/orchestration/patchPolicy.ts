@@ -12,7 +12,6 @@ import type {
  *
  *   `/tasks/{id:T-003}/status`     -> tasks element whose .id === "T-003"
  *   `/agents/{sessionId:S-1}/...`  -> agents element whose .sessionId === "S-1"
- *   `/validationStrategy/checklist/{id:V-9}/runs/-`  -> append run to checklist V-9
  *
  * Numeric indices are deliberately rejected — arrays are addressed by id only.
  */
@@ -76,7 +75,7 @@ export function pathMatchesPattern(
     if (want === "*") continue;
     if (got.kind === "predicate") {
       const m = PREDICATE_RE.exec(want);
-      if (m && m[1] === got.field) continue;
+      if (m && m[1] === got.field && (m[2] === "*" || m[2] === got.value)) continue;
       if (want === got.field || want === `{${got.field}}`) continue;
       return false;
     }
@@ -123,8 +122,10 @@ const LEAD_DENY_PATTERNS = [
  * Worker allow-list. Workers may patch:
  *  - their own agent row's status/currentStepId/lastHeartbeatAt
  *  - tasks they have claimed: status, evidence, attempts
- *  - checklist run records only for their own required per-worker gates
- *  - never validationGate or global/foreign validationStrategy.checklist rows
+ *  - never validationGate or validationStrategy.checklist rows
+ *
+ * Validation proof is written through planAppend + recordValidationRun so the
+ * service can enforce task/step applicability before mutating gate state.
  */
 const WORKER_ALLOW_PATTERNS = [
   "/agents/{sessionId:SELF}/status",
@@ -152,15 +153,14 @@ const VALIDATOR_ALLOW_PATTERNS = [
   "/agents/{sessionId:SELF}/currentStepId",
   "/agents/{sessionId:SELF}/lastHeartbeatAt",
   "/agents/{sessionId:SELF}/usage",
-  "/validationStrategy/checklist/{id:*}/runs",
-  "/validationStrategy/checklist/{id:*}/runs/-",
-  "/validationStrategy/checklist/{id:*}/latestRunId",
 ];
 
 const VALIDATOR_DENY_PATTERNS = [
   "/tasks/{id:*}/status",
   "/tasks/{id:*}/validationGate",
   "/tasks/{id:*}/validationGate/**",
+  "/validationStrategy/checklist",
+  "/validationStrategy/checklist/**",
   "/validationStrategy/steps",
   "/validationStrategy/steps/**",
 ];
@@ -182,108 +182,6 @@ function matchesAnyWithSelf(
   return patterns.some((p) =>
     pathMatchesPattern(parsed, rewriteSelf(p, actorSessionId)),
   );
-}
-
-function extractChecklistItemId(path: string): string | null {
-  const m = /\/validationStrategy\/checklist\/\{id:([^}]+)\}/.exec(path);
-  return m ? m[1]! : null;
-}
-
-function isValidationRunStatus(value: unknown): boolean {
-  return value === "running" || value === "passed" || value === "failed";
-}
-
-function workerOwnsValidationTask(
-  manifest: OrchestrationManifest,
-  actorSessionId: string | undefined,
-  taskId: string | undefined,
-  stepId: string | undefined,
-): boolean {
-  if (!actorSessionId || !taskId || !stepId) return false;
-  const task = manifest.tasks.find((entry) => entry.id === taskId);
-  if (!task || task.assigneeSessionId !== actorSessionId) return false;
-  if (!task.validationGate.stepIds.includes(stepId)) return false;
-  const step = manifest.validationStrategy.steps.find((entry) => entry.id === stepId);
-  return step?.scope === "per_worker";
-}
-
-function runValueBelongsToWorker(value: unknown, actorSessionId: string | undefined): boolean {
-  if (!value || typeof value !== "object" || !actorSessionId) return false;
-  const run = value as Record<string, unknown>;
-  return run.runBySessionId === actorSessionId && isValidationRunStatus(run.status);
-}
-
-function workerChecklistPatchPolicy(
-  op: ManifestPatchOp,
-  parsed: ParsedPatchPath,
-  ctx: PatchPolicyContext,
-): PatchPolicyResult | null {
-  if (pathMatchesPattern(parsed, "/validationStrategy/checklist/-")) {
-    if (op.op !== "add" || !op.value || typeof op.value !== "object") {
-      return {
-        allowed: false,
-        reason: "workers may only append owned per-worker checklist items",
-        path: op.path,
-      };
-    }
-    const item = op.value as {
-      taskId?: unknown;
-      stepId?: unknown;
-      runs?: unknown;
-    };
-    const taskId = typeof item.taskId === "string" ? item.taskId : undefined;
-    const stepId = typeof item.stepId === "string" ? item.stepId : undefined;
-    if (!workerOwnsValidationTask(ctx.manifest, ctx.actorSessionId, taskId, stepId)) {
-      return {
-        allowed: false,
-        reason: "workers may only append checklist items for their own per-worker gates",
-        path: op.path,
-      };
-    }
-    if (
-      Array.isArray(item.runs) &&
-      item.runs.some((run) => !runValueBelongsToWorker(run, ctx.actorSessionId))
-    ) {
-      return {
-        allowed: false,
-        reason: "workers may only record their own checklist runs",
-        path: op.path,
-      };
-    }
-    return { allowed: true };
-  }
-
-  if (
-    !pathMatchesPattern(parsed, "/validationStrategy/checklist/{id:*}/runs/-") &&
-    !pathMatchesPattern(parsed, "/validationStrategy/checklist/{id:*}/latestRunId")
-  ) {
-    return null;
-  }
-  const itemId = extractChecklistItemId(op.path);
-  const item = ctx.manifest.validationStrategy.checklist.find((entry) => entry.id === itemId);
-  if (!item || !workerOwnsValidationTask(ctx.manifest, ctx.actorSessionId, item.taskId, item.stepId)) {
-    return {
-      allowed: false,
-      reason: "workers may only update checklist runs for their own per-worker gates",
-      path: op.path,
-    };
-  }
-  if (pathMatchesPattern(parsed, "/validationStrategy/checklist/{id:*}/runs/-")) {
-    if (op.op !== "add" || !runValueBelongsToWorker(op.value, ctx.actorSessionId)) {
-      return {
-        allowed: false,
-        reason: "workers may only append their own checklist run records",
-        path: op.path,
-      };
-    }
-  } else if (op.op === "remove" || typeof op.value !== "string") {
-    return {
-      allowed: false,
-      reason: "workers may only replace latestRunId with a run id",
-      path: op.path,
-    };
-  }
-  return { allowed: true };
 }
 
 /**
@@ -312,12 +210,10 @@ export function checkPatchOp(
   }
 
   if (ctx.actorRole === "worker") {
-    const checklistPolicy = workerChecklistPatchPolicy(op, parsed, ctx);
-    if (checklistPolicy) return checklistPolicy;
     if (matchesAny(parsed, WORKER_DENY_PATTERNS)) {
       return {
         allowed: false,
-        reason: "workers may not patch validation gates or checklist",
+        reason: "workers may not patch validation gates or checklist; use recordValidationRun",
         path: op.path,
       };
     }
@@ -352,7 +248,7 @@ export function checkPatchOp(
     if (matchesAny(parsed, VALIDATOR_DENY_PATTERNS)) {
       return {
         allowed: false,
-        reason: "validators may not modify tasks or steps",
+        reason: "validators may not modify tasks, steps, or checklist directly; use recordValidationRun",
         path: op.path,
       };
     }

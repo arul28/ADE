@@ -20,7 +20,7 @@ import type { createOrchestrationService } from "../../orchestration/orchestrati
 import type { OrchestrationAgentChatHandle, OrchestrationSessionContext } from "./orchestrationTools";
 
 // ---------------------------------------------------------------------------
-// Error helper (re-uses the shared util signature)
+// Error helper
 // ---------------------------------------------------------------------------
 
 export function errorMessage(err: unknown): string {
@@ -170,7 +170,7 @@ const cancellationRegistries = new WeakMap<
 >();
 
 function cancellationRegistryKey(ctx: OrchestrationSessionContext): string {
-  return `${ctx.runId}${ctx.sessionId}`;
+  return `${ctx.runId}:${ctx.sessionId}`;
 }
 
 function manifestRequestsCancellation(
@@ -244,8 +244,8 @@ export function buildOrchestrationSandboxConfig(
   base: WorkerSandboxConfig = DEFAULT_WORKER_SANDBOX_CONFIG,
 ): WorkerSandboxConfig {
   const extraProtected = [
-    `^${escapeRegExp(path.join(bundlePath, "manifest.json"))}$`,
-    `^${escapeRegExp(path.join(bundlePath, "plan.md"))}$`,
+    escapeRegExp(path.join(bundlePath, "manifest.json")),
+    escapeRegExp(path.join(bundlePath, "plan.md")),
   ];
   return {
     ...base,

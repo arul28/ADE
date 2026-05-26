@@ -69,6 +69,15 @@ const ORCHESTRATION_PILL_PALETTE: Record<
   },
 };
 
+function orchestrationRolePillLabel(role: OrchestrationRole, tag?: string | null): string {
+  if (role === "worker" && tag && tag.trim().length > 0) {
+    return `WORKER · ${tag.trim().toLowerCase()}`;
+  }
+  if (role === "lead") return "LEAD";
+  if (role === "validator") return "VALIDATOR";
+  return role.toUpperCase();
+}
+
 function OrchestrationRolePill({
   role,
   tag,
@@ -77,14 +86,7 @@ function OrchestrationRolePill({
   tag?: string | null;
 }) {
   const palette = ORCHESTRATION_PILL_PALETTE[role];
-  const label =
-    role === "worker" && tag && tag.trim().length > 0
-      ? `WORKER · ${tag.trim().toLowerCase()}`
-      : role === "lead"
-        ? "LEAD"
-        : role === "validator"
-          ? "VALIDATOR"
-          : role.toUpperCase();
+  const label = orchestrationRolePillLabel(role, tag);
   return (
     <span
       data-orchestration-role={role}

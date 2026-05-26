@@ -463,7 +463,7 @@ function ConnectBody({
         }}
       >
         <LinkBreak size={14} weight="regular" style={{ color: COLORS.warning, flexShrink: 0, marginTop: 2 }} />
-        <span>GitHub is not connected. Paste a personal access token to publish this project.</span>
+        <span>GitHub is not connected. Run gh auth login with repo and workflow scopes, or paste a personal access token.</span>
       </div>
 
       <Field label="PERSONAL ACCESS TOKEN">

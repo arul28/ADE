@@ -1050,12 +1050,10 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         });
       }
       if (actor.role !== "lead") {
-        const agentStatus =
-          req.status === "done"
-            ? "completed"
-            : req.status === "failed"
-              ? "failed"
-              : "blocked";
+        let agentStatus: string;
+        if (req.status === "done") agentStatus = "completed";
+        else if (req.status === "failed") agentStatus = "failed";
+        else agentStatus = "blocked";
         ops.push({
           op: "replace",
           path: `/agents/{sessionId:${req.sessionId}}/status`,
@@ -1074,6 +1072,25 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       const patchRes = await directPatch(runtime, ops, "release");
       return { manifest: patchRes.manifest, etag: patchRes.etag };
     });
+  }
+
+  function validatorMayRecordValidationRun(
+    manifest: OrchestrationManifest,
+    actor: OrchestrationManifest["agents"][number],
+    task: OrchestrationManifest["tasks"][number],
+    stepId: string,
+  ): boolean {
+    if (actor.role !== "validator") return false;
+    if (task.assigneeSessionId === actor.sessionId && task.phaseId === "validating") {
+      return true;
+    }
+    const currentStepId = actor.currentStepId?.trim();
+    if (!currentStepId) return false;
+    if (currentStepId === stepId || currentStepId === task.id) return true;
+    const assignedTask = manifest.tasks.find((entry) => entry.id === currentStepId);
+    return assignedTask?.assigneeSessionId === actor.sessionId
+      && assignedTask.phaseId === "validating"
+      && assignedTask.validationGate.stepIds.includes(stepId);
   }
 
   async function recordValidationRun(
@@ -1150,6 +1167,18 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           ok: false,
           error: "policy_denied",
           message: "workers may only record validation runs for their own per-worker gates",
+          manifest,
+          etag: manifest.etag,
+        };
+      }
+      if (
+        actor.role === "validator" &&
+        !validatorMayRecordValidationRun(manifest, actor, task, req.stepId)
+      ) {
+        return {
+          ok: false,
+          error: "policy_denied",
+          message: "validators may only record assigned validation gates",
           manifest,
           etag: manifest.etag,
         };

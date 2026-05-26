@@ -898,22 +898,12 @@ function planRows(block: Extract<AggregatedBlock, { kind: "plan" }>, spinFrame: 
   return out;
 }
 
-function activeTurnRows(blocks: AggregatedBlock[], dots: string): RenderedChatRow[] {
-  let activeTurnStart = -1;
-  for (let index = blocks.length - 1; index >= 0; index -= 1) {
-    if (blocks[index]?.kind === "user-bubble") {
-      activeTurnStart = index;
-      break;
-    }
-  }
-  const activeTurnBlocks = activeTurnStart >= 0 ? blocks.slice(activeTurnStart + 1) : blocks;
-  const hasLiveBlock = activeTurnBlocks.some((block) => "live" in block && block.live);
-  const hasAssistantOutput = activeTurnBlocks.some((block) => block.kind === "assistant-text");
-  if (hasLiveBlock || hasAssistantOutput) return [];
+function activeTurnRows(dots: string, showWorkingIndicator = true): RenderedChatRow[] {
+  if (!showWorkingIndicator) return [];
   return [{
-    id: "active-turn-waiting",
+    id: "model-working",
     tone: "work",
-    text: `✦ active turn · waiting for runtime events${dots}`,
+    text: `✦ model working${dots}`,
     color: theme.color.violet,
     bold: true,
     rail: null,
@@ -1233,6 +1223,7 @@ function selectableRowsForBlocks({
   brailleFrame = "·",
   spinFrame = "◐",
   dotPulse = "",
+  showWorkingIndicator = true,
 }: {
   blocks: AggregatedBlock[];
   width?: number;
@@ -1241,10 +1232,11 @@ function selectableRowsForBlocks({
   brailleFrame?: string;
   spinFrame?: string;
   dotPulse?: string;
+  showWorkingIndicator?: boolean;
 }): RenderedChatRow[] {
   const innerWidth = Math.max(24, width - 4);
   const baseRows = rowsForBlocks(blocks, innerWidth, brailleFrame, spinFrame);
-  if (streaming) return [...baseRows, ...activeTurnRows(blocks, dotPulse)];
+  if (streaming) return [...baseRows, ...activeTurnRows(dotPulse, showWorkingIndicator)];
   if (interrupted) return [...baseRows, ...modelInterruptedRows()];
   return baseRows;
 }
@@ -1260,6 +1252,7 @@ function visibleRowsForBlocks({
   brailleFrame = "·",
   spinFrame = "◐",
   dotPulse = "",
+  showWorkingIndicator = true,
 }: {
   blocks: AggregatedBlock[];
   maxRows?: number;
@@ -1271,6 +1264,7 @@ function visibleRowsForBlocks({
   brailleFrame?: string;
   spinFrame?: string;
   dotPulse?: string;
+  showWorkingIndicator?: boolean;
 }): RenderedChatRow[] {
   return sliceRows(
     selectableRowsForBlocks({
@@ -1281,6 +1275,7 @@ function visibleRowsForBlocks({
       brailleFrame,
       spinFrame,
       dotPulse,
+      showWorkingIndicator,
     }),
     maxRows,
     scrollOffsetRows,
@@ -1299,6 +1294,7 @@ export function renderChatVisibleRowTexts({
   width = DEFAULT_VIEW_WIDTH,
   streaming = false,
   interrupted = false,
+  showWorkingIndicator = true,
 }: {
   events: AgentChatEventEnvelope[];
   notices: LocalNotice[];
@@ -1310,6 +1306,7 @@ export function renderChatVisibleRowTexts({
   width?: number;
   streaming?: boolean;
   interrupted?: boolean;
+  showWorkingIndicator?: boolean;
 }): string[] {
   const blocks = aggregateChatBlocks({
     events,
@@ -1325,6 +1322,7 @@ export function renderChatVisibleRowTexts({
     width,
     streaming,
     interrupted,
+    showWorkingIndicator,
   }).map(renderedRowText);
 }
 
@@ -1339,6 +1337,7 @@ export function renderChatVisibleSelectionRows({
   width = DEFAULT_VIEW_WIDTH,
   streaming = false,
   interrupted = false,
+  showWorkingIndicator = true,
 }: {
   events: AgentChatEventEnvelope[];
   notices: LocalNotice[];
@@ -1350,6 +1349,7 @@ export function renderChatVisibleSelectionRows({
   width?: number;
   streaming?: boolean;
   interrupted?: boolean;
+  showWorkingIndicator?: boolean;
 }): ChatVisibleSelectionRow[] {
   const blocks = aggregateChatBlocks({
     events,
@@ -1365,6 +1365,7 @@ export function renderChatVisibleSelectionRows({
     width,
     streaming,
     interrupted,
+    showWorkingIndicator,
   }).map((row) => ({
     sourceRow: typeof row.sourceRowIndex === "number" ? row.sourceRowIndex : null,
     text: renderedRowText(row),
@@ -1379,6 +1380,7 @@ export function renderChatSelectableRowTexts({
   width = DEFAULT_VIEW_WIDTH,
   streaming = false,
   interrupted = false,
+  showWorkingIndicator = true,
 }: {
   events: AgentChatEventEnvelope[];
   notices: LocalNotice[];
@@ -1387,6 +1389,7 @@ export function renderChatSelectableRowTexts({
   width?: number;
   streaming?: boolean;
   interrupted?: boolean;
+  showWorkingIndicator?: boolean;
 }): string[] {
   const blocks = aggregateChatBlocks({
     events,
@@ -1399,6 +1402,7 @@ export function renderChatSelectableRowTexts({
     width,
     streaming,
     interrupted,
+    showWorkingIndicator,
   }).map(renderedRowText);
 }
 
@@ -1457,6 +1461,7 @@ export function computeChatScrollMaxOffset({
   maxRows,
   streaming = false,
   interrupted = false,
+  showWorkingIndicator = true,
   width = DEFAULT_VIEW_WIDTH,
 }: {
   events: AgentChatEventEnvelope[];
@@ -1466,6 +1471,7 @@ export function computeChatScrollMaxOffset({
   maxRows?: number;
   streaming?: boolean;
   interrupted?: boolean;
+  showWorkingIndicator?: boolean;
   width?: number;
 }): number {
   const blocks = aggregateChatBlocks({
@@ -1477,7 +1483,7 @@ export function computeChatScrollMaxOffset({
   if (!blocks.length && !streaming && !interrupted) return 0;
   const innerWidth = Math.max(24, width - 4);
   let statusRows = 0;
-  if (streaming) statusRows = activeTurnRows(blocks, "").length;
+  if (streaming) statusRows = activeTurnRows("", showWorkingIndicator).length;
   else if (interrupted) statusRows = modelInterruptedRows().length;
   const rowCount = rowsForBlocks(blocks, innerWidth, "·", "◐").length + statusRows;
   return maxScrollOffsetForRows(rowCount, maxRows);
@@ -1540,6 +1546,7 @@ export function ChatView({
   const brailleFrame = useBrailleSpin();
   const spinFrame = useSpinFrame();
   const dotPulse = useDotPulse();
+  const showWorkingIndicator = provider !== "claude" && activeSession?.provider !== "claude";
   // Memoize the rendered row list. Spinner ticks change brailleFrame/spinFrame
   // every animation frame; without memoization we'd rebuild every row tree per
   // tick. Most non-live rows don't depend on the frames, so this is a big win
@@ -1556,8 +1563,9 @@ export function ChatView({
       brailleFrame,
       spinFrame,
       dotPulse,
+      showWorkingIndicator,
     }),
-    [blocks, bodyRows, brailleFrame, dotPulse, interrupted, scrollOffsetRows, spinFrame, streaming, unseenMessageCount, width],
+    [blocks, bodyRows, brailleFrame, dotPulse, interrupted, scrollOffsetRows, showWorkingIndicator, spinFrame, streaming, unseenMessageCount, width],
   );
   const isEmpty = !blocks.length && !streaming && !interrupted;
   let content: React.ReactNode;

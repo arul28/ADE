@@ -8858,7 +8858,7 @@ function checkGitHubReadiness(projectRoot: string): ReadinessCheck {
     message: hasGitHubRemote
       ? ready
         ? "GitHub remote detected and a local auth mechanism is available."
-        : "GitHub remote detected, but no gh CLI or GitHub token was found locally."
+        : "GitHub remote detected, but no gh CLI or environment GitHub token was found locally."
       : "No GitHub origin remote detected.",
     nextAction: ready
       ? undefined

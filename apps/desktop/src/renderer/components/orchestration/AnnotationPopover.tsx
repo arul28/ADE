@@ -72,6 +72,20 @@ const POPOVER_WIDTH = 320;
 const POPOVER_PADDING = 12;
 const POPOVER_MIN_INPUT_HEIGHT = 64;
 
+function clampHorizontal(value: number): number {
+  if (typeof window === "undefined") return value;
+  const max = window.innerWidth - POPOVER_WIDTH - POPOVER_PADDING;
+  return Math.max(POPOVER_PADDING, Math.min(value, max));
+}
+
+function clampVertical(value: number): number {
+  if (typeof window === "undefined") return value;
+  // Roughly cap so the popover doesn't drop off the bottom; the actual
+  // height varies, but ~220 px is a safe envelope.
+  const max = window.innerHeight - 220;
+  return Math.max(POPOVER_PADDING, Math.min(value, max));
+}
+
 /**
  * Dispatches the `ade:agent-chat:add-plan-annotation` CustomEvent.
  * Exposed separately so external callers (e.g. tests, or non-popover code
@@ -131,14 +145,10 @@ export function AnnotationPopover({
       comment: trimmedComment,
       capturedAt: new Date().toISOString(),
     };
-    if (sessionId) {
-      dispatchOrchestrationAnnotation({ sessionId, item });
-    } else {
-      // No active chat session: still dispatch with empty sessionId so any
-      // listener can filter and surface a diagnostic. The composer listener
-      // only merges when sessionId matches its own pane.
-      dispatchOrchestrationAnnotation({ sessionId: "", item });
-    }
+    // Dispatch with empty sessionId when no active chat session so
+    // listeners can still surface a diagnostic. The composer listener only
+    // merges when sessionId matches its own pane.
+    dispatchOrchestrationAnnotation({ sessionId: sessionId ?? "", item });
     onSubmit?.(item);
     onClose();
   }, [comment, anchor, runId, sessionId, onSubmit, onClose]);
@@ -271,19 +281,6 @@ export function AnnotationPopover({
   );
 
   return createPortal(card, portalTarget);
-
-  function clampHorizontal(value: number): number {
-    if (typeof window === "undefined") return value;
-    const max = window.innerWidth - POPOVER_WIDTH - POPOVER_PADDING;
-    return Math.max(POPOVER_PADDING, Math.min(value, max));
-  }
-  function clampVertical(value: number): number {
-    if (typeof window === "undefined") return value;
-    // Roughly cap so the popover doesn't drop off the bottom; the actual
-    // height varies, but ~220 px is a safe envelope.
-    const max = window.innerHeight - 220;
-    return Math.max(POPOVER_PADDING, Math.min(value, max));
-  }
 }
 
 /**

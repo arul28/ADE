@@ -1368,10 +1368,7 @@ function createBashTool(
         terminateProcessTree(proc, signal);
       };
       const abortController = new AbortController();
-      const unregisterActiveBash = registerActiveBash?.(abortController);
-      const unregister = typeof unregisterActiveBash === "function"
-        ? unregisterActiveBash
-        : () => {};
+      const unregister = registerActiveBash?.(abortController) ?? (() => {});
       try {
         const result = await new Promise<{ stdout: string; stderr: string; exitCode: number }>(
           (resolve, reject) => {

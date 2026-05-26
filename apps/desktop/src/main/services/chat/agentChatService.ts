@@ -340,6 +340,7 @@ import { mapStopReasonToTerminalEvents } from "./stopReasonEvents";
 import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { getApiKey } from "../ai/apiKeyStore";
 import type { createOrchestrationService } from "../orchestration/orchestrationService";
+import { applyOrchestrationPermissionProfile } from "../orchestration/runtimeProfile";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 
 const CLAUDE_AGENT_SDK_VERSION = "0.2.139";
@@ -3891,16 +3892,10 @@ function lockedOrchestrationPermissionMode(
     ?? (isOrchestrationInteractionMode(session.interactionMode)
       ? orchestrationRoleForMode(session.interactionMode)
       : null);
-  if (role === "lead") return "plan";
-  if (role === "worker" || role === "validator") return "full-auto";
-  return null;
-}
-
-function cursorModeIdForLockedPermissionMode(
-  mode: AgentChatSession["permissionMode"],
-): string | null {
-  if (mode === "full-auto") return "full-auto";
-  if (mode === "plan") return "plan";
+  // All orchestration roles use full-auto (bypassPermissions). The lead's
+  // security comes from the tool-set restriction (no write tools), not the
+  // permission mode. Plan mode would block orchestration tools.
+  if (role === "lead" || role === "worker" || role === "validator") return "full-auto";
   return null;
 }
 
@@ -3926,11 +3921,14 @@ function enforceOrchestrationLockedPermissionMode(
   const orchestrationMode = isOrchestrationInteractionMode(session.interactionMode)
     ? session.interactionMode
     : null;
-  applyLegacyPermissionModeToNativeControls(session, lockedMode);
+  // Use the per-provider profile directly — each provider has its own
+  // "most permissive" mode name (bypassPermissions, danger-full-access,
+  // full-auto, auto-high, etc.). The lead's security comes from the tool-set
+  // restriction, not the permission mode.
+  const profile = applyOrchestrationPermissionProfile(session.provider);
+  Object.assign(session, profile);
+  session.permissionMode = lockedMode;
   if (orchestrationMode) session.interactionMode = orchestrationMode;
-  if (session.provider === "cursor") {
-    session.cursorModeId = cursorModeIdForLockedPermissionMode(lockedMode);
-  }
   return true;
 }
 

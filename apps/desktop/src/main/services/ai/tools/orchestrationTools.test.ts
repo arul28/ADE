@@ -313,6 +313,7 @@ describe("spawnAgent tool", () => {
       role: "worker",
       tag: "backend",
       goalSummary: "Implement T-1",
+      stepId: "T-1",
       initialMessage: "## TASK\nDo something\n## FILES\n- a.ts\n",
     });
     expect(result.ok).toBe(false);
@@ -332,6 +333,7 @@ describe("spawnAgent tool", () => {
       role: "worker",
       tag: "backend",
       goalSummary: "Implement T-1",
+      stepId: "T-1",
       initialMessage: VALID_BRIEF,
     });
     expect(result.ok).toBe(true);
@@ -341,6 +343,7 @@ describe("spawnAgent tool", () => {
     expect(createArgs.interactionMode).toBe("orchestrator-worker");
     expect(createArgs.orchestrationRunId).toBe(setup.runId);
     expect(createArgs.orchestrationRole).toBe("worker");
+    expect(createArgs.orchestrationStepId).toBe("T-1");
     expect(createArgs.provider).toBe("claude");
     expect(createArgs.model).toBe("claude-sonnet-4-6");
     expect(createArgs.claudePermissionMode).toBe("bypassPermissions");
@@ -362,6 +365,7 @@ describe("spawnAgent tool", () => {
       role: "worker",
       tag: "backend",
       goalSummary: "Implement T-1",
+      stepId: "T-1",
       initialMessage: VALID_BRIEF,
     });
     expect(result.ok).toBe(false);
@@ -405,6 +409,7 @@ describe("spawnAgent tool", () => {
       role: "worker",
       tag: "backend",
       goalSummary: "Implement T-1",
+      stepId: "T-1",
       initialMessage: VALID_BRIEF,
     });
     expect(result.ok).toBe(true);
@@ -571,6 +576,7 @@ describe("messageAgent tool", () => {
       role: "worker",
       tag: "backend",
       goalSummary: "task",
+      stepId: "T-peer",
       initialMessage: VALID_BRIEF,
     }) as Promise<unknown>);
     // Inject the actor worker into the manifest too so it's discoverable.
@@ -625,6 +631,7 @@ describe("messageAgent tool", () => {
       role: "worker",
       tag: "backend",
       goalSummary: "task",
+      stepId: "T-cancel",
       initialMessage: VALID_BRIEF,
     });
     expect(spawnResult.ok).toBe(true);
@@ -646,6 +653,11 @@ describe("messageAgent tool", () => {
       revert: true,
       reason: "test",
     });
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    expect(manifest.agents.find((agent) => agent.sessionId === spawnResult.sessionId)?.cancellationRequested).toBe(true);
+    expect(manifest.decisions.some((decision) =>
+      decision.summary.includes(`Cancellation requested for ${spawnResult.sessionId}`),
+    )).toBe(true);
   });
 });
 
@@ -674,6 +686,7 @@ describe("getAgentTranscript tool", () => {
       role: "worker",
       tag: "backend",
       goalSummary: "task",
+      stepId: "T-1",
       initialMessage: VALID_BRIEF,
     });
     setup.chat.readTranscript.mockResolvedValueOnce([
@@ -804,6 +817,152 @@ describe("recordValidationRun tool", () => {
 
     const release: any = await tools.releaseTask!.execute({ taskId: "T-1", status: "done" });
     expect(release.ok).toBe(true);
+  });
+
+  it("lets a validator record an assigned validation gate", async () => {
+    setup = await setupWithRun("validator");
+    const m = setup.svc.getManifestForRun(setup.runId)!;
+    const seeded = await setup.svc.manifestPatch(
+      {
+        runId: setup.runId,
+        ifMatchEtag: m.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [
+          {
+            op: "add",
+            path: "/agents/-",
+            value: {
+              sessionId: "S-validator",
+              role: "validator",
+              tag: "final",
+              goalSummary: "validate task",
+              status: "running",
+              spawnedAt: "now",
+              currentStepId: "V-final",
+            },
+          },
+          {
+            op: "add",
+            path: "/validationStrategy/steps/-",
+            value: {
+              id: "V-final",
+              concern: "pre_completion_gate",
+              scope: "per_step",
+              required: true,
+              prompt: "Validate the final state and record proof.",
+              evidenceRequired: ["plan_md_section"],
+              appliesToTaskIds: ["T-1"],
+            },
+          },
+          {
+            op: "add",
+            path: "/tasks/-",
+            value: {
+              id: "T-1",
+              phaseId: "validating",
+              title: "validate T-1",
+              description: "check the worker output",
+              status: "claimed",
+              validationGate: { required: true, stepIds: ["V-final"] },
+              assigneeSessionId: "S-validator",
+            },
+          },
+        ],
+      },
+      setup.bundlePath,
+    );
+    expect(seeded.ok).toBe(true);
+
+    const tools = makeToolSet(setup, "validator", "S-validator");
+    const result: any = await tools.recordValidationRun!.execute({
+      taskId: "T-1",
+      stepId: "V-final",
+      status: "failed",
+      notes: "Found a regression; lead needs to delegate a fix task.",
+    });
+    expect(result.ok).toBe(true);
+    const checklist = result.manifest.validationStrategy.checklist.find(
+      (item: { taskId?: string; stepId: string }) =>
+        item.taskId === "T-1" && item.stepId === "V-final",
+    );
+    expect(checklist).toBeTruthy();
+    const latest = checklist!.runs.find((run: { id: string }) => run.id === checklist!.latestRunId);
+    expect(latest).toMatchObject({
+      runBySessionId: "S-validator",
+      status: "failed",
+    });
+    expect(setup.chat.steer).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "S-lead",
+      text: expect.stringContaining("recorded validation V-final"),
+    }));
+  });
+
+  it("rejects a validator recording an unassigned validation gate", async () => {
+    setup = await setupWithRun("validator");
+    const m = setup.svc.getManifestForRun(setup.runId)!;
+    const seeded = await setup.svc.manifestPatch(
+      {
+        runId: setup.runId,
+        ifMatchEtag: m.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [
+          {
+            op: "add",
+            path: "/agents/-",
+            value: {
+              sessionId: "S-validator",
+              role: "validator",
+              tag: "final",
+              goalSummary: "validate another gate",
+              status: "running",
+              spawnedAt: "now",
+              currentStepId: "V-other",
+            },
+          },
+          {
+            op: "add",
+            path: "/validationStrategy/steps/-",
+            value: {
+              id: "V-final",
+              concern: "pre_completion_gate",
+              scope: "per_step",
+              required: true,
+              prompt: "Validate the final state and record proof.",
+              evidenceRequired: ["plan_md_section"],
+              appliesToTaskIds: ["T-1"],
+            },
+          },
+          {
+            op: "add",
+            path: "/tasks/-",
+            value: {
+              id: "T-1",
+              phaseId: "developing",
+              title: "validate T-1",
+              description: "check the worker output",
+              status: "review",
+              validationGate: { required: true, stepIds: ["V-final"] },
+              assigneeSessionId: "S-worker",
+            },
+          },
+        ],
+      },
+      setup.bundlePath,
+    );
+    expect(seeded.ok).toBe(true);
+
+    const tools = makeToolSet(setup, "validator", "S-validator");
+    const result: any = await tools.recordValidationRun!.execute({
+      taskId: "T-1",
+      stepId: "V-final",
+      status: "passed",
+      notes: "Trying to write a gate I was not assigned.",
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("policy_denied");
+    expect(result.message).toContain("assigned validation gates");
   });
 });
 

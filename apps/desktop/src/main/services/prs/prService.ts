@@ -4204,7 +4204,7 @@ export function createPrService({
 
     const formatMergeError = (rawMsg: string): string => {
       if (rawMsg.includes("Resource not accessible by personal access token")) {
-        return "GitHub token lacks permission to merge PRs. For fine-grained PATs, enable 'Contents: write' and 'Pull requests: write'. For classic PATs, enable the 'repo' scope.";
+        return "GitHub auth lacks permission to merge PRs. For gh auth or classic PATs, enable the repo scope. For fine-grained PATs, enable Contents: write and Pull requests: write.";
       }
       if (rawMsg.includes("405") || rawMsg.includes("Method Not Allowed")) {
         return "PR cannot be merged — branch protection rules may require status checks or reviews to pass first.";
@@ -5792,15 +5792,15 @@ export function createPrService({
 
   const buildGithubSnapshotAuthError = (githubStatus: GitHubStatus): string => {
     if (!githubStatus.tokenStored) {
-      return "GitHub token missing. Set it in Settings to sync pull requests.";
+      return "GitHub auth missing. Run gh auth login or add a PAT in Settings to sync pull requests.";
     }
     if (githubStatus.tokenDecryptionFailed) {
       return "GitHub token could not be decrypted. Reconnect GitHub in Settings to sync pull requests.";
     }
     if (githubStatus.repo && githubStatus.repoAccessError) {
-      return `GitHub token cannot access ${githubStatus.repo.owner}/${githubStatus.repo.name}: ${githubStatus.repoAccessError}. Update it in Settings to sync pull requests.`;
+      return `GitHub auth cannot access ${githubStatus.repo.owner}/${githubStatus.repo.name}: ${githubStatus.repoAccessError}. Update it in Settings to sync pull requests.`;
     }
-    return "GitHub token is invalid or missing required access. Update it in Settings to sync pull requests.";
+    return "GitHub auth is invalid or missing required access. Update it in Settings to sync pull requests.";
   };
 
   const requireGithubSnapshotAuth = async (): Promise<GitHubStatus> => {

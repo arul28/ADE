@@ -2462,15 +2462,13 @@ export function AgentChatPane({
   const planApprovalPendingInput = selectedPendingInputs.find((entry) =>
     isOrchestrationPlanApprovalRequest(entry.request),
   ) ?? null;
-  const composerPendingInput = pendingInput
-    ? isOrchestrationPlanApprovalRequest(pendingInput.request)
-      ? {
-          ...pendingInput.request,
-          blocking: false,
-          canProceedWithoutAnswer: true,
-        }
-      : pendingInput.request
-    : null;
+  const composerPendingInput = (() => {
+    if (!pendingInput) return null;
+    if (isOrchestrationPlanApprovalRequest(pendingInput.request)) {
+      return { ...pendingInput.request, blocking: false, canProceedWithoutAnswer: true };
+    }
+    return pendingInput.request;
+  })();
   const selectedSessionAwaitingInput = Boolean(pendingInput) || selectedSession?.awaitingInput === true;
   const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
   const sendCodexControlMessage = useCallback(async (sessionId: string, text: string) => {
@@ -7277,7 +7275,7 @@ export function AgentChatPane({
               }
             }}
             orchestratorModeActive={isOrchestratorDraft || isOrchestratorLead}
-            orchestrationRole={activeOrchestrationRole}
+            orchestrationRole={isOrchestratorDraft ? "lead" : activeOrchestrationRole}
             onModelChange={(nextModelId) => {
               const modelAllowed =
                 modelSelectionConstrained
@@ -7725,7 +7723,7 @@ export function AgentChatPane({
 
   return (
     <>
-      <OrchestratorLeadFrame active={isOrchestratorLead || isOrchestratorDraft} className="flex h-full min-h-0 w-full min-w-0 flex-col">
+      <OrchestratorLeadFrame active={false} className="flex h-full min-h-0 w-full min-w-0 flex-col">
       <ChatSurfaceShell
         containerRef={shellRef}
         mode={surfaceMode}
@@ -8049,7 +8047,7 @@ export function AgentChatPane({
                         </motion.div>
 
                         <h2 className="font-sans text-[18px] font-semibold tracking-tight text-fg/80">
-                          {isOrchestratorDraft ? "Start a new orchestration" : "Start a new conversation"}
+                          {isOrchestratorDraft ? "Orchestrate a swarm of agents" : "Start a new conversation"}
                         </h2>
 
                         {/* Lane selector pill */}

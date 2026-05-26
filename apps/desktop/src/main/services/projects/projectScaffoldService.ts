@@ -211,7 +211,7 @@ export function createProjectScaffoldService({
     // created ourselves.
     const preexistedRoot = fs.existsSync(rootPath);
 
-    // Inject the stored GitHub token via http.extraheader so private-repo
+    // Inject the available GitHub token via http.extraheader so private-repo
     // clones work in environments without a system credential helper. Using
     // the basic-auth shape (x-access-token:<token>) is the GitHub-recommended
     // form and avoids leaking the token via the URL in process listings.
@@ -265,7 +265,7 @@ export function createProjectScaffoldService({
     try {
       token = githubService.getTokenOrThrow();
     } catch (err) {
-      const wrapped = new Error("GitHub is not connected. Add a token in Settings.") as Error & { code?: string };
+      const wrapped = new Error("GitHub is not connected. Run gh auth login or add a PAT in Settings.") as Error & { code?: string };
       wrapped.code = "github_not_connected";
       (wrapped as any).cause = err;
       throw wrapped;

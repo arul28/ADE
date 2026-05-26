@@ -262,6 +262,21 @@ function StatusGlyph({
    ValidationBadge
    ────────────────────────────────────────────────────────────────────────── */
 
+type ValidationPalette = { bg: string; border: string; fg: string; glyph: string };
+
+function validationBadgePalette(status: "running" | "passed" | "failed" | null): ValidationPalette {
+  switch (status) {
+    case "passed":
+      return { bg: "rgba(34, 197, 94, 0.10)", border: "rgba(34, 197, 94, 0.30)", fg: "rgb(134, 239, 172)", glyph: "✓" };
+    case "failed":
+      return { bg: "rgba(239, 68, 68, 0.10)", border: "rgba(239, 68, 68, 0.30)", fg: "rgb(252, 165, 165)", glyph: "✗" };
+    case "running":
+      return { bg: "rgba(250, 204, 21, 0.10)", border: "rgba(250, 204, 21, 0.30)", fg: "rgb(254, 240, 138)", glyph: "⏳" };
+    default:
+      return { bg: "rgba(255, 255, 255, 0.04)", border: "rgba(255, 255, 255, 0.10)", fg: "rgba(255, 255, 255, 0.55)", glyph: "—" };
+  }
+}
+
 function ValidationBadge({
   label,
   status,
@@ -274,14 +289,7 @@ function ValidationBadge({
   run?: ValidationChecklistRun | null;
 }) {
   const [open, setOpen] = useState(false);
-  const palette =
-    status === "passed"
-      ? { bg: "rgba(34, 197, 94, 0.10)", border: "rgba(34, 197, 94, 0.30)", fg: "rgb(134, 239, 172)", glyph: "✓" }
-      : status === "failed"
-        ? { bg: "rgba(239, 68, 68, 0.10)", border: "rgba(239, 68, 68, 0.30)", fg: "rgb(252, 165, 165)", glyph: "✗" }
-        : status === "running"
-          ? { bg: "rgba(250, 204, 21, 0.10)", border: "rgba(250, 204, 21, 0.30)", fg: "rgb(254, 240, 138)", glyph: "⏳" }
-          : { bg: "rgba(255, 255, 255, 0.04)", border: "rgba(255, 255, 255, 0.10)", fg: "rgba(255, 255, 255, 0.55)", glyph: "—" };
+  const palette = validationBadgePalette(status);
   const normalizedLabel = label.replace(/_/g, " ");
   const statusLabel = status ?? "pending";
   const evidence = run?.attachedEvidence ?? [];

@@ -301,9 +301,11 @@ export type GitHubRepoRef = {
 
 export type GitHubStatus = {
   tokenStored: boolean;
+  patTokenStored: boolean;
   tokenDecryptionFailed: boolean;
   storageScope: "app";
-  tokenType?: "classic" | "fine-grained" | "unknown";
+  authSource: "pat" | "environment" | "gh" | "none";
+  tokenType?: "classic" | "fine-grained" | "oauth" | "unknown";
   repo: GitHubRepoRef | null;
   // True when the project has any `origin` remote, even non-GitHub. Distinct
   // from `repo != null`, which is only true for GitHub origins. The Publish
@@ -311,6 +313,8 @@ export type GitHubStatus = {
   hasOrigin: boolean;
   userLogin: string | null;
   scopes: string[];
+  ghCliPath: string | null;
+  ghAuthError: string | null;
   checkedAt: string | null;
   // null = no repo to probe / probe not run; true/false = result of GET /repos/{owner}/{repo}.
   // Required because fine-grained tokens pass /user validation even when the user forgot to

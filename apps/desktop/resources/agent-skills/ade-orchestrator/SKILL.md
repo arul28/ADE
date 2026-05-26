@@ -5,9 +5,15 @@ description: Orchestrator-mode protocol for ADE Work-tab lead, worker, and valid
 
 # ADE Orchestrator Skill
 
+**Read this skill file completely before your first action.** Do not start working, planning, or writing until you have read every section.
+
 You are running inside ADE's Work-tab orchestrator. Your role (lead, worker, or validator) is declared in the system prompt. This skill is the protocol everyone follows.
 
 The orchestration **bundle** at `<bundlePath>/manifest.json` + `<bundlePath>/plan.md` is the single source of truth. Read it before reasoning. Write through tools (`manifestPatch`, `planAppend`, `recordValidationRun`, `claimTask`, `releaseTask`, etc.) — never invent state, never fork canonical state into chat-only prose.
+
+**Do not use TodoWrite/TodoRead.** ADE captures tasks in its own task view. Use `manifestPatch` to create tasks in the orchestration manifest, not the runtime's built-in task list.
+
+**Permissions are pre-configured.** All orchestration roles (lead, worker, validator) run with auto-approved permissions. The lead cannot edit files — that restriction comes from the tool set (no `editFile`/`writeFile`/`bash`), not from a permission mode. Orchestration tools (`planAppend`, `manifestPatch`, `spawnAgent`, etc.) execute without permission prompts. Do not ask the user for file-write approval — you cannot write files.
 
 ## §1 — User authority overrides defaults
 
@@ -26,6 +32,8 @@ When you accept an override:
 - The lead, workers, and validators all converge on the same bundle. The plan.md is append-only narrative; the manifest is mutable structured state.
 
 ## §3 — Planning protocol (lead only)
+
+**Planning is interactive. You MUST ask the user questions at each step — do not silently plan and present a finished plan. The steps below are sequential; complete each one (with user confirmation) before moving to the next.**
 
 1. Read `goal.md` if present in the lane worktree; otherwise `askUser` for a one-line goal. Persist it to `manifest.goalSummary`.
 
@@ -53,7 +61,7 @@ When you accept an override:
 
 6. **Validation step derivation.** See §6. Detect which `ValidationConcern`s apply by inspecting the repo; ask the user where uncertain; write codebase-specific `prompt` text into each `validationStrategy.steps[]` entry. Do not assume vitest / pytest / specific CI commands unless the inspection confirmed them.
 
-7. **Model picks.** For every `(role, tag)` pair (where role ∈ `worker`, `validator`), call `askUserForModelSelection(role, tag)`. The picker UI is ADE's in-house `ModelPicker` — never present a flat option list. Batch all picks for the run as one wave per the user's locked cadence.
+7. **Model picks.** For every `(role, tag)` pair (where role ∈ `worker`, `validator`), call `askUserForModelSelection(role, tag, workDescription)`. Always include a short `workDescription` (one sentence) explaining what this agent will do — e.g. "Implement the login form component and auth route" not just "renderer worker". The picker UI is ADE's in-house `ModelPicker` — never present a flat option list. Model selection must happen during planning, before `requestPlanApproval`. The tool will reject calls after the plan is approved.
 
 8. Append a `DecisionLogEntry` per lock-in (tags, validation strategy, model routing, etc.). Each entry carries `source: "lead"`, `at`, and a short `summary`.
 
@@ -83,9 +91,9 @@ When you accept an override:
 
 2. Attach evidence and record the checklist run as `passed` or `failed`. Use `planAppend` for the evidence first, then call `recordValidationRun({ taskId, stepId, status, notes, attachedEvidence })`. The service preserves run history and updates the latest task-scoped checklist item.
 
-3. **On failure**: spawn a fix-task by *reporting up to the lead*. Validators do NOT spawn agents themselves. Use `messageAgent({ kind: "wake" | "queue", intent: "status", text: "T-3 failed reverify_changes: <details>" })` targeted at the lead.
+3. **On failure**: write a concise failure note into `plan.md`, record the failed run, then *report up to the lead*. Validators do NOT spawn agents themselves. Use `messageAgent({ kind: "wake" | "queue", intent: "status", text: "T-3 failed reverify_changes: <details>" })` targeted at the lead.
 
-4. The lead receives the message, patches a new task with `supersedes: T-original`, and re-tasks the original worker (or a new one).
+4. The lead owns the repair loop: read the failed proof in `plan.md`, patch a fix task with `supersedes: [T-original]`, delegate it to the original worker or a new worker, then rerun the same validation gate after the worker records completion proof. The source of truth is the updated `plan.md` plus `manifest.json`; chat prose alone is not enough.
 
 ## §6 — Validation as universal concerns
 
@@ -133,7 +141,7 @@ Anything the planner needs that doesn't fit the above.
 Every state mutation that affects another agent must trigger a ping. Examples:
 - Worker patches `tasks[mine].status = "done"` → ping lead.
 - Lead patches `tasks[T].assigneeSessionId` → ping new and old assignee.
-- Validator patches a checklist run to `passed` / `failed` → ping lead.
+- Validator records a validation run as `passed` / `failed` → ping lead.
 - Worker registers an asset → ping lead.
 
 **Inter-worker pings always go through the lead.** Workers do not ping each other directly.
@@ -157,7 +165,7 @@ Pick `queue` for non-urgent context drops (worker progress reports, validator pa
 
 ## §9 — Cancellation with smart revert
 
-Lead's `messageAgent({ kind: "interrupt-replace", intent: "cancellation", cancellation: { revert: true | false | "review", reason } })`.
+Lead's `messageAgent({ kind: "interrupt-replace", intent: "cancellation", cancellation: { revert: true | false | "review", reason } })`. The tool also records `agents[target].cancellationRequested = true` in `manifest.json`; running worker bash tools watch that bit and abort.
 
 Worker reads the cancellation envelope, halts work, then:
 

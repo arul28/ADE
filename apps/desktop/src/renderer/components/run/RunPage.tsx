@@ -7,6 +7,7 @@ import {
   Plus,
   Stop,
   Terminal,
+  X,
 } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import {
@@ -421,204 +422,250 @@ function WelcomeScreen() {
   );
   const connectedRemoteCount = remoteSnapshot?.connectedCount ?? 0;
 
+  const forgetProject = async (rootPath: string) => {
+    try {
+      const next = await window.ade.project.forgetRecent(rootPath);
+      setRecentProjects(next);
+    } catch { /* best-effort */ }
+  };
+
   return (
     <div
       style={{
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        justifyContent: "center",
         height: "100%",
         background: `radial-gradient(circle at 50% 30%, color-mix(in srgb, var(--color-accent) 15%, transparent) 0%, ${COLORS.pageBg} 40%)`,
-        gap: 32,
-        padding: 48,
+        overflow: "hidden",
       }}
     >
-      <div style={{ textAlign: "center", maxWidth: 520 }}>
-        <div
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            marginBottom: 16,
-            filter:
-              "drop-shadow(0 0 22px color-mix(in srgb, var(--color-accent) 45%, transparent))",
-          }}
-        >
-          <img
-            src="./logo.png"
-            alt="ADE Logo"
-            style={{
-              width: 420,
-              height: 240,
-              objectFit: "contain",
-              maxWidth: "72vw",
-            }}
-          />
-        </div>
-      </div>
-
-      <button
-        type="button"
-        data-tour="project.welcomeAddButton"
-        onClick={() => setProjectBrowserOpen(true)}
-        style={{
-          ...primaryButton({ height: 48, padding: "0 32px", fontSize: 14 }),
-          gap: 12,
-          border:
-            connectedRemoteCount > 0
-              ? "1px solid rgba(245,158,11,0.72)"
-              : undefined,
-          boxShadow:
-            connectedRemoteCount > 0
-              ? "0 0 0 1px rgba(245,158,11,0.24), 0 6px 28px rgba(245,158,11,0.24)"
-              : `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`,
-          transition: "transform 0.2s ease, box-shadow 0.2s ease",
-          marginTop: -16,
-        }}
-        onMouseEnter={(event) => {
-          event.currentTarget.style.transform = "translateY(-2px)";
-          event.currentTarget.style.boxShadow =
-            connectedRemoteCount > 0
-              ? "0 0 0 1px rgba(245,158,11,0.38), 0 8px 34px rgba(245,158,11,0.34)"
-              : `0 6px 24px color-mix(in srgb, var(--color-accent) 60%, transparent)`;
-        }}
-        onMouseLeave={(event) => {
-          event.currentTarget.style.transform = "none";
-          event.currentTarget.style.boxShadow =
-            connectedRemoteCount > 0
-              ? "0 0 0 1px rgba(245,158,11,0.24), 0 6px 28px rgba(245,158,11,0.24)"
-              : `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`;
-        }}
-      >
-        <Plus size={20} weight="bold" />
-        ADD PROJECT
-      </button>
-      {connectedRemoteCount > 0 ? (
-        <div
-          style={{
-            marginTop: -22,
-            fontFamily: MONO_FONT,
-            fontSize: 11,
-            fontWeight: 700,
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
-            color: "#FBBF24",
-          }}
-        >
-          {connectedRemoteCount} remote device
-          {connectedRemoteCount === 1 ? "" : "s"} available
-        </div>
-      ) : null}
-
-      {realProjects.length > 0 ? (
-        <div style={{ width: "100%", maxWidth: 440, marginTop: 8 }}>
+      {/* Pinned header: logo + add button */}
+      <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center", gap: 32, paddingTop: 48, paddingBottom: 16 }}>
+        <div style={{ textAlign: "center", maxWidth: 520 }}>
           <div
             style={{
-              ...LABEL_STYLE,
-              marginBottom: 12,
-              textAlign: "center",
-              color: COLORS.textMuted,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              marginBottom: 16,
+              filter:
+                "drop-shadow(0 0 22px color-mix(in srgb, var(--color-accent) 45%, transparent))",
             }}
           >
-            RECENT PROJECTS
+            <img
+              src="./logo.png"
+              alt="ADE Logo"
+              style={{
+                width: 420,
+                height: 240,
+                objectFit: "contain",
+                maxWidth: "72vw",
+              }}
+            />
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {realProjects.map((rp) => (
-              <button
-                key={rp.rootPath}
-                type="button"
-                data-tour="project.recentProject"
-                onClick={() => {
-                  if (project?.rootPath === rp.rootPath) {
-                    cancelNewTab();
-                    return;
-                  }
-                  void switchProjectToPath(rp.rootPath);
-                }}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 12,
-                  padding: "12px 16px",
-                  background: "rgba(255,255,255,0.02)",
-                  border: `1px solid ${COLORS.border}`,
-                  borderRadius: 12,
-                  color: COLORS.textPrimary,
-                  fontFamily: MONO_FONT,
-                  fontSize: 12,
-                  cursor: "pointer",
-                  textAlign: "left",
-                  transition: "all 0.2s ease",
-                  backdropFilter: "blur(10px)",
-                }}
-              >
+        </div>
+
+        <button
+          type="button"
+          data-tour="project.welcomeAddButton"
+          onClick={() => setProjectBrowserOpen(true)}
+          style={{
+            ...primaryButton({ height: 48, padding: "0 32px", fontSize: 14 }),
+            gap: 12,
+            border:
+              connectedRemoteCount > 0
+                ? "1px solid rgba(245,158,11,0.72)"
+                : undefined,
+            boxShadow:
+              connectedRemoteCount > 0
+                ? "0 0 0 1px rgba(245,158,11,0.24), 0 6px 28px rgba(245,158,11,0.24)"
+                : `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`,
+            transition: "transform 0.2s ease, box-shadow 0.2s ease",
+            marginTop: -16,
+          }}
+          onMouseEnter={(event) => {
+            event.currentTarget.style.transform = "translateY(-2px)";
+            event.currentTarget.style.boxShadow =
+              connectedRemoteCount > 0
+                ? "0 0 0 1px rgba(245,158,11,0.38), 0 8px 34px rgba(245,158,11,0.34)"
+                : `0 6px 24px color-mix(in srgb, var(--color-accent) 60%, transparent)`;
+          }}
+          onMouseLeave={(event) => {
+            event.currentTarget.style.transform = "none";
+            event.currentTarget.style.boxShadow =
+              connectedRemoteCount > 0
+                ? "0 0 0 1px rgba(245,158,11,0.24), 0 6px 28px rgba(245,158,11,0.24)"
+                : `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`;
+          }}
+        >
+          <Plus size={20} weight="bold" />
+          ADD PROJECT
+        </button>
+        {connectedRemoteCount > 0 ? (
+          <div
+            style={{
+              marginTop: -22,
+              fontFamily: MONO_FONT,
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: "#FBBF24",
+            }}
+          >
+            {connectedRemoteCount} remote device
+            {connectedRemoteCount === 1 ? "" : "s"} available
+          </div>
+        ) : null}
+      </div>
+
+      {/* Scrollable recent projects list */}
+      {realProjects.length > 0 ? (
+        <div style={{ flex: 1, minHeight: 0, width: "100%", display: "flex", justifyContent: "center", overflow: "hidden" }}>
+          <div style={{ width: "100%", maxWidth: 440, overflowY: "auto", paddingLeft: 16, paddingRight: 16, paddingBottom: 48 }}>
+            <div
+              style={{
+                ...LABEL_STYLE,
+                marginBottom: 12,
+                textAlign: "center",
+                color: COLORS.textMuted,
+              }}
+            >
+              RECENT PROJECTS
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {realProjects.map((rp) => (
                 <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    width: 32,
-                    height: 32,
-                    borderRadius: 8,
-                    background:
-                      "color-mix(in srgb, var(--color-accent) 15%, transparent)",
-                    color: COLORS.accent,
-                    flexShrink: 0,
-                  }}
+                  key={rp.rootPath}
+                  className="group"
+                  style={{ position: "relative" }}
                 >
-                  <RecentProjectIcon rootPath={rp.rootPath} />
-                </div>
-                <div style={{ overflow: "hidden", flex: 1 }}>
-                  <div
-                    style={{ fontWeight: 600, fontSize: 13, marginBottom: 2 }}
-                  >
-                    {rp.displayName}
-                  </div>
-                  <div
+                  <button
+                    type="button"
+                    data-tour="project.recentProject"
+                    onClick={() => {
+                      if (project?.rootPath === rp.rootPath) {
+                        cancelNewTab();
+                        return;
+                      }
+                      void switchProjectToPath(rp.rootPath);
+                    }}
                     style={{
-                      fontSize: 10,
-                      color: COLORS.textDim,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 12,
+                      padding: "12px 16px",
+                      width: "100%",
+                      background: "rgba(255,255,255,0.02)",
+                      border: `1px solid ${COLORS.border}`,
+                      borderRadius: 12,
+                      color: COLORS.textPrimary,
+                      fontFamily: MONO_FONT,
+                      fontSize: 12,
+                      cursor: "pointer",
+                      textAlign: "left",
+                      transition: "all 0.2s ease",
+                      backdropFilter: "blur(10px)",
                     }}
                   >
-                    {rp.rootPath}
-                  </div>
-                </div>
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "flex-end",
-                    gap: 4,
-                    flexShrink: 0,
-                  }}
-                >
-                  {rp.laneCount !== undefined ? (
-                    <span
+                    <div
                       style={{
-                        fontSize: 10,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        width: 32,
+                        height: 32,
+                        borderRadius: 8,
                         background:
-                          "color-mix(in srgb, var(--color-accent) 20%, transparent)",
+                          "color-mix(in srgb, var(--color-accent) 15%, transparent)",
                         color: COLORS.accent,
-                        padding: "2px 6px",
-                        borderRadius: 10,
-                        fontWeight: 600,
+                        flexShrink: 0,
                       }}
                     >
-                      {rp.laneCount} lane{rp.laneCount !== 1 ? "s" : ""}
-                    </span>
-                  ) : null}
-                  {rp.lastOpenedAt ? (
-                    <span style={{ fontSize: 9, color: COLORS.textDim }}>
-                      {toRelativeTime(rp.lastOpenedAt)}
-                    </span>
-                  ) : null}
+                      <RecentProjectIcon rootPath={rp.rootPath} />
+                    </div>
+                    <div style={{ overflow: "hidden", flex: 1 }}>
+                      <div
+                        style={{ fontWeight: 600, fontSize: 13, marginBottom: 2 }}
+                      >
+                        {rp.displayName}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 10,
+                          color: COLORS.textDim,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {rp.rootPath}
+                      </div>
+                    </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "flex-end",
+                        gap: 4,
+                        flexShrink: 0,
+                      }}
+                    >
+                      {rp.laneCount !== undefined ? (
+                        <span
+                          style={{
+                            fontSize: 10,
+                            background:
+                              "color-mix(in srgb, var(--color-accent) 20%, transparent)",
+                            color: COLORS.accent,
+                            padding: "2px 6px",
+                            borderRadius: 10,
+                            fontWeight: 600,
+                          }}
+                        >
+                          {rp.laneCount} lane{rp.laneCount !== 1 ? "s" : ""}
+                        </span>
+                      ) : null}
+                      {rp.lastOpenedAt ? (
+                        <span style={{ fontSize: 9, color: COLORS.textDim }}>
+                          {toRelativeTime(rp.lastOpenedAt)}
+                        </span>
+                      ) : null}
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${rp.displayName} from recents`}
+                    onClick={(e) => { e.stopPropagation(); void forgetProject(rp.rootPath); }}
+                    className="opacity-0 group-hover:opacity-100"
+                    style={{
+                      position: "absolute",
+                      top: 6,
+                      right: 6,
+                      width: 22,
+                      height: 22,
+                      borderRadius: 6,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      background: "rgba(255,255,255,0.06)",
+                      border: "1px solid rgba(255,255,255,0.08)",
+                      color: COLORS.textDim,
+                      cursor: "pointer",
+                      transition: "opacity 0.15s ease, background 0.15s ease, color 0.15s ease",
+                      padding: 0,
+                      zIndex: 2,
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(239,68,68,0.18)"; e.currentTarget.style.color = "#EF4444"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; e.currentTarget.style.color = COLORS.textDim; }}
+                    title="Remove from recents"
+                  >
+                    <X size={12} weight="bold" />
+                  </button>
                 </div>
-              </button>
-            ))}
+              ))}
+            </div>
           </div>
         </div>
       ) : null}

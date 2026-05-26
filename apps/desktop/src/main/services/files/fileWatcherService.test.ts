@@ -84,9 +84,6 @@ describe("fileWatcherService", () => {
     expect(includeIgnored.ignored.filter((pattern) => pattern instanceof RegExp).map((pattern) => String(pattern))).toEqual([
       "/(^|[/\\\\])\\.git($|[/\\\\])/",
       "/(^|[/\\\\])node_modules($|[/\\\\])/",
-      "/(^|[/\\\\])\\.ade[/\\\\](artifacts|cache|agent-configs|secrets|transcripts|logs|tmp|runtime)($|[/\\\\])/",
-      "/(^|[/\\\\])\\.ade[/\\\\]ade\\.db($|-)/",
-      "/(^|[/\\\\])\\.ade[/\\\\]ade\\.sock$/",
     ]);
   });
 

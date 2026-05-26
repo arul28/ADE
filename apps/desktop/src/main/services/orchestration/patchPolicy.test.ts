@@ -45,6 +45,14 @@ function makeManifest(): OrchestrationManifest {
         status: "pending",
         spawnedAt: "now",
       },
+      {
+        sessionId: "S-v",
+        role: "validator",
+        tag: "final",
+        goalSummary: "validate",
+        status: "pending",
+        spawnedAt: "now",
+      },
     ],
     tasks: [
       {
@@ -84,6 +92,8 @@ describe("patchPolicy", () => {
   it("pattern matches wildcards", () => {
     const parsed = parsePatchPath("/tasks/{id:T-3}/status");
     expect(pathMatchesPattern(parsed, "/tasks/{id:*}/status")).toBe(true);
+    expect(pathMatchesPattern(parsed, "/tasks/{id:T-3}/status")).toBe(true);
+    expect(pathMatchesPattern(parsed, "/tasks/{id:T-4}/status")).toBe(false);
     expect(pathMatchesPattern(parsed, "/tasks/{id:*}/title")).toBe(false);
   });
 
@@ -102,13 +112,25 @@ describe("patchPolicy", () => {
     expect(denied.allowed).toBe(false);
   });
 
-  it("worker may patch its own status; not validationGate", () => {
+  it("worker may patch its own rows but not another agent row or validationGate", () => {
     const manifest = makeManifest();
-    const ok = checkPatchOp(
+    const taskOk = checkPatchOp(
       { op: "replace", path: "/tasks/{id:T-1}/status", value: "claimed" },
       { actorRole: "worker", actorSessionId: "S-worker", manifest },
     );
-    expect(ok.allowed).toBe(true);
+    expect(taskOk.allowed).toBe(true);
+
+    const ownAgentOk = checkPatchOp(
+      { op: "replace", path: "/agents/{sessionId:S-worker}/status", value: "running" },
+      { actorRole: "worker", actorSessionId: "S-worker", manifest },
+    );
+    expect(ownAgentOk.allowed).toBe(true);
+
+    const foreignAgent = checkPatchOp(
+      { op: "replace", path: "/agents/{sessionId:S-lead}/status", value: "failed" },
+      { actorRole: "worker", actorSessionId: "S-worker", manifest },
+    );
+    expect(foreignAgent.allowed).toBe(false);
 
     const gate = checkPatchOp(
       {
@@ -121,7 +143,7 @@ describe("patchPolicy", () => {
     expect(gate.allowed).toBe(false);
   });
 
-  it("worker may record its own per-worker checklist run", () => {
+  it("workers must use recordValidationRun instead of direct checklist patches", () => {
     const manifest = makeManifest();
     manifest.tasks[0]!.validationGate.stepIds = ["V-1"];
     manifest.validationStrategy.steps = [
@@ -144,7 +166,7 @@ describe("patchPolicy", () => {
       },
     ];
 
-    const ok = checkPatchOp(
+    const runPatch = checkPatchOp(
       {
         op: "add",
         path: "/validationStrategy/checklist/{id:C-1}/runs/-",
@@ -158,9 +180,9 @@ describe("patchPolicy", () => {
       },
       { actorRole: "worker", actorSessionId: "S-worker", manifest },
     );
-    expect(ok.allowed).toBe(true);
+    expect(runPatch.allowed).toBe(false);
 
-    const latest = checkPatchOp(
+    const latestPatch = checkPatchOp(
       {
         op: "replace",
         path: "/validationStrategy/checklist/{id:C-1}/latestRunId",
@@ -168,25 +190,9 @@ describe("patchPolicy", () => {
       },
       { actorRole: "worker", actorSessionId: "S-worker", manifest },
     );
-    expect(latest.allowed).toBe(true);
+    expect(latestPatch.allowed).toBe(false);
 
-    const foreignRun = checkPatchOp(
-      {
-        op: "add",
-        path: "/validationStrategy/checklist/{id:C-1}/runs/-",
-        value: {
-          id: "R-2",
-          runBySessionId: "S-other-worker",
-          status: "passed",
-          startedAt: "now",
-          endedAt: "now",
-        },
-      },
-      { actorRole: "worker", actorSessionId: "S-worker", manifest },
-    );
-    expect(foreignRun.allowed).toBe(false);
-
-    const globalItem = checkPatchOp(
+    const itemPatch = checkPatchOp(
       {
         op: "add",
         path: "/validationStrategy/checklist/-",
@@ -199,7 +205,7 @@ describe("patchPolicy", () => {
       },
       { actorRole: "worker", actorSessionId: "S-worker", manifest },
     );
-    expect(globalItem.allowed).toBe(false);
+    expect(itemPatch.allowed).toBe(false);
   });
 
   it("worker cannot patch another worker's task", () => {
@@ -211,9 +217,21 @@ describe("patchPolicy", () => {
     expect(denied.allowed).toBe(false);
   });
 
-  it("validator may patch its own row + checklist runs", () => {
+  it("validator may patch its own row but must use recordValidationRun for checklist state", () => {
     const manifest = makeManifest();
-    const ok = checkPatchOp(
+    const ownRow = checkPatchOp(
+      { op: "replace", path: "/agents/{sessionId:S-v}/status", value: "running" },
+      { actorRole: "validator", actorSessionId: "S-v", manifest },
+    );
+    expect(ownRow.allowed).toBe(true);
+
+    const foreignRow = checkPatchOp(
+      { op: "replace", path: "/agents/{sessionId:S-worker}/status", value: "failed" },
+      { actorRole: "validator", actorSessionId: "S-v", manifest },
+    );
+    expect(foreignRow.allowed).toBe(false);
+
+    const checklist = checkPatchOp(
       {
         op: "add",
         path: "/validationStrategy/checklist/{id:C-1}/runs/-",
@@ -221,7 +239,7 @@ describe("patchPolicy", () => {
       },
       { actorRole: "validator", actorSessionId: "S-v", manifest },
     );
-    expect(ok.allowed).toBe(true);
+    expect(checklist.allowed).toBe(false);
 
     const denied = checkPatchOp(
       { op: "replace", path: "/tasks/{id:T-1}/status", value: "done" },

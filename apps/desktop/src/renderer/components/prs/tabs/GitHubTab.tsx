@@ -131,8 +131,8 @@ function formatGitHubSnapshotError(err: unknown): string {
     .replace(/^Error invoking remote method '[^']+':\s*/i, "")
     .replace(/^Error:\s*/i, "")
     .trim();
-  if (/github token missing/i.test(message)) {
-    return "Connect GitHub in Settings to sync pull requests.";
+  if (/github (token|auth) missing/i.test(message)) {
+    return "Connect GitHub in Settings with gh auth or a PAT to sync pull requests.";
   }
   return message || "Unable to sync pull requests.";
 }

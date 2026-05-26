@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowBendDownRight, At, Bug, CaretDown, Check, CloudArrowUp, Cube, Desktop, DeviceMobile, GithubLogo, Globe, Image, Lightning, PaperPlaneTilt, Paperclip, PencilSimple, Plus, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
+import { ArrowBendDownRight, At, Bug, CaretDown, Check, CloudArrowUp, Cube, Desktop, DeviceMobile, GithubLogo, Globe, Image, Lightning, PaperPlaneTilt, Paperclip, PencilSimple, Plus, Square, SquareSplitHorizontal, Strategy, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -3657,7 +3657,7 @@ export function AgentChatComposer({
                   aria-label={orchestratorModeActive ? "Orchestrator mode active" : "Start orchestrator mode"}
                   aria-pressed={orchestratorModeActive}
                 >
-                  <SquareSplitHorizontal className="h-3 w-3" size={14} weight={orchestratorModeActive ? "bold" : "regular"} />
+                  <Strategy className="h-3 w-3" size={14} weight={orchestratorModeActive ? "fill" : "regular"} />
                   <span className="hidden lg:inline">Orchestrator</span>
                 </button>
               </SmartTooltip>

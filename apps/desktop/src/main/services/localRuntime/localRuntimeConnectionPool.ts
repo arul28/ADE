@@ -206,10 +206,11 @@ function readRuntimeInfo(value: unknown): {
   if (!runtimeInfo || typeof runtimeInfo !== "object" || Array.isArray(runtimeInfo)) {
     return { version: null, buildHash: null, defaultRole: null, pid: null };
   }
-  const version = (runtimeInfo as { version?: unknown }).version;
-  const buildHash = (runtimeInfo as { buildHash?: unknown }).buildHash;
-  const defaultRole = (runtimeInfo as { defaultRole?: unknown }).defaultRole;
-  const pid = (runtimeInfo as { pid?: unknown }).pid;
+  const info = runtimeInfo as Record<string, unknown>;
+  const version = info.version;
+  const buildHash = info.buildHash;
+  const defaultRole = info.defaultRole;
+  const pid = info.pid;
   return {
     version: typeof version === "string" && version.trim() ? version.trim() : null,
     buildHash: typeof buildHash === "string" && buildHash.trim() ? buildHash.trim() : null,

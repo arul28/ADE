@@ -107,14 +107,13 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
 
   const headerLabel = useMemo(() => {
     if (!metadata) return "Pick a model";
-    if (metadata.tag) return `Model for ${metadata.role}:${metadata.tag}`;
-    return `Model for ${metadata.role}`;
+    const friendlyRole = metadata.role;
+    if (metadata.tag) return `Pick a model for the "${metadata.tag}" ${friendlyRole}`;
+    return `Pick a model for the ${friendlyRole}`;
   }, [metadata]);
 
-  // Pass the inferred initial provider family hint to the picker rail so it
-  // highlights the right column.
-  const initialFamily = inferProviderFamily(initialProvider);
-  void initialFamily;
+  // TODO: pass inferProviderFamily(initialProvider) to the picker rail so it
+  // highlights the right column once ModelPicker supports an initialFamily prop.
 
   const descriptor = getModelById(modelId);
   const fastModeSupported = modelSupportsFastMode(descriptor);
@@ -136,9 +135,9 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
         </span>
       </div>
       <div className="mb-3 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/68">
-        The orchestrator is asking which model to use{metadata?.tag ? ` for ${metadata.role}:${metadata.tag}` : ""}.
-        Permission tier is locked by the orchestrator profile — only model,
-        fast-mode, and reasoning level apply.
+        {metadata?.workDescription
+          ? metadata.workDescription
+          : `Choose the model${metadata?.tag ? ` for the "${metadata.tag}" agent` : ""}. Permissions are locked automatically.`}
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <ModelPicker

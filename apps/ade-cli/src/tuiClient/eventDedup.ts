@@ -1,7 +1,29 @@
 import type { AgentChatEventEnvelope } from "../../../desktop/src/shared/types/chat";
 
-export function tuiEventDedupKey(envelope: AgentChatEventEnvelope): string {
+function eventCorrelationKey(envelope: AgentChatEventEnvelope): string | null {
+  const event = envelope.event as Record<string, unknown>;
+  const type = typeof event.type === "string" ? event.type : "";
+  const ids = [
+    event.turnId,
+    event.itemId,
+    event.messageId,
+    event.steerId,
+    event.toolCallId,
+  ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  if (ids.length === 0 && !["user_message", "status", "done", "error", "system_notice"].includes(type)) {
+    return null;
+  }
   return [
+    "semantic",
+    envelope.sessionId,
+    type,
+    ...ids,
+    JSON.stringify(envelope.event),
+  ].join(":");
+}
+
+export function tuiEventDedupKey(envelope: AgentChatEventEnvelope): string {
+  return eventCorrelationKey(envelope) ?? [
     "event",
     envelope.sessionId,
     envelope.sequence != null ? `seq:${String(envelope.sequence)}` : "seq:none",
@@ -9,6 +31,22 @@ export function tuiEventDedupKey(envelope: AgentChatEventEnvelope): string {
     envelope.event.type,
     JSON.stringify(envelope.event),
   ].join(":");
+}
+
+export function dedupeTuiEvents(
+  events: readonly AgentChatEventEnvelope[],
+  limit = 500,
+): AgentChatEventEnvelope[] {
+  const normalizedLimit = Math.max(1, limit);
+  const seen = new Set<string>();
+  const deduped: AgentChatEventEnvelope[] = [];
+  for (const event of events) {
+    const key = tuiEventDedupKey(event);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(event);
+  }
+  return deduped.slice(-normalizedLimit);
 }
 
 export function syncTuiEventDedupKeys(
@@ -58,4 +96,12 @@ export function appendReservedTuiEvent(
     events: nextEvents,
     eventKeys: [...retainedKeys, reservedIncomingKey],
   };
+}
+
+export function appendDedupedTuiEvent(
+  previousEvents: readonly AgentChatEventEnvelope[],
+  envelope: AgentChatEventEnvelope,
+  limit = 500,
+): AgentChatEventEnvelope[] {
+  return dedupeTuiEvents([...previousEvents, envelope], limit);
 }

@@ -103,11 +103,7 @@ function normalizeValidationChecklistRun(
     const note = value.trim();
     if (!note) return null;
     const timestamp = extractIsoTimestamp(note) ?? manifest.updatedAt ?? manifest.createdAt ?? new Date().toISOString();
-    const status = /\bpass(?:ed)?\b/i.test(note)
-      ? "passed"
-      : /\bfail(?:ed)?\b/i.test(note)
-        ? "failed"
-        : "running";
+    const status = inferRunStatusFromNote(note);
     return {
       id: `legacy-${index + 1}`,
       runBySessionId: inferValidationRunSessionId(note, manifest) ?? "",
@@ -141,6 +137,12 @@ function normalizeValidationChecklistRun(
   };
 }
 
+function inferRunStatusFromNote(note: string): ValidationChecklistRun["status"] {
+  if (/\bpass(?:ed)?\b/i.test(note)) return "passed";
+  if (/\bfail(?:ed)?\b/i.test(note)) return "failed";
+  return "running";
+}
+
 function isValidationChecklistRunStatus(value: unknown): value is ValidationChecklistRun["status"] {
   return value === "running" || value === "passed" || value === "failed";
 }
@@ -162,6 +164,32 @@ function inferValidationRunSessionId(
         lower.includes(agent.sessionId.toLowerCase())),
   );
   return validator?.sessionId ?? manifest.agents.find((agent) => agent.role === "validator")?.sessionId ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Shared string helpers for normalization
+// ---------------------------------------------------------------------------
+
+function nonEmptyTrimmedString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function extractFirstString(record: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const trimmed = nonEmptyTrimmedString(record[key]);
+    if (trimmed) return trimmed;
+  }
+  return "";
+}
+
+function isDecisionSource(value: unknown): value is "user" | "worker" | "validator" | "lead" {
+  return value === "user" || value === "worker" || value === "validator" || value === "lead";
+}
+
+function isOverrideScope(value: unknown): value is "phase" | "task" | "step" | "session" {
+  return value === "phase" || value === "task" || value === "step" || value === "session";
 }
 
 // ---------------------------------------------------------------------------
@@ -191,26 +219,13 @@ function normalizeSingleDecision(
   }
   if (!entry || typeof entry !== "object") return null;
   const record = entry as Record<string, unknown>;
-  const summary = typeof record.summary === "string"
-    ? record.summary.trim()
-    : typeof record.answer === "string"
-      ? record.answer.trim()
-      : "";
+  const summary = extractFirstString(record, ["summary", "answer"]);
   if (!summary) return null;
-  const source = record.source === "user"
-    || record.source === "worker"
-    || record.source === "validator"
-    || record.source === "lead"
-    ? record.source
-    : "lead";
+  const source = isDecisionSource(record.source) ? record.source : "lead";
   return {
     ...record,
-    id: typeof record.id === "string" && record.id.trim()
-      ? record.id.trim()
-      : `D-legacy-${index + 1}`,
-    at: typeof record.at === "string" && record.at.trim()
-      ? record.at.trim()
-      : fallbackAt,
+    id: nonEmptyTrimmedString(record.id) ?? `D-legacy-${index + 1}`,
+    at: nonEmptyTrimmedString(record.at) ?? fallbackAt,
     source,
     summary,
   } as OrchestrationManifest["decisions"][number];
@@ -239,36 +254,19 @@ function normalizeSingleUserOverride(
   }
   if (!entry || typeof entry !== "object") return null;
   const record = entry as Record<string, unknown>;
-  const instruction = typeof record.instruction === "string"
-    ? record.instruction.trim()
-    : typeof record.summary === "string"
-      ? record.summary.trim()
-      : typeof record.answer === "string"
-        ? record.answer.trim()
-        : "";
+  const instruction = extractFirstString(record, ["instruction", "summary", "answer"]);
   if (!instruction) return null;
-  const scope = record.scope === "phase"
-    || record.scope === "task"
-    || record.scope === "step"
-    || record.scope === "session"
-    ? record.scope
-    : "session";
+  const scope = isOverrideScope(record.scope) ? record.scope : "session";
+  const appliedToId = nonEmptyTrimmedString(record.appliedToId);
+  const affectedDefault = nonEmptyTrimmedString(record.affectedDefault);
   return {
     ...record,
-    id: typeof record.id === "string" && record.id.trim()
-      ? record.id.trim()
-      : `O-legacy-${index + 1}`,
-    at: typeof record.at === "string" && record.at.trim()
-      ? record.at.trim()
-      : fallbackAt,
+    id: nonEmptyTrimmedString(record.id) ?? `O-legacy-${index + 1}`,
+    at: nonEmptyTrimmedString(record.at) ?? fallbackAt,
     scope,
     instruction,
-    ...(typeof record.appliedToId === "string" && record.appliedToId.trim()
-      ? { appliedToId: record.appliedToId.trim() }
-      : {}),
-    ...(typeof record.affectedDefault === "string" && record.affectedDefault.trim()
-      ? { affectedDefault: record.affectedDefault.trim() }
-      : {}),
+    ...(appliedToId ? { appliedToId } : {}),
+    ...(affectedDefault ? { affectedDefault } : {}),
   } as OrchestrationManifest["userOverrides"][number];
 }
 

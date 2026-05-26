@@ -113,9 +113,10 @@ export async function readAssetDataUrl(args: {
   const assetDataUrl = w?.ade?.orchestration?.assetDataUrl;
   if (!assetDataUrl) return null;
   const res = await assetDataUrl(args);
+  const kind = assetKindForPreview(res.mimeType, args.relPath);
   return {
     url: res.dataUrl,
-    kind: assetKindForPreview(res.mimeType, args.relPath),
-    ...(res.text && assetKindForPreview(res.mimeType, args.relPath) === "html" ? { srcDoc: res.text } : {}),
+    kind,
+    ...(res.text && kind === "html" ? { srcDoc: res.text } : {}),
   };
 }

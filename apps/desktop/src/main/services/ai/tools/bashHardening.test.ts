@@ -1,6 +1,6 @@
 /* @vitest-environment node */
 import { describe, expect, it } from "vitest";
-import { DEFAULT_WORKER_SANDBOX_CONFIG } from "../../orchestrator/orchestratorConstants";
+import { DEFAULT_WORKER_SANDBOX_CONFIG } from "./workerSandboxDefaults";
 import type { WorkerSandboxConfig } from "../../../../shared/types";
 import {
   checkWorkerSandbox,

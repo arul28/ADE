@@ -38,7 +38,6 @@ import {
   resolveOrchestrationModel,
 } from "../../orchestration/runtimeProfile";
 
-// Extracted modules
 import { assessOrchestrationPlanQuality } from "./orchestrationPlanQuality";
 import {
   buildOrchestrationSandboxConfig,
@@ -49,7 +48,7 @@ import {
   withMutationSideEffects,
 } from "./orchestrationRuntime";
 
-// Re-export plan quality and sandbox config so existing consumers keep working
+// Re-export so existing consumers keep working
 export { assessOrchestrationPlanQuality } from "./orchestrationPlanQuality";
 export type { OrchestrationPlanQualityMissing } from "./orchestrationPlanQuality";
 export { buildOrchestrationSandboxConfig } from "./orchestrationRuntime";
@@ -156,15 +155,12 @@ const LEAD_READ_ONLY_BASE = new Set([
   "gitLog",
   "webFetch",
   "webSearch",
-  "TodoWrite",
-  "TodoRead",
   "askUser",
   "findRoutingFiles",
   "findPageComponents",
   "findAppEntryPoints",
   "summarizeFrontendStructure",
 ]);
-
 
 
 // ---------------------------------------------------------------------------
@@ -391,11 +387,12 @@ function createMessageAgentTool(args: {
           };
         }
         // Defence-in-depth: schema already rejects "cancellation" when restricted,
-        // but a direct caller could still attempt it. Cast through unknown to
-        // bypass the narrowed type for the runtime check.
+        // but a direct caller could still attempt it. Cast to the full intent
+        // union so the runtime check covers bypassed schema calls.
+        const intent = input.intent as OrchestrationPingIntent;
         if (
           args.restrictedIntents &&
-          ((input.intent as unknown) === "cancellation")
+          intent === "cancellation"
         ) {
           return {
             ok: false as const,
@@ -404,11 +401,60 @@ function createMessageAgentTool(args: {
               "Workers and validators cannot send cancellation directives.",
           };
         }
+        if (intent === "cancellation") {
+          const cancelledAt = new Date().toISOString();
+          const buildCancellationPatch = (
+            current: OrchestrationManifest,
+            summary: string,
+          ) => ({
+            runId: args.ctx.runId,
+            ifMatchEtag: current.etag,
+            actorRole: args.ctx.role,
+            actorSessionId: args.ctx.sessionId,
+            summary,
+            patches: [
+              {
+                op: "add" as const,
+                path: `/agents/{sessionId:${input.targetSessionId}}/cancellationRequested`,
+                value: true,
+              },
+              {
+                op: "add" as const,
+                path: "/decisions/-",
+                value: {
+                  id: `D-cancel-${cancelledAt.replace(/[^a-zA-Z0-9_-]/g, "_")}`,
+                  at: cancelledAt,
+                  source: args.ctx.role,
+                  summary: `Cancellation requested for ${input.targetSessionId}: ${input.cancellation?.reason ?? input.text}`,
+                  ...(input.taskId ? { refs: { taskId: input.taskId } } : {}),
+                },
+              },
+            ] satisfies ManifestPatchOp[],
+          });
+          let patchRes = await args.svc.manifestPatch(
+            buildCancellationPatch(manifest, "cancellation requested"),
+            args.ctx.bundlePath,
+          );
+          if (!patchRes.ok && patchRes.error === "etag_conflict") {
+            patchRes = await args.svc.manifestPatch(
+              buildCancellationPatch(patchRes.manifest, "cancellation requested (retry)"),
+              args.ctx.bundlePath,
+            );
+          }
+          if (!patchRes.ok) {
+            return {
+              ok: false as const,
+              error: "cancellation_patch_failed",
+              message: "Cancellation could not be recorded in the manifest.",
+              detail: "message" in patchRes ? patchRes.message : patchRes.error,
+            };
+          }
+        }
         const origin = {
           runId: args.ctx.runId,
           fromSessionId: args.ctx.sessionId,
           kind: input.kind,
-          intent: input.intent,
+          intent,
           taskId: input.taskId,
         };
         const metadata = {
@@ -976,10 +1022,12 @@ function createAskUserForModelSelectionTool(
   return tool({
     description:
       "Lead-only. Ask the user to pick a model for a (role, tag) pair via the ADE ModelPicker. " +
-      "Use this once per (role, tag) during planning before spawning any worker on that tag.",
+      "Use this once per (role, tag) during planning before spawning any worker on that tag. " +
+      "Always include a short `workDescription` so the user knows what this agent will do.",
     inputSchema: z.object({
       role: z.enum(ROLE_VALUES),
       tag: z.string().min(1),
+      workDescription: z.string().min(1, "Describe in one sentence what this agent will do").optional(),
       suggested: z
         .object({
           provider: z.string(),
@@ -992,6 +1040,15 @@ function createAskUserForModelSelectionTool(
     }),
     execute: async (input) => {
       return withHeartbeat(ctx, svc, async () => {
+        const manifest = manifestOrThrow(svc, ctx.runId);
+        if (manifest.currentPhase !== "planning") {
+          return {
+            ok: false as const,
+            error: "not_planning",
+            message:
+              "Model selection must happen during planning — call this before requestPlanApproval, not after.",
+          };
+        }
         if (!universalOpts.onAskUser) {
           return {
             ok: false as const,
@@ -1000,17 +1057,22 @@ function createAskUserForModelSelectionTool(
               "askUserForModelSelection requires an onAskUser handler — none configured.",
           };
         }
+        const friendlyRole = input.role;
+        const workDesc = input.workDescription?.trim();
         try {
           const response = await universalOpts.onAskUser({
-            title: `Pick a model for ${input.role}:${input.tag}`,
-            body: input.suggested
-              ? `Suggested: ${input.suggested.provider}/${input.suggested.modelId}`
-              : undefined,
-            question: `Which model should the ${input.role} on tag '${input.tag}' use?`,
+            title: `Pick a model for the "${input.tag}" ${friendlyRole}`,
+            body: workDesc
+              ? workDesc
+              : input.suggested
+                ? `Suggested: ${input.suggested.provider}/${input.suggested.modelId}`
+                : undefined,
+            question: `Which model should the "${input.tag}" ${friendlyRole} use?`,
             pendingInputKind: "model_selection",
             providerMetadata: {
               role: input.role,
               tag: input.tag,
+              workDescription: workDesc ?? null,
               ...(input.suggested ? { suggested: input.suggested } : {}),
             },
           });

@@ -204,20 +204,20 @@ function markUsageAlertDismissed(
 function describeGithubBanner(status: GitHubStatus): { message: string; linkLabel: string } {
   if (!status.tokenStored) {
     return {
-      message: "GitHub is not connected for this ADE app yet. ",
+      message: "GitHub is not connected yet. Use gh auth or add a PAT. ",
       linkLabel: "Connect GitHub",
     };
   }
   if (status.tokenType === "fine-grained" && status.repoAccessOk === false) {
     const repoLabel = status.repo ? `${status.repo.owner}/${status.repo.name}` : "this repo";
     return {
-      message: `GitHub token saved, but it cannot access ${repoLabel}. `,
-      linkLabel: "Fix GitHub token",
+      message: `GitHub auth is active, but it cannot access ${repoLabel}. `,
+      linkLabel: "Fix GitHub auth",
     };
   }
   return {
-    message: "GitHub token saved, but it does not have the required permissions. ",
-    linkLabel: "Fix GitHub token",
+    message: "GitHub auth is missing required permissions. ",
+    linkLabel: "Fix GitHub auth",
   };
 }
 

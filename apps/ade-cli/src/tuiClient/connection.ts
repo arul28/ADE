@@ -384,22 +384,18 @@ class StaleAdeSocketError extends Error {
   }
 }
 
+function trimmedStringOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 function readAttachedRuntimeInfo(result: InitializeResult): AttachedRuntimeInfo {
   const runtimeInfo = result.runtimeInfo;
   const pid = runtimeInfo?.pid;
+  const projectRoot = trimmedStringOrNull(runtimeInfo?.projectRoot);
   return {
-    buildHash:
-      typeof runtimeInfo?.buildHash === "string" && runtimeInfo.buildHash.trim()
-        ? runtimeInfo.buildHash.trim()
-        : null,
-    defaultRole:
-      typeof runtimeInfo?.defaultRole === "string" && runtimeInfo.defaultRole.trim()
-        ? runtimeInfo.defaultRole.trim()
-        : null,
-    projectRoot:
-      typeof runtimeInfo?.projectRoot === "string" && runtimeInfo.projectRoot.trim()
-        ? path.resolve(runtimeInfo.projectRoot.trim())
-        : null,
+    buildHash: trimmedStringOrNull(runtimeInfo?.buildHash),
+    defaultRole: trimmedStringOrNull(runtimeInfo?.defaultRole),
+    projectRoot: projectRoot ? path.resolve(projectRoot) : null,
     pid:
       typeof pid === "number" && Number.isFinite(pid) && pid > 0
         ? Math.floor(pid)

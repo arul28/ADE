@@ -315,23 +315,22 @@ function buildComponents({
     fontFamily: "var(--font-sans)",
   };
 
+  const HEADING_SIZE_CLASS = ["text-[15px]", "text-[14px]", "text-[12.5px]", "text-[11.5px]", "text-[11px]", "text-[11px]"] as const;
+
   const renderHeading = (level: 1 | 2 | 3 | 4 | 5 | 6) => {
     const Component = (props: {
       children?: ReactNode;
       id?: string;
     }) => {
       const Tag = `h${level}` as const;
-      const sizes = ["text-[15px]", "text-[14px]", "text-[12.5px]", "text-[11.5px]", "text-[11px]", "text-[11px]"];
-      const trackings = ["tracking-tight", "tracking-tight", "tracking-tight", "tracking-tight", "tracking-tight", "tracking-tight"];
       const sectionId = typeof props.id === "string" ? props.id : undefined;
       return (
         <Tag
           id={sectionId}
           data-section-id={sectionId}
           className={cn(
-            "mb-1.5 mt-3 font-semibold first:mt-0",
-            sizes[level - 1],
-            trackings[level - 1],
+            "mb-1.5 mt-3 font-semibold tracking-tight first:mt-0",
+            HEADING_SIZE_CLASS[level - 1],
             "text-fg/85",
             onSectionClick ? "cursor-pointer" : undefined,
           )}

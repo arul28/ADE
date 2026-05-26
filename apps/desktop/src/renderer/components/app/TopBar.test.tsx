@@ -196,12 +196,16 @@ describe("TopBar", () => {
       github: {
         getStatus: vi.fn(async () => ({
           tokenStored: false,
+          patTokenStored: false,
           tokenDecryptionFailed: false,
           storageScope: "app",
+          authSource: "none",
           repo: { owner: "acme", name: "ade", url: "https://github.com/acme/ade" },
           hasOrigin: true,
           userLogin: null,
           scopes: [],
+          ghCliPath: null,
+          ghAuthError: null,
           checkedAt: "2026-04-22T00:00:00.000Z",
           repoAccessOk: true,
           repoAccessError: null,

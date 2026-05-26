@@ -1840,10 +1840,10 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
   // ---------------------------------------------------------------------------
   // github
   // ---------------------------------------------------------------------------
-  { domain: "github", action: "clearToken", label: "Clear GitHub token", description: "Clear the stored GitHub token.", params: [] },
+  { domain: "github", action: "clearToken", label: "Clear stored GitHub PAT", description: "Clear the stored GitHub personal access token. ADE falls back to environment or gh auth when available.", params: [] },
   { domain: "github", action: "getRepoOrThrow", label: "Get GitHub repo (or throw)", description: "Return the detected GitHub repo or throw if missing.", params: [] },
-  { domain: "github", action: "getStatus", label: "Get GitHub status", description: "Return the GitHub auth status (token, scopes, repo).", params: [] },
-  { domain: "github", action: "setToken", label: "Set GitHub token", description: "Advanced action — pass arguments as JSON.", params: [] },
+  { domain: "github", action: "getStatus", label: "Get GitHub status", description: "Return the GitHub auth status (source, scopes, repo).", params: [] },
+  { domain: "github", action: "setToken", label: "Set GitHub PAT", description: "Advanced action — pass arguments as JSON.", params: [] },
 
   // ---------------------------------------------------------------------------
   // usage

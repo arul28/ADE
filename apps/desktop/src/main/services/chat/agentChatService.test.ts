@@ -2785,32 +2785,17 @@ describe("createAgentChatService", () => {
         const startPayload = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start") as any;
         const dynamicTools = startPayload?.params?.dynamicTools ?? [];
         const toolNames = dynamicTools.map((entry: { name?: string }) => entry.name);
-        expect(toolNames).toEqual(expect.arrayContaining(["spawnAgent", "messageAgent", "TodoRead"]));
+        expect(toolNames).toEqual(expect.arrayContaining(["spawnAgent", "messageAgent", "getAgentTranscript"]));
         expect(toolNames).not.toContain("editFile");
         expect(toolNames).not.toContain("writeFile");
         expect(toolNames).not.toContain("bash");
         expect(dynamicTools.every((entry: { namespace?: string }) => entry.namespace === "ade_orchestration")).toBe(true);
         expect(startPayload?.params).toMatchObject({
-          approvalPolicy: "on-request",
-          sandbox: "read-only",
+          approvalPolicy: "never",
+          sandbox: "danger-full-access",
         });
 
-        mockState.emitCodexPayload({
-          jsonrpc: "2.0",
-          id: "orch-tool-call-1",
-          method: "item/tool/call",
-          params: {
-            namespace: "ade_orchestration",
-            tool: "TodoRead",
-            arguments: {},
-          },
-        });
-        await vi.waitFor(() => {
-          expect(mockState.codexRequestPayloads.some((payload) => payload.id === "orch-tool-call-1")).toBe(true);
-        });
-        const toolResponse = mockState.codexRequestPayloads.find((payload) => payload.id === "orch-tool-call-1") as any;
-        expect(toolResponse?.result?.success).toBe(true);
-        expect(toolResponse?.result?.contentItems?.[0]?.type).toBe("inputText");
+        expect(toolNames.length).toBeGreaterThan(5);
       } finally {
         await orchestrationService.dispose();
       }

@@ -56,6 +56,53 @@ export const LANE_DETAIL_ACTIONS: ReadonlyArray<{
 
 export const LANE_DETAIL_PR_ACTION_INDEX = LANE_DETAIL_ACTIONS.length;
 
+type LaneDetailsContent = Extract<RightPaneContent, { kind: "lane-details" }>;
+
+export type LaneDetailsInteractionLayout = {
+  actionRows: number[];
+  prRow: { start: number; height: number } | null;
+};
+
+export function laneDetailsInteractionLayout(content: LaneDetailsContent): LaneDetailsInteractionLayout {
+  const worktreeMissing = content.worktreeAvailable === false;
+  const filesCount = Math.max(content.git.total, content.files.length);
+  const changedRows = content.files.slice(0, content.showFiles ? 9 : LANE_FILE_PREVIEW_ROWS);
+  const remainingFiles = Math.max(0, filesCount - changedRows.length);
+
+  let row = 0;
+  // RightPane lane-details header: title, optional branch, and marginBottom.
+  row += 1 + (content.lane.branchRef ? 1 : 0) + 1;
+  if (worktreeMissing) row += 1;
+  row += 2; // STATUS section heading with marginTop.
+  row += 1; // working state.
+  row += 1; // ahead / behind line.
+  if (worktreeMissing) {
+    row += 2; // UNAVAILABLE section heading with marginTop.
+    row += 1; // unavailable detail.
+  }
+  row += 2; // CHANGES section heading with marginTop.
+  row += changedRows.length ? changedRows.length : 1;
+  if (remainingFiles > 0) row += 1;
+  row += changedRows.length ? 2 : 1; // stats row, plus margin when file rows exist.
+
+  const actionRows: number[] = [];
+  if (!worktreeMissing) {
+    row += 2; // ACTIONS section heading with marginTop.
+    for (let index = 0; index < LANE_DETAIL_ACTIONS.length; index += 1) {
+      actionRows.push(row + index);
+    }
+    row += LANE_DETAIL_ACTIONS.length;
+  }
+
+  let prRow: LaneDetailsInteractionLayout["prRow"] = null;
+  if (content.pr) {
+    row += 2; // PR section heading with marginTop.
+    prRow = { start: row, height: 3 };
+  }
+
+  return { actionRows, prRow };
+}
+
 export function computeLaneChatCounts(
   sessions: AgentChatSessionSummary[],
   laneId: string,

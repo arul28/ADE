@@ -505,6 +505,8 @@ export type OrchestrationRunCreateResponse = {
 export type OrchestrationModelSelectionMetadata = {
   role: OrchestrationRole;
   tag: string;
+  /** Short description of what this agent will work on. */
+  workDescription?: string | null;
   suggested?: ModelSelection;
   /** Optional snapshot of available models — server-provided when needed. */
   availableModels?: unknown;
