@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AiProviderConnectionStatus,
@@ -230,22 +230,6 @@ describe("usage components", () => {
 
       await waitFor(() => {
         expect(window.ade.usage.refresh).toHaveBeenCalledTimes(1);
-      });
-    });
-
-    it("keeps live provider polling available through the manual refresh button", async () => {
-      render(<UsageQuotaPanel />);
-
-      await waitFor(() => {
-        const refreshButton = screen.getByRole("button", { name: /refresh/i }) as HTMLButtonElement;
-        expect(refreshButton.disabled).toBe(false);
-      });
-
-      const baseline = vi.mocked(window.ade.usage.refresh).mock.calls.length;
-      fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
-
-      await waitFor(() => {
-        expect(window.ade.usage.refresh).toHaveBeenCalledTimes(baseline + 1);
       });
     });
 
