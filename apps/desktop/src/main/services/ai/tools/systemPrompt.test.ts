@@ -142,6 +142,59 @@ describe("buildCodingAgentSystemPrompt", () => {
     });
   });
 
+  describe("orchestration role guidance", () => {
+    const orchestrationArgs = {
+      cwd: "/repo",
+      orchestrationRunId: "run-1",
+      orchestrationBundlePath: "/repo/.ade/orchestration/run-1",
+      adeSkillRoots: ["/repo/apps/desktop/resources/agent-skills"],
+    };
+
+    it("guides leads through bundled skill discovery and plan quality minimums", () => {
+      const result = buildCodingAgentSystemPrompt({
+        ...orchestrationArgs,
+        orchestrationRole: "lead",
+      });
+
+      expect(result).toContain("orchestration **LEAD**");
+      expect(result).toContain("/repo/apps/desktop/resources/agent-skills");
+      expect(result).toContain("ADE_AGENT_SKILLS_DIRS");
+      expect(result).toContain("ade-orchestrator/SKILL.md");
+      expect(result).toContain("Lead planning quality contract");
+      expect(result).toContain("out-of-scope / non-goals");
+      expect(result).toContain("UI / UX / user-facing decisions");
+      expect(result).toContain("Planned implementation order");
+      expect(result).toContain("Agent plan");
+      expect(result).toContain("Validation / proof plan");
+      expect(result).toContain("Plan presentation");
+      expect(result).toContain("artifacts/ui/*.html");
+      expect(result).toContain("Do not embed raw iframes");
+      expect(result).toContain("Implementation handoff");
+      expect(result).toContain("Implement` button");
+      expect(result).toContain("requestPlanApproval");
+      expect(result).toContain("Spawn brief discipline");
+    });
+
+    it("guides workers to read shared state, stay scoped, update the plan, and report blockers", () => {
+      const result = buildCodingAgentSystemPrompt({
+        ...orchestrationArgs,
+        orchestrationRole: "worker",
+        orchestrationParentSessionId: "S-lead",
+        orchestrationStepId: "T-1",
+        orchestrationTag: "prompt-tools",
+      });
+
+      expect(result).toContain("orchestration **WORKER**");
+      expect(result).toContain("Read the bundled ADE orchestrator skill");
+      expect(result).toContain("Before editing, read `manifest.json`, `plan.md`, your spawn brief, and `## PEERS`");
+      expect(result).toContain("Only work in this lane and only on the assigned task");
+      expect(result).toContain("Use `planAppend` when you start");
+      expect(result).toContain("when you are stuck");
+      expect(result).toContain("Use `messageAgent` to report status");
+      expect(result).toContain("inter-worker coordination goes through the lead");
+    });
+  });
+
   it("includes interactive question guidance by default", () => {
     const result = buildCodingAgentSystemPrompt({ cwd: "/x" });
     expect(result).toContain("ask one concise question");
@@ -238,6 +291,7 @@ describe("buildCodingAgentSystemPrompt", () => {
     expect(result).toContain("ADE exposes Agent Skills from project, user, runtime, and bundled ADE skill roots");
     expect(result).toContain("ade-ios-simulator");
     expect(result).toContain("ade-cli-control-plane");
+    expect(result).toContain("ade-orchestrator");
     expect(result).toContain("## Editing Rules");
     expect(result).toContain("## Verification Rules");
     expect(result).toContain("## User-Facing Progress");

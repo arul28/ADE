@@ -612,6 +612,31 @@ export const SessionListPane = React.memo(function SessionListPane({
               New Chat
             </button>
           </SmartTooltip>
+          <SmartTooltip
+            content={{
+              label: "New orchestrator chat",
+              description: "Spawn a lead chat that coordinates workers and validators in this lane.",
+            }}
+          >
+            <button
+              type="button"
+              data-testid="session-list-new-orchestrator-chat"
+              className="inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[10px] font-medium transition-colors"
+              style={{
+                // Purple-accent tone (goal.md §10.1) — distinct from regular New Chat.
+                border: "1px solid rgba(168,130,255,0.5)",
+                background: "rgba(168,130,255,0.18)",
+                color: "rgba(220,210,255,0.95)",
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+              onClick={() => onShowDraftKind("chat-orchestrator")}
+              aria-label="Start a new orchestrator chat"
+            >
+              <Plus size={10} weight="bold" />
+              Orchestrator
+            </button>
+          </SmartTooltip>
           <SmartTooltip content={{ label: "Filters", description: "Toggle the filter panel to organize sessions by lane, status, or time." }}>
             <button
               type="button"

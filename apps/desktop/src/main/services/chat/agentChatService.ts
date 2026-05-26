@@ -14,7 +14,13 @@ import {
   renameSession as renameClaudeSession,
   startup,
   tagSession as tagClaudeSession,
+  createSdkMcpServer,
+  tool as createClaudeSdkTool,
 } from "@anthropic-ai/claude-agent-sdk";
+import {
+  createSdkMcpServer as createDroidSdkMcpServer,
+  tool as createDroidSdkTool,
+} from "@factory/droid-sdk";
 import type {
   SDKSessionInfo,
   SessionMessage as ClaudeSdkSessionMessage,
@@ -27,6 +33,7 @@ import type {
   SDKUserMessage,
   WarmQuery,
 } from "@anthropic-ai/claude-agent-sdk";
+import { z, type ZodType } from "zod";
 import { buildClaudeV2Message, inferAttachmentMediaType } from "./buildClaudeV2Message";
 import { ClaudeInputPump } from "./claudeInputPump";
 import {
@@ -113,6 +120,7 @@ import type {
   AgentChatExecutionMode,
   AgentChatEvent,
   AgentChatEventEnvelope,
+  AgentChatEventMetadata,
   AgentChatEventHistorySnapshot,
   AgentChatContextAttachment,
   AgentChatFileRef,
@@ -166,6 +174,7 @@ import type {
   CodexTokenUsageBreakdown,
   CodexWebSearchAction,
   PendingInputQuestion,
+  PendingInputKind,
   PendingInputRequest,
   PendingInputSource,
   AgentChatUpdateSessionArgs,
@@ -204,7 +213,19 @@ import {
 } from "../../../shared/modelCatalog";
 import { canSwitchChatSessionModel } from "../../../shared/chatModelSwitching";
 import { detectAllAuth } from "../ai/authDetector";
-import type { PermissionMode } from "../ai/tools/universalTools";
+import type {
+  AskUserToolInput,
+  AskUserToolResult,
+  PermissionMode,
+  UniversalToolSetOptions,
+} from "../ai/tools/universalTools";
+import {
+  createOrchestrationToolSet,
+  type OrchestrationInteractionMode,
+  type OrchestrationSessionContext,
+  type OrchestrationToolMap,
+} from "../ai/tools/orchestrationTools";
+import type { ExecutableTool } from "../ai/tools/executableTool";
 import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { createLinearTools } from "../ai/tools/linearTools";
 import { createCtoOperatorTools, type CtoOperatorToolDeps } from "../ai/tools/ctoOperatorTools";
@@ -318,6 +339,8 @@ import { promises as fsPromises } from "node:fs";
 import { mapStopReasonToTerminalEvents } from "./stopReasonEvents";
 import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { getApiKey } from "../ai/apiKeyStore";
+import type { createOrchestrationService } from "../orchestration/orchestrationService";
+import { applyOrchestrationPermissionProfile } from "../orchestration/runtimeProfile";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 
 const CLAUDE_AGENT_SDK_VERSION = "0.2.139";
@@ -338,6 +361,14 @@ type JsonRpcEnvelope = {
     message?: string;
     data?: unknown;
   };
+};
+
+type CodexDynamicToolSpec = {
+  namespace?: string | null;
+  name: string;
+  description: string;
+  inputSchema: unknown;
+  deferLoading?: boolean;
 };
 
 type PersistedRecentConversationEntry = {
@@ -414,6 +445,13 @@ type PersistedChatState = {
   approvalOverrides?: string[];
   /** Queued mid-turn steers for the Claude runtime, restored on app restart. */
   pendingSteers?: PersistedPendingSteer[];
+  // Orchestration-mode fields
+  orchestrationRunId?: string;
+  orchestrationRole?: "lead" | "worker" | "validator";
+  orchestrationParentSessionId?: string;
+  orchestrationTag?: string;
+  orchestrationStepId?: string;
+  orchestrationBundlePath?: string;
   updatedAt: string;
 };
 
@@ -422,6 +460,7 @@ type PersistedPendingSteer = {
   text: string;
   attachments?: AgentChatFileRef[];
   contextAttachments?: AgentChatContextAttachment[];
+  metadata?: AgentChatEventMetadata | null | undefined;
 };
 
 type PendingRpc = {
@@ -511,6 +550,8 @@ type CodexRuntime = {
   planModeFallbackNotified: boolean;
   goalBudgetClearInFlight: Set<string>;
   goalBudgetClearRetryAfterByThreadId: Map<string, number>;
+  dynamicTools: Map<string, ExecutableTool>;
+  dynamicToolSpecs: CodexDynamicToolSpec[];
 };
 
 type QueuedSteer = {
@@ -519,6 +560,7 @@ type QueuedSteer = {
   attachments: AgentChatFileRef[];
   contextAttachments: AgentChatContextAttachment[];
   resolvedAttachments: ResolvedAgentChatFileRef[];
+  metadata?: AgentChatEventMetadata | null | undefined;
 };
 
 type ClaudeRuntime = {
@@ -1559,6 +1601,11 @@ type ManagedChatSession = {
       responseText?: string | null;
     }) => void;
   }>;
+  orchestrationHttpMcpServer: {
+    config: { type?: string; name?: string; url?: string; headers?: unknown };
+    close: () => Promise<void>;
+  } | null;
+  activeBashControllers: Set<AbortController>;
   eventSequence: number;
   lastActivityTimestamp: number;
   turnBeforeSha: string | null;
@@ -1631,6 +1678,7 @@ type PreparedSendMessage = {
   attachments: AgentChatFileRef[];
   contextAttachments: AgentChatContextAttachment[];
   resolvedAttachments: ResolvedAgentChatFileRef[];
+  metadata?: AgentChatEventMetadata | null | undefined;
   reasoningEffort?: string | null;
   interactionMode?: AgentChatInteractionMode | null;
   laneDirectiveKey?: string | null;
@@ -3428,7 +3476,13 @@ const PLAN_STEP_STATUS_MAP: Record<string, "pending" | "in_progress" | "complete
 
 const VALID_PERMISSION_MODES = new Set(["default", "auto", "plan", "edit", "full-auto", "config-toml"]);
 const VALID_EXECUTION_MODES = new Set(["focused", "parallel", "subagents", "teams"]);
-const VALID_INTERACTION_MODES = new Set(["default", "plan"]);
+const VALID_INTERACTION_MODES = new Set([
+  "default",
+  "plan",
+  "orchestrator-lead",
+  "orchestrator-worker",
+  "orchestrator-validator",
+]);
 const VALID_CLAUDE_PERMISSION_MODES = new Set(["default", "auto", "plan", "acceptEdits", "bypassPermissions"]);
 const VALID_CODEX_APPROVAL_POLICIES = new Set(["untrusted", "on-request", "on-failure", "never"]);
 const VALID_CODEX_SANDBOXES = new Set(["read-only", "workspace-write", "danger-full-access"]);
@@ -3728,21 +3782,26 @@ function hydrateNativePermissionControls(
     "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode"
   >,
 ): void {
+  const orchestrationMode = isOrchestrationInteractionMode(session.interactionMode)
+    ? session.interactionMode
+    : null;
   if (session.provider === "claude") {
     session.interactionMode = resolveSessionClaudeInteractionMode(session);
     session.claudePermissionMode = resolveSessionClaudeAccessMode(session, "default");
   } else if (session.provider === "codex") {
+    if (orchestrationMode) session.interactionMode = orchestrationMode;
     session.codexApprovalPolicy = session.codexApprovalPolicy ?? legacyPermissionModeToCodexApprovalPolicy(session.permissionMode);
     session.codexSandbox = session.codexSandbox ?? legacyPermissionModeToCodexSandbox(session.permissionMode);
     session.codexConfigSource = session.codexConfigSource ?? legacyPermissionModeToCodexConfigSource(session.permissionMode);
   } else if (session.provider === "droid") {
-    session.interactionMode = session.interactionMode === "plan" || session.permissionMode === "plan"
+    session.interactionMode = orchestrationMode ?? (session.interactionMode === "plan" || session.permissionMode === "plan"
       ? "plan"
-      : "default";
+      : "default");
     session.droidPermissionMode = session.droidPermissionMode
       ?? legacyPermissionModeToDroidPermissionMode(session.permissionMode)
       ?? legacyOpenCodePermissionModeToDroidPermissionMode(session.opencodePermissionMode);
   } else {
+    if (orchestrationMode) session.interactionMode = orchestrationMode;
     session.opencodePermissionMode = session.opencodePermissionMode ?? legacyPermissionModeToOpenCodePermissionMode(session.permissionMode);
   }
 
@@ -3802,13 +3861,191 @@ function toHarnessPermissionMode(
   return "edit";
 }
 
+function isOrchestrationInteractionMode(
+  mode: AgentChatInteractionMode | null | undefined,
+): mode is OrchestrationInteractionMode {
+  return mode === "orchestrator-lead"
+    || mode === "orchestrator-worker"
+    || mode === "orchestrator-validator";
+}
+
+function orchestrationRoleForMode(
+  mode: OrchestrationInteractionMode,
+): OrchestrationSessionContext["role"] {
+  if (mode === "orchestrator-lead") return "lead";
+  if (mode === "orchestrator-validator") return "validator";
+  return "worker";
+}
+
+function orchestrationInteractionModeForRole(
+  role: OrchestrationSessionContext["role"],
+): OrchestrationInteractionMode {
+  if (role === "lead") return "orchestrator-lead";
+  if (role === "validator") return "orchestrator-validator";
+  return "orchestrator-worker";
+}
+
+function lockedOrchestrationPermissionMode(
+  session: Pick<AgentChatSession, "interactionMode" | "orchestrationRole">,
+): AgentChatSession["permissionMode"] | null {
+  const role = session.orchestrationRole
+    ?? (isOrchestrationInteractionMode(session.interactionMode)
+      ? orchestrationRoleForMode(session.interactionMode)
+      : null);
+  // All orchestration roles use full-auto (bypassPermissions). The lead's
+  // security comes from the tool-set restriction (no write tools), not the
+  // permission mode. Plan mode would block orchestration tools.
+  if (role === "lead" || role === "worker" || role === "validator") return "full-auto";
+  return null;
+}
+
+function enforceOrchestrationLockedPermissionMode(
+  session: Pick<
+    AgentChatSession,
+    | "provider"
+    | "permissionMode"
+    | "interactionMode"
+    | "orchestrationRole"
+    | "claudePermissionMode"
+    | "codexApprovalPolicy"
+    | "codexSandbox"
+    | "codexConfigSource"
+    | "opencodePermissionMode"
+    | "droidPermissionMode"
+    | "cursorModeId"
+  >,
+): boolean {
+  const lockedMode = lockedOrchestrationPermissionMode(session);
+  if (!lockedMode) return false;
+
+  const orchestrationMode = isOrchestrationInteractionMode(session.interactionMode)
+    ? session.interactionMode
+    : null;
+  // Use the per-provider profile directly — each provider has its own
+  // "most permissive" mode name (bypassPermissions, danger-full-access,
+  // full-auto, auto-high, etc.). The lead's security comes from the tool-set
+  // restriction, not the permission mode.
+  const profile = applyOrchestrationPermissionProfile(session.provider);
+  Object.assign(session, profile);
+  session.permissionMode = lockedMode;
+  if (orchestrationMode) session.interactionMode = orchestrationMode;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Orchestration field helpers — single source of truth for the 6-field bag
+// that gets spread/read in persistence, hydration, session creation, summary,
+// and dead-session reconstruction.  Every call-site that previously copy-pasted
+// these fields now delegates here.
+// ---------------------------------------------------------------------------
+
+const ORCHESTRATION_SESSION_FIELD_NAMES = [
+  "orchestrationRunId",
+  "orchestrationRole",
+  "orchestrationParentSessionId",
+  "orchestrationTag",
+  "orchestrationStepId",
+  "orchestrationBundlePath",
+] as const;
+
+type OrchestrationFieldSource = Partial<Record<(typeof ORCHESTRATION_SESSION_FIELD_NAMES)[number], unknown>>;
+
+const VALID_ORCHESTRATION_ROLES = new Set(["lead", "worker", "validator"]);
+
+/**
+ * Read orchestration fields from an untyped record (e.g. persisted JSON),
+ * validating and trimming each value.  Returns only the fields that are
+ * present and valid, ready to spread into a typed object.
+ */
+function hydrateOrchestrationFields(
+  record: Record<string, unknown>,
+): Partial<PersistedChatState> {
+  const out: Partial<PersistedChatState> = {};
+  const runId = record.orchestrationRunId;
+  if (typeof runId === "string" && runId.trim().length) out.orchestrationRunId = runId.trim();
+  const role = record.orchestrationRole;
+  if (typeof role === "string" && VALID_ORCHESTRATION_ROLES.has(role)) {
+    out.orchestrationRole = role as "lead" | "worker" | "validator";
+  }
+  const parentId = record.orchestrationParentSessionId;
+  if (typeof parentId === "string" && parentId.trim().length) out.orchestrationParentSessionId = parentId.trim();
+  const tag = record.orchestrationTag;
+  if (typeof tag === "string" && tag.trim().length) out.orchestrationTag = tag.trim();
+  const stepId = record.orchestrationStepId;
+  if (typeof stepId === "string" && stepId.trim().length) out.orchestrationStepId = stepId.trim();
+  const bundlePath = record.orchestrationBundlePath;
+  if (typeof bundlePath === "string" && bundlePath.trim().length) out.orchestrationBundlePath = bundlePath.trim();
+  return out;
+}
+
+/**
+ * Collect orchestration fields from a live session or persisted state, falling
+ * back from live to persisted when the live value is absent.  Returns a spread-
+ * ready partial.
+ */
+function collectOrchestrationFields(
+  live: OrchestrationFieldSource | null | undefined,
+  persisted: OrchestrationFieldSource | null | undefined,
+): Partial<PersistedChatState> {
+  const out: Partial<PersistedChatState> = {};
+  for (const key of ORCHESTRATION_SESSION_FIELD_NAMES) {
+    const value = (live as Record<string, unknown>)?.[key] ?? (persisted as Record<string, unknown>)?.[key];
+    if (value != null) (out as Record<string, unknown>)[key] = value;
+  }
+  return out;
+}
+
+const ORCHESTRATION_CLAUDE_SERVER_NAME = "ade-orchestration";
+const ORCHESTRATION_CODEX_TOOL_NAMESPACE = "ade_orchestration";
+const ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS = new Set([
+  "Bash",
+  "Edit",
+  "MultiEdit",
+  "Write",
+  "NotebookEdit",
+]);
+
+function stripJsonSchemaMeta(schema: unknown): unknown {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema;
+  const record = { ...(schema as Record<string, unknown>) };
+  delete record.$schema;
+  return record;
+}
+
+function jsonSchemaForExecutableTool(toolDefinition: ExecutableTool): unknown {
+  try {
+    return stripJsonSchemaMeta(z.toJSONSchema(toolDefinition.inputSchema as ZodType));
+  } catch {
+    return { type: "object", additionalProperties: true };
+  }
+}
+
+function stringifyExecutableToolOutput(output: unknown): string {
+  if (typeof output === "string") return output;
+  try {
+    return JSON.stringify(output, null, 2);
+  } catch {
+    return String(output);
+  }
+}
+
 function buildAdeGuidanceForLane(laneWorktreePath: string): string {
   return buildAdeCliAgentGuidance(getAdeAgentSkillRootsForPrompt({ cwd: laneWorktreePath }));
 }
 
 function buildCodexDeveloperInstructions(args: {
   laneWorktreePath: string;
-  session: Pick<AgentChatSession, "permissionMode" | "interactionMode">;
+  session: Pick<
+    AgentChatSession,
+    | "permissionMode"
+    | "interactionMode"
+    | "orchestrationRole"
+    | "orchestrationRunId"
+    | "orchestrationBundlePath"
+    | "orchestrationTag"
+    | "orchestrationParentSessionId"
+    | "orchestrationStepId"
+  >;
   collaborationMode: "default" | "plan";
 }): string {
   const promptMode = args.collaborationMode === "plan" || args.session.interactionMode === "plan"
@@ -3821,6 +4058,12 @@ function buildCodexDeveloperInstructions(args: {
     interactive: true,
     runtime: "codex-app-server",
     adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: args.laneWorktreePath }),
+    orchestrationRole: args.session.orchestrationRole,
+    orchestrationRunId: args.session.orchestrationRunId,
+    orchestrationBundlePath: args.session.orchestrationBundlePath,
+    orchestrationTag: args.session.orchestrationTag,
+    orchestrationParentSessionId: args.session.orchestrationParentSessionId,
+    orchestrationStepId: args.session.orchestrationStepId,
   });
 }
 
@@ -4154,6 +4397,9 @@ function normalizeSessionNativePermissionControls(
   >,
   config: ResolvedChatConfig,
 ): void {
+  const orchestrationMode = isOrchestrationInteractionMode(session.interactionMode)
+    ? session.interactionMode
+    : null;
   if (session.provider === "claude") {
     session.interactionMode = resolveSessionClaudeInteractionMode(session);
     session.claudePermissionMode = resolveSessionClaudePermissionMode(session, config.claudePermissionMode);
@@ -4163,7 +4409,8 @@ function normalizeSessionNativePermissionControls(
     delete session.opencodePermissionMode;
     delete session.droidPermissionMode;
   } else if (session.provider === "codex") {
-    delete session.interactionMode;
+    if (orchestrationMode) session.interactionMode = orchestrationMode;
+    else delete session.interactionMode;
     session.codexConfigSource = resolveSessionCodexConfigSource(session);
     if (session.codexConfigSource === "config-toml") {
       delete session.codexApprovalPolicy;
@@ -4176,9 +4423,9 @@ function normalizeSessionNativePermissionControls(
     delete session.opencodePermissionMode;
     delete session.droidPermissionMode;
   } else if (session.provider === "droid") {
-    session.interactionMode = session.interactionMode === "plan" || session.permissionMode === "plan"
+    session.interactionMode = orchestrationMode ?? (session.interactionMode === "plan" || session.permissionMode === "plan"
       ? "plan"
-      : "default";
+      : "default");
     session.droidPermissionMode = resolveSessionDroidPermissionMode(session, "auto-low");
     delete session.claudePermissionMode;
     delete session.codexApprovalPolicy;
@@ -4186,7 +4433,8 @@ function normalizeSessionNativePermissionControls(
     delete session.codexConfigSource;
     delete session.opencodePermissionMode;
   } else {
-    delete session.interactionMode;
+    if (orchestrationMode) session.interactionMode = orchestrationMode;
+    else delete session.interactionMode;
     session.opencodePermissionMode = resolveSessionOpenCodePermissionMode(session, config.opencodePermissionMode);
     delete session.claudePermissionMode;
     delete session.codexApprovalPolicy;
@@ -4298,6 +4546,7 @@ export function createAgentChatService(args: {
   workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
   linearIssueTracker?: IssueTracker | null;
   flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
+  getOrchestrationService?: () => ReturnType<typeof createOrchestrationService> | null;
   getLinearDispatcherService?: () => ReturnType<typeof createLinearDispatcherService> | null;
   linearClient?: LinearClient | null;
   linearCredentials?: LinearCredentialService | null;
@@ -4333,6 +4582,7 @@ export function createAgentChatService(args: {
     workerHeartbeatService,
     linearIssueTracker,
     flowPolicyService,
+    getOrchestrationService,
     getLinearDispatcherService,
     linearClient: linearClientRef,
     linearCredentials: linearCredentialsRef,
@@ -4443,7 +4693,8 @@ export function createAgentChatService(args: {
   ): void => {
     if (!managed.session.laneId || contextAttachments.length === 0) return;
     const issues = contextAttachments
-      .filter((attachment) => attachment.type === "linear_issue")
+      .filter((attachment): attachment is Extract<AgentChatContextAttachment, { type: "linear_issue" }> =>
+        attachment.type === "linear_issue")
       .map((attachment) => attachment.issue);
     if (!issues.length) return;
     try {
@@ -4688,6 +4939,16 @@ export function createAgentChatService(args: {
     runtime: ClaudeRuntime,
     managed: ManagedChatSession,
   ): ClaudeSDKOptions["canUseTool"] => async (toolName, input, sdkOptions): Promise<ClaudePermissionResult> => {
+    if (
+      managed.session.interactionMode === "orchestrator-lead"
+      && ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS.has(toolName)
+    ) {
+      return {
+        behavior: "deny",
+        message: "Orchestrator lead sessions cannot edit files or run bash directly. Spawn a worker with spawnAgent instead.",
+      };
+    }
+
     // ── EnterPlanMode interception ──
     // Sync ADE session state when the SDK enters plan mode mid-session so
     // the permission-mode picker in the UI stays in sync.
@@ -4763,8 +5024,8 @@ export function createAgentChatService(args: {
           header: "Implementation Plan",
           question: planSummary,
           options: [
-            { label: "Approve & Implement", value: "approve", recommended: true },
-            { label: "Reject & Revise", value: "reject" },
+            { label: "Implement", value: "approve", recommended: true },
+            { label: "Keep planning", value: "reject" },
           ],
           allowsFreeform: true,
         }],
@@ -5278,82 +5539,64 @@ export function createAgentChatService(args: {
     }
   };
 
-  const readTranscriptEntries = (managed: ManagedChatSession): AgentChatTranscriptEntry[] => {
-    try {
-      const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
-      if (!transcriptPath) return [];
-      const raw = fs.readFileSync(transcriptPath, "utf8");
-      type TranscriptDraftEntry = AgentChatTranscriptEntry & Partial<BufferedAssistantText>;
-      const entries: TranscriptDraftEntry[] = [];
-      const assistantDraftsByKey = new Map<string, TranscriptDraftEntry>();
-      let assistantDraft: (AgentChatTranscriptEntry & BufferedAssistantText) | null = null;
-      const flushAssistantDraft = (): void => {
-        if (!assistantDraft) return;
-        const text = assistantDraft.text.trim();
-        if (text.length > 0) {
-          entries.push({
-            role: "assistant",
-            text,
-            timestamp: assistantDraft.timestamp,
-            ...(assistantDraft.turnId ? { turnId: assistantDraft.turnId } : {}),
-          });
-        }
-        assistantDraft = null;
-      };
-      const assistantTranscriptMergeKey = (event: Extract<AgentChatEvent, { type: "text" }>): string | null => {
-        const messageId = event.messageId?.trim();
-        if (messageId) return `message:${messageId}`;
-        const turnId = event.turnId?.trim();
-        if (turnId) return `turn:${turnId}`;
-        return null;
-      };
+  const transcriptEntriesFromEnvelopes = (
+    sessionId: string,
+    envelopes: readonly AgentChatEventEnvelope[],
+  ): AgentChatTranscriptEntry[] => {
+    type TranscriptDraftEntry = AgentChatTranscriptEntry & Partial<BufferedAssistantText>;
+    const entries: TranscriptDraftEntry[] = [];
+    const assistantDraftsByKey = new Map<string, TranscriptDraftEntry>();
+    let assistantDraft: (AgentChatTranscriptEntry & BufferedAssistantText) | null = null;
+    const flushAssistantDraft = (): void => {
+      if (!assistantDraft) return;
+      const text = assistantDraft.text.trim();
+      if (text.length > 0) {
+        entries.push({
+          role: "assistant",
+          text,
+          timestamp: assistantDraft.timestamp,
+          ...(assistantDraft.turnId ? { turnId: assistantDraft.turnId } : {}),
+        });
+      }
+      assistantDraft = null;
+    };
+    const assistantTranscriptMergeKey = (event: Extract<AgentChatEvent, { type: "text" }>): string | null => {
+      const messageId = event.messageId?.trim();
+      if (messageId) return `message:${messageId}`;
+      const turnId = event.turnId?.trim();
+      if (turnId) return `turn:${turnId}`;
+      return null;
+    };
 
-      for (const entry of parseAgentChatTranscript(raw)) {
-        if (entry.sessionId !== managed.session.id) continue;
-        if (entry.event.type === "user_message") {
+    for (const entry of envelopes) {
+      if (entry.sessionId !== sessionId) continue;
+      if (entry.event.type === "user_message") {
+        flushAssistantDraft();
+        const text = entry.event.text.trim();
+        if (!text.length) continue;
+        const displayText = typeof entry.event.displayText === "string" && entry.event.displayText.trim().length > 0
+          ? entry.event.displayText.trim()
+          : undefined;
+        entries.push({
+          role: "user",
+          text,
+          ...(displayText ? { displayText } : {}),
+          timestamp: entry.timestamp,
+          turnId: entry.event.turnId,
+        });
+        continue;
+      }
+      if (entry.event.type === "text") {
+        if (!entry.event.text.trim().length) continue;
+        const mergeKey = assistantTranscriptMergeKey(entry.event);
+        if (mergeKey) {
           flushAssistantDraft();
-          const text = entry.event.text.trim();
-          if (!text.length) continue;
-          const displayText = typeof entry.event.displayText === "string" && entry.event.displayText.trim().length > 0
-            ? entry.event.displayText.trim()
-            : undefined;
-          entries.push({
-            role: "user",
-            text,
-            ...(displayText ? { displayText } : {}),
-            timestamp: entry.timestamp,
-            turnId: entry.event.turnId,
-          });
-          continue;
-        }
-        if (entry.event.type === "text") {
-          if (!entry.event.text.trim().length) continue;
-          const mergeKey = assistantTranscriptMergeKey(entry.event);
-          if (mergeKey) {
-            flushAssistantDraft();
-            const existing = assistantDraftsByKey.get(mergeKey);
-            if (existing) {
-              existing.text = `${existing.text}${entry.event.text}`;
-              continue;
-            }
-            const draft: TranscriptDraftEntry = {
-              role: "assistant",
-              text: entry.event.text,
-              timestamp: entry.timestamp,
-              ...(entry.event.messageId ? { messageId: entry.event.messageId } : {}),
-              ...(entry.event.turnId ? { turnId: entry.event.turnId } : {}),
-              ...(entry.event.itemId ? { itemId: entry.event.itemId } : {}),
-            };
-            assistantDraftsByKey.set(mergeKey, draft);
-            entries.push(draft);
+          const existing = assistantDraftsByKey.get(mergeKey);
+          if (existing) {
+            existing.text = `${existing.text}${entry.event.text}`;
             continue;
           }
-          if (assistantDraft && canAppendBufferedAssistantText(assistantDraft, entry.event)) {
-            assistantDraft.text = `${assistantDraft.text}${entry.event.text}`;
-            continue;
-          }
-          flushAssistantDraft();
-          assistantDraft = {
+          const draft: TranscriptDraftEntry = {
             role: "assistant",
             text: entry.event.text,
             timestamp: entry.timestamp,
@@ -5361,20 +5604,45 @@ export function createAgentChatService(args: {
             ...(entry.event.turnId ? { turnId: entry.event.turnId } : {}),
             ...(entry.event.itemId ? { itemId: entry.event.itemId } : {}),
           };
+          assistantDraftsByKey.set(mergeKey, draft);
+          entries.push(draft);
+          continue;
+        }
+        if (assistantDraft && canAppendBufferedAssistantText(assistantDraft, entry.event)) {
+          assistantDraft.text = `${assistantDraft.text}${entry.event.text}`;
           continue;
         }
         flushAssistantDraft();
+        assistantDraft = {
+          role: "assistant",
+          text: entry.event.text,
+          timestamp: entry.timestamp,
+          ...(entry.event.messageId ? { messageId: entry.event.messageId } : {}),
+          ...(entry.event.turnId ? { turnId: entry.event.turnId } : {}),
+          ...(entry.event.itemId ? { itemId: entry.event.itemId } : {}),
+        };
+        continue;
       }
       flushAssistantDraft();
-      return entries
-        .map((entry) => ({
-          role: entry.role,
-          text: entry.text.trim(),
-          ...(entry.displayText ? { displayText: entry.displayText } : {}),
-          timestamp: entry.timestamp,
-          ...(entry.turnId ? { turnId: entry.turnId } : {}),
-        }))
-        .filter((entry) => entry.text.length > 0);
+    }
+    flushAssistantDraft();
+    return entries
+      .map((entry) => ({
+        role: entry.role,
+        text: entry.text.trim(),
+        ...(entry.displayText ? { displayText: entry.displayText } : {}),
+        timestamp: entry.timestamp,
+        ...(entry.turnId ? { turnId: entry.turnId } : {}),
+      }))
+      .filter((entry) => entry.text.length > 0);
+  };
+
+  const readTranscriptEntries = (managed: ManagedChatSession): AgentChatTranscriptEntry[] => {
+    try {
+      const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
+      if (!transcriptPath) return [];
+      const raw = fs.readFileSync(transcriptPath, "utf8");
+      return transcriptEntriesFromEnvelopes(managed.session.id, parseAgentChatTranscript(raw));
     } catch {
       return [];
     }
@@ -6387,18 +6655,36 @@ export function createAgentChatService(args: {
         // Non-fatal — provider may be offline
       }
     }
-    const handle = await startOpenCodeSession({
-      directory: managed.laneWorktreePath,
-      title: manualSessionTitleForRuntime(managed),
-      sessionId: persisted?.providerSessionId,
-      projectConfig: configSnapshot.effective,
-      discoveredLocalModels,
-      ownerKind: "chat",
-      ownerId: managed.session.id,
-      ownerKey: `chat:${managed.session.id}`,
-      leaseKind: "shared",
-      logger,
-    });
+    const orchestrationMcp = await ensureOrchestrationHttpMcpServer(managed);
+    const opencodeOrchestrationMcp = orchestrationMcp?.config.url
+      ? {
+          [ORCHESTRATION_CLAUDE_SERVER_NAME]: {
+            type: "remote" as const,
+            url: orchestrationMcp.config.url,
+            enabled: true,
+            timeout: 10_000,
+          },
+        }
+      : undefined;
+    let handle: OpenCodeSessionHandle;
+    try {
+      handle = await startOpenCodeSession({
+        directory: managed.laneWorktreePath,
+        title: manualSessionTitleForRuntime(managed),
+        sessionId: persisted?.providerSessionId,
+        projectConfig: configSnapshot.effective,
+        discoveredLocalModels,
+        ...(opencodeOrchestrationMcp ? { mcp: opencodeOrchestrationMcp } : {}),
+        ownerKind: "chat",
+        ownerId: managed.session.id,
+        ownerKey: `chat:${managed.session.id}`,
+        leaseKind: "shared",
+        logger,
+      });
+    } catch (error) {
+      closeOrchestrationHttpMcpServer(managed);
+      throw error;
+    }
     adoptRuntimeSessionTitle(managed, handle.initialTitle, "opencode_session_create");
 
     const runtime: OpenCodeRuntime = {
@@ -6992,6 +7278,7 @@ export function createAgentChatService(args: {
               text: s.text,
               ...(s.attachments.length ? { attachments: s.attachments } : {}),
               ...(s.contextAttachments.length ? { contextAttachments: s.contextAttachments } : {}),
+              ...(s.metadata ? { metadata: s.metadata } : {}),
             })),
           }
         : prevPersisted?.pendingSteers?.length ? { pendingSteers: prevPersisted.pendingSteers } : {}),
@@ -7056,6 +7343,7 @@ export function createAgentChatService(args: {
       ...(managed.codexTerminalTurnIds.size
         ? { codexTerminalTurnIds: [...managed.codexTerminalTurnIds].slice(-64) }
         : prevPersisted?.codexTerminalTurnIds?.length ? { codexTerminalTurnIds: prevPersisted.codexTerminalTurnIds.slice(-64) } : {}),
+      ...collectOrchestrationFields(managed.session, prevPersisted),
       updatedAt: nowIso()
     };
 
@@ -7289,9 +7577,14 @@ export function createAgentChatService(args: {
         ...(record.runtimeMode === "print" || record.runtimeMode === "interactive"
           ? { runtimeMode: record.runtimeMode }
           : {}),
+        ...hydrateOrchestrationFields(record as Record<string, unknown>),
         updatedAt: typeof record.updatedAt === "string" && record.updatedAt.trim().length ? record.updatedAt : nowIso()
       };
+      if (!hydrated.interactionMode && hydrated.orchestrationRole) {
+        hydrated.interactionMode = orchestrationInteractionModeForRole(hydrated.orchestrationRole);
+      }
       hydrateNativePermissionControls(hydrated as Parameters<typeof hydrateNativePermissionControls>[0]);
+      enforceOrchestrationLockedPermissionMode(hydrated);
       return hydrated;
     } catch {
       return null;
@@ -7906,6 +8199,18 @@ export function createAgentChatService(args: {
       }
     }
 
+    if (request?.kind === "model_selection") {
+      const rawSelection = answers?.selection;
+      const selectionValues = Array.isArray(rawSelection)
+        ? trimValues(rawSelection.filter((value): value is string => typeof value === "string"))
+        : typeof rawSelection === "string"
+          ? trimValues([rawSelection])
+          : [];
+      if (selectionValues.length > 0) {
+        normalized.selection = selectionValues;
+      }
+    }
+
     const trimmedResponse = typeof responseText === "string" ? responseText.trim() : "";
     if (trimmedResponse.length > 0) {
       if (request?.questions.length === 1) {
@@ -7919,6 +8224,305 @@ export function createAgentChatService(args: {
     }
 
     return normalized;
+  };
+
+  const activeTurnIdForManaged = (managed: ManagedChatSession): string | null => {
+    const runtime = managed.runtime;
+    if (!runtime) return null;
+    return runtime.activeTurnId ?? null;
+  };
+
+  const firstAnswerText = (
+    answers: Record<string, string[]> | undefined,
+    fallback?: string | null,
+  ): string => {
+    const fromAnswers = Object.values(answers ?? {})
+      .flat()
+      .map((value) => value.trim())
+      .find((value) => value.length > 0);
+    return fromAnswers ?? fallback?.trim() ?? "";
+  };
+
+  const buildOrchestrationSessionContext = (
+    managed: ManagedChatSession,
+  ): {
+    interactionMode: OrchestrationInteractionMode;
+    sessionContext: OrchestrationSessionContext;
+  } | null => {
+    const interactionMode = isOrchestrationInteractionMode(managed.session.interactionMode)
+      ? managed.session.interactionMode
+      : managed.session.orchestrationRole
+        ? orchestrationInteractionModeForRole(managed.session.orchestrationRole)
+        : null;
+    if (!interactionMode) return null;
+    const runId = managed.session.orchestrationRunId?.trim();
+    const bundlePath = managed.session.orchestrationBundlePath?.trim();
+    if (!runId || !bundlePath) return null;
+    return {
+      interactionMode,
+      sessionContext: {
+        sessionId: managed.session.id,
+        runId,
+        role: managed.session.orchestrationRole ?? orchestrationRoleForMode(interactionMode),
+        bundlePath,
+        laneId: managed.session.laneId,
+        ...(managed.session.orchestrationParentSessionId
+          ? { leadSessionId: managed.session.orchestrationParentSessionId }
+          : {}),
+      },
+    };
+  };
+
+  const abortActiveBashControllers = (managed: ManagedChatSession, reason: string): void => {
+    if (!managed.activeBashControllers.size) return;
+    for (const controller of [...managed.activeBashControllers]) {
+      if (!controller.signal.aborted) {
+        controller.abort(reason);
+      }
+    }
+    managed.activeBashControllers.clear();
+  };
+
+  const buildOrchestrationUniversalOptions = (
+    managed: ManagedChatSession,
+  ): UniversalToolSetOptions => ({
+    permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
+    getTodoItems: () => managed.todoItems,
+    onTodoUpdate: (items) => {
+      emitChatEvent(managed, {
+        type: "todo_update",
+        items,
+        ...(activeTurnIdForManaged(managed) ? { turnId: activeTurnIdForManaged(managed)! } : {}),
+      });
+    },
+    onAskUser: async (input: AskUserToolInput): Promise<AskUserToolResult> => {
+      const title = input.title?.trim() || "Input requested";
+      const body =
+        input.body?.trim()
+        || input.question?.trim()
+        || input.questions?.[0]?.question?.trim()
+        || "The agent needs input before it can continue.";
+      const response = await requestChatInput({
+        chatSessionId: managed.session.id,
+        title,
+        body,
+        source: "ade",
+        ...(input.pendingInputKind ? { kind: input.pendingInputKind } : {}),
+        questions: input.questions,
+        providerMetadata: {
+          tool: "askUser",
+          orchestration: true,
+          ...(input.providerMetadata ?? {}),
+        },
+        eventDescription: body,
+        eventDetail: {
+          tool: "askUser",
+          orchestration: true,
+          ...(input.providerMetadata ?? {}),
+        },
+      });
+      return {
+        answer: firstAnswerText(response.answers, response.responseText),
+        answers: response.answers,
+        responseText: response.responseText,
+        decision: response.decision,
+      };
+    },
+    onApprovalRequest: async (request) => {
+      const response = await requestChatInput({
+        chatSessionId: managed.session.id,
+        title: "Approval required",
+        body: request.description,
+        source: "ade",
+        questions: [{
+          id: "tool_decision",
+          header: "Tool approval",
+          question: request.description,
+          options: [
+            { label: "Allow", value: "allow", recommended: true },
+            { label: "Deny", value: "deny" },
+          ],
+          allowsFreeform: true,
+        }],
+        providerMetadata: { toolApproval: true, detail: request.detail ?? null },
+        eventDescription: request.description,
+        eventDetail: { toolApproval: true, detail: request.detail ?? null },
+      });
+      const answer = firstAnswerText(response.answers, response.responseText).toLowerCase();
+      const denied = response.decision === "decline"
+        || response.decision === "cancel"
+        || answer.includes("deny")
+        || answer.includes("reject");
+      return {
+        approved: !denied,
+        decision: denied ? "decline" : "accept",
+        reason: response.responseText,
+      };
+    },
+    registerActiveBash: (controller) => {
+      managed.activeBashControllers.add(controller);
+      if (managed.closed && !controller.signal.aborted) {
+        controller.abort("Session is closed.");
+      }
+      return () => {
+        managed.activeBashControllers.delete(controller);
+      };
+    },
+  });
+
+  const createOrchestrationRuntimeToolMap = (
+    managed: ManagedChatSession,
+  ): OrchestrationToolMap | null => {
+    const context = buildOrchestrationSessionContext(managed);
+    if (!context) return null;
+    const orchestrationService = getOrchestrationService?.() ?? null;
+    if (!orchestrationService) return null;
+    return createOrchestrationToolSet({
+      cwd: managed.laneWorktreePath,
+      interactionMode: context.interactionMode,
+      sessionContext: context.sessionContext,
+      orchestrationService,
+      agentChatService: {
+        createSession: (args) => createSession(args as never),
+        deleteSession: (args) => deleteSession(args),
+        sendMessage: (args, options) => sendMessage(args as never, options),
+        steer: (args) => steer(args as never),
+        interrupt: (args) => interrupt(args as never),
+        readTranscript,
+      },
+      universal: buildOrchestrationUniversalOptions(managed),
+    });
+  };
+
+  const droidMcpInputShapeForTool = (toolDefinition: ExecutableTool): Record<string, z.ZodTypeAny> => {
+    const schema = toolDefinition.inputSchema as unknown as {
+      shape?: Record<string, z.ZodTypeAny> | (() => Record<string, z.ZodTypeAny>);
+    };
+    if (!schema || typeof schema !== "object") return {};
+    const shape = typeof schema.shape === "function" ? schema.shape() : schema.shape;
+    return shape && typeof shape === "object" && !Array.isArray(shape) ? shape : {};
+  };
+
+  const ensureOrchestrationHttpMcpServer = async (
+    managed: ManagedChatSession,
+  ): Promise<ManagedChatSession["orchestrationHttpMcpServer"]> => {
+    if (managed.orchestrationHttpMcpServer) return managed.orchestrationHttpMcpServer;
+    const tools = createOrchestrationRuntimeToolMap(managed);
+    if (!tools) return null;
+    const server = createDroidSdkMcpServer({
+      name: ORCHESTRATION_CLAUDE_SERVER_NAME,
+      version: appVersion,
+      tools: Object.entries(tools).map(([name, toolDefinition]) =>
+        createDroidSdkTool(
+          name,
+          toolDefinition.description,
+          droidMcpInputShapeForTool(toolDefinition) as any,
+          async (args) => {
+            const parsed = await toolDefinition.inputSchema.safeParseAsync(args);
+            if (!parsed.success) return parsed.error.message;
+            try {
+              return stringifyExecutableToolOutput(await toolDefinition.execute(parsed.data));
+            } catch (error) {
+              return error instanceof Error ? error.message : String(error);
+            }
+          },
+        ),
+      ),
+    });
+    const config = await server.start();
+    managed.orchestrationHttpMcpServer = {
+      config,
+      close: () => server.close(),
+    };
+    return managed.orchestrationHttpMcpServer;
+  };
+
+  const closeOrchestrationHttpMcpServer = (managed: ManagedChatSession): void => {
+    const lease = managed.orchestrationHttpMcpServer;
+    managed.orchestrationHttpMcpServer = null;
+    if (!lease) return;
+    lease.close().catch((error) => {
+      logger.warn("agent_chat.orchestration_mcp_close_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  const codexDynamicToolKey = (namespace: string | null | undefined, name: string): string =>
+    `${namespace ?? ""}\u0000${name}`;
+
+  const buildCodexDynamicToolSpecs = (
+    tools: OrchestrationToolMap,
+  ): CodexDynamicToolSpec[] =>
+    Object.entries(tools).map(([name, toolDefinition]) => ({
+      namespace: ORCHESTRATION_CODEX_TOOL_NAMESPACE,
+      name,
+      description: toolDefinition.description,
+      inputSchema: jsonSchemaForExecutableTool(toolDefinition),
+      deferLoading: false,
+    }));
+
+  const refreshCodexDynamicTools = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+  ): CodexDynamicToolSpec[] => {
+    runtime.dynamicTools.clear();
+    runtime.dynamicToolSpecs = [];
+    const tools = createOrchestrationRuntimeToolMap(managed);
+    if (!tools) return [];
+    for (const [name, toolDefinition] of Object.entries(tools)) {
+      runtime.dynamicTools.set(codexDynamicToolKey(ORCHESTRATION_CODEX_TOOL_NAMESPACE, name), toolDefinition);
+    }
+    runtime.dynamicToolSpecs = buildCodexDynamicToolSpecs(tools);
+    return runtime.dynamicToolSpecs;
+  };
+
+  const buildClaudeOrchestrationMcpServer = (
+    managed: ManagedChatSession,
+  ): ReturnType<typeof createSdkMcpServer> | null => {
+    const tools = createOrchestrationRuntimeToolMap(managed);
+    if (!tools) return null;
+    const sdkTools = Object.entries(tools).map(([name, toolDefinition]) =>
+      createClaudeSdkTool(
+        name,
+        toolDefinition.description,
+        toolDefinition.inputSchema as any,
+        async (args: unknown) => {
+          const parsed = await toolDefinition.inputSchema.safeParseAsync(args);
+          if (!parsed.success) {
+            return {
+              content: [{ type: "text" as const, text: parsed.error.message }],
+              isError: true,
+            };
+          }
+          try {
+            const result = await toolDefinition.execute(parsed.data);
+            return {
+              content: [{
+                type: "text" as const,
+                text: stringifyExecutableToolOutput(result),
+              }],
+            };
+          } catch (error) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: error instanceof Error ? error.message : String(error),
+              }],
+              isError: true,
+            };
+          }
+        },
+        { alwaysLoad: true },
+      ),
+    );
+    return createSdkMcpServer({
+      name: ORCHESTRATION_CLAUDE_SERVER_NAME,
+      version: appVersion,
+      tools: sdkTools,
+      alwaysLoad: true,
+    });
   };
 
   const setOpenCodeRuntimeBusy = (runtime: OpenCodeRuntime, busy: boolean): void => {
@@ -7936,6 +8540,7 @@ export function createAgentChatService(args: {
   ): void => {
     flushBufferedReasoning(managed);
     flushBufferedText(managed);
+    closeOrchestrationHttpMcpServer(managed);
 
     const reasonAllowsPreservation =
       openCodeReason === "idle_ttl"
@@ -7961,7 +8566,7 @@ export function createAgentChatService(args: {
 
     const preserveClaudeResumeState =
       managed.runtime.kind === "claude" && reasonAllowsPreservation;
-    if (managed.runtime?.kind === "codex") {
+    if (managed.runtime.kind === "codex") {
       const runtime = managed.runtime;
       const interruptedTurnId = runtime.activeTurnId ?? runtime.startedTurnId ?? null;
       const shouldMarkInterrupted =
@@ -8366,6 +8971,7 @@ export function createAgentChatService(args: {
         ...(persisted?.requestedCwd != null && String(persisted.requestedCwd).trim().length
           ? { requestedCwd: String(persisted.requestedCwd).trim() }
           : {}),
+        ...collectOrchestrationFields(null, persisted),
         createdAt: row.startedAt,
         lastActivityAt: persisted?.updatedAt ?? row.endedAt ?? row.startedAt
       },
@@ -8409,6 +9015,8 @@ export function createAgentChatService(args: {
         ...(entry.turnId ? { turnId: entry.turnId } : {}),
       })) ?? [],
       localPendingInputs: new Map(),
+      orchestrationHttpMcpServer: null,
+      activeBashControllers: new Set(),
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
       turnBeforeSha: null,
@@ -8417,7 +9025,11 @@ export function createAgentChatService(args: {
       claudeBackgroundLogText: persisted?.claudeBackgroundLogText ?? "",
     };
     managed.todoItems = readLatestTranscriptTodoItems(managed);
+    if (!managed.session.interactionMode && managed.session.orchestrationRole) {
+      managed.session.interactionMode = orchestrationInteractionModeForRole(managed.session.orchestrationRole);
+    }
     normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
+    enforceOrchestrationLockedPermissionMode(managed.session);
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
     refreshReconstructionContext(managed);
 
@@ -8432,6 +9044,7 @@ export function createAgentChatService(args: {
       displayText?: string;
       attachments: AgentChatFileRef[];
       contextAttachments: AgentChatContextAttachment[];
+      metadata?: AgentChatEventMetadata | null | undefined;
       turnId?: string;
       messageId?: string;
       laneDirectiveKey?: string | null;
@@ -8446,6 +9059,7 @@ export function createAgentChatService(args: {
         : {}),
       attachments: args.attachments,
       ...(args.contextAttachments.length ? { contextAttachments: args.contextAttachments } : {}),
+      ...(args.metadata ? { metadata: args.metadata } : {}),
       ...(args.turnId ? { turnId: args.turnId } : {}),
       ...(args.messageId ? { messageId: args.messageId } : {}),
     });
@@ -8475,6 +9089,7 @@ export function createAgentChatService(args: {
       attachments?: AgentChatFileRef[];
       contextAttachments?: AgentChatContextAttachment[];
       resolvedAttachments?: ResolvedAgentChatFileRef[];
+      metadata?: AgentChatEventMetadata | null | undefined;
       laneDirectiveKey?: string | null;
       providerSlashCommand?: boolean;
       forceClaudeUserMessage?: boolean;
@@ -8515,6 +9130,7 @@ export function createAgentChatService(args: {
         displayText,
         attachments,
         contextAttachments,
+        metadata: args.metadata,
         laneDirectiveKey: args.laneDirectiveKey,
         onDispatched: markDispatched,
       });
@@ -9050,6 +9666,7 @@ export function createAgentChatService(args: {
       attachments?: AgentChatFileRef[];
       contextAttachments?: AgentChatContextAttachment[];
       resolvedAttachments?: ResolvedAgentChatFileRef[];
+      metadata?: AgentChatEventMetadata | null | undefined;
       laneDirectiveKey?: string | null;
       providerSlashCommand?: boolean;
       forceClaudeUserMessage?: boolean;
@@ -9089,6 +9706,7 @@ export function createAgentChatService(args: {
       displayText,
       attachments,
       contextAttachments,
+      metadata: args.metadata,
       turnId,
       messageId: userMessageId,
       laneDirectiveKey: args.laneDirectiveKey,
@@ -10635,6 +11253,7 @@ export function createAgentChatService(args: {
       attachments?: AgentChatFileRef[];
       contextAttachments?: AgentChatContextAttachment[];
       resolvedAttachments?: ResolvedAgentChatFileRef[];
+      metadata?: AgentChatEventMetadata | null | undefined;
       laneDirectiveKey?: string | null;
       providerSlashCommand?: boolean;
       forceClaudeUserMessage?: boolean;
@@ -10671,6 +11290,7 @@ export function createAgentChatService(args: {
       displayText,
       attachments,
       contextAttachments,
+      metadata: args.metadata,
       turnId,
       messageId: userMessageId,
       laneDirectiveKey: args.laneDirectiveKey,
@@ -10764,6 +11384,7 @@ export function createAgentChatService(args: {
       attachments?: AgentChatFileRef[];
       contextAttachments?: AgentChatContextAttachment[];
       resolvedAttachments?: ResolvedAgentChatFileRef[];
+      metadata?: AgentChatEventMetadata | null | undefined;
       laneDirectiveKey?: string | null;
       providerSlashCommand?: boolean;
       forceClaudeUserMessage?: boolean;
@@ -10804,6 +11425,7 @@ export function createAgentChatService(args: {
       displayText,
       attachments,
       contextAttachments,
+      metadata: args.metadata,
       turnId,
       laneDirectiveKey: args.laneDirectiveKey,
       onDispatched: args.onDispatched,
@@ -11522,6 +12144,81 @@ export function createAgentChatService(args: {
     }
   };
 
+  const handleCodexDynamicToolCall = async (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    id: string | number,
+    params: unknown,
+  ): Promise<void> => {
+    const record = asRecord(params) ?? {};
+    const toolName = typeof record.tool === "string"
+      ? record.tool.trim()
+      : typeof record.name === "string"
+        ? record.name.trim()
+        : "";
+    const namespace = typeof record.namespace === "string" && record.namespace.trim().length
+      ? record.namespace.trim()
+      : null;
+    if (!toolName.length) {
+      runtime.sendResponse(id, {
+        success: false,
+        contentItems: [{ type: "inputText", text: "Dynamic tool call missing tool name." }],
+      });
+      return;
+    }
+
+    if (runtime.dynamicTools.size === 0) {
+      refreshCodexDynamicTools(managed, runtime);
+    }
+    const toolDefinition =
+      runtime.dynamicTools.get(codexDynamicToolKey(namespace, toolName))
+      ?? runtime.dynamicTools.get(codexDynamicToolKey(ORCHESTRATION_CODEX_TOOL_NAMESPACE, toolName));
+    if (!toolDefinition) {
+      runtime.sendResponse(id, {
+        success: false,
+        contentItems: [{ type: "inputText", text: `ADE dynamic tool '${toolName}' is not available for this session.` }],
+      });
+      return;
+    }
+
+    const rawArgs = typeof record.arguments === "string"
+      ? (() => {
+          try {
+            return JSON.parse(record.arguments as string);
+          } catch {
+            return record.arguments;
+          }
+        })()
+      : record.arguments ?? {};
+    const parsed = await toolDefinition.inputSchema.safeParseAsync(rawArgs);
+    if (!parsed.success) {
+      runtime.sendResponse(id, {
+        success: false,
+        contentItems: [{ type: "inputText", text: parsed.error.message }],
+      });
+      return;
+    }
+
+    try {
+      const result = await toolDefinition.execute(parsed.data);
+      runtime.sendResponse(id, {
+        success: true,
+        contentItems: [{
+          type: "inputText",
+          text: stringifyExecutableToolOutput(result),
+        }],
+      });
+    } catch (error) {
+      runtime.sendResponse(id, {
+        success: false,
+        contentItems: [{
+          type: "inputText",
+          text: error instanceof Error ? error.message : String(error),
+        }],
+      });
+    }
+  };
+
   const handleCodexServerRequest = (managed: ManagedChatSession, runtime: CodexRuntime, payload: JsonRpcEnvelope): void => {
     const method = typeof payload.method === "string" ? payload.method : "";
     const id = payload.id;
@@ -11752,10 +12449,22 @@ export function createAgentChatService(args: {
       return;
     }
 
+    if (method === "item/tool/call") {
+      void handleCodexDynamicToolCall(managed, runtime, id, payload.params).catch((error) => {
+        runtime.sendResponse(id, {
+          success: false,
+          contentItems: [{
+            type: "inputText",
+            text: error instanceof Error ? error.message : String(error),
+          }],
+        });
+      });
+      return;
+    }
+
     if (
       method === "attestation/generate"
       || method === "account/chatgptAuthTokens/refresh"
-      || method === "item/tool/call"
     ) {
       runtime.sendError(id, `ADE does not provide Codex app-server capability '${method}'.`, -32601);
       return;
@@ -11869,8 +12578,8 @@ export function createAgentChatService(args: {
         header: "Implementation Plan",
         question: planSummary,
         options: [
-          { label: "Approve & Implement", value: "approve", recommended: true },
-          { label: "Reject & Revise", value: "reject" },
+          { label: "Implement", value: "approve", recommended: true },
+          { label: "Keep planning", value: "reject" },
         ],
         allowsFreeform: true,
       }],
@@ -11957,8 +12666,8 @@ export function createAgentChatService(args: {
         header: "Implementation Plan",
         question: planText,
         options: [
-          { label: "Approve & Implement", value: "approve", recommended: true },
-          { label: "Reject & Revise", value: "reject" },
+          { label: "Implement", value: "approve", recommended: true },
+          { label: "Keep planning", value: "reject" },
         ],
         allowsFreeform: true,
       }],
@@ -12012,6 +12721,50 @@ export function createAgentChatService(args: {
           error: error instanceof Error ? error.message : String(error),
         });
       });
+    }
+  };
+
+  const buildPlanApprovalFollowupText = (
+    decision: AgentChatApprovalDecision,
+    responseText?: string | null,
+  ): string => {
+    const approved = decision === "accept" || decision === "accept_for_session";
+    const feedback = typeof responseText === "string" ? responseText.trim() : "";
+    if (approved) {
+      return "The user approved the plan. Please proceed with implementation.";
+    }
+    return feedback.length > 0
+      ? `The user rejected the plan with feedback: "${feedback}". Please revise.`
+      : "The user rejected the plan. Please revise your approach.";
+  };
+
+  const stageCodexPlanApprovalFollowup = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    args: {
+      itemId: string;
+      decision: AgentChatApprovalDecision;
+      request?: PendingInputRequest | null;
+      responseText?: string | null;
+    },
+  ): void => {
+    const approved = args.decision === "accept" || args.decision === "accept_for_session";
+    if (approved) {
+      managed.session.permissionMode = "edit";
+      applyLegacyPermissionModeToNativeControls(managed.session, "edit");
+      managed.session.interactionMode = "default";
+      runtime.threadResumed = false;
+      runtime.canAttachResumedTurnStart = false;
+      persistChatState(managed);
+    }
+    runtime.pendingPlanFollowups.push({
+      itemId: args.itemId,
+      decision: args.decision,
+      turnId: args.request?.turnId ?? null,
+      followupText: buildPlanApprovalFollowupText(args.decision, args.responseText),
+    });
+    if (!runtime.activeTurnId) {
+      drainPendingPlanFollowups(managed, runtime);
     }
   };
 
@@ -13509,6 +14262,8 @@ export function createAgentChatService(args: {
       planModeFallbackNotified: false,
       goalBudgetClearInFlight: new Set<string>(),
       goalBudgetClearRetryAfterByThreadId: new Map<string, number>(),
+      dynamicTools: new Map(),
+      dynamicToolSpecs: [],
       request: async <T = unknown>(method: string, params?: unknown): Promise<T> => {
       const id = runtime.nextRequestId;
       runtime.nextRequestId += 1;
@@ -13722,6 +14477,17 @@ export function createAgentChatService(args: {
     codexPolicy: CodexPolicy;
   } => {
     const config = resolveChatConfig();
+    const lockedMode = lockedOrchestrationPermissionMode(managed.session);
+    if (lockedMode) {
+      const codexPolicy: CodexPolicy = lockedMode === "plan"
+        ? { approvalPolicy: "on-request", sandbox: "read-only" }
+        : { approvalPolicy: "never", sandbox: "danger-full-access" };
+      managed.session.codexConfigSource = "flags";
+      managed.session.codexApprovalPolicy = codexPolicy.approvalPolicy;
+      managed.session.codexSandbox = codexPolicy.sandbox;
+      managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? lockedMode;
+      return { codexPolicy };
+    }
     const codexConfigSource = resolveSessionCodexConfigSource(managed.session);
     managed.session.codexConfigSource = codexConfigSource;
     const codexPolicy = codexConfigSource === "config-toml"
@@ -13753,6 +14519,7 @@ export function createAgentChatService(args: {
       descriptor,
     );
     managed.session.reasoningEffort = reasoningEffort;
+    const dynamicTools = refreshCodexDynamicTools(managed, runtime);
     const startResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/start", {
       model: managed.session.model,
       cwd: managed.laneWorktreePath,
@@ -13764,6 +14531,7 @@ export function createAgentChatService(args: {
       }),
       ...codexServiceTierArgs(managed.session),
       ...codexPolicyArgs(codexPolicy),
+      ...(dynamicTools.length ? { dynamicTools } : {}),
       experimentalRawEvents: false,
       persistExtendedHistory: true
     });
@@ -14055,6 +14823,31 @@ export function createAgentChatService(args: {
         cwd: managed.laneWorktreePath,
       }),
     };
+    const orchestrationMcpServer = buildClaudeOrchestrationMcpServer(managed);
+    if (orchestrationMcpServer) {
+      opts.mcpServers = {
+        ...(opts.mcpServers ?? {}),
+        [ORCHESTRATION_CLAUDE_SERVER_NAME]: orchestrationMcpServer,
+      };
+      const existingAllowedMcpServers = opts.managedSettings?.allowedMcpServers ?? [];
+      const hasOrchestrationMcpServer = existingAllowedMcpServers.some(
+        (server) => server.serverName === ORCHESTRATION_CLAUDE_SERVER_NAME,
+      );
+      opts.managedSettings = {
+        ...(opts.managedSettings ?? {}),
+        allowedMcpServers: hasOrchestrationMcpServer
+          ? existingAllowedMcpServers
+          : [...existingAllowedMcpServers, { serverName: ORCHESTRATION_CLAUDE_SERVER_NAME }],
+        allowManagedMcpServersOnly: true,
+        strictPluginOnlyCustomization: ["mcp"],
+      };
+      if (managed.session.interactionMode === "orchestrator-lead") {
+        opts.disallowedTools = Array.from(new Set([
+          ...(opts.disallowedTools ?? []),
+          ...ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS,
+        ]));
+      }
+    }
     logger.debug("agent_chat.claude_executable_resolved", {
       sessionId: managed.session.id,
       source: claudeExecutable.source,
@@ -14412,6 +15205,7 @@ export function createAgentChatService(args: {
         attachments: nextSteer.attachments,
         contextAttachments: nextSteer.contextAttachments,
         resolvedAttachments: nextSteer.resolvedAttachments,
+        metadata: nextSteer.metadata,
         laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
       });
     } else if (runtime.kind === "cursor") {
@@ -14421,6 +15215,7 @@ export function createAgentChatService(args: {
         attachments: nextSteer.attachments,
         contextAttachments: nextSteer.contextAttachments,
         resolvedAttachments: nextSteer.resolvedAttachments,
+        metadata: nextSteer.metadata,
         laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
       });
     } else if (runtime.kind === "droid") {
@@ -14430,6 +15225,7 @@ export function createAgentChatService(args: {
         attachments: nextSteer.attachments,
         contextAttachments: nextSteer.contextAttachments,
         resolvedAttachments: nextSteer.resolvedAttachments,
+        metadata: nextSteer.metadata,
         laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
       });
     } else {
@@ -14439,6 +15235,7 @@ export function createAgentChatService(args: {
         attachments: nextSteer.attachments,
         contextAttachments: nextSteer.contextAttachments,
         resolvedAttachments: nextSteer.resolvedAttachments,
+        metadata: nextSteer.metadata,
         laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
       });
     }
@@ -14456,6 +15253,7 @@ export function createAgentChatService(args: {
     attachments: AgentChatFileRef[] = [],
     contextAttachments: AgentChatContextAttachment[] = [],
     resolvedAttachments: ResolvedAgentChatFileRef[] = [],
+    metadata?: AgentChatEventMetadata | null,
   ): boolean => {
     if (runtime.pendingSteers.length >= MAX_PENDING_STEERS) {
       logger.warn("agent_chat.steer_queue_full", { sessionId, queueSize: runtime.pendingSteers.length });
@@ -14467,12 +15265,13 @@ export function createAgentChatService(args: {
       });
       return false;
     }
-    runtime.pendingSteers.push({ steerId, text, attachments, contextAttachments, resolvedAttachments });
+    runtime.pendingSteers.push({ steerId, text, attachments, contextAttachments, resolvedAttachments, ...(metadata ? { metadata } : {}) });
     emitChatEvent(managed, {
       type: "user_message",
       text,
       ...(attachments.length ? { attachments } : {}),
       ...(contextAttachments.length ? { contextAttachments } : {}),
+      ...(metadata ? { metadata } : {}),
       steerId,
       turnId: runtime.activeTurnId ?? undefined,
       deliveryState: "queued",
@@ -14644,7 +15443,14 @@ export function createAgentChatService(args: {
         });
         continue;
       }
-      out.push({ steerId: entry.steerId, text, attachments, contextAttachments, resolvedAttachments });
+      out.push({
+        steerId: entry.steerId,
+        text,
+        attachments,
+        contextAttachments,
+        resolvedAttachments,
+        ...(entry.metadata ? { metadata: entry.metadata } : {}),
+      });
       if (out.length >= MAX_PENDING_STEERS) break;
     }
     return out;
@@ -14747,6 +15553,8 @@ export function createAgentChatService(args: {
       bufferedText: null,
       recentConversationEntries: [],
       localPendingInputs: new Map(),
+      orchestrationHttpMcpServer: null,
+      activeBashControllers: new Set(),
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
       turnBeforeSha: null,
@@ -14940,6 +15748,12 @@ export function createAgentChatService(args: {
     automationRunId,
     requestedCwd,
     runtimeMode,
+    orchestrationRunId: requestedOrchestrationRunId,
+    orchestrationRole: requestedOrchestrationRole,
+    orchestrationParentSessionId: requestedOrchestrationParentSessionId,
+    orchestrationTag: requestedOrchestrationTag,
+    orchestrationStepId: requestedOrchestrationStepId,
+    orchestrationBundlePath: requestedOrchestrationBundlePath,
   }: AgentChatCreateArgs): Promise<AgentChatSession> => {
     const launchContext = resolveLaneLaunchContext({
       laneService,
@@ -15031,16 +15845,22 @@ export function createAgentChatService(args: {
     // opencodePermissionMode.
     const identityPinned = isPrimaryPinnedIdentity(identityKey);
     const effectiveInteractionMode = identityPinned ? undefined : requestedInteractionMode;
-    const effectiveClaudePermissionMode = identityPinned ? undefined : requestedClaudePermissionMode;
-    const effectiveCodexApprovalPolicy = identityPinned ? undefined : requestedCodexApprovalPolicy;
-    const effectiveCodexSandbox = identityPinned ? undefined : requestedCodexSandbox;
-    const effectiveCodexConfigSource = identityPinned ? undefined : requestedCodexConfigSource;
-    const requestedDroidPermissionMode = identityPinned ? undefined : requestedDroidPermissionModeArg;
+    const orchestrationLeadRequested =
+      effectiveInteractionMode === "orchestrator-lead" || requestedOrchestrationRole === "lead";
+    const permissionsPinned = identityPinned || orchestrationLeadRequested;
+    const effectiveClaudePermissionMode = permissionsPinned ? undefined : requestedClaudePermissionMode;
+    const effectiveCodexApprovalPolicy = permissionsPinned ? undefined : requestedCodexApprovalPolicy;
+    const effectiveCodexSandbox = permissionsPinned ? undefined : requestedCodexSandbox;
+    const effectiveCodexConfigSource = permissionsPinned ? undefined : requestedCodexConfigSource;
+    const requestedDroidPermissionMode = permissionsPinned ? undefined : requestedDroidPermissionModeArg;
     let effectivePermissionMode = identityKey
       ? normalizeIdentityPermissionMode(identityKey, requestedPermMode, effectiveProvider)
       : requestedPermMode;
+    if (orchestrationLeadRequested) {
+      effectivePermissionMode = "plan";
+    }
     const chatConfig = resolveChatConfig();
-    let requestedOpenCodePermissionMode = identityPinned ? undefined : requestedOpenCodePermissionModeArg;
+    let requestedOpenCodePermissionMode = permissionsPinned ? undefined : requestedOpenCodePermissionModeArg;
     const localHarnessPermissions = applyLocalHarnessPermissionMode({
       descriptor: resolvedDescriptor,
       requestedPermissionMode: effectivePermissionMode,
@@ -15147,6 +15967,9 @@ export function createAgentChatService(args: {
         ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
           ...(requestedCodexFastMode === true ? { codexFastMode: true } : {}),
           ...nativePermissionFields,
+          ...(isOrchestrationInteractionMode(effectiveInteractionMode)
+            ? { interactionMode: effectiveInteractionMode }
+            : {}),
           ...(initialClaudeOutputStyle ? { claudeOutputStyle: initialClaudeOutputStyle } : {}),
           ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}),
         ...(identityKey ? { identityKey } : {}),
@@ -15163,6 +15986,14 @@ export function createAgentChatService(args: {
           ? { requestedCwd: requestedCwd.trim() }
           : {}),
         ...(runtimeMode === "print" ? { runtimeMode: "print" as const } : {}),
+        ...collectOrchestrationFields({
+          orchestrationRunId: requestedOrchestrationRunId,
+          orchestrationRole: requestedOrchestrationRole,
+          orchestrationParentSessionId: requestedOrchestrationParentSessionId,
+          orchestrationTag: requestedOrchestrationTag,
+          orchestrationStepId: requestedOrchestrationStepId,
+          orchestrationBundlePath: requestedOrchestrationBundlePath,
+        }, null),
       },
       transcriptPath,
       transcriptBytesWritten: fileSizeOrZero(transcriptPath),
@@ -15199,6 +16030,8 @@ export function createAgentChatService(args: {
       bufferedText: null,
       recentConversationEntries: [],
       localPendingInputs: new Map(),
+      orchestrationHttpMcpServer: null,
+      activeBashControllers: new Set(),
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
       turnBeforeSha: null,
@@ -15207,6 +16040,7 @@ export function createAgentChatService(args: {
       claudeBackgroundLogText: "",
     };
     normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
+    enforceOrchestrationLockedPermissionMode(managed.session);
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
     refreshReconstructionContext(managed);
 
@@ -15376,6 +16210,7 @@ export function createAgentChatService(args: {
     displayText,
     attachments = [],
     contextAttachments = [],
+    metadata,
     reasoningEffort,
     executionMode,
     interactionMode,
@@ -15569,6 +16404,7 @@ export function createAgentChatService(args: {
       attachments: publicAttachments,
       contextAttachments: publicContextAttachments,
       resolvedAttachments,
+      ...(metadata ? { metadata } : {}),
       reasoningEffort,
       interactionMode: managed.session.provider === "claude" ? managed.session.interactionMode ?? "default" : null,
       laneDirectiveKey: providerSlashCommand ? null : shouldInjectLaneDirective ? laneDirectiveKey : null,
@@ -15665,6 +16501,7 @@ export function createAgentChatService(args: {
     policy.chatMode,
     policy.approvalPolicy,
     policy.force ? "force" : "guarded",
+    buildOrchestrationSessionContext(managed) ? "orchestration-mcp" : "standard",
   ].join(":");
 
   const resolveCursorSdkModelParamsForSession = (
@@ -16682,6 +17519,16 @@ export function createAgentChatService(args: {
       );
     }
 
+    const orchestrationMcp = await ensureOrchestrationHttpMcpServer(managed);
+    const cursorOrchestrationMcpServers = orchestrationMcp?.config.url
+      ? {
+          [ORCHESTRATION_CLAUDE_SERVER_NAME]: {
+            type: "http" as const,
+            url: orchestrationMcp.config.url,
+          },
+        }
+      : undefined;
+
     const throwIfCursorSetupInterrupted = (): void => {
       if (!cursorRuntimeSetupInterruptRequested.get(managed)) return;
       cursorRuntimeSetupInterruptRequested.delete(managed);
@@ -16708,6 +17555,7 @@ export function createAgentChatService(args: {
         agentName: manualSessionTitleForRuntime(managed),
         sessionId: managed.session.id,
         policy,
+        ...(cursorOrchestrationMcpServers ? { mcpServers: cursorOrchestrationMcpServers } : {}),
         logger,
       });
       reportProviderRuntimeReady("cursor");
@@ -16734,6 +17582,7 @@ export function createAgentChatService(args: {
           reportProviderRuntimeFailure("cursor", errorMessage);
         }
       }
+      closeOrchestrationHttpMcpServer(managed);
       throw error;
     }
     const pooled = acquired.pooled;
@@ -16791,6 +17640,7 @@ export function createAgentChatService(args: {
       attachments: AgentChatFileRef[];
       contextAttachments: AgentChatContextAttachment[];
       resolvedAttachments: ResolvedAgentChatFileRef[];
+      metadata?: AgentChatEventMetadata | null | undefined;
       laneDirectiveKey?: string | null;
       turnId?: string;
       optimisticCursorTurnStart?: boolean;
@@ -16818,6 +17668,7 @@ export function createAgentChatService(args: {
         displayText,
         attachments: args.attachments,
         contextAttachments: args.contextAttachments,
+        metadata: args.metadata,
         turnId,
         laneDirectiveKey: args.laneDirectiveKey,
         onDispatched: args.onDispatched,
@@ -17142,6 +17993,7 @@ export function createAgentChatService(args: {
       attachments: AgentChatFileRef[];
       contextAttachments: AgentChatContextAttachment[];
       resolvedAttachments: ResolvedAgentChatFileRef[];
+      metadata?: AgentChatEventMetadata | null | undefined;
       laneDirectiveKey?: string | null;
       turnId?: string;
       optimisticCursorTurnStart?: boolean;
@@ -17175,6 +18027,7 @@ export function createAgentChatService(args: {
         displayText,
         attachments: args.attachments,
         contextAttachments: args.contextAttachments,
+        metadata: args.metadata,
         turnId,
         laneDirectiveKey: args.laneDirectiveKey,
         onDispatched: args.onDispatched,
@@ -17753,6 +18606,7 @@ export function createAgentChatService(args: {
     managed.session.id,
     managed.session.laneId,
     managed.laneWorktreePath,
+    buildOrchestrationSessionContext(managed) ? "orchestration-mcp" : "standard",
   ].join(":");
 
   const ensureDroidRuntime = async (managed: ManagedChatSession): Promise<DroidRuntime> => {
@@ -17803,6 +18657,10 @@ export function createAgentChatService(args: {
     try {
       const auth = await detectAuth();
       throwIfDroidSetupInterrupted();
+      const orchestrationMcp = await ensureOrchestrationHttpMcpServer(managed);
+      const droidOrchestrationMcpServers = orchestrationMcp?.config.url
+        ? [orchestrationMcp.config]
+        : undefined;
       const persisted = readPersistedState(managed.session.id);
       const acquired = await acquireDroidSdkConnection({
         poolKey,
@@ -17811,6 +18669,7 @@ export function createAgentChatService(args: {
         sessionId: managed.session.id,
         resumeSessionId: persisted?.droidSdkSessionId ?? null,
         settings: buildDroidSdkSessionSettings(managed, launchModelId),
+        ...(droidOrchestrationMcpServers ? { mcpServers: droidOrchestrationMcpServers } : {}),
         logger,
       });
       pooled = acquired.pooled;
@@ -17853,6 +18712,9 @@ export function createAgentChatService(args: {
       if (!released && pooled && managed.runtime?.kind !== "droid") {
         releaseDroidSdkConnection(poolKey, poolGeneration);
       }
+      if (managed.runtime?.kind !== "droid") {
+        closeOrchestrationHttpMcpServer(managed);
+      }
       droidRuntimeSetupInterruptRequested.delete(managed);
       throw err;
     }
@@ -17867,6 +18729,7 @@ export function createAgentChatService(args: {
       attachments: AgentChatFileRef[];
       contextAttachments: AgentChatContextAttachment[];
       resolvedAttachments: ResolvedAgentChatFileRef[];
+      metadata?: AgentChatEventMetadata | null | undefined;
       laneDirectiveKey?: string | null;
       turnId?: string;
       optimisticDroidTurnStart?: boolean;
@@ -17912,6 +18775,7 @@ export function createAgentChatService(args: {
         displayText,
         attachments: args.attachments,
         contextAttachments: args.contextAttachments,
+        metadata: args.metadata,
         turnId,
         laneDirectiveKey: args.laneDirectiveKey,
         onDispatched: args.onDispatched,
@@ -17991,6 +18855,12 @@ export function createAgentChatService(args: {
         interactive: true,
         runtime: "droid-sdk",
         adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: managed.laneWorktreePath }),
+        orchestrationRole: managed.session.orchestrationRole,
+        orchestrationRunId: managed.session.orchestrationRunId,
+        orchestrationBundlePath: managed.session.orchestrationBundlePath,
+        orchestrationTag: managed.session.orchestrationTag,
+        orchestrationParentSessionId: managed.session.orchestrationParentSessionId,
+        orchestrationStepId: managed.session.orchestrationStepId,
       });
       const sdkInput = [
         droidHarnessPrompt,
@@ -18133,6 +19003,7 @@ export function createAgentChatService(args: {
       attachments,
       contextAttachments,
       resolvedAttachments,
+      metadata,
       reasoningEffort,
       laneDirectiveKey,
       providerSlashCommand,
@@ -18176,6 +19047,7 @@ export function createAgentChatService(args: {
         attachments,
         contextAttachments,
         resolvedAttachments,
+        metadata,
         laneDirectiveKey,
         providerSlashCommand,
         onDispatched,
@@ -18203,6 +19075,7 @@ export function createAgentChatService(args: {
           attachments,
           contextAttachments,
           resolvedAttachments,
+          metadata,
           laneDirectiveKey,
           turnId,
           optimisticCursorTurnStart,
@@ -18218,6 +19091,7 @@ export function createAgentChatService(args: {
         attachments,
         contextAttachments,
         resolvedAttachments,
+        metadata,
         laneDirectiveKey,
         turnId,
         optimisticCursorTurnStart,
@@ -18240,6 +19114,7 @@ export function createAgentChatService(args: {
         attachments,
         contextAttachments,
         resolvedAttachments,
+        metadata,
         laneDirectiveKey,
         turnId,
         optimisticDroidTurnStart,
@@ -18285,6 +19160,7 @@ export function createAgentChatService(args: {
 
         if (threadIdToResume) {
           try {
+            const dynamicTools = refreshCodexDynamicTools(managed, runtime);
             const resumeReasoningEffort = resolveCodexReasoningEffortForRuntime(
               managed.session.reasoningEffort,
               readPersistedState(sessionId)?.reasoningEffort,
@@ -18303,6 +19179,7 @@ export function createAgentChatService(args: {
               }),
               ...codexServiceTierArgs(managed.session),
               ...codexPolicyArgs(codexPolicy),
+              ...(dynamicTools.length ? { dynamicTools } : {}),
               excludeTurns: true,
               persistExtendedHistory: true
             });
@@ -18368,6 +19245,7 @@ export function createAgentChatService(args: {
         attachments,
         contextAttachments,
         resolvedAttachments,
+        metadata,
         laneDirectiveKey,
         providerSlashCommand,
         optimisticCodexTurnStart,
@@ -18393,6 +19271,7 @@ export function createAgentChatService(args: {
       attachments,
       contextAttachments,
       resolvedAttachments,
+      metadata,
       laneDirectiveKey,
       providerSlashCommand,
       forceClaudeUserMessage,
@@ -18440,6 +19319,7 @@ export function createAgentChatService(args: {
         ...(prepared.visibleText !== prepared.submittedText ? { displayText: prepared.visibleText } : {}),
         attachments: prepared.attachments,
         ...(prepared.contextAttachments.length ? { contextAttachments: prepared.contextAttachments } : {}),
+        ...(prepared.metadata ? { metadata: prepared.metadata } : {}),
         turnId,
       });
       emitChatEvent(prepared.managed, { type: "status", turnStatus: "started", turnId });
@@ -18464,6 +19344,7 @@ export function createAgentChatService(args: {
         displayText: prepared.visibleText,
         attachments: prepared.attachments,
         contextAttachments: prepared.contextAttachments,
+        metadata: prepared.metadata,
         laneDirectiveKey: prepared.laneDirectiveKey,
       });
       emitChatEvent(prepared.managed, { type: "status", turnStatus: "started" });
@@ -18498,7 +19379,7 @@ export function createAgentChatService(args: {
     }
   };
 
-  const steer = async ({ sessionId, text, attachments = [], contextAttachments = [] }: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
+  const steer = async ({ sessionId, text, attachments = [], contextAttachments = [], metadata }: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
     const trimmed = text.trim();
     const steerId = randomUUID();
     // Allow context-only steers: if text is empty but issue context attachments
@@ -18522,6 +19403,7 @@ export function createAgentChatService(args: {
           displayText: trimmed,
           attachments,
           contextAttachments,
+          metadata,
         });
         if (!preparedSteer) {
           return { steerId, queued: false };
@@ -18535,6 +19417,7 @@ export function createAgentChatService(args: {
           preparedSteer.attachments,
           preparedSteer.contextAttachments,
           preparedSteer.resolvedAttachments,
+          preparedSteer.metadata,
         );
         return { steerId, queued: true };
       }
@@ -18544,6 +19427,7 @@ export function createAgentChatService(args: {
         displayText: trimmed,
         attachments,
         contextAttachments,
+        metadata,
       });
       if (!preparedSteer) {
         return { steerId, queued: false };
@@ -18561,6 +19445,7 @@ export function createAgentChatService(args: {
           displayText: trimmed,
           attachments,
           contextAttachments,
+          metadata,
           allowActiveSession: true,
         });
         if (!preparedSteer) {
@@ -18582,12 +19467,14 @@ export function createAgentChatService(args: {
           attachments: preparedSteer.attachments,
           contextAttachments: preparedSteer.contextAttachments,
           resolvedAttachments: preparedSteer.resolvedAttachments,
+          ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
         });
         emitChatEvent(managed, {
           type: "user_message",
           text: preparedSteer.visibleText,
           ...(preparedSteer.attachments.length ? { attachments: preparedSteer.attachments } : {}),
           ...(preparedSteer.contextAttachments.length ? { contextAttachments: preparedSteer.contextAttachments } : {}),
+          ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
           steerId,
           turnId: rt.activeTurnId ?? undefined,
           deliveryState: "queued",
@@ -18608,6 +19495,7 @@ export function createAgentChatService(args: {
         displayText: trimmed,
         attachments,
         contextAttachments,
+        metadata,
       });
       if (!preparedSteer) {
         return { steerId, queued: false };
@@ -18625,6 +19513,7 @@ export function createAgentChatService(args: {
           displayText: trimmed,
           attachments: [],
           contextAttachments,
+          metadata,
           allowActiveSession: true,
         });
         if (!preparedSteer) {
@@ -18646,11 +19535,13 @@ export function createAgentChatService(args: {
           attachments: [],
           contextAttachments: preparedSteer.contextAttachments,
           resolvedAttachments: [],
+          ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
         });
         emitChatEvent(managed, {
           type: "user_message",
           text: preparedSteer.visibleText,
           ...(preparedSteer.contextAttachments.length ? { contextAttachments: preparedSteer.contextAttachments } : {}),
+          ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
           steerId,
           turnId: rt.activeTurnId ?? undefined,
           deliveryState: "queued",
@@ -18671,6 +19562,7 @@ export function createAgentChatService(args: {
         displayText: trimmed,
         attachments: [],
         contextAttachments,
+        metadata,
       });
       if (!preparedSteer) {
         return { steerId, queued: false };
@@ -18689,6 +19581,7 @@ export function createAgentChatService(args: {
         displayText: trimmed,
         attachments,
         contextAttachments,
+        metadata,
       });
       if (!preparedSteer) {
         return { steerId, queued: false };
@@ -18737,6 +19630,7 @@ export function createAgentChatService(args: {
         text: preparedSteer.visibleText,
         ...(preparedSteer.attachments.length ? { attachments: preparedSteer.attachments } : {}),
         ...(preparedSteer.contextAttachments.length ? { contextAttachments: preparedSteer.contextAttachments } : {}),
+        ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
         steerId,
         deliveryState: "delivered",
         turnId: runtime.activeTurnId,
@@ -18750,6 +19644,7 @@ export function createAgentChatService(args: {
       displayText: trimmed,
       attachments,
       contextAttachments,
+      metadata,
     });
     if (!preparedSteer) {
       return { steerId, queued: false };
@@ -18766,6 +19661,7 @@ export function createAgentChatService(args: {
           preparedSteer.attachments,
           preparedSteer.contextAttachments,
           preparedSteer.resolvedAttachments,
+          preparedSteer.metadata,
         );
         return { steerId, queued: true };
       }
@@ -18825,6 +19721,7 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, {
       type: "user_message",
       text: trimmed,
+      ...(runtime.pendingSteers[idx].metadata ? { metadata: runtime.pendingSteers[idx].metadata } : {}),
       steerId,
       turnId: runtime.activeTurnId ?? undefined,
       deliveryState: "queued",
@@ -18870,6 +19767,7 @@ export function createAgentChatService(args: {
           displayText: steer.text,
           attachments: steer.attachments,
           contextAttachments: steer.contextAttachments,
+          metadata: steer.metadata,
         });
         if (!prepared) {
           logger.warn("agent_chat.dispatch_steer_inline_drop_skipped", {
@@ -18919,6 +19817,7 @@ export function createAgentChatService(args: {
         text: steer.text,
         ...(steer.attachments.length ? { attachments: steer.attachments } : {}),
         ...(steer.contextAttachments.length ? { contextAttachments: steer.contextAttachments } : {}),
+        ...(steer.metadata ? { metadata: steer.metadata } : {}),
         steerId,
         deliveryState: "inline",
         turnId: runtime.activeTurnId ?? undefined,
@@ -19003,6 +19902,7 @@ export function createAgentChatService(args: {
 
   const interrupt = async ({ sessionId }: AgentChatInterruptArgs): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
+    abortActiveBashControllers(managed, "Session interrupt requested.");
 
     // OpenCode runtime interrupt
     if (managed.runtime?.kind === "opencode") {
@@ -19217,6 +20117,7 @@ export function createAgentChatService(args: {
       if (threadId) {
         const { codexPolicy } = resolveCodexThreadParams(managed);
         try {
+          const dynamicTools = refreshCodexDynamicTools(managed, runtime);
           const resumeResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/resume", {
             threadId,
             model: managed.session.model,
@@ -19224,6 +20125,7 @@ export function createAgentChatService(args: {
             effort: managed.session.reasoningEffort,
             ...codexServiceTierArgs(managed.session),
             ...codexPolicyArgs(codexPolicy),
+            ...(dynamicTools.length ? { dynamicTools } : {}),
             excludeTurns: true,
             persistExtendedHistory: true
           });
@@ -19376,6 +20278,61 @@ export function createAgentChatService(args: {
     return latest;
   };
 
+  const latestTranscriptPlanApprovalRequest = (
+    sessionId: string,
+    itemId: string,
+  ): PendingInputRequest | null => {
+    const pending = new Map<string, PendingInputRequest>();
+    for (const envelope of getChatEventHistory(sessionId, { maxEvents: 512 }).events) {
+      const event = envelope.event;
+      if (event.type === "approval_request") {
+        const detail = asRecord(event.detail);
+        const request = asRecord(detail?.request);
+        const requestKind = typeof request?.kind === "string" ? request.kind.trim() : "";
+        const requestItemId = typeof request?.itemId === "string" && request.itemId.trim().length
+          ? request.itemId.trim()
+          : event.itemId;
+        if (requestKind === "plan_approval") {
+          pending.set(requestItemId, request as unknown as PendingInputRequest);
+        } else {
+          const planContent = typeof detail?.planContent === "string" ? detail.planContent.trim() : "";
+          if (planContent.length > 0) {
+            pending.set(requestItemId, {
+              requestId: requestItemId,
+              itemId: requestItemId,
+              source: "codex",
+              kind: "plan_approval",
+              title: "Plan Ready for Review",
+              description: planContent,
+              questions: [{
+                id: "plan_decision",
+                header: "Implementation Plan",
+                question: planContent,
+                options: [
+                  { label: "Implement", value: "approve", recommended: true },
+                  { label: "Keep planning", value: "reject" },
+                ],
+                allowsFreeform: true,
+              }],
+              allowsFreeform: true,
+              blocking: true,
+              canProceedWithoutAnswer: false,
+              providerMetadata: { tool: "codexPlanApproval" },
+              turnId: typeof event.turnId === "string" && event.turnId.trim().length ? event.turnId.trim() : null,
+            });
+          } else {
+            pending.delete(event.itemId);
+          }
+        }
+        continue;
+      }
+      if (event.type === "pending_input_resolved") {
+        pending.delete(event.itemId);
+      }
+    }
+    return pending.get(itemId) ?? null;
+  };
+
   const latestPendingInputItemIdForSession = (
     sessionId: string,
     managed: ManagedChatSession | null | undefined,
@@ -19501,7 +20458,8 @@ export function createAgentChatService(args: {
         : {}),
       ...(liveSession?.requestedCwd != null || persisted?.requestedCwd != null
         ? { requestedCwd: liveSession?.requestedCwd ?? persisted?.requestedCwd ?? null }
-        : {})
+        : {}),
+      ...collectOrchestrationFields(liveSession, persisted)
     } satisfies AgentChatSessionSummary;
   };
 
@@ -19700,10 +20658,22 @@ export function createAgentChatService(args: {
       return;
     }
 
-    if (managed.runtime?.kind === "codex") {
-      const runtime = managed.runtime;
+    if (managed.session.provider === "codex") {
+      const runtime = managed.runtime?.kind === "codex"
+        ? managed.runtime
+        : await ensureCodexSessionRuntime(managed);
       const pending = runtime.approvals.get(itemId);
       if (!pending) {
+        const recoveredPlanApproval = latestTranscriptPlanApprovalRequest(sessionId, itemId);
+        if (recoveredPlanApproval) {
+          stageCodexPlanApprovalFollowup(managed, runtime, {
+            itemId,
+            decision: resolvedDecision,
+            request: recoveredPlanApproval,
+            responseText,
+          });
+          return;
+        }
         logger.warn("agent_chat.codex_approval_not_found", {
           sessionId,
           itemId,
@@ -19737,30 +20707,12 @@ export function createAgentChatService(args: {
       // sees the planning turn finish before the implementation turn
       // starts.
       if (pending.kind === "plan_approval") {
-        const approved = resolvedDecision === "accept" || resolvedDecision === "accept_for_session";
-        const feedback = typeof responseText === "string" ? responseText.trim() : "";
-        const followupText = approved
-          ? "The user approved the plan. Please proceed with implementation."
-          : feedback.length > 0
-            ? `The user rejected the plan with feedback: "${feedback}". Please revise.`
-            : "The user rejected the plan. Please revise your approach.";
-        if (approved) {
-          managed.session.permissionMode = "edit";
-          applyLegacyPermissionModeToNativeControls(managed.session, "edit");
-          managed.session.interactionMode = "default";
-          runtime.threadResumed = false;
-          runtime.canAttachResumedTurnStart = false;
-          persistChatState(managed);
-        }
-        runtime.pendingPlanFollowups.push({
+        stageCodexPlanApprovalFollowup(managed, runtime, {
           itemId,
           decision: resolvedDecision,
-          turnId: pending.request?.turnId ?? null,
-          followupText,
+          request: pending.request,
+          responseText,
         });
-        if (!runtime.activeTurnId) {
-          drainPendingPlanFollowups(managed, runtime);
-        }
         return;
       }
 
@@ -20513,6 +21465,7 @@ export function createAgentChatService(args: {
 
   const dispose = async ({ sessionId }: AgentChatDisposeArgs): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
+    abortActiveBashControllers(managed, "Session disposed.");
 
     // Interrupt active codex turn before teardown
     if (managed.runtime?.kind === "codex") {
@@ -20693,6 +21646,7 @@ export function createAgentChatService(args: {
           pending.resolve({ decision: "cancel" });
         }
         managed.localPendingInputs.clear();
+        abortActiveBashControllers(managed, "Session closed during shutdown.");
         managed.closed = true;
         managed.endedNotified = true;
         managed.ctoSessionStartedAt = null;
@@ -20769,6 +21723,8 @@ export function createAgentChatService(args: {
     const chatConfig = resolveChatConfig();
     const isIdentitySession = Boolean(managed.session.identityKey);
     const identityPinned = isPrimaryPinnedIdentity(managed.session.identityKey);
+    const orchestrationLockedMode = lockedOrchestrationPermissionMode(managed.session);
+    const permissionsPinned = identityPinned || orchestrationLockedMode !== null;
     const hasConversation = managed.recentConversationEntries.length > 0 || readTranscriptConversationEntries(managed).length > 0;
     const prevCodexApprovalPolicy = managed.session.codexApprovalPolicy;
     const prevCodexSandbox = managed.session.codexSandbox;
@@ -20843,7 +21799,9 @@ export function createAgentChatService(args: {
         resumeCommand: resumeCommandForProvider(nextProvider, sessionId)
       });
 
-      if (isIdentitySession) {
+      if (orchestrationLockedMode) {
+        enforceOrchestrationLockedPermissionMode(managed.session);
+      } else if (isIdentitySession) {
         managed.session.permissionMode = normalizeIdentityPermissionMode(
           managed.session.identityKey,
           managed.session.permissionMode,
@@ -20909,9 +21867,10 @@ export function createAgentChatService(args: {
     }
 
     if (permissionMode !== undefined) {
-      managed.session.permissionMode = isIdentitySession
+      managed.session.permissionMode = orchestrationLockedMode
+        ?? (isIdentitySession
         ? normalizeIdentityPermissionMode(managed.session.identityKey, permissionMode, managed.session.provider)
-        : permissionMode;
+          : permissionMode);
       applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
     }
 
@@ -20919,11 +21878,11 @@ export function createAgentChatService(args: {
     // Ignore incoming native permission overrides — applyLegacyPermissionMode-
     // ToNativeControls() has already derived the correct native fields from
     // full-auto, and we must not let callers layer a stricter mode on top.
-    if (interactionMode !== undefined && !identityPinned) {
+    if (interactionMode !== undefined && !permissionsPinned) {
       managed.session.interactionMode = interactionMode;
     }
 
-    if (claudePermissionMode !== undefined && !identityPinned) {
+    if (claudePermissionMode !== undefined && !permissionsPinned) {
       if (claudePermissionMode === "plan") {
         managed.session.interactionMode = "plan";
       } else {
@@ -20931,15 +21890,15 @@ export function createAgentChatService(args: {
       }
     }
 
-    if (codexApprovalPolicy !== undefined && !identityPinned) {
+    if (codexApprovalPolicy !== undefined && !permissionsPinned) {
       managed.session.codexApprovalPolicy = codexApprovalPolicy;
     }
 
-    if (codexSandbox !== undefined && !identityPinned) {
+    if (codexSandbox !== undefined && !permissionsPinned) {
       managed.session.codexSandbox = codexSandbox;
     }
 
-    if (codexConfigSource !== undefined && !identityPinned) {
+    if (codexConfigSource !== undefined && !permissionsPinned) {
       managed.session.codexConfigSource = codexConfigSource;
     }
 
@@ -20951,15 +21910,15 @@ export function createAgentChatService(args: {
       }
     }
 
-    if (opencodePermissionMode !== undefined && !identityPinned) {
+    if (opencodePermissionMode !== undefined && !permissionsPinned) {
       managed.session.opencodePermissionMode = opencodePermissionMode;
     }
 
-    if (droidPermissionMode !== undefined && !identityPinned) {
+    if (droidPermissionMode !== undefined && !permissionsPinned) {
       managed.session.droidPermissionMode = droidPermissionMode;
     }
 
-    if (cursorModeId !== undefined) {
+    if (cursorModeId !== undefined && !permissionsPinned) {
       managed.session.cursorModeId = typeof cursorModeId === "string"
         ? (cursorModeId.trim() || null)
         : null;
@@ -20986,6 +21945,7 @@ export function createAgentChatService(args: {
     ) {
       enforceManagedLocalHarnessPermissionMode(managed);
       normalizeSessionNativePermissionControls(managed.session, chatConfig);
+      enforceOrchestrationLockedPermissionMode(managed.session);
       if (managed.runtime?.kind === "opencode") {
         managed.runtime.permissionMode = resolveSessionOpenCodePermissionMode(
           managed.session,
@@ -22032,6 +22992,8 @@ export function createAgentChatService(args: {
     title: string;
     body: string;
     source?: PendingInputSource;
+    kind?: PendingInputKind;
+    allowsFreeform?: boolean;
     providerMetadata?: Record<string, unknown>;
     eventDescription?: string;
     eventDetail?: Record<string, unknown>;
@@ -22158,11 +23120,11 @@ export function createAgentChatService(args: {
       requestId: itemId,
       itemId,
       source: args.source ?? "ade",
-      kind: questions.some((q) => q.options?.length) ? "structured_question" : "question",
+      kind: args.kind ?? (questions.some((q) => q.options?.length) ? "structured_question" : "question"),
       title: args.title,
-      description: questions[0]?.question ?? args.body,
+      description: args.kind === "plan_approval" ? args.body : (questions[0]?.question ?? args.body),
       questions,
-      allowsFreeform: true,
+      allowsFreeform: args.allowsFreeform ?? true,
       blocking: true,
       canProceedWithoutAnswer: false,
       ...(args.providerMetadata ? { providerMetadata: args.providerMetadata } : {}),
@@ -22241,11 +23203,83 @@ export function createAgentChatService(args: {
     }
   };
 
+  const readTranscript = async (
+    sessionId: string,
+    limit?: number,
+    since?: string,
+  ): Promise<AgentChatTranscriptEntry[]> => {
+    const managed = managedSessions.get(sessionId);
+    const entries = managed
+      ? readTranscriptEntries(managed)
+      : transcriptEntriesFromEnvelopes(sessionId, readTranscriptEnvelopesForSessionId(sessionId));
+    let filtered = entries;
+    if (typeof since === "string" && since.trim().length) {
+      filtered = filtered.filter((entry) => entry.timestamp >= since);
+    }
+    if (typeof limit === "number" && limit > 0) {
+      filtered = filtered.slice(-Math.floor(limit));
+    }
+    return filtered;
+  };
+
+  /**
+   * Set orchestration fields on a session and persist them. Used by the
+   * orchestration.runCreate IPC handler to stitch the new run id back into the
+   * lead chat's persisted record so the OrchestrationPanel mounts after a
+   * restart.
+   */
+  const setOrchestrationFields = (
+    sessionId: string,
+    fields: {
+      orchestrationRunId?: string | null;
+      orchestrationRole?: "lead" | "worker" | "validator" | null;
+      orchestrationParentSessionId?: string | null;
+      orchestrationTag?: string | null;
+      orchestrationStepId?: string | null;
+      orchestrationBundlePath?: string | null;
+    },
+  ): void => {
+    const managed = managedSessions.get(sessionId);
+    if (!managed) return;
+    const hadOrchestrationToolContext = buildOrchestrationSessionContext(managed) != null;
+    const session = managed.session;
+    for (const key of ORCHESTRATION_SESSION_FIELD_NAMES) {
+      const value = fields[key];
+      if (value === undefined) continue;
+      if (value) {
+        (session as Record<string, unknown>)[key] = value;
+      } else {
+        delete (session as Record<string, unknown>)[key];
+      }
+    }
+    if (
+      fields.orchestrationRole === "lead"
+      && !isOrchestrationInteractionMode(session.interactionMode)
+    ) {
+      session.interactionMode = "orchestrator-lead";
+    }
+    const hasOrchestrationToolContext = buildOrchestrationSessionContext(managed) != null;
+    if (
+      !hadOrchestrationToolContext
+      && hasOrchestrationToolContext
+      && managed.runtime?.kind === "claude"
+      && managed.session.status !== "active"
+    ) {
+      resetClaudeQuerySession(managed, managed.runtime, "session_reset", {
+        clearSdkSessionId: true,
+      });
+      prewarmClaudeQuery(managed);
+    }
+    persistChatState(managed);
+  };
+
   return {
     createSession,
     suggestLaneNameFromPrompt,
     handoffSession,
     sendMessage,
+    readTranscript,
+    setOrchestrationFields,
     runSessionTurn,
     steer,
     cancelSteer,

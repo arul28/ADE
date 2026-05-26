@@ -10,7 +10,7 @@ import { createGrepSearchTool } from "./grepSearch";
 import { createGlobSearchTool } from "./globSearch";
 import { webFetchTool } from "./webFetch";
 import { webSearchTool } from "./webSearch";
-import type { AgentChatApprovalDecision, AgentChatEvent, WorkerSandboxConfig } from "../../../../shared/types";
+import type { AgentChatApprovalDecision, AgentChatEvent, PendingInputKind, WorkerSandboxConfig } from "../../../../shared/types";
 import { DEFAULT_WORKER_SANDBOX_CONFIG } from "./workerSandboxDefaults";
 import { getErrorMessage, isEnoentError, isWithinDir, resolvePathWithinRoot } from "../../shared/utils";
 import { terminateProcessTree } from "../../shared/processExecution";
@@ -45,6 +45,8 @@ export type AskUserToolInput = {
   title?: string;
   body?: string;
   questions?: AskUserToolQuestion[];
+  pendingInputKind?: PendingInputKind;
+  providerMetadata?: Record<string, unknown>;
 };
 
 export type AskUserToolResult = {
@@ -68,6 +70,11 @@ export interface UniversalToolSetOptions {
   onApprovalRequest?: (request: ToolApprovalRequest) => Promise<ToolApprovalResult>;
   /** Sandbox config for API-model workers. CLI models skip this check. */
   sandboxConfig?: WorkerSandboxConfig;
+  /**
+   * Optional lifecycle hook for long-running bash calls. Callers can retain the
+   * controller and abort it when an external policy event cancels the session.
+   */
+  registerActiveBash?: (controller: AbortController) => (() => void) | void;
 }
 
 // ── Permission helpers ──────────────────────────────────────────────
@@ -160,8 +167,17 @@ function compileSandbox(config: WorkerSandboxConfig): CompiledSandbox {
 }
 
 const WRITE_COMMAND_RE = /(?:>|>>|\btee\b|\bcp\s|\bmv\s|\brm\s|\bwrite\b|\bedit\b)/;
-const MUTATING_BASH_RE = /\b(?:rm|mv|cp|mkdir|touch|chmod|chown|patch|install|uninstall|add|remove|upgrade|apply|commit|rebase|merge|reset|checkout|switch|restore|sed\s+-i|perl\s+-i)\b|>>?|tee\b/i;
+const MUTATING_BASH_RE = /\b(?:rm|mv|cp|mkdir|touch|chmod|chown|patch|install|uninstall|add|remove|upgrade|apply|commit|rebase|merge|reset|checkout|switch|restore|sed\s+-i|perl\s+-i|ln\s+(?!-s))\b|>>?|tee\b/i;
 const MUTATING_CMD_RE = /\b(?:copy|xcopy|robocopy|move|del|erase|rd|rmdir|md|mkdir|ren|rename)\b|>>?|tee\b/i;
+/**
+ * Interpreters that can stage filesystem writes through a `-c` / `-e` flag.
+ * Used by the orchestration sandbox to force path-inspection on commands like
+ *   python -c "open('/etc/passwd', 'w')"
+ *   node -e "require('fs').writeFileSync('manifest.json', '')"
+ * `perl` already has its own `perl -i` match in `MUTATING_BASH_RE`; the
+ * negative lookahead here keeps us from double-matching that path.
+ */
+const INTERPRETER_RE = /\b(?:python3?|node|ruby|perl(?!\s+-i))\b/i;
 
 type PathAccessMode = "read" | "write" | "unknown";
 type PathReference = {
@@ -806,7 +822,30 @@ function bashCommandLikelyMutates(
   powerShellInspection?: PowerShellInspection,
 ): boolean {
   const inspection = powerShellInspection ?? inspectPowerShellInvocations(command, cwd);
-  return inspection.mutates || !!inspection.blockedReason || MUTATING_BASH_RE.test(command) || MUTATING_CMD_RE.test(command) || WRITE_COMMAND_RE.test(command);
+  if (inspection.mutates || !!inspection.blockedReason) return true;
+  if (MUTATING_BASH_RE.test(command) || MUTATING_CMD_RE.test(command) || WRITE_COMMAND_RE.test(command)) {
+    return true;
+  }
+  // Interpreter `-c`/`-e` invocations can stage writes through their script
+  // payload. Treat them as mutating whenever the payload contains a write-y
+  // builtin (open(...,"w"), writeFile, File.open(...,"w"), File.write, etc).
+  if (INTERPRETER_RE.test(command) && /-[ce]\b/.test(command)) {
+    if (/\b(?:open|writeFile|writeFileSync|appendFile|appendFileSync|truncate|copyFile|rename|unlink|rmdir|mkdir|chmod|chown|symlink|link)\b/.test(command)) {
+      return true;
+    }
+    if (/File\.(?:open|write|delete|rename|new)\b/.test(command)) return true;
+  }
+  return false;
+}
+
+/**
+ * Heuristic check whether a command is an interpreter invocation that includes
+ * a script payload (i.e. would bypass argv-based path inspection). Exported
+ * for use by the orchestration worker hardening in checkWorkerSandbox.
+ */
+export function commandUsesInterpreterPayload(command: string): boolean {
+  if (!INTERPRETER_RE.test(command)) return false;
+  return /-[ce]\b/.test(command);
 }
 
 function resolveAllowedWriteRoots(cwd: string, sandboxConfig?: WorkerSandboxConfig, pathApi: SandboxPathApi = getSandboxPathApi(cwd)): string[] {
@@ -1272,6 +1311,7 @@ function createBashTool(
   mode: PermissionMode,
   sandboxConfig?: WorkerSandboxConfig,
   onApprovalRequest?: (request: ToolApprovalRequest) => Promise<ToolApprovalResult>,
+  registerActiveBash?: (controller: AbortController) => (() => void) | void,
 ) {
   return tool({
     description:
@@ -1316,9 +1356,19 @@ function createBashTool(
         }
       }
       const clampedTimeout = Math.min(timeout, 600_000);
-      const killProc = (proc: ReturnType<typeof spawn>): void => {
-        terminateProcessTree(proc, "SIGTERM");
+      const killProc = (proc: ReturnType<typeof spawn>, signal: NodeJS.Signals = "SIGTERM"): void => {
+        if (process.platform !== "win32" && typeof proc.pid === "number") {
+          try {
+            process.kill(-proc.pid, signal);
+            return;
+          } catch {
+            // Fall back to killing the direct child when process-group teardown is unavailable.
+          }
+        }
+        terminateProcessTree(proc, signal);
       };
+      const abortController = new AbortController();
+      const unregister = registerActiveBash?.(abortController) ?? (() => {});
       try {
         const result = await new Promise<{ stdout: string; stderr: string; exitCode: number }>(
           (resolve, reject) => {
@@ -1326,14 +1376,34 @@ function createBashTool(
             const proc = spawn(file, args, {
               cwd,
               stdio: ["ignore", "pipe", "pipe"],
+              detached: process.platform !== "win32",
               windowsVerbatimArguments: process.platform === "win32",
               env:
                 process.platform === "win32"
                   ? { ...process.env }
                   : { ...process.env, TERM: "dumb" },
             });
+            let abortMessage: string | null = null;
+            let forceKillId: NodeJS.Timeout | null = null;
+            const onAbort = () => {
+              const reason = abortController.signal.reason;
+              abortMessage = typeof reason === "string"
+                ? reason
+                : reason instanceof Error
+                  ? reason.message
+                  : "Command aborted.";
+              killProc(proc);
+              forceKillId ??= setTimeout(() => killProc(proc, "SIGKILL"), 2_000);
+              forceKillId.unref?.();
+            };
+            abortController.signal.addEventListener("abort", onAbort, { once: true });
+            if (abortController.signal.aborted) {
+              onAbort();
+            }
             const timeoutId = setTimeout(() => {
               killProc(proc);
+              forceKillId ??= setTimeout(() => killProc(proc, "SIGKILL"), 2_000);
+              forceKillId.unref?.();
             }, clampedTimeout);
 
             let stdout = "";
@@ -1355,14 +1425,21 @@ function createBashTool(
 
             proc.on("close", (code) => {
               clearTimeout(timeoutId);
+              if (forceKillId) clearTimeout(forceKillId);
+              abortController.signal.removeEventListener("abort", onAbort);
+              const stderrWithAbort = abortMessage
+                ? `${stderr}${stderr.length ? "\n" : ""}ABORTED: ${abortMessage}`
+                : stderr;
               resolve({
                 stdout: stdout.slice(0, 200_000),
-                stderr: stderr.slice(0, 50_000),
-                exitCode: code ?? 1,
+                stderr: stderrWithAbort.slice(0, 50_000),
+                exitCode: code ?? (abortMessage ? 130 : 1),
               });
             });
             proc.on("error", (error) => {
               clearTimeout(timeoutId);
+              if (forceKillId) clearTimeout(forceKillId);
+              abortController.signal.removeEventListener("abort", onAbort);
               reject(error);
             });
           }
@@ -1374,6 +1451,8 @@ function createBashTool(
           stderr: `Command failed: ${getErrorMessage(err)}`,
           exitCode: 1,
         };
+      } finally {
+        unregister();
       }
     },
   });
@@ -2671,6 +2750,7 @@ export function createUniversalToolSet(
       permissionMode,
       effectiveSandboxConfig,
       onApprovalRequest,
+      opts.registerActiveBash,
     );
   }
 

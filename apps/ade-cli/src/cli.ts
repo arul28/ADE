@@ -4,6 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import YAML from "yaml";
@@ -64,6 +65,9 @@ type ParsedCli = {
   options: GlobalOptions;
   command: string[];
 };
+
+const DEFAULT_EPHEMERAL_RUNTIME_IDLE_EXIT_MS = 5 * 60 * 1000;
+const MIN_RUNTIME_IDLE_EXIT_MS = 5_000;
 
 type InvocationStep = {
   key: string;
@@ -8854,7 +8858,7 @@ function checkGitHubReadiness(projectRoot: string): ReadinessCheck {
     message: hasGitHubRemote
       ? ready
         ? "GitHub remote detected and a local auth mechanism is available."
-        : "GitHub remote detected, but no gh CLI or GitHub token was found locally."
+        : "GitHub remote detected, but no gh CLI or environment GitHub token was found locally."
       : "No GitHub origin remote detected.",
     nextAction: ready
       ? undefined
@@ -10095,6 +10099,31 @@ function normalizeRuntimeSocketPath(rawSocketPath: string): string {
     : path.resolve(rawSocketPath);
 }
 
+function isEphemeralRuntimeSocketPath(socketPath: string): boolean {
+  if (socketPath.startsWith("tcp://") || isAdeRuntimeNamedPipePath(socketPath)) {
+    return false;
+  }
+  const normalizedSocketPath = path.resolve(socketPath);
+  const tmpDirs = Array.from(new Set(
+    [os.tmpdir(), realpathSyncSafe(os.tmpdir()), "/tmp", realpathSyncSafe("/tmp")]
+      .map((dir) => path.resolve(dir)),
+  ));
+  for (const tmpDir of tmpDirs) {
+    const relativeToTmp = path.relative(tmpDir, normalizedSocketPath);
+    if (relativeToTmp.startsWith("..") || path.isAbsolute(relativeToTmp)) continue;
+    return /(^|[/\\])ade-(stdio-rpc|code|local-runtime)[^/\\]*/.test(relativeToTmp);
+  }
+  return false;
+}
+
+function realpathSyncSafe(filePath: string): string {
+  try {
+    return fs.realpathSync.native(filePath);
+  } catch {
+    return filePath;
+  }
+}
+
 async function resolveMachineRuntimeSocketPath(
   rawOverride?: string | null,
 ): Promise<string> {
@@ -10265,6 +10294,12 @@ async function spawnMachineRuntimeDaemon(
     ADE_RPC_SOCKET_PATH: socketPath,
     ADE_RUNTIME_SOCKET_PATH: socketPath,
   };
+  if (
+    isEphemeralRuntimeSocketPath(socketPath) &&
+    !env.ADE_RUNTIME_IDLE_EXIT_MS
+  ) {
+    env.ADE_RUNTIME_IDLE_EXIT_MS = String(DEFAULT_EPHEMERAL_RUNTIME_IDLE_EXIT_MS);
+  }
   if (runtimeBuildHash) {
     env.ADE_RUNTIME_BUILD_HASH = runtimeBuildHash;
   }
@@ -10892,11 +10927,22 @@ async function runServe(
     `ade serve listening on ${socketPath}${tcpUrl ? ` and ${tcpUrl}` : ""}\n`,
   );
 
-  await new Promise<void>((resolve) => {
-    resolveDone = resolve;
-    process.once("SIGINT", finish);
-    process.once("SIGTERM", finish);
-  });
+  const stopParentMonitor = monitorRuntimeParentProcess(finish);
+  const stopIdleMonitor = monitorRuntimeIdleExit(states, finish);
+  try {
+    await new Promise<void>((resolve) => {
+      if (done) {
+        resolve();
+        return;
+      }
+      resolveDone = resolve;
+      process.once("SIGINT", finish);
+      process.once("SIGTERM", finish);
+    });
+  } finally {
+    stopParentMonitor();
+    stopIdleMonitor();
+  }
 
   for (const state of states) {
     stopHeadlessRpcServer(state);
@@ -10912,6 +10958,89 @@ async function runServe(
     if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
     else process.env.ADE_DEFAULT_ROLE = previousRole;
   }
+}
+
+function readRuntimeParentPid(env: NodeJS.ProcessEnv = process.env): number | null {
+  const raw = env.ADE_RUNTIME_PARENT_PID?.trim();
+  if (!raw) return null;
+  const pid = Number.parseInt(raw, 10);
+  return Number.isFinite(pid) && pid > 0 ? pid : null;
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function monitorRuntimeParentProcess(onGone: () => void): () => void {
+  const parentPid = readRuntimeParentPid();
+  if (parentPid == null || parentPid === process.pid) return () => {};
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    onGone();
+  };
+  const timer = setInterval(() => {
+    if (done) return;
+    if (process.ppid === 1 && parentPid !== 1) {
+      finish();
+      return;
+    }
+    if (!isPidAlive(parentPid)) {
+      finish();
+    }
+  }, 2_000);
+  timer.unref?.();
+  process.once("disconnect", finish);
+  return () => {
+    done = true;
+    clearInterval(timer);
+    process.off("disconnect", finish);
+  };
+}
+
+function readRuntimeIdleExitMs(env: NodeJS.ProcessEnv = process.env): number | null {
+  const raw = env.ADE_RUNTIME_IDLE_EXIT_MS?.trim();
+  if (!raw) return null;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.max(MIN_RUNTIME_IDLE_EXIT_MS, parsed);
+}
+
+function hasActiveHeadlessConnections(states: readonly HeadlessRpcServerState[]): boolean {
+  return states.some((state) => state.activeConnections.size > 0);
+}
+
+function monitorRuntimeIdleExit(
+  states: readonly HeadlessRpcServerState[],
+  onIdle: () => void,
+): () => void {
+  const idleExitMs = readRuntimeIdleExitMs();
+  if (idleExitMs == null) return () => {};
+  let stopped = false;
+  let lastActiveAt = Date.now();
+  const intervalMs = Math.max(1_000, Math.min(10_000, Math.floor(idleExitMs / 4)));
+  const check = () => {
+    if (stopped) return;
+    if (hasActiveHeadlessConnections(states)) {
+      lastActiveAt = Date.now();
+      return;
+    }
+    if (Date.now() - lastActiveAt >= idleExitMs) {
+      onIdle();
+    }
+  };
+  const timer = setInterval(check, intervalMs);
+  timer.unref?.();
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
 }
 
 function isFailedServiceManagerResult(value: unknown): boolean {
@@ -12962,8 +13091,10 @@ export {
   findProjectRoots,
   formatOutput,
   graphWaitState,
+  isEphemeralRuntimeSocketPath,
   isFailedServiceManagerResult,
   parseCliArgs,
+  readRuntimeIdleExitMs,
   renderLaneGraph,
   resolveRoots,
   runCli,

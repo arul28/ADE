@@ -87,33 +87,32 @@ describe("buildTrackedCliStartupCommand", () => {
   describe("claude provider", () => {
     it("adds --dangerously-skip-permissions for full-auto", () => {
       const command = buildTrackedCliStartupCommand({ provider: "claude", permissionMode: "full-auto" });
-      expect(command).toContain("claude --append-system-prompt");
-      expect(command).toContain("only normal reason to skip ADE CLI");
       expect(command).toContain("--dangerously-skip-permissions");
+      expect(command).not.toContain("--append-system-prompt");
     });
 
     it("adds --permission-mode acceptEdits for edit", () => {
       const command = buildTrackedCliStartupCommand({ provider: "claude", permissionMode: "edit" });
-      expect(command).toContain("--append-system-prompt");
       expect(command).toContain("--permission-mode acceptEdits");
+      expect(command).not.toContain("--append-system-prompt");
     });
 
     it("adds --permission-mode default for default", () => {
       const command = buildTrackedCliStartupCommand({ provider: "claude", permissionMode: "default" });
-      expect(command).toContain("--append-system-prompt");
       expect(command).toContain("--permission-mode default");
+      expect(command).not.toContain("--append-system-prompt");
     });
 
     it("adds --permission-mode auto for Claude auto", () => {
       const command = buildTrackedCliStartupCommand({ provider: "claude", permissionMode: "auto" });
-      expect(command).toContain("--append-system-prompt");
       expect(command).toContain("--permission-mode auto");
+      expect(command).not.toContain("--append-system-prompt");
     });
 
     it("adds --permission-mode plan for plan (else branch)", () => {
       const command = buildTrackedCliStartupCommand({ provider: "claude", permissionMode: "plan" });
-      expect(command).toContain("--append-system-prompt");
       expect(command).toContain("--permission-mode plan");
+      expect(command).not.toContain("--append-system-prompt");
     });
 
     it("rejects config-toml before building unsupported Claude commands", () => {
@@ -137,10 +136,9 @@ describe("buildTrackedCliStartupCommand", () => {
         "--permission-mode",
         "default",
       ]));
-      expect(launch.startupCommand).toContain("--append-system-prompt");
-      expect(launch.startupCommand).toContain(ADE_CLI_AGENT_GUIDANCE.split("\n")[0]!);
-      expect(launch.startupCommand).toContain("ADE_AGENT_SKILLS_DIRS");
-      expect(launch.startupCommand).toContain("clean up old, stale, or finished processes");
+      expect(launch.startupCommand).not.toContain("--append-system-prompt");
+      expect(launch.args).toContain("--append-system-prompt");
+      expect(launch.args).toContain(ADE_CLI_AGENT_GUIDANCE);
       expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
     });
 

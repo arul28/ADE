@@ -469,7 +469,7 @@ function NewReportTab({
       >
         <ChatCircleDots size={28} weight="duotone" style={{ color: COLORS.textDim }} />
         <p style={{ fontSize: 12, color: COLORS.textMuted }}>
-          Configure your GitHub token in Settings to submit reports.
+          Connect GitHub with gh auth or a PAT in Settings to submit reports.
         </p>
       </div>
     );
@@ -1156,7 +1156,7 @@ export function FeedbackReporterModal({
     if (!open) return;
     void window.ade.github
       .getStatus()
-      .then((status) => setHasGithubToken(status.tokenStored))
+      .then((status) => setHasGithubToken(status.connected))
       .catch(() => setHasGithubToken(false));
   }, [open]);
 

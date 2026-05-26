@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
-import { resolveDrawerChatSelection } from "../drawerSelection";
+import { chatSelectionCopyText, resolveDrawerChatSelection } from "../drawerSelection";
 
 function session(sessionId: string, laneId = "lane-1"): AgentChatSessionSummary {
   return {
@@ -82,5 +82,43 @@ describe("resolveDrawerChatSelection", () => {
       selectedDrawerChatId: "chat-2",
       selectedDrawerChatAction: null,
     });
+  });
+});
+
+describe("chatSelectionCopyText", () => {
+  it("copies the highlighted drawer chat label when no text selection exists", () => {
+    expect(chatSelectionCopyText({
+      drawerSection: "chats",
+      displaySessions: [
+        { ...session("chat-1"), title: "Refactor auth flow" },
+        { ...session("chat-2"), title: "  " },
+      ],
+      selectedDrawerChatAction: null,
+      selectedDrawerChatId: "chat-1",
+    })).toBe("Refactor auth flow");
+  });
+
+  it("falls back to the chat id when the highlighted chat has no title", () => {
+    expect(chatSelectionCopyText({
+      drawerSection: "chats",
+      displaySessions: [session("chat-2")],
+      selectedDrawerChatAction: null,
+      selectedDrawerChatId: "chat-2",
+    })).toBe("chat-2");
+  });
+
+  it("ignores the new-chat row and non-chat drawer sections", () => {
+    expect(chatSelectionCopyText({
+      drawerSection: "chats",
+      displaySessions: [session("chat-1")],
+      selectedDrawerChatAction: "new-chat",
+      selectedDrawerChatId: null,
+    })).toBeNull();
+    expect(chatSelectionCopyText({
+      drawerSection: "lanes",
+      displaySessions: [session("chat-1")],
+      selectedDrawerChatAction: null,
+      selectedDrawerChatId: "chat-1",
+    })).toBeNull();
   });
 });

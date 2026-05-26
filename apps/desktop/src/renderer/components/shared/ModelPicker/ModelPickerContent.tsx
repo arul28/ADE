@@ -104,6 +104,19 @@ export type ModelPickerContentProps = {
   onSelect: (modelId: string) => void;
   onRequestClose: () => void;
   onProviderRailSelect?: (family: ProviderFamily) => void;
+  /**
+   * When true (set by orchestration `model_selection` pending input), hide
+   * any permission-related rail/picker rows so the user only chooses model
+   * + fast-mode + reasoning. The permission tier is forced by the
+   * orchestration spawn profile (see `goal.md` §12, §10.9).
+   *
+   * v1 ModelPickerContent does not render permission rows directly — the
+   * permission picker lives in `AgentChatComposer.tsx` alongside the model
+   * picker — so this flag is a forward-compat hook. It is propagated to
+   * children that may render permission-aware affordances (e.g. sign-in
+   * rails) so they can elide them when the surface is orchestrated.
+   */
+  hidePermissionRail?: boolean;
   refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
   onOpenSignIn?: () => void;
   allowRegistryExpansion?: boolean;
@@ -120,8 +133,13 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   onProviderRailSelect,
   refreshingProvider,
   onOpenSignIn,
+  hidePermissionRail = false,
   allowRegistryExpansion = true,
 }: ModelPickerContentProps) {
+  // hidePermissionRail is currently a forward-compat hook (see prop docs).
+  // Reference it so unused-var lint stays quiet, and so future code paths
+  // that branch on the flag can drop in here without touching the signature.
+  void hidePermissionRail;
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);

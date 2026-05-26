@@ -47,6 +47,7 @@ import { createFileService } from "./services/files/fileService";
 import { createConflictService } from "./services/conflicts/conflictService";
 import { createProjectConfigService } from "./services/config/projectConfigService";
 import { createProcessService } from "./services/processes/processService";
+import { recoverOrphanedAdeAgentProcesses } from "./services/processes/orphanedAgentProcessReaper";
 import { createTestService } from "./services/tests/testService";
 import { createOperationService } from "./services/history/operationService";
 import { createGitOperationsService } from "./services/git/gitOperationsService";
@@ -156,6 +157,7 @@ import { createLinearDispatcherService } from "./services/cto/linearDispatcherSe
 import { publishLinearLaneCard } from "./services/cto/linearLaneCardService";
 import { createLinearIngressService } from "./services/cto/linearIngressService";
 import { createLinearSyncService } from "./services/cto/linearSyncService";
+import { createOrchestrationService } from "./services/orchestration/orchestrationService";
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createAppControlService } from "./services/appControl/appControlService";
@@ -1409,7 +1411,7 @@ app.whenReady().then(async () => {
       if (ctx) {
         persistRecentProject(ctx.project, { recordLastProject: false, preserveRecentOrder: true });
       }
-      if (process.env.NODE_ENV !== "test" && process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON !== "1") {
+      if (!shouldUseInProcessProjectRuntime()) {
         void localRuntimePool.ensureProject(normalizedRoot).catch((error) => {
           localRuntimeLogger.warn("local_runtime.project_registration_failed", {
             rootPath: normalizedRoot,
@@ -2439,6 +2441,8 @@ app.whenReady().then(async () => {
     > | null = null;
     let agentChatServiceRef: ReturnType<typeof createAgentChatService> | null =
       null;
+    let orchestrationServiceRef: ReturnType<typeof createOrchestrationService> | null =
+      null;
     const queueLandingService = createQueueLandingService({
       db,
       logger,
@@ -2732,6 +2736,7 @@ app.whenReady().then(async () => {
       workerHeartbeatService,
       linearIssueTracker,
       flowPolicyService,
+      getOrchestrationService: () => orchestrationServiceRef,
       getLinearDispatcherService: () => linearDispatcherServiceRef,
       linearClient,
       linearCredentials: linearCredentialService,
@@ -2989,6 +2994,16 @@ app.whenReady().then(async () => {
       "ADE_ENABLE_PORT_ALLOCATION_RECOVERY",
     );
 
+    const orchestrationService = createOrchestrationService({
+      resolveLaneWorktree: (laneId: string): string | undefined => {
+        try {
+          return laneService.getLaneWorktreePath(laneId);
+        } catch {
+          return undefined;
+        }
+      },
+    });
+    orchestrationServiceRef = orchestrationService;
     const computerUseArtifactBrokerService =
       createComputerUseArtifactBrokerService({
         db,
@@ -4024,6 +4039,7 @@ app.whenReady().then(async () => {
       apnsService,
       apnsKeyStore,
       notificationEventBus,
+      orchestrationService,
       agentChatService,
       projectConfigService,
       processService,
@@ -4252,6 +4268,7 @@ app.whenReady().then(async () => {
       apnsService: null,
       apnsKeyStore: null,
       notificationEventBus: null,
+      orchestrationService: null,
       projectConfigService: null,
       processService: null,
       sessionDeltaService: null,
@@ -4999,6 +5016,11 @@ app.whenReady().then(async () => {
     } catch {
       // ignore
     }
+    try {
+      localRuntimePool.dispose();
+    } catch {
+      // ignore
+    }
 
     const contexts = new Set<AppContext>(projectContexts.values());
     contexts.add(getActiveContext());
@@ -5398,6 +5420,11 @@ app.whenReady().then(async () => {
       error: error instanceof Error ? error.message : String(error),
     });
   }
+  void recoverOrphanedAdeAgentProcesses({ logger: getActiveContext().logger }).catch((error: unknown) => {
+    getActiveContext().logger.warn("agent_process_orphan_recovery_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
   autoUpdateService.onStateChange((snapshot) => {
     BrowserWindow.getAllWindows().forEach((win) => {
       win.webContents.send(IPC.updateEvent, snapshot);

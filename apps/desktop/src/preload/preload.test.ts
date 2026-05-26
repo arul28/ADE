@@ -3590,13 +3590,17 @@ describe("preload OAuth bridge", () => {
     const conflictEvent = { type: "rebase-started", laneId: "lane-1", timestamp: "now" };
     const githubStatus = {
       tokenStored: true,
+      patTokenStored: true,
       tokenDecryptionFailed: false,
       storageScope: "app",
+      authSource: "pat",
       tokenType: "classic",
       repo: { owner: "acme", name: "repo" },
       hasOrigin: true,
       userLogin: "octocat",
       scopes: ["repo"],
+      ghCliPath: null,
+      ghAuthError: null,
       checkedAt: "now",
       repoAccessOk: true,
       repoAccessError: null,

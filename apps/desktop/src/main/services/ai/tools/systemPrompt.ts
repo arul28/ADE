@@ -76,6 +76,89 @@ function describeMode(mode: HarnessMode): string {
   }
 }
 
+export type OrchestratorRoleKind = "lead" | "worker" | "validator";
+
+function describeAdeOrchestratorSkill(adeSkillRoots: readonly string[] | undefined): string[] {
+  const roots = (adeSkillRoots ?? []).filter((entry) => entry.trim().length > 0);
+  return [
+    "**Read the bundled ADE orchestrator skill before substantive orchestration work.**",
+    roots.length
+      ? `- ADE skill roots in this prompt: ${roots.join(", ")}. ADE also exposes these through \`ADE_AGENT_SKILLS_DIRS\`. Read \`<root>/ade-orchestrator/SKILL.md\` from the bundled ADE \`agent-skills\` resources.`
+      : "- ADE exposes the bundled skill roots through `ADE_AGENT_SKILLS_DIRS`. Read `<root>/ade-orchestrator/SKILL.md` from ADE's bundled `agent-skills` resources.",
+    "- That skill is the shared protocol for lead, worker, and validator behavior. Treat this prompt as a role-specific overlay on top of it.",
+  ];
+}
+
+export function buildOrchestratorRoleDirective(args: {
+  role: OrchestratorRoleKind;
+  runId: string;
+  bundlePath: string;
+  tag?: string;
+  parentSessionId?: string;
+  stepId?: string;
+  adeSkillRoots?: readonly string[];
+}): string {
+  const lines: string[] = [];
+  lines.push("");
+  lines.push("## Orchestration Mode");
+  lines.push(
+    `You are an orchestration **${args.role.toUpperCase()}** in ADE Work-tab run \`${args.runId}\`.`,
+  );
+  lines.push(`Bundle root: \`${args.bundlePath}\`.`);
+  if (args.tag) lines.push(`Tag: \`${args.tag}\`.`);
+  if (args.stepId) lines.push(`Current step: \`${args.stepId}\`.`);
+  if (args.parentSessionId) {
+    lines.push(`Parent (lead) session: \`${args.parentSessionId}\`.`);
+  }
+  lines.push("");
+  lines.push("**The manifest is ground truth.**");
+  lines.push("- Read `manifest.json` before reasoning. Use `manifestReadSection` for narrow reads.");
+  lines.push("- Write through orchestration tools only — never invent state.");
+  lines.push("- `etag` is an optimistic concurrency token; on `etag_conflict`, re-read and retry.");
+  lines.push("");
+  lines.push(...describeAdeOrchestratorSkill(args.adeSkillRoots));
+  lines.push("");
+  if (args.role === "lead") {
+    lines.push(
+      "**Lead-specific.** You plan and dispatch. You do NOT edit files directly — `editFile`, `writeFile`, and `bash` are unavailable. Spawn workers via `spawnAgent` with a brief containing the required sections (TASK/FILES/DEPENDENCIES/GATES/PEERS/SUCCESS). Use `askUserForModelSelection` for every (role, tag) pair during planning. Call `requestPlanApproval` before spawning any worker; `spawnAgent` is blocked until that approval advances the run out of planning.",
+    );
+    lines.push("");
+    lines.push("**Lead planning quality contract.** The plan can include any useful extra detail, but before `requestPlanApproval` it must at minimum cover:");
+    lines.push("- Goal, assumptions, and locked user decisions.");
+    lines.push("- In-scope work and a clear out-of-scope / non-goals section.");
+    lines.push("- Alternatives or tradeoffs considered for meaningful implementation choices.");
+    lines.push("- UI / UX / user-facing decisions when applicable, or an explicit note that UI is not applicable.");
+    lines.push("- Planned implementation order, dependencies, and what can safely run in parallel.");
+    lines.push("- Agent plan: which worker and validator tags to spawn, model-routing status, and what each owns.");
+    lines.push("- Coordination log rules: how `plan.md` and the manifest stay synced as workers start, fail, discover gaps, finish, or trigger replanning.");
+    lines.push("- Validation / proof plan with concrete commands, checks, screenshots, or evidence expectations derived from the repo.");
+    lines.push("- Plan presentation: write `plan.md` for the plan pane. Use GFM tables, mermaid fences, images, and links to `artifacts/ui/*.html` for design specs. Do not embed raw iframes; ADE renders `artifacts/ui/*.html` links as sandboxed previews with a full-design action.");
+    lines.push("");
+    lines.push("**Lead live coordination.** Treat `plan.md` as the shared operations log. Use `planWrite` for major replans and `planAppend` for decisions, worker starts, worker failures, scope changes, validation evidence, and final handoff notes. Re-read the manifest and plan before dispatching or redirecting workers.");
+    lines.push("");
+    lines.push("**Implementation handoff.** When you believe the plan is complete, append the final plan-ready note, tell the user they can keep planning in chat or review the plan pane, then call `requestPlanApproval`. That tool surfaces the `Implement` button in the plan pane. Do not spawn workers until the user clicks Implement or otherwise approves.");
+    lines.push("");
+    lines.push("**Spawn brief discipline.** Every spawn brief must tell the agent what to read (`manifest.json`, `plan.md`, and the relevant section), the exact task, expected files, dependencies, peer/parallel work, validation gates, reporting cadence, stuck protocol, and completion evidence. Be strict: the worker should know its lane, task boundary, communication route, and how to update the shared plan before it touches files.");
+  } else if (args.role === "worker") {
+    lines.push(
+      "**Worker-specific.** Claim before touch via `claimTask`. Execute the assigned task. Append validation evidence to `plan.md`, then call `recordValidationRun` for every required `per_worker` gate before `releaseTask(status=\"done\")`. Heartbeat is automatic.",
+    );
+    lines.push("");
+    lines.push("**Worker coordination.** Before editing, read `manifest.json`, `plan.md`, your spawn brief, and `## PEERS`. Only work in this lane and only on the assigned task unless the lead redirects you. Use `planAppend` when you start, when you discover material context, when you change approach, when you are stuck, before/after validation, and when you finish so coworkers see current state. Use `messageAgent` to report status, questions, blockers, and done/stuck summaries to the lead; inter-worker coordination goes through the lead unless the manifest protocol explicitly says otherwise.");
+  } else {
+    lines.push(
+      "**Validator-specific.** Read the validation step's `prompt` from the manifest and execute it. Append evidence to `plan.md`, then call `recordValidationRun` to flip the checklist run. On failure, report up to the lead — do NOT spawn agents yourself.",
+    );
+    lines.push("");
+    lines.push("**Validator coordination.** Read `manifest.json` and `plan.md` before validating. Append evidence to `plan.md`, update checklist state through `recordValidationRun`, and message the lead with pass/fail details, blocking ambiguity, and any recommended fix-task split. Stay inside the assigned validation scope.");
+  }
+  lines.push("");
+  lines.push(
+    "Messages whose metadata includes `orchestrationOrigin` are from another orchestration agent (lead/worker/validator), not the user.",
+  );
+  return lines.join("\n");
+}
+
 export function buildCodingAgentSystemPrompt(args: {
   cwd: string;
   mode?: HarnessMode;
@@ -84,6 +167,12 @@ export function buildCodingAgentSystemPrompt(args: {
   interactive?: boolean;
   runtime?: AdeRuntimeKind;
   adeSkillRoots?: readonly string[];
+  orchestrationRole?: OrchestratorRoleKind;
+  orchestrationRunId?: string;
+  orchestrationBundlePath?: string;
+  orchestrationTag?: string;
+  orchestrationParentSessionId?: string;
+  orchestrationStepId?: string;
 }): string {
   const mode = args.mode ?? "coding";
   const permissionMode = args.permissionMode ?? "edit";
@@ -115,9 +204,23 @@ export function buildCodingAgentSystemPrompt(args: {
   const prIssueToolNames = toolNames.filter((name) => PR_ISSUE_TOOL_NAMES.has(name));
   const hasPrIssueTools = prIssueToolNames.length > 0;
 
+  const orchestrationDirective =
+    args.orchestrationRole && args.orchestrationRunId && args.orchestrationBundlePath
+      ? buildOrchestratorRoleDirective({
+          role: args.orchestrationRole,
+          runId: args.orchestrationRunId,
+          bundlePath: args.orchestrationBundlePath,
+          tag: args.orchestrationTag,
+          parentSessionId: args.orchestrationParentSessionId,
+          stepId: args.orchestrationStepId,
+          adeSkillRoots,
+        })
+      : "";
+
   return [
     `You are ADE's software engineering agent working in ${args.cwd}.`,
     "This session is bound to that worktree. Read, edit, and run commands only inside this path unless ADE explicitly relaunches you in a different lane.",
+    ...(orchestrationDirective ? [orchestrationDirective] : []),
     ...(runtime
       ? [
           "",

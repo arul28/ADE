@@ -26,6 +26,7 @@ export type DroidSdkWorkerInit = {
   droidPath: string;
   resumeSessionId?: string | null;
   settings: DroidSdkSessionSettings;
+  mcpServers?: unknown[];
 };
 
 export type DroidSdkUserImage = {

@@ -67,7 +67,7 @@ describe("fileWatcherService", () => {
     vi.useRealTimers();
   });
 
-  it("keeps node_modules filtered even when includeIgnored is requested", () => {
+  it("keeps heavy runtime paths filtered even when includeIgnored is requested", () => {
     const service = createFileWatcherService();
 
     service.watch({ workspaceId: "ws-1", rootPath: "/repo", senderId: 1 }, vi.fn());

@@ -616,7 +616,7 @@ function MyReposTab({
   }
 
   const isConnected = Boolean(
-    status?.tokenStored && !status?.tokenDecryptionFailed,
+    status?.connected && !status?.tokenDecryptionFailed,
   );
 
   if (statusLoading && !status) {
@@ -738,7 +738,7 @@ function ConnectGithubPrompt({
               marginTop: 2,
             }}
           >
-            Paste a personal access token. Your token stays local.
+            Run gh auth login, then retry. You can also paste a personal access token.
           </div>
         </div>
       </div>

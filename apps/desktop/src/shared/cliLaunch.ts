@@ -324,15 +324,22 @@ export function buildTrackedCliLaunchCommand(args: {
     if (reasoningEffort) {
       commandArgs.push("--effort", reasoningEffort);
     }
-    commandArgs.push("--append-system-prompt", buildAdeCliAgentGuidance(skillRoots));
+    const guidance = buildAdeCliAgentGuidance(skillRoots);
+    commandArgs.push("--append-system-prompt", guidance);
     commandArgs.push(...permissionModeToClaudeFlag(args.permissionMode));
     if (initialPrompt) {
       commandArgs.push(initialPrompt);
     }
+    // Build a shorter startupCommand for the shell-fallback path that excludes
+    // the huge --append-system-prompt blob. The direct-spawn path uses the full
+    // args array. Claude still discovers ADE skills via ADE_AGENT_SKILLS_DIRS.
+    const shellArgs = commandArgs.filter(
+      (arg, i, arr) => arg !== "--append-system-prompt" && arr[i - 1] !== "--append-system-prompt",
+    );
     return {
       command: "claude",
       args: commandArgs,
-      startupCommand: commandArrayToLine(["claude", ...commandArgs]),
+      startupCommand: commandArrayToLine(["claude", ...shellArgs]),
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
   }

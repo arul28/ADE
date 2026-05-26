@@ -392,7 +392,7 @@ describe("cloneRepository", () => {
     ).rejects.toThrow(/repository not found/i);
   });
 
-  it("injects the stored GitHub token via http.extraheader so private clones succeed without a credential helper", async () => {
+  it("injects the available GitHub token via http.extraheader so private clones succeed without a credential helper", async () => {
     runGitMock.mockResolvedValue(gitOk());
     const parentDir = makeTempDir("ade-scaffold-clone-auth-");
     const service = createProjectScaffoldService({
@@ -455,7 +455,7 @@ describe("cloneRepository", () => {
       logger: makeLogger(),
       githubService: makeGithubServiceStub({
         getTokenOrThrow: vi.fn(() => {
-          throw new Error("GitHub token missing. Set it in Settings.");
+          throw new Error("GitHub auth missing. Run gh auth login or add a PAT in Settings.");
         }),
       }),
     });
@@ -505,7 +505,7 @@ describe("listMyGitHubRepos", () => {
       logger: makeLogger(),
       githubService: makeGithubServiceStub({
         getTokenOrThrow: vi.fn(() => {
-          throw new Error("GitHub token missing. Set it in Settings.");
+          throw new Error("GitHub auth missing. Run gh auth login or add a PAT in Settings.");
         }),
       }),
     });

@@ -30,7 +30,7 @@ const STEP_META: Record<SetupStep, { title: string; subtitle: string }> = {
   },
   github: {
     title: "GitHub",
-    subtitle: "Enable PR and code review workflows",
+    subtitle: "Use gh auth for PR and review workflows",
   },
   linear: {
     title: "Linear",
@@ -46,7 +46,7 @@ const STEP_HEADERS: Record<SetupStep, { heading: string; sub: string }> = {
     sub: "Set up ADE runtime providers. Claude and Codex use their native CLIs. Cursor uses a Cursor API key for SDK chat and Cursor Cloud agents. OpenCode powers API-backed and local model chats.",
   },
   helpers: { heading: "Background helpers", sub: "These lightweight helpers run in the background while you work. They are optional and can be changed anytime in Settings." },
-  github: { heading: "GitHub Integration", sub: "A personal access token lets ADE create PRs, request reviews, and monitor CI on your behalf." },
+  github: { heading: "GitHub integration", sub: "ADE uses GitHub CLI auth automatically when gh is signed in. A personal access token remains available as an optional fallback." },
   linear: { heading: "Linear Integration", sub: "Connect your Linear workspace so ADE can carry issue context through lanes, chats, GitHub PRs, and CTO workflows." },
 };
 

@@ -947,16 +947,20 @@ describe("runtime GitHub actions", () => {
       githubService: {
         getStatus: vi.fn(async () => ({
           tokenStored,
+          patTokenStored: tokenStored,
           tokenDecryptionFailed: false,
           storageScope: "app",
+          authSource: tokenStored ? "pat" : "none",
           tokenType: tokenStored ? "classic" : "unknown",
           repo: { owner: "ade", name: "runtime" },
           hasOrigin: true,
           userLogin: null,
           scopes: [],
+          ghCliPath: null,
+          ghAuthError: null,
           checkedAt: tokenStored ? TEST_NOW : null,
           repoAccessOk: tokenStored,
-          repoAccessError: tokenStored ? null : "GitHub token missing.",
+          repoAccessError: tokenStored ? null : "GitHub auth missing.",
           connected: tokenStored,
         })),
         setToken,
@@ -991,7 +995,7 @@ describe("runtime GitHub actions", () => {
     await expect(githubService.clearToken()).resolves.toMatchObject({
       connected: false,
       hasOrigin: true,
-      repoAccessError: "GitHub token missing.",
+      repoAccessError: "GitHub auth missing.",
       repoAccessOk: false,
       tokenStored: false,
     });

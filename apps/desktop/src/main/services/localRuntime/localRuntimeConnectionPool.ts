@@ -206,10 +206,11 @@ function readRuntimeInfo(value: unknown): {
   if (!runtimeInfo || typeof runtimeInfo !== "object" || Array.isArray(runtimeInfo)) {
     return { version: null, buildHash: null, defaultRole: null, pid: null };
   }
-  const version = (runtimeInfo as { version?: unknown }).version;
-  const buildHash = (runtimeInfo as { buildHash?: unknown }).buildHash;
-  const defaultRole = (runtimeInfo as { defaultRole?: unknown }).defaultRole;
-  const pid = (runtimeInfo as { pid?: unknown }).pid;
+  const info = runtimeInfo as Record<string, unknown>;
+  const version = info.version;
+  const buildHash = info.buildHash;
+  const defaultRole = info.defaultRole;
+  const pid = info.pid;
   return {
     version: typeof version === "string" && version.trim() ? version.trim() : null,
     buildHash: typeof buildHash === "string" && buildHash.trim() ? buildHash.trim() : null,
@@ -294,6 +295,54 @@ function closeRuntimeClient(client: RuntimeRpcClient): void {
   try {
     client.close();
   } catch {}
+}
+
+function signalRuntimeChildProcess(child: ChildProcess | null, signal: NodeJS.Signals): void {
+  if (!child?.pid) return;
+  try {
+    child.kill(signal);
+  } catch {}
+}
+
+async function unlinkSocketIfNotListening(socketPath: string): Promise<void> {
+  if (isAdeRuntimeNamedPipePath(socketPath)) return;
+  try {
+    const transport = await openSocketTransport(socketPath, 150);
+    transport.close();
+    return;
+  } catch {}
+  try {
+    fs.unlinkSync(socketPath);
+  } catch {}
+}
+
+function disposeOwnedRuntimeChild(
+  child: ChildProcess | null,
+  socketPath: string,
+  options: { unlinkSocket?: boolean } = {},
+): void {
+  if (!child?.pid) return;
+  let settled = false;
+  let cleanupTimer: NodeJS.Timeout | null = null;
+  const cleanup = () => {
+    if (settled) return;
+    settled = true;
+    if (cleanupTimer) {
+      clearTimeout(cleanupTimer);
+      cleanupTimer = null;
+    }
+    if (options.unlinkSocket) {
+      void unlinkSocketIfNotListening(socketPath);
+    }
+  };
+  child.once("exit", cleanup);
+  signalRuntimeChildProcess(child, "SIGTERM");
+  cleanupTimer = setTimeout(() => {
+    signalRuntimeChildProcess(child, "SIGKILL");
+    const unlinkTimer = setTimeout(cleanup, 250);
+    unlinkTimer.unref?.();
+  }, 2_000);
+  cleanupTimer.unref?.();
 }
 
 async function waitForSocket(socketPath: string, timeoutMs = 10_000): Promise<void> {
@@ -695,6 +744,7 @@ export class LocalRuntimeConnectionPool {
     this.projectsByRoot.clear();
     void pending?.then((entry) => {
       try { entry.client.close(); } catch {}
+      disposeOwnedRuntimeChild(entry.child, entry.socketPath);
     }).catch(() => {});
   }
 
@@ -714,9 +764,14 @@ export class LocalRuntimeConnectionPool {
     if (existing) return { client: existing, child: null, socketPath };
 
     const child = this.spawnRuntime(socketPath);
-    await waitForSocket(socketPath);
-    const client = await this.connectClient(socketPath);
-    return { client, child, socketPath };
+    try {
+      await waitForSocket(socketPath);
+      const client = await this.connectClient(socketPath);
+      return { client, child, socketPath };
+    } catch (error) {
+      disposeOwnedRuntimeChild(child, socketPath, { unlinkSocket: true });
+      throw error;
+    }
   }
 
   private async tryConnect(socketPath: string): Promise<RuntimeRpcClient | null> {
@@ -846,14 +901,14 @@ export class LocalRuntimeConnectionPool {
     const args = buildLocalRuntimeServeArgs(cliPath, socketPath, this.options);
     this.logger.info("local_runtime.spawn", { cliPath, socketPath, disableSync: this.options.disableSync === true });
     const env = buildLocalRuntimeNodeEnv(this.appVersion);
+    env.ADE_RUNTIME_PARENT_PID = String(process.pid);
     const buildHash = computeLocalRuntimeBuildHash(cliPath);
     if (buildHash) env.ADE_RUNTIME_BUILD_HASH = buildHash;
     const child = spawn(process.execPath, args, {
       env,
       stdio: "ignore",
-      detached: true,
+      detached: false,
     });
-    child.unref();
     child.once("exit", (code, signal) => {
       this.logger.warn("local_runtime.exited", { code, signal });
       this.connection = null;

@@ -5,6 +5,19 @@ export type DrawerChatSelection = {
   selectedDrawerChatAction: "new-chat" | null;
 };
 
+export function chatSelectionCopyText(args: {
+  drawerSection: "lanes" | "chats";
+  displaySessions: AgentChatSessionSummary[];
+  selectedDrawerChatAction: "new-chat" | null;
+  selectedDrawerChatId: string | null;
+}): string | null {
+  if (args.drawerSection !== "chats") return null;
+  if (args.selectedDrawerChatAction === "new-chat" || !args.selectedDrawerChatId) return null;
+  const session = args.displaySessions.find((entry) => entry.sessionId === args.selectedDrawerChatId);
+  if (!session) return null;
+  return session.title?.trim() || session.sessionId;
+}
+
 export function resolveDrawerChatSelection(args: {
   activeLaneId: string | null;
   activeSessionId: string | null;

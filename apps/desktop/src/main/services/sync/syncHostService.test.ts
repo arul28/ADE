@@ -7,7 +7,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { openKvDb } from "../state/kvDb";
 import { isCrsqliteAvailable } from "../state/crsqliteExtension";
-import { createSyncHostService, syncHeartbeatMissLimitForPeerMetadata } from "./syncHostService";
+import {
+  createSyncHostService,
+  parseNativeLanDiscoveryProcessList,
+  syncHeartbeatMissLimitForPeerMetadata,
+} from "./syncHostService";
 import type { SyncPinStore } from "./syncPinStore";
 import { encodeSyncEnvelope, parseSyncEnvelope } from "./syncProtocol";
 import type { ParsedSyncEnvelope } from "./syncProtocol";
@@ -307,6 +311,20 @@ it("allows a wider heartbeat grace window for mobile peers", () => {
   expect(syncHeartbeatMissLimitForPeerMetadata({ platform: "unknown", deviceType: "phone" })).toBeGreaterThan(
     syncHeartbeatMissLimitForPeerMetadata(null),
   );
+});
+
+it("parses ADE dns-sd discovery processes for orphan recovery", () => {
+  const stdout = [
+    " 111 1 dns-sd -R ADE Sync lappy 8788 _ade-sync._tcp local 8788 version=1",
+    " 112 44 dns-sd -R ADE Sync current 8788 _ade-sync._tcp local 8788 version=1",
+    " 113 1 dns-sd -B _http._tcp local",
+    " 114 1 /usr/bin/other -R ADE Sync lappy 8788 _ade-sync._tcp local",
+  ].join("\n");
+
+  expect(parseNativeLanDiscoveryProcessList(stdout)).toEqual([
+    expect.objectContaining({ pid: 111, ppid: 1 }),
+    expect.objectContaining({ pid: 112, ppid: 44 }),
+  ]);
 });
 
 describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {

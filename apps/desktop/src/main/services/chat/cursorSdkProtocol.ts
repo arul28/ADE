@@ -49,6 +49,7 @@ export type CursorSdkWorkerInit = {
   agentId?: string | null;
   agentName?: string | null;
   policy: CursorSdkPermissionPolicy;
+  mcpServers?: Record<string, unknown>;
 };
 
 export type CursorSdkUserImage = {

@@ -30,6 +30,7 @@ vi.mock("@opencode-ai/sdk", () => ({
 const mockState = vi.hoisted(() => ({
   sessions: new Map<string, any>(),
   uuidCounter: 0,
+  mcpServerCounter: 0,
   codexThreadCounter: 0,
   codexTurnCounter: 0,
   openCodeSessionCounter: 0,
@@ -182,6 +183,13 @@ vi.mock("node:readline", () => ({
 }));
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
+  createSdkMcpServer: vi.fn((config: any) => ({
+    type: "sdk",
+    name: config?.name,
+    instance: {
+      _registeredTools: Object.fromEntries((config?.tools ?? []).map((entry: any) => [entry.name, entry])),
+    },
+  })),
   getSessionInfo: vi.fn(),
   getSessionMessages: vi.fn(),
   listSessions: vi.fn(),
@@ -189,6 +197,35 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   renameSession: vi.fn(async () => undefined),
   startup: vi.fn(),
   tagSession: vi.fn(async () => undefined),
+  tool: vi.fn((name: string, description: string, inputSchema: unknown, handler: unknown, options?: { alwaysLoad?: boolean }) => ({
+    name,
+    description,
+    inputSchema,
+    handler,
+    ...(options?.alwaysLoad ? { _meta: { "anthropic/alwaysLoad": true } } : {}),
+  })),
+}));
+
+vi.mock("@factory/droid-sdk", () => ({
+  createSdkMcpServer: vi.fn((config: any) => ({
+    async start() {
+      mockState.mcpServerCounter += 1;
+      return {
+        type: "http",
+        name: config?.name,
+        url: `http://127.0.0.1:${47000 + mockState.mcpServerCounter}/mcp`,
+        headers: [],
+        _registeredTools: Object.fromEntries((config?.tools ?? []).map((entry: any) => [entry.name, entry])),
+      };
+    },
+    close: vi.fn(async () => undefined),
+  })),
+  tool: vi.fn((name: string, description: string, inputSchema: unknown, handler: unknown) => ({
+    name,
+    description,
+    inputSchema,
+    handler,
+  })),
 }));
 
 vi.mock("../ai/codexExecutable", () => ({
@@ -454,6 +491,12 @@ vi.mock("../ai/tools/universalTools", () => ({
   createUniversalToolSet: vi.fn((): Record<string, unknown> => ({
     readFile: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
     grep: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+    TodoRead: {
+      description: "stub",
+      inputSchema: { safeParseAsync: vi.fn(async () => ({ success: true, data: {} })) },
+      execute: vi.fn(async () => ({ count: 0, todos: [] })),
+    },
+    TodoWrite: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
     bash: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
   })),
 }));
@@ -673,6 +716,7 @@ import {
 import { spawn } from "node:child_process";
 import { detectAllAuth } from "../ai/authDetector";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
+import { createOrchestrationService } from "../orchestration/orchestrationService";
 import { runGit } from "../git/git";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { mapPermissionToCodex } from "./permissionMapping";
@@ -1237,6 +1281,20 @@ function createService(overrides: Record<string, unknown> = {}) {
   return { service, logger, laneService, sessionService, projectConfigService, issueInventoryService, aiIntegrationService };
 }
 
+async function createLoadedOrchestrationRun(leadSessionId = "S-lead") {
+  const orchestrationService = createOrchestrationService({
+    resolveLaneWorktree: () => tmpRoot,
+  });
+  const created = await orchestrationService.runCreate({
+    laneId: "lane-1",
+    leadSessionId,
+    bundleRoot: tmpRoot,
+    title: "test orchestration",
+    goalSummary: "orchestrate the work",
+  });
+  return { orchestrationService, created };
+}
+
 function readPersistedChatState(sessionId: string): Record<string, any> {
   return JSON.parse(
     fs.readFileSync(path.join(tmpRoot, ".ade", "cache", "chat-sessions", `${sessionId}.json`), "utf8"),
@@ -1339,6 +1397,7 @@ beforeEach(() => {
   vi.spyOn(os, "homedir").mockReturnValue(tmpHomeRoot);
   mockState.sessions.clear();
   mockState.uuidCounter = 0;
+  mockState.mcpServerCounter = 0;
   mockState.codexThreadCounter = 0;
   mockState.codexTurnCounter = 0;
   mockState.openCodeSessionCounter = 0;
@@ -1889,6 +1948,53 @@ describe("createAgentChatService", () => {
         allowManagedMcpServersOnly: true,
         strictPluginOnlyCustomization: ["mcp"],
       });
+    });
+
+    it("attaches ADE orchestration tools to Claude lead sessions through an SDK MCP server", async () => {
+      const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
+      try {
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send: vi.fn(),
+          stream: vi.fn(async function* () {
+            return;
+          }),
+          close: vi.fn(),
+          sessionId: "sdk-session-orchestration",
+        } as any);
+
+        const { service } = createService({
+          getOrchestrationService: () => orchestrationService,
+        });
+        await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+          modelId: "anthropic/claude-sonnet-4-6",
+          interactionMode: "orchestrator-lead",
+          orchestrationRunId: created.runId,
+          orchestrationRole: "lead",
+          orchestrationBundlePath: created.manifest.bundlePath,
+        });
+
+        await vi.waitFor(() => {
+          expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+        });
+
+        const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as any;
+        const server = opts?.mcpServers?.["ade-orchestration"];
+        expect(server?.type).toBe("sdk");
+        const toolNames = Object.keys(server?.instance?._registeredTools ?? {});
+        expect(toolNames).toEqual(expect.arrayContaining(["spawnAgent", "messageAgent"]));
+        expect(toolNames).not.toContain("editFile");
+        expect(toolNames).not.toContain("writeFile");
+        expect(toolNames).not.toContain("bash");
+        expect(opts?.managedSettings?.allowedMcpServers).toEqual(
+          expect.arrayContaining([expect.objectContaining({ serverName: "ade-orchestration" })]),
+        );
+        expect(opts?.disallowedTools).toEqual(expect.arrayContaining(["Bash", "Edit", "Write"]));
+      } finally {
+        await orchestrationService.dispose();
+      }
     });
 
     it("passes Claude subprocess spawns through the reaper", async () => {
@@ -2649,6 +2755,156 @@ describe("createAgentChatService", () => {
       expect(textInput).not.toContain("only normal reason to skip ADE CLI");
       expect(textInput).not.toContain("ade actions list --text");
       expect(textInput).toContain("Inspect the repo and fix the lane launch bug.");
+    });
+
+    it("adds dynamic orchestration tools to Codex orchestrator threads", async () => {
+      const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
+      try {
+        const { service } = createService({
+          getOrchestrationService: () => orchestrationService,
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+          interactionMode: "orchestrator-lead",
+          orchestrationRunId: created.runId,
+          orchestrationRole: "lead",
+          orchestrationBundlePath: created.manifest.bundlePath,
+        });
+
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "Plan the work.",
+        });
+
+        await vi.waitFor(() => {
+          expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
+        });
+
+        const startPayload = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start") as any;
+        const dynamicTools = startPayload?.params?.dynamicTools ?? [];
+        const toolNames = dynamicTools.map((entry: { name?: string }) => entry.name);
+        expect(toolNames).toEqual(expect.arrayContaining(["spawnAgent", "messageAgent", "getAgentTranscript"]));
+        expect(toolNames).not.toContain("editFile");
+        expect(toolNames).not.toContain("writeFile");
+        expect(toolNames).not.toContain("bash");
+        expect(dynamicTools.every((entry: { namespace?: string }) => entry.namespace === "ade_orchestration")).toBe(true);
+        expect(startPayload?.params).toMatchObject({
+          approvalPolicy: "never",
+          sandbox: "danger-full-access",
+        });
+
+        expect(toolNames.length).toBeGreaterThan(5);
+      } finally {
+        await orchestrationService.dispose();
+      }
+    });
+
+    it("attaches ADE orchestration tools to OpenCode orchestrator sessions through MCP", async () => {
+      vi.mocked(streamText).mockReturnValue({
+        fullStream: (async function* () {
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any);
+      const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
+      try {
+        const { service } = createService({
+          getOrchestrationService: () => orchestrationService,
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "opencode",
+          model: "",
+          modelId: "opencode/openai/gpt-5.4",
+          interactionMode: "orchestrator-lead",
+          orchestrationRunId: created.runId,
+          orchestrationRole: "lead",
+          orchestrationBundlePath: created.manifest.bundlePath,
+        });
+
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "Plan the work.",
+        });
+
+        const startArgs = vi.mocked(startOpenCodeSession).mock.calls.at(-1)?.[0] as any;
+        expect(startArgs?.mcp?.["ade-orchestration"]).toMatchObject({
+          type: "remote",
+          enabled: true,
+          url: expect.stringContaining("/mcp"),
+        });
+      } finally {
+        await orchestrationService.dispose();
+      }
+    });
+
+    it("attaches ADE orchestration tools to Cursor SDK orchestrator sessions through MCP", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
+      try {
+        const { service } = createService({
+          getOrchestrationService: () => orchestrationService,
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "cursor",
+          model: "composer-2",
+          modelId: "cursor/composer-2",
+          interactionMode: "orchestrator-lead",
+          orchestrationRunId: created.runId,
+          orchestrationRole: "lead",
+          orchestrationBundlePath: created.manifest.bundlePath,
+        });
+
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "Plan the work.",
+        }, { awaitDispatch: true });
+
+        expect(mockState.cursorSdkAcquireCalls.at(-1)?.mcpServers).toMatchObject({
+          "ade-orchestration": {
+            type: "http",
+            url: expect.stringContaining("/mcp"),
+          },
+        });
+      } finally {
+        await orchestrationService.dispose();
+      }
+    });
+
+    it("attaches ADE orchestration tools to Droid SDK orchestrator sessions through MCP", async () => {
+      const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
+      try {
+        const { service } = createService({
+          getOrchestrationService: () => orchestrationService,
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "droid",
+          model: "custom:claude-sonnet-4-6-thinking-32000",
+          modelId: "droid/custom:claude-sonnet-4-6-thinking-32000",
+          interactionMode: "orchestrator-lead",
+          orchestrationRunId: created.runId,
+          orchestrationRole: "lead",
+          orchestrationBundlePath: created.manifest.bundlePath,
+        });
+
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "Plan the work.",
+        }, { awaitDispatch: true });
+
+        expect(mockState.droidAcquireCalls.at(-1)?.mcpServers).toEqual([
+          expect.objectContaining({
+            type: "http",
+            name: "ade-orchestration",
+            url: expect.stringContaining("/mcp"),
+          }),
+        ]);
+      } finally {
+        await orchestrationService.dispose();
+      }
     });
 
     it("passes the selected Codex reasoning effort into app-server config", async () => {

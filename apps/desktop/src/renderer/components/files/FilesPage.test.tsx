@@ -407,20 +407,18 @@ describe("FilesPage", () => {
       depth: 1,
     });
     await waitForFilesWatcherStartup();
-    expect((window.ade.files.watchChanges as any).mock.calls[0]?.[0]).toMatchObject({
-      workspaceId: "primary",
-      includeIgnored: true,
-    });
+    const watchArgs = (window.ade.files.watchChanges as any).mock.calls[0]?.[0];
+    expect(watchArgs).toMatchObject({ workspaceId: "primary" });
+    expect(watchArgs).not.toHaveProperty("includeIgnored");
   });
 
-  it("starts the workspace watcher even before a file is opened", async () => {
+  it("starts the workspace watcher before a file is opened without watching ADE runtime churn", async () => {
     renderFilesPage({ preferPrimaryWorkspace: true });
 
     await waitForFilesWatcherStartup();
-    expect((window.ade.files.watchChanges as any).mock.calls[0]?.[0]).toMatchObject({
-      workspaceId: "primary",
-      includeIgnored: true,
-    });
+    const watchArgs = (window.ade.files.watchChanges as any).mock.calls[0]?.[0];
+    expect(watchArgs).toMatchObject({ workspaceId: "primary" });
+    expect(watchArgs).not.toHaveProperty("includeIgnored");
   });
 
   it("filters loaded tree paths locally and keeps content search explicit", async () => {

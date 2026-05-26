@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import { IPC } from "../shared/ipc";
+import { createOrchestrationBridge } from "./orchestrationBridge";
 import type {
   AdeCleanupResult,
   AdeProjectEvent,
@@ -5192,7 +5193,13 @@ contextBridge.exposeInMainWorld("ade", {
           ipcRenderer.invoke(IPC.agentChatCodexOpenInCli, args),
         ),
     },
+    readTranscript: (args: {
+      sessionId: string;
+      limit?: number;
+      since?: string;
+    }) => ipcRenderer.invoke(IPC.agentChatReadTranscript, args),
   },
+  orchestration: createOrchestrationBridge(ipcRenderer),
   computerUse: {
     listArtifacts: async (
       args: ComputerUseArtifactListArgs = {},

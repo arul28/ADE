@@ -8,7 +8,9 @@ import { connectToAde } from "../connection";
 import { JsonRpcClient } from "../jsonRpcClient";
 import { startTuiHeartbeat, type TuiHeartbeat } from "../heartbeat";
 import {
+  appendDedupedTuiEvent,
   appendReservedTuiEvent,
+  dedupeTuiEvents,
   reserveTuiEventDedupKey,
   syncTuiEventDedupKeys,
   tuiEventDedupKey,
@@ -772,6 +774,52 @@ describe("tuiEventDedupKey", () => {
     syncTuiEventDedupKeys(keys, [first]);
 
     expect(reserveTuiEventDedupKey(first, keys)).toBeNull();
+  });
+
+  it("rejects semantic replays even when sequence and timestamp differ", () => {
+    const first = {
+      sessionId: "session-1",
+      sequence: 1,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      event: { type: "user_message", text: "hello", turnId: "turn-1" },
+    } as AgentChatEventEnvelope;
+    const replay = {
+      sessionId: "session-1",
+      sequence: 99,
+      timestamp: "2026-01-01T00:01:00.000Z",
+      event: { type: "user_message", text: "hello", turnId: "turn-1" },
+    } as AgentChatEventEnvelope;
+    const keys = new Set<string>();
+
+    syncTuiEventDedupKeys(keys, [first]);
+
+    expect(tuiEventDedupKey(first)).toBe(tuiEventDedupKey(replay));
+    expect(reserveTuiEventDedupKey(replay, keys)).toBeNull();
+  });
+
+  it("dedupes history and live append using the same semantic key", () => {
+    const first = {
+      sessionId: "session-1",
+      sequence: 1,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      event: { type: "text", text: "same chunk", turnId: "turn-1", itemId: "msg-1" },
+    } as AgentChatEventEnvelope;
+    const replay = {
+      sessionId: "session-1",
+      sequence: 2,
+      timestamp: "2026-01-01T00:00:01.000Z",
+      event: { type: "text", text: "same chunk", turnId: "turn-1", itemId: "msg-1" },
+    } as AgentChatEventEnvelope;
+    const next = {
+      sessionId: "session-1",
+      sequence: 3,
+      timestamp: "2026-01-01T00:00:02.000Z",
+      event: { type: "text", text: "next chunk", turnId: "turn-1", itemId: "msg-1" },
+    } as AgentChatEventEnvelope;
+
+    expect(dedupeTuiEvents([first, replay, next])).toEqual([first, next]);
+    expect(appendDedupedTuiEvent([first], replay)).toEqual([first]);
+    expect(appendDedupedTuiEvent([first], next)).toEqual([first, next]);
   });
 
   it("keeps pending reserved keys when trimming old events", () => {

@@ -68,6 +68,7 @@ export async function acquireDroidSdkConnection(args: {
   sessionId: string;
   resumeSessionId?: string | null;
   settings: DroidSdkSessionSettings;
+  mcpServers?: unknown[];
   logger?: Logger;
 }): Promise<{ pooled: DroidSdkPooled; generation: number }> {
   const existing = pools.get(args.poolKey);
@@ -241,6 +242,7 @@ async function createDroidSdkConnection(args: Parameters<typeof acquireDroidSdkC
     droidPath: args.droidPath,
     resumeSessionId: args.resumeSessionId ?? null,
     settings: args.settings,
+    ...(args.mcpServers?.length ? { mcpServers: args.mcpServers } : {}),
   };
   let ready: DroidSdkReady;
   try {

@@ -9,6 +9,7 @@ import type {
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
 } from "./chat";
+import type { OrchestrationRole } from "./orchestration";
 
 export type TerminalSessionStatus = "running" | "completed" | "failed" | "disposed";
 
@@ -89,6 +90,14 @@ export type TerminalSessionSummary = {
   chatIdleSinceAt?: string | null;
   /** Parent chat session id when this terminal was launched from a chat (e.g. App Control, in-chat terminal drawer). */
   chatSessionId?: string | null;
+  /**
+   * Orchestration-mode fields. Populated only when the underlying chat session
+   * is part of an orchestration run; the sidebar renders role pills from these.
+   * All optional for migration tolerance.
+   */
+  orchestrationRunId?: string;
+  orchestrationRole?: OrchestrationRole;
+  orchestrationTag?: string;
 };
 
 export type TerminalSessionDetail = TerminalSessionSummary & {

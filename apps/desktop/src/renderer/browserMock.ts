@@ -119,10 +119,160 @@ function mockBrowserLaneHealth(laneId: string) {
 }
 
 const oneHourAgo = new Date(Date.now() - 3600000).toISOString();
+const thirtyMinAgo = new Date(Date.now() - 1800000).toISOString();
+const tenMinAgo = new Date(Date.now() - 600000).toISOString();
+const fiveMinAgo = new Date(Date.now() - 300000).toISOString();
 const yesterday = new Date(Date.now() - 86400000).toISOString();
 const twoDaysAgo = new Date(Date.now() - 172800000).toISOString();
 const threeDaysAgo = new Date(Date.now() - 259200000).toISOString();
 const fourHoursFromNow = new Date(Date.now() + 4 * 3600000).toISOString();
+
+// ── Orchestration demo data ──────────────────────────────────
+const MOCK_ORCH_RUN_ID = "orch-run-demo-001";
+const MOCK_ORCH_BUNDLE = "/tmp/mock/.ade/orchestration/" + MOCK_ORCH_RUN_ID;
+const MOCK_ORCH_LEAD_SESSION = "mock-orch-lead";
+const MOCK_ORCH_WORKER_1 = "mock-orch-worker-auth";
+const MOCK_ORCH_WORKER_2 = "mock-orch-worker-dashboard";
+const MOCK_ORCH_VALIDATOR = "mock-orch-validator";
+
+const MOCK_ORCH_MANIFEST: any = {
+  version: 1,
+  runId: MOCK_ORCH_RUN_ID,
+  laneId: "lane-main",
+  bundlePath: MOCK_ORCH_BUNDLE,
+  etag: "etag-42",
+  serverGeneration: 42,
+  createdAt: oneHourAgo,
+  updatedAt: fiveMinAgo,
+  title: "Implement user authentication + dashboard",
+  goalSummary: "Add OAuth login flow with Google/GitHub, session management, and a post-login dashboard showing recent activity and quick actions.",
+  currentPhase: "developing",
+  phases: [
+    { id: "planning", title: "Planning", status: "done", startedAt: oneHourAgo, completedAt: thirtyMinAgo },
+    { id: "developing", title: "Developing", status: "active", startedAt: thirtyMinAgo },
+    { id: "validating", title: "Validating", status: "pending" },
+    { id: "wrapup", title: "Wrap-up", status: "pending" },
+  ],
+  agents: [
+    { sessionId: MOCK_ORCH_LEAD_SESSION, role: "lead", goalSummary: "Coordinate auth + dashboard implementation", status: "running", lastHeartbeatAt: fiveMinAgo, spawnedAt: oneHourAgo, spawnFingerprint: { provider: "claude", modelId: "claude-sonnet-4-6", resolvedAt: oneHourAgo, routingKey: "default" } },
+    { sessionId: MOCK_ORCH_WORKER_1, role: "worker", tag: "auth", displayName: "Auth flow worker", goalSummary: "Build OAuth login with Google + GitHub providers", status: "running", currentStepId: "T-auth-oauth", lastHeartbeatAt: fiveMinAgo, spawnedAt: thirtyMinAgo, spawnFingerprint: { provider: "claude", modelId: "claude-sonnet-4-6", resolvedAt: thirtyMinAgo, routingKey: "byTag" } },
+    { sessionId: MOCK_ORCH_WORKER_2, role: "worker", tag: "dashboard", displayName: "Dashboard worker", goalSummary: "Build post-login dashboard with activity feed and quick actions", status: "running", currentStepId: "T-dash-layout", lastHeartbeatAt: tenMinAgo, spawnedAt: thirtyMinAgo, spawnFingerprint: { provider: "codex", modelId: "openai/o3", resolvedAt: thirtyMinAgo, routingKey: "byRoleTag" } },
+    { sessionId: MOCK_ORCH_VALIDATOR, role: "validator", tag: "quality", displayName: "Quality validator", goalSummary: "Verify test coverage, type safety, and security review", status: "pending", spawnedAt: thirtyMinAgo, spawnFingerprint: { provider: "claude", modelId: "claude-sonnet-4-6", resolvedAt: thirtyMinAgo, routingKey: "byRole" } },
+  ],
+  tasks: [
+    { id: "T-auth-oauth", phaseId: "developing", title: "OAuth provider integration", description: "Implement Google and GitHub OAuth flows with passport.js", status: "in_progress", tag: "auth", labels: ["backend", "security"], priority: "high", estimatedComplexity: "medium", filesHint: ["src/auth/oauth.ts", "src/auth/providers/google.ts", "src/auth/providers/github.ts"], assigneeSessionId: MOCK_ORCH_WORKER_1, claimedAt: thirtyMinAgo, validationGate: { required: true, stepIds: ["VS-auth-security"] }, attempts: [{ id: "att-1", sessionId: MOCK_ORCH_WORKER_1, startedAt: thirtyMinAgo, outcome: "succeeded" }] },
+    { id: "T-auth-session", phaseId: "developing", title: "Session management", description: "Cookie-based session with Redis store, CSRF protection", status: "pending", tag: "auth", labels: ["backend", "security"], priority: "high", estimatedComplexity: "small", blockedBy: ["T-auth-oauth"], filesHint: ["src/auth/session.ts", "src/middleware/csrf.ts"], validationGate: { required: true, stepIds: ["VS-auth-security"] } },
+    { id: "T-dash-layout", phaseId: "developing", title: "Dashboard layout + routing", description: "Post-login dashboard shell with sidebar nav and content area", status: "in_progress", tag: "dashboard", labels: ["frontend", "ui"], priority: "normal", estimatedComplexity: "medium", filesHint: ["src/pages/Dashboard.tsx", "src/components/DashboardShell.tsx"], assigneeSessionId: MOCK_ORCH_WORKER_2, claimedAt: thirtyMinAgo, validationGate: { required: false, stepIds: [] }, attempts: [{ id: "att-2", sessionId: MOCK_ORCH_WORKER_2, startedAt: thirtyMinAgo, outcome: "succeeded" }] },
+    { id: "T-dash-activity", phaseId: "developing", title: "Activity feed component", description: "Real-time activity feed with infinite scroll and skeleton loading", status: "pending", tag: "dashboard", labels: ["frontend"], priority: "normal", estimatedComplexity: "small", blockedBy: ["T-dash-layout"], filesHint: ["src/components/ActivityFeed.tsx"], validationGate: { required: false, stepIds: [] } },
+    { id: "T-dash-actions", phaseId: "developing", title: "Quick actions grid", description: "Grid of action cards with keyboard navigation", status: "pending", tag: "dashboard", labels: ["frontend"], priority: "low", estimatedComplexity: "trivial", blockedBy: ["T-dash-layout"], filesHint: ["src/components/QuickActions.tsx"], validationGate: { required: false, stepIds: [] } },
+    { id: "T-plan-review", phaseId: "planning", title: "Architecture review", description: "Review proposed architecture, confirm tech stack", status: "done", tag: "planning", labels: ["planning"], priority: "critical", estimatedComplexity: "small", assigneeSessionId: MOCK_ORCH_LEAD_SESSION, validationGate: { required: false, stepIds: [] } },
+  ],
+  validationStrategy: {
+    steps: [
+      { id: "VS-auth-security", concern: "reverify_changes", scope: "per_worker", required: true, prompt: "Verify OAuth token handling, CSRF protection, and session cookie security flags", evidenceRequired: ["test_log", "diff_summary"] },
+      { id: "VS-test-coverage", concern: "test_suite_truthfulness", scope: "mission_exit", required: true, prompt: "Run full test suite, verify >80% branch coverage on new code", evidenceRequired: ["test_log"] },
+    ],
+    checklist: [],
+  },
+  modelRouting: {
+    default: { provider: "claude", modelId: "claude-sonnet-4-6" },
+    byRole: { validator: { provider: "claude", modelId: "claude-sonnet-4-6", reasoningEffort: "high" } },
+    byTag: { auth: { provider: "claude", modelId: "claude-sonnet-4-6" } },
+    byRoleTag: { "worker:dashboard": { provider: "codex", modelId: "openai/o3" } },
+  },
+  assets: [
+    { id: "asset-1", path: "artifacts/ui/dashboard-wireframe.html", kind: "html_spec", version: 1, approval: "approved" },
+    { id: "asset-2", path: "artifacts/auth-flow-diagram.md", kind: "doc", version: 1 },
+  ],
+  decisions: [
+    { id: "D-1", at: oneHourAgo, source: "user", summary: "Use passport.js for OAuth instead of custom implementation" },
+    { id: "D-2", at: thirtyMinAgo, source: "lead", summary: "Split auth and dashboard into parallel work streams" },
+  ],
+  userOverrides: [],
+  leadState: { lastSnapshotEtag: "etag-40", lastSnapshotSeenAt: tenMinAgo, planApprovedAt: thirtyMinAgo },
+  history: [
+    { etag: "etag-1", at: oneHourAgo, summary: "Run created", patchKindSummary: "core" },
+    { etag: "etag-20", at: thirtyMinAgo, summary: "Plan approved, entering development", patchKindSummary: "phase" },
+    { etag: "etag-30", at: thirtyMinAgo, summary: "Workers spawned for auth and dashboard", patchKindSummary: "agent" },
+    { etag: "etag-42", at: fiveMinAgo, summary: "Auth worker claimed T-auth-oauth", patchKindSummary: "task" },
+  ],
+};
+
+const MOCK_ORCH_PLAN_MD = `# Auth + Dashboard Implementation Plan
+
+## Architecture
+
+OAuth flow uses passport.js with Google and GitHub strategies.
+Sessions stored in Redis with \`connect-redis\`.
+Dashboard is a React SPA with server-side data fetching.
+
+\`\`\`mermaid
+graph LR
+  A[Login Page] --> B{OAuth Provider}
+  B --> C[Google]
+  B --> D[GitHub]
+  C --> E[Callback Handler]
+  D --> E
+  E --> F[Session Created]
+  F --> G[Dashboard]
+\`\`\`
+
+## Task Breakdown
+
+### Auth Stream (tag: auth)
+1. **T-auth-oauth** — OAuth provider integration (Google + GitHub)
+2. **T-auth-session** — Session management (Redis, CSRF, expiry)
+
+### Dashboard Stream (tag: dashboard)
+3. **T-dash-layout** — Dashboard layout + routing
+4. **T-dash-activity** — Activity feed component
+5. **T-dash-actions** — Quick actions grid
+
+## Validation Strategy
+
+- **Security review** (per-worker): OAuth token handling, CSRF, cookie flags
+- **Test coverage** (exit gate): >80% branch coverage on new code
+
+## Decisions
+
+- passport.js over custom OAuth (user decision)
+- Parallel auth + dashboard streams (lead decision, no shared code)
+`;
+
+const MOCK_ORCH_SESSIONS: any[] = [
+  {
+    id: MOCK_ORCH_LEAD_SESSION, laneId: "lane-main", laneName: "main", ptyId: null, tracked: true, pinned: false, manuallyNamed: false,
+    goal: "Coordinate auth + dashboard implementation", toolType: "claude-chat", title: "Orchestrator Lead", status: "running",
+    startedAt: oneHourAgo, endedAt: null, archivedAt: null, exitCode: null, transcriptPath: null, headShaStart: null, headShaEnd: null,
+    lastOutputPreview: "Workers spawned. Auth and dashboard streams running in parallel.", summary: null, runtimeState: "running", resumeCommand: null,
+    resumeMetadata: { provider: "claude", targetKind: "session", targetId: MOCK_ORCH_LEAD_SESSION, modelId: "claude-sonnet-4-6", model: "Sonnet 4.6", interactionMode: "orchestrator-lead", launch: {} },
+    orchestrationRunId: MOCK_ORCH_RUN_ID, orchestrationRole: "lead", orchestrationBundlePath: MOCK_ORCH_BUNDLE,
+  },
+  {
+    id: MOCK_ORCH_WORKER_1, laneId: "lane-main", laneName: "main", ptyId: null, tracked: true, pinned: false, manuallyNamed: false,
+    goal: "Build OAuth login with Google + GitHub providers", toolType: "claude-chat", title: "Auth flow worker", status: "running",
+    startedAt: thirtyMinAgo, endedAt: null, archivedAt: null, exitCode: null, transcriptPath: null, headShaStart: null, headShaEnd: null,
+    lastOutputPreview: "Implementing Google OAuth callback handler…", summary: null, runtimeState: "running", resumeCommand: null,
+    resumeMetadata: { provider: "claude", targetKind: "session", targetId: MOCK_ORCH_WORKER_1, modelId: "claude-sonnet-4-6", model: "Sonnet 4.6", interactionMode: "orchestrator-worker", launch: {} },
+    orchestrationRunId: MOCK_ORCH_RUN_ID, orchestrationRole: "worker", orchestrationTag: "auth", orchestrationStepId: "T-auth-oauth", orchestrationParentSessionId: MOCK_ORCH_LEAD_SESSION, orchestrationBundlePath: MOCK_ORCH_BUNDLE,
+  },
+  {
+    id: MOCK_ORCH_WORKER_2, laneId: "lane-main", laneName: "main", ptyId: null, tracked: true, pinned: false, manuallyNamed: false,
+    goal: "Build dashboard layout and routing", toolType: "codex-chat", title: "Dashboard worker", status: "running",
+    startedAt: thirtyMinAgo, endedAt: null, archivedAt: null, exitCode: null, transcriptPath: null, headShaStart: null, headShaEnd: null,
+    lastOutputPreview: "Setting up dashboard shell with sidebar navigation…", summary: null, runtimeState: "running", resumeCommand: null,
+    resumeMetadata: { provider: "codex", targetKind: "session", targetId: MOCK_ORCH_WORKER_2, modelId: "openai/o3", model: "o3", interactionMode: "orchestrator-worker", launch: {} },
+    orchestrationRunId: MOCK_ORCH_RUN_ID, orchestrationRole: "worker", orchestrationTag: "dashboard", orchestrationStepId: "T-dash-layout", orchestrationParentSessionId: MOCK_ORCH_LEAD_SESSION, orchestrationBundlePath: MOCK_ORCH_BUNDLE,
+  },
+  {
+    id: MOCK_ORCH_VALIDATOR, laneId: "lane-main", laneName: "main", ptyId: null, tracked: true, pinned: false, manuallyNamed: false,
+    goal: "Verify test coverage and security review", toolType: "claude-chat", title: "Quality validator", status: "idle",
+    startedAt: thirtyMinAgo, endedAt: null, archivedAt: null, exitCode: null, transcriptPath: null, headShaStart: null, headShaEnd: null,
+    lastOutputPreview: "Waiting for development phase to complete…", summary: null, runtimeState: "idle", resumeCommand: null,
+    resumeMetadata: { provider: "claude", targetKind: "session", targetId: MOCK_ORCH_VALIDATOR, modelId: "claude-sonnet-4-6", model: "Sonnet 4.6", interactionMode: "orchestrator-validator", launch: {} },
+    orchestrationRunId: MOCK_ORCH_RUN_ID, orchestrationRole: "validator", orchestrationTag: "quality", orchestrationParentSessionId: MOCK_ORCH_LEAD_SESSION, orchestrationBundlePath: MOCK_ORCH_BUNDLE,
+  },
+];
 
 // ── Lane defaults (fields required by LaneSummary) ────────────
 function makeLane(
@@ -508,9 +658,12 @@ const ADE_DB_SESSIONS: any[] =
   USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.sessions)
     ? ADE_DB_SNAPSHOT.sessions
     : [];
-/** Prefer exported DB rows when present; otherwise built-ins so Work is usable without a snapshot file. */
-const MOCK_SESSIONS: any[] =
-  ADE_DB_SESSIONS.length > 0 ? ADE_DB_SESSIONS : BUILTIN_MOCK_SESSIONS;
+/** Prefer exported DB rows when present; otherwise built-ins so Work is usable without a snapshot file.
+ *  Always append orchestration demo sessions so the orchestration panel is populated. */
+const MOCK_SESSIONS: any[] = [
+  ...(ADE_DB_SESSIONS.length > 0 ? ADE_DB_SESSIONS : BUILTIN_MOCK_SESSIONS),
+  ...MOCK_ORCH_SESSIONS,
+];
 const ADE_DB_CHAT_TRANSCRIPTS: Record<
   string,
   { events?: any[]; path?: string | null }
@@ -899,6 +1052,12 @@ function mockAgentChatSummaryFromSession(session: any): any | null {
     summary: session.summary ?? null,
     threadId: session.resumeMetadata?.threadId ?? undefined,
     requestedCwd: session.resumeMetadata?.requestedCwd ?? null,
+    orchestrationRunId: session.orchestrationRunId ?? undefined,
+    orchestrationRole: session.orchestrationRole ?? undefined,
+    orchestrationParentSessionId: session.orchestrationParentSessionId ?? undefined,
+    orchestrationTag: session.orchestrationTag ?? undefined,
+    orchestrationStepId: session.orchestrationStepId ?? undefined,
+    orchestrationBundlePath: session.orchestrationBundlePath ?? undefined,
   };
 }
 
@@ -5355,6 +5514,26 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           nextAction: "Run npm link in apps/ade-cli for local development.",
         },
       }),
+    },
+    orchestration: {
+      runCreate: resolvedArg({ runId: MOCK_ORCH_RUN_ID, manifest: MOCK_ORCH_MANIFEST, etag: MOCK_ORCH_MANIFEST.etag }),
+      bundleRead: resolvedArg({ manifest: MOCK_ORCH_MANIFEST, planMd: MOCK_ORCH_PLAN_MD, etag: MOCK_ORCH_MANIFEST.etag }),
+      manifestReadSection: async (args: any) => ({ section: args?.section ?? "tasks", data: (MOCK_ORCH_MANIFEST as any)[args?.section ?? "tasks"] ?? [], etag: MOCK_ORCH_MANIFEST.etag }),
+      manifestPatch: resolvedArg({ ok: true, manifest: MOCK_ORCH_MANIFEST, etag: MOCK_ORCH_MANIFEST.etag }),
+      planAppend: resolvedArg({ etag: MOCK_ORCH_MANIFEST.etag }),
+      planWrite: resolvedArg({ etag: MOCK_ORCH_MANIFEST.etag }),
+      spawnAgent: resolvedArg({ sessionId: "mock-orch-spawn-new", manifest: MOCK_ORCH_MANIFEST, etag: MOCK_ORCH_MANIFEST.etag }),
+      agentInject: resolvedArg({ ok: true }),
+      assetRegister: resolvedArg({ manifest: MOCK_ORCH_MANIFEST, etag: MOCK_ORCH_MANIFEST.etag }),
+      claimTask: resolvedArg({ ok: true, manifest: MOCK_ORCH_MANIFEST, etag: MOCK_ORCH_MANIFEST.etag }),
+      releaseTask: resolvedArg({ ok: true, manifest: MOCK_ORCH_MANIFEST, etag: MOCK_ORCH_MANIFEST.etag }),
+      runList: resolvedArg([{
+        runId: MOCK_ORCH_RUN_ID, laneId: "lane-main", title: MOCK_ORCH_MANIFEST.title, goalSummary: MOCK_ORCH_MANIFEST.goalSummary,
+        currentPhase: "developing", etag: MOCK_ORCH_MANIFEST.etag, createdAt: MOCK_ORCH_MANIFEST.createdAt, updatedAt: MOCK_ORCH_MANIFEST.updatedAt,
+        status: "active", agentCount: MOCK_ORCH_MANIFEST.agents.length, taskCount: MOCK_ORCH_MANIFEST.tasks.length,
+      }]),
+      subscribe: (_args: any, _cb: any) => () => {},
+      assetDataUrl: resolvedArg({ dataUrl: "data:text/html;base64,PGgxPkRhc2hib2FyZCBXaXJlZnJhbWU8L2gxPg==", mimeType: "text/html", text: "<h1>Dashboard Wireframe</h1><p>Mock wireframe preview</p>" }),
     },
     zoom: {
       getLevel: () => 0,

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowBendDownRight, At, Bug, CaretDown, Check, CloudArrowUp, Cube, Desktop, DeviceMobile, GithubLogo, Globe, Image, Lightning, PaperPlaneTilt, Paperclip, PencilSimple, Plus, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
+import { ArrowBendDownRight, At, Bug, CaretDown, Check, CloudArrowUp, Cube, Desktop, DeviceMobile, GithubLogo, Globe, Image, Lightning, PaperPlaneTilt, Paperclip, PencilSimple, Plus, Square, SquareSplitHorizontal, Strategy, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -34,6 +34,11 @@ import {
   buildChatContextAttachmentPrompt,
   makeLinearIssueContextAttachment,
 } from "../../../shared/chatContextAttachments";
+import type {
+  ModelSelection,
+  OrchestrationModelSelectionMetadata,
+  OrchestrationRole,
+} from "../../../shared/types/orchestration";
 import { getModelById, modelSupportsFastMode, type ProviderFamily } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
@@ -55,6 +60,7 @@ import { getPendingInputQuestionCount, hasPendingInputOptions } from "./pendingI
 import { CURSOR_MODE_LABELS } from "../../../shared/cursorModes";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
+import { ChatModelSelectionPendingCard } from "./ChatModelSelectionPendingCard";
 import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle } from "./ChatCommandMenu";
 import { modifierKeyLabel } from "../../lib/platform";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -66,6 +72,45 @@ const ISSUE_CONTEXT_MENU_WIDTH = 256;
 const ISSUE_CONTEXT_MENU_GAP = 8;
 const ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER = 8;
 const IMAGE_URL_EXTENSION_RE = /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?)$/i;
+
+/**
+ * Best-effort decoder for the `providerMetadata` payload carried on a
+ * `model_selection` PendingInputRequest. The server packs
+ * `OrchestrationModelSelectionMetadata` into the metadata bag; here we
+ * recover it defensively so a malformed payload renders an empty picker
+ * rather than crashing the composer.
+ */
+function readOrchestrationModelSelectionMetadata(
+  value: Record<string, unknown> | undefined,
+): OrchestrationModelSelectionMetadata | null {
+  if (!value || typeof value !== "object") return null;
+  const role = value.role;
+  if (role !== "lead" && role !== "worker" && role !== "validator") return null;
+  const tag = typeof value.tag === "string" ? value.tag : "";
+  const rawSuggested = value.suggested;
+  let suggested: ModelSelection | undefined;
+  if (rawSuggested && typeof rawSuggested === "object") {
+    const r = rawSuggested as Record<string, unknown>;
+    const sProvider = typeof r.provider === "string" ? r.provider : null;
+    const sModelId = typeof r.modelId === "string" ? r.modelId : null;
+    if (sProvider && sModelId) {
+      suggested = {
+        provider: sProvider as ModelSelection["provider"],
+        modelId: sModelId,
+        ...(typeof r.reasoningEffort === "string" || r.reasoningEffort === null
+          ? { reasoningEffort: r.reasoningEffort as string | null }
+          : {}),
+        ...(typeof r.codexFastMode === "boolean" ? { codexFastMode: r.codexFastMode } : {}),
+      };
+    }
+  }
+  return {
+    role,
+    tag,
+    ...(suggested ? { suggested } : {}),
+    ...(value.availableModels !== undefined ? { availableModels: value.availableModels } : {}),
+  };
+}
 
 type PasteShortcutEvent = {
   key: string;
@@ -754,6 +799,7 @@ export function AgentChatComposer({
   modelSelectionLocked = false,
   permissionModeLocked = false,
   hideNativeControls = false,
+  orchestrationRole = null,
   messagePlaceholder,
   onModelChange,
   onReasoningEffortChange,
@@ -796,6 +842,9 @@ export function AgentChatComposer({
   onDispatchSteerInterrupt,
   onOpenAiSettings,
   onOpenLinearSettings,
+  onStartOrchestratorChat,
+  onStopOrchestratorChat,
+  orchestratorModeActive = false,
   sessionId,
   parallelChatMode = false,
   onParallelChatModeChange,
@@ -876,6 +925,18 @@ export function AgentChatComposer({
   modelSelectionLocked?: boolean;
   permissionModeLocked?: boolean;
   hideNativeControls?: boolean;
+  /**
+   * Orchestration role lock (see `goal.md` §10.10).
+   *   - `"lead"`: hide permission picker AND model picker (lead's model is
+   *     fixed at create-time).
+   *   - `"worker"` / `"validator"`: hide permission picker; show model +
+   *     fast + reasoning rows.
+   *   - `null` / undefined: default behaviour (regular chat composer).
+   *
+   * Worker/Validator permission tier is forced by the orchestration spawn
+   * profile (`goal.md` §12) — the user should not be able to demote it.
+   */
+  orchestrationRole?: OrchestrationRole | null;
   messagePlaceholder?: string;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
@@ -888,7 +949,11 @@ export function AgentChatComposer({
   backgroundLaunchBusy?: boolean;
   backgroundLaunchLabel?: string;
   onInterrupt: () => void;
-  onApproval: (decision: AgentChatApprovalDecision, responseText?: string | null) => void;
+  onApproval: (
+    decision: AgentChatApprovalDecision,
+    responseText?: string | null,
+    answers?: Record<string, string | string[]>,
+  ) => void;
   onAddAttachment: (attachment: AgentChatFileRef) => void;
   onRemoveAttachment: (path: string) => void;
   onAddContextAttachment?: (attachment: AgentChatContextAttachment) => void;
@@ -925,6 +990,14 @@ export function AgentChatComposer({
   onDispatchSteerInterrupt?: (steerId: string) => void;
   onOpenAiSettings?: () => void;
   onOpenLinearSettings?: () => void;
+  /**
+   * Open the "New orchestrator chat" flow from the visible composer mode
+   * button (see `goal.md` §10.1). Hosts that don't want the entry simply
+   * leave this undefined.
+   */
+  onStartOrchestratorChat?: () => void;
+  onStopOrchestratorChat?: () => void;
+  orchestratorModeActive?: boolean;
   sessionId?: string | null;
   parallelChatMode?: boolean;
   onParallelChatModeChange?: (enabled: boolean) => void;
@@ -1044,6 +1117,8 @@ export function AgentChatComposer({
   });
   const contextAttachmentCount = contextAttachments.length;
   const canAttachIssueContext = !composerInputLocked && typeof onAddContextAttachment === "function";
+  const showOrchestratorModeButton = Boolean(onStartOrchestratorChat && !sessionId && !parallelChatMode);
+  const orchestratorModeButtonDisabled = composerInputLocked || busy || turnActive;
 
   const resizeTextarea = useCallback(() => {
     if (useRichComposer) return;
@@ -1926,6 +2001,12 @@ export function AgentChatComposer({
     if (hideNativeControls) {
       return null;
     }
+    // Orchestration-locked composers (lead / worker / validator) hide the
+    // native permission picker — the orchestrator forces the permission
+    // tier per `goal.md` §10.10 + §12.
+    if (orchestrationRole) {
+      return null;
+    }
     const effectiveModelId =
       parallelChatMode && parallelConfiguringIndex != null
         ? (parallelModelSlots[parallelConfiguringIndex]?.modelId ?? "")
@@ -2352,6 +2433,7 @@ export function AgentChatComposer({
     codexCustomSummary,
     nativeControlsDisabled,
     hideNativeControls,
+    orchestrationRole,
     onClaudeModeChange,
     onClaudePermissionModeChange,
     onInteractionModeChange,
@@ -2388,6 +2470,7 @@ export function AgentChatComposer({
   }, [parallelChatMode, nativeControlPanel, composerToolbarReasoningVisible]);
 
   const composerGlowColor = useMemo(() => {
+    if (orchestratorModeActive) return "rgba(217, 70, 239, 0.36)";
     const provider = sessionProvider ?? (modelId ? "anthropic" : null);
     if (!provider) return null;
     if (provider === "anthropic") return "rgba(249, 115, 22, 0.25)";
@@ -2395,7 +2478,7 @@ export function AgentChatComposer({
     if (provider === "cursor") return "rgba(59, 130, 246, 0.25)";
     if (provider === "opencode") return "rgba(255, 255, 255, 0.12)";
     return null;
-  }, [sessionProvider, modelId]);
+  }, [orchestratorModeActive, sessionProvider, modelId]);
 
   /* ── Keyboard handler for composer input ── */
   const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
@@ -2702,11 +2785,15 @@ export function AgentChatComposer({
     setSelectedMacosVmContextId(null);
   }, [macosVmContextItems, selectedMacosVmContextId]);
 
-  // Idle composer motion keeps the GPU busy; reserve the beam for active turns.
-  const composerBeamActive = isActive && layoutVariant !== "grid-tile" && !iosSimulatorOpen && turnActive;
-  const composerBeamVariant = turnActive ? "ocean" : "colorful";
-  const composerBeamDuration = turnActive ? 20 : 5;
-  const composerBeamStrength = turnActive ? 0.26 : 0.44;
+  // Idle composer motion keeps the GPU busy; keep the animated beam to active
+  // turns and explicit orchestration mode.
+  const composerBeamActive = isActive
+    && layoutVariant !== "grid-tile"
+    && !iosSimulatorOpen
+    && (turnActive || orchestratorModeActive);
+  const composerBeamVariant = orchestratorModeActive ? "colorful" : turnActive ? "ocean" : "colorful";
+  const composerBeamDuration = orchestratorModeActive ? 8 : turnActive ? 20 : 5;
+  const composerBeamStrength = orchestratorModeActive ? 0.68 : turnActive ? 0.26 : 0.44;
 
   const parallelReady =
     parallelChatMode
@@ -2814,7 +2901,11 @@ export function AgentChatComposer({
       {issueContextMenu}
       <LinearIssueContextDialog
         open={linearIssuePickerOpen}
-        selectedIssue={contextAttachments[0]?.issue ?? null}
+        selectedIssue={
+          contextAttachments[0]?.type === "linear_issue"
+            ? contextAttachments[0].issue
+            : null
+        }
         pinnedIssue={pinnedLinearIssue}
         busy={busy || parallelLaunchBusy}
         onOpenChange={setLinearIssuePickerOpen}
@@ -2837,6 +2928,7 @@ export function AgentChatComposer({
       <ChatComposerShell
       mode={surfaceMode}
       glowColor={composerGlowColor}
+      orchestratorActive={orchestratorModeActive}
       className={cn(
         layoutVariant === "grid-tile" ? "border-0 bg-transparent shadow-none" : "",
       )}
@@ -2850,6 +2942,30 @@ export function AgentChatComposer({
             onApprove={() => onApproval("accept")}
             onReject={() => onApproval("decline")}
           />
+        ) : pendingInput.kind === "model_selection" ? (
+          (() => {
+            // Decode the orchestration model-selection metadata payload. The
+            // server packs `{ role, tag, suggested?, availableModels? }` into
+            // `providerMetadata`; if it's malformed we fall back to a
+            // permissive shape so the user can still pick a model.
+            const meta = readOrchestrationModelSelectionMetadata(pendingInput.providerMetadata);
+            const availableModelIdsForPicker = meta?.availableModels && Array.isArray(meta.availableModels)
+              ? (meta.availableModels as unknown[]).filter((id): id is string => typeof id === "string")
+              : availableModelIds;
+            return (
+              <ChatModelSelectionPendingCard
+                metadata={meta}
+                {...(meta?.suggested ? { suggested: meta.suggested } : {})}
+                {...(availableModelIdsForPicker ? { availableModelIds: availableModelIdsForPicker } : {})}
+                {...(providerAuthStatus ? { providerAuthStatus } : {})}
+                responding={approvalResponding ?? false}
+                onConfirm={(selection) => {
+                  onApproval("accept", null, { selection: JSON.stringify(selection) });
+                }}
+                onCancel={() => onApproval("cancel")}
+              />
+            );
+          })()
         ) : (
           <div className="px-4 py-3">
             <div className="mb-2 flex items-center gap-2">
@@ -3421,7 +3537,7 @@ export function AgentChatComposer({
                 />
               </>
             ) : null}
-            {!parallelChatMode ? (
+            {!parallelChatMode && orchestrationRole !== "lead" ? (
               <>
                 <ModelPicker
                   value={modelId}
@@ -3506,6 +3622,44 @@ export function AgentChatComposer({
                 ) : null}
               </button>
             </SmartTooltip>
+
+            {showOrchestratorModeButton ? (
+              <SmartTooltip
+                content={{
+                  label: orchestratorModeActive ? "Orchestrator mode" : "Start orchestrator mode",
+                  description: orchestratorModeActive
+                    ? "Return this draft to a normal chat."
+                    : "Turn this draft into an orchestrator lead chat before sending.",
+                  effect: orchestratorModeActive ? "Click to turn it off." : undefined,
+                }}
+              >
+                <button
+                  type="button"
+                  data-testid="composer-orchestrator-mode-button"
+                  disabled={orchestratorModeButtonDisabled}
+                  onClick={() => {
+                    if (orchestratorModeButtonDisabled) return;
+                    if (orchestratorModeActive) {
+                      onStopOrchestratorChat?.();
+                      return;
+                    }
+                    onStartOrchestratorChat?.();
+                  }}
+                  className={cn(
+                    "relative inline-flex h-8 min-w-8 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-2 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium transition-colors",
+                    orchestratorModeActive
+                      ? "border-fuchsia-300/35 bg-fuchsia-400/[0.12] text-fuchsia-100 shadow-[0_0_18px_rgba(217,70,239,0.18)]"
+                      : "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-fuchsia-300/22 hover:bg-fuchsia-400/[0.08] hover:text-fuchsia-100/80",
+                    orchestratorModeButtonDisabled ? "cursor-not-allowed opacity-45" : "",
+                  )}
+                  aria-label={orchestratorModeActive ? "Orchestrator mode active" : "Start orchestrator mode"}
+                  aria-pressed={orchestratorModeActive}
+                >
+                  <Strategy className="h-3 w-3" size={14} weight={orchestratorModeActive ? "fill" : "regular"} />
+                  <span className="hidden lg:inline">Orchestrator</span>
+                </button>
+              </SmartTooltip>
+            ) : null}
 
             {showParallelChatToggle && !parallelChatMode ? (
               <SmartTooltip

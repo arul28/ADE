@@ -6,7 +6,7 @@ import {
   normalizeChatContextAttachments,
   removeChatContextAttachment,
 } from "./chatContextAttachments";
-import type { AgentChatContextAttachment, LaneLinearIssue } from "./types";
+import type { AgentChatContextAttachment, AgentChatLinearIssueContextAttachment, LaneLinearIssue } from "./types";
 
 const SAMPLE_ISSUE: LaneLinearIssue = {
   id: "ADE-45",
@@ -54,7 +54,7 @@ describe("chatContextAttachments", () => {
     ]);
 
     expect(attachments).toHaveLength(1);
-    expect(attachments[0]?.issue).toEqual(expect.objectContaining({
+    expect((attachments[0] as AgentChatLinearIssueContextAttachment)?.issue).toEqual(expect.objectContaining({
       identifier: "ADE-45",
       projectId: "",
       teamKey: "ADE",
@@ -68,7 +68,7 @@ describe("chatContextAttachments", () => {
     const merged = mergeChatContextAttachments([a], [b]);
 
     expect(merged).toHaveLength(1);
-    expect(merged[0]?.issue.title).toBe("Updated title");
+    expect((merged[0] as AgentChatLinearIssueContextAttachment)?.issue.title).toBe("Updated title");
   });
 
   it("removes attachments by key", () => {
@@ -79,7 +79,7 @@ describe("chatContextAttachments", () => {
     const remaining = removeChatContextAttachment([a, b], key);
 
     expect(remaining).toHaveLength(1);
-    expect(remaining[0]?.issue.identifier).toBe("OTHER-1");
+    expect((remaining[0] as AgentChatLinearIssueContextAttachment)?.issue.identifier).toBe("OTHER-1");
   });
 
   it("builds a prompt with issue context and escapes untrusted content", () => {

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockState = vi.hoisted(() => ({
   syncService: {
@@ -11,6 +11,16 @@ const mockState = vi.hoisted(() => ({
   ingressOnEvent: null as ((event: { issueId?: string | null }) => Promise<void>) | null,
   dispatcherOnEvent: null as ((event: unknown) => void) | null,
 }));
+
+const originalDisableGhAuthFallback = process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+
+afterAll(() => {
+  if (originalDisableGhAuthFallback == null) {
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+  } else {
+    process.env.ADE_DISABLE_GH_AUTH_FALLBACK = originalDisableGhAuthFallback;
+  }
+});
 
 vi.mock("../../desktop/src/main/services/cto/linearClient", () => ({
   createLinearClient: vi.fn(() => ({})),
@@ -132,6 +142,7 @@ function createDeps() {
 
 describe("headlessLinearServices", () => {
   beforeEach(() => {
+    process.env.ADE_DISABLE_GH_AUTH_FALLBACK = "1";
     vi.clearAllMocks();
     mockState.ingressOnEvent = null;
     mockState.dispatcherOnEvent = null;

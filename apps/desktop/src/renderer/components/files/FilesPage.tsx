@@ -1531,7 +1531,7 @@ export function FilesPage({
         workspaceId,
       });
       watchRequested = true;
-      window.ade.files.watchChanges({ workspaceId, includeIgnored: true })
+      window.ade.files.watchChanges({ workspaceId })
         .then(() => {
           logRendererDebugEvent("renderer.files.watch.done", {
             workspaceId,
@@ -1558,7 +1558,7 @@ export function FilesPage({
       if (refreshTimer != null) window.clearTimeout(refreshTimer);
       if (!watchRequested) return;
       const stopStartedAt = performance.now();
-      window.ade.files.stopWatching({ workspaceId, includeIgnored: true })
+      window.ade.files.stopWatching({ workspaceId })
         .then(() => {
           logRendererDebugEvent("renderer.files.watch.cleanup_done", {
             workspaceId,

@@ -33,6 +33,9 @@ const VOLATILE_ADE_PREFIXES = [
   ".ade/agent-configs/",
   ".ade/secrets/",
   ".ade/transcripts/",
+  ".ade/logs/",
+  ".ade/tmp/",
+  ".ade/runtime/",
   ".ade/worktrees/",
 ] as const;
 const VOLATILE_ADE_EXACT_PATHS = new Set([
@@ -126,6 +129,11 @@ export function createFileWatcherService() {
   const ALWAYS_IGNORED_PATTERNS: RegExp[] = [
     /(^|[/\\])\.git($|[/\\])/,
     /(^|[/\\])node_modules($|[/\\])/,
+  ];
+  const VOLATILE_ADE_IGNORED_PATTERNS: RegExp[] = [
+    /(^|[/\\])\.ade[/\\](artifacts|cache|agent-configs|secrets|transcripts|logs|tmp|runtime|worktrees)($|[/\\])/,
+    /(^|[/\\])\.ade[/\\]ade\.db($|-)/,
+    /(^|[/\\])\.ade[/\\]ade\.sock$/,
   ];
   const DEFAULT_IGNORED_PATTERNS: RegExp[] = [
     ...ALWAYS_IGNORED_PATTERNS,

@@ -184,9 +184,21 @@ function makeGithubService(overrides?: Record<string, unknown>) {
 function makeGithubStatus(overrides?: Record<string, unknown>) {
   return {
     tokenStored: true,
+    patTokenStored: true,
+    tokenDecryptionFailed: false,
+    storageScope: "app",
+    authSource: "pat",
+    tokenType: "classic",
     connected: true,
     repo: REPO,
+    hasOrigin: true,
     userLogin: "octocat",
+    scopes: ["repo", "workflow"],
+    ghCliPath: null,
+    ghAuthError: null,
+    checkedAt: "2026-05-10T00:00:00.000Z",
+    repoAccessOk: null,
+    repoAccessError: null,
     ...overrides,
   };
 }
@@ -574,11 +586,11 @@ describe("prService.getGithubSnapshot", () => {
     });
     const db = makeMockDb();
     db.all.mockImplementation(() => {
-      throw new Error("Repository state should not be inspected without a usable GitHub token.");
+      throw new Error("Repository state should not be inspected without usable GitHub auth.");
     });
     const { service } = buildService({ db, githubService });
 
-    await expect(service.getGithubSnapshot()).rejects.toThrow("GitHub token missing");
+    await expect(service.getGithubSnapshot()).rejects.toThrow("GitHub auth missing");
     expect(db.all).not.toHaveBeenCalled();
     expect(githubService.apiRequest).not.toHaveBeenCalled();
   });
@@ -599,7 +611,7 @@ describe("prService.getGithubSnapshot", () => {
     expect(cached.repoPullRequests[0]?.title).toBe("Private cached PR");
     githubService.apiRequest.mockClear();
 
-    await expect(service.getGithubSnapshot()).rejects.toThrow("GitHub token cannot access test-owner/test-repo");
+    await expect(service.getGithubSnapshot()).rejects.toThrow("GitHub auth cannot access test-owner/test-repo");
     expect(githubService.apiRequest).not.toHaveBeenCalled();
   });
 

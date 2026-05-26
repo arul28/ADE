@@ -194,6 +194,7 @@ export async function acquireCursorSdkConnection(args: {
   agentName?: string | null;
   sessionId: string;
   policy: CursorSdkPermissionPolicy;
+  mcpServers?: Record<string, unknown>;
   cleanupStateRoot?: boolean;
   logger?: Logger;
 }): Promise<{ pooled: CursorSdkPooled; generation: number }> {
@@ -433,6 +434,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     agentId: args.agentId ?? null,
     agentName: args.agentName ?? null,
     policy: args.policy,
+    ...(args.mcpServers ? { mcpServers: args.mcpServers } : {}),
   };
   let result: { agentId: string };
   try {

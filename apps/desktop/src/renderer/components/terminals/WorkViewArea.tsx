@@ -1059,7 +1059,9 @@ function ModeSwitcherPills({
   return (
     <div className="ade-liquid-glass-pill inline-flex items-center gap-1 rounded-full p-1.5">
       {MODE_OPTIONS.map((opt) => {
-        const active = draftKind === opt.kind;
+        const active = opt.kind === "chat"
+          ? draftKind === "chat" || draftKind === "chat-orchestrator"
+          : draftKind === opt.kind;
         const Icon = opt.Icon;
         return (
           <SmartTooltip
@@ -1684,7 +1686,7 @@ export function WorkViewArea({
 
         {visibleSessions.length === 0 ? (
           <div className="flex h-full flex-col">
-            <div className="flex shrink-0 items-center justify-center pb-3 pt-6">
+            <div className="relative z-10 flex shrink-0 items-center justify-center pb-8 pt-6">
               <ModeSwitcherPills draftKind={draftKind} onShowDraftKind={onShowDraftKind} />
             </div>
             <div className="min-h-0 flex-1">
@@ -1744,7 +1746,7 @@ export function WorkViewArea({
 
       {!activeSession ? (
         <div className="absolute inset-0 flex flex-col">
-          <div className="flex shrink-0 items-center justify-center pb-3 pt-6">
+          <div className="relative z-10 flex shrink-0 items-center justify-center pb-8 pt-6">
             <ModeSwitcherPills draftKind={draftKind} onShowDraftKind={onShowDraftKind} />
           </div>
           <div className="min-h-0 flex-1">

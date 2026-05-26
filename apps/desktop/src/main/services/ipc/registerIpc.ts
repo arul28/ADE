@@ -565,6 +565,26 @@ import type { createGithubPollingService } from "../automations/githubPollingSer
 import { ADE_ACTION_ALLOWLIST, getAdeActionDomainServices, listAllowedAdeActionNames } from "../adeActions/registry";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
 
+import type { createOrchestrationService } from "../orchestration/orchestrationService";
+import { validateSpawnBrief } from "../orchestration/orchestrationService";
+import {
+  applyOrchestrationPermissionProfile,
+  isOrchestrationPlanApproved,
+  resolveOrchestrationModel,
+} from "../orchestration/runtimeProfile";
+import type {
+  ManifestSection,
+  OrchestrationAgentInjectRequest,
+  OrchestrationAssetRegisterRequest,
+  OrchestrationClaimTaskRequest,
+  OrchestrationManifestPatchRequest,
+  OrchestrationOrigin,
+  OrchestrationPlanAppendRequest,
+  OrchestrationPlanWriteRequest,
+  OrchestrationReleaseTaskRequest,
+  OrchestrationRunCreateRequest,
+  OrchestrationSpawnAgentRequest,
+} from "../../../shared/types/orchestration";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { createWorkerAgentService } from "../cto/workerAgentService";
 import type { createWorkerRevisionService } from "../cto/workerRevisionService";
@@ -660,6 +680,7 @@ export type AppContext = {
   automationPlannerService: ReturnType<typeof createAutomationPlannerService>;
   automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
   githubPollingService?: ReturnType<typeof createGithubPollingService> | null;
+  orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   processService: ReturnType<typeof createProcessService>;
   testService: ReturnType<typeof createTestService>;
@@ -707,6 +728,46 @@ function clampLayout(layout: DockLayout): DockLayout {
     out[k] = Math.max(0, Math.min(100, v));
   }
   return out;
+}
+
+function pathJoinOrchestration(worktree: string, runId: string): string {
+  return path.join(worktree, ".ade", "orchestration", runId);
+}
+
+/**
+ * Project chat-level runtime state and orchestration identity onto a terminal
+ * session summary. Centralises the mapping so that every IPC endpoint that
+ * enriches sessions with chat data produces identical results.
+ */
+function projectChatOntoSession(
+  session: TerminalSessionSummary,
+  chat: AgentChatSessionSummary,
+): TerminalSessionSummary {
+  const base: TerminalSessionSummary = {
+    ...session,
+    ...(chat.orchestrationRunId
+      ? {
+          orchestrationRunId: chat.orchestrationRunId,
+          orchestrationRole: chat.orchestrationRole,
+          orchestrationTag: chat.orchestrationTag,
+        }
+      : {}),
+  };
+  if (chat.awaitingInput) {
+    return {
+      ...base,
+      runtimeState: "waiting-input" as const,
+      chatIdleSinceAt: null,
+      pendingInputItemId: chat.pendingInputItemId ?? session.pendingInputItemId ?? null,
+    };
+  }
+  if (chat.status === "active") {
+    return { ...base, runtimeState: "running" as const, chatIdleSinceAt: null };
+  }
+  if (chat.status === "idle" || chat.status === "ended") {
+    return { ...base, runtimeState: "idle" as const, chatIdleSinceAt: chat.idleSinceAt ?? null };
+  }
+  return base;
 }
 
 function escapeCsvCell(value: string | null | undefined): string {
@@ -5413,19 +5474,7 @@ export function registerIpc({
           if (!isChatToolType(session.toolType)) return session;
           const chat = chatSummaryBySessionId.get(session.id);
           if (!chat) return session;
-          if (chat.awaitingInput) {
-            return {
-              ...session,
-              runtimeState: "waiting-input" as const,
-              chatIdleSinceAt: null,
-              pendingInputItemId: chat.pendingInputItemId ?? session.pendingInputItemId ?? null,
-            };
-          }
-          if (chat.status === "active") return { ...session, runtimeState: "running" as const, chatIdleSinceAt: null };
-          if (chat.status === "idle" || chat.status === "ended") {
-            return { ...session, runtimeState: "idle" as const, chatIdleSinceAt: chat.idleSinceAt ?? null };
-          }
-          return session;
+          return projectChatOntoSession(session, chat);
         });
       },
       {
@@ -5764,6 +5813,342 @@ export function registerIpc({
         ? rawMaxEvents
         : undefined;
     return ctx.agentChatService.getChatEventHistory(sessionId, maxEvents != null ? { maxEvents } : undefined);
+  });
+
+  ipcMain.handle(IPC.agentChatReadTranscript, async (
+    _event,
+    arg: { sessionId: string; limit?: number; since?: string },
+  ) => {
+    const ctx = getCtx();
+    const service = ctx.agentChatService;
+    if (typeof (service as unknown as { readTranscript?: unknown }).readTranscript !== "function") {
+      return [];
+    }
+    const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
+    if (!sessionId) return [];
+    return await (service as unknown as {
+      readTranscript: (
+        sessionId: string,
+        limit?: number,
+        since?: string,
+      ) => Promise<unknown>;
+    }).readTranscript(sessionId, arg?.limit, arg?.since);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Orchestration (lead/worker/validator runs)
+  // ---------------------------------------------------------------------------
+  const ensureOrchestration = () => {
+    const ctx = getCtx();
+    if (!ctx.orchestrationService) {
+      throw new Error("orchestration service is not initialised");
+    }
+    return { ctx, service: ctx.orchestrationService };
+  };
+
+  let orchestrationBroadcastSubscribed = false;
+  const subscribeOrchestrationBroadcast = (): void => {
+    if (orchestrationBroadcastSubscribed) return;
+    const ctx = getCtx();
+    if (!ctx.orchestrationService) return;
+    orchestrationBroadcastSubscribed = true;
+    ctx.orchestrationService.on("event", (payload) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (win.isDestroyed()) continue;
+        try {
+          win.webContents.send(IPC.orchestrationEvent, payload);
+        } catch {
+          // ignore broadcast failures
+        }
+      }
+    });
+  };
+
+  ipcMain.handle(IPC.orchestrationRunCreate, async (_event, arg: OrchestrationRunCreateRequest & { laneId: string }) => {
+    const { ctx, service } = ensureOrchestration();
+    subscribeOrchestrationBroadcast();
+    const worktree = ctx.laneService.getLaneWorktreePath(arg.laneId);
+    const result = await service.runCreate({ ...arg, bundleRoot: worktree });
+    // Stitch the run id + bundle path back into the lead chat's persisted
+    // record so the OrchestrationPanel mounts after a restart and downstream
+    // tooling can discover the bundle from the chat session alone.
+    const setter = (
+      ctx.agentChatService as unknown as {
+        setOrchestrationFields?: (
+          sessionId: string,
+          fields: {
+            orchestrationRunId?: string | null;
+            orchestrationRole?: "lead" | "worker" | "validator" | null;
+            orchestrationBundlePath?: string | null;
+          },
+        ) => void;
+      }
+    ).setOrchestrationFields;
+    if (typeof setter === "function") {
+      try {
+        setter(arg.leadSessionId, {
+          orchestrationRunId: result.runId,
+          orchestrationRole: "lead",
+          orchestrationBundlePath: result.manifest.bundlePath,
+        });
+      } catch {
+        // best-effort; the renderer also patches its local cache so the
+        // panel mounts immediately. Persisted state will fall through to
+        // a subsequent updateSession call if needed.
+      }
+    }
+    return result;
+  });
+
+  ipcMain.handle(IPC.orchestrationBundleRead, async (_event, arg: { runId: string; laneId: string }) => {
+    const { ctx, service } = ensureOrchestration();
+    subscribeOrchestrationBroadcast();
+    const worktree = ctx.laneService.getLaneWorktreePath(arg.laneId);
+    const bundlePath = pathJoinOrchestration(worktree, arg.runId);
+    return service.bundleRead(arg.runId, bundlePath);
+  });
+
+  ipcMain.handle(IPC.orchestrationManifestReadSection, async (
+    _event,
+    arg: { runId: string; laneId: string; section: ManifestSection },
+  ) => {
+    const { ctx, service } = ensureOrchestration();
+    const worktree = ctx.laneService.getLaneWorktreePath(arg.laneId);
+    const bundlePath = pathJoinOrchestration(worktree, arg.runId);
+    return service.manifestReadSection(arg.runId, bundlePath, arg.section);
+  });
+
+  ipcMain.handle(IPC.orchestrationManifestPatch, async (
+    _event,
+    arg: OrchestrationManifestPatchRequest & { laneId: string },
+  ) => {
+    const { ctx, service } = ensureOrchestration();
+    const worktree = ctx.laneService.getLaneWorktreePath(arg.laneId);
+    const bundlePath = pathJoinOrchestration(worktree, arg.runId);
+    return service.manifestPatch(arg, bundlePath);
+  });
+
+  ipcMain.handle(IPC.orchestrationPlanAppend, async (
+    _event,
+    arg: OrchestrationPlanAppendRequest & { laneId: string },
+  ) => {
+    const { ctx, service } = ensureOrchestration();
+    const worktree = ctx.laneService.getLaneWorktreePath(arg.laneId);
+    const bundlePath = pathJoinOrchestration(worktree, arg.runId);
+    return service.planAppend(arg, bundlePath);
+  });
+
+  ipcMain.handle(IPC.orchestrationPlanWrite, async (
+    _event,
+    arg: OrchestrationPlanWriteRequest & { laneId: string },
+  ) => {
+    const { ctx, service } = ensureOrchestration();
+    const worktree = ctx.laneService.getLaneWorktreePath(arg.laneId);
+    const bundlePath = pathJoinOrchestration(worktree, arg.runId);
+    return service.planWrite(arg, bundlePath);
+  });
+
+  ipcMain.handle(IPC.orchestrationAssetRegister, async (
+    _event,
+    arg: OrchestrationAssetRegisterRequest & { laneId: string },
+  ) => {
+    const { ctx, service } = ensureOrchestration();
+    const worktree = ctx.laneService.getLaneWorktreePath(arg.laneId);
+    const bundlePath = pathJoinOrchestration(worktree, arg.runId);
+    return service.assetRegister(arg, bundlePath);
+  });
+
+  ipcMain.handle(IPC.orchestrationClaimTask, async (
+    _event,
+    arg: OrchestrationClaimTaskRequest & { laneId: string },
+  ) => {
+    const { ctx, service } = ensureOrchestration();
+    const worktree = ctx.laneService.getLaneWorktreePath(arg.laneId);
+    const bundlePath = pathJoinOrchestration(worktree, arg.runId);
+    return service.claimTask(arg, bundlePath);
+  });
+
+  ipcMain.handle(IPC.orchestrationReleaseTask, async (
+    _event,
+    arg: OrchestrationReleaseTaskRequest & { laneId: string },
+  ) => {
+    const { ctx, service } = ensureOrchestration();
+    const worktree = ctx.laneService.getLaneWorktreePath(arg.laneId);
+    const bundlePath = pathJoinOrchestration(worktree, arg.runId);
+    return service.releaseTask(arg, bundlePath);
+  });
+
+  ipcMain.handle(IPC.orchestrationRunList, async (_event, arg: { laneId?: string } = {}) => {
+    const { service } = ensureOrchestration();
+    return service.runList(arg?.laneId);
+  });
+
+  ipcMain.handle(IPC.orchestrationSpawnAgent, async (
+    _event,
+    arg: OrchestrationSpawnAgentRequest & { laneId: string; leadSessionId: string },
+  ): Promise<{ sessionId: string; etag: string }> => {
+    const { ctx, service } = ensureOrchestration();
+    const worktree = ctx.laneService.getLaneWorktreePath(arg.laneId);
+    const bundlePath = pathJoinOrchestration(worktree, arg.runId);
+    const manifest = service.getManifestForRun(arg.runId);
+    if (!manifest) {
+      throw new Error(`run ${arg.runId} not loaded — call orchestrationBundleRead first`);
+    }
+    if (!isOrchestrationPlanApproved(manifest)) {
+      throw new Error("spawnAgent is blocked until the user approves the orchestration plan.");
+    }
+    const brief = validateSpawnBrief(arg.initialMessage);
+    if (!brief.ok) {
+      throw new Error(
+        `spawn brief missing required sections: ${brief.missing.join(", ")}`,
+      );
+    }
+    const routedSelection = resolveOrchestrationModel(manifest, arg.role, arg.tag, arg.modelOverride);
+    const interactionMode =
+      arg.role === "validator" ? "orchestrator-validator" : "orchestrator-worker";
+    const created = await ctx.agentChatService.createSession({
+      laneId: arg.laneId,
+      provider: routedSelection.provider,
+      model: routedSelection.modelId,
+      reasoningEffort: routedSelection.reasoningEffort ?? null,
+      codexFastMode: routedSelection.codexFastMode,
+      interactionMode,
+      surface: "work",
+      ...applyOrchestrationPermissionProfile(routedSelection.provider),
+      orchestrationRunId: arg.runId,
+      orchestrationRole: arg.role,
+      orchestrationParentSessionId: arg.leadSessionId,
+      orchestrationTag: arg.tag,
+      orchestrationStepId: arg.stepId,
+      orchestrationBundlePath: bundlePath,
+      goal: arg.goalSummary,
+    });
+    const spawnedAt = new Date().toISOString();
+    const fp = {
+      provider: routedSelection.provider,
+      modelId: routedSelection.modelId,
+      reasoningEffort: routedSelection.reasoningEffort ?? null,
+      codexFastMode: routedSelection.codexFastMode,
+      resolvedAt: spawnedAt,
+      routingKey: routedSelection.routingKey,
+    };
+    const buildSpawnPatch = (etag: string, summary: string) =>
+      ({
+        runId: arg.runId,
+        ifMatchEtag: etag,
+        actorRole: "lead" as const,
+        actorSessionId: arg.leadSessionId,
+        summary,
+        patches: [
+          {
+            op: "add" as const,
+            path: "/agents/-",
+            value: {
+              sessionId: created.id,
+              role: arg.role,
+              tag: arg.tag,
+              goalSummary: arg.goalSummary,
+              status: "pending",
+              spawnedAt,
+              currentStepId: arg.stepId,
+              spawnFingerprint: fp,
+            },
+          },
+        ],
+      });
+    let patchRes = await service.manifestPatch(buildSpawnPatch(manifest.etag, "spawn worker"), bundlePath);
+    if (!patchRes.ok && "manifest" in patchRes && patchRes.manifest) {
+      patchRes = await service.manifestPatch(
+        buildSpawnPatch(patchRes.manifest.etag, "spawn worker (retry)"),
+        bundlePath,
+      );
+    }
+    if (!patchRes.ok) {
+      await ctx.agentChatService.deleteSession({ sessionId: created.id });
+      throw new Error(
+        `spawn manifest patch failed: ${("error" in patchRes ? patchRes.error : "unknown")}`,
+      );
+    }
+    const origin: OrchestrationOrigin = {
+      runId: arg.runId,
+      fromSessionId: arg.leadSessionId,
+      kind: "wake",
+      intent: "directive",
+      taskId: arg.stepId,
+    };
+    await ctx.agentChatService.sendMessage(
+      {
+        sessionId: created.id,
+        text: arg.initialMessage,
+        metadata: { orchestrationOrigin: origin },
+      },
+      { awaitDispatch: false },
+    );
+    return { sessionId: created.id, etag: patchRes.etag };
+  });
+
+  ipcMain.handle(IPC.orchestrationAgentInject, async (
+    _event,
+    arg: OrchestrationAgentInjectRequest,
+  ): Promise<void> => {
+    const { ctx, service } = ensureOrchestration();
+    const manifest = service.getManifestForRun(arg.runId);
+    if (!manifest) throw new Error(`run ${arg.runId} not loaded`);
+    const fromAgent = manifest.agents.find((a) => a.sessionId === arg.fromSessionId);
+    const targetAgent = manifest.agents.find((a) => a.sessionId === arg.targetSessionId);
+    if (!fromAgent || !targetAgent) {
+      throw new Error("orchestrationAgentInject: source/target not in same run");
+    }
+    const origin: OrchestrationOrigin = {
+      runId: arg.runId,
+      fromSessionId: arg.fromSessionId,
+      kind: arg.payload.kind,
+      intent: arg.payload.intent,
+      taskId: arg.payload.taskId,
+    };
+    if (arg.payload.kind === "queue") {
+      await ctx.agentChatService.steer({
+        sessionId: arg.targetSessionId,
+        text: arg.payload.text,
+        metadata: { orchestrationOrigin: origin },
+      });
+    } else if (arg.payload.kind === "interrupt-replace") {
+      await ctx.agentChatService.interrupt({ sessionId: arg.targetSessionId });
+      await ctx.agentChatService.sendMessage(
+        {
+          sessionId: arg.targetSessionId,
+          text: arg.payload.text,
+          metadata: { orchestrationOrigin: origin },
+        },
+        { awaitDispatch: false },
+      );
+    } else {
+      await ctx.agentChatService.sendMessage(
+        {
+          sessionId: arg.targetSessionId,
+          text: arg.payload.text,
+          metadata: { orchestrationOrigin: origin },
+        },
+        { awaitDispatch: false },
+      );
+    }
+  });
+
+  ipcMain.handle(IPC.orchestrationSubscribe, async (_event, arg: { runId: string; laneId?: string }) => {
+    const { ctx, service } = ensureOrchestration();
+    if (typeof arg.laneId === "string" && arg.laneId.trim()) {
+      const worktree = ctx.laneService.getLaneWorktreePath(arg.laneId);
+      const bundlePath = pathJoinOrchestration(worktree, arg.runId);
+      await service.subscribe(arg.runId, bundlePath);
+    }
+    subscribeOrchestrationBroadcast();
+    return { ok: true, runId: arg.runId };
+  });
+
+  ipcMain.handle(IPC.orchestrationUnsubscribe, async (_event, arg: { runId: string }) => {
+    const { service } = ensureOrchestration();
+    await service.release(arg.runId);
+    return { ok: true };
   });
 
   ipcMain.handle(IPC.agentChatCodexOpenInCli, async (

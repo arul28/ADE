@@ -7,6 +7,7 @@ export const adeBundledAgentSkills = [
   "ade-browser",
   "ade-pr-workflows",
   "ade-lanes-git",
+  "ade-orchestrator",
   "ade-proof-artifacts",
   "ade-macos-vm",
   "ade-deeplinks",

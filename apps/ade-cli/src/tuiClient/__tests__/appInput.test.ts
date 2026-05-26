@@ -3,6 +3,8 @@ import {
   CLAUDE_TERMINAL_SUBMIT_CONFIRM_DELAY_MS,
   clampChatScrollOffsetRows,
   cycleLaneDeleteScope,
+  deletePromptBackward,
+  deletePromptForward,
   deletePreviousPromptLine,
   deletePreviousPromptWord,
   drawerMouseHitForLine,
@@ -18,14 +20,22 @@ import {
   isTerminalControlToggle,
   isTerminalMouseTrackingEnabled,
   isChatTextSelectionRange,
+  isChatCopyShortcut,
   isCtrlCCopyPlatform,
   isCtrlInput,
   chatSelectionEdgeDirectionForMouseY,
   chatSelectionFromAnchor,
+  chatSessionToOptimisticSummary,
   chatSelectionPointFromVisibleRows,
   moveChatSelectionFocusByRows,
+  mergeOptimisticChatSessions,
+  insertPromptText,
+  isPromptCursorOnFirstVisualRow,
+  isPromptCursorOnLastVisualRow,
+  movePromptCursorVertical,
   parseTerminalMouseInput,
   promptDisplayRows,
+  promptDisplayRowsWithCursor,
   promptHitLine,
   modelPickerSurfaceForSetupPane,
   resolveContextDefault,
@@ -38,6 +48,7 @@ import {
 } from "../app";
 import { clampTerminalPaneCols } from "../components/TerminalPane";
 import type { ChatInfoSnapshot } from "../types";
+import type { AgentChatSession, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 
 describe("session activity helpers", () => {
@@ -168,6 +179,14 @@ describe("parseTerminalMouseInput", () => {
       direction: "up",
       x: 104,
       y: 32,
+    });
+  });
+
+  it("keeps the actionable click when all-motion hover packets are batched before it", () => {
+    expect(parseTerminalMouseInput("[<35;4;8M[<35;5;8M[<0;5;8M")).toEqual({
+      kind: "click",
+      x: 5,
+      y: 8,
     });
   });
 
@@ -428,6 +447,13 @@ describe("chat text selection helpers", () => {
     expect(isCtrlCCopyPlatform("win32")).toBe(true);
     expect(isCtrlCCopyPlatform("darwin")).toBe(false);
     expect(isCtrlCCopyPlatform("linux")).toBe(false);
+  });
+
+  it("recognizes command-copy for internal highlighted chat text", () => {
+    expect(isChatCopyShortcut("c", { meta: true }, "darwin")).toBe(true);
+    expect(isChatCopyShortcut("\x03", { meta: true }, "darwin")).toBe(true);
+    expect(isChatCopyShortcut("c", { ctrl: true }, "darwin")).toBe(false);
+    expect(isChatCopyShortcut("c", { ctrl: true }, "win32")).toBe(true);
   });
 });
 
@@ -728,8 +754,103 @@ describe("prompt editing helpers", () => {
 
   it("caps prompt display rows at the newest visual lines", () => {
     expect(promptDisplayRows("one\ntwo", 20)).toEqual(["one", "two"]);
-    expect(promptDisplayRows("abcdef", 2, 5)).toEqual(["ab", "cd", "ef"]);
+    expect(promptDisplayRows("abcdef", 2, 5)).toEqual(["ab", "cd", "ef", ""]);
     expect(promptDisplayRows("1\n2\n3\n4\n5\n6", 20, 5)).toEqual(["2", "3", "4", "5", "6"]);
+  });
+
+  it("keeps the cursor on a fresh visual row when the prompt exactly fills a row", () => {
+    expect(promptDisplayRows("abcd", 4)).toEqual(["abcd", ""]);
+    expect(promptDisplayRows("abcde", 4)).toEqual(["abcd", "e"]);
+  });
+
+  it("reports the cursor row and column for wrapped prompt text", () => {
+    expect(promptDisplayRowsWithCursor("abcdef", 3, 4).rows).toEqual([
+      { text: "abc", start: 0, end: 3, cursorColumn: null },
+      { text: "def", start: 3, end: 6, cursorColumn: 1 },
+      { text: "", start: 6, end: 6, cursorColumn: null },
+    ]);
+  });
+
+  it("moves vertically between prompt visual rows without jumping to the end", () => {
+    expect(movePromptCursorVertical("abcdef", 3, 1, 1)).toBe(4);
+    expect(movePromptCursorVertical("abcdef", 3, 4, -1)).toBe(1);
+    expect(movePromptCursorVertical("abc", 3, 3, 1)).toBe(3);
+  });
+
+  it("detects prompt visual-row edges for attachment and model-row navigation", () => {
+    expect(isPromptCursorOnFirstVisualRow("abcdef", 3, 1)).toBe(true);
+    expect(isPromptCursorOnFirstVisualRow("abcdef", 3, 4)).toBe(false);
+    expect(isPromptCursorOnLastVisualRow("abcdef", 3, 6)).toBe(true);
+    expect(isPromptCursorOnLastVisualRow("abcdef", 3, 1)).toBe(false);
+  });
+
+  it("edits prompt text at the cursor", () => {
+    expect(insertPromptText("hello world", 5, ",")).toEqual({ value: "hello, world", cursor: 6 });
+    expect(deletePromptBackward("hello world", 5)).toEqual({ value: "hell world", cursor: 4 });
+    expect(deletePromptBackward("hello world", 5, "word")).toEqual({ value: " world", cursor: 0 });
+    expect(deletePromptForward("hello world", 5)).toEqual({ value: "helloworld", cursor: 5 });
+  });
+
+  it("does not split multi-byte characters when editing or wrapping", () => {
+    expect(promptDisplayRowsWithCursor("a🙂b", 2, 3).rows).toEqual([
+      { text: "a🙂", start: 0, end: 3, cursorColumn: null },
+      { text: "b", start: 3, end: 4, cursorColumn: 0 },
+    ]);
+    expect(deletePromptBackward("a🙂b", 3)).toEqual({ value: "ab", cursor: 1 });
+    expect(deletePromptForward("a🙂b", 1)).toEqual({ value: "ab", cursor: 1 });
+  });
+});
+
+describe("optimistic chat summaries", () => {
+  function createdSession(overrides: Partial<AgentChatSession> = {}): AgentChatSession {
+    return {
+      id: "chat-new",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      modelId: "openai/gpt-5.5",
+      status: "idle",
+      createdAt: "2026-05-25T12:00:00.000Z",
+      lastActivityAt: "2026-05-25T12:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  function summary(sessionId: string): AgentChatSessionSummary {
+    return {
+      sessionId,
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      status: "idle",
+      startedAt: "2026-05-25T11:00:00.000Z",
+      endedAt: null,
+      lastActivityAt: "2026-05-25T11:00:00.000Z",
+      lastOutputPreview: null,
+      summary: null,
+    };
+  }
+
+  it("keeps a newly created chat visible until listSessions catches up", () => {
+    const optimistic = new Map<string, AgentChatSessionSummary>();
+    const newSummary = chatSessionToOptimisticSummary(createdSession(), "Draft title");
+    optimistic.set(newSummary.sessionId, newSummary);
+
+    expect(mergeOptimisticChatSessions([summary("chat-old")], optimistic).map((session) => session.sessionId)).toEqual([
+      "chat-new",
+      "chat-old",
+    ]);
+    expect(optimistic.has("chat-new")).toBe(true);
+  });
+
+  it("drops the optimistic row once the runtime returns the created chat", () => {
+    const optimistic = new Map<string, AgentChatSessionSummary>();
+    optimistic.set("chat-new", chatSessionToOptimisticSummary(createdSession()));
+
+    const merged = mergeOptimisticChatSessions([summary("chat-new")], optimistic);
+
+    expect(merged.map((session) => session.sessionId)).toEqual(["chat-new"]);
+    expect(optimistic.size).toBe(0);
   });
 });
 

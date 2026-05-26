@@ -14,6 +14,7 @@ import {
   parseInlineRuns,
   type AssistantMarkdownBlock,
 } from "../format";
+import type { AdeCodeProvider } from "../types";
 import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 
 const session: AgentChatSessionSummary = {
@@ -35,15 +36,17 @@ function stripAnsi(value: string): string {
 
 function renderEvents(
   events: AgentChatEventEnvelope[],
-  options: { maxRows?: number; scrollOffsetRows?: number; width?: number; streaming?: boolean; interrupted?: boolean } = {},
+  options: { maxRows?: number; scrollOffsetRows?: number; width?: number; streaming?: boolean; interrupted?: boolean; provider?: AdeCodeProvider } = {},
 ): string {
+  const provider = options.provider ?? "codex";
   const result = render(
     <ChatView
       events={events}
       notices={[]}
-      activeSession={session}
+      activeSession={{ ...session, provider }}
       projectName="ADE"
       laneName="Primary"
+      provider={provider}
       streaming={options.streaming}
       interrupted={options.interrupted}
       maxRows={options.maxRows}
@@ -146,7 +149,7 @@ describe("ChatView", () => {
     expect(frame).not.toContain("type to chat");
   });
 
-  it("shows an active-turn wait state before runtime events arrive", () => {
+  it("shows a model working state before runtime events arrive", () => {
     const frame = renderEvents([
       {
         sessionId: "s1",
@@ -163,10 +166,11 @@ describe("ChatView", () => {
     ], { streaming: true, width: 80 });
 
     expect(frame).toContain("check status");
-    expect(frame).toContain("active turn · waiting for runtime events");
+    expect(frame).toContain("model working");
+    expect(frame).not.toContain("waiting for runtime events");
   });
 
-  it("shows the active-turn wait state after historical assistant output", () => {
+  it("shows the model working state after historical assistant output", () => {
     const events: AgentChatEventEnvelope[] = [
       {
         sessionId: "s1",
@@ -211,11 +215,12 @@ describe("ChatView", () => {
 
     expect(frame).toContain("first answer");
     expect(frame).toContain("second turn");
-    expect(frame).toContain("active turn · waiting for runtime events");
+    expect(frame).toContain("model working");
+    expect(frame).not.toContain("waiting for runtime events");
     expect(maxOffset).toBeGreaterThan(0);
   });
 
-  it("does not add a generic working indicator while active text is streaming", () => {
+  it("keeps showing the model working indicator while active text is streaming", () => {
     const frame = renderEvents([
       {
         sessionId: "s1",
@@ -226,6 +231,21 @@ describe("ChatView", () => {
     ], { streaming: true, width: 80 });
 
     expect(frame).toContain("I found the issue.");
+    expect(frame).toContain("model working");
+    expect(frame).not.toContain("waiting for runtime events");
+  });
+
+  it("does not show the TUI model working indicator for Claude chat sessions", () => {
+    const frame = renderEvents([
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "user_message", text: "claude status", turnId: "turn-active" },
+      },
+    ], { streaming: true, width: 80, provider: "claude" });
+
+    expect(frame).toContain("claude status");
     expect(frame).not.toContain("model working");
     expect(frame).not.toContain("waiting for runtime events");
   });

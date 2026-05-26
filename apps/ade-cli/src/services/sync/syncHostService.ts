@@ -121,6 +121,11 @@ const BONJOUR_PROJECT_NAME_MAX_LENGTH = 48;
 export const SYNC_TAILNET_DISCOVERY_SERVICE_NAME = "svc:ade-sync";
 export const SYNC_TAILNET_DISCOVERY_SERVICE_PORT = DEFAULT_SYNC_HOST_PORT;
 export type SyncRuntimeKind = "desktop-embedded" | "headless" | "remote-stdio" | "desktop" | "daemon" | "remote";
+export type NativeLanDiscoveryProcess = {
+  pid: number;
+  ppid: number;
+  command: string;
+};
 const MOBILE_MUTATING_FILE_ACTIONS = new Set<SyncFileRequest["action"]>([
   "writeText",
   "createFile",
@@ -646,11 +651,61 @@ function shouldAttemptTailnetServiceAdvertise(): boolean {
   return process.platform === "darwin" || process.platform === "linux" || process.platform === "win32";
 }
 
+export function parseNativeLanDiscoveryProcessList(stdout: string): NativeLanDiscoveryProcess[] {
+  const out: NativeLanDiscoveryProcess[] = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/);
+    if (!match) continue;
+    const pid = Number.parseInt(match[1], 10);
+    const ppid = Number.parseInt(match[2], 10);
+    const command = match[3];
+    if (!Number.isFinite(pid) || !Number.isFinite(ppid)) continue;
+    if (!/\bdns-sd\b/.test(command)) continue;
+    if (!/\s-R\s+ADE Sync\b/.test(command)) continue;
+    if (!/\b_ade-sync\._tcp\b/.test(command)) continue;
+    out.push({ pid, ppid, command });
+  }
+  return out;
+}
+
+async function recoverOrphanedNativeLanDiscoveryProcesses(logger: Logger): Promise<void> {
+  if (
+    process.platform !== "darwin"
+    || process.env.NODE_ENV === "test"
+    || process.env.VITEST
+    || process.env.VITEST_WORKER_ID
+  ) return;
+  try {
+    const { stdout } = await execFileAsync("ps", ["-axo", "pid=,ppid=,command="], { timeout: 2_000 });
+    for (const proc of parseNativeLanDiscoveryProcessList(stdout)) {
+      if (proc.ppid !== 1) continue;
+      try {
+        process.kill(proc.pid, "SIGKILL");
+        logger.warn("sync_host.discovery_native_orphan_recovered", {
+          pid: proc.pid,
+          ppid: proc.ppid,
+        });
+      } catch (error) {
+        logger.warn("sync_host.discovery_native_orphan_recovery_failed", {
+          pid: proc.pid,
+          ppid: proc.ppid,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  } catch (error) {
+    logger.warn("sync_host.discovery_native_orphan_scan_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 function looksLikePendingTailnetApproval(text: string): boolean {
   return /\b(pending|approval|approve|review)\b/i.test(text);
 }
 
 export function createSyncHostService(args: SyncHostServiceArgs) {
+  void recoverOrphanedNativeLanDiscoveryProcesses(args.logger);
   const layout = resolveAdeLayout(args.projectRoot);
   const bootstrapTokenPath = args.bootstrapTokenPath ?? path.join(layout.secretsDir, "sync-bootstrap-token");
   const pairingSecretsPath = args.pairingSecretsPath ?? path.join(layout.secretsDir, "sync-paired-devices.json");

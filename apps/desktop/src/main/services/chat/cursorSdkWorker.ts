@@ -347,6 +347,7 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
       workspaceRef: init.laneRoot,
       stateRoot: init.stateRoot,
     },
+    ...(init.mcpServers ? { mcpServers: init.mcpServers as AgentOptions["mcpServers"] } : {}),
   };
   agent = init.agentId?.trim()
     ? await Agent.resume(init.agentId.trim(), agentOptions)

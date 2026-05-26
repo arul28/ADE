@@ -1,7 +1,7 @@
 import React from "react";
 import { describe, expect, it } from "vitest";
 import { render } from "ink-testing-library";
-import { LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, RightPane } from "../components/RightPane";
+import { LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, laneDetailsInteractionLayout, RightPane } from "../components/RightPane";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 
 function stripAnsi(text: string): string {
@@ -342,6 +342,46 @@ describe("RightPane lane-details", () => {
     expect(frame).toContain("commit");
     expect(frame).not.toMatch(/\[c\][^\n]*commit/);
     expect(frame).not.toMatch(/\[p\][^\n]*push/);
+  });
+
+  it("keeps lane action click rows aligned with rendered action rows", () => {
+    const content = {
+      kind: "lane-details" as const,
+      ...baseLaneDetails,
+      git: {
+        ...baseLaneDetails.git,
+        total: 7,
+        additions: 12,
+        deletions: 3,
+      },
+      files: [
+        { path: "apps/desktop/src/main.ts", status: "M" as const, staged: false },
+        { path: "apps/ade-cli/src/tuiClient/app.tsx", status: "M" as const, staged: true },
+        { path: "docs/notes.md", status: "A" as const, staged: false },
+      ],
+      pr: {
+        number: 311,
+        state: "open" as const,
+        url: "https://github.com/example/ADE/pull/311",
+        checksPassed: 2,
+        checksTotal: 5,
+        checksPending: 0,
+        checksFailed: 0,
+      },
+      selectedActionIndex: LANE_DETAIL_ACTIONS.findIndex((action) => action.k === "c"),
+    };
+    const result = render(<RightPane content={content} focused width={80} />);
+    const lines = stripAnsi(result.lastFrame() ?? "").split("\n");
+    const layout = laneDetailsInteractionLayout(content);
+    const actionLineIndexes = layout.actionRows.map((offset) => offset + 1);
+
+    expect(actionLineIndexes.map((line) => lines[line])).toEqual(expect.arrayContaining([
+      expect.stringContaining("new chat"),
+      expect.stringContaining("commit"),
+      expect.stringContaining("delete lane"),
+    ]));
+    expect(layout.prRow).not.toBeNull();
+    expect(lines[(layout.prRow?.start ?? 0) + 1]).toContain("open");
   });
 
   it("renders PR activity and chat counts", () => {
