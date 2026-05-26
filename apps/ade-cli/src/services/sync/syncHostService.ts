@@ -2846,8 +2846,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         try {
           let appliedCount = 0;
           if (changes.length > 0) {
-            args.db.sync.applyChanges(changes);
-            appliedCount = changes.length;
+            const applyResult = args.db.sync.applyChanges(changes);
+            appliedCount = applyResult.appliedCount;
             peer.lastAppliedAt = nowIso();
             lastBroadcastAt = nowIso();
             args.onStateChanged?.();

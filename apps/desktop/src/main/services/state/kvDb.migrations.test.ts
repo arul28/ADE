@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { createLaneWorktreeLockService } from "../lanes/laneWorktreeLockService";
 import { openKvDb } from "./kvDb";
+import { isCrsqliteAvailable } from "./crsqliteExtension";
 
 const require = createRequire(import.meta.url);
 
@@ -153,6 +154,25 @@ describe("kvDb migrations - legacy upgrade paths", () => {
       expect(db.get<{ count: number }>("select count(1) as count from projects")?.count).toBe(1);
     } finally {
       db.close();
+    }
+  });
+
+  it.skipIf(!isCrsqliteAvailable())("skips primary-key retrofit for tables that already have __crsql_clock companions", async () => {
+    const dbPath = makeDbPath("ade-kvdb-pk-retrofit-skip-crr-");
+    const first = await openKvDb(dbPath, createLogger());
+    first.run("create unique index if not exists temp_ade_pk_retrofit_probe on lanes(project_id, name)");
+    first.close();
+
+    const reopened = await openKvDb(dbPath, createLogger());
+    try {
+      expect(
+        reopened.get<{ name: string }>(
+          "select name from sqlite_master where type = 'table' and name = 'lanes__crsql_clock' limit 1",
+        )?.name,
+      ).toBe("lanes__crsql_clock");
+      reopened.run("drop index if exists temp_ade_pk_retrofit_probe");
+    } finally {
+      reopened.close();
     }
   });
 
