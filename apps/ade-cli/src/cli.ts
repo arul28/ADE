@@ -10127,10 +10127,10 @@ function readMachineRuntimeInfo(value: unknown): MachineRuntimeInfo {
   }
   const pid = value.runtimeInfo.pid;
   return {
-    version: asString(value.runtimeInfo.version)?.trim() || null,
-    buildHash: asString(value.runtimeInfo.buildHash)?.trim() || null,
+    version: asString(value.runtimeInfo.version),
+    buildHash: asString(value.runtimeInfo.buildHash),
     defaultRole: normalizeAdeRuntimeRole(value.runtimeInfo.defaultRole),
-    projectRoot: asString(value.runtimeInfo.projectRoot)?.trim() || null,
+    projectRoot: asString(value.runtimeInfo.projectRoot),
     pid:
       typeof pid === "number" && Number.isFinite(pid) && pid > 0
         ? Math.floor(pid)

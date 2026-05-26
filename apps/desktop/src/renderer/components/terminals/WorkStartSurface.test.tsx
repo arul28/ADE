@@ -61,7 +61,7 @@ describe("WorkStartSurface", () => {
   });
 
   it("uses one AgentChatPane surface for CLI mode and opens shell in the selected lane", async () => {
-    const onLaunchPtySession = vi.fn().mockResolvedValue({});
+    const onLaunchPtySession = vi.fn().mockResolvedValue({ sessionId: "shell-session", ptyId: "pty-shell", pid: null });
     render(
       <WorkStartSurface
         draftKind="cli"

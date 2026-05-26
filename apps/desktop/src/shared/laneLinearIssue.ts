@@ -1,4 +1,7 @@
+import type { LinearPriorityLabel } from "./types/linearSync";
 import type { LaneLinearIssue } from "./types";
+
+const VALID_PRIORITY_LABELS = new Set<LinearPriorityLabel>(["urgent", "high", "normal", "low", "none"]);
 
 function readRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -44,8 +47,8 @@ export function parseLaneLinearIssueValue(value: unknown): LaneLinearIssue | nul
     return null;
   }
   const rawPriorityLabel = readString(issue.priorityLabel);
-  const priorityLabel: LaneLinearIssue["priorityLabel"] = rawPriorityLabel === "urgent" || rawPriorityLabel === "high" || rawPriorityLabel === "normal" || rawPriorityLabel === "low" || rawPriorityLabel === "none"
-    ? rawPriorityLabel
+  const priorityLabel: LinearPriorityLabel = VALID_PRIORITY_LABELS.has(rawPriorityLabel as LinearPriorityLabel)
+    ? rawPriorityLabel as LinearPriorityLabel
     : "none";
   return {
     id,

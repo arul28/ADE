@@ -158,10 +158,13 @@ Renderer surfaces:
   Owns the multi-select state (`selectedSessionIds`, shift/ctrl anchor,
   bulk close and bulk delete handlers) that the sidebar forwards into.
   It consumes `AgentChatPane` session-created options from
-  `WorkStartSurface` / `WorkViewArea`: foreground Work chat launches
-  select the lane, focus the session, and open the session tab, while
-  background launches upsert the optimistic chat session and refresh the
-  list without stealing focus.
+  `WorkStartSurface` / `WorkViewArea`: foreground Work launches
+  (disposition `"foreground"` or unset) select the lane, focus the
+  session, and open the session tab, while background launches
+  (disposition `"background"`) upsert the optimistic session and
+  refresh the list without stealing focus. Both chat and CLI draft
+  launches respect the same disposition field through the unified
+  `WorkPtyLaunchArgs` / `WorkPtyLaunchResult` contract.
   Also owns the right-edge `WorkSidebar` toggle and resizer: when the
   sidebar is open and the view mode is not `grid`, the work view area
   shares its row with `WorkSidebar` via a flex container with a
@@ -231,7 +234,8 @@ Renderer surfaces:
   whose send button calls `ade.pty.sendToSession`. The handler writes
   into a live runtime when one is still attached, or starts a fresh
   provider continuation internally and binds it back to the same
-  durable session id.
+  durable session id. The `onLaunchPtySession` prop is typed as
+  `(args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>`.
 - `apps/desktop/src/renderer/components/terminals/useWorkLaneContextMenu.tsx`
   — shared Work-tab lane context menu hook. It portals `LaneContextMenu`
   over lane bands, lane chips, collapsed lane pills, and grouped session
@@ -250,7 +254,8 @@ Renderer surfaces:
   `AgentChatPane` in embedded draft mode and forwards
   `onSessionCreated(session, options)` so foreground draft launches can
   open in Work while background launches stay quiet and surface their
-  dismissible launch notice inside the pane.
+  dismissible launch notice inside the pane. The `onLaunchPtySession`
+  prop is typed as `(args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>`.
 - `apps/desktop/src/renderer/components/terminals/TerminalView.tsx` —
   xterm.js wrapper; WebGL renderer with DOM fallback, fit retries, health
   counters.
@@ -280,7 +285,11 @@ Renderer surfaces:
   switches it hydrates the destination project's cached rows but marks them
   non-authoritative until the active project refresh returns; cache mirroring
   and open-tab pruning pause during that window so the previous project's
-  sessions cannot poison the new project's Work state.
+  sessions cannot poison the new project's Work state. `launchPtySession`
+  accepts `WorkPtyLaunchArgs` and returns `WorkPtyLaunchResult`; when
+  `disposition` is `"background"` the hook skips `selectLane`,
+  `focusSession`, and `openSessionTab` so the launch happens silently
+  without stealing the user's current focus.
 - `apps/desktop/src/renderer/components/terminals/useSessionDelta.ts` —
   fetches `SessionDeltaSummary` for a given session.
 - `apps/desktop/src/shared/cliLaunch.ts` — canonical CLI launch
@@ -343,8 +352,15 @@ Renderer surfaces:
   instead of "Codex" / "Claude" while still letting providers like
   Shell fall back to the generic profile title.
 - `apps/desktop/src/renderer/components/terminals/cliLaunch.ts` — thin
-  re-export of `apps/desktop/src/shared/cliLaunch.ts` so existing
-  renderer callers keep their import path.
+  re-export of `apps/desktop/src/shared/cliLaunch.ts` plus the renderer-
+  local Work launch envelope types: `WorkPtyLaunchDisposition`
+  (`"foreground" | "background"`), `WorkPtyLaunchArgs` (typed argument
+  bag for `launchPtySession` across all Work surfaces — carries
+  `laneId`, `profile`, optional overrides, and the `disposition` field),
+  and `WorkPtyLaunchResult` (alias of `PtyCreateResult`). These types
+  unify the inline prop shapes that `WorkStartSurface`, `WorkViewArea`,
+  `useLaneWorkSessions`, `useWorkSessions`, and `AgentChatPane` all
+  previously duplicated.
 - `apps/desktop/src/shared/shell.ts` — shared shell-quoting and
   command-line parsing utilities (`quoteShellArg`, `commandArrayToLine`,
   `parseCommandLine`) used by both the renderer and the main-process

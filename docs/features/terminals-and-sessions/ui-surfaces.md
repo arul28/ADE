@@ -477,7 +477,8 @@ Rendered when the Work view has no open sessions. Contains:
   resets the permission picker to that provider's documented default
   (`getPermissionOptions` keyed by `family`); Droid and OpenCode default
   to `edit`, the rest default to `default`. The "Launch" button calls
-  `onLaunchPtySession` with the payload from
+  `onLaunchPtySession` (typed as `(args: WorkPtyLaunchArgs) =>
+  Promise<WorkPtyLaunchResult>`) with the payload from
   `buildTrackedCliLaunchCommand` (`{ command?, args, startupCommand,
   env? }`). `onLaunchPtySession` forwards `command` + `args` for direct
   argv spawn (Claude / Codex), passes `env` through to the PTY when set
@@ -597,27 +598,35 @@ before the IPC round-trip completes), `refresh`, and the right-sidebar
 setters `setWorkSidebarOpen`, `setWorkSidebarTab` (also forces the
 sidebar open), and `setWorkSidebarWidthPct` (clamped 26–55%).
 
-`launchPtySession` opens the tab off the synchronous `ptyCreate`
-result before kicking off the background refresh: it focuses the
-session, calls `openSessionTab`, and only then fires `refresh({
-showLoading: false, force: true })`. This is what makes the Work tab's
-optimistic terminal visible the moment the PTY exists, which is the
-window in which the new `TerminalView` runtime needs to attach so it
-can subscribe to live PTY data before fast TUIs like Codex or Claude
-paint their first frame. Waiting on the refresh round-trip first used
-to lose the initial paint and leave the terminal blank. The
-`launchPtySession({ laneId, profile, command?, args?, startupCommand?,
-startupDelayMs?, env?, title?, tracked? })` helper (and its
-lane-scoped twin in `useLaneWorkSessions`) builds a default launch
-payload with
-`buildTrackedCliLaunchCommand` when the caller didn't override
-`command`/`args`/`env`, so every entry point — chat composer launch
-button, TopBar work controls, lane Work pane — produces the same
-argv-based spawn with ADE CLI guidance baked in. `profile` is a
-`LaunchProfile` (`"claude" | "codex" | "cursor" | "droid" | "opencode"
-| "shell"`); the matching tab title and recorded `TerminalToolType`
-come from the shared `LAUNCH_PROFILE_TITLE` / `LAUNCH_PROFILE_TOOL_TYPE`
-maps in `apps/desktop/src/shared/cliLaunch.ts`.
+`launchPtySession` accepts `WorkPtyLaunchArgs` and returns
+`Promise<WorkPtyLaunchResult>`. The args carry `disposition?:
+WorkPtyLaunchDisposition` (`"foreground" | "background"`). When
+disposition is `"background"`, the hook inserts the optimistic session
+and invalidates the cache but skips `selectLane`, `focusSession`, and
+`openSessionTab` so the launch happens without stealing the user's
+current focus. When disposition is `"foreground"` (or unset), the hook
+opens the tab off the synchronous `ptyCreate` result before kicking off
+the background refresh: it focuses the session, calls `openSessionTab`,
+and only then fires `refresh({ showLoading: false, force: true })`.
+This is what makes the Work tab's optimistic terminal visible the
+moment the PTY exists, which is the window in which the new
+`TerminalView` runtime needs to attach so it can subscribe to live PTY
+data before fast TUIs like Codex or Claude paint their first frame.
+Waiting on the refresh round-trip first used to lose the initial paint
+and leave the terminal blank. The `WorkPtyLaunchArgs` type (defined in
+`apps/desktop/src/renderer/components/terminals/cliLaunch.ts`) carries
+`laneId`, `profile`, and optional `command`, `args`, `startupCommand`,
+`startupDelayMs`, `env`, `title`, `tracked`, and `disposition`. The
+helper (and its lane-scoped twin in `useLaneWorkSessions`) builds a
+default launch payload with `buildTrackedCliLaunchCommand` when the
+caller didn't override `command`/`args`/`env`, so every entry point —
+chat composer launch button, TopBar work controls, lane Work pane —
+produces the same argv-based spawn with ADE CLI guidance baked in.
+`profile` is a `LaunchProfile` (`"claude" | "codex" | "cursor" |
+"droid" | "opencode" | "shell"`); the matching tab title and recorded
+`TerminalToolType` come from the shared `LAUNCH_PROFILE_TITLE` /
+`LAUNCH_PROFILE_TOOL_TYPE` maps in
+`apps/desktop/src/shared/cliLaunch.ts`.
 The runtime strips leading `ENV=value` assignments before sniffing the
 provider, so continuation commands the OpenCode preamble emits
 (`OPENCODE_CONFIG_CONTENT=… opencode --session …`) round-trip
@@ -630,8 +639,12 @@ goes through the shell + `startupCommand` path (see
 [pty-and-processes.md](./pty-and-processes.md#create-flow-createargs)
 for how the PTY service consumes the delay).
 
-`useLaneWorkSessions` (same file) wraps the same state but scopes to a
-single lane for the Lanes tab.
+`useLaneWorkSessions` (in
+`apps/desktop/src/renderer/components/lanes/useLaneWorkSessions.ts`)
+wraps the same state but scopes to a single lane for the Lanes tab.
+Its `launchPtySession` also accepts `WorkPtyLaunchArgs` and returns
+`WorkPtyLaunchResult`, forwarding `startupDelayMs` and respecting
+`disposition` the same way.
 
 ## Session delta hook: `useSessionDelta.ts`
 

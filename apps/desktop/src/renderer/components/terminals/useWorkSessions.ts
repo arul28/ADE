@@ -19,7 +19,8 @@ import {
   resolveLaunchFields,
   LAUNCH_PROFILE_TITLE,
   LAUNCH_PROFILE_TOOL_TYPE,
-  type LaunchProfile,
+  type WorkPtyLaunchArgs,
+  type WorkPtyLaunchResult,
 } from "./cliLaunch";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 
@@ -1300,17 +1301,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   }, [runningSessions, stopRuntime]);
 
   const launchPtySession = useCallback(
-    async (args: {
-      laneId: string;
-      profile: LaunchProfile;
-      tracked?: boolean;
-      title?: string;
-      startupCommand?: string;
-      startupDelayMs?: number;
-      command?: string;
-      args?: string[];
-      env?: Record<string, string>;
-    }) => {
+    async (args: WorkPtyLaunchArgs): Promise<WorkPtyLaunchResult> => {
       // resolveLaunchFields preserves caller intent: any caller-supplied
       // startupCommand/command/args is used as-is, never mixed with defaults
       // from the other fields. Only when the caller passes none of them do
@@ -1364,16 +1355,18 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         createdAtMs: Date.now(),
       });
       setSessions((prev) => upsertSessionByStartedAt(prev, optimisticSession));
-      selectLane(args.laneId);
       // Invalidate all cache entries so other views (e.g. Lanes tab) pick up
       // the new session on their next refresh.
       invalidateSessionListCache();
-      focusSession(result.sessionId);
-      openSessionTab(result.sessionId);
+      if (args.disposition !== "background") {
+        selectLane(args.laneId);
+        focusSession(result.sessionId);
+        openSessionTab(result.sessionId);
+      }
       // Reconcile with persisted backend state in the background. The
-      // optimistic row already has the returned pty/session ids, so opening it
-      // immediately lets TerminalView subscribe before fast TUIs draw their
-      // initial frame.
+      // optimistic row already has the returned pty/session ids. Foreground
+      // launches open it immediately so TerminalView subscribes before fast
+      // TUIs draw their initial frame; background launches leave focus alone.
       void refresh({ showLoading: false, force: true }).catch(() => {});
       return result;
     },

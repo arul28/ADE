@@ -718,7 +718,7 @@ export async function createAdeRuntime(args: {
     projectRoot,
     logger,
     onEvent: (event) => pushEvent("runtime", { type: "computer_use_event", event }),
-  } as Parameters<typeof createComputerUseArtifactBrokerService>[0]);
+  });
   const iosSimulatorService = chatOnlyRuntime
     ? null
     : createIosSimulatorService({
