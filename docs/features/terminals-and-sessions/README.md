@@ -81,6 +81,10 @@ desktop fallback IPC path.
   managed process tests.
 - `apps/desktop/src/main/services/lanes/laneLaunchContext.ts` —
   per-lane cwd resolution that gates PTY creation to the lane worktree.
+  For macOS VM-backed lanes it also owns the cached launch target and
+  invalidates/refreshes that cache from VM operation events so PTY or
+  agent launches do not reuse a stale SSH endpoint during stop/restart/delete
+  windows.
 
 Shared types and IPC:
 
@@ -272,7 +276,11 @@ Renderer surfaces:
   tab switch always renders the current session set. Fresh PTY launches
   are inserted as short-lived optimistic sessions before the forced
   session-list refresh returns, which keeps the new terminal tab visible
-  even when the runtime cache responds with a stale list.
+  even when the runtime cache responds with a stale list. During project
+  switches it hydrates the destination project's cached rows but marks them
+  non-authoritative until the active project refresh returns; cache mirroring
+  and open-tab pruning pause during that window so the previous project's
+  sessions cannot poison the new project's Work state.
 - `apps/desktop/src/renderer/components/terminals/useSessionDelta.ts` —
   fetches `SessionDeltaSummary` for a given session.
 - `apps/desktop/src/shared/cliLaunch.ts` — canonical CLI launch

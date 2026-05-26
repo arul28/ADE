@@ -11,7 +11,7 @@ stream plus session metadata.
 
 | Path | Role |
 |---|---|
-| `AgentChatPane.tsx` | Top-level pane; IPC wiring, session state, presentation profile resolution, lane navigation, parallel launch orchestration, mounting of sub-panels and composer. Visible Work grid tiles flush user/lifecycle/live events immediately and poll-recover active transcripts so inactive-but-visible tiles stay current. Draft chats preserve user-touched model/reasoning/permission controls across late lane-session hydration. |
+| `AgentChatPane.tsx` | Top-level pane; IPC wiring, session state, presentation profile resolution, lane navigation, parallel launch orchestration, mounting of sub-panels and composer. Visible Work grid tiles flush user/lifecycle/live events immediately and poll-recover active transcripts so inactive-but-visible tiles stay current. Draft chats preserve user-touched model/reasoning/permission controls across late lane-session hydration, and composer text is keyed by session id or lane draft key so switching draft lanes does not reuse another draft's text. |
 | `AgentChatMessageList.tsx` | Virtualized message list (`@tanstack/react-virtual`). Renders transcript rows and turn dividers, and keeps sticky-bottom sessions pinned across streamed row growth and late virtual-height measurements. |
 | `AgentChatComposer.tsx` | Text input, attachments, model selector, permission controls, slash commands, pending-input answering, and parallel model-slot controls. |
 | `ChatSurfaceShell.tsx` | Floating chat header, body, footer layout. Backdrop-blur glass-morphism styling. |

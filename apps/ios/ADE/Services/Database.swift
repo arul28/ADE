@@ -350,12 +350,11 @@ final class DatabaseService {
         values (?, ?, ?, ?, ?, ?, ?, ?, ?)
       """
       for rawChange in changes {
-        let change = normalizeIncomingChange(rawChange)
-        // These snapshot tables are fully replaced by explicit hydration after
-        // connect, so accepting CRDT deltas for them is redundant and brittle.
-        if DatabaseService.hydrationOwnedCrrExcludedTables.contains(change.table) {
+        if shouldIgnoreIncomingSyncTable(rawChange.table) {
           continue
         }
+        try validateIncomingSyncTableExists(rawChange.table)
+        let change = normalizeIncomingChange(rawChange)
         let changed = try execute(sql) { statement in
           try bindText(change.table, to: statement, index: 1)
           try bindScalar(change.pk, to: statement, index: 2)
@@ -2717,7 +2716,33 @@ final class DatabaseService {
     "pull_request_snapshots",
   ]
 
+  /// Tables removed locally that older desktop or phone peers may still export.
+  private static let droppedIncomingSyncTables: Set<String> = [
+    "unified_memories",
+    "unified_memories_fts",
+  ]
+
   private static let excludedCrrTables = localOnlyCacheTables.union(hydrationOwnedCrrExcludedTables)
+
+  private func shouldIgnoreIncomingSyncTable(_ tableName: String) -> Bool {
+    // These snapshot tables are fully replaced by explicit hydration after
+    // connect, so accepting CRDT deltas for them is redundant and brittle.
+    if DatabaseService.hydrationOwnedCrrExcludedTables.contains(tableName) {
+      return true
+    }
+    if DatabaseService.droppedIncomingSyncTables.contains(tableName) {
+      return true
+    }
+    if tableName.hasPrefix("unified_memories_") {
+      return true
+    }
+    return false
+  }
+
+  private func validateIncomingSyncTableExists(_ tableName: String) throws {
+    if hasTable(named: tableName) { return }
+    throw sqliteError("Unsupported incoming sync table '\(tableName)'. Update ADE before applying this changeset.")
+  }
 
   private func listEligibleCrrTables() -> [String] {
     let sql = """

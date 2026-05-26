@@ -624,6 +624,7 @@ export type SyncRemoteCommandAction =
   | "git.listCommitFiles"
   | "git.getFileHistory"
   | "git.getCommitMessage"
+  | "git.isCommitInLaneHistory"
   | "git.revertCommit"
   | "git.cherryPickCommit"
   | "git.createTag"

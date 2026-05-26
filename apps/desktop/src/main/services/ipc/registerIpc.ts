@@ -6800,6 +6800,14 @@ export function registerIpc({
     },
   );
 
+  ipcMain.handle(
+    IPC.gitIsCommitInLaneHistory,
+    async (_event, arg: { laneId: string; commitSha: string }): Promise<boolean> => {
+      const ctx = getCtx();
+      return await ctx.gitService.isCommitInLaneHistory(arg);
+    },
+  );
+
   ipcMain.handle(IPC.gitRevertCommit, async (_event, arg: GitRevertArgs): Promise<GitActionResult> => {
     const ctx = getCtx();
     return ctx.gitService.revertCommit(arg);

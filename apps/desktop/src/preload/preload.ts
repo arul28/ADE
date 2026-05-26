@@ -1111,6 +1111,9 @@ async function callRemoteProjectActionIfBound<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
   options?: { freshBinding?: boolean },
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
+    return { handled: false };
+  }
   const binding = await getRemoteProjectBinding(options?.freshBinding ? { fresh: true } : undefined);
   if (!binding) return { handled: false };
   const response = (await ipcRenderer.invoke(IPC.remoteRuntimeCallAction, {
@@ -1127,6 +1130,9 @@ async function callLocalProjectActionIfBound<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
   options?: { freshBinding?: boolean },
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
+    return { handled: false };
+  }
   if (localRuntimeDaemonDisabled) return { handled: false };
   const binding = await getLocalProjectBinding(options?.freshBinding ? { fresh: true } : undefined);
   if (!binding) return { handled: false };
@@ -1159,6 +1165,9 @@ async function callLocalProjectActionStrictIfBound<T>(
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
+    return { handled: false };
+  }
   if (localRuntimeDaemonDisabled) return { handled: false };
   const binding = await getLocalProjectBinding();
   if (!binding) return { handled: false };
@@ -1201,6 +1210,81 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "codexOpenInCli",
 ]);
 
+const READ_ONLY_RUNTIME_ACTION_PREFIXES = [
+  "diagnosticsGet",
+  "get",
+  "list",
+  "oauthGet",
+  "oauthList",
+  "portList",
+  "proxyGet",
+  "read",
+  "search",
+] as const;
+
+const READ_ONLY_RUNTIME_ACTIONS = new Set([
+  "chat.codexFuzzyFileSearch",
+  "chat.fileSearch",
+  "chat.modelCatalog",
+  "file.quickOpen",
+  "terminal.activeForChat",
+  "terminal.preview",
+]);
+
+const MUTATING_SYNC_METHODS = new Set([
+  "sync.connectToBrain",
+  "sync.disconnectFromBrain",
+  "sync.forgetDevice",
+  "sync.transferBrainToLocal",
+  "sync.setPin",
+  "sync.generatePin",
+  "sync.clearPin",
+  "sync.updateLocalDevice",
+  "sync.setActiveLanePresence",
+  "modelPicker.setFavorites",
+  "modelPicker.toggleFavorite",
+  "modelPicker.pushRecent",
+]);
+
+const PROJECT_SWITCHING_MESSAGE =
+  "Project is switching. Wait for the current project to finish loading before changing project state.";
+
+let openRemoteProjectGeneration = 0;
+let activeRemoteProjectOpenGeneration: number | null = null;
+
+function isReadOnlyRuntimeAction(domain: string, action: string): boolean {
+  const key = `${domain}.${action}`;
+  if (READ_ONLY_RUNTIME_ACTIONS.has(key)) return true;
+  return READ_ONLY_RUNTIME_ACTION_PREFIXES.some(
+    (prefix) =>
+      action === prefix ||
+      (action.startsWith(prefix) && /^[A-Z]/.test(action.slice(prefix.length))),
+  );
+}
+
+function isMutatingRuntimeAction(domain: string, action: string): boolean {
+  if (domain === "chat") return MUTATING_CHAT_ACTIONS.has(action);
+  return !isReadOnlyRuntimeAction(domain, action);
+}
+
+function assertProjectRuntimeNotTransitioningForMutation(label: string): void {
+  if (projectRuntimeTransitionDepth > 0) {
+    throw new Error(PROJECT_SWITCHING_MESSAGE.replace("changing project state", label));
+  }
+}
+
+function shouldBypassProjectRuntimeDuringTransition(domain: string, action: string): boolean {
+  if (projectRuntimeTransitionDepth <= 0) return false;
+  if (isMutatingRuntimeAction(domain, action)) {
+    const label =
+      domain === "chat" && MUTATING_CHAT_ACTIONS.has(action)
+        ? "sending chat messages"
+        : "changing project state";
+    throw new Error(PROJECT_SWITCHING_MESSAGE.replace("changing project state", label));
+  }
+  return activeRemoteProjectOpenGeneration !== null;
+}
+
 async function callProjectRuntimeActionIfBound<T>(
   domain: string,
   action: string,
@@ -1209,8 +1293,12 @@ async function callProjectRuntimeActionIfBound<T>(
   const freshBinding = domain === "chat";
   const isMutatingChatAction =
     freshBinding && MUTATING_CHAT_ACTIONS.has(action);
-  if (isMutatingChatAction && projectRuntimeTransitionDepth > 0) {
-    throw new Error("Project is switching. Wait for the current project to finish loading before sending chat messages.");
+  if (isMutatingRuntimeAction(domain, action) && projectRuntimeTransitionDepth > 0) {
+    const label =
+      isMutatingChatAction
+        ? "sending chat messages"
+        : "changing project state";
+    throw new Error(PROJECT_SWITCHING_MESSAGE.replace("changing project state", label));
   }
   // During a project transition, let read-only chat calls fall through to
   // their IPC fallback instead of binding to a possibly-stale runtime.
@@ -1342,6 +1430,9 @@ async function callProjectRuntimeSyncOr<T>(
   params: Record<string, unknown>,
   local: () => Promise<T>,
 ): Promise<T> {
+  if (MUTATING_SYNC_METHODS.has(method) && projectRuntimeTransitionDepth > 0) {
+    assertProjectRuntimeNotTransitioningForMutation("changing sync state");
+  }
   const remote = await callRemoteProjectSyncIfBound<T>(method, params);
   if (remote.handled) return remote.result;
   const localRuntime = await callLocalProjectSyncIfBound<T>(method, params);
@@ -3286,12 +3377,28 @@ contextBridge.exposeInMainWorld("ade", {
       id: string,
       projectId: string,
     ): Promise<OpenProjectBinding> => {
-      const binding = (await ipcRenderer.invoke(IPC.remoteRuntimeOpenProject, {
-        id,
-        projectId,
-      })) as OpenProjectBinding;
-      rememberProjectBinding(binding);
-      return binding;
+      return runProjectRuntimeTransition(async () => {
+        const generation = ++openRemoteProjectGeneration;
+        activeRemoteProjectOpenGeneration = generation;
+        rememberProjectBinding(null);
+        try {
+          const binding = (await ipcRenderer.invoke(IPC.remoteRuntimeOpenProject, {
+            id,
+            projectId,
+          })) as OpenProjectBinding;
+          if (generation === openRemoteProjectGeneration) {
+            rememberProjectBinding(binding);
+            activeRemoteProjectOpenGeneration = null;
+          }
+          return binding;
+        } catch (error) {
+          if (generation === openRemoteProjectGeneration) {
+            await refreshProjectBinding().catch(() => {});
+            activeRemoteProjectOpenGeneration = null;
+          }
+          throw error;
+        }
+      });
     },
     callAction: async (
       id: string,
@@ -6158,6 +6265,18 @@ contextBridge.exposeInMainWorld("ade", {
       return runtime.handled
         ? runtime.result
         : ipcRenderer.invoke(IPC.gitGetCommit, args);
+    },
+    isCommitInLaneHistory: async (
+      args: { laneId: string; commitSha: string },
+    ): Promise<boolean> => {
+      const runtime = await callProjectRuntimeActionIfBound<boolean>(
+        "git",
+        "isCommitInLaneHistory",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.gitIsCommitInLaneHistory, args);
     },
     revertCommit: async (args: GitRevertArgs): Promise<GitActionResult> => {
       clearGitReadCaches();

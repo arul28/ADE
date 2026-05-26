@@ -1933,7 +1933,7 @@ export function AgentChatPane({
   const [sdkSlashCommands, setSdkSlashCommands] = useState<import("../../../shared/types").AgentChatSlashCommand[]>([]);
   const [sendOnEnter, setSendOnEnter] = useState(true);
   const [draft, setDraft] = useState("");
-  const draftsPerSessionRef = useRef<Map<string | null, string>>(new Map());
+  const draftsPerSessionRef = useRef<Map<string, string>>(new Map());
   const [busy, setBusy] = useState(false);
   const [shellLaunchBusy, setShellLaunchBusy] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -2232,17 +2232,17 @@ export function AgentChatPane({
   }, []);
   const updateComposerDraft = useCallback((value: string) => {
     setDraft(value);
-    draftsPerSessionRef.current.set(selectedSessionId, value);
+    draftsPerSessionRef.current.set(companionStateKey, value);
     if (value.length > 0) setPromptSuggestion(null);
-  }, [selectedSessionId]);
+  }, [companionStateKey]);
   const insertComposerDraft = useCallback((value: string) => {
     setDraft((current) => {
       const next = current.trim().length ? `${current.trimEnd()}\n\n${value}` : value;
-      draftsPerSessionRef.current.set(selectedSessionId, next);
+      draftsPerSessionRef.current.set(companionStateKey, next);
       return next;
     });
     setPromptSuggestion(null);
-  }, [selectedSessionId]);
+  }, [companionStateKey]);
 
   const iosSimulatorProjectRoot = useMemo(() => {
     const scopedLaneId = selectedSession?.laneId ?? laneId;
@@ -3424,19 +3424,17 @@ export function AgentChatPane({
     });
   }, [forceDraft, initialSessionId, laneId, lockSessionId, lockedSingleSessionMode, preferDraftStart, refreshLockedSessionSummary]);
 
-  // Save/restore per-session drafts when switching sessions
-  const prevSessionIdRef = useRef<string | null | undefined>(undefined);
+  // Save/restore per-session (or per-lane draft) composer text when scope changes.
+  const prevDraftKeyRef = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (prevSessionIdRef.current !== undefined) {
-      // Save draft for the session we're leaving
-      draftsPerSessionRef.current.set(prevSessionIdRef.current, draft);
+    if (prevDraftKeyRef.current !== undefined) {
+      draftsPerSessionRef.current.set(prevDraftKeyRef.current, draft);
     }
-    prevSessionIdRef.current = selectedSessionId;
-    // Restore draft for the session we're entering
-    const saved = draftsPerSessionRef.current.get(selectedSessionId) ?? "";
+    prevDraftKeyRef.current = companionStateKey;
+    const saved = draftsPerSessionRef.current.get(companionStateKey) ?? "";
     setDraft(saved);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only trigger on session switch, not draft changes
-  }, [selectedSessionId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only trigger on scope switch, not draft edits
+  }, [companionStateKey]);
 
   useEffect(() => {
     if (!isTileActive) return;

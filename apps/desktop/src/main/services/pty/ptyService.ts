@@ -2411,6 +2411,7 @@ export function createPtyService({
       const chatSessionId = cleanOptionalId(args.chatSessionId);
       const launchContext = resolveLaneLaunchContext({
         laneService,
+        projectRoot,
         laneId,
         requestedCwd: args.cwd,
         allowExternalCwd: args.allowExternalCwd === true,

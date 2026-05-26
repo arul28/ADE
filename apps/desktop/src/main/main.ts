@@ -10,6 +10,7 @@ import {
   handleDeeplinkUrl,
   registerAdeProtocolHandler,
 } from "./services/deeplinks/protocolHandler";
+import { selectWindowForProjectNavigation } from "./services/deeplinks/projectNavigationWindowSelection";
 import { registerIpc } from "./services/ipc/registerIpc";
 import { createFileLogger } from "./services/logging/logger";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
@@ -25,8 +26,10 @@ import {
 import { createLaneService, type LaneDeleteTeardownDeps } from "./services/lanes/laneService";
 import {
   invalidateVmLaneLaunchCache,
+  type MacosVmLaunchProvider,
   refreshVmLaneLaunchCache,
   setMacosVmLaunchProvider,
+  syncMacosVmLaunchCacheFromEvent,
 } from "./services/lanes/laneLaunchContext";
 import { createLaneEnvironmentService } from "./services/lanes/laneEnvironmentService";
 import { createLaneTemplateService } from "./services/lanes/laneTemplateService";
@@ -795,6 +798,9 @@ const deeplinkClaimAsDefault =
 
 const pendingAppNavigationRequests: AppNavigationRequest[] = [];
 let dispatchAppNavigationRequest: ((request: AppNavigationRequest) => void) | null = null;
+let dispatchAppNavigationForProjectRoot:
+  | ((targetProjectRoot: string, request: AppNavigationRequest) => void)
+  | null = null;
 
 const dispatchOrQueueAppNavigationRequest = (request: AppNavigationRequest): void => {
   if (!dispatchAppNavigationRequest) {
@@ -1916,6 +1922,7 @@ app.whenReady().then(async () => {
     };
 
     const laneTeardownDeps: LaneDeleteTeardownDeps = {};
+    let macosVmLaunchProviderForProject: MacosVmLaunchProvider | null = null;
     const laneService = createLaneService({
       db,
       projectRoot,
@@ -1945,9 +1952,13 @@ app.whenReady().then(async () => {
         // TODO(mac-vm-onboarding): emit a renderer-facing IPC event so the
         // CreateLaneDialog re-gate + Work-tab banner can react without
         // polling. Requires adding a new IPC channel in shared/ipc.ts.
-        invalidateVmLaneLaunchCache(event.laneId);
+        invalidateVmLaneLaunchCache(event.laneId, projectRoot);
         if (event.to === "macos-vm") {
-          void refreshVmLaneLaunchCache({ laneId: event.laneId }).catch((error) => {
+          void refreshVmLaneLaunchCache({
+            laneId: event.laneId,
+            projectRoot,
+            provider: macosVmLaunchProviderForProject,
+          }).catch((error) => {
             logger.warn("lane.placement_changed_refresh_failed", {
               laneId: event.laneId,
               error: error instanceof Error ? error.message : String(error),
@@ -3118,8 +3129,15 @@ app.whenReady().then(async () => {
       projectRoot,
       logger,
       resolveLanes: async () => laneService.list({ includeArchived: false }),
-      onEvent: (payload) =>
-        emitProjectEvent(projectRoot, IPC.macosVmEvent, payload),
+      onEvent: (payload) => {
+        syncMacosVmLaunchCacheFromEvent(payload, (event, fields) => {
+          logger.warn(event, fields);
+        }, {
+          projectRoot,
+          provider: macosVmLaunchProviderForProject,
+        });
+        emitProjectEvent(projectRoot, IPC.macosVmEvent, payload);
+      },
       captureWindowSources: async () => {
         const sources = await desktopCapturer.getSources({
           types: ["window"],
@@ -3137,6 +3155,19 @@ app.whenReady().then(async () => {
       // wire-up needs the pool/registry to be lifted into a shared scope.
       onRuntimeReady: ({ vmName, ipAddress, username }) => {
         logger.info("macos_vm.runtime_ready", { vmName, ipAddress, username });
+        const vmLane = laneService.findExistingVmLane();
+        if (!vmLane) return;
+        invalidateVmLaneLaunchCache(vmLane.id, projectRoot);
+        void refreshVmLaneLaunchCache({
+          laneId: vmLane.id,
+          projectRoot,
+          provider: macosVmLaunchProviderForProject,
+        }).catch((error) => {
+          logger.warn("macos_vm.runtime_ready_cache_refresh_failed", {
+            laneId: vmLane.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
       },
     });
     // Wire macosVmService into laneService now that both exist. The hooks let
@@ -3182,10 +3213,11 @@ app.whenReady().then(async () => {
     // Register the launch-context provider so resolveLaneLaunchContext can
     // synthesize an SSH launch context for VM lanes.
     if (typeof macosVmSvcAny.getStatus === "function" && typeof macosVmSvcAny.getCredentials === "function") {
-      setMacosVmLaunchProvider({
+      macosVmLaunchProviderForProject = {
         getStatus: macosVmSvcAny.getStatus.bind(macosVmService),
         getCredentials: macosVmSvcAny.getCredentials.bind(macosVmService),
-      });
+      };
+      setMacosVmLaunchProvider(macosVmLaunchProviderForProject);
     }
     // Phone sync is owned by the per-machine ADE service. The desktop
     // keeps a non-host sync service for legacy viewer state and explicit
@@ -3263,7 +3295,14 @@ app.whenReady().then(async () => {
       // / InboundDeeplinkModal / CrossRepoPrBanner all fire normally.
       dispatchDeeplinkUrl: async (rawUrl) => {
         try {
-          handleDeeplinkUrl(rawUrl, "sync:ios", dispatchOrQueueAppNavigationRequest);
+          // Route to this sync host's project window, not whichever window is focused.
+          handleDeeplinkUrl(rawUrl, "sync:ios", (request) => {
+            if (dispatchAppNavigationForProjectRoot) {
+              dispatchAppNavigationForProjectRoot(projectRoot, request);
+              return;
+            }
+            dispatchOrQueueAppNavigationRequest(request);
+          });
           return { ok: true };
         } catch (error) {
           return {
@@ -3732,28 +3771,18 @@ app.whenReady().then(async () => {
       autoUpdateService,
       appNavigationService: {
         navigate: async (request) => {
-          const normalizedRoot = normalizeProjectRoot(projectRoot);
-          let targetWindow = BrowserWindow.getAllWindows()
-            .find((win) => !win.isDestroyed() && windowProjectRoots.get(win.id) === normalizedRoot) ?? null;
-          if (!targetWindow) {
-            const opened = await openAdeWindow({ projectRoot });
-            targetWindow = opened.windowId != null ? BrowserWindow.fromId(opened.windowId) : null;
-          }
-          if (!targetWindow || targetWindow.isDestroyed()) {
+          const result = await deliverAppNavigationToProject(projectRoot, request);
+          if (!result.ok) {
             return {
               ok: false,
               mode: "unavailable" as const,
-              message: "No ADE window is available for this project.",
+              message: result.message,
             };
           }
-          if (targetWindow.isMinimized()) targetWindow.restore();
-          targetWindow.show();
-          targetWindow.focus();
-          targetWindow.webContents.send(IPC.appNavigate, request);
           return {
             ok: true,
             mode: "desktop" as const,
-            windowId: targetWindow.id,
+            windowId: result.windowId,
           };
         },
       },
@@ -4033,6 +4062,7 @@ app.whenReady().then(async () => {
     const project = toProjectInfo(projectRoot, baseRef);
     const runtimeProject = await localRuntimePool.ensureProject(projectRoot);
     const shellContext = createDormantProjectContext(projectRoot);
+    let macosVmLaunchProviderForProject: MacosVmLaunchProvider | null = null;
     const macosVmService = createMacosVmService({
       projectRoot,
       logger,
@@ -4049,8 +4079,15 @@ app.whenReady().then(async () => {
           worktreePath: lane.worktreePath,
         }));
       },
-      onEvent: (payload) =>
-        emitProjectEvent(projectRoot, IPC.macosVmEvent, payload),
+      onEvent: (payload) => {
+        syncMacosVmLaunchCacheFromEvent(payload, (event, fields) => {
+          logger.warn(event, fields);
+        }, {
+          projectRoot,
+          provider: macosVmLaunchProviderForProject,
+        });
+        emitProjectEvent(projectRoot, IPC.macosVmEvent, payload);
+      },
       captureWindowSources: async () => {
         const sources = await desktopCapturer.getSources({
           types: ["window"],
@@ -4067,8 +4104,43 @@ app.whenReady().then(async () => {
       // bootstrap script only writes a marker file).
       onRuntimeReady: ({ vmName, ipAddress, username }) => {
         logger.info("macos_vm.runtime_ready", { vmName, ipAddress, username });
+        void (async () => {
+          const response = await localRuntimePool.callActionForRoot(projectRoot, {
+            domain: "lane",
+            action: "list",
+            args: { includeArchived: false, includeStatus: false },
+          });
+          const lanes = Array.isArray(response.result) ? response.result as LaneSummary[] : [];
+          const vmLane = lanes.find((lane) => lane.runtimePlacement === "macos-vm") ?? null;
+          if (!vmLane) return;
+          invalidateVmLaneLaunchCache(vmLane.id, projectRoot);
+          await refreshVmLaneLaunchCache({
+            laneId: vmLane.id,
+            projectRoot,
+            provider: macosVmLaunchProviderForProject,
+          });
+        })().catch((error) => {
+          logger.warn("macos_vm.runtime_ready_cache_refresh_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
       },
     });
+    const macosVmSvcAny = macosVmService as unknown as {
+      getStatus?: typeof macosVmService.getStatus;
+      getCredentials?: (args: { vmName: string }) => Promise<{
+        vmName: string;
+        username: string | null;
+        hasPassword: boolean;
+      }>;
+    };
+    if (typeof macosVmSvcAny.getStatus === "function" && typeof macosVmSvcAny.getCredentials === "function") {
+      macosVmLaunchProviderForProject = {
+        getStatus: macosVmSvcAny.getStatus.bind(macosVmService),
+        getCredentials: macosVmSvcAny.getCredentials.bind(macosVmService),
+      };
+      setMacosVmLaunchProvider(macosVmLaunchProviderForProject);
+    }
     logger.info("project.runtime_bound", {
       projectRoot,
       projectId: runtimeProject.projectId,
@@ -5435,6 +5507,55 @@ app.whenReady().then(async () => {
       emitProjectBindingChangedToWindow(win.id, null);
     }
     return getWindowSession(win.id);
+  };
+
+  const deliverAppNavigationToProject = async (
+    targetProjectRoot: string,
+    request: AppNavigationRequest,
+  ): Promise<{ ok: true; windowId: number } | { ok: false; message: string }> => {
+    const normalizedRoot = normalizeProjectRoot(targetProjectRoot);
+    const candidateWindows = BrowserWindow.getAllWindows().filter(
+      (win) => !win.isDestroyed(),
+    );
+    const selection = selectWindowForProjectNavigation(
+      normalizedRoot,
+      candidateWindows.map((win) => ({
+        id: win.id,
+        activeProjectRoot: windowProjectRoots.get(win.id) ?? null,
+        openProjectRoots: windowProjectTabRoots.get(win.id) ?? new Set<string>(),
+      })),
+    );
+
+    let targetWindow = selection
+      ? candidateWindows.find((win) => win.id === selection.windowId) ?? null
+      : null;
+    if (targetWindow && selection?.activateProjectRoot) {
+      bindWindowToProject(targetWindow.id, normalizedRoot, {
+        emit: true,
+        foreground: true,
+      });
+    }
+    if (!targetWindow) {
+      const opened = await openAdeWindow({ projectRoot: normalizedRoot });
+      targetWindow = opened.windowId != null ? BrowserWindow.fromId(opened.windowId) : null;
+    }
+    if (!targetWindow || targetWindow.isDestroyed()) {
+      return { ok: false, message: "No ADE window is available for this project." };
+    }
+    if (targetWindow.isMinimized()) targetWindow.restore();
+    targetWindow.show();
+    targetWindow.focus();
+    targetWindow.webContents.send(IPC.appNavigate, request);
+    return { ok: true, windowId: targetWindow.id };
+  };
+
+  dispatchAppNavigationForProjectRoot = (targetProjectRoot, request) => {
+    void deliverAppNavigationToProject(targetProjectRoot, request).catch((error: unknown) => {
+      getActiveContext().logger.warn("deeplink.dispatch_window_failed", {
+        projectRoot: normalizeProjectRoot(targetProjectRoot),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   };
 
   let initialWindowNavigationReady = false;

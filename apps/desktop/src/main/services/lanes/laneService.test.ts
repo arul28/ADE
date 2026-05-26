@@ -673,6 +673,139 @@ describe("laneService create", () => {
     }
   });
 
+  it("cleans up the row, worktree, and branch when VM lane wiring fails", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-create-vm-fail-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const now = "2026-03-11T12:00:00.000Z";
+
+    try {
+      db.run(
+        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+        ["proj-create-vm-fail", repoRoot, "demo", "main", now, now],
+      );
+      db.run(
+        `
+          insert into lanes(
+            id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+            attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        ["lane-main", "proj-create-vm-fail", "Main", null, "primary", "main", "main", repoRoot, null, 0, null, null, null, null, "active", now, null],
+      );
+
+      vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+        if (args[0] === "worktree" && args[1] === "add") {
+          return { exitCode: 0, stdout: "", stderr: "" } as any;
+        }
+        if (args[0] === "worktree" && args[1] === "remove") {
+          return { exitCode: 0, stdout: "", stderr: "" } as any;
+        }
+        throw new Error(`Unexpected git call: ${args.join(" ")}`);
+      });
+
+      vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+        const laneBranchGitStub = defaultLaneBranchGitStub(args);
+        if (laneBranchGitStub) return laneBranchGitStub;
+        if (args[0] === "rev-parse" && args[1] === "main") {
+          return { exitCode: 0, stdout: "sha-main\n", stderr: "" };
+        }
+        if (args[0] === "branch" && args[1] === "-D") {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        throw new Error(`Unexpected git call: ${args.join(" ")}`);
+      });
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-create-vm-fail",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+        macosVmHooks: {
+          linkLaneToCurrentVm: vi.fn(async () => {
+            throw new Error("vm link failed");
+          }),
+        } as any,
+      });
+
+      await expect(
+        service.create({
+          name: "VM lane",
+          baseBranch: "main",
+          runtimePlacement: "macos-vm",
+        }),
+      ).rejects.toThrow("vm link failed");
+
+      expect(
+        db.get<{ count: number }>(
+          "select count(*) as count from lanes where project_id = ? and lane_type = 'worktree'",
+          ["proj-create-vm-fail"],
+        )?.count,
+      ).toBe(0);
+      expect(vi.mocked(runGitOrThrow).mock.calls).toEqual(
+        expect.arrayContaining([
+          [
+            expect.arrayContaining(["worktree", "remove", "--force"]),
+            expect.objectContaining({ cwd: repoRoot }),
+          ],
+        ]),
+      );
+      expect(vi.mocked(runGit).mock.calls).toEqual(
+        expect.arrayContaining([
+          [
+            expect.arrayContaining(["branch", "-D"]),
+            expect.objectContaining({ cwd: repoRoot }),
+          ],
+        ]),
+      );
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not emit placement changed when re-attaching a lane that is already on the VM", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-reattach-vm-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const now = "2026-03-11T12:00:00.000Z";
+    const onPlacementChanged = vi.fn();
+    const linkLaneToCurrentVm = vi.fn(async () => undefined);
+
+    try {
+      db.run(
+        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+        ["proj-reattach-vm", repoRoot, "demo", "main", now, now],
+      );
+      db.run(
+        `
+          insert into lanes(
+            id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+            attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, runtime_placement, status, created_at, archived_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        ["lane-vm", "proj-reattach-vm", "VM", null, "worktree", "main", "feature/vm", path.join(repoRoot, "vm"), null, 0, null, null, null, null, "macos-vm", "active", now, null],
+      );
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-reattach-vm",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+        onPlacementChanged,
+        macosVmHooks: { linkLaneToCurrentVm } as any,
+      });
+
+      await service.attachLaneToVm({ laneId: "lane-vm" });
+
+      expect(linkLaneToCurrentVm).toHaveBeenCalledWith({ laneId: "lane-vm" });
+      expect(onPlacementChanged).not.toHaveBeenCalled();
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   it("creates an unparented lane from an explicit start point", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-create-start-point-"));
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());

@@ -178,6 +178,17 @@ function resolveAuthorizedLocalRuntimeRootPath(
     : null;
 }
 
+function canBindRemoteProjectToSender(
+  windowId: number | null,
+  sender: WebContents,
+): boolean {
+  if (sender.isDestroyed()) return false;
+  if (windowId == null) return true;
+  const window = BrowserWindow.fromId(windowId);
+  if (!window || window.isDestroyed()) return false;
+  return !window.webContents.isDestroyed();
+}
+
 function normalizeGitRemoteForComparison(
   value: string | null | undefined,
 ): string | null {
@@ -266,6 +277,8 @@ export function registerRuntimeBridge({
     RuntimeEventWindowSubscription
   >();
   const runtimeEventWatchedSenders = new Set<number>();
+  const remoteOpenProjectGenerations = new Map<string, number>();
+  let remoteOpenProjectGeneration = 0;
 
   remoteConnectionService.onSnapshotChanged((snapshot) => {
     for (const window of BrowserWindow.getAllWindows()) {
@@ -545,41 +558,59 @@ export function registerRuntimeBridge({
       event,
       arg: { id: string; projectId: string },
     ): Promise<OpenProjectBinding & { kind: "remote" }> => {
+      const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
+      const generationKey =
+        windowId == null
+          ? `webContents:${event.sender.id}`
+          : `window:${windowId}`;
+      const requestGeneration = ++remoteOpenProjectGeneration;
+      remoteOpenProjectGenerations.set(generationKey, requestGeneration);
+      const isLatestOpenRequest = (): boolean =>
+        remoteOpenProjectGenerations.get(generationKey) === requestGeneration;
+
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
       const projectId =
         typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
-      const target = id ? remoteConnectionService.getTarget(id) : null;
-      if (!target) throw new Error("Remote target was not found.");
-      if (!projectId) throw new Error("Remote project is required.");
+      try {
+        const target = id ? remoteConnectionService.getTarget(id) : null;
+        if (!target) throw new Error("Remote target was not found.");
+        if (!projectId) throw new Error("Remote project is required.");
 
-      const connection = await remoteConnectionService.connect(target.id);
-      let project =
-        connection.projects.find(
-          (candidate) => candidate.projectId === projectId,
-        ) ?? null;
-      if (!project) {
-        const projects = await remoteConnectionService.projects(target.id);
-        project =
-          projects.find((candidate) => candidate.projectId === projectId) ??
-          null;
+        const connection = await remoteConnectionService.connect(target.id);
+        let project =
+          connection.projects.find(
+            (candidate) => candidate.projectId === projectId,
+          ) ?? null;
+        if (!project) {
+          const projects = await remoteConnectionService.projects(target.id);
+          project =
+            projects.find((candidate) => candidate.projectId === projectId) ??
+            null;
+        }
+        if (!project)
+          throw new Error("Remote project was not found on this runtime.");
+
+        const binding: OpenProjectBinding & { kind: "remote" } = {
+          kind: "remote",
+          key: `remote:${target.id}:${project.projectId}`,
+          targetId: target.id,
+          runtimeName: target.name,
+          projectId: project.projectId,
+          rootPath: project.rootPath,
+          displayName: project.displayName || path.basename(project.rootPath),
+        };
+        if (
+          isLatestOpenRequest() &&
+          canBindRemoteProjectToSender(windowId, event.sender)
+        ) {
+          bindRemoteProject?.(windowId, binding);
+        }
+        return binding;
+      } finally {
+        if (isLatestOpenRequest()) {
+          remoteOpenProjectGenerations.delete(generationKey);
+        }
       }
-      if (!project)
-        throw new Error("Remote project was not found on this runtime.");
-
-      const binding: OpenProjectBinding & { kind: "remote" } = {
-        kind: "remote",
-        key: `remote:${target.id}:${project.projectId}`,
-        targetId: target.id,
-        runtimeName: target.name,
-        projectId: project.projectId,
-        rootPath: project.rootPath,
-        displayName: project.displayName || path.basename(project.rootPath),
-      };
-      bindRemoteProject?.(
-        BrowserWindow.fromWebContents(event.sender)?.id ?? null,
-        binding,
-      );
-      return binding;
     },
   );
 

@@ -31,6 +31,17 @@ const mockLocalStorage = {
       switchToPath: vi.fn(async () => null),
       closeCurrent: vi.fn(async () => {}),
     },
+    remoteRuntime: {
+      openProject: vi.fn(async () => ({
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "Remote",
+        projectId: "project-1",
+        rootPath: "/remote/one",
+        displayName: "Remote One",
+      })),
+    },
   },
 };
 
@@ -1113,6 +1124,54 @@ describe("appStore", () => {
 
       expect(useAppStore.getState().projectTransition).toBeNull();
       expect(useAppStore.getState().projectTransitionError).toBeNull();
+    });
+
+    it("ignores stale switchRemoteProject completions when a newer switch starts", async () => {
+      const bindingA = {
+        kind: "remote" as const,
+        key: "remote:target-1:project-a",
+        targetId: "target-1",
+        runtimeName: "Remote",
+        projectId: "project-a",
+        rootPath: "/remote/a",
+        displayName: "Project A",
+      };
+      const bindingB = {
+        kind: "remote" as const,
+        key: "remote:target-1:project-b",
+        targetId: "target-1",
+        runtimeName: "Remote",
+        projectId: "project-b",
+        rootPath: "/remote/b",
+        displayName: "Project B",
+      };
+      let resolveSlow: (value: typeof bindingA) => void = () => {};
+      (window.ade.remoteRuntime.openProject as any).mockImplementation(
+        async (_targetId: string, projectId: string) => {
+          if (projectId === "project-a") {
+            return await new Promise((resolve) => {
+              resolveSlow = resolve as (value: typeof bindingA) => void;
+            });
+          }
+          return bindingB;
+        },
+      );
+
+      const slowSwitch = useAppStore.getState().switchRemoteProject("target-1", "project-a");
+      await useAppStore.getState().switchRemoteProject("target-1", "project-b");
+
+      expect(useAppStore.getState().project).toEqual({
+        rootPath: "/remote/b",
+        displayName: "Project B",
+        baseRef: "main",
+      });
+      expect(useAppStore.getState().projectBinding).toEqual(bindingB);
+
+      resolveSlow(bindingA);
+      await slowSwitch;
+
+      expect(useAppStore.getState().project?.rootPath).toBe("/remote/b");
+      expect(useAppStore.getState().projectBinding).toEqual(bindingB);
     });
   });
 });

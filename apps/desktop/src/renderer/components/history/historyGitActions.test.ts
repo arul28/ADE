@@ -70,6 +70,22 @@ describe("history git actions", () => {
     vi.unstubAllGlobals();
   });
 
+  it("disables lane git mutations when the commit is not on the focused lane history", () => {
+    const actions = buildCommitContextActions({
+      commit,
+      isHead: false,
+      hasWorktree: true,
+      commitOnLaneHistory: false,
+    });
+    const byId = new Map(actions.map((action) => [action.id, action]));
+    expect(byId.get("reset_hard")).toMatchObject({
+      disabled: true,
+      disabledReason: "Select the lane that contains this commit before changing git state",
+    });
+    expect(byId.get("cherry_pick")).toMatchObject({ disabled: true });
+    expect(byId.get("copy_sha")?.disabled).not.toBe(true);
+  });
+
   it("includes branch, tag, reset, and commit inspection actions for a worktree", () => {
     const actions = buildCommitContextActions({
       commit,
@@ -99,6 +115,21 @@ describe("history git actions", () => {
       "apply",
       "share",
     ]);
+  });
+
+  it("disables destructive commit actions when the lane worktree is unavailable", () => {
+    const actions = buildCommitContextActions({
+      commit,
+      isHead: false,
+      hasWorktree: false,
+    });
+
+    for (const id of ["cherry_pick", "revert", "reset_hard"] as const) {
+      expect(actions.find((action) => action.id === id)).toMatchObject({
+        disabled: true,
+        disabledReason: "Lane worktree is missing",
+      });
+    }
   });
 
   it("disables cherry-pick when the selected commit is HEAD", () => {

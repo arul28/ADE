@@ -4468,6 +4468,8 @@ export function createAgentChatService(args: {
 
   /** Interrupt arrived while `ensureDroidRuntime` was still acquiring the SDK worker. */
   const droidRuntimeSetupInterruptRequested = new WeakMap<ManagedChatSession, boolean>();
+  /** Interrupt arrived while `ensureCursorSdkRuntime` was still acquiring the SDK worker. */
+  const cursorRuntimeSetupInterruptRequested = new WeakMap<ManagedChatSession, boolean>();
   const sessionTurnCollectors = new Map<string, SessionTurnCollector>();
   const subagentStates = new Map<string, Map<string, AgentChatSubagentSnapshot>>();
 
@@ -6562,6 +6564,7 @@ export function createAgentChatService(args: {
     try {
       ({ laneWorktreePath: cwd } = resolveLaneLaunchContext({
         laneService,
+        projectRoot,
         laneId: sourceLaneId,
         purpose: "name a lane from prompt",
       }));
@@ -6629,6 +6632,7 @@ export function createAgentChatService(args: {
     try {
       ({ laneWorktreePath: cwd } = resolveLaneLaunchContext({
         laneService,
+        projectRoot,
         laneId,
         purpose: "inspect lane git state",
       }));
@@ -6678,6 +6682,7 @@ export function createAgentChatService(args: {
       try {
         ({ laneWorktreePath: cwd } = resolveLaneLaunchContext({
           laneService,
+          projectRoot,
           laneId,
           purpose: "turn diff summary",
         }));
@@ -6743,6 +6748,7 @@ export function createAgentChatService(args: {
     const laneId = resolveManagedExecutionLaneId(managed);
     const launchContext = resolveLaneLaunchContext({
       laneService,
+      projectRoot,
       laneId,
       purpose: args.purpose,
       requestedCwd: args.requestedCwd,
@@ -14937,6 +14943,7 @@ export function createAgentChatService(args: {
   }: AgentChatCreateArgs): Promise<AgentChatSession> => {
     const launchContext = resolveLaneLaunchContext({
       laneService,
+      projectRoot,
       laneId,
       purpose: "start this chat",
       requestedCwd,
@@ -16675,12 +16682,20 @@ export function createAgentChatService(args: {
       );
     }
 
+    const throwIfCursorSetupInterrupted = (): void => {
+      if (!cursorRuntimeSetupInterruptRequested.get(managed)) return;
+      cursorRuntimeSetupInterruptRequested.delete(managed);
+      throw new Error("Cursor session interrupted.");
+    };
+
     const persisted = readPersistedState(managed.session.id);
     const persistedCursorSdkAgentId =
       persisted?.cursorSdkAgentProtocolVersion === CURSOR_SDK_AGENT_PROTOCOL_VERSION
         ? persisted.cursorSdkAgentId ?? null
         : null;
-    let acquired: Awaited<ReturnType<typeof acquireCursorSdkConnection>>;
+    throwIfCursorSetupInterrupted();
+    let acquired: Awaited<ReturnType<typeof acquireCursorSdkConnection>> | null = null;
+    let released = false;
     try {
       acquired = await acquireCursorSdkConnection({
         poolKey,
@@ -16696,12 +16711,28 @@ export function createAgentChatService(args: {
         logger,
       });
       reportProviderRuntimeReady("cursor");
+      throwIfCursorSetupInterrupted();
+      if (managed.closed) {
+        releaseCursorSdkConnection(poolKey, acquired.generation);
+        released = true;
+        cursorRuntimeSetupInterruptRequested.delete(managed);
+        throw new Error("Cursor session closed during setup.");
+      }
     } catch (error) {
+      if (!released && acquired && managed.runtime?.kind !== "cursor") {
+        releaseCursorSdkConnection(poolKey, acquired.generation);
+      }
+      cursorRuntimeSetupInterruptRequested.delete(managed);
       const errorMessage = readErrorMessage(error);
-      if (isCursorRuntimeAuthError(error)) {
-        reportProviderRuntimeAuthFailure("cursor", CURSOR_RUNTIME_AUTH_ERROR);
-      } else {
-        reportProviderRuntimeFailure("cursor", errorMessage);
+      if (
+        errorMessage !== "Cursor session interrupted."
+        && errorMessage !== "Cursor session closed during setup."
+      ) {
+        if (isCursorRuntimeAuthError(error)) {
+          reportProviderRuntimeAuthFailure("cursor", CURSOR_RUNTIME_AUTH_ERROR);
+        } else {
+          reportProviderRuntimeFailure("cursor", errorMessage);
+        }
       }
       throw error;
     }
@@ -16734,10 +16765,12 @@ export function createAgentChatService(args: {
       activeCloudRunId: null,
       cursorTaskStatusByRunId: new Map(),
     };
+    throwIfCursorSetupInterrupted();
     managed.runtime = rt;
     wireCursorSdkBridgeHandlers(managed, rt);
     syncCursorModeSnapshot(managed, rt);
     persistChatState(managed);
+    cursorRuntimeSetupInterruptRequested.delete(managed);
     logger.info("agent_chat.cursor_transport_selected", {
       sessionId: managed.session.id,
       transport: "sdk",
@@ -19057,6 +19090,13 @@ export function createAgentChatService(args: {
       return;
     }
 
+    if (managed.session.provider === "cursor") {
+      cursorRuntimeSetupInterruptRequested.set(managed, true);
+      cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
+      persistChatState(managed);
+      return;
+    }
+
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
       await runtime.collaborationModesReady?.catch(() => {});
@@ -21145,6 +21185,7 @@ export function createAgentChatService(args: {
       try {
         return resolveLaneLaunchContext({
           laneService,
+          projectRoot,
           laneId,
           purpose: "list slash commands",
         }).laneWorktreePath;
@@ -21309,6 +21350,7 @@ export function createAgentChatService(args: {
     }
     const launchContext = resolveLaneLaunchContext({
       laneService,
+      projectRoot,
       laneId: normalizedLaneId,
       purpose: "read Claude sessions",
     });
@@ -21705,6 +21747,7 @@ export function createAgentChatService(args: {
       if (args.laneId?.trim()) {
         const { laneWorktreePath } = resolveLaneLaunchContext({
           laneService,
+          projectRoot,
           laneId: args.laneId.trim(),
           purpose: "list Claude output styles",
         });
@@ -22156,7 +22199,7 @@ export function createAgentChatService(args: {
    */
   const handleLanePlacementChanged = (event: {
     laneId: string;
-    from: "macos-vm" | "local";
+    from: "macos-vm" | "local" | "none";
     to: "macos-vm" | "local";
   }): void => {
     const laneId = String(event?.laneId ?? "").trim();

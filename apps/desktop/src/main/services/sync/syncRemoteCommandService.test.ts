@@ -62,6 +62,7 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "git.listRecentCommits",
   "git.listCommitFiles",
   "git.getCommitMessage",
+  "git.isCommitInLaneHistory",
   "git.revertCommit",
   "git.cherryPickCommit",
   "git.createTag",
@@ -384,6 +385,7 @@ function createMockGitService() {
     listCommitFiles: vi.fn().mockResolvedValue([]),
     getFileHistory: vi.fn().mockResolvedValue([]),
     getCommitMessage: vi.fn().mockResolvedValue({ message: "msg" }),
+    isCommitInLaneHistory: vi.fn().mockResolvedValue(true),
     revertCommit: vi.fn().mockResolvedValue(undefined),
     cherryPickCommit: vi.fn().mockResolvedValue(undefined),
     createTag: vi.fn().mockResolvedValue(undefined),
@@ -1263,6 +1265,17 @@ describe("createSyncRemoteCommandService", () => {
       expect(gitService.listRecentCommits).toHaveBeenCalledWith({
         laneId: "lane-1",
         limit: 5,
+      });
+    });
+
+    it("git.isCommitInLaneHistory passes laneId and commitSha", async () => {
+      await service.execute(makePayload("git.isCommitInLaneHistory", {
+        laneId: "lane-1",
+        commitSha: "abc123",
+      }));
+      expect(gitService.isCommitInLaneHistory).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        commitSha: "abc123",
       });
     });
 

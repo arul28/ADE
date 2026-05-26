@@ -173,16 +173,22 @@ recent `succeeded` operations whose kind starts with `git_` /  `git.`,
 both `pre_head_sha` and `post_head_sha` are non-null, and the two SHAs
 differ. The list is ordered newest-first.
 
-`gitOperationsService.undoLastHeadChange` looks at the head of that
-list:
+`gitOperationsService.undoLastHeadChange` filters that list to the
+current branch before choosing a row:
 
-1. Reject if the head row is itself a `git_undo_head_change` -- the
-   lane is already in an undone state; the caller should call redo.
-2. Read the live HEAD with `git rev-parse HEAD`. If it does not match
+1. Skip `git_undo_head_change` and `git_checkout_branch`; checkout
+   updates the lane's branch ref, and a plain reset is not a safe way
+   to undo a branch switch.
+2. Parse each candidate's `metadataJson.branchRef` and require it to
+   match the lane's current branch (normalized the same way branch
+   config refs are normalized).
+3. Re-read the lane inside the operation and reject if its branch has
+   changed since the candidate was selected.
+4. Read the live HEAD with `git rev-parse HEAD`. If it does not match
    the row's `postHeadSha`, refuse: HEAD has drifted since that
    operation (the user committed, pulled, or otherwise moved on) and
    `git reset --hard` would clobber unrelated work.
-3. Run `git reset --hard preHeadSha` and record a new
+5. Run `git reset --hard preHeadSha` and record a new
    `git_undo_head_change` operation whose metadata captures the row
    it undid plus `redoHeadSha = preHeadSha`'s sibling (`postHeadSha`
    of the undone row). This is what `redoLastHeadChange` reads back.
@@ -192,10 +198,11 @@ walks the inverse direction: head row must be a `git_undo_head_change`
 and current HEAD must still match its `postHeadSha`, then
 `git reset --hard redoHeadSha`.
 
-Both paths fail loudly with `Cannot undo because the lane head has
-changed since that operation.` (or `since the undo.`) when the SHA
-guard trips. The UI surfaces those errors verbatim through
-`historyLaneActions.runHistoryLaneAction`.
+Both paths fail loudly with `Cannot undo because the lane branch has
+changed since that operation was selected.`, `Cannot undo because the
+lane head has changed since that operation.`, or the redo equivalent
+when the branch/SHA guard trips. The UI surfaces those errors verbatim
+through `historyLaneActions.runHistoryLaneAction`.
 
 ## Synthesized Activity rows
 

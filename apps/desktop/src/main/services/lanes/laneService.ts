@@ -809,7 +809,7 @@ function isTerminalLaneDeleteProgress(progress: LaneDeleteProgress): boolean {
 export type LanePlacementChangedEvent = {
   type: "lane-placement-changed";
   laneId: string;
-  from: "macos-vm" | "local";
+  from: "macos-vm" | "local" | "none";
   to: "macos-vm" | "local";
   changedAt: string;
 };
@@ -2061,6 +2061,23 @@ export function createLaneService({
       : null;
     invalidateLaneListCache();
 
+    if (runtimePlacement === "macos-vm") {
+      try {
+        await wireMacosVmLanePlacement({
+          laneId,
+          previousPlacement: "none",
+          rollbackPlacementOnLinkFailure: true,
+        });
+      } catch (error) {
+        await cleanupCreatedWorktreeLaneAfterVmWireFailure({
+          laneId,
+          branchRef,
+          worktreePath,
+          cause: error,
+        });
+      }
+    }
+
     // Best-effort initial push to establish upstream tracking
     try {
       await runGit(["push", "-u", "origin", branchRef], { cwd: worktreePath, timeoutMs: 60_000 });
@@ -2095,6 +2112,59 @@ export function createLaneService({
     });
     if (linearIssue) notifyLinearIssueLinked(summary, linearIssue);
     return summary;
+  };
+
+  const wireMacosVmLanePlacement = async (args: {
+    laneId: string;
+    previousPlacement: LaneRuntimePlacement | "none";
+    rollbackPlacementOnLinkFailure: boolean;
+  }): Promise<void> => {
+    const laneId = String(args.laneId ?? "").trim();
+    if (!laneId.length) return;
+    const hooks = activeMacosVmHooks;
+    if (hooks?.linkLaneToCurrentVm) {
+      try {
+        await hooks.linkLaneToCurrentVm({ laneId });
+      } catch (error) {
+        logger.warn("laneService.wire_vm_link_failed", {
+          laneId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        if (args.rollbackPlacementOnLinkFailure) {
+          db.run(
+            `
+              update lanes
+              set runtime_placement = 'local'
+              where id = ?
+                and project_id = ?
+            `,
+            [laneId, projectId],
+          );
+          invalidateLaneListCache();
+        }
+        throw error;
+      }
+    }
+    if (hooks?.startMirrorSyncForLane) {
+      try {
+        await hooks.startMirrorSyncForLane({ laneId });
+      } catch (error) {
+        logger.warn("laneService.wire_vm_mirror_sync_failed", {
+          laneId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    if (args.previousPlacement !== "macos-vm") {
+      emitPlacementChanged({
+        type: "lane-placement-changed",
+        laneId,
+        from: args.previousPlacement,
+        to: "macos-vm",
+        changedAt: new Date().toISOString(),
+      });
+    }
   };
 
   const getRowsById = (includeArchived = true): Map<string, LaneRow> =>
@@ -2259,6 +2329,65 @@ export function createLaneService({
     db.run("delete from lane_linear_issue_links where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("delete from lanes where id = ? and project_id = ?", [laneId, projectId]);
   };
+
+  async function cleanupCreatedWorktreeLaneAfterVmWireFailure(args: {
+    laneId: string;
+    branchRef: string;
+    worktreePath: string;
+    cause: unknown;
+  }): Promise<never> {
+    const cleanupErrors: string[] = [];
+    const originalMessage = args.cause instanceof Error ? args.cause.message : String(args.cause);
+
+    try {
+      cleanupLaneDatabaseRows(args.laneId);
+      invalidateLaneListCache();
+    } catch (error) {
+      cleanupErrors.push(`database cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    try {
+      await runGitWorktreeMutation(async () => {
+        try {
+          await runGitOrThrow(
+            ["worktree", "remove", "--force", args.worktreePath],
+            { cwd: projectRoot, timeoutMs: 60_000 },
+          );
+        } catch {
+          await removeWorktreeDirectoryWithRecovery(args.worktreePath);
+          await runGit(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
+        }
+      });
+    } catch (error) {
+      cleanupErrors.push(`worktree cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    try {
+      const result = await runGit(
+        ["branch", "-D", args.branchRef],
+        { cwd: projectRoot, timeoutMs: 30_000 },
+      );
+      if (result.exitCode !== 0) {
+        const message = (result.stderr || result.stdout).trim();
+        cleanupErrors.push(`branch cleanup failed: ${message || `git branch -D exited ${result.exitCode}`}`);
+      }
+    } catch (error) {
+      cleanupErrors.push(`branch cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    if (cleanupErrors.length > 0) {
+      logger.error("laneService.vm_lane_create_cleanup_failed", {
+        laneId: args.laneId,
+        branchRef: args.branchRef,
+        worktreePath: args.worktreePath,
+        error: originalMessage,
+        cleanupErrors,
+      });
+      throw new Error(`${originalMessage} Cleanup after failed VM lane creation also failed: ${cleanupErrors.join("; ")}`);
+    }
+
+    throw args.cause instanceof Error ? args.cause : new Error(originalMessage);
+  }
 
   return {
     async ensurePrimaryLane(): Promise<void> {
@@ -3107,6 +3236,21 @@ export function createLaneService({
         db.run("commit");
       } catch (err) {
         try { db.run("rollback"); } catch { /* swallow rollback failures */ }
+        if (previousBranchRef && previousBranchRef !== targetBranchRef) {
+          try {
+            await runGitOrThrow(
+              ["checkout", "--ignore-other-worktrees", previousBranchRef],
+              { cwd: row.worktree_path, timeoutMs: 60_000 },
+            );
+          } catch (rollbackErr) {
+            logger.warn("laneService.switchBranch_git_rollback_failed", {
+              laneId: row.id,
+              previousBranchRef,
+              targetBranchRef,
+              error: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr),
+            });
+          }
+        }
         throw err;
       }
       invalidateLaneListCache();
@@ -4454,61 +4598,24 @@ export function createLaneService({
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
       const previous = normalizeRuntimePlacement(row.runtime_placement);
-      if (previous === "macos-vm") return;
 
-      db.run(
-        `
-          update lanes
-          set runtime_placement = 'macos-vm'
-          where id = ?
-            and project_id = ?
-        `,
-        [row.id, projectId],
-      );
-      invalidateLaneListCache();
-
-      const hooks = activeMacosVmHooks;
-      // Treat the link step as the critical one — if it fails we cannot host
-      // the lane in the VM and need to roll the placement flip back. Mirror
-      // sync failure is recoverable (retry on next restart) so we only warn.
-      if (hooks?.linkLaneToCurrentVm) {
-        try {
-          await hooks.linkLaneToCurrentVm({ laneId: row.id });
-        } catch (error) {
-          logger.warn("laneService.attach_link_to_vm_failed_rolling_back", {
-            laneId: row.id,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          db.run(
-            `
-              update lanes
-              set runtime_placement = 'local'
-              where id = ?
-                and project_id = ?
-            `,
-            [row.id, projectId],
-          );
-          invalidateLaneListCache();
-          throw error;
-        }
-      }
-      if (hooks?.startMirrorSyncForLane) {
-        try {
-          await hooks.startMirrorSyncForLane({ laneId: row.id });
-        } catch (error) {
-          logger.warn("laneService.attach_start_mirror_sync_failed", {
-            laneId: row.id,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
+      if (previous !== "macos-vm") {
+        db.run(
+          `
+            update lanes
+            set runtime_placement = 'macos-vm'
+            where id = ?
+              and project_id = ?
+          `,
+          [row.id, projectId],
+        );
+        invalidateLaneListCache();
       }
 
-      emitPlacementChanged({
-        type: "lane-placement-changed",
+      await wireMacosVmLanePlacement({
         laneId: row.id,
-        from: "local",
-        to: "macos-vm",
-        changedAt: new Date().toISOString(),
+        previousPlacement: previous,
+        rollbackPlacementOnLinkFailure: previous !== "macos-vm",
       });
     },
 

@@ -95,7 +95,22 @@ create index if not exists idx_lane_linear_issue_links_issue on lane_linear_issu
 
 create index if not exists idx_lane_linear_issue_links_role on lane_linear_issue_links(project_id, role);
 
-create unique index if not exists uq_lane_linear_issue_links_role on lane_linear_issue_links(project_id, lane_id, issue_id, role);
+drop index if exists uq_lane_linear_issue_links_role;
+
+delete from lane_linear_issue_links
+      where rowid not in (
+        select rowid from lane_linear_issue_links as keep
+        where keep.id = (
+          select id from lane_linear_issue_links inner_p
+          where inner_p.project_id = keep.project_id
+            and inner_p.lane_id = keep.lane_id
+            and inner_p.issue_id = keep.issue_id
+            and inner_p.role = keep.role
+          order by inner_p.updated_at desc,
+                   inner_p.id asc
+          limit 1
+        )
+      );
 
 create table if not exists lane_branch_profiles (
       id text primary key,
