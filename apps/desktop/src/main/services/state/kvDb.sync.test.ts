@@ -201,7 +201,7 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
     db2.close();
   });
 
-  it("rejects CRDT changes for unknown future tables", async () => {
+  it("silently skips CRDT changes for unknown future tables", async () => {
     const db2 = await openKvDb(makeDbPath("ade-kvdb-sync-future-table-"), createLogger() as any);
     const futureChange = {
       table: "missing_future_table",
@@ -215,7 +215,11 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
       seq: 1,
     };
 
-    expect(() => db2.sync.applyChanges([futureChange as any])).toThrow(/missing_future_table/);
+    const beforeVersion = db2.sync.getDbVersion();
+    const result = db2.sync.applyChanges([futureChange as any]);
+    expect(result.appliedCount).toBe(0);
+    expect(result.touchedTables).toEqual([]);
+    expect(db2.sync.getDbVersion()).toBe(beforeVersion);
 
     db2.close();
   });

@@ -2970,6 +2970,9 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       runStatement(db, "begin");
       try {
         for (const rawChange of changes) {
+          // Skip changes for tables that no longer exist in the schema
+          // (e.g. unified_memories removed in #329).
+          if (!rawHasTable(db, rawChange.table)) continue;
           const change = normalizeIncomingCrsqlChange(db, rawChange);
           const result = runStatement(
             db,
