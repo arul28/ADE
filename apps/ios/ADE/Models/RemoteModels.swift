@@ -581,6 +581,13 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var pendingInputItemId: String? = nil
   var threadId: String?
   var requestedCwd: String?
+  // Orchestration-mode fields (populated when session is part of an orchestration run)
+  var orchestrationRunId: String? = nil
+  var orchestrationRole: String? = nil
+  var orchestrationParentSessionId: String? = nil
+  var orchestrationTag: String? = nil
+  var orchestrationStepId: String? = nil
+  var orchestrationBundlePath: String? = nil
 }
 
 struct CtoWorkerEntry: Codable, Identifiable, Hashable {
@@ -1078,6 +1085,13 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
   var requestedCwd: String?
   var createdAt: String
   var lastActivityAt: String
+  // Orchestration-mode fields (populated when session is part of an orchestration run)
+  var orchestrationRunId: String? = nil
+  var orchestrationRole: String? = nil
+  var orchestrationParentSessionId: String? = nil
+  var orchestrationTag: String? = nil
+  var orchestrationStepId: String? = nil
+  var orchestrationBundlePath: String? = nil
 
   enum CodingKeys: String, CodingKey {
     case id
@@ -1116,6 +1130,12 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     case requestedCwd
     case createdAt
     case lastActivityAt
+    case orchestrationRunId
+    case orchestrationRole
+    case orchestrationParentSessionId
+    case orchestrationTag
+    case orchestrationStepId
+    case orchestrationBundlePath
   }
 
   init(from decoder: Decoder) throws {
@@ -1156,6 +1176,12 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     requestedCwd = try container.decodeIfPresent(String.self, forKey: .requestedCwd)
     createdAt = try container.decode(String.self, forKey: .createdAt)
     lastActivityAt = try container.decodeIfPresent(String.self, forKey: .lastActivityAt) ?? createdAt
+    orchestrationRunId = try container.decodeIfPresent(String.self, forKey: .orchestrationRunId)
+    orchestrationRole = try container.decodeIfPresent(String.self, forKey: .orchestrationRole)
+    orchestrationParentSessionId = try container.decodeIfPresent(String.self, forKey: .orchestrationParentSessionId)
+    orchestrationTag = try container.decodeIfPresent(String.self, forKey: .orchestrationTag)
+    orchestrationStepId = try container.decodeIfPresent(String.self, forKey: .orchestrationStepId)
+    orchestrationBundlePath = try container.decodeIfPresent(String.self, forKey: .orchestrationBundlePath)
   }
 
   func encode(to encoder: Encoder) throws {
@@ -1194,6 +1220,12 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     try container.encodeIfPresent(requestedCwd, forKey: .requestedCwd)
     try container.encode(createdAt, forKey: .createdAt)
     try container.encode(lastActivityAt, forKey: .lastActivityAt)
+    try container.encodeIfPresent(orchestrationRunId, forKey: .orchestrationRunId)
+    try container.encodeIfPresent(orchestrationRole, forKey: .orchestrationRole)
+    try container.encodeIfPresent(orchestrationParentSessionId, forKey: .orchestrationParentSessionId)
+    try container.encodeIfPresent(orchestrationTag, forKey: .orchestrationTag)
+    try container.encodeIfPresent(orchestrationStepId, forKey: .orchestrationStepId)
+    try container.encodeIfPresent(orchestrationBundlePath, forKey: .orchestrationBundlePath)
   }
 }
 
@@ -2199,6 +2231,10 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var chatSessionId: String? = nil
   /// Current pending approval/input item id when the backing chat is waiting on the user.
   var pendingInputItemId: String? = nil
+  // Orchestration-mode fields (populated when the session is part of an orchestration run)
+  var orchestrationRunId: String? = nil
+  var orchestrationRole: String? = nil
+  var orchestrationTag: String? = nil
 }
 
 struct ProcessReadinessConfig: Codable, Equatable {

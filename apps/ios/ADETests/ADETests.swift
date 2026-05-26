@@ -9859,6 +9859,104 @@ final class ADETests: XCTestCase {
     XCTAssertNil(status.organizationUrlKey)
     XCTAssertNil(status.organizationLogoUrl)
   }
+
+  // MARK: - Orchestration session fields forward-compat
+
+  func testAgentChatSessionSummaryDecodesOrchestrationFields() throws {
+    let json = """
+    {
+      "sessionId": "sess-orch-1",
+      "laneId": "lane-1",
+      "provider": "claude",
+      "model": "claude-sonnet-4-6",
+      "status": "running",
+      "startedAt": "2026-05-25T00:00:00.000Z",
+      "lastActivityAt": "2026-05-25T00:01:00.000Z",
+      "orchestrationRunId": "run-abc",
+      "orchestrationRole": "worker",
+      "orchestrationParentSessionId": "sess-lead-1",
+      "orchestrationTag": "impl-auth",
+      "orchestrationStepId": "step-2",
+      "orchestrationBundlePath": "/tmp/.ade/orchestration/run-abc"
+    }
+    """.data(using: .utf8)!
+    let summary = try JSONDecoder().decode(AgentChatSessionSummary.self, from: json)
+    XCTAssertEqual(summary.orchestrationRunId, "run-abc")
+    XCTAssertEqual(summary.orchestrationRole, "worker")
+    XCTAssertEqual(summary.orchestrationParentSessionId, "sess-lead-1")
+    XCTAssertEqual(summary.orchestrationTag, "impl-auth")
+    XCTAssertEqual(summary.orchestrationStepId, "step-2")
+    XCTAssertEqual(summary.orchestrationBundlePath, "/tmp/.ade/orchestration/run-abc")
+  }
+
+  func testAgentChatSessionSummaryDecodesWithoutOrchestrationFields() throws {
+    let json = """
+    {
+      "sessionId": "sess-plain-1",
+      "laneId": "lane-1",
+      "provider": "codex",
+      "model": "gpt-5.4",
+      "status": "completed",
+      "startedAt": "2026-05-25T00:00:00.000Z",
+      "lastActivityAt": "2026-05-25T00:05:00.000Z"
+    }
+    """.data(using: .utf8)!
+    let summary = try JSONDecoder().decode(AgentChatSessionSummary.self, from: json)
+    XCTAssertNil(summary.orchestrationRunId)
+    XCTAssertNil(summary.orchestrationRole)
+    XCTAssertNil(summary.orchestrationParentSessionId)
+    XCTAssertNil(summary.orchestrationTag)
+    XCTAssertNil(summary.orchestrationStepId)
+    XCTAssertNil(summary.orchestrationBundlePath)
+  }
+
+  func testTerminalSessionSummaryDecodesOrchestrationFields() throws {
+    let json = """
+    {
+      "id": "term-orch-1",
+      "laneId": "lane-1",
+      "laneName": "Feature",
+      "tracked": true,
+      "pinned": false,
+      "title": "Worker: auth impl",
+      "status": "running",
+      "startedAt": "2026-05-25T00:00:00.000Z",
+      "transcriptPath": "/tmp/transcript.jsonl",
+      "runtimeState": "running",
+      "orchestrationRunId": "run-xyz",
+      "orchestrationRole": "validator",
+      "orchestrationTag": "test-coverage"
+    }
+    """.data(using: .utf8)!
+    let session = try JSONDecoder().decode(TerminalSessionSummary.self, from: json)
+    XCTAssertEqual(session.orchestrationRunId, "run-xyz")
+    XCTAssertEqual(session.orchestrationRole, "validator")
+    XCTAssertEqual(session.orchestrationTag, "test-coverage")
+  }
+
+  func testAgentChatSessionDecodesOrchestrationFields() throws {
+    let json = """
+    {
+      "sessionId": "sess-full-orch",
+      "laneId": "lane-2",
+      "provider": "claude",
+      "model": "claude-sonnet-4-6",
+      "status": "running",
+      "createdAt": "2026-05-25T00:00:00.000Z",
+      "lastActivityAt": "2026-05-25T00:02:00.000Z",
+      "orchestrationRunId": "run-full",
+      "orchestrationRole": "lead",
+      "orchestrationTag": "coordinator"
+    }
+    """.data(using: .utf8)!
+    let session = try JSONDecoder().decode(AgentChatSession.self, from: json)
+    XCTAssertEqual(session.orchestrationRunId, "run-full")
+    XCTAssertEqual(session.orchestrationRole, "lead")
+    XCTAssertEqual(session.orchestrationTag, "coordinator")
+    XCTAssertNil(session.orchestrationParentSessionId)
+    XCTAssertNil(session.orchestrationStepId)
+    XCTAssertNil(session.orchestrationBundlePath)
+  }
 }
 
 private extension Collection {

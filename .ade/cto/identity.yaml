@@ -6,11 +6,6 @@ modelPreferences:
   provider: claude
   model: sonnet
   reasoningEffort: high
-memoryPolicy:
-  autoCompact: true
-  compactionThreshold: 0.7
-  preCompactionFlush: true
-  temporalDecayHalfLifeDays: 30
 onboardingState:
   completedSteps:
     - identity
