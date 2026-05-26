@@ -330,12 +330,9 @@ async function pollCodexUsage(logger: Logger): Promise<{ windows: UsageWindow[];
     return { windows, errors };
   }
 
-  if (isCodexTokenStale(creds)) {
-    errors.push("codex: token is stale (older than 8 days)");
-    return { windows, errors };
-  }
-
-  // Try HTTP API first
+  // Try HTTP API first — skip the stale-token gate; the API will 401 if
+  // the token is truly dead, and tokens often remain valid well past the
+  // local last_refresh timestamp.
   try {
     const result = await fetchJson(CODEX_USAGE_URL, {
       Authorization: `Bearer ${creds.accessToken}`,

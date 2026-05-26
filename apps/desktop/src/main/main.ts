@@ -4157,6 +4157,18 @@ app.whenReady().then(async () => {
       };
       setMacosVmLaunchProvider(macosVmLaunchProviderForProject);
     }
+    const usageTrackingService = createUsageTrackingService({
+      logger,
+      pollIntervalMs: 120_000,
+      onUpdate: (snapshot) => {
+        emitProjectEvent(projectRoot, IPC.usageEvent, snapshot);
+      },
+      onThresholdEvent: (event) => {
+        emitProjectEvent(projectRoot, IPC.usageThresholdEvent, event);
+      },
+    });
+    usageTrackingService.start();
+
     logger.info("project.runtime_bound", {
       projectRoot,
       projectId: runtimeProject.projectId,
@@ -4172,6 +4184,7 @@ app.whenReady().then(async () => {
       adeCliService: shellContext.adeCliService,
       builtInBrowserService,
       macosVmService,
+      usageTrackingService,
     } as AppContext;
   };
 

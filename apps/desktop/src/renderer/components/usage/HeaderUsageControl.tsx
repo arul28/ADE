@@ -1,19 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CaretDown, CaretRight, Gauge, X } from "@phosphor-icons/react";
+import { ArrowClockwise as RefreshCw, Gauge, X } from "@phosphor-icons/react";
 import type {
   AiProviderConnections,
-  BudgetCapConfig,
   UsageProvider,
   UsageSnapshot,
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
-import { BudgetCapEditor } from "../settings/BudgetCapEditor";
 import { UsageQuotaPanel } from "./UsageQuotaPanel";
 import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
-
-function extractError(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 const TRACKED_PROVIDERS: UsageProvider[] = ["claude", "codex"];
 
@@ -113,17 +107,28 @@ export function HeaderUsageControl() {
   const [open, setOpen] = useState(false);
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
   const [providerConnections, setProviderConnections] = useState<AiProviderConnections | null>(null);
-  const [budgetConfig, setBudgetConfig] = useState<BudgetCapConfig | null>(null);
-  const [budgetSaving, setBudgetSaving] = useState(false);
-  const [budgetError, setBudgetError] = useState<string | null>(null);
-  const [guardrailsOpen, setGuardrailsOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const snapshotRef = useRef<UsageSnapshot | null>(null);
+
+  const [refreshing, setRefreshing] = useState(false);
 
   const applySnapshot = useCallback((nextSnapshot: UsageSnapshot | null) => {
     snapshotRef.current = nextSnapshot;
     setSnapshot(nextSnapshot);
   }, []);
+
+  const handleRefresh = useCallback(async () => {
+    if (!window.ade?.usage?.refresh) return;
+    setRefreshing(true);
+    try {
+      const next = await window.ade.usage.refresh();
+      if (next) applySnapshot(next);
+    } catch {
+      // swallow
+    } finally {
+      setRefreshing(false);
+    }
+  }, [applySnapshot]);
 
   useEffect(() => {
     if (!window.ade?.usage) return;
@@ -220,39 +225,6 @@ export function HeaderUsageControl() {
   }, [providerConnections]);
 
   useEffect(() => {
-    if (!open || !window.ade?.usage?.getBudgetConfig) return;
-    let cancelled = false;
-    window.ade.usage
-      .getBudgetConfig()
-      .then((config) => {
-        if (!cancelled) setBudgetConfig(config);
-      })
-      .catch((err) => {
-        if (!cancelled) setBudgetError(extractError(err));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open]);
-
-  const saveBudget = useCallback(async (next: BudgetCapConfig) => {
-    if (!window.ade?.usage?.saveBudgetConfig) {
-      setBudgetError("Budget save bridge unavailable.");
-      return;
-    }
-    setBudgetSaving(true);
-    setBudgetError(null);
-    try {
-      const saved = await window.ade.usage.saveBudgetConfig(next);
-      setBudgetConfig(saved);
-    } catch (err) {
-      setBudgetError(extractError(err));
-    } finally {
-      setBudgetSaving(false);
-    }
-  }, []);
-
-  useEffect(() => {
     if (!open) return;
     const frame = window.requestAnimationFrame(() => {
       panelRef.current?.focus();
@@ -343,52 +315,30 @@ export function HeaderUsageControl() {
                   Usage
                 </div>
               </div>
-              <button
-                type="button"
-                className="ade-shell-control inline-flex h-7 w-7 items-center justify-center rounded-md"
-                data-variant="ghost"
-                onClick={() => setOpen(false)}
-                title="Close usage"
-              >
-                <X size={13} weight="regular" />
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  className="ade-shell-control inline-flex h-7 w-7 items-center justify-center rounded-md"
+                  data-variant="ghost"
+                  onClick={() => void handleRefresh()}
+                  disabled={refreshing}
+                  title="Refresh usage"
+                >
+                  <RefreshCw size={13} weight="regular" className={cn(refreshing && "animate-spin")} />
+                </button>
+                <button
+                  type="button"
+                  className="ade-shell-control inline-flex h-7 w-7 items-center justify-center rounded-md"
+                  data-variant="ghost"
+                  onClick={() => setOpen(false)}
+                  title="Close usage"
+                >
+                  <X size={13} weight="regular" />
+                </button>
+              </div>
             </div>
             <div className="space-y-3 p-3">
               <UsageQuotaPanel onSnapshotChange={applySnapshot} />
-
-              <section
-                className="rounded-lg border border-white/10 bg-card/95 p-3 backdrop-blur-sm"
-              >
-                <button
-                  type="button"
-                  className="flex w-full items-center justify-between gap-3 text-left"
-                  onClick={() => setGuardrailsOpen((value) => !value)}
-                  aria-expanded={guardrailsOpen}
-                >
-                  <div className="min-w-0">
-                    <div className="text-[13px] font-semibold text-fg">Automation guardrails</div>
-                    <div className="mt-0.5 text-[11px] text-muted-fg">
-                      Shared budget rules that govern automation runs.
-                    </div>
-                  </div>
-                  {guardrailsOpen ? (
-                    <CaretDown size={14} weight="regular" className="shrink-0 opacity-70" />
-                  ) : (
-                    <CaretRight size={14} weight="regular" className="shrink-0 opacity-70" />
-                  )}
-                </button>
-
-                {guardrailsOpen ? (
-                  <div className="mt-3">
-                    <BudgetCapEditor
-                      config={budgetConfig}
-                      saving={budgetSaving}
-                      saveError={budgetError}
-                      onSave={saveBudget}
-                    />
-                  </div>
-                ) : null}
-              </section>
             </div>
           </div>
         </div>

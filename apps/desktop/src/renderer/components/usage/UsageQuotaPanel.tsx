@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowClockwise as RefreshCw, Gauge } from "@phosphor-icons/react";
+import { Gauge } from "@phosphor-icons/react";
 import type {
   AiProviderConnectionStatus,
   AiProviderConnections,
@@ -8,7 +8,6 @@ import type {
   UsageSnapshot,
   UsageWindow,
 } from "../../../shared/types";
-import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { UsageMeter } from "../settings/UsageMeter";
 
@@ -184,32 +183,19 @@ export function UsageQuotaPanel({
   }, [snapshot?.windows, visibleProviders]);
 
   return (
-    <section className={cn("rounded-lg border border-white/10 bg-card/95 p-4 backdrop-blur-sm", className)}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 text-sm font-semibold text-fg">
-            <Gauge size={15} weight="regular" className="text-muted-fg" />
-            Provider usage
-          </div>
-        </div>
-        <Button size="sm" variant="outline" onClick={() => void manualRefresh()} disabled={loading}>
-          <RefreshCw size={12} weight="regular" className={cn(loading && "animate-spin")} />
-          Refresh
-        </Button>
-      </div>
-
+    <div className={cn("space-y-3", className)}>
       {error ? (
-        <div className="mt-3 rounded-lg bg-red-500/10 p-2 text-xs text-red-300">{error}</div>
+        <div className="rounded-lg bg-red-500/10 p-2 text-xs text-red-300">{error}</div>
       ) : null}
 
       {snapshot?.errors.map((entry, index) => (
-        <div key={`${entry}-${index}`} className="mt-3 rounded-lg bg-amber-500/10 p-2 text-xs text-amber-300">
+        <div key={`${entry}-${index}`} className="rounded-lg bg-amber-500/10 p-2 text-xs text-amber-300">
           {entry}
         </div>
       ))}
 
       {visibleProviders.length === 0 ? (
-        <div className="mt-4 flex flex-col items-center justify-center rounded-lg border border-border/10 bg-card/70 py-8 text-center">
+        <div className="flex flex-col items-center justify-center rounded-lg border border-border/10 bg-card/70 py-8 text-center">
           <Gauge size={32} weight="regular" className="mb-3 text-[#2D2840]" />
           <div className="text-sm font-semibold text-fg">No provider CLIs detected</div>
           <div className="mt-2 max-w-[44ch] text-[11px] text-muted-fg">
@@ -217,7 +203,7 @@ export function UsageQuotaPanel({
           </div>
         </div>
       ) : (
-        <div className="mt-4 grid grid-cols-1 gap-3">
+        <div className="grid grid-cols-1 gap-3">
           {visibleProviders.map((provider) => (
             <ProviderUsageCard
               key={provider}
@@ -236,7 +222,7 @@ export function UsageQuotaPanel({
         .map((extra) => (
           <ExtraUsageCard key={extra.provider} extra={extra} />
         ))}
-    </section>
+    </div>
   );
 }
 
