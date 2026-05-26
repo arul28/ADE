@@ -4581,6 +4581,71 @@ describe("preload OAuth bridge", () => {
   });
 });
 
+describe("preload openRepo binding", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    delete (globalThis as any).__adeBridge;
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+    vi.doUnmock("electron");
+    delete (globalThis as any).__adeBridge;
+  });
+
+  it("restores the previous binding when openRepo is cancelled", async () => {
+    const remoteRuntimeRoots: string[] = [];
+    const invoke = vi.fn(async (channel: string, arg?: unknown) => {
+      if (channel === IPC.projectOpenRepo) {
+        return null;
+      }
+      if (channel === IPC.remoteRuntimeCallAction) {
+        remoteRuntimeRoots.push((arg as { projectId?: string }).projectId ?? "");
+        return { result: [] };
+      }
+      if (channel === IPC.appGetWindowSession) {
+        return {
+          windowId: 1,
+          project: null,
+          binding: {
+            kind: "remote",
+            key: "remote:target-1:project-1",
+            targetId: "target-1",
+            runtimeName: "Remote",
+            projectId: "project-1",
+            rootPath: "/remote/project",
+            displayName: "Project",
+          },
+        };
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+
+    await expect(bridge.lanes.list()).resolves.toEqual([]);
+    await expect(bridge.project.openRepo()).resolves.toBeNull();
+    await expect(bridge.lanes.list()).resolves.toEqual([]);
+    expect(remoteRuntimeRoots).toEqual(["project-1", "project-1"]);
+  });
+});
+
 describe("preload remote project binding", () => {
   beforeEach(() => {
     vi.resetModules();

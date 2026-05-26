@@ -3168,15 +3168,25 @@ contextBridge.exposeInMainWorld("ade", {
       // appProjectBindingChanged listener) and disabled runtime routing /
       // event pumping until another refresh restored it. Null once up front;
       // the listener handles the post-action update.
+      const previousBinding = currentProjectBinding;
       rememberProjectBinding(null);
-      return clearAround(
-        () => {
-          clearProjectScopedReadCaches();
-        },
-        () => runProjectRuntimeTransition(() =>
-          ipcRenderer.invoke(IPC.projectOpenRepo, args ?? {}),
-        ),
-      );
+      try {
+        const project = await clearAround(
+          () => {
+            clearProjectScopedReadCaches();
+          },
+          () => runProjectRuntimeTransition(() =>
+            ipcRenderer.invoke(IPC.projectOpenRepo, args ?? {}),
+          ),
+        );
+        if (!project) {
+          rememberProjectBinding(previousBinding);
+        }
+        return project;
+      } catch (error) {
+        rememberProjectBinding(previousBinding);
+        throw error;
+      }
     },
     chooseDirectory: async (
       args: { title?: string; defaultPath?: string } = {},
