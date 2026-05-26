@@ -71,6 +71,8 @@ const WATCHER_IDLE_CLOSE_MS = 30_000;
 const ORCHESTRATION_INDEX_VERSION = 1;
 const RUN_LIST_DEFAULT_LIMIT = 100;
 const RUN_LIST_MAX_LIMIT = 250;
+const RUN_SUSPENDED_MESSAGE =
+  "orchestration run is suspended (bundle changed externally); re-open the run or restore the correct branch";
 
 export type OrchestrationServiceEvents = {
   event: (payload: OrchestrationEventPayload) => void;
@@ -449,9 +451,10 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         );
       }
       if (manifest.runId !== runtime.runId) {
-        throw new Error(
-          `manifest.runId ${manifest.runId} does not match expected ${runtime.runId}`,
-        );
+        runtime.suspended = true;
+        runtime.manifest = null;
+        runtime.planMd = null;
+        return;
       }
       runtime.manifest = normalizeManifestShape(manifest);
     } catch (err) {
@@ -565,6 +568,8 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         // file), do not blindly etag-bump; mark suspended and ignore.
         if (next.runId !== runtime.runId) {
           runtime.suspended = true;
+          runtime.manifest = null;
+          runtime.planMd = null;
           emit({
             runId: runtime.runId,
             kind: "lifecycle",
@@ -624,6 +629,12 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     markSelfWrite(runtime);
     await atomicWrite(planPath, plan);
     runtime.planMd = plan;
+  }
+
+  function assertRunWritable(runtime: RunRuntime): void {
+    if (runtime.suspended) {
+      throw new Error(RUN_SUSPENDED_MESSAGE);
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -731,6 +742,13 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     const runtime = getOrCreateRuntime(req.runId, bundlePath);
     return runtime.mutex.run(async () => {
       await loadIntoRuntime(runtime);
+      if (runtime.suspended) {
+        return {
+          ok: false,
+          error: "validation_failed",
+          message: RUN_SUSPENDED_MESSAGE,
+        };
+      }
       const current = runtime.manifest;
       if (!current) {
         return {
@@ -849,6 +867,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     const runtime = getOrCreateRuntime(req.runId, bundlePath);
     return runtime.mutex.run(async () => {
       await loadIntoRuntime(runtime);
+      assertRunWritable(runtime);
       if (!runtime.manifest) throw new Error(`run ${req.runId} not found`);
       const prev = runtime.planMd ?? "";
       const heading = req.section.startsWith("#")
@@ -876,6 +895,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     const runtime = getOrCreateRuntime(req.runId, bundlePath);
     return runtime.mutex.run(async () => {
       await loadIntoRuntime(runtime);
+      assertRunWritable(runtime);
       if (!runtime.manifest) throw new Error(`run ${req.runId} not found`);
       if (runtime.manifest.etag !== req.ifMatchEtag) {
         return { error: "etag_conflict", etag: runtime.manifest.etag };
@@ -900,6 +920,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     const runtime = getOrCreateRuntime(req.runId, bundlePath);
     return runtime.mutex.run(async () => {
       await loadIntoRuntime(runtime);
+      assertRunWritable(runtime);
       if (!runtime.manifest) throw new Error(`run ${req.runId} not found`);
       const id = `A-${runtime.manifest.assets.length + 1}-${shortRand()}`;
       const asset: OrchestrationAsset = {
@@ -935,6 +956,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     const runtime = getOrCreateRuntime(req.runId, bundlePath);
     return runtime.mutex.run(async () => {
       await loadIntoRuntime(runtime);
+      assertRunWritable(runtime);
       const manifest = runtime.manifest!;
       const registeredAgent = manifest.agents.find(
         (agent) => agent.sessionId === req.sessionId,
@@ -1014,6 +1036,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     const runtime = getOrCreateRuntime(req.runId, bundlePath);
     return runtime.mutex.run(async () => {
       await loadIntoRuntime(runtime);
+      assertRunWritable(runtime);
       const manifest = runtime.manifest;
       if (!manifest) throw new Error(`run ${req.runId} not found`);
       const task = manifest.tasks.find((entry) => entry.id === req.taskId);
@@ -1114,6 +1137,13 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     const runtime = getOrCreateRuntime(req.runId, bundlePath);
     return runtime.mutex.run(async () => {
       await loadIntoRuntime(runtime);
+      if (runtime.suspended) {
+        return {
+          ok: false,
+          error: "validation_failed",
+          message: RUN_SUSPENDED_MESSAGE,
+        };
+      }
       const manifest = runtime.manifest;
       if (!manifest) {
         return {
@@ -1267,6 +1297,9 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     const runtime = getOrCreateRuntime(req.runId, bundlePath);
     return runtime.mutex.run(async () => {
       await loadIntoRuntime(runtime);
+      if (runtime.suspended) {
+        return { ok: false, reason: RUN_SUSPENDED_MESSAGE };
+      }
       const manifest = runtime.manifest;
       if (!manifest) return { ok: false, reason: `run ${req.runId} not found` };
       if (!manifest.agents.some((agent) => agent.sessionId === req.sessionId)) {
@@ -1401,6 +1434,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     patches: readonly ManifestPatchOp[],
     summary: string,
   ): Promise<{ manifest: OrchestrationManifest; etag: string }> {
+    assertRunWritable(runtime);
     if (!runtime.manifest) throw new Error("manifest not loaded");
     const next = normalizeManifestShape(applyPatches(runtime.manifest, patches));
     const updatedAt = nowIso();
@@ -1439,6 +1473,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     const runtime = getOrCreateRuntime(runId, bundlePath);
     return runtime.mutex.run(async () => {
       await loadIntoRuntime(runtime);
+      assertRunWritable(runtime);
       if (!runtime.manifest) {
         return { ok: false, error: "run_not_found", message: `run ${runId} not found` };
       }

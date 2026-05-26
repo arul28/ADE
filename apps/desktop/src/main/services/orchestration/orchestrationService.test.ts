@@ -1070,6 +1070,47 @@ describe("orchestration watcher resilience", () => {
     await svc.dispose();
   });
 
+  it("blocks manifest writes after an external manifest runId swap", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const { manifest, etag } = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+      title: "Original run",
+    });
+    await svc.subscribe(manifest.runId, manifest.bundlePath);
+    const manifestPath = path.join(manifest.bundlePath, "manifest.json");
+    const foreign = {
+      ...JSON.parse(await fsp.readFile(manifestPath, "utf-8")),
+      runId: "R-foreign-checkout",
+      etag: "etag-foreign",
+      title: "Foreign branch manifest",
+    };
+    // Wait past the self-write suppression window used by persistManifest.
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    await fsp.writeFile(manifestPath, JSON.stringify(foreign, null, 2));
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    const patch = await svc.manifestPatch(
+      {
+        runId: manifest.runId,
+        ifMatchEtag: etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [{ op: "replace", path: "/title", value: "Stale write attempt" }],
+      },
+      manifest.bundlePath,
+    );
+    expect(patch.ok).toBe(false);
+    if (patch.ok) return;
+    expect(patch.message).toContain("suspended");
+
+    const onDisk = JSON.parse(await fsp.readFile(manifestPath, "utf-8"));
+    expect(onDisk.runId).toBe("R-foreign-checkout");
+    expect(onDisk.title).toBe("Foreign branch manifest");
+    await svc.dispose();
+  });
+
   it("planAppend produces an event with the new contents", async () => {
     const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
     const { manifest } = await svc.runCreate({
