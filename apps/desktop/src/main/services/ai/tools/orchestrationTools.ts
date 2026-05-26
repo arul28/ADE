@@ -162,7 +162,6 @@ const LEAD_READ_ONLY_BASE = new Set([
   "summarizeFrontendStructure",
 ]);
 
-
 // ---------------------------------------------------------------------------
 // Tool factories (per orchestration concept)
 // ---------------------------------------------------------------------------

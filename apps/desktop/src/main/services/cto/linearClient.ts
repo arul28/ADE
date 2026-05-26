@@ -976,13 +976,13 @@ export function createLinearClient(args: LinearClientArgs) {
 
       await request({
         query: `
-          mutation AddIssueLabel($id: String!, $labelIds: [String!]) {
-            issueUpdate(id: $id, input: { labelIds: $labelIds }) {
+          mutation AddIssueLabel($id: String!, $addedLabelIds: [String!]) {
+            issueUpdate(id: $id, input: { addedLabelIds: $addedLabelIds }) {
               success
             }
           }
         `,
-        variables: { id: issueId, labelIds: [labelId] },
+        variables: { id: issueId, addedLabelIds: [labelId] },
         maxRetries: 1,
       });
     } catch (error) {

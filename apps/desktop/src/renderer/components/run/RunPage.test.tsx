@@ -316,7 +316,7 @@ describe("RunPage Advanced lane runtime drawer", () => {
 
   it("opens the terminal drawer without creating a shell from the plain toggle", async () => {
     render(<RunPage />);
-    fireEvent.click(screen.getByRole("button", { name: /^terminal$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /open terminal/i }));
 
     expect(await screen.findByText("Open a shell or run a command to attach a terminal.")).toBeTruthy();
     expect(vi.mocked((window as unknown as { ade: { pty: { create: ReturnType<typeof vi.fn> } } }).ade.pty.create)).not.toHaveBeenCalled();

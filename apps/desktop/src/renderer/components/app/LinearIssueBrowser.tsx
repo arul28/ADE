@@ -50,7 +50,7 @@ const STATE_TABS = [
 ] as const;
 
 const ACTIVE_LINEAR_STATE_TYPES = ["backlog", "unstarted", "started"];
-const STATE_GROUP_ORDER = ["started", "unstarted", "backlog", "triage", "completed", "canceled"] as const;
+const STATE_GROUP_ORDER = ["started", "unstarted", "backlog", "triage", "completed", "canceled", "duplicate"] as const;
 const FILTER_STORAGE_PREFIX = "ade.linear.quickView.filters.v1:";
 
 const DEFAULT_FILTERS: LinearIssueBrowserFilters = {
@@ -60,17 +60,6 @@ const DEFAULT_FILTERS: LinearIssueBrowserFilters = {
   priority: "",
   query: "",
   sort: "updated_desc",
-};
-
-const STATE_LABELS: Record<string, string> = {
-  active: "Active",
-  all: "All states",
-  backlog: "Backlog",
-  unstarted: "Todo",
-  started: "In progress",
-  completed: "Done",
-  canceled: "Canceled",
-  triage: "Triage",
 };
 
 const PRIORITY_OPTIONS = [
@@ -119,14 +108,7 @@ function safeSaveFilters(projectRoot: string | null | undefined, filters: Linear
   const key = storageKey(projectRoot);
   if (!key || typeof window === "undefined") return;
   try {
-    if (
-      filters.projectId === DEFAULT_FILTERS.projectId &&
-      filters.statePreset === DEFAULT_FILTERS.statePreset &&
-      filters.assigneeId === DEFAULT_FILTERS.assigneeId &&
-      filters.priority === DEFAULT_FILTERS.priority &&
-      filters.query === DEFAULT_FILTERS.query &&
-      filters.sort === DEFAULT_FILTERS.sort
-    ) {
+    if (!hasActiveFilters(filters)) {
       window.localStorage.removeItem(key);
       return;
     }

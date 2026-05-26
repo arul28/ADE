@@ -7,7 +7,6 @@
  */
 
 import {
-  type CSSProperties,
   useEffect,
   useMemo,
   useState,
@@ -160,12 +159,6 @@ export function TaskCard({
             "mt-1 font-sans text-[12px] leading-[1.6] text-fg/60",
             expanded ? undefined : "line-clamp-3",
           )}
-          style={{
-            display: expanded ? undefined : "-webkit-box",
-            WebkitLineClamp: expanded ? undefined : 3,
-            WebkitBoxOrient: expanded ? undefined : "vertical",
-            overflow: expanded ? undefined : "hidden",
-          } as CSSProperties}
         >
           {task.description}
         </div>

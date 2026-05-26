@@ -8,7 +8,7 @@ Consolidated technical reference for the ADE (Agentic Development Environment) s
 
 ADE is a local-first development control plane that orchestrates AI-assisted software engineering across parallel worktrees. The center of the system is a **per-machine ADE runtime daemon** (`apps/ade-cli/`, started with `ade serve`). The daemon hosts every project on that machine through a project registry and exposes a multi-project JSON-RPC surface on a Unix socket / Windows named pipe at `~/.ade/sock/ade.sock`. Desktop, the terminal `ade code` client, the iOS app, and SSH-attached desktop windows are all peer **clients** that bind to a runtime — local or remote — and invoke runtime-owned actions through that one surface.
 
-The runtime owns everything that needs to survive a client closing: worktree-per-lane git isolation, a multi-provider AI runtime, a Linear-integrated CTO agent acting as a team lead, worker delegation, a pipeline builder for visual automations, stacked pull requests with conflict simulation, computer-use proofs, the sync host that replicates projects to other devices, and the per-machine credential store and agent registry. Nothing leaves the user's machine by default: AI work runs through user-authenticated CLIs (Claude Code, Codex), local API-key routes (OpenCode server), or local model endpoints (Ollama, LM Studio, vLLM).
+The runtime owns everything that needs to survive a client closing: worktree-per-lane git isolation, a multi-provider AI runtime, a work-tab orchestration layer for multi-phase plans, a Linear-integrated CTO agent acting as a team lead, worker delegation, a pipeline builder for visual automations, stacked pull requests with conflict simulation, computer-use proofs, the sync host that replicates projects to other devices, and the per-machine credential store and agent registry. Nothing leaves the user's machine by default: AI work runs through user-authenticated CLIs (Claude Code, Codex), local API-key routes (OpenCode server), or local model endpoints (Ollama, LM Studio, vLLM).
 
 ADE ships as four runtime/client packages plus the marketing site:
 
@@ -278,7 +278,7 @@ Roles are open-ended strings; today's vocabulary is `desktop-main`, `ade-serve-d
 - Schema is defined idempotently — `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS`.
 - One-time schema-compat migration at startup: retrofits `NOT NULL` on PKs and strips UNIQUE/FK constraints incompatible with cr-sqlite CRRs. A pre-cr-sqlite backup (`<db>.pre-crsqlite-w1.bak`) is written on first CRR enablement.
 - Feature migrations add columns via `ALTER TABLE ADD COLUMN`, wrapped by `crsql_begin_alter`/`crsql_commit_alter` to stay CRR-safe.
-- Targeted per-domain migrations live in `kvDb.migrations.test.ts`, which covers the consolidated upgrade path for mission/orchestrator/worker tables plus later CRR-safe schema cleanups.
+- Targeted per-domain migrations live in `kvDb.migrations.test.ts`, which covers the consolidated upgrade path for orchestration/worker tables plus later CRR-safe schema cleanups.
 - The canonical iOS bootstrap schema is exported from desktop `kvDb.ts` to `apps/ios/ADE/Resources/DatabaseBootstrap.sql` so iOS stays schema-compatible.
 
 ---
@@ -397,6 +397,11 @@ ade.ai.*                     # AI integration status + provider auth (storeApiKe
                              # used to gate the ModelPicker OpenCode rail + Settings install CTA.
 ade.ai.cursorCloud.*         # Cursor background-agents bridge: listRepositories, listAgents, listRuns, getAgent, createRun, followUp, streamRun, cancelRun, archiveAgent / unarchiveAgent / deleteAgent, listArtifacts / downloadArtifact, openChat (mirror an existing cloud agent into an ADE chat session)
 ade.automations.*
+ade.orchestration.*          # work-tab orchestration: runCreate, bundleRead, manifestReadSection,
+                             # manifestPatch, planAppend, planWrite, spawnAgent, agentInject,
+                             # assetRegister, claimTask, subscribe (push). Preload bridge in
+                             # preload/orchestrationBridge.ts; renderer consumes via
+                             # components/orchestration/orchestrationDataSource.ts.
 ade.processes.* / ade.tests.* # processes also expose group bulk ops:
                              # ade.processes.startGroup / stopGroup / restartGroup
 ade.config.*                 # project config get/save/trust
@@ -457,7 +462,7 @@ Most services described here live under `apps/desktop/src/main/services/<domain>
 | `appControl/` | `appControlService.ts` | Chrome DevTools Protocol bridge for developer-owned Electron apps. Launches a chat-owned PTY running the user's dev command (or connects to an existing `--remote-debugging-port`), polls `/json` for ready CDP targets, attaches a long-lived `CdpClient` WebSocket, and exposes screenshot / DOM snapshot / hit-test / click / type / scroll / key dispatch / screencast frames. `inspectPoint` and `selectPoint` produce `AppControlContextItem`s for the chat composer (DOM packet + screenshot + source-file candidates resolved by `findSourceMatches` over an indexed tree of project source files). See [features/computer-use/app-control.md](./features/computer-use/app-control.md). |
 | `builtInBrowser/` | `builtInBrowserService.ts` | In-app web browser owned by the main process. Allocates `WebContentsView` tabs against the shared `persist:ade-browser` partition (cap 10), positions them over a renderer-supplied bounds rect, drives navigation / tabs / reload / back / forward, attaches the Chrome DevTools Protocol debugger for inspect-mode hit tests, captures screenshots, and emits `BuiltInBrowserEventPayload`s to subscribers. Consumed by `ChatBuiltInBrowserPanel` (Work sidebar Browser tab) and by `openUrlInAdeBrowser()` in the renderer so renderer-side link clicks open inside ADE rather than the system browser. |
 | `automations/` | `automationService.ts`, `automationPlannerService.ts`, `automationIngressService.ts`, `automationSecretService.ts` | Rule lifecycle, NL → rule planner, inbound triggers, per-rule secrets. |
-| `chat/` | `agentChatService.ts`, `runtimeEvents.ts`, `buildClaudeV2Message.ts`, `markdownSlashCommandDiscovery.ts`, `claudeSlashCommandDiscovery.ts`, `codexSlashCommandDiscovery.ts`, `cursorSlashCommandDiscovery.ts`, `projectSlashCommandDiscovery.ts`, `slashCommandPromptExpansion.ts`, `cursorSdk*` (`cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`), `sessionRecovery.ts` | Agent chat sessions (lane-scoped + mission worker/coordinator). Builds Claude messages, hosts the Cursor SDK in a Node worker pool, formalizes the cross-runtime event vocabulary, discovers and resolves provider-specific slash commands through a shared markdown engine, recovers sessions on restart, and derives prompt-based lane names for parallel model launches. |
+| `chat/` | `agentChatService.ts`, `runtimeEvents.ts`, `buildClaudeV2Message.ts`, `markdownSlashCommandDiscovery.ts`, `claudeSlashCommandDiscovery.ts`, `codexSlashCommandDiscovery.ts`, `cursorSlashCommandDiscovery.ts`, `projectSlashCommandDiscovery.ts`, `slashCommandPromptExpansion.ts`, `cursorSdk*` (`cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`), `sessionRecovery.ts` | Agent chat sessions (lane-scoped + orchestration worker/coordinator). Builds Claude messages, hosts the Cursor SDK in a Node worker pool, formalizes the cross-runtime event vocabulary, discovers and resolves provider-specific slash commands through a shared markdown engine, recovers sessions on restart, and derives prompt-based lane names for parallel model launches. |
 | `computerUse/` | `computerUseArtifactBrokerService.ts`, `controlPlane.ts`, `localComputerUse.ts`, `agentBrowserArtifactAdapter.ts`, `syntheticToolResult.ts` | Proof-artifact broker (ingests, owner links, review state, routing), control-plane snapshot helpers, macOS capture capability descriptor, agent-browser payload parser, and the synthetic-tool-result helper used by the Claude compaction path. `proofObserver.ts` was removed in the rebuild — there is no passive auto-ingest. |
 | `config/` | `projectConfigService.ts`, `laneOverlayMatcher.ts` | Load/save `.ade/ade.yaml` + `local.yaml`; trust enforcement; lane overlays. |
 | `conflicts/` | `conflictService.ts` | Pairwise dry-merge simulation, risk matrix, proposal generation. |
@@ -480,6 +485,7 @@ Most services described here live under `apps/desktop/src/main/services/<domain>
 | `macosVm/` | `macosVmService.ts`, `rfbDirectClient.ts`, `credentialsStore.ts`, `runtimeBootstrap.ts`, `macosVmRecovery.ts` | Lane-tied macOS VM lifecycle and GUI control. `macosVmService.ts` uses Lume, stores VM records in `.ade/cache`, mounts direct lane roots when safe (otherwise a sanitized rsync mirror), and exposes screenshot/click/type/select through headless VNC or visible-window fallbacks. `credentialsStore.ts` keeps guest user credentials in the macOS Keychain (`/usr/bin/security`, service `ade-macos-vm-<vmName>` / account `ade-cli`); renderers only see a summary. `runtimeBootstrap.ts` installs the in-guest ade-runtime over SSH+SCP with a five-phase progress signal (`ssh-probe`, `write-script`, `scp-script`, `run-script`, `verify-marker`). `macosVmRecovery.ts` is a standalone CLI cleanup path for stale records / lease / VNC credentials when the desktop surface cannot reach them. |
 | `onboarding/` | `onboardingService.ts` | First-run flow, defaults detection, existing lane discovery. |
 | `opencode/` | `openCodeRuntime.ts`, `openCodeServerManager.ts`, `openCodeBinaryManager.ts`, `openCodeInventory.ts`, `openCodeModelCatalog.ts` | OpenCode server spawn, binary resolution, model discovery. |
+| `orchestration/` | `orchestrationService.ts`, `applyPatches.ts`, `patchPolicy.ts`, `manifestNormalization.ts`, `runtimeProfile.ts` | Work-tab orchestration for multi-phase plans. `orchestrationService` manages run lifecycle, manifest persistence, plan markdown, and asset bundles. `applyPatches` + `patchPolicy` handle lead/worker manifest patches with safety constraints. `runtimeProfile` resolves the active orchestration profile per session. The renderer surfaces live in `renderer/components/orchestration/` (see §7.3). The former `orchestrator/` and `missions/` directories were consolidated into this service. |
 | `processes/` | `processService.ts` | Managed-process lifecycle per lane, readiness probes, restart policies. |
 | `projects/` | `adeProjectService.ts`, `configReloadService.ts`, `projectService.ts`, `logIntegrityService.ts`, `recentProjectSummary.ts`, `projectBrowserService.ts`, `projectDetailService.ts` | Project detection + `.ade` repair/bootstrap, reload on config change, recent-project metadata. `projectBrowserService` is the in-app directory autocomplete used by the Command Palette project browser (typed-path completion, `.git` detection, home expansion, system-picker fallback); `projectDetailService` returns repo metadata (branch, dirty count, ahead/behind, last commit, README excerpt, language mix, lane count, last-opened) for the palette's preview pane. |
 | `prs/` | `prService.ts`, `prPollingService.ts`, `prSummaryService.ts`, `queueLandingService.ts`, `issueInventoryService.ts`, `prIssueResolver.ts`, `prRebaseResolver.ts`, `integrationPlanning.ts`, `integrationValidation.ts` | PR CRUD, polling (with per-PR `last_polled_at` cursor), AI summary cache keyed by `(prId, head_sha)`, stacked-queue landing, issue inventory, AI-assisted resolution, integration planning, and merge-into-existing-lane proposal adoption. |
@@ -549,7 +555,7 @@ Domain stores co-located with their pages follow the same factory + context patt
 Feature-grouped under `apps/desktop/src/renderer/components/`:
 
 ```
-app/            # shell, App.tsx, TopBar, TabNav, startup, splash
+app/            # shell, App.tsx, TopBar, TabNav, LinearIssueBrowser, LinearIssueResolveModals, startup, splash
 project/        # Play tab, run/test/process controls
 lanes/          # list/detail/inspector, stacks, laneDesignTokens.ts
 files/          # tree, editor, diffs
@@ -561,6 +567,7 @@ prs/            # PR list/detail, stacked queue, shared/
 history/        # operation timeline
 automations/    # rule list, pipeline builder
 cto/            # CTO page, identity editor, team panel, pipeline, shared/designTokens.ts
+orchestration/  # OrchestrationPanel, TaskCard, PlanMarkdown, PhaseAccordion, AnnotationPopover, SpecPreviewCard
 onboarding/     # first-run flows
 settings/       # keybindings, agents, data, context, sync
 chat/           # AgentChatPane + composer + subpanels

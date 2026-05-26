@@ -1074,9 +1074,10 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     const { result } = renderHook(() => useWorkSessions());
 
     await waitFor(() => {
-      expect(result.current.filtered.map((session) => session.id)).toEqual(["session-running"]);
+      expect(result.current.filtered.map((session) => session.id)).toEqual(["session-running", "session-ended"]);
     });
-    expect(result.current.endedFiltered).toEqual([]);
+    expect(result.current.runningFiltered.map((s) => s.id)).toEqual(["session-running"]);
+    expect(result.current.endedFiltered.map((s) => s.id)).toEqual(["session-ended"]);
   });
 
   it("reapplies the same stale-session URL filters after navigating to a valid session and back", async () => {

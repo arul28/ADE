@@ -41,6 +41,17 @@ function detectTokenType(token: string): TokenType {
   return "unknown";
 }
 
+function tokenTypeDetectionLabel(type: TokenType): string {
+  switch (type) {
+    case "classic":
+      return "Classic token";
+    case "fine-grained":
+      return "Fine-grained token";
+    default:
+      return "Unknown format";
+  }
+}
+
 function authSourceLabel(status: GitHubStatus | null): string {
   switch (status?.authSource) {
     case "gh":
@@ -519,7 +530,7 @@ export function GitHubSection() {
             />
             {githubTokenDraft.trim() ? (
               <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-                Detected: {detectTokenType(githubTokenDraft.trim()) === "classic" ? "Classic token" : detectTokenType(githubTokenDraft.trim()) === "fine-grained" ? "Fine-grained token" : "Unknown format"}
+                Detected: {tokenTypeDetectionLabel(detectTokenType(githubTokenDraft.trim()))}
               </span>
             ) : null}
           </label>

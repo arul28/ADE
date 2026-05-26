@@ -127,20 +127,23 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     return now().toISOString();
   }
 
-  function bundleRootFor(laneId: string, runId: string): string {
+  function orchestrationDirForLane(laneId: string): string {
     const worktree = deps.resolveLaneWorktree(laneId);
     if (!worktree) {
       throw new Error(`unknown laneId ${laneId} — cannot resolve worktree`);
     }
-    return path.join(worktree, ".ade", "orchestration", runId);
+    return path.join(worktree, ".ade", "orchestration");
+  }
+
+  function bundleRootFor(laneId: string, runId: string): string {
+    return path.join(orchestrationDirForLane(laneId), runId);
   }
 
   async function ensureBundleDir(bundlePath: string): Promise<void> {
-    await fsp.mkdir(path.join(bundlePath, "artifacts"), { recursive: true });
-    await fsp.mkdir(path.join(bundlePath, "artifacts", "ui"), { recursive: true });
-    await fsp.mkdir(path.join(bundlePath, "artifacts", "evidence"), {
-      recursive: true,
-    });
+    await Promise.all([
+      fsp.mkdir(path.join(bundlePath, "artifacts", "ui"), { recursive: true }),
+      fsp.mkdir(path.join(bundlePath, "artifacts", "evidence"), { recursive: true }),
+    ]);
   }
 
   async function readServerGeneration(bundlePath: string): Promise<number> {
@@ -186,14 +189,6 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       laneIndexMutexes.set(laneId, mutex);
     }
     return mutex;
-  }
-
-  function orchestrationDirForLane(laneId: string): string {
-    const worktree = deps.resolveLaneWorktree(laneId);
-    if (!worktree) {
-      throw new Error(`unknown laneId ${laneId} — cannot resolve worktree`);
-    }
-    return path.join(worktree, ".ade", "orchestration");
   }
 
   function indexPathForLane(laneId: string): string {

@@ -273,6 +273,11 @@ Renderer wiring:
   for the workspace summary and `ade.cto.searchLinearIssues` for
   paginated results. Persists per-project filter state in
   `localStorage` under `ade.linear.quickView.filters.v1:<projectRoot>`.
+- `apps/desktop/src/renderer/components/app/LinearIssueResolveModals.tsx`
+  — modal dialogs for resolving Linear issues directly from the
+  quick-view or issue browser: create a new lane from the issue,
+  attach to an existing lane, or launch an agent chat to work on the
+  issue with model selection and branch preview.
 - `apps/desktop/src/renderer/components/chat/AgentChatComposer.tsx`
   — the composer's Linear attach affordance opens a
   `LinearIssueContextDialog` that hosts the same

@@ -58,6 +58,13 @@ export type PlanMarkdownProps = {
   className?: string;
 };
 
+const headingAttrs = Object.fromEntries(
+  ["h1", "h2", "h3", "h4", "h5", "h6"].map((tag) => [
+    tag,
+    Array.from(new Set([...(defaultSchema.attributes?.[tag] ?? []), "id", "dataSectionId"])),
+  ]),
+);
+
 const planSanitizeSchema: RehypeSanitizeOptions = {
   ...defaultSchema,
   tagNames: Array.from(new Set([...(defaultSchema.tagNames ?? []), "a", "sub", "details", "summary"])),
@@ -65,12 +72,7 @@ const planSanitizeSchema: RehypeSanitizeOptions = {
     ...(defaultSchema.attributes ?? {}),
     "*": Array.from(new Set([...(defaultSchema.attributes?.["*"] ?? []), "id", "title"])),
     a: Array.from(new Set([...(defaultSchema.attributes?.a ?? []), "href", "id", "title"])),
-    h1: Array.from(new Set([...(defaultSchema.attributes?.h1 ?? []), "id", "dataSectionId"])),
-    h2: Array.from(new Set([...(defaultSchema.attributes?.h2 ?? []), "id", "dataSectionId"])),
-    h3: Array.from(new Set([...(defaultSchema.attributes?.h3 ?? []), "id", "dataSectionId"])),
-    h4: Array.from(new Set([...(defaultSchema.attributes?.h4 ?? []), "id", "dataSectionId"])),
-    h5: Array.from(new Set([...(defaultSchema.attributes?.h5 ?? []), "id", "dataSectionId"])),
-    h6: Array.from(new Set([...(defaultSchema.attributes?.h6 ?? []), "id", "dataSectionId"])),
+    ...headingAttrs,
   },
   clobber: (defaultSchema.clobber ?? []).filter((name) => name !== "id"),
 };

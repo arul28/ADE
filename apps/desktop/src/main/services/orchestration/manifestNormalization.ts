@@ -460,8 +460,6 @@ export function buildPhaseTransitionOpsAfterTaskRelease(
   return ops;
 }
 
-// ManifestPatchOp and OrchestrationTaskStatus imported at top of file
-
 // ---------------------------------------------------------------------------
 // Supersede inference helpers
 // ---------------------------------------------------------------------------

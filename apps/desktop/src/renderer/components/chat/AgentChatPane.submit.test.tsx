@@ -821,8 +821,9 @@ describe("AgentChatPane companion drawers", () => {
   it("opens the proof drawer and persists split resize from the real divider", async () => {
     renderDrawerPane();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open proof drawer" }));
-    expect(screen.getByText("Artifacts")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Proof" }));
+    expect(screen.getByText("No artifacts captured yet.")).toBeTruthy();
 
     const divider = screen.getByRole("separator", { name: "" });
     const splitParent = divider.parentElement;
@@ -850,9 +851,9 @@ describe("AgentChatPane companion drawers", () => {
       expect(window.sessionStorage.getItem("ade.chat.rightPaneSplit")).toBe("40");
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Close proof drawer" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close chat actions drawer" }));
     await waitFor(() => {
-      expect(screen.queryByText("Artifacts")).toBeNull();
+      expect(screen.queryByText("No artifacts captured yet.")).toBeNull();
     });
   });
 
@@ -1357,7 +1358,7 @@ describe("AgentChatPane submit recovery", () => {
     );
 
     await screen.findByRole("textbox");
-    expect(screen.getByRole("button", { name: /^Terminal$/ })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /(Open|Close) terminal/i })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Open iOS simulator drawer" })).toBeNull();
 
     act(() => {
@@ -2153,7 +2154,7 @@ describe("AgentChatPane submit recovery", () => {
     renderPane(session);
 
     const trigger = await screen.findByRole("button", { name: "Claude permission mode" });
-    expect(trigger.textContent ?? "").not.toContain("Plan mode");
+    expect(trigger.textContent ?? "").not.toContain("plan");
 
     sessions[0] = {
       ...session,
@@ -2176,7 +2177,7 @@ describe("AgentChatPane submit recovery", () => {
     });
 
     await waitFor(() => {
-      expect(trigger.textContent ?? "").toContain("Plan mode");
+      expect(trigger.textContent ?? "").toContain("Plan");
     });
   });
 
@@ -2467,14 +2468,18 @@ describe("AgentChatPane submit recovery", () => {
     installAdeMocks();
     renderPane(session);
 
-    expect(await screen.findByRole("button", { name: "Handoff" })).not.toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    expect(await screen.findByText("Start a sibling chat on another model")).toBeTruthy();
 
     cleanup();
     installAdeMocks();
     renderResolverPane(session);
 
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
     await waitFor(() => {
-      expect(screen.queryByRole("button", { name: "Handoff" })).toBeNull();
+      expect(screen.getByText("Handoff is not available for this chat.")).toBeTruthy();
     });
   });
 
@@ -2493,9 +2498,9 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() => {
-      expect(screen.queryByRole("button", { name: "Handoff" })).toBeNull();
-    });
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    expect(await screen.findByText("Handoff is not available for this chat.")).toBeTruthy();
   });
 
   it("disables chat handoff while the current turn is still active", async () => {
@@ -2506,9 +2511,11 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    const button = await screen.findByRole("button", { name: "Handoff" });
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    const createBtn = await screen.findByRole("button", { name: "Create handoff chat" });
     await waitFor(() => {
-      expect((button as HTMLButtonElement).disabled).toBe(true);
+      expect((createBtn as HTMLButtonElement).disabled).toBe(true);
     });
   });
 
@@ -2534,9 +2541,8 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    const handoffBtn = await screen.findByRole("button", { name: "Handoff" }) as HTMLButtonElement;
-    await waitFor(() => expect(handoffBtn.disabled).toBe(false));
-    fireEvent.click(handoffBtn);
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
     expect(await screen.findByText("Create opens the new work chat and sends the handoff summary as its first message.")).toBeTruthy();
     fireEvent.click(await screen.findByRole("button", { name: "Create handoff chat" }));
 
@@ -2578,11 +2584,11 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    const handoffBtn = await screen.findByRole("button", { name: "Handoff" }) as HTMLButtonElement;
-    await waitFor(() => expect(handoffBtn.disabled).toBe(false));
-    fireEvent.click(handoffBtn);
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
 
-    const handoffMenu = (await screen.findByText("Start a sibling chat on another model")).closest("[data-chat-handoff-menu='true']");
+    const handoffTextEl = await screen.findByText("Start a sibling chat on another model");
+    const handoffMenu = handoffTextEl.parentElement!.parentElement!;
     expect(handoffMenu).toBeTruthy();
     fireEvent.click(within(handoffMenu as HTMLElement).getByRole("button", { name: /^Select model/ }));
     const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
@@ -2622,11 +2628,11 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    const handoffBtn = await screen.findByRole("button", { name: "Handoff" }) as HTMLButtonElement;
-    await waitFor(() => expect(handoffBtn.disabled).toBe(false));
-    fireEvent.click(handoffBtn);
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
 
-    const handoffMenu = (await screen.findByText("Start a sibling chat on another model")).closest("[data-chat-handoff-menu='true']");
+    const handoffTextEl2 = await screen.findByText("Start a sibling chat on another model");
+    const handoffMenu = handoffTextEl2.parentElement!.parentElement!;
     expect(handoffMenu).toBeTruthy();
     fireEvent.click(within(handoffMenu as HTMLElement).getByRole("button", { name: /^Select model/ }));
     const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
@@ -2934,7 +2940,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalled();
       expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
-      expect((screen.getByRole("button", { name: "Launch in background" }) as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByRole("button", { name: "Launching" }) as HTMLButtonElement).disabled).toBe(true);
     });
     expect((textbox as HTMLTextAreaElement).disabled).toBe(false);
 
@@ -3536,9 +3542,8 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    // The git toolbar renders commit/push buttons when laneId is present
-    expect(await screen.findByText("Stage & Commit")).toBeTruthy();
-    expect(screen.getByText("Push")).toBeTruthy();
+    // The git toolbar renders a PR button when laneId is present
+    expect(await screen.findByText("PR")).toBeTruthy();
   });
 
   it("labels a merged linked PR in the git toolbar", async () => {
@@ -3581,7 +3586,7 @@ describe("AgentChatPane submit recovery", () => {
 
     // Wait for the pane to fully render — no git toolbar when laneId is null
     await waitFor(() => {
-      expect(screen.queryByText("Commit")).toBeNull();
+      expect(screen.queryByText("PR")).toBeNull();
     });
   });
 

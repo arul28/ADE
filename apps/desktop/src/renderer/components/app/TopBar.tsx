@@ -335,28 +335,17 @@ function ShellConnectionChip({
     >
       {layout === "menu-row" ? icon : <span>{label}</span>}
       {layout === "menu-row" ? (
-        <>
-          <span className="min-w-0 flex-1 truncate">{label}</span>
-          <span
-            className={cn(
-              "h-1.5 w-1.5 shrink-0 rounded-full",
-              connected ? "bg-emerald-400" : "bg-red-400",
-            )}
-            aria-hidden
-          />
-        </>
+        <span className="min-w-0 flex-1 truncate">{label}</span>
       ) : (
-        <>
-          {icon}
-          <span
-            className={cn(
-              "h-1.5 w-1.5 shrink-0 rounded-full",
-              connected ? "bg-emerald-400" : "bg-red-400",
-            )}
-            aria-hidden
-          />
-        </>
+        icon
       )}
+      <span
+        className={cn(
+          "h-1.5 w-1.5 shrink-0 rounded-full",
+          connected ? "bg-emerald-400" : "bg-red-400",
+        )}
+        aria-hidden
+      />
     </button>
   );
 }

@@ -122,16 +122,18 @@ export function buildHistoryLaneActions(args: {
   if (args.conflictState?.inProgress) {
     const isRebase = args.conflictState.kind === "rebase";
     const isMerge = args.conflictState.kind === "merge";
-    const continueReason = args.conflictState.conflictedFiles.length
-      ? "Resolve conflicted files first"
-      : undefined;
+    const conflictCount = args.conflictState.conflictedFiles.length;
+    const continueReason = conflictCount ? "Resolve conflicted files first" : undefined;
+    const conflictDescription = (kind: string) =>
+      conflictCount
+        ? `${conflictCount} conflicted file${conflictCount === 1 ? "" : "s"} left`
+        : `Resume the interrupted ${kind}`;
+
     conflictActions.push(
       {
         id: "rebase_continue",
         label: "Continue rebase",
-        description: args.conflictState.conflictedFiles.length
-          ? `${args.conflictState.conflictedFiles.length} conflicted file${args.conflictState.conflictedFiles.length === 1 ? "" : "s"} left`
-          : "Resume the interrupted rebase",
+        description: conflictDescription("rebase"),
         disabled: disabled || !isRebase || !args.conflictState.canContinue,
         disabledReason: disabledReason ?? (!isRebase ? "No rebase in progress" : continueReason),
       },
@@ -146,9 +148,7 @@ export function buildHistoryLaneActions(args: {
       {
         id: "merge_continue",
         label: "Continue merge",
-        description: args.conflictState.conflictedFiles.length
-          ? `${args.conflictState.conflictedFiles.length} conflicted file${args.conflictState.conflictedFiles.length === 1 ? "" : "s"} left`
-          : "Resume the interrupted merge",
+        description: conflictDescription("merge"),
         disabled: disabled || !isMerge || !args.conflictState.canContinue,
         disabledReason: disabledReason ?? (!isMerge ? "No merge in progress" : continueReason),
       },
