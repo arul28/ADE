@@ -39,8 +39,6 @@ import type { createWorkerHeartbeatService } from "../../cto/workerHeartbeatServ
 import type { createFlowPolicyService } from "../../cto/flowPolicyService";
 import type { createFileService } from "../../files/fileService";
 import type { createLaneService } from "../../lanes/laneService";
-import type { createMissionService } from "../../missions/missionService";
-import type { createAiOrchestratorService } from "../../orchestrator/aiOrchestratorService";
 import type { createIssueInventoryService } from "../../prs/issueInventoryService";
 import { computeConvergenceStatus, detectSource, extractSeverity } from "../../prs/issueInventoryService";
 import { launchPrIssueResolutionChat } from "../../prs/prIssueResolver";
@@ -64,8 +62,6 @@ export interface CtoOperatorToolDeps {
     freshLaneDescription?: string | null;
   }) => Promise<string>;
   laneService: ReturnType<typeof createLaneService>;
-  missionService?: ReturnType<typeof createMissionService> | null;
-  aiOrchestratorService?: ReturnType<typeof createAiOrchestratorService> | null;
   workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
   workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
   linearDispatcherService?: ReturnType<typeof createLinearDispatcherService> | null;
@@ -131,9 +127,6 @@ export interface CtoOperatorToolDeps {
   workerBudgetService?: {
     getBudgetSnapshot: (args: { monthKey?: string }) => any;
     listCostEvents: (args: { agentId: string; monthKey?: string; limit?: number }) => any[];
-  } | null;
-  missionBudgetService?: {
-    getMissionBudgetStatus: (args: { missionId: string }) => Promise<any>;
   } | null;
   issueTracker?: IssueTracker | null;
   ctoStateService?: Pick<ReturnType<typeof createCtoStateService>, "getSessionLogs" | "getSubordinateActivityLogs"> | null;
@@ -224,11 +217,9 @@ function buildNavigationSuggestion(args: {
   surface: OperatorNavigationSuggestion["surface"];
   laneId?: string | null;
   sessionId?: string | null;
-  missionId?: string | null;
 }): OperatorNavigationSuggestion {
   const laneId = args.laneId?.trim() || null;
   const sessionId = args.sessionId?.trim() || null;
-  const missionId = args.missionId?.trim() || null;
   if (args.surface === "work") {
     const search = new URLSearchParams();
     if (laneId) search.set("laneId", laneId);
@@ -240,19 +231,6 @@ function buildNavigationSuggestion(args: {
       href: `/work${query ? `?${query}` : ""}`,
       laneId,
       sessionId,
-    };
-  }
-  if (args.surface === "missions") {
-    const search = new URLSearchParams();
-    if (missionId) search.set("missionId", missionId);
-    if (laneId) search.set("laneId", laneId);
-    const query = search.toString();
-    return {
-      surface: "missions",
-      label: "Open mission",
-      href: `/missions${query ? `?${query}` : ""}`,
-      laneId,
-      missionId,
     };
   }
   if (args.surface === "cto") {
@@ -595,54 +573,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     };
   };
 
-  const routeIssueToMission = async (args: {
-    issueId: string;
-    laneId?: string;
-    launch?: boolean;
-    runMode?: "autopilot" | "manual";
-  }) => {
-    if (!deps.issueTracker || !deps.missionService) {
-      return { success: false as const, error: "Mission routing services are not available." };
-    }
-    const issue = await loadIssue(args.issueId);
-    if (!issue) return { success: false as const, error: `Issue not found: ${args.issueId}` };
-    try {
-      const mission = deps.missionService.create({
-        title: `${issue.identifier}: ${issue.title}`,
-        prompt: buildIssueBrief(issue),
-        laneId: args.laneId?.trim() || deps.defaultLaneId,
-        autostart: false,
-        launchMode: args.runMode ?? "autopilot",
-      });
-      let run: unknown = null;
-      if ((args.launch ?? true) && deps.aiOrchestratorService) {
-        run = await deps.aiOrchestratorService.startMissionRun({
-          missionId: mission.id,
-          runMode: args.runMode ?? "autopilot",
-          autopilotOwnerId: "cto-linear-route",
-          defaultRetryLimit: 1,
-          metadata: {
-            launchSource: "cto_operator_tools.routeLinearIssueToMission",
-            linearIssueId: issue.id,
-            linearIssueIdentifier: issue.identifier,
-          },
-        });
-      }
-      return {
-        success: true as const,
-        mission,
-        run,
-        ...buildNavigationPayload(buildNavigationSuggestion({
-          surface: "missions",
-          laneId: mission.laneId ?? (args.laneId?.trim() || deps.defaultLaneId),
-          missionId: mission.id,
-        })),
-      };
-    } catch (error) {
-      return { success: false as const, error: getErrorMessage(error) };
-    }
-  };
-
   const routeIssueToWorker = async (args: {
     issueId: string;
     agentId: string;
@@ -891,305 +821,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           ...transcript,
           count: transcript.entries.length,
         };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  tools.listMissions = tool({
-    description: "List ADE missions so you can supervise orchestrated work.",
-    inputSchema: z.object({
-      laneId: z.string().optional(),
-      status: z.enum(["active", "in_progress", "queued", "planning", "intervention_required", "completed", "failed", "canceled"]).optional(),
-    }),
-    execute: async ({ laneId, status }) => {
-      if (!deps.missionService) return { success: false, error: "Mission service is not available." };
-      const missions = deps.missionService.list({
-        ...(laneId?.trim() ? { laneId: laneId.trim() } : {}),
-        ...(status ? { status } : {}),
-      });
-      return { success: true, count: missions.length, missions };
-    },
-  });
-
-  tools.startMission = tool({
-    description: "Create a mission and optionally launch it through the orchestrator.",
-    inputSchema: z.object({
-      prompt: z.string(),
-      title: z.string().optional(),
-      laneId: z.string().optional(),
-      priority: z.enum(["urgent", "high", "normal", "low"]).optional(),
-      launch: z.boolean().optional().default(true),
-      runMode: z.enum(["autopilot", "manual"]).optional().default("autopilot"),
-    }),
-    execute: async ({ prompt, title, laneId, priority, launch, runMode }) => {
-      if (!deps.missionService) return { success: false, error: "Mission service is not available." };
-      try {
-        const executionLaneId = await deps.resolveExecutionLane({
-          requestedLaneId: laneId?.trim() || undefined,
-          purpose: title?.trim() || "mission",
-          freshLaneName: title?.trim() || "mission",
-          freshLaneDescription: "Dedicated mission lane launched from the CTO coordinator chat.",
-        });
-        const mission = deps.missionService.create({
-          prompt,
-          ...(title?.trim() ? { title: title.trim() } : {}),
-          laneId: executionLaneId,
-          ...(priority ? { priority } : {}),
-          autostart: false,
-          launchMode: runMode,
-        });
-        let run: unknown = null;
-        if (launch && deps.aiOrchestratorService) {
-          run = await deps.aiOrchestratorService.startMissionRun({
-            missionId: mission.id,
-            runMode,
-            autopilotOwnerId: "cto-operator-tools",
-            defaultRetryLimit: 1,
-            metadata: {
-              launchSource: "cto_operator_tools.startMission",
-            },
-          });
-        }
-        return {
-          success: true,
-          mission,
-          run,
-          ...buildNavigationPayload(buildNavigationSuggestion({
-            surface: "missions",
-            laneId: mission.laneId ?? executionLaneId,
-            missionId: mission.id,
-          })),
-        };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  tools.getMissionStatus = tool({
-    description: "Get mission detail so you can inspect steps, artifacts, and interventions.",
-    inputSchema: z.object({
-      missionId: z.string(),
-    }),
-    execute: async ({ missionId }) => {
-      if (!deps.missionService) return { success: false, error: "Mission service is not available." };
-      const mission = deps.missionService.get(missionId);
-      if (!mission) return { success: false, error: `Mission not found: ${missionId}` };
-      return {
-        success: true,
-        mission,
-        ...buildNavigationPayload(buildNavigationSuggestion({
-          surface: "missions",
-          laneId: mission.laneId ?? null,
-          missionId: mission.id,
-        })),
-      };
-    },
-  });
-
-  tools.updateMission = tool({
-    description: "Apply stable mission edits such as title, prompt, lane, priority, status, or outcome summary.",
-    inputSchema: z.object({
-      missionId: z.string(),
-      title: z.string().optional(),
-      prompt: z.string().optional(),
-      laneId: z.string().nullable().optional(),
-      status: z.enum(["queued", "planning", "in_progress", "intervention_required", "completed", "failed", "canceled"]).optional(),
-      priority: z.enum(["urgent", "high", "normal", "low"]).optional(),
-      outcomeSummary: z.string().nullable().optional(),
-    }),
-    execute: async ({ missionId, title, prompt, laneId, status, priority, outcomeSummary }) => {
-      if (!deps.missionService) return { success: false, error: "Mission service is not available." };
-      try {
-        const mission = deps.missionService.update({
-          missionId,
-          ...(title !== undefined ? { title } : {}),
-          ...(prompt !== undefined ? { prompt } : {}),
-          ...(laneId !== undefined ? { laneId } : {}),
-          ...(status ? { status } : {}),
-          ...(priority ? { priority } : {}),
-          ...(outcomeSummary !== undefined ? { outcomeSummary } : {}),
-        });
-        return {
-          success: true,
-          mission,
-          ...buildNavigationPayload(buildNavigationSuggestion({
-            surface: "missions",
-            laneId: mission.laneId ?? null,
-            missionId: mission.id,
-          })),
-        };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  tools.launchMissionRun = tool({
-    description: "Launch or relaunch orchestration for an existing mission.",
-    inputSchema: z.object({
-      missionId: z.string(),
-      runMode: z.enum(["autopilot", "manual"]).optional().default("autopilot"),
-      plannerProvider: z.enum(["claude", "codex", "deterministic"]).optional(),
-    }),
-    execute: async ({ missionId, runMode, plannerProvider }) => {
-      if (!deps.missionService || !deps.aiOrchestratorService) {
-        return { success: false, error: "Mission runtime services are not available." };
-      }
-      const mission = deps.missionService.get(missionId);
-      if (!mission) return { success: false, error: `Mission not found: ${missionId}` };
-      try {
-        const run = await deps.aiOrchestratorService.startMissionRun({
-          missionId,
-          runMode,
-          autopilotOwnerId: "cto-operator-tools",
-          defaultRetryLimit: 1,
-          ...(plannerProvider ? { plannerProvider } : {}),
-          metadata: {
-            launchSource: "cto_operator_tools.launchMissionRun",
-          },
-        });
-        return {
-          success: true,
-          mission,
-          run,
-          ...buildNavigationPayload(buildNavigationSuggestion({
-            surface: "missions",
-            laneId: mission.laneId ?? null,
-            missionId: mission.id,
-          })),
-        };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  tools.resolveMissionIntervention = tool({
-    description: "Resolve an open mission intervention with an explicit status and resolution kind.",
-    inputSchema: z.object({
-      missionId: z.string(),
-      interventionId: z.string(),
-      status: z.enum(["resolved", "dismissed"]),
-      resolutionKind: z.enum(["answer_provided", "accept_defaults", "skip_question", "cancel_run"]).nullable().optional(),
-      note: z.string().nullable().optional(),
-    }),
-    execute: async ({ missionId, interventionId, status, resolutionKind, note }) => {
-      if (!deps.missionService) return { success: false, error: "Mission service is not available." };
-      try {
-        const intervention = deps.missionService.resolveIntervention({
-          missionId,
-          interventionId,
-          status,
-          resolutionKind: resolutionKind ?? null,
-          note: note ?? null,
-        });
-        return { success: true, intervention };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  tools.getMissionRunView = tool({
-    description: "Read the orchestrator-backed mission runtime summary.",
-    inputSchema: z.object({
-      missionId: z.string(),
-      runId: z.string().nullable().optional(),
-    }),
-    execute: async ({ missionId, runId }) => {
-      if (!deps.aiOrchestratorService) return { success: false, error: "Mission runtime service is not available." };
-      try {
-        const view = await deps.aiOrchestratorService.getRunView({
-          missionId,
-          runId: runId?.trim() || null,
-        });
-        if (!view) return { success: false, error: `Mission run view not found for mission ${missionId}.` };
-        return { success: true, view };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  tools.getMissionLogs = tool({
-    description: "Read bounded mission logs across timeline, runtime, chat, outputs, and interventions.",
-    inputSchema: z.object({
-      missionId: z.string(),
-      runId: z.string().nullable().optional(),
-      channels: z.array(z.enum(["timeline", "runtime", "chat", "outputs", "reflections", "retrospectives", "interventions"])).optional(),
-      cursor: z.string().nullable().optional(),
-      limit: z.number().int().positive().max(500).optional().default(100),
-    }),
-    execute: async ({ missionId, runId, channels, cursor, limit }) => {
-      if (!deps.aiOrchestratorService) return { success: false, error: "Mission runtime service is not available." };
-      try {
-        const logs = await deps.aiOrchestratorService.getMissionLogs({
-          missionId,
-          runId: runId?.trim() || null,
-          ...(channels?.length ? { channels } : {}),
-          cursor: cursor?.trim() || null,
-          limit,
-        });
-        return { success: true, ...logs };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  tools.listMissionWorkerDigests = tool({
-    description: "List worker runtime digests for a mission so the CTO can supervise delegated execution.",
-    inputSchema: z.object({
-      missionId: z.string(),
-      runId: z.string().nullable().optional(),
-      stepId: z.string().nullable().optional(),
-      attemptId: z.string().nullable().optional(),
-      laneId: z.string().nullable().optional(),
-      limit: z.number().int().positive().max(200).optional().default(50),
-    }),
-    execute: async ({ missionId, runId, stepId, attemptId, laneId, limit }) => {
-      if (!deps.aiOrchestratorService) return { success: false, error: "Mission runtime service is not available." };
-      try {
-        const digests = deps.aiOrchestratorService.listWorkerDigests({
-          missionId,
-          runId: runId?.trim() || null,
-          stepId: stepId?.trim() || null,
-          attemptId: attemptId?.trim() || null,
-          laneId: laneId?.trim() || null,
-          limit,
-        });
-        return { success: true, count: digests.length, digests };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  tools.steerMission = tool({
-    description: "Send a follow-up directive into a live mission run without opening raw coordinator internals.",
-    inputSchema: z.object({
-      missionId: z.string(),
-      directive: z.string(),
-      priority: z.enum(["suggestion", "instruction", "override"]).optional().default("instruction"),
-      targetStepKey: z.string().nullable().optional(),
-      interventionId: z.string().nullable().optional(),
-      resolutionKind: z.enum(["answer_provided", "accept_defaults", "skip_question", "cancel_run"]).nullable().optional(),
-    }),
-    execute: async ({ missionId, directive, priority, targetStepKey, interventionId, resolutionKind }) => {
-      if (!deps.aiOrchestratorService) return { success: false, error: "Mission runtime service is not available." };
-      try {
-        const result = deps.aiOrchestratorService.steerMission({
-          missionId,
-          directive,
-          priority,
-          targetStepKey: targetStepKey?.trim() || null,
-          interventionId: interventionId?.trim() || null,
-          resolutionKind: resolutionKind ?? null,
-        });
-        return { success: true, result };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }
@@ -1936,17 +1567,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     execute: async ({ issueId, laneId, reuseExisting }) => routeIssueToCto({ issueId, laneId, reuseExisting }),
   });
 
-  tools.routeLinearIssueToMission = tool({
-    description: "Create a mission from a Linear issue and optionally launch it.",
-    inputSchema: z.object({
-      issueId: z.string(),
-      laneId: z.string().optional(),
-      launch: z.boolean().optional().default(true),
-      runMode: z.enum(["autopilot", "manual"]).optional().default("autopilot"),
-    }),
-    execute: async ({ issueId, laneId, launch, runMode }) => routeIssueToMission({ issueId, laneId, launch, runMode }),
-  });
-
   tools.routeLinearIssueToWorker = tool({
     description: "Wake a worker agent with a Linear issue as the task context.",
     inputSchema: z.object({
@@ -1961,16 +1581,14 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     description: "Recover a Linear workflow run by canceling the current run if needed and re-routing its issue.",
     inputSchema: z.object({
       runId: z.string(),
-      target: z.enum(["cto", "mission", "worker"]),
+      target: z.enum(["cto", "worker"]),
       reason: z.string(),
       laneId: z.string().optional(),
       reuseExisting: z.boolean().optional().default(true),
-      launch: z.boolean().optional().default(true),
-      runMode: z.enum(["autopilot", "manual"]).optional().default("autopilot"),
       agentId: z.string().optional(),
       taskKey: z.string().optional(),
     }),
-    execute: async ({ runId, target, reason, laneId, reuseExisting, launch, runMode, agentId, taskKey }) => {
+    execute: async ({ runId, target, reason, laneId, reuseExisting, agentId, taskKey }) => {
       if (!deps.linearDispatcherService || !deps.flowPolicyService) {
         return { success: false, error: "Linear workflow services are not available." };
       }
@@ -1993,9 +1611,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         }
         const rerouted = target === "cto"
           ? await routeIssueToCto({ issueId, laneId, reuseExisting })
-          : target === "mission"
-            ? await routeIssueToMission({ issueId, laneId, launch, runMode })
-            : await routeIssueToWorker({ issueId, agentId: agentId?.trim() || "", taskKey });
+          : await routeIssueToWorker({ issueId, agentId: agentId?.trim() || "", taskKey });
         if (!rerouted.success) return rerouted;
         return {
           success: true,
@@ -2869,7 +2485,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.getRecentEvents = tool({
     description:
       "Surface a unified feed of recent project events: CTO session completions, worker activity, " +
-      "test completions/failures, PR review activity, mission state transitions, and chat session events. " +
+      "test completions/failures, PR review activity, and chat session events. " +
       "Use this to stay aware of what happened while you were idle or to brief the user on recent activity.",
     inputSchema: z.object({
       since: z
@@ -2987,29 +2603,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         }
       }
 
-      // 5. Mission state transitions
-      if (deps.missionService) {
-        try {
-          const missions = deps.missionService.list({ limit: 50 });
-          for (const mission of missions) {
-            const ts = mission.completedAt ?? mission.updatedAt;
-            if (!afterCutoff(ts)) continue;
-            events.push({
-              type: "mission_update",
-              timestamp: ts,
-              summary: `Mission "${mission.title}": ${mission.status}${mission.outcomeSummary ? ` — ${mission.outcomeSummary}` : ""}`,
-              ids: {
-                missionId: mission.id,
-                laneId: mission.laneId,
-              },
-            });
-          }
-        } catch {
-          // ignore
-        }
-      }
-
-      // 6. PR review activity (recent events from all tracked PRs)
+      // 5. PR review activity (recent events from all tracked PRs)
       if (deps.prService) {
         try {
           const prs = deps.prService.listAll();
@@ -3082,7 +2676,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
 
   tools.getProjectHealthSummary = tool({
     description:
-      "Aggregate project health into a single snapshot: mission counts by status, worker utilization, test pass rates, PR status distribution, active lanes, and weekly budget burn.",
+      "Aggregate project health into a single snapshot: worker utilization, test pass rates, PR status distribution, active lanes, and weekly budget burn.",
     inputSchema: z.object({
       testRunLimit: z
         .number()
@@ -3093,32 +2687,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         .default(50),
     }),
     execute: async ({ testRunLimit }) => {
-      let missions: {
-        byStatus: Record<string, number>;
-        total: number;
-        activeCount: number;
-        openInterventions: number;
-        weekly: { missions: number; successRate: number; avgDurationMs: number; totalCostUsd: number } | null;
-      } | null = null;
-      if (deps.missionService) {
-        const all = deps.missionService.list({ includeArchived: false, limit: 500 });
-        const byStatus: Record<string, number> = {};
-        let openInterventions = 0;
-        for (const m of all) {
-          byStatus[m.status] = (byStatus[m.status] ?? 0) + 1;
-          openInterventions += m.openInterventions;
-        }
-        const activeCount = all.filter(
-          (m) => m.status === "queued" || m.status === "planning" || m.status === "in_progress" || m.status === "intervention_required",
-        ).length;
-        let weekly: { missions: number; successRate: number; avgDurationMs: number; totalCostUsd: number } | null = null;
-        try {
-          const dashboard = (deps.missionService as any).getDashboard?.();
-          if (dashboard?.weekly) weekly = dashboard.weekly;
-        } catch { /* non-fatal */ }
-        missions = { byStatus, total: all.length, activeCount, openInterventions, weekly };
-      }
-
       let workers: {
         total: number;
         byStatus: Record<string, number>;
@@ -3192,13 +2760,11 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       const lanes = {
         total: allLanes.length,
         active: activeLanes.length,
-        withMission: activeLanes.filter((l) => (l as any).missionId).length,
       };
 
       return {
         success: true,
         generatedAt: nowIso(),
-        missions,
         workers,
         tests,
         prs,
@@ -3219,7 +2785,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         .enum(["screenshot", "video_recording", "browser_trace", "browser_verification", "console_logs"])
         .optional(),
       ownerKind: z
-        .enum(["lane", "mission", "orchestrator_run", "orchestrator_step", "orchestrator_attempt", "chat_session", "automation_run", "github_pr", "linear_issue"])
+        .enum(["lane", "chat_session", "automation_run", "github_pr", "linear_issue"])
         .optional(),
       ownerId: z.string().optional(),
       limit: z.number().int().min(1).max(200).optional().default(50),
@@ -3322,21 +2888,14 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   // ---------------------------------------------------------------------------
 
   tools.getProjectBudgetStatus = tool({
-    description: "Get project-wide budget status: total spend, budget remaining, per-worker summaries, and optional per-mission deep dive.",
+    description: "Get project-wide budget status: total spend, budget remaining, and per-worker summaries.",
     inputSchema: z.object({
       monthKey: z.string().optional().describe("YYYY-MM format. Defaults to current month."),
-      missionId: z.string().optional().describe("Include detailed budget for this mission."),
     }),
-    execute: async ({ monthKey, missionId }) => {
+    execute: async ({ monthKey }) => {
       if (!deps.workerBudgetService) return { success: false, error: "Worker budget service is not available." };
       try {
         const snapshot = deps.workerBudgetService.getBudgetSnapshot({ monthKey: monthKey?.trim() || undefined });
-        let missionBudget: any = null;
-        if (missionId?.trim() && deps.missionBudgetService) {
-          try {
-            missionBudget = await deps.missionBudgetService.getMissionBudgetStatus({ missionId: missionId.trim() });
-          } catch { /* non-fatal */ }
-        }
         return {
           success: true,
           monthKey: snapshot.monthKey,
@@ -3351,7 +2910,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
             agentId: w.agentId, name: w.name, budgetMonthlyCents: w.budgetMonthlyCents,
             spentMonthlyCents: w.spentMonthlyCents, remainingCents: w.remainingCents, status: w.status,
           })),
-          ...(missionBudget ? { missionBudget } : {}),
         };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };

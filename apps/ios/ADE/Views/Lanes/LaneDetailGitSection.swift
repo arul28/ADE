@@ -102,8 +102,6 @@ extension LaneDetailScreen {
         laneId: laneId,
         branchRef: detail.lane.branchRef,
         laneType: detail.lane.laneType,
-        missionId: detail.lane.missionId,
-        laneRole: detail.lane.laneRole,
         onOpenManageSheet: { managePresented = true },
         onSwitchBranch: { showBranchPicker = true },
         onStash: {

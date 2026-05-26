@@ -135,17 +135,6 @@
             ]
           },
           {
-            "group": "Missions",
-            "icon": "bullseye",
-            "pages": [
-              "missions/overview",
-              "missions/creating",
-              "missions/workers",
-              "missions/budget",
-              "guides/first-mission"
-            ]
-          },
-          {
             "group": "CTO Agent",
             "icon": "crown",
             "pages": [

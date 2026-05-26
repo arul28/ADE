@@ -322,7 +322,7 @@
 .tab-tint-prs { --tab-tint-rgb: 167, 139, 250; }
 .tab-tint-history { --tab-tint-rgb: 217, 119, 6; }
 .tab-tint-automations { --tab-tint-rgb: 249, 115, 22; }
-.tab-tint-missions { --tab-tint-rgb: 59, 130, 246; }
+.tab-tint-cto { --tab-tint-rgb: 59, 130, 246; }
 .tab-tint-settings { --tab-tint-rgb: 113, 113, 122; }
 .tab-tint-review { --tab-tint-rgb: 56, 189, 248; }
 
@@ -2255,15 +2255,15 @@ button:active, [role="button"]:active {
   opacity: 0.35;
 }
 
-/* 11. Missions — Topographic Contour Map (blue #3b82f6) */
-.ade-tab-bg-missions {
+/* 11. CTO — Topographic Contour Map (blue #3b82f6) */
+.ade-tab-bg-cto {
   background:
     repeating-radial-gradient(circle at 50% 50%, transparent, transparent 40px, rgba(59, 130, 246, 0.025) 41px, transparent 43px),
     repeating-radial-gradient(circle at 25% 65%, transparent, transparent 30px, rgba(59, 130, 246, 0.02) 31px, transparent 33px),
     repeating-radial-gradient(circle at 75% 35%, transparent, transparent 35px, rgba(59, 130, 246, 0.018) 36px, transparent 38px);
 }
 
-.ade-tab-bg-missions::before {
+.ade-tab-bg-cto::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -2346,7 +2346,7 @@ button:active, [role="button"]:active {
 }
 
 
-/* Blue glow pulse for active missions */
+/* Blue glow pulse for active work */
 .ade-glow-pulse-blue {
   animation: ade-glow-pulse-blue 2s ease-in-out infinite;
 }
@@ -3194,7 +3194,7 @@ button:active, [role="button"]:active {
   animation: none;
 }
 
-/* Tab icon breathing glow for active missions */
+/* Tab icon breathing glow for active work */
 .ade-tab-icon-active {
   position: relative;
 }

@@ -7,10 +7,6 @@ export type ComputerUseArtifactKind =
 
 export type ComputerUseArtifactOwnerKind =
   | "lane"
-  | "mission"
-  | "orchestrator_run"
-  | "orchestrator_step"
-  | "orchestrator_attempt"
   | "chat_session"
   | "automation_run"
   | "github_pr"

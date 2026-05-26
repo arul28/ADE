@@ -2895,7 +2895,6 @@ describe("prService.createIntegrationLane", () => {
       expect.objectContaining({
         parentLaneId: BASE_LANE_ID,
         name: "integration/test",
-        laneRole: "integration",
       }),
     );
 
@@ -3098,55 +3097,6 @@ describe("prService.createIntegrationLane", () => {
         allowDirtyWorktree: true,
       }),
     ).rejects.toThrow("git merge crashed");
-  });
-
-  it("passes custom laneRole through to createChild", async () => {
-    vi.mocked(buildIntegrationPreflight).mockReturnValue({
-      baseLane: baseLane as any,
-      uniqueSourceLaneIds: [SOURCE_LANE_A_ID],
-      duplicateSourceLaneIds: [],
-      missingSourceLaneIds: [],
-    });
-    mockGit.runGit.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
-
-    const laneService = makeIntegrationLaneService();
-    const { service } = buildIntegrationService({ laneService });
-
-    await service.createIntegrationLane({
-      sourceLaneIds: [SOURCE_LANE_A_ID],
-      integrationLaneName: "integration/test",
-      baseBranch: "main",
-      laneRole: "result",
-      allowDirtyWorktree: true,
-    });
-
-    expect(laneService.createChild).toHaveBeenCalledWith(
-      expect.objectContaining({ laneRole: "result" }),
-    );
-  });
-
-  it("defaults laneRole to 'integration' when not specified", async () => {
-    vi.mocked(buildIntegrationPreflight).mockReturnValue({
-      baseLane: baseLane as any,
-      uniqueSourceLaneIds: [SOURCE_LANE_A_ID],
-      duplicateSourceLaneIds: [],
-      missingSourceLaneIds: [],
-    });
-    mockGit.runGit.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
-
-    const laneService = makeIntegrationLaneService();
-    const { service } = buildIntegrationService({ laneService });
-
-    await service.createIntegrationLane({
-      sourceLaneIds: [SOURCE_LANE_A_ID],
-      integrationLaneName: "integration/test",
-      baseBranch: "main",
-      allowDirtyWorktree: true,
-    });
-
-    expect(laneService.createChild).toHaveBeenCalledWith(
-      expect.objectContaining({ laneRole: "integration" }),
-    );
   });
 
   it("throws when dirty worktrees are detected without allowDirtyWorktree", async () => {

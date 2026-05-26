@@ -855,7 +855,7 @@ describe("linearDispatcherService (file group)", () => {
     terminalStateTypes: ["completed", "canceled"],
   };
 
-  function buildPolicy(targetType: "mission" | "review_gate" | "worker_run"): LinearWorkflowConfig {
+  function buildPolicy(targetType: "review_gate" | "worker_run"): LinearWorkflowConfig {
     return {
       version: 1,
       source: "repo",
@@ -873,7 +873,7 @@ describe("linearDispatcherService (file group)", () => {
             { id: "launch", type: "launch_target", name: "Launch target" },
             ...(targetType === "review_gate"
               ? [{ id: "review", type: "request_human_review", name: "Review gate" } as const]
-              : [{ id: "wait", type: "wait_for_target_status", name: "Wait", targetStatus: targetType === "mission" ? "completed" : "runtime_completed" } as const]),
+              : [{ id: "wait", type: "wait_for_target_status", name: "Wait", targetStatus: "runtime_completed" } as const]),
             { id: "complete", type: "complete_issue", name: "Complete issue" },
           ],
           closeout: { successState: "done", failureState: "blocked", applyLabels: ["ade"], resolveOnSuccess: true, reopenOnFailure: true, artifactMode: "links" },
@@ -1263,61 +1263,12 @@ describe("linearDispatcherService (file group)", () => {
     return {
       ensureWorkpad: vi.fn(async () => ({ commentId: "comment-1" })),
       updateWorkpad: vi.fn(async () => ({ commentId: "comment-1" })),
-      publishMissionStart: vi.fn(async () => {}),
-      publishMissionProgress: vi.fn(async () => {}),
       publishWorkflowStatus: vi.fn(async () => {}),
       publishWorkflowCloseout: vi.fn(async () => {}),
-      publishMissionCloseout: vi.fn(async () => {}),
     } as any;
   }
 
   describe("linearDispatcherService", () => {
-    it("launches a mission target and records the mission id", async () => {
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-"));
-      const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
-      const policy = buildPolicy("mission");
-      const missionCreate = vi.fn(() => ({ id: "mission-1", title: "Mission" }));
-
-      const dispatcher = createLinearDispatcherService({
-        db,
-        projectId: "project-1",
-        issueTracker: {
-          fetchIssueById: vi.fn(async () => issueFixture),
-          fetchWorkflowStates: vi.fn(async () => [{ id: "done", name: "Done", type: "completed", teamId: "team-1", teamKey: "ACME" }]),
-          updateIssueState: vi.fn(async () => {}),
-          addLabel: vi.fn(async () => {}),
-          createComment: vi.fn(async () => ({ commentId: "comment-1" })),
-        } as any,
-        workerAgentService: { listAgents: vi.fn(() => [{ id: "agent-1", slug: "backend-dev", capabilities: [] }]) } as any,
-        workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
-        missionService: { create: missionCreate, get: vi.fn(() => ({ id: "mission-1", status: "completed", artifacts: [] })) } as any,
-        aiOrchestratorService: { startMissionRun: vi.fn(async () => ({ runId: "run-1" })) } as any,
-        agentChatService: {
-          ensureIdentitySession: vi.fn(async () => ({ id: "session-1" })),
-          sendMessage: vi.fn(async () => {}),
-          listSessions: vi.fn(async () => []),
-        } as any,
-        laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
-        templateService: { renderTemplate: vi.fn(() => ({ prompt: "Fix it." })) } as any,
-        closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
-        outboundService: createOutboundServiceMocks(),
-        workerTaskSessionService: {
-          deriveTaskKey: vi.fn(() => "task-1"),
-          ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
-        } as any,
-        prService: {
-          getForLane: vi.fn(() => null),
-          createFromLane: vi.fn(async () => ({ id: "pr-1", githubPrNumber: 101 })),
-        } as any,
-      });
-
-      const run = dispatcher.createRun(issueFixture, buildMatch(policy));
-      await dispatcher.advanceRun(run.id, policy);
-      expect(missionCreate).toHaveBeenCalledTimes(1);
-      expect(dispatcher.listQueue()[0]?.missionId).toBe("mission-1");
-      db.close();
-    });
-
     it("holds review_gate targets in escalated status", async () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-review-"));
       const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
@@ -1335,8 +1286,6 @@ describe("linearDispatcherService (file group)", () => {
         } as any,
         workerAgentService: { listAgents: vi.fn(() => []) } as any,
         workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
-        missionService: { create: vi.fn(), get: vi.fn() } as any,
-        aiOrchestratorService: { startMissionRun: vi.fn() } as any,
         agentChatService: {
           ensureIdentitySession: vi.fn(async () => ({ id: "session-1" })),
           sendMessage: vi.fn(async () => {}),
@@ -1385,8 +1334,6 @@ describe("linearDispatcherService (file group)", () => {
           getAgent: vi.fn(() => null),
         } as any,
         workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
-        missionService: { create: vi.fn(), get: vi.fn() } as any,
-        aiOrchestratorService: { startMissionRun: vi.fn() } as any,
         agentChatService: {
           ensureIdentitySession: vi.fn(async () => ({ id: "session-1" })),
           sendMessage,
@@ -1436,8 +1383,6 @@ describe("linearDispatcherService (file group)", () => {
         } as any,
         workerAgentService: { listAgents: vi.fn(() => []) } as any,
         workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
-        missionService: { create: vi.fn(), get: vi.fn() } as any,
-        aiOrchestratorService: { startMissionRun: vi.fn() } as any,
         agentChatService: {
           ensureIdentitySession: vi.fn(async () => ({ id: "session-1" })),
           sendMessage: vi.fn(async () => {}),
@@ -1489,8 +1434,6 @@ describe("linearDispatcherService (file group)", () => {
         } as any,
         workerAgentService: { listAgents: vi.fn(() => []) } as any,
         workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
-        missionService: { create: vi.fn(), get: vi.fn() } as any,
-        aiOrchestratorService: { startMissionRun: vi.fn() } as any,
         agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
         laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
         templateService: { renderTemplate: vi.fn(() => ({ prompt: "Please own this issue." })) } as any,
@@ -1543,8 +1486,6 @@ describe("linearDispatcherService (file group)", () => {
         } as any,
         workerAgentService: { listAgents: vi.fn(() => []) } as any,
         workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
-        missionService: { create: vi.fn(), get: vi.fn() } as any,
-        aiOrchestratorService: { startMissionRun: vi.fn() } as any,
         agentChatService: {
           ensureIdentitySession,
           sendMessage: vi.fn(async () => ({ id: "message-1" })),
@@ -1598,8 +1539,6 @@ describe("linearDispatcherService (file group)", () => {
         } as any,
         workerAgentService: { listAgents: vi.fn(() => []) } as any,
         workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
-        missionService: { create: vi.fn(), get: vi.fn() } as any,
-        aiOrchestratorService: { startMissionRun: vi.fn() } as any,
         agentChatService: {
           ensureIdentitySession,
           sendMessage: vi.fn(async () => ({ id: "message-1" })),
@@ -1651,8 +1590,6 @@ describe("linearDispatcherService (file group)", () => {
         } as any,
         workerAgentService: { listAgents: vi.fn(() => []) } as any,
         workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
-        missionService: { create: vi.fn(), get: vi.fn() } as any,
-        aiOrchestratorService: { startMissionRun: vi.fn() } as any,
         agentChatService: {
           ensureIdentitySession,
           sendMessage: vi.fn(async () => ({ id: "message-1" })),
@@ -1725,8 +1662,6 @@ describe("linearDispatcherService (file group)", () => {
         } as any,
         workerAgentService: { listAgents: vi.fn(() => []) } as any,
         workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
-        missionService: { create: vi.fn(), get: vi.fn() } as any,
-        aiOrchestratorService: { startMissionRun: vi.fn() } as any,
         agentChatService: {
           ensureIdentitySession: vi.fn(async () => ({ id: "session-cto-1" })),
           sendMessage: vi.fn(async () => ({ id: "message-1" })),
@@ -1801,8 +1736,6 @@ describe("linearDispatcherService (file group)", () => {
         } as any,
         workerAgentService: { listAgents: vi.fn(() => []) } as any,
         workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
-        missionService: { create: vi.fn(), get: vi.fn() } as any,
-        aiOrchestratorService: { startMissionRun: vi.fn() } as any,
         agentChatService: {
           ensureIdentitySession,
           sendMessage: vi.fn(async () => ({ id: "message-1" })),
@@ -1870,8 +1803,6 @@ describe("linearDispatcherService (file group)", () => {
           triggerWakeup: vi.fn(async () => ({ runId: "worker-run-1" })),
           listRuns: vi.fn(() => [{ id: "worker-run-1", status: "completed" }]),
         } as any,
-        missionService: { create: vi.fn(), get: vi.fn() } as any,
-        aiOrchestratorService: { startMissionRun: vi.fn() } as any,
         agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
         laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
         templateService: { renderTemplate: vi.fn(() => ({ prompt: "Implement the issue." })) } as any,
@@ -1923,8 +1854,6 @@ describe("linearDispatcherService (file group)", () => {
         } as any,
         workerAgentService: { listAgents: vi.fn(() => []) } as any,
         workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
-        missionService: { create: vi.fn(), get: vi.fn() } as any,
-        aiOrchestratorService: { startMissionRun: vi.fn() } as any,
         agentChatService: {
           ensureIdentitySession,
           sendMessage: vi.fn(async () => ({ id: "message-1" })),
@@ -1985,8 +1914,6 @@ describe("linearDispatcherService (file group)", () => {
           triggerWakeup,
           listRuns: vi.fn(() => []),
         } as any,
-        missionService: { create: vi.fn(), get: vi.fn() } as any,
-        aiOrchestratorService: { startMissionRun: vi.fn() } as any,
         agentChatService: {
           ensureIdentitySession: vi.fn(async () => ({ id: "session-1" })),
           sendMessage: vi.fn(async () => ({ id: "message-1" })),
@@ -2036,8 +1963,6 @@ describe("linearDispatcherService (file group)", () => {
         } as any,
         workerAgentService: { listAgents: vi.fn(() => []) } as any,
         workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
-        missionService: { create: vi.fn(), get: vi.fn() } as any,
-        aiOrchestratorService: { startMissionRun: vi.fn() } as any,
         agentChatService: {
           ensureIdentitySession,
           sendMessage: vi.fn(async () => {
@@ -2097,8 +2022,6 @@ describe("linearDispatcherService (file group)", () => {
         } as any,
         workerAgentService: { listAgents: vi.fn(() => []) } as any,
         workerHeartbeatService: { triggerWakeup: vi.fn(), listRuns: vi.fn(() => []) } as any,
-        missionService: { create: vi.fn(), get: vi.fn() } as any,
-        aiOrchestratorService: { startMissionRun: vi.fn() } as any,
         agentChatService: {
           ensureIdentitySession: vi.fn(async () => ({ id: "session-cto-1" })),
           sendMessage: vi.fn(async () => ({ id: "message-1" })),
@@ -2176,8 +2099,6 @@ describe("linearDispatcherService (file group)", () => {
       const closeoutService = createLinearCloseoutService({
         issueTracker,
         outboundService,
-        missionService: { get: vi.fn(() => null) } as any,
-        orchestratorService: { getArtifactsForMission: vi.fn(() => []) } as any,
         prService,
         computerUseArtifactBrokerService: {
           listArtifacts: vi.fn(() => [{ uri: artifactPath }]),
@@ -2195,8 +2116,6 @@ describe("linearDispatcherService (file group)", () => {
           triggerWakeup: vi.fn(async () => ({ runId: "worker-run-1" })),
           listRuns: vi.fn(() => [{ id: "worker-run-1", status: "completed" }]),
         } as any,
-        missionService: { create: vi.fn(), get: vi.fn() } as any,
-        aiOrchestratorService: { startMissionRun: vi.fn() } as any,
         agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
         laneService: {
           ensurePrimaryLane: vi.fn(async () => {}),
@@ -2253,8 +2172,6 @@ describe("linearDispatcherService (file group)", () => {
           triggerWakeup: vi.fn(async () => ({ runId: "worker-run-1" })),
           listRuns: vi.fn(() => [{ id: "worker-run-1", status: "completed" }]),
         } as any,
-        missionService: { create: vi.fn(), get: vi.fn() } as any,
-        aiOrchestratorService: { startMissionRun: vi.fn() } as any,
         agentChatService: {
           ensureIdentitySession: vi.fn(async () => ({ id: "session-cto-2" })),
           sendMessage: vi.fn(async () => ({ id: "message-1" })),
@@ -2314,8 +2231,6 @@ describe("linearDispatcherService (file group)", () => {
           triggerWakeup: vi.fn(async () => ({ runId: "worker-run-1" })),
           listRuns,
         } as any,
-        missionService: { create: vi.fn(), get: vi.fn() } as any,
-        aiOrchestratorService: { startMissionRun: vi.fn() } as any,
         agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
         laneService: {
           ensurePrimaryLane: vi.fn(async () => {}),
@@ -2370,8 +2285,6 @@ describe("linearDispatcherService (file group)", () => {
           triggerWakeup: vi.fn(async () => ({ runId: "worker-run-1" })),
           listRuns: vi.fn(() => [{ id: "worker-run-1", status: "completed" }]),
         } as any,
-        missionService: { create: vi.fn(), get: vi.fn() } as any,
-        aiOrchestratorService: { startMissionRun: vi.fn() } as any,
         agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
         laneService: {
           ensurePrimaryLane: vi.fn(async () => {}),
@@ -2426,8 +2339,6 @@ describe("linearDispatcherService (file group)", () => {
           triggerWakeup: vi.fn(async () => ({ runId: "worker-run-1" })),
           listRuns: vi.fn(() => []),
         } as any,
-        missionService: { create: vi.fn(), get: vi.fn() } as any,
-        aiOrchestratorService: { startMissionRun: vi.fn() } as any,
         agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
         laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
         templateService: { renderTemplate: vi.fn(() => ({ prompt: "Open a PR." })) } as any,
@@ -2515,8 +2426,6 @@ describe("linearDispatcherService (file group)", () => {
           triggerWakeup: vi.fn(async () => ({ runId: "worker-run-1" })),
           listRuns: vi.fn(() => []),
         } as any,
-        missionService: { create: vi.fn(), get: vi.fn() } as any,
-        aiOrchestratorService: { startMissionRun: vi.fn() } as any,
         agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
         laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
         templateService: { renderTemplate: vi.fn(() => ({ prompt: "Open a review-ready PR." })) } as any,
@@ -2570,8 +2479,6 @@ describe("linearDispatcherService (file group)", () => {
           triggerWakeup,
           listRuns: vi.fn(() => [{ id: "worker-run-1", status: "completed" }]),
         } as any,
-        missionService: { create: vi.fn(), get: vi.fn() } as any,
-        aiOrchestratorService: { startMissionRun: vi.fn() } as any,
         agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
         laneService: { ensurePrimaryLane: vi.fn(async () => {}), list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]) } as any,
         templateService: { renderTemplate: vi.fn(() => ({ prompt: "Open a PR." })) } as any,
@@ -2655,27 +2562,40 @@ describe("linearOutboundService (file group)", () => {
         logger: createLogger(),
       });
 
-      await service.publishMissionStart({
+      await service.publishWorkflowStatus({
         issue: issueFixture,
-        missionId: "mission-1",
-        missionTitle: "Fix auth refresh",
-        templateId: "bug-fix",
-        routeReason: "Matched bug rule",
-        workerName: "Backend Dev",
+        workflowName: "Assigned worker run",
+        runId: "run-1",
+        targetType: "worker_run",
+        state: "waiting_for_target",
+        currentStep: "Launch worker run",
+        delegatedOwner: "Backend Dev",
+        workerRunId: "worker-run-1",
+        note: "Delegated the issue into a dedicated worker lane.",
       });
       expect(createComment).toHaveBeenCalledTimes(1);
 
-      await service.publishMissionProgress({
+      await service.publishWorkflowStatus({
         issue: issueFixture,
-        missionId: "mission-1",
-        status: "in_progress",
-        stepSummary: "1/3 steps completed.",
+        workflowName: "Assigned worker run",
+        runId: "run-1",
+        targetType: "worker_run",
+        state: "waiting_for_target",
+        currentStep: "Wait",
+        delegatedOwner: "Backend Dev",
+        workerRunId: "worker-run-1",
+        note: "1/3 steps completed.",
       });
-      await service.publishMissionProgress({
+      await service.publishWorkflowStatus({
         issue: issueFixture,
-        missionId: "mission-1",
-        status: "in_progress",
-        stepSummary: "1/3 steps completed.",
+        workflowName: "Assigned worker run",
+        runId: "run-1",
+        targetType: "worker_run",
+        state: "waiting_for_target",
+        currentStep: "Wait",
+        delegatedOwner: "Backend Dev",
+        workerRunId: "worker-run-1",
+        note: "1/3 steps completed.",
       });
 
       expect(updateComment).toHaveBeenCalledTimes(1);
@@ -2781,12 +2701,15 @@ describe("linearOutboundService (file group)", () => {
         logger: createLogger(),
       });
 
-      await service.publishMissionStart({
+      await service.publishWorkflowStatus({
         issue: issueFixture,
-        missionId: "mission-1",
-        missionTitle: "Auth mission",
-        templateId: "bug-fix",
-        routeReason: "Matched bug",
+        workflowName: "Assigned worker run",
+        runId: "run-1",
+        targetType: "worker_run",
+        state: "waiting_for_target",
+        currentStep: "Launch worker run",
+        workerRunId: "worker-run-1",
+        note: "Matched bug.",
       });
 
       await service.publishWorkflowCloseout({
@@ -2833,12 +2756,15 @@ describe("linearOutboundService (file group)", () => {
         logger: createLogger(),
       });
 
-      await service.publishMissionStart({
+      await service.publishWorkflowStatus({
         issue: issueFixture,
-        missionId: "mission-1",
-        missionTitle: "Auth mission",
-        templateId: "bug-fix",
-        routeReason: "Matched bug",
+        workflowName: "Assigned worker run",
+        runId: "run-1",
+        targetType: "worker_run",
+        state: "waiting_for_target",
+        currentStep: "Launch worker run",
+        workerRunId: "worker-run-1",
+        note: "Matched bug.",
       });
 
       await service.publishWorkflowCloseout({
@@ -2861,46 +2787,6 @@ describe("linearOutboundService (file group)", () => {
       const latest = updateBodies[updateBodies.length - 1] ?? "";
       expect(latest).toContain(`https://linear.example/${path.basename(insideArtifact)}`);
       expect(latest).not.toContain(`https://linear.example/${path.basename(outsideArtifact)}`);
-      db.close();
-    });
-
-    it("keeps the mission closeout wrapper body shape stable", async () => {
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-mission-closeout-"));
-      const db = await openKvDb(path.join(root, "ade.db"), createLogger());
-      const updateBodies: string[] = [];
-      const service = createLinearOutboundService({
-        db,
-        projectId: "project-1",
-        projectRoot: root,
-        issueTracker: {
-          createComment: vi.fn(async () => ({ commentId: "comment-1" })),
-          updateComment: vi.fn(async (_commentId: string, body: string) => {
-            updateBodies.push(body);
-          }),
-          uploadAttachment: vi.fn(),
-        } as any,
-        logger: createLogger(),
-      });
-
-      await service.publishMissionStart({
-        issue: issueFixture,
-        missionId: "mission-1",
-        missionTitle: "Auth mission",
-        templateId: "bug-fix",
-        routeReason: "Matched bug",
-      });
-
-      await service.publishMissionCloseout({
-        issue: issueFixture,
-        missionId: "mission-1",
-        status: "completed",
-        summary: "Shipped",
-        artifactMode: "links",
-      });
-
-      const latest = updateBodies[updateBodies.length - 1] ?? "";
-      expect(latest).toContain("- Mission: mission-1");
-      expect(latest).not.toContain("- Target:");
       db.close();
     });
 
@@ -3058,7 +2944,6 @@ describe("linearWorkflowFileService (file group)", () => {
       expect(loaded.intake.terminalStateTypes).toEqual(["completed", "canceled"]);
       expect(loaded.settings.ctoLinearAssigneeName).toBe("CTO");
       expect(loaded.workflows.map((workflow) => workflow.id)).toEqual([
-        "cto-mission-autopilot",
         "cto-direct-employee-session",
         "cto-worker-run-autopilot",
         "cto-pr-fast-lane",
@@ -3093,7 +2978,7 @@ describe("linearWorkflowFileService (file group)", () => {
 
       expect(saved.source).toBe("repo");
       expect(saved.files.some((file) => file.kind === "settings")).toBe(true);
-      expect(saved.files.filter((file) => file.kind === "workflow")).toHaveLength(5);
+      expect(saved.files.filter((file) => file.kind === "workflow")).toHaveLength(4);
       expect(fs.existsSync(path.join(root, ".ade", "workflows", "linear", "_settings.yaml"))).toBe(true);
     });
 
@@ -3140,8 +3025,7 @@ describe("linearWorkflowFileService (file group)", () => {
       expect(loaded.intake.projectSlugs).toEqual(["acme-platform"]);
       expect(loaded.intake.activeStateTypes).toEqual(["backlog", "unstarted", "started"]);
       expect(loaded.intake.terminalStateTypes).toEqual(["completed", "canceled"]);
-      expect(migrated?.target.type).toBe("mission");
-      expect(migrated?.target.missionTemplate).toBe("fast-track");
+      expect(migrated?.target.type).toBe("worker_run");
       expect(migrated?.target.workerSelector).toEqual({ mode: "slug", value: "backend-hotfix" });
       expect(migrated?.triggers.labels).toEqual(["bug"]);
       expect(migrated?.triggers.projectSlugs).toEqual(["acme-platform"]);

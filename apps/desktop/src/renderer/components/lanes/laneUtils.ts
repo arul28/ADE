@@ -74,14 +74,6 @@ export function mergeUnique(...lists: string[][]): string[] {
 
 /* ---- Filter helpers ---- */
 
-export function isMissionResultLane(lane: Pick<LaneSummary, "missionId" | "laneRole">): boolean {
-  return Boolean(lane.missionId) && lane.laneRole === "result";
-}
-
-export function isMissionLaneHiddenByDefault(lane: Pick<LaneSummary, "missionId" | "laneRole">): boolean {
-  return Boolean(lane.missionId) && !isMissionResultLane(lane);
-}
-
 export function matchesLaneFilterToken(lane: LaneSummary, isPinned: boolean, token: string): boolean {
   const normalized = token.trim().toLowerCase();
   if (!normalized.length) return true;
@@ -93,15 +85,13 @@ export function matchesLaneFilterToken(lane: LaneSummary, isPinned: boolean, tok
     if (value === "primary") return lane.laneType === "primary";
     if (value === "worktree") return lane.laneType === "worktree";
     if (value === "attached") return lane.laneType === "attached";
-    if (value === "mission") return Boolean(lane.missionId);
-    if (value === "mission-result") return isMissionResultLane(lane);
     return false;
   }
   if (normalized.startsWith("type:")) return lane.laneType === normalized.slice(5);
 
   const indexedText = [
     lane.name, lane.branchRef, lane.laneType, lane.description ?? "",
-    lane.worktreePath, lane.folder ?? "", lane.tags.join(" "), lane.laneRole ?? "",
+    lane.worktreePath, lane.folder ?? "", lane.tags.join(" "),
     lane.status.dirty ? "dirty modified changed" : "clean",
     lane.status.ahead > 0 ? `ahead ahead:${lane.status.ahead}` : "ahead:0",
     lane.status.behind > 0 ? `behind behind:${lane.status.behind}` : "behind:0",
@@ -112,8 +102,6 @@ export function matchesLaneFilterToken(lane: LaneSummary, isPinned: boolean, tok
 
 export function laneMatchesFilter(lane: LaneSummary, isPinned: boolean, query: string): boolean {
   const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const includesMissionLanes = tokens.includes("is:mission") || tokens.includes("is:mission-result");
-  if (isMissionLaneHiddenByDefault(lane) && !includesMissionLanes) return false;
   if (tokens.length === 0) return true;
   return tokens.every((token) => matchesLaneFilterToken(lane, isPinned, token));
 }

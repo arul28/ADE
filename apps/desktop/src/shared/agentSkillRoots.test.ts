@@ -20,10 +20,12 @@ describe("agent skill roots", () => {
       resourcesPath: "/Applications/ADE.app/Contents/Resources",
     });
 
-    expect(roots[0]).toBe("/repo/.ade/worktrees/chat-lane/.claude/skills");
+    expect(roots[0]).toBe("/repo/.ade/worktrees/chat-lane/.cursor/skills");
+    expect(roots).toContain("/repo/.ade/worktrees/chat-lane/.claude/skills");
     expect(roots).toContain("/repo/.ade/worktrees/chat-lane/.agents/skills");
     expect(roots).toContain("/repo/.ade/worktrees/chat-lane/.ade/skills");
     expect(roots).toContain("/repo/.ade/worktrees/chat-lane/.codex/skills");
+    expect(roots).toContain("/home/agent/.cursor/skills");
     expect(roots).toContain("/home/agent/.claude/skills");
     expect(roots).toContain("/home/agent/.agents/skills");
     expect(roots).toContain("/home/agent/.ade/skills");

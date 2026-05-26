@@ -2,8 +2,8 @@
 
 ADE's Linear integration attaches a Linear workspace to the CTO autonomous
 orchestration layer. It ingests issues from Linear, matches each issue against
-user-defined workflow definitions, dispatches the matched work as an ADE
-mission, employee chat session, worker run, or PR resolution, and closes the
+user-defined workflow definitions, dispatches the matched work as an
+employee chat session, worker run, or PR resolution, and closes the
 issue back out (state transition, comment, artifact links) when the run
 terminates.
 
@@ -41,12 +41,7 @@ The integration is used by four distinct consumers:
    default supervisor for review gates (`reviewerIdentityKey: "cto"`). Linear
    runs show up in the CTO's history and feed the `awaiting_human_review`
    and `awaiting_delegation` queues that operators resolve from the CTO tab.
-2. **Missions.** When a Linear workflow's target type is `mission`, the
-   dispatcher launches a mission through `missionService` /
-   `aiOrchestratorService`, links the mission back to the
-   `LinearWorkflowRun` row, and waits for mission completion before moving
-   on to PR gates or closeout.
-3. **Lanes, commits, PRs, and chat.** A user can attach a Linear issue
+2. **Lanes, commits, PRs, and chat.** A user can attach a Linear issue
    to a brand-new lane from `CreateLaneDialog` (the Linear issue picker
    in the always-open Advanced section), or to chat context from the
    composer's Linear attach affordance. Once a lane is connected to an
@@ -58,13 +53,13 @@ The integration is used by four distinct consumers:
    the chat composer uses, lets the operator filter / search across
    their Linear backlog, and turns any selected issue into a new
    lane in one click.
-4. **The headless ADE CLI.** `apps/ade-cli/src/headlessLinearServices.ts`
+3. **The headless ADE CLI.** `apps/ade-cli/src/headlessLinearServices.ts`
    instantiates the full Linear service stack (sync, dispatcher, closeout,
    intake, ingress, routing, outbound, templates) so external callers can
    trigger and resolve Linear runs without the desktop UI running. The
    ADE CLI exposes these over JSON-RPC tools such as `listLinearWorkflows`,
    `resolveLinearRunAction`, `routeLinearIssueToCto`,
-   `routeLinearIssueToMission`, and `resolveLinearSyncQueueItem`.
+   `routeLinearIssueToWorker`, and `resolveLinearSyncQueueItem`.
 
 ## Top-level shape
 
@@ -93,8 +88,7 @@ Linear (webhook / polled issues)
         |                          |         |
         v                          |         |
 +-----------------------+ launches |         |
-| missionService /      |----------+         |
-| agentChatService /    |                    |
+| agentChatService /    |----------+         |
 | workerAgentService /  |                    |
 | prService             |                    |
 +-----------------------+                    |
@@ -131,7 +125,7 @@ A `LinearWorkflowDefinition` has six main parts:
    Empty groups are ignored.
 2. **Routing** — `metadataTags` applied to the run and `watchOnly: true`
    which records a match but launches no work.
-3. **Target** — what to create. `type` is one of `mission`,
+3. **Target** — what to create. `type` is one of
    `employee_session`, `worker_run`, `pr_resolution`, `review_gate`. Other
    target fields set executor kind (`cto`/`employee`/`worker`), run mode
    (`autopilot`/`assisted`/`manual`), lane selection
@@ -178,7 +172,7 @@ Core Linear services on desktop
 - `linearOAuthService.ts` — OAuth authorization flow
 - `linearClient.ts` — GraphQL client wrapper
 - `linearIssueTracker.ts` — normalization into `NormalizedLinearIssue`
-- `linearTemplateService.ts` — mission/session template resolution
+- `linearTemplateService.ts` — session template resolution
 - `linearWorkflowFileService.ts` — YAML workflow files under
   `.ade/workflows/linear/**`. Every `save(config)` call invokes
   `ensureSharedAdeProjectScaffold(projectRoot)` first so a project that
@@ -340,7 +334,7 @@ Headless ADE CLI mode:
   fail fast when agent execution is requested.
 - `apps/ade-cli/src/adeRpcServer.ts` registers the Linear JSON-RPC tools
   at `listLinearWorkflows`, `getLinearRunStatus`, `resolveLinearRunAction`,
-  `cancelLinearRun`, `routeLinearIssueToCto`, `routeLinearIssueToMission`,
+  `cancelLinearRun`, `routeLinearIssueToCto`,
   `routeLinearIssueToWorker`, `rerouteLinearRun`,
   `getLinearSyncDashboard`, `runLinearSyncNow`, `listLinearSyncQueue`,
   `resolveLinearSyncQueueItem`, `getLinearWorkflowRunDetail`.
@@ -354,8 +348,8 @@ Deeper reading:
 
 ## Lane attachment, commit references, and PR magic words
 
-The Linear pipeline above is fully autonomous: it runs missions /
-chats / workers without the human ever opening a lane manually. Most
+The Linear pipeline above is fully autonomous: it runs chats /
+workers without the human ever opening a lane manually. Most
 day-to-day developer work, though, starts the other way around — the
 human picks a Linear ticket and creates a lane to work on it. ADE
 exposes that path in three places that all share the same primitives:
@@ -513,7 +507,7 @@ once configured, but:
   `status: "failed"` with the message *"Headless ADE CLI mode does not
   support worker-backed Linear targets yet."* Workflows targeting
   `worker_run` are not a supported headless path; use
-  `employee_session`, `mission`, or `pr_resolution` instead.
+  `employee_session` or `pr_resolution` instead.
 - **OAuth client config is per-app, not per-project.** Token storage is
   `storageScope: "app"` in `LinearConnectionStatus`. Switching projects
   does not change which Linear workspace is attached unless the token is

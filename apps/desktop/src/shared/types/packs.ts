@@ -7,7 +7,7 @@ import type { LaneType, LaneStatus } from "./lanes";
 import type { ConflictStatusValue, ConflictRiskLevel } from "./conflicts";
 import type { GitConflictState } from "./git";
 
-export type PackType = "project" | "lane" | "feature" | "conflict" | "plan" | "mission";
+export type PackType = "project" | "lane" | "feature" | "conflict" | "plan";
 
 export type ContextExportLevel = "lite" | "standard" | "deep";
 
@@ -248,15 +248,6 @@ export type GetProjectExportArgs = { level: ContextExportLevel };
 export type GetConflictExportArgs = { laneId: string; peerLaneId?: string | null; level: ContextExportLevel };
 export type GetFeatureExportArgs = { featureKey: string; level: ContextExportLevel };
 export type GetPlanExportArgs = { laneId: string; level: ContextExportLevel };
-export type GetMissionExportArgs = { missionId: string; level: ContextExportLevel };
-
-export type GetMissionPackArgs = { missionId: string };
-
-export type RefreshMissionPackArgs = {
-  missionId: string;
-  reason: string;
-  runId?: string | null;
-};
 
 export type OrchestratorContextPolicyProfile = {
   id: string;

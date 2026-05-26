@@ -447,8 +447,6 @@ function makeLane(overrides: Partial<LaneSummary> & Pick<LaneSummary, "id" | "na
     icon: null,
     tags: [],
     folder: null,
-    missionId: null,
-    laneRole: null,
     createdAt: TEST_NOW,
     archivedAt: null,
     ...overrides,
@@ -568,7 +566,6 @@ describe("runtime lane snapshot actions", () => {
     const stateSnapshot = {
       laneId: lane.id,
       agentSummary: { activeAgent: "codex" },
-      missionSummary: { missionId: "mission-1" },
       updatedAt: TEST_NOW,
     };
     const sessions = [
@@ -796,12 +793,6 @@ describe("runtime AI actions", () => {
       enabled: true,
       dailyUsage: 2,
       dailyLimit: 5,
-    });
-    expect(status.features).toContainEqual({
-      feature: "mission_planning",
-      enabled: false,
-      dailyUsage: 0,
-      dailyLimit: null,
     });
   });
 

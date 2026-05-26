@@ -879,7 +879,6 @@ export type QueueAutomationConfig = {
   pipeline: PipelineSettings;
   /** Origin surface (telemetry/attribution) for the auto-resolver agent. */
   originSurface: ConflictResolverOriginSurface;
-  originMissionId: string | null;
   originRunId: string | null;
   originLabel: string | null;
   /** @deprecated Mirrors `pipeline.conflictStrategy === "auto"`. */
@@ -903,7 +902,6 @@ export type StartQueueAutomationArgs = {
   ciGating?: boolean;
   pipeline?: PipelineSettings;
   originSurface?: ConflictResolverOriginSurface;
-  originMissionId?: string | null;
   originRunId?: string | null;
   originLabel?: string | null;
   /** @deprecated Use `pipeline.conflictStrategy = "auto"` instead. */
@@ -927,7 +925,6 @@ export type ResumeQueueAutomationArgs = {
   ciGating?: boolean;
   pipeline?: PipelineSettings;
   originSurface?: ConflictResolverOriginSurface;
-  originMissionId?: string | null;
   originRunId?: string | null;
   originLabel?: string | null;
   /** @deprecated Use `pipeline.conflictStrategy = "auto"` instead. */

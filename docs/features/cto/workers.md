@@ -1,6 +1,6 @@
 # Workers (Team)
 
-Workers are named agent identities that ADE can wake for delegated work. The CTO owns the team; workers execute inside lanes with their own budgets and heartbeats. Workers are distinct from mission-run workers (which are transient and role-based) — a Team worker is a stable, configurable identity.
+Workers are named agent identities that ADE can wake for delegated work. The CTO owns the team; workers execute inside lanes with their own budgets and heartbeats.
 
 ## Source file map
 
@@ -10,7 +10,7 @@ Workers are named agent identities that ADE can wake for delegated work. The CTO
 - `workerBudgetService.ts` — budget caps and spend tracking per worker and for the CTO org overall. `recordCostEvent`, budget snapshots, monthly rollups.
 - `workerHeartbeatService.ts` — heartbeat policy (interval, pause threshold), liveness reporting, activity feed updates.
 - `workerRevisionService.ts` — config revision history; every identity change lands as a new `AgentConfigRevision`.
-- `workerTaskSessionService.ts` — short-lived task session records that tie a worker to a lane/issue/run.
+- `workerTaskSessionService.ts` — short-lived task session records that tie a worker to a lane or issue.
 - `workerAdapterRuntimeService.ts` — adapter lifecycle management for the three worker adapter types: `claude-local`, `codex-local`, and `process`.
 
 ### Renderer (apps/desktop/src/renderer/components/cto/)
@@ -116,7 +116,7 @@ Worker sessions undergo the same post-compaction identity re-injection as CTO se
 
 ## Runs
 
-`WorkerAgentRun` records a delegated run with `laneId`, `issueKey`, `sessionId`, `status`, timestamps, and cost totals. `workerTaskSessionService` ties runs to their triggering lane/issue/mission. Runs surface in:
+`WorkerAgentRun` records a delegated run with `laneId`, `issueKey`, `sessionId`, `status`, timestamps, and cost totals. `workerTaskSessionService` ties runs to their triggering lane or issue. Runs surface in:
 
 - the Team panel's Recent Runs list,
 - the sidebar budget footer (monthly totals),
@@ -146,4 +146,3 @@ This prevents accidental commit of API keys into worker config revisions.
 - `../agents/identity-and-personas.md` — worker identity, reconstruction, and persona rules.
 - `linear-integration.md` — worker runs launched via `worker_run` target type.
 - `onboarding.md` — first-run flow that gates before the team is set up.
-- `../missions/workers.md` — mission-run workers (transient role-based runtime) are a different concept.

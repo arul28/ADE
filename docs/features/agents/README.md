@@ -16,13 +16,13 @@ those surfaces.
 | `apps/desktop/src/main/services/cto/workerBudgetService.ts` | Monthly budget tracking. |
 | `apps/desktop/src/main/services/cto/flowPolicyService.ts` | Worker flow policies. |
 | `apps/desktop/src/main/services/cto/workerAdapterRuntimeService.ts` | Adapter lifecycle for supported worker adapter types. |
-| `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO-only tools for chat spawning, mission control, worker management, and Linear dispatch. |
+| `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO-only tools for chat spawning, worker management, and Linear dispatch. |
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | Detects external CLI tools on PATH. |
-| `apps/ade-cli/src/cli.ts` | Agent-focused `ade` command surface and text/JSON output formatters. Includes the `ade ios-sim` (alias `ade ios`, `ade simulator`) family — see [iOS Simulator feature](../ios-simulator/README.md), the `ade --socket app-control ...` driver for live Electron apps, and the `ade --socket browser ...` driver for the in-app browser (`browser panel`, `browser open <url> [--no-panel]`, `browser new-tab --background`, `browser switch`, `browser close`, plus selection / inspect commands). `ade chat create --provider codex --model <id> --fast` opts a new Codex session into the fast service tier; `ade shell start --lane <id> --chat-session <chatId>` (or `ADE_CHAT_SESSION_ID` from the env) attaches a tracked shell to an existing chat so `ade --socket terminal read --chat-session "$ADE_CHAT_SESSION_ID" --text` resolves to it. |
+| `apps/ade-cli/src/cli.ts` | Agent-focused `ade` command surface and text/JSON output formatters. Includes the `ade ios-sim` (alias `ade ios`, `ade simulator`) family — see [iOS Simulator feature](../ios-simulator/README.md), the `ade --socket app-control ...` driver for live Electron apps, and the `ade --socket browser ...` driver for the in-app browser (`browser panel`, `browser open <url> [--no-panel]`, `browser new-tab --background`, `browser switch`, `browser close`, plus selection / inspect commands). `ade chat create --provider codex --model <id> --fast` opts a new Codex session into the fast service tier; `ade shell start --lane <id> --chat-session <chatId>` (or `ADE_CHAT_SESSION_ID` from the env) attaches a tracked shell to an existing chat so `ade --socket terminal read --chat-session "$ADE_CHAT_SESSION_ID" --text` resolves to it. `ade lanes link-linear-issue <laneId> --linear-issue-json '{...}'` (aliases `link-linear`, `linear-link`) links one or more Linear issues to an existing lane with optional `--role`, `--source`, `--include-in-pr`/`--no-include-in-pr`, and `--close-on-merge` flags. |
 | `apps/ade-cli/src/adeRpcServer.ts` | Private ADE action RPC: registers actions, handles JSON-RPC, applies session-identity-based filtering, builds lane-scoped ADE guidance / `ADE_AGENT_SKILLS_DIRS` for worker CLI launches, and returns GitHub + ADE PR URLs from PR creation tools when available. |
 | `apps/desktop/src/main/services/cli/adeCliService.ts` | Desktop-side install / status / uninstall surface for the `ade` launcher. Owns the install-target path resolution and the optional shell-rc PATH append. |
 | `apps/desktop/src/shared/adeCliGuidance.ts` | Canonical agent-prompt guidance builder for finding and using `ade`, reading Agent Skills on demand, naming the bundled ADE skills, using socket-backed live surfaces, registering proof, and cleaning up started processes. Injected into Work chats, CLI launches, ADE Code/TUI sessions, CTO/mission workers, and mobile-started runtime work. |
-| `apps/desktop/src/shared/agentSkillRoots.ts` | Resolves and formats Agent Skill roots injected into prompts and CLI environments: lane/current-working-directory ancestors, user homes, inherited `ADE_AGENT_SKILLS_DIRS`, packaged ADE resources, and source fallbacks across `.claude`, `.agents`, `.ade`, and `.codex` skill directories. |
+| `apps/desktop/src/shared/agentSkillRoots.ts` | Resolves and formats Agent Skill roots injected into prompts and CLI environments: lane/current-working-directory ancestors, user homes, inherited `ADE_AGENT_SKILLS_DIRS`, packaged ADE resources, and source fallbacks across `.cursor`, `.claude`, `.agents`, `.ade`, and `.codex` skill directories. |
 | `apps/desktop/src/shared/ctoPersonalityPresets.ts` | CTO personality overlays. |
 | `apps/desktop/src/shared/types/agents.ts` | Worker identity, role, adapter, and runtime types. |
 | `apps/desktop/src/shared/types/cto.ts` | CTO identity, capability mode, personality, onboarding, and prompt-preview types. |
@@ -125,17 +125,16 @@ is exactly `"claude-local" | "codex-local" | "process"`.
 
 ## Tool access tiers
 
-| Tier | CTO | Worker | Regular chat | Coordinator |
-|---|:-:|:-:|:-:|:-:|
-| Universal (read, write, bash, web, todo) | yes | yes | yes | yes |
-| Workflow (createLane, createPR, captureScreenshot, reportCompletion, PR issue resolution) | yes | no | yes | no |
-| CTO operator (spawnChat, missions, worker management, Linear) | yes | no | no | no |
-| Coordinator (spawn_worker, skip_step, complete_mission, etc.) | no | no | no | yes |
-| Linear tools | yes (when connected) | no | no | no |
+| Tier | CTO | Worker | Regular chat |
+|---|:-:|:-:|:-:|
+| Universal (read, write, bash, web, todo) | yes | yes | yes |
+| Workflow (createLane, createPR, captureScreenshot, reportCompletion, PR issue resolution) | yes | no | yes |
+| CTO operator (spawnChat, worker management, Linear) | yes | no | no |
+| Linear tools | yes (when connected) | no | no |
 
 Standalone chat sessions connected through ADE CLI with no
-mission/run/step/attempt context have coordinator tools hidden from tool
-listing and execution at the ADE CLI server boundary.
+worker context have elevated tools hidden from tool listing and
+execution at the ADE CLI server boundary.
 
 ## Prompt composition
 
@@ -154,8 +153,8 @@ identity/context prefixes:
 
 `workerHeartbeatService.ts` schedules worker activations. The runtime
 resolves the worker identity, adapter config, and current lane/project
-context, then dispatches through the orchestrator or spawns a chat
-session via the CTO's `spawnChat` tool.
+context, then spawns a chat session via the CTO's `spawnChat` tool or
+the worker adapter runtime.
 
 ## Session logs
 

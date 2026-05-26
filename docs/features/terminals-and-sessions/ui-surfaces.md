@@ -576,6 +576,13 @@ A single hook that owns a lot of state:
 - persistence to `localStorage` under `ade.workViewState.v1`, written on
   every mutation
 - `refresh({ showLoading, force })` — forces a cache bust and reloads
+- project-switch hydration guards: cached destination rows can render
+  immediately, but they are not treated as authoritative until the
+  active project's refresh applies. While that guard is set,
+  `useWorkSessions` does not mirror the current `sessions` array back
+  into `sessionsCacheByProject` and does not prune persisted open tabs,
+  because React can briefly render the previous project's session list
+  after `projectRoot` changes.
 
 `useWorkSessions({ active })` accepts an optional `active` flag (default
 `true`). When `active` is false, the hook stops scheduling background
@@ -656,9 +663,11 @@ nothing when no delta is available.
 - The session list cache is per `projectRoot + laneId + statusFilter`.
   Events that should update all views (e.g. a new chat session) should
   call `invalidateSessionListCache()` before the first `refresh()`.
-- Refresh ordering — `openSessionTab` must run *after* `refresh` resolves,
-  otherwise `sessionsById.get(activeItemId)` returns undefined on first
-  paint and the view silently falls back to the most recent session.
+- Refresh ordering for launches — use the synchronous `ptyCreate` /
+  chat-create result to `openSessionTab` before the background forced
+  refresh, then merge any stale persisted row with the optimistic row.
+  Do not prune open tabs until an authoritative refresh for the current
+  project has applied.
 - The Work tab and the Lanes tab share the hook; changes to
   `useWorkSessions` ripple. Keep lane-scoped persistence keyed by
   `projectRoot::laneId` or the Lanes tab state leaks across projects.

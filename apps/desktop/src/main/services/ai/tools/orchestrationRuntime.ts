@@ -15,7 +15,7 @@ import type {
   OrchestrationPingKind,
 } from "../../../../shared/types/orchestration";
 import type { WorkerSandboxConfig } from "../../../../shared/types";
-import { DEFAULT_WORKER_SANDBOX_CONFIG } from "../../orchestrator/orchestratorConstants";
+import { DEFAULT_WORKER_SANDBOX_CONFIG } from "./workerSandboxDefaults";
 import type { createOrchestrationService } from "../../orchestration/orchestrationService";
 import type { OrchestrationAgentChatHandle, OrchestrationSessionContext } from "./orchestrationTools";
 

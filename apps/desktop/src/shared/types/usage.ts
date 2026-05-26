@@ -33,13 +33,6 @@ export type UsageActiveSession = {
   elapsedMs: number;
 };
 
-export type UsageMissionBreakdown = {
-  missionId: string;
-  missionTitle: string;
-  totalTokens: number;
-  costEstimateUsd: number;
-};
-
 export type AggregatedUsageStats = {
   summary: {
     totalSessions: number;
@@ -52,13 +45,11 @@ export type AggregatedUsageStats = {
   byModel: UsageModelBreakdown[];
   recentSessions: UsageRecentSession[];
   activeSessions: UsageActiveSession[];
-  missionBreakdown: UsageMissionBreakdown[];
 };
 
 export type GetAggregatedUsageArgs = {
   since?: string | null;
   limit?: number;
-  missionId?: string | null;
 };
 
 // ---------------------------------------------------------------------------

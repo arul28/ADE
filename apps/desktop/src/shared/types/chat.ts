@@ -6,20 +6,107 @@ import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
 import type { LaneLinearIssue } from "./lanes";
-import type { DelegationContract } from "./orchestrator";
 
 export type AgentChatProvider = "codex" | "claude" | "cursor" | "droid" | "opencode" | (string & {});
 
 export type AgentChatSessionStatus = "active" | "idle" | "ended";
 export type AgentChatSessionProfile = "light" | "workflow";
 
-export type ChatSurfaceMode = "standard" | "resolver" | "mission-thread" | "mission-feed";
+export type DelegationMode = "exclusive" | "bounded_parallel" | "recovery";
+
+export type DelegationIntent =
+  | "planner"
+  | "implementation"
+  | "validation"
+  | "specialist"
+  | "subagent"
+  | "parallel_subtasks"
+  | "recovery";
+
+export type DelegationScope = {
+  kind: "phase" | "step" | "worker" | "batch";
+  key: string;
+  label?: string | null;
+};
+
+export type DelegationContractStatus =
+  | "launching"
+  | "active"
+  | "completed"
+  | "failed"
+  | "launch_failed"
+  | "recovering"
+  | "blocked"
+  | "canceled";
+
+export type DelegationLaunchState =
+  | "awaiting_context"
+  | "fetching_context"
+  | "awaiting_worker_launch"
+  | "launching_worker"
+  | "waiting_on_worker"
+  | "recovering"
+  | "completed"
+  | "blocked";
+
+export type CoordinatorCapability =
+  | "observe"
+  | "fetch_project_context"
+  | "spawn_top_level_worker"
+  | "spawn_nested_worker"
+  | "spawn_parallel_workers"
+  | "read_repo"
+  | "message_workers"
+  | "ask_user"
+  | "run_control"
+  | "update_state";
+
+export type DelegationFailureCategory =
+  | "run_context_bug"
+  | "provider_unreachable"
+  | "permission_denied"
+  | "tool_schema_error"
+  | "native_tool_violation"
+  | "unknown";
+
+export type DelegationContract = {
+  schemaVersion: 1;
+  contractId: string;
+  runId: string;
+  ownerKind: "coordinator";
+  workerIntent: DelegationIntent;
+  mode: DelegationMode;
+  scope: DelegationScope;
+  phaseKey: string | null;
+  status: DelegationContractStatus;
+  launchState: DelegationLaunchState | null;
+  activeWorkerIds: string[];
+  coordinatorCapabilities: CoordinatorCapability[];
+  launchPolicy: {
+    maxLaunchAttempts: number;
+  };
+  failurePolicy: {
+    retryLimit: number;
+    escalation: "intervention" | "retry" | "stop";
+  };
+  batchId?: string | null;
+  parentContractId?: string | null;
+  failure?: {
+    category: DelegationFailureCategory;
+    message: string;
+    retryAfterMs?: number | null;
+  } | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ChatSurfaceMode = "standard" | "resolver";
 export type ChatSurfaceProfile = "standard" | "persistent_identity";
 export type ChatModelSwitchPolicy = "same-family-after-launch" | "any-after-launch";
 
 export type ChatSurfaceChipTone = "accent" | "success" | "warning" | "danger" | "info" | "muted";
 
-export type OperatorNavigationSurface = "work" | "missions" | "lanes" | "cto";
+export type OperatorNavigationSurface = "work" | "lanes" | "cto";
 
 export type OperatorNavigationSuggestion = {
   surface: OperatorNavigationSurface;
@@ -27,7 +114,6 @@ export type OperatorNavigationSuggestion = {
   href: string;
   laneId?: string | null;
   sessionId?: string | null;
-  missionId?: string | null;
 };
 
 export type ChatSurfaceChip = {
@@ -46,7 +132,6 @@ export type ChatSurfacePresentation = {
   messagePlaceholder?: string | null;
   chips?: ChatSurfaceChip[];
   showMcpStatus?: boolean;
-  rewriteMissionControlTextTools?: boolean;
 };
 
 export type AgentChatApprovalDecision = "accept" | "accept_for_session" | "decline" | "cancel";
@@ -697,7 +782,7 @@ export type OrchestrationSessionFields = {
   orchestrationBundlePath?: string;
 };
 export type AgentChatIdentityKey = "cto" | `agent:${string}`;
-export type AgentChatSurface = "work" | "automation" | "mission";
+export type AgentChatSurface = "work" | "automation";
 export type AgentChatCursorConfigValue = string | boolean | number;
 export type AgentChatCursorConfigSelectOption = {
   value: string;
@@ -724,14 +809,8 @@ export type AgentChatCursorModeSnapshot = {
   availableModelIds?: string[];
   configOptions?: AgentChatCursorConfigOption[];
 };
-export type PendingInputSource = "claude" | "codex" | "cursor" | "droid" | "opencode" | "mission" | "ade";
-export type PendingInputKind =
-  | "approval"
-  | "question"
-  | "structured_question"
-  | "permissions"
-  | "plan_approval"
-  | "model_selection";
+export type PendingInputSource = "claude" | "codex" | "cursor" | "droid" | "opencode" | "ade";
+export type PendingInputKind = "approval" | "question" | "structured_question" | "permissions" | "plan_approval" | "model_selection";
 
 export type PendingInputOption = {
   label: string;

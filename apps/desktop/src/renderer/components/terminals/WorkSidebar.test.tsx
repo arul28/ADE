@@ -147,7 +147,6 @@ const lane: LaneSummary = {
   color: null,
   icon: null,
   tags: [],
-  missionId: null,
 };
 
 const laneTwo: LaneSummary = {

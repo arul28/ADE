@@ -88,7 +88,7 @@ description: "Optional project description shown in ADE's title bar"
 ai:
   defaultModel: "claude-opus-4-7"       # or "claude-sonnet-4-6", "gpt-4o", etc.
   defaultBudgetPerSession: 1.00         # USD cap per chat session
-  defaultBudgetPerMission: 5.00         # USD cap per mission run
+  defaultBudgetPerWorkerRun: 5.00      # USD cap per delegated worker run
   defaultBudgetPerAutomation: 0.50      # USD cap per automation execution
   monthlyBudgetCap: 100.00              # Hard monthly cap across all agents
 
@@ -145,13 +145,13 @@ trust:
 
 <AccordionGroup>
   <Accordion title="ai — AI defaults" icon="robot">
-    All `ai.*` values are defaults. They can be overridden per-mission, per-worker, or per-automation at creation time. The `monthlyBudgetCap` is a hard ceiling — once reached, all agent activity pauses until the next billing period or you manually raise the cap in Settings → Budget.
+    All `ai.*` values are defaults. They can be overridden per-worker run, per-worker, or per-automation at creation time. The `monthlyBudgetCap` is a hard ceiling — once reached, all agent activity pauses until the next billing period or you manually raise the cap in Settings → Budget.
   </Accordion>
   <Accordion title="processes — Dev server definitions" icon="server">
     Process definitions describe how to start development servers. ADE uses these to populate the lane startup commands and to generate the process panel in the Lanes view. The `group` field organizes processes visually in the UI.
   </Accordion>
   <Accordion title="testSuites — Test runner config" icon="vial">
-    ADE uses the `run` command in agent contexts when a worker needs to execute tests. The `watch` command is used in lane terminal sessions for continuous testing. The `ci` command is used during Mission validation phases and automation triggers.
+    ADE uses the `run` command in agent contexts when a worker needs to execute tests. The `watch` command is used in lane terminal sessions for continuous testing. The `ci` command is used during Worker run validation phases and automation triggers.
   </Accordion>
   <Accordion title="lanes.profiles — Lane environment templates" icon="code-branch">
     Lane profiles are templates applied when creating new lanes. A profile sets the base port offset, environment variables, and startup commands. When you create a lane and select a profile, all profile values are applied as the lane's initial configuration.
@@ -187,7 +187,7 @@ terminal:
   fontSize: 13
 
 notifications:
-  missionComplete: true
+  workerRunComplete: true
   conflictDetected: true
   budgetWarning: true
   prStatusChange: false

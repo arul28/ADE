@@ -340,7 +340,7 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
     name: init.agentName ?? undefined,
     local: {
       cwd: init.laneRoot,
-      settingSources: ["project", "user"],
+      settingSources: ["all"],
       sandboxOptions: { enabled: false },
     },
     platform: {

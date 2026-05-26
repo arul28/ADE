@@ -268,7 +268,7 @@ function retrofitLegacyPrimaryKeyNotNullSchema(db: DatabaseSyncType): boolean {
 /**
  * Desired foreign key constraints with ON DELETE actions.
  *
- * Keyed by `"table:column"`.  `references` is the target (e.g. `"missions(id)"`),
+ * Keyed by `"table:column"`.  `references` is the target (e.g. `"pull_requests(id)"`),
  * `action` is the ON DELETE clause (e.g. `"on delete cascade"`).
  *
  * When a database was created before these clauses were added to the CREATE
@@ -277,31 +277,6 @@ function retrofitLegacyPrimaryKeyNotNullSchema(db: DatabaseSyncType): boolean {
  * referential actions.
  */
 const FK_CONSTRAINTS: Record<string, { references: string; action: string }> = {
-  // lanes
-  "lanes:mission_id": { references: "missions(id)", action: "on delete set null" },
-  // missions
-  "missions:mission_lane_id": { references: "lanes(id)", action: "on delete set null" },
-  "missions:result_lane_id": { references: "lanes(id)", action: "on delete set null" },
-  // mission child tables
-  "mission_steps:mission_id": { references: "missions(id)", action: "on delete cascade" },
-  "mission_events:mission_id": { references: "missions(id)", action: "on delete cascade" },
-  "mission_artifacts:mission_id": { references: "missions(id)", action: "on delete cascade" },
-  "mission_interventions:mission_id": { references: "missions(id)", action: "on delete cascade" },
-  "mission_phase_overrides:mission_id": { references: "missions(id)", action: "on delete cascade" },
-  "mission_step_handoffs:mission_id": { references: "missions(id)", action: "on delete cascade" },
-  "mission_metrics_config:mission_id": { references: "missions(id)", action: "on delete cascade" },
-  // orchestrator tables
-  "orchestrator_runs:mission_id": { references: "missions(id)", action: "on delete cascade" },
-  "orchestrator_chat_threads:mission_id": { references: "missions(id)", action: "on delete cascade" },
-  "orchestrator_chat_messages:mission_id": { references: "missions(id)", action: "on delete cascade" },
-  "orchestrator_worker_digests:mission_id": { references: "missions(id)", action: "on delete cascade" },
-  "orchestrator_artifacts:mission_id": { references: "missions(id)", action: "on delete cascade" },
-  "orchestrator_context_checkpoints:mission_id": { references: "missions(id)", action: "on delete cascade" },
-  "orchestrator_worker_checkpoints:mission_id": { references: "missions(id)", action: "on delete cascade" },
-  "orchestrator_lane_decisions:mission_id": { references: "missions(id)", action: "on delete cascade" },
-  "orchestrator_ai_decisions:mission_id": { references: "missions(id)", action: "on delete cascade" },
-  "orchestrator_metrics_samples:mission_id": { references: "missions(id)", action: "on delete cascade" },
-  "orchestrator_team_members:mission_id": { references: "missions(id)", action: "on delete cascade" },
   // PR convergence loop tables
   "pr_issue_inventory:pr_id": { references: "pull_requests(id)", action: "on delete cascade" },
   "pr_pipeline_settings:pr_id": { references: "pull_requests(id)", action: "on delete cascade" },
@@ -368,7 +343,7 @@ function retrofitForeignKeyCascadeActions(db: DatabaseSyncType, crsqliteEnabled:
 
       for (const { column, references, action } of desired) {
         // Match a foreign key constraint line for this column, e.g.:
-        //   foreign key(mission_id) references missions(id)
+        //   foreign key(pr_id) references pull_requests(id)
         // Optionally already carrying an ON DELETE clause.
         const fkPattern = new RegExp(
           `(foreign\\s+key\\s*\\(\\s*${escapeRegExp(column)}\\s*\\)\\s+references\\s+\\w+\\s*\\([^)]+\\))` +
@@ -995,25 +970,18 @@ function migrate(db: MigrationDb) {
       icon text,
       tags_json text,
       folder text,
-      mission_id text,
-      lane_role text,
       runtime_placement text not null default 'local',
       status text not null,
       created_at text not null,
       archived_at text,
       foreign key(project_id) references projects(id),
-      foreign key(parent_lane_id) references lanes(id),
-      foreign key(mission_id) references missions(id) on delete set null
+      foreign key(parent_lane_id) references lanes(id)
     )
   `);
-  try { db.run("alter table lanes add column mission_id text"); } catch {}
-  try { db.run("alter table lanes add column lane_role text"); } catch {}
   try { db.run("alter table lanes add column runtime_placement text not null default 'local'"); } catch {}
   db.run("create index if not exists idx_lanes_project_id on lanes(project_id)");
   db.run("create index if not exists idx_lanes_project_type on lanes(project_id, lane_type)");
   db.run("create index if not exists idx_lanes_project_parent on lanes(project_id, parent_lane_id)");
-  db.run("create index if not exists idx_lanes_project_mission on lanes(project_id, mission_id)");
-  db.run("create index if not exists idx_lanes_project_role on lanes(project_id, lane_role)");
 
   db.run(`
     create table if not exists lane_linear_issues (
@@ -1186,7 +1154,6 @@ function migrate(db: MigrationDb) {
       remote_behind integer not null default -1,
       rebase_in_progress integer not null default 0,
       agent_summary_json text,
-      mission_summary_json text,
       updated_at text not null,
       foreign key(lane_id) references lanes(id)
     )
@@ -1902,89 +1869,6 @@ function migrate(db: MigrationDb) {
   `);
   db.run("create index if not exists idx_rebase_deferred_project on rebase_deferred(project_id)");
 
-  // Phase 1 missions model foundation.
-  db.run(`
-    create table if not exists missions (
-      id text primary key,
-      project_id text not null,
-      lane_id text,
-      mission_lane_id text,
-      result_lane_id text,
-      title text not null,
-      prompt text not null,
-      status text not null,
-      priority text not null default 'normal',
-      execution_mode text not null default 'local',
-      target_machine_id text,
-      queue_claim_token text,
-      queue_claimed_at text,
-      outcome_summary text,
-      last_error text,
-      metadata_json text,
-      created_at text not null,
-      updated_at text not null,
-      started_at text,
-      completed_at text,
-      archived_at text,
-      foreign key(project_id) references projects(id),
-      foreign key(lane_id) references lanes(id),
-      foreign key(mission_lane_id) references lanes(id) on delete set null,
-      foreign key(result_lane_id) references lanes(id) on delete set null
-    )
-  `);
-  try { db.run("alter table missions add column mission_lane_id text"); } catch {}
-  try { db.run("alter table missions add column result_lane_id text"); } catch {}
-  try { db.run("alter table missions add column queue_claim_token text"); } catch {}
-  try { db.run("alter table missions add column queue_claimed_at text"); } catch {}
-  try { db.run("alter table missions add column archived_at text"); } catch {}
-  db.run("create index if not exists idx_missions_project_updated on missions(project_id, updated_at)");
-  db.run("create index if not exists idx_missions_project_status on missions(project_id, status)");
-  db.run("create index if not exists idx_missions_project_lane on missions(project_id, lane_id)");
-  db.run("create index if not exists idx_missions_project_mission_lane on missions(project_id, mission_lane_id)");
-  db.run("create index if not exists idx_missions_project_result_lane on missions(project_id, result_lane_id)");
-  db.run("drop index if exists idx_missions_queue_claim_token");
-  db.run("create index if not exists idx_missions_project_queue_claim on missions(project_id, queue_claim_token)");
-
-  db.run(`
-    create table if not exists mission_steps (
-      id text primary key,
-      mission_id text not null,
-      project_id text not null,
-      step_index integer not null,
-      title text not null,
-      detail text,
-      kind text not null default 'manual',
-      lane_id text,
-      status text not null,
-      metadata_json text,
-      created_at text not null,
-      updated_at text not null,
-      started_at text,
-      completed_at text,
-      foreign key(mission_id) references missions(id) on delete cascade,
-      foreign key(project_id) references projects(id),
-      foreign key(lane_id) references lanes(id)
-    )
-  `);
-  db.run("create index if not exists idx_mission_steps_mission_index on mission_steps(mission_id, step_index)");
-  db.run("create index if not exists idx_mission_steps_project_status on mission_steps(project_id, status)");
-
-  db.run(`
-    create table if not exists mission_events (
-      id text primary key,
-      mission_id text not null,
-      project_id text not null,
-      event_type text not null,
-      actor text not null,
-      summary text not null,
-      payload_json text,
-      created_at text not null,
-      foreign key(mission_id) references missions(id) on delete cascade,
-      foreign key(project_id) references projects(id)
-    )
-  `);
-  db.run("create index if not exists idx_mission_events_mission_created on mission_events(mission_id, created_at)");
-  db.run("create index if not exists idx_mission_events_project_created on mission_events(project_id, created_at)");
 
   db.run(`
     create table if not exists computer_use_artifacts (
@@ -2025,615 +1909,6 @@ function migrate(db: MigrationDb) {
   db.run("create index if not exists idx_computer_use_artifact_links_owner on computer_use_artifact_links(project_id, owner_kind, owner_id, created_at)");
   db.run("create index if not exists idx_computer_use_artifact_links_artifact on computer_use_artifact_links(artifact_id)");
 
-  db.run(`
-    create table if not exists mission_artifacts (
-      id text primary key,
-      mission_id text not null,
-      project_id text not null,
-      artifact_type text not null,
-      title text not null,
-      description text,
-      uri text,
-      lane_id text,
-      metadata_json text,
-      created_at text not null,
-      updated_at text not null,
-      created_by text not null,
-      foreign key(mission_id) references missions(id) on delete cascade,
-      foreign key(project_id) references projects(id),
-      foreign key(lane_id) references lanes(id)
-    )
-  `);
-  db.run("create index if not exists idx_mission_artifacts_mission_created on mission_artifacts(mission_id, created_at)");
-
-  db.run(`
-    create table if not exists mission_interventions (
-      id text primary key,
-      mission_id text not null,
-      project_id text not null,
-      intervention_type text not null,
-      status text not null,
-      resolution_kind text,
-      title text not null,
-      body text not null,
-      requested_action text,
-      resolution_note text,
-      lane_id text,
-      metadata_json text,
-      created_at text not null,
-      updated_at text not null,
-      resolved_at text,
-      foreign key(mission_id) references missions(id) on delete cascade,
-      foreign key(project_id) references projects(id),
-      foreign key(lane_id) references lanes(id)
-    )
-  `);
-  try { db.run("alter table mission_interventions add column resolution_kind text"); } catch {}
-  db.run("create index if not exists idx_mission_interventions_mission_status on mission_interventions(mission_id, status)");
-  db.run("create index if not exists idx_mission_interventions_project_status on mission_interventions(project_id, status)");
-
-  // Phase 3: mission phases engine + profile storage.
-  db.run(`
-    create table if not exists phase_cards (
-      id text primary key,
-      project_id text not null,
-      phase_key text not null,
-      name text not null,
-      description text not null,
-      instructions text not null,
-      model_json text not null,
-      budget_json text,
-      ordering_constraints_json text,
-      ask_questions_json text,
-      validation_gate_json text,
-      is_built_in integer not null default 0,
-      is_custom integer not null default 0,
-      position integer not null default 0,
-      archived_at text,
-      created_at text not null,
-      updated_at text not null,
-      foreign key(project_id) references projects(id)
-    )
-  `);
-  db.run("create index if not exists idx_phase_cards_project_position on phase_cards(project_id, position)");
-
-  db.run(`
-    create table if not exists phase_profiles (
-      id text primary key,
-      project_id text not null,
-      name text not null,
-      description text not null,
-      phases_json text not null,
-      is_built_in integer not null default 0,
-      is_default integer not null default 0,
-      archived_at text,
-      created_at text not null,
-      updated_at text not null,
-      foreign key(project_id) references projects(id)
-    )
-  `);
-  db.run("create index if not exists idx_phase_profiles_project_updated on phase_profiles(project_id, updated_at)");
-  db.run("create index if not exists idx_phase_profiles_project_default on phase_profiles(project_id, is_default)");
-
-  db.run(`
-    create table if not exists mission_phase_overrides (
-      id text primary key,
-      mission_id text not null,
-      project_id text not null,
-      profile_id text,
-      phases_json text not null,
-      created_at text not null,
-      updated_at text not null,
-      foreign key(mission_id) references missions(id) on delete cascade,
-      foreign key(project_id) references projects(id),
-      foreign key(profile_id) references phase_profiles(id)
-    )
-  `);
-  db.run("create index if not exists idx_mission_phase_overrides_project_mission on mission_phase_overrides(project_id, mission_id)");
-  db.run("create index if not exists idx_mission_phase_overrides_profile on mission_phase_overrides(profile_id)");
-
-  // Phase 1.5 orchestrator/context hardening gate.
-  db.run(`
-    create table if not exists orchestrator_runs (
-      id text primary key,
-      project_id text not null,
-      mission_id text not null,
-      status text not null,
-      context_profile text not null default 'orchestrator_deterministic_v1',
-      scheduler_state text not null,
-      runtime_cursor_json text,
-      last_error text,
-      metadata_json text,
-      created_at text not null,
-      updated_at text not null,
-      started_at text,
-      completed_at text,
-      foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id) on delete cascade
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_runs_project_status on orchestrator_runs(project_id, status)");
-  db.run("create index if not exists idx_orchestrator_runs_mission on orchestrator_runs(mission_id)");
-  db.run("create index if not exists idx_orchestrator_runs_project_updated on orchestrator_runs(project_id, updated_at)");
-
-  db.run(`
-    create table if not exists orchestrator_steps (
-      id text primary key,
-      run_id text not null,
-      project_id text not null,
-      mission_step_id text,
-      step_key text not null,
-      step_index integer not null,
-      title text not null,
-      lane_id text,
-      status text not null,
-      join_policy text not null default 'all_success',
-      quorum_count integer,
-      dependency_step_ids_json text not null default '[]',
-      retry_limit integer not null default 0,
-      retry_count integer not null default 0,
-      last_attempt_id text,
-      policy_json text,
-      metadata_json text,
-      created_at text not null,
-      updated_at text not null,
-      started_at text,
-      completed_at text,
-      foreign key(run_id) references orchestrator_runs(id),
-      foreign key(project_id) references projects(id),
-      foreign key(mission_step_id) references mission_steps(id),
-      foreign key(lane_id) references lanes(id)
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_steps_run_status on orchestrator_steps(run_id, status)");
-  db.run("create index if not exists idx_orchestrator_steps_project_status on orchestrator_steps(project_id, status)");
-  db.run("create index if not exists idx_orchestrator_steps_run_order on orchestrator_steps(run_id, step_index)");
-
-  db.run(`
-    create table if not exists orchestrator_attempts (
-      id text primary key,
-      run_id text not null,
-      step_id text not null,
-      project_id text not null,
-      attempt_number integer not null,
-      status text not null,
-      executor_kind text not null,
-      executor_session_id text,
-      tracked_session_enforced integer not null default 1,
-      context_profile text not null default 'orchestrator_deterministic_v1',
-      context_snapshot_id text,
-      error_class text not null default 'none',
-      error_message text,
-      retry_backoff_ms integer not null default 0,
-      result_envelope_json text,
-      metadata_json text,
-      created_at text not null,
-      started_at text,
-      completed_at text,
-      foreign key(run_id) references orchestrator_runs(id),
-      foreign key(step_id) references orchestrator_steps(id),
-      foreign key(project_id) references projects(id),
-      foreign key(context_snapshot_id) references orchestrator_context_snapshots(id)
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_attempts_run_status on orchestrator_attempts(run_id, status)");
-  db.run("create index if not exists idx_orchestrator_attempts_step_status on orchestrator_attempts(step_id, status)");
-  db.run("create index if not exists idx_orchestrator_attempts_project_created on orchestrator_attempts(project_id, created_at)");
-
-  db.run(`
-    create table if not exists orchestrator_attempt_runtime (
-      attempt_id text primary key,
-      session_id text,
-      runtime_state text,
-      last_signal_at text,
-      last_output_preview text,
-      last_preview_digest text,
-      digest_since_ms integer not null default 0,
-      repeat_count integer not null default 0,
-      last_waiting_intervention_at_ms integer not null default 0,
-      last_event_heartbeat_at_ms integer not null default 0,
-      last_waiting_notified_at_ms integer not null default 0,
-      updated_at text not null,
-      foreign key(attempt_id) references orchestrator_attempts(id)
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_attempt_runtime_session on orchestrator_attempt_runtime(session_id)");
-  db.run("create index if not exists idx_orchestrator_attempt_runtime_updated on orchestrator_attempt_runtime(updated_at)");
-
-  db.run(`
-    create table if not exists orchestrator_runtime_events (
-      id text primary key,
-      project_id text not null,
-      run_id text not null,
-      step_id text,
-      attempt_id text,
-      session_id text,
-      event_type text not null,
-      event_key text not null,
-      occurred_at text not null,
-      payload_json text,
-      created_at text not null,
-      foreign key(project_id) references projects(id),
-      foreign key(run_id) references orchestrator_runs(id),
-      foreign key(step_id) references orchestrator_steps(id),
-      foreign key(attempt_id) references orchestrator_attempts(id)
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_runtime_events_run_occurred on orchestrator_runtime_events(run_id, occurred_at)");
-  db.run("create index if not exists idx_orchestrator_runtime_events_attempt_occurred on orchestrator_runtime_events(attempt_id, occurred_at)");
-  db.run("create index if not exists idx_orchestrator_runtime_events_session_occurred on orchestrator_runtime_events(session_id, occurred_at)");
-  db.run("create index if not exists idx_orchestrator_runtime_events_project_key on orchestrator_runtime_events(project_id, event_key)");
-
-  db.run(`
-    create table if not exists orchestrator_claims (
-      id text primary key,
-      project_id text not null,
-      run_id text not null,
-      step_id text,
-      attempt_id text,
-      owner_id text not null,
-      scope_kind text not null,
-      scope_value text not null,
-      state text not null,
-      acquired_at text not null,
-      heartbeat_at text not null,
-      expires_at text not null,
-      released_at text,
-      policy_json text,
-      metadata_json text,
-      foreign key(project_id) references projects(id),
-      foreign key(run_id) references orchestrator_runs(id),
-      foreign key(step_id) references orchestrator_steps(id),
-      foreign key(attempt_id) references orchestrator_attempts(id)
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_claims_run_state on orchestrator_claims(run_id, state)");
-  db.run("create index if not exists idx_orchestrator_claims_scope_state on orchestrator_claims(project_id, scope_kind, scope_value, state)");
-  db.run("create index if not exists idx_orchestrator_claims_expires on orchestrator_claims(state, expires_at)");
-  db.run(
-    "create index if not exists idx_orchestrator_claims_active_scope on orchestrator_claims(project_id, scope_kind, scope_value) where state = 'active'"
-  );
-
-  db.run(`
-    create table if not exists orchestrator_context_snapshots (
-      id text primary key,
-      project_id text not null,
-      run_id text not null,
-      step_id text,
-      attempt_id text,
-      snapshot_type text not null,
-      context_profile text not null default 'orchestrator_deterministic_v1',
-      cursor_json text not null,
-      created_at text not null,
-      foreign key(project_id) references projects(id),
-      foreign key(run_id) references orchestrator_runs(id),
-      foreign key(step_id) references orchestrator_steps(id),
-      foreign key(attempt_id) references orchestrator_attempts(id)
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_context_snapshots_run_created on orchestrator_context_snapshots(run_id, created_at)");
-  db.run("create index if not exists idx_orchestrator_context_snapshots_attempt on orchestrator_context_snapshots(attempt_id)");
-
-  db.run(`
-    create table if not exists mission_step_handoffs (
-      id text primary key,
-      project_id text not null,
-      mission_id text not null,
-      mission_step_id text,
-      run_id text,
-      step_id text,
-      attempt_id text,
-      handoff_type text not null,
-      producer text not null,
-      payload_json text not null,
-      created_at text not null,
-      foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id) on delete cascade,
-      foreign key(mission_step_id) references mission_steps(id),
-      foreign key(run_id) references orchestrator_runs(id),
-      foreign key(step_id) references orchestrator_steps(id),
-      foreign key(attempt_id) references orchestrator_attempts(id)
-    )
-  `);
-  db.run("create index if not exists idx_mission_step_handoffs_mission_created on mission_step_handoffs(mission_id, created_at)");
-  db.run("create index if not exists idx_mission_step_handoffs_step_created on mission_step_handoffs(mission_step_id, created_at)");
-  db.run("create index if not exists idx_mission_step_handoffs_attempt on mission_step_handoffs(attempt_id)");
-
-  // Phase 2 orchestrator runtime v2: durable timeline + quality gate snapshots.
-  db.run(`
-    create table if not exists orchestrator_timeline_events (
-      id text primary key,
-      project_id text not null,
-      run_id text not null,
-      step_id text,
-      attempt_id text,
-      claim_id text,
-      event_type text not null,
-      reason text not null,
-      detail_json text,
-      created_at text not null,
-      foreign key(project_id) references projects(id),
-      foreign key(run_id) references orchestrator_runs(id),
-      foreign key(step_id) references orchestrator_steps(id),
-      foreign key(attempt_id) references orchestrator_attempts(id),
-      foreign key(claim_id) references orchestrator_claims(id)
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_timeline_run_created on orchestrator_timeline_events(run_id, created_at)");
-  db.run("create index if not exists idx_orchestrator_timeline_attempt on orchestrator_timeline_events(attempt_id)");
-  db.run("create index if not exists idx_orchestrator_timeline_project_created on orchestrator_timeline_events(project_id, created_at)");
-
-  db.run(`
-    create table if not exists orchestrator_gate_reports (
-      id text primary key,
-      project_id text not null,
-      generated_at text not null,
-      report_json text not null,
-      foreign key(project_id) references projects(id)
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_gate_reports_project_generated on orchestrator_gate_reports(project_id, generated_at)");
-
-  // Big-bang orchestrator overhaul: threaded chat, digest/checkpoint, lane decisions, and mission metrics.
-  db.run(`
-    create table if not exists orchestrator_chat_threads (
-      id text primary key,
-      project_id text not null,
-      mission_id text not null,
-      thread_type text not null,
-      title text not null,
-      run_id text,
-      step_id text,
-      step_key text,
-      attempt_id text,
-      session_id text,
-      lane_id text,
-      status text not null default 'active',
-      unread_count integer not null default 0,
-      metadata_json text,
-      created_at text not null,
-      updated_at text not null,
-      foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id) on delete cascade,
-      foreign key(run_id) references orchestrator_runs(id),
-      foreign key(step_id) references orchestrator_steps(id),
-      foreign key(attempt_id) references orchestrator_attempts(id),
-      foreign key(lane_id) references lanes(id)
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_chat_threads_mission_updated on orchestrator_chat_threads(mission_id, updated_at)");
-  db.run("create index if not exists idx_orchestrator_chat_threads_project_mission on orchestrator_chat_threads(project_id, mission_id)");
-  db.run("create index if not exists idx_orchestrator_chat_threads_mission_type on orchestrator_chat_threads(mission_id, thread_type)");
-  db.run("create index if not exists idx_orchestrator_chat_threads_lane on orchestrator_chat_threads(lane_id)");
-
-  db.run(`
-    create table if not exists orchestrator_chat_messages (
-      id text primary key,
-      project_id text not null,
-      mission_id text not null,
-      thread_id text not null,
-      role text not null,
-      content text not null,
-      timestamp text not null,
-      step_key text,
-      target_json text,
-      visibility text not null default 'full',
-      delivery_state text not null default 'delivered',
-      source_session_id text,
-      attempt_id text,
-      lane_id text,
-      run_id text,
-      metadata_json text,
-      created_at text not null,
-      foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id) on delete cascade,
-      foreign key(thread_id) references orchestrator_chat_threads(id),
-      foreign key(attempt_id) references orchestrator_attempts(id),
-      foreign key(lane_id) references lanes(id),
-      foreign key(run_id) references orchestrator_runs(id)
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_chat_messages_thread_ts on orchestrator_chat_messages(thread_id, timestamp)");
-  db.run("create index if not exists idx_orchestrator_chat_messages_mission_ts on orchestrator_chat_messages(mission_id, timestamp)");
-  db.run("create index if not exists idx_orchestrator_chat_messages_attempt_ts on orchestrator_chat_messages(attempt_id, timestamp)");
-  db.run("create index if not exists idx_orchestrator_chat_messages_lane_ts on orchestrator_chat_messages(lane_id, timestamp)");
-  db.run("create index if not exists idx_orchestrator_chat_messages_delivery_queue on orchestrator_chat_messages(delivery_state, role, mission_id, thread_id, timestamp)");
-
-  db.run(`
-    create table if not exists orchestrator_worker_digests (
-      id text primary key,
-      project_id text not null,
-      mission_id text not null,
-      run_id text not null,
-      step_id text not null,
-      step_key text,
-      attempt_id text not null,
-      lane_id text,
-      session_id text,
-      status text not null,
-      summary text not null,
-      files_changed_json text not null,
-      tests_run_json text not null,
-      warnings_json text not null,
-      tokens_json text,
-      cost_usd real,
-      suggested_next_actions_json text not null,
-      created_at text not null,
-      foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id) on delete cascade,
-      foreign key(run_id) references orchestrator_runs(id),
-      foreign key(step_id) references orchestrator_steps(id),
-      foreign key(attempt_id) references orchestrator_attempts(id),
-      foreign key(lane_id) references lanes(id)
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_worker_digests_mission_created on orchestrator_worker_digests(mission_id, created_at)");
-  db.run("create index if not exists idx_orchestrator_worker_digests_run_created on orchestrator_worker_digests(run_id, created_at)");
-  db.run("create index if not exists idx_orchestrator_worker_digests_attempt on orchestrator_worker_digests(attempt_id)");
-  db.run("create index if not exists idx_orchestrator_worker_digests_lane_created on orchestrator_worker_digests(lane_id, created_at)");
-
-  db.run(`
-    create table if not exists orchestrator_artifacts (
-      id text primary key,
-      project_id text not null,
-      mission_id text not null,
-      run_id text not null,
-      step_id text not null,
-      attempt_id text not null,
-      artifact_key text not null,
-      kind text not null,
-      value text not null,
-      metadata_json text not null default '{}',
-      declared integer not null default 0,
-      created_at text not null,
-      foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id) on delete cascade,
-      foreign key(run_id) references orchestrator_runs(id),
-      foreign key(step_id) references orchestrator_steps(id),
-      foreign key(attempt_id) references orchestrator_attempts(id)
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_artifacts_mission_created on orchestrator_artifacts(mission_id, created_at)");
-  db.run("create index if not exists idx_orchestrator_artifacts_step on orchestrator_artifacts(step_id)");
-  db.run("create index if not exists idx_orchestrator_artifacts_mission_key on orchestrator_artifacts(mission_id, artifact_key)");
-
-  db.run(`
-    create table if not exists orchestrator_context_checkpoints (
-      id text primary key,
-      project_id text not null,
-      mission_id text not null,
-      run_id text,
-      trigger text not null,
-      summary text not null,
-      source_json text not null,
-      created_at text not null,
-      foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id) on delete cascade,
-      foreign key(run_id) references orchestrator_runs(id)
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_context_checkpoints_mission_created on orchestrator_context_checkpoints(mission_id, created_at)");
-  db.run("create index if not exists idx_orchestrator_context_checkpoints_run_created on orchestrator_context_checkpoints(run_id, created_at)");
-
-  db.run(`
-    create table if not exists orchestrator_worker_checkpoints (
-      id text primary key,
-      project_id text not null,
-      mission_id text not null,
-      run_id text not null,
-      step_id text not null,
-      attempt_id text not null,
-      step_key text not null,
-      content text not null,
-      file_path text not null,
-      created_at text not null,
-      updated_at text not null,
-      foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id) on delete cascade,
-      foreign key(run_id) references orchestrator_runs(id),
-      foreign key(step_id) references orchestrator_steps(id),
-      foreign key(attempt_id) references orchestrator_attempts(id)
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_worker_checkpoints_mission_step_key on orchestrator_worker_checkpoints(mission_id, step_key)");
-  db.run("create index if not exists idx_orchestrator_worker_checkpoints_run on orchestrator_worker_checkpoints(run_id)");
-  db.run("create index if not exists idx_orchestrator_worker_checkpoints_mission on orchestrator_worker_checkpoints(mission_id, updated_at)");
-
-  db.run(`
-    create table if not exists orchestrator_lane_decisions (
-      id text primary key,
-      project_id text not null,
-      mission_id text not null,
-      run_id text,
-      step_id text,
-      step_key text,
-      lane_id text,
-      decision_type text not null,
-      validator_outcome text not null,
-      rule_hits_json text not null,
-      rationale text not null,
-      metadata_json text,
-      created_at text not null,
-      foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id) on delete cascade,
-      foreign key(run_id) references orchestrator_runs(id),
-      foreign key(step_id) references orchestrator_steps(id),
-      foreign key(lane_id) references lanes(id)
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_lane_decisions_mission_created on orchestrator_lane_decisions(mission_id, created_at)");
-  db.run("create index if not exists idx_orchestrator_lane_decisions_run_created on orchestrator_lane_decisions(run_id, created_at)");
-  db.run("create index if not exists idx_orchestrator_lane_decisions_step_created on orchestrator_lane_decisions(step_id, created_at)");
-  db.run("create index if not exists idx_orchestrator_lane_decisions_lane_created on orchestrator_lane_decisions(lane_id, created_at)");
-
-  db.run(`
-    create table if not exists orchestrator_ai_decisions (
-      id text primary key,
-      project_id text not null,
-      mission_id text not null,
-      run_id text,
-      step_id text,
-      attempt_id text,
-      call_type text not null,
-      provider text,
-      model text,
-      timeout_cap_ms integer,
-      decision_json text not null,
-      action_trace_json text,
-      validation_json text,
-      rationale text,
-      fallback_used integer not null default 0,
-      failure_reason text,
-      duration_ms integer,
-      prompt_tokens integer,
-      completion_tokens integer,
-      created_at text not null,
-      foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id) on delete cascade,
-      foreign key(run_id) references orchestrator_runs(id),
-      foreign key(step_id) references orchestrator_steps(id),
-      foreign key(attempt_id) references orchestrator_attempts(id)
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_ai_decisions_mission_created on orchestrator_ai_decisions(mission_id, created_at)");
-  db.run("create index if not exists idx_orchestrator_ai_decisions_run_created on orchestrator_ai_decisions(run_id, created_at)");
-  db.run("create index if not exists idx_orchestrator_ai_decisions_step_created on orchestrator_ai_decisions(step_id, created_at)");
-  db.run("create index if not exists idx_orchestrator_ai_decisions_project_category_created on orchestrator_ai_decisions(project_id, call_type, created_at)");
-  db.run("create index if not exists idx_orchestrator_ai_decisions_created on orchestrator_ai_decisions(created_at)");
-
-  db.run(`
-    create table if not exists mission_metrics_config (
-      mission_id text primary key,
-      project_id text not null,
-      toggles_json text not null,
-      updated_at text not null,
-      foreign key(mission_id) references missions(id) on delete cascade,
-      foreign key(project_id) references projects(id)
-    )
-  `);
-  db.run("create index if not exists idx_mission_metrics_config_project_updated on mission_metrics_config(project_id, updated_at)");
-
-  db.run(`
-    create table if not exists orchestrator_metrics_samples (
-      id text primary key,
-      project_id text not null,
-      mission_id text not null,
-      run_id text,
-      attempt_id text,
-      metric text not null,
-      value real not null,
-      unit text,
-      metadata_json text,
-      created_at text not null,
-      foreign key(project_id) references projects(id),
-      foreign key(mission_id) references missions(id) on delete cascade,
-      foreign key(run_id) references orchestrator_runs(id),
-      foreign key(attempt_id) references orchestrator_attempts(id)
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_metrics_samples_mission_created on orchestrator_metrics_samples(mission_id, created_at)");
-  db.run("create index if not exists idx_orchestrator_metrics_samples_run_created on orchestrator_metrics_samples(run_id, created_at)");
-  db.run("create index if not exists idx_orchestrator_metrics_samples_metric_created on orchestrator_metrics_samples(metric, created_at)");
 
   // CTO persistent identity/core-continuity/session-log state.
   db.run(`
@@ -2680,138 +1955,6 @@ function migrate(db: MigrationDb) {
     )
   `);
   db.run("create index if not exists idx_agent_identities_project on agent_identities(project_id)");
-
-  // Team runtime: persistent team member registry for agent-team orchestration.
-  db.run(`
-    create table if not exists orchestrator_team_members (
-      id text primary key,
-      run_id text not null,
-      mission_id text not null,
-      provider text not null,
-      model text not null,
-      role text not null default 'teammate',
-      session_id text,
-      status text not null default 'spawning',
-      claimed_task_ids_json text not null default '[]',
-      metadata_json text,
-      created_at text not null,
-      updated_at text not null,
-      foreign key(run_id) references orchestrator_runs(id),
-      foreign key(mission_id) references missions(id) on delete cascade
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_team_members_run on orchestrator_team_members(run_id)");
-  db.run("create index if not exists idx_orchestrator_team_members_mission on orchestrator_team_members(mission_id)");
-  db.run("create index if not exists idx_orchestrator_team_members_status on orchestrator_team_members(run_id, status)");
-
-
-  // Reflection protocol tables (Phase 7): structured reflection ledger + run retrospectives.
-  db.run(`
-    create table if not exists orchestrator_reflections (
-      id text primary key,
-      project_id text not null,
-      mission_id text not null,
-      run_id text not null,
-      step_id text,
-      attempt_id text,
-      agent_role text not null,
-      phase text not null,
-      signal_type text not null,
-      observation text not null,
-      recommendation text not null,
-      context text not null,
-      occurred_at text not null,
-      created_at text not null,
-      schema_version integer not null default 1,
-      foreign key(run_id) references orchestrator_runs(id)
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_reflections_run_occurred on orchestrator_reflections(run_id, occurred_at)");
-  db.run("create index if not exists idx_orchestrator_reflections_mission on orchestrator_reflections(mission_id, occurred_at)");
-
-  db.run(`
-    create table if not exists orchestrator_retrospectives (
-      id text primary key,
-      project_id text not null,
-      mission_id text not null,
-      run_id text not null,
-      generated_at text not null,
-      final_status text not null,
-      payload_json text not null,
-      schema_version integer not null default 1,
-      created_at text not null,
-      foreign key(run_id) references orchestrator_runs(id)
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_retrospectives_mission_generated on orchestrator_retrospectives(mission_id, generated_at)");
-
-  db.run(`
-    create table if not exists orchestrator_retrospective_trends (
-      id text primary key,
-      project_id text not null,
-      mission_id text not null,
-      run_id text not null,
-      retrospective_id text not null,
-      source_mission_id text not null,
-      source_run_id text not null,
-      source_retrospective_id text not null,
-      pain_point_key text not null,
-      pain_point_label text not null,
-      status text not null,
-      previous_pain_score integer not null default 0,
-      current_pain_score integer not null default 0,
-      created_at text not null
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_retrospective_trends_mission_created on orchestrator_retrospective_trends(mission_id, created_at)");
-  db.run("create index if not exists idx_orchestrator_retrospective_trends_run_created on orchestrator_retrospective_trends(run_id, created_at)");
-
-  db.run(`
-    create table if not exists orchestrator_reflection_pattern_stats (
-      id text primary key,
-      project_id text not null,
-      pattern_key text not null,
-      pattern_label text not null,
-      occurrence_count integer not null default 0,
-      first_seen_retrospective_id text not null,
-      first_seen_run_id text not null,
-      last_seen_retrospective_id text not null,
-      last_seen_run_id text not null,
-      created_at text not null,
-      updated_at text not null
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_reflection_pattern_stats_count on orchestrator_reflection_pattern_stats(project_id, occurrence_count desc, updated_at desc)");
-
-  db.run(`
-    create table if not exists orchestrator_reflection_pattern_sources (
-      id text primary key,
-      project_id text not null,
-      pattern_stat_id text not null,
-      retrospective_id text not null,
-      mission_id text not null,
-      run_id text not null,
-      created_at text not null,
-      foreign key(pattern_stat_id) references orchestrator_reflection_pattern_stats(id)
-    )
-  `);
-  db.run("create index if not exists idx_orchestrator_reflection_pattern_sources_pattern on orchestrator_reflection_pattern_sources(pattern_stat_id, created_at)");
-  db.run("create index if not exists idx_orchestrator_reflection_pattern_sources_mission on orchestrator_reflection_pattern_sources(mission_id, created_at)");
-  // Team runtime: durable run-level state for team lifecycle (phase, completion gating).
-  db.run(`
-    create table if not exists orchestrator_run_state (
-      run_id text primary key,
-      phase text not null default 'bootstrapping',
-      completion_requested integer not null default 0,
-      completion_validated integer not null default 0,
-      last_validation_error text,
-      coordinator_session_id text,
-      teammate_ids_json text not null default '[]',
-      created_at text not null,
-      updated_at text not null,
-      foreign key(run_id) references orchestrator_runs(id)
-    )
-  `);
 
   // Context compaction engine — transcript persistence for SDK agent sessions.
   db.run(`
@@ -3043,7 +2186,6 @@ function migrate(db: MigrationDb) {
       action text not null,
       worker_id text,
       worker_slug text,
-      mission_id text,
       route_json text not null default '{}',
       attempt_count integer not null default 0,
       next_attempt_at text,
@@ -3067,7 +2209,6 @@ function migrate(db: MigrationDb) {
       queue_item_id text,
       worker_id text,
       worker_slug text,
-      mission_id text,
       linear_assignee_id text,
       status text not null default 'active',
       claimed_at text not null,
@@ -3129,7 +2270,6 @@ function migrate(db: MigrationDb) {
       current_step_index integer not null default 0,
       current_step_id text,
       execution_lane_id text,
-      linked_mission_id text,
       linked_session_id text,
       linked_worker_run_id text,
       linked_pr_id text,
@@ -3830,6 +2970,9 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       runStatement(db, "begin");
       try {
         for (const rawChange of changes) {
+          // Skip changes for tables that no longer exist in the schema
+          // (e.g. unified_memories removed in #329).
+          if (!rawHasTable(db, rawChange.table)) continue;
           const change = normalizeIncomingCrsqlChange(db, rawChange);
           const result = runStatement(
             db,

@@ -6,7 +6,7 @@
  *
  * Usage:
  *   scripts/perf-launch.mjs --tab lanes
- *   scripts/perf-launch.mjs --tab missions --run-id manual
+ *   scripts/perf-launch.mjs --tab work --run-id manual
  *   scripts/perf-launch.mjs --tab boot --no-project
  *   scripts/perf-launch.mjs --route /settings --project "/path/to/repo"
  */

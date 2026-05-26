@@ -16,17 +16,13 @@ import { TemplateCard, type AutomationTemplate } from "./components/TemplateCard
 type TemplateDefinition = AutomationTemplate & { draft: Omit<AutomationRuleDraft, "id"> };
 
 const DEFAULT_MODEL = {
-  orchestratorModel: {
-    modelId: "anthropic/claude-sonnet-4-6" as const,
-    thinkingLevel: "medium" as const,
-  },
+  modelId: "anthropic/claude-sonnet-4-6" as const,
+  thinkingLevel: "medium" as const,
 };
 
 const DEFAULT_MODEL_HIGH = {
-  orchestratorModel: {
-    modelId: "anthropic/claude-sonnet-4-6" as const,
-    thinkingLevel: "high" as const,
-  },
+  modelId: "anthropic/claude-sonnet-4-6" as const,
+  thinkingLevel: "high" as const,
 };
 
 const BASE_DRAFT: Pick<
@@ -198,7 +194,7 @@ const TEMPLATES: TemplateDefinition[] = [
     id: "nightly-test-sweep",
     name: "Nightly test sweep",
     description:
-      "Run the built-in test suite on a cron. No chat thread, no mission — just deterministic checks against main.",
+      "Run the built-in test suite on a cron. No chat thread, just deterministic checks against main.",
     triggerType: "schedule",
     actionSummary: "built-in · run-tests",
     icon: TestTube,
@@ -314,10 +310,8 @@ const TEMPLATES: TemplateDefinition[] = [
 
 export function TemplatesTab({
   onUseTemplate,
-  missionsEnabled,
 }: {
   onUseTemplate: (draft: Omit<AutomationRuleDraft, "id">) => void;
-  missionsEnabled: boolean;
 }) {
   return (
     <div className="h-full overflow-y-auto px-6 py-6" style={{ background: "#0F0D14" }}>
@@ -330,18 +324,13 @@ export function TemplatesTab({
         </div>
 
         <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {TEMPLATES.map((template) => {
-            const disabled = template.draft.execution?.kind === "mission" && !missionsEnabled;
-            return (
-              <TemplateCard
-                key={template.id}
-                template={template}
-                disabled={disabled}
-                disabledReason={disabled ? "Mission automations are coming soon in production builds." : undefined}
-                onUse={() => onUseTemplate(template.draft)}
-              />
-            );
-          })}
+          {TEMPLATES.map((template) => (
+            <TemplateCard
+              key={template.id}
+              template={template}
+              onUse={() => onUseTemplate(template.draft)}
+            />
+          ))}
         </div>
       </div>
     </div>

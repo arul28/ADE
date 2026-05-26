@@ -42,9 +42,9 @@ import {
 export type OpenCodeAgentProfile = "ade-plan" | "ade-edit" | "ade-full-auto" | "ade-helper";
 
 const ADE_PLAN_TOOL_SELECTION: Record<string, boolean> = {
-  // ADE mission planning must go through coordinator tools such as
-  // spawn_worker. The native `task` subagent tool is intentionally allowed so
-  // OpenCode child sessions surface in the desktop / TUI subagents panes.
+  // ADE planning uses coordinator tools such as spawn_worker. The native
+  // `task` subagent tool is intentionally allowed so OpenCode child sessions
+  // surface in the desktop / TUI subagents panes.
   codesearch: false,
   code_search: false,
   filesearch: false,

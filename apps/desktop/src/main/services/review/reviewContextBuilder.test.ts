@@ -40,41 +40,7 @@ function createInMemoryAdeDb(): { db: AdeDb; raw: Database } {
   raw.run(`
     create table lanes(
       id text primary key,
-      project_id text not null,
-      mission_id text
-    );
-  `);
-  raw.run(`
-    create table missions(
-      id text primary key,
-      project_id text not null,
-      title text,
-      prompt text,
-      status text,
-      outcome_summary text,
-      updated_at text
-    );
-  `);
-  raw.run(`
-    create table orchestrator_worker_digests(
-      id text primary key,
-      project_id text not null,
-      mission_id text not null,
-      run_id text not null,
-      step_id text not null,
-      attempt_id text not null,
-      lane_id text,
-      session_id text,
-      step_key text,
-      status text not null,
-      summary text not null,
-      files_changed_json text,
-      tests_run_json text,
-      warnings_json text,
-      tokens_json text,
-      cost_usd real,
-      suggested_next_actions_json text,
-      created_at text not null
+      project_id text not null
     );
   `);
   raw.run(`
@@ -172,49 +138,7 @@ function makeMaterialized(changedPaths: string[]) {
 describe("reviewContextBuilder", () => {
   it("builds a bounded compact packet from ADE-native provenance, rules, and validation signals", async () => {
     const { db } = createInMemoryAdeDb();
-    db.run("insert into lanes(id, project_id, mission_id) values (?, ?, ?)", ["lane-review", "project-1", "mission-1"]);
-    db.run(
-      "insert into missions(id, project_id, title, prompt, status, outcome_summary, updated_at) values (?, ?, ?, ?, ?, ?, ?)",
-      [
-        "mission-1",
-        "project-1",
-        "Keep preload and renderer aligned",
-        "This is a very long mission prompt that should be clipped in the compact provenance packet because raw prompt bloat is not review-safe and should never be copied wholesale into prompts or artifacts.",
-        "running",
-        "Workers are still converging on the bridge rollout.",
-        "2026-04-06T09:59:00.000Z",
-      ],
-    );
-    for (let index = 0; index < 4; index += 1) {
-      db.run(
-        `
-          insert into orchestrator_worker_digests(
-            id, project_id, mission_id, run_id, step_id, attempt_id, lane_id, session_id, step_key, status,
-            summary, files_changed_json, tests_run_json, warnings_json, tokens_json, cost_usd, suggested_next_actions_json, created_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-        [
-          `digest-${index}`,
-          "project-1",
-          "mission-1",
-          "orchestrator-run-1",
-          `step-${index}`,
-          `attempt-${index}`,
-          "lane-review",
-          `session-${index}`,
-          `step-${index}`,
-          index === 0 ? "failed" : "succeeded",
-          `Worker digest ${index} repeated text ${"x".repeat(80)}`,
-          JSON.stringify(["apps/desktop/src/preload/reviewBridge.ts"]),
-          JSON.stringify({ passed: 0, failed: 1, skipped: 0, summary: "bridge unit failed" }),
-          JSON.stringify(["warning one", "warning two"]),
-          null,
-          null,
-          JSON.stringify(["fix the bridge"]),
-          `2026-04-06T10:0${index}:00.000Z`,
-        ],
-      );
-    }
+    db.run("insert into lanes(id, project_id) values (?, ?)", ["lane-review", "project-1"]);
     db.run(
       `
         insert into pull_requests(
@@ -258,7 +182,6 @@ describe("reviewContextBuilder", () => {
         getStateSnapshot: vi.fn().mockReturnValue({
           laneId: "lane-review",
           agentSummary: { summary: "Recent ADE chat distilled the bridge rollout intent." },
-          missionSummary: { summary: "Finish the preload bridge rollout cleanly." },
           updatedAt: "2026-04-06T09:58:00.000Z",
         }),
       } as any,
@@ -411,11 +334,9 @@ describe("reviewContextBuilder", () => {
       ]) as any,
     });
 
-    expect(packet.provenance.payload.workerDigests).toHaveLength(3);
     expect(packet.provenance.payload.sessionDeltas).toHaveLength(3);
     expect(packet.validation.payload.issueInventory).toHaveLength(5);
     expect(packet.validation.payload.signals.length).toBeLessThanOrEqual(5);
-    expect(packet.provenance.payload.missions[0]?.intentSummary?.length ?? 0).toBeLessThanOrEqual(220);
     expect(packet.validation.payload.testRuns[0]?.logExcerpt?.length ?? 0).toBeLessThanOrEqual(220);
     expect(packet.validation.prompt).not.toContain("noise noise noise noise noise noise");
     expect(packet.rules.metadata.matchedRuleIds).toContain("preload-bridge");
@@ -424,7 +345,7 @@ describe("reviewContextBuilder", () => {
 
   it("emits late-stage signals for validation failures, reviewer feedback, and prior review overlap", async () => {
     const { db } = createInMemoryAdeDb();
-    db.run("insert into lanes(id, project_id, mission_id) values (?, ?, ?)", ["lane-review", "project-1", null]);
+    db.run("insert into lanes(id, project_id) values (?, ?)", ["lane-review", "project-1"]);
     db.run(
       `
         insert into pull_requests(

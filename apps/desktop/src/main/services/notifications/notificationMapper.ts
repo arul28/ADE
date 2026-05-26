@@ -20,7 +20,6 @@ export type NotificationCategory =
   | "CHAT_COMPLETED"
   | "CTO_SUBAGENT_STARTED"
   | "CTO_SUBAGENT_FINISHED"
-  | "CTO_MISSION_PHASE"
   | "PR_CI_FAILING"
   | "PR_REVIEW_REQUESTED"
   | "PR_CHANGES_REQUESTED"
@@ -35,7 +34,6 @@ export type IosNotificationCategory =
   | "CHAT_TURN_COMPLETED"
   | "CTO_SUBAGENT_STARTED"
   | "CTO_SUBAGENT_FINISHED"
-  | "CTO_MISSION_PHASE"
   | "PR_CI_FAILING"
   | "PR_REVIEW_REQUESTED"
   | "PR_CHANGES_REQUESTED"
@@ -264,14 +262,14 @@ export function mapChatEvent(envelope: AgentChatEventEnvelope): MappedNotificati
     case "delegation_state": {
       return [
         {
-          category: "CTO_MISSION_PHASE",
+          category: "CTO_SUBAGENT_FINISHED",
           family: "cto",
-          title: "Mission phase changed",
-          body: truncate(event.message ?? "Mission phase advanced.", 178),
+          title: "Delegation updated",
+          body: truncate(event.message ?? "Delegation state changed.", 178),
           pushType: "alert",
           priority: 5,
           interruptionLevel: "passive",
-          collapseId: `mission:${sessionId}:phase`,
+          collapseId: `cto:${sessionId}:delegation`,
           deepLink,
           metadata: sessionMeta,
         },
@@ -380,29 +378,6 @@ export function mapPrEvent(args: {
     default:
       return [];
   }
-}
-
-export type MissionPhaseEvent = {
-  missionId: string;
-  phase: string;
-  message?: string;
-};
-
-export function mapMissionEvent(event: MissionPhaseEvent): MappedNotification[] {
-  return [
-    {
-      category: "CTO_MISSION_PHASE",
-      family: "cto",
-      title: "Mission phase changed",
-      body: truncate(event.message ?? `Mission ${event.missionId} entered ${event.phase}.`, 178),
-      pushType: "alert",
-      priority: 5,
-      interruptionLevel: "passive",
-      collapseId: `mission:${event.missionId}:phase`,
-      deepLink: `ade://mission/${event.missionId}`,
-      metadata: { missionId: event.missionId, phase: event.phase },
-    },
-  ];
 }
 
 export type SystemEvent = {
@@ -543,7 +518,7 @@ export function isAllowedByPrefs(
   prefs: {
     enabled: boolean;
     chat: { awaitingInput: boolean; chatFailed: boolean; turnCompleted: boolean };
-    cto: { subagentStarted: boolean; subagentFinished: boolean; missionPhaseChanged: boolean };
+    cto: { subagentStarted: boolean; subagentFinished: boolean };
     prs: { ciFailing: boolean; reviewRequested: boolean; changesRequested: boolean; mergeReady: boolean };
     system: { providerOutage: boolean; authRateLimit: boolean; hookFailure: boolean };
     muteUntil?: string | null;
@@ -578,8 +553,6 @@ export function isAllowedByPrefs(
       return prefs.cto.subagentStarted;
     case "CTO_SUBAGENT_FINISHED":
       return prefs.cto.subagentFinished;
-    case "CTO_MISSION_PHASE":
-      return prefs.cto.missionPhaseChanged;
     case "PR_CI_FAILING":
       return prefs.prs.ciFailing;
     case "PR_REVIEW_REQUESTED":

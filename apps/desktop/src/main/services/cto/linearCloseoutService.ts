@@ -4,12 +4,9 @@ import type {
   LinearWorkflowRun,
   NormalizedLinearIssue,
 } from "../../../shared/types";
-import { resolveOrchestratorArtifactUri } from "../../../shared/proofArtifacts";
 import type { Logger } from "../logging/logger";
 import type { createLinearOutboundService } from "./linearOutboundService";
 import type { IssueTracker } from "./issueTracker";
-import type { createMissionService } from "../missions/missionService";
-import type { createOrchestratorService } from "../orchestrator/orchestratorService";
 import type { createPrService } from "../prs/prService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { renderTemplateString } from "../shared/utils";
@@ -41,8 +38,6 @@ function resolveStateId(states: Array<{ id: string; name: string; type: string }
 export function createLinearCloseoutService(args: {
   issueTracker: IssueTracker;
   outboundService: ReturnType<typeof createLinearOutboundService>;
-  missionService: ReturnType<typeof createMissionService>;
-  orchestratorService: ReturnType<typeof createOrchestratorService>;
   prService: ReturnType<typeof createPrService>;
   computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService>;
   logger?: Logger | null;
@@ -103,40 +98,8 @@ export function createLinearCloseoutService(args: {
       input.run.linkedPrId ? `Linked PR record: ${input.run.linkedPrId}` : null,
     ]);
 
-    if (input.workflow.target.type === "mission" && input.run.linkedMissionId) {
-      const mission = args.missionService.get(input.run.linkedMissionId);
-      const missionArtifactUris = mission?.artifacts
-        .map((artifact) => artifact.uri)
-        .filter(isNonEmptyString) ?? [];
-      const missionPrLinks = mission?.artifacts
-        .filter((artifact) => artifact.artifactType === "pr")
-        .map((artifact) => artifact.uri)
-        .filter(isNonEmptyString) ?? [];
-      const orchestratorArtifacts = args.orchestratorService.getArtifactsForMission(input.run.linkedMissionId);
-      const orchestratorUris = orchestratorArtifacts
-        .map((artifact) => resolveOrchestratorArtifactUri({
-          kind: artifact.kind,
-          value: artifact.value,
-          metadata: artifact.metadata,
-        }))
-        .filter(isNonEmptyString);
-      const orchestratorPrLinks = orchestratorArtifacts
-        .filter((artifact) => artifact.kind === "pr")
-        .map((artifact) => resolveOrchestratorArtifactUri({
-          kind: artifact.kind,
-          value: artifact.value,
-          metadata: artifact.metadata,
-        }))
-        .filter(isNonEmptyString);
-      return {
-        prLinks: uniqueStrings([...prLinks, ...missionPrLinks, ...orchestratorPrLinks]),
-        artifactPaths: uniqueStrings([...missionArtifactUris, ...orchestratorUris]),
-        contextLines,
-      };
-    }
-
     const owners: ComputerUseArtifactOwner[] = [];
-    owners.push({ kind: "orchestrator_run", id: input.run.id });
+    owners.push({ kind: "automation_run", id: input.run.id });
     if (input.run.linkedSessionId) {
       owners.push({ kind: "chat_session", id: input.run.linkedSessionId });
     }
@@ -182,7 +145,6 @@ export function createLinearCloseoutService(args: {
         id:
           input.run.linkedSessionId
           ?? input.run.linkedWorkerRunId
-          ?? input.run.linkedMissionId
           ?? input.run.linkedPrId
           ?? input.run.executionLaneId
           ?? null,
@@ -231,21 +193,6 @@ export function createLinearCloseoutService(args: {
         links: closeoutArtifacts.prLinks,
       },
     };
-
-    if (input.workflow.target.type === "mission" && input.run.linkedMissionId) {
-      await args.outboundService.publishMissionCloseout({
-        issue: input.issue,
-        missionId: input.run.linkedMissionId,
-        status: outboundStatus,
-        summary: input.summary,
-        prLinks: closeoutArtifacts.prLinks,
-        artifactPaths: closeoutArtifacts.artifactPaths,
-        artifactMode: closeout?.artifactMode ?? "links",
-        commentTemplate: closeout?.commentTemplate ?? null,
-        templateValues: outboundTemplateValues,
-      });
-      return;
-    }
 
     await args.outboundService.publishWorkflowCloseout({
       issue: input.issue,

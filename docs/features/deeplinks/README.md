@@ -58,8 +58,17 @@ Desktop main process — protocol handler:
   most-suitable `BrowserWindow` and `webContents.send(IPC.appNavigate, …)`.
   `handleDeeplinkUrl` is also re-used by the iOS Send-to-Mac sync command
   (`syncRemoteCommandService.ts`'s `deeplinks.open`).
+- `apps/desktop/src/main/services/deeplinks/projectNavigationWindowSelection.ts`
+  — pure selection helper for project-scoped navigation. It first prefers a
+  window whose active project already matches the target root, then a window
+  with the target root open in a background project tab, asking main to
+  activate that project before dispatching. Only when no existing window/tab
+  can own the project does main open a new ADE window.
 - `apps/desktop/src/main/main.ts` — calls `registerAdeProtocolHandler({...})`
-  before `app.whenReady()` so cold-start URLs aren't lost.
+  before `app.whenReady()` so cold-start URLs aren't lost. The iOS
+  `deeplinks.open` path calls the project-scoped dispatcher for the sync
+  host's project root so Send-to-Mac targets the paired project's window/tab
+  instead of whichever ADE window is focused locally.
 
 Desktop main process — PR footer integration:
 
@@ -135,7 +144,8 @@ iOS — inbound deeplinks + Send-to-Mac:
 - `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts` — receives
   the iOS "Send to your Mac" payload as the `deeplinks.open` sync
   command and feeds the URL through `handleDeeplinkUrl` so the desktop
-  dispatches it identically to an OS-routed `open ade://...`.
+  dispatches it through the same parser as an OS-routed `open ade://...`,
+  with main scoping delivery to the paired sync host's project root.
 - `apps/ade-cli/src/services/sync/syncHostService.ts` — exposes the same
   `deeplinks.open` command from the runtime daemon so a phone paired
   directly to a headless host can still bounce a URL out to the host.
@@ -180,11 +190,13 @@ malformed.
                                                                        → IPC.appNavigate
 ```
 
-The dispatcher is the same function in every case: parse, map to
-`AppNavigationTarget`, send through `IPC.appNavigate`. The renderer's
-`window.ade.app.onNavigate` listener owns the routing decision (open lane
-tab, jump to PR, prompt to create lane from branch, resolve Linear issue
-to lane).
+The parser and `AppNavigationTarget` mapping are the same in every case.
+Delivery is project-aware: OS-routed desktop URLs use the active-window
+dispatcher, while sync-originated Send-to-Mac URLs select the paired
+project's existing window or background tab before `IPC.appNavigate` is
+sent. The renderer's `window.ade.app.onNavigate` listener owns the routing
+decision (open lane tab, jump to PR, prompt to create lane from branch,
+resolve Linear issue to lane).
 
 ## PR description footer
 

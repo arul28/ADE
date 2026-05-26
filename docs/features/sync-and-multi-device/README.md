@@ -74,7 +74,7 @@ directories.
 
 Two disconnected desktops do **not** have a shared live session. They
 converge code through Git and they converge the narrow tracked ADE
-scaffold through Git, but live mission/chat/process state converges
+scaffold through Git, but live chat/process state converges
 only when they join the same sync cluster (i.e. point at the same
 running daemon).
 
@@ -212,6 +212,15 @@ which:
 3. Only as a final fallback (and only when the desktop in-process host
    was actually started) does the call hit the in-process IPC handler.
 
+During project transitions, mutating sync methods (`sync.setPin`,
+`sync.clearPin`, `sync.connectToBrain`, lane-presence updates, model-picker
+favorites/recents writes, and similar state changes) fail with the same
+"Project is switching" guard used by project runtime actions. Read/status
+calls can still fall through to safe fallbacks. Remote sync calls replay only
+for the explicit retry-safe allowlist (status/discovery/device/PIN reads,
+lane-presence announce, and model-picker reads); other sync mutations surface
+connection errors rather than being replayed after reconnect.
+
 The shared protocol DTOs (`SyncEnvelope`, controller-originated
 `terminal_input` / `terminal_resize`, the mobile CLI launcher payload —
 `SyncCliLaunchProvider`, `SyncStartCliSessionArgs`,
@@ -259,7 +268,7 @@ Notification services (`apps/desktop/src/main/services/notifications/`):
 - `notificationMapper.ts` — pure domain-event → `MappedNotification`
   mapping across 13 categories in 4 families (chat, cto, pr, system).
 - `notificationEventBus.ts` — `publishChatEvent`, `publishPrEvent`,
-  `publishMissionEvent`, `publishSystemEvent`, `sendTestPush`. Routes
+  `publishSystemEvent`, `sendTestPush`. Routes
   to APNs (alert + Live Activity update pushes) and/or in-app WS
   delivery, filtered by per-device `NotificationPreferences`.
 
@@ -349,9 +358,8 @@ never elect to host.
 
 Transfer:
 
-1. Preflight blockers — active missions, running chat turns, live
-   PTYs, running managed processes. Paused missions, CTO history/idle
-   threads, and idle/ended chats are treated as durable synced state
+1. Preflight blockers — running chat turns, live PTYs, running managed
+   processes. CTO history/idle threads and idle/ended chats are treated as durable synced state
    and survive a handoff.
 2. Final sync flush on the old host.
 3. `sync_cluster_state.brain_device_id` rewrites, `brain_epoch`
@@ -505,8 +513,8 @@ payload.
 
 ## Command routing and execution isolation
 
-Controllers never run agent processes. CTO heartbeats, worker
-activations, and mission orchestration are host-exclusive
+Controllers never run agent processes. CTO heartbeats and worker
+activations are host-exclusive
 (host = the daemon).
 
 Two categories of controller write:
@@ -649,6 +657,12 @@ project scope split.
   into the matching `packedCrsqlPrimaryKey` byte layout the native
   cr-sqlite extension expects. Skipping this step is how phone-side
   edits silently fail to apply on the desktop.
+- **Rolling schema removals are filtered before apply.** Peers on older
+  builds may still export changes for dropped local tables such as
+  `unified_memories` and its FTS side tables. `kvDb.ts` filters those
+  rows, plus rows for tables that no longer exist locally, before
+  opening the apply transaction. A batch that contains only ignored
+  tables is a no-op and preserves the local database version.
 - **Controller command queues replay on reconnect.** If the host
   advertises `chat.send` as queueable and the user sends while the
   desktop is reconnecting, the iOS app stores the command locally with

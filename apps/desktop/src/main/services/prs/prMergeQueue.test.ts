@@ -293,7 +293,6 @@ describe("queueLandingService", () => {
         contextGaps: [],
         warnings: [],
         originSurface: "queue",
-        originMissionId: null,
         originRunId: null,
         originLabel: "Queue B",
         ptyId: null,

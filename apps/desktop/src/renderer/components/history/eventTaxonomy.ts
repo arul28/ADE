@@ -6,7 +6,6 @@ export type EventCategory =
   | "pack"
   | "conflict"
   | "pr"
-  | "mission"
   | "automation"
   | "process"
   | "system";
@@ -61,12 +60,6 @@ export const CATEGORY_META: Record<EventCategory, CategoryMeta> = {
     color: "#06B6D4",
     colorMuted: "rgba(6,182,212,0.15)",
     shape: "pill",
-  },
-  mission: {
-    label: "Missions",
-    color: "#8B5CF6",
-    colorMuted: "rgba(139,92,246,0.15)",
-    shape: "star",
   },
   automation: {
     label: "Automations",
@@ -189,16 +182,6 @@ export const EVENT_KIND_META: Record<string, EventKindMeta> = {
   "pr.queue_entered":        { label: "Merge Queue",        category: "pr", iconName: "Queue",          description: "Entered merge queue",    importance: "high" },
   "pr.integration_started":  { label: "Integration",        category: "pr", iconName: "Rocket",         description: "Integration flow started", importance: "high" },
 
-  // ── Mission & Orchestrator ──────────────────────────────────
-  "mission.started":        { label: "Mission Started",     category: "mission", iconName: "Rocket",      description: "Mission launched",         importance: "high" },
-  "mission.update":         { label: "Mission Update",      category: "mission", iconName: "ListChecks",  description: "Mission state changed",    importance: "medium" },
-  "mission.completed":      { label: "Mission Done",        category: "mission", iconName: "Trophy",      description: "Mission completed",        importance: "high" },
-  "mission.failed":         { label: "Mission Failed",      category: "mission", iconName: "XCircle",     description: "Mission failed",           importance: "high" },
-  "mission.step_progress":  { label: "Step Progress",       category: "mission", iconName: "Spinner",     description: "Step in progress",         importance: "low" },
-  "mission.intervention":   { label: "Intervention",        category: "mission", iconName: "HandPalm",    description: "Intervention required",    importance: "high" },
-  "mission.worker_status":  { label: "Worker Update",       category: "mission", iconName: "Robot",       description: "Worker status update",     importance: "low" },
-  "mission.plan_revised":   { label: "Plan Revised",        category: "mission", iconName: "NotePencil",  description: "Execution plan revised",   importance: "medium" },
-
   // ── Automation ──────────────────────────────────────────────
   "automation.triggered":   { label: "Triggered",       category: "automation", iconName: "Lightning",    description: "Automation triggered",  importance: "high" },
   "automation.completed":   { label: "Completed",       category: "automation", iconName: "CheckCircle",  description: "Automation completed",  importance: "high" },
@@ -222,15 +205,15 @@ export const EVENT_KIND_META: Record<string, EventKindMeta> = {
   // ── Unified ADE work feed ─────────────────────────────────
   "chat.session":     { label: "Chat Session",    category: "session", iconName: "ChatCircleText", description: "ADE chat session activity",      importance: "medium" },
   "cto.session":      { label: "CTO Session",     category: "session", iconName: "Strategy",       description: "CTO coordinator session update", importance: "medium" },
-  "worker.run":       { label: "Worker Run",      category: "mission", iconName: "Robot",          description: "Worker task run",                importance: "medium" },
-  "worker.activity":  { label: "Worker Activity", category: "mission", iconName: "Users",          description: "Worker activity update",         importance: "low" },
+  "worker.run":       { label: "Worker Run",      category: "automation", iconName: "Robot",       description: "Worker task run",                importance: "medium" },
+  "worker.activity":  { label: "Worker Activity", category: "automation", iconName: "Users",       description: "Worker activity update",         importance: "low" },
 
   // ── Noise-level events (hidden by default) ─────────────────
   "tool_call":         { label: "Tool Call",         category: "system", iconName: "Wrench",          description: "Tool invocation",              importance: "noise" },
-  "worker":            { label: "Worker",            category: "mission", iconName: "Robot",           description: "Worker orchestration step",    importance: "noise" },
-  "implementation":    { label: "Implementation",    category: "mission", iconName: "Code",            description: "Implementation step",          importance: "noise" },
-  "coordinator":       { label: "Coordinator",       category: "mission", iconName: "TreeStructure",   description: "Coordinator operation",        importance: "noise" },
-  "opencode":          { label: "OpenCode",          category: "mission", iconName: "Stack",           description: "OpenCode orchestrator step",   importance: "noise" },
+  "worker":            { label: "Worker",            category: "automation", iconName: "Robot",         description: "Worker step",                  importance: "noise" },
+  "implementation":    { label: "Implementation",    category: "automation", iconName: "Code",          description: "Implementation step",          importance: "noise" },
+  "coordinator":       { label: "Coordinator",       category: "automation", iconName: "TreeStructure", description: "Coordinator operation",        importance: "noise" },
+  "opencode":          { label: "OpenCode",          category: "automation", iconName: "Stack",         description: "OpenCode step",                importance: "noise" },
   "manual":            { label: "Manual Op",         category: "system",  iconName: "Hand",            description: "Manual operation",             importance: "noise" },
   "heading":           { label: "Heading",           category: "system",  iconName: "TextH",           description: "Section heading marker",       importance: "noise" },
   "markers":           { label: "Markers",           category: "system",  iconName: "MapPin",          description: "Context markers update",       importance: "noise" },
@@ -238,7 +221,7 @@ export const EVENT_KIND_META: Record<string, EventKindMeta> = {
   "validation":        { label: "Validation",        category: "system",  iconName: "CheckSquare",     description: "Validation check",             importance: "noise" },
   "queue":             { label: "Queue",             category: "system",  iconName: "Queue",            description: "Queue processing",             importance: "noise" },
   "task":              { label: "Task",              category: "system",  iconName: "ListChecks",       description: "Background task",              importance: "noise" },
-  "teammate":          { label: "Teammate",          category: "mission", iconName: "Users",            description: "Teammate coordination",        importance: "noise" },
+  "teammate":          { label: "Teammate",          category: "automation", iconName: "Users",          description: "Teammate coordination",        importance: "noise" },
   "integration":       { label: "Integration Step",  category: "pr",      iconName: "GitMerge",        description: "Integration substep",          importance: "noise" },
 };
 

@@ -1,10 +1,5 @@
 import type { WorkerSandboxConfig } from "../../../../shared/types";
 
-/**
- * Default sandbox configuration for API-model workers.
- * CLI-wrapped models can add native sandboxing, but tool-backed runtimes still
- * need a provider-neutral fallback.
- */
 export const DEFAULT_WORKER_SANDBOX_CONFIG: WorkerSandboxConfig = {
   blockedCommands: [
     "\\brm\\s+-rf\\s+/",
@@ -68,3 +63,21 @@ export const DEFAULT_WORKER_SANDBOX_CONFIG: WorkerSandboxConfig = {
   allowedPaths: ["./"],
   blockByDefault: false,
 };
+
+const CLAUDE_READ_ONLY_NATIVE_TOOLS = [
+  "Read",
+  "Glob",
+  "Grep",
+] as const;
+
+export function buildClaudeReadOnlyWorkerAllowedTools(extraToolNames: readonly string[] = []): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of [...CLAUDE_READ_ONLY_NATIVE_TOOLS, ...extraToolNames]) {
+    const trimmed = entry.trim();
+    if (!trimmed.length || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
+}

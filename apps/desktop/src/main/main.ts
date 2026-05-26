@@ -10,6 +10,7 @@ import {
   handleDeeplinkUrl,
   registerAdeProtocolHandler,
 } from "./services/deeplinks/protocolHandler";
+import { selectWindowForProjectNavigation } from "./services/deeplinks/projectNavigationWindowSelection";
 import { registerIpc } from "./services/ipc/registerIpc";
 import { createFileLogger } from "./services/logging/logger";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
@@ -25,8 +26,10 @@ import {
 import { createLaneService, type LaneDeleteTeardownDeps } from "./services/lanes/laneService";
 import {
   invalidateVmLaneLaunchCache,
+  type MacosVmLaunchProvider,
   refreshVmLaneLaunchCache,
   setMacosVmLaunchProvider,
+  syncMacosVmLaunchCacheFromEvent,
 } from "./services/lanes/laneLaunchContext";
 import { createLaneEnvironmentService } from "./services/lanes/laneEnvironmentService";
 import { createLaneTemplateService } from "./services/lanes/laneTemplateService";
@@ -132,8 +135,6 @@ import {
 } from "./services/runtime/machineStateMigration";
 import { createRebaseSuggestionService } from "./services/lanes/rebaseSuggestionService";
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
-import { createMissionService } from "./services/missions/missionService";
-import { createMissionPreflightService } from "./services/missions/missionPreflightService";
 import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createWorkerAgentService } from "./services/cto/workerAgentService";
 import { createWorkerRevisionService } from "./services/cto/workerRevisionService";
@@ -156,11 +157,7 @@ import { createLinearDispatcherService } from "./services/cto/linearDispatcherSe
 import { publishLinearLaneCard } from "./services/cto/linearLaneCardService";
 import { createLinearIngressService } from "./services/cto/linearIngressService";
 import { createLinearSyncService } from "./services/cto/linearSyncService";
-import { createOrchestratorService } from "./services/orchestrator/orchestratorService";
 import { createOrchestrationService } from "./services/orchestration/orchestrationService";
-import { createAiOrchestratorService } from "./services/orchestrator/aiOrchestratorService";
-import { createMissionBudgetService } from "./services/orchestrator/missionBudgetService";
-import { transitionMissionStatus } from "./services/orchestrator/missionLifecycle";
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createAppControlService } from "./services/appControl/appControlService";
@@ -332,8 +329,6 @@ const enableAllBackgroundTasks =
 const defaultEnabledBackgroundTaskFlags = new Set<string>([
   "ADE_ENABLE_CONFIG_RELOAD",
   "ADE_ENABLE_USAGE_TRACKING",
-  "ADE_ENABLE_MISSION_QUEUE",
-  "ADE_ENABLE_TEAM_RUNTIME_RECOVERY",
   "ADE_ENABLE_HEAD_WATCHER",
   "ADE_ENABLE_PORT_ALLOCATION_RECOVERY",
   "ADE_ENABLE_SYNC_INIT",
@@ -805,6 +800,9 @@ const deeplinkClaimAsDefault =
 
 const pendingAppNavigationRequests: AppNavigationRequest[] = [];
 let dispatchAppNavigationRequest: ((request: AppNavigationRequest) => void) | null = null;
+let dispatchAppNavigationForProjectRoot:
+  | ((targetProjectRoot: string, request: AppNavigationRequest) => void)
+  | null = null;
 
 const dispatchOrQueueAppNavigationRequest = (request: AppNavigationRequest): void => {
   if (!dispatchAppNavigationRequest) {
@@ -1209,7 +1207,7 @@ app.whenReady().then(async () => {
     localRuntimePool.noteServiceInstallSkipped("Background service installation is skipped in tests.");
   }
   // Soft cap for project contexts that have NO user work at all (no chats,
-  // no live PTYs, no active sessions/missions/tests). Anything with work is
+  // no live PTYs, no active sessions/tests). Anything with work is
   // protected by `hasActiveProjectWorkloads` and is never evicted regardless
   // of this number. The cap exists only as a safety valve against opening
   // hundreds of empty projects in a long-running session — well above any
@@ -1567,14 +1565,6 @@ app.whenReady().then(async () => {
     }
 
     try {
-      if (ctx.missionService?.list({ status: "active", limit: 1 }).length > 0) {
-        return true;
-      }
-    } catch (error) {
-      return keepAliveOnProbeFailure("missions", error);
-    }
-
-    try {
       if (ctx.testService?.hasActiveRuns()) {
         return true;
       }
@@ -1881,9 +1871,6 @@ app.whenReady().then(async () => {
     let testServiceRef: ReturnType<typeof createTestService> | null = null;
     let gitServiceRef: ReturnType<typeof createGitOperationsService> | null =
       null;
-    let missionBudgetServiceRef: ReturnType<
-      typeof createMissionBudgetService
-    > | null = null;
     let linearIssueTrackerRef: LinearIssueTracker | null = null;
 
     const lastHeadByLaneId = new Map<string, string>();
@@ -1937,6 +1924,7 @@ app.whenReady().then(async () => {
     };
 
     const laneTeardownDeps: LaneDeleteTeardownDeps = {};
+    let macosVmLaunchProviderForProject: MacosVmLaunchProvider | null = null;
     const laneService = createLaneService({
       db,
       projectRoot,
@@ -1966,9 +1954,13 @@ app.whenReady().then(async () => {
         // TODO(mac-vm-onboarding): emit a renderer-facing IPC event so the
         // CreateLaneDialog re-gate + Work-tab banner can react without
         // polling. Requires adding a new IPC channel in shared/ipc.ts.
-        invalidateVmLaneLaunchCache(event.laneId);
+        invalidateVmLaneLaunchCache(event.laneId, projectRoot);
         if (event.to === "macos-vm") {
-          void refreshVmLaneLaunchCache({ laneId: event.laneId }).catch((error) => {
+          void refreshVmLaneLaunchCache({
+            laneId: event.laneId,
+            projectRoot,
+            provider: macosVmLaunchProviderForProject,
+          }).catch((error) => {
             logger.warn("lane.placement_changed_refresh_failed", {
               laneId: event.laneId,
               error: error instanceof Error ? error.message : String(error),
@@ -2438,12 +2430,6 @@ app.whenReady().then(async () => {
     });
     prPollingServiceRef = prPollingService;
 
-    let orchestratorServiceRef: ReturnType<
-      typeof createOrchestratorService
-    > | null = null;
-    let aiOrchestratorServiceRef: ReturnType<
-      typeof createAiOrchestratorService
-    > | null = null;
     let linearDispatcherServiceRef: ReturnType<
       typeof createLinearDispatcherService
     > | null = null;
@@ -2548,15 +2534,6 @@ app.whenReady().then(async () => {
         });
       }
       void linearSyncServiceRef?.processActiveRunsNow().catch(() => {});
-      if (orchestratorServiceRef) {
-        void orchestratorServiceRef
-          .onTrackedSessionEnded({
-            laneId,
-            sessionId,
-            exitCode,
-          })
-          .catch(() => {});
-      }
     };
 
     let syncServiceRef: ReturnType<typeof createSyncService> | null = null;
@@ -2583,7 +2560,6 @@ app.whenReady().then(async () => {
       },
       onSessionEnded: onTrackedSessionEnded,
       onSessionRuntimeSignal: (signal) => {
-        aiOrchestratorServiceRef?.onSessionRuntimeSignal(signal);
         emitProjectEvent(projectRoot, IPC.sessionsChanged, {
           sessionId: signal.sessionId,
           reason: "meta-updated",
@@ -2760,8 +2736,6 @@ app.whenReady().then(async () => {
       workerHeartbeatService,
       linearIssueTracker,
       flowPolicyService,
-      getMissionService: () => missionServiceRef,
-      getAiOrchestratorService: () => aiOrchestratorServiceRef,
       getOrchestrationService: () => orchestrationServiceRef,
       getLinearDispatcherService: () => linearDispatcherServiceRef,
       linearClient,
@@ -2775,7 +2749,6 @@ app.whenReady().then(async () => {
       getGitService: () => gitServiceRef,
       conflictService,
       getWorkerBudgetService: () => workerBudgetService,
-      getMissionBudgetService: () => missionBudgetServiceRef,
       laneService,
       sessionService,
       processRegistry,
@@ -2786,7 +2759,6 @@ app.whenReady().then(async () => {
       appVersion: app.getVersion(),
       getAdeCliAgentEnv: adeCliService.agentEnv,
       onEvent: (event) => {
-        aiOrchestratorServiceRef?.onAgentChatEvent(event);
         emitProjectEvent(projectRoot, IPC.agentChatEvent, event);
       },
       onSessionEnded: onTrackedSessionEnded,
@@ -2926,74 +2898,6 @@ app.whenReady().then(async () => {
       automationService,
     });
 
-    let missionServiceRef: ReturnType<typeof createMissionService> | null =
-      null;
-    const missionService = createMissionService({
-      db,
-      projectId,
-      projectRoot,
-      logger,
-      onBlockingInterventionAdded: ({ missionId, intervention }) => {
-        const currentMissionService = missionServiceRef;
-        const currentOrchestratorService = orchestratorServiceRef;
-        if (!currentMissionService || !currentOrchestratorService) return;
-        transitionMissionStatus(
-          {
-            logger,
-            missionService: currentMissionService,
-            orchestratorService: currentOrchestratorService,
-          } as any,
-          missionId,
-          "intervention_required",
-          {
-            lastError:
-              intervention.body?.trim() || intervention.title?.trim() || null,
-          },
-        );
-      },
-      onEvent: (event) => {
-        emitProjectEvent(projectRoot, IPC.missionsEvent, event);
-        if (event.missionId) {
-          automationService?.onMissionUpdated({ missionId: event.missionId });
-        }
-        if (event.reason === "ready_to_start" && event.missionId) {
-          void aiOrchestratorServiceRef
-            ?.startMissionRun({
-              missionId: event.missionId,
-              queueClaimToken: event.claimToken ?? null,
-            })
-            .catch((error) => {
-              logger.warn("missions.queue_autostart_failed", {
-                missionId: event.missionId,
-                error: error instanceof Error ? error.message : String(error),
-              });
-            });
-        }
-      },
-    });
-    missionServiceRef = missionService;
-    // Run phase built-in migration/cleanup once at startup so launcher state is canonical.
-    try {
-      missionService.listPhaseProfiles({ includeArchived: true });
-      missionService.listPhaseItems({ includeArchived: true });
-    } catch (error) {
-      logger.warn("missions.phase_storage_seed_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-    const missionBudgetService = createMissionBudgetService({
-      db,
-      logger,
-      projectId,
-      projectRoot,
-      missionService,
-      aiIntegrationService,
-      projectConfigService,
-    });
-    missionBudgetServiceRef = missionBudgetService;
-    let missionPreflightService: ReturnType<
-      typeof createMissionPreflightService
-    >;
     const deferredProjectStartCancels = new Set<() => void>();
     const scheduleDeferredProjectStart = (
       task: () => Promise<unknown> | unknown,
@@ -3090,22 +2994,6 @@ app.whenReady().then(async () => {
       "ADE_ENABLE_PORT_ALLOCATION_RECOVERY",
     );
 
-    const orchestratorService = createOrchestratorService({
-      db,
-      projectId,
-      projectRoot,
-      conflictService,
-      ptyService,
-      agentChatService,
-      prService,
-      projectConfigService,
-      aiIntegrationService,
-      onEvent: (event) => {
-        aiOrchestratorServiceRef?.onOrchestratorRuntimeEvent(event);
-        emitProjectEvent(projectRoot, IPC.orchestratorEvent, event);
-      },
-    });
-    orchestratorServiceRef = orchestratorService;
     const orchestrationService = createOrchestrationService({
       resolveLaneWorktree: (laneId: string): string | undefined => {
         try {
@@ -3121,8 +3009,6 @@ app.whenReady().then(async () => {
         db,
         projectId,
         projectRoot,
-        missionService,
-        orchestratorService,
         logger,
         onEvent: (payload) =>
           emitProjectEvent(projectRoot, IPC.computerUseEvent, payload),
@@ -3258,8 +3144,15 @@ app.whenReady().then(async () => {
       projectRoot,
       logger,
       resolveLanes: async () => laneService.list({ includeArchived: false }),
-      onEvent: (payload) =>
-        emitProjectEvent(projectRoot, IPC.macosVmEvent, payload),
+      onEvent: (payload) => {
+        syncMacosVmLaunchCacheFromEvent(payload, (event, fields) => {
+          logger.warn(event, fields);
+        }, {
+          projectRoot,
+          provider: macosVmLaunchProviderForProject,
+        });
+        emitProjectEvent(projectRoot, IPC.macosVmEvent, payload);
+      },
       captureWindowSources: async () => {
         const sources = await desktopCapturer.getSources({
           types: ["window"],
@@ -3277,6 +3170,19 @@ app.whenReady().then(async () => {
       // wire-up needs the pool/registry to be lifted into a shared scope.
       onRuntimeReady: ({ vmName, ipAddress, username }) => {
         logger.info("macos_vm.runtime_ready", { vmName, ipAddress, username });
+        const vmLane = laneService.findExistingVmLane();
+        if (!vmLane) return;
+        invalidateVmLaneLaunchCache(vmLane.id, projectRoot);
+        void refreshVmLaneLaunchCache({
+          laneId: vmLane.id,
+          projectRoot,
+          provider: macosVmLaunchProviderForProject,
+        }).catch((error) => {
+          logger.warn("macos_vm.runtime_ready_cache_refresh_failed", {
+            laneId: vmLane.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
       },
     });
     // Wire macosVmService into laneService now that both exist. The hooks let
@@ -3322,42 +3228,12 @@ app.whenReady().then(async () => {
     // Register the launch-context provider so resolveLaneLaunchContext can
     // synthesize an SSH launch context for VM lanes.
     if (typeof macosVmSvcAny.getStatus === "function" && typeof macosVmSvcAny.getCredentials === "function") {
-      setMacosVmLaunchProvider({
+      macosVmLaunchProviderForProject = {
         getStatus: macosVmSvcAny.getStatus.bind(macosVmService),
         getCredentials: macosVmSvcAny.getCredentials.bind(macosVmService),
-      });
+      };
+      setMacosVmLaunchProvider(macosVmLaunchProviderForProject);
     }
-    missionPreflightService = createMissionPreflightService({
-      logger,
-      projectRoot,
-      missionService,
-      laneService,
-      aiIntegrationService,
-      projectConfigService,
-      missionBudgetService,
-      computerUseArtifactBrokerService,
-    });
-    const aiOrchestratorService = createAiOrchestratorService({
-      db,
-      logger,
-      missionService,
-      orchestratorService,
-      agentChatService,
-      laneService,
-      projectConfigService,
-      aiIntegrationService,
-      prService,
-      conflictService,
-      queueLandingService,
-      projectRoot,
-      missionBudgetService,
-      computerUseArtifactBrokerService,
-      onThreadEvent: (event) =>
-        emitProjectEvent(projectRoot, IPC.orchestratorThreadEvent, event),
-      onDagMutation: (event) =>
-        emitProjectEvent(projectRoot, IPC.orchestratorDagMutation, event),
-    });
-    aiOrchestratorServiceRef = aiOrchestratorService;
     // Phone sync is owned by the per-machine ADE service. The desktop
     // keeps a non-host sync service for legacy viewer state and explicit
     // diagnostics only; ADE_ENABLE_DESKTOP_SYNC_HOST=1 re-enables the old
@@ -3392,7 +3268,6 @@ app.whenReady().then(async () => {
       rebaseSuggestionService,
       autoRebaseService,
       computerUseArtifactBrokerService,
-      missionService,
       agentChatService,
       workerAgentService,
       workerBudgetService,
@@ -3435,7 +3310,14 @@ app.whenReady().then(async () => {
       // / InboundDeeplinkModal / CrossRepoPrBanner all fire normally.
       dispatchDeeplinkUrl: async (rawUrl) => {
         try {
-          handleDeeplinkUrl(rawUrl, "sync:ios", dispatchOrQueueAppNavigationRequest);
+          // Route to this sync host's project window, not whichever window is focused.
+          handleDeeplinkUrl(rawUrl, "sync:ios", (request) => {
+            if (dispatchAppNavigationForProjectRoot) {
+              dispatchAppNavigationForProjectRoot(projectRoot, request);
+              return;
+            }
+            dispatchOrQueueAppNavigationRequest(request);
+          });
           return { ok: true };
         } catch (error) {
           return {
@@ -3461,20 +3343,6 @@ app.whenReady().then(async () => {
       0,
       "ADE_ENABLE_SYNC_INIT",
     );
-    scheduleBackgroundProjectTask(
-      "missions.process_queue",
-      () => {
-        missionService.processQueue();
-      },
-      (error) => {
-        logger.warn("missions.queue_autostart_bootstrap_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      },
-      20_000,
-      "ADE_ENABLE_MISSION_QUEUE",
-    );
-
     logger.info("project.init_stage", {
       projectRoot,
       stage: "linear_closeout_init",
@@ -3482,8 +3350,6 @@ app.whenReady().then(async () => {
     const linearCloseoutService = createLinearCloseoutService({
       issueTracker: linearIssueTracker,
       outboundService: linearOutboundService,
-      missionService,
-      orchestratorService,
       prService,
       computerUseArtifactBrokerService,
       logger,
@@ -3498,8 +3364,6 @@ app.whenReady().then(async () => {
       issueTracker: linearIssueTracker,
       workerAgentService,
       workerHeartbeatService,
-      missionService,
-      aiOrchestratorService,
       agentChatService,
       laneService,
       templateService: linearTemplateService,
@@ -3616,19 +3480,6 @@ app.whenReady().then(async () => {
       "ADE_ENABLE_LINEAR_INGRESS",
     );
 
-    // Resume any active team runtimes that were running before app restart
-    scheduleBackgroundProjectTask(
-      "orchestrator.resume_team_runtimes",
-      () => aiOrchestratorService.resumeActiveTeamRuntimes(),
-      (error) => {
-        logger.warn("orchestrator.resume_team_runtimes_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      },
-      60_000,
-      "ADE_ENABLE_TEAM_RUNTIME_RECOVERY",
-    );
-
     const automationPlannerService = createAutomationPlannerService({
       logger,
       projectRoot,
@@ -3664,12 +3515,6 @@ app.whenReady().then(async () => {
       logger,
       projectConfigService,
       usageTrackingService,
-    });
-    automationService?.bindMissionRuntime({
-      missionService,
-      aiOrchestratorService,
-      budgetCapService,
-      workerHeartbeatService,
     });
     scheduleBackgroundProjectTask(
       "automations.ingress_start",
@@ -3901,8 +3746,6 @@ app.whenReady().then(async () => {
       conflictService,
       gitService,
       diffService,
-      missionService,
-      missionPreflightService,
       ptyService,
       testService,
       aiIntegrationService,
@@ -3933,9 +3776,6 @@ app.whenReady().then(async () => {
       appControlService,
       builtInBrowserService,
       macosVmService,
-      orchestratorService,
-      aiOrchestratorService,
-      missionBudgetService,
       syncHostService: syncService.getHostService(),
       syncService,
       automationIngressService,
@@ -3946,28 +3786,18 @@ app.whenReady().then(async () => {
       autoUpdateService,
       appNavigationService: {
         navigate: async (request) => {
-          const normalizedRoot = normalizeProjectRoot(projectRoot);
-          let targetWindow = BrowserWindow.getAllWindows()
-            .find((win) => !win.isDestroyed() && windowProjectRoots.get(win.id) === normalizedRoot) ?? null;
-          if (!targetWindow) {
-            const opened = await openAdeWindow({ projectRoot });
-            targetWindow = opened.windowId != null ? BrowserWindow.fromId(opened.windowId) : null;
-          }
-          if (!targetWindow || targetWindow.isDestroyed()) {
+          const result = await deliverAppNavigationToProject(projectRoot, request);
+          if (!result.ok) {
             return {
               ok: false,
               mode: "unavailable" as const,
-              message: "No ADE window is available for this project.",
+              message: result.message,
             };
           }
-          if (targetWindow.isMinimized()) targetWindow.restore();
-          targetWindow.show();
-          targetWindow.focus();
-          targetWindow.webContents.send(IPC.appNavigate, request);
           return {
             ok: true,
             mode: "desktop" as const,
-            windowId: targetWindow.id,
+            windowId: result.windowId,
           };
         },
       },
@@ -4083,8 +3913,7 @@ app.whenReady().then(async () => {
     // Wire the automation runtime into the shared ADE-action registry so
     // that `ade-action` automation steps can invoke the same domain services
     // the RPC server exposes. We do this lazily — the registry re-resolves
-    // services on every call so that runtime bindings (bindMissionRuntime,
-    // ctoStateService) that settle later are still visible.
+    // services on every call so late-bound runtime state remains visible.
     {
       const adeActionLookup: AutomationAdeActionRegistry = {
         isAllowed(domain: string, action: string): boolean {
@@ -4119,9 +3948,6 @@ app.whenReady().then(async () => {
         prService,
         testService,
         agentChatService,
-        missionService,
-        aiOrchestratorService,
-        orchestratorService,
         ctoStateService,
         workerAgentService,
         sessionService,
@@ -4213,12 +4039,7 @@ app.whenReady().then(async () => {
       apnsService,
       apnsKeyStore,
       notificationEventBus,
-      missionService,
-      missionPreflightService,
-      orchestratorService,
       orchestrationService,
-      missionBudgetService,
-      aiOrchestratorService,
       agentChatService,
       projectConfigService,
       processService,
@@ -4257,6 +4078,7 @@ app.whenReady().then(async () => {
     const project = toProjectInfo(projectRoot, baseRef);
     const runtimeProject = await localRuntimePool.ensureProject(projectRoot);
     const shellContext = createDormantProjectContext(projectRoot);
+    let macosVmLaunchProviderForProject: MacosVmLaunchProvider | null = null;
     const macosVmService = createMacosVmService({
       projectRoot,
       logger,
@@ -4273,8 +4095,15 @@ app.whenReady().then(async () => {
           worktreePath: lane.worktreePath,
         }));
       },
-      onEvent: (payload) =>
-        emitProjectEvent(projectRoot, IPC.macosVmEvent, payload),
+      onEvent: (payload) => {
+        syncMacosVmLaunchCacheFromEvent(payload, (event, fields) => {
+          logger.warn(event, fields);
+        }, {
+          projectRoot,
+          provider: macosVmLaunchProviderForProject,
+        });
+        emitProjectEvent(projectRoot, IPC.macosVmEvent, payload);
+      },
       captureWindowSources: async () => {
         const sources = await desktopCapturer.getSources({
           types: ["window"],
@@ -4291,8 +4120,43 @@ app.whenReady().then(async () => {
       // bootstrap script only writes a marker file).
       onRuntimeReady: ({ vmName, ipAddress, username }) => {
         logger.info("macos_vm.runtime_ready", { vmName, ipAddress, username });
+        void (async () => {
+          const response = await localRuntimePool.callActionForRoot(projectRoot, {
+            domain: "lane",
+            action: "list",
+            args: { includeArchived: false, includeStatus: false },
+          });
+          const lanes = Array.isArray(response.result) ? response.result as LaneSummary[] : [];
+          const vmLane = lanes.find((lane) => lane.runtimePlacement === "macos-vm") ?? null;
+          if (!vmLane) return;
+          invalidateVmLaneLaunchCache(vmLane.id, projectRoot);
+          await refreshVmLaneLaunchCache({
+            laneId: vmLane.id,
+            projectRoot,
+            provider: macosVmLaunchProviderForProject,
+          });
+        })().catch((error) => {
+          logger.warn("macos_vm.runtime_ready_cache_refresh_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
       },
     });
+    const macosVmSvcAny = macosVmService as unknown as {
+      getStatus?: typeof macosVmService.getStatus;
+      getCredentials?: (args: { vmName: string }) => Promise<{
+        vmName: string;
+        username: string | null;
+        hasPassword: boolean;
+      }>;
+    };
+    if (typeof macosVmSvcAny.getStatus === "function" && typeof macosVmSvcAny.getCredentials === "function") {
+      macosVmLaunchProviderForProject = {
+        getStatus: macosVmSvcAny.getStatus.bind(macosVmService),
+        getCredentials: macosVmSvcAny.getCredentials.bind(macosVmService),
+      };
+      setMacosVmLaunchProvider(macosVmLaunchProviderForProject);
+    }
     logger.info("project.runtime_bound", {
       projectRoot,
       projectId: runtimeProject.projectId,
@@ -4404,12 +4268,7 @@ app.whenReady().then(async () => {
       apnsService: null,
       apnsKeyStore: null,
       notificationEventBus: null,
-      missionService: null,
-      missionPreflightService: null,
-      orchestratorService: null,
       orchestrationService: null,
-      missionBudgetService: null,
-      aiOrchestratorService: null,
       projectConfigService: null,
       processService: null,
       sessionDeltaService: null,
@@ -4504,11 +4363,6 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.usageTrackingService?.dispose();
-    } catch {
-      // ignore
-    }
-    try {
-      ctx.aiOrchestratorService.dispose();
     } catch {
       // ignore
     }
@@ -5173,11 +5027,6 @@ app.whenReady().then(async () => {
 
     for (const ctx of contexts) {
       try {
-        ctx.aiOrchestratorService?.dispose?.();
-      } catch {
-        // ignore
-      }
-      try {
         ctx.automationService?.dispose?.();
       } catch {
         // ignore
@@ -5685,6 +5534,55 @@ app.whenReady().then(async () => {
       emitProjectBindingChangedToWindow(win.id, null);
     }
     return getWindowSession(win.id);
+  };
+
+  const deliverAppNavigationToProject = async (
+    targetProjectRoot: string,
+    request: AppNavigationRequest,
+  ): Promise<{ ok: true; windowId: number } | { ok: false; message: string }> => {
+    const normalizedRoot = normalizeProjectRoot(targetProjectRoot);
+    const candidateWindows = BrowserWindow.getAllWindows().filter(
+      (win) => !win.isDestroyed(),
+    );
+    const selection = selectWindowForProjectNavigation(
+      normalizedRoot,
+      candidateWindows.map((win) => ({
+        id: win.id,
+        activeProjectRoot: windowProjectRoots.get(win.id) ?? null,
+        openProjectRoots: windowProjectTabRoots.get(win.id) ?? new Set<string>(),
+      })),
+    );
+
+    let targetWindow = selection
+      ? candidateWindows.find((win) => win.id === selection.windowId) ?? null
+      : null;
+    if (targetWindow && selection?.activateProjectRoot) {
+      bindWindowToProject(targetWindow.id, normalizedRoot, {
+        emit: true,
+        foreground: true,
+      });
+    }
+    if (!targetWindow) {
+      const opened = await openAdeWindow({ projectRoot: normalizedRoot });
+      targetWindow = opened.windowId != null ? BrowserWindow.fromId(opened.windowId) : null;
+    }
+    if (!targetWindow || targetWindow.isDestroyed()) {
+      return { ok: false, message: "No ADE window is available for this project." };
+    }
+    if (targetWindow.isMinimized()) targetWindow.restore();
+    targetWindow.show();
+    targetWindow.focus();
+    targetWindow.webContents.send(IPC.appNavigate, request);
+    return { ok: true, windowId: targetWindow.id };
+  };
+
+  dispatchAppNavigationForProjectRoot = (targetProjectRoot, request) => {
+    void deliverAppNavigationToProject(targetProjectRoot, request).catch((error: unknown) => {
+      getActiveContext().logger.warn("deeplink.dispatch_window_failed", {
+        projectRoot: normalizeProjectRoot(targetProjectRoot),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   };
 
   let initialWindowNavigationReady = false;

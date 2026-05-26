@@ -631,8 +631,6 @@ function buildMockLanesFromAdeSnapshot(laneRows: any[]): any[] {
       icon: raw.icon ?? null,
       tags: Array.isArray(raw.tags) ? raw.tags : [],
       folder: raw.folder ?? null,
-      missionId: raw.missionId ?? null,
-      laneRole: raw.laneRole ?? null,
       createdAt: raw.createdAt ?? now,
       archivedAt: raw.archivedAt ?? null,
     };
@@ -2178,7 +2176,6 @@ const BUILTIN_MOCK_QUEUE_STATE: Record<string, any> = {
       permissionMode: "guarded_edit",
       confidenceThreshold: null,
       originSurface: "queue",
-      originMissionId: null,
       originRunId: null,
       originLabel: "Release v3.0 - Commerce",
     },
@@ -2220,7 +2217,6 @@ const BUILTIN_MOCK_QUEUE_STATE: Record<string, any> = {
       permissionMode: "guarded_edit",
       confidenceThreshold: null,
       originSurface: "queue",
-      originMissionId: null,
       originRunId: null,
       originLabel: "Billing Upgrade",
     },
@@ -2790,7 +2786,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     preset: "conservative",
   };
 
-  /** Full enough for Settings, lane behavior, and Missions `applyMissionSettingsSnapshot` in the dev browser. */
+  /** Full enough for Settings and lane behavior in the dev browser. */
   const BROWSER_MOCK_PROJECT_CONFIG_SNAPSHOT: any = {
     shared: {
       version: 1,
@@ -2865,40 +2861,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       sharedPath: "/tmp/.ade/ade.yaml",
       localPath: "/tmp/.ade/local.yaml",
     },
-  };
-
-  const BROWSER_MOCK_MISSION_DASHBOARD: any = {
-    active: [],
-    recent: [],
-    weekly: {
-      missions: 0,
-      successRate: 0,
-      avgDurationMs: 0,
-      totalCostUsd: 0,
-    },
-  };
-  const BROWSER_MISSION_DASHBOARD: any =
-    USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.missionDashboard
-      ? ADE_DB_SNAPSHOT.missionDashboard
-      : BROWSER_MOCK_MISSION_DASHBOARD;
-
-  const BROWSER_MOCK_EMPTY_FULL_MISSION_VIEW: any = {
-    mission: null,
-    runGraph: null,
-    artifacts: [],
-    checkpoints: [],
-    dashboard: null,
-  };
-
-  const BROWSER_MOCK_PHASE_PROFILE: any = {
-    id: "mock-profile",
-    name: "Mock profile",
-    description: "Browser mock phase profile",
-    phases: [] as any[],
-    isBuiltIn: true,
-    isDefault: true,
-    createdAt: now,
-    updatedAt: now,
   };
 
   const BROWSER_MOCK_DEVTOOLS_CHECK: any = {
@@ -3514,11 +3476,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
                 },
                 executor: { mode: "automation-bot" },
                 modelConfig: {
-                  orchestratorModel: {
                     modelId: "anthropic/claude-sonnet-4-6",
                     thinkingLevel: "medium",
                   },
-                },
                 permissionConfig: {
                   providers: {
                     opencode: "edit",
@@ -3530,7 +3490,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
                 prompt:
                   "Review the latest PR update and leave a concise follow-up summary with any high-signal next steps.",
                 reviewProfile: "incremental",
-                toolPalette: ["repo", "git", "github", "mission"],
+                toolPalette: ["repo", "git", "github"],
                 contextSources: [],
                 guardrails: {},
                 outputs: { disposition: "comment-only", createArtifact: true },
@@ -3557,7 +3517,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         id: "run-1",
         automationId: "auto-session-review",
         chatSessionId: "chat-auto-1",
-        missionId: null,
         triggerType: "manual",
         startedAt: now,
         endedAt: now,
@@ -3580,7 +3539,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
                 id: "run-1",
                 automationId: "auto-session-review",
                 chatSessionId: "chat-auto-1",
-                missionId: null,
                 triggerType: "git.pr_updated",
                 startedAt: now,
                 endedAt: now,
@@ -3607,7 +3565,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           id: "run-1",
           automationId: "auto-session-review",
           chatSessionId: "chat-auto-1",
-          missionId: null,
           triggerType: "git.pr_updated",
           startedAt: now,
           endedAt: now,
@@ -3673,7 +3630,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
                 id: "run-1",
                 automationId: "auto-session-review",
                 chatSessionId: "chat-auto-1",
-                missionId: null,
                 triggerType: "git.pr_updated",
                 startedAt: now,
                 endedAt: now,
@@ -3748,7 +3704,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           executor: { mode: "automation-bot" },
           prompt: "Review the latest changes.",
           reviewProfile: "quick",
-          toolPalette: ["repo", "mission"],
+          toolPalette: ["repo"],
           contextSources: [],
           guardrails: {},
           outputs: { disposition: "comment-only", createArtifact: true },
@@ -4049,269 +4005,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     },
     actions: {
       listRegistry: resolved([]),
-    },
-    missions: {
-      list: async (args: any = {}) => {
-        const rows =
-          USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.missions)
-            ? ADE_DB_SNAPSHOT.missions
-            : [];
-        const status = typeof args?.status === "string" ? args.status : null;
-        const laneId = typeof args?.laneId === "string" ? args.laneId : null;
-        const includeArchived = args?.includeArchived === true;
-        const activeStatuses = new Set([
-          "queued",
-          "planning",
-          "plan_review",
-          "in_progress",
-          "intervention_required",
-        ]);
-        let filtered = rows;
-        if (!includeArchived)
-          filtered = filtered.filter((mission: any) => !mission.archivedAt);
-        if (laneId)
-          filtered = filtered.filter(
-            (mission: any) => mission.laneId === laneId,
-          );
-        if (status === "active") {
-          filtered = filtered.filter((mission: any) =>
-            activeStatuses.has(mission.status),
-          );
-        } else if (status === "in_progress") {
-          filtered = filtered.filter(
-            (mission: any) =>
-              mission.status === "in_progress" ||
-              mission.status === "plan_review",
-          );
-        } else if (status) {
-          filtered = filtered.filter(
-            (mission: any) => mission.status === status,
-          );
-        }
-        const limit = Number.isFinite(args?.limit)
-          ? Math.max(1, Math.floor(args.limit))
-          : filtered.length;
-        return filtered.slice(0, limit);
-      },
-      get: async (missionId: string) => {
-        const rows =
-          USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.missions)
-            ? ADE_DB_SNAPSHOT.missions
-            : [];
-        return rows.find((mission: any) => mission.id === missionId) ?? null;
-      },
-      create: resolvedArg({ id: "mock" }),
-      update: resolvedArg({ id: "mock" }),
-      archive: resolvedArg(undefined),
-      delete: resolvedArg(undefined),
-      updateStep: resolvedArg({ id: "mock" }),
-      addArtifact: resolvedArg({ id: "mock" }),
-      addIntervention: resolvedArg({ id: "mock" }),
-      resolveIntervention: resolvedArg({ id: "mock" }),
-      listPhaseItems: resolved([]),
-      savePhaseItem: resolvedArg({} as any),
-      deletePhaseItem: resolvedArg(undefined),
-      importPhaseItems: resolvedArg([]),
-      exportPhaseItems: resolvedArg({ items: [], savedPath: null }),
-      listPhaseProfiles: resolved([]),
-      savePhaseProfile: resolvedArg({
-        ...BROWSER_MOCK_PHASE_PROFILE,
-        id: "mock-profile-saved",
-        name: "Saved profile",
-      } as any),
-      deletePhaseProfile: resolvedArg(undefined),
-      clonePhaseProfile: resolvedArg({
-        ...BROWSER_MOCK_PHASE_PROFILE,
-        id: "mock-profile-clone",
-        isBuiltIn: false,
-        isDefault: false,
-        name: "Cloned profile",
-      } as any),
-      exportPhaseProfile: resolvedArg({
-        profile: BROWSER_MOCK_PHASE_PROFILE,
-        savedPath: null,
-      } as any),
-      importPhaseProfile: resolvedArg({
-        ...BROWSER_MOCK_PHASE_PROFILE,
-        id: "mock-profile-imported",
-        isBuiltIn: false,
-        isDefault: false,
-        name: "Imported profile",
-      } as any),
-      getPhaseConfiguration: resolvedArg(null),
-      getDashboard: resolved(BROWSER_MISSION_DASHBOARD),
-      getFullMissionView: async (missionId: string) =>
-        USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.missionFullViews?.[missionId]
-          ? ADE_DB_SNAPSHOT.missionFullViews[missionId]
-          : BROWSER_MOCK_EMPTY_FULL_MISSION_VIEW,
-      preflight: resolvedArg({
-        canLaunch: true,
-        checkedAt: now,
-        profileName: null,
-        selectedPhaseCount: 0,
-        hardFailures: 0,
-        warnings: 0,
-        checklist: [] as any[],
-        budgetEstimate: null,
-      } as any),
-      getRunView: resolvedArg(null),
-      subscribeRunView: () => () => {},
-      onEvent: noop,
-    },
-    orchestrator: {
-      listRuns: resolved([]),
-      getRunGraph: resolvedArg({ nodes: [], edges: [] }),
-      startRun: resolvedArg({ run: {}, steps: [] }),
-      startRunFromMission: resolvedArg({ run: {}, steps: [] }),
-      startAttempt: resolvedArg({}),
-      completeAttempt: resolvedArg({}),
-      tickRun: resolvedArg({}),
-      resumeRun: resolvedArg({}),
-      cancelRun: resolvedArg({}),
-      cleanupTeamResources: resolvedArg({
-        missionId: "mock",
-        runId: null,
-        laneIds: [],
-        lanesArchived: [],
-        lanesSkipped: [],
-        laneErrors: [],
-      }),
-      heartbeatClaims: resolvedArg(0),
-      listTimeline: resolvedArg([]),
-      getGateReport: resolved({}),
-      getWorkerStates: resolvedArg([]),
-      startMissionRun: resolvedArg({}),
-      steerMission: resolvedArg({}),
-      getTeamMembers: async (args: { runId?: string } = {}) => {
-        const runId =
-          typeof args.runId === "string" && args.runId.trim().length > 0
-            ? args.runId.trim()
-            : "mock-run";
-        const missionId = "mock-mission";
-        const nowIso = new Date().toISOString();
-        return [
-          {
-            id: "coordinator",
-            runId,
-            missionId,
-            provider: "claude",
-            model: "anthropic/claude-sonnet-4-6",
-            role: "coordinator",
-            source: "ade-worker",
-            parentWorkerId: null,
-            sessionId: "session-coordinator",
-            status: "active",
-            claimedTaskIds: ["plan_phase"],
-            metadata: { teamRole: "coordinator", source: "ade-worker" },
-            createdAt: nowIso,
-            updatedAt: nowIso,
-          },
-          {
-            id: "implement-api",
-            runId,
-            missionId,
-            provider: "codex",
-            model: DEFAULT_BROWSER_MOCK_CODEX_MODEL,
-            role: "worker",
-            source: "ade-worker",
-            parentWorkerId: null,
-            sessionId: "session-impl-api",
-            status: "active",
-            claimedTaskIds: ["api_step"],
-            metadata: { teamRole: "implementer", source: "ade-worker" },
-            createdAt: nowIso,
-            updatedAt: nowIso,
-          },
-          {
-            id: "api-tests",
-            runId,
-            missionId,
-            provider: "claude",
-            model: "anthropic/claude-3-5-haiku",
-            role: "teammate",
-            source: "ade-subagent",
-            parentWorkerId: "implement-api",
-            sessionId: "session-api-tests",
-            status: "idle",
-            claimedTaskIds: [],
-            metadata: {
-              teamRole: "validator",
-              source: "ade-subagent",
-              parentWorkerId: "implement-api",
-              isSubAgent: true,
-            },
-            createdAt: nowIso,
-            updatedAt: nowIso,
-          },
-          {
-            id: "native-reviewer",
-            runId,
-            missionId,
-            provider: "claude",
-            model: "anthropic/claude-sonnet-4-6",
-            role: "teammate",
-            source: "claude-native",
-            parentWorkerId: "implement-api",
-            sessionId: "session-native-reviewer",
-            status: "active",
-            claimedTaskIds: [],
-            metadata: {
-              source: "claude-native",
-              parentWorkerId: "implement-api",
-              teamRole: "specialist",
-            },
-            createdAt: nowIso,
-            updatedAt: nowIso,
-          },
-        ];
-      },
-      listArtifacts: resolvedArg([]),
-      listWorkerCheckpoints: resolvedArg([]),
-      getPromptInspector: resolvedArg({
-        target: "coordinator",
-        runId: "mock-run",
-        missionId: "mock-mission",
-        stepId: null,
-        phaseKey: null,
-        phaseName: null,
-        title: "Mock prompt inspector",
-        notes: [],
-        layers: [],
-        fullPrompt: "",
-      }),
-      getTeamRuntimeState: resolvedArg(null),
-      finalizeRun: resolvedArg({ success: true, blockers: [] }),
-      getModelCapabilities: resolved({ models: [] }),
-      sendChat: resolvedArg({}),
-      getChat: resolvedArg([]),
-      listChatThreads: resolvedArg([]),
-      getThreadMessages: resolvedArg([]),
-      sendThreadMessage: resolvedArg({}),
-      getWorkerDigest: resolvedArg(null),
-      listWorkerDigests: resolvedArg([]),
-      getContextCheckpoint: resolvedArg(null),
-      listLaneDecisions: resolvedArg([]),
-      getMissionMetrics: resolvedArg({ config: null, samples: [] }),
-      setMissionMetricsConfig: resolvedArg({}),
-      getExecutionPlanPreview: resolvedArg(null),
-      getMissionStateDocument: resolvedArg(null),
-      getCheckpointStatus: resolvedArg(null),
-      sendAgentMessage: resolvedArg({}),
-      getGlobalChat: resolvedArg([]),
-      getActiveAgents: resolvedArg([]),
-      getMissionBudgetTelemetry: resolvedArg({
-        computedAt: new Date().toISOString(),
-        perProvider: [],
-        dataSources: [],
-      }),
-      getAggregatedUsage: resolvedArg({
-        totalTokens: 0,
-        totalCost: 0,
-        byModel: [],
-      }),
-      onEvent: noop,
-      onThreadEvent: noop,
-      onDagMutation: noop,
     },
     lanes: {
       list: resolved(MOCK_LANES),
@@ -5090,6 +4783,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       ]),
       listCommitFiles: resolvedArg([]),
       getCommitMessage: resolvedArg(""),
+      getCommit: resolvedArg(null),
+      isCommitInLaneHistory: resolvedArg(true),
       revertCommit: resolvedArg({ ok: true }),
       cherryPickCommit: resolvedArg({ ok: true }),
       createTag: resolvedArg({ ok: true }),
@@ -5262,8 +4957,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           icon: null,
           tags: [],
           folder: null,
-          missionId: null,
-          laneRole: null,
           status: {
             dirty: false,
             ahead: 0,

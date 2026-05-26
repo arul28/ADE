@@ -58,13 +58,13 @@ What was removed:
 
 - **Passive `proofObserver`** (~460 lines) and its tests — no more background screenshotting.
 - **`controlPlane.ts`, `localComputerUse.ts` backend-style arbitration** — Ghost OS, agent-browser, and ADE Local are no longer separate backends the app manages.
-- **Per-phase coverage math** — missions don't block on "you need one screenshot and one browser trace".
+- **Per-phase coverage math** — runs don't block on "you need one screenshot and one browser trace".
 - **`CU Off` / `CU Auto` / `CU On` / `Fallback` / `Proof` chips**, the `ComputerUseSection` of Settings, and the `buildComputerUseDirective` chat prompt preamble.
 
 What stays — renamed and shrunk:
 
 - **`proofArtifactBrokerService`** (formerly `computerUseArtifactBrokerService`) still persists screenshots, owner snapshots, and review state to SQLite.
-- **`MissionProofPanel`** and **`ChatProofPanel`** (formerly the computer-use panels) render the artifact drawer in missions and chat.
+- **`RunProofPanel`** and **`ChatProofPanel`** (formerly the computer-use panels) render the artifact drawer in runs and chat.
 - **`proofControlPlane.ts`** is a tiny helper that lists artifact kinds and feeds the review surface — no backend arbitration, no fallback logic.
 - **Agent chat directive**: a single sentence telling the agent to run `ade proof capture` when it reaches a checkpoint worth showing. That replaces the multi-paragraph policy prompt.
 
@@ -124,7 +124,7 @@ The iOS `SyncService` grew from ~300 lines of logic to ~900 to support tailnet d
 
 ### Work + Settings polish
 
-- **`WorkChatSessionView+Timeline`** consolidates the live/static branches so pending structured questions, mission briefings, and action rows render consistently once a session ends.
+- **`WorkChatSessionView+Timeline`** consolidates the live/static branches so pending structured questions, run briefings, and action rows render consistently once a session ends.
 - **`SettingsPairingSection`** surfaces "Saved Tailscale route" when no live hosts are discovered but a Tailscale-addressed host is on file, and rewrites the discover sheet to show the saved host alongside new ones instead of substituting them.
 - **`SettingsConnectionHeader`** now meets the 44pt minimum hit target on the connected chip, and the connection status hovers around the gear dot in the nav bar on every root screen.
 - **App icon parity.** The iOS app icon now uses a full-bleed, opaque export of the centered ADE artwork, so the mark matches the macOS logo without a nested desktop badge and satisfies App Store upload checks.
@@ -137,7 +137,7 @@ The iOS `SyncService` grew from ~300 lines of logic to ~900 to support tailnet d
 - **PrDetailPane**: the issue-resolver availability calculation now folds in PR comments alongside checks and review threads, so "Send to agent" actually appears when the relevant signals come from review comments rather than formal review threads.
 - **PRsPage + GitHubTab**: small wiring tweaks to align with the updated issue inventory service and the new `data-tour` anchors.
 - **PrIssueResolverModal**: shared `isActionableIssueComment`, `isPrCheckActionableFailure`, and `isPrCheckPassing` helpers landed in `shared/prIssueResolution.ts` so the issue resolver, convergence service, and workflow tools all agree on what counts as actionable.
-- **Provider permission merge.** Project-level and mission-level AI permission policies now merge before launching managed sessions, so Codex receives the intended sandbox, approval, edit, and `config-toml` settings while unsupported Claude config is rejected early.
+- **Provider permission merge.** Project-level and run-level AI permission policies now merge before launching managed sessions, so Codex receives the intended sandbox, approval, edit, and `config-toml` settings while unsupported Claude config is rejected early.
 - **Automation lane targeting.** Automation runs now prefer explicit target lanes, render prompts with the same lane the agent will actually use, and avoid misleading lane labels during follow-up review cycles.
 - **Rebase and review fixes.** Auto-rebase dismissal keeps its head-SHA guard, rebase banner errors remain visible, and redundant rebase suggestion state was removed so review comments do not re-open stale UI paths.
 
@@ -145,9 +145,9 @@ The iOS `SyncService` grew from ~300 lines of logic to ~900 to support tailnet d
 
 ## Platform plumbing
 
-- **`dialogBus`** — a new tiny pub/sub with stable dialog ids (`lanes.create`, `missions.create`, …). Dialogs subscribe by id; the tour engine drives them open/close without prop drilling. Full test coverage.
+- **`dialogBus`** — a new tiny pub/sub with stable dialog ids (`lanes.create`, `runs.create`, …). Dialogs subscribe by id; the tour engine drives them open/close without prop drilling. Full test coverage.
 - **`waitForTarget`** — MutationObserver-based selector waiter with a polling fallback, aborts via `AbortSignal`, and a 10 s default timeout.
-- **Workflow tools** — the `ade_complete_mission`, `ade_complete_pr_convergence_round`, and related tools now consume `proofArtifactBrokerService` directly and share issue-resolution helpers with the renderer.
+- **Workflow tools** — the `ade_complete_run`, `ade_complete_pr_convergence_round`, and related tools now consume `proofArtifactBrokerService` directly and share issue-resolution helpers with the renderer.
 - **CTO operator tools** — the `listComputerUseArtifacts` / `getArtifactPreview` tools are renamed to `listProofArtifacts` / `getProofArtifactPreview` with the same schema.
 - **IPC cleanup** — `registerIpc.ts` grew handlers for `sync.refreshDiscovery`, `onboarding.tutorial.*` (start, advance, complete, prompt state), and the proof artifact APIs; legacy computer-use IPC routes are gone. The `preload` surface was updated accordingly.
 - **ade-cli RPC rewrite** — `adeRpcServer.ts` shed ~400 lines as redundant legacy endpoints fell off; `cli.ts` grew to match the new proof command set.

@@ -503,13 +503,6 @@ export function CommandPalette({
         run: () => navigate("/history"),
       },
       {
-        id: "go-missions",
-        title: "Go to Missions",
-        shortcut: "G M",
-        group: "Navigation",
-        run: () => navigate("/missions"),
-      },
-      {
         id: "go-automations",
         title: "Go to Automations",
         hint: "Automation rules and agent workflows",

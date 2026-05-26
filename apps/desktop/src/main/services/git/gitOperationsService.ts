@@ -572,18 +572,43 @@ export function createGitOperationsService({
     throw new Error((res.stderr || res.stdout).trim() || "Failed to merge");
   };
 
-  function getLatestUndoableHeadChange(laneId: string): OperationRecord & {
+  const HEAD_CHANGE_UNDO_BOUNDARY_KINDS = new Set([
+    // Branch checkout updates lane branch_ref via switchBranch; reset --hard alone
+    // would move the wrong ref (see History "Create branch here" → undo).
+    "git_checkout_branch",
+  ]);
+
+  function getOperationBranchRef(operation: OperationRecord): string | null {
+    const parsed = safeJsonParse<unknown>(operation.metadataJson, null);
+    if (!isRecord(parsed)) return null;
+    const branchRef = parsed.branchRef;
+    return typeof branchRef === "string" && branchRef.trim()
+      ? localBranchNameForConfig(branchRef)
+      : null;
+  }
+
+  function getLatestUndoableHeadChange(
+    laneId: string,
+    currentBranchRef: string,
+  ): OperationRecord & {
     preHeadSha: string;
     postHeadSha: string;
   } {
-    const operation = operationService.listHeadChanges({ laneId, limit: 100 })[0];
-    if (!operation) {
-      throw new Error("No undoable head-changing git operation found for this lane.");
+    const normalizedCurrentBranch = localBranchNameForConfig(currentBranchRef);
+    for (const operation of operationService.listHeadChanges({ laneId, limit: 100 })) {
+      if (operation.kind === "git_undo_head_change") {
+        throw new Error("Latest head change is already an undo. Use redo to restore it.");
+      }
+      if (HEAD_CHANGE_UNDO_BOUNDARY_KINDS.has(operation.kind)) {
+        break;
+      }
+      const operationBranch = getOperationBranchRef(operation);
+      if (operationBranch !== null && operationBranch !== normalizedCurrentBranch) {
+        continue;
+      }
+      return operation;
     }
-    if (operation.kind === "git_undo_head_change") {
-      throw new Error("Latest head change is already an undo. Use redo to restore it.");
-    }
-    return operation;
+    throw new Error("No undoable head-changing git operation found for this branch.");
   }
 
   function getLatestRedoableUndo(laneId: string): {
@@ -601,6 +626,15 @@ export function createGitOperationsService({
       throw new Error("No redoable git undo operation found for this lane.");
     }
     return { operation: latest, redoHeadSha };
+  }
+
+  function normalizeCommitShaArg(commitSha: string): string {
+    const normalized = commitSha.trim();
+    if (!normalized.length) throw new Error("Commit SHA is required");
+    if (normalized.includes("\0") || normalized.startsWith("-") || /\s/.test(normalized)) {
+      throw new Error("Invalid commit SHA");
+    }
+    return normalized;
   }
 
   return {
@@ -814,11 +848,7 @@ export function createGitOperationsService({
 
     async getCommit(args: { laneId: string; commitSha: string }): Promise<GitCommitSummary | null> {
       const laneId = args.laneId.trim();
-      const commitSha = args.commitSha.trim();
-      if (!commitSha.length) throw new Error("Commit SHA is required");
-      if (commitSha.includes("\0") || commitSha.startsWith("-") || /\s/.test(commitSha)) {
-        throw new Error("Invalid commit SHA");
-      }
+      const commitSha = normalizeCommitShaArg(args.commitSha);
       return readLaneCached(`commit:${laneId}:${commitSha}`, 2_000, async () => {
         const lane = laneService.getLaneBaseAndBranch(laneId);
         let out: string;
@@ -873,6 +903,24 @@ export function createGitOperationsService({
           subject: subject ?? "",
           pushed,
         };
+      });
+    },
+
+    async isCommitInLaneHistory(args: { laneId: string; commitSha: string }): Promise<boolean> {
+      const laneId = args.laneId.trim();
+      const commitSha = normalizeCommitShaArg(args.commitSha);
+      return readLaneCached(`commit-in-lane-history:${laneId}:${commitSha}`, 2_000, async () => {
+        const lane = laneService.getLaneBaseAndBranch(laneId);
+        const result = await runGit(
+          ["merge-base", "--is-ancestor", commitSha, "HEAD"],
+          { cwd: lane.worktreePath, timeoutMs: 10_000 },
+        );
+        if (result.exitCode === 0) return true;
+        if (result.exitCode === 1) return false;
+        if (isMissingWorktreeError(new Error(result.stderr || result.stdout))) {
+          throw laneWorktreeMissingError(lane);
+        }
+        return false;
       });
     },
 
@@ -1344,7 +1392,9 @@ export function createGitOperationsService({
     },
 
     async undoLastHeadChange(args: GitHeadChangeActionArgs): Promise<GitActionResult> {
-      const operation = getLatestUndoableHeadChange(args.laneId);
+      const laneAtSelection = laneService.getLaneBaseAndBranch(args.laneId);
+      const selectedBranchRef = localBranchNameForConfig(laneAtSelection.branchRef);
+      const operation = getLatestUndoableHeadChange(args.laneId, selectedBranchRef);
       const { action } = await runLaneOperation({
         laneId: args.laneId,
         kind: "git_undo_head_change",
@@ -1356,6 +1406,9 @@ export function createGitOperationsService({
           targetHeadSha: operation.preHeadSha,
         },
         fn: async (lane) => {
+          if (localBranchNameForConfig(lane.branchRef) !== selectedBranchRef) {
+            throw new Error("Cannot undo because the lane branch has changed since that operation was selected.");
+          }
           const currentHead = await getHeadSha(lane.worktreePath);
           if (currentHead !== operation.postHeadSha) {
             throw new Error("Cannot undo because the lane head has changed since that operation.");

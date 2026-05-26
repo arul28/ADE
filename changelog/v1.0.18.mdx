@@ -3,7 +3,7 @@ title: "v1.0.18"
 description: "Release notes for ADE v1.0.18 — April 14, 2026"
 ---
 
-A consolidation release: the Lanes, Missions, and Run surfaces shed several legacy panels in favour of fewer, denser screens; the chat transcript adds an in-line file-changes panel; a new Quick Run menu and stacked-run tabs land on the Run page; and the renderer picks up batched user-preference persistence, a visibility-aware watchdog, and a unified warmup timer.
+A consolidation release: the Lanes, Runs, and Run surfaces shed several legacy panels in favour of fewer, denser screens; the chat transcript adds an in-line file-changes panel; a new Quick Run menu and stacked-run tabs land on the Run page; and the renderer picks up batched user-preference persistence, a visibility-aware watchdog, and a unified warmup timer.
 
 ---
 
@@ -18,11 +18,11 @@ A round of legacy lane panels were retired in favor of the consolidated lane wor
 - `LanePrPanel` (and its tests) and the inline PR terminal (`InlineTerminal`) are removed; PR work is fully driven from the PRs page and the Path-to-Merge tab.
 - The `LaunchPanel` terminal launcher is gone — the same actions live in the new Quick Run menu and the existing Work surface.
 
-### Missions UI consolidation
+### Runs UI consolidation
 
-The bespoke mission micro-pages were absorbed into the main Missions experience:
+The bespoke run micro-pages were absorbed into the main Runs experience:
 
-- `MissionControlPage`, `MissionPhaseBadge`, `UsageDashboard`, and `WorkerTranscriptPane` are removed — their content now renders inside `MissionsPage` and the associated panels there.
+- `RunControlPage`, `RunPhaseBadge`, `UsageDashboard`, and `WorkerTranscriptPane` are removed — their content now renders inside `RunsPage` and the associated panels there.
 - The `WorkerDetailSlideOut` slideout for individual worker inspection was retired; the same details surface inside the worker timeline.
 
 ### Run page replaces Project Home
@@ -149,7 +149,7 @@ The on-site docs at [ade-app.dev/docs](https://www.ade-app.dev/docs) received a 
 
 A new `## Applied` section was appended to `docs/OPTIMIZATION_OPPORTUNITIES.md` describing the renderer optimizations that landed this release.
 
-The internal architecture notes were reorganized: legacy `docs/architecture/*` and `docs/final-plan/*` trees were removed in favor of a new `docs/features/*` hierarchy with per-feature READMEs (lanes, missions, chat, cto, computer-use, terminals-and-sessions, sync-and-multi-device, automations, conflicts, files-and-editor, history, linear-integration, onboarding-and-settings, pull-requests, workspace-graph, agents, context-packs, project-home). The overall docs layout is captured in a top-level `docs/ARCHITECTURE.md` and `docs/README.md`.
+The internal architecture notes were reorganized: legacy `docs/architecture/*` and `docs/final-plan/*` trees were removed in favor of a new `docs/features/*` hierarchy with per-feature READMEs (lanes, runs, chat, cto, computer-use, terminals-and-sessions, sync-and-multi-device, automations, conflicts, files-and-editor, history, linear-integration, onboarding-and-settings, pull-requests, workspace-graph, agents, context-packs, project-home). The overall docs layout is captured in a top-level `docs/ARCHITECTURE.md` and `docs/README.md`.
 
 ---
 

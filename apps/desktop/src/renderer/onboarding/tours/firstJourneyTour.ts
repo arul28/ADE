@@ -614,6 +614,39 @@ const act9Intro: TourStep = {
   docUrl: docs.automationsOverview,
 };
 
+const act9Triggers: TourStep = {
+  id: "act9.triggers",
+  target: '[data-tour="automations.createTrigger"]',
+  title: "Triggers",
+  body: "Pick what starts the automation — a webhook, a schedule, a git event, or a file watch. One automation can wire up several.",
+  placement: "right",
+  requires: PROJECT_OPEN_REQUIRES,
+  waitForSelector: '[data-tour="automations.createTrigger"]',
+  docUrl: docs.automationsOverview,
+};
+
+const act9Actions: TourStep = {
+  id: "act9.actions",
+  target: '[data-tour="automations.createTrigger"]',
+  title: "Actions",
+  body: "What happens when a trigger fires — run a command, open an agent session, ping a worker. Chain them in order.",
+  placement: "right",
+  requires: PROJECT_OPEN_REQUIRES,
+  waitForSelector: '[data-tour="automations.createTrigger"]',
+  docUrl: docs.automationsOverview,
+};
+
+const act9Guardrails: TourStep = {
+  id: "act9.guardrails",
+  target: '[data-tour="automations.createTrigger"]',
+  title: "Guardrails",
+  body: "Rate limits, concurrency caps, quiet hours. Guardrails stop an automation from going rogue — set them before you save.",
+  placement: "right",
+  requires: PROJECT_OPEN_REQUIRES,
+  waitForSelector: '[data-tour="automations.createTrigger"]',
+  docUrl: docs.automationsOverview,
+};
+
 // --- Bonus Act 10: CTO ------------------------------------------------------
 const act10Intro: TourStep = {
   id: "act10.intro",
@@ -623,6 +656,45 @@ const act10Intro: TourStep = {
   actIntro: { title: "Your AI lead", variant: "orbit" },
   requires: PROJECT_OPEN_REQUIRES,
   beforeEnter: async () => [{ type: "navigate", to: "/cto" }],
+  docUrl: docs.ctoOverview,
+};
+
+const act10Sidebar: TourStep = {
+  id: "act10.sidebar",
+  target: '[data-tour="cto.sidebar"]',
+  title: "Your agents",
+  body: "The sidebar lists every agent the CTO manages. Identities persist — each one remembers who they are between sessions.",
+  placement: "right",
+  requires: PROJECT_OPEN_REQUIRES,
+  waitForSelector: '[data-tour="cto.sidebar"]',
+  docUrl: docs.ctoOverview,
+};
+
+const act10Team: TourStep = {
+  id: "act10.team",
+  target: '[data-tour="cto.teamPanel"]',
+  title: "Team panel",
+  body: "Inspect, edit, or archive agents. Budget caps and heartbeat intervals live here too — set them low while you're learning.",
+  placement: "left",
+  requires: PROJECT_OPEN_REQUIRES,
+  waitForSelector: '[data-tour="cto.teamPanel"]',
+  docUrl: docs.ctoOverview,
+};
+
+const act10Linear: TourStep = {
+  id: "act10.linear",
+  target: '[data-tour="cto.linearPanel"]',
+  title: "Linear sync",
+  body: "Hook the CTO up to Linear and it auto-dispatches work from tickets, posting results back to the issue. Skip if you don't use Linear.",
+  placement: "left",
+  requires: PROJECT_OPEN_REQUIRES,
+  beforeEnter: async () => [{
+    type: "ipc",
+    call: async () => {
+      window.dispatchEvent(new CustomEvent("ade:tour-cto-tab", { detail: "workflows" }));
+    },
+  }],
+  waitForSelector: '[data-tour="cto.linearPanel"]',
   docUrl: docs.ctoOverview,
 };
 

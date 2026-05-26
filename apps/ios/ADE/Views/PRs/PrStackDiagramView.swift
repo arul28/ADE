@@ -154,7 +154,7 @@ private struct PrStackStatePill: View {
     PrStackNode(id: "2", label: "#309 · Schema migration v3", branch: "integration/schema-v3", state: "open", adeKind: "integration", kindColor: PrGlassPalette.warning, subMetric: "base · awaiting 1 child", indent: 0, isRoot: true),
     PrStackNode(id: "3", label: "#316 · Fix auth middleware ordering", branch: "lane/auth-fix", state: "open", adeKind: "worker", kindColor: PrGlassPalette.purple, subMetric: "12 ✓ · 1 approval · ready", indent: 1),
     PrStackNode(id: "4", label: "#315 · Add payments idempotency", branch: "lane/payments", state: "draft", adeKind: "lane", kindColor: PrGlassPalette.success, subMetric: "8 ✓ · draft", indent: 1),
-    PrStackNode(id: "5", label: "#318 · Rename preferences", branch: "lane/rename-prefs", state: "blocked", adeKind: "mission", kindColor: PrGlassPalette.purpleBright, subMetric: "2 ✗ · blocked", indent: 1, isLast: true),
+    PrStackNode(id: "5", label: "#318 · Rename preferences", branch: "lane/rename-prefs", state: "blocked", adeKind: "lane", kindColor: PrGlassPalette.purpleBright, subMetric: "2 ✗ · blocked", indent: 1, isLast: true),
   ])
   .padding()
   .background(PrGlassPalette.ink)

@@ -40,7 +40,6 @@ const TOOL_LABEL_OVERRIDES: Record<string, string> = {
   request_specialist: "Request specialist",
   delegate_to_subagent: "Delegate",
   delegate_parallel: "Delegate batch",
-  read_mission_status: "Mission status",
   get_worker_output: "Worker output",
   revise_plan: "Revise plan",
   retry_step: "Retry step",

@@ -33,7 +33,6 @@ import type {
   LaneBranchSwitchPreview,
   LaneBranchSwitchResult,
   DeleteLaneArgs,
-  DeleteMissionArgs,
   DevToolsCheckResult,
   DiffChanges,
   DockLayout,
@@ -244,8 +243,6 @@ import type {
   CtoEnsureLinearWebhookArgs,
   CtoListLinearIngressEventsArgs,
   LinearWorkflowConfig,
-  AddMissionArtifactArgs,
-  AddMissionInterventionArgs,
   KeybindingOverride,
   KeybindingsSnapshot,
   OnboardingDetectionResult,
@@ -400,7 +397,6 @@ import type {
   UpdatePrDescriptionArgs,
   ListOverlapsArgs,
   LaneSummary,
-  ListMissionsArgs,
   ImportBranchLaneArgs,
   MergeSimulationArgs,
   MergeSimulationResult,
@@ -468,126 +464,13 @@ import type {
   StopTestRunArgs,
   TerminalSessionDetail,
   TerminalSessionSummary,
-  ResolveMissionInterventionArgs,
-  MissionArtifact,
-  MissionDetail,
-  MissionIntervention,
-  OrchestratorAttempt,
-  OrchestratorGateReport,
-  OrchestratorRun,
-  OrchestratorRunGraph,
-  OrchestratorRuntimeEvent,
-  OrchestratorThreadEvent,
-  DagMutationEvent,
-  OrchestratorStep,
-  OrchestratorTimelineEvent,
-  MissionStep,
-  MissionSummary,
-  PhaseCard,
-  MissionsEventPayload,
-  ListPhaseItemsArgs,
-  SavePhaseItemArgs,
-  DeletePhaseItemArgs,
-  ImportPhaseItemsArgs,
-  ExportPhaseItemsArgs,
-  ExportPhaseItemsResult,
-  PhaseProfile,
-  SavePhaseProfileArgs,
-  ListPhaseProfilesArgs,
-  DeletePhaseProfileArgs,
-  ClonePhaseProfileArgs,
-  ExportPhaseProfileArgs,
-  ExportPhaseProfileResult,
-  ImportPhaseProfileArgs,
-  MissionPhaseConfiguration,
-  MissionDashboardSnapshot,
-  GetFullMissionViewArgs,
-  FullMissionViewResult,
-  MissionPreflightRequest,
-  MissionPreflightResult,
-  GetMissionRunViewArgs,
-  MissionRunView,
-  GetMissionLogsArgs,
-  GetMissionLogsResult,
-  ExportMissionLogsArgs,
-  ExportMissionLogsResult,
-  GetAggregatedUsageArgs,
-  AggregatedUsageStats,
-  GetOrchestratorGateReportArgs,
-  GetOrchestratorRunGraphArgs,
-  ListOrchestratorRunsArgs,
-  ListOrchestratorTimelineArgs,
-  CreateMissionArgs,
-  ArchiveMissionArgs,
-  CancelOrchestratorRunArgs,
-  CleanupOrchestratorTeamResourcesArgs,
-  CleanupOrchestratorTeamResourcesResult,
-  CompleteOrchestratorAttemptArgs,
-  HeartbeatOrchestratorClaimsArgs,
-  PauseOrchestratorRunArgs,
-  ResumeOrchestratorRunArgs,
-  StartOrchestratorAttemptArgs,
-  StartOrchestratorRunArgs,
-  StartOrchestratorRunFromMissionArgs,
-  TickOrchestratorRunArgs,
-  UpdateMissionArgs,
   UpdateSessionMetaArgs,
-  UpdateMissionStepArgs,
   TestEvent,
   TestRunSummary,
   TestSuiteDefinition,
   UpdateLaneAppearanceArgs,
   UndoConflictProposalArgs,
   WriteTextAtomicArgs,
-  GetOrchestratorWorkerStatesArgs,
-  OrchestratorWorkerState,
-  StartMissionRunWithAIArgs,
-  StartMissionRunWithAIResult,
-  SteerMissionArgs,
-  SteerMissionResult,
-  GetTeamMembersArgs,
-  GetTeamRuntimeStateArgs,
-  FinalizeRunArgs,
-  FinalizeRunResult,
-  OrchestratorTeamMember,
-  OrchestratorTeamRuntimeState,
-  GetModelCapabilitiesResult,
-  GetMissionMetricsArgs,
-  OrchestratorChatMessage,
-  OrchestratorChatThread,
-  OrchestratorContextCheckpoint,
-  OrchestratorLaneDecision,
-  OrchestratorWorkerDigest,
-  SendOrchestratorChatArgs,
-  GetOrchestratorChatArgs,
-  ListOrchestratorChatThreadsArgs,
-  GetOrchestratorThreadMessagesArgs,
-  SendOrchestratorThreadMessageArgs,
-  GetOrchestratorWorkerDigestArgs,
-  ListOrchestratorWorkerDigestsArgs,
-  GetOrchestratorContextCheckpointArgs,
-  ListOrchestratorLaneDecisionsArgs,
-  ListOrchestratorArtifactsArgs,
-  ListOrchestratorWorkerCheckpointsArgs,
-  MissionMetricsConfig,
-  MissionMetricSample,
-  SetMissionMetricsConfigArgs,
-  ExecutionPlanPreview,
-  GetMissionStateDocumentArgs,
-  MissionStateDocument,
-  OrchestratorArtifact,
-  OrchestratorWorkerCheckpoint,
-  GetOrchestratorPromptInspectorArgs,
-  GetPlanningPromptPreviewArgs,
-  OrchestratorPromptInspector,
-  GetMissionBudgetTelemetryArgs,
-  GetMissionBudgetStatusArgs,
-  MissionBudgetTelemetrySnapshot,
-  MissionBudgetSnapshot,
-  SendAgentMessageArgs,
-  GetGlobalChatArgs,
-  GetActiveAgentsArgs,
-  ActiveAgentInfo,
   InitLaneEnvArgs,
   GetLaneEnvStatusArgs,
   GetLaneOverlayArgs,
@@ -1144,202 +1027,6 @@ declare global {
         saveBudgetConfig: (config: BudgetCapConfig) => Promise<BudgetCapConfig>;
         onUpdate: (cb: (snapshot: UsageSnapshot) => void) => () => void;
         onThreshold: (cb: (event: UsageThresholdEvent) => void) => () => void;
-      };
-      missions: {
-        list: (args?: ListMissionsArgs) => Promise<MissionSummary[]>;
-        get: (missionId: string) => Promise<MissionDetail | null>;
-        create: (args: CreateMissionArgs) => Promise<MissionDetail>;
-        update: (args: UpdateMissionArgs) => Promise<MissionDetail>;
-        archive: (args: ArchiveMissionArgs) => Promise<void>;
-        delete: (args: DeleteMissionArgs) => Promise<void>;
-        updateStep: (args: UpdateMissionStepArgs) => Promise<MissionStep>;
-        addArtifact: (args: AddMissionArtifactArgs) => Promise<MissionArtifact>;
-        addIntervention: (
-          args: AddMissionInterventionArgs,
-        ) => Promise<MissionIntervention>;
-        resolveIntervention: (
-          args: ResolveMissionInterventionArgs,
-        ) => Promise<MissionIntervention>;
-        listPhaseItems: (args?: ListPhaseItemsArgs) => Promise<PhaseCard[]>;
-        savePhaseItem: (args: SavePhaseItemArgs) => Promise<PhaseCard>;
-        deletePhaseItem: (args: DeletePhaseItemArgs) => Promise<void>;
-        importPhaseItems: (args: ImportPhaseItemsArgs) => Promise<PhaseCard[]>;
-        exportPhaseItems: (
-          args?: ExportPhaseItemsArgs,
-        ) => Promise<ExportPhaseItemsResult>;
-        listPhaseProfiles: (
-          args?: ListPhaseProfilesArgs,
-        ) => Promise<PhaseProfile[]>;
-        savePhaseProfile: (args: SavePhaseProfileArgs) => Promise<PhaseProfile>;
-        deletePhaseProfile: (args: DeletePhaseProfileArgs) => Promise<void>;
-        clonePhaseProfile: (
-          args: ClonePhaseProfileArgs,
-        ) => Promise<PhaseProfile>;
-        exportPhaseProfile: (
-          args: ExportPhaseProfileArgs,
-        ) => Promise<ExportPhaseProfileResult>;
-        importPhaseProfile: (
-          args: ImportPhaseProfileArgs,
-        ) => Promise<PhaseProfile>;
-        getPhaseConfiguration: (
-          missionId: string,
-        ) => Promise<MissionPhaseConfiguration | null>;
-        getDashboard: () => Promise<MissionDashboardSnapshot>;
-        getFullMissionView: (
-          args: GetFullMissionViewArgs,
-        ) => Promise<FullMissionViewResult>;
-        preflight: (
-          args: MissionPreflightRequest,
-        ) => Promise<MissionPreflightResult>;
-        getRunView: (
-          args: GetMissionRunViewArgs,
-        ) => Promise<MissionRunView | null>;
-        subscribeRunView: (
-          args: GetMissionRunViewArgs,
-          cb: (view: MissionRunView | null) => void,
-        ) => () => void;
-        onEvent: (cb: (ev: MissionsEventPayload) => void) => () => void;
-      };
-      orchestrator: {
-        listRuns: (
-          args?: ListOrchestratorRunsArgs,
-        ) => Promise<OrchestratorRun[]>;
-        getRunGraph: (
-          args: GetOrchestratorRunGraphArgs,
-        ) => Promise<OrchestratorRunGraph>;
-        startRun: (
-          args: StartOrchestratorRunArgs,
-        ) => Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }>;
-        startRunFromMission: (
-          args: StartOrchestratorRunFromMissionArgs,
-        ) => Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }>;
-        startAttempt: (
-          args: StartOrchestratorAttemptArgs,
-        ) => Promise<OrchestratorAttempt>;
-        completeAttempt: (
-          args: CompleteOrchestratorAttemptArgs,
-        ) => Promise<OrchestratorAttempt>;
-        tickRun: (args: TickOrchestratorRunArgs) => Promise<OrchestratorRun>;
-        pauseRun: (args: PauseOrchestratorRunArgs) => Promise<OrchestratorRun>;
-        resumeRun: (
-          args: ResumeOrchestratorRunArgs,
-        ) => Promise<OrchestratorRun>;
-        cancelRun: (
-          args: CancelOrchestratorRunArgs,
-        ) => Promise<OrchestratorRun>;
-        cleanupTeamResources: (
-          args: CleanupOrchestratorTeamResourcesArgs,
-        ) => Promise<CleanupOrchestratorTeamResourcesResult>;
-        heartbeatClaims: (
-          args: HeartbeatOrchestratorClaimsArgs,
-        ) => Promise<number>;
-        listTimeline: (
-          args: ListOrchestratorTimelineArgs,
-        ) => Promise<OrchestratorTimelineEvent[]>;
-        getMissionLogs: (
-          args: GetMissionLogsArgs,
-        ) => Promise<GetMissionLogsResult>;
-        exportMissionLogs: (
-          args: ExportMissionLogsArgs,
-        ) => Promise<ExportMissionLogsResult>;
-        getGateReport: (
-          args?: GetOrchestratorGateReportArgs,
-        ) => Promise<OrchestratorGateReport>;
-        getWorkerStates: (
-          args: GetOrchestratorWorkerStatesArgs,
-        ) => Promise<OrchestratorWorkerState[]>;
-        startMissionRun: (
-          args: StartMissionRunWithAIArgs,
-        ) => Promise<StartMissionRunWithAIResult>;
-        steerMission: (args: SteerMissionArgs) => Promise<SteerMissionResult>;
-        getModelCapabilities: () => Promise<GetModelCapabilitiesResult>;
-        getTeamMembers: (
-          args: GetTeamMembersArgs,
-        ) => Promise<OrchestratorTeamMember[]>;
-        getTeamRuntimeState: (
-          args: GetTeamRuntimeStateArgs,
-        ) => Promise<OrchestratorTeamRuntimeState | null>;
-        finalizeRun: (args: FinalizeRunArgs) => Promise<FinalizeRunResult>;
-        sendChat: (
-          args: SendOrchestratorChatArgs,
-        ) => Promise<OrchestratorChatMessage>;
-        getChat: (
-          args: GetOrchestratorChatArgs,
-        ) => Promise<OrchestratorChatMessage[]>;
-        listChatThreads: (
-          args: ListOrchestratorChatThreadsArgs,
-        ) => Promise<OrchestratorChatThread[]>;
-        getThreadMessages: (
-          args: GetOrchestratorThreadMessagesArgs,
-        ) => Promise<OrchestratorChatMessage[]>;
-        sendThreadMessage: (
-          args: SendOrchestratorThreadMessageArgs,
-        ) => Promise<OrchestratorChatMessage>;
-        getWorkerDigest: (
-          args: GetOrchestratorWorkerDigestArgs,
-        ) => Promise<OrchestratorWorkerDigest | null>;
-        listWorkerDigests: (
-          args: ListOrchestratorWorkerDigestsArgs,
-        ) => Promise<OrchestratorWorkerDigest[]>;
-        getContextCheckpoint: (
-          args: GetOrchestratorContextCheckpointArgs,
-        ) => Promise<OrchestratorContextCheckpoint | null>;
-        listLaneDecisions: (
-          args: ListOrchestratorLaneDecisionsArgs,
-        ) => Promise<OrchestratorLaneDecision[]>;
-        listArtifacts: (
-          args: ListOrchestratorArtifactsArgs,
-        ) => Promise<OrchestratorArtifact[]>;
-        listWorkerCheckpoints: (
-          args: ListOrchestratorWorkerCheckpointsArgs,
-        ) => Promise<OrchestratorWorkerCheckpoint[]>;
-        getPromptInspector: (
-          args: GetOrchestratorPromptInspectorArgs,
-        ) => Promise<OrchestratorPromptInspector>;
-        getPlanningPromptPreview: (
-          args: GetPlanningPromptPreviewArgs,
-        ) => Promise<OrchestratorPromptInspector>;
-        getMissionMetrics: (args: GetMissionMetricsArgs) => Promise<{
-          config: MissionMetricsConfig | null;
-          samples: MissionMetricSample[];
-        }>;
-        setMissionMetricsConfig: (
-          args: SetMissionMetricsConfigArgs,
-        ) => Promise<MissionMetricsConfig>;
-        getExecutionPlanPreview: (args: {
-          runId: string;
-        }) => Promise<ExecutionPlanPreview | null>;
-        getMissionStateDocument: (
-          args: GetMissionStateDocumentArgs,
-        ) => Promise<MissionStateDocument | null>;
-        getCheckpointStatus: (args: { runId: string }) => Promise<{
-          savedAt: string;
-          turnCount: number;
-          compactionCount: number;
-        } | null>;
-        getMissionBudgetStatus: (
-          args: GetMissionBudgetStatusArgs,
-        ) => Promise<MissionBudgetSnapshot>;
-        getMissionBudgetTelemetry: (
-          args: GetMissionBudgetTelemetryArgs,
-        ) => Promise<MissionBudgetTelemetrySnapshot>;
-        sendAgentMessage: (
-          args: SendAgentMessageArgs,
-        ) => Promise<OrchestratorChatMessage>;
-        getGlobalChat: (
-          args: GetGlobalChatArgs,
-        ) => Promise<OrchestratorChatMessage[]>;
-        getActiveAgents: (
-          args: GetActiveAgentsArgs,
-        ) => Promise<ActiveAgentInfo[]>;
-        getAggregatedUsage: (
-          args: GetAggregatedUsageArgs,
-        ) => Promise<AggregatedUsageStats>;
-        onEvent: (cb: (ev: OrchestratorRuntimeEvent) => void) => () => void;
-        onThreadEvent: (
-          cb: (ev: OrchestratorThreadEvent) => void,
-        ) => () => void;
-        onDagMutation: (cb: (ev: DagMutationEvent) => void) => () => void;
       };
       orchestration: {
         runCreate: (args: {
@@ -1958,6 +1645,10 @@ declare global {
           laneId: string;
           commitSha: string;
         }) => Promise<GitCommitSummary | null>;
+        isCommitInLaneHistory: (args: {
+          laneId: string;
+          commitSha: string;
+        }) => Promise<boolean>;
         revertCommit: (args: GitRevertArgs) => Promise<GitActionResult>;
         cherryPickCommit: (args: GitCherryPickArgs) => Promise<GitActionResult>;
         createTag: (args: GitCreateTagArgs) => Promise<GitActionResult>;

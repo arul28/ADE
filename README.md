@@ -101,7 +101,7 @@ Every worktree, every agent, every PR — synced to iOS. Start a task on macOS, 
 </tr>
 </table>
 
-Plus files, terminals, git history, workspace graph, multi-tasking, Linear sync, long-running missions, cron automations, computer-use proofs, and the `ade` CLI.
+Plus files, terminals, git history, workspace graph, multi-tasking, Linear sync, cron automations, computer-use proofs, and the `ade` CLI.
 
 ## Install
 
@@ -215,7 +215,7 @@ Validate with `npm --prefix apps/desktop run typecheck` and `npm run test:deskto
 
 ## Links
 
-[Quickstart](https://www.ade-app.dev/docs/quickstart) · [Key concepts](https://www.ade-app.dev/docs/key-concepts) · [Worktrees](https://www.ade-app.dev/docs/lanes/overview) · [Missions](https://www.ade-app.dev/docs/missions/overview) · [Computer use](https://www.ade-app.dev/docs/computer-use/overview) · [Changelog](https://www.ade-app.dev/docs/changelog/v1.1.0) · [Contributing](CONTRIBUTING.md)
+[Quickstart](https://www.ade-app.dev/docs/quickstart) · [Key concepts](https://www.ade-app.dev/docs/key-concepts) · [Worktrees](https://www.ade-app.dev/docs/lanes/overview) · [Computer use](https://www.ade-app.dev/docs/computer-use/overview) · [Changelog](https://www.ade-app.dev/docs/changelog/v1.1.0) · [Contributing](CONTRIBUTING.md)
 
 ## License
 

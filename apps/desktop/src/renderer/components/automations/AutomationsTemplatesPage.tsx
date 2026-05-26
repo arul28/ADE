@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft } from "@phosphor-icons/react";
 import type { AutomationRuleDraft } from "../../../shared/types";
@@ -7,23 +6,7 @@ import { TemplatesTab } from "./TemplatesTab";
 
 export function AutomationsTemplatesPage({ active = true }: { active?: boolean } = {}) {
   const navigate = useNavigate();
-  const [missionsEnabled, setMissionsEnabled] = useState(true);
-
-  useEffect(() => {
-    if (!active) return;
-    let cancelled = false;
-    window.ade.app.getInfo().then(
-      (info) => {
-        if (!cancelled) setMissionsEnabled(!info.isPackaged);
-      },
-      () => {
-        if (!cancelled) setMissionsEnabled(true);
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [active]);
+  void active;
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-bg text-fg" data-testid="automations-templates-page">
@@ -40,7 +23,6 @@ export function AutomationsTemplatesPage({ active = true }: { active?: boolean }
 
       <div className="flex-1 min-h-0 overflow-hidden">
         <TemplatesTab
-          missionsEnabled={missionsEnabled}
           onUseTemplate={(draft) => {
             navigate("/automations", { state: { draft: draft as AutomationRuleDraft } });
           }}

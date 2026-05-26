@@ -18,6 +18,7 @@ import {
   useTimelineStore,
   type TimelineStoreApi,
 } from "./useTimelineStore";
+import { shouldHydrateCommitShaFromUrl } from "./historyUrlHydration";
 import type { TimelineEvent } from "./timelineTypes";
 import type { GitCommitSummary } from "../../../shared/types";
 
@@ -63,6 +64,9 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   const syncingFromUrlRef = useRef(false);
   const lastWrittenUrlRef = useRef<string>("");
   const [commitRefreshToken, setCommitRefreshToken] = useState(0);
+  /** False when the selected commit object exists but is not reachable from the lane head. */
+  const [commitOnLaneHistory, setCommitOnLaneHistory] = useState(true);
+  const [selectedCommitLaneId, setSelectedCommitLaneId] = useState<string | null>(null);
 
   const events = useTimelineStore((s) => s.events);
   const rawEvents = useTimelineStore((s) => s.rawEvents);
@@ -114,8 +118,12 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
 
     const laneFromUrl = searchParams.get("laneId");
     const laneIsKnown = laneFromUrl != null && lanes.some((l) => l.id === laneFromUrl);
+    let focusLaneChanged = false;
     if (laneFromUrl && laneIsKnown) {
-      if (focusLaneId !== laneFromUrl) setFocusLaneId(laneFromUrl);
+      if (focusLaneId !== laneFromUrl) {
+        setFocusLaneId(laneFromUrl);
+        focusLaneChanged = true;
+      }
     } else {
       if (laneFromUrl && !laneIsKnown && lanes.length > 0) {
         // Lane referenced in URL no longer exists — strip it and the dependent commit hash.
@@ -123,7 +131,17 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
         cleanedParams.delete("commitSha");
         cleanedUrl = true;
       }
-      if (!focusLaneId || !lanes.some((l) => l.id === focusLaneId)) {
+      const commitShaInUrl = searchParams.get("commitSha");
+      const needsLaneForCommit =
+        commitShaInUrl != null &&
+        commitShaInUrl.length > 0 &&
+        (requestedSurface === "commits" || surface === "commits");
+      // Do not guess a lane when a commit deeplink omits laneId — destructive git
+      // actions would run against the wrong worktree.
+      if (
+        !needsLaneForCommit &&
+        (!focusLaneId || !lanes.some((l) => l.id === focusLaneId))
+      ) {
         const fallback =
           (selectedLaneId && lanes.some((l) => l.id === selectedLaneId) ? selectedLaneId : null) ??
           lanes[0]?.id ??
@@ -145,12 +163,16 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     if (commitSha && requestedSurface === "activity") {
       cleanedParams.delete("commitSha");
       cleanedUrl = true;
-    } else if (commitSha && commitSha !== selectedCommitSha) {
+    } else if (
+      shouldHydrateCommitShaFromUrl({
+        commitSha,
+        requestedSurface,
+        selectedCommitSha,
+        focusLaneChanged,
+      })
+    ) {
       setSelectedCommitSha(commitSha);
       setSurface("commits");
-      if (laneFromUrl && lanes.some((l) => l.id === laneFromUrl)) {
-        setFocusLaneId(laneFromUrl);
-      }
     }
 
     if (cleanedUrl) {
@@ -166,6 +188,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     lanes,
     selectedLaneId,
     focusLaneId,
+    surface,
     searchParams,
     selectedEventId,
     selectedCommitSha,
@@ -176,6 +199,20 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     setSearchParams,
   ]);
 
+  // Keep History destructive git actions aligned with the lane selected elsewhere
+  // (Lanes / Work), unless the URL is driving lane or commit-only deeplink state.
+  useEffect(() => {
+    if (!active) return;
+    if (syncingFromUrlRef.current) return;
+    if (searchParams.get("laneId")) return;
+    if (searchParams.get("commitSha") && !searchParams.get("laneId")) return;
+    const selected =
+      selectedLaneId && lanes.some((lane) => lane.id === selectedLaneId) ? selectedLaneId : null;
+    if (selected && focusLaneId !== selected) {
+      setFocusLaneId(selected);
+    }
+  }, [active, focusLaneId, lanes, searchParams, selectedLaneId, setFocusLaneId]);
+
   useEffect(() => {
     if (!active || surface === "commits") return;
     void fetchEvents();
@@ -184,7 +221,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   useEffect(() => {
     if (!active || surface !== "activity") return;
     // Tight polling only refreshes the cheap operations feed; supplemental sources
-    // (missions, CTO, worker runs) refresh on focus/visibility change instead.
+    // Supplemental sources refresh on focus/visibility change instead.
     const tightRefresh = () => {
       if (document.visibilityState !== "visible") return;
       void fetchEvents({ silent: true, skipSupplemental: true });
@@ -205,7 +242,14 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   }, [active, surface, events, fetchEvents]);
 
   useEffect(() => {
-    if (!active || !focusLaneId || !selectedCommitSha || selectedCommit?.sha === selectedCommitSha) {
+    const selectedCommitIsCurrentLane =
+      selectedCommit?.sha === selectedCommitSha &&
+      selectedCommitLaneId === focusLaneId;
+    if (!active || !focusLaneId || !selectedCommitSha || selectedCommitIsCurrentLane) {
+      if (!selectedCommitSha) {
+        setCommitOnLaneHistory(true);
+        setSelectedCommitLaneId(null);
+      }
       return;
     }
     let cancelled = false;
@@ -215,26 +259,50 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
         if (cancelled) return;
         const found = rows.find((r) => r.sha === selectedCommitSha);
         if (found) {
+          setCommitOnLaneHistory(true);
+          setSelectedCommitLaneId(focusLaneId);
           setSelectedCommit(found);
           return;
         }
         // Outside the loaded window — fall back to a targeted single-commit lookup.
-        if (typeof window.ade.git.getCommit !== "function") return;
+        if (typeof window.ade.git.getCommit !== "function") {
+          setCommitOnLaneHistory(false);
+          return;
+        }
         try {
           const targeted = await window.ade.git.getCommit({
             laneId: focusLaneId,
             commitSha: selectedCommitSha,
           });
-          if (!cancelled && targeted) setSelectedCommit(targeted);
+          if (!cancelled) {
+            const isOnLane = targeted
+              ? await window.ade.git.isCommitInLaneHistory({
+                laneId: focusLaneId,
+                commitSha: selectedCommitSha,
+              }).catch(() => false)
+              : false;
+            if (cancelled) return;
+            setCommitOnLaneHistory(isOnLane);
+            setSelectedCommitLaneId(focusLaneId);
+            if (targeted) setSelectedCommit(targeted);
+          }
         } catch {
-          // Best-effort hydration; ignore failures.
+          if (!cancelled) {
+            setCommitOnLaneHistory(false);
+            setSelectedCommitLaneId(focusLaneId);
+          }
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) {
+          setCommitOnLaneHistory(false);
+          setSelectedCommitLaneId(focusLaneId);
+        }
+      });
     return () => {
       cancelled = true;
     };
-  }, [active, focusLaneId, selectedCommitSha, selectedCommit?.sha, setSelectedCommit]);
+  }, [active, focusLaneId, selectedCommitLaneId, selectedCommitSha, selectedCommit?.sha, setSelectedCommit]);
 
   useEffect(() => {
     if (!active || syncingFromUrlRef.current) return;
@@ -355,6 +423,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   }, [selectedCommitSha, rawEvents, events]);
 
   const focusLane = lanes.find((l) => l.id === focusLaneId) ?? null;
+  const focusLaneHasWorktree = Boolean(focusLane?.worktreePath?.trim());
 
   const laneData = useMemo(
     () =>
@@ -379,6 +448,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
       <CommitHistoryView
         laneId={focusLaneId}
         laneName={focusLane?.name ?? null}
+        laneHasWorktree={focusLaneHasWorktree}
         selectedSha={selectedCommitSha}
         onSelectCommit={handleSelectCommit}
         active={active}
@@ -455,7 +525,9 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
       <Suspense fallback={panelFallback}>
         <CommitDetailPanel
           laneId={focusLaneId}
+          laneHasWorktree={focusLaneHasWorktree}
           commit={selectedCommit}
+          commitOnLaneHistory={commitOnLaneHistory}
           relatedEvents={relatedEventsForCommit}
           onClose={handleCloseDetail}
           onNavigateToLane={handleNavigateToLane}

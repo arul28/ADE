@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { ArrowClockwise } from "@phosphor-icons/react";
 import type { AutomationRun, AutomationRunDetail } from "../../../shared/types";
 import { Button } from "../ui/Button";
@@ -16,7 +15,6 @@ export function RuleHistoryPanel({
   automationId: string;
   ruleName: string;
 }) {
-  const navigate = useNavigate();
   const [runs, setRuns] = useState<AutomationRun[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
@@ -128,7 +126,6 @@ export function RuleHistoryPanel({
         <RunDetailPanel
           detail={detail}
           loading={detailLoading}
-          onOpenMission={(missionId) => navigate(`/missions?missionId=${encodeURIComponent(missionId)}`)}
         />
       </div>
     </div>

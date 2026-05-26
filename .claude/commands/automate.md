@@ -178,13 +178,13 @@ docs/
 ├── OPTIMIZATION_OPPORTUNITIES.md      # backlog (append-only)
 └── features/
     ├── agents/              ├── memory/
-    ├── automations/         ├── missions/
-    ├── chat/                ├── onboarding-and-settings/
-    ├── computer-use/        ├── project-home/
-    ├── conflicts/           ├── pull-requests/
-    ├── context-packs/       ├── sync-and-multi-device/
-    ├── cto/                 ├── terminals-and-sessions/
-    ├── files-and-editor/    └── workspace-graph/
+    ├── automations/         ├── onboarding-and-settings/
+    ├── chat/                ├── project-home/
+    ├── computer-use/        ├── pull-requests/
+    ├── conflicts/           ├── sync-and-multi-device/
+    ├── context-packs/       ├── terminals-and-sessions/
+    ├── cto/                 ├── workspace-graph/
+    ├── files-and-editor/
     ├── history/
     ├── lanes/
     └── linear-integration/
@@ -209,7 +209,6 @@ Step 2: Map changed source to internal docs
 
 | Source Directory                                   | Doc Location                                       |
 |----------------------------------------------------|----------------------------------------------------|
-| apps/desktop/src/main/services/orchestrator/       | docs/features/missions/                            |
 | apps/desktop/src/main/services/projects/           | docs/features/project-home/                        |
 | apps/desktop/src/main/services/proof/              | docs/features/proof.md                             |
 | apps/desktop/src/main/services/review/             | docs/features/pull-requests/                       |
@@ -347,7 +346,7 @@ Step 2: Identify CLI-relevant desktop changes
 Treat anything under these paths as a candidate for new / changed / removed
 CLI surface:
 - apps/desktop/src/main/services/**  (each service is a candidate action
-  domain — lanes, prs, chat, tests, proof, run, git, files, missions,
+  domain — lanes, prs, chat, tests, proof, run, git, files,
   automations, computerUse, context, conflicts, history, memory, onboarding,
   pty, sessions, processes, sync, config, cto, ai)
 - apps/desktop/src/preload/**  and  apps/desktop/src/shared/**  (IPC and
@@ -371,7 +370,7 @@ Step 3: Map each candidate to the CLI
 
 Step 4: Apply auto-fix edits — scoped to apps/ade-cli/ only
 - New feature: add a typed subcommand if the desktop feature is a distinct
-  user-facing workflow (lane / PR / chat / test / run / proof / mission /
+  user-facing workflow (lane / PR / chat / test / run / proof /
   automation / etc.). If it is just a new low-level service action, ensure
   it is reachable via the actions registry and skip a typed wrapper.
 - Renamed or behavior-changed feature: update the existing case to match
@@ -496,16 +495,12 @@ After all seven passes:
 - One project: `cd apps/desktop && npx vitest run --project unit-main`
 - Sharded (CI uses 8): `cd apps/desktop && npx vitest run --shard=1/8`
 
-**MCP server** (`apps/mcp-server/`):
-- `cd apps/mcp-server && npx vitest run <file>` or `npm test`
-
 **Web** (`apps/web/`) — marketing site, no tests.
 
 ### Feature docs (read for context before adding tests)
 
 | Changed source area | Feature doc |
 |---|---|
-| services/orchestrator/, renderer missions/ | docs/features/missions/ |
 | services/prs/, renderer prs/ | docs/features/pull-requests/ |
 | services/lanes/, renderer lanes/ | docs/features/lanes/ |
 | services/chat/, services/ai/, renderer chat/ | docs/features/chat/ + docs/features/agents/ |

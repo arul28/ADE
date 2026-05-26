@@ -1770,14 +1770,13 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                     const artifactType = String(artifact.artifactType);
                     const countValue =
                       artifactType === "provenance_brief"
-                        ? readArtifactMetaCount(artifact, ["provenanceCount", "missionCount", "workerDigestCount", "sessionDeltaCount", "priorReviewCount"])
+                        ? readArtifactMetaCount(artifact, ["provenanceCount", "workerDigestCount", "sessionDeltaCount", "priorReviewCount"])
                         : artifactType === "rule_overlays"
                           ? readArtifactMetaCount(artifact, ["ruleCount", "matchedRuleCount", "overlayCount", "pathCount"])
                           : readArtifactMetaCount(artifact, ["signalCount", "checkCount", "testRunCount", "issueCount"]);
                     const detailChips =
                       artifactType === "provenance_brief"
                         ? [
-                            readArtifactMetaCount(artifact, ["missionCount", "missionsCount"]) ? `missions ${readArtifactMetaCount(artifact, ["missionCount", "missionsCount"])}` : null,
                             readArtifactMetaCount(artifact, ["workerDigestCount", "workerCount"]) ? `workers ${readArtifactMetaCount(artifact, ["workerDigestCount", "workerCount"])}` : null,
                             readArtifactMetaCount(artifact, ["sessionDeltaCount", "sessionCount"]) ? `sessions ${readArtifactMetaCount(artifact, ["sessionDeltaCount", "sessionCount"])}` : null,
                           ].filter((value): value is string => Boolean(value))

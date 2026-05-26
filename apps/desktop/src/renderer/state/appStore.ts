@@ -826,6 +826,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   /** Monotonic counter incremented before each lane refresh request.
    *  Slower responses whose token doesn't match the latest value are discarded. */
   let laneRefreshVersion = 0;
+  let remoteProjectSwitchGeneration = 0;
   let laneRefreshInFlight: Promise<void> | null = null;
   let activeLaneRefreshProjectKey: string | null = null;
   let activeLaneRefreshRequest: LaneRefreshRequest | null = null;
@@ -1608,6 +1609,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   },
 
   switchRemoteProject: async (targetId: string, projectId: string) => {
+    const switchGeneration = ++remoteProjectSwitchGeneration;
     ++laneRefreshVersion;
     set({
       projectTransition: {
@@ -1620,6 +1622,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     });
     try {
       const binding = await window.ade.remoteRuntime.openProject(targetId, projectId);
+      if (switchGeneration !== remoteProjectSwitchGeneration) {
+        return binding;
+      }
       set({
         project: {
           rootPath: binding.rootPath,
@@ -1647,11 +1652,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       void get().refreshLanes({ includeStatus: false });
       return binding;
     } catch (error) {
-      set({
-        projectTransition: null,
-        lanesLoading: false,
-        projectTransitionError: formatProjectTransitionError("switching", error),
-      });
+      if (switchGeneration === remoteProjectSwitchGeneration) {
+        set({
+          projectTransition: null,
+          lanesLoading: false,
+          projectTransitionError: formatProjectTransitionError("switching", error),
+        });
+      }
       throw error;
     }
   },

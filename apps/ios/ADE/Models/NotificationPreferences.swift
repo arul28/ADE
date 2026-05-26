@@ -25,7 +25,6 @@ public struct NotificationPreferences: Codable, Equatable, Hashable {
   // CTO & sub-agents
   public var ctoSubagentStarted: Bool = false
   public var ctoSubagentFinished: Bool = true
-  public var ctoMissionPhase: Bool = true
 
   // PRs & CI
   public var prCiFailing: Bool = true
@@ -58,7 +57,6 @@ public struct NotificationPreferences: Codable, Equatable, Hashable {
     if chatTurnCompleted { n += 1 }
     if ctoSubagentStarted { n += 1 }
     if ctoSubagentFinished { n += 1 }
-    if ctoMissionPhase { n += 1 }
     if prCiFailing { n += 1 }
     if prReviewRequested { n += 1 }
     if prChangesRequested { n += 1 }
@@ -71,7 +69,7 @@ public struct NotificationPreferences: Codable, Equatable, Hashable {
 
   /// Total category toggle count (excluding per-session overrides / quiet
   /// hours) — useful for "N of M" style UI.
-  public static let totalCategoryCount = 13
+  public static let totalCategoryCount = 12
 }
 
 public extension NotificationPreferences {

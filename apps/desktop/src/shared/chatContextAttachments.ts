@@ -1,5 +1,6 @@
 import type { AgentChatContextAttachment, LaneLinearIssue } from "./types";
 import type { OrchestrationContextItem } from "./types/orchestration";
+import { parseLaneLinearIssueValue } from "./laneLinearIssue";
 
 export function chatContextAttachmentKey(attachment: AgentChatContextAttachment): string {
   switch (attachment.type) {
@@ -66,75 +67,9 @@ function readRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function readString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length ? value.trim() : null;
-}
-
 function readNullableString(value: unknown): string | null {
   if (value == null) return null;
   return typeof value === "string" ? value : null;
-}
-
-function readNumber(value: unknown, fallback = 0): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-function readStringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((entry): entry is string => typeof entry === "string")
-    : [];
-}
-
-function normalizeLinearIssue(value: unknown): LaneLinearIssue | null {
-  const issue = readRecord(value);
-  if (!issue) return null;
-  const id = readString(issue.id);
-  const identifier = readString(issue.identifier);
-  const title = readString(issue.title);
-  const projectId = readString(issue.projectId);
-  const projectSlug = readString(issue.projectSlug);
-  const teamId = readString(issue.teamId);
-  const teamKey = readString(issue.teamKey);
-  const stateId = readString(issue.stateId);
-  const stateName = readString(issue.stateName);
-  const stateType = readString(issue.stateType);
-  const createdAt = readString(issue.createdAt);
-  const updatedAt = readString(issue.updatedAt);
-  if (!id || !identifier || !title || !projectId || !projectSlug || !teamId || !teamKey || !stateId || !stateName || !stateType || !createdAt || !updatedAt) {
-    return null;
-  }
-  const rawPriorityLabel = readString(issue.priorityLabel);
-  const priorityLabel: LaneLinearIssue["priorityLabel"] = rawPriorityLabel === "urgent" || rawPriorityLabel === "high" || rawPriorityLabel === "normal" || rawPriorityLabel === "low" || rawPriorityLabel === "none"
-    ? rawPriorityLabel
-    : "none";
-  return {
-    id,
-    identifier,
-    title,
-    description: readNullableString(issue.description),
-    url: readNullableString(issue.url),
-    projectId,
-    projectSlug,
-    projectName: readNullableString(issue.projectName),
-    teamId,
-    teamKey,
-    teamName: readNullableString(issue.teamName),
-    stateId,
-    stateName,
-    stateType,
-    priority: readNumber(issue.priority),
-    priorityLabel,
-    labels: readStringArray(issue.labels),
-    assigneeId: readNullableString(issue.assigneeId),
-    assigneeName: readNullableString(issue.assigneeName),
-    creatorId: readNullableString(issue.creatorId),
-    creatorName: readNullableString(issue.creatorName),
-    dueDate: readNullableString(issue.dueDate),
-    estimate: issue.estimate == null ? null : readNumber(issue.estimate),
-    branchName: readNullableString(issue.branchName),
-    createdAt,
-    updatedAt,
-  };
 }
 
 export function normalizeChatContextAttachments(value: unknown): AgentChatContextAttachment[] {
@@ -143,7 +78,7 @@ export function normalizeChatContextAttachments(value: unknown): AgentChatContex
   for (const entry of value) {
     const record = readRecord(entry);
     if (!record || record.type !== "linear_issue") continue;
-    const issue = normalizeLinearIssue(record.issue);
+    const issue = parseLaneLinearIssueValue(record.issue);
     if (!issue) continue;
     out.push({
       type: "linear_issue",

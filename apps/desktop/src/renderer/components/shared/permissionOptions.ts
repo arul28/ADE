@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
-// Shared permission option definitions — used by both chat composer and
-// mission dialog to keep per-provider permission UIs in sync.
+// Shared permission option definitions used by chat, PR resolver, and
+// automation UIs to keep per-provider permission choices in sync.
 // ---------------------------------------------------------------------------
 
 import type { AgentChatPermissionMode, ChatSurfaceProfile } from "../../../shared/types";
@@ -400,7 +400,7 @@ export function safetyColors(safety: SafetyLevel) {
 
 /**
  * Map a ProviderFamily string to the permission-family key used by
- * MissionProviderPermissions ("claude" | "codex" | "cursor" | "droid" | "opencode").
+ * provider permission config ("claude" | "codex" | "cursor" | "droid" | "opencode").
  *
  * Only CLI-wrapped anthropic → "claude" and CLI-wrapped openai → "codex".
  * All API / local models (even anthropic-api or openai-api) use "opencode".

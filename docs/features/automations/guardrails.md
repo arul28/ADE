@@ -81,7 +81,7 @@ This path is used for "what would this rule do?" dry runs — nothing persists e
 
 Status mapping:
 
-- Mission and worker-backed runs map runtime state into the shared run statuses above.
+- Worker-backed runs map runtime state into the shared run statuses above.
 - Legacy `needs_review` rows are normalized to `succeeded`; publish review now lives in queue status and verification metadata.
 
 The key invariant: when a rule has `verifyBeforePublish`, completion keeps the run in the queue through `verification-required` rather than inventing a separate run status.
@@ -103,11 +103,11 @@ Publish is only allowed when:
 3. `guardrails.requireHuman` is not set, or a reviewer has approved.
 4. The disposition-specific path is available (e.g. Linear credentials exist for `linear-comment`).
 
-`PUBLISH_CAPABLE_TOOL_FAMILIES` (`github`, `linear`, `browser`, `external-cli`) is the set of families that can publish — built-in palettes like `repo`, `git`, `tests`, `mission` cannot publish externally regardless of disposition.
+`PUBLISH_CAPABLE_TOOL_FAMILIES` (`github`, `linear`, `browser`, `external-cli`) is the set of families that can publish — built-in palettes like `repo`, `git`, and `tests` cannot publish externally regardless of disposition.
 
 ## Human review
 
-Review gating creates an intervention via the mission runtime (for `kind: "mission"`) or a queue entry (for `agent-session` and `built-in`). The operator:
+Review gating creates a queue entry for `agent-session` and `built-in` runs. The operator:
 
 - Approves -> run transitions to `succeeded`, publish proceeds.
 - Rejects -> run transitions to `failed` or `cancelled` depending on the rejection reason.
@@ -133,11 +133,11 @@ Built-in shell actions must stay within the allowed workdirs:
 - `validateAutomationCwd(baseCwd, cwdRaw)` resolves the requested cwd against the base and rejects anything outside.
 - Paths are resolved with `resolvePathWithinRoot` which handles symlink-resolution and rejects traversal.
 
-Mission-execution rules inherit the mission runtime's sandbox (`WorkerSandboxConfig`). Agent-session rules run inside the ADE chat service's permission model (per-session allowed tools).
+Agent-session rules run inside the ADE chat service's permission model (per-session allowed tools). Built-in shell actions use the cwd and lane allowlists above.
 
 ## Budget caps
 
-Shared with Missions via the top-bar Usage popup. The popup (`HeaderUsageControl`, `UsageQuotaPanel`) renders the live provider quotas plus a collapsible Automation guardrails section that mounts `BudgetCapEditor`. Supporting widgets (`CostSummaryCard`, `UsageMeter`, `UsagePacingBadge`) still live under `apps/desktop/src/renderer/components/settings/` but are reused from the popup. Settings no longer has a Usage tab; the Automations page continues to focus on rules, history, and ingress.
+Shared via the top-bar Usage popup. The popup (`HeaderUsageControl`, `UsageQuotaPanel`) renders the live provider quotas plus a collapsible Automation guardrails section that mounts `BudgetCapEditor`. Supporting widgets (`CostSummaryCard`, `UsageMeter`, `UsagePacingBadge`) still live under `apps/desktop/src/renderer/components/settings/` but are reused from the popup. Settings no longer has a Usage tab; the Automations page continues to focus on rules, history, and ingress.
 
 Automations also support rule-level caps:
 
@@ -152,7 +152,7 @@ Every run writes:
 - Run row with executor, status, queue status, confidence, spend, trigger metadata, verification flag.
 - Action rows for each step with status and output.
 - Ingress event row (for webhook/relay triggers) with raw payload.
-- Mission artifacts (when `outputs.createArtifact` is true) for cross-surface indexing.
+- Proof artifacts (when `outputs.createArtifact` is true) for cross-surface indexing.
 - Procedure feedback (`AutomationProcedureFeedback`) — operator ratings and notes that feed back into the procedural learning service.
 
 ## Gotchas
@@ -169,4 +169,3 @@ Every run writes:
 - `README.md` — rule structure and execution surfaces.
 - `triggers-and-actions.md` — trigger surface and built-in action catalog.
 - `../cto/workers.md` — same env-ref secret policy.
-- `../missions/README.md` — mission runtime enforces its own sandboxing for mission-execution automations.

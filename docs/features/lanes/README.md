@@ -59,7 +59,7 @@ Desktop fallback services (`apps/desktop/src/main/services/lanes/`):
 
 | File | Responsibility |
 |------|---------------|
-| `laneService.ts` | Lane CRUD, worktree creation/removal, status computation, stack chain traversal, rebase runs, reparent, mission role tagging, startup repair routines, and the multi-step lane teardown pipeline (`getDeleteRisk`, `delete`, `cancelDelete`) that streams `LaneDeleteProgress` events as it stops processes/PTYs/watchers, cancels auto-rebase, runs `git worktree remove` / `git branch -D` / optional `git push --delete origin`, verifies residual worktree files are gone before DB cleanup, and cleans the pack directory + DB rows. Deletes now run to completion once started, so `cancelDelete` reports that no active delete can be cancelled. `reparent` accepts an optional `stackBaseBranchRef` to pick a specific branch to stack onto (resolved in the project repo with `origin/` preferred); when both the parent link and the resolved base branch are unchanged the call short-circuits without touching git. |
+| `laneService.ts` | Lane CRUD, worktree creation/removal, status computation, stack chain traversal, rebase runs, reparent, mission role tagging, startup repair routines, branch switching, macOS VM placement wiring, and the multi-step lane teardown pipeline (`getDeleteRisk`, `delete`, `cancelDelete`) that streams `LaneDeleteProgress` events as it stops processes/PTYs/watchers, cancels auto-rebase, runs `git worktree remove` / `git branch -D` / optional `git push --delete origin`, verifies residual worktree files are gone before DB cleanup, and cleans the pack directory + DB rows. Deletes now run to completion once started, so `cancelDelete` reports that no active delete can be cancelled. `reparent` accepts an optional `stackBaseBranchRef` to pick a specific branch to stack onto (resolved in the project repo with `origin/` preferred); when both the parent link and the resolved base branch are unchanged the call short-circuits without touching git. Branch switching rolls git checkout back to the previous branch when the database update fails. macOS VM placement links the lane to the current VM, rolls placement back on critical link failure, starts mirror sync best-effort, and emits a placement-change event. |
 | `autoRebaseService.ts` | Auto-rebase worker for stacked lanes, attention state, head-change handlers. Consults `resolvePrRebaseMode` to determine whether a lane with a linked PR should auto-rebase (`pr_target` strategy) or only surface manual attention (`lane_base` strategy). `listStatuses({ includeAll: true })` returns stored statuses without recomputing lane git status for PR workflow views. |
 | `rebaseSuggestionService.ts` | Emits rebase suggestions when a parent lane advances, dismiss/defer lifecycle. Each suggestion may include up to 20 `RebaseTargetCommit` entries showing the behind commits the rebase would pull in. |
 | `laneEnvironmentService.ts` | Environment init pipeline: env files, docker services, dependencies, mount points, copy paths (Phase 5 W1) |
@@ -68,7 +68,7 @@ Desktop fallback services (`apps/desktop/src/main/services/lanes/`):
 | `laneProxyService.ts` | `*.localhost` reverse proxy, per-lane routes, cookie isolation (Phase 5 W4) |
 | `oauthRedirectService.ts` | OAuth callback routing for multi-lane (Phase 5 W5) |
 | `runtimeDiagnosticsService.ts` | Aggregate lane health checks, fallback mode (Phase 5 W6) |
-| `laneLaunchContext.ts` | Pure helper: resolves launch cwd/env for terminals and tools. Returns `{ laneWorktreePath, cwd, execStrategy: "local" \| "ssh", sshTarget? }`. For lanes whose `runtimePlacement` is `macos-vm`, the helper consults a pluggable `MacosVmLaunchProvider` (installed during main-process bootstrap) and routes the launch to an in-guest `ssh user@host` target under `/Volumes/My Shared Files`. When the VM is missing, not runtime-ready, or not yet fetched, it throws `VmNotReadyError` (`code: "macos-vm-not-ready"`) carrying the current `MacosVmPhaseNumber` so the renderer can prompt "Open VM tab". |
+| `laneLaunchContext.ts` | Pure helper: resolves launch cwd/env for terminals and tools. Returns `{ laneWorktreePath, cwd, execStrategy: "local" \| "ssh", sshTarget? }`. For lanes whose `runtimePlacement` is `macos-vm`, the helper consults a pluggable `MacosVmLaunchProvider` (installed during main-process bootstrap) and routes the launch to an in-guest `ssh user@host` target under `/Volumes/My Shared Files`. When the VM is missing, not runtime-ready, or not yet fetched, it throws `VmNotReadyError` (`code: "macos-vm-not-ready"`) carrying the current `MacosVmPhaseNumber` so the renderer can prompt "Open VM tab". `syncMacosVmLaunchCacheFromEvent` keeps the launch-context cache aligned with macOS VM lifecycle events: disruptive operations invalidate on `started`, successful lifecycle updates refresh on `completed`/`vm-updated`, and stale SSH targets are dropped before new PTY/agent launches reuse them. |
 | `laneListSnapshotService.ts` | Desktop-side snapshot assembly: takes runtime-supplied lane summaries and decorates them with sync presence (`devicesOpen`), conflict status, rebase suggestions, auto-rebase status, and runtime session bucket counts. Used to build the lane list for the renderer without round-tripping every overlay separately. |
 
 Renderer components:
@@ -96,7 +96,7 @@ Renderer components:
 | `renderer/components/lanes/BranchPickerView.tsx` | Filterable virtualized branch list rendered inside `CreateLaneDialog`. Each row shows branch name, last-commit author + relative date, and an inline PR pill (`#NNN`, dim for drafts) when the branch has an open PR. Loading/empty/error states are handled inline. Backed by `branchPickerSearch.ts`. |
 | `renderer/components/lanes/branchPickerSearch.ts` | Pure parser + matcher. Tokens AND together: `pr:open` / `pr:none` / `pr:draft`, `author:NAME` (or `author:me` / `mine` resolved against the local git user), `stale:Nd` (older than N days), `#PRNUMBER` (exact match), and free text fuzzy-matched across branch name / PR title / author. Also exposes `formatRelativeTime` for the row subtitle. |
 | `renderer/components/lanes/LinearIssuePicker.tsx` | Filterable Linear issue picker rendered inside `CreateLaneDialog`. Loads project / state / assignee filters from `ade.cto.getLinearIssuePickerData` and pages issues through `ade.cto.searchLinearIssues`. Shared row + label helpers (`LinearIssueRow`, `linearPriorityLabel`, `issueProjectLabel`, `issueUpdatedLabel`, `toLaneLinearIssue`, `branchExistsForLinearIssue`) are reused by `LinearIssueBrowser` (top-bar quick view) and the chat composer's Linear context dialog. Also exports a `LinearIssueSummaryCard` used by the dialog's "currently connected" state. |
-| `renderer/components/lanes/LinearIssueBadge.tsx` | Compact lane-list badge that surfaces the lane's connected Linear issue (identifier + state + priority); clicking opens the issue in a new chat with the issue pre-attached as context, falling back to opening the issue in Linear when chat is unavailable. |
+| `renderer/components/lanes/LinearIssueBadge.tsx` | Compact lane-list badge that surfaces the lane's connected Linear issue (identifier + state + priority); clicking opens the issue in a new chat with the issue pre-attached as context, falling back to opening the issue in Linear when chat is unavailable. The project label falls back through `projectName` -> `projectSlug` -> `teamKey` so issues without a project assignment still render a meaningful label. |
 | `renderer/components/lanes/linearBrand.tsx` | Linear brand tokens (`LINEAR_BRAND` colour palette) plus the icon family used everywhere ADE references Linear: `LinearMark`, `LinearStateIcon`, `LinearPriorityIcon`. |
 | `renderer/components/lanes/ManageLaneDialog.tsx` | Unified manage dialog covering stack position, appearance, adopt-attached, archive, and delete in both single-lane and batch (multi-select) modes. Single-lane mode opens with a "What each section does" info panel and a hero lane-info strip; batch mode swaps in a callout explaining that only archive/delete apply to multiple lanes (stack, color, and adopt are single-lane only). The `StackPositionSection` is single-lane and non-primary only: it shows a parent-lane select (filtered to exclude the lane itself and its descendants), an optional base-branch override input, and an inline "Runs git rebase" disclosure. Apply calls `lanes.reparent({ laneId, newParentLaneId, stackBaseBranchRef })`; the button is disabled while the lane is dirty or has a rebase in progress and while nothing has actually changed, and a parent-callback (`onStackReorganized`) refreshes the lane list. Delete still supports the three scopes (`worktree`, `local_branch`, `remote_branch`), the typed confirmation phrase, remote-branch name input, dirty-state warnings, and the live multi-step progress strip wired to `lanes.delete.event` (`git_status` when a worktree exists, then `cancel_auto_rebase` / `stop_processes` / `stop_ptys` / `stop_watchers` / `cleanup_env` / `git_worktree_remove` / `git_branch_delete` / `git_remote_branch_delete` / `pack_dir_remove` / `database_cleanup`). Optional branch cleanup steps can finish as warnings, allowing lane-owned worktree/database cleanup to complete while still showing the branch cleanup error inline. The dialog calls `lanes.getDeleteRisk` on open to surface dirty state, unpushed commits, running processes / PTYs / watchers, and remote-branch existence before the user confirms; running deletes are shown as non-cancellable because teardown runs to completion once started. |
 | `renderer/components/lanes/MonacoDiffView.tsx` | Monaco diff editor used for editable working-tree views (invoked from `AdeDiffViewer`) |
@@ -109,6 +109,8 @@ Shared code:
 
 - `src/shared/laneBaseResolution.ts` — `shouldLaneTrackParent`, `branchNameFromLaneRef`, `resolveStableLaneBaseBranch`. Used by `laneService`, `conflictService`, `autoRebaseService`, `rebaseSuggestionService`, `prService`, and renderer helpers so base-ref resolution stays consistent.
 - `src/shared/prStrategy.ts` — `resolvePrRebaseMode(creationStrategy)` maps a PR's `PrCreationStrategy` to `"auto" | "manual"`. Used by `autoRebaseService` and `conflictService` to decide whether drift against a linked PR's base branch should trigger auto-rebase (`pr_target`) or only surface as manual attention (`lane_base`).
+- `src/shared/laneLinearIssue.ts` — `parseLaneLinearIssueValue`, `parseLaneLinearIssueJson`, `finalizeLaneLinearIssue`, `laneLinearIssueMissingFields`, `isLinkableLaneLinearIssue`. Validates, normalizes, and checks completeness of `LaneLinearIssue` payloads. Used by `laneService` (create, link), `chatContextAttachments` (attachment hydration), and the TUI/CLI.
+- `src/shared/chatContextAttachments.ts` — Chat context attachment helpers for Linear issues. Delegates Linear issue parsing to `laneLinearIssue.ts`.
 - `src/shared/types.ts` — `LaneSummary`, `LaneStatus`, `StackChainItem`, `CreateLaneArgs`, rebase args/results, `RebaseTargetCommit`, overlay types, port/proxy/OAuth/diagnostics types.
 - `src/shared/laneOverlayMatcher.ts` — last-wins/deep-merge evaluator for per-lane overlay policies.
 
@@ -210,7 +212,6 @@ a lane parented to primary would always show zero behind.
 - `stackDepth: number`
 - `childCount: number`
 - `tags: string[]`, `color`, `icon`, `folder`
-- `missionId`, `laneRole` (nullable; see mission roles)
 - `devicesOpen?: LaneDevicePresence[]` — decoration added by
   `syncHostService` on response paths (`lanes.list`, `lanes.getDetail`,
   `lanes.create`, `lanes.attach`, etc.) from the in-memory lane
@@ -250,23 +251,6 @@ a lane parented to primary would always show zero behind.
   PRs that touch multiple tickets get cross-linked automatically.
   See [features/linear-integration/README.md](../linear-integration/README.md)
   for the cross-feature picture.
-
-## Mission lane roles
-
-Lanes may belong to a mission via `missionId` + `laneRole`. Roles:
-
-| Role | Meaning |
-|------|---------|
-| `mission_root` | Base lane the mission launched from |
-| `worker` | Lane for an individual worker agent |
-| `integration` | Merge target (legacy, retained for compatibility) |
-| `result` | Single output lane holding consolidated changes |
-
-`laneService.setMissionOwnership()` tags or re-tags a lane after
-creation. `createChildLane` also accepts these fields so worker/result
-lanes are tagged at birth. Mission-owned worker lanes are hidden by
-default from the Lanes list (see `isMissionLaneHiddenByDefault` in
-`renderer/components/lanes/laneUtils.ts`).
 
 ## Lane lifecycle
 
@@ -449,6 +433,7 @@ Lane management (selected):
 | `ade.lanes.attach` | `(args: AttachLaneArgs) => LaneSummary` |
 | `ade.lanes.importBranch` | `(args: { branchRef: string }) => LaneSummary` |
 | `ade.lanes.rename` / `.updateAppearance` / `.reparent` / `.archive` / `.delete` | lane edit operations; `.delete` is also surfaced as `lane.delete` through the generic ADE action registry |
+| `ade.lanes.linkLinearIssues` | `(args: { laneId, issues, role?, source?, includeInPr?, closeOnMerge?, evidence? }) => LaneLinearIssueLink[]` — link one or more Linear issues to an existing lane post-creation. Also surfaced as `lane.linkLinearIssues` through the ADE action registry and the `ade lanes link-linear-issue` CLI command. |
 | `ade.lanes.delete.risk` | `(args: { laneId }) => LaneDeleteRisk` — preflight read for the manage dialog: dirty state, unpushed commit count, remote-branch existence, active processes/PTYs/watchers, env-init flag. |
 | `ade.lanes.delete.cancel` | `(args: { laneId }) => { cancelled, reason? }` — cooperative cancel during the early teardown steps. After `git_worktree_remove` starts the lane is unrecoverable and cancel is a no-op. |
 | `ade.lanes.delete.event` (push) | `LaneDeleteEvent` carrying `LaneDeleteProgress` — `steps[]` with per-step status (`pending` / `running` / `completed` / `failed` / `skipped`) plus `overallStatus` (`running` / `completed` / `failed` / `cancelled`) and `cancellable`. |
@@ -532,6 +517,3 @@ open lanes; primary lanes render with a home icon.
 - **Worktree paths must remain absolute.** `laneService` stores
   resolved absolute paths. Relative paths persisted by a bad caller
   break `git -C` across shells.
-- **Mission lanes hidden by default.** If a test expects a mission
-  worker lane to be visible, it must explicitly include mission
-  lanes via `isMissionLaneHiddenByDefault` filter bypass.

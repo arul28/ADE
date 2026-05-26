@@ -42,7 +42,7 @@ function homePath(env: NodeJS.ProcessEnv): string | null {
   return drive && pathPart ? normalizePathEntry(`${drive}${pathPart}`) : null;
 }
 
-const ancestorSkillDirs = [".claude", ".agents", ".ade", ".codex"] as const;
+const ancestorSkillDirs = [".cursor", ".claude", ".agents", ".ade", ".codex"] as const;
 const promptAgentSkillRootLimit = 4;
 type AncestorSkillDir = (typeof ancestorSkillDirs)[number];
 

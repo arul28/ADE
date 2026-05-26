@@ -85,7 +85,6 @@ regenerated.
 
 ```ts
 export function defaultCompletionContract(targetType) {
-  if (targetType === "mission") return "wait_for_runtime_success";
   if (targetType === "pr_resolution") return "wait_for_pr_created";
   if (targetType === "employee_session" || targetType === "worker_run") {
     return "wait_for_explicit_completion";
@@ -96,8 +95,6 @@ export function defaultCompletionContract(targetType) {
 
 The shape of the preset flows from this:
 
-- **Mission**: starts → moves to In Progress → launches mission → waits for
-  runtime success → optional review/notify → complete. No PR gate.
 - **Employee session**: starts → In Progress → creates chat session →
   waits for explicit completion (chat ends or user marks done) → optional
   review/notify → complete.
@@ -126,13 +123,12 @@ type WorkflowPresetOptions = {
 Defaults when options are omitted:
 
 - `id` from `workflowIdForTargetType(targetType)`:
-  - `mission` → `"assigned-mission-run"`
   - `employee_session` → `"assigned-employee-session"`
   - `worker_run` → `"assigned-worker-run"`
   - `pr_resolution` → `"assigned-pr-resolution"`
   - `review_gate` → `"assigned-review-gate"`
 - `name` from `defaultWorkflowName(targetType)`. Examples:
-  `"Assigned employee -> review handoff"`, `"Mission autopilot"`,
+  `"Assigned employee -> review handoff"`,
   `"Human review gate"`.
 - `triggers.assignees` defaults to `["CTO"]`.
 - `triggers.labels` defaults to `["workflow:default"]`.
@@ -190,8 +186,7 @@ Merges `planPatch` into the current plan and reconstructs the step array:
 4. For review gate targets, emit `request_human_review` immediately.
 5. For non-review-gate targets, emit `wait_for_target_status` with the
    target status inferred from `completionContract` and `target.type`.
-   Missions always use `runtime_completed`; employee/worker sessions
-   default to `explicit_completion`.
+   Employee/worker sessions default to `explicit_completion`.
 6. If supervisor mode is `after_work` or `before_pr`, emit
    `request_human_review` here.
 7. If the contract uses a PR gate (`wait_for_pr_created` or

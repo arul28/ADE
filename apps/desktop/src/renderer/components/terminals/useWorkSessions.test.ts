@@ -1183,6 +1183,96 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     );
   });
 
+  it("does not prune warm-cached project tabs using the previous project's session list", async () => {
+    const sessionA = {
+      id: "session-a",
+      laneId: "lane-1",
+      laneName: "Lane 1",
+      ptyId: null,
+      tracked: true,
+      pinned: false,
+      goal: null,
+      toolType: "shell" as const,
+      title: "Session A",
+      status: "running" as const,
+      startedAt: "2026-04-01T12:00:00.000Z",
+      endedAt: null,
+      exitCode: null,
+      transcriptPath: "",
+      headShaStart: null,
+      headShaEnd: null,
+      lastOutputPreview: null,
+      summary: null,
+      runtimeState: "running" as const,
+      resumeCommand: null,
+    };
+    const sessionB = {
+      ...sessionA,
+      id: "session-b",
+      title: "Session B",
+    };
+    const persistedProjectBState = {
+      openItemIds: ["session-b"],
+      activeItemId: "session-b",
+      selectedItemId: "session-b",
+      viewMode: "grid" as const,
+      draftKind: "chat" as const,
+      laneFilter: "all",
+      statusFilter: "all" as const,
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [],
+      workCollapsedTabGroupIds: [],
+      workFocusSessionsHidden: false,
+    };
+
+    listSessionsCachedMock
+      .mockResolvedValueOnce([sessionA])
+      .mockResolvedValueOnce([sessionB]);
+
+    const { result, rerender } = renderHook(() => useWorkSessions());
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    expect(result.current.sessions.map((session) => session.id)).toEqual(["session-a"]);
+
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      project: { rootPath: "/project/b" },
+      sessionsCacheByProject: {
+        "/project/b": [sessionB],
+      },
+      workViewByProject: {
+        "/project/b": persistedProjectBState,
+      },
+    };
+
+    act(() => {
+      rerender();
+    });
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    expect(result.current.sessions.map((session) => session.id)).toEqual(["session-b"]);
+
+    const projectBStates = setWorkViewStateSpy.mock.calls
+      .filter(([projectRoot]) => projectRoot === "/project/b")
+      .map(([, next]) => (
+        typeof next === "function"
+          ? next(persistedProjectBState)
+          : { ...persistedProjectBState, ...next }
+      ));
+
+    expect(projectBStates).not.toContainEqual(
+      expect.objectContaining({ openItemIds: [] }),
+    );
+    expect((fakeAppStoreState.sessionsCacheByProject as Record<string, unknown>)["/project/b"]).toEqual([sessionB]);
+  });
+
   it("refetches after a session metadata update arrives", async () => {
     let onChangedHandler: (() => void) | null = null;
     (window as any).ade.sessions.onChanged.mockImplementation((cb: () => void) => {

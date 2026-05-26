@@ -1678,13 +1678,11 @@ describe("workerTaskSessionService (file group)", () => {
       const keyA = fixture.service.deriveTaskKey({
         agentId: "a1",
         laneId: "lane-x",
-        missionId: "mission-1",
         summary: "fix checkout bug",
       });
       const keyB = fixture.service.deriveTaskKey({
         agentId: "a1",
         laneId: "lane-x",
-        missionId: "mission-1",
         summary: "fix checkout bug",
       });
       expect(keyA).toBe(keyB);

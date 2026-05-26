@@ -44,8 +44,7 @@ import type {
   PtySendToSessionResult,
   TerminalSessionSummary,
 } from "../../../desktop/src/shared/types";
-import { discoverClaudeSlashCommands } from "../../../desktop/src/main/services/chat/claudeSlashCommandDiscovery";
-import { discoverCodexSlashCommands } from "../../../desktop/src/main/services/chat/codexSlashCommandDiscovery";
+import { discoverAllProjectSlashCommands } from "../../../desktop/src/main/services/chat/projectSlashCommandDiscovery";
 import type { AdeCodeConnection, ChatHistorySnapshot, CreatedChat, NavigateRequest, NavigateResult } from "./types";
 
 export const DEFAULT_CODEX_REASONING_EFFORT = "low";
@@ -286,26 +285,8 @@ export async function setClaudeOutputStyle(
   return await connection.action<AgentChatSession>("chat", "setClaudeOutputStyle", { sessionId, outputStyle });
 }
 
-function slashCommandKey(value: string): string {
-  return value.trim().toLowerCase();
-}
-
 export function discoverProjectSlashCommands(workspaceRoot: string): AgentChatSlashCommand[] {
-  const byName = new Map<string, AgentChatSlashCommand>();
-  const add = (command: { name: string; description: string; argumentHint?: string }) => {
-    const key = slashCommandKey(command.name);
-    if (key === "/login") return;
-    if (byName.has(key)) return;
-    byName.set(key, {
-      name: command.name,
-      description: command.description,
-      argumentHint: command.argumentHint,
-      source: "sdk",
-    });
-  };
-  for (const command of discoverClaudeSlashCommands(workspaceRoot)) add(command);
-  for (const command of discoverCodexSlashCommands(workspaceRoot)) add(command);
-  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+  return discoverAllProjectSlashCommands(workspaceRoot);
 }
 
 export async function getAvailableModels(
@@ -314,7 +295,7 @@ export async function getAvailableModels(
 ): Promise<AgentChatModelInfo[]> {
   return await connection.action<AgentChatModelInfo[]>("chat", "getAvailableModels", {
     provider,
-    activateRuntime: false,
+    activateRuntime: provider === "cursor",
   });
 }
 

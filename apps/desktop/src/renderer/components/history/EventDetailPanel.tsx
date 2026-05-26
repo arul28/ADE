@@ -30,7 +30,7 @@ function copyToClipboard(text: string) {
 
 function metadataId(
   metadata: Record<string, unknown> | null,
-  key: "missionId" | "sessionId",
+  key: "sessionId",
 ): string | null {
   if (!metadata) return null;
   const value = metadata[key];
@@ -137,7 +137,6 @@ function PanelContent({
   const meta = getEventMeta(event.kind);
   const catMeta = CATEGORY_META[event.category];
   const statusClasses = getStatusClasses(event.status);
-  const missionId = metadataId(event.metadata, "missionId");
   const sessionId = metadataId(event.metadata, "sessionId");
 
   return (
@@ -254,24 +253,6 @@ function PanelContent({
               </span>
             )}
           </MetaCell>
-
-          {missionId ? (
-            <MetaCell label="Mission ID">
-              <button
-                type="button"
-                onClick={() => copyToClipboard(missionId)}
-                className="group inline-flex max-w-full items-center gap-1 text-left"
-                title={`Copy ${missionId}`}
-              >
-                <span className="truncate font-mono text-[11px] text-accent">{missionId}</span>
-                <Copy
-                  size={10}
-                  weight="bold"
-                  className="shrink-0 text-muted-fg opacity-0 transition-opacity group-hover:opacity-100"
-                />
-              </button>
-            </MetaCell>
-          ) : null}
 
           {sessionId ? (
             <MetaCell label="Session ID">
@@ -399,14 +380,6 @@ function PanelContent({
             <span className="inline-flex items-center gap-1">
               <ArrowSquareOut size={10} weight="bold" />
               Open PRs
-            </span>
-          </Button>
-        ) : null}
-        {event.category === "mission" && navigate ? (
-          <Button variant="outline" size="sm" onClick={() => navigate("/missions")}>
-            <span className="inline-flex items-center gap-1">
-              <ArrowSquareOut size={10} weight="bold" />
-              Open missions
             </span>
           </Button>
         ) : null}

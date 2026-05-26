@@ -706,8 +706,7 @@ function normalizeDraft(args: {
       type !== "run-tests" &&
       type !== "run-command" &&
       type !== "ade-action" &&
-      type !== "agent-session" &&
-      type !== "launch-mission"
+      type !== "agent-session"
     ) {
       issues.push({ level: "error", path: `actions[${idx}].type`, message: `Unknown action type '${safeTrim(action?.type)}'.` });
       continue;
@@ -755,14 +754,6 @@ function normalizeDraft(args: {
         ...(actionModelConfig ? { modelConfig: actionModelConfig } : {}),
         ...(typeof action?.codexFastMode === "boolean" ? { codexFastMode: action.codexFastMode } : {}),
         ...(actionPermissionConfig ? { permissionConfig: actionPermissionConfig } : {}),
-      });
-      continue;
-    }
-
-    if (type === "launch-mission") {
-      normalizedActions.push({
-        ...(base as AutomationAction),
-        ...(safeTrim(action?.sessionTitle) ? { sessionTitle: safeTrim(action?.sessionTitle) } : {}),
       });
       continue;
     }
@@ -856,7 +847,7 @@ function normalizeDraft(args: {
       : {}),
   };
   const execution =
-    requestedExecution?.kind === "agent-session" || requestedExecution?.kind === "mission" || requestedExecution?.kind === "built-in"
+    requestedExecution?.kind === "agent-session" || requestedExecution?.kind === "built-in"
       ? {
           kind: requestedExecution.kind,
           ...laneExecutionFields,
@@ -871,13 +862,6 @@ function normalizeDraft(args: {
                   ...(typeof requestedExecution.session?.codexFastMode === "boolean"
                     ? { codexFastMode: requestedExecution.session.codexFastMode }
                     : {}),
-                },
-              }
-            : {}),
-          ...(requestedExecution.kind === "mission"
-            ? {
-                mission: {
-                  ...(safeTrim(requestedExecution.mission?.title) ? { title: safeTrim(requestedExecution.mission?.title) } : {}),
                 },
               }
             : {}),
@@ -935,7 +919,7 @@ function normalizeDraft(args: {
         : "quick",
     toolPalette: Array.isArray(args.draft.toolPalette) && args.draft.toolPalette.length
       ? [...new Set(args.draft.toolPalette)]
-      : ["repo", "mission"],
+      : ["repo"],
     contextSources: includeProjectContext && Array.isArray(args.draft.contextSources) && args.draft.contextSources.length
       ? args.draft.contextSources.map((source) => ({
           type: source.type,
@@ -1033,7 +1017,7 @@ function createEmptyDraft(): AutomationRuleDraft {
     execution: { kind: "agent-session", session: {} },
     executor: { mode: "automation-bot" },
     reviewProfile: "quick",
-    toolPalette: ["repo", "mission"],
+    toolPalette: ["repo"],
     contextSources: [],
     guardrails: {},
     outputs: { disposition: "comment-only", createArtifact: true },
@@ -1372,13 +1356,6 @@ export function createAutomationPlannerService({
           summary: "Send the prompt to an automation-only agent thread",
           warnings: [],
         });
-      } else if (execution.kind === "mission") {
-        actions.unshift({
-          index: -1,
-          type: "launch-mission",
-          summary: "Launch a mission run with the selected model and permissions",
-          warnings: [],
-        });
       }
 
       const notes: string[] = [];
@@ -1394,11 +1371,8 @@ export function createAutomationPlannerService({
       if (execution.kind === "agent-session") {
         notes.push("Run output stays in Automations history and does not appear in Work chat.");
       }
-      if (execution.kind === "mission") {
-        notes.push("Mission runs stay visible from the Missions tab.");
-      }
       if (execution.kind === "built-in") {
-        notes.push("Built-in tasks run directly without launching a mission or chat thread.");
+        notes.push("Built-in tasks run directly without launching a chat thread.");
       }
       if (execution.laneMode === "require-on-trigger") {
         notes.push("Lane resolution: trigger caller must supply a lane.");

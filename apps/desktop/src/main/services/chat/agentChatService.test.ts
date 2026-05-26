@@ -557,7 +557,7 @@ vi.mock("../orchestrator/providerOrchestratorAdapter", () => ({
   resolveOpenCodeRuntimeRoot: vi.fn(() => process.cwd()),
 }));
 
-vi.mock("../orchestrator/permissionMapping", () => ({
+vi.mock("./permissionMapping", () => ({
   mapPermissionToClaude: vi.fn(() => "plan"),
   mapPermissionToCodex: vi.fn(() => ({
     approvalPolicy: "on-request",
@@ -719,8 +719,8 @@ import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
 import { createOrchestrationService } from "../orchestration/orchestrationService";
 import { runGit } from "../git/git";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
-import { mapPermissionToCodex } from "../orchestrator/permissionMapping";
-import { acquireCursorSdkConnection } from "./cursorSdkPool";
+import { mapPermissionToCodex } from "./permissionMapping";
+import { acquireCursorSdkConnection, releaseCursorSdkConnection } from "./cursorSdkPool";
 import { acquireDroidSdkConnection } from "./droidSdkPool";
 import type { AgentChatEventEnvelope, ComputerUseBackendStatus, LaneLinearIssue, PendingInputRequest } from "../../../shared/types";
 import { makeLinearIssueContextAttachment } from "../../../shared/chatContextAttachments";
@@ -2956,58 +2956,6 @@ describe("createAgentChatService", () => {
       expect(startParams?.reasoning_effort).toBeUndefined();
     });
 
-    it("starts mission Codex app-server sessions without global MCP servers", async () => {
-      const laneRootPath = path.join(tmpRoot, "lane-2");
-      fs.mkdirSync(laneRootPath, { recursive: true });
-
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-2",
-        provider: "codex",
-        model: "gpt-5.4",
-        reasoningEffort: "low",
-        surface: "mission",
-      });
-
-      await service.sendMessage({
-        sessionId: session.id,
-        text: "Plan this mission without loading desktop MCP helpers.",
-      });
-
-      await vi.waitFor(() => {
-        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
-      });
-
-      expect(spawn).toHaveBeenCalledWith(
-        "codex",
-        [
-          "app-server",
-          "-c",
-          "model_reasoning_effort=\"low\"",
-          "-c",
-          "mcp_servers={}",
-        ],
-        expect.any(Object),
-      );
-      const spawnCall = vi.mocked(spawn).mock.calls.find((call) =>
-        call[0] === "codex" && Array.isArray(call[1]) && call[1].includes("app-server")
-      );
-      const spawnArgs = spawnCall?.[1] as string[] | undefined;
-      expect(spawnArgs).toBeDefined();
-      expect(spawnArgs).not.toContain("--disable");
-      expect(spawnArgs).not.toContain("browser_use");
-      expect(spawnArgs).not.toContain("computer_use");
-      const spawnOptions = spawnCall?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
-      const codexHome = spawnOptions?.env?.CODEX_HOME;
-      expect(codexHome).toContain("ade-mission-codex-home");
-      const configToml = fs.readFileSync(path.join(String(codexHome), "config.toml"), "utf8");
-      expect(configToml).toContain("enable_mcp_apps = false");
-      expect(configToml).toContain("multi_agent = false");
-      expect(configToml).toContain("plugins = false");
-      expect(configToml).toContain("apps = false");
-      expect(configToml).not.toContain("[mcp_servers");
-    });
-
     it("spawns Codex with ADE CLI agent env injected", async () => {
       const laneRootPath = path.join(tmpRoot, "lane-2");
       fs.mkdirSync(laneRootPath, { recursive: true });
@@ -4767,6 +4715,64 @@ describe("createAgentChatService", () => {
       ]));
     });
 
+    it("returns Cursor commands, subagents, skills, and /clear for a Cursor lane", async () => {
+      const commandDir = path.join(tmpRoot, ".cursor", "commands");
+      const agentsDir = path.join(tmpRoot, ".cursor", "agents");
+      const skillDir = path.join(tmpRoot, ".cursor", "skills", "sdk-audit");
+      fs.mkdirSync(commandDir, { recursive: true });
+      fs.mkdirSync(agentsDir, { recursive: true });
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(path.join(commandDir, "write-tests.md"), [
+        "---",
+        "description: Write Cursor-backed tests",
+        "---",
+        "",
+        "Write tests.",
+        "",
+      ].join("\n"));
+      fs.writeFileSync(path.join(agentsDir, "verifier.md"), [
+        "---",
+        "description: Verify the implementation",
+        "---",
+        "",
+        "Verify work.",
+        "",
+      ].join("\n"));
+      fs.writeFileSync(path.join(skillDir, "SKILL.md"), [
+        "---",
+        "name: sdk-audit",
+        "description: Audit the Cursor SDK wiring",
+        "---",
+        "",
+        "Audit Cursor.",
+        "",
+      ].join("\n"));
+      const { service } = createService();
+
+      const commands = service.getSlashCommands({ laneId: "lane-1", provider: "cursor" });
+      const names = commands.map((command) => command.name);
+
+      expect(names).toContain("/clear");
+      expect(names).toContain("/explore");
+      expect(commands).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: "/write-tests",
+          description: "Write Cursor-backed tests",
+          source: "sdk",
+        }),
+        expect.objectContaining({
+          name: "/verifier",
+          description: "Verify the implementation",
+          source: "sdk",
+        }),
+        expect.objectContaining({
+          name: "/sdk-audit",
+          description: "Audit the Cursor SDK wiring",
+          source: "sdk",
+        }),
+      ]));
+    });
+
     it("returns the same slash command set for a live droid session", async () => {
       const codexPromptsDir = path.join(tmpRoot, ".codex", "prompts");
       fs.mkdirSync(codexPromptsDir, { recursive: true });
@@ -5406,46 +5412,6 @@ describe("createAgentChatService", () => {
       expect(mockState.codexRequestPayloads.some((payload) => payload.method === "review/start")).toBe(true);
     });
     expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
-    expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
-  });
-
-  it("keeps mission-surface sessions on deterministic titles and summaries", async () => {
-    vi.mocked(detectAllAuth).mockResolvedValue([
-      { type: "cli-subscription", cli: "claude", authenticated: true },
-      { type: "cli-subscription", cli: "codex", authenticated: true },
-    ] as any);
-    const { service, aiIntegrationService } = createService();
-    const session = await service.createSession({
-      laneId: "lane-1",
-      provider: "codex",
-      model: "gpt-5.5",
-      surface: "mission",
-    });
-
-    await service.sendMessage({
-      sessionId: session.id,
-      text: "Execute worker step \"Run targeted throwaway score tests\".",
-    }, { awaitDispatch: true });
-    mockState.emitCodexPayload({
-      jsonrpc: "2.0",
-      method: "item/completed",
-      params: {
-        turnId: "turn-1",
-        item: {
-          id: "assistant-1",
-          type: "assistant_message",
-          text: "Both targeted tests passed.",
-        },
-      },
-    });
-    mockState.emitCodexPayload({
-      jsonrpc: "2.0",
-      method: "turn/completed",
-      params: { turnId: "turn-1" },
-    });
-
-    await service.dispose({ sessionId: session.id });
-
     expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
   });
 
@@ -7284,7 +7250,7 @@ describe("createAgentChatService", () => {
 
       const firstTurn = service.runSessionTurn({
         sessionId: session.id,
-        text: "Start mission coordination.",
+        text: "Start coordination.",
       });
       await vi.waitFor(() => {
         expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start")).toHaveLength(1);
@@ -7317,7 +7283,7 @@ describe("createAgentChatService", () => {
 
       const secondTurn = service.runSessionTurn({
         sessionId: session.id,
-        text: "Continue mission coordination.",
+        text: "Continue coordination.",
       });
       await vi.waitFor(() => {
         expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start")).toHaveLength(2);
@@ -7428,7 +7394,7 @@ describe("createAgentChatService", () => {
 
       const firstTurn = service.runSessionTurn({
         sessionId: session.id,
-        text: "Start mission coordination.",
+        text: "Start coordination.",
       });
       await vi.waitFor(() => {
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
@@ -7492,7 +7458,7 @@ describe("createAgentChatService", () => {
 
       const firstTurn = service.runSessionTurn({
         sessionId: session.id,
-        text: "Start mission coordination.",
+        text: "Start coordination.",
       });
       await vi.waitFor(() => {
         expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start")).toHaveLength(1);
@@ -7524,7 +7490,7 @@ describe("createAgentChatService", () => {
 
       const secondTurn = service.runSessionTurn({
         sessionId: session.id,
-        text: "Continue mission coordination.",
+        text: "Continue coordination.",
       });
       await vi.waitFor(() => {
         expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start")).toHaveLength(2);
@@ -9710,42 +9676,6 @@ describe("createAgentChatService", () => {
           runtime: "codex-app-server",
         }),
       );
-    });
-
-    it("keeps mission-surface Codex coordinator sessions out of native plan collaboration", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "codex",
-        model: "gpt-5.5",
-        codexApprovalPolicy: "on-request",
-        codexSandbox: "read-only",
-        codexConfigSource: "flags",
-        surface: "mission",
-      });
-      expect(session.permissionMode).toBe("plan");
-      expect(session.surface).toBe("mission");
-
-      await service.sendMessage({
-        sessionId: session.id,
-        text: "Coordinate the mission without provider-native plan approval.",
-      });
-
-      await vi.waitFor(() => {
-        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
-      });
-      const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
-      const params = turnStartRequest?.params as {
-        approvalPolicy?: unknown;
-        sandboxPolicy?: { type?: unknown };
-        collaborationMode?: { mode?: unknown };
-      } | undefined;
-
-      expect(params?.approvalPolicy).toBe("on-request");
-      expect(params?.sandboxPolicy?.type).toBe("readOnly");
-      expect(params?.collaborationMode?.mode).toBe("default");
-      expect(await service.listSessions()).toHaveLength(0);
-      expect(await service.listSessions(undefined, { includeAutomation: true })).toHaveLength(1);
     });
 
     it("turns native Codex plan items into an implementation approval request", async () => {
@@ -12364,6 +12294,68 @@ describe("createAgentChatService", () => {
       await expect(
         service.interrupt({ sessionId: "unknown-session-id" }),
       ).rejects.toThrow(/not found/i);
+    });
+
+    it("cursor interrupt before runtime setup does not create a Claude session", async () => {
+      process.env.CURSOR_API_KEY = "test-cursor-key";
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      vi.mocked(claudeSdkCreateSessionCompat).mockClear();
+      await service.interrupt({ sessionId: session.id });
+      expect(claudeSdkCreateSessionCompat).not.toHaveBeenCalled();
+    });
+
+    it("releases the cursor pool slot when interrupted during SDK setup", async () => {
+      process.env.CURSOR_API_KEY = "test-cursor-key";
+      let unblockAcquire: (() => void) | null = null;
+      const acquireGate = new Promise<void>((resolve) => {
+        unblockAcquire = resolve;
+      });
+      vi.mocked(acquireCursorSdkConnection).mockImplementationOnce(async (args: Record<string, unknown>) => {
+        mockState.cursorSdkAcquireCalls.push(args);
+        await acquireGate;
+        const pooled: any = {
+          process: { exitCode: null, killed: false },
+          bridge: { onEvent: null, onRunStarted: null, onRunResult: null, onHookRequest: null },
+          agentId: "cursor-sdk-agent-setup-interrupt",
+          runId: null,
+          request: vi.fn(async () => ({})),
+          sendPrompt: vi.fn(async () => ({ id: "cursor-sdk-run-setup", status: "finished" })),
+          updatePolicy: vi.fn(async () => {}),
+          cancel: vi.fn(async () => {}),
+          dispose: vi.fn(),
+        };
+        mockState.cursorSdkPooled = pooled;
+        return { generation: 9, pooled };
+      });
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      const turnPromise = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start cursor turn",
+        displayText: "Start cursor turn",
+      });
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkAcquireCalls.length).toBe(1);
+      });
+      await service.interrupt({ sessionId: session.id });
+      unblockAcquire!();
+      await expect(turnPromise).rejects.toThrow(/Cursor session interrupted/i);
+      expect(releaseCursorSdkConnection).toHaveBeenCalledWith(
+        expect.any(String),
+        9,
+      );
     });
 
     it("emits subagent_result stopped for active subagents on claude interrupt", async () => {

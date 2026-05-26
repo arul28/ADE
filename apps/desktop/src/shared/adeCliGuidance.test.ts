@@ -9,7 +9,7 @@ describe("ADE CLI guidance", () => {
     expect(guidance).toContain("project, user, runtime, and bundled ADE skill roots");
     expect(guidance).toContain("ADE-hosted Work chats");
     expect(guidance).toContain("ADE Code/TUI sessions");
-    expect(guidance).toContain("CTO and mission worker prompts");
+    expect(guidance).toContain("CTO prompts");
     expect(guidance).toContain("mobile-started work");
     expect(guidance).toContain("ADE_AGENT_SKILLS_DIRS");
     expect(guidance).toContain("<skill-name>/SKILL.md");

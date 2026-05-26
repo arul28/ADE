@@ -7,27 +7,10 @@ export function AutomationsPage({ active = true }: { active?: boolean } = {}) {
   const navigate = useNavigate();
   const location = useLocation();
   const [pendingDraft, setPendingDraft] = useState<AutomationRuleDraft | null>(null);
-  const [missionsEnabled, setMissionsEnabled] = useState(true);
 
   useEffect(() => {
     console.info(`renderer.page ${JSON.stringify({ page: "automations" })}`);
   }, []);
-
-  useEffect(() => {
-    if (!active) return;
-    let cancelled = false;
-    window.ade.app.getInfo().then(
-      (info) => {
-        if (!cancelled) setMissionsEnabled(!info.isPackaged);
-      },
-      () => {
-        if (!cancelled) setMissionsEnabled(true);
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [active]);
 
   // Templates screen navigates here with { draft } in location state to seed a new rule.
   useEffect(() => {
@@ -47,7 +30,6 @@ export function AutomationsPage({ active = true }: { active?: boolean } = {}) {
           active={active}
           pendingDraft={pendingDraft}
           onDraftConsumed={() => setPendingDraft(null)}
-          missionsEnabled={missionsEnabled}
           onOpenTemplates={() => navigate("/automations/templates")}
         />
       </div>

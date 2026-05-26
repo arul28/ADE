@@ -124,62 +124,6 @@ export function LanesIllustration() {
   );
 }
 
-export function MissionsIllustration() {
-  // A chat bubble pointing at a target with a small bot figure.
-  return (
-    <Frame label="A Worker running a Mission on its own Lane">
-      <defs>
-        <linearGradient id="ade-mission-ring" x1="0" x2="1" y1="0" y2="1">
-          <stop offset="0%" stopColor={ACCENT} />
-          <stop offset="100%" stopColor="#EC4899" />
-        </linearGradient>
-      </defs>
-      {/* Target on the right */}
-      <g transform="translate(232, 80)">
-        <circle r="36" fill="none" stroke={LINE} strokeWidth="1" />
-        <circle r="24" fill="none" stroke={LINE} strokeWidth="1" />
-        <circle r="12" fill="none" stroke="url(#ade-mission-ring)" strokeWidth="2" />
-        <circle r="4" fill={ACCENT}>
-          <animate attributeName="r" values="4;6;4" dur="2.4s" repeatCount="indefinite" />
-        </circle>
-      </g>
-      {/* Worker bubble on the left */}
-      <g transform="translate(30, 52)">
-        <rect width="120" height="56" rx="12" fill={SURFACE} stroke={LINE} />
-        {/* Bot head icon */}
-        <g transform="translate(12, 14)">
-          <rect x="0" y="3" width="22" height="20" rx="5" fill={ACCENT} opacity="0.9" />
-          <circle cx="7" cy="13" r="2" fill={INK} />
-          <circle cx="15" cy="13" r="2" fill={INK} />
-          <rect x="-2" y="9" width="2" height="6" rx="1" fill={ACCENT} opacity="0.5" />
-          <rect x="22" y="9" width="2" height="6" rx="1" fill={ACCENT} opacity="0.5" />
-        </g>
-        {/* Message bars */}
-        <rect x="44" y="14" width="64" height="5" rx="2.5" fill={INK} opacity="0.8" />
-        <rect x="44" y="24" width="52" height="4" rx="2" fill={LINE} />
-        <rect x="44" y="33" width="44" height="4" rx="2" fill={LINE} />
-        {/* Tail */}
-        <path d="M120 42 L132 48 L120 54 Z" fill={SURFACE} stroke={LINE} />
-      </g>
-      {/* Travel dots from bubble to target */}
-      <g>
-        <circle cx="160" cy="80" r="3" fill={ACCENT}>
-          <animate attributeName="cx" values="160;220;160" dur="2.6s" repeatCount="indefinite" />
-          <animate attributeName="opacity" values="0.9;0.1;0.9" dur="2.6s" repeatCount="indefinite" />
-        </circle>
-        <circle cx="180" cy="80" r="2" fill={ACCENT}>
-          <animate attributeName="cx" values="180;220;180" dur="2.6s" begin="0.4s" repeatCount="indefinite" />
-          <animate attributeName="opacity" values="0.7;0.1;0.7" dur="2.6s" begin="0.4s" repeatCount="indefinite" />
-        </circle>
-        <circle cx="200" cy="80" r="2" fill={ACCENT}>
-          <animate attributeName="cx" values="200;220;200" dur="2.6s" begin="0.8s" repeatCount="indefinite" />
-          <animate attributeName="opacity" values="0.5;0.1;0.5" dur="2.6s" begin="0.8s" repeatCount="indefinite" />
-        </circle>
-      </g>
-    </Frame>
-  );
-}
-
 export function HelpIllustration() {
   // Mock top-right with a highlighted ? button
   return (

@@ -121,7 +121,7 @@ export function buildLinearToolRequest(input: string): LinearToolRequest {
     if (mode === "reroute") {
       const target = optionString(options, "target") ?? rest[1] ?? null;
       const reason = optionString(options, "reason") ?? rest.slice(2).join(" ");
-      if (!runId || !target || !reason) return usage("Linear run reroute", "Usage: /linear run reroute <run-id> <cto|mission|worker> --reason <reason>");
+      if (!runId || !target || !reason) return usage("Linear run reroute", "Usage: /linear run reroute <run-id> <cto|worker> --reason <reason>");
       return tool("Linear run reroute", "rerouteLinearRun", {
         runId,
         target,
@@ -140,20 +140,12 @@ export function buildLinearToolRequest(input: string): LinearToolRequest {
   if (group === "route") {
     const mode = modeArg ?? "cto";
     const issueId = optionString(options, "issueId", "issue") ?? rest[0] ?? null;
-    if (!issueId) return usage("Linear route", "Usage: /linear route <cto|mission|worker> <issue-id>");
+    if (!issueId) return usage("Linear route", "Usage: /linear route <cto|worker> <issue-id>");
     if (mode === "cto") {
       return tool("Linear route cto", "routeLinearIssueToCto", {
         issueId,
         laneId: optionString(options, "laneId", "lane") ?? undefined,
         reuseExisting: optionBoolean(options, "reuseExisting"),
-      });
-    }
-    if (mode === "mission") {
-      return tool("Linear route mission", "routeLinearIssueToMission", {
-        issueId,
-        laneId: optionString(options, "laneId", "lane") ?? undefined,
-        launch: optionBoolean(options, "launch"),
-        runMode: optionString(options, "runMode") ?? undefined,
       });
     }
     if (mode === "worker") {
@@ -165,7 +157,7 @@ export function buildLinearToolRequest(input: string): LinearToolRequest {
         taskKey: optionString(options, "taskKey") ?? undefined,
       });
     }
-    return usage("Linear route", "Usage: /linear route <cto|mission|worker> ...");
+    return usage("Linear route", "Usage: /linear route <cto|worker> ...");
   }
 
   if (group === "sync") {

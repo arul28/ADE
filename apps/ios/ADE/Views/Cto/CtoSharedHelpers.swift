@@ -30,7 +30,7 @@ let ctoStatusRunningBlue = Color(red: 0x60 / 255.0, green: 0xA5 / 255.0, blue: 0
 
 let ctoAvatarPalette: [Color] = [
   ADEColor.ctoAccent,
-  ADEColor.tintMissions,
+  ADEColor.info,
   ADEColor.tintLanes,
   ADEColor.tintWork,
   ADEColor.tintHistory,

@@ -1,6 +1,6 @@
 ---
 title: "Chat Capabilities"
-description: "What the chat agent can do — file operations, terminal commands, git, PRs, Linear integration, mission spawning, repo inspection, and ADE action tools."
+description: "What the chat agent can do — file operations, terminal commands, git, PRs, Linear integration, worker run spawning, repo inspection, and ADE action tools."
 icon: "toolbox"
 ---
 
@@ -24,8 +24,8 @@ The chat agent has access to a broad tool palette. The exact tools available dep
   <Card title="Linear integration" icon="layers">
     Create and update Linear issues, link issues to branches, and attach artifacts to issues.
   </Card>
-  <Card title="Mission spawning" icon="target">
-    Escalate the current task into a new Mission, carrying over conversation context as the planner's seed.
+  <Card title="Worker run spawning" icon="target">
+    Escalate the current task into a new Worker run, carrying over conversation context as the planner's seed.
   </Card>
   <Card title="Repo inspection" icon="database">
     Inspect repository docs, source files, file maps, open PRs, recent activity, and human work digests.
@@ -74,23 +74,23 @@ The most common workflow is: make changes in chat → have the agent create a PR
 
 ---
 
-## Spawning a Mission from Chat
+## Spawning a Worker run from Chat
 
-When a task is too large for a single chat session, escalate to a Mission without losing context.
+When a task is too large for a single chat session, escalate to a Worker run without losing context.
 
 <Steps>
   <Step title="Recognize the scope">
     Escalate when the task needs changes across more than 3–4 unrelated files, parallel workers, a validation phase, or a formal audit trail.
   </Step>
-  <Step title="Say 'start a mission'">
-    Type "start a mission for this" or "this should be a mission." ADE opens the Mission creation dialog, pre-filled with:
+  <Step title="Say 'start a worker run'">
+    Type "start a worker run for this" or "this should be a worker run." ADE opens the Worker run creation dialog, pre-filled with:
 
     - A title derived from the current conversation
     - A description assembled from your messages in the session
     - The current lane pre-selected
   </Step>
   <Step title="Review and launch">
-    Adjust the mission config as needed (add lanes, set budget cap, configure permissions), then click **Start Mission**. The mission opens in the Mission detail view. The chat session remains in History for reference.
+    Adjust the worker run config as needed (add lanes, set budget cap, configure permissions), then click **Start Worker run**. The worker run opens in the Worker run detail view. The chat session remains in History for reference.
   </Step>
 </Steps>
 

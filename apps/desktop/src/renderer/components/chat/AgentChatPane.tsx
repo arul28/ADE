@@ -130,7 +130,6 @@ import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { getAgentChatModelsCached, getAiStatusCached, invalidateAiDiscoveryCache, peekAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
-import { rewriteMissionControlTextToolEvents } from "./missionControlTextTools";
 import {
   buildAutomaticMacosVmContextForPrompt,
   createAppControlContextInstanceId,
@@ -424,7 +423,7 @@ function getExecutionModeOptions(model: ModelDescriptor | null | undefined): Exe
         value: "parallel",
         label: "Parallel",
         summary: "Droid delegates",
-        helper: "Tell Droid to use available delegation or mission-style tools for independent subtasks, then reconcile the result.",
+        helper: "Tell Droid to use available delegation tools for independent subtasks, then reconcile the result.",
         accent: "#10B981",
       },
     ];
@@ -1976,7 +1975,7 @@ export function AgentChatPane({
   const [sdkSlashCommands, setSdkSlashCommands] = useState<import("../../../shared/types").AgentChatSlashCommand[]>([]);
   const [sendOnEnter, setSendOnEnter] = useState(true);
   const [draft, setDraft] = useState("");
-  const draftsPerSessionRef = useRef<Map<string | null, string>>(new Map());
+  const draftsPerSessionRef = useRef<Map<string, string>>(new Map());
   const [busy, setBusy] = useState(false);
   const [shellLaunchBusy, setShellLaunchBusy] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -2275,17 +2274,17 @@ export function AgentChatPane({
   }, []);
   const updateComposerDraft = useCallback((value: string) => {
     setDraft(value);
-    draftsPerSessionRef.current.set(selectedSessionId, value);
+    draftsPerSessionRef.current.set(companionStateKey, value);
     if (value.length > 0) setPromptSuggestion(null);
-  }, [selectedSessionId]);
+  }, [companionStateKey]);
   const insertComposerDraft = useCallback((value: string) => {
     setDraft((current) => {
       const next = current.trim().length ? `${current.trimEnd()}\n\n${value}` : value;
-      draftsPerSessionRef.current.set(selectedSessionId, next);
+      draftsPerSessionRef.current.set(companionStateKey, next);
       return next;
     });
     setPromptSuggestion(null);
-  }, [selectedSessionId]);
+  }, [companionStateKey]);
 
   const iosSimulatorProjectRoot = useMemo(() => {
     const scopedLaneId = selectedSession?.laneId ?? laneId;
@@ -2310,9 +2309,7 @@ export function AgentChatPane({
       ? [...selectedEvents, optimisticOutgoingMessage.envelope]
       : selectedEvents;
     const renderableEvents = baseEvents.filter((envelope) => !envelope.event.type.startsWith("subagent."));
-    const displayEvents = presentation?.rewriteMissionControlTextTools === true || presentation?.mode === "mission-thread"
-      ? rewriteMissionControlTextToolEvents(renderableEvents)
-      : renderableEvents;
+    const displayEvents = renderableEvents;
     const promotedTurnId = selectedSession?.cursorPromotedTurnId;
     const cloudAgentId = selectedSession?.cursorCloudAgentId;
     if (!promotedTurnId || !cloudAgentId) return displayEvents;
@@ -2341,7 +2338,7 @@ export function AgentChatPane({
       },
     };
     return [...displayEvents.slice(0, insertAt), synthetic, ...displayEvents.slice(insertAt)];
-  }, [optimisticOutgoingMessage, presentation?.mode, presentation?.rewriteMissionControlTextTools, selectedEvents, selectedSession?.cursorCloudAgentId, selectedSession?.cursorPromotedTurnId, selectedSessionId]);
+  }, [optimisticOutgoingMessage, selectedEvents, selectedSession?.cursorCloudAgentId, selectedSession?.cursorPromotedTurnId, selectedSessionId]);
   const selectedCodexGoal = useMemo<CodexThreadGoal | null>(() => {
     let goalFromEvents: CodexThreadGoal | null = null;
     let sawGoalEvent = false;
@@ -3486,19 +3483,17 @@ export function AgentChatPane({
     });
   }, [forceDraft, initialSessionId, laneId, lockSessionId, lockedSingleSessionMode, preferDraftStart, refreshLockedSessionSummary]);
 
-  // Save/restore per-session drafts when switching sessions
-  const prevSessionIdRef = useRef<string | null | undefined>(undefined);
+  // Save/restore per-session (or per-lane draft) composer text when scope changes.
+  const prevDraftKeyRef = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (prevSessionIdRef.current !== undefined) {
-      // Save draft for the session we're leaving
-      draftsPerSessionRef.current.set(prevSessionIdRef.current, draft);
+    if (prevDraftKeyRef.current !== undefined) {
+      draftsPerSessionRef.current.set(prevDraftKeyRef.current, draft);
     }
-    prevSessionIdRef.current = selectedSessionId;
-    // Restore draft for the session we're entering
-    const saved = draftsPerSessionRef.current.get(selectedSessionId) ?? "";
+    prevDraftKeyRef.current = companionStateKey;
+    const saved = draftsPerSessionRef.current.get(companionStateKey) ?? "";
     setDraft(saved);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only trigger on session switch, not draft changes
-  }, [selectedSessionId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only trigger on scope switch, not draft edits
+  }, [companionStateKey]);
 
   useEffect(() => {
     if (!isTileActive) return;
@@ -6796,7 +6791,6 @@ export function AgentChatPane({
           ) : null}
           {chatTerminalVisible ? <ChatTerminalToggle open={terminalDrawerOpen} onToggle={() => setTerminalDrawerOpen((v) => !v)} /> : null}
           {selectedSession?.provider === "codex"
-            && selectedSession.surface !== "mission"
             && selectedSessionId
             && selectedSession.threadId ? (
             <CodexOpenInCliButton

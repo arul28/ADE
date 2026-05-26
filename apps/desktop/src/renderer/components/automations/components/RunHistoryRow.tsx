@@ -5,7 +5,6 @@ import { formatDate, formatDurationMs, statusToneAutomation as statusTone } from
 
 function summarizeExecution(run: AutomationRun): string {
   if (run.executionKind === "agent-session") return "Agent session";
-  if (run.executionKind === "mission") return "Mission";
   return `${Math.max(1, run.actionsTotal)} built-in task${run.actionsTotal === 1 ? "" : "s"}`;
 }
 
@@ -47,7 +46,6 @@ export function RunHistoryRow({
             <span>{formatDurationMs(durationMs)}</span>
             <span>{summarizeExecution(run)}</span>
             {run.chatSessionId ? <span>{run.chatSessionId.slice(0, 8)}</span> : null}
-            {!run.chatSessionId && run.missionId ? <span>{run.missionId.slice(0, 8)}</span> : null}
           </div>
 
           {run.summary ? (

@@ -226,7 +226,7 @@ type AppPackagingState = "checking" | "packaged" | "dev";
 
 /**
  * Gate the Mac VM tab behind a "Coming soon" splash in packaged builds —
- * mirrors the MissionsProductionGate pattern. The provisioning + first-boot
+ * mirrors the production-gate pattern. The provisioning + first-boot
  * flow still lives in {@link MacVmWorkspace} and runs unchanged in dev.
  *
  * The `getInfo()` call is guarded so existing renderer tests that stub

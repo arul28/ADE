@@ -143,7 +143,6 @@ describe("initializeOrRepairAdeProject", () => {
     fs.writeFileSync(path.join(root, ".ade", "logs", "main.jsonl"), "{\"ok\":true}\n", "utf8");
     fs.mkdirSync(path.join(root, ".ade", "chat-sessions"), { recursive: true });
     fs.writeFileSync(path.join(root, ".ade", "chat-sessions", "session-1.json"), "{\"id\":\"session-1\"}\n", "utf8");
-    fs.writeFileSync(path.join(root, ".ade", "mission-state-run-1.json"), "{\"runId\":\"run-1\"}\n", "utf8");
 
     return root;
   }
@@ -170,7 +169,6 @@ describe("initializeOrRepairAdeProject", () => {
     expect(fs.existsSync(layout.linearWorkflowsDir)).toBe(true);
     expect(fs.existsSync(path.join(layout.logsDir, "main.jsonl"))).toBe(true);
     expect(fs.existsSync(path.join(layout.chatSessionsDir, "session-1.json"))).toBe(true);
-    expect(fs.existsSync(path.join(layout.missionStateDir, "mission-state-run-1.json"))).toBe(true);
     expect(fs.existsSync(path.join(layout.adeDir, "logs"))).toBe(false);
     expect(fs.existsSync(path.join(layout.adeDir, "chat-sessions"))).toBe(false);
   });

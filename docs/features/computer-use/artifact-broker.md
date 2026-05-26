@@ -1,6 +1,6 @@
 # Computer-Use Artifact Broker
 
-The broker is the normalization layer after external computer-use execution has happened. External tools perform the actual clicks, keystrokes, and captures. The broker ingests their output, stores it canonically, links it to owners (missions, chats, PRs, Linear issues), and tracks review and publication state.
+The broker is the normalization layer after external computer-use execution has happened. External tools perform the actual clicks, keystrokes, and captures. The broker ingests their output, stores it canonically, links it to owners (runs, chats, PRs, Linear issues), and tracks review and publication state.
 
 The broker runs inside the runtime daemon (`ade serve`) that owns the project. Artifacts are written to that runtime host's `.ade/artifacts/computer-use/` directory; database rows live in that runtime's `.ade/ade.db`. Renderer reads/writes flow through `window.ade.proof.*` → preload → runtime JSON-RPC → broker; the desktop main process is no longer the owner of this state.
 
@@ -40,13 +40,13 @@ Stored as `StoredLinkRow`:
 
 - `id` — UUID.
 - `artifact_id` — FK to the artifact.
-- `owner_kind` — one of `lane`, `mission`, `orchestrator_run`, `orchestrator_step`, `orchestrator_attempt`, `chat_session`, `automation_run`, `github_pr`, `linear_issue`.
+- `owner_kind` — one of `lane`, `chat_session`, `automation_run`, `github_pr`, `linear_issue`.
 - `owner_id` — the owner's id.
 - `relation` — default `attached_to`; can also be `produced_by`, `referenced_by`, `published_to`, etc.
 - `metadata_json` — per-link metadata.
 - `created_at`.
 
-A single artifact can have multiple links — evidence that starts in a chat can attach to a mission, then to a PR, then to a Linear issue without being duplicated.
+A single artifact can have multiple links — evidence that starts in a chat can attach to a PR, then to a Linear issue without being duplicated.
 
 ## Ingestion pipeline
 
@@ -119,7 +119,7 @@ This is the symlink-safe copy path. Do not replace with plain `copyFileSync` —
 
 ```
 {
-  kind: "lane" | "mission" | "orchestrator_run" | "orchestrator_step" | "orchestrator_attempt" | "chat_session" | "automation_run" | "github_pr" | "linear_issue",
+  kind: "lane" | "chat_session" | "automation_run" | "github_pr" | "linear_issue",
   id: string,
   relation?: "attached_to" | "produced_by" | "referenced_by" | "published_to" | ...,
   metadata?: Record<string, unknown>
@@ -129,10 +129,6 @@ This is the symlink-safe copy path. Do not replace with plain `copyFileSync` —
 Owner precedence for snapshots (`usageEventMatchesOwner`):
 
 - `chat_session` — matches usage events with `chatSessionId` or `callerId` matching the id.
-- `mission` — matches events with `missionId`.
-- `orchestrator_run` — matches events with `runId`.
-- `orchestrator_step` — matches events with `stepId`.
-- `orchestrator_attempt` — matches events with `attemptId`.
 
 ## Review state
 
@@ -144,26 +140,21 @@ Owner precedence for snapshots (`usageEventMatchesOwner`):
 
 ## Routing and promotion
 
-`routeArtifact(args)` adds a new link to a different owner — this is the "promote from chat to mission" path. The original link is preserved (to maintain provenance) and a new link is added with an appropriate `relation`.
+`routeArtifact(args)` adds a new link to a different owner. The original link is preserved (to maintain provenance) and a new link is added with an appropriate `relation`.
 
 Example promotion flow:
 
 ```
 chat_session:abc (relation: attached_to)
-  -> mission:xyz (relation: produced_by)
   -> github_pr:123 (relation: published_to)
   -> linear_issue:LIN-456 (relation: published_to)
 ```
 
 All links remain in `computer_use_artifact_links`; the artifact record itself is unchanged.
 
-## Projection into legacy artifact plumbing
-
-The broker projects broker-managed artifacts into older mission/orchestrator artifact plumbing where compatibility still matters (mission artifact lists, orchestrator artifact queries). `missionService` and `orchestratorService` read from the broker and expose broker artifacts under the normal artifact surface so UI that hasn't migrated yet still sees proof evidence.
-
 ## Event emission
 
-`onEvent(payload: ComputerUseEventPayload)` fires after every successful ingestion, review, or routing change. Renderer surfaces subscribe to this stream to refresh the proof drawer, mission run view, or Settings readiness snapshot without polling.
+`onEvent(payload: ComputerUseEventPayload)` fires after every successful ingestion, review, or routing change. Renderer surfaces subscribe to this stream to refresh the proof drawer or Settings readiness snapshot without polling.
 
 ## Snapshots
 
@@ -184,7 +175,6 @@ The broker projects broker-managed artifacts into older mission/orchestrator art
 
 Artifacts flow into downstream workflow surfaces:
 
-- **Mission closeout** — broker artifacts attach to the result lane closeout record.
 - **Lane history** — linked lane surfaces the artifact in the lane timeline.
 - **Chat history** — linked chat session surfaces the artifact in the thread.
 - **GitHub PR workflows** — linked PR gets a comment with the artifact reference (when published).
@@ -214,5 +204,4 @@ Publication paths call `routeArtifact` or `reviewArtifact` depending on the tran
 - `README.md` — control-plane role, proof kinds, backend overview.
 - `backends.md` — Ghost OS, agent-browser, ADE local detection and capabilities.
 - `settings-and-readiness.md` — Settings > Computer Use surface.
-- `../missions/README.md` — mission preflight and run monitoring consume broker snapshots.
 - `../cto/linear-integration.md` — Linear closeout attaches broker artifacts via routing.

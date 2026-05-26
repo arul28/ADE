@@ -288,13 +288,13 @@ beforeEach(() => {
 describe("aiIntegrationService", () => {
   it("routes executeTask through the provider task runner", async () => {
     const { service, runCalls } = makeService({
-      aiConfig: { features: { mission_planning: true } },
+      aiConfig: { features: { initial_context: true } },
     });
 
     const result = await service.executeTask({
-      feature: "mission_planning",
+      feature: "initial_context",
       taskType: "planning",
-      prompt: "Plan this mission",
+      prompt: "Plan this task",
       cwd: "/tmp",
       model: "anthropic/claude-sonnet-4-6"
     });

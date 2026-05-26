@@ -285,8 +285,6 @@ const DESKTOP_COMMAND_ROUTES: Record<string, string> = {
   "/ios": "/ios-sim",
   "/ios-sim": "/ios-sim",
   "/macos-vm": "/macos-vm",
-  "/mission": "/missions",
-  "/missions": "/missions",
   "/pencil": "/pencil",
   "/proof": "/proof",
 };

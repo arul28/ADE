@@ -1,6 +1,6 @@
 # ADE — Product Requirements
 
-ADE is a **per-machine local-first runtime daemon** for AI-assisted software engineering. The runtime owns projects, git-worktree lanes of work, multi-provider AI chat, multi-agent missions, a persistent CTO agent, pipeline automations, PR stacking, conflict simulation, computer-use proofs, and multi-device sync. Three first-party clients attach to it as peers: the **Electron desktop app** (multi-window, one window per project, optionally bound to a remote runtime over SSH), the **`ade code` terminal client**, and the **iOS app**. The same `ade` CLI is also used directly from any shell.
+ADE is a **per-machine local-first runtime daemon** for AI-assisted software engineering. The runtime owns projects, git-worktree lanes of work, multi-provider AI chat, a persistent CTO agent, worker delegation, pipeline automations, PR stacking, conflict simulation, computer-use proofs, and multi-device sync. Three first-party clients attach to it as peers: the **Electron desktop app** (multi-window, one window per project, optionally bound to a remote runtime over SSH), the **`ade code` terminal client**, and the **iOS app**. The same `ade` CLI is also used directly from any shell.
 
 This doc is the entry point. Every major feature and concept is linked to its detailed breakdown in [`features/`](./features/). For how the pieces fit together, read [ARCHITECTURE.md](./ARCHITECTURE.md) next.
 
@@ -17,7 +17,7 @@ The clients of that runtime are equal:
 - **iOS app** (`apps/ios/`) — SwiftUI controller; connects to the runtime over WebSocket. The phone never runs agents.
 - **SSH-attached desktop** — a desktop window pointed at a remote runtime is the same client as a local window; the runtime daemon is what differs.
 
-The primary unit of work inside any project is a **lane**: an isolated git worktree + per-lane process pool + agent session. Many lanes run concurrently — each with its own chat, its own processes, its own PR. Lanes compose into **stacks** (dependency chains) and graduate into **missions** (multi-agent, multi-step orchestrated runs) when the work is bigger than a single session.
+The primary unit of work inside any project is a **lane**: an isolated git worktree + per-lane process pool + agent session. Many lanes run concurrently — each with its own chat, its own processes, its own PR. Lanes compose into **stacks** (dependency chains) and can be delegated to CTO workers or automation rules when the work needs durable routing.
 
 Layered on top, all owned by the runtime:
 - **Agents** — chat, CTO operator, workers. Multi-provider (Anthropic, OpenAI, Claude Code CLI, Codex, OpenCode, Cursor). Tool-aware. CTO worker adapter types: `claude-local`, `codex-local`, `process`.
@@ -39,7 +39,6 @@ ADE is the control plane. It does not execute browser automation or computer-use
 | Project | One repo entry in the runtime's project registry. Identified by stable hash of root path; addressed in the multi-project RPC by `projectId`. | [remote-runtime/README.md](./features/remote-runtime/README.md) |
 | Lane | Isolated git worktree + per-lane process pool + agent session for one task. | [lanes/README.md](./features/lanes/README.md) |
 | Stack | Dependency chain of lanes → stacked PRs. | [lanes/stacking.md](./features/lanes/stacking.md) |
-| Mission | Multi-step orchestrated run with a coordinator agent, sub-workers, validation gates, and a result lane. | [missions/README.md](./features/missions/README.md) |
 | Agent | Typed persona with identity, tool tier, budget, and session log. CTO + workers + chat agents. | [agents/README.md](./features/agents/README.md) |
 | Worktree | Git clone dir under `.ade/worktrees/<lane-id>/`, one per lane. | [lanes/worktree-isolation.md](./features/lanes/worktree-isolation.md) |
 | Lane runtime | Per-lane process pool + env + ports + proxy + diagnostics. | [lanes/runtime.md](./features/lanes/runtime.md) |
@@ -66,24 +65,23 @@ ADE is the control plane. It does not execute browser automation or computer-use
 
 - [**Agents**](./features/agents/README.md) — Three surfaces: chat, CTO operator, workers. Identity, capability modes, tool tiers, heartbeats.
 - [**Chat**](./features/chat/README.md) — Multi-provider, streaming, tool-aware. Transcript and turns, tool system (universal/workflow/coordinator), agent routing, composer + derived panels, and parallel multi-model lane launch. Terminal client: [ADE Code](./features/ade-code/README.md).
-- [**History**](./features/history/README.md) — Two surfaces sharing one page: a GitKraken-style commit graph for the focused lane (per-commit branch/lane/tag/cherry-pick/revert/reset and lane-level head-change undo+redo), and a unified activity feed that merges operations with chat sessions, missions, CTO sessions, and worker runs. Every recorded service follows the same `runTrackedOperation` pattern.
+- [**History**](./features/history/README.md) — Two surfaces sharing one page: a GitKraken-style commit graph for the focused lane (per-commit branch/lane/tag/cherry-pick/revert/reset and lane-level head-change undo+redo), and a unified activity feed that merges operations with chat sessions, CTO sessions, and worker runs. Every recorded service follows the same `runTrackedOperation` pattern.
 
-### Orchestration
+### Automation and CTO
 
-- [**Missions**](./features/missions/README.md) — Coordinator agent, delegation graph, validation gates (19 VAL-XXX assertions), result-lane closeout, worker fan-out.
-- [**Automations**](./features/automations/README.md) — Rule triggers (time, action, webhook) → three execution surfaces (mission, agent-session, built-in). Confidence + verification + human review.
+- [**Automations**](./features/automations/README.md) — Rule triggers (time, action, webhook) → agent-session and built-in execution surfaces. Confidence + verification + human review.
 - [**CTO**](./features/cto/README.md) — Persistent project-level AI operator with identity, context continuity, Linear workflows, pipeline builder, and worker team.
 
 ### Workspace surfaces
 
-- [**Terminals and Sessions**](./features/terminals-and-sessions/README.md) — PTY, session, managed-process, and lane-tied macOS VM services. Multi-run process lifecycle keyed by `runId`, AI-title pipeline, lazy resume-target hydration, stale reconciliation, VM-backed GUI validation.
+- [**Terminals and Sessions**](./features/terminals-and-sessions/README.md) — PTY, session, managed-process, and lane-tied macOS VM services. Process lifecycle tracking, AI-title pipeline, lazy resume-target hydration, stale reconciliation, VM-backed GUI validation.
 - [**Files and Editor**](./features/files-and-editor/README.md) — Atomic writes, ref-counted chokidar watcher, file search index, Monaco surfaces (edit/diff/conflict), preload trust boundary.
 - [**Project Home**](./features/project-home/README.md) — Combined welcome + per-lane runtime dashboard. Loads lane-independent metadata vs lane runtime separately.
 - [**Onboarding and Settings**](./features/onboarding-and-settings/README.md) — First-run wizard (stack detection, suggested config, import), 9-tab settings, configuration schema with trust model.
 
 ### Integrations
 
-- [**Linear Integration**](./features/linear-integration/README.md) — Webhook + relay + reconciliation. Workflow presets, target types (mission/session/worker/PR), bidirectional sync.
+- [**Linear Integration**](./features/linear-integration/README.md) — Webhook + relay + reconciliation. Workflow presets, target types (session/worker/PR), bidirectional sync.
 - [**Computer Use**](./features/computer-use/README.md) — Intentional proof capture plus active App Control and macOS VM bridges. Canonical artifact model, ownership-linked storage.
 - [**iOS Simulator**](./features/ios-simulator/README.md) — Chat-side macOS-only drawer that builds, launches, mirrors, inspects, and controls a booted iOS Simulator. ADEInspector publishes per-frame SwiftUI element metadata so taps become source-anchored chat context.
 - [**Sync and Multi-Device**](./features/sync-and-multi-device/README.md) — cr-sqlite CRDT (desktop native ext, iOS pure-SQL emulation). Host/controller model. WebSocket envelope. Remote commands.
@@ -126,7 +124,6 @@ Fragile areas flagged across the docs (read docs before editing):
 - PTY / sessions / processes services — rewritten this branch.
 - OAuth redirect service — complex three-state machine with HMAC signing.
 - Chat transcript render pipeline — two-layer event→state→render path.
-- Mission coordinator delegation — 19 VAL-XXX behavioral invariants.
 
 ---
 

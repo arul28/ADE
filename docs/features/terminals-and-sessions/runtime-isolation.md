@@ -14,7 +14,7 @@ calls `fs.realpathSync` against the remote filesystem and refuses to
 spawn outside the remote worktree. The desktop renderer never bypasses
 the runtime to spawn directly.
 
-This document covers the gating, fallback behavior, and per-mission
+This document covers the gating, fallback behavior, and per-run
 scoping that makes "which work runs where" a deterministic answer.
 
 ## Lane gating: `resolveLaneLaunchContext`
@@ -127,27 +127,12 @@ If the CLI assigns a new session ID at runtime, `ptyService`
 backfills it into `resumeMetadata.targetId` via the transcript scan
 and/or Claude/Codex local storage lookup.
 
-## Mission scoping
+## Worker scoping
 
-Missions run through the orchestrator (`aiOrchestratorService`,
-`missionLifecycle`) and launch PTYs or agent chats via the same
-`ptyService.create` + `agentChatService` entry points. Each mission
-step operates inside:
-
-- the mission's assigned lane (missions own a `laneId`)
-- optionally, an integration lane for cross-lane simulation
-
-Missions do not bypass `resolveLaneLaunchContext`; they go through the
-same gate, which means mission work stays inside its lane's worktree.
-
-Mission-level execution policy (see
-`apps/desktop/src/shared/types/missions.ts` and
-`orchestrator/executionPolicy.ts`) additionally controls:
-
-- which tools the agent may call
-- permission mode (Claude `auto`/`plan`/`allow`, Codex approval
-  policies and sandbox modes)
-- network/fs sandboxing flags passed through as resume metadata
+Worker launches use the same `ptyService.create` and
+`agentChatService` entry points as regular chats. Each worker operates
+inside its assigned lane and does not bypass `resolveLaneLaunchContext`,
+which means worker work stays inside the lane's worktree.
 
 ## Managed process scoping
 

@@ -11,6 +11,12 @@ import { fetchRemoteTrackingBranch, resolveQueueRebaseOverride, type QueueRebase
 import { detectConflictKind } from "../git/gitConflictState";
 import { shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
 import { linearIssueBranchName, sanitizeLinearIssueBranchName } from "../../../shared/linearIssueBranch";
+import {
+  finalizeLaneLinearIssue,
+  isLinkableLaneLinearIssue,
+  laneLinearIssueMissingFields,
+  parseLaneLinearIssueJson,
+} from "../../../shared/laneLinearIssue";
 import type { createOperationService } from "../history/operationService";
 import type { Logger } from "../logging/logger";
 import type {
@@ -40,7 +46,6 @@ import type {
   LaneLinearIssueLinkRole,
   LaneLinearIssueLinkSource,
   LaneRuntimePlacement,
-  MissionLaneRole,
   LaneStateSnapshotSummary,
   LaneStatus,
   LaneSummary,
@@ -81,8 +86,6 @@ type LaneRow = {
   icon: string | null;
   tags_json: string | null;
   folder: string | null;
-  mission_id: string | null;
-  lane_role: MissionLaneRole | null;
   runtime_placement: LaneRuntimePlacement | null;
   created_at: string;
   archived_at: string | null;
@@ -92,7 +95,6 @@ type LaneRow = {
 type LaneStateSnapshotRow = {
   lane_id: string;
   agent_summary_json: string | null;
-  mission_summary_json: string | null;
   updated_at: string | null;
 };
 
@@ -321,64 +323,6 @@ function parseSummaryRecord(raw: string | null): Record<string, unknown> | null 
   }
 }
 
-function parseLaneLinearIssue(raw: string | null): LaneLinearIssue | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    const record = parsed as Record<string, unknown>;
-    const id = typeof record.id === "string" ? record.id : "";
-    const identifier = typeof record.identifier === "string" ? record.identifier : "";
-    const title = typeof record.title === "string" ? record.title : "";
-    const projectId = typeof record.projectId === "string" ? record.projectId : "";
-    const projectSlug = typeof record.projectSlug === "string" ? record.projectSlug : "";
-    const teamId = typeof record.teamId === "string" ? record.teamId : "";
-    const teamKey = typeof record.teamKey === "string" ? record.teamKey : "";
-    const stateId = typeof record.stateId === "string" ? record.stateId : "";
-    const stateName = typeof record.stateName === "string" ? record.stateName : "";
-    const stateType = typeof record.stateType === "string" ? record.stateType : "";
-    const createdAt = typeof record.createdAt === "string" ? record.createdAt : "";
-    const updatedAt = typeof record.updatedAt === "string" ? record.updatedAt : "";
-    if (!id || !identifier || !title || !projectId || !projectSlug || !teamId || !teamKey || !stateId || !stateName || !stateType || !createdAt || !updatedAt) {
-      return null;
-    }
-    const priority = typeof record.priority === "number" && Number.isFinite(record.priority) ? record.priority : 0;
-    const priorityLabel = record.priorityLabel === "urgent" || record.priorityLabel === "high" || record.priorityLabel === "normal" || record.priorityLabel === "low"
-      ? record.priorityLabel
-      : "none";
-    return {
-      id,
-      identifier,
-      title,
-      description: typeof record.description === "string" ? record.description : null,
-      url: typeof record.url === "string" ? record.url : null,
-      projectId,
-      projectSlug,
-      projectName: typeof record.projectName === "string" ? record.projectName : null,
-      teamId,
-      teamKey,
-      teamName: typeof record.teamName === "string" ? record.teamName : null,
-      stateId,
-      stateName,
-      stateType,
-      priority,
-      priorityLabel,
-      labels: Array.isArray(record.labels) ? record.labels.filter((entry): entry is string => typeof entry === "string") : [],
-      assigneeId: typeof record.assigneeId === "string" ? record.assigneeId : null,
-      assigneeName: typeof record.assigneeName === "string" ? record.assigneeName : null,
-      creatorId: typeof record.creatorId === "string" ? record.creatorId : null,
-      creatorName: typeof record.creatorName === "string" ? record.creatorName : null,
-      dueDate: typeof record.dueDate === "string" ? record.dueDate : null,
-      estimate: typeof record.estimate === "number" && Number.isFinite(record.estimate) ? record.estimate : null,
-      branchName: typeof record.branchName === "string" ? record.branchName : null,
-      createdAt,
-      updatedAt,
-    };
-  } catch {
-    return null;
-  }
-}
-
 const LANE_LINEAR_ISSUE_LINK_ROLES: ReadonlySet<LaneLinearIssueLinkRole> = new Set([
   "primary",
   "worked",
@@ -425,7 +369,7 @@ function parseIssueLinkEvidence(raw: string | null | undefined): LaneLinearIssue
 
 function parseLaneLinearIssueLink(row: LaneLinearIssueLinkRow | null | undefined): LaneLinearIssueLink | null {
   if (!row) return null;
-  const issue = parseLaneLinearIssue(row.issue_json);
+  const issue = parseLaneLinearIssueJson(row.issue_json);
   if (!issue) return null;
   return {
     id: row.id,
@@ -508,8 +452,6 @@ function toLaneSummary(args: {
     icon: parseLaneIcon(row.icon),
     tags: parseLaneTags(row.tags_json),
     folder: row.folder,
-    missionId: row.mission_id,
-    laneRole: row.lane_role,
     runtimePlacement: normalizeRuntimePlacement(row.runtime_placement),
     createdAt: row.created_at,
     archivedAt: row.archived_at,
@@ -867,7 +809,7 @@ function isTerminalLaneDeleteProgress(progress: LaneDeleteProgress): boolean {
 export type LanePlacementChangedEvent = {
   type: "lane-placement-changed";
   laneId: string;
-  from: "macos-vm" | "local";
+  from: "macos-vm" | "local" | "none";
   to: "macos-vm" | "local";
   changedAt: string;
 };
@@ -1018,15 +960,14 @@ export function createLaneService({
     laneId: string;
     status: LaneStatus;
     agentSummary?: Record<string, unknown> | null;
-    missionSummary?: Record<string, unknown> | null;
     updatedAt?: string;
   }): void => {
     db.run(
       `
         insert into lane_state_snapshots(
           lane_id, dirty, ahead, behind, remote_behind, rebase_in_progress,
-          agent_summary_json, mission_summary_json, updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          agent_summary_json, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?)
         on conflict(lane_id) do update set
           dirty = excluded.dirty,
           ahead = excluded.ahead,
@@ -1034,7 +975,6 @@ export function createLaneService({
           remote_behind = excluded.remote_behind,
           rebase_in_progress = excluded.rebase_in_progress,
           agent_summary_json = excluded.agent_summary_json,
-          mission_summary_json = excluded.mission_summary_json,
           updated_at = excluded.updated_at
       `,
       [
@@ -1045,7 +985,6 @@ export function createLaneService({
         args.status.remoteBehind,
         args.status.rebaseInProgress ? 1 : 0,
         args.agentSummary == null ? null : JSON.stringify(args.agentSummary),
-        args.missionSummary == null ? null : JSON.stringify(args.missionSummary),
         args.updatedAt ?? new Date().toISOString(),
       ],
     );
@@ -1067,7 +1006,7 @@ export function createLaneService({
         `,
         [projectId, laneId],
       );
-      return parseLaneLinearIssue(row?.issue_json ?? null);
+      return parseLaneLinearIssueJson(row?.issue_json ?? null);
     } catch {
       return null;
     }
@@ -1292,47 +1231,9 @@ export function createLaneService({
     return toLaneBranchProfile(profile);
   };
 
-  const normalizeLaneLinearIssue = (issue: LaneLinearIssue, branchName: string): LaneLinearIssue => ({
-    ...issue,
-    id: issue.id.trim(),
-    identifier: issue.identifier.trim(),
-    title: issue.title.trim(),
-    description: issue.description ?? null,
-    url: issue.url ?? null,
-    projectId: issue.projectId.trim(),
-    projectSlug: issue.projectSlug.trim(),
-    projectName: issue.projectName ?? null,
-    teamId: issue.teamId.trim(),
-    teamKey: issue.teamKey.trim(),
-    teamName: issue.teamName ?? null,
-    stateId: issue.stateId.trim(),
-    stateName: issue.stateName.trim(),
-    stateType: issue.stateType.trim(),
-    labels: issue.labels.map((entry) => entry.trim()).filter(Boolean).slice(0, 24),
-    assigneeId: issue.assigneeId ?? null,
-    assigneeName: issue.assigneeName ?? null,
-    creatorId: issue.creatorId ?? null,
-    creatorName: issue.creatorName ?? null,
-    dueDate: issue.dueDate ?? null,
-    estimate: issue.estimate ?? null,
-    branchName,
-  });
-
   const upsertLaneLinearIssue = (laneId: string, issue: LaneLinearIssue, branchName: string): LaneLinearIssue => {
-    const normalized = normalizeLaneLinearIssue(issue, branchName);
-    const missing: string[] = [];
-    if (!normalized.id) missing.push("id");
-    if (!normalized.identifier) missing.push("identifier");
-    if (!normalized.title) missing.push("title");
-    if (!normalized.projectId) missing.push("projectId");
-    if (!normalized.projectSlug) missing.push("projectSlug");
-    if (!normalized.teamId) missing.push("teamId");
-    if (!normalized.teamKey) missing.push("teamKey");
-    if (!normalized.stateId) missing.push("stateId");
-    if (!normalized.stateName) missing.push("stateName");
-    if (!normalized.stateType) missing.push("stateType");
-    if (!issue.createdAt || typeof issue.createdAt !== "string" || !issue.createdAt.trim()) missing.push("createdAt");
-    if (!issue.updatedAt || typeof issue.updatedAt !== "string" || !issue.updatedAt.trim()) missing.push("updatedAt");
+    const normalized = finalizeLaneLinearIssue(issue, branchName);
+    const missing = laneLinearIssueMissingFields(normalized);
     if (missing.length > 0) {
       throw new Error(`Linear issue attachment is missing required fields: ${missing.join(", ")}.`);
     }
@@ -1937,7 +1838,7 @@ export function createLaneService({
       );
       for (const linearRow of linearRows) {
         if (!linearRow?.lane_id || linearIssueByLaneId.has(linearRow.lane_id)) continue;
-        const parsed = parseLaneLinearIssue(linearRow.issue_json ?? null);
+        const parsed = parseLaneLinearIssueJson(linearRow.issue_json ?? null);
         if (parsed) linearIssueByLaneId.set(linearRow.lane_id, parsed);
       }
     } catch {
@@ -2108,8 +2009,6 @@ export function createLaneService({
     startPoint: string;
     parentLaneId: string | null;
     folder?: string;
-    missionId?: string | null;
-    laneRole?: MissionLaneRole | null;
     branchName?: string | null;
     linearIssue?: LaneLinearIssue | null;
     runtimePlacement?: LaneRuntimePlacement | null;
@@ -2139,9 +2038,9 @@ export function createLaneService({
       `
         insert into lanes(
           id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder, mission_id, lane_role, runtime_placement, status, created_at, archived_at
+          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder, runtime_placement, status, created_at, archived_at
         )
-        values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, null, null, null, ?, ?, ?, ?, 'active', ?, null)
+        values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, null, null, null, ?, ?, 'active', ?, null)
       `,
       [
         laneId,
@@ -2153,8 +2052,6 @@ export function createLaneService({
         worktreePath,
         args.parentLaneId,
         args.folder ?? null,
-        args.missionId ?? null,
-        args.laneRole ?? null,
         runtimePlacement,
         now
       ]
@@ -2163,6 +2060,23 @@ export function createLaneService({
       ? upsertLaneLinearIssue(laneId, args.linearIssue, branchRef)
       : null;
     invalidateLaneListCache();
+
+    if (runtimePlacement === "macos-vm") {
+      try {
+        await wireMacosVmLanePlacement({
+          laneId,
+          previousPlacement: "none",
+          rollbackPlacementOnLinkFailure: true,
+        });
+      } catch (error) {
+        await cleanupCreatedWorktreeLaneAfterVmWireFailure({
+          laneId,
+          branchRef,
+          worktreePath,
+          cause: error,
+        });
+      }
+    }
 
     // Best-effort initial push to establish upstream tracking
     try {
@@ -2198,6 +2112,59 @@ export function createLaneService({
     });
     if (linearIssue) notifyLinearIssueLinked(summary, linearIssue);
     return summary;
+  };
+
+  const wireMacosVmLanePlacement = async (args: {
+    laneId: string;
+    previousPlacement: LaneRuntimePlacement | "none";
+    rollbackPlacementOnLinkFailure: boolean;
+  }): Promise<void> => {
+    const laneId = String(args.laneId ?? "").trim();
+    if (!laneId.length) return;
+    const hooks = activeMacosVmHooks;
+    if (hooks?.linkLaneToCurrentVm) {
+      try {
+        await hooks.linkLaneToCurrentVm({ laneId });
+      } catch (error) {
+        logger.warn("laneService.wire_vm_link_failed", {
+          laneId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        if (args.rollbackPlacementOnLinkFailure) {
+          db.run(
+            `
+              update lanes
+              set runtime_placement = 'local'
+              where id = ?
+                and project_id = ?
+            `,
+            [laneId, projectId],
+          );
+          invalidateLaneListCache();
+        }
+        throw error;
+      }
+    }
+    if (hooks?.startMirrorSyncForLane) {
+      try {
+        await hooks.startMirrorSyncForLane({ laneId });
+      } catch (error) {
+        logger.warn("laneService.wire_vm_mirror_sync_failed", {
+          laneId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    if (args.previousPlacement !== "macos-vm") {
+      emitPlacementChanged({
+        type: "lane-placement-changed",
+        laneId,
+        from: args.previousPlacement,
+        to: "macos-vm",
+        changedAt: new Date().toISOString(),
+      });
+    }
   };
 
   const getRowsById = (includeArchived = true): Map<string, LaneRow> =>
@@ -2316,25 +2283,6 @@ export function createLaneService({
     db.run("update lane_branch_profiles set parent_lane_id = null where parent_lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("update pr_convergence_state set active_lane_id = null where active_lane_id = ?", [laneId]);
     db.run("update linear_workflow_runs set execution_lane_id = null where execution_lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run(
-      `
-        update missions
-        set lane_id = case when lane_id = ? then null else lane_id end,
-            mission_lane_id = case when mission_lane_id = ? then null else mission_lane_id end,
-            result_lane_id = case when result_lane_id = ? then null else result_lane_id end
-        where project_id = ?
-          and (lane_id = ? or mission_lane_id = ? or result_lane_id = ?)
-      `,
-      [laneId, laneId, laneId, projectId, laneId, laneId, laneId],
-    );
-    db.run("update mission_steps set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("update mission_artifacts set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("update mission_interventions set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("update orchestrator_steps set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("update orchestrator_chat_threads set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("update orchestrator_chat_messages set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("update orchestrator_worker_digests set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("update orchestrator_lane_decisions set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("update integration_proposals set integration_lane_id = null where integration_lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("update integration_proposals set preferred_integration_lane_id = null where preferred_integration_lane_id = ? and project_id = ?", [laneId, projectId]);
 
@@ -2382,6 +2330,65 @@ export function createLaneService({
     db.run("delete from lanes where id = ? and project_id = ?", [laneId, projectId]);
   };
 
+  async function cleanupCreatedWorktreeLaneAfterVmWireFailure(args: {
+    laneId: string;
+    branchRef: string;
+    worktreePath: string;
+    cause: unknown;
+  }): Promise<never> {
+    const cleanupErrors: string[] = [];
+    const originalMessage = args.cause instanceof Error ? args.cause.message : String(args.cause);
+
+    try {
+      cleanupLaneDatabaseRows(args.laneId);
+      invalidateLaneListCache();
+    } catch (error) {
+      cleanupErrors.push(`database cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    try {
+      await runGitWorktreeMutation(async () => {
+        try {
+          await runGitOrThrow(
+            ["worktree", "remove", "--force", args.worktreePath],
+            { cwd: projectRoot, timeoutMs: 60_000 },
+          );
+        } catch {
+          await removeWorktreeDirectoryWithRecovery(args.worktreePath);
+          await runGit(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
+        }
+      });
+    } catch (error) {
+      cleanupErrors.push(`worktree cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    try {
+      const result = await runGit(
+        ["branch", "-D", args.branchRef],
+        { cwd: projectRoot, timeoutMs: 30_000 },
+      );
+      if (result.exitCode !== 0) {
+        const message = (result.stderr || result.stdout).trim();
+        cleanupErrors.push(`branch cleanup failed: ${message || `git branch -D exited ${result.exitCode}`}`);
+      }
+    } catch (error) {
+      cleanupErrors.push(`branch cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    if (cleanupErrors.length > 0) {
+      logger.error("laneService.vm_lane_create_cleanup_failed", {
+        laneId: args.laneId,
+        branchRef: args.branchRef,
+        worktreePath: args.worktreePath,
+        error: originalMessage,
+        cleanupErrors,
+      });
+      throw new Error(`${originalMessage} Cleanup after failed VM lane creation also failed: ${cleanupErrors.join("; ")}`);
+    }
+
+    throw args.cause instanceof Error ? args.cause : new Error(originalMessage);
+  }
+
   return {
     async ensurePrimaryLane(): Promise<void> {
       await ensurePrimaryLane();
@@ -2398,7 +2405,7 @@ export function createLaneService({
     getStateSnapshot(laneId: string): LaneStateSnapshotSummary | null {
       const row = db.get<LaneStateSnapshotRow>(
         `
-          select s.lane_id, s.agent_summary_json, s.mission_summary_json, s.updated_at
+          select s.lane_id, s.agent_summary_json, s.updated_at
           from lane_state_snapshots s
           join lanes l on l.id = s.lane_id
           where s.lane_id = ?
@@ -2411,7 +2418,6 @@ export function createLaneService({
       return {
         laneId: row.lane_id,
         agentSummary: parseSummaryRecord(row.agent_summary_json),
-        missionSummary: parseSummaryRecord(row.mission_summary_json),
         updatedAt: row.updated_at ?? null,
       };
     },
@@ -2419,7 +2425,7 @@ export function createLaneService({
     listStateSnapshots(): LaneStateSnapshotSummary[] {
       return db.all<LaneStateSnapshotRow>(
         `
-          select s.lane_id, s.agent_summary_json, s.mission_summary_json, s.updated_at
+          select s.lane_id, s.agent_summary_json, s.updated_at
           from lane_state_snapshots s
           join lanes l on l.id = s.lane_id
           where l.project_id = ?
@@ -2428,7 +2434,6 @@ export function createLaneService({
       ).map((row) => ({
         laneId: row.lane_id,
         agentSummary: parseSummaryRecord(row.agent_summary_json),
-        missionSummary: parseSummaryRecord(row.mission_summary_json),
         updatedAt: row.updated_at ?? null,
       }));
     },
@@ -2467,15 +2472,8 @@ export function createLaneService({
       const links: LaneLinearIssueLink[] = [];
       const seen = new Set<string>();
       for (const issue of args.issues) {
-        const normalized = normalizeLaneLinearIssue(issue, issue.branchName ?? row.branch_ref);
-        if (
-          !normalized.id
-          || !normalized.identifier
-          || !normalized.title
-          || !normalized.projectId
-          || !normalized.teamKey
-          || seen.has(normalized.id)
-        ) {
+        const normalized = finalizeLaneLinearIssue(issue, issue.branchName ?? row.branch_ref);
+        if (!isLinkableLaneLinearIssue(normalized) || seen.has(normalized.id)) {
           continue;
         }
         seen.add(normalized.id);
@@ -2628,8 +2626,6 @@ export function createLaneService({
           startPoint,
           parentLaneId: parent.id,
           folder: args.folder,
-          missionId: args.missionId ?? null,
-          laneRole: args.laneRole ?? null,
           branchName: args.branchName,
           linearIssue: args.linearIssue ?? null,
           runtimePlacement: args.runtimePlacement,
@@ -2650,8 +2646,6 @@ export function createLaneService({
           startPoint,
           parentLaneId: null,
           folder: args.folder,
-          missionId: args.missionId ?? null,
-          laneRole: args.laneRole ?? null,
           branchName: args.branchName,
           linearIssue: args.linearIssue ?? null,
           runtimePlacement: args.runtimePlacement,
@@ -2667,34 +2661,10 @@ export function createLaneService({
         startPoint: parentHeadSha,
         parentLaneId: parent.id,
         folder: args.folder,
-        missionId: args.missionId ?? null,
-        laneRole: args.laneRole ?? null,
         branchName: args.branchName,
         linearIssue: args.linearIssue ?? null,
         runtimePlacement: args.runtimePlacement,
       });
-    },
-
-    setMissionOwnership(args: {
-      laneId: string;
-      missionId?: string | null;
-      laneRole?: MissionLaneRole | null;
-    }): void {
-      const laneId = args.laneId.trim();
-      if (!laneId.length) throw new Error("laneId is required.");
-      const existing = getLaneRow(laneId);
-      if (!existing) throw new Error(`Lane not found: ${laneId}`);
-      db.run(
-        `
-          update lanes
-          set mission_id = ?,
-              lane_role = ?
-          where id = ?
-            and project_id = ?
-        `,
-        [args.missionId?.trim() || null, args.laneRole ?? null, laneId, projectId]
-      );
-      invalidateLaneListCache();
     },
 
     async createFromUnstaged(args: CreateLaneFromUnstagedArgs): Promise<LaneSummary> {
@@ -3266,6 +3236,21 @@ export function createLaneService({
         db.run("commit");
       } catch (err) {
         try { db.run("rollback"); } catch { /* swallow rollback failures */ }
+        if (previousBranchRef && previousBranchRef !== targetBranchRef) {
+          try {
+            await runGitOrThrow(
+              ["checkout", "--ignore-other-worktrees", previousBranchRef],
+              { cwd: row.worktree_path, timeoutMs: 60_000 },
+            );
+          } catch (rollbackErr) {
+            logger.warn("laneService.switchBranch_git_rollback_failed", {
+              laneId: row.id,
+              previousBranchRef,
+              targetBranchRef,
+              error: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr),
+            });
+          }
+        }
         throw err;
       }
       invalidateLaneListCache();
@@ -4613,61 +4598,24 @@ export function createLaneService({
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
       const previous = normalizeRuntimePlacement(row.runtime_placement);
-      if (previous === "macos-vm") return;
 
-      db.run(
-        `
-          update lanes
-          set runtime_placement = 'macos-vm'
-          where id = ?
-            and project_id = ?
-        `,
-        [row.id, projectId],
-      );
-      invalidateLaneListCache();
-
-      const hooks = activeMacosVmHooks;
-      // Treat the link step as the critical one — if it fails we cannot host
-      // the lane in the VM and need to roll the placement flip back. Mirror
-      // sync failure is recoverable (retry on next restart) so we only warn.
-      if (hooks?.linkLaneToCurrentVm) {
-        try {
-          await hooks.linkLaneToCurrentVm({ laneId: row.id });
-        } catch (error) {
-          logger.warn("laneService.attach_link_to_vm_failed_rolling_back", {
-            laneId: row.id,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          db.run(
-            `
-              update lanes
-              set runtime_placement = 'local'
-              where id = ?
-                and project_id = ?
-            `,
-            [row.id, projectId],
-          );
-          invalidateLaneListCache();
-          throw error;
-        }
-      }
-      if (hooks?.startMirrorSyncForLane) {
-        try {
-          await hooks.startMirrorSyncForLane({ laneId: row.id });
-        } catch (error) {
-          logger.warn("laneService.attach_start_mirror_sync_failed", {
-            laneId: row.id,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
+      if (previous !== "macos-vm") {
+        db.run(
+          `
+            update lanes
+            set runtime_placement = 'macos-vm'
+            where id = ?
+              and project_id = ?
+          `,
+          [row.id, projectId],
+        );
+        invalidateLaneListCache();
       }
 
-      emitPlacementChanged({
-        type: "lane-placement-changed",
+      await wireMacosVmLanePlacement({
         laneId: row.id,
-        from: "local",
-        to: "macos-vm",
-        changedAt: new Date().toISOString(),
+        previousPlacement: previous,
+        rollbackPlacementOnLinkFailure: previous !== "macos-vm",
       });
     },
 

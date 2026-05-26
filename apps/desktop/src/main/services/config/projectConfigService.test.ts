@@ -686,6 +686,10 @@ describe("projectConfigService - automation execution", () => {
               laneNameTemplate: "Auto {{trigger.issue.title}}",
               mission: { title: "Run mission" },
             },
+            modelConfig: {
+              orchestratorModel: { modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
+              profileId: "legacy-profile",
+            },
           },
           {
             id: "preset-lane-rule",
@@ -732,6 +736,21 @@ describe("projectConfigService - automation execution", () => {
               },
             },
           },
+          {
+            id: "legacy-launch-mission-rule",
+            trigger: { type: "manual" },
+            execution: {
+              kind: "built-in",
+              builtIn: {
+                actions: [
+                  {
+                    type: "launch-mission",
+                    sessionTitle: "Launch nightly",
+                  },
+                ],
+              },
+            },
+          },
         ],
       }),
       "utf8",
@@ -745,14 +764,26 @@ describe("projectConfigService - automation execution", () => {
       logger: makeLogger(),
     });
 
-    const [customRule, presetRule, requireTriggerLaneRule, legacyPromptAtRunRule, builtInAgentRule] = service.get().effective.automations;
+    const [
+      customRule,
+      presetRule,
+      requireTriggerLaneRule,
+      legacyPromptAtRunRule,
+      builtInAgentRule,
+      legacyLaunchMissionRule,
+    ] = service.get().effective.automations;
 
     expect(customRule.execution).toMatchObject({
-      kind: "mission",
+      kind: "agent-session",
       laneMode: "create",
       laneNamePreset: "custom",
       laneNameTemplate: "Auto {{trigger.issue.title}}",
-      mission: { title: "Run mission" },
+      session: { title: "Run mission" },
+    });
+    expect(customRule.prompt).toBe("Run mission");
+    expect(customRule.modelConfig).toMatchObject({
+      modelId: "anthropic/claude-sonnet-4-6",
+      thinkingLevel: "medium",
     });
     expect(presetRule.execution).toMatchObject({
       kind: "agent-session",
@@ -782,6 +813,12 @@ describe("projectConfigService - automation execution", () => {
         ],
       },
     });
+    expect(legacyLaunchMissionRule.execution).toMatchObject({
+      kind: "agent-session",
+      laneMode: "reuse",
+      session: { title: "Launch nightly" },
+    });
+    expect(legacyLaunchMissionRule.prompt).toBe("Launch nightly");
   });
 
   it("flags fixed target lanes on require-on-trigger automation execution", () => {

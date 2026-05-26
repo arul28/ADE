@@ -1173,11 +1173,11 @@ describe("AgentChatPane submit recovery", () => {
     const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
     expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(codexLabel)}`, "i") })).toBeTruthy();
 
-    const textbox = await screen.findByRole("textbox");
-    fireEvent.change(textbox, { target: { value: "Launch on the selected lane and model." } });
-
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
     fireEvent.click(await screen.findByRole("button", { name: /target-lane/i }));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Launch on the selected lane and model." } });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
     const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";

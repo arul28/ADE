@@ -141,8 +141,6 @@ import type {
   CtoEnsureLinearWebhookArgs,
   CtoListLinearIngressEventsArgs,
   LinearWorkflowConfig,
-  AddMissionArtifactArgs,
-  AddMissionInterventionArgs,
   AutomationsEventPayload,
   ConflictExternalResolverRunSummary,
   ConflictProposal,
@@ -352,7 +350,6 @@ import type {
   LaneSummary,
   ListOverlapsArgs,
   ListLanesArgs,
-  ListMissionsArgs,
   ImportBranchLaneArgs,
   ListOperationsArgs,
   ListSessionsArgs,
@@ -514,131 +511,17 @@ import type {
   StopTestRunArgs,
   TerminalSessionDetail,
   TerminalSessionSummary,
-  ResolveMissionInterventionArgs,
-  PhaseCard,
-  PhaseProfile,
-  ListPhaseItemsArgs,
-  SavePhaseItemArgs,
-  DeletePhaseItemArgs,
-  ExportPhaseItemsArgs,
-  ExportPhaseItemsResult,
-  ImportPhaseItemsArgs,
-  SavePhaseProfileArgs,
-  ListPhaseProfilesArgs,
-  DeletePhaseProfileArgs,
-  ClonePhaseProfileArgs,
-  ExportPhaseProfileArgs,
-  ExportPhaseProfileResult,
-  ImportPhaseProfileArgs,
-  MissionPhaseConfiguration,
-  MissionDashboardSnapshot,
-  GetFullMissionViewArgs,
-  FullMissionViewResult,
-  MissionPreflightRequest,
-  MissionPreflightResult,
-  GetMissionRunViewArgs,
-  MissionRunView,
-  ArchiveMissionArgs,
-  DeleteMissionArgs,
-  MissionArtifact,
-  MissionDetail,
-  MissionIntervention,
-  OrchestratorAttempt,
-  OrchestratorGateReport,
-  OrchestratorRuntimeEvent,
-  OrchestratorThreadEvent,
-  DagMutationEvent,
-  OrchestratorRun,
-  OrchestratorRunGraph,
-  OrchestratorStep,
-  OrchestratorTimelineEvent,
-  MissionStep,
-  MissionSummary,
-  MissionsEventPayload,
-  GetOrchestratorGateReportArgs,
-  GetOrchestratorRunGraphArgs,
-  ListOrchestratorRunsArgs,
-  ListOrchestratorTimelineArgs,
-  CreateMissionArgs,
-  CancelOrchestratorRunArgs,
-  CleanupOrchestratorTeamResourcesArgs,
-  CleanupOrchestratorTeamResourcesResult,
-  CompleteOrchestratorAttemptArgs,
-  HeartbeatOrchestratorClaimsArgs,
-  PauseOrchestratorRunArgs,
-  ResumeOrchestratorRunArgs,
-  StartOrchestratorAttemptArgs,
-  StartOrchestratorRunArgs,
-  StartOrchestratorRunFromMissionArgs,
-  TickOrchestratorRunArgs,
-  UpdateMissionArgs,
   UpdateSessionMetaArgs,
-  UpdateMissionStepArgs,
   TestEvent,
   TestRunSummary,
   TestSuiteDefinition,
   WriteTextAtomicArgs,
-  GetOrchestratorWorkerStatesArgs,
-  OrchestratorWorkerState,
-  StartMissionRunWithAIArgs,
-  StartMissionRunWithAIResult,
-  SteerMissionArgs,
-  SteerMissionResult,
-  GetTeamMembersArgs,
-  GetTeamRuntimeStateArgs,
-  FinalizeRunArgs,
-  FinalizeRunResult,
-  OrchestratorTeamMember,
-  OrchestratorTeamRuntimeState,
-  GetModelCapabilitiesResult,
-  OrchestratorChatMessage,
-  OrchestratorChatThread,
-  OrchestratorWorkerDigest,
-  OrchestratorContextCheckpoint,
-  OrchestratorLaneDecision,
-  MissionMetricsConfig,
-  MissionMetricSample,
-  SendOrchestratorChatArgs,
-  GetOrchestratorChatArgs,
-  ListOrchestratorChatThreadsArgs,
-  GetOrchestratorThreadMessagesArgs,
-  SendOrchestratorThreadMessageArgs,
-  GetOrchestratorWorkerDigestArgs,
-  ListOrchestratorWorkerDigestsArgs,
-  GetOrchestratorContextCheckpointArgs,
-  ListOrchestratorLaneDecisionsArgs,
-  GetMissionMetricsArgs,
-  SetMissionMetricsConfigArgs,
-  ExecutionPlanPreview,
-  GetMissionStateDocumentArgs,
-  MissionStateDocument,
-  ListOrchestratorArtifactsArgs,
-  ListOrchestratorWorkerCheckpointsArgs,
-  GetOrchestratorPromptInspectorArgs,
-  GetPlanningPromptPreviewArgs,
-  OrchestratorArtifact,
-  OrchestratorWorkerCheckpoint,
-  OrchestratorPromptInspector,
-  GetMissionLogsArgs,
-  GetMissionLogsResult,
-  ExportMissionLogsArgs,
-  ExportMissionLogsResult,
-  GetAggregatedUsageArgs,
-  AggregatedUsageStats,
   UsageSnapshot,
   UsageThresholdEvent,
   BudgetCheckResult,
   BudgetCapScope,
   BudgetCapProvider,
   BudgetCapConfig,
-  GetMissionBudgetTelemetryArgs,
-  GetMissionBudgetStatusArgs,
-  MissionBudgetTelemetrySnapshot,
-  MissionBudgetSnapshot,
-  SendAgentMessageArgs,
-  GetGlobalChatArgs,
-  GetActiveAgentsArgs,
-  ActiveAgentInfo,
   RuntimeDiagnosticsStatus,
   RuntimeDiagnosticsEvent,
   LaneHealthCheck,
@@ -1229,6 +1112,9 @@ async function callRemoteProjectActionIfBound<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
   options?: { freshBinding?: boolean },
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
+    return { handled: false };
+  }
   const binding = await getRemoteProjectBinding(options?.freshBinding ? { fresh: true } : undefined);
   if (!binding) return { handled: false };
   const response = (await ipcRenderer.invoke(IPC.remoteRuntimeCallAction, {
@@ -1245,6 +1131,9 @@ async function callLocalProjectActionIfBound<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
   options?: { freshBinding?: boolean },
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
+    return { handled: false };
+  }
   if (localRuntimeDaemonDisabled) return { handled: false };
   const binding = await getLocalProjectBinding(options?.freshBinding ? { fresh: true } : undefined);
   if (!binding) return { handled: false };
@@ -1277,6 +1166,9 @@ async function callLocalProjectActionStrictIfBound<T>(
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
+    return { handled: false };
+  }
   if (localRuntimeDaemonDisabled) return { handled: false };
   const binding = await getLocalProjectBinding();
   if (!binding) return { handled: false };
@@ -1319,6 +1211,81 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "codexOpenInCli",
 ]);
 
+const READ_ONLY_RUNTIME_ACTION_PREFIXES = [
+  "diagnosticsGet",
+  "get",
+  "list",
+  "oauthGet",
+  "oauthList",
+  "portList",
+  "proxyGet",
+  "read",
+  "search",
+] as const;
+
+const READ_ONLY_RUNTIME_ACTIONS = new Set([
+  "chat.codexFuzzyFileSearch",
+  "chat.fileSearch",
+  "chat.modelCatalog",
+  "file.quickOpen",
+  "terminal.activeForChat",
+  "terminal.preview",
+]);
+
+const MUTATING_SYNC_METHODS = new Set([
+  "sync.connectToBrain",
+  "sync.disconnectFromBrain",
+  "sync.forgetDevice",
+  "sync.transferBrainToLocal",
+  "sync.setPin",
+  "sync.generatePin",
+  "sync.clearPin",
+  "sync.updateLocalDevice",
+  "sync.setActiveLanePresence",
+  "modelPicker.setFavorites",
+  "modelPicker.toggleFavorite",
+  "modelPicker.pushRecent",
+]);
+
+const PROJECT_SWITCHING_MESSAGE =
+  "Project is switching. Wait for the current project to finish loading before changing project state.";
+
+let openRemoteProjectGeneration = 0;
+let activeRemoteProjectOpenGeneration: number | null = null;
+
+function isReadOnlyRuntimeAction(domain: string, action: string): boolean {
+  const key = `${domain}.${action}`;
+  if (READ_ONLY_RUNTIME_ACTIONS.has(key)) return true;
+  return READ_ONLY_RUNTIME_ACTION_PREFIXES.some(
+    (prefix) =>
+      action === prefix ||
+      (action.startsWith(prefix) && /^[A-Z]/.test(action.slice(prefix.length))),
+  );
+}
+
+function isMutatingRuntimeAction(domain: string, action: string): boolean {
+  if (domain === "chat") return MUTATING_CHAT_ACTIONS.has(action);
+  return !isReadOnlyRuntimeAction(domain, action);
+}
+
+function assertProjectRuntimeNotTransitioningForMutation(label: string): void {
+  if (projectRuntimeTransitionDepth > 0) {
+    throw new Error(PROJECT_SWITCHING_MESSAGE.replace("changing project state", label));
+  }
+}
+
+function shouldBypassProjectRuntimeDuringTransition(domain: string, action: string): boolean {
+  if (projectRuntimeTransitionDepth <= 0) return false;
+  if (isMutatingRuntimeAction(domain, action)) {
+    const label =
+      domain === "chat" && MUTATING_CHAT_ACTIONS.has(action)
+        ? "sending chat messages"
+        : "changing project state";
+    throw new Error(PROJECT_SWITCHING_MESSAGE.replace("changing project state", label));
+  }
+  return activeRemoteProjectOpenGeneration !== null;
+}
+
 async function callProjectRuntimeActionIfBound<T>(
   domain: string,
   action: string,
@@ -1327,8 +1294,12 @@ async function callProjectRuntimeActionIfBound<T>(
   const freshBinding = domain === "chat";
   const isMutatingChatAction =
     freshBinding && MUTATING_CHAT_ACTIONS.has(action);
-  if (isMutatingChatAction && projectRuntimeTransitionDepth > 0) {
-    throw new Error("Project is switching. Wait for the current project to finish loading before sending chat messages.");
+  if (isMutatingRuntimeAction(domain, action) && projectRuntimeTransitionDepth > 0) {
+    const label =
+      isMutatingChatAction
+        ? "sending chat messages"
+        : "changing project state";
+    throw new Error(PROJECT_SWITCHING_MESSAGE.replace("changing project state", label));
   }
   // During a project transition, let read-only chat calls fall through to
   // their IPC fallback instead of binding to a possibly-stale runtime.
@@ -1460,6 +1431,9 @@ async function callProjectRuntimeSyncOr<T>(
   params: Record<string, unknown>,
   local: () => Promise<T>,
 ): Promise<T> {
+  if (MUTATING_SYNC_METHODS.has(method) && projectRuntimeTransitionDepth > 0) {
+    assertProjectRuntimeNotTransitioningForMutation("changing sync state");
+  }
   const remote = await callRemoteProjectSyncIfBound<T>(method, params);
   if (remote.handled) return remote.result;
   const localRuntime = await callLocalProjectSyncIfBound<T>(method, params);
@@ -1512,18 +1486,6 @@ const remotePrAiResolutionEventCallbacks = new Set<
 >();
 const remoteProjectStateEventCallbacks = new Set<
   (payload: AdeProjectEvent) => void
->();
-const remoteMissionEventCallbacks = new Set<
-  (payload: MissionsEventPayload) => void
->();
-const remoteOrchestratorEventCallbacks = new Set<
-  (payload: OrchestratorRuntimeEvent) => void
->();
-const remoteOrchestratorThreadEventCallbacks = new Set<
-  (payload: OrchestratorThreadEvent) => void
->();
-const remoteDagMutationEventCallbacks = new Set<
-  (payload: DagMutationEvent) => void
 >();
 const remoteSyncStatusEventCallbacks = new Set<
   (payload: SyncStatusEventPayload) => void
@@ -1694,10 +1656,6 @@ function shouldDispatchRemoteRuntimeEvent(
 function hasRemoteRuntimeEventSubscribers(): boolean {
   return (
     remoteAgentChatEventCallbacks.size > 0 ||
-    remoteMissionEventCallbacks.size > 0 ||
-    remoteOrchestratorEventCallbacks.size > 0 ||
-    remoteOrchestratorThreadEventCallbacks.size > 0 ||
-    remoteDagMutationEventCallbacks.size > 0 ||
     remoteSyncStatusEventCallbacks.size > 0 ||
     remoteReviewEventCallbacks.size > 0 ||
     remoteSessionChangedCallbacks.size > 0 ||
@@ -1919,13 +1877,7 @@ function toRemoteRuntimeBufferedEvent(
   if (typeof value.id !== "number" || !Number.isFinite(value.id)) return null;
   if (typeof value.timestamp !== "string") return null;
   const category = value.category;
-  if (
-    category !== "orchestrator" &&
-    category !== "dag_mutation" &&
-    category !== "runtime" &&
-    category !== "mission" &&
-    category !== "pty"
-  ) {
+  if (category !== "runtime" && category !== "pty") {
     return null;
   }
   const payload = isRecord(value.payload) ? value.payload : {};
@@ -1944,16 +1896,6 @@ ipcRenderer.on(IPC.runtimeEvent, (_event, payload: unknown) => {
 function dispatchRemoteRuntimeEventPayload(
   payload: Record<string, unknown>,
 ): void {
-  if (payload.type === "missions-updated") {
-    for (const cb of [...remoteMissionEventCallbacks]) {
-      try {
-        cb(payload as MissionsEventPayload);
-      } catch (error) {
-        console.error("preload remote mission listener failed", error);
-      }
-    }
-  }
-
   if (payload.type === "sync-status" && isRecord(payload.snapshot)) {
     for (const cb of [...remoteSyncStatusEventCallbacks]) {
       try {
@@ -2112,55 +2054,6 @@ function dispatchRemoteRuntimeEventPayload(
         cb(reviewEvent);
       } catch (error) {
         console.error("preload remote review listener failed", error);
-      }
-    }
-  }
-
-  if (
-    payload.type === "orchestrator-run-updated" ||
-    payload.type === "orchestrator-step-updated" ||
-    payload.type === "orchestrator-attempt-updated" ||
-    payload.type === "orchestrator-claim-updated"
-  ) {
-    for (const cb of [...remoteOrchestratorEventCallbacks]) {
-      try {
-        cb(payload as OrchestratorRuntimeEvent);
-      } catch (error) {
-        console.error("preload remote orchestrator listener failed", error);
-      }
-    }
-  }
-
-  if (
-    payload.type === "thread_updated" ||
-    payload.type === "message_appended" ||
-    payload.type === "message_updated" ||
-    payload.type === "metrics_updated" ||
-    payload.type === "worker_digest_updated" ||
-    payload.type === "worker_replay"
-  ) {
-    for (const cb of [...remoteOrchestratorThreadEventCallbacks]) {
-      try {
-        cb(payload as OrchestratorThreadEvent);
-      } catch (error) {
-        console.error(
-          "preload remote orchestrator thread listener failed",
-          error,
-        );
-      }
-    }
-  }
-
-  if (
-    typeof payload.runId === "string" &&
-    isRecord(payload.mutation) &&
-    typeof payload.timestamp === "string"
-  ) {
-    for (const cb of [...remoteDagMutationEventCallbacks]) {
-      try {
-        cb(payload as DagMutationEvent);
-      } catch (error) {
-        console.error("preload remote DAG mutation listener failed", error);
       }
     }
   }
@@ -2439,46 +2332,6 @@ function subscribeRemoteAgentChatEvents(
   ensureRemoteRuntimeEventPump();
   return () => {
     remoteAgentChatEventCallbacks.delete(cb);
-  };
-}
-
-function subscribeRemoteMissionEvents(
-  cb: (payload: MissionsEventPayload) => void,
-): () => void {
-  remoteMissionEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteMissionEventCallbacks.delete(cb);
-  };
-}
-
-function subscribeRemoteOrchestratorEvents(
-  cb: (payload: OrchestratorRuntimeEvent) => void,
-): () => void {
-  remoteOrchestratorEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteOrchestratorEventCallbacks.delete(cb);
-  };
-}
-
-function subscribeRemoteOrchestratorThreadEvents(
-  cb: (payload: OrchestratorThreadEvent) => void,
-): () => void {
-  remoteOrchestratorThreadEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteOrchestratorThreadEventCallbacks.delete(cb);
-  };
-}
-
-function subscribeRemoteDagMutationEvents(
-  cb: (payload: DagMutationEvent) => void,
-): () => void {
-  remoteDagMutationEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteDagMutationEventCallbacks.delete(cb);
   };
 }
 
@@ -3525,12 +3378,28 @@ contextBridge.exposeInMainWorld("ade", {
       id: string,
       projectId: string,
     ): Promise<OpenProjectBinding> => {
-      const binding = (await ipcRenderer.invoke(IPC.remoteRuntimeOpenProject, {
-        id,
-        projectId,
-      })) as OpenProjectBinding;
-      rememberProjectBinding(binding);
-      return binding;
+      return runProjectRuntimeTransition(async () => {
+        const generation = ++openRemoteProjectGeneration;
+        activeRemoteProjectOpenGeneration = generation;
+        rememberProjectBinding(null);
+        try {
+          const binding = (await ipcRenderer.invoke(IPC.remoteRuntimeOpenProject, {
+            id,
+            projectId,
+          })) as OpenProjectBinding;
+          if (generation === openRemoteProjectGeneration) {
+            rememberProjectBinding(binding);
+            activeRemoteProjectOpenGeneration = null;
+          }
+          return binding;
+        } catch (error) {
+          if (generation === openRemoteProjectGeneration) {
+            await refreshProjectBinding().catch(() => {});
+            activeRemoteProjectOpenGeneration = null;
+          }
+          throw error;
+        }
+      });
     },
     callAction: async (
       id: string,
@@ -4305,754 +4174,6 @@ contextBridge.exposeInMainWorld("ade", {
       ),
     onUpdate: subscribeUsageUpdateEvents,
     onThreshold: subscribeUsageThresholdEvents,
-  },
-  missions: {
-    list: async (args: ListMissionsArgs = {}): Promise<MissionSummary[]> =>
-      callProjectRuntimeActionOr("mission", "list", { args }, () =>
-        ipcRenderer.invoke(IPC.missionsList, args),
-      ),
-    get: async (missionId: string): Promise<MissionDetail | null> =>
-      callProjectRuntimeActionOr("mission", "get", { arg: missionId }, () =>
-        ipcRenderer.invoke(IPC.missionsGet, { missionId }),
-      ),
-    create: async (args: CreateMissionArgs): Promise<MissionDetail> =>
-      callProjectRuntimeActionOr("mission", "create", { args }, () =>
-        ipcRenderer.invoke(IPC.missionsCreate, args),
-      ),
-    update: async (args: UpdateMissionArgs): Promise<MissionDetail> =>
-      callProjectRuntimeActionOr("mission", "update", { args }, () =>
-        ipcRenderer.invoke(IPC.missionsUpdate, args),
-      ),
-    archive: async (args: ArchiveMissionArgs): Promise<void> =>
-      callProjectRuntimeActionOr("mission", "archive", { args }, () =>
-        ipcRenderer.invoke(IPC.missionsArchive, args),
-      ),
-    delete: async (args: DeleteMissionArgs): Promise<void> =>
-      callProjectRuntimeActionOr("mission", "delete", { args }, () =>
-        ipcRenderer.invoke(IPC.missionsDelete, args),
-      ),
-    updateStep: async (args: UpdateMissionStepArgs): Promise<MissionStep> =>
-      callProjectRuntimeActionOr("mission", "updateStep", { args }, () =>
-        ipcRenderer.invoke(IPC.missionsUpdateStep, args),
-      ),
-    addArtifact: async (
-      args: AddMissionArtifactArgs,
-    ): Promise<MissionArtifact> =>
-      callProjectRuntimeActionOr("mission", "addArtifact", { args }, () =>
-        ipcRenderer.invoke(IPC.missionsAddArtifact, args),
-      ),
-    addIntervention: async (
-      args: AddMissionInterventionArgs,
-    ): Promise<MissionIntervention> =>
-      callProjectRuntimeActionOr("mission", "addIntervention", { args }, () =>
-        ipcRenderer.invoke(IPC.missionsAddIntervention, args),
-      ),
-    resolveIntervention: async (
-      args: ResolveMissionInterventionArgs,
-    ): Promise<MissionIntervention> =>
-      callProjectRuntimeActionOr(
-        "mission",
-        "resolveIntervention",
-        { args },
-        () => ipcRenderer.invoke(IPC.missionsResolveIntervention, args),
-      ),
-    listPhaseItems: async (
-      args: ListPhaseItemsArgs = {},
-    ): Promise<PhaseCard[]> =>
-      callProjectRuntimeActionOr("mission", "listPhaseItems", { args }, () =>
-        ipcRenderer.invoke(IPC.missionsListPhaseItems, args),
-      ),
-    savePhaseItem: async (args: SavePhaseItemArgs): Promise<PhaseCard> =>
-      callProjectRuntimeActionOr("mission", "savePhaseItem", { args }, () =>
-        ipcRenderer.invoke(IPC.missionsSavePhaseItem, args),
-      ),
-    deletePhaseItem: async (args: DeletePhaseItemArgs): Promise<void> =>
-      callProjectRuntimeActionOr("mission", "deletePhaseItem", { args }, () =>
-        ipcRenderer.invoke(IPC.missionsDeletePhaseItem, args),
-      ).then(() => undefined),
-    importPhaseItems: async (
-      args: ImportPhaseItemsArgs,
-    ): Promise<PhaseCard[]> =>
-      callProjectRuntimeActionOr("mission", "importPhaseItems", { args }, () =>
-        ipcRenderer.invoke(IPC.missionsImportPhaseItems, args),
-      ),
-    exportPhaseItems: async (
-      args: ExportPhaseItemsArgs = {},
-    ): Promise<ExportPhaseItemsResult> =>
-      callProjectRuntimeActionOr("mission", "exportPhaseItems", { args }, () =>
-        ipcRenderer.invoke(IPC.missionsExportPhaseItems, args),
-      ),
-    listPhaseProfiles: async (
-      args: ListPhaseProfilesArgs = {},
-    ): Promise<PhaseProfile[]> =>
-      callProjectRuntimeActionOr("mission", "listPhaseProfiles", { args }, () =>
-        ipcRenderer.invoke(IPC.missionsListPhaseProfiles, args),
-      ),
-    savePhaseProfile: async (
-      args: SavePhaseProfileArgs,
-    ): Promise<PhaseProfile> =>
-      callProjectRuntimeActionOr("mission", "savePhaseProfile", { args }, () =>
-        ipcRenderer.invoke(IPC.missionsSavePhaseProfile, args),
-      ),
-    deletePhaseProfile: async (args: DeletePhaseProfileArgs): Promise<void> =>
-      callProjectRuntimeActionOr(
-        "mission",
-        "deletePhaseProfile",
-        { args },
-        () => ipcRenderer.invoke(IPC.missionsDeletePhaseProfile, args),
-      ).then(() => undefined),
-    clonePhaseProfile: async (
-      args: ClonePhaseProfileArgs,
-    ): Promise<PhaseProfile> =>
-      callProjectRuntimeActionOr("mission", "clonePhaseProfile", { args }, () =>
-        ipcRenderer.invoke(IPC.missionsClonePhaseProfile, args),
-      ),
-    exportPhaseProfile: async (
-      args: ExportPhaseProfileArgs,
-    ): Promise<ExportPhaseProfileResult> =>
-      callProjectRuntimeActionOr(
-        "mission",
-        "exportPhaseProfile",
-        { args },
-        () => ipcRenderer.invoke(IPC.missionsExportPhaseProfile, args),
-      ),
-    importPhaseProfile: async (
-      args: ImportPhaseProfileArgs,
-    ): Promise<PhaseProfile> =>
-      callProjectRuntimeActionOr(
-        "mission",
-        "importPhaseProfile",
-        { args },
-        () => ipcRenderer.invoke(IPC.missionsImportPhaseProfile, args),
-      ),
-    getPhaseConfiguration: async (
-      missionId: string,
-    ): Promise<MissionPhaseConfiguration | null> =>
-      callProjectRuntimeActionOr(
-        "mission",
-        "getPhaseConfiguration",
-        { arg: missionId },
-        () =>
-          ipcRenderer.invoke(IPC.missionsGetPhaseConfiguration, { missionId }),
-      ),
-    getDashboard: async (): Promise<MissionDashboardSnapshot> =>
-      callProjectRuntimeActionOr("mission", "getDashboard", {}, () =>
-        ipcRenderer.invoke(IPC.missionsGetDashboard),
-      ),
-    getFullMissionView: async (
-      args: GetFullMissionViewArgs,
-    ): Promise<FullMissionViewResult> =>
-      callProjectRuntimeActionOr(
-        "mission",
-        "getFullMissionView",
-        { args },
-        () => ipcRenderer.invoke(IPC.missionsGetFullMissionView, args),
-      ),
-    preflight: async (
-      args: MissionPreflightRequest,
-    ): Promise<MissionPreflightResult> =>
-      callProjectRuntimeActionOr("mission", "preflight", { args }, () =>
-        ipcRenderer.invoke(IPC.missionsPreflight, args),
-      ),
-    getRunView: async (
-      args: GetMissionRunViewArgs,
-    ): Promise<MissionRunView | null> =>
-      callProjectRuntimeActionOr("mission", "getRunView", { args }, () =>
-        ipcRenderer.invoke(IPC.missionsGetRunView, args),
-      ),
-    subscribeRunView: (
-      args: GetMissionRunViewArgs,
-      cb: (view: MissionRunView | null) => void,
-    ) => {
-      let disposed = false;
-      let refreshTimer: ReturnType<typeof setTimeout> | null = null;
-      let inFlight = false;
-      let pending = false;
-      const refresh = () => {
-        if (disposed) return;
-        if (inFlight) {
-          pending = true;
-          return;
-        }
-        inFlight = true;
-        void callProjectRuntimeActionOr("mission", "getRunView", { args }, () =>
-          ipcRenderer.invoke(IPC.missionsGetRunView, args),
-        )
-          .then(
-            (view: MissionRunView | null) => {
-              if (!disposed) cb(view);
-            },
-            () => {},
-          )
-          .finally(() => {
-            inFlight = false;
-            if (disposed || !pending) return;
-            pending = false;
-            scheduleRefresh(350);
-          });
-      };
-      const scheduleRefresh = (delayMs = 650) => {
-        if (disposed) return;
-        if (refreshTimer) clearTimeout(refreshTimer);
-        refreshTimer = setTimeout(() => {
-          refreshTimer = null;
-          refresh();
-        }, delayMs);
-      };
-      const missionListener = (
-        _event: Electron.IpcRendererEvent,
-        payload: MissionsEventPayload,
-      ) => {
-        if (payload.missionId !== args.missionId) return;
-        scheduleRefresh();
-      };
-      const runtimeListener = (
-        _event: Electron.IpcRendererEvent,
-        payload: OrchestratorRuntimeEvent,
-      ) => {
-        if (args.runId && payload.runId !== args.runId) return;
-        scheduleRefresh();
-      };
-      const threadListener = (
-        _event: Electron.IpcRendererEvent,
-        payload: OrchestratorThreadEvent,
-      ) => {
-        if (payload.missionId !== args.missionId) return;
-        if (args.runId && payload.runId !== args.runId) return;
-        scheduleRefresh(750);
-      };
-      const dagListener = (
-        _event: Electron.IpcRendererEvent,
-        payload: DagMutationEvent,
-      ) => {
-        if (args.runId && payload.runId !== args.runId) return;
-        scheduleRefresh(750);
-      };
-      ipcRenderer.on(IPC.missionsEvent, missionListener);
-      ipcRenderer.on(IPC.orchestratorEvent, runtimeListener);
-      ipcRenderer.on(IPC.orchestratorThreadEvent, threadListener);
-      ipcRenderer.on(IPC.orchestratorDagMutation, dagListener);
-      const removeRemoteMission = subscribeRemoteMissionEvents((payload) => {
-        if (payload.missionId !== args.missionId) return;
-        scheduleRefresh();
-      });
-      const removeRemoteOrchestrator = subscribeRemoteOrchestratorEvents(
-        (payload) => {
-          if (args.runId && payload.runId !== args.runId) return;
-          scheduleRefresh();
-        },
-      );
-      const removeRemoteThread = subscribeRemoteOrchestratorThreadEvents(
-        (payload) => {
-          if (payload.missionId !== args.missionId) return;
-          if (args.runId && payload.runId !== args.runId) return;
-          scheduleRefresh(750);
-        },
-      );
-      const removeRemoteDag = subscribeRemoteDagMutationEvents((payload) => {
-        if (args.runId && payload.runId !== args.runId) return;
-        scheduleRefresh(750);
-      });
-      refresh();
-      return () => {
-        disposed = true;
-        if (refreshTimer) clearTimeout(refreshTimer);
-        removeRemoteMission();
-        removeRemoteOrchestrator();
-        removeRemoteThread();
-        removeRemoteDag();
-        ipcRenderer.removeListener(IPC.missionsEvent, missionListener);
-        ipcRenderer.removeListener(IPC.orchestratorEvent, runtimeListener);
-        ipcRenderer.removeListener(IPC.orchestratorThreadEvent, threadListener);
-        ipcRenderer.removeListener(IPC.orchestratorDagMutation, dagListener);
-      };
-    },
-    onEvent: (cb: (ev: MissionsEventPayload) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: MissionsEventPayload,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.missionsEvent, listener);
-      const removeRemote = subscribeRemoteMissionEvents(cb);
-      return () => {
-        removeRemote();
-        ipcRenderer.removeListener(IPC.missionsEvent, listener);
-      };
-    },
-  },
-  orchestrator: {
-    listRuns: async (
-      args: ListOrchestratorRunsArgs = {},
-    ): Promise<OrchestratorRun[]> =>
-      callProjectRuntimeActionOr(
-        "orchestrator_core",
-        "listRuns",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorListRuns, args),
-      ),
-    getRunGraph: async (
-      args: GetOrchestratorRunGraphArgs,
-    ): Promise<OrchestratorRunGraph> =>
-      callProjectRuntimeActionOr(
-        "orchestrator_core",
-        "getRunGraph",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorGetRunGraph, args),
-      ),
-    startRun: async (
-      args: StartOrchestratorRunArgs,
-    ): Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }> =>
-      callProjectRuntimeActionOr(
-        "orchestrator_core",
-        "startRun",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorStartRun, args),
-      ),
-    startRunFromMission: async (
-      args: StartOrchestratorRunFromMissionArgs,
-    ): Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }> => {
-      const launch =
-        await callProjectRuntimeActionOr<StartMissionRunWithAIResult>(
-          "orchestrator",
-          "startMissionRun",
-          {
-            args: {
-              missionId: args.missionId,
-              runMode: args.runMode,
-              autopilotOwnerId: args.autopilotOwnerId,
-              defaultExecutorKind: args.defaultExecutorKind,
-              defaultRetryLimit: args.defaultRetryLimit,
-              metadata: args.metadata ?? null,
-              plannerProvider: args.plannerProvider ?? undefined,
-            },
-          },
-          () =>
-            ipcRenderer.invoke(IPC.orchestratorStartMissionRun, {
-              missionId: args.missionId,
-              runMode: args.runMode,
-              autopilotOwnerId: args.autopilotOwnerId,
-              defaultExecutorKind: args.defaultExecutorKind,
-              defaultRetryLimit: args.defaultRetryLimit,
-              metadata: args.metadata ?? null,
-              plannerProvider: args.plannerProvider ?? undefined,
-            }),
-        );
-      if (!launch.started) {
-        throw new Error("Mission run did not produce a runnable execution.");
-      }
-      return launch.started;
-    },
-    startAttempt: async (
-      args: StartOrchestratorAttemptArgs,
-    ): Promise<OrchestratorAttempt> =>
-      callProjectRuntimeActionOr(
-        "orchestrator_core",
-        "startAttempt",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorStartAttempt, args),
-      ),
-    completeAttempt: async (
-      args: CompleteOrchestratorAttemptArgs,
-    ): Promise<OrchestratorAttempt> =>
-      callProjectRuntimeActionOr(
-        "orchestrator_core",
-        "completeAttempt",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorCompleteAttempt, args),
-      ),
-    tickRun: async (args: TickOrchestratorRunArgs): Promise<OrchestratorRun> =>
-      callProjectRuntimeActionOr("orchestrator_core", "tick", { args }, () =>
-        ipcRenderer.invoke(IPC.orchestratorTickRun, args),
-      ),
-    pauseRun: async (
-      args: PauseOrchestratorRunArgs,
-    ): Promise<OrchestratorRun> =>
-      callProjectRuntimeActionOr(
-        "orchestrator_core",
-        "pauseRun",
-        {
-          args: {
-            runId: args.runId,
-            reason: args.reason ?? "Paused from Missions UI.",
-          },
-        },
-        () => ipcRenderer.invoke(IPC.orchestratorPauseRun, args),
-      ),
-    resumeRun: async (
-      args: ResumeOrchestratorRunArgs,
-    ): Promise<OrchestratorRun> =>
-      callProjectRuntimeActionOr("orchestrator", "resumeRun", { args }, () =>
-        ipcRenderer.invoke(IPC.orchestratorResumeRun, args),
-      ),
-    cancelRun: async (
-      args: CancelOrchestratorRunArgs,
-    ): Promise<OrchestratorRun> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "cancelRunGracefully",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorCancelRun, args),
-      ),
-    cleanupTeamResources: async (
-      args: CleanupOrchestratorTeamResourcesArgs,
-    ): Promise<CleanupOrchestratorTeamResourcesResult> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "cleanupTeamResources",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorCleanupTeamResources, args),
-      ),
-    heartbeatClaims: async (
-      args: HeartbeatOrchestratorClaimsArgs,
-    ): Promise<number> =>
-      callProjectRuntimeActionOr(
-        "orchestrator_core",
-        "heartbeatClaims",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorHeartbeatClaims, args),
-      ),
-    listTimeline: async (
-      args: ListOrchestratorTimelineArgs,
-    ): Promise<OrchestratorTimelineEvent[]> =>
-      callProjectRuntimeActionOr(
-        "orchestrator_core",
-        "listTimeline",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorListTimeline, args),
-      ),
-    getMissionLogs: async (
-      args: GetMissionLogsArgs,
-    ): Promise<GetMissionLogsResult> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "getMissionLogs",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorGetMissionLogs, args),
-      ),
-    exportMissionLogs: async (
-      args: ExportMissionLogsArgs,
-    ): Promise<ExportMissionLogsResult> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "exportMissionLogs",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorExportMissionLogs, args),
-      ),
-    getGateReport: async (
-      args: GetOrchestratorGateReportArgs = {},
-    ): Promise<OrchestratorGateReport> =>
-      callProjectRuntimeActionOr(
-        "orchestrator_core",
-        "getLatestGateReport",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorGetGateReport, args),
-      ),
-    getWorkerStates: async (
-      args: GetOrchestratorWorkerStatesArgs,
-    ): Promise<OrchestratorWorkerState[]> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "getWorkerStates",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorGetWorkerStates, args),
-      ),
-    startMissionRun: async (
-      args: StartMissionRunWithAIArgs,
-    ): Promise<StartMissionRunWithAIResult> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "startMissionRun",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorStartMissionRun, args),
-      ),
-    steerMission: async (args: SteerMissionArgs): Promise<SteerMissionResult> =>
-      callProjectRuntimeActionOr("orchestrator", "steerMission", { args }, () =>
-        ipcRenderer.invoke(IPC.orchestratorSteerMission, args),
-      ),
-    getModelCapabilities: async (): Promise<GetModelCapabilitiesResult> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "getModelCapabilities",
-        {},
-        () => ipcRenderer.invoke(IPC.orchestratorGetModelCapabilities),
-      ),
-    getTeamMembers: async (
-      args: GetTeamMembersArgs,
-    ): Promise<OrchestratorTeamMember[]> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "getTeamMembers",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorGetTeamMembers, args),
-      ),
-    getTeamRuntimeState: async (
-      args: GetTeamRuntimeStateArgs,
-    ): Promise<OrchestratorTeamRuntimeState | null> =>
-      callProjectRuntimeActionOr(
-        "orchestrator_core",
-        "getRunState",
-        { arg: args.runId },
-        () => ipcRenderer.invoke(IPC.orchestratorGetTeamRuntimeState, args),
-      ),
-    finalizeRun: async (args: FinalizeRunArgs): Promise<FinalizeRunResult> =>
-      callProjectRuntimeActionOr("orchestrator", "finalizeRun", { args }, () =>
-        ipcRenderer.invoke(IPC.orchestratorFinalizeRun, args),
-      ),
-    sendChat: async (
-      args: SendOrchestratorChatArgs,
-    ): Promise<OrchestratorChatMessage> =>
-      callProjectRuntimeActionOr("orchestrator", "sendChat", { args }, () =>
-        ipcRenderer.invoke(IPC.orchestratorSendChat, args),
-      ),
-    getChat: async (
-      args: GetOrchestratorChatArgs,
-    ): Promise<OrchestratorChatMessage[]> =>
-      callProjectRuntimeActionOr("orchestrator", "getChat", { args }, () =>
-        ipcRenderer.invoke(IPC.orchestratorGetChat, args),
-      ),
-    listChatThreads: async (
-      args: ListOrchestratorChatThreadsArgs,
-    ): Promise<OrchestratorChatThread[]> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "listChatThreads",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorListChatThreads, args),
-      ),
-    getThreadMessages: async (
-      args: GetOrchestratorThreadMessagesArgs,
-    ): Promise<OrchestratorChatMessage[]> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "getThreadMessages",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorGetThreadMessages, args),
-      ),
-    sendThreadMessage: async (
-      args: SendOrchestratorThreadMessageArgs,
-    ): Promise<OrchestratorChatMessage> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "sendThreadMessage",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorSendThreadMessage, args),
-      ),
-    getWorkerDigest: async (
-      args: GetOrchestratorWorkerDigestArgs,
-    ): Promise<OrchestratorWorkerDigest | null> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "getWorkerDigest",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorGetWorkerDigest, args),
-      ),
-    listWorkerDigests: async (
-      args: ListOrchestratorWorkerDigestsArgs,
-    ): Promise<OrchestratorWorkerDigest[]> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "listWorkerDigests",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorListWorkerDigests, args),
-      ),
-    getContextCheckpoint: async (
-      args: GetOrchestratorContextCheckpointArgs,
-    ): Promise<OrchestratorContextCheckpoint | null> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "getContextCheckpoint",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorGetContextCheckpoint, args),
-      ),
-    listLaneDecisions: async (
-      args: ListOrchestratorLaneDecisionsArgs,
-    ): Promise<OrchestratorLaneDecision[]> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "listLaneDecisions",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorListLaneDecisions, args),
-      ),
-    getMissionMetrics: async (
-      args: GetMissionMetricsArgs,
-    ): Promise<{
-      config: MissionMetricsConfig | null;
-      samples: MissionMetricSample[];
-    }> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "getMissionMetrics",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorGetMissionMetrics, args),
-      ),
-    setMissionMetricsConfig: async (
-      args: SetMissionMetricsConfigArgs,
-    ): Promise<MissionMetricsConfig> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "setMissionMetricsConfig",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorSetMissionMetricsConfig, args),
-      ),
-    getExecutionPlanPreview: async (args: {
-      runId: string;
-    }): Promise<ExecutionPlanPreview | null> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "getExecutionPlanPreview",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorGetExecutionPlanPreview, args),
-      ),
-    getMissionStateDocument: async (
-      args: GetMissionStateDocumentArgs,
-    ): Promise<MissionStateDocument | null> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "getMissionStateDocument",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorGetMissionStateDocument, args),
-      ),
-    listArtifacts: async (
-      args: ListOrchestratorArtifactsArgs,
-    ): Promise<OrchestratorArtifact[]> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "listArtifacts",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorListArtifacts, args),
-      ),
-    listWorkerCheckpoints: async (
-      args: ListOrchestratorWorkerCheckpointsArgs,
-    ): Promise<OrchestratorWorkerCheckpoint[]> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "listWorkerCheckpoints",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorListWorkerCheckpoints, args),
-      ),
-    getPromptInspector: async (
-      args: GetOrchestratorPromptInspectorArgs,
-    ): Promise<OrchestratorPromptInspector | null> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "getPromptInspector",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorGetPromptInspector, args),
-      ),
-    getPlanningPromptPreview: async (
-      args: GetPlanningPromptPreviewArgs,
-    ): Promise<OrchestratorPromptInspector | null> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "getPlanningPromptPreview",
-        { args },
-        () =>
-          ipcRenderer.invoke(IPC.orchestratorGetPlanningPromptPreview, args),
-      ),
-    getCheckpointStatus: async (args: {
-      runId: string;
-    }): Promise<{
-      savedAt: string;
-      turnCount: number;
-      compactionCount: number;
-    } | null> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "getCheckpointStatus",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorGetCheckpointStatus, args),
-      ),
-    getMissionBudgetStatus: async (
-      args: GetMissionBudgetStatusArgs,
-    ): Promise<MissionBudgetSnapshot> =>
-      callProjectRuntimeActionOr(
-        "mission_budget",
-        "getMissionBudgetStatus",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorGetMissionBudgetStatus, args),
-      ),
-    getMissionBudgetTelemetry: async (
-      args: GetMissionBudgetTelemetryArgs,
-    ): Promise<MissionBudgetTelemetrySnapshot> =>
-      callProjectRuntimeActionOr(
-        "mission_budget",
-        "getMissionBudgetTelemetry",
-        { args },
-        () =>
-          ipcRenderer.invoke(IPC.orchestratorGetMissionBudgetTelemetry, args),
-      ),
-    sendAgentMessage: async (
-      args: SendAgentMessageArgs,
-    ): Promise<OrchestratorChatMessage> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "sendAgentMessage",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorSendAgentMessage, args),
-      ),
-    getGlobalChat: async (
-      args: GetGlobalChatArgs,
-    ): Promise<OrchestratorChatMessage[]> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "getGlobalChat",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorGetGlobalChat, args),
-      ),
-    getActiveAgents: async (
-      args: GetActiveAgentsArgs,
-    ): Promise<ActiveAgentInfo[]> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "getActiveAgents",
-        { args },
-        () => ipcRenderer.invoke(IPC.orchestratorGetActiveAgents, args),
-      ),
-    getAggregatedUsage: async (
-      args: GetAggregatedUsageArgs,
-    ): Promise<AggregatedUsageStats> =>
-      callProjectRuntimeActionOr(
-        "orchestrator",
-        "getAggregatedUsage",
-        { args },
-        () => ipcRenderer.invoke(IPC.getAggregatedUsage, args),
-      ),
-    onEvent: (cb: (ev: OrchestratorRuntimeEvent) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: OrchestratorRuntimeEvent,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.orchestratorEvent, listener);
-      const removeRemote = subscribeRemoteOrchestratorEvents(cb);
-      return () => {
-        removeRemote();
-        ipcRenderer.removeListener(IPC.orchestratorEvent, listener);
-      };
-    },
-    onThreadEvent: (cb: (ev: OrchestratorThreadEvent) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: OrchestratorThreadEvent,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.orchestratorThreadEvent, listener);
-      const removeRemote = subscribeRemoteOrchestratorThreadEvents(cb);
-      return () => {
-        removeRemote();
-        ipcRenderer.removeListener(IPC.orchestratorThreadEvent, listener);
-      };
-    },
-    onDagMutation: (cb: (ev: DagMutationEvent) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: DagMutationEvent,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.orchestratorDagMutation, listener);
-      const removeRemote = subscribeRemoteDagMutationEvents(cb);
-      return () => {
-        removeRemote();
-        ipcRenderer.removeListener(IPC.orchestratorDagMutation, listener);
-      };
-    },
   },
   lanes: {
     list: async (args: ListLanesArgs = {}): Promise<LaneSummary[]> => {
@@ -7151,6 +6272,18 @@ contextBridge.exposeInMainWorld("ade", {
       return runtime.handled
         ? runtime.result
         : ipcRenderer.invoke(IPC.gitGetCommit, args);
+    },
+    isCommitInLaneHistory: async (
+      args: { laneId: string; commitSha: string },
+    ): Promise<boolean> => {
+      const runtime = await callProjectRuntimeActionIfBound<boolean>(
+        "git",
+        "isCommitInLaneHistory",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.gitIsCommitInLaneHistory, args);
     },
     revertCommit: async (args: GitRevertArgs): Promise<GitActionResult> => {
       clearGitReadCaches();

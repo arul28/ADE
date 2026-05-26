@@ -96,7 +96,7 @@ import { CodexImageGenerationCard } from "./codex/CodexImageGenerationCard";
 import { CodexImageViewLine } from "./codex/CodexImageViewLine";
 import { CodexContextCompactionChip } from "./codex/CodexContextCompactionChip";
 
-const NAVIGATION_SURFACES = new Set(["work", "missions", "lanes", "cto"]);
+const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
 type PendingInputResolution = Extract<AgentChatEvent, { type: "pending_input_resolved" }>["resolution"];
 type WorkspacePathLocation = {
   path: string;
@@ -114,7 +114,6 @@ function readOperatorNavigationSuggestion(value: unknown): OperatorNavigationSug
   const result: OperatorNavigationSuggestion = { surface: surface as OperatorNavigationSuggestion["surface"], href, label };
   if (typeof record.laneId === "string") result.laneId = record.laneId;
   if (typeof record.sessionId === "string") result.sessionId = record.sessionId;
-  if (typeof record.missionId === "string") result.missionId = record.missionId;
   return result;
 }
 
@@ -1957,9 +1956,7 @@ function renderEvent(
   }
 ) {
   const event = envelope.event;
-  const activeTurnMotionEnabled = Boolean(options?.turnActive)
-    && options?.surfaceMode !== "mission-thread"
-    && options?.surfaceMode !== "mission-feed";
+  const activeTurnMotionEnabled = Boolean(options?.turnActive);
 
   /* ── User message ── */
   if (event.type === "user_message") {
@@ -3397,9 +3394,7 @@ const EventRow = React.memo(function EventRow({
 }: EventRowProps) {
   const workLogAnimate = Boolean(turnActive)
     && !sessionEnded
-    && Boolean(isLatestWorkLog)
-    && surfaceMode !== "mission-thread"
-    && surfaceMode !== "mission-feed";
+    && Boolean(isLatestWorkLog);
   return (
     <div className="min-w-0 max-w-full space-y-3 overflow-hidden">
       {showTurnDivider ? (
@@ -4283,9 +4278,7 @@ function AgentChatMessageListMain({
   }, [shouldVirtualize, endIndex, groupedRows.length, rowHeight, timelineRowGapPx]);
 
   const streamingIndicatorAnimated = showStreamingIndicator
-    && !sessionEnded
-    && surfaceMode !== "mission-thread"
-    && surfaceMode !== "mission-feed";
+    && !sessionEnded;
   const streamingIndicator = showStreamingIndicator && !sessionEnded ? (
     <motion.div
       className="w-fit max-w-[min(100%,70ch)] pt-3 pb-2"

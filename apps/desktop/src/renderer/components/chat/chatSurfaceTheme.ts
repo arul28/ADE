@@ -2,11 +2,9 @@ import type { CSSProperties } from "react";
 import type { ChatChromeTint } from "../../state/appStore";
 import type { ChatSurfaceChipTone, ChatSurfaceMode } from "../../../shared/types";
 
-export const CHAT_SURFACE_ACCENTS: Record<ChatSurfaceMode, string> = {
+export const CHAT_SURFACE_ACCENTS: Record<string, string> = {
   standard: "#71717A",
   resolver: "#F97316",
-  "mission-thread": "#38BDF8",
-  "mission-feed": "#22C55E",
 };
 
 /// Per-provider chat-surface accent. Keeps Claude/Codex/etc. visually
@@ -70,7 +68,7 @@ export function colorToRgba(value: string, alpha: number): string {
 
 export function resolveChatSurfaceAccent(mode: ChatSurfaceMode, accentColor?: string | null): string {
   const trimmed = accentColor?.trim();
-  return trimmed?.length ? normalizeHex(trimmed) : CHAT_SURFACE_ACCENTS[mode];
+  return trimmed?.length ? normalizeHex(trimmed) : CHAT_SURFACE_ACCENTS[mode] ?? CHAT_SURFACE_ACCENTS.standard;
 }
 
 /** Gray zinc accent — no per-runtime provider tint in chrome or bubbles. */

@@ -25,7 +25,7 @@ Three subcommands under `ade proof`. Each prints a JSON summary on success and e
 Take a screenshot now and file it as proof for the current session.
 
 ```
-ade proof capture [--caption "<text>"] [--owner-kind chat|mission|lane] [--owner-id <id>]
+ade proof capture [--caption "<text>"] [--owner-kind chat|lane] [--owner-id <id>]
 ```
 
 - `--caption` — short free-text label. Prominent in the drawer grid.
@@ -70,7 +70,7 @@ The file is copied into `.ade/artifacts/computer-use/`; the original is left in 
 Print the proof set for the current session as JSON.
 
 ```
-ade proof list [--owner-kind chat|mission|lane] [--owner-id <id>] [--limit <n>]
+ade proof list [--owner-kind chat|lane] [--owner-id <id>] [--limit <n>]
 ```
 
 No args: lists the inferred session. Primarily for agents to see what they have already captured.
@@ -84,10 +84,9 @@ The CLI resolves the owner of a capture from environment variables set by the de
 | Env var | Owner kind | Precedence |
 |---|---|---|
 | `ADE_CHAT_SESSION_ID` | `chat` | highest |
-| `ADE_MISSION_ID` | `mission` | middle |
 | `ADE_LANE_ID` | `lane` | lowest |
 
-Agents spawned inside ADE pick up the right owner automatically. If more than one var is set — e.g. a mission worker also has a lane — the highest-precedence kind wins.
+Agents spawned inside ADE pick up the right owner automatically. If more than one var is set — e.g. a chat also has a lane — the highest-precedence kind wins.
 
 If no env var is set and no `--owner-kind`/`--owner-id` flags are passed, `ade proof capture` exits with code `3`. This is deliberate: an un-owned proof has no home in the UI.
 
@@ -95,7 +94,7 @@ If no env var is set and no `--owner-kind`/`--owner-id` flags are passed, `ade p
 
 The `screenshot_environment`, `record_environment`, `ingest_computer_use_artifacts`, `get_environment_info`, `interact_gui`, and `list_computer_use_artifacts` JSON-RPC tools accept explicit `ownerKind` + `ownerId` fields. `resolveComputerUseOwners` in `apps/ade-cli/src/adeRpcServer.ts` is the single normalizer:
 
-- Canonical kinds: `lane`, `mission`, `orchestrator_run`, `orchestrator_step`, `orchestrator_attempt`, `chat_session`, `automation_run`, `github_pr`, `linear_issue`.
+- Canonical kinds: `lane`, `chat_session`, `automation_run`, `github_pr`, `linear_issue`.
 - Friendly aliases: `chat` → `chat_session`, `pr` → `github_pr`. Any other value raises a `JsonRpcError(invalidParams)` with an "Unsupported proof ownerKind" message.
 
 Explicit owners are added in addition to the session identity inferred from `ADE_*` env vars, so an agent can attach the same artifact to its current chat plus a specific PR in one call.
@@ -123,7 +122,7 @@ There is no retention policy — captures persist until the project is cleaned u
 Proof surfaces in two places:
 
 - **Chat** — the proof drawer below the composer shows a thumbnail grid for the current session. Captions are rendered in full below each thumbnail, not as hover tooltips. Click to preview at full size.
-- **Mission detail** — the Proof tab shows the same grid for the mission, scoped by `ADE_MISSION_ID`.
+- **Lane and PR review** — linked proof can be surfaced alongside lane work and PR closeout.
 
 Review controls (accept / reject / annotate) remain as first-class actions on each proof.
 

@@ -31,7 +31,7 @@ const FEATURES = [
   { icon: ArrowsLeftRight, title: "Issue routing", desc: "Attach Linear issues to lanes, chats, and the work that happened there" },
   { icon: Lightning, title: "PR linkage", desc: "Carry Linear refs, ADE links, and issue lists into GitHub PRs" },
   { icon: ArrowsClockwise, title: "Linear timeline", desc: "Publish ADE lane and PR cards back onto the Linear issue" },
-  { icon: Plugs, title: "CTO workflows", desc: "Dispatch missions directly from Linear and keep status context close" },
+  { icon: Plugs, title: "CTO workflows", desc: "Dispatch work directly from Linear and keep status context close" },
 ];
 
 export function LinearSection() {

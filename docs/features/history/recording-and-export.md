@@ -26,7 +26,7 @@ user's local machine).
 | `apps/desktop/src/main/services/sessions/sessionService.ts` | Terminal session lifecycle (writes `terminal_sessions` rows and persists transcripts to disk). |
 | `apps/desktop/src/shared/chatTranscript.ts` | JSON-lines parser for chat transcripts; used to reconstruct chat state, generate summaries, and derive activity signals. |
 | `apps/desktop/src/main/services/ipc/registerIpc.ts` | `ade.history.listOperations` and `ade.history.exportOperations` handlers, plus the new git IPC the History toolbar relies on (`gitCreateTag`, `gitResetToCommit`, `gitUndoLastHeadChange`, `gitRedoLastHeadChange`, multi-mode `gitPull`). |
-| `apps/desktop/src/renderer/components/history/historyActivitySources.ts` | Renderer-side adapters that synthesize Activity-feed rows from `agentChat.list`, `missions.list`, `cto.getState`, and `cto.listAgentRuns`. These rows are not written to the operations table. |
+| `apps/desktop/src/renderer/components/history/historyActivitySources.ts` | Renderer-side adapters that synthesize Activity-feed rows from `agentChat.list`, `cto.getState`, and `cto.listAgentRuns`. These rows are not written to the operations table. |
 
 ## Recording pattern
 
@@ -173,16 +173,22 @@ recent `succeeded` operations whose kind starts with `git_` /  `git.`,
 both `pre_head_sha` and `post_head_sha` are non-null, and the two SHAs
 differ. The list is ordered newest-first.
 
-`gitOperationsService.undoLastHeadChange` looks at the head of that
-list:
+`gitOperationsService.undoLastHeadChange` filters that list to the
+current branch before choosing a row:
 
-1. Reject if the head row is itself a `git_undo_head_change` -- the
-   lane is already in an undone state; the caller should call redo.
-2. Read the live HEAD with `git rev-parse HEAD`. If it does not match
+1. Skip `git_undo_head_change` and `git_checkout_branch`; checkout
+   updates the lane's branch ref, and a plain reset is not a safe way
+   to undo a branch switch.
+2. Parse each candidate's `metadataJson.branchRef` and require it to
+   match the lane's current branch (normalized the same way branch
+   config refs are normalized).
+3. Re-read the lane inside the operation and reject if its branch has
+   changed since the candidate was selected.
+4. Read the live HEAD with `git rev-parse HEAD`. If it does not match
    the row's `postHeadSha`, refuse: HEAD has drifted since that
    operation (the user committed, pulled, or otherwise moved on) and
    `git reset --hard` would clobber unrelated work.
-3. Run `git reset --hard preHeadSha` and record a new
+5. Run `git reset --hard preHeadSha` and record a new
    `git_undo_head_change` operation whose metadata captures the row
    it undid plus `redoHeadSha = preHeadSha`'s sibling (`postHeadSha`
    of the undone row). This is what `redoLastHeadChange` reads back.
@@ -192,31 +198,32 @@ walks the inverse direction: head row must be a `git_undo_head_change`
 and current HEAD must still match its `postHeadSha`, then
 `git reset --hard redoHeadSha`.
 
-Both paths fail loudly with `Cannot undo because the lane head has
-changed since that operation.` (or `since the undo.`) when the SHA
-guard trips. The UI surfaces those errors verbatim through
-`historyLaneActions.runHistoryLaneAction`.
+Both paths fail loudly with `Cannot undo because the lane branch has
+changed since that operation was selected.`, `Cannot undo because the
+lane head has changed since that operation.`, or the redo equivalent
+when the branch/SHA guard trips. The UI surfaces those errors verbatim
+through `historyLaneActions.runHistoryLaneAction`.
 
 ## Synthesized Activity rows
 
 The Activity surface in the History UI merges persisted
 `OperationRecord` rows with synthesized rows pulled from chat,
-mission, CTO, and worker feeds. Synthesis happens in
+CTO, and worker feeds. Synthesis happens in
 `apps/desktop/src/renderer/components/history/historyActivitySources.ts`
 and never writes to the operations table.
 
 The renderer fetches the four feeds in parallel with
 `fetchSupplementalTimelineRecords(limit)` and folds the results into
 `OperationRecord`-shaped objects with namespaced IDs (`chat:`,
-`mission:`, `worker-run:`, `cto-session:`, `cto-activity:`). Each
+`worker-run:`, `cto-session:`, `cto-activity:`). Each
 record carries:
 
-- `kind` -- `chat.session`, `mission.{completed|failed|intervention|update}`,
-  `worker.run`, `cto.session`, or `worker.activity`. The taxonomy in
+- `kind` -- `chat.session`, `worker.run`, `cto.session`, or
+  `worker.activity`. The taxonomy in
   `eventTaxonomy.ts` ensures each kind has a category, icon, and
   importance level.
-- `status` -- mapped from the source's status enum (e.g. mission
-  `intervention_required` → `running`, worker `cancelled` → `canceled`).
+- `status` -- mapped from the source's status enum (for example,
+  worker `cancelled` → `canceled`).
 - `metadataJson` -- a `JSON.stringify`'d object with at minimum
   `source`, `eventLabel`, and an `actor` field so the detail panel can
   render uniformly regardless of source.
@@ -244,8 +251,6 @@ parser is `parseAgentChatTranscript` in
 - `event` -- the `AgentChatEvent` discriminated union.
 - `sequence` -- optional monotonic index for ordering across parallel
   streams.
-- `provenance` -- optional metadata for mission-scoped chats (thread
-  id, role, source session id, attempt id, step key, lane id, run id).
 
 Malformed lines are silently skipped; the parser is tolerant by design
 so a single corrupt line does not poison an entire transcript.

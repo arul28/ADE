@@ -4,7 +4,6 @@ import {
   Code,
   Lightning,
   Plus,
-  Rocket,
   TerminalWindow,
   TestTube,
   Warning,
@@ -65,13 +64,6 @@ const ADD_OPTIONS: readonly AddOption[] = [
     accent: "#F97316",
     description: "Run the conflict prediction pass against recent lanes.",
   },
-  {
-    kind: "launch-mission",
-    label: "Launch mission",
-    icon: Rocket,
-    accent: "#94A3B8",
-    description: "Spin up a multi-step mission for this rule.",
-  },
 ];
 
 function createBlankAction(kind: ActionRowKind, suites: TestSuiteDefinition[]): ActionRowValue {
@@ -92,8 +84,6 @@ function createBlankAction(kind: ActionRowKind, suites: TestSuiteDefinition[]): 
       return { kind, command: "", cwd: "" };
     case "predict-conflicts":
       return { kind };
-    case "launch-mission":
-      return { kind, missionTitle: "" };
   }
 }
 

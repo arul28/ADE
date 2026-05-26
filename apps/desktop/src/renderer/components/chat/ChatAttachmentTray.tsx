@@ -587,12 +587,6 @@ export const ChatAttachmentTray = forwardRef<HTMLDivElement, ChatAttachmentTrayP
     case "resolver":
       chipTone = "border-orange-400/18 bg-orange-500/10 text-orange-100";
       break;
-    case "mission-feed":
-      chipTone = "border-emerald-400/18 bg-emerald-500/10 text-emerald-100";
-      break;
-    case "mission-thread":
-      chipTone = "border-sky-400/18 bg-sky-500/10 text-sky-100";
-      break;
     default:
       chipTone = "border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)] text-fg/82";
       break;
