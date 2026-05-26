@@ -2898,6 +2898,9 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       try {
         runStatement(db, sql, params);
       } catch (error) {
+        // Commit the alter even on failure so the CRR state stays consistent,
+        // then re-throw so callers (e.g. safeAlter) can handle duplicate columns.
+        getRow(db, "select crsql_commit_alter(?) as ok", [alterTable]);
         throw error;
       }
       getRow(db, "select crsql_commit_alter(?) as ok", [alterTable]);

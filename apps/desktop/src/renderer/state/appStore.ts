@@ -1608,6 +1608,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
 
   switchRemoteProject: async (targetId: string, projectId: string) => {
     const switchGeneration = ++remoteProjectSwitchGeneration;
+    const previousBinding = get().projectBinding;
     ++laneRefreshVersion;
     set({
       projectTransition: {
@@ -1654,6 +1655,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         set({
           projectTransition: null,
           lanesLoading: false,
+          projectBinding: previousBinding,
           projectTransitionError: formatProjectTransitionError("switching", error),
         });
       }

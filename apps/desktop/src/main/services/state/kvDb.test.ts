@@ -389,4 +389,43 @@ describe.skipIf(!isCrsqliteAvailable())("openKvDb CRR repair", () => {
       )?.present,
     ).toBe(1);
   });
+
+  it("commits CRR alter sessions after failed runtime ALTER TABLE", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-crr-alter-failure-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => db.close());
+
+    expect(
+      db.get<{ present: number }>(
+        "select 1 as present from sqlite_master where type = 'table' and name = 'automation_runs__crsql_clock' limit 1",
+      )?.present,
+    ).toBe(1);
+
+    const alterSql =
+      "alter table automation_runs add column ade_crr_alter_failure_probe text";
+    db.run(alterSql);
+    expect(() => db.run(alterSql)).toThrow();
+
+    insertProjectGraph(db);
+    expect(() =>
+      db.run(
+        `insert into automation_runs(
+           id, project_id, automation_id, trigger_type, started_at, status, actions_total
+         ) values (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          "run-probe",
+          "project-1",
+          "automation-probe",
+          "manual",
+          "2026-05-26T00:00:00.000Z",
+          "queued",
+          0,
+        ],
+      ),
+    ).not.toThrow();
+    expect(
+      db.get<{ id: string }>("select id from automation_runs where id = ? limit 1", ["run-probe"])?.id,
+    ).toBe("run-probe");
+  });
 });
