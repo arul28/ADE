@@ -935,7 +935,10 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     const runtime = getOrCreateRuntime(req.runId, bundlePath);
     return runtime.mutex.run(async () => {
       await loadIntoRuntime(runtime);
-      const manifest = runtime.manifest!;
+      if (!runtime.manifest) {
+        throw new Error(`run ${req.runId} not found`);
+      }
+      const manifest = runtime.manifest;
       const registeredAgent = manifest.agents.find(
         (agent) => agent.sessionId === req.sessionId,
       );
