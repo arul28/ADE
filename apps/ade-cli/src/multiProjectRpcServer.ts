@@ -378,19 +378,19 @@ export function createMultiProjectRpcRequestHandler(
     return syncService;
   };
 
-  const resolveRuntimeEnvInfo = () => ({
-    buildHash:
-      typeof process.env.ADE_RUNTIME_BUILD_HASH === "string" &&
-      process.env.ADE_RUNTIME_BUILD_HASH.trim()
-        ? process.env.ADE_RUNTIME_BUILD_HASH.trim()
-        : null,
-    defaultRole: normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
-    projectRoot:
-      typeof process.env.ADE_PROJECT_ROOT === "string" &&
-      process.env.ADE_PROJECT_ROOT.trim()
-        ? path.resolve(process.env.ADE_PROJECT_ROOT.trim())
-        : null,
-  });
+  const trimmedEnvOrNull = (key: string): string | null => {
+    const value = process.env[key];
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+  };
+
+  const resolveRuntimeEnvInfo = () => {
+    const projectRoot = trimmedEnvOrNull("ADE_PROJECT_ROOT");
+    return {
+      buildHash: trimmedEnvOrNull("ADE_RUNTIME_BUILD_HASH"),
+      defaultRole: normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
+      projectRoot: projectRoot ? path.resolve(projectRoot) : null,
+    };
+  };
 
   const handler = (async (request: JsonRpcRequest): Promise<unknown | null> => {
     const method = typeof request.method === "string" ? request.method : "";

@@ -54,7 +54,7 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import { useFloatingPaneEmbeddedChrome, type FloatingPaneEmbeddedChrome } from "../ui/FloatingPane";
 import { PaneTilingLayout, type PaneConfig } from "../ui/PaneTilingLayout";
 import { cn } from "../ui/cn";
-import { launchProfileForTerminalSession, type LaunchProfile } from "./cliLaunch";
+import { launchProfileForTerminalSession, type WorkPtyLaunchArgs, type WorkPtyLaunchResult } from "./cliLaunch";
 import { buildWorkSessionTilingTree, type TilingPreset } from "./workSessionTiling";
 import { laneSurfaceTint } from "../lanes/laneDesignTokens";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
@@ -1406,17 +1406,7 @@ export function WorkViewArea({
   onSelectItem: (sessionId: string) => void;
   onCloseItem: (sessionId: string) => void;
   onOpenChatSession: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
-  onLaunchPtySession: (args: {
-    laneId: string;
-    profile: LaunchProfile;
-    title?: string;
-    startupCommand?: string;
-    startupDelayMs?: number;
-    command?: string;
-    args?: string[];
-    env?: Record<string, string>;
-    tracked?: boolean;
-  }) => Promise<unknown>;
+  onLaunchPtySession: (args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>;
   onDraftLaneChange?: (laneId: string) => void;
   onShowDraftKind: (kind: WorkDraftKind) => void;
   onToggleTabGroupCollapsed?: (groupId: string) => void;

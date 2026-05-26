@@ -594,21 +594,18 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
 
   if (kind === "agent-session") {
     const legacyTitle = kindRaw === "mission" ? legacyMissionPrompt(value) : undefined;
-    const session = isRecord(value.session)
+    const sessionTitle = isRecord(value.session)
+      ? firstNonEmptyString(value.session.title, legacyTitle)
+      : legacyTitle;
+    const sessionReasoningEffort = isRecord(value.session) ? asString(value.session.reasoningEffort)?.trim() : undefined;
+    const sessionCodexFastMode = isRecord(value.session) ? asBool(value.session.codexFastMode) : undefined;
+    const session = sessionTitle || sessionReasoningEffort || sessionCodexFastMode != null
       ? {
-          ...(asString(value.session.title)?.trim()
-            ? { title: asString(value.session.title)!.trim() }
-            : legacyTitle
-              ? { title: legacyTitle }
-              : {}),
-          ...(asString(value.session.reasoningEffort)?.trim()
-            ? { reasoningEffort: asString(value.session.reasoningEffort)!.trim() }
-            : {}),
-          ...(asBool(value.session.codexFastMode) != null ? { codexFastMode: asBool(value.session.codexFastMode) } : {}),
+          ...(sessionTitle ? { title: sessionTitle } : {}),
+          ...(sessionReasoningEffort ? { reasoningEffort: sessionReasoningEffort } : {}),
+          ...(sessionCodexFastMode != null ? { codexFastMode: sessionCodexFastMode } : {}),
         }
-      : legacyTitle
-        ? { title: legacyTitle }
-        : undefined;
+      : undefined;
     return {
       kind,
       ...sharedLaneFields,

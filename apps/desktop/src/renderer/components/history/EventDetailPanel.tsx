@@ -30,7 +30,7 @@ function copyToClipboard(text: string) {
 
 function metadataId(
   metadata: Record<string, unknown> | null,
-  key: "sessionId",
+  key: string,
 ): string | null {
   if (!metadata) return null;
   const value = metadata[key];

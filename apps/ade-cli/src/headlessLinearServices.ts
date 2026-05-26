@@ -1647,7 +1647,7 @@ export function createHeadlessLinearServices(
     outboundService,
     prService,
     computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
-  } as Parameters<typeof createLinearCloseoutServiceImpl>[0]);
+  });
   const dispatcherService = createLinearDispatcherServiceImpl({
     db: args.db,
     projectId: args.projectId,
@@ -1662,7 +1662,7 @@ export function createHeadlessLinearServices(
     workerTaskSessionService,
     prService,
     onEvent: args.onLinearWorkflowEvent ?? (() => {}),
-  } as Parameters<typeof createLinearDispatcherServiceImpl>[0]);
+  });
   const syncService = createLinearSyncServiceImpl({
     db: args.db,
     logger: args.logger,

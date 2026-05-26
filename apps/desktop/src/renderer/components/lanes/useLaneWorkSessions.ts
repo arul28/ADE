@@ -9,7 +9,8 @@ import {
   LAUNCH_PROFILE_TITLE,
   LAUNCH_PROFILE_TOOL_TYPE,
   resolveLaunchFields,
-  type LaunchProfile,
+  type WorkPtyLaunchArgs,
+  type WorkPtyLaunchResult,
 } from "../terminals/cliLaunch";
 
 const EMPTY_WORK_STATE: WorkProjectViewState = {
@@ -487,16 +488,7 @@ export function useLaneWorkSessions(laneId: string | null) {
   }, [laneOpenItemIds, projectRoot, setWorkViewState, setViewState]);
 
   const launchPtySession = useCallback(
-    async (args: {
-      laneId: string;
-      profile: LaunchProfile;
-      tracked?: boolean;
-      title?: string;
-      startupCommand?: string;
-      command?: string;
-      args?: string[];
-      env?: Record<string, string>;
-    }) => {
+    async (args: WorkPtyLaunchArgs): Promise<WorkPtyLaunchResult> => {
       // resolveLaunchFields treats the caller's launch overrides as atomic:
       // if any of startupCommand/command/args is supplied we don't mix in
       // defaults from the other fields (which used to override the caller's
@@ -516,9 +508,9 @@ export function useLaneWorkSessions(laneId: string | null) {
         title: args.title ?? LAUNCH_PROFILE_TITLE[args.profile],
         tracked: args.tracked ?? true,
         toolType: LAUNCH_PROFILE_TOOL_TYPE[args.profile],
+        ...(args.startupDelayMs !== undefined ? { startupDelayMs: args.startupDelayMs } : {}),
         ...launchFields,
       });
-      selectLane(args.laneId);
       // Invalidate all cache entries so other views (e.g. Work tab) pick up
       // the new session on their next refresh.
       invalidateSessionListCache();
@@ -527,8 +519,11 @@ export function useLaneWorkSessions(laneId: string | null) {
       // Without this, activeItemId points to an unknown ID and the view
       // falls back to the most recent session for several seconds.
       await refresh({ showLoading: false, force: true });
-      focusSession(result.sessionId);
-      openSessionTab(result.sessionId);
+      if (args.disposition !== "background") {
+        selectLane(args.laneId);
+        focusSession(result.sessionId);
+        openSessionTab(result.sessionId);
+      }
       return result;
     },
     [focusSession, openSessionTab, refresh, selectLane],

@@ -352,7 +352,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       const resolved = typeof next === "function" ? next(workState) : { ...workState, ...next };
       Object.assign(workState, resolved);
     });
-    listSessionsCachedMock.mockResolvedValue([]);
+    listSessionsCachedMock.mockResolvedValue([makeSession("existing-session", "lane-1")]);
     (window as any).ade.pty.create.mockResolvedValueOnce({
       sessionId: "new-pty-session",
       ptyId: "pty-1",
@@ -365,6 +365,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       expect(listSessionsCachedMock).toHaveBeenCalled();
     });
     listSessionsCachedMock.mockClear();
+    listSessionsCachedMock.mockResolvedValue([]);
 
     await act(async () => {
       await result.current.launchPtySession({
@@ -387,6 +388,68 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(workState.openItemIds).toContain("new-pty-session");
     expect(workState.activeItemId).toBe("new-pty-session");
     expect(workState.selectedItemId).toBe("new-pty-session");
+  });
+
+  it("launchPtySession can start a terminal in the background without changing the active tab", async () => {
+    const workState = {
+      openItemIds: ["existing-session"] as string[],
+      activeItemId: "existing-session" as string | null,
+      selectedItemId: "existing-session" as string | null,
+      viewMode: "tabs" as const,
+      draftKind: "cli" as const,
+      laneFilter: "all",
+      statusFilter: "all" as const,
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [] as string[],
+      workCollapsedTabGroupIds: [] as string[],
+      workFocusSessionsHidden: false,
+    };
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      workViewByProject: { "/fake/project": workState },
+    };
+    setWorkViewStateSpy.mockImplementation((_projectRoot: string, next: any) => {
+      const resolved = typeof next === "function" ? next(workState) : { ...workState, ...next };
+      Object.assign(workState, resolved);
+    });
+    listSessionsCachedMock.mockResolvedValue([makeSession("existing-session", "lane-1")]);
+    (window as any).ade.pty.create.mockResolvedValueOnce({
+      sessionId: "background-pty-session",
+      ptyId: "pty-bg",
+      pid: 1234,
+    });
+
+    const { result } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(listSessionsCachedMock).toHaveBeenCalled();
+    });
+    listSessionsCachedMock.mockClear();
+    listSessionsCachedMock.mockResolvedValue([makeSession("existing-session", "lane-1")]);
+
+    await act(async () => {
+      await result.current.launchPtySession({
+        laneId: "lane-1",
+        profile: "codex",
+        title: "Background prompt",
+        disposition: "background",
+      });
+    });
+
+    expect(result.current.sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "background-pty-session",
+        ptyId: "pty-bg",
+        title: "Background prompt",
+        toolType: "codex",
+        status: "running",
+      }),
+    ]));
+    expect(workState.openItemIds).toEqual(["existing-session"]);
+    expect(workState.activeItemId).toBe("existing-session");
+    expect(workState.selectedItemId).toBe("existing-session");
+    expect(focusSessionSpy).not.toHaveBeenCalledWith("background-pty-session");
   });
 
   it("launchPtySession preserves the live optimistic pty id when a stale row has the same session id", async () => {
