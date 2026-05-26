@@ -538,6 +538,11 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
       sendLocalChanges();
     },
 
+    acknowledgeLocalDbVersion(): void {
+      pendingOutboundChangeset = null;
+      outboundLocalDbVersion = args.db.sync.getDbVersion();
+    },
+
     async executeRemoteCommand(action: SyncRemoteCommandAction | (string & {}), commandArgs: Record<string, unknown>): Promise<unknown> {
       if (!ws || ws.readyState !== WebSocket.OPEN) {
         throw new Error("Not connected to a host device.");

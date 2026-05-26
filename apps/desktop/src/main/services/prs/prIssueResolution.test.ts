@@ -33,7 +33,13 @@ function makeMockDb() {
     run: vi.fn(),
     getJson: vi.fn(() => null),
     setJson: vi.fn(),
-    sync: { getSiteId: vi.fn(), getDbVersion: vi.fn(), exportChangesSince: vi.fn(), applyChanges: vi.fn() },
+    sync: {
+      getSiteId: vi.fn(),
+      getDbVersion: vi.fn(),
+      exportChangesSince: vi.fn(),
+      applyChanges: vi.fn(),
+      discardUnpublishedChangesForTables: vi.fn(),
+    },
     flushNow: vi.fn(),
     close: vi.fn(),
   } as any;

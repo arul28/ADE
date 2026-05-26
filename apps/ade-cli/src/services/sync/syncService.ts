@@ -1019,6 +1019,7 @@ export function createSyncService(args: SyncServiceArgs) {
       }
       await stopHostIfRunning();
       deviceRegistryService.clearClusterRegistryForViewerJoin();
+      syncPeerService.acknowledgeLocalDbVersion();
       writeSavedDraft(draft);
       syncPeerService.setSavedDraft(draft);
       try {

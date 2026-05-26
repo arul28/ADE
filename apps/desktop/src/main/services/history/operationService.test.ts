@@ -82,6 +82,7 @@ function createInMemoryAdeDb(): { db: AdeDb; raw: Database } {
           touchedTables: [],
           rebuiltFts: false,
         }),
+        discardUnpublishedChangesForTables: () => {},
       },
       flushNow: () => undefined,
       close: () => raw.close(),

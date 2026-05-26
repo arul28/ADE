@@ -629,6 +629,12 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
     });
     args.db.run("delete from sync_cluster_state");
     args.db.run("delete from devices");
+    // Local DELETEs are CRR changesets; discard them so connectToBrain /
+    // disconnectFromBrain cannot broadcast mass device tombstones to the brain
+    // or paired peers.
+    if (args.db.sync.isAvailable?.()) {
+      args.db.sync.discardUnpublishedChangesForTables(["devices", "sync_cluster_state"]);
+    }
   };
 
   const forgetDevice = (deviceId: string): void => {

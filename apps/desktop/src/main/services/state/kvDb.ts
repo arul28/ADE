@@ -23,6 +23,12 @@ export type AdeDbSyncApi = {
   getDbVersion: () => number;
   exportChangesSince: (version: number) => CrsqlChangeRow[];
   applyChanges: (changes: CrsqlChangeRow[]) => ApplyRemoteChangesResult;
+  /**
+   * Drop unpublished local-site rows from crsql_changes for the given tables.
+   * Used when a viewer clears local registry state that must not be relayed to
+   * the brain or paired peers.
+   */
+  discardUnpublishedChangesForTables: (tableNames: string[]) => void;
 };
 
 /**
@@ -3005,6 +3011,19 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
         touchedTables: Array.from(touchedTables).sort(),
         rebuiltFts: false,
       };
+    },
+    discardUnpublishedChangesForTables: (tableNames: string[]) => {
+      if (!crsqliteLoaded || tableNames.length === 0) return;
+      runStatement(db, "begin");
+      try {
+        for (const tableName of tableNames) {
+          runStatement(db, "delete from crsql_changes where [table] = ?", [tableName]);
+        }
+        runStatement(db, "commit");
+      } catch (err) {
+        runStatement(db, "rollback");
+        throw err;
+      }
     },
   };
 
