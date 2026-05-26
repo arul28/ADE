@@ -7,6 +7,7 @@ import {
   parseTrackedCliLaunchConfig,
   parseTrackedCliResumeCommand,
   normalizeResumeCommand,
+  providerFromTool,
   runtimeStateFromOsc133Chunk,
   sanitizeResumeTargetId,
 } from "./terminalSessionSignals";
@@ -20,6 +21,16 @@ describe("terminalSessionSignals", () => {
   it("extracts plain resume command lines", () => {
     const chunk = "codex resume session_abc123 --last";
     expect(extractResumeCommandFromOutput(chunk, "codex")).toBe("codex resume session_abc123 --last");
+  });
+
+  it("extracts resume commands from shell-prompted lines", () => {
+    const chunk = "arul@host project % codex resume thread_abc123";
+    expect(extractResumeCommandFromOutput(chunk, "codex")).toBe("codex resume thread_abc123");
+  });
+
+  it("does not extract resume-looking words from user prompts", () => {
+    const chunk = "ADE dev resume verification for codex. Reply exactly: codex resume ok";
+    expect(extractResumeCommandFromOutput(chunk, "codex")).toBeNull();
   });
 
   it("does not treat terminal CSI replies as Codex resume targets", () => {
@@ -68,10 +79,16 @@ describe("terminalSessionSignals", () => {
   it("returns default resume command for known tools", () => {
     expect(defaultResumeCommandForTool("claude")).toBe("claude --resume");
     expect(defaultResumeCommandForTool("codex")).toBe("codex resume");
-    expect(defaultResumeCommandForTool("cursor-cli")).toBe("cursor-agent --continue");
+    expect(defaultResumeCommandForTool("cursor-cli")).toBe("cursor-agent --model auto --continue");
     expect(defaultResumeCommandForTool("droid")).toBe("droid --resume");
     expect(defaultResumeCommandForTool("opencode")).toBe("opencode --continue");
+    expect(defaultResumeCommandForTool("opencode-orchestrated")).toBe("opencode --continue");
     expect(defaultResumeCommandForTool("shell")).toBeNull();
+  });
+
+  it("treats orchestrated OpenCode terminals as OpenCode resume sessions", () => {
+    expect(providerFromTool("opencode-orchestrated")).toBe("opencode");
+    expect(normalizeResumeCommand("opencode --session open-1", "opencode-orchestrated")).toBe("opencode --session open-1");
   });
 
   it("parses tracked Claude and Codex launch configs from startup commands", () => {
@@ -92,8 +109,28 @@ describe("terminalSessionSignals", () => {
     expect(parseTrackedCliLaunchConfig("cursor-agent --mode plan", "cursor-cli")).toEqual({
       permissionMode: "plan",
     });
+    expect(parseTrackedCliLaunchConfig("cursor-agent --mode plan --model auto", "cursor-cli")).toEqual({
+      permissionMode: "plan",
+      model: "auto",
+    });
     expect(parseTrackedCliLaunchConfig("droid --settings /tmp/ade.json", "droid")).toEqual({
       permissionMode: "plan",
+    });
+    expect(parseTrackedCliLaunchConfig(
+      "ADE_DROID_SETTINGS=\"$(mktemp \"${TMPDIR:-/tmp}/ade-droid-settings.XXXXXX.json\")\" && printf %s \"{\\\"sessionDefaultSettings\\\":{\\\"interactionMode\\\":\\\"auto\\\",\\\"autonomyLevel\\\":\\\"low\\\"},\\\"model\\\":\\\"gpt-5.4\\\",\\\"reasoningEffort\\\":\\\"xhigh\\\"}\" > \"$ADE_DROID_SETTINGS\" && droid --settings \"$ADE_DROID_SETTINGS\"",
+      "droid",
+    )).toEqual({
+      permissionMode: "edit",
+      model: "gpt-5.4",
+      reasoningEffort: "xhigh",
+    });
+    expect(parseTrackedCliLaunchConfig(
+      "ADE_DROID_SETTINGS=\"$(mktemp \"${TMPDIR:-/tmp}/ade-droid-settings.XXXXXX.json\")\" && printf %s \"{\\\"sessionDefaultSettings\\\":{\\\"interactionMode\\\":\\\"spec\\\",\\\"autonomyLevel\\\":\\\"off\\\",\\\"specModeModel\\\":\\\"claude-sonnet-4-6\\\",\\\"specModeReasoningEffort\\\":\\\"high\\\"}}\" > \"$ADE_DROID_SETTINGS\" && droid --settings \"$ADE_DROID_SETTINGS\"",
+      "droid",
+    )).toEqual({
+      permissionMode: "plan",
+      model: "claude-sonnet-4-6",
+      reasoningEffort: "high",
     });
     expect(parseTrackedCliLaunchConfig("OPENCODE_CONFIG_CONTENT='{\"permission\":{\"*\":\"ask\",\"edit\":\"allow\"}}' opencode", "opencode")).toEqual({
       permissionMode: "edit",
@@ -127,7 +164,7 @@ describe("terminalSessionSignals", () => {
       targetKind: "session",
       targetId: "chat-1",
       launch: { permissionMode: "edit" },
-    })).toBe("cursor-agent --mode ask --resume chat-1");
+    })).toBe("cursor-agent --mode ask --model auto --resume chat-1");
 
     expect(buildTrackedCliResumeCommand({
       provider: "opencode",
@@ -154,6 +191,29 @@ describe("terminalSessionSignals", () => {
       launch: { permissionMode: "edit" },
     }, { model: "gpt-5.4", reasoningEffort: "high", permissionMode: "plan" })).toBe(
       "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"high\"' --sandbox read-only --ask-for-approval on-request resume thread-99",
+    );
+  });
+
+  it("preserves parsed model and reasoning when resuming without overrides", () => {
+    expect(parseTrackedCliLaunchConfig(
+      "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"medium\"' --sandbox workspace-write --ask-for-approval untrusted",
+      "codex",
+    )).toEqual({
+      permissionMode: "edit",
+      model: "gpt-5.4",
+      reasoningEffort: "medium",
+      codexApprovalPolicy: "untrusted",
+      codexSandbox: "workspace-write",
+      codexConfigSource: "flags",
+    });
+
+    expect(buildTrackedCliResumeCommand({
+      provider: "codex",
+      targetKind: "thread",
+      targetId: "thread-99",
+      launch: { permissionMode: "edit", model: "gpt-5.4", reasoningEffort: "medium" },
+    })).toBe(
+      "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"medium\"' --sandbox workspace-write --ask-for-approval untrusted resume thread-99",
     );
   });
 
@@ -245,6 +305,17 @@ describe("terminalSessionSignals", () => {
 
     expect(command).toContain("opencode run --interactive --model openai/gpt-5.4 --session ses_abc --replay --replay-limit 40 -- 'continue from here'");
     expect(command).toContain("\"question\":\"allow\"");
+  });
+
+  it("normalizes ADE OpenCode registry IDs in replay resume commands", () => {
+    const command = buildOpenCodeReplayResumeCommand({
+      permissionMode: "plan",
+      targetId: "ses_abc",
+      model: "opencode/lmstudio/openai%2Fgpt-oss-20b",
+      prompt: "continue from here",
+    });
+
+    expect(command).toContain("--model lmstudio/openai/gpt-oss-20b");
   });
 
   it("extracts Cursor resume commands printed by ADE launch wrappers", () => {

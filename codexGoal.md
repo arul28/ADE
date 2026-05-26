@@ -669,3 +669,85 @@ Final stop-state check after this handoff:
   terminal session owns each process from ADE's DB/transcripts, stop them
   through the Work tab where possible, and only kill manually after confirming
   ownership.
+
+## Handoff update: 2026-05-26 16:45 EDT
+
+User asked to stop, update this file, push, and report.
+
+Latest work completed after the prior handoff:
+
+- Validated the previously untested Droid launch patch against the installed
+  Droid CLI help:
+  - `droid --help` says bare `droid` starts interactive mode and an inline
+    prompt starts the same interactive CLI with initial context.
+  - `droid exec --help` says `exec` is non-interactive and exposes
+    `--auto low|medium|high`, `--model`, `--reasoning-effort`,
+    `--spec-model`, and `--spec-reasoning-effort`.
+- Confirmed the generated Work-tab Droid command now uses interactive Droid via
+  `droid --settings "$ADE_DROID_SETTINGS" "<prompt>"`, not `droid exec`.
+- Found and fixed a real resume-metadata bug in
+  `apps/desktop/src/main/utils/terminalSessionSignals.ts`:
+  - After the interactive Droid settings-file patch, Droid launch metadata
+    lived inside the generated `printf %s <json> > "$ADE_DROID_SETTINGS"`
+    command.
+  - `parseTrackedCliLaunchConfig(...)` was still looking only for plain CLI
+    flags or unescaped JSON fragments.
+  - Result before fix: a generated Droid edit launch parsed as only
+    `{ permissionMode: "plan" }`, losing model, reasoning effort, and autonomy.
+  - Result after fix: the same generated launch parses as
+    `{ permissionMode: "edit", model: "claude-sonnet-4-6", reasoningEffort:
+    "high" }`.
+- Updated focused tests:
+  - `apps/desktop/src/main/utils/terminalSessionSignals.test.ts` now covers
+    generated Droid settings JSON for edit/auto and plan/spec settings.
+  - `apps/desktop/src/renderer/components/terminals/cliLaunch.test.ts` now
+    asserts the shell-escaped JSON format produced by `quoteShellArg(...)`.
+
+Validation run after this patch:
+
+```bash
+PATH=$HOME/.asdf/installs/nodejs/22.13.1/bin:$PATH \
+npm --prefix apps/desktop run test -- --run \
+  src/renderer/components/terminals/cliLaunch.test.ts \
+  src/main/utils/terminalSessionSignals.test.ts
+```
+
+Result:
+
+- Passed.
+- `2 passed`, `70 passed`.
+
+Runtime/UI state when stopped:
+
+- Dev Electron/Vite/tsup was not running after the user interruption.
+- I had restarted this lane's runtime socket during the aborted dev launch
+  because the launcher detected a build-hash change:
+  `/tmp/ade-runtime-app-control-fixes-d55c0422.sock`.
+- This lane runtime should be stopped for this handoff because the user asked
+  to stop.
+- The other lane socket remains off-limits:
+  `/tmp/ade-runtime-ui-clean-up-3470f34e.sock`.
+- The Work-tab Computer Use smoke for Droid was not completed. The app state
+  was inspected and the Work tab was visible, but no new Droid session was
+  launched before the user stopped the run.
+
+Files from this latest stop-point that should be committed/pushed as one
+focused follow-up:
+
+- `apps/desktop/src/shared/cliLaunch.ts`
+- `apps/desktop/src/main/utils/terminalSessionSignals.ts`
+- `apps/desktop/src/main/utils/terminalSessionSignals.test.ts`
+- `apps/desktop/src/renderer/components/terminals/cliLaunch.test.ts`
+- `codexGoal.md`
+
+Remaining high-priority work:
+
+1. Resume through Codex Computer Use from the Work tab and run an actual Droid
+   UI smoke if Droid auth/subscription permits.
+2. Finish the runtime matrix and app close/reopen proof for Codex, Claude,
+   Cursor, OpenCode, and Droid if available.
+3. Clean or account for old smoke sessions and provider sidecars through the
+   Work tab, then verify no stale provider descendants remain.
+4. Investigate the OpenCode Kitty graphics payload still visible in one old
+   Work sidebar preview.
+5. Continue performance/resource measurement from real Work-tab UI evidence.
