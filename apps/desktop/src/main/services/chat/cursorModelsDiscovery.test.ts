@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ModelDescriptor } from "../../../shared/modelRegistry";
 
 const cursorModelsListMock = vi.hoisted(() => vi.fn());
 const reportProviderRuntimeAuthFailureMock = vi.hoisted(() => vi.fn());
@@ -21,6 +22,7 @@ import {
   clearCursorCliModelsCache,
   discoverCursorSdkModelDescriptors,
   listCursorModelsFromSdk,
+  mergeCursorModelDescriptorSources,
   parseCursorCliModelsStdout,
   probeCursorSdkModelDiscovery,
   resolveCursorSdkModelSelectionParams,
@@ -134,6 +136,51 @@ describe("parseCursorCliModelsStdout", () => {
     expect(descriptors.find((descriptor) => descriptor.id === "cursor/composer-2")?.aliases).toContain("composer-latest");
     expect(cursorModelsListMock).toHaveBeenCalledWith({ apiKey: "crsr_test" });
     expect(reportProviderRuntimeReadyMock).toHaveBeenCalledWith("cursor");
+  });
+
+  it("merges Cursor CLI and SDK model availability by provider id", async () => {
+    cursorModelsListMock.mockResolvedValue([
+      { id: "composer-2", displayName: "Composer 2 SDK" },
+      { id: "chat-only", displayName: "Chat Only" },
+    ]);
+
+    const sdkDescriptors = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
+    const cliRows = parseCursorCliModelsStdout("auto - Auto\ncomposer-2 - Composer 2 CLI\n");
+    const cliDescriptors = mergeCursorModelDescriptorSources({
+      cliDescriptors: cliRows.map((row): ModelDescriptor => ({
+        id: `cursor/${row.id}`,
+        shortId: row.id,
+        displayName: row.displayName ?? row.id,
+        family: "cursor",
+        authTypes: ["api-key"],
+        contextWindow: 200_000,
+        maxOutputTokens: 32_000,
+        capabilities: { tools: true, vision: true, reasoning: true, streaming: true },
+        color: "#A78BFA",
+        providerRoute: "cursor-sdk",
+        providerModelId: row.id,
+        cliCommand: "cursor",
+        isCliWrapped: false,
+      })),
+      sdkDescriptors: [],
+    });
+
+    const merged = mergeCursorModelDescriptorSources({ cliDescriptors, sdkDescriptors });
+
+    expect(merged.find((descriptor) => descriptor.id === "cursor/auto")?.cursorAvailability).toEqual({
+      cli: true,
+      sdk: false,
+    });
+    expect(merged.find((descriptor) => descriptor.id === "cursor/composer-2")?.cursorAvailability).toEqual({
+      cli: true,
+      sdk: true,
+    });
+    expect(merged.find((descriptor) => descriptor.id === "cursor/chat-only")?.cursorAvailability).toEqual({
+      cli: false,
+      sdk: true,
+    });
+
+    expect(mergeCursorModelDescriptorSources({ cliDescriptors: [], sdkDescriptors: [] })).toEqual([]);
   });
 
   it("preserves Cursor SDK parameters and variants as runtime reasoning and service tiers", async () => {

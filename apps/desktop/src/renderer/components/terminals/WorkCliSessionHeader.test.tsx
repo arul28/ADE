@@ -67,6 +67,23 @@ describe("WorkCliSessionHeader", () => {
     expect(screen.queryByLabelText("Open macOS VM in Work sidebar")).toBeNull();
   });
 
+  it("labels detached sessions as ended without stop affordances", () => {
+    render(
+      <WorkCliSessionHeader
+        session={makeSession({
+          ptyId: null,
+          status: "detached",
+          runtimeState: "exited",
+          endedAt: "2026-05-13T00:10:00.000Z",
+        })}
+        onStopRunningSession={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Ended")).toBeTruthy();
+    expect(screen.queryByLabelText("Stop Claude Code")).toBeNull();
+  });
+
   it("wires info, stop, and action affordances to existing session handlers", () => {
     const onInfoClick = vi.fn();
     const onContextMenu = vi.fn();

@@ -217,6 +217,21 @@ export function useLaneWorkSessions(laneId: string | null) {
     });
   }, [currentLane?.name, laneId, lanes, scopeKey]);
 
+  const upsertSessionSnapshot = useCallback((session: TerminalSessionSummary) => {
+    if (!laneId || session.laneId !== laneId) return;
+    hasLoadedOnceRef.current = true;
+    setSessions((prev) => {
+      const next = [session, ...prev.filter((entry) => entry.id !== session.id)];
+      next.sort((left, right) => (
+        new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime()
+      ));
+      if (scopeKey) {
+        laneSessionsCacheByScope.set(scopeKey, next);
+      }
+      return next;
+    });
+  }, [laneId, scopeKey]);
+
   useEffect(() => {
     const cachedSessions = scopeKey ? laneSessionsCacheByScope.get(scopeKey) ?? null : null;
     setSessions(cachedSessions ?? []);
@@ -496,10 +511,13 @@ export function useLaneWorkSessions(laneId: string | null) {
       // command/args).
       const launchFields = resolveLaunchFields({
         profile: args.profile,
+        ...(args.permissionMode !== undefined ? { permissionMode: args.permissionMode } : {}),
         ...(args.startupCommand !== undefined ? { startupCommand: args.startupCommand } : {}),
         ...(args.command !== undefined ? { command: args.command } : {}),
         ...(args.args !== undefined ? { args: args.args } : {}),
         ...(args.env !== undefined ? { env: args.env } : {}),
+        ...(args.initialInput !== undefined ? { initialInput: args.initialInput } : {}),
+        ...(args.initialInputDelayMs !== undefined ? { initialInputDelayMs: args.initialInputDelayMs } : {}),
       });
       const result = await window.ade.pty.create({
         laneId: args.laneId,
@@ -509,6 +527,8 @@ export function useLaneWorkSessions(laneId: string | null) {
         tracked: args.tracked ?? true,
         toolType: LAUNCH_PROFILE_TOOL_TYPE[args.profile],
         ...(args.startupDelayMs !== undefined ? { startupDelayMs: args.startupDelayMs } : {}),
+        ...(launchFields.initialInput !== undefined ? { initialInput: launchFields.initialInput } : {}),
+        ...(launchFields.initialInputDelayMs !== undefined ? { initialInputDelayMs: launchFields.initialInputDelayMs } : {}),
         ...launchFields,
       });
       // Invalidate all cache entries so other views (e.g. Work tab) pick up
@@ -544,6 +564,23 @@ export function useLaneWorkSessions(laneId: string | null) {
     void refresh({ showLoading: false, force: true });
   }, [focusSession, laneId, openSessionTab, refresh, selectLane, upsertOptimisticChatSession]);
 
+  const continueCliSession = useCallback(async (session: TerminalSessionSummary, text: string) => {
+    const result = await window.ade.pty.sendToSession({
+      sessionId: session.id,
+      text,
+      cols: 100,
+      rows: 30,
+    });
+    invalidateSessionListCache();
+    if (result.session) {
+      upsertSessionSnapshot(result.session);
+    }
+    await refresh({ showLoading: false, force: true });
+    selectLane(session.laneId);
+    focusSession(result.sessionId);
+    openSessionTab(result.sessionId);
+  }, [focusSession, openSessionTab, refresh, selectLane, upsertSessionSnapshot]);
+
   const closePtySession = useCallback(async (ptyId: string) => {
     setClosingPtyIds((prev) => {
       const next = new Set(prev);
@@ -576,6 +613,7 @@ export function useLaneWorkSessions(laneId: string | null) {
     setActiveItemId,
     closeTab,
     launchPtySession,
+    continueCliSession,
     handleOpenChatSession,
     closingPtyIds,
     closePtySession,

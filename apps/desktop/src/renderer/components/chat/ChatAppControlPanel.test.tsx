@@ -62,7 +62,16 @@ const snapshot: AppControlSnapshot = {
     height: 80,
     dataUrl: transparentPngDataUrl,
   },
-  screen: { width: 100, height: 80, scale: 1 },
+  screen: {
+    width: 100,
+    height: 80,
+    scale: 1,
+    viewportWidth: 100,
+    viewportHeight: 80,
+    devicePixelRatio: 1,
+    scaleX: 1,
+    scaleY: 1,
+  },
   elements: [{
     id: "element-1",
     ref: "ref-1",
@@ -81,6 +90,11 @@ const snapshot: AppControlSnapshot = {
   providers: [{ provider: "screenshot", available: true }, { provider: "cdp", available: true, elementCount: 1 }],
   url: "http://localhost:5173",
   title: "ADE renderer",
+};
+
+const selectedSnapshot: AppControlSnapshot = {
+  ...snapshot,
+  hitElement: snapshot.elements[0] ?? null,
 };
 
 const targets: AppControlTarget[] = [
@@ -139,10 +153,13 @@ function installAdeMock({
       launchInTerminal: vi.fn(),
       connect: vi.fn(),
       stop: vi.fn(),
+      focusWindow: vi.fn().mockResolvedValue({ ok: true }),
+      minimizeWindow: vi.fn().mockResolvedValue({ ok: true }),
       click: vi.fn().mockResolvedValue(undefined),
       typeText: vi.fn().mockResolvedValue(undefined),
       scroll: vi.fn().mockResolvedValue(undefined),
-      selectPoint: vi.fn().mockResolvedValue({ item: contextItem, source: "cdp" }),
+      inspectPoint: vi.fn().mockResolvedValue({ item: contextItem, source: "cdp", snapshot: selectedSnapshot }),
+      selectPoint: vi.fn().mockResolvedValue({ item: contextItem, source: "cdp", snapshot: selectedSnapshot }),
     },
     agentChat: {
       saveTempAttachment: vi.fn().mockResolvedValue({ path: ".ade/artifacts/app-control-selection.png" }),
@@ -206,6 +223,15 @@ describe("ChatAppControlPanel", () => {
       terminalId: "terminal-1",
       ptyId: "pty-1",
       label: "ADE Test",
+    });
+
+    fireEvent.click(screen.getByTitle("Show the controlled app window"));
+    await waitFor(() => {
+      expect(api.appControl.focusWindow).toHaveBeenCalled();
+    });
+    fireEvent.click(screen.getByLabelText("Minimize controlled app window"));
+    await waitFor(() => {
+      expect(api.appControl.minimizeWindow).toHaveBeenCalled();
     });
 
     fireEvent.click(screen.getByTitle("Re-capture screenshot and DOM snapshot"));
@@ -294,6 +320,15 @@ describe("ChatAppControlPanel", () => {
     fireEvent.click(screen.getByText("Inspect"));
     fireEvent.mouseMove(image, { clientX: 15, clientY: 15 });
 
+    await waitFor(() => {
+      expect(api.appControl.inspectPoint).toHaveBeenCalledWith({
+        projectRoot: "/repo",
+        x: 15,
+        y: 15,
+        coordinateSpace: "viewport",
+        includeScreenshot: false,
+      });
+    });
     expect(screen.getByText("hovering")).toBeTruthy();
 
     fireEvent.click(image, { clientX: 60, clientY: 60 });
@@ -303,7 +338,7 @@ describe("ChatAppControlPanel", () => {
         projectRoot: "/repo",
         x: 60,
         y: 60,
-        scale: 1,
+        coordinateSpace: "viewport",
         includeScreenshot: false,
       });
     });
@@ -311,7 +346,7 @@ describe("ChatAppControlPanel", () => {
       id: "context-1",
       sourceFile: "src/App.tsx",
     }));
-    expect(await screen.findByText("Inserted cdp context")).toBeTruthy();
+    expect(await screen.findByText("Inserted Run context")).toBeTruthy();
 
     const selectCallsBeforeReattach = api.appControl.selectPoint.mock.calls.length;
     fireEvent.click(screen.getByText("Re-attach"));

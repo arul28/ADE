@@ -21,8 +21,6 @@ import {
   X,
 } from "@phosphor-icons/react";
 import type {
-  AgentChatModelInfo,
-  AgentChatPermissionMode,
   AgentChatSession,
   AgentChatSlashCommand,
   ChatTerminalPreviewResult,
@@ -33,7 +31,6 @@ import type {
   TerminalSnapshotCell,
   TerminalSnapshotRow,
 } from "../../../shared/types";
-import { getRuntimeModelRefForDescriptor, resolveModelDescriptorForProvider } from "../../../shared/modelRegistry";
 import type { WorkDraftKind, WorkViewMode } from "../../state/appStore";
 import { TerminalView } from "./TerminalView";
 import { ToolLogo } from "./ToolLogos";
@@ -41,9 +38,6 @@ import { SessionLaneHeaderLabel } from "./LaneChip";
 import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import { ChatCommandMenu, handleCommandMenuKeyDown, type ChatCommandMenuHandle, type ChatCommandMenuItem } from "../chat/ChatCommandMenu";
 import { ChatComposerShell } from "../chat/ChatComposerShell";
-import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
-import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
-import { getPermissionOptions, safetyColors, type PermissionOption } from "../shared/permissionOptions";
 import { WorkStartSurface } from "./WorkStartSurface";
 import { WorkCliSessionHeader } from "./WorkCliSessionHeader";
 import { isChatToolType, primarySessionLabel, stripTerminalLabelControls, truncateSessionLabel, formatToolTypeLabel } from "../../lib/sessions";
@@ -314,6 +308,10 @@ function canContinueAgentCliSession(session: TerminalSessionSummary): boolean {
   return Boolean(session.tracked && continuationProviderForSession(session) && (session.resumeMetadata || session.resumeCommand));
 }
 
+function shouldKeepMountedInHiddenTab(session: TerminalSessionSummary): boolean {
+  return isChatToolType(session.toolType) || isRunningPtySession(session);
+}
+
 function continuationProviderLabel(provider: TerminalResumeProvider | null): string {
   if (provider === "claude") return "Claude Code";
   if (provider === "codex") return "Codex";
@@ -323,222 +321,23 @@ function continuationProviderLabel(provider: TerminalResumeProvider | null): str
   return "agent CLI";
 }
 
-function continuationSupportsModelSelection(
-  provider: TerminalResumeProvider | null,
-): provider is "claude" | "codex" {
-  return provider === "claude" || provider === "codex";
-}
-
-function canonicalContinuationModelId(provider: "claude" | "codex" | null, modelId: string): string {
-  if (!provider) return modelId;
-  return resolveModelDescriptorForProvider(modelId, provider)?.id ?? modelId;
-}
-
-function defaultContinuationModel(models: AgentChatModelInfo[], provider: "claude" | "codex" | null): string {
-  const modelId = models.find((model) => model.isDefault)?.id ?? models[0]?.id ?? "";
-  return canonicalContinuationModelId(provider, modelId);
-}
-
-type WorkCliContinuationOptions = {
-  model?: string | null;
-  reasoningEffort?: string | null;
-  permissionMode?: AgentChatPermissionMode | null;
-};
-
-function continuationPermissionFamily(provider: TerminalResumeProvider | null): string | null {
-  if (provider === "claude") return "anthropic";
-  if (provider === "codex") return "openai";
-  if (provider === "cursor") return "cursor";
-  if (provider === "droid") return "factory";
-  if (provider === "opencode") return "opencode";
-  return null;
-}
-
-function continuationPermissionOptions(provider: TerminalResumeProvider | null): PermissionOption[] {
-  const family = continuationPermissionFamily(provider);
-  return family ? getPermissionOptions({ family, isCliWrapped: true }) : [];
-}
-
-function defaultContinuationPermissionMode(session: TerminalSessionSummary): AgentChatPermissionMode {
-  const raw = session.resumeMetadata?.launch?.permissionMode ?? session.resumeMetadata?.permissionMode ?? "default";
-  const options = continuationPermissionOptions(continuationProviderForSession(session));
-  return options.some((option) => option.value === raw)
-    ? raw
-    : options[0]?.value ?? "default";
-}
-
-function defaultContinuationReasoningEffort(tiers: readonly string[] | null | undefined): string | null {
-  if (!tiers?.length) return null;
-  for (const preferred of ["high", "medium", "low"]) {
-    if (tiers.includes(preferred)) return preferred;
-  }
-  return tiers[0] ?? null;
-}
-
-function runtimeModelForContinuation(provider: "claude" | "codex", modelId: string): string {
-  const descriptor = resolveModelDescriptorForProvider(modelId, provider);
-  return descriptor ? getRuntimeModelRefForDescriptor(descriptor, provider) : modelId;
-}
-
-function permissionSafetyDotClass(option: PermissionOption): string {
-  if (option.safety === "safe") return "bg-emerald-400/80";
-  if (option.safety === "semi-auto") return "bg-amber-400/80";
-  if (option.safety === "full-auto" || option.safety === "danger") return "bg-red-400/80";
-  return "bg-violet-400/80";
-}
-
-function WorkCliPermissionPicker({
-  provider,
-  value,
-  onChange,
-  disabled,
-  compact = false,
-}: {
-  provider: TerminalResumeProvider | null;
-  value: AgentChatPermissionMode;
-  onChange: (mode: AgentChatPermissionMode) => void;
-  disabled?: boolean;
-  compact?: boolean;
-}) {
-  const options = useMemo(() => continuationPermissionOptions(provider), [provider]);
-  const selected = options.find((option) => option.value === value) ?? options[0] ?? null;
-  const providerLabel = continuationProviderLabel(provider);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const [open, setOpen] = useState(false);
-
-  useEffect(() => {
-    if (!open) return;
-    const handlePointerDown = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (containerRef.current?.contains(target)) return;
-      setOpen(false);
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [open]);
-
-  useEffect(() => {
-    if (disabled && open) setOpen(false);
-  }, [disabled, open]);
-
-  if (!selected) return null;
-
-  return (
-    <div ref={containerRef} className="relative min-w-0 shrink-0">
-      <button
-        type="button"
-        disabled={disabled}
-        data-state={open ? "open" : "closed"}
-        onClick={() => {
-          if (!disabled) setOpen((current) => !current);
-        }}
-        className={cn(
-          "inline-flex min-w-0 max-w-[11rem] items-center gap-1.5 rounded-md border font-sans transition-colors duration-150",
-          compact ? "h-7 px-1.5 text-[10px]" : "h-8 px-2 text-[11px] sm:text-[12px]",
-          "border-white/[0.06] bg-white/[0.03] text-fg/80",
-          "hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg",
-          open && "border-violet-400/30 bg-violet-500/[0.08] text-fg",
-          disabled && "cursor-not-allowed opacity-60 hover:border-white/[0.06] hover:bg-white/[0.03]",
-        )}
-        aria-label={`${providerLabel} permission mode`}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        title={`Permission mode: ${selected.label}`}
-      >
-        <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", permissionSafetyDotClass(selected))} />
-        <span className="min-w-0 truncate font-medium leading-none">{selected.label}</span>
-        <CaretDown
-          size={compact ? 9 : 10}
-          weight="bold"
-          className={cn(
-            "shrink-0 text-muted-fg/60 transition-transform duration-150",
-            open && "rotate-180 text-fg/80",
-          )}
-        />
-      </button>
-      {open ? (
-        <div
-          role="menu"
-          aria-label={`${providerLabel} permission mode`}
-          className={cn(
-            "absolute right-0 top-full z-[100] mt-1.5 w-[280px] overflow-y-auto rounded-xl border border-white/[0.08] p-1",
-            "bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md",
-          )}
-        >
-          {options.map((option) => {
-            const optionColors = safetyColors(option.safety);
-            const active = option.value === selected.value;
-            return (
-              <button
-                key={option.value}
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  onChange(option.value);
-                  setOpen(false);
-                }}
-                className={cn(
-                  "flex w-full cursor-pointer items-start gap-2 rounded-md border-l-2 px-2.5 py-1.5 text-left transition-colors hover:bg-white/[0.05]",
-                  optionColors.border,
-                  active && optionColors.activeBg,
-                )}
-              >
-                <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-white/[0.10] bg-white/[0.03]">
-                  {active ? <Check size={10} weight="bold" className="text-accent" /> : null}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center justify-between gap-2">
-                    <span className="truncate text-[11px] font-semibold text-fg/85">{option.label}</span>
-                    <span className={cn("shrink-0 text-[9px] font-semibold uppercase tracking-[0.08em]", optionColors.badge)}>
-                      {option.safety.replace("-", " ")}
-                    </span>
-                  </span>
-                  <span className="mt-0.5 block text-[10px] leading-snug text-muted-fg/65">{option.shortDesc}</span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 function WorkCliContinuationComposer({
   session,
   onContinue,
 }: {
   session: TerminalSessionSummary;
-  onContinue?: (session: TerminalSessionSummary, text: string, options?: WorkCliContinuationOptions) => Promise<void> | void;
+  onContinue?: (session: TerminalSessionSummary, text: string) => Promise<void> | void;
 }) {
   const provider = continuationProviderForSession(session);
   const providerLabel = continuationProviderLabel(provider);
-  const modelProvider = continuationSupportsModelSelection(provider) ? provider : null;
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const commandMenuRef = useRef<ChatCommandMenuHandle | null>(null);
   const [draft, setDraft] = useState("");
   const [slashCommands, setSlashCommands] = useState<AgentChatSlashCommand[]>([]);
-  const [models, setModels] = useState<AgentChatModelInfo[]>([]);
-  const [selectedModel, setSelectedModel] = useState("");
-  const [selectedReasoningEffort, setSelectedReasoningEffort] = useState<string | null>(null);
-  const [selectedPermissionMode, setSelectedPermissionMode] = useState<AgentChatPermissionMode>(() => defaultContinuationPermissionMode(session));
-  const [modelsLoading, setModelsLoading] = useState(false);
   const [commandMenuTrigger, setCommandMenuTrigger] = useState<{ type: "slash"; query: string; cursorIndex: number } | null>(null);
   const [commandMenuAnchor, setCommandMenuAnchor] = useState<CommandMenuAnchor | null>(null);
   const [sending, setSending] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const defaultPermissionMode = defaultContinuationPermissionMode(session);
-  const availableModelIds = useMemo(
-    () => models.map((model) => canonicalContinuationModelId(modelProvider, model.id)),
-    [modelProvider, models],
-  );
 
   useEffect(() => {
     let cancelled = false;
@@ -559,57 +358,6 @@ function WorkCliContinuationComposer({
       cancelled = true;
     };
   }, [provider, session.laneId]);
-
-  useEffect(() => {
-    let cancelled = false;
-    setModels([]);
-    setSelectedModel("");
-    setSelectedReasoningEffort(null);
-    if (!modelProvider) return () => {
-      cancelled = true;
-    };
-    setModelsLoading(true);
-    void window.ade.agentChat.models({ provider: modelProvider })
-      .then((rows) => {
-        if (cancelled) return;
-        setModels(rows);
-        setSelectedModel((current) => (
-          current && rows.some((model) => canonicalContinuationModelId(modelProvider, model.id) === current)
-            ? current
-            : defaultContinuationModel(rows, modelProvider)
-        ));
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setModels([]);
-          setSelectedModel("");
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setModelsLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [modelProvider]);
-
-  useEffect(() => {
-    setSelectedPermissionMode(defaultPermissionMode);
-  }, [defaultPermissionMode, session.id]);
-
-  useEffect(() => {
-    if (!modelProvider || !selectedModel) {
-      setSelectedReasoningEffort(null);
-      return;
-    }
-    const descriptor = resolveModelDescriptorForProvider(selectedModel, modelProvider);
-    const tiers = descriptor?.reasoningTiers ?? [];
-    setSelectedReasoningEffort((current) => (
-      current && tiers.includes(current)
-        ? current
-        : defaultContinuationReasoningEffort(tiers)
-    ));
-  }, [modelProvider, selectedModel]);
 
   const updateDraft = useCallback((next: string, element: HTMLTextAreaElement | null) => {
     setDraft(next);
@@ -643,16 +391,7 @@ function WorkCliContinuationComposer({
     setSending(true);
     setSubmitError(null);
     try {
-      const options: WorkCliContinuationOptions = {
-        permissionMode: selectedPermissionMode,
-      };
-      if (modelProvider && selectedModel) {
-        options.model = runtimeModelForContinuation(modelProvider, selectedModel);
-      }
-      if (selectedReasoningEffort) {
-        options.reasoningEffort = selectedReasoningEffort;
-      }
-      await onContinue?.(session, text, options);
+      await onContinue?.(session, text);
       setDraft("");
       setCommandMenuTrigger(null);
     } catch (err) {
@@ -660,7 +399,7 @@ function WorkCliContinuationComposer({
     } finally {
       setSending(false);
     }
-  }, [draft, modelProvider, onContinue, selectedModel, selectedPermissionMode, selectedReasoningEffort, sending, session]);
+  }, [draft, onContinue, sending, session]);
 
   return (
     <div className="shrink-0">
@@ -672,37 +411,6 @@ function WorkCliContinuationComposer({
             <div className="min-w-0 shrink truncate px-1">
               <span className="font-medium text-fg/70">{providerLabel}</span>
             </div>
-            {modelProvider ? (
-              <div className="inline-flex items-center gap-1.5">
-                <ModelPicker
-                  value={selectedModel}
-                  disabled={sending || modelsLoading || models.length === 0}
-                  onChange={setSelectedModel}
-                  surfaceKey="work-view-cli"
-                  availableModelIds={availableModelIds}
-                  catalogMode="available-only"
-                  filter={(model) => (
-                    modelProvider === "claude"
-                      ? model.family === "anthropic" && model.isCliWrapped
-                      : model.family === "openai" && model.isCliWrapped
-                  )}
-                  compact
-                />
-                <ReasoningEffortPicker
-                  modelId={selectedModel}
-                  reasoningEffort={selectedReasoningEffort}
-                  onChange={setSelectedReasoningEffort}
-                  compact
-                  disabled={sending || modelsLoading || models.length === 0}
-                />
-              </div>
-            ) : null}
-            <WorkCliPermissionPicker
-              provider={provider}
-              value={selectedPermissionMode}
-              onChange={setSelectedPermissionMode}
-              disabled={sending}
-            />
             <button
               type="button"
               disabled={sending || !draft.trim()}
@@ -769,7 +477,7 @@ function ClosedCliSessionSurface({
   layoutVariant: "standard" | "grid-tile";
   onInfoClick?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
   onContextMenu?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
-  onContinue?: (session: TerminalSessionSummary, text: string, options?: WorkCliContinuationOptions) => Promise<void> | void;
+  onContinue?: (session: TerminalSessionSummary, text: string) => Promise<void> | void;
 }) {
   const [preview, setPreview] = useState<ChatTerminalPreviewResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -779,6 +487,7 @@ function ClosedCliSessionSurface({
   const endedTime = session.endedAt
     ? new Date(session.endedAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
     : null;
+  const endedLabel = endedTime ? `Ended ${endedTime}` : "Session ended";
 
   useEffect(() => {
     let cancelled = false;
@@ -820,7 +529,7 @@ function ClosedCliSessionSurface({
           <div className="min-w-0">
             <div className="truncate text-[12px] font-medium text-fg/85">{label}</div>
             <div className="mt-0.5 text-[10px] text-muted-fg/55">
-              {endedTime ? `Ended ${endedTime}` : "Session ended"}
+              {endedLabel}
               {exitLabel ? ` · ${exitLabel}` : ""}
             </div>
           </div>
@@ -868,7 +577,7 @@ function SessionSurface({
   onStopRunningSession?: (session: TerminalSessionSummary) => void;
   stopping?: boolean;
   onOpenChatSession: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
-  onContinueCliSession?: (session: TerminalSessionSummary, text: string, options?: WorkCliContinuationOptions) => Promise<void> | void;
+  onContinueCliSession?: (session: TerminalSessionSummary, text: string) => Promise<void> | void;
 }) {
   const isChat = isChatToolType(session.toolType);
   const surfaceActive = pageActive && isActive;
@@ -1504,7 +1213,7 @@ export function WorkViewArea({
   onToggleTabGroupCollapsed?: (groupId: string) => void;
   closingPtyIds: Set<string>;
   onContextMenu?: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
-  onContinueCliSession?: (session: TerminalSessionSummary, text: string, options?: WorkCliContinuationOptions) => Promise<void> | void;
+  onContinueCliSession?: (session: TerminalSessionSummary, text: string) => Promise<void> | void;
   onReorderLaneSessions?: (laneId: string, movedSessionId: string, targetSessionId: string, edge: "before" | "after") => void;
   onOpenSessionInTabsView?: (sessionId: string) => void;
   onGoToLane?: (laneId: string) => void;
@@ -1800,6 +1509,7 @@ export function WorkViewArea({
     <div className="relative min-h-0 flex-1" style={{ background: "var(--color-bg)" }}>
       {visibleSessions.map((session) => {
         const isActive = activeSession?.id === session.id;
+        if (!isActive && !shouldKeepMountedInHiddenTab(session)) return null;
 
         return (
           <div

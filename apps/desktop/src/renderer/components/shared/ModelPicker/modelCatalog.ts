@@ -233,6 +233,11 @@ export function descriptorsFromAgentChatModelCatalog(
             catalogGroupKey: String(model.groupKey || group.key),
             catalogAvailable: model.isAvailable,
             catalogRequiresConfiguration: model.requiresConfiguration,
+            ...(model.cursorAvailability
+              ? { cursorAvailability: model.cursorAvailability }
+              : base.cursorAvailability
+                ? { cursorAvailability: base.cursorAvailability }
+                : {}),
           };
           if (filter && !filter(descriptor)) continue;
           merged.set(descriptor.id, descriptor);

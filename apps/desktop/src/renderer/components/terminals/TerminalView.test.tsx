@@ -966,7 +966,7 @@ describe("TerminalView", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(16);
     });
-    expect(firstTerminal?.write).toHaveBeenCalledWith("still running in project a\n");
+    expect(firstTerminal?.write).not.toHaveBeenCalledWith("still running in project a\n");
     expect(firstTerminal?.dispose).not.toHaveBeenCalled();
 
     mockState.projectRoot = "/project/a";
@@ -974,6 +974,7 @@ describe("TerminalView", () => {
 
     render(<TerminalView ptyId="pty-switch" sessionId="session-switch" isActive />);
     await flushAllTimers();
+    expect(firstTerminal?.write).toHaveBeenCalledWith("still running in project a\n");
 
     const secondTerminal = mockState.terminalInstances.at(-1) as {
       dispose: ReturnType<typeof vi.fn>;
@@ -1627,7 +1628,7 @@ describe("TerminalView", () => {
     expect(view.queryByTestId("terminal-startup-loading")).toBeNull();
   });
 
-  it("writes PTY output into the parked runtime so the terminal state stays current", async () => {
+  it("buffers PTY output for parked runtimes and flushes it on remount", async () => {
     const firstView = render(<TerminalView ptyId="pty-buffered" sessionId="session-buffered" isActive />);
     await flushAllTimers();
 
@@ -1645,21 +1646,15 @@ describe("TerminalView", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(16);
     });
-    // xterm.write is safe on a parked runtime (host is detached but the
-    // instance still owns a valid internal buffer). Writing through while
-    // parked keeps the terminal state in sync so switching back shows the
-    // latest output instead of a stale snapshot.
-    expect(terminal?.write).toHaveBeenCalledWith("hello from background\n");
+    expect(terminal?.write).not.toHaveBeenCalledWith("hello from background\n");
 
     terminal?.write.mockClear();
     render(<TerminalView ptyId="pty-buffered" sessionId="session-buffered" isActive />);
     await flushAnimationFrame();
-    // Remount should not duplicate the write — the data was already applied
-    // via the parked-runtime path, so no further synchronous flush is needed.
-    expect(terminal?.write).not.toHaveBeenCalledWith("hello from background\n");
+    expect(terminal?.write).toHaveBeenCalledWith("hello from background\n");
   });
 
-  it("uses a timer flush for parked runtimes while the document is hidden", async () => {
+  it("keeps parked runtime output buffered while the document is hidden", async () => {
     const rafSpy = vi.spyOn(globalThis, "requestAnimationFrame");
     const firstView = render(<TerminalView ptyId="pty-hidden" sessionId="session-hidden" isActive />);
     await flushAllTimers();
@@ -1687,7 +1682,7 @@ describe("TerminalView", () => {
       await vi.advanceTimersByTimeAsync(16);
     });
 
-    expect(terminal?.write).toHaveBeenCalledWith("buffered while hidden\n");
+    expect(terminal?.write).not.toHaveBeenCalledWith("buffered while hidden\n");
   });
 
   it("redraws and force-fits a visible terminal when the Work surface is revealed", async () => {

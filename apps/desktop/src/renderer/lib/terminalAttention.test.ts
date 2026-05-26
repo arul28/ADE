@@ -34,6 +34,10 @@ describe("terminalAttention", () => {
     expect(sanitizeTerminalInlineText("\u001b7Claude Code\u001b8 ready")).toBe("Claude Code ready");
   });
 
+  it("removes Kitty graphics protocol controls from inline previews", () => {
+    expect(sanitizeTerminalInlineText("\u001b_Gi=31337,s=1,v=1,a=q,t=d,f=24;AAAA\u001b\\opencode ready")).toBe("opencode ready");
+  });
+
   it("treats idle chat sessions as a static ready state", () => {
     expect(
       sessionIndicatorState({
@@ -65,6 +69,17 @@ describe("terminalAttention", () => {
         toolType: "shell",
       }),
     ).toBe("running-active");
+  });
+
+  it("treats detached sessions as ended instead of ready chat state", () => {
+    expect(
+      sessionIndicatorState({
+        status: "detached",
+        lastOutputPreview: "Last preserved output",
+        runtimeState: "exited",
+        toolType: "codex-chat",
+      }),
+    ).toBe("ended");
   });
 
   describe("sessionNeedsChatTabHighlight", () => {
@@ -173,6 +188,18 @@ describe("terminalAttention", () => {
         status: "completed",
         lastOutputPreview: "Process exited with code 0",
         toolType: "claude",
+      });
+      expect(dot.spinning).toBe(false);
+      expect(dot.cls).toContain("red");
+      expect(dot.label).toBe("Ended");
+    });
+
+    it("returns a solid red ended dot for a detached session", () => {
+      const dot = sessionStatusDot({
+        status: "detached",
+        lastOutputPreview: "Last preserved output",
+        runtimeState: "exited",
+        toolType: "codex",
       });
       expect(dot.spinning).toBe(false);
       expect(dot.cls).toContain("red");

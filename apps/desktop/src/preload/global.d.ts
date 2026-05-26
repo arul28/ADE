@@ -1448,6 +1448,8 @@ declare global {
         stop: (
           args?: AppControlStopArgs,
         ) => Promise<{ ok: true; previousSession: AppControlSession | null }>;
+        focusWindow: () => Promise<{ ok: true }>;
+        minimizeWindow: () => Promise<{ ok: true }>;
         screenshot: () => Promise<AppControlScreenshot>;
         getSnapshot: (
           args?: AppControlSnapshotArgs,
@@ -1466,6 +1468,7 @@ declare global {
           deltaX: number;
           deltaY: number;
           scale?: number | null;
+          coordinateSpace?: "screenshot" | "viewport" | null;
         }) => Promise<{ ok: true }>;
         dispatchKey: (args: {
           type: "keyDown" | "keyUp" | "rawKeyDown" | "char";

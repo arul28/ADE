@@ -31,6 +31,7 @@ function formatSessionStatus(s: TerminalSessionStatus): string {
     completed: "Completed",
     failed: "Failed",
     disposed: "Disposed",
+    detached: "Ended",
   };
   return map[s] ?? s;
 }

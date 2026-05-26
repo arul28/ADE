@@ -13,7 +13,10 @@ import {
 import { createConfigReloadService } from "../../desktop/src/main/services/projects/configReloadService";
 import { createOperationService } from "../../desktop/src/main/services/history/operationService";
 import { createLaneService } from "../../desktop/src/main/services/lanes/laneService";
-import { createSessionService } from "../../desktop/src/main/services/sessions/sessionService";
+import {
+  createSessionService,
+  STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS,
+} from "../../desktop/src/main/services/sessions/sessionService";
 import { createProjectConfigService } from "../../desktop/src/main/services/config/projectConfigService";
 import { createConflictService } from "../../desktop/src/main/services/conflicts/conflictService";
 import { createGitOperationsService } from "../../desktop/src/main/services/git/gitOperationsService";
@@ -474,37 +477,54 @@ export async function createAdeRuntime(args: {
   });
   processRegistry.start();
   let runtimeCreated = false;
+  let staleSessionReconcileTimer: ReturnType<typeof setTimeout> | null = null;
   try {
-  sessionService.reconcileStaleRunningSessions({
-    status: "disposed",
-    excludeToolTypes: ["claude-chat", "codex-chat", "opencode-chat", "cursor", "droid-chat"],
-    liveOwnerPids: processRegistry.listLivePids(),
-    liveOwnerIdentities: processRegistry.listLiveProcessIdentities(),
-  });
-  const sessionDeltaService = createSessionDeltaService({
-    db,
-    projectId,
-    laneService,
-    sessionService,
-  });
+    const reconcileStaleRunningSessions = (reason: "startup" | "fresh-activity-grace-expired") => {
+      const reconciledSessions = sessionService.reconcileStaleRunningSessions({
+        status: "detached",
+        excludeToolTypes: ["claude-chat", "codex-chat", "opencode-chat", "cursor", "droid-chat"],
+        liveOwnerPids: processRegistry.listLivePids(),
+        liveOwnerIdentities: processRegistry.listLiveProcessIdentities(),
+        freshActivityGraceMs: STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS,
+      });
+      if (reconciledSessions > 0) {
+        logger.warn("sessions.reconciled_stale_running", {
+          count: reconciledSessions,
+          runtimeProfile: chatOnlyRuntime ? "chat" : "full",
+          reason,
+        });
+      }
+    };
+    reconcileStaleRunningSessions("startup");
+    staleSessionReconcileTimer = setTimeout(
+      () => reconcileStaleRunningSessions("fresh-activity-grace-expired"),
+      STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS + 1_000,
+    );
+    staleSessionReconcileTimer.unref?.();
+    const sessionDeltaService = createSessionDeltaService({
+      db,
+      projectId,
+      laneService,
+      sessionService,
+    });
 
-  const projectConfigService = createProjectConfigService({
-    projectRoot,
-    adeDir: paths.adeDir,
-    projectId,
-    db,
-    logger
-  });
-  const onboardingService = createOnboardingService({
-    db,
-    logger,
-    projectRoot,
-    projectId,
-    baseRef,
-    freshProject: !hadAdeDb,
-    laneService,
-    projectConfigService,
-  });
+    const projectConfigService = createProjectConfigService({
+      projectRoot,
+      adeDir: paths.adeDir,
+      projectId,
+      db,
+      logger
+    });
+    const onboardingService = createOnboardingService({
+      db,
+      logger,
+      projectRoot,
+      projectId,
+      baseRef,
+      freshProject: !hadAdeDb,
+      laneService,
+      projectConfigService,
+    });
 
   const laneEnvironmentService = createLaneEnvironmentService({
     projectRoot,
@@ -1135,6 +1155,9 @@ export async function createAdeRuntime(args: {
     eventBuffer,
     dispose: () => {
       const swallow = (fn: () => void) => { try { fn(); } catch { /* ignore */ } };
+      if (staleSessionReconcileTimer) {
+        clearTimeout(staleSessionReconcileTimer);
+      }
       void configReloadService.dispose().catch(() => {});
       swallow(() => automationService.dispose());
       swallow(() => usageTrackingService.dispose());
@@ -1184,6 +1207,9 @@ export async function createAdeRuntime(args: {
   return runtime;
   } finally {
     if (!runtimeCreated) {
+      if (staleSessionReconcileTimer) {
+        clearTimeout(staleSessionReconcileTimer);
+      }
       try {
         processRegistry.stop();
       } catch {

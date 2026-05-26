@@ -9,10 +9,24 @@ export type AppControlFrame = {
   height: number;
 };
 
+export type AppControlCoordinateSpace = "screenshot" | "viewport";
+
 export type AppControlScreen = {
+  /** Screenshot/live-frame bitmap width in pixels. */
   width: number;
+  /** Screenshot/live-frame bitmap height in pixels. */
   height: number;
+  /** Back-compat alias for scaleX. */
   scale: number;
+  /** CSS viewport width that CDP input commands expect. */
+  viewportWidth?: number;
+  /** CSS viewport height that CDP input commands expect. */
+  viewportHeight?: number;
+  devicePixelRatio?: number;
+  /** Bitmap-to-viewport horizontal scale. */
+  scaleX?: number;
+  /** Bitmap-to-viewport vertical scale. */
+  scaleY?: number;
 };
 
 export type AppControlStatus = {
@@ -119,6 +133,7 @@ export type AppControlSnapshotArgs = {
   projectRoot?: string | null;
   x?: number | null;
   y?: number | null;
+  coordinateSpace?: AppControlCoordinateSpace | null;
 };
 
 export type AppControlSnapshot = {
@@ -138,6 +153,7 @@ export type AppControlInspectPointArgs = {
   x: number;
   y: number;
   scale?: number | null;
+  coordinateSpace?: AppControlCoordinateSpace | null;
   includeScreenshot?: boolean | null;
 };
 
@@ -165,12 +181,14 @@ export type AppControlInspectResult = {
 export type AppControlSelectResult = {
   item: AppControlContextItem;
   source: AppControlProvider | "coordinate-fallback";
+  snapshot?: AppControlSnapshot;
 };
 
 export type AppControlClickArgs = {
   x: number;
   y: number;
   scale?: number | null;
+  coordinateSpace?: AppControlCoordinateSpace | null;
 };
 
 export type AppControlTypeTextArgs = {
@@ -191,9 +209,17 @@ export type AppControlScreencastFrame = {
   /** PNG/JPEG bytes encoded as base64 (no data: prefix). */
   data: string;
   mimeType: "image/jpeg" | "image/png";
+  /** Encoded bitmap width in pixels. */
   width: number;
+  /** Encoded bitmap height in pixels. */
   height: number;
+  /** Back-compat alias for scaleX. */
   scale: number;
+  viewportWidth?: number;
+  viewportHeight?: number;
+  devicePixelRatio?: number;
+  scaleX?: number;
+  scaleY?: number;
   capturedAt: string;
 };
 

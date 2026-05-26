@@ -5,6 +5,21 @@ function normalizePreviewLine(raw: string): string {
   return raw.replace(/\t/g, " ").replace(/\s+/g, " ").trim();
 }
 
+const CODEX_PLACEHOLDER_PROMPTS = new Set([
+  "Explain this codebase",
+  "Improve documentation in @filename",
+  "Implement {feature}",
+  "Run /review on my current changes",
+  "Summarize recent commits",
+  "Use /skills to list available skills",
+  "Write tests for @filename",
+]);
+
+function isGhostPromptPreview(line: string): boolean {
+  const normalized = line.replace(/^[•\-\s]*/, "").replace(/^›\s*/, "").trim();
+  return CODEX_PLACEHOLDER_PROMPTS.has(normalized);
+}
+
 function appendVisibleChar(line: string, ch: string): string {
   if (!ch) return line;
   const code = ch.charCodeAt(0);
@@ -27,7 +42,7 @@ export function derivePreviewFromChunk(args: {
 
   const captureLine = () => {
     const normalized = normalizePreviewLine(line);
-    if (normalized.length) preview = normalized;
+    if (normalized.length && !isGhostPromptPreview(normalized)) preview = normalized;
     line = "";
   };
 
@@ -45,7 +60,7 @@ export function derivePreviewFromChunk(args: {
   }
 
   const currentLine = normalizePreviewLine(line);
-  if (currentLine.length) preview = currentLine;
+  if (currentLine.length && !isGhostPromptPreview(currentLine)) preview = currentLine;
 
   if (preview && preview.length > maxChars) {
     preview = `${preview.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;

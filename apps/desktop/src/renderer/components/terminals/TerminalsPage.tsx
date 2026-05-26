@@ -6,7 +6,7 @@ import { WorkViewArea } from "./WorkViewArea";
 import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
 import { SessionContextMenu, type SessionContextMenuState } from "./SessionContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
-import type { AgentChatPermissionMode, AgentChatSession, TerminalSessionSummary } from "../../../shared/types";
+import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/types";
 import type { AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import { formatToolTypeLabel, isChatToolType } from "../../lib/sessions";
 import { sortLanesForTabs } from "../lanes/laneUtils";
@@ -375,7 +375,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }, [selectedSessions, work]);
 
   const handleContinueCliSession = useCallback(
-    async (session: TerminalSessionSummary, text: string, options?: { model?: string | null; reasoningEffort?: string | null; permissionMode?: AgentChatPermissionMode | null }) => {
+    async (session: TerminalSessionSummary, text: string) => {
       setSessionActionError(null);
       try {
         const result = await window.ade.pty.sendToSession({
@@ -383,9 +383,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           text,
           cols: 100,
           rows: 30,
-          ...(options?.model ? { model: options.model } : {}),
-          ...(options?.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
-          ...(options?.permissionMode ? { permissionMode: options.permissionMode } : {}),
         });
         invalidateSessionListCache();
         // Patch the local sessions list with the freshly-resumed snapshot so

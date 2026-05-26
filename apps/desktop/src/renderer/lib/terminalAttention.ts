@@ -22,6 +22,9 @@ export type TerminalAttentionSummary = {
 };
 
 const OSC_REGEX = /\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g;
+const APC_REGEX = /\u001b_[\s\S]*?(?:\u0007|\u001b\\)/g;
+const DCS_REGEX = /\u001bP[\s\S]*?(?:\u0007|\u001b\\)/g;
+const PM_REGEX = /\u001b\^[\s\S]*?(?:\u0007|\u001b\\)/g;
 const CSI_REGEX = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 const CHARSET_REGEX = /\u001b[\(\)][0-9A-Za-z]/g;
 const TWO_CHAR_ESC_REGEX = /\u001b(?:[@-Z\\-_]|[0-9=>])/g;
@@ -66,6 +69,9 @@ export function sanitizeTerminalInlineText(raw: string | null | undefined, maxCh
   if (!raw) return "";
   const stripped = raw
     .replace(OSC_REGEX, "")
+    .replace(APC_REGEX, "")
+    .replace(DCS_REGEX, "")
+    .replace(PM_REGEX, "")
     .replace(CSI_REGEX, "")
     .replace(CHARSET_REGEX, "")
     .replace(TWO_CHAR_ESC_REGEX, "")
@@ -93,6 +99,7 @@ export function sessionIndicatorState(args: {
   runtimeState?: TerminalRuntimeState;
   toolType?: TerminalToolType | null;
 }): SessionUiState {
+  if (args.status === "detached") return "ended";
   if (args.status === "running") {
     if (args.runtimeState === "waiting-input") return "running-needs-attention";
     if (args.runtimeState === "idle" && idleRuntimeNeedsAttention(args.toolType)) return "running-needs-attention";

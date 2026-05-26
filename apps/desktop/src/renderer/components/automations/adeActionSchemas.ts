@@ -1091,7 +1091,7 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
       { name: "codexApprovalPolicy", type: "enum", enumValues: ["untrusted", "on-request", "on-failure", "never"] },
       { name: "codexSandbox", type: "enum", enumValues: ["read-only", "workspace-write", "danger-full-access"] },
       { name: "codexConfigSource", type: "enum", enumValues: ["flags", "config-toml"] },
-      { name: "opencodePermissionMode", type: "enum", enumValues: ["plan", "edit", "full-auto"] },
+      { name: "opencodePermissionMode", type: "enum", enumValues: ["plan", "edit", "full-auto", "config-toml"] },
       { name: "cursorModeId", type: "string" },
       { name: "cursorConfigValues", type: "json" },
       { name: "identityKey", type: "string", description: "cto or agent:<id>." },

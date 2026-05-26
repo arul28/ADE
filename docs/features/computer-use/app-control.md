@@ -12,8 +12,9 @@ App Control runs on the runtime that owns the project. The launch terminal, CDP 
 
 - `appControlService.ts` — the broker. Resolves launch parameters, runs the Electron app inside a chat-owned PTY (so the user sees stdout/stderr), polls the CDP HTTP endpoint for ready targets, attaches a long-lived `CdpClient` WebSocket, and exposes the high-level operations consumed via IPC and the ADE CLI:
   - lifecycle: `getStatus`, `launch` / `launchInTerminal`, `connect`, `stop`, `dispose`, `listTargets`, `attachToTarget`
-  - capture: `screenshot`, `getSnapshot` (screenshot + DOM elements), `getViewportScale`
-  - context: `inspectPoint`, `selectPoint` — produce an `AppControlContextItem` from page coordinates with element + source-file matches
+  - window controls: `focusWindow`, `minimizeWindow` — explicit user actions for raising or minimizing the controlled Electron window
+  - capture: `screenshot`, `getSnapshot` (screenshot + DOM elements)
+  - context: `inspectPoint`, `selectPoint` — produce an `AppControlContextItem` from screenshot or viewport coordinates with element + source-file matches
   - input: `click`, `typeText`, `scroll`, `dispatchKey`
   - launch terminal passthrough: `readTerminal`, `writeTerminal`, `signalTerminal`
   - screencast frames stream out via the `onEvent` channel (`type: "frame"`)
@@ -24,6 +25,7 @@ App Control runs on the runtime that owns the project. The launch terminal, CDP 
 - `apps/desktop/src/shared/types/appControl.ts` — the type contract:
   - identity: `AppControlAppKind`, `AppControlProvider` (`cdp` | `os-accessibility` | `computer-use` | `external`), `AppControlSession` (status: `starting` | `running` | `connected` | `stopping` | `exited` | `stopped` | `failed`). Sessions carry both `projectRoot` and `laneId` so the renderer can detect when an active App Control session is attached to a different lane than the active Work / chat lane and surface a mismatch warning. `AppControlConnectArgs` accepts an optional `laneId`; `connect()` resolves the final lane id through the same `resolveLaneId` strategy as `launch()` and `launchInTerminal()` (caller-supplied id wins; otherwise `chatSessionId` resolves it).
   - capture: `AppControlScreenshot`, `AppControlScreen`, `AppControlElement`, `AppControlFrame`, `AppControlSnapshot`, `AppControlSnapshotProvider`, `AppControlScreencastFrame`.
+  - coordinate spaces: `AppControlCoordinateSpace` is `"screenshot"` for bitmap pixels or `"viewport"` for CDP CSS viewport coordinates. Live renderer clicks use viewport coordinates so CDP input lands on the actual element under the pointer.
   - context: `AppControlContextItem` (`kind: "app_control_element"`), `AppControlSourceMatch`, `AppControlInspectResult`, `AppControlSelectResult`.
   - inputs: `AppControlLaunchArgs`, `AppControlConnectArgs`, `AppControlStopArgs`, `AppControlClickArgs`, `AppControlTypeTextArgs`, `AppControlInspectPointArgs`.
   - eventing: `AppControlEventPayload` union (`session-started`, `session-updated`, `session-stopped`, `selection`, `frame`).
@@ -37,6 +39,7 @@ Channels live under `ade.appControl.*`:
 - `ade.appControl.launch` / `ade.appControl.launchInTerminal`
 - `ade.appControl.connect`
 - `ade.appControl.stop`
+- `ade.appControl.focusWindow` / `ade.appControl.minimizeWindow`
 - `ade.appControl.screenshot`
 - `ade.appControl.getSnapshot`
 - `ade.appControl.inspectPoint` / `ade.appControl.selectPoint`
@@ -44,7 +47,7 @@ Channels live under `ade.appControl.*`:
 - `ade.appControl.listTargets` / `ade.appControl.attachToTarget`
 - `ade.appControl.event` (push channel; carries `AppControlEventPayload`, including screencast frames)
 
-`registerIpc.ts` rate-limits launch/snapshot/click/type calls and validates argument shapes via `appControlRecord`. Heavy operations (`launch`, `getSnapshot`, `inspectPoint`, `selectPoint`, `screenshot`, `connect`, `stop`, `click`, `typeText`) bypass the global 30 s IPC timeout — CDP screenshot/screencast operations can legitimately exceed it.
+`registerIpc.ts` rate-limits launch/snapshot/click/type calls and validates argument shapes via `appControlRecord`. Heavy operations (`launch`, `getSnapshot`, `inspectPoint`, `selectPoint`, `screenshot`, `connect`, `stop`, `focusWindow`, `minimizeWindow`, `click`, `typeText`) bypass the global 30 s IPC timeout — CDP screenshot/screencast operations can legitimately exceed it.
 
 The companion **chat terminal** surface lives at `ade.terminal.*` and shares the same backend as PTY:
 
@@ -65,8 +68,8 @@ The companion **chat terminal** surface lives at `ade.terminal.*` and shares the
   - Inside the Work right-edge sidebar's `app-control` tab (`apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx`, lane-scoped, `sessionId={null}` + `laneId` set, persisted under `sessionStorage["ade.chat.appControlPanel.lane:<laneId>:<projectRoot>"]`).
 
   Two modes:
-  - **Control** — shows live screencast frames, Run-tab style launch/connect controls, click/type input, and quick actions for `terminal write` (answer a prompt) and `terminal signal` (interrupt).
-  - **Inspect** — overlays a hit-test crosshair on the screenshot. Hovering inspects an element via `inspectPoint`; clicking commits via `selectPoint`, producing an `AppControlContextItem` that the chat composer attaches as a context chip plus an attachment.
+  - **Control** — shows live screencast frames, Run-tab style launch/connect controls, explicit Show/Minimize window buttons, click/type input, and quick actions for `terminal write` (answer a prompt) and `terminal signal` (interrupt). Live clicks and wheel events are mapped to viewport coordinates before CDP input dispatch.
+  - **Inspect** — overlays a DevTools-style outline on the screenshot or live frame. Hovering calls backend `inspectPoint`; clicking commits via `selectPoint`, producing an `AppControlContextItem` that the chat composer attaches as a context chip plus an attachment.
 
   Connect / launch calls forward the resolved `laneId` so the resulting `AppControlSession` records its launching lane.
 - `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` mounts the chat-scoped panel, owns `appControlContextItems`, and renders App Control chips alongside file attachments. The pane polls `ade.appControl.getStatus` to gate the header toggle on platform support only when lane tool drawers are visible. When mounted as a Work tile (`hideLaneToolDrawers={true}`) the in-chat App Control drawer toggle and status poll are suppressed because the Work sidebar owns that drawer at lane scope; selections from the sidebar still flow into the chat composer through the `ade:agent-chat:add-app-control-context` window event.
@@ -79,9 +82,9 @@ The companion **chat terminal** surface lives at `ade.terminal.*` and shares the
 
 - `ade app-control <sub>`:
   - `status`, `actions` (list every callable `app_control` action)
-  - `launch`, `connect`, `stop`
+  - `launch`, `connect`, `focus`, `minimize`, `stop`
   - `screenshot`, `snapshot`, `inspect`, `select`
-  - `click`, `type`, `scroll`, `key`
+  - `click`, `type`, `scroll`, `key` (`inspect`, `select`, `click`, and `scroll` accept `--coords screenshot|viewport`)
   - `targets`, `attach`
   - `logs`, `terminal write`, `terminal signal` — operate on the active App Control launch terminal
 - `ade terminal <sub>`: `list`, `active`, `read`, `write`, `signal` — control the in-chat terminal owned by a chat session.
@@ -94,7 +97,7 @@ The agent guidance built by `apps/desktop/src/shared/adeCliGuidance.ts` tells ag
 
 `apps/desktop/src/main/services/adeActions/registry.ts` adds two domains:
 
-- `app_control` — every public method on `AppControlService` (`getStatus`, `launch`, `launchInTerminal`, `connect`, `stop`, `screenshot`, `getSnapshot`, `inspectPoint`, `selectPoint`, `click`, `typeText`, `readTerminal`, `writeTerminal`, `signalTerminal`).
+- `app_control` — every public method on `AppControlService` (`getStatus`, `launch`, `launchInTerminal`, `connect`, `stop`, `focusWindow`, `minimizeWindow`, `screenshot`, `getSnapshot`, `inspectPoint`, `selectPoint`, `click`, `typeText`, `scroll`, `dispatchKey`, `listTargets`, `attachToTarget`, `readTerminal`, `writeTerminal`, `signalTerminal`).
 - `terminal` — `list`, `read`, `write`, `signal`, `activeForChat` against `ptyService` so headless agents can control chat-owned terminals.
 
 ## Launch and connect flow
@@ -113,22 +116,24 @@ The agent guidance built by `apps/desktop/src/shared/adeCliGuidance.ts` tells ag
 
 `connect(args)` is the same flow without the launch step — useful when an agent already has an Electron app running with `--remote-debugging-port=<port>`.
 
+Routine capture and input paths do not raise or normalize the external Electron window. The panel exposes explicit Show and Minimize controls backed by `focusWindow()` and `minimizeWindow()` for the cases where the user wants to manage that window.
+
 `stop({ force })` closes the CDP socket, signals the launch terminal (`SIGINT` then `SIGKILL` on `force`), drops cached frames, and emits `session-stopped`. `dispose()` is the shutdown path.
 
 ## Snapshot and source matching
 
 `getSnapshot()` runs in two parts inside the renderer process:
 
-1. **DOM collector** (`cdpDomSnapshotScript`) walks the document, ranks elements by interactivity, captures `tagName`, ARIA `role`, computed `label`, value, a stable `selector` (id → testid → tag.class), `data-testid` / `data-test` / `data-qa`, geometry (logical + pixel `frame`), and a small `metadata` bag (text, ARIA bits, common React-DevTools markers like `data-component`, `data-source-file`, `data-source-line`). Up to `MAX_DOM_ELEMENTS = 450` entries are returned, and a separate hit-test resolves the element under `(x, y)` via `cdpPointSnapshotScript`.
+1. **DOM collector** (`cdpDomSnapshotScript`) walks the document, ranks elements by interactivity, captures `tagName`, ARIA `role`, computed `label`, value, a stable `selector` (id → testid → tag.class), `data-testid` / `data-test` / `data-qa`, geometry (logical + pixel `frame`), and a small `metadata` bag (text, ARIA bits, common React-DevTools markers like `data-component`, `data-source-file`, `data-source-line`). Up to `MAX_DOM_ELEMENTS = 450` entries are returned. Point inspection uses CDP `DOM.getNodeForLocation` + `Runtime.callFunctionOn` first so hover/select outlines snap to the actual control under the pointer; the in-page `cdpPointSnapshotScript` remains as a fallback for targets that do not expose node lookup.
 2. **Source matching** runs in the main process. `collectSourceFiles(projectRoot)` indexes a capped list of `.ts`/`.tsx`/`.js`/`.jsx`/`.html`/`.css` files (skipping `.git`, `.ade`, `node_modules`, `dist`, etc.) and `findSourceMatches` searches for the element's `data-component`, `data-testid`, `id`, label text, or selector tokens. Matches are returned as `AppControlSourceMatch[]` with `confidence: "exact" | "candidate"` and a small snippet.
 
-`inspectPoint({ x, y })` returns an `AppControlInspectResult` with the hit element, all surrounding elements (via `nearbyElements`), and the source candidates — without committing anything to chat. `selectPoint()` is the same call but produces a final `AppControlContextItem` (with `provider`, `componentId`, `sourceFile`, `sourceLine`, `metadata`, `screenshotDataUrl`, `selectedAt`) ready to attach to the active chat composer. Both calls fall back to a `coordinate-fallback` provider when the DOM hit-test misses (e.g. inside an `<iframe>` ADE cannot reach).
+`inspectPoint({ x, y, coordinateSpace })` returns an `AppControlInspectResult` with the hit element, all surrounding elements (via `nearbyElements`), and the source candidates — without committing anything to chat. `selectPoint()` is the same call but produces a final `AppControlContextItem` (with `provider`, `componentId`, `sourceFile`, `sourceLine`, `metadata`, `screenshotDataUrl`, `selectedAt`) ready to attach to the active chat composer. Both calls fall back to a `coordinate-fallback` provider when the DOM hit-test misses (e.g. inside an `<iframe>` ADE cannot reach).
 
 ## Input
 
-- `click({ x, y, scale })` runs `dispatchDomClick` first (a synthetic `MouseEvent` walk inside the page) and falls back to CDP `Input.dispatchMouseEvent` when DOM dispatch reports `ok: false`. This keeps modern React click handlers happy without losing the ability to drive native `<select>` dropdowns and Electron menubar items.
+- `click({ x, y, scale, coordinateSpace })` sends CDP `Input.dispatchMouseEvent` at viewport coordinates. The default coordinate space is `"screenshot"` for backwards-compatible CLI/API calls, and the renderer panel sends `"viewport"` so live-frame clicks do not drift on high-DPI or resized Electron windows. For hidden renderers, App Control tries `dispatchDomClick` first as a synthetic in-page fallback.
 - `typeText({ text })` calls `Input.insertText`. `dispatchKey({ type, key, code, text, modifiers })` is the lower-level escape hatch for shortcuts and special keys.
-- `scroll({ x, y, deltaX, deltaY })` is `Input.dispatchMouseEvent` with `type: "mouseWheel"`.
+- `scroll({ x, y, deltaX, deltaY, coordinateSpace })` is `Input.dispatchMouseEvent` with `type: "mouseWheel"`.
 - All input calls go through a single shared `CdpClient` (`withCdp`) so the WebSocket isn't reopened per click; this measurably reduces input latency.
 
 ## Chat-owned terminal model

@@ -518,7 +518,7 @@ const CLAUDE_MODE_TONE_STYLES: Record<
   },
 };
 
-type CodexPermissionPreset = "default" | "plan" | "full-auto" | "config-toml" | "custom";
+type CodexPermissionPreset = "default" | "edit" | "plan" | "full-auto" | "config-toml" | "custom";
 
 function resolveCodexPermissionPreset(args: {
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
@@ -526,7 +526,8 @@ function resolveCodexPermissionPreset(args: {
   codexConfigSource?: AgentChatCodexConfigSource;
 }): CodexPermissionPreset {
   if (args.codexConfigSource === "config-toml") return "config-toml";
-  if ((args.codexApprovalPolicy === "on-request" || args.codexApprovalPolicy === "untrusted" || args.codexApprovalPolicy === "on-failure") && args.codexSandbox === "workspace-write") return "default";
+  if (args.codexApprovalPolicy === "untrusted" && args.codexSandbox === "workspace-write") return "edit";
+  if ((args.codexApprovalPolicy === "on-request" || args.codexApprovalPolicy === "on-failure") && args.codexSandbox === "workspace-write") return "default";
   if ((args.codexApprovalPolicy === "on-request" || args.codexApprovalPolicy === "untrusted") && args.codexSandbox === "read-only") return "plan";
   if (args.codexApprovalPolicy === "never" && args.codexSandbox === "danger-full-access") return "full-auto";
   return "custom";
@@ -550,6 +551,7 @@ const OPENCODE_PERMISSION_OPTIONS: Array<{ value: AgentChatOpenCodePermissionMod
   { value: "plan", label: "Plan" },
   { value: "edit", label: "Edit" },
   { value: "full-auto", label: "Full auto" },
+  { value: "config-toml", label: "Config" },
 ];
 
 const DROID_PERMISSION_OPTIONS: Array<{ value: AgentChatDroidPermissionMode; label: string; detail: string }> = [
@@ -790,6 +792,7 @@ export function AgentChatComposer({
   modelUnavailableMessage,
   providerAuthStatus,
   onRuntimeCatalogRefreshed,
+  allowCliOnlyModels = false,
   reasoningEffort,
   codexFastMode = false,
   codexTokenUsage = null,
@@ -913,6 +916,7 @@ export function AgentChatComposer({
   modelUnavailableMessage?: string;
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
   onRuntimeCatalogRefreshed?: (provider: AgentChatModelCatalogRefreshProvider) => void;
+  allowCliOnlyModels?: boolean;
   reasoningEffort: string | null;
   codexFastMode?: boolean;
   codexTokenUsage?: CodexThreadTokenUsage | null;
@@ -1874,7 +1878,7 @@ export function AgentChatComposer({
   });
   const codexPresetOptions = useMemo(
     () => getPermissionOptions({ family: "openai", isCliWrapped: true })
-      .filter((option) => option.value === "default" || option.value === "plan" || option.value === "full-auto" || option.value === "config-toml"),
+      .filter((option) => option.value === "default" || option.value === "edit" || option.value === "plan" || option.value === "full-auto" || option.value === "config-toml"),
     [],
   );
   const applyCodexPreset = useCallback((preset: Exclude<CodexPermissionPreset, "custom">) => {
@@ -1895,6 +1899,13 @@ export function AgentChatComposer({
         next = {
           codexApprovalPolicy: "on-request",
           codexSandbox: "read-only",
+          codexConfigSource: "flags",
+        };
+        break;
+      case "edit":
+        next = {
+          codexApprovalPolicy: "untrusted",
+          codexSandbox: "workspace-write",
           codexConfigSource: "flags",
         };
         break;
@@ -2007,7 +2018,7 @@ export function AgentChatComposer({
     const approvalLabel = {
       "untrusted": "Untrusted",
       "on-request": "On request",
-      "on-failure": "On failure",
+      "on-failure": "On failure (legacy)",
       "never": "Never",
     }[capUse ?? "on-request"];
     const sandboxLabel = {
@@ -3523,6 +3534,7 @@ export function AgentChatComposer({
                   {...(providerAuthStatus ? { providerAuthStatus } : {})}
                   {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
                   {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
+                  allowCliOnlyModels={allowCliOnlyModels}
                   disabled={parallelLaunchBusy}
                   compact
                   triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
@@ -3551,6 +3563,7 @@ export function AgentChatComposer({
                   {...(providerAuthStatus ? { providerAuthStatus } : {})}
                   {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
                   {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
+                  allowCliOnlyModels={allowCliOnlyModels}
                   disabled={modelSelectionLocked}
                   compact
                   triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}

@@ -90,6 +90,7 @@ function installWindowAde() {
     },
     pty: {
       create: vi.fn().mockResolvedValue({ sessionId: "new-pty-session", ptyId: "pty-1" }),
+      sendToSession: vi.fn().mockResolvedValue({ sessionId: "resumed-session", ptyId: "pty-resumed", pid: 123, session: null }),
       onExit: vi.fn(() => () => {}),
       dispose: vi.fn().mockResolvedValue(undefined),
     },
@@ -621,5 +622,94 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     );
     expect(callOrder).not.toContain("focusSession");
     expect(callOrder).not.toContain("selectLane");
+  });
+
+  it("launchPtySession forwards CLI initial input fields from lane work panes", async () => {
+    const { result } = renderHook(() => useLaneWorkSessions("lane-1"));
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    await act(async () => {
+      await result.current.launchPtySession({
+        laneId: "lane-1",
+        profile: "codex",
+        title: "Prompt launch",
+        startupCommand: "codex --no-alt-screen --model gpt-5.4",
+        initialInput: "Print EXACT_CUA_526 and stop",
+        initialInputDelayMs: 750,
+      });
+    });
+
+    expect((window as any).ade.pty.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        laneId: "lane-1",
+        title: "Prompt launch",
+        toolType: "codex",
+        startupCommand: "codex --no-alt-screen --model gpt-5.4",
+        initialInput: "Print EXACT_CUA_526 and stop",
+        initialInputDelayMs: 750,
+      }),
+    );
+  });
+
+  it("continues an ended agent CLI session from lane work panes", async () => {
+    const closedCliSession = {
+      ...makeSession("session-ended", "lane-1", "Ended Codex"),
+      toolType: "codex",
+      status: "completed",
+      runtimeState: "exited",
+      resumeCommand: "codex --no-alt-screen resume thread-1",
+      resumeMetadata: {
+        provider: "codex",
+        targetKind: "thread",
+        targetId: "thread-1",
+        launch: { permissionMode: "default" },
+        permissionMode: "default",
+      },
+    } as any;
+    const resumedSession = {
+      ...closedCliSession,
+      ptyId: "pty-resumed",
+      status: "running",
+      runtimeState: "running",
+      startedAt: "2026-05-01T12:01:00.000Z",
+    };
+    (window as any).ade.pty.sendToSession.mockResolvedValueOnce({
+      sessionId: "session-ended",
+      ptyId: "pty-resumed",
+      pid: 123,
+      session: resumedSession,
+      resumed: true,
+      reusedExistingRuntime: false,
+    });
+    listSessionsCachedMock
+      .mockResolvedValueOnce([closedCliSession])
+      .mockResolvedValueOnce([resumedSession]);
+
+    const { result } = renderHook(() => useLaneWorkSessions("lane-1"));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    await act(async () => {
+      await result.current.continueCliSession(closedCliSession, "Print EXACT_RESUME_526 and stop");
+    });
+
+    expect((window as any).ade.pty.sendToSession).toHaveBeenCalledWith({
+      sessionId: "session-ended",
+      text: "Print EXACT_RESUME_526 and stop",
+      cols: 100,
+      rows: 30,
+    });
+    expect(selectLaneSpy).toHaveBeenCalledWith("lane-1");
+    expect(focusSessionSpy).toHaveBeenCalledWith("session-ended");
+    expect(setWorkViewStateSpy).toHaveBeenCalledWith("/fake/project", expect.any(Function));
+    expect(result.current.sessions[0]).toEqual(expect.objectContaining({
+      id: "session-ended",
+      ptyId: "pty-resumed",
+      status: "running",
+    }));
   });
 });

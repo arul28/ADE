@@ -52,6 +52,7 @@ import type {
   ReviewLaunchContext,
   AppControlClickArgs,
   AppControlConnectArgs,
+  AppControlCoordinateSpace,
   AppControlInspectPointArgs,
   AppControlLaunchArgs,
   AppControlSnapshotArgs,
@@ -635,6 +636,7 @@ export type AppContext = {
   projectId: string;
   adeDir: string;
   getActiveRpcConnectionCount?: (() => number) | null;
+  disposeTimers?: Array<ReturnType<typeof setTimeout>>;
   disposeHeadWatcher: () => void;
   keybindingsService: ReturnType<typeof createKeybindingsService>;
   agentToolsService: ReturnType<typeof createAgentToolsService>;
@@ -1139,6 +1141,7 @@ function mapPrAiPermissionModeToNativeFields(
     "full-auto": "full-auto",
     "edit": "edit",
     "plan": "plan",
+    "config-toml": "config-toml",
   };
   return { opencodePermissionMode: umap[legacy] ?? "edit" };
 }
@@ -1177,6 +1180,7 @@ function deriveAiPermissionModeFromSummary(
   if (summary.opencodePermissionMode === "full-auto") return "full-auto";
   if (summary.opencodePermissionMode === "edit") return "edit";
   if (summary.opencodePermissionMode === "plan") return "plan";
+  if (summary.opencodePermissionMode === "config-toml") return "config-toml";
   return null;
 }
 
@@ -2149,7 +2153,7 @@ export function registerIpc({
       return null;
     }
     if (value.length > maxLength || value.includes("\0")) invalidMacosVmArg(channel, `${field} is invalid`);
-    return value;
+    return value as AppControlCoordinateSpace;
   };
 
   const macosVmNumber = (
@@ -2446,6 +2450,19 @@ export function registerIpc({
     return value as "electron";
   };
 
+  const optionalAppControlCoordinateSpace = (
+    record: Record<string, unknown>,
+    channel: string,
+  ): AppControlCoordinateSpace | null | undefined => {
+    const value = record.coordinateSpace;
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    if (value !== "screenshot" && value !== "viewport") {
+      invalidAppControlArg(channel, "coordinateSpace must be screenshot or viewport");
+    }
+    return value as AppControlCoordinateSpace;
+  };
+
   const optionalAppControlEnv = (
     record: Record<string, unknown>,
     channel: string,
@@ -2540,6 +2557,8 @@ export function registerIpc({
     if (x !== undefined) args.x = x;
     const y = optionalAppControlNumber(record, "y", channel, { min: 0, max: 100_000 });
     if (y !== undefined) args.y = y;
+    const coordinateSpace = optionalAppControlCoordinateSpace(record, channel);
+    if (coordinateSpace !== undefined) args.coordinateSpace = coordinateSpace;
     return args;
   };
 
@@ -2551,6 +2570,8 @@ export function registerIpc({
     const args: AppControlInspectPointArgs = { x: x as number, y: y as number };
     const scale = optionalAppControlNumber(record, "scale", channel, { min: 0.01, max: 100 });
     if (scale !== undefined) args.scale = scale;
+    const coordinateSpace = optionalAppControlCoordinateSpace(record, channel);
+    if (coordinateSpace !== undefined) args.coordinateSpace = coordinateSpace;
     const projectRoot = optionalAppControlString(record, "projectRoot", channel, 4096);
     if (projectRoot !== undefined) args.projectRoot = projectRoot;
     const includeScreenshot = optionalAppControlBoolean(record, "includeScreenshot", channel);
@@ -2564,7 +2585,13 @@ export function registerIpc({
     const y = optionalAppControlNumber(record, "y", channel, { min: 0, max: 100_000 });
     if (x == null || y == null) invalidAppControlArg(channel, "x and y are required");
     const scale = optionalAppControlNumber(record, "scale", channel, { min: 0.01, max: 100 });
-    return { x: x as number, y: y as number, ...(scale !== undefined ? { scale } : {}) };
+    const coordinateSpace = optionalAppControlCoordinateSpace(record, channel);
+    return {
+      x: x as number,
+      y: y as number,
+      ...(scale !== undefined ? { scale } : {}),
+      ...(coordinateSpace !== undefined ? { coordinateSpace } : {}),
+    };
   };
 
   const parseAppControlTypeTextArgs = (value: unknown, channel: string): AppControlTypeTextArgs => {
@@ -5520,7 +5547,8 @@ export function registerIpc({
     if (isChatToolType(session.toolType)) {
       throw new Error(`Session '${sessionId}' is an agent chat session. Use the chat delete flow instead.`);
     }
-    if (session.status === "running" || session.ptyId) {
+    const enriched = ctx.ptyService.enrichSessions([session])[0] ?? session;
+    if (enriched.status === "running" || enriched.ptyId) {
       throw new Error("Running terminal sessions must be closed before they can be deleted.");
     }
     ctx.sessionService.deleteSession(sessionId);
@@ -6581,6 +6609,16 @@ export function registerIpc({
     return ensureAppControl().stop(parseAppControlStopArgs(arg, IPC.appControlStop));
   });
 
+  ipcMain.handle(IPC.appControlFocusWindow, async (event) => {
+    guardAppControlIpc(event, IPC.appControlFocusWindow, { windowMs: 10_000, max: 20 });
+    return ensureAppControl().focusWindow();
+  });
+
+  ipcMain.handle(IPC.appControlMinimizeWindow, async (event) => {
+    guardAppControlIpc(event, IPC.appControlMinimizeWindow, { windowMs: 10_000, max: 20 });
+    return ensureAppControl().minimizeWindow();
+  });
+
   ipcMain.handle(IPC.appControlScreenshot, async (event) => {
     guardAppControlIpc(event, IPC.appControlScreenshot, { windowMs: 10_000, max: 30 });
     return ensureAppControl().screenshot();
@@ -6628,6 +6666,7 @@ export function registerIpc({
       deltaX: finiteNumberOr("deltaX", 0) as number,
       deltaY: finiteNumberOr("deltaY", 0) as number,
       scale: finiteNumberOr("scale", null),
+      coordinateSpace: optionalAppControlCoordinateSpace(record, IPC.appControlScroll),
     });
   });
 

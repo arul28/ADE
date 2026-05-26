@@ -56,6 +56,7 @@ import {
   validateLaunchProfilePermissionMode,
   type CliProvider,
   type LaunchProfile,
+  type TrackedCliLaunchCommand,
 } from "../../desktop/src/shared/cliLaunch";
 import type { AgentChatPermissionMode, TerminalSessionSummary } from "../../desktop/src/shared/types";
 import type { AdeRuntime } from "./bootstrap";
@@ -167,7 +168,6 @@ type SessionState = {
 const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
 const DEFAULT_PTY_COLS = 120;
 const DEFAULT_PTY_ROWS = 36;
-export const CLAUDE_INITIAL_INPUT_CONFIRM_DELAY_MS = 1200;
 
 const RESOURCE_MIME_JSON = "application/json";
 
@@ -3642,7 +3642,7 @@ async function runTool(args: {
     const preassignedSessionId = provider === "claude" ? randomUUID() : undefined;
     const laneWorktreePath = resolveLaneWorktreePath(runtime, laneId);
 
-    const launchFields: { startupCommand?: string; command?: string; args?: string[]; env?: Record<string, string> } = (() => {
+    const launchFields: Partial<TrackedCliLaunchCommand> = (() => {
       if (provider === "shell") {
         return resolveCleanShellLaunchFields({
           platform: process.platform,
@@ -3657,7 +3657,7 @@ async function runTool(args: {
         sessionId: preassignedSessionId,
         model,
         reasoningEffort,
-        initialPrompt: provider === "codex" ? initialInput : null,
+        initialPrompt: initialInput,
         laneWorktreePath,
       });
     })();
@@ -3676,35 +3676,7 @@ async function runTool(args: {
       ...launchFields,
     });
 
-    let initialInputWritten = false;
-    if (initialInput && provider === "codex") {
-      initialInputWritten = true;
-    } else if (initialInput && isCliProvider(provider)) {
-      initialInputWritten = ptyService.writeBySessionId(created.sessionId, `${initialInput}\r`);
-      if (!initialInputWritten) {
-        try {
-          ptyService.dispose({ ptyId: created.ptyId, sessionId: created.sessionId });
-        } catch {
-          // Best-effort cleanup; preserve the caller-facing write failure.
-        }
-        throw new JsonRpcError(
-          JsonRpcErrorCode.internalError,
-          "Created terminal session could not receive the initial input.",
-        );
-      }
-      if (provider === "claude") {
-        const confirmTimer = setTimeout(() => {
-          const confirmWritten = ptyService.writeBySessionId(created.sessionId, "\r");
-          if (!confirmWritten) {
-            runtime.logger.warn("rpc.start_cli_session_claude_initial_input_confirm_failed", {
-              sessionId: created.sessionId,
-              ptyId: created.ptyId,
-            });
-          }
-        }, CLAUDE_INITIAL_INPUT_CONFIRM_DELAY_MS);
-        confirmTimer.unref?.();
-      }
-    }
+    const initialInputWritten = Boolean(initialInput && isCliProvider(provider));
 
     const autoTitleApplied = Boolean(initialInputMeta.promptTitle) && title === initialInputMeta.promptTitle;
     if (initialInputMeta.goal || autoTitleApplied) {

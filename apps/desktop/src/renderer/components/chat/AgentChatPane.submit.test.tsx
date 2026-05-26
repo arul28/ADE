@@ -511,6 +511,7 @@ let iosEventListener: ((event: { type: string; chatSessionId?: string; laneId?: 
 function installMatchMediaMock(): void {
   if (typeof window.matchMedia === "function") return;
   Object.defineProperty(window, "matchMedia", {
+    configurable: true,
     writable: true,
     value: vi.fn().mockImplementation((query: string) => ({
       matches: false,
@@ -2330,6 +2331,62 @@ describe("AgentChatPane submit recovery", () => {
     expect(window.ade.agentChat.models).not.toHaveBeenCalled();
   });
 
+  it("does not poll Cursor Cloud agents for a CLI-only Cursor session", async () => {
+    const session = buildSession("session-1", {
+      provider: "cursor",
+      model: "auto",
+      modelId: "cursor/auto",
+      status: "idle",
+    });
+    installAdeMocks({
+      sessions: [session],
+    });
+    const cursorCloudListAgents = vi.fn().mockResolvedValue({ items: [] });
+    window.ade.ai.getStatus = vi.fn().mockResolvedValue({
+      mode: "subscription",
+      availableProviders: {
+        claude: {
+          binary: { present: false, source: "missing", path: null },
+          auth: { ready: false, mode: "none", detail: null },
+        },
+        codex: true,
+        cursor: false,
+        droid: false,
+      },
+      models: { claude: [], codex: [], cursor: [], droid: [] },
+      features: [],
+      detectedAuth: [
+        { type: "cli-subscription", cli: "codex", authenticated: true },
+      ],
+      availableModelIds: ["cursor/auto"],
+      providerConnections: {
+        claude: null,
+        codex: null,
+        cursor: {
+          provider: "cursor",
+          authAvailable: false,
+          runtimeDetected: true,
+          runtimeAvailable: false,
+          usageAvailable: false,
+          path: "/usr/local/bin/cursor-agent",
+          blocker: "Add a Cursor API key before using Cursor Cloud agents.",
+          lastCheckedAt: "2026-05-26T00:00:00.000Z",
+          sources: [{ kind: "cli", detected: true, authenticated: true, path: "/usr/local/bin/cursor-agent" }],
+        },
+        droid: null,
+      },
+    }) as any;
+    window.ade.ai.cursorCloudListAgents = cursorCloudListAgents as any;
+
+    renderPane(session);
+
+    await waitFor(() => {
+      expect(window.ade.ai.getStatus).toHaveBeenCalled();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(cursorCloudListAgents).not.toHaveBeenCalled();
+  });
+
   it("keeps the committed model visible until the backend confirms the switch", async () => {
     const session = buildSession("session-1", { status: "idle" });
     const sessions = [session];
@@ -2993,12 +3050,148 @@ describe("AgentChatPane submit recovery", () => {
       }));
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
-    expect(launchArgs.command).toBeUndefined();
-    expect(launchArgs.args).toBeUndefined();
-    expect(launchArgs.startupCommand).toContain("ADE session guidance");
-    expect(launchArgs.startupCommand).toContain("Run the unified CLI launch.");
+    expect(launchArgs.command).toBe("codex");
+    expect(launchArgs.args).toEqual(expect.arrayContaining(["--no-alt-screen"]));
+    expect(launchArgs.startupCommand).not.toContain("ADE session guidance");
+    expect(launchArgs.startupCommand).not.toContain("Run the unified CLI launch.");
+    expect(launchArgs.initialInput).toContain("ADE session guidance");
+    expect(launchArgs.initialInput).toContain("Run the unified CLI launch.");
     expect(create).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("uses the selected Codex plan preset when launching a Work draft CLI session", async () => {
+    installAdeMocks({ sessions: [] });
+    useAppStore.setState({
+      project: { rootPath: "/tmp/project-under-test" } as any,
+    });
+    const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-1", ptyId: "pty-1" });
+    const launchConfigKey = [
+      "ade.chat.lastLaunchConfig.v1",
+      "/tmp/project-under-test",
+      "lane-1",
+      "standard",
+      "cli",
+    ].map(encodeURIComponent).join(":");
+    window.localStorage.setItem(launchConfigKey, JSON.stringify({
+      version: 1,
+      modelId: "openai/gpt-5.4",
+      reasoningEffort: "medium",
+      codexFastMode: false,
+      executionMode: "focused",
+      updatedAt: "2026-05-26T12:00:00.000Z",
+      controls: {
+        interactionMode: "default",
+        claudePermissionMode: "default",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+        opencodePermissionMode: "edit",
+        droidPermissionMode: "auto-low",
+        cursorModeId: "agent",
+        cursorConfigValues: {},
+      },
+    }));
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId="lane-1"
+          forceDraftMode
+          embeddedWorkLayout
+          workDraftKind="cli"
+          onLaunchCliSession={onLaunchCliSession}
+        />
+      </MemoryRouter>,
+    );
+
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(codexLabel)}`, "i") })).toBeTruthy();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Codex approval preset" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Plan mode" }));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Launch Codex in plan mode." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(onLaunchCliSession).toHaveBeenCalledWith(expect.objectContaining({
+        profile: "codex",
+        tracked: true,
+      }));
+    });
+    const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
+    expect(launchArgs.args).toEqual(expect.arrayContaining(["--sandbox", "read-only", "--ask-for-approval", "on-request"]));
+    expect(launchArgs.args).not.toContain("workspace-write");
+    expect(launchArgs.startupCommand).toContain("codex --no-alt-screen");
+    expect(launchArgs.startupCommand).toContain("--sandbox read-only --ask-for-approval on-request");
+  });
+
+  it("uses the selected Codex edit preset when launching a Work draft CLI session", async () => {
+    installAdeMocks({ sessions: [] });
+    useAppStore.setState({
+      project: { rootPath: "/tmp/project-under-test" } as any,
+    });
+    const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-1", ptyId: "pty-1" });
+    const launchConfigKey = [
+      "ade.chat.lastLaunchConfig.v1",
+      "/tmp/project-under-test",
+      "lane-1",
+      "standard",
+      "cli",
+    ].map(encodeURIComponent).join(":");
+    window.localStorage.setItem(launchConfigKey, JSON.stringify({
+      version: 1,
+      modelId: "openai/gpt-5.4",
+      reasoningEffort: "medium",
+      codexFastMode: false,
+      executionMode: "focused",
+      updatedAt: "2026-05-26T12:00:00.000Z",
+      controls: {
+        interactionMode: "default",
+        claudePermissionMode: "default",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+        opencodePermissionMode: "edit",
+        droidPermissionMode: "auto-low",
+        cursorModeId: "agent",
+        cursorConfigValues: {},
+      },
+    }));
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId="lane-1"
+          forceDraftMode
+          embeddedWorkLayout
+          workDraftKind="cli"
+          onLaunchCliSession={onLaunchCliSession}
+        />
+      </MemoryRouter>,
+    );
+
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(codexLabel)}`, "i") })).toBeTruthy();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Codex approval preset" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Edit mode" }));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Launch Codex in edit mode." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(onLaunchCliSession).toHaveBeenCalledWith(expect.objectContaining({
+        profile: "codex",
+        tracked: true,
+      }));
+    });
+    const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
+    expect(launchArgs.args).toEqual(expect.arrayContaining(["--sandbox", "workspace-write", "--ask-for-approval", "untrusted"]));
+    expect(launchArgs.startupCommand).toContain("--sandbox workspace-write --ask-for-approval untrusted");
   });
 
   it("auto-creates a lane for a foreground CLI session draft", async () => {
@@ -3050,7 +3243,8 @@ describe("AgentChatPane submit recovery", () => {
       }));
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
-    expect(launchArgs.startupCommand).toContain("Launch a CLI agent on a new lane.");
+    expect(launchArgs.startupCommand).not.toContain("Launch a CLI agent on a new lane.");
+    expect(launchArgs.initialInput).toContain("Launch a CLI agent on a new lane.");
     expect(create).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
   });
@@ -3096,7 +3290,8 @@ describe("AgentChatPane submit recovery", () => {
       expect(screen.getByRole("button", { name: "Dismiss launch notice" })).toBeTruthy();
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
-    expect(launchArgs.startupCommand).toContain("Launch this CLI session in the background.");
+    expect(launchArgs.startupCommand).not.toContain("Launch this CLI session in the background.");
+    expect(launchArgs.initialInput).toContain("Launch this CLI session in the background.");
     expect(create).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
     expect(screen.getByTestId("location").textContent).toBe("/work");

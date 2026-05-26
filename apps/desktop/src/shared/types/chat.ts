@@ -167,7 +167,7 @@ export type AgentChatReloadClaudePluginsResult = {
 export type AgentChatCodexApprovalPolicy = "untrusted" | "on-request" | "on-failure" | "never";
 export type AgentChatCodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
 export type AgentChatCodexConfigSource = "flags" | "config-toml";
-export type AgentChatOpenCodePermissionMode = "plan" | "edit" | "full-auto";
+export type AgentChatOpenCodePermissionMode = "plan" | "edit" | "full-auto" | "config-toml";
 export type AgentChatDroidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high";
 
 export type AgentChatNoticeDetailMetric = {
@@ -1106,6 +1106,10 @@ export type AgentChatModelInfo = {
   supportsReasoning?: boolean;
   supportsTools?: boolean;
   color?: string;
+  cursorAvailability?: {
+    cli: boolean;
+    sdk: boolean;
+  };
 };
 
 export type AgentChatModelCatalogModel = AgentChatModelInfo & {

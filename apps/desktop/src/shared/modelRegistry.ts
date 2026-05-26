@@ -29,6 +29,11 @@ export type ModelCapabilities = {
   streaming: boolean;
 };
 
+export type CursorModelAvailability = {
+  cli: boolean;
+  sdk: boolean;
+};
+
 export type LocalModelHarnessProfile = "verified" | "guarded" | "read_only";
 
 export type ModelDescriptor = {
@@ -65,6 +70,8 @@ export type ModelDescriptor = {
   openCodeModelId?: string;
   /** True when the model was injected via a local proxy (e.g. vibeproxy in ~/.factory/config.json). */
   customProxy?: boolean;
+  /** Cursor models can be available through local CLI, Cursor SDK/API chat, or both. */
+  cursorAvailability?: CursorModelAvailability;
 };
 
 export type DynamicLocalModelDescriptorOptions = {
@@ -745,6 +752,7 @@ export function createDynamicCursorCliModelDescriptor(
     serviceTiers?: string[];
     aliases?: string[];
     capabilities?: Partial<ModelCapabilities>;
+    cursorAvailability?: CursorModelAvailability;
   },
 ): ModelDescriptor {
   const id = `cursor/${providerModelId}`;
@@ -771,6 +779,7 @@ export function createDynamicCursorCliModelDescriptor(
     ...(options?.reasoningTiers?.length ? { reasoningTiers: [...options.reasoningTiers] } : {}),
     ...(options?.serviceTiers?.length ? { serviceTiers: [...options.serviceTiers] } : {}),
     ...(options?.aliases?.length ? { aliases: [...options.aliases] } : {}),
+    ...(options?.cursorAvailability ? { cursorAvailability: { ...options.cursorAvailability } } : {}),
     isCliWrapped: false,
   };
 }

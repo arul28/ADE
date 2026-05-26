@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { EventEmitter } from "node:events";
 import os from "node:os";
 import path from "node:path";
 import { query, startup } from "@anthropic-ai/claude-agent-sdk";
@@ -38,6 +39,7 @@ const mockState = vi.hoisted(() => ({
     events: any[];
     waiters: Array<() => void>;
     aborted: boolean;
+    promptBodies: any[];
     questionReply: ReturnType<typeof vi.fn>;
     questionReject: ReturnType<typeof vi.fn>;
     permissionReply: ReturnType<typeof vi.fn>;
@@ -112,11 +114,23 @@ vi.mock("node:child_process", () => ({
           if (payload?.id == null || typeof payload?.method !== "string") return true;
 
           let result: Record<string, unknown> = {};
+          let responseError: Record<string, unknown> | null = null;
           const override = mockState.codexResponseOverrides.get(payload.method);
           if (typeof override === "function") {
-            result = override(payload);
+            const overrideResult = override(payload);
+            const overrideError = overrideResult.error;
+            if (overrideError && typeof overrideError === "object" && !Array.isArray(overrideError)) {
+              responseError = overrideError as Record<string, unknown>;
+            } else {
+              result = overrideResult;
+            }
           } else if (override) {
-            result = override;
+            const overrideError = override.error;
+            if (overrideError && typeof overrideError === "object" && !Array.isArray(overrideError)) {
+              responseError = overrideError as Record<string, unknown>;
+            } else {
+              result = override;
+            }
           } else if (payload.method === "thread/start") {
             mockState.codexThreadCounter += 1;
             result = { thread: { id: `thread-${mockState.codexThreadCounter}` } };
@@ -134,11 +148,16 @@ vi.mock("node:child_process", () => ({
           }
 
           const emitResponse = () => {
-            mockState.emitCodexPayload({
+            const responsePayload = responseError ? {
+              jsonrpc: "2.0",
+              id: payload.id,
+              error: responseError,
+            } : {
               jsonrpc: "2.0",
               id: payload.id,
               result,
-            });
+            };
+            mockState.emitCodexPayload(responsePayload);
           };
           if (mockState.delayedCodexMethods.has(payload.method)) {
             mockState.pendingCodexResponses.push(emitResponse);
@@ -254,6 +273,7 @@ vi.mock("../opencode/openCodeRuntime", () => ({
       events: [] as any[],
       waiters: [] as Array<() => void>,
       aborted: false,
+      promptBodies: [] as any[],
       questionReply: vi.fn(async ({ requestID, answers }: { requestID: string; answers?: string[][] }) => {
         pushEvent({
           type: "question.replied",
@@ -296,7 +316,8 @@ vi.mock("../opencode/openCodeRuntime", () => ({
     const client = {
       __sessionId: sessionId,
       session: {
-        promptAsync: vi.fn(async () => {
+        promptAsync: vi.fn(async ({ body }: { body?: any } = {}) => {
+          state.promptBodies.push(body ?? {});
           void (async () => {
             if (mockState.openCodeTitleForNextPrompt) {
               pushEvent({
@@ -7692,6 +7713,178 @@ describe("createAgentChatService", () => {
       ]));
     });
 
+    it("adopts Codex active turn mismatches and retries delivered steers", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start working",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+        } =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      mockState.codexRequestPayloads = [];
+      let attempts = 0;
+      mockState.codexResponseOverrides.set("turn/steer", (payload) => {
+        attempts += 1;
+        const params = payload.params as Record<string, unknown>;
+        if (params.expectedTurnId === "turn-1") {
+          return {
+            error: {
+              code: -32000,
+              message: "expected active turn id turn-1 but found turn-real",
+            },
+          };
+        }
+        return {};
+      });
+
+      const result = await service.steer({
+        sessionId: session.id,
+        text: "Keep going with the real turn.",
+      });
+
+      expect(result.queued).toBe(false);
+      expect(attempts).toBe(2);
+      const steerRequests = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/steer");
+      expect(steerRequests.map((payload) => (payload.params as Record<string, unknown>).expectedTurnId)).toEqual([
+        "turn-1",
+        "turn-real",
+      ]);
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "user_message",
+            text: "Keep going with the real turn.",
+            deliveryState: "delivered",
+            steerId: result.steerId,
+            turnId: "turn-real",
+          }),
+        }),
+      ]));
+    });
+
+    it("adopts a Codex turn/started notification that corrects the active turn id", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start working",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+        } =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: {
+          turn: {
+            id: "turn-real",
+            status: "inProgress",
+          },
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/agentMessage/delta",
+        params: {
+          turnId: "turn-real",
+          delta: "Recovered text",
+        },
+      });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "text"
+          && event.event.turnId === "turn-real"
+          && event.event.text === "Recovered text",
+      );
+    });
+
+    it("does not retry Codex active turn mismatches more than once", async () => {
+      const { service } = createService();
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start working",
+      }, { awaitDispatch: true });
+
+      mockState.codexRequestPayloads = [];
+      let attempts = 0;
+      mockState.codexResponseOverrides.set("turn/steer", (payload) => {
+        attempts += 1;
+        const params = payload.params as Record<string, unknown>;
+        if (params.expectedTurnId === "turn-1") {
+          return {
+            error: {
+              code: -32000,
+              message: "expected active turn id turn-1 but found turn-real",
+            },
+          };
+        }
+        if (params.expectedTurnId === "turn-real") {
+          return {
+            error: {
+              code: -32000,
+              message: "expected active turn id turn-real but found turn-newer",
+            },
+          };
+        }
+        return {};
+      });
+
+      await expect(service.steer({
+        sessionId: session.id,
+        text: "Keep going with the real turn.",
+      })).rejects.toThrow("expected active turn id turn-real but found turn-newer");
+
+      expect(attempts).toBe(2);
+      const steerRequests = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/steer");
+      expect(steerRequests.map((payload) => (payload.params as Record<string, unknown>).expectedTurnId)).toEqual([
+        "turn-1",
+        "turn-real",
+      ]);
+    });
+
     it("starts a normal Codex turn when steering stale active UI state", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
@@ -7789,6 +7982,110 @@ describe("createAgentChatService", () => {
           }),
         }),
       ]));
+    });
+
+    it("adopts Codex active turn mismatches and retries interrupt", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start working",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+        } =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      mockState.codexRequestPayloads = [];
+      let attempts = 0;
+      mockState.codexResponseOverrides.set("turn/interrupt", (payload) => {
+        attempts += 1;
+        const params = payload.params as Record<string, unknown>;
+        if (params.turnId === "turn-1") {
+          return {
+            error: {
+              code: -32000,
+              message: "expected active turn id turn-1 but found turn-real",
+            },
+          };
+        }
+        return {};
+      });
+
+      await service.interrupt({ sessionId: session.id });
+
+      expect(attempts).toBe(2);
+      const interruptRequests = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/interrupt");
+      expect(interruptRequests.map((payload) => (payload.params as Record<string, unknown>).turnId)).toEqual([
+        "turn-1",
+        "turn-real",
+      ]);
+    });
+
+    it("adopts Codex active turn mismatches and retries dispose interrupt", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start working",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+        } =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      mockState.codexRequestPayloads = [];
+      let attempts = 0;
+      mockState.codexResponseOverrides.set("turn/interrupt", (payload) => {
+        attempts += 1;
+        const params = payload.params as Record<string, unknown>;
+        if (params.turnId === "turn-1") {
+          return {
+            error: {
+              code: -32000,
+              message: "expected active turn id turn-1 but found turn-real",
+            },
+          };
+        }
+        return {};
+      });
+
+      await service.dispose({ sessionId: session.id });
+
+      expect(attempts).toBe(2);
+      const interruptRequests = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/interrupt");
+      expect(interruptRequests.map((payload) => (payload.params as Record<string, unknown>).turnId)).toEqual([
+        "turn-1",
+        "turn-real",
+      ]);
     });
 
     it("marks active Codex subagents stopped on interrupt and ignores late child updates", async () => {
@@ -9085,6 +9382,52 @@ describe("createAgentChatService", () => {
       expect(Array.isArray(models)).toBe(true);
     });
 
+    it("returns Cursor CLI models without requiring a Cursor SDK API key", async () => {
+      delete process.env.CURSOR_API_KEY;
+      vi.mocked(detectAllAuth).mockResolvedValue([
+        {
+          type: "cli-subscription",
+          cli: "cursor",
+          path: "/usr/local/bin/cursor-agent",
+          authenticated: true,
+          verified: true,
+          paidPlan: true,
+        },
+      ]);
+      vi.mocked(spawn).mockImplementationOnce(() => {
+        const stdout = new EventEmitter() as EventEmitter & { destroy: () => void };
+        const stderr = new EventEmitter() as EventEmitter & { destroy: () => void };
+        stdout.destroy = vi.fn();
+        stderr.destroy = vi.fn();
+        const child = new EventEmitter() as EventEmitter & {
+          stdout: typeof stdout;
+          stderr: typeof stderr;
+          stdin: { destroy: () => void };
+          kill: () => boolean;
+          pid: number;
+        };
+        child.stdout = stdout;
+        child.stderr = stderr;
+        child.stdin = { destroy: vi.fn() };
+        child.kill = vi.fn(() => true);
+        child.pid = 12345;
+        queueMicrotask(() => {
+          stdout.emit("data", Buffer.from("auto - Auto\ncomposer-2 - Composer 2\n"));
+          child.emit("close", 0);
+        });
+        return child as any;
+      });
+
+      const { service } = createService();
+      const models = await service.getAvailableModels({ provider: "cursor", activateRuntime: true });
+
+      expect(models.map((model) => model.id)).toEqual(["cursor/auto", "cursor/composer-2"]);
+      expect(models[0]).toMatchObject({
+        cursorAvailability: { cli: true, sdk: false },
+      });
+      expect(models[0]?.description).toContain("Cursor CLI");
+    });
+
     it("coalesces concurrent codex model discovery requests", async () => {
       const { service, logger } = createService();
 
@@ -9527,6 +9870,33 @@ describe("createAgentChatService", () => {
 
       expect(session.permissionMode).toBe("edit");
       expect(session.opencodePermissionMode).toBe("edit");
+    });
+
+    it("does not force an ADE OpenCode agent when config mode is selected", async () => {
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+        opencodePermissionMode: "config-toml",
+      });
+
+      expect(session.opencodePermissionMode).toBe("config-toml");
+      expect(session.permissionMode).toBe("config-toml");
+
+      await service.sendMessage({ sessionId: session.id, text: "Use configured OpenCode behavior." }, { awaitDispatch: true });
+
+      const openCodeState = [...mockState.openCodeSessions.values()][0]!;
+      expect(openCodeState.promptBodies.at(-1)).toEqual(expect.not.objectContaining({
+        agent: expect.stringMatching(/^ade-/),
+      }));
     });
   });
 

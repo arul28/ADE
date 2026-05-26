@@ -25,7 +25,7 @@ function row(text: string): TerminalSnapshotRow {
 function preview(
   rows: TerminalSnapshotRow[],
   overrides: Partial<Pick<ChatTerminalPreviewResult, "transcript">> & {
-    status?: "running" | "completed" | "failed" | "disposed";
+    status?: "running" | "completed" | "failed" | "disposed" | "detached";
     runtimeState?: "running" | "waiting-input" | "idle" | "exited" | "killed";
     resumeCommand?: string | null;
   } = {},

@@ -67,6 +67,7 @@ export function LaneWorkPane({
           onCloseItem={work.closeTab}
           onOpenChatSession={work.handleOpenChatSession}
           onLaunchPtySession={work.launchPtySession}
+          onContinueCliSession={work.continueCliSession}
           onShowDraftKind={work.showDraftKind}
           closingPtyIds={work.closingPtyIds}
           initialLinearIssueContext={initialLinearIssueContext}

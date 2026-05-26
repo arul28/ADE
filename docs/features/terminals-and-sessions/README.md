@@ -56,7 +56,7 @@ desktop fallback IPC path.
   ownership-aware queries gate row sweeps on the live-pid set returned by
   `processRegistryService.listLivePids()`: a `running` row whose `owner_pid`
   is still in the set belongs to a live sibling and must be left alone, only
-  unowned or owner-crashed rows get marked `disposed`. ~580 lines. Branch
+  unowned or owner-crashed rows get marked `detached`. ~580 lines. Branch
   rewrite.
 - `apps/desktop/src/main/services/runtime/processRegistryService.ts` — per-
   process heartbeat registrar against the `runtime_processes` table. Every
@@ -234,7 +234,11 @@ Renderer surfaces:
   whose send button calls `ade.pty.sendToSession`. The handler writes
   into a live runtime when one is still attached, or starts a fresh
   provider continuation internally and binds it back to the same
-  durable session id. The `onLaunchPtySession` prop is typed as
+  durable session id. Agent CLI input submission is serialized per session
+  and uses two writes: prompt text first, then the provider's submit
+  sequence. Codex, Claude, Cursor, and OpenCode use Kitty keyboard protocol
+  Enter; Droid uses carriage return for its line-oriented CLI. The
+  `onLaunchPtySession` prop is typed as
   `(args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>`.
 - `apps/desktop/src/renderer/components/terminals/useWorkLaneContextMenu.tsx`
   — shared Work-tab lane context menu hook. It portals `LaneContextMenu`
@@ -301,10 +305,11 @@ Renderer surfaces:
   profile to the recorded `TerminalToolType` (`cursor-cli`, `droid`,
   `opencode`, etc.) and the human tab title. `buildTrackedCliLaunchCommand`
   returns a typed `TrackedCliLaunchCommand` (`{ command?, args,
-  startupCommand, env? }`) so `ptyService.create` can spawn Claude/
-  Codex directly via argv (preferred) while `startupCommand` stays as a
-  shell-typed fallback for the providers (Cursor, Droid, OpenCode) that
-  need a multi-line shell preamble: Cursor pre-allocates a chat with
+  startupCommand, env? }`) so `ptyService.create` can spawn tracked
+  CLIs with explicit argv instead of typing the launch command into an
+  already-open shell. Cursor uses a direct `/bin/bash -lc` launch on
+  non-Windows because its startup path needs a multi-line preamble:
+  Cursor pre-allocates a chat with
   `cursor-agent create-chat` so the resume target is known up front,
   Droid materializes a temp `--settings` JSON keyed off the active
   permission mode, and OpenCode passes its inline permission policy
@@ -330,10 +335,12 @@ Renderer surfaces:
   now includes `auto` (Claude only; mapped onto the SDK
   `permissionMode: "auto"`); `validateLaunchProfilePermissionMode`
   rejects `auto` for any non-Claude provider and rejects `config-toml`
-  for any non-Codex provider. Codex CLI launches that pass an
-  `initialPrompt` receive it as the final argv positional on `codex`,
-  not as PTY-typed bytes, so the prompt is treated as a real first
-  turn and does not become a half-typed shell line; Codex argv also
+  for providers other than Codex and OpenCode. A launch that passes an
+  `initialPrompt` embeds it into the provider launch itself (Claude/
+  Codex/Droid argv, OpenCode `--prompt`, Cursor's pre-created resume
+  command), not as a post-create PTY write, so the first user message
+  opens the PTY and is submitted as the provider's real first turn
+  instead of becoming a half-typed shell line. Codex argv also
   appends `codexNoisyLocalMcpDisableFlags` (`-c
   mcp_servers.unityMCP.enabled=false`, `-c
   mcp_servers.xcode.enabled=false`) for every non-`config-toml`
@@ -485,7 +492,9 @@ schema is used for:
   `opencode-chat`, `cursor-chat`, `droid-chat`)
 - other tracked tools (`cursor`, `aider`, `continue`, `other`)
 
-Status transitions: `running` → `completed` | `failed` | `disposed`.
+Status transitions: `running` → `completed` | `failed` | `disposed` |
+`detached`. `detached` means the durable row and transcript remain, but the
+process-local PTY is no longer reachable from the current ADE runtime.
 
 Fields that feed UI and downstream systems:
 
@@ -537,18 +546,29 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
      title from the transcript tail.
    - `sessionDeltaService` can compute file-level git deltas using
      `headShaStart`/`headShaEnd`.
+   User-launched agent CLI sessions are not auto-disposed just because a
+   TUI returns to a waiting input prompt. Auto-close is reserved for
+   orchestrated worker PTYs (`*-orchestrated`) where the wrapped CLI has
+   exited back to the shell and no user-owned terminal is expected to stay
+   interactive.
 
 6. **Continue** — `work.sendToSession` reuses an existing session row
    when the user sends text to an ended agent CLI session and the PTY
-   service opens the transcript in append mode. This keeps identity,
-   lane association, and transcript history intact.
+   service opens the transcript in append mode. When the runtime is still
+   live, it submits to that PTY directly. When the PTY is gone, it rebuilds
+   the provider resume command, creates a new PTY bound to the same durable
+   session id, then submits the text with the same text-plus-Enter sequence.
+   This keeps identity, lane association, and transcript history intact.
 
 7. **Reconcile** — on startup, `reconcileStaleRunningSessions` marks
-   orphaned `running` rows as `disposed`. Ownership is gated through
+   orphaned `running` rows as `detached`. Ownership is gated through
    `processRegistryService.listLivePids()`: a row whose `owner_pid` is
    still in the live set belongs to a sibling process (another desktop
    window, the `ade serve` daemon, an attached `ade code` TUI) and is
-   left alone, only owner-crashed or unowned rows get swept. The service
+   left alone, only owner-crashed or unowned rows get swept. Freshly
+   started or recently-outputting rows get a short grace window before
+   they can be detached, so a new runtime cannot immediately close a CLI
+   session created by the process it just replaced. The service
    still accepts an `excludeToolTypes` option, but `main.ts` no longer
    passes chat tool types: chat runtimes always warm up afresh on app
    start, so leaving stale `running` chat rows behind only causes UI
@@ -607,7 +627,7 @@ PTY:
 | Channel | Purpose |
 |---|---|
 | `ade.pty.create` | create or reattach; returns `{ ptyId, sessionId, pid }`. Accepts an optional `chatSessionId` to mark the terminal as chat-owned. |
-| `ade.pty.sendToSession` | send-or-continue. Args: `{ sessionId, text, cols?, rows?, model?, reasoningEffort?, permissionMode? }`. Writes into the live PTY when one is attached; otherwise validates that the row is a tracked agent CLI session, rebuilds the resume command via `buildTrackedCliResumeCommand` (honouring runtime overrides), spawns the continuation PTY in the same `terminal_sessions` row, and then writes the user's text. Returns `PtySendToSessionResult` (`{ ptyId, sessionId, pid, session, resumed, reusedExistingRuntime }`). |
+| `ade.pty.sendToSession` | send-or-continue. Args: `{ sessionId, text, cols?, rows?, model?, reasoningEffort?, permissionMode? }`. Submits text into the live PTY when one is attached; otherwise validates that the row is a tracked agent CLI session, rebuilds the resume command via `buildTrackedCliResumeCommand` (honouring runtime overrides), spawns the continuation PTY in the same `terminal_sessions` row, and then submits the user's text. Submission is serialized per session and writes text followed by the provider submit sequence: Kitty Enter (`ESC [ 13 u`) for Codex, Claude, Cursor, and OpenCode; carriage return for Droid. Returns `PtySendToSessionResult` (`{ ptyId, sessionId, pid, session, resumed, reusedExistingRuntime }`). |
 | `ade.pty.write` | write bytes to PTY |
 | `ade.pty.resize` | cols/rows resize |
 | `ade.pty.dispose` | close PTY; optional `sessionId` used for logging |
@@ -668,9 +688,10 @@ Processes (managed):
   the `runtime` event instead.
 - `reconcileStaleRunningSessions` accepts `excludeToolTypes` but the
   main-process startup no longer excludes chat tool types — stale
-  `running` chat rows are swept to `disposed` like any other orphaned
-  row. If you need a row to survive reconciliation, the caller has to
-  pass `excludeToolTypes` explicitly.
+  `running` chat rows are swept to `detached` like any other orphaned
+  row after the startup activity grace expires. If you need a row to
+  survive reconciliation, the caller has to pass `excludeToolTypes`
+  explicitly.
 - `transcriptPath` may be blank for untracked sessions (tracked=false)
   and for processes that died before their PTY opened — always
   null-check before reading.

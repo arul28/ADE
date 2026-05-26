@@ -11,7 +11,7 @@ import type {
 } from "./chat";
 import type { OrchestrationRole } from "./orchestration";
 
-export type TerminalSessionStatus = "running" | "completed" | "failed" | "disposed";
+export type TerminalSessionStatus = "running" | "completed" | "failed" | "disposed" | "detached";
 
 export type TerminalToolType =
   | "shell"
@@ -41,6 +41,8 @@ export type TerminalResumeTargetKind = "session" | "thread";
 
 export type TerminalResumeLaunchConfig = {
   permissionMode?: AgentChatPermissionMode | null;
+  model?: string | null;
+  reasoningEffort?: string | null;
   claudePermissionMode?: AgentChatClaudePermissionMode | null;
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy | null;
   codexSandbox?: AgentChatCodexSandbox | null;
@@ -132,6 +134,9 @@ export type PtyCreateArgs = {
   toolType?: TerminalToolType | null;
   startupCommand?: string;
   startupDelayMs?: number;
+  /** Optional input to send to the PTY after the process starts. */
+  initialInput?: string;
+  initialInputDelayMs?: number;
   command?: string;
   args?: string[];
   env?: Record<string, string>;

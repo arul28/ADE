@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { MagnifyingGlass } from "@phosphor-icons/react";
 import { MODEL_REGISTRY, type ModelDescriptor, type ProviderFamily } from "../../../../shared/modelRegistry";
 import { cn } from "../../ui/cn";
@@ -21,6 +22,8 @@ import { scoreModelPickerSearch } from "./modelPickerSearch";
 import { sortModelItems } from "./modelOrdering";
 import { ProviderEmptyState, ProviderSetupBanner } from "./providerEmptyState";
 import type { AgentChatModelCatalogRefreshProvider } from "../../../../shared/types";
+
+const MODEL_ROW_ESTIMATED_HEIGHT = 44;
 
 const PROVIDER_LABELS: Partial<Record<ProviderFamily, string>> = {
   anthropic: "Anthropic",
@@ -119,6 +122,7 @@ export type ModelPickerContentProps = {
   hidePermissionRail?: boolean;
   refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
   onOpenSignIn?: () => void;
+  allowCliOnlyModels?: boolean;
   allowRegistryExpansion?: boolean;
 };
 
@@ -134,6 +138,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   refreshingProvider,
   onOpenSignIn,
   hidePermissionRail = false,
+  allowCliOnlyModels = false,
   allowRegistryExpansion = true,
 }: ModelPickerContentProps) {
   // hidePermissionRail is currently a forward-compat hook (see prop docs).
@@ -372,28 +377,42 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     return providerTabs.find((tab) => tab.key === activeProviderTabKey)?.models ?? candidateModels;
   }, [activeProviderTabKey, candidateModels, providerTabs]);
 
-  const groupedRows = useMemo(() => {
-    return [{ subProvider: "", models: visibleModels }];
-  }, [visibleModels]);
-
   const [focusedIndex, setFocusedIndex] = useState(0);
   useEffect(() => {
     setFocusedIndex(0);
-  }, [selection, query]);
+  }, [activeProviderTabKey, selection, query]);
 
   const flatVisibleIds = useMemo(
     () => visibleModels.map((m) => m.id),
     [visibleModels],
   );
 
+  const getVirtualModelKey = useCallback(
+    (index: number) => visibleModels[index]?.id ?? index,
+    [visibleModels],
+  );
+  const modelListVirtualizer = useVirtualizer({
+    count: visibleModels.length,
+    getScrollElement: () => listRef.current,
+    estimateSize: () => MODEL_ROW_ESTIMATED_HEIGHT,
+    getItemKey: getVirtualModelKey,
+    overscan: 8,
+  });
+  useEffect(() => {
+    modelListVirtualizer.scrollToIndex(0, { align: "start" });
+  }, [activeProviderTabKey, modelListVirtualizer, selection, query]);
+
   const isAvailableForUse = useCallback(
     (m: ModelDescriptor): boolean => {
+      if (allowCliOnlyModels && m.family === "cursor" && m.cursorAvailability?.cli === true) {
+        return true;
+      }
       if (Object.keys(effectiveAuth).length > 0) {
         return familyIsReady(m.family) && isAvailable(m.id);
       }
       return isAvailable(m.id);
     },
-    [effectiveAuth, familyIsReady, isAvailable],
+    [allowCliOnlyModels, effectiveAuth, familyIsReady, isAvailable],
   );
 
   const handleListKeyDown = useCallback(
@@ -405,12 +424,20 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       }
       if (event.key === "ArrowDown") {
         event.preventDefault();
-        setFocusedIndex((i) => Math.min(i + 1, Math.max(0, flatVisibleIds.length - 1)));
+        setFocusedIndex((i) => {
+          const next = Math.min(i + 1, Math.max(0, flatVisibleIds.length - 1));
+          modelListVirtualizer.scrollToIndex(next, { align: "auto" });
+          return next;
+        });
         return;
       }
       if (event.key === "ArrowUp") {
         event.preventDefault();
-        setFocusedIndex((i) => Math.max(0, i - 1));
+        setFocusedIndex((i) => {
+          const next = Math.max(0, i - 1);
+          modelListVirtualizer.scrollToIndex(next, { align: "auto" });
+          return next;
+        });
         return;
       }
       if (event.key === "Enter") {
@@ -429,6 +456,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       flatVisibleIds,
       focusedIndex,
       isAvailableForUse,
+      modelListVirtualizer,
       onOpenSignIn,
       onRequestClose,
       onSelect,
@@ -644,35 +672,46 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                 {...(onOpenSignIn ? { onOpenSignIn } : {})}
               />
             ) : (
-              <div className="flex flex-col gap-px">
-	                {groupedRows.map((group, gi) => (
-	                  <div key={group.subProvider || `g${gi}`}>
-	                    {group.models.map((m) => {
-                      const indexInFlat = flatVisibleIds.indexOf(m.id);
-                      const isFocused = indexInFlat === focusedIndex;
-                      const isActive = m.id === value;
-                      return (
-                        <div
-                          key={m.id}
-                          data-focused={isFocused ? "true" : undefined}
-                          className={cn(isFocused && "outline-none ring-1 ring-violet-400/30 rounded-md")}
-                        >
-                          <ModelListRow
-                            model={m}
-                            isFavorite={isFavorite(m.id)}
-                            isActive={isActive}
-                            isAvailable={isAvailableForUse(m)}
-                            onSelect={handleRowSelect}
-                            onToggleFavorite={toggleFavorite}
-                            onCopyId={handleCopyId}
-                            onSetSurfaceDefault={handleSetSurfaceDefault}
-                            {...(onOpenSignIn ? { onSignIn: onOpenSignIn } : {})}
-                          />
-                        </div>
-                      );
-                    })}
-                  </div>
-                ))}
+              <div
+                data-model-picker-virtual-list="true"
+                style={{
+                  height: modelListVirtualizer.getTotalSize(),
+                  position: "relative",
+                }}
+              >
+                {modelListVirtualizer.getVirtualItems().map((virtualRow) => {
+                  const m = visibleModels[virtualRow.index];
+                  if (!m) return null;
+                  const isFocused = virtualRow.index === focusedIndex;
+                  const isActive = m.id === value;
+                  return (
+                    <div
+                      key={virtualRow.key}
+                      ref={modelListVirtualizer.measureElement}
+                      data-index={virtualRow.index}
+                      data-focused={isFocused ? "true" : undefined}
+                      className={cn(
+                        "absolute left-0 top-0 w-full",
+                        isFocused && "outline-none ring-1 ring-violet-400/30 rounded-md",
+                      )}
+                      style={{
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
+                    >
+                      <ModelListRow
+                        model={m}
+                        isFavorite={isFavorite(m.id)}
+                        isActive={isActive}
+                        isAvailable={isAvailableForUse(m)}
+                        onSelect={handleRowSelect}
+                        onToggleFavorite={toggleFavorite}
+                        onCopyId={handleCopyId}
+                        onSetSurfaceDefault={handleSetSurfaceDefault}
+                        {...(onOpenSignIn ? { onSignIn: onOpenSignIn } : {})}
+                      />
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

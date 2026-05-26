@@ -292,6 +292,7 @@ function createHarness(overrides: {
         endedAt: null,
         exitCode: null,
         ...(args.ownerPid !== undefined ? { ownerPid: args.ownerPid } : {}),
+        ...(args.ownerProcessStartedAt !== undefined ? { ownerProcessStartedAt: args.ownerProcessStartedAt } : {}),
       });
       return session;
     }),
@@ -756,6 +757,129 @@ describe("ptyService", () => {
       });
 
       expect(mockPty.write).not.toHaveBeenCalled();
+    });
+
+    it("sends direct command initialInput separately from startupCommand previews", async () => {
+      const { service, mockPty } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        command: "codex",
+        args: ["--no-alt-screen", "--model", "gpt-5.4"],
+        startupCommand: "codex --no-alt-screen --model gpt-5.4",
+        initialInput: "ADE session guidance\r\nUser prompt:\r\nhello",
+      });
+
+      expect(mockPty.write).toHaveBeenCalledTimes(1);
+      expect(mockPty.write).toHaveBeenCalledWith("\x1b[200~ADE session guidance\nUser prompt:\nhello\x1b[201~\r");
+    });
+
+    it("waits for agent CLI readiness before sending initialInput", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty } = createHarness();
+
+        await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+          startupCommand: "codex --no-alt-screen",
+          initialInput: "print cwd",
+        });
+
+        expect(mockPty.write).not.toHaveBeenCalled();
+
+        mockPty._emitter.emit("data", "OpenAI Codex\n");
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(mockPty.write).not.toHaveBeenCalled();
+
+        mockPty._emitter.emit("data", "\x1b[2J\x1b[Hmodel: loading\n› ");
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(mockPty.write).not.toHaveBeenCalled();
+
+        mockPty._emitter.emit("data", "\x1b[2J\x1b[Hmodel: gpt-5.4 medium\nStarting MCP servers (2/6): codex_apps, computer-use\n› ");
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(mockPty.write).not.toHaveBeenCalled();
+
+        mockPty._emitter.emit("data", "\x1b[2J\x1b[Hmodel: gpt-5.4 medium\nMCP startup incomplete (failed: linear)\n› ");
+        await vi.advanceTimersByTimeAsync(599);
+        expect(mockPty.write).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(mockPty.write).toHaveBeenCalledTimes(1);
+        expect(mockPty.write).toHaveBeenNthCalledWith(1, "\x05");
+
+        await vi.advanceTimersByTimeAsync(25);
+        expect(mockPty.write).toHaveBeenCalledTimes(2);
+        expect(mockPty.write).toHaveBeenNthCalledWith(2, "\x15");
+
+        await vi.advanceTimersByTimeAsync(25);
+        expect(mockPty.write).toHaveBeenCalledTimes(3);
+        expect(mockPty.write).toHaveBeenLastCalledWith("\x1b[200~print cwd\x1b[201~");
+
+        await vi.advanceTimersByTimeAsync(180);
+        expect(mockPty.write).toHaveBeenCalledTimes(4);
+        expect(mockPty.write).toHaveBeenLastCalledWith("\r");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not send Cursor initialInput into the workspace trust prompt", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty } = createHarness();
+
+        await service.create({
+          laneId: "lane-1",
+          title: "Cursor CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "cursor-cli",
+          command: "/bin/bash",
+          args: ["-lc", "cursor-agent --resume chat-1"],
+          startupCommand: "cursor-agent --resume chat-1",
+          initialInput: "print cwd",
+        });
+
+        mockPty._emitter.emit("data", [
+          "Cursor Agent\n",
+          "Workspace Trust Required\n",
+          "Do you trust the content of this directory?\n",
+          "[a] Trust this workspace\n",
+        ].join(""));
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(mockPty.write).not.toHaveBeenCalled();
+
+        mockPty._emitter.emit("data", "Cursor Agent\nv2026.05.24\nUse /skills to give Cursor specialized knowledge for tasks.\n");
+        await vi.advanceTimersByTimeAsync(600);
+        expect(mockPty.write).toHaveBeenCalledTimes(1);
+        expect(mockPty.write).toHaveBeenNthCalledWith(1, "\x05");
+
+        await vi.advanceTimersByTimeAsync(25);
+        expect(mockPty.write).toHaveBeenCalledTimes(2);
+        expect(mockPty.write).toHaveBeenNthCalledWith(2, "\x15");
+
+        await vi.advanceTimersByTimeAsync(25);
+        expect(mockPty.write).toHaveBeenCalledTimes(3);
+        expect(mockPty.write).toHaveBeenNthCalledWith(3, "print cwd");
+
+        await vi.advanceTimersByTimeAsync(499);
+        expect(mockPty.write).toHaveBeenCalledTimes(3);
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(mockPty.write).toHaveBeenCalledTimes(4);
+        expect(mockPty.write).toHaveBeenLastCalledWith("\r");
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("falls back to typing startupCommand in a shell when direct command spawn fails", async () => {
@@ -1264,7 +1388,7 @@ describe("ptyService", () => {
 
     it("backfills a targetless Claude resume command before launching the resumed PTY", async () => {
       (mocks.extractResumeCommandFromOutput as any).mockReturnValueOnce("claude --resume claude-session-123");
-      const { service, sessionService, mockPty } = createHarness();
+      const { service, sessionService, mockPty, loadPty } = createHarness();
       sessionService.create({
         sessionId: "session-claude-picker",
         laneId: "lane-1",
@@ -1510,12 +1634,46 @@ describe("ptyService", () => {
         resumed: false,
         reusedExistingRuntime: true,
       }));
-      expect(mockPty.write).toHaveBeenCalledWith("keep going\r");
+      expect(mockPty.write).toHaveBeenNthCalledWith(1, "\x05");
+      expect(mockPty.write).toHaveBeenNthCalledWith(2, "\x15");
+      expect(mockPty.write).toHaveBeenNthCalledWith(3, "\x1b[200~keep going\x1b[201~");
+      expect(mockPty.write).toHaveBeenNthCalledWith(4, "\r");
       expect(loadPty).not.toHaveBeenCalled();
     });
 
+    it("sendToSession uses line-submit for Droid CLI sessions", async () => {
+      const { service, mockPty } = createHarness();
+      const created = await service.create({
+        sessionId: "session-droid-send",
+        allowNewSessionId: true,
+        laneId: "lane-1",
+        title: "Droid CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "droid",
+        startupCommand: "droid",
+      });
+      (mockPty.write as unknown as { mockClear(): void }).mockClear();
+
+      const result = await service.sendToSession({
+        sessionId: created.sessionId,
+        text: "keep going",
+      });
+
+      expect(result).toEqual(expect.objectContaining({
+        sessionId: "session-droid-send",
+        ptyId: created.ptyId,
+        resumed: false,
+        reusedExistingRuntime: true,
+      }));
+      expect(mockPty.write).toHaveBeenNthCalledWith(1, "\x05");
+      expect(mockPty.write).toHaveBeenNthCalledWith(2, "\x15");
+      expect(mockPty.write).toHaveBeenNthCalledWith(3, "keep going");
+      expect(mockPty.write).toHaveBeenNthCalledWith(4, "\r");
+    });
+
     it("sendToSession resumes an ended tracked CLI session and writes the message", async () => {
-      const { service, sessionService, mockPty } = createHarness();
+      const { service, sessionService, mockPty, loadPty } = createHarness();
       sessionService.create({
         sessionId: "session-ended-send",
         laneId: "lane-1",
@@ -1540,7 +1698,7 @@ describe("ptyService", () => {
         status: "completed",
       });
 
-      const result = await service.sendToSession({
+      const pending = service.sendToSession({
         sessionId: "session-ended-send",
         text: "fix failing tests",
         cols: 120,
@@ -1549,6 +1707,9 @@ describe("ptyService", () => {
         reasoningEffort: "high",
         permissionMode: "plan",
       });
+      await Promise.resolve();
+      mockPty._emitter.emit("data", "OpenAI Codex\n› ");
+      const result = await pending;
 
       expect(result).toEqual(expect.objectContaining({
         sessionId: "session-ended-send",
@@ -1560,15 +1721,131 @@ describe("ptyService", () => {
         ptyId: expect.any(String),
         startedAt: expect.any(String),
       });
-      expect(mockPty.write).toHaveBeenCalledWith("codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"high\"' --sandbox read-only --ask-for-approval on-request resume thread-ended\r");
-      expect(mockPty.write).toHaveBeenCalledWith("fix failing tests\r");
+      const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+      expect(spawn).toHaveBeenCalledWith(
+        "/bin/bash",
+        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"high\"' --sandbox read-only --ask-for-approval on-request resume thread-ended"],
+        expect.any(Object),
+      );
+      expect(mockPty.write).toHaveBeenCalledWith("\x1b[200~fix failing tests\x1b[201~");
+      expect(mockPty.write).toHaveBeenCalledWith("\r");
+    });
+
+    it("sendToSession preserves stored launch model and reasoning when no overrides are provided", async () => {
+      const { service, sessionService, mockPty, loadPty } = createHarness();
+      sessionService.create({
+        sessionId: "session-ended-stored-launch",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Codex CLI",
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: "/tmp/transcripts/session-ended-stored-launch.log",
+        toolType: "codex",
+        resumeCommand: "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"medium\"' --sandbox workspace-write --ask-for-approval untrusted resume thread-stored",
+        resumeMetadata: {
+          provider: "codex",
+          targetKind: "thread",
+          targetId: "thread-stored",
+          launch: {
+            permissionMode: "edit",
+            model: "gpt-5.4",
+            reasoningEffort: "medium",
+          },
+        },
+      });
+      sessionService.end({
+        sessionId: "session-ended-stored-launch",
+        endedAt: "2026-04-09T12:30:00.000Z",
+        exitCode: 0,
+        status: "completed",
+      });
+
+      const pending = service.sendToSession({
+        sessionId: "session-ended-stored-launch",
+        text: "continue",
+      });
+      await Promise.resolve();
+      mockPty._emitter.emit("data", "OpenAI Codex\n› ");
+      await pending;
+
+      const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+      expect(spawn).toHaveBeenCalledWith(
+        "/bin/bash",
+        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"medium\"' --sandbox workspace-write --ask-for-approval untrusted resume thread-stored"],
+        expect.any(Object),
+      );
+    });
+
+    it("sendToSession treats Cursor's resumed follow-up composer as ready", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, sessionService, mockPty, loadPty } = createHarness();
+        sessionService.create({
+          sessionId: "session-cursor-resume",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Cursor CLI",
+          startedAt: "2026-04-09T12:00:00.000Z",
+          transcriptPath: "/tmp/transcripts/session-cursor-resume.log",
+          toolType: "cursor-cli",
+          resumeCommand: "cursor-agent --model auto --resume cursor-chat-1",
+          resumeMetadata: {
+            provider: "cursor",
+            targetKind: "session",
+            targetId: "cursor-chat-1",
+            launch: { permissionMode: "default", model: "auto" },
+          },
+        });
+        sessionService.end({
+          sessionId: "session-cursor-resume",
+          endedAt: "2026-04-09T12:30:00.000Z",
+          exitCode: 0,
+          status: "completed",
+        });
+
+        const pending = service.sendToSession({
+          sessionId: "session-cursor-resume",
+          text: "Print EXACT_CURSOR_RESUME_526 and stop",
+          cols: 120,
+          rows: 40,
+        });
+        await Promise.resolve();
+        mockPty._emitter.emit("data", "Cursor Agent\nv2026.05.24\n→ Add a follow-up\n");
+
+        await vi.advanceTimersByTimeAsync(599);
+        expect(mockPty.write).toHaveBeenCalledTimes(0);
+        const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+        expect(spawn).toHaveBeenCalledWith(
+          "/bin/bash",
+          ["--noprofile", "--norc", "-lc", "cursor-agent --model auto --resume cursor-chat-1"],
+          expect.any(Object),
+        );
+
+        await vi.advanceTimersByTimeAsync(1);
+        await vi.advanceTimersByTimeAsync(550);
+        const result = await pending;
+
+        expect(result).toEqual(expect.objectContaining({
+          sessionId: "session-cursor-resume",
+          resumed: true,
+          reusedExistingRuntime: false,
+        }));
+        expect(mockPty.write).toHaveBeenNthCalledWith(1, "\x05");
+        expect(mockPty.write).toHaveBeenNthCalledWith(2, "\x15");
+        expect(mockPty.write).toHaveBeenNthCalledWith(3, "Print EXACT_CURSOR_RESUME_526 and stop");
+        expect(mockPty.write).toHaveBeenNthCalledWith(4, "\r");
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("sendToSession uses OpenCode replay resume when the installed CLI supports it", async () => {
       const previous = process.env.ADE_OPENCODE_REPLAY_RESUME;
       process.env.ADE_OPENCODE_REPLAY_RESUME = "1";
       try {
-        const { service, sessionService, mockPty } = createHarness();
+        const { service, sessionService, mockPty, loadPty } = createHarness();
         sessionService.create({
           sessionId: "session-opencode-replay",
           laneId: "lane-1",
@@ -1596,7 +1873,7 @@ describe("ptyService", () => {
         const result = await service.sendToSession({
           sessionId: "session-opencode-replay",
           text: "continue from the freeze frame",
-          model: "openai/gpt-5.4",
+          model: "opencode/lmstudio/openai%2Fgpt-oss-20b",
           permissionMode: "plan",
         });
 
@@ -1605,9 +1882,10 @@ describe("ptyService", () => {
           resumed: true,
           reusedExistingRuntime: false,
         }));
-        const writes = (mockPty.write as any).mock.calls.map((call: string[]) => call[0]);
-        expect(writes.some((line: string) =>
-          line.includes("opencode run --interactive --agent plan --model openai/gpt-5.4 --session ses_abc --replay --replay-limit 40 --")
+        const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+        const spawnArgs = spawn.mock.calls.map((call: any[]) => call[1]).flat();
+        expect(spawnArgs.some((line: string) =>
+          line.includes("opencode run --interactive --agent plan --model lmstudio/openai/gpt-oss-20b --session ses_abc --replay --replay-limit 40 --")
           && line.includes("continue from the freeze frame")
           && line.includes("\"question\":\"allow\"")
         )).toBe(true);
@@ -1647,15 +1925,25 @@ describe("ptyService", () => {
         status: "completed",
       });
 
-      const [first, second] = await Promise.all([
+      const pending = Promise.all([
         service.sendToSession({ sessionId: "session-concurrent-send", text: "first" }),
         service.sendToSession({ sessionId: "session-concurrent-send", text: "second" }),
       ]);
+      await Promise.resolve();
+      mockPty._emitter.emit("data", "OpenAI Codex\n› ");
+      const [first, second] = await pending;
 
       expect(first.ptyId).toBe(second.ptyId);
       expect(loadPty).toHaveBeenCalledTimes(1);
-      expect(mockPty.write).toHaveBeenCalledWith("first\r");
-      expect(mockPty.write).toHaveBeenCalledWith("second\r");
+      const writes = (mockPty.write as any).mock.calls.map((call: string[]) => call[0]);
+      const firstText = writes.indexOf("\x1b[200~first\x1b[201~");
+      const firstSubmit = writes.indexOf("\r", writes.indexOf("codex resume thread-concurrent\r") + 1);
+      const secondText = writes.indexOf("\x1b[200~second\x1b[201~");
+      const secondSubmit = writes.indexOf("\r", firstSubmit + 1);
+      expect(firstText).toBeGreaterThanOrEqual(0);
+      expect(firstSubmit).toBeGreaterThan(firstText);
+      expect(secondText).toBeGreaterThan(firstSubmit);
+      expect(secondSubmit).toBeGreaterThan(secondText);
     });
 
     it("sendToSession rejects ended shell sessions", async () => {
@@ -2305,6 +2593,7 @@ describe("ptyService", () => {
       expect(service.getRuntimeState("unknown-session", "failed")).toBe("exited");
       expect(service.getRuntimeState("unknown-session", "running")).toBe("running");
       expect(service.getRuntimeState("unknown-session", "disposed")).toBe("killed");
+      expect(service.getRuntimeState("unknown-session", "detached")).toBe("exited");
     });
   });
 
@@ -2352,6 +2641,70 @@ describe("ptyService", () => {
       const rows = [{ id: "unknown", status: "completed" as const }];
       const enriched = service.enrichSessions(rows as any);
       expect(enriched[0].runtimeState).toBe("exited");
+    });
+
+    it("presents stale running PTY rows without a live local PTY as ended", () => {
+      const { service } = createHarness();
+      const enriched = service.enrichSessions([{
+        id: "stale-session",
+        status: "running" as const,
+        ptyId: "stale-pty",
+        toolType: "codex" as const,
+        chatSessionId: null,
+      }] as any);
+
+      expect(enriched[0]).toMatchObject({
+        id: "stale-session",
+        status: "detached",
+        ptyId: null,
+        runtimeState: "exited",
+      });
+    });
+
+    it("does not end persisted agent chat rows just because there is no PTY", () => {
+      const { service } = createHarness();
+      const enriched = service.enrichSessions([{
+        id: "chat-session",
+        status: "running" as const,
+        ptyId: null,
+        toolType: "codex-chat" as const,
+        chatSessionId: "chat-session",
+      }] as any);
+
+      expect(enriched[0]).toMatchObject({
+        id: "chat-session",
+        status: "running",
+        runtimeState: "running",
+      });
+    });
+
+    it("presents live peer-owned PTYs as detached from this runtime", () => {
+      const processRegistry = {
+        pid: 12_345,
+        startedAt: "2026-03-17T00:00:00.000Z",
+        isPidLive: vi.fn((pid: number) => pid === 99_999),
+        isProcessIdentityLive: vi.fn((pid: number, startedAt: string | null) => (
+          pid === 99_999 && startedAt === "2026-03-17T00:01:00.000Z"
+        )),
+      };
+      const { service } = createHarness({ processRegistry });
+
+      const enriched = service.enrichSessions([{
+        id: "peer-session",
+        status: "running" as const,
+        ptyId: "peer-pty",
+        ownerPid: 99_999,
+        ownerProcessStartedAt: "2026-03-17T00:01:00.000Z",
+        chatSessionId: null,
+      }] as any);
+
+      expect(enriched[0]).toMatchObject({
+        id: "peer-session",
+        status: "detached",
+        ptyId: null,
+        runtimeState: "exited",
+      });
+      expect(processRegistry.isProcessIdentityLive).toHaveBeenCalledWith(99_999, "2026-03-17T00:01:00.000Z");
     });
   });
 
@@ -2509,6 +2862,57 @@ describe("ptyService", () => {
         ownerPid: 12_345,
         ownerProcessStartedAt: "2026-03-17T00:00:00.000Z",
       }));
+    });
+
+    it("repairs a live PTY session row that another runtime marked detached", async () => {
+      const { service, mockPty, sessionService, logger } = createHarness({
+        processRegistry: {
+          pid: 12_345,
+          startedAt: "2026-03-17T00:00:00.000Z",
+          isPidLive: vi.fn(),
+          isProcessIdentityLive: vi.fn(() => false),
+        },
+      });
+
+      const { ptyId, sessionId } = await service.create({
+        laneId: "lane-1",
+        title: "Claude session",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        startupCommand: "claude",
+      });
+      const session = sessionService.get(sessionId);
+      Object.assign(session, {
+        status: "detached",
+        ptyId: null,
+        endedAt: "2026-03-17T00:01:00.000Z",
+      });
+
+      mockPty._emitter.emit("data", "still running\n");
+
+      expect(sessionService.reattach).toHaveBeenCalledWith({
+        sessionId,
+        ptyId,
+        startedAt: expect.any(String),
+        ownerPid: 12_345,
+        ownerProcessStartedAt: "2026-03-17T00:00:00.000Z",
+      });
+      expect(session).toEqual(expect.objectContaining({
+        status: "running",
+        ptyId,
+        endedAt: null,
+      }));
+      expect(logger.warn).toHaveBeenCalledWith(
+        "pty.live_session_row_resynced",
+        expect.objectContaining({
+          sessionId,
+          ptyId,
+          previousStatus: "detached",
+          previousPtyId: null,
+          toolType: "claude",
+        }),
+      );
     });
 
     it("uses the bound cwd for AI summaries after exit even if the lane mapping changes later", async () => {
@@ -3190,6 +3594,25 @@ describe("ptyService", () => {
       expect(read.terminalId).toBe(created.sessionId);
       expect(read.data).toBe("456789");
       expect(read.nextSince).toBe(4 + "456789".length);
+    });
+
+    it("readTerminal merges recent live output before the transcript stream flushes", async () => {
+      const { service, mockPty, sessionService } = createChatHarness();
+      const created = await service.create({
+        laneId: "lane-1",
+        title: "Reader",
+        cols: 80,
+        rows: 24,
+        chatSessionId: "chat-7",
+      });
+      sessionService.readTranscriptTail.mockResolvedValueOnce("disk\n");
+
+      mockPty._emitter.emit("data", "live output");
+
+      const read = await service.readTerminal({ terminalId: created.sessionId, since: 5, maxBytes: 1024 });
+      expect(read.terminalId).toBe(created.sessionId);
+      expect(read.data).toBe("live output");
+      expect(read.nextSince).toBe("disk\nlive output".length);
     });
 
     it("readTerminal defaults to a bounded transcript tail", async () => {

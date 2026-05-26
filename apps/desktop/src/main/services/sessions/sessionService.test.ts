@@ -135,6 +135,8 @@ describe("sessionService resume metadata", () => {
         targetId: null,
         launch: {
           permissionMode: "edit",
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
           codexApprovalPolicy: "untrusted",
           codexSandbox: "workspace-write",
           codexConfigSource: "flags",
@@ -144,7 +146,7 @@ describe("sessionService resume metadata", () => {
 
     const created = service.get("session-2");
     expect(created?.resumeCommand).toBe(
-      "codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume",
+      "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"medium\"' --sandbox workspace-write --ask-for-approval untrusted resume",
     );
 
     service.setResumeCommand("session-2", "codex resume thread-1");
@@ -156,13 +158,15 @@ describe("sessionService resume metadata", () => {
       permissionMode: "edit",
       launch: {
         permissionMode: "edit",
+        model: "gpt-5.4",
+        reasoningEffort: "medium",
         codexApprovalPolicy: "untrusted",
         codexSandbox: "workspace-write",
         codexConfigSource: "flags",
       },
     });
     expect(resumed?.resumeCommand).toBe(
-      "codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-1",
+      "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"medium\"' --sandbox workspace-write --ask-for-approval untrusted resume thread-1",
     );
 
     activeDisposers.push(async () => db.close());
@@ -448,14 +452,14 @@ describe("sessionService resume metadata", () => {
 
     const reconciled = service.reconcileStaleRunningSessions({
       endedAt: "2026-03-17T00:20:00.000Z",
-      status: "disposed",
+      status: "detached",
     });
 
     expect(reconciled).toBe(1);
     expect(service.get("session-chat-stale")).toEqual(expect.objectContaining({
       id: "session-chat-stale",
       ptyId: null,
-      status: "disposed",
+      status: "detached",
       endedAt: "2026-03-17T00:20:00.000Z",
     }));
 
@@ -533,7 +537,7 @@ describe("sessionService resume metadata", () => {
 
     const reconciled = service.reconcileStaleRunningSessions({
       endedAt: "2026-03-17T00:20:00.000Z",
-      status: "disposed",
+      status: "detached",
       liveOwnerPids: new Set([12_345]),
     });
 
@@ -546,14 +550,14 @@ describe("sessionService resume metadata", () => {
     }));
     expect(service.get("session-dead-owner")).toEqual(expect.objectContaining({
       id: "session-dead-owner",
-      status: "disposed",
+      status: "detached",
       ptyId: null,
       ownerPid: 99_999,
       endedAt: "2026-03-17T00:20:00.000Z",
     }));
     expect(service.get("session-legacy-owner")).toEqual(expect.objectContaining({
       id: "session-legacy-owner",
-      status: "disposed",
+      status: "detached",
       ptyId: null,
     }));
     expect(events).toEqual(expect.arrayContaining([
@@ -598,7 +602,7 @@ describe("sessionService resume metadata", () => {
 
     const reconciled = service.reconcileStaleRunningSessions({
       endedAt: "2026-03-17T00:20:00.000Z",
-      status: "disposed",
+      status: "detached",
       liveOwnerPids: new Set([12_345]),
       liveOwnerIdentities: [{ pid: 12_345, startedAt: "2026-03-17T00:00:00.000Z" }],
     });
@@ -610,11 +614,180 @@ describe("sessionService resume metadata", () => {
       ownerProcessStartedAt: "2026-03-17T00:00:00.000Z",
     }));
     expect(service.get("session-reused-pid")).toEqual(expect.objectContaining({
-      status: "disposed",
+      status: "detached",
       ptyId: null,
       ownerPid: 12_345,
       ownerProcessStartedAt: "2026-03-16T23:59:00.000Z",
     }));
+
+    activeDisposers.push(async () => db.close());
+  });
+
+  it("does not reconcile running sessions with fresh startup or output", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "session-stale-owner",
+      laneId: "lane-1",
+      ptyId: "pty-stale-owner",
+      tracked: true,
+      title: "Stale owner",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-stale-owner.log",
+      toolType: "codex",
+      ownerPid: 99_999,
+      ownerProcessStartedAt: "2026-03-17T00:00:00.000Z",
+    });
+    service.create({
+      sessionId: "session-fresh-start",
+      laneId: "lane-1",
+      ptyId: "pty-fresh-start",
+      tracked: true,
+      title: "Fresh start",
+      startedAt: "2026-03-17T00:19:30.000Z",
+      transcriptPath: "/tmp/session-fresh-start.log",
+      toolType: "codex",
+      ownerPid: 99_999,
+      ownerProcessStartedAt: "2026-03-17T00:00:00.000Z",
+    });
+    service.create({
+      sessionId: "session-fresh-output",
+      laneId: "lane-1",
+      ptyId: "pty-fresh-output",
+      tracked: true,
+      title: "Fresh output",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-fresh-output.log",
+      toolType: "claude",
+      ownerPid: 99_999,
+      ownerProcessStartedAt: "2026-03-17T00:00:00.000Z",
+    });
+    db.run(
+      "update terminal_sessions set last_output_at = ? where id = ?",
+      ["2026-03-17T00:19:50.000Z", "session-fresh-output"],
+    );
+
+    const reconciled = service.reconcileStaleRunningSessions({
+      endedAt: "2026-03-17T00:20:00.000Z",
+      status: "detached",
+      liveOwnerPids: new Set([12_345]),
+      liveOwnerIdentities: [{ pid: 12_345, startedAt: "2026-03-17T00:00:00.000Z" }],
+      freshActivityGraceMs: 60_000,
+    });
+
+    expect(reconciled).toBe(1);
+    expect(service.get("session-stale-owner")).toEqual(expect.objectContaining({
+      status: "detached",
+      ptyId: null,
+    }));
+    expect(service.get("session-fresh-start")).toEqual(expect.objectContaining({
+      status: "running",
+      ptyId: "pty-fresh-start",
+    }));
+    expect(service.get("session-fresh-output")).toEqual(expect.objectContaining({
+      status: "running",
+      ptyId: "pty-fresh-output",
+    }));
+
+    const reconciledAfterGrace = service.reconcileStaleRunningSessions({
+      endedAt: "2026-03-17T00:21:01.000Z",
+      status: "detached",
+      liveOwnerPids: new Set([12_345]),
+      liveOwnerIdentities: [{ pid: 12_345, startedAt: "2026-03-17T00:00:00.000Z" }],
+      freshActivityGraceMs: 60_000,
+    });
+
+    expect(reconciledAfterGrace).toBe(2);
+    expect(service.get("session-fresh-start")).toEqual(expect.objectContaining({
+      status: "detached",
+      ptyId: null,
+    }));
+    expect(service.get("session-fresh-output")).toEqual(expect.objectContaining({
+      status: "detached",
+      ptyId: null,
+    }));
+
+    activeDisposers.push(async () => db.close());
+  });
+
+  it("preserves fresh activity for every terminal-backed CLI tool type", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+    const freshToolTypes = [
+      "claude",
+      "codex",
+      "cursor-cli",
+      "droid",
+      "opencode",
+      "claude-orchestrated",
+      "codex-orchestrated",
+      "opencode-orchestrated",
+      "shell",
+      "run-shell",
+      "aider",
+      "continue",
+      "other",
+    ] as const;
+
+    service.create({
+      sessionId: "session-stale-owner-all-tools",
+      laneId: "lane-1",
+      ptyId: "pty-stale-owner-all-tools",
+      tracked: true,
+      title: "Stale owner",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-stale-owner-all-tools.log",
+      toolType: "codex",
+      ownerPid: 99_999,
+      ownerProcessStartedAt: "2026-03-17T00:00:00.000Z",
+    });
+
+    freshToolTypes.forEach((toolType, index) => {
+      const sessionId = `session-fresh-${index}`;
+      service.create({
+        sessionId,
+        laneId: "lane-1",
+        ptyId: `pty-fresh-${index}`,
+        tracked: true,
+        title: `Fresh ${toolType}`,
+        startedAt: "2026-03-17T00:10:00.000Z",
+        transcriptPath: `/tmp/${sessionId}.log`,
+        toolType,
+        ownerPid: 99_999,
+        ownerProcessStartedAt: "2026-03-17T00:00:00.000Z",
+      });
+      db.run(
+        "update terminal_sessions set last_output_at = ? where id = ?",
+        ["2026-03-17T00:19:50.000Z", sessionId],
+      );
+    });
+
+    const reconciled = service.reconcileStaleRunningSessions({
+      endedAt: "2026-03-17T00:20:00.000Z",
+      status: "detached",
+      liveOwnerPids: new Set([12_345]),
+      liveOwnerIdentities: [{ pid: 12_345, startedAt: "2026-03-17T00:00:00.000Z" }],
+      freshActivityGraceMs: 60_000,
+    });
+
+    expect(reconciled).toBe(1);
+    expect(service.get("session-stale-owner-all-tools")).toEqual(expect.objectContaining({
+      status: "detached",
+      ptyId: null,
+    }));
+    freshToolTypes.forEach((_, index) => {
+      expect(service.get(`session-fresh-${index}`)).toEqual(expect.objectContaining({
+        status: "running",
+        ptyId: `pty-fresh-${index}`,
+      }));
+    });
 
     activeDisposers.push(async () => db.close());
   });
@@ -650,7 +823,7 @@ describe("sessionService resume metadata", () => {
 
     expect(service.reconcileStaleRunningSessions({
       endedAt: "2026-03-17T00:20:00.000Z",
-      status: "disposed",
+      status: "detached",
     })).toBe(1);
 
     expect(service.get("session-owned-unknown")).toEqual(expect.objectContaining({
@@ -658,7 +831,7 @@ describe("sessionService resume metadata", () => {
       ownerPid: 12_345,
     }));
     expect(service.get("session-legacy-unknown")).toEqual(expect.objectContaining({
-      status: "disposed",
+      status: "detached",
       ptyId: null,
     }));
 

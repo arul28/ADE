@@ -686,8 +686,10 @@ function summarizeNativeControls(
       permissionMode = "config-toml";
     } else if (controls.codexApprovalPolicy === "never" && controls.codexSandbox === "danger-full-access") {
       permissionMode = "full-auto";
+    } else if (controls.codexApprovalPolicy === "untrusted" && controls.codexSandbox === "workspace-write") {
+      permissionMode = "edit";
     } else if (
-      (controls.codexApprovalPolicy === "on-request" || controls.codexApprovalPolicy === "on-failure" || controls.codexApprovalPolicy === "untrusted")
+      (controls.codexApprovalPolicy === "on-request" || controls.codexApprovalPolicy === "on-failure")
       && controls.codexSandbox === "workspace-write"
     ) {
       permissionMode = "default";
@@ -810,7 +812,7 @@ function buildFallbackCursorModeSnapshot(modeId: string | null | undefined): Non
   };
 }
 
-type HandoffCodexPreset = "default" | "plan" | "full-auto" | "config-toml" | "custom";
+type HandoffCodexPreset = "default" | "edit" | "plan" | "full-auto" | "config-toml" | "custom";
 
 function resolveHandoffCodexPreset(controls: {
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
@@ -818,19 +820,27 @@ function resolveHandoffCodexPreset(controls: {
   codexConfigSource?: AgentChatCodexConfigSource;
 }): HandoffCodexPreset {
   if (controls.codexConfigSource === "config-toml") return "config-toml";
-  if ((controls.codexApprovalPolicy === "on-request" || controls.codexApprovalPolicy === "on-failure" || controls.codexApprovalPolicy === "untrusted") && controls.codexSandbox === "workspace-write") return "default";
+  if (controls.codexApprovalPolicy === "untrusted" && controls.codexSandbox === "workspace-write") return "edit";
+  if ((controls.codexApprovalPolicy === "on-request" || controls.codexApprovalPolicy === "on-failure") && controls.codexSandbox === "workspace-write") return "default";
   if ((controls.codexApprovalPolicy === "on-request" || controls.codexApprovalPolicy === "untrusted") && controls.codexSandbox === "read-only") return "plan";
   if (controls.codexApprovalPolicy === "never" && controls.codexSandbox === "danger-full-access") return "full-auto";
   return "custom";
 }
 
 function handoffApplyCodexPreset(
-  preset: "default" | "plan" | "full-auto" | "config-toml",
+  preset: "default" | "edit" | "plan" | "full-auto" | "config-toml",
   fallbacks: { cap: AgentChatCodexApprovalPolicy; sandbox: AgentChatCodexSandbox },
 ): Pick<NativeControlState, "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource"> {
   if (preset === "default") {
     return {
       codexApprovalPolicy: "on-request",
+      codexSandbox: "workspace-write",
+      codexConfigSource: "flags",
+    };
+  }
+  if (preset === "edit") {
+    return {
+      codexApprovalPolicy: "untrusted",
       codexSandbox: "workspace-write",
       codexConfigSource: "flags",
     };
@@ -877,6 +887,7 @@ const HANDOFF_OPENCODE_MODES: Array<{ value: AgentChatOpenCodePermissionMode; la
   { value: "plan", label: "Plan" },
   { value: "edit", label: "Edit" },
   { value: "full-auto", label: "Full auto" },
+  { value: "config-toml", label: "Config" },
 ];
 
 const HANDOFF_DROID_MODES: Array<{ value: AgentChatDroidPermissionMode; label: string }> = [
@@ -1219,10 +1230,10 @@ function resolveRegistryModelId(value: string | null | undefined): string | null
 
 const INTERACTION_MODES: readonly AgentChatInteractionMode[] = ["default", "plan"];
 const CLAUDE_PERMISSION_MODES: readonly AgentChatClaudePermissionMode[] = ["default", "auto", "plan", "acceptEdits", "bypassPermissions"];
-const CODEX_APPROVAL_POLICIES: readonly AgentChatCodexApprovalPolicy[] = ["untrusted", "on-request", "on-failure", "never"];
+const CODEX_APPROVAL_POLICIES: readonly AgentChatCodexApprovalPolicy[] = ["untrusted", "on-request", "never"];
 const CODEX_SANDBOXES: readonly AgentChatCodexSandbox[] = ["read-only", "workspace-write", "danger-full-access"];
 const CODEX_CONFIG_SOURCES: readonly AgentChatCodexConfigSource[] = ["flags", "config-toml"];
-const OPENCODE_PERMISSION_MODES: readonly AgentChatOpenCodePermissionMode[] = ["plan", "edit", "full-auto"];
+const OPENCODE_PERMISSION_MODES: readonly AgentChatOpenCodePermissionMode[] = ["plan", "edit", "full-auto", "config-toml"];
 const DROID_PERMISSION_MODES: readonly AgentChatDroidPermissionMode[] = ["read-only", "auto-low", "auto-medium", "auto-high"];
 const EXECUTION_MODES: readonly AgentChatExecutionMode[] = ["focused", "parallel", "subagents", "teams"];
 const EMPTY_CHAT_EVENTS: AgentChatEventEnvelope[] = [];
@@ -1454,7 +1465,10 @@ function resolveCliRegistryModelId(provider: "codex" | "claude" | "cursor" | "dr
   if (!normalized.length) return null;
   if (provider === "cursor") {
     const fullId = normalized.startsWith("cursor/") ? normalized : `cursor/${normalized}`;
-    const dynamic = getModelById(fullId) ?? resolveModelDescriptorForProvider(normalized.replace(/^cursor\//, ""), "cursor");
+    const dynamic =
+      resolveModelDescriptorWithRuntimeCatalog(fullId)
+      ?? getModelById(fullId)
+      ?? resolveModelDescriptorForProvider(normalized.replace(/^cursor\//, ""), "cursor");
     if (dynamic && dynamic.family === "cursor") return dynamic.id;
     return null;
   }
@@ -3134,7 +3148,10 @@ export function AgentChatPane({
     }
     return null;
   }, [effectiveAvailableModelIds, modelId, modelSelectionConstrained]);
+  const cursorCloudApiAvailable = providerConnections?.cursor?.authAvailable === true
+    || aiStatus?.availableProviders?.cursor === true;
   const cursorCloudAvailable = Boolean(laneId)
+    && cursorCloudApiAvailable
     && (selectedSession?.provider === "cursor" || (typeof modelId === "string" && modelId.startsWith("cursor/")));
   // Launch-to-cloud is only allowed for a fresh chat: no events yet AND not already promoted to a
   // cloud agent. The "open existing cloud chat" affordance remains independent of this flag because
@@ -3278,7 +3295,7 @@ export function AgentChatPane({
       }),
     [handoffCodexApprovalPolicy, handoffCodexSandbox, handoffCodexConfigSource],
   );
-  const handoffCodexSelectValue: "default" | "plan" | "full-auto" | "config-toml" =
+  const handoffCodexSelectValue: "default" | "edit" | "plan" | "full-auto" | "config-toml" =
     handoffCodexPermissionPreset === "custom" ? "default" : handoffCodexPermissionPreset;
   const handoffBlocked = turnActive || selectedSessionAwaitingInput || handoffBusy;
   const handoffButtonTitle = handoffBlocked
@@ -5218,11 +5235,15 @@ export function AgentChatPane({
   ): Promise<StartedDraftLaunch> => {
     if (!onLaunchCliSession) throw new Error("CLI sessions are not available from this surface.");
     if (!modelId) throw new Error("Select a model before launching a CLI session.");
-    const desc = getModelById(modelId);
+    const desc = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
     if (!desc) throw new Error("Select a model before launching a CLI session.");
-    const provider = resolveCliProviderForModel(desc) ?? "opencode";
+    if (desc.family === "cursor" && desc.cursorAvailability?.cli === false) {
+      throw new Error("This Cursor model is available for chat only. Choose a Cursor CLI model for a CLI session.");
+    }
+    const provider = desc.family === "cursor" ? "cursor" : resolveCliProviderForModel(desc) ?? "opencode";
     const runtimeModel = getRuntimeModelRefForDescriptor(desc, provider);
-    const permissionMode = cliPermissionModeFromNativeControls(provider, currentNativeControls);
+    const launchNativeControls = nativeControlsRef.current;
+    const permissionMode = cliPermissionModeFromNativeControls(provider, launchNativeControls);
     const cliPrompt = buildWorkCliInitialPrompt({
       text: prepared.finalText,
       attachments: prepared.selectedAttachments,
@@ -5239,12 +5260,23 @@ export function AgentChatPane({
       initialPrompt: cliPrompt,
       laneWorktreePath: targetLane.worktreePath ?? projectRoot,
     });
+    const codexUsesPromptArg = provider === "codex" && runtimeModel === "gpt-5.3-codex";
+    const initialInput = launch.initialInput ?? (
+      provider === "codex" && !codexUsesPromptArg ? cliPrompt : undefined
+    );
+    const initialInputDelayMs = launch.initialInputDelayMs ?? (
+      initialInput && provider === "codex" && !codexUsesPromptArg ? 750 : undefined
+    );
     const result = await onLaunchCliSession({
       laneId: targetLane.laneId,
       profile: provider,
       title: workCliTitleFromPrompt(prepared.text || prepared.finalDisplayText || prepared.finalText, LAUNCH_PROFILE_TITLE[provider]),
       startupCommand: launch.startupCommand,
       startupDelayMs: workCliStartupDelayMs,
+      ...(launch.command !== undefined ? { command: launch.command } : {}),
+      ...(launch.args !== undefined ? { args: launch.args } : {}),
+      ...(initialInput !== undefined ? { initialInput } : {}),
+      ...(initialInputDelayMs !== undefined ? { initialInputDelayMs } : {}),
       ...(launch.env ? { env: launch.env } : {}),
       tracked: true,
       disposition: mode,
@@ -5254,7 +5286,6 @@ export function AgentChatPane({
       draftKind: "cli",
     };
   }, [
-    currentNativeControls,
     modelId,
     onLaunchCliSession,
     projectRoot,
@@ -7244,6 +7275,7 @@ export function AgentChatPane({
             onRuntimeCatalogRefreshed={() => {
               setRuntimeCatalogVersion((version) => version + 1);
             }}
+            allowCliOnlyModels={workDraftKind === "cli"}
             reasoningEffort={reasoningEffort}
             codexFastMode={codexFastMode}
             codexTokenUsage={selectedCodexTokenUsage}
