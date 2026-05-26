@@ -2410,9 +2410,7 @@ function buildAdeInlineGuidanceForLane(laneWorktreePath: string | null | undefin
   return buildAdeCliInlineGuidance(getAdeAgentSkillRootsForPrompt({ cwd: laneWorktreePath ?? undefined }));
 }
 
-function resolveRunContextLaneId(runtime: AdeRuntime, callerCtx: CallerContext): string | null {
-  void runtime;
-  void callerCtx;
+function resolveRunContextLaneId(_runtime: AdeRuntime, _callerCtx: CallerContext): string | null {
   return null;
 }
 
@@ -2864,12 +2862,8 @@ async function resolveEffectiveCallerContext(
   return callerCtx;
 }
 
-function isStandaloneChatCaller(callerCtx: CallerContext): boolean {
-  return callerCtx.standaloneChatSession;
-}
-
 function isToolHiddenForStandaloneChat(name: string, callerCtx: CallerContext): boolean {
-  return isStandaloneChatCaller(callerCtx) && STANDALONE_CHAT_HIDDEN_TOOL_NAMES.has(name);
+  return callerCtx.standaloneChatSession && STANDALONE_CHAT_HIDDEN_TOOL_NAMES.has(name);
 }
 
 function isLocalComputerUseAllowed(callerCtx: CallerContext): boolean {
@@ -2922,8 +2916,7 @@ async function listToolSpecsForSession(runtime: AdeRuntime, session: SessionStat
   return allVisibleTools.filter((tool) => !isToolHiddenForStandaloneChat(tool.name, callerCtx));
 }
 
-function parseInitializeIdentity(runtime: AdeRuntime, params: unknown): SessionIdentity {
-  void runtime;
+function parseInitializeIdentity(_runtime: AdeRuntime, params: unknown): SessionIdentity {
   const data = safeObject(params);
   const identity = safeObject(data.identity);
   const envContext = resolveEnvCallerContext();
@@ -3094,7 +3087,6 @@ async function buildLaneStatus(runtime: AdeRuntime, laneId: string): Promise<Rec
   };
 }
 
-
 // Global ask_user rate limit shared across all sessions to prevent
 // bypass via session recycling. Limits to 20 calls per 60s globally.
 const GLOBAL_ASK_USER_RATE_LIMIT = {
@@ -3217,9 +3209,7 @@ async function runTool(args: {
           title: args.title,
           path: args.artifactPath,
           mimeType: args.mimeType,
-          metadata: {
-            ...args.metadata,
-          },
+          metadata: args.metadata,
         },
       ],
       owners: resolveComputerUseOwners(args.sessionState, args.toolArgs),
@@ -3602,14 +3592,17 @@ async function runTool(args: {
     const argsList = Array.isArray(toolArgs.argsList) ? toolArgs.argsList : null;
     const hasScalarArg = Object.prototype.hasOwnProperty.call(toolArgs, "arg");
     const rawObjectArgs = safeObject(toolArgs.args);
-    const result = argsList
-      ? await (callable as (...params: unknown[]) => Promise<unknown>).apply(service, argsList)
-      : hasScalarArg
-        ? await (callable as (arg: unknown) => Promise<unknown>).call(service, toolArgs.arg)
-        : await (callable as (args?: Record<string, unknown>) => Promise<unknown>).call(
-            service,
-            Object.keys(rawObjectArgs).length > 0 ? rawObjectArgs : undefined
-          );
+    let result: unknown;
+    if (argsList) {
+      result = await (callable as (...params: unknown[]) => Promise<unknown>).apply(service, argsList);
+    } else if (hasScalarArg) {
+      result = await (callable as (arg: unknown) => Promise<unknown>).call(service, toolArgs.arg);
+    } else {
+      result = await (callable as (args?: Record<string, unknown>) => Promise<unknown>).call(
+        service,
+        Object.keys(rawObjectArgs).length > 0 ? rawObjectArgs : undefined,
+      );
+    }
     const record = isRecord(result) ? result : null;
     const statusHints = {
       operationId: typeof record?.operationId === "string" ? record.operationId : null,
@@ -4076,11 +4069,10 @@ async function runTool(args: {
       });
     }
     const answered = result.decision !== "decline" && result.decision !== "cancel";
-    const outcome = result.decision === "decline"
-      ? "declined"
-      : result.decision === "cancel"
-        ? "cancelled"
-        : "answered";
+    let outcome: "answered" | "declined" | "cancelled";
+    if (result.decision === "decline") outcome = "declined";
+    else if (result.decision === "cancel") outcome = "cancelled";
+    else outcome = "answered";
     return buildAskUserResult({
       awaitingUserResponse: false,
       blocking: false,

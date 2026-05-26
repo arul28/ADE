@@ -23,6 +23,38 @@ vi.mock("@emoji-mart/data/sets/15/native.json", () => ({
   default: { categories: [], emojis: {}, aliases: {}, sheet: { cols: 0, rows: 0 } },
 }));
 
+vi.mock("@lobehub/icons", () => {
+  const brand = () => {
+    const Component = () => null;
+    Object.assign(Component, {
+      Avatar: () => null,
+      Color: () => null,
+      Combine: () => null,
+      Text: () => null,
+      colorPrimary: "#888",
+      title: "stub",
+    });
+    return Component;
+  };
+  return {
+    Anthropic: brand(),
+    Claude: brand(),
+    Codex: brand(),
+    Cursor: brand(),
+    Gemini: brand(),
+    Google: brand(),
+    Grok: brand(),
+    Groq: brand(),
+    Kimi: brand(),
+    LmStudio: brand(),
+    Ollama: brand(),
+    OpenAI: brand(),
+    OpenCode: brand(),
+    OpenRouter: brand(),
+    XAI: brand(),
+  };
+});
+
 vi.mock("./TerminalView", () => ({
   TerminalView: ({ sessionId, isActive }: { sessionId: string; isActive: boolean }) => (
     <div data-testid="terminal-view" data-session-id={sessionId} data-active={String(isActive)} />
@@ -116,6 +148,7 @@ const terminalPreviewMock = vi.fn();
 const slashCommandsMock = vi.fn();
 const modelsMock = vi.fn();
 const sendToSessionMock = vi.fn();
+const resolvePtyLaunch = async () => ({ sessionId: "test-session", ptyId: "test-pty", pid: null });
 
 beforeEach(() => {
   latestPaneTilingLayoutProps = null;
@@ -277,7 +310,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -323,7 +356,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={async () => ({ ptyId: "pty-1", sessionId: "sess-1", pid: 1234 })}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -369,7 +402,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -424,7 +457,7 @@ describe("WorkViewArea", () => {
             onSelectItem={() => {}}
             onCloseItem={() => {}}
             onOpenChatSession={() => {}}
-            onLaunchPtySession={async () => ({})}
+            onLaunchPtySession={resolvePtyLaunch}
             onShowDraftKind={() => {}}
             onToggleTabGroupCollapsed={() => {}}
             closingPtyIds={new Set()}
@@ -484,7 +517,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={onCloseItem}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -538,7 +571,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -583,7 +616,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -673,7 +706,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -780,7 +813,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -869,7 +902,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -945,7 +978,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -1005,7 +1038,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -1055,7 +1088,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -1115,7 +1148,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -1168,7 +1201,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -1210,7 +1243,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -1257,7 +1290,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -1298,7 +1331,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -1348,7 +1381,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -1401,7 +1434,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -1452,7 +1485,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -1495,7 +1528,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -1552,7 +1585,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -1600,7 +1633,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -1648,7 +1681,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -1700,7 +1733,7 @@ describe("WorkViewArea", () => {
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
@@ -1747,7 +1780,7 @@ describe("WorkViewArea", () => {
         onSelectItem={onSelectItem}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
-        onLaunchPtySession={async () => ({})}
+        onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}

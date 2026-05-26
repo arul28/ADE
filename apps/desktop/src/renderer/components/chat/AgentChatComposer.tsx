@@ -2691,9 +2691,7 @@ export function AgentChatComposer({
     captureRichSelection();
   }, [captureRichSelection, getRichCursorTextOffset, onDraftChange, serializeRichEditor]);
 
-  const singleModelBlockedMessage = (modelUnavailableMessage?.trim() ?? "").length > 0
-    ? modelUnavailableMessage
-    : null;
+  const singleModelBlockedMessage = modelUnavailableMessage?.trim() ? modelUnavailableMessage : null;
   const singleModelReady = Boolean(modelId) && !singleModelBlockedMessage;
 
   const submitComposerDraft = useCallback(() => {

@@ -586,4 +586,40 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
       draftKind: "chat",
     });
   });
+
+  it("launchPtySession with disposition 'background' skips selectLane, focusSession, and openSessionTab", async () => {
+    const callOrder: string[] = [];
+
+    const { result } = renderHook(() => useLaneWorkSessions("lane-1"));
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    listSessionsCachedMock.mockResolvedValue([]);
+
+    focusSessionSpy.mockImplementation(() => {
+      callOrder.push("focusSession");
+    });
+    selectLaneSpy.mockImplementation(() => {
+      callOrder.push("selectLane");
+    });
+    setWorkViewStateSpy.mockImplementation(() => {
+      callOrder.push("setWorkViewState");
+    });
+
+    await act(async () => {
+      await result.current.launchPtySession({
+        laneId: "lane-1",
+        profile: "shell",
+        disposition: "background",
+      });
+    });
+
+    expect((window as any).ade.pty.create).toHaveBeenCalledWith(
+      expect.objectContaining({ laneId: "lane-1", title: "Shell" }),
+    );
+    expect(callOrder).not.toContain("focusSession");
+    expect(callOrder).not.toContain("selectLane");
+  });
 });

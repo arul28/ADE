@@ -124,7 +124,8 @@ import {
   buildTrackedCliLaunchCommand,
   LAUNCH_PROFILE_TITLE,
   type CliProvider,
-  type LaunchProfile,
+  type WorkPtyLaunchArgs,
+  type WorkPtyLaunchResult,
 } from "../terminals/cliLaunch";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
@@ -266,6 +267,22 @@ type BackgroundLaunchNotice = {
   laneId: string;
   laneName: string;
   sessionId: string;
+  draftKind: "chat" | "cli";
+};
+
+type DraftLaunchMode = "foreground" | "background";
+type DraftLaunchKind = BackgroundLaunchNotice["draftKind"];
+
+type DraftLaunchLaneTarget = {
+  laneId: string;
+  laneName: string;
+  worktreePath: string | null;
+  autoCreated: boolean;
+};
+
+type StartedDraftLaunch = {
+  sessionId: string;
+  draftKind: DraftLaunchKind;
 };
 
 function createTemporaryAutoLaneName(date = new Date()): string {
@@ -1831,17 +1848,7 @@ export function AgentChatPane({
   onInitialLinearIssueContextConsumed?: () => void;
   onSessionCreated?: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
   workDraftKind?: "chat" | "cli" | "chat-orchestrator";
-  onLaunchCliSession?: (args: {
-    laneId: string;
-    profile: LaunchProfile;
-    title?: string;
-    startupCommand?: string;
-    startupDelayMs?: number;
-    command?: string;
-    args?: string[];
-    env?: Record<string, string>;
-    tracked?: boolean;
-  }) => Promise<unknown>;
+  onLaunchCliSession?: (args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>;
   onOpenShellSession?: (laneId: string) => void | Promise<void>;
   /** Available lanes for the lane selector in empty state (full `LaneSummary` includes `branchRef` for branch sublines in the menu). */
   availableLanes?: Array<{ id: string; name: string; color?: string | null; branchRef?: string | null; laneType?: string | null }>;
@@ -2308,8 +2315,7 @@ export function AgentChatPane({
     const baseEvents = shouldRenderOptimistic
       ? [...selectedEvents, optimisticOutgoingMessage.envelope]
       : selectedEvents;
-    const renderableEvents = baseEvents.filter((envelope) => !envelope.event.type.startsWith("subagent."));
-    const displayEvents = renderableEvents;
+    const displayEvents = baseEvents.filter((envelope) => !envelope.event.type.startsWith("subagent."));
     const promotedTurnId = selectedSession?.cursorPromotedTurnId;
     const cloudAgentId = selectedSession?.cursorCloudAgentId;
     if (!promotedTurnId || !cloudAgentId) return displayEvents;
@@ -5042,7 +5048,7 @@ export function AgentChatPane({
     setMacosVmContextItems((current) => (current.length ? current : snapshot.macosVmContextItems));
   }, []);
 
-  const openLaunchedDraftChat = useCallback((launch: BackgroundLaunchNotice) => {
+  const openLaunchedDraftSession = useCallback((launch: BackgroundLaunchNotice) => {
     setBackgroundLaunchNotice(null);
     if (projectRoot) {
       setWorkViewState(projectRoot, (prev) => ({
@@ -5052,7 +5058,7 @@ export function AgentChatPane({
           : [...prev.openItemIds, launch.sessionId],
         activeItemId: launch.sessionId,
         selectedItemId: launch.sessionId,
-        draftKind: "chat",
+        draftKind: launch.draftKind,
         viewMode: "tabs",
       }));
       setLaneWorkViewState(projectRoot, launch.laneId, (prev) => ({
@@ -5062,7 +5068,7 @@ export function AgentChatPane({
           : [...prev.openItemIds, launch.sessionId],
         activeItemId: launch.sessionId,
         selectedItemId: launch.sessionId,
-        draftKind: "chat",
+        draftKind: launch.draftKind,
         viewMode: "tabs",
       }));
     }
@@ -5073,7 +5079,7 @@ export function AgentChatPane({
     navigate(`/lanes?laneId=${encodeURIComponent(launch.laneId)}&sessionId=${encodeURIComponent(launch.sessionId)}&focus=single`);
   }, [embeddedWorkLayout, navigate, projectRoot, setLaneWorkViewState, setWorkViewState]);
 
-  const resolveDraftLaunchLane = useCallback(async (snapshot: DraftLaunchSnapshot): Promise<{ laneId: string; laneName: string }> => {
+  const resolveDraftLaunchLane = useCallback(async (snapshot: DraftLaunchSnapshot): Promise<DraftLaunchLaneTarget> => {
     if (draftLaunchTargetIsAutoCreate) {
       if (!laneId) throw new Error("Select a lane before auto-creating a new lane.");
       const primaryLane = availableLanes?.find((candidate) => candidate.laneType === "primary")
@@ -5088,59 +5094,60 @@ export function AgentChatPane({
       });
       const createdLane = await window.ade.lanes.create({ name: laneName, parentLaneId: primaryLane.id });
       await refreshLanesStore().catch((refreshError: unknown) => {
-        console.warn("draft chat launch lane refresh failed", refreshError);
+        console.warn("draft launch lane refresh failed", refreshError);
       });
-      return { laneId: createdLane.id, laneName: createdLane.name };
+      return {
+        laneId: createdLane.id,
+        laneName: createdLane.name,
+        worktreePath: createdLane.worktreePath ?? null,
+        autoCreated: true,
+      };
     }
-    if (!laneId) throw new Error("Select a lane before launching chat.");
-    const laneName = availableLanes?.find((lane) => lane.id === laneId)?.name ?? laneDisplayLabel ?? laneId;
-    return { laneId, laneName };
-  }, [availableLanes, draftLaunchTargetIsAutoCreate, laneDisplayLabel, laneId, modelId, refreshLanesStore]);
+    if (!laneId) throw new Error("Select a lane before launching.");
+    const launchLane = lanes.find((lane) => lane.id === laneId);
+    const laneName = availableLanes?.find((lane) => lane.id === laneId)?.name ?? launchLane?.name ?? laneDisplayLabel ?? laneId;
+    return {
+      laneId,
+      laneName,
+      worktreePath: launchLane?.worktreePath ?? projectRoot ?? null,
+      autoCreated: false,
+    };
+  }, [availableLanes, draftLaunchTargetIsAutoCreate, laneDisplayLabel, laneId, lanes, modelId, projectRoot, refreshLanesStore]);
 
-  const launchDraftChat = useCallback(async (mode: "foreground" | "background") => {
-    if (submitInFlightRef.current || busy || backgroundLaunchBusy || parallelLaunchBusy) {
-      if (submitInFlightRef.current) {
-        setError("Still sending the previous message. Wait a moment and try again.");
-      }
-      return;
-    }
-    if (selectedSessionId || (workDraftKind !== "chat" && workDraftKind !== "chat-orchestrator")) return;
-    if (constrainedModelSelectionError) {
-      setError(constrainedModelSelectionError);
-      return;
-    }
-    if (!modelId) {
-      setError("Select a model first");
-      return;
-    }
-    const snapshot = buildDraftLaunchSnapshotForCurrentState();
-    if (!snapshot) {
-      setError("Add a message before sending.");
-      return;
-    }
+  const clearDraftLaunchComposer = useCallback((snapshot: DraftLaunchSnapshot) => {
+    setDraft((current) => (current === snapshot.draft ? "" : current));
+    setAttachments([]);
+    setContextAttachments([]);
+    setIosElementContextItems([]);
+    setAppControlContextItems([]);
+    setBuiltInBrowserContextItems([]);
+    setMacosVmContextItems([]);
+  }, []);
 
-    submitInFlightRef.current = true;
-    if (mode === "background") setBackgroundLaunchBusy(true);
-    else setBusy(true);
-    setPromptSuggestion(null);
-    setError(null);
-    setBackgroundLaunchNotice(null);
-    draftSelectionLockedRef.current = mode === "background";
+  const cleanupDraftChatSession = useCallback(async (
+    session: AgentChatSession,
+    targetLane: DraftLaunchLaneTarget,
+  ) => {
+    await window.ade.agentChat.delete({ sessionId: session.id }).catch((cleanupError: unknown) => {
+      console.warn("draft chat launch session cleanup failed", cleanupError);
+    });
+    loadedHistoryRef.current.delete(session.id);
+    localTouchBySessionRef.current.delete(session.id);
+    optimisticSessionIdsRef.current.delete(session.id);
+    knownSessionIdsRef.current.delete(session.id);
+    invalidateSessionListCache();
+    if (targetLane.laneId === laneId) {
+      await refreshSessions().catch(() => undefined);
+    }
+  }, [laneId, refreshSessions]);
 
-    let targetLane: { laneId: string; laneName: string } | null = null;
+  const startDraftChatLaunch = useCallback(async (
+    prepared: PreparedDraftLaunch,
+    targetLane: DraftLaunchLaneTarget,
+  ): Promise<StartedDraftLaunch> => {
     let createdSession: AgentChatSession | null = null;
-
     try {
-      targetLane = await resolveDraftLaunchLane(snapshot);
-      const prepared = await prepareDraftLaunchForSend(snapshot, targetLane.laneId);
       createdSession = await createSessionForLane(targetLane.laneId, { select: false });
-      setDraft((current) => (current === snapshot.draft ? "" : current));
-      setAttachments([]);
-      setContextAttachments([]);
-      setIosElementContextItems([]);
-      setAppControlContextItems([]);
-      setBuiltInBrowserContextItems([]);
-      setMacosVmContextItems([]);
       touchSession(createdSession.id);
       await window.ade.agentChat.send({
         sessionId: createdSession.id,
@@ -5157,38 +5164,134 @@ export function AgentChatPane({
         activate: false,
         source: "draft-launch",
       });
+      return {
+        sessionId: createdSession.id,
+        draftKind: "chat",
+      };
+    } catch (launchError) {
+      if (createdSession) {
+        await cleanupDraftChatSession(createdSession, targetLane);
+      }
+      throw launchError;
+    }
+  }, [
+    cleanupDraftChatSession,
+    createSessionForLane,
+    executionMode,
+    interactionMode,
+    notifySessionCreated,
+    reasoningEffort,
+    touchSession,
+  ]);
+
+  const startDraftCliLaunch = useCallback(async (
+    prepared: PreparedDraftLaunch,
+    targetLane: DraftLaunchLaneTarget,
+    mode: DraftLaunchMode,
+  ): Promise<StartedDraftLaunch> => {
+    if (!onLaunchCliSession) throw new Error("CLI sessions are not available from this surface.");
+    if (!modelId) throw new Error("Select a model before launching a CLI session.");
+    const desc = getModelById(modelId);
+    if (!desc) throw new Error("Select a model before launching a CLI session.");
+    const provider = resolveCliProviderForModel(desc) ?? "opencode";
+    const runtimeModel = getRuntimeModelRefForDescriptor(desc, provider);
+    const permissionMode = cliPermissionModeFromNativeControls(provider, currentNativeControls);
+    const cliPrompt = buildWorkCliInitialPrompt({
+      text: prepared.finalText,
+      attachments: prepared.selectedAttachments,
+      contextAttachments: prepared.selectedContextAttachments,
+    });
+    if (!cliPrompt.trim().length) throw new Error("Enter a prompt or attach context before launching a CLI session.");
+    const cliSessionId = provider === "claude" ? createClaudeSessionIdForCliLaunch() : undefined;
+    const launch = buildTrackedCliLaunchCommand({
+      provider,
+      permissionMode,
+      ...(cliSessionId ? { sessionId: cliSessionId } : {}),
+      model: runtimeModel,
+      reasoningEffort,
+      initialPrompt: cliPrompt,
+      laneWorktreePath: targetLane.worktreePath ?? projectRoot,
+    });
+    const result = await onLaunchCliSession({
+      laneId: targetLane.laneId,
+      profile: provider,
+      title: workCliTitleFromPrompt(prepared.text || prepared.finalDisplayText || prepared.finalText, LAUNCH_PROFILE_TITLE[provider]),
+      startupCommand: launch.startupCommand,
+      startupDelayMs: workCliStartupDelayMs,
+      ...(launch.env ? { env: launch.env } : {}),
+      tracked: true,
+      disposition: mode,
+    });
+    return {
+      sessionId: result.sessionId,
+      draftKind: "cli",
+    };
+  }, [
+    currentNativeControls,
+    modelId,
+    onLaunchCliSession,
+    projectRoot,
+    reasoningEffort,
+  ]);
+
+  const launchDraftSession = useCallback(async (kind: DraftLaunchKind, mode: DraftLaunchMode) => {
+    if (submitInFlightRef.current || busy || backgroundLaunchBusy || parallelLaunchBusy) {
+      if (submitInFlightRef.current) {
+        setError("Still sending the previous message. Wait a moment and try again.");
+      }
+      return;
+    }
+    if (kind === "chat" && (selectedSessionId || (workDraftKind !== "chat" && workDraftKind !== "chat-orchestrator"))) return;
+    if (kind === "cli" && (!isWorkCliLaunchDraft || !onLaunchCliSession)) return;
+    if (!modelId) {
+      setError("Select a model first");
+      return;
+    }
+    const snapshot = buildDraftLaunchSnapshotForCurrentState();
+    if (!snapshot) {
+      setError(kind === "cli"
+        ? "Enter a prompt or attach context before launching a CLI session."
+        : "Add a message before sending.");
+      return;
+    }
+
+    submitInFlightRef.current = true;
+    if (mode === "background") setBackgroundLaunchBusy(true);
+    else setBusy(true);
+    setPromptSuggestion(null);
+    setError(null);
+    setBackgroundLaunchNotice(null);
+    draftSelectionLockedRef.current = mode === "background";
+
+    let targetLane: DraftLaunchLaneTarget | null = null;
+
+    try {
+      targetLane = await resolveDraftLaunchLane(snapshot);
+      const prepared = await prepareDraftLaunchForSend(snapshot, targetLane.laneId);
+      clearDraftLaunchComposer(snapshot);
+      const launched = kind === "chat"
+        ? await startDraftChatLaunch(prepared, targetLane)
+        : await startDraftCliLaunch(prepared, targetLane, mode);
       invalidateSessionListCache();
-      if (targetLane.laneId === laneId) {
+      if (launched.draftKind === "chat" && targetLane.laneId === laneId) {
         void refreshSessions().catch(() => {});
       }
       const launch = {
         laneId: targetLane.laneId,
         laneName: targetLane.laneName,
-        sessionId: createdSession.id,
+        sessionId: launched.sessionId,
+        draftKind: launched.draftKind,
       };
-      if (mode === "foreground") {
-        openLaunchedDraftChat(launch);
-      } else {
+      if (mode === "foreground" && launched.draftKind === "chat") {
+        openLaunchedDraftSession(launch);
+      } else if (mode === "background") {
         setSelectedSessionId(null);
         setBackgroundLaunchNotice(launch);
       }
     } catch (launchError) {
-      if (createdSession) {
-        await window.ade.agentChat.delete({ sessionId: createdSession.id }).catch((cleanupError: unknown) => {
-          console.warn("draft chat launch session cleanup failed", cleanupError);
-        });
-        loadedHistoryRef.current.delete(createdSession.id);
-        localTouchBySessionRef.current.delete(createdSession.id);
-        optimisticSessionIdsRef.current.delete(createdSession.id);
-        knownSessionIdsRef.current.delete(createdSession.id);
-        invalidateSessionListCache();
-        if (targetLane?.laneId === laneId) {
-          await refreshSessions().catch(() => undefined);
-        }
-      }
-      if (draftLaunchTargetIsAutoCreate && targetLane) {
+      if (targetLane?.autoCreated) {
         await window.ade.lanes.delete({ laneId: targetLane.laneId, force: true }).catch((cleanupError: unknown) => {
-          console.warn("draft chat launch lane cleanup failed", cleanupError);
+          console.warn(`draft ${kind} launch lane cleanup failed`, cleanupError);
         });
         await refreshLanesStore().catch(() => undefined);
       }
@@ -5204,25 +5307,31 @@ export function AgentChatPane({
     backgroundLaunchBusy,
     buildDraftLaunchSnapshotForCurrentState,
     busy,
+    clearDraftLaunchComposer,
     constrainedModelSelectionError,
     createSessionForLane,
     draftLaunchTargetIsAutoCreate,
     executionMode,
     interactionMode,
+    isWorkCliLaunchDraft,
     laneId,
     modelId,
-    openLaunchedDraftChat,
+    onLaunchCliSession,
+    openLaunchedDraftSession,
     parallelLaunchBusy,
     prepareDraftLaunchForSend,
-    reasoningEffort,
     refreshLanesStore,
     refreshSessions,
     resolveDraftLaunchLane,
     restoreDraftLaunchSnapshot,
     selectedSessionId,
-    touchSession,
+    startDraftChatLaunch,
+    startDraftCliLaunch,
     workDraftKind,
   ]);
+
+  const launchDraftChat = useCallback((mode: DraftLaunchMode) => launchDraftSession("chat", mode), [launchDraftSession]);
+  const launchDraftCliSession = useCallback((mode: DraftLaunchMode) => launchDraftSession("cli", mode), [launchDraftSession]);
 
   const handoffSession = useCallback(async (mode: "brief" | "fork" = "brief") => {
     if (!canShowHandoff || !selectedSessionId || !handoffModelId || handoffBlocked) return;
@@ -5658,15 +5767,21 @@ export function AgentChatPane({
       return;
     }
 
+    if (isWorkCliLaunchDraft) {
+      await launchDraftCliSession("foreground");
+      return;
+    }
+
+    if (constrainedModelSelectionError) {
+      setError(constrainedModelSelectionError);
+      return;
+    }
+    if (!modelId) {
+      setError("Select a model first");
+      return;
+    }
+
     if (draftLaunchTargetIsAutoCreate && selectedSessionId == null && workDraftKind === "chat") {
-      if (constrainedModelSelectionError) {
-        setError(constrainedModelSelectionError);
-        return;
-      }
-      if (!modelId) {
-        setError("Select a model first");
-        return;
-      }
       await launchDraftChat("foreground");
       return;
     }
@@ -5679,24 +5794,7 @@ export function AgentChatPane({
       && !lockSessionId
       && !draftLaunchTargetIsAutoCreate
     ) {
-      if (constrainedModelSelectionError) {
-        setError(constrainedModelSelectionError);
-        return;
-      }
-      if (!modelId) {
-        setError("Select a model first");
-        return;
-      }
       await launchDraftChat("foreground");
-      return;
-    }
-
-    if (constrainedModelSelectionError) {
-      setError(constrainedModelSelectionError);
-      return;
-    }
-    if (!modelId) {
-      setError("Select a model first");
       return;
     }
     const text = draft.trim();
@@ -5874,44 +5972,6 @@ export function AgentChatPane({
         },
       });
 
-      if (isWorkCliLaunchDraft && onLaunchCliSession) {
-        const desc = getModelById(modelId);
-        if (!desc) throw new Error("Select a model before launching a CLI session.");
-        const provider = resolveCliProviderForModel(desc) ?? "opencode";
-        const runtimeModel = getRuntimeModelRefForDescriptor(desc, provider);
-        const permissionMode = cliPermissionModeFromNativeControls(provider, currentNativeControls);
-        const cliPrompt = buildWorkCliInitialPrompt({
-          text: finalText,
-          attachments: selectedAttachments,
-          contextAttachments: selectedContextAttachments,
-        });
-        if (!cliPrompt.trim().length) throw new Error("Enter a prompt or attach context before launching a CLI session.");
-        const sessionId = provider === "claude" ? createClaudeSessionIdForCliLaunch() : undefined;
-        const launch = buildTrackedCliLaunchCommand({
-          provider,
-          permissionMode,
-          ...(sessionId ? { sessionId } : {}),
-          model: runtimeModel,
-          reasoningEffort,
-          initialPrompt: cliPrompt,
-          laneWorktreePath: activeLaneWorktreePath,
-        });
-        await onLaunchCliSession({
-          laneId,
-          profile: provider,
-          title: workCliTitleFromPrompt(text || finalDisplayText || finalText, LAUNCH_PROFILE_TITLE[provider]),
-          startupCommand: launch.startupCommand,
-          startupDelayMs: workCliStartupDelayMs,
-          ...(launch.env ? { env: launch.env } : {}),
-          tracked: true,
-        });
-        setIosElementContextItems([]);
-        setAppControlContextItems([]);
-        setBuiltInBrowserContextItems([]);
-        setMacosVmContextItems([]);
-        return;
-      }
-
       if (sessionId && !turnActive && (
         selectedModelChanged
         || selectedCodexFastModeChanged
@@ -6057,8 +6117,10 @@ export function AgentChatPane({
     handleApproval,
     hasComputerUseSelectionChanged,
     interactionMode,
+    isWorkCliLaunchDraft,
     laneId,
     launchDraftChat,
+    launchDraftCliSession,
     launchModeEditable,
     modelSelectionConstrained,
     modelId,
@@ -6085,9 +6147,7 @@ export function AgentChatPane({
     embeddedWorkLayout,
     lastLaunchConfigStorageKey,
     projectRoot,
-    activeLaneWorktreePath,
     navigate,
-    onLaunchCliSession,
     buildNativeControlPayloadForSlot,
     refreshLanesStore,
     persistParallelLaunchState,
@@ -6402,7 +6462,7 @@ export function AgentChatPane({
     && selectedSessionId == null
     && !lockSessionId
     && !initialSessionId
-    && workDraftKind === "chat";
+    && (workDraftKind === "chat" || isWorkCliLaunchDraft);
   const draftLaneSelectorLanes = useMemo(
     () => showDraftLaunchControls && availableLanes
       ? [AUTO_CREATE_LANE_OPTION, ...availableLanes]
@@ -7377,6 +7437,10 @@ export function AgentChatPane({
             }}
             onSubmitBlocked={(message) => setError(message)}
             onSubmitInBackground={showDraftLaunchControls ? () => {
+              if (workDraftKind === "cli") {
+                void launchDraftCliSession("background");
+                return;
+              }
               void launchDraftChat("background");
             } : undefined}
             backgroundLaunchBusy={backgroundLaunchBusy}
@@ -7629,13 +7693,13 @@ export function AgentChatPane({
             <button
               type="button"
               className="rounded-md border border-emerald-200/20 bg-emerald-300/[0.10] px-2 py-0.5 text-[10px] font-medium text-emerald-50 transition-colors hover:bg-emerald-300/[0.16]"
-              onClick={() => openLaunchedDraftChat(backgroundLaunchNotice)}
+              onClick={() => openLaunchedDraftSession(backgroundLaunchNotice)}
             >
               Open
             </button>
             <button
               type="button"
-              aria-label="Dismiss launched chat notice"
+              aria-label="Dismiss launch notice"
               className="grid h-5 w-5 place-items-center rounded-md text-emerald-50/70 transition-colors hover:bg-emerald-300/[0.12] hover:text-emerald-50"
               onClick={() => setBackgroundLaunchNotice(null)}
             >

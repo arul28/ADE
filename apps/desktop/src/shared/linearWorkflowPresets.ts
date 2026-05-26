@@ -52,20 +52,21 @@ export function defaultWorkflowName(targetType: LinearWorkflowTargetType): strin
   return "Human review gate";
 }
 
+function defaultLaunchStepName(targetType: LinearWorkflowTargetType): string {
+  switch (targetType) {
+    case "employee_session": return "Launch delegated employee chat";
+    case "pr_resolution": return "Launch PR workflow";
+    case "worker_run": return "Launch worker run";
+    case "review_gate":
+    default: return "Create review gate";
+  }
+}
+
 function defaultLaunchStep(targetType: LinearWorkflowTargetType): LinearWorkflowStep {
   return {
     id: "launch",
     type: "launch_target",
-    name:
-      targetType === "employee_session"
-        ? "Launch delegated employee chat"
-        : targetType === "review_gate"
-          ? "Create review gate"
-          : targetType === "pr_resolution"
-            ? "Launch PR workflow"
-            : targetType === "worker_run"
-              ? "Launch worker run"
-              : "Create review gate",
+    name: defaultLaunchStepName(targetType),
   };
 }
 
@@ -141,37 +142,44 @@ export function createWorkflowPreset(
   const completionContract = defaultCompletionContract(targetType);
   const reviewReadyWhen = reviewReadyWhenForContract(completionContract);
   const wantsNotification = targetType !== "review_gate";
-  const target: LinearWorkflowDefinition["target"] =
-    targetType === "employee_session"
-      ? {
-          type: targetType,
-          runMode: "assisted",
-          sessionTemplate: "default",
-          laneSelection: "fresh_issue_lane",
-          sessionReuse: "fresh_session",
-          prTiming: "none",
-        }
-      : targetType === "review_gate"
-        ? {
-            type: targetType,
-            runMode: "manual",
-          }
-        : targetType === "pr_resolution"
-          ? {
-              type: targetType,
-              runMode: "autopilot",
-              workerSelector: { mode: "none" },
-              prStrategy: { kind: "per-lane", draft: true },
-              laneSelection: "fresh_issue_lane",
-              prTiming: "after_target_complete",
-            }
-            : {
-                type: targetType,
-                runMode: "autopilot",
-                workerSelector: { mode: "none" },
-                laneSelection: "fresh_issue_lane",
-                prTiming: "none",
-              };
+  let target: LinearWorkflowDefinition["target"];
+  switch (targetType) {
+    case "employee_session":
+      target = {
+        type: targetType,
+        runMode: "assisted",
+        sessionTemplate: "default",
+        laneSelection: "fresh_issue_lane",
+        sessionReuse: "fresh_session",
+        prTiming: "none",
+      };
+      break;
+    case "review_gate":
+      target = {
+        type: targetType,
+        runMode: "manual",
+      };
+      break;
+    case "pr_resolution":
+      target = {
+        type: targetType,
+        runMode: "autopilot",
+        workerSelector: { mode: "none" },
+        prStrategy: { kind: "per-lane", draft: true },
+        laneSelection: "fresh_issue_lane",
+        prTiming: "after_target_complete",
+      };
+      break;
+    default:
+      target = {
+        type: targetType,
+        runMode: "autopilot",
+        workerSelector: { mode: "none" },
+        laneSelection: "fresh_issue_lane",
+        prTiming: "none",
+      };
+      break;
+  }
 
   const steps: LinearWorkflowStep[] = [
     { id: "set-in-progress", type: "set_linear_state", name: "Move issue to In Progress", state: "in_progress" },

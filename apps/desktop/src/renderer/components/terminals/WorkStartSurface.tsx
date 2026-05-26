@@ -8,24 +8,14 @@ import type {
 import type { WorkDraftKind } from "../../state/appStore";
 import { useAppStore } from "../../state/appStore";
 import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
-import type { LaunchProfile } from "./cliLaunch";
+import type { WorkPtyLaunchArgs, WorkPtyLaunchResult } from "./cliLaunch";
 
 type WorkStartSurfaceProps = {
   draftKind: WorkDraftKind;
   draftLaneId?: string | null;
   lanes: LaneSummary[];
   onOpenChatSession: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
-  onLaunchPtySession: (args: {
-    laneId: string;
-    profile: LaunchProfile;
-    title?: string;
-    startupCommand?: string;
-    startupDelayMs?: number;
-    command?: string;
-    args?: string[];
-    env?: Record<string, string>;
-    tracked?: boolean;
-  }) => Promise<unknown>;
+  onLaunchPtySession: (args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>;
   onDraftLaneChange?: (laneId: string) => void;
   initialLinearIssueContext?: LaneLinearIssue | null;
   onInitialLinearIssueContextConsumed?: () => void;

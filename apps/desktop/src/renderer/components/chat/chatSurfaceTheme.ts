@@ -2,7 +2,7 @@ import type { CSSProperties } from "react";
 import type { ChatChromeTint } from "../../state/appStore";
 import type { ChatSurfaceChipTone, ChatSurfaceMode } from "../../../shared/types";
 
-export const CHAT_SURFACE_ACCENTS: Record<string, string> = {
+export const CHAT_SURFACE_ACCENTS: Record<ChatSurfaceMode, string> = {
   standard: "#71717A",
   resolver: "#F97316",
 };

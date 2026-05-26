@@ -508,7 +508,25 @@ const originalNavigatorPlatform = window.navigator.platform;
 const originalMatchMedia = window.matchMedia;
 let iosEventListener: ((event: { type: string; chatSessionId?: string; laneId?: string; mode?: string }) => void) | null = null;
 
+function installMatchMediaMock(): void {
+  if (typeof window.matchMedia === "function") return;
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  });
+}
+
 beforeEach(() => {
+  installMatchMediaMock();
   invalidateAiDiscoveryCache();
   resetModelPickerRuntimeCatalogForTests();
   window.localStorage.clear();
@@ -687,6 +705,8 @@ function renderAutoCreateDraftPane(args?: {
     session: AgentChatSession,
     options?: AgentChatSessionCreatedOptions,
   ) => void | Promise<void>;
+  workDraftKind?: "chat" | "cli";
+  onLaunchCliSession?: React.ComponentProps<typeof AgentChatPane>["onLaunchCliSession"];
 }) {
   const lanes = [
     {
@@ -722,9 +742,11 @@ function renderAutoCreateDraftPane(args?: {
                 laneId="lane-1"
                 forceDraftMode
                 embeddedWorkLayout
+                workDraftKind={args?.workDraftKind}
                 availableLanes={lanes}
                 onLaneChange={vi.fn()}
                 onSessionCreated={args?.onSessionCreated}
+                onLaunchCliSession={args?.onLaunchCliSession}
               />
               <LocationProbe />
             </>
@@ -2793,7 +2815,7 @@ describe("AgentChatPane submit recovery", () => {
         { activate: false, source: "draft-launch" },
       );
       expect(screen.getByText("Launched in background-lane")).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Dismiss launched chat notice" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Dismiss launch notice" })).toBeTruthy();
     });
     expect(screen.getByTestId("location").textContent).toBe("/work");
 
@@ -2961,6 +2983,7 @@ describe("AgentChatPane submit recovery", () => {
         title: "Run the unified CLI launch",
         startupDelayMs: 180,
         tracked: true,
+        disposition: "foreground",
       }));
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
@@ -2970,6 +2993,112 @@ describe("AgentChatPane submit recovery", () => {
     expect(launchArgs.startupCommand).toContain("Run the unified CLI launch.");
     expect(create).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("auto-creates a lane for a foreground CLI session draft", async () => {
+    const { send, create, createLane, suggestLaneName } = installAdeMocks({ sessions: [] });
+    const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-created", ptyId: "pty-created" });
+    suggestLaneName.mockResolvedValue("cli-auto-lane");
+    createLane.mockResolvedValue({
+      id: "lane-created",
+      name: "cli-auto-lane",
+      laneType: "worktree",
+      branchRef: "refs/heads/cli-auto-lane",
+      worktreePath: "/tmp/project-under-test/cli-auto-lane",
+      parentLaneId: "lane-primary",
+    });
+
+    renderAutoCreateDraftPane({ workDraftKind: "cli", onLaunchCliSession });
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Launch a CLI agent on a new lane." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(suggestLaneName).toHaveBeenCalledWith(expect.objectContaining({
+        laneId: "lane-primary",
+        prompt: "Launch a CLI agent on a new lane.",
+        modelId: "openai/gpt-5.4",
+      }));
+      expect(createLane).toHaveBeenCalledWith({
+        name: "cli-auto-lane",
+        parentLaneId: "lane-primary",
+      });
+      expect(onLaunchCliSession).toHaveBeenCalledWith(expect.objectContaining({
+        laneId: "lane-created",
+        profile: "codex",
+        title: "Launch a CLI agent on a new lane",
+        startupDelayMs: 180,
+        tracked: true,
+        disposition: "foreground",
+      }));
+    });
+    const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
+    expect(launchArgs.startupCommand).toContain("Launch a CLI agent on a new lane.");
+    expect(create).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("launches a CLI session draft in the background without stealing focus", async () => {
+    const { send, create, createLane, suggestLaneName } = installAdeMocks({ sessions: [] });
+    const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-created", ptyId: "pty-created" });
+    suggestLaneName.mockResolvedValue("background-cli-lane");
+    createLane.mockResolvedValue({
+      id: "lane-created",
+      name: "background-cli-lane",
+      laneType: "worktree",
+      branchRef: "refs/heads/background-cli-lane",
+      worktreePath: "/tmp/project-under-test/background-cli-lane",
+      parentLaneId: "lane-primary",
+    });
+
+    renderAutoCreateDraftPane({ workDraftKind: "cli", onLaunchCliSession });
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Launch this CLI session in the background." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Launch in background" }));
+
+    await waitFor(() => {
+      expect(onLaunchCliSession).toHaveBeenCalledWith(expect.objectContaining({
+        laneId: "lane-created",
+        profile: "codex",
+        startupDelayMs: 180,
+        tracked: true,
+        disposition: "background",
+      }));
+      expect(screen.getByText("Launched in background-cli-lane")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Dismiss launch notice" })).toBeTruthy();
+    });
+    const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
+    expect(launchArgs.startupCommand).toContain("Launch this CLI session in the background.");
+    expect(create).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(screen.getByTestId("location").textContent).toBe("/work");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toBe("/work?laneId=lane-created&sessionId=terminal-created");
+    });
   });
 
   it("keeps immediate agent events for a freshly created chat before session refresh catches up", async () => {

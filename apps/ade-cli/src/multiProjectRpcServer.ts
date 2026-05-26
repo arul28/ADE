@@ -378,15 +378,15 @@ export function createMultiProjectRpcRequestHandler(
     return syncService;
   };
 
-  const trimmedEnv = (key: string): string | null => {
+  const trimmedEnvOrNull = (key: string): string | null => {
     const value = process.env[key];
     return typeof value === "string" && value.trim() ? value.trim() : null;
   };
 
   const resolveRuntimeEnvInfo = () => {
-    const projectRoot = trimmedEnv("ADE_PROJECT_ROOT");
+    const projectRoot = trimmedEnvOrNull("ADE_PROJECT_ROOT");
     return {
-      buildHash: trimmedEnv("ADE_RUNTIME_BUILD_HASH"),
+      buildHash: trimmedEnvOrNull("ADE_RUNTIME_BUILD_HASH"),
       defaultRole: normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
       projectRoot: projectRoot ? path.resolve(projectRoot) : null,
     };

@@ -171,18 +171,19 @@ export const ModelPicker = memo(function ModelPicker({
   );
 
   const modelList = useMemo<readonly ModelDescriptor[]>(() => {
+    const constrainedAvailable = constrainToAvailableModelIds
+      ? new Set((availableModelIds ?? []).map((id) => id.trim()).filter(Boolean))
+      : null;
     if (models && models.length) {
-      if (!constrainToAvailableModelIds) return models;
-      const available = new Set((availableModelIds ?? []).map((id) => id.trim()).filter(Boolean));
-      const constrainedModels = models.filter((model) => available.has(model.id.trim()));
+      if (!constrainedAvailable) return models;
+      const constrainedModels = models.filter((model) => constrainedAvailable.has(model.id.trim()));
       if (constrainedModels.length > 0) return constrainedModels;
     }
     const selectedValue = (() => {
-      if (!constrainToAvailableModelIds) return value;
+      if (!constrainedAvailable) return value;
       const normalizedValue = value.trim();
       if (!normalizedValue) return "";
-      const available = new Set((availableModelIds ?? []).map((id) => id.trim()).filter(Boolean));
-      return available.has(normalizedValue) ? normalizedValue : "";
+      return constrainedAvailable.has(normalizedValue) ? normalizedValue : "";
     })();
     const fallbackModels = mergeSelectorModels(
       availableModelIds,
