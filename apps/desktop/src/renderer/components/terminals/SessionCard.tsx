@@ -204,7 +204,7 @@ export const SessionCard = React.memo(function SessionCard({
           {/* Content — 3 rows */}
           <div className="min-w-0 flex-1">
             {/* Row 1: Title + role pill + status dot + relative time */}
-            <div className="flex items-center gap-2 min-w-0">
+            <div className="flex min-w-0 items-center gap-1.5">
               <span
                 className={cn(
                   "min-w-0 flex-1 truncate font-semibold text-fg/90",
@@ -213,36 +213,38 @@ export const SessionCard = React.memo(function SessionCard({
               >
                 {primaryText}
               </span>
-              {session.orchestrationRole ? (
-                <>
-                  <span className="sr-only">{orchestrationLabel}</span>
-                  <OrchestrationRolePill
-                    role={session.orchestrationRole}
-                    tag={session.orchestrationTag ?? null}
-                  />
-                </>
-              ) : null}
-              {staleAgeHours != null ? (
+              <div className="flex shrink-0 items-center gap-1.5">
+                {session.orchestrationRole ? (
+                  <>
+                    <span className="sr-only">{orchestrationLabel}</span>
+                    <OrchestrationRolePill
+                      role={session.orchestrationRole}
+                      tag={session.orchestrationTag ?? null}
+                    />
+                  </>
+                ) : null}
+                {staleAgeHours != null ? (
+                  <span
+                    className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-amber-500/30 bg-amber-500/10 text-amber-300"
+                    aria-label="Old running session"
+                    title={`Old running session. This CLI or shell session has been running for about ${staleAgeHours} hours. Stop the runtime if it is no longer being used.`}
+                  >
+                    <WarningCircle size={11} weight="fill" />
+                  </span>
+                ) : null}
                 <span
-                  className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-amber-500/30 bg-amber-500/10 text-amber-300"
-                  aria-label="Old running session"
-                  title={`Old running session. This CLI or shell session has been running for about ${staleAgeHours} hours. Stop the runtime if it is no longer being used.`}
-                >
-                  <WarningCircle size={11} weight="fill" />
+                  title={dot.label}
+                  className={cn(
+                    "shrink-0 rounded-full",
+                    compact ? "h-2.5 w-2.5" : "h-3 w-3",
+                    dot.cls,
+                    dot.spinning && "animate-spin",
+                  )}
+                />
+                <span className={cn("shrink-0 text-muted-fg/45 tabular-nums", compact ? "text-[9px]" : "text-[10px]")}>
+                  {relativeTimeCompact(session.endedAt ?? session.startedAt)}
                 </span>
-              ) : null}
-              <span
-                title={dot.label}
-                className={cn(
-                  "shrink-0 rounded-full",
-                  compact ? "h-2.5 w-2.5" : "h-3 w-3",
-                  dot.cls,
-                  dot.spinning && "animate-spin",
-                )}
-              />
-              <span className={cn("shrink-0 text-muted-fg/45 tabular-nums", compact ? "text-[9px]" : "text-[10px]")}>
-                {relativeTimeCompact(session.endedAt ?? session.startedAt)}
-              </span>
+              </div>
             </div>
 
             {/* Row 2: Summary/preview line (conditional) */}

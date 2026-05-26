@@ -91,7 +91,7 @@ import {
   shouldRefreshSessionListForChatEvent,
 } from "../../lib/chatSessionEvents";
 import { SmartTooltip } from "../ui/SmartTooltip";
-import { ChatSurfaceShell } from "./ChatSurfaceShell";
+import { CHAT_SHELL_HEADER_CLASS, ChatSurfaceShell } from "./ChatSurfaceShell";
 import { OrchestratorLeadFrame } from "./OrchestratorLeadFrame";
 import { OrchestrationPanel } from "../orchestration/OrchestrationPanel";
 import { chatChipToneClass, providerChatAccent } from "./chatSurfaceTheme";
@@ -109,17 +109,20 @@ import { ChatCursorCloudPanel, type ChatCursorCloudPanelHandle } from "./ChatCur
 import { CursorCloudInlineLaunch, type CursorCloudInlineLaunchHandle } from "./CursorCloudInlineLaunch";
 import { QuickRunMenu } from "../run/QuickRunMenu";
 import { ChatGitToolbar } from "./ChatGitToolbar";
+import { LaneChip } from "../terminals/LaneChip";
+import { getLaneAccent } from "../lanes/laneColorPalette";
+import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
 import { ChatTerminalDrawer, ChatTerminalToggle } from "./ChatTerminalDrawer";
 import { deriveChatSubagentSnapshots, deriveTodoItems, deriveTurnDiffSummaries } from "./chatExecutionSummary";
 import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
-import { useClickOutside } from "../../hooks/useClickOutside";
+import { ChatActionsDrawerPanel, type ChatActionsTab } from "./ChatActionsDrawerPanel";
 import { useAppStore } from "../../state/appStore";
 import { buildChatAppearanceRootStyle } from "./chatAppearance";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
-import { LaneCombobox } from "../terminals/LaneCombobox";
+import { LaneCombobox, AUTO_CREATE_LANE_OPTION_ID } from "../terminals/LaneCombobox";
 import {
   buildTrackedCliLaunchCommand,
   LAUNCH_PROFILE_TITLE,
@@ -164,11 +167,10 @@ const workCliStartupDelayMs = 180;
 export const DEFAULT_PARALLEL_ATTACHMENT_REQUEST = "Please review the attached files.";
 
 const chatToolbarActionBase =
-  "relative inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2.5 font-sans text-[10px] font-medium transition-colors";
+  "relative inline-flex h-6 shrink-0 items-center gap-1 rounded-md border px-2 font-sans text-[10px] font-medium transition-colors";
 const chatToolbarActionIdle =
   "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.10] hover:text-fg/65";
 
-const AUTO_CREATE_LANE_OPTION_ID = "__ade_auto_create_lane__";
 const AUTO_CREATE_LANE_OPTION = {
   id: AUTO_CREATE_LANE_OPTION_ID,
   name: "Auto-create lane",
@@ -1736,18 +1738,25 @@ function completionBadgeClass(status: NonNullable<AgentChatSessionSummary["compl
 }
 
 type ChatCompanionUiState = {
-  proofDrawerOpen: boolean;
+  chatActionsOpen: boolean;
+  chatActionsTab: ChatActionsTab;
   iosSimulatorOpen: boolean;
   appControlOpen: boolean;
   terminalDrawerOpen: boolean;
 };
 
 const DEFAULT_CHAT_COMPANION_UI_STATE: ChatCompanionUiState = {
-  proofDrawerOpen: false,
+  chatActionsOpen: false,
+  chatActionsTab: "agents",
   iosSimulatorOpen: false,
   appControlOpen: false,
   terminalDrawerOpen: false,
 };
+
+function parseChatActionsTab(value: unknown): ChatActionsTab {
+  if (value === "agents" || value === "proof" || value === "handoff") return value;
+  return "agents";
+}
 
 const chatCompanionUiStateByKey = new Map<string, ChatCompanionUiState>();
 
@@ -1761,9 +1770,13 @@ function readChatCompanionUiState(key: string): ChatCompanionUiState {
   try {
     const raw = window.sessionStorage.getItem(chatCompanionUiStorageKey(key));
     if (raw) {
-      const parsed = JSON.parse(raw) as Partial<ChatCompanionUiState>;
+      const parsed = JSON.parse(raw) as Partial<ChatCompanionUiState> & { proofDrawerOpen?: boolean };
+      const legacyProofOpen = parsed.proofDrawerOpen === true;
       const state = {
-        proofDrawerOpen: parsed.proofDrawerOpen === true,
+        chatActionsOpen: parsed.chatActionsOpen === true || legacyProofOpen,
+        chatActionsTab: legacyProofOpen && parsed.chatActionsTab == null
+          ? "proof"
+          : parseChatActionsTab(parsed.chatActionsTab),
         iosSimulatorOpen: parsed.iosSimulatorOpen === true,
         appControlOpen: parsed.appControlOpen === true,
         terminalDrawerOpen: parsed.terminalDrawerOpen === true,
@@ -1813,6 +1826,8 @@ export function AgentChatPane({
   isTileVisible = isTileActive,
   shouldAutofocusComposer = false,
   initialLinearIssueContext = null,
+  initialLinearIssueContextSource = "lane_link",
+  initialModelId = null,
   onInitialLinearIssueContextConsumed,
   onSessionCreated,
   workDraftKind = "chat",
@@ -1845,6 +1860,8 @@ export function AgentChatPane({
   isTileVisible?: boolean;
   shouldAutofocusComposer?: boolean;
   initialLinearIssueContext?: LaneLinearIssue | null;
+  initialLinearIssueContextSource?: "manual" | "lane_link";
+  initialModelId?: string | null;
   onInitialLinearIssueContextConsumed?: () => void;
   onSessionCreated?: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
   workDraftKind?: "chat" | "cli" | "chat-orchestrator";
@@ -1990,8 +2007,11 @@ export function AgentChatPane({
   const [error, setError] = useState<string | null>(null);
   const [deletingChatSessionId, setDeletingChatSessionId] = useState<string | null>(null);
   const [computerUseSnapshot, setComputerUseSnapshot] = useState<ComputerUseOwnerSnapshot | null>(null);
-  const [proofDrawerOpen, setProofDrawerOpen] = useState(
-    () => readChatCompanionUiState(initialCompanionStateKey).proofDrawerOpen,
+  const [chatActionsOpen, setChatActionsOpen] = useState(
+    () => readChatCompanionUiState(initialCompanionStateKey).chatActionsOpen,
+  );
+  const [chatActionsTab, setChatActionsTab] = useState<ChatActionsTab>(
+    () => readChatCompanionUiState(initialCompanionStateKey).chatActionsTab,
   );
   const [iosSimulatorOpen, setIosSimulatorOpen] = useState(
     () => readChatCompanionUiState(initialCompanionStateKey).iosSimulatorOpen,
@@ -1999,7 +2019,6 @@ export function AgentChatPane({
   const [iosSimulatorDrawerModeRequest, setIosSimulatorDrawerModeRequest] = useState<{ mode: IosSimulatorDrawerMode; nonce: number } | null>(null);
   const [iosSimulatorAvailable, setIosSimulatorAvailable] = useState(isLikelyMacRenderer);
   const [cursorCloudPaneOpen, setCursorCloudPaneOpen] = useState(false);
-  const [subagentPaneOpen, setSubagentPaneOpen] = useState(false);
   // Subagent drill-in: when set, the chat surface renders the named subagent's
   // transcript instead of the parent stream and the composer is disabled.
   const [subagentView, setSubagentView] = useState<{
@@ -2088,7 +2107,6 @@ export function AgentChatPane({
     sessionId: string;
     envelope: AgentChatEventEnvelope;
   } | null>(null);
-  const [handoffOpen, setHandoffOpen] = useState(false);
   const [handoffBusy, setHandoffBusy] = useState(false);
   const [handoffModelId, setHandoffModelId] = useState("");
   const [handoffReasoningEffort, setHandoffReasoningEffort] = useState<string | null>(null);
@@ -2158,7 +2176,6 @@ export function AgentChatPane({
   const lastComputerUseSnapshotRef = useRef<{ sessionId: string; fetchedAt: number } | null>(null);
   const knownSessionIdsRef = useRef<Set<string>>(new Set());
   const seededInitialSummaryRef = useRef(false);
-  const handoffRef = useRef<HTMLDivElement | null>(null);
   const localTouchBySessionRef = useRef<Map<string, string>>(new Map());
   const cursorWarmupKeyRef = useRef<string | null>(null);
   const draftLaunchConfigHydratedRef = useRef<string | null>(null);
@@ -2221,7 +2238,8 @@ export function AgentChatPane({
   useEffect(() => {
     companionHydrationKeyRef.current = companionStateKey;
     const saved = readChatCompanionUiState(companionStateKey);
-    setProofDrawerOpen(saved.proofDrawerOpen);
+    setChatActionsOpen(saved.chatActionsOpen);
+    setChatActionsTab(saved.chatActionsTab);
     setIosSimulatorOpen(saved.iosSimulatorOpen);
     setAppControlOpen(saved.appControlOpen);
     setTerminalDrawerOpen(saved.terminalDrawerOpen);
@@ -2233,12 +2251,13 @@ export function AgentChatPane({
       return;
     }
     writeChatCompanionUiState(companionStateKey, {
-      proofDrawerOpen,
+      chatActionsOpen,
+      chatActionsTab,
       iosSimulatorOpen,
       appControlOpen,
       terminalDrawerOpen,
     });
-  }, [appControlOpen, companionStateKey, iosSimulatorOpen, proofDrawerOpen, terminalDrawerOpen]);
+  }, [appControlOpen, chatActionsOpen, chatActionsTab, companionStateKey, iosSimulatorOpen, terminalDrawerOpen]);
 
   const removeIosElementContext = useCallback((id: string) => {
     let linkedAttachmentPath: string | null = null;
@@ -2535,11 +2554,10 @@ export function AgentChatPane({
 
   useEffect(() => {
     if (!selectedSessionId) {
-      if (subagentPaneOpen) setSubagentPaneOpen(false);
+      if (chatActionsOpen) setChatActionsOpen(false);
       return;
     }
     if (selectedSubagentSnapshots.length === 0) {
-      if (subagentPaneOpen) setSubagentPaneOpen(false);
       return;
     }
     if (subagentAutoOpenedSessionsRef.current.has(selectedSessionId)) {
@@ -2562,14 +2580,14 @@ export function AgentChatPane({
     } catch {
       /* best-effort persistence */
     }
-    if (!subagentPaneOpen) {
-      setProofDrawerOpen(false);
+    if (!chatActionsOpen) {
+      setChatActionsTab("agents");
       setIosSimulatorOpen(false);
       setAppControlOpen(false);
       setCursorCloudPaneOpen(false);
-      setSubagentPaneOpen(true);
+      setChatActionsOpen(true);
     }
-  }, [selectedSessionId, selectedSubagentSnapshots.length, subagentPaneOpen]);
+  }, [chatActionsOpen, selectedSessionId, selectedSubagentSnapshots.length]);
 
   const persistParallelLaunchState = useCallback(async (state: AgentChatParallelLaunchState | null) => {
     if (!projectRoot || !laneId) return;
@@ -3060,6 +3078,9 @@ export function AgentChatPane({
   const launchModeEditable = !selectedSessionId || selectedEvents.length === 0;
   const resolvedTitle = presentation?.title?.trim()
     || (surfaceMode === "resolver" ? "AI Resolver" : selectedSession ? chatSessionTitle(selectedSession) : "New chat");
+  const chatHeaderLane = laneId ? lanes.find((lane) => lane.id === laneId) ?? null : null;
+  const chatHeaderLaneName = chatHeaderLane?.name ?? laneId ?? "lane";
+  const chatHeaderLaneColor = getLaneAccent(chatHeaderLane, 0);
   const assistantLabel = presentation?.assistantLabel?.trim()
     || resolveAssistantLabel(selectedModelDesc, selectedSession?.provider);
   const defaultMessagePlaceholder =
@@ -3213,6 +3234,7 @@ export function AgentChatPane({
       && !isPersistentIdentitySurface
       && (selectedSession.surface ?? "work") === "work",
   );
+  const chatActionsHandoffActive = chatActionsOpen && chatActionsTab === "handoff";
   const handoffTargetDescriptor = useMemo(
     () => (handoffModelId ? (getModelById(handoffModelId) ?? null) : null),
     [handoffModelId],
@@ -3950,10 +3972,9 @@ export function AgentChatPane({
       if (eventLaneId && laneId && eventLaneId !== laneId) return;
       if (!eventChatSessionId && !eventLaneId && !isTileActive) return;
       setIosSimulatorAvailable(true);
-      setProofDrawerOpen(false);
+      setChatActionsOpen(false);
       setAppControlOpen(false);
       setCursorCloudPaneOpen(false);
-      setSubagentPaneOpen(false);
       setIosSimulatorOpen(true);
       setIosSimulatorDrawerModeRequest({ mode: event.mode, nonce: Date.now() });
     });
@@ -3979,14 +4000,8 @@ export function AgentChatPane({
     knownSessionIdsRef.current = next;
   }, [initialSessionId, lockSessionId, selectedSessionId, sessions]);
 
-  const shouldKeepHandoffOpenForPortalClick = useCallback((target: Node) => {
-    return Array.from(document.querySelectorAll("[data-model-picker-panel='true']"))
-      .some((panel) => panel.contains(target));
-  }, []);
-  useClickOutside(handoffRef, () => setHandoffOpen(false), handoffOpen, shouldKeepHandoffOpenForPortalClick);
-
   useEffect(() => {
-    if (!handoffOpen) return;
+    if (!chatActionsHandoffActive) return;
     const preferredTargetId = handoffAvailableModelIds.find((id) => id !== selectedSessionModelId) ?? handoffAvailableModelIds[0] ?? "";
     setHandoffModelId((current) => {
       if (current && handoffAvailableModelIds.includes(current)) {
@@ -3994,11 +4009,11 @@ export function AgentChatPane({
       }
       return preferredTargetId;
     });
-  }, [handoffAvailableModelIds, handoffOpen, selectedSessionModelId]);
+  }, [chatActionsHandoffActive, handoffAvailableModelIds, selectedSessionModelId]);
 
   const prevHandoffOpenRef = useRef(false);
   useEffect(() => {
-    if (handoffOpen && !prevHandoffOpenRef.current) {
+    if (chatActionsHandoffActive && !prevHandoffOpenRef.current) {
       setHandoffReasoningEffort(reasoningEffort ?? null);
       setHandoffCodexFastMode(codexFastMode);
       setHandoffClaudePermissionMode(claudePermissionMode);
@@ -4010,15 +4025,15 @@ export function AgentChatPane({
       setHandoffCursorModeId(cursorModeId);
       setHandoffCursorConfigValues({ ...cursorConfigValues });
     }
-    prevHandoffOpenRef.current = handoffOpen;
+    prevHandoffOpenRef.current = chatActionsHandoffActive;
     // Intentional: one-shot on open; avoid resetting the handoff form when underlying composer state changes while the menu is open.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [handoffOpen]);
+  }, [chatActionsHandoffActive]);
 
   useEffect(() => {
-    if (!handoffOpen || !handoffModelId) return;
+    if (!chatActionsHandoffActive || !handoffModelId) return;
     setHandoffReasoningEffort((prev) => clampHandoffReasoningToModel(prev, handoffTargetDescriptor));
-  }, [handoffOpen, handoffModelId, handoffTargetDescriptor]);
+  }, [chatActionsHandoffActive, handoffModelId, handoffTargetDescriptor]);
 
   useEffect(() => {
     if (!isTileVisible) return;
@@ -4111,7 +4126,7 @@ export function AgentChatPane({
     setAttachments([]);
     setContextAttachments([]);
     setPromptSuggestion(null);
-    setHandoffOpen(false);
+    setChatActionsOpen(false);
     setHandoffBusy(false);
     optimisticOutgoingMessageRef.current = null;
     setOptimisticOutgoingMessage(null);
@@ -4397,8 +4412,7 @@ export function AgentChatPane({
 
   useEffect(() => {
     if (!selectedSessionId) {
-      setProofDrawerOpen(false);
-      setSubagentPaneOpen(false);
+      setChatActionsOpen(false);
     }
   }, [selectedSessionId]);
 
@@ -4684,10 +4698,23 @@ export function AgentChatPane({
     if (consumedInitialLinearIssueContextRef.current === key) return;
     consumedInitialLinearIssueContextRef.current = key;
     setContextAttachments((prev) => mergeChatContextAttachments(prev, [
-      makeLinearIssueContextAttachment(initialLinearIssueContext, "lane_link"),
+      makeLinearIssueContextAttachment(initialLinearIssueContext, initialLinearIssueContextSource),
     ]));
     onInitialLinearIssueContextConsumed?.();
-  }, [initialLinearIssueContext, onInitialLinearIssueContextConsumed]);
+  }, [initialLinearIssueContext, initialLinearIssueContextSource, onInitialLinearIssueContextConsumed]);
+
+  const consumedInitialModelIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const nextModelId = initialModelId?.trim() || "";
+    if (!nextModelId) {
+      consumedInitialModelIdRef.current = null;
+      return;
+    }
+    if (!preferencesReady) return;
+    if (consumedInitialModelIdRef.current === nextModelId) return;
+    consumedInitialModelIdRef.current = nextModelId;
+    setModelId(nextModelId);
+  }, [initialModelId, preferencesReady]);
 
   const currentNativeControls = useMemo<NativeControlState>(() => ({
     interactionMode,
@@ -5355,7 +5382,7 @@ export function AgentChatPane({
         cursorModeId: handoffCursorModeId,
         cursorConfigValues: handoffCursorConfigValues,
       });
-      setHandoffOpen(false);
+      setChatActionsOpen(false);
       notifySessionCreated(result.session);
       void refreshSessions().catch(() => {});
     } catch (handoffError) {
@@ -6514,37 +6541,22 @@ export function AgentChatPane({
     providerChatAccent(selectedSession?.provider ?? selectedModelDesc?.family ?? null)
     ?? selectedModelDesc?.color
     ?? "#A1A1AA";
+  const chatActionsToolbarIcon = chatActionsOpen
+    ? (chatActionsTab === "proof"
+      ? Cube
+      : chatActionsTab === "handoff"
+        ? ArrowBendUpRight
+        : TreeStructure)
+    : TreeStructure;
+  const ChatActionsToolbarIcon = chatActionsToolbarIcon;
   const proofArtifactCount = computerUseSnapshot?.artifacts?.length ?? 0;
   const proofSessionId = selectedSessionId ?? "";
-  const proofPanelContent = (
-    <>
-      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-2.5">
-        <span className="font-sans text-[12px] font-medium text-fg/80">Artifacts</span>
-        <button
-          type="button"
-          className="rounded-md border border-white/[0.06] bg-white/[0.03] px-2 py-0.5 font-sans text-[10px] font-medium text-fg/50 transition-colors hover:text-fg/80"
-          onClick={() => setProofDrawerOpen(false)}
-          title="Close artifacts panel"
-        >
-          Close
-        </button>
-      </div>
-      <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
-        <ChatComputerUsePanel
-          sessionId={proofSessionId}
-          snapshot={computerUseSnapshot}
-          onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
-        />
-      </div>
-    </>
-  );
-  const subagentPanelContent = selectedSubagentPaneAvailable ? (
+  const agentsTabContent = selectedSubagentPaneAvailable ? (
     <ChatSubagentsPanel
       snapshots={selectedSubagentSnapshots}
       events={selectedEvents}
       onInterruptTurn={turnActive ? () => { void interrupt(); } : undefined}
       variant="pane"
-      onClose={() => setSubagentPaneOpen(false)}
       onSelectSubagent={(selection) => {
         setSubagentView({
           taskId: selection.taskId,
@@ -6556,7 +6568,218 @@ export function AgentChatPane({
       }}
       selectedTaskId={subagentView?.taskId ?? null}
     />
-  ) : null;
+  ) : (
+    <div className="flex h-full min-h-0 flex-col items-center justify-center px-4 py-8 text-center">
+      <p className="font-sans text-[13px] text-fg/50">No subagents detected</p>
+    </div>
+  );
+  const proofTabContent = (
+    <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
+      <ChatComputerUsePanel
+        sessionId={proofSessionId}
+        snapshot={computerUseSnapshot}
+        onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
+      />
+    </div>
+  );
+  const handoffTabContent = canShowHandoff ? (
+    <div className="min-h-0 flex-1 overflow-auto p-4">
+      <div className="space-y-1">
+        <div className="font-sans text-[12px] font-semibold text-fg/82">Start a sibling chat on another model</div>
+        <div className="text-[11px] leading-5 text-fg/54">
+          {handoffTargetProvider === "claude"
+            ? "ADE can fork Claude with full SDK history, or start a brief handoff that sends a compact summary."
+            : "ADE will create a new work chat, inject a handoff summary from this session, and route you into the new tab."}
+        </div>
+        {laneId ? (
+          <div className="text-[10px] leading-4 text-fg/40">
+            New session stays in this lane ({laneDisplayLabel}).
+          </div>
+        ) : null}
+      </div>
+      <div className="mt-3 inline-flex items-center gap-1.5">
+        <ModelPicker
+          value={handoffModelId}
+          onChange={setHandoffModelId}
+          surfaceKey="chat-handoff"
+          {...(handoffAvailableModelIds ? { availableModelIds: handoffAvailableModelIds } : {})}
+          onOpenSignIn={openAiProvidersSettings}
+        />
+        <ReasoningEffortPicker
+          modelId={handoffModelId}
+          reasoningEffort={handoffReasoningEffort}
+          onChange={setHandoffReasoningEffort}
+        />
+      </div>
+      {handoffTargetProvider ? (
+        <div className="mt-2 space-y-1.5">
+          <div className="text-[9px] font-medium uppercase tracking-[0.12em] text-muted-fg/45">Permission mode</div>
+          {handoffTargetProvider === "claude" ? (
+            <select
+              value={handoffClaudePermissionMode}
+              onChange={(e) => setHandoffClaudePermissionMode(e.target.value as AgentChatClaudePermissionMode)}
+              className={handoffSelectCls}
+              aria-label="Claude permission mode for handoff"
+            >
+              {HANDOFF_CLAUDE_MODES.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          {handoffTargetProvider === "codex" ? (
+            <div className="space-y-0.5">
+              <select
+                value={handoffCodexSelectValue}
+                title={handoffCodexPermissionPreset === "custom" ? "Non-standard policy; choosing a preset replaces it." : undefined}
+                onChange={(e) => {
+                  const next = e.target.value as "default" | "plan" | "full-auto" | "config-toml";
+                  const updated = handoffApplyCodexPreset(next, {
+                    cap: handoffCodexApprovalPolicy,
+                    sandbox: handoffCodexSandbox,
+                  });
+                  setHandoffCodexApprovalPolicy(updated.codexApprovalPolicy);
+                  setHandoffCodexSandbox(updated.codexSandbox);
+                  setHandoffCodexConfigSource(updated.codexConfigSource);
+                }}
+                className={handoffSelectCls}
+                aria-label="Codex permission preset for handoff"
+              >
+                <option value="default">Default — write + prompts on risk</option>
+                <option value="plan">Plan — read only + prompts</option>
+                <option value="full-auto">Full auto — no prompts</option>
+                <option value="config-toml">Use codex config.toml</option>
+              </select>
+              {modelSupportsFastMode(handoffTargetDescriptor) ? (
+                <button
+                  type="button"
+                  className={cn(
+                    "mt-1 inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 font-sans text-[11px] font-semibold transition-colors",
+                    handoffCodexFastMode
+                      ? "border-amber-300/28 bg-amber-400/12 text-amber-100"
+                      : "border-white/[0.08] bg-white/[0.03] text-muted-fg/62 hover:bg-white/[0.06] hover:text-fg/78",
+                  )}
+                  aria-pressed={handoffCodexFastMode}
+                  aria-label="Fast mode for handoff"
+                  onClick={() => setHandoffCodexFastMode((current) => !current)}
+                >
+                  <Lightning size={12} weight="fill" />
+                  Fast
+                </button>
+              ) : null}
+              {handoffCodexPermissionPreset === "custom" ? (
+                <div className="text-[10px] text-amber-200/55">Session uses a custom policy; select a standard preset to apply to the new chat.</div>
+              ) : null}
+            </div>
+          ) : null}
+          {handoffTargetProvider === "opencode" ? (
+            <select
+              value={handoffOpenCodePermissionMode}
+              onChange={(e) => setHandoffOpenCodePermissionMode(e.target.value as AgentChatOpenCodePermissionMode)}
+              className={handoffSelectCls}
+              aria-label="OpenCode permission mode for handoff"
+            >
+              {HANDOFF_OPENCODE_MODES.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          {handoffTargetProvider === "droid" ? (
+            <select
+              value={handoffDroidPermissionMode}
+              onChange={(e) => setHandoffDroidPermissionMode(e.target.value as AgentChatDroidPermissionMode)}
+              className={handoffSelectCls}
+              aria-label="Droid autonomy mode for handoff"
+            >
+              {HANDOFF_DROID_MODES.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          {handoffTargetProvider === "cursor" ? (
+            <select
+              value={handoffCursorModeId?.trim() || "agent"}
+              onChange={(e) => {
+                setHandoffCursorModeId(e.target.value || "agent");
+              }}
+              className={handoffSelectCls}
+              aria-label="Cursor agent mode for handoff"
+            >
+              {CURSOR_AVAILABLE_MODE_IDS.map((modeId) => (
+                <option key={modeId} value={modeId}>
+                  {modeId}
+                </option>
+              ))}
+            </select>
+          ) : null}
+        </div>
+      ) : null}
+      <div className="mt-3 rounded-md border border-white/[0.05] bg-white/[0.025] px-2.5 py-2 text-[10px] leading-4 text-fg/44">
+        {handoffTargetProvider === "claude"
+          ? "Fork keeps the complete Claude transcript through the SDK. Brief sends a summary as the first message."
+          : "Create opens the new work chat and sends the handoff summary as its first message."}
+      </div>
+      <div className="mt-3 flex items-center justify-end gap-2">
+        {handoffTargetProvider === "claude" ? (
+          <>
+            <button
+              type="button"
+              className="rounded-md border border-white/[0.08] bg-white/[0.035] px-2.5 py-1 font-sans text-[11px] font-medium text-fg/72 transition-colors hover:border-white/[0.14] hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
+              onClick={() => {
+                void handoffSession("brief");
+              }}
+              disabled={!handoffModelId || handoffBusy || handoffBlocked}
+            >
+              {handoffBusy ? "Starting..." : "Brief handoff"}
+            </button>
+            <button
+              type="button"
+              className="rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] px-2.5 py-1 font-sans text-[11px] font-medium text-fg/86 transition-colors hover:border-[color:color-mix(in_srgb,var(--chat-accent)_34%,transparent)] disabled:cursor-not-allowed disabled:opacity-40"
+              onClick={() => {
+                void handoffSession("fork");
+              }}
+              disabled={!handoffModelId || handoffBusy || handoffBlocked}
+            >
+              {handoffBusy ? "Starting..." : "Fork full history"}
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            className="rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] px-2.5 py-1 font-sans text-[11px] font-medium text-fg/86 transition-colors hover:border-[color:color-mix(in_srgb,var(--chat-accent)_34%,transparent)] disabled:cursor-not-allowed disabled:opacity-40"
+            onClick={() => {
+              void handoffSession();
+            }}
+            disabled={!handoffModelId || handoffBusy || handoffBlocked}
+          >
+            {handoffBusy ? "Starting..." : "Create handoff chat"}
+          </button>
+        )}
+      </div>
+      {handoffBlocked ? (
+        <div className="mt-3 text-[10px] leading-4 text-fg/40">{handoffButtonTitle}</div>
+      ) : null}
+    </div>
+  ) : (
+    <div className="flex h-full min-h-0 flex-col items-center justify-center px-4 py-8 text-center">
+      <p className="font-sans text-[13px] text-fg/50">Handoff is not available for this chat.</p>
+    </div>
+  );
+  const chatActionsPanelContent = (
+    <ChatActionsDrawerPanel
+      tab={chatActionsTab}
+      onTabChange={setChatActionsTab}
+      onClose={() => setChatActionsOpen(false)}
+      agentsContent={agentsTabContent}
+      proofContent={proofTabContent}
+      handoffContent={handoffTabContent}
+    />
+  );
   const cursorCloudPanelContent = (
     <ChatCursorCloudPanel
       ref={cursorCloudPanelRef}
@@ -6644,13 +6867,21 @@ export function AgentChatPane({
     </>
   );
   const shellHeader = (
-    <div className="space-y-2 px-4 py-3">
+    <div className={CHAT_SHELL_HEADER_CLASS}>
       {/* Single-row header: title + git toolbar + actions */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2">
         <div className="flex min-w-0 shrink items-center gap-2">
-          <span className="min-w-0 shrink truncate font-sans text-[14px] font-bold tracking-tight text-fg/90">
+          <span className="min-w-0 shrink truncate font-sans text-[13px] font-bold tracking-tight text-white">
             {resolvedTitle}
           </span>
+          {showWorkspaceChrome && laneId ? (
+            <LaneChip
+              laneName={chatHeaderLaneName}
+              laneColor={chatHeaderLaneColor}
+              onClick={() => navigate(openLaneInLanesTabPath(laneId))}
+              aria-label={`Open ${chatHeaderLaneName} in Lanes tab`}
+            />
+          ) : null}
           {showClaudeCacheTimer ? (
             <ClaudeCacheTtlBadge idleSinceAt={selectedSession?.idleSinceAt} />
           ) : null}
@@ -6658,7 +6889,7 @@ export function AgentChatPane({
 
         {showWorkspaceChrome && laneId ? <ChatGitToolbar laneId={laneId} /> : null}
 
-        <div className="ml-auto flex shrink-0 items-center gap-4">
+        <div className="ml-auto flex shrink-0 items-center gap-2">
           {laneToolsVisible && iosSimulatorAvailable ? (
             <SmartTooltip
               content={{
@@ -6681,10 +6912,9 @@ export function AgentChatPane({
                   setIosSimulatorOpen((current) => {
                     const next = !current;
                     if (next) {
-                      setProofDrawerOpen(false);
+                      setChatActionsOpen(false);
                       setAppControlOpen(false);
                       setCursorCloudPaneOpen(false);
-                      setSubagentPaneOpen(false);
                     }
                     return next;
                   });
@@ -6724,9 +6954,8 @@ export function AgentChatPane({
                   setAppControlOpen((current) => {
                     const next = !current;
                     if (next) {
-                      setProofDrawerOpen(false);
+                      setChatActionsOpen(false);
                       setIosSimulatorOpen(false);
-                      setSubagentPaneOpen(false);
                     }
                     return next;
                   });
@@ -6750,91 +6979,60 @@ export function AgentChatPane({
               compact
               label="Run"
               align="end"
-              triggerStyle={{ height: 28, padding: "0 10px" }}
+              triggerStyle={{ height: 24, padding: "0 8px" }}
             />
           ) : null}
-          {showWorkspaceChrome && laneId ? (
+          {(showWorkspaceChrome && laneId) || canShowHandoff ? (
             <SmartTooltip
               content={{
-                label: proofDrawerOpen ? "Close proof drawer" : "Open proof drawer",
-                description: proofDrawerOpen
-                  ? "Hide captured screenshots, videos, browser traces, and proof artifacts."
-                  : "Show captured screenshots, videos, browser traces, and proof artifacts for this chat.",
-                effect: proofArtifactCount > 0 ? `${proofArtifactCount} artifact${proofArtifactCount === 1 ? "" : "s"} available.` : undefined,
+                label: chatActionsOpen ? "Close chat actions" : "Open chat actions",
+                description: chatActionsOpen
+                  ? "Hide agents, proof artifacts, and handoff controls."
+                  : "Open agents, proof artifacts, and handoff controls for this chat.",
+                effect: [
+                  proofArtifactCount > 0 ? `${proofArtifactCount} artifact${proofArtifactCount === 1 ? "" : "s"}` : null,
+                  selectedSubagentSnapshots.length > 0
+                    ? `${selectedSubagentSnapshots.length} subagent${selectedSubagentSnapshots.length === 1 ? "" : "s"}`
+                    : null,
+                ].filter(Boolean).join(" · ") || undefined,
               }}
             >
               <button
                 type="button"
                 className={cn(
                   chatToolbarActionBase,
-                  proofDrawerOpen
-                    ? "border-emerald-400/22 bg-emerald-500/10 text-emerald-100/80"
+                  chatActionsOpen
+                    ? "border-violet-400/22 bg-violet-500/10 text-violet-100/80"
                     : chatToolbarActionIdle,
                 )}
                 onClick={() => {
-                  setProofDrawerOpen((current) => {
+                  setError(null);
+                  setChatActionsOpen((current) => {
                     const next = !current;
                     if (next) {
                       setIosSimulatorOpen(false);
                       setCursorCloudPaneOpen(false);
                       setAppControlOpen(false);
-                      setSubagentPaneOpen(false);
                     }
                     return next;
                   });
                 }}
-                title={proofDrawerOpen ? "Close proof drawer" : "Open proof drawer"}
-                aria-label={proofDrawerOpen ? "Close proof drawer" : "Open proof drawer"}
-                aria-pressed={proofDrawerOpen}
+                title={chatActionsOpen ? "Close chat actions drawer" : "Open chat actions drawer"}
+                aria-label={chatActionsOpen ? "Close chat actions drawer" : "Open chat actions drawer"}
+                aria-pressed={chatActionsOpen}
               >
-                <span>Proof</span>
-                <Cube size={13} weight={proofDrawerOpen ? "fill" : "regular"} />
+                <span>Chat actions</span>
+                <ChatActionsToolbarIcon size={13} weight={chatActionsOpen ? "fill" : "regular"} />
                 {proofArtifactCount > 0 ? (
                   <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-emerald-500/80 px-0.5 font-mono text-[8px] font-bold text-black">
                     {proofArtifactCount}
                   </span>
+                ) : selectedSubagentSnapshots.length > 0 ? (
+                  <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-amber-400/85 px-0.5 font-mono text-[8px] font-bold text-black">
+                    {selectedSubagentSnapshots.length}
+                  </span>
                 ) : null}
-              </button>
-            </SmartTooltip>
-          ) : null}
-          {selectedSubagentPaneAvailable ? (
-            <SmartTooltip
-              content={{
-                label: subagentPaneOpen ? "Close subagents" : "Open subagents",
-                description: "Inspect active and completed Claude subagents for this chat.",
-                effect: `${selectedSubagentSnapshots.length} subagent${selectedSubagentSnapshots.length === 1 ? "" : "s"} tracked.`,
-              }}
-            >
-              <button
-                type="button"
-                className={cn(
-                  chatToolbarActionBase,
-                  subagentPaneOpen
-                    ? "border-amber-300/22 bg-amber-500/10 text-amber-100/80"
-                    : chatToolbarActionIdle,
-                )}
-                onClick={() => {
-                  setSubagentPaneOpen((current) => {
-                    const next = !current;
-                    if (next) {
-                      setProofDrawerOpen(false);
-                      setIosSimulatorOpen(false);
-                      setAppControlOpen(false);
-                      setCursorCloudPaneOpen(false);
-                    }
-                    return next;
-                  });
-                }}
-                title={subagentPaneOpen ? "Close subagents panel" : "Open subagents panel"}
-                aria-label={subagentPaneOpen ? "Close subagents panel" : "Open subagents panel"}
-                aria-pressed={subagentPaneOpen}
-              >
-                <span>Agents</span>
-                <TreeStructure size={13} weight={subagentPaneOpen ? "fill" : "regular"} />
-                <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-amber-400/85 px-0.5 font-mono text-[8px] font-bold text-black">
-                  {selectedSubagentSnapshots.length}
-                </span>
-                {!subagentPaneOpen && hasRunningBackgroundSubagent ? (
+                {!chatActionsOpen && hasRunningBackgroundSubagent ? (
                   <span
                     aria-hidden
                     className={cn(
@@ -6894,214 +7092,6 @@ export function AgentChatPane({
               {chip.label}
             </span>
           ))}
-          {canShowHandoff ? (
-            <div ref={handoffRef} className="relative">
-              <button
-                type="button"
-                className={cn(
-                  chatToolbarActionBase,
-                  "border-violet-400/[0.12] bg-violet-500/[0.04] text-violet-200/60 hover:border-violet-400/20 hover:bg-violet-500/[0.08] hover:text-violet-200/80 disabled:cursor-not-allowed disabled:opacity-40",
-                )}
-                onClick={() => {
-                  setError(null);
-                  setHandoffOpen((current) => !current);
-                }}
-                disabled={handoffBlocked}
-                title={handoffButtonTitle}
-              >
-                <span>Handoff</span>
-                <ArrowBendUpRight size={13} weight="regular" />
-              </button>
-              {handoffOpen ? (
-                <div data-chat-handoff-menu="true" className="absolute right-0 top-full z-[100] mt-2 w-[min(26rem,calc(100vw-2rem))] rounded-[14px] border border-violet-400/[0.10] bg-[#13101a] p-4 shadow-[0_20px_50px_-12px_rgba(0,0,0,0.55)]">
-                  <div className="space-y-1">
-                    <div className="font-sans text-[12px] font-semibold text-fg/82">Start a sibling chat on another model</div>
-                    <div className="text-[11px] leading-5 text-fg/54">
-                      {handoffTargetProvider === "claude"
-                        ? "ADE can fork Claude with full SDK history, or start a brief handoff that sends a compact summary."
-                        : "ADE will create a new work chat, inject a handoff summary from this session, and route you into the new tab."}
-                    </div>
-                    {laneId ? (
-                      <div className="text-[10px] leading-4 text-fg/40">
-                        New session stays in this lane ({laneDisplayLabel}).
-                      </div>
-                    ) : null}
-                  </div>
-                  <div className="mt-3 inline-flex items-center gap-1.5">
-                    <ModelPicker
-                      value={handoffModelId}
-                      onChange={setHandoffModelId}
-                      surfaceKey="chat-handoff"
-                      {...(handoffAvailableModelIds ? { availableModelIds: handoffAvailableModelIds } : {})}
-                      onOpenSignIn={openAiProvidersSettings}
-                    />
-                    <ReasoningEffortPicker
-                      modelId={handoffModelId}
-                      reasoningEffort={handoffReasoningEffort}
-                      onChange={setHandoffReasoningEffort}
-                    />
-                  </div>
-                  {handoffTargetProvider ? (
-                    <div className="mt-2 space-y-1.5">
-                      <div className="text-[9px] font-medium uppercase tracking-[0.12em] text-muted-fg/45">Permission mode</div>
-                      {handoffTargetProvider === "claude" ? (
-                        <select
-                          value={handoffClaudePermissionMode}
-                          onChange={(e) => setHandoffClaudePermissionMode(e.target.value as AgentChatClaudePermissionMode)}
-                          className={handoffSelectCls}
-                          aria-label="Claude permission mode for handoff"
-                        >
-                          {HANDOFF_CLAUDE_MODES.map((m) => (
-                            <option key={m.value} value={m.value}>
-                              {m.label}
-                            </option>
-                          ))}
-                        </select>
-                      ) : null}
-                      {handoffTargetProvider === "codex" ? (
-                        <div className="space-y-0.5">
-                          <select
-                            value={handoffCodexSelectValue}
-                            title={handoffCodexPermissionPreset === "custom" ? "Non-standard policy; choosing a preset replaces it." : undefined}
-                            onChange={(e) => {
-                              const next = e.target.value as "default" | "plan" | "full-auto" | "config-toml";
-                              const updated = handoffApplyCodexPreset(next, {
-                                cap: handoffCodexApprovalPolicy,
-                                sandbox: handoffCodexSandbox,
-                              });
-                              setHandoffCodexApprovalPolicy(updated.codexApprovalPolicy);
-                              setHandoffCodexSandbox(updated.codexSandbox);
-                              setHandoffCodexConfigSource(updated.codexConfigSource);
-                            }}
-                            className={handoffSelectCls}
-                            aria-label="Codex permission preset for handoff"
-                          >
-                            <option value="default">Default — write + prompts on risk</option>
-                            <option value="plan">Plan — read only + prompts</option>
-                            <option value="full-auto">Full auto — no prompts</option>
-                            <option value="config-toml">Use codex config.toml</option>
-                          </select>
-                          {modelSupportsFastMode(handoffTargetDescriptor) ? (
-                            <button
-                              type="button"
-                              className={cn(
-                                "mt-1 inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 font-sans text-[11px] font-semibold transition-colors",
-                                handoffCodexFastMode
-                                  ? "border-amber-300/28 bg-amber-400/12 text-amber-100"
-                                  : "border-white/[0.08] bg-white/[0.03] text-muted-fg/62 hover:bg-white/[0.06] hover:text-fg/78",
-                              )}
-                              aria-pressed={handoffCodexFastMode}
-                              aria-label="Fast mode for handoff"
-                              onClick={() => setHandoffCodexFastMode((current) => !current)}
-                            >
-                              <Lightning size={12} weight="fill" />
-                              Fast
-                            </button>
-                          ) : null}
-                          {handoffCodexPermissionPreset === "custom" ? (
-                            <div className="text-[10px] text-amber-200/55">Session uses a custom policy; select a standard preset to apply to the new chat.</div>
-                          ) : null}
-                        </div>
-                      ) : null}
-                      {handoffTargetProvider === "opencode" ? (
-                        <select
-                          value={handoffOpenCodePermissionMode}
-                          onChange={(e) => setHandoffOpenCodePermissionMode(e.target.value as AgentChatOpenCodePermissionMode)}
-                          className={handoffSelectCls}
-                          aria-label="OpenCode permission mode for handoff"
-                        >
-                          {HANDOFF_OPENCODE_MODES.map((m) => (
-                            <option key={m.value} value={m.value}>
-                              {m.label}
-                            </option>
-                          ))}
-                        </select>
-                      ) : null}
-                      {handoffTargetProvider === "droid" ? (
-                        <select
-                          value={handoffDroidPermissionMode}
-                          onChange={(e) => setHandoffDroidPermissionMode(e.target.value as AgentChatDroidPermissionMode)}
-                          className={handoffSelectCls}
-                          aria-label="Droid autonomy mode for handoff"
-                        >
-                          {HANDOFF_DROID_MODES.map((m) => (
-                            <option key={m.value} value={m.value}>
-                              {m.label}
-                            </option>
-                          ))}
-                        </select>
-                      ) : null}
-                      {handoffTargetProvider === "cursor" ? (
-                        <select
-                          value={handoffCursorModeId?.trim() || "agent"}
-                          onChange={(e) => {
-                            setHandoffCursorModeId(e.target.value || "agent");
-                          }}
-                          className={handoffSelectCls}
-                          aria-label="Cursor agent mode for handoff"
-                        >
-                          {CURSOR_AVAILABLE_MODE_IDS.map((modeId) => (
-                            <option key={modeId} value={modeId}>
-                              {modeId}
-                            </option>
-                          ))}
-                        </select>
-                      ) : null}
-                    </div>
-                  ) : null}
-                  <div className="mt-3 rounded-md border border-white/[0.05] bg-white/[0.025] px-2.5 py-2 text-[10px] leading-4 text-fg/44">
-                    {handoffTargetProvider === "claude"
-                      ? "Fork keeps the complete Claude transcript through the SDK. Brief sends a summary as the first message."
-                      : "Create opens the new work chat and sends the handoff summary as its first message."}
-                  </div>
-                  <div className="mt-3 flex items-center justify-end gap-2">
-                    <button
-                      type="button"
-                      className="rounded-md border border-white/[0.06] px-2.5 py-1 font-sans text-[11px] text-muted-fg/60 transition-colors hover:border-white/[0.1] hover:text-fg"
-                      onClick={() => setHandoffOpen(false)}
-                    >
-                      Cancel
-                    </button>
-                    {handoffTargetProvider === "claude" ? (
-                      <>
-                        <button
-                          type="button"
-                          className="rounded-md border border-white/[0.08] bg-white/[0.035] px-2.5 py-1 font-sans text-[11px] font-medium text-fg/72 transition-colors hover:border-white/[0.14] hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
-                          onClick={() => {
-                            void handoffSession("brief");
-                          }}
-                          disabled={!handoffModelId || handoffBusy}
-                        >
-                          {handoffBusy ? "Starting..." : "Brief handoff"}
-                        </button>
-                        <button
-                          type="button"
-                          className="rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] px-2.5 py-1 font-sans text-[11px] font-medium text-fg/86 transition-colors hover:border-[color:color-mix(in_srgb,var(--chat-accent)_34%,transparent)] disabled:cursor-not-allowed disabled:opacity-40"
-                          onClick={() => {
-                            void handoffSession("fork");
-                          }}
-                          disabled={!handoffModelId || handoffBusy}
-                        >
-                          {handoffBusy ? "Starting..." : "Fork full history"}
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        type="button"
-                        className="rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] px-2.5 py-1 font-sans text-[11px] font-medium text-fg/86 transition-colors hover:border-[color:color-mix(in_srgb,var(--chat-accent)_34%,transparent)] disabled:cursor-not-allowed disabled:opacity-40"
-                        onClick={() => {
-                          void handoffSession();
-                        }}
-                        disabled={!handoffModelId || handoffBusy}
-                      >
-                        {handoffBusy ? "Starting..." : "Create handoff chat"}
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
           {!lockedSingleSessionMode && selectedSessionId ? (
             <button
               type="button"
@@ -7494,10 +7484,9 @@ export function AgentChatPane({
               setIosSimulatorOpen((current) => {
                 const next = !current;
                 if (next) {
-                  setProofDrawerOpen(false);
-                  setCursorCloudPaneOpen(false);
+                  setChatActionsOpen(false);
                   setAppControlOpen(false);
-                  setSubagentPaneOpen(false);
+                  setCursorCloudPaneOpen(false);
                 }
                 return next;
               });
@@ -7508,10 +7497,9 @@ export function AgentChatPane({
               setAppControlOpen((current) => {
                 const next = !current;
                 if (next) {
-                  setProofDrawerOpen(false);
+                  setChatActionsOpen(false);
                   setIosSimulatorOpen(false);
                   setCursorCloudPaneOpen(false);
-                  setSubagentPaneOpen(false);
                 }
                 return next;
               });
@@ -7543,14 +7531,11 @@ export function AgentChatPane({
             onOpenCloudLaunchMode={() => {
               setCursorCloudLaunchModeOpen(true);
               setCursorCloudPaneOpen(false);
-              setSubagentPaneOpen(false);
+              setChatActionsOpen(false);
             }}
             onCloseCloudLaunchMode={() => setCursorCloudLaunchModeOpen(false)}
             onOpenCloudBringToLocal={() => {
-              setCursorCloudLaunchModeOpen(false);
-              setProofDrawerOpen(false);
-              setIosSimulatorOpen(false);
-              setSubagentPaneOpen(false);
+              setChatActionsOpen(false);
               setCursorCloudPaneOpen(true);
             }}
             onSubmitToCloud={async (promptText) => {
@@ -7716,7 +7701,6 @@ export function AgentChatPane({
   // App Control) host their own input affordances, so the empty-state layout
   // shrinks the hero and moves the composer below.
   const appPanelOpen = effectiveIosSimulatorOpen || effectiveAppControlOpen;
-  const effectiveSubagentPaneOpen = subagentPaneOpen && selectedSubagentPaneAvailable;
   const effectiveCursorCloudPaneOpen = cursorCloudPaneOpen && cursorCloudAvailable;
   // Orchestration: derive runId / role from the active session. When set, mount
   // the right plan panel and (for "orchestrator-lead") wrap the chat surface in
@@ -7724,7 +7708,7 @@ export function AgentChatPane({
   const orchestrationRunId = selectedSession?.orchestrationRunId ?? null;
   const orchestrationRole = activeOrchestrationRole;
   const orchestrationPanelOpen = Boolean(orchestrationRunId);
-  const rightPaneOpen = proofDrawerOpen || appPanelOpen || effectiveSubagentPaneOpen || effectiveCursorCloudPaneOpen || orchestrationPanelOpen;
+  const rightPaneOpen = chatActionsOpen || appPanelOpen || effectiveCursorCloudPaneOpen || orchestrationPanelOpen;
   const supportsSplit = layoutVariant !== "grid-tile";
   const splitChatColStyle: React.CSSProperties | undefined =
     rightPaneOpen && supportsSplit ? { flexGrow: 100 - rightPaneSplit } : undefined;
@@ -8064,8 +8048,7 @@ export function AgentChatPane({
                   </div>
 
                   {rightPaneDivider}
-                  {proofDrawerOpen ? renderRightPane(proofPanelContent) : null}
-                  {effectiveSubagentPaneOpen && subagentPanelContent ? renderRightPane(subagentPanelContent) : null}
+                  {chatActionsOpen ? renderRightPane(chatActionsPanelContent) : null}
                   {effectiveIosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
                   {effectiveAppControlOpen ? renderRightPane(appControlPanelContent) : null}
                   {effectiveCursorCloudPaneOpen ? renderRightPane(cursorCloudPanelContent) : null}
@@ -8084,7 +8067,7 @@ export function AgentChatPane({
                   >
                     <div className={cn(
                       "flex min-h-0 flex-1 items-center justify-center overflow-hidden",
-                      appPanelOpen ? "px-3" : "px-6",
+                      appPanelOpen ? "px-3" : "px-6 pb-24",
                     )}>
                       <div className={cn(
                         "flex w-full flex-col items-center gap-4 text-center",

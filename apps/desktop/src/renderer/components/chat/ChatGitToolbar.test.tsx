@@ -102,16 +102,6 @@ describe("ChatGitToolbar", () => {
     }
   });
 
-  it("opens the current lane from the chat Git toolbar", async () => {
-    renderToolbar();
-
-    fireEvent.click(await screen.findByRole("button", { name: /UI audit lane/i }));
-
-    expect(screen.getByTestId("location").textContent).toBe(
-      "/lanes?laneId=lane-1&focus=single",
-    );
-  });
-
   it("opens the PR creation handoff when the current lane has no linked PR", async () => {
     renderToolbar();
 

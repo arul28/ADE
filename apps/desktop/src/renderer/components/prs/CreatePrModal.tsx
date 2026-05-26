@@ -1,7 +1,8 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
 import * as Dialog from "@radix-ui/react-dialog";
-import { GitPullRequest, GitMerge, Stack as Layers, CheckCircle, Warning, CircleNotch, X, GitBranch, Sparkle, ArrowRight, ArrowLeft, Check, DotsSixVertical, Trash, ArrowUp, ArrowDown } from "@phosphor-icons/react";
+import { GitPullRequest, GitMerge, Stack as Layers, CheckCircle, Warning, CircleNotch, X, Sparkle, ArrowRight, ArrowLeft, Check, DotsSixVertical, Trash, ArrowUp, ArrowDown } from "@phosphor-icons/react";
+import { BranchIcon } from "../ui/vcsIcons";
 import { useAppStore } from "../../state/appStore";
 import type {
   MergeMethod,
@@ -1297,7 +1298,7 @@ export function CreatePrModal({
                     <div>
                       <span style={labelStyle}>SOURCE BRANCH</span>
                       <div style={{ position: "relative" }}>
-                        <GitBranch
+                        <BranchIcon
                           size={14}
                           weight="bold"
                           style={{
@@ -1339,7 +1340,7 @@ export function CreatePrModal({
                     <div>
                       <span style={labelStyle}>TARGET BRANCH</span>
                       <div style={{ position: "relative" }}>
-                        <GitBranch
+                        <BranchIcon
                           size={14}
                           weight="bold"
                           style={{
@@ -1614,7 +1615,7 @@ export function CreatePrModal({
                     <div style={{ marginTop: 12 }}>
                       <span style={labelStyle}>TARGET BRANCH</span>
                       <div style={{ position: "relative" }}>
-                        <GitBranch
+                        <BranchIcon
                           size={14}
                           weight="bold"
                           style={{
@@ -1653,7 +1654,7 @@ export function CreatePrModal({
                     <div>
                       <span style={labelStyle}>TARGET BRANCH</span>
                       <div style={{ position: "relative" }}>
-                        <GitBranch
+                        <BranchIcon
                           size={14}
                           weight="bold"
                           style={{

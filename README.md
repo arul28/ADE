@@ -176,6 +176,16 @@ npm run dev:stop             # stop the dev runtime
 npm stop dev                 # same as dev:stop
 ```
 
+Browser preview of the desktop renderer (UI work without Electron):
+
+```bash
+cd apps/desktop
+npm run dev:vite             # mock-only: synthetic window.ade, fast shell
+ADE_PROJECT_ROOT=/path/to/project npm run dev:vite:live   # mock + live runtime bridge (Linear, sync, lanes)
+```
+
+`dev:vite:live` starts the ADE dev runtime, a localhost HTTP bridge to the runtime socket, and Vite with a proxy so the browser can call real backend methods on top of the mock. Set `ADE_PROJECT_ROOT` to your primary project checkout (where `.ade/` and secrets live), especially when working from a lane worktree. Full details: [apps/desktop/README.md](apps/desktop/README.md).
+
 The dev commands intentionally use a temp socket and a separate Electron profile so they do not collide with the installed ADE app:
 
 ```text

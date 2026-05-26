@@ -184,14 +184,6 @@ const STATUS_PILL_TONE: Record<StatusTone, string> = {
   error: "border-rose-400/30 bg-rose-500/10 text-rose-200/85",
 };
 
-const STATUS_DOT_TONE: Record<StatusTone, string> = {
-  idle: "bg-muted-fg/45",
-  active: "bg-emerald-300",
-  warn: "bg-amber-300",
-  muted: "bg-muted-fg/40",
-  error: "bg-rose-300",
-};
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -1494,10 +1486,6 @@ export function ChatBuiltInBrowserPanel({
     <div className="flex h-full min-h-0 flex-col font-sans text-[12px] text-fg/75">
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-sky-300/10 bg-[#080b11] shadow-[0_18px_48px_rgba(0,0,0,0.32)]">
         <div className="flex min-h-9 shrink-0 items-center gap-1 overflow-x-auto border-b border-white/[0.07] bg-[#10131d] px-2 py-1">
-          <span className="mr-1 inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md border border-sky-300/18 bg-sky-500/10 px-2 text-[10px] font-semibold text-sky-50/80">
-            <span className={cn("h-1.5 w-1.5 rounded-full", STATUS_DOT_TONE[statusInfo.tone], statusInfo.tone === "warn" || statusInfo.tone === "active" ? "animate-pulse" : null)} />
-            ADE
-          </span>
           {browserTabs.map((tab) => {
             const active = tab.id === activeTabId;
             const label = tab.title ?? tab.url ?? "New tab";

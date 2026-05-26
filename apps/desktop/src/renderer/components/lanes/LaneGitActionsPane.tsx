@@ -5,6 +5,7 @@ import { useAppStore } from "../../state/appStore";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { modifierKeyLabel } from "../../lib/platform";
 import { cn } from "../ui/cn";
+import { BranchIcon } from "../ui/vcsIcons";
 import { SmartTooltip, type SmartTooltipContent } from "../ui/SmartTooltip";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton, primaryButton, dangerButton } from "./laneDesignTokens";
 import { CommitTimeline } from "./CommitTimeline";
@@ -1661,6 +1662,9 @@ export function LaneGitActionsPane({
               <span
                 title={`Git branch: ${lane.branchRef}`}
                 style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
                   padding: "3px 8px",
                   fontSize: 10,
                   fontWeight: 600,
@@ -1670,6 +1674,7 @@ export function LaneGitActionsPane({
                   letterSpacing: "0.5px",
                 }}
               >
+                <BranchIcon size={11} weight="bold" style={{ flexShrink: 0, color: COLORS.accent }} />
                 {lane.branchRef}
               </span>
               <span

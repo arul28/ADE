@@ -186,7 +186,7 @@ const ReasoningEffortTrigger = memo(
           className={cn(
             "inline-flex min-w-0 items-center gap-1 rounded-md border font-sans transition-colors duration-150",
             compact
-              ? "h-7 px-1.5 text-[10px]"
+              ? "h-6 px-1 text-[9px]"
               : "h-8 px-2 text-[11px] sm:text-[12px]",
             "border-white/[0.06] bg-white/[0.03] text-fg/80",
             "hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg",

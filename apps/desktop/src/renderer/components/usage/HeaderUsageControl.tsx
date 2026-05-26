@@ -103,7 +103,13 @@ function HeaderProviderUsageChip({
   );
 }
 
-export function HeaderUsageControl() {
+export function HeaderUsageControl({
+  variant = "chip",
+  onMenuActivate,
+}: {
+  variant?: "chip" | "menu-row";
+  onMenuActivate?: () => void;
+} = {}) {
   const [open, setOpen] = useState(false);
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
   const [providerConnections, setProviderConnections] = useState<AiProviderConnections | null>(null);
@@ -253,36 +259,73 @@ export function HeaderUsageControl() {
     buttonTitle = "Usage";
   }
 
+  const openUsage = () => {
+    setOpen(true);
+    onMenuActivate?.();
+  };
+
+  const trigger = variant === "menu-row" ? (
+    <button
+      type="button"
+      role="menuitem"
+      className={cn(
+        "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] font-medium text-muted-fg/80 transition-colors duration-150 hover:bg-white/[0.06] hover:text-fg/90",
+      )}
+      onClick={openUsage}
+      title={buttonTitle}
+      aria-label={buttonTitle}
+      aria-expanded={open}
+      style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+    >
+      <Gauge
+        size={12}
+        weight="regular"
+        className={cn("shrink-0", hasErrors && "animate-pulse")}
+        style={{ color: hasErrors ? "#F59E0B" : "var(--color-accent)" }}
+      />
+      <span className="min-w-0 flex-1 truncate">Usage</span>
+      {providersWithUsage.length > 0 ? (
+        <span className="shrink-0 text-[10px] tabular-nums text-muted-fg/55">
+          {providersWithUsage.map(({ provider, usage }) => (
+            `${PROVIDER_LABEL[provider]} ${percentLabel(usage.fiveHourPercent)}`
+          )).join(" · ")}
+        </span>
+      ) : null}
+    </button>
+  ) : (
+    <button
+      type="button"
+      className={cn(
+        "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2 py-1",
+        "text-[11px] font-medium transition-colors duration-150",
+      )}
+      data-variant="ghost"
+      onClick={() => setOpen((value) => !value)}
+      title={buttonTitle}
+      aria-label={buttonTitle}
+      aria-expanded={open}
+      style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+    >
+      {providersWithUsage.length > 0 ? (
+        <div className="flex items-center gap-2">
+          {providersWithUsage.map(({ provider, usage }) => (
+            <HeaderProviderUsageChip key={provider} provider={provider} usage={usage} />
+          ))}
+        </div>
+      ) : (
+        <Gauge
+          size={18}
+          weight="regular"
+          className={cn(hasErrors && "animate-pulse")}
+          style={{ color: hasErrors ? "#F59E0B" : "var(--color-accent)" }}
+        />
+      )}
+    </button>
+  );
+
   return (
     <>
-      <button
-        type="button"
-        className={cn(
-          "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2 py-1",
-          "text-[11px] font-medium transition-colors duration-150",
-        )}
-        data-variant="ghost"
-        onClick={() => setOpen((value) => !value)}
-        title={buttonTitle}
-        aria-label={buttonTitle}
-        aria-expanded={open}
-        style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-      >
-        {providersWithUsage.length > 0 ? (
-          <div className="flex items-center gap-2">
-            {providersWithUsage.map(({ provider, usage }) => (
-              <HeaderProviderUsageChip key={provider} provider={provider} usage={usage} />
-            ))}
-          </div>
-        ) : (
-          <Gauge
-            size={18}
-            weight="regular"
-            className={cn(hasErrors && "animate-pulse")}
-            style={{ color: hasErrors ? "#F59E0B" : "var(--color-accent)" }}
-          />
-        )}
-      </button>
+      {trigger}
 
       {open ? (
         <div

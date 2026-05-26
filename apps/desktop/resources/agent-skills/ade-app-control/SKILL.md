@@ -49,3 +49,25 @@ ade --socket app-control terminal signal --signal SIGINT
 
 Only fall back to `ade --socket terminal list --text` and `ade --socket terminal read ...` when no App Control terminal is active.
 
+## Launching ADE itself from inside ADE
+
+If you are an agent running inside one ADE instance (e.g. ADE Beta or stable) and you need to launch the ADE dev desktop app under App Control, the dev launcher is already isolated and safe to run:
+
+```bash
+ade --socket app-control launch --command "npm run dev" --text
+```
+
+`npm run dev` uses its own runtime socket (`/tmp/ade-runtime-dev.sock`) and a separate Electron profile (`ade-desktop-dev`), so it will not collide with the runtime/socket that is hosting you. Confirm with `ade runtime status --text` before launching — that tells you which socket the CLI is currently attached to.
+
+### Survive Electron restarts
+
+`npm run dev` watches `apps/desktop/src/main/**` and restarts Electron whenever the main bundle rebuilds. After a restart, the App Control drawer UI in the parent ADE window can show stale `Waiting for CDP on 127.0.0.1:<port>` even though the new renderer is already exposed on the same port. From the CLI you can confirm and re-bind:
+
+```bash
+ade --socket app-control targets --text          # find the new page target id
+ade --socket app-control attach-target --target <id> --text
+ade --socket app-control snapshot --text         # forces the drawer to repaint
+```
+
+If `targets` shows a `/devtools/page/<id>` entry with the dev URL (`http://localhost:5173/...`), CDP is healthy — the drawer banner is just lagging until the next snapshot.
+

@@ -19,7 +19,7 @@ const FULL_TUTORIAL_ID = "first-journey";
 
 type MenuPosition = { top: number; right: number } | null;
 
-export function HelpMenu() {
+export function HelpMenu({ compact = false }: { compact?: boolean }) {
   const navigate = useNavigate();
   const smartTooltipsEnabled = useAppStore((s) => s.smartTooltipsEnabled);
   const setSmartTooltipsEnabled = useAppStore((s) => s.setSmartTooltipsEnabled);
@@ -127,8 +127,11 @@ export function HelpMenu() {
         aria-expanded={open}
         title="Help · tours, glossary, and preferences"
         className={cn(
-          "ade-shell-control inline-flex h-[24px] w-[24px] items-center justify-center",
-          "transition-[background-color,color,border-color,box-shadow] duration-150"
+          "ade-shell-control inline-flex items-center justify-center",
+          compact
+            ? "ade-shell-header-utility-btn"
+            : "h-[24px] w-[24px]",
+          "transition-[background-color,color,border-color,box-shadow] duration-150",
         )}
         onClick={() => (open ? close() : openAt())}
         style={{
@@ -136,7 +139,7 @@ export function HelpMenu() {
           color: open ? "var(--color-accent)" : undefined,
         } as React.CSSProperties}
       >
-        <Question size={16} weight={open ? "fill" : "regular"} />
+        <Question size={compact ? 14 : 16} weight={open ? "fill" : "regular"} />
       </button>
 
       {open && position

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowBendDownRight, At, Bug, CaretDown, Check, CloudArrowUp, Cube, Desktop, DeviceMobile, GithubLogo, Globe, Image, Lightning, PaperPlaneTilt, Paperclip, PencilSimple, Plus, Square, SquareSplitHorizontal, Strategy, Trash, X } from "@phosphor-icons/react";
+import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, CloudArrowUp, Cube, Desktop, DeviceMobile, GithubLogo, Globe, Image, Lightning, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Strategy, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -442,6 +442,26 @@ type ClaudeModeOption = {
   detail: string;
   tone: ClaudeModeTone;
 };
+
+function composerPermissionLabel(label: string): string {
+  const SHORT: Record<string, string> = {
+    "Ask permissions": "Ask",
+    "Accept edits": "Edits",
+    "Bypass permissions": "Bypass",
+    "Plan mode": "Plan",
+  };
+  return SHORT[label] ?? label;
+}
+
+const COMPOSER_TOOLBAR_PICKER_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-0";
+
+const COMPOSER_PERMISSION_TRIGGER_CLASS = cn(
+  "ade-chat-composer-permission-trigger",
+  "inline-flex h-6 min-w-0 shrink-0 items-center justify-start gap-1 rounded-md border px-1.5",
+  "font-sans text-[length:calc(var(--chat-font-size)*9/14)] leading-none transition-colors duration-150",
+  "border-white/[0.06] bg-white/[0.03] text-fg/80",
+  "hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg",
+);
 
 const CLAUDE_MODE_OPTIONS: ClaudeModeOption[] = [
   { value: "default", label: "Ask permissions", detail: "Claude asks before edits, Bash, and other sensitive tools.", tone: "green" },
@@ -2058,21 +2078,19 @@ export function AgentChatComposer({
                 setClaudeModePickerOpen((open) => !open);
               }}
               className={cn(
-                "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-md border px-2 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-none transition-colors duration-150",
-                "border-white/[0.06] bg-white/[0.03] text-fg/80",
-                "hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg",
+                COMPOSER_PERMISSION_TRIGGER_CLASS,
                 claudeModePickerOpen && "border-violet-400/30 bg-violet-500/[0.08] text-fg",
                 nativeControlsDisabled && "cursor-not-allowed opacity-60 hover:border-white/[0.06] hover:bg-white/[0.03]",
               )}
               title={selectedOption.detail}
             >
               <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", selectedTone.dot)} aria-hidden />
-              <span className="font-medium leading-none">{selectedOption.label}</span>
+              <span className="ade-chat-composer-permission-label truncate font-medium leading-none">{composerPermissionLabel(selectedOption.label)}</span>
               <CaretDown
                 size={10}
                 weight="bold"
                 className={cn(
-                  "shrink-0 text-muted-fg/60 transition-transform duration-150",
+                  "ade-chat-composer-permission-chevron shrink-0 text-muted-fg/60 transition-transform duration-150",
                   claudeModePickerOpen && "rotate-180 text-fg/80",
                 )}
               />
@@ -2152,9 +2170,7 @@ export function AgentChatComposer({
               setCodexPresetPickerOpen((open) => !open);
             }}
             className={cn(
-              "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-md border px-2 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-none transition-colors duration-150",
-              "border-white/[0.06] bg-white/[0.03] text-fg/80",
-              "hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg",
+              COMPOSER_PERMISSION_TRIGGER_CLASS,
               codexPresetPickerOpen && "border-violet-400/30 bg-violet-500/[0.08] text-fg",
               nativeControlsDisabled && "cursor-not-allowed opacity-60 hover:border-white/[0.06] hover:bg-white/[0.03]",
             )}
@@ -2165,13 +2181,15 @@ export function AgentChatComposer({
                 className={cn("h-1.5 w-1.5 shrink-0 rounded-full", safetyDotClass(activePreset.safety))}
                 aria-hidden
               />
-            ) : null}
-            <span className="font-medium leading-none">{presetLabel}</span>
+            ) : (
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-muted-fg/40" aria-hidden />
+            )}
+            <span className="ade-chat-composer-permission-label truncate font-medium leading-none">{presetLabel}</span>
             <CaretDown
               size={10}
               weight="bold"
               className={cn(
-                "shrink-0 text-muted-fg/60 transition-transform duration-150",
+                "ade-chat-composer-permission-chevron shrink-0 text-muted-fg/60 transition-transform duration-150",
                 codexPresetPickerOpen && "rotate-180 text-fg/80",
               )}
             />
@@ -2451,23 +2469,6 @@ export function AgentChatComposer({
     parallelConfiguringIndex,
     parallelModelSlots,
   ]);
-
-  const composerToolbarReasoningVisible = useMemo(() => {
-    if (parallelChatMode) return false;
-    const id = modelId?.trim();
-    if (!id) return false;
-    return (resolveModelDescriptorWithRuntimeCatalog(id)?.reasoningTiers?.length ?? 0) > 0;
-  }, [parallelChatMode, modelId]);
-
-  const composerToolbarGridMode = useMemo<"flex" | "grid2" | "grid3">(() => {
-    if (parallelChatMode) return "flex";
-    const hasNative = Boolean(nativeControlPanel);
-    const reasoning = composerToolbarReasoningVisible;
-    const total = (hasNative ? 1 : 0) + 1 + (reasoning ? 1 : 0);
-    if (total <= 1) return "flex";
-    if (total === 2) return "grid2";
-    return "grid3";
-  }, [parallelChatMode, nativeControlPanel, composerToolbarReasoningVisible]);
 
   const composerGlowColor = useMemo(() => {
     if (orchestratorModeActive) return "rgba(217, 70, 239, 0.36)";
@@ -3360,7 +3361,7 @@ export function AgentChatComposer({
         </>
       }
       footer={
-        <div className="flex flex-col gap-2 px-2 py-1.5 sm:px-3 sm:py-2">
+        <div className="ade-chat-composer-footer flex flex-col gap-2 px-2 py-1 sm:px-2.5">
           {parallelChatMode ? (
             <div className="rounded-xl border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_06%,transparent)] p-3">
               <div className="flex items-start justify-between gap-2">
@@ -3457,23 +3458,23 @@ export function AgentChatComposer({
               ) : null}
             </div>
           ) : null}
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex min-w-0 items-center gap-1">
           {/* Left: permission + model controls */}
-          <div className="flex min-w-0 flex-wrap items-center gap-3">
+          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {(() => {
               const showNativeControls =
                 !parallelChatMode
                 || (parallelConfiguringIndex != null && parallelModelSlots[parallelConfiguringIndex]);
               if (!showNativeControls || !nativeControlPanel) return null;
-              const wrapForUniformHeight = !parallelChatMode && composerToolbarGridMode !== "flex";
+              const wrapForUniformHeight = !parallelChatMode;
               if (!wrapForUniformHeight) return nativeControlPanel;
               return (
                 <div
                   className={cn(
-                    "min-w-0 flex min-h-8 items-stretch",
-                    "[&_button]:h-8 [&_button]:max-h-8 [&_button]:min-h-8 [&_button]:shrink-0 [&_button]:py-0",
-                    "[&_label]:flex [&_label]:h-8 [&_label]:max-h-8 [&_label]:min-h-8 [&_label]:items-center [&_label]:py-0",
-                    "[&_select]:h-8 [&_select]:max-h-8 [&_select]:min-h-8",
+                    "min-w-0 flex min-h-6 items-stretch shrink-0",
+                    "[&_button]:h-6 [&_button]:max-h-6 [&_button]:min-h-6 [&_button]:shrink-0 [&_button]:py-0",
+                    "[&_label]:flex [&_label]:h-6 [&_label]:max-h-6 [&_label]:min-h-6 [&_label]:items-center [&_label]:py-0",
+                    "[&_select]:h-6 [&_select]:max-h-6 [&_select]:min-h-6",
                   )}
                 >
                   {nativeControlPanel}
@@ -3524,6 +3525,7 @@ export function AgentChatComposer({
                   {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
                   disabled={parallelLaunchBusy}
                   compact
+                  triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
                   fastModeActive={fastModeActive}
                   fastModeSupported={fastModeSupported}
                   onFastModeToggle={(next) => onParallelSlotCodexFastModeChange?.(parallelConfiguringIndex, next)}
@@ -3534,6 +3536,7 @@ export function AgentChatComposer({
                   onChange={(effort) => onParallelSlotReasoningChange?.(parallelConfiguringIndex, effort)}
                   disabled={parallelLaunchBusy}
                   compact
+                  triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
                 />
               </>
             ) : null}
@@ -3550,6 +3553,7 @@ export function AgentChatComposer({
                   {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
                   disabled={modelSelectionLocked}
                   compact
+                  triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
                   fastModeActive={fastModeActive}
                   fastModeSupported={fastModeSupported}
                   onFastModeToggle={onCodexFastModeChange}
@@ -3560,6 +3564,7 @@ export function AgentChatComposer({
                   onChange={onReasoningEffortChange}
                   disabled={modelSelectionLocked}
                   compact
+                  triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
                 />
               </>
             ) : null}
@@ -3570,8 +3575,9 @@ export function AgentChatComposer({
           ) : null}
 
           {/* Right: attachment, commands, proof, context, send */}
-          <div className="ml-auto flex max-w-full shrink-0 items-center gap-0.5 sm:gap-1">
+          <div className="ml-auto flex shrink-0 items-center gap-0.5">
             <SmartTooltip
+              forceEnabled
               content={{
                 label: "Upload file",
                 description: parallelChatMode
@@ -3581,7 +3587,7 @@ export function AgentChatComposer({
             >
               <button
                 type="button"
-                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
+                className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
                 disabled={!canAttach}
                 onClick={openUploadPicker}
                 aria-label="Upload file from disk"
@@ -3590,6 +3596,7 @@ export function AgentChatComposer({
               </button>
             </SmartTooltip>
             <SmartTooltip
+              forceEnabled
               content={{
                 label: "Issue context",
                 description: canAttachIssueContext
@@ -3601,7 +3608,7 @@ export function AgentChatComposer({
                 type="button"
                 ref={issueContextButtonRef}
                 className={cn(
-                  "relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60",
+                  "relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60",
                   issueContextMenuOpen && "bg-violet-500/[0.08] text-violet-200/80",
                 )}
                 disabled={!canAttachIssueContext}
@@ -3625,6 +3632,7 @@ export function AgentChatComposer({
 
             {showOrchestratorModeButton ? (
               <SmartTooltip
+                forceEnabled
                 content={{
                   label: orchestratorModeActive ? "Orchestrator mode" : "Start orchestrator mode",
                   description: orchestratorModeActive
@@ -3646,7 +3654,7 @@ export function AgentChatComposer({
                     onStartOrchestratorChat?.();
                   }}
                   className={cn(
-                    "relative inline-flex h-8 min-w-8 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-2 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium transition-colors",
+                    "relative inline-flex h-7 min-w-7 shrink-0 items-center justify-center gap-1 rounded-lg border px-1.5 font-sans text-[length:calc(var(--chat-font-size)*9/14)] font-medium transition-colors",
                     orchestratorModeActive
                       ? "border-fuchsia-300/35 bg-fuchsia-400/[0.12] text-fuchsia-100 shadow-[0_0_18px_rgba(217,70,239,0.18)]"
                       : "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-fuchsia-300/22 hover:bg-fuchsia-400/[0.08] hover:text-fuchsia-100/80",
@@ -3663,6 +3671,7 @@ export function AgentChatComposer({
 
             {showParallelChatToggle && !parallelChatMode ? (
               <SmartTooltip
+                forceEnabled
                 content={{
                   label: "Parallel models",
                   description: "Send the same prompt and attachments to one child lane per model.",
@@ -3674,7 +3683,7 @@ export function AgentChatComposer({
                   disabled={turnActive || busy}
                   onClick={() => onParallelChatModeChange?.(true)}
                   className={cn(
-                    "relative inline-flex h-8 min-w-8 items-center justify-center gap-1 rounded-lg border px-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium transition-colors",
+                    "relative inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded-lg border px-1.5 font-sans text-[length:calc(var(--chat-font-size)*9/14)] font-medium transition-colors",
                     "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] hover:text-fg/60",
                     turnActive || busy ? "cursor-not-allowed opacity-40" : "",
                   )}
@@ -3710,7 +3719,7 @@ export function AgentChatComposer({
                   type="button"
                   onClick={onToggleIosSimulator}
                   className={cn(
-                    "inline-flex h-8 min-w-8 items-center justify-center gap-1 rounded-lg border px-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium transition-colors",
+                    "inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded-lg border px-1.5 font-sans text-[length:calc(var(--chat-font-size)*9/14)] font-medium transition-colors",
                     iosSimulatorOpen
                       ? "border-cyan-300/22 bg-cyan-500/10 text-cyan-100/80"
                       : "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] hover:text-fg/60",
@@ -3735,7 +3744,7 @@ export function AgentChatComposer({
                   type="button"
                   onClick={onToggleAppControl}
                   className={cn(
-                    "inline-flex h-8 min-w-8 items-center justify-center gap-1 rounded-lg border px-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium transition-colors",
+                    "inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded-lg border px-1.5 font-sans text-[length:calc(var(--chat-font-size)*9/14)] font-medium transition-colors",
                     appControlOpen
                       ? "border-sky-300/22 bg-sky-500/10 text-sky-100/80"
                       : "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] hover:text-fg/60",
@@ -3770,11 +3779,11 @@ export function AgentChatComposer({
                   <SmartTooltip content={{ label: "Send steer message", description: "Queue this message for the running chat after the current turn finishes." }}>
                     <button
                       type="button"
-                      className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] transition-all hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)]"
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white/90 text-zinc-900 transition-all hover:bg-white active:scale-[0.97]"
                       onClick={submitComposerDraft}
                       aria-label="Send steer message"
                     >
-                      <PaperPlaneTilt size={10} weight="fill" />
+                      <ArrowUp size={14} weight="bold" />
                     </button>
                   </SmartTooltip>
                 ) : null}
@@ -3810,45 +3819,39 @@ export function AgentChatComposer({
                     : "Send this prompt to the selected model.";
                 return (
                   <>
-                    <SmartTooltip content={{ label, description, effect: sendButtonTitle() }}>
+                    <SmartTooltip forceEnabled content={{ label, description, effect: sendButtonTitle() }}>
                       <button
                         type="button"
                         className={cn(
-                          "inline-flex h-8 min-h-0 items-center justify-center rounded-lg border px-2.5 transition-all",
+                          "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-all active:scale-[0.97]",
                           sendEnabled
-                            ? "border-violet-300/30 bg-violet-500/[0.16] text-violet-50 hover:border-violet-300/45 hover:bg-violet-500/[0.22] active:scale-[0.97]"
-                            : "border-white/[0.04] bg-white/[0.02] text-muted-fg/15",
+                            ? "bg-white/90 text-zinc-900 hover:bg-white"
+                            : "bg-white/[0.06] text-muted-fg/20",
                         )}
                         disabled={!sendEnabled}
                         onClick={submitComposerDraft}
                         aria-label={label}
                       >
                         {cloudMode
-                          ? <CloudArrowUp className="h-3 w-3" size={12} weight="fill" />
-                          : <PaperPlaneTilt className="h-3 w-3" size={12} weight="fill" />}
-                        <span className="ml-1 max-w-[10rem] truncate font-sans text-[length:calc(var(--chat-font-size)*10/14)] sm:max-w-[13rem]">
-                          {label}
-                        </span>
+                          ? <CloudArrowUp size={14} weight="bold" />
+                          : <ArrowUp size={14} weight="bold" />}
                       </button>
                     </SmartTooltip>
                     {onSubmitInBackground && !parallelChatMode && !cloudMode ? (
-                      <SmartTooltip content={{ label: "Launch in background", description: "Start this chat without leaving the new chat pane." }}>
+                      <SmartTooltip forceEnabled content={{ label: "Launch in background", description: "Start this chat without leaving the new chat pane." }}>
                         <button
                           type="button"
                           className={cn(
-                            "inline-flex h-8 min-h-0 items-center justify-center rounded-lg border px-2.5 transition-all",
+                            "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-all active:scale-[0.97]",
                             backgroundSendEnabled
-                              ? "border-emerald-300/25 bg-emerald-500/[0.12] text-emerald-100 hover:border-emerald-300/40 hover:bg-emerald-500/[0.18] active:scale-[0.97]"
+                              ? "border-emerald-300/25 bg-emerald-500/[0.12] text-emerald-100 hover:border-emerald-300/40 hover:bg-emerald-500/[0.18]"
                               : "border-white/[0.04] bg-white/[0.02] text-muted-fg/15",
                           )}
                           disabled={!backgroundSendEnabled}
                           onClick={onSubmitInBackground}
-                          aria-label="Launch in background"
+                          aria-label={backgroundLaunchBusy ? "Launching" : "Launch in background"}
                         >
-                          <Lightning className="h-3 w-3" size={12} weight="fill" />
-                          <span className="ml-1 max-w-[7rem] truncate font-sans text-[length:calc(var(--chat-font-size)*10/14)]">
-                            {backgroundLaunchBusy ? "Launching" : backgroundLaunchLabel}
-                          </span>
+                          <RocketLaunch size={14} weight="fill" />
                         </button>
                       </SmartTooltip>
                     ) : null}
@@ -4180,7 +4183,7 @@ function CursorCloudActionMenu({
           ref={triggerRef}
           onClick={() => setOpen((v) => !v)}
           className={cn(
-            "relative inline-flex h-8 min-w-8 items-center justify-center gap-1 rounded-lg border px-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium transition-colors",
+            "relative inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded-lg border px-1.5 font-sans text-[length:calc(var(--chat-font-size)*9/14)] font-medium transition-colors",
             active
               ? "border-violet-300/30 bg-violet-500/[0.16] text-violet-100/90"
               : "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-violet-300/22 hover:text-violet-200/80",

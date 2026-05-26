@@ -25,6 +25,7 @@ export type { PaneLeaf, PaneSplit, PaneLayoutEntry } from "./paneTreeOps";
 
 export type PaneConfig = {
   title: string;
+  titleContent?: React.ReactNode;
   icon?: PhosphorIcon;
   meta?: React.ReactNode;
   minimizable?: boolean;
@@ -386,6 +387,7 @@ export function PaneTilingLayout({
         <FloatingPane
           id={paneId}
           title={config.title}
+          titleContent={config.titleContent}
           icon={config.icon}
           meta={config.meta}
           minimized={isMinimized}

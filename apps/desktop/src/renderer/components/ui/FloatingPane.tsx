@@ -42,6 +42,7 @@ function getDropZoneStyle(edge: DropEdge): React.CSSProperties | null {
 export function FloatingPane({
   id,
   title,
+  titleContent,
   icon: Icon,
   meta,
   headerActions,
@@ -69,6 +70,7 @@ export function FloatingPane({
 }: {
   id: string;
   title: string;
+  titleContent?: React.ReactNode;
   icon?: PhosphorIcon;
   meta?: React.ReactNode;
   headerActions?: React.ReactNode;
@@ -177,7 +179,7 @@ export function FloatingPane({
           onDragStart={isDraggable ? handleDragStart : undefined}
           onDragEnd={isDraggable ? handleDragEnd : undefined}
         >
-          <div className="flex items-center gap-1 min-w-0">
+          <div className="flex min-w-0 flex-1 items-center gap-1">
             {isDraggable ? (
               <DotsSixVertical size={10} weight="regular" className="text-muted-fg/30 shrink-0 cursor-grab" />
             ) : null}
@@ -211,7 +213,11 @@ export function FloatingPane({
                 minimized ? "text-fg/70" : "text-muted-fg/50"
               )} />
             ) : null}
-            <span className={cn("ade-pane-title truncate")}>{title}</span>
+            {titleContent ? (
+              <div className="ade-floating-pane-title-slot min-w-0 flex-1 overflow-hidden">{titleContent}</div>
+            ) : (
+              <span className={cn("ade-pane-title truncate")}>{title}</span>
+            )}
             {meta && !minimized ? <span className="font-mono text-[9px] text-muted-fg/40 truncate">{meta}</span> : null}
           </div>
           {headerActions ? (
@@ -229,7 +235,7 @@ export function FloatingPane({
           onDragStart={isDraggable ? handleDragStart : undefined}
           onDragEnd={isDraggable ? handleDragEnd : undefined}
         >
-          <div className="flex min-h-0 items-center gap-1 min-w-0">
+          <div className="flex min-h-0 min-w-0 flex-1 items-center gap-1">
             {isDraggable ? (
               <DotsSixVertical size={10} weight="regular" className="text-muted-fg/30 shrink-0 cursor-grab" />
             ) : null}

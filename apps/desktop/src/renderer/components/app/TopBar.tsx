@@ -5,6 +5,7 @@ import React, {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowSquareOut,
   ChatCircleDots,
@@ -15,6 +16,7 @@ import {
   FolderOpen,
   Plus,
   Minus,
+  Plugs,
   Trash,
   UploadSimple,
   X,
@@ -257,11 +259,217 @@ function getFocusableElements(root: HTMLElement): HTMLElement[] {
   );
 }
 
-function syncDotClass(snapshot: SyncRoleSnapshot): string {
-  if (snapshot.client.state === "error") return "ade-status-dot-error";
-  if (snapshot.client.state === "connected" || snapshot.role === "brain")
-    return "ade-status-dot-active";
-  return "ade-status-dot-warning";
+function isSyncConnected(snapshot: SyncRoleSnapshot | null): boolean {
+  if (!snapshot) return false;
+  const unavailableReason = typeof snapshot.localDevice.metadata?.unavailableReason === "string"
+    ? snapshot.localDevice.metadata.unavailableReason
+    : null;
+  if (
+    unavailableReason === "local_runtime_daemon_disabled"
+    || snapshot.localDevice.deviceId === "local-runtime-disabled"
+  ) {
+    return false;
+  }
+  if (snapshot.client.state === "error") return false;
+  if (snapshot.role === "brain") return snapshot.connectedPeers.length > 0;
+  return snapshot.client.state === "connected";
+}
+
+const HEADER_STATUS_COMPACT_MAX_WIDTH_PX = 767;
+
+function useHeaderStatusCompactLayout(): boolean {
+  const [compact, setCompact] = useState(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return false;
+    }
+    return window.matchMedia(`(max-width: ${HEADER_STATUS_COMPACT_MAX_WIDTH_PX}px)`).matches;
+  });
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia(`(max-width: ${HEADER_STATUS_COMPACT_MAX_WIDTH_PX}px)`);
+    const update = () => setCompact(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+
+  return compact;
+}
+
+const HEADER_STATUS_MENU_ROW_CLASS =
+  "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] font-medium text-muted-fg/80 transition-colors duration-150 hover:bg-white/[0.06] hover:text-fg/90";
+
+function ShellConnectionChip({
+  label,
+  icon,
+  connected,
+  title,
+  ariaExpanded,
+  onClick,
+  layout = "chip",
+}: {
+  label: string;
+  icon: React.ReactNode;
+  connected: boolean;
+  title: string;
+  ariaExpanded?: boolean;
+  onClick: () => void;
+  layout?: "chip" | "menu-row";
+}) {
+  return (
+    <button
+      type="button"
+      className={cn(
+        layout === "menu-row"
+          ? HEADER_STATUS_MENU_ROW_CLASS
+          : "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-medium text-muted-fg/75 transition-colors duration-150 hover:text-fg/90",
+      )}
+      data-variant={layout === "chip" ? "ghost" : undefined}
+      role={layout === "menu-row" ? "menuitem" : undefined}
+      style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+      title={title}
+      aria-label={`${label}, ${connected ? "connected" : "not connected"}`}
+      aria-expanded={ariaExpanded}
+      onClick={onClick}
+    >
+      {layout === "menu-row" ? icon : <span>{label}</span>}
+      {layout === "menu-row" ? (
+        <>
+          <span className="min-w-0 flex-1 truncate">{label}</span>
+          <span
+            className={cn(
+              "h-1.5 w-1.5 shrink-0 rounded-full",
+              connected ? "bg-emerald-400" : "bg-red-400",
+            )}
+            aria-hidden
+          />
+        </>
+      ) : (
+        <>
+          {icon}
+          <span
+            className={cn(
+              "h-1.5 w-1.5 shrink-0 rounded-full",
+              connected ? "bg-emerald-400" : "bg-red-400",
+            )}
+            aria-hidden
+          />
+        </>
+      )}
+    </button>
+  );
+}
+
+function HeaderStatusMenu({
+  remoteConnected,
+  syncConnected,
+  showSyncControl,
+  children,
+}: {
+  remoteConnected: boolean;
+  syncConnected: boolean;
+  showSyncControl: boolean;
+  children: (close: () => void) => React.ReactNode;
+}) {
+  const compact = useHeaderStatusCompactLayout();
+  const [open, setOpen] = useState(false);
+  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  const close = useCallback(() => {
+    setOpen(false);
+    setMenuPos(null);
+  }, []);
+
+  const openMenu = useCallback(() => {
+    const el = buttonRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    setMenuPos({
+      top: rect.bottom + 6,
+      right: Math.max(8, window.innerWidth - rect.right),
+    });
+    setOpen(true);
+  }, []);
+
+  useEffect(() => {
+    if (!compact) close();
+  }, [close, compact]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (menuRef.current?.contains(target)) return;
+      if (buttonRef.current?.contains(target)) return;
+      close();
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+      }
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [close, open]);
+
+  const anyConnected = remoteConnected || (showSyncControl && syncConnected);
+
+  if (!compact) return null;
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        className={cn(
+          "ade-shell-control relative inline-flex h-[24px] w-[24px] shrink-0 items-center justify-center",
+          "transition-[background-color,color,border-color,box-shadow] duration-150",
+        )}
+        data-variant="ghost"
+        aria-label="Connections and usage"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="Connections and usage"
+        onClick={() => (open ? close() : openMenu())}
+        style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+      >
+        <Plugs size={14} weight="regular" />
+        <span
+          className={cn(
+            "absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full border border-black/40",
+            anyConnected ? "bg-emerald-400" : "bg-red-400",
+          )}
+          aria-hidden
+        />
+      </button>
+      {open && menuPos
+        ? createPortal(
+            <div
+              ref={menuRef}
+              role="menu"
+              aria-label="Connections and usage"
+              className={cn(
+                "fixed z-[90] min-w-[220px] overflow-hidden rounded-xl border border-white/10",
+                "bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45",
+              )}
+              style={{ top: menuPos.top, right: menuPos.right }}
+            >
+              {children(close)}
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
 }
 
 function projectIconErrorMessage(error: unknown): string {
@@ -400,7 +608,7 @@ function ProjectTabIcon({
 
   const fallbackIcon = (
     <Folder
-      size={16}
+      size={14}
       weight="regular"
       className={cn(
         "shrink-0 transition-opacity duration-150",
@@ -418,7 +626,7 @@ function ProjectTabIcon({
         src={icon.dataUrl}
         alt=""
         className={cn(
-          "h-[18px] w-[18px] shrink-0 rounded-[4px] object-contain transition-opacity duration-150",
+          "h-[14px] w-[14px] shrink-0 rounded-[3px] object-contain transition-opacity duration-150",
           isCurrent ? "opacity-95" : "opacity-75",
           animate && "animate-pulse",
         )}
@@ -479,7 +687,7 @@ function ProjectTabIcon({
         aria-label="Project icon"
         title="Project icon"
         className={cn(
-          "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[5px] text-current",
+          "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] text-current",
         )}
         onClick={(event) => event.stopPropagation()}
         onKeyDown={(event) => event.stopPropagation()}
@@ -504,7 +712,7 @@ function ProjectTabIcon({
           aria-label="Project icon"
           title="Project icon"
           className={cn(
-            "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[5px]",
+            "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px]",
             "text-current transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent/70",
           )}
           onClick={(event) => event.stopPropagation()}
@@ -692,8 +900,8 @@ export function TopBar() {
     hasGitHubRemote === false &&
     hasOrigin === false;
   const connectedRemoteCount = remoteSnapshot?.connectedCount ?? 0;
-  const remoteButtonLabel =
-    connectedRemoteCount > 0 ? `Remote ${connectedRemoteCount}` : "Remote";
+  const remoteConnected = connectedRemoteCount > 0;
+  const syncConnected = isSyncConnected(syncSnapshot);
   const showSyncControl = workspaceProjectOpen;
 
   useEffect(() => {
@@ -1386,6 +1594,88 @@ export function TopBar() {
   );
 
   const syncLabel = deriveSyncLabel(syncSnapshot) ?? "Phone sync";
+
+  const renderHeaderStatusControls = useCallback(
+    (options?: { menuLayout?: boolean; onActivate?: () => void }) => {
+      const menuLayout = options?.menuLayout === true;
+      const wrapActivate = (handler: () => void) => () => {
+        handler();
+        options?.onActivate?.();
+      };
+
+      const remoteChip = (
+        <ShellConnectionChip
+          layout={menuLayout ? "menu-row" : "chip"}
+          label="Remote"
+          connected={remoteConnected}
+          title="Manage remote machines"
+          ariaExpanded={remotePanelOpen}
+          onClick={
+            menuLayout
+              ? wrapActivate(() => setRemotePanelOpen(true))
+              : () => setRemotePanelOpen((open) => !open)
+          }
+          icon={(
+            <DesktopTower
+              size={12}
+              weight="regular"
+              className="shrink-0 opacity-85"
+            />
+          )}
+        />
+      );
+
+      const mobileChip = showSyncControl ? (
+        <ShellConnectionChip
+          layout={menuLayout ? "menu-row" : "chip"}
+          label="Mobile"
+          connected={syncConnected}
+          title="Connect a phone to this machine"
+          ariaExpanded={phoneSyncOpen}
+          onClick={
+            menuLayout
+              ? wrapActivate(() => setPhoneSyncOpen(true))
+              : () => setPhoneSyncOpen((open) => !open)
+          }
+          icon={(
+            <DeviceMobile
+              size={12}
+              weight="regular"
+              className="shrink-0 opacity-85"
+            />
+          )}
+        />
+      ) : null;
+
+      if (menuLayout) {
+        return (
+          <div className="flex flex-col gap-0.5">
+            <LinearQuickViewButton variant="menu-row" onMenuActivate={options?.onActivate} />
+            <HeaderUsageControl variant="menu-row" onMenuActivate={options?.onActivate} />
+            {remoteChip}
+            {mobileChip}
+          </div>
+        );
+      }
+
+      return (
+        <>
+          <LinearQuickViewButton />
+          {remoteChip}
+          {mobileChip}
+          <HeaderUsageControl />
+        </>
+      );
+    },
+    [
+      phoneSyncOpen,
+      remoteConnected,
+      remotePanelOpen,
+      showSyncControl,
+      syncConnected,
+    ],
+  );
+
   const transitionTargetName = projectTransition?.rootPath
     ? (projectTabs.find(
         (entry) => entry.rootPath === projectTransition.rootPath,
@@ -1421,12 +1711,12 @@ export function TopBar() {
         src="./logo.png"
         alt="ADE"
         className="shrink-0 select-none"
-        style={{ height: 26 }}
+        style={{ height: 20 }}
         draggable={false}
       />
 
       {/* Divider */}
-      <div className="ade-shell-header-divider h-4 w-px shrink-0" />
+      <div className="ade-shell-header-divider h-3 w-px shrink-0" />
 
       {/* Project tabs — the container stays draggable, only interactive elements opt out */}
       <div
@@ -1448,7 +1738,7 @@ export function TopBar() {
                   data-state={isCurrentRemote ? "active" : undefined}
                   aria-current={isCurrentRemote ? "true" : undefined}
                   className={cn(
-                    "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 shrink-0 items-center gap-2 px-3 py-0.5",
+                    "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 shrink-0 items-center gap-1.5 px-2.5",
                     "font-semibold transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
                     "cursor-pointer border border-warning/40",
                   )}
@@ -1483,7 +1773,7 @@ export function TopBar() {
                   <button
                     type="button"
                     className={cn(
-                      "ade-shell-control ml-auto inline-flex h-5 w-5 shrink-0 items-center justify-center text-current",
+                      "ade-shell-control ml-auto inline-flex h-4 w-4 shrink-0 items-center justify-center text-current",
                       "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150",
                     )}
                     data-variant="ghost"
@@ -1546,7 +1836,7 @@ export function TopBar() {
                   onDrop={(e) => handleDrop(e, idx)}
                   onDragEnd={(e) => handleDragEnd(e, rp.rootPath)}
                   className={cn(
-                    "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 shrink-0 items-center gap-2 px-3 py-0.5",
+                    "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 shrink-0 items-center gap-1.5 px-2.5",
                     "transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
                     !isMissing && "cursor-pointer",
                     isCurrent && "font-semibold",
@@ -1610,7 +1900,7 @@ export function TopBar() {
                     <span className="ml-auto inline-flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150">
                       <button
                         type="button"
-                        className="ade-shell-control inline-flex h-5 w-5 items-center justify-center text-current transition-[background-color,color,border-color,box-shadow] duration-100"
+                        className="ade-shell-control inline-flex h-4 w-4 items-center justify-center text-current transition-[background-color,color,border-color,box-shadow] duration-100"
                         data-variant="ghost"
                         data-state={isRelocating ? "open" : undefined}
                         disabled={isRelocating || isProjectBusy}
@@ -1629,7 +1919,7 @@ export function TopBar() {
                       </button>
                       <button
                         type="button"
-                        className="ade-shell-control inline-flex h-5 w-5 items-center justify-center text-current transition-[background-color,color,border-color,box-shadow] duration-100"
+                        className="ade-shell-control inline-flex h-4 w-4 items-center justify-center text-current transition-[background-color,color,border-color,box-shadow] duration-100"
                         data-variant="ghost"
                         disabled={isProjectBusy}
                         onClick={(e) => {
@@ -1646,7 +1936,7 @@ export function TopBar() {
                     <button
                       type="button"
                       className={cn(
-                        "ade-shell-control ml-auto inline-flex h-5 w-5 shrink-0 items-center justify-center text-current",
+                        "ade-shell-control ml-auto inline-flex h-4 w-4 shrink-0 items-center justify-center text-current",
                         "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150",
                       )}
                       data-variant="ghost"
@@ -1667,7 +1957,7 @@ export function TopBar() {
             {isNewTabOpen && (
               <div
                 className={cn(
-                  "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 items-center gap-2 px-3 py-0.5",
+                  "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 items-center gap-1.5 px-2.5",
                   "transition-[background-color,color,border-color,box-shadow] duration-150",
                   "font-semibold",
                 )}
@@ -1839,141 +2129,80 @@ export function TopBar() {
         </div>
       ) : null}
 
-      {/* Trailing groups: status · actions · view, gap-6 between, gap-2 within */}
-      <div className="flex items-center gap-6 shrink-0">
-      <div className="flex items-center gap-2">
-      <LinearQuickViewButton />
+      {/* Trailing controls: status · updates · utility cluster */}
+      <div className="flex shrink-0 items-center gap-2">
+        <div className="hidden md:flex items-center gap-1.5">
+          {renderHeaderStatusControls()}
+        </div>
 
-      <button
-        type="button"
-        className={cn(
-          "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
-          "text-[11px] font-medium transition-colors duration-150",
-        )}
-        style={
-          {
-            WebkitAppRegion: "no-drag",
-            color: "#FBBF24",
-            background:
-              connectedRemoteCount > 0
-                ? "rgba(245,158,11,0.16)"
-                : "rgba(245,158,11,0.08)",
-            border: "1px solid rgba(245,158,11,0.34)",
-            boxShadow:
-              connectedRemoteCount > 0
-                ? "0 0 18px -8px rgba(245,158,11,0.9)"
-                : undefined,
-          } as React.CSSProperties
-        }
-        title="Manage remote machines"
-        aria-expanded={remotePanelOpen}
-        onClick={() => setRemotePanelOpen((open) => !open)}
-      >
-        <DesktopTower
-          size={12}
-          weight="regular"
-          className="shrink-0 opacity-90"
-        />
-        <span
-          className={cn(
-            "ade-status-dot h-1.5 w-1.5 shrink-0",
-            connectedRemoteCount > 0 ? "bg-emerald-400" : "bg-amber-400/65",
-          )}
-        />
-        {remoteButtonLabel}
-      </button>
+        <HeaderStatusMenu
+          remoteConnected={remoteConnected}
+          syncConnected={syncConnected}
+          showSyncControl={showSyncControl}
+        >
+          {(closeMenu) => renderHeaderStatusControls({ menuLayout: true, onActivate: closeMenu })}
+        </HeaderStatusMenu>
 
-      {showSyncControl ? (
-        <button
-          type="button"
-          className={cn(
-            "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
-            "text-[11px] font-medium transition-colors duration-150",
-          )}
-          data-variant="ghost"
+        <AutoUpdateControl />
+
+        <div
+          className="ade-shell-header-utility-cluster inline-flex shrink-0 items-center gap-px rounded-md border border-white/[0.08] bg-white/[0.03] p-px"
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-          title="Connect a phone to this machine"
-          aria-expanded={phoneSyncOpen}
-          onClick={() => setPhoneSyncOpen((open) => !open)}
         >
-          <DeviceMobile
-            size={12}
-            weight="regular"
-            className="shrink-0 opacity-85"
-          />
-          <span
+          <button
+            type="button"
             className={cn(
-              "ade-status-dot h-1.5 w-1.5 shrink-0",
-              syncSnapshot ? syncDotClass(syncSnapshot) : "bg-white/30",
+              "ade-shell-control ade-shell-header-utility-btn inline-flex items-center justify-center",
+              "transition-[background-color,color,border-color,box-shadow] duration-150",
             )}
-          />
-          {syncLabel}
-        </button>
-      ) : null}
+            data-variant="ghost"
+            onClick={() => setFeedbackOpen(true)}
+            title="Report bug or suggest feature"
+            aria-label="Report bug or suggest feature"
+          >
+            <ChatCircleDots size={13} weight="regular" />
+          </button>
 
-      <HeaderUsageControl />
+          <HelpMenu compact />
+
+          <div className="inline-flex items-center gap-0">
+            <button
+              type="button"
+              className={cn(
+                "ade-shell-control ade-shell-header-utility-btn inline-flex items-center justify-center",
+                "transition-[background-color,color,border-color,box-shadow] duration-150",
+              )}
+              data-variant="ghost"
+              onClick={zoomOut}
+              title="Zoom out"
+              aria-label="Zoom out"
+            >
+              <Minus size={11} weight="bold" />
+            </button>
+            <span
+              className={cn(
+                "ade-shell-control-kbd ade-shell-header-utility-zoom inline-flex items-center justify-center border-x-0",
+                "select-none text-center font-mono",
+              )}
+            >
+              {zoom}%
+            </span>
+            <button
+              type="button"
+              className={cn(
+                "ade-shell-control ade-shell-header-utility-btn inline-flex items-center justify-center",
+                "transition-[background-color,color,border-color,box-shadow] duration-150",
+              )}
+              data-variant="ghost"
+              onClick={zoomIn}
+              title="Zoom in"
+              aria-label="Zoom in"
+            >
+              <Plus size={11} weight="bold" />
+            </button>
+          </div>
+        </div>
       </div>
-      {/* /status group */}
-
-      <div className="flex items-center gap-2">
-      <AutoUpdateControl />
-
-      <HelpMenu />
-
-      <button
-        type="button"
-        className={cn(
-          "ade-shell-control inline-flex h-[24px] w-[24px] items-center justify-center",
-          "transition-[background-color,color,border-color,box-shadow] duration-150",
-        )}
-        onClick={() => setFeedbackOpen(true)}
-        title="Report bug or suggest feature"
-        style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-      >
-        <ChatCircleDots size={16} weight="regular" />
-      </button>
-      </div>
-      {/* /actions group */}
-
-      {/* Zoom controls (view group) */}
-      <div
-        className="shrink-0 inline-flex items-center gap-0"
-        style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-      >
-        <button
-          type="button"
-          className={cn(
-            "ade-shell-control inline-flex h-[20px] w-[20px] items-center justify-center",
-            "transition-[background-color,color,border-color,box-shadow] duration-150",
-          )}
-          onClick={zoomOut}
-          title="Zoom out"
-        >
-          <Minus size={12} weight="bold" />
-        </button>
-        <span
-          className={cn(
-            "ade-shell-control-kbd inline-flex h-[20px] items-center justify-center border-x-0 px-1.5",
-            "text-[10px] font-mono select-none",
-            "min-w-[36px] text-center",
-          )}
-        >
-          {zoom}%
-        </span>
-        <button
-          type="button"
-          className={cn(
-            "ade-shell-control inline-flex h-[20px] w-[20px] items-center justify-center",
-            "transition-[background-color,color,border-color,box-shadow] duration-150",
-          )}
-          onClick={zoomIn}
-          title="Zoom in"
-        >
-          <Plus size={12} weight="bold" />
-        </button>
-      </div>
-      </div>
-      {/* /trailing groups */}
 
       {/* Overlay panels & modals — kept outside the gap-6 wrapper so they
           never participate in flex gap accounting when toggled open. */}

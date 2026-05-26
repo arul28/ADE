@@ -76,8 +76,6 @@ function renderPane(props: Partial<ComponentProps<typeof SessionListPane>> = {})
         loading={false}
         filterLaneId="all"
         setFilterLaneId={vi.fn()}
-        filterStatus="all"
-        setFilterStatus={vi.fn()}
         q=""
         setQ={vi.fn()}
         selectedSessionId={null}
@@ -108,16 +106,16 @@ describe("SessionListPane", () => {
     expect(screen.getByText("Mobile Tool Streaming UI")).toBeTruthy();
   });
 
-  it("lets the user set the status filter from the filter panel", () => {
-    const setFilterStatus = vi.fn();
-    const view = renderPane({ setFilterStatus });
+  it("lets the user set the group organization from the filter panel", () => {
+    const setSessionListOrganization = vi.fn();
+    const view = renderPane({ setSessionListOrganization });
     const filterButton = view.container.querySelector('button[data-tour="work.laneFilter"]');
     expect(filterButton).toBeTruthy();
 
     fireEvent.click(filterButton!);
-    fireEvent.click(within(view.container).getByRole("button", { name: "Running" }));
+    fireEvent.click(within(view.container).getByRole("button", { name: "Time" }));
 
-    expect(setFilterStatus).toHaveBeenCalledWith("running");
+    expect(setSessionListOrganization).toHaveBeenCalledWith("by-time");
   });
 
   it("bolds only the session name in sidebar cards", () => {

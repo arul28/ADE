@@ -1923,10 +1923,11 @@ export function FilesPage({
     explorer: {
       title: "Explorer",
       icon: FolderOpen,
-      meta: activeWorkspace?.name,
+      meta: embedded ? undefined : activeWorkspace?.name,
       bodyClassName: "flex min-h-0 flex-col overflow-hidden",
       children: (
         <FilesExplorer
+          compact={embedded}
           tree={tree}
           expanded={expanded}
           selectedNodePath={selectedTreeNodePath}
@@ -1956,19 +1957,19 @@ export function FilesPage({
       headerActions: (
         <div className="flex items-center gap-1.5">
           {/* Mode toggle group */}
-          <div className="inline-flex items-center" style={{ border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 8, overflow: "hidden" }} data-tour="files.modeToggle">
+          <div className="inline-flex items-center" style={{ border: `1px solid ${COLORS.outlineBorder}`, borderRadius: embedded ? 6 : 8, overflow: "hidden" }} data-tour="files.modeToggle">
             {(["edit", "diff", "conflict"] as const).map((m) => {
-              const label = m === "edit" ? "CODE" : m === "diff" ? "CHANGES" : "MERGE";
+              const label = m === "edit" ? (embedded ? "CODE" : "CODE") : m === "diff" ? (embedded ? "DIFF" : "CHANGES") : (embedded ? "MERGE" : "MERGE");
               const description = m === "edit" ? "View and edit the file content." : m === "diff" ? "View the diff between working changes and the last commit." : "View and resolve merge conflicts.";
               const isActive = mode === m;
               const disabled = m === "diff" ? (!laneIdForDiff || !activeTabPath) : m === "conflict" ? !activeTabPath : false;
               return (
-                <SmartTooltip key={m} content={{ label, description }}>
+                <SmartTooltip key={m} content={{ label: m === "edit" ? "Code" : m === "diff" ? "Changes" : "Merge", description }}>
                   <button
                     type="button"
                     style={{
-                      height: 24, padding: "0 10px",
-                      fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700, letterSpacing: "1px",
+                      height: embedded ? 20 : 24, padding: embedded ? "0 5px" : "0 10px",
+                      fontFamily: MONO_FONT, fontSize: embedded ? 8 : 9, fontWeight: 700, letterSpacing: embedded ? "0.5px" : "1px",
                       color: isActive ? COLORS.pageBg : disabled ? COLORS.textDim : COLORS.textMuted,
                       background: isActive ? COLORS.accent : "transparent",
                       border: "none", cursor: disabled ? "default" : "pointer",
@@ -1986,14 +1987,15 @@ export function FilesPage({
           <SmartTooltip content={{ label: "Save", description: "Save the current file to disk.", shortcut: "\u2318S" }}>
             <button
               type="button"
+              aria-label="Save"
               style={{
-                ...primaryButton({ height: 24, padding: "0 10px", fontSize: 9 }),
+                ...primaryButton({ height: embedded ? 20 : 24, padding: embedded ? "0 6px" : "0 10px", fontSize: embedded ? 8 : 9 }),
                 opacity: (!activeTab || !canEdit || !activeTabIsText) ? 0.35 : 1,
               }}
               onClick={() => saveActive().catch(() => {})}
               disabled={!activeTab || !canEdit || !activeTabIsText}
             >
-              <Save size={11} weight="bold" /> SAVE
+              <Save size={11} weight="bold" />{embedded ? null : " SAVE"}
             </button>
           </SmartTooltip>
         </div>
@@ -2226,28 +2228,28 @@ export function FilesPage({
     const Icon = config.icon;
     return (
       <section
-        className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
+        className="ade-files-pane flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
         style={{
-          borderRadius: 16,
+          borderRadius: embedded ? 10 : 16,
           border: `1px solid ${COLORS.border}`,
           background: "color-mix(in srgb, var(--color-card) 94%, var(--color-bg) 6%)",
-          boxShadow: "0 18px 40px rgba(3, 8, 20, 0.18)",
+          boxShadow: embedded ? "none" : "0 18px 40px rgba(3, 8, 20, 0.18)",
           backdropFilter: "blur(20px)",
           WebkitBackdropFilter: "blur(20px)",
         }}
       >
         <div
-          className="flex shrink-0 items-center gap-3"
+          className="ade-files-pane-header flex shrink-0 items-center gap-2"
           style={{
-            minHeight: 46,
-            padding: "0 14px",
+            minHeight: embedded ? 32 : 46,
+            padding: embedded ? "0 8px" : "0 14px",
             borderBottom: `1px solid ${COLORS.border}`,
             background: "linear-gradient(180deg, color-mix(in srgb, var(--color-fg) 2%, transparent), transparent)",
           }}
         >
-          <div className="flex min-w-0 flex-1 items-center gap-2">
-            {Icon ? <Icon size={14} weight="fill" style={{ color: COLORS.accent }} /> : null}
-            <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.textSecondary }}>
+          <div className="flex min-w-0 flex-1 items-center gap-1.5">
+            {Icon ? <Icon size={embedded ? 12 : 14} weight="fill" style={{ color: COLORS.accent, flexShrink: 0 }} /> : null}
+            <span style={{ fontFamily: MONO_FONT, fontSize: embedded ? 9 : 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.textSecondary, flexShrink: 0 }}>
               {config.title.toUpperCase()}
             </span>
             {config.meta ? (
@@ -2260,7 +2262,7 @@ export function FilesPage({
               </span>
             ) : null}
           </div>
-          <div className="ml-auto flex min-w-0 shrink items-center justify-end gap-2 overflow-x-auto">
+          <div className="ml-auto flex min-w-0 shrink items-center justify-end gap-1 overflow-x-auto">
             {config.headerActions}
           </div>
         </div>
@@ -2269,35 +2271,34 @@ export function FilesPage({
         </div>
       </section>
     );
-  }, [paneConfigs]);
+  }, [paneConfigs, embedded]);
 
   return (
     <div
       className={cn("relative flex h-full min-h-0 flex-col", embedded && "ade-files-page-embedded")}
       style={{ background: COLORS.pageBg }}
     >
-      {/* Header bar */}
+      {/* Header bar — full Files tab only; Work sidebar uses the active session lane via preferredLaneId */}
+      {!embedded ? (
       <div
         style={{
-          padding: embedded ? "0 8px" : "0 24px",
-          height: embedded ? 36 : 64,
+          padding: "0 24px",
+          height: 64,
           display: "flex",
           alignItems: "center",
-          gap: embedded ? 6 : 20,
+          gap: 20,
           background: "transparent",
           borderBottom: `1px solid ${COLORS.border}`,
         }}
         data-tour="files.header"
       >
         {/* Numbered title group */}
-        {embedded ? null : (
-          <div className="flex items-center gap-2 shrink-0">
-            <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.accent }}>03</span>
-            <FolderOpen size={18} weight="fill" style={{ color: COLORS.accent }} />
-            <span style={{ fontFamily: SANS_FONT, fontSize: 20, fontWeight: 700, color: COLORS.textPrimary }}>FILES</span>
-            <span style={inlineBadge(COLORS.accent, { fontSize: 9 })}>{workspaces.length} WS</span>
-          </div>
-        )}
+        <div className="flex items-center gap-2 shrink-0">
+          <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.accent }}>03</span>
+          <FolderOpen size={18} weight="fill" style={{ color: COLORS.accent }} />
+          <span style={{ fontFamily: SANS_FONT, fontSize: 20, fontWeight: 700, color: COLORS.textPrimary }}>FILES</span>
+          <span style={inlineBadge(COLORS.accent, { fontSize: 9 })}>{workspaces.length} WS</span>
+        </div>
 
         {/* Workspace selector */}
         <div className="flex min-w-0 items-center gap-1" data-tour="files.workspaceSelector">
@@ -2306,28 +2307,27 @@ export function FilesPage({
             title={activeWorkspaceSelectTitle}
             onChange={(e) => switchWorkspace(e.target.value)}
             style={{
-              height: embedded ? 24 : 32,
-              padding: embedded ? "0 8px" : "0 12px",
-              fontSize: embedded ? 11 : 12,
+              height: 32,
+              padding: "0 12px",
+              fontSize: 12,
               fontFamily: MONO_FONT, fontWeight: 600,
               color: COLORS.success, background: COLORS.recessedBg, borderRadius: 8,
               border: `1px solid ${COLORS.outlineBorder}`, cursor: "pointer", outline: "none",
               minWidth: 0,
-              maxWidth: embedded ? "100%" : 280,
+              maxWidth: 280,
               overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
             }}
             onFocus={(e) => { e.currentTarget.style.borderColor = COLORS.accent; }}
             onBlur={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; }}
           >
-            {workspaceSelectOptions.map((opt) => (
-              <option key={opt.id} value={opt.id} title={opt.title}>
-                {opt.label}
-              </option>
-            ))}
+          {workspaceSelectOptions.map((opt) => (
+            <option key={opt.id} value={opt.id} title={opt.title}>
+              {opt.label}
+            </option>
+          ))}
           </select>
-          {embedded ? null : (
-            <>
-              <SmartTooltip
+          <>
+            <SmartTooltip
                 content={
                   activeWorkspace?.laneId
                     ? {
@@ -2354,11 +2354,10 @@ export function FilesPage({
                   onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
                   onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
                 >
-                  View lane
-                </button>
-              </SmartTooltip>
-            </>
-          )}
+                View lane
+              </button>
+            </SmartTooltip>
+          </>
         </div>
 
         {/* Read-only badge */}
@@ -2369,7 +2368,7 @@ export function FilesPage({
         ) : null}
 
         {/* Trust / edit toggle */}
-        {!embedded && activeWorkspace?.isReadOnlyByDefault ? (
+        {activeWorkspace?.isReadOnlyByDefault ? (
           <SmartTooltip content={{ label: allowPrimaryEdit ? "Disable Edits" : "Trust & Edit", description: allowPrimaryEdit ? "Lock the editor to prevent changes to the primary workspace." : "Unlock the editor to make changes directly on the primary workspace.", warning: allowPrimaryEdit ? undefined : "You will be editing the primary workspace directly" }}>
             <button
               type="button"
@@ -2386,7 +2385,6 @@ export function FilesPage({
         {/* Spacer */}
         <div style={{ flex: 1, height: 1 }} />
 
-        {embedded ? null : (
         <>
         <SmartTooltip content={{ label: "Toggle Theme", description: "Switch the editor between light and dark theme." }}>
           <button
@@ -2463,11 +2461,11 @@ export function FilesPage({
           {openTabs.length} OPEN
         </span>
         </>
-        )}
       </div>
+      ) : null}
 
       {/* Warning banners */}
-      {(activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit) || (activeWorkspace?.kind === "primary" && suggestedLaneWorkspace) ? (
+      {!embedded && ((activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit) || (activeWorkspace?.kind === "primary" && suggestedLaneWorkspace)) ? (
         <div className="flex flex-wrap items-center gap-3 shrink-0" style={{
           padding: "6px 24px",
           borderBottom: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)",
@@ -2516,11 +2514,11 @@ export function FilesPage({
 
       {/* Static split layout for Files. This intentionally bypasses the shared
           tiling shell while Files-route crashes are under investigation. */}
-      <div className="flex-1 min-h-0 p-3">
-        <div className={cn("flex h-full min-h-0 min-w-0 gap-3", embedded ? "flex-col" : "flex-row")}>
+      <div className={cn("ade-files-layout flex-1 min-h-0", embedded ? "p-1.5" : "p-3")}>
+        <div className={cn("flex h-full min-h-0 min-w-0 flex-row", embedded ? "gap-2" : "gap-3")}>
           <div
-            className="min-h-0 min-w-0 shrink-0"
-            style={embedded ? { flexBasis: "42%", minHeight: 160 } : { width: 320, maxWidth: "28vw" }}
+            className={cn("ade-files-explorer-pane min-h-0 min-w-0 shrink-0", embedded && "basis-[36%]")}
+            style={embedded ? { minWidth: 108, maxWidth: 168 } : { width: 320, maxWidth: "28vw" }}
             data-tour="files.explorerPane"
           >
             {renderPane("explorer")}

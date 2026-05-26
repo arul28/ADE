@@ -15,6 +15,13 @@ export default defineConfig({
     host: true,
     port: 5173,
     strictPort: true,
+    proxy: {
+      "/ade-dev-rpc": {
+        target: "http://127.0.0.1:18765",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/ade-dev-rpc/, ""),
+      },
+    },
     fs: {
       // Keep Vite's default workspace/node_modules access and additionally allow src/.
       // Monaco's ESM runtime pulls CSS/assets from node_modules at dev-time.

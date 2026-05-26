@@ -1,5 +1,6 @@
 import React from "react";
-import { ArrowLeft, GitBranch, GitCommit, MagnifyingGlass, Tag } from "@phosphor-icons/react";
+import { ArrowLeft, GitCommit, MagnifyingGlass, Tag } from "@phosphor-icons/react";
+import { BranchIcon } from "../ui/vcsIcons";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { BranchPullRequest } from "../../../shared/types";
 import type { LaneBranchOption } from "./laneUtils";
@@ -73,7 +74,7 @@ function BranchRow({
       data-branch-name={branch.name}
     >
       <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/[0.04] text-sky-300">
-        <GitBranch size={14} weight="duotone" />
+        <BranchIcon size={14} weight="duotone" />
       </span>
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-2">

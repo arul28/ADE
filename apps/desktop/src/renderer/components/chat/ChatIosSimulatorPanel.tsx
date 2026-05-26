@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
-import { ArrowClockwise, ArrowSquareOut, ArrowsInSimple, ArrowsOutSimple, BracketsCurly, CheckCircle, Circle, Copy, CursorClick, Desktop, DeviceMobile, FileCode, ImageSquare, Lightning, Lock, MagnifyingGlassMinus, MagnifyingGlassPlus, Play, Power, Selection, SpinnerGap, TextT, WarningCircle, Wrench } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowSquareOut, ArrowsInSimple, ArrowsOutSimple, BracketsCurly, CheckCircle, Circle, Copy, CursorClick, Desktop, DeviceMobile, FileCode, ImageSquare, Lightning, Lock, MagnifyingGlassMinus, MagnifyingGlassPlus, Play, Power, Selection, SpinnerGap, WarningCircle, Wrench } from "@phosphor-icons/react";
 import type {
   AgentChatFileRef,
   IosElementContextItem,
@@ -3885,7 +3885,6 @@ export function ChatIosSimulatorPanel({
       {!mediaExpanded ? <div className="shrink-0 space-y-2">
         {mode === "interact" && !controlsOwnedElsewhere && !showSetupChecklist ? (
           <div className="flex items-center gap-2">
-            <TextT size={14} className="text-muted-fg/45" />
             <input
               className="min-w-0 flex-1 rounded-md border border-white/[0.07] bg-black/20 px-2 py-1.5 font-sans text-[11px] text-fg/75 outline-none"
               value={typedText}

@@ -1,6 +1,7 @@
 import React, { Suspense, useEffect, useCallback, useRef, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Clock, GitBranch } from "@phosphor-icons/react";
+import { Clock } from "@phosphor-icons/react";
+import { LaneIcon } from "../ui/vcsIcons";
 import { useAppStore } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
 import {
@@ -557,7 +558,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
           />
           {surface === "commits" ? (
             <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.06] bg-white/[0.02] px-3 py-1.5">
-              <GitBranch size={14} className="shrink-0 text-accent" weight="bold" />
+              <LaneIcon size={14} className="shrink-0 text-accent" weight="bold" />
               <span className="font-sans text-[11px] font-bold uppercase tracking-[1px] text-muted-fg">
                 Lane
               </span>

@@ -397,7 +397,7 @@ describe("AgentChatComposer", () => {
 
     expect(screen.queryByRole("button", { name: "Chat" })).toBeNull();
     const trigger = screen.getByRole("button", { name: "Claude permission mode" });
-    expect(trigger.textContent).toContain("Ask permissions");
+    expect(trigger.textContent).toContain("Ask");
 
     fireEvent.click(trigger);
 
@@ -483,6 +483,22 @@ describe("AgentChatComposer", () => {
     expect(screen.queryByDisplayValue("ADE flags")).toBeNull();
     expect(screen.queryByDisplayValue("On request")).toBeNull();
     expect(screen.queryByDisplayValue("Workspace write")).toBeNull();
+  });
+
+  it("wires permission preset triggers to composer container-query compact layout", () => {
+    const { container } = renderComposer({
+      sessionProvider: "codex",
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "workspace-write",
+      codexConfigSource: "flags",
+    });
+
+    expect(container.querySelector(".ade-chat-composer-footer")).toBeTruthy();
+
+    const trigger = screen.getByRole("button", { name: "Codex approval preset" });
+    expect(trigger.className).toContain("ade-chat-composer-permission-trigger");
+    expect(trigger.querySelector(".ade-chat-composer-permission-label")).toBeTruthy();
+    expect(trigger.querySelector(".ade-chat-composer-permission-chevron")).toBeTruthy();
   });
 
   it("maps Codex preset buttons to the underlying approval and sandbox controls", () => {
@@ -843,7 +859,6 @@ describe("AgentChatComposer", () => {
 
     const button = screen.getByRole("button", { name: "Orchestrator mode active" });
     expect(button.getAttribute("aria-pressed")).toBe("true");
-    expect(container.querySelector("[data-chat-composer-orchestrator-effects]")).toBeTruthy();
     expect(container.querySelector("[data-chat-composer-orchestrator-glow]")).toBeTruthy();
 
     fireEvent.click(button);

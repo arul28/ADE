@@ -277,6 +277,8 @@ export function createLinearClient(args: LinearClientArgs) {
                 id
                 name
                 slug: slugId
+                icon
+                color
                 teams {
                   nodes {
                     key
@@ -310,7 +312,24 @@ export function createLinearClient(args: LinearClientArgs) {
                 .map((entry) => (isRecord(entry) ? asString(entry.key) : null))
                 .find((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
               : null) ?? null;
-          return teamKey ? { id, name, slug, teamName, teamKey } : { id, name, slug, teamName };
+          return teamKey
+            ? {
+                id,
+                name,
+                slug,
+                teamName,
+                teamKey,
+                icon: asString(node.icon),
+                color: asString(node.color),
+              }
+            : {
+                id,
+                name,
+                slug,
+                teamName,
+                icon: asString(node.icon),
+                color: asString(node.color),
+              };
         })
         .filter((entry): entry is CtoLinearProject => entry != null);
 
@@ -614,7 +633,7 @@ export function createLinearClient(args: LinearClientArgs) {
     const [viewer, organization, projectsConnection, teamsConnection, recentIssuesResult] = await Promise.all([
       sdk.viewer,
       sdk.organization.catch(() => null),
-      sdk.projects({ first: 8, includeArchived: false } as never).catch(() => null),
+      sdk.projects({ first: 50, includeArchived: false } as never).catch(() => null),
       sdk.teams({ first: 8, includeArchived: false } as never).catch(() => null),
       recentIssuesPromise,
     ]);

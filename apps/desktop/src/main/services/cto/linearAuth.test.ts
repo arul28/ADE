@@ -907,7 +907,7 @@ describe("linearClient", () => {
     });
 
     await expect(client.listProjects()).resolves.toEqual([
-      { id: "project-1", name: "App Platform", slug: "app-platform", teamName: "Platform" },
+      { id: "project-1", name: "App Platform", slug: "app-platform", teamName: "Platform", icon: null, color: null },
     ]);
   });
 

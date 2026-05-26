@@ -1119,16 +1119,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     const needle = q.trim().toLowerCase();
     return sessions.filter((session) => {
       if (filterLaneId !== "all" && session.laneId !== filterLaneId) return false;
-      if (filterStatus !== "all") {
-        const bucket = sessionStatusBucket({
-          status: session.status,
-          lastOutputPreview: session.lastOutputPreview,
-          runtimeState: session.runtimeState,
-          toolType: session.toolType,
-          pendingInputItemId: session.pendingInputItemId,
-        });
-        if (bucket !== filterStatus) return false;
-      }
       if (!needle) return true;
 
       if (needle.startsWith("lane:")) {
@@ -1155,7 +1145,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         (session.resumeCommand ?? "").toLowerCase().includes(needle)
       );
     });
-  }, [sessions, filterLaneId, filterStatus, q]);
+  }, [sessions, filterLaneId, q]);
 
   const { runningFiltered, awaitingInputFiltered, endedFiltered } = useMemo(() => {
     const running: TerminalSessionSummary[] = [];

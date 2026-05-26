@@ -15,6 +15,10 @@
  * when a snapshot is exported; otherwise a built-in multi-command / groups / runtime demo is used.
  * Work tab: `sessions` come from the snapshot when present; otherwise built-in terminal session rows
  * (same shape as the export script) so the session list is not empty in Vite-only previews.
+ * Linear: `getLinearConnectionStatus` and quick-view mocks stay in sync so the top-bar Linear
+ * button appears; data is synthetic unless you use the Electron dev shell (real `window.ade` IPC).
+ * For real Linear, sync, and lanes in Vite-only preview, run `npm run dev:vite:live` with
+ * `ADE_PROJECT_ROOT` pointing at your ADE project (starts the browser runtime bridge).
  *
  * Optional: generate `browser-mock-ade-snapshot.generated.json` with
  *   npm run export:browser-mock-ade
@@ -30,6 +34,7 @@
 
 import { getDefaultModelDescriptor } from "../shared/modelRegistry";
 import { DEFAULT_PIPELINE_SETTINGS } from "../shared/types";
+import { attachBrowserRuntimeBridge } from "./browserRuntimeBridge";
 
 const noop = () => () => {};
 const resolved =
@@ -87,6 +92,117 @@ const MOCK_PROJECT =
 
 // ── Timestamps ────────────────────────────────────────────────
 const now = new Date().toISOString();
+
+const MOCK_LINEAR_CONNECTION = {
+  tokenStored: true,
+  connected: true,
+  viewerId: "mock-linear-user",
+  viewerName: "Mock Linear User",
+  checkedAt: now,
+  authMode: "manual" as const,
+  oauthAvailable: true,
+  tokenExpiresAt: null,
+  message: null,
+};
+
+const MOCK_LINEAR_ISSUES = [
+  {
+    id: "mock-linear-issue-1",
+    identifier: "ADE-101",
+    title: "Polish Work tab header layout",
+    description: "Align tabs, tools toggle, and lane bands in the Work chrome.",
+    url: "https://linear.app/ade/issue/ADE-101/polish-work-tab-header-layout",
+    projectId: "mock-linear-project",
+    projectSlug: "desktop-polish",
+    projectName: "Desktop polish",
+    teamId: "mock-linear-team",
+    teamKey: "ADE",
+    teamName: "ADE",
+    stateId: "mock-linear-state-started",
+    stateName: "In Progress",
+    stateType: "started",
+    priority: 2,
+    priorityLabel: "high",
+    labels: [],
+    metadataTags: [],
+    assigneeId: "mock-linear-user",
+    assigneeName: "Mock Linear User",
+    creatorId: "mock-linear-user",
+    creatorName: "Mock Linear User",
+    blockerIssueIds: [],
+    hasOpenBlockers: false,
+    dueDate: null,
+    estimate: 3,
+    archivedAt: null,
+    completedAt: null,
+    canceledAt: null,
+    startedAt: now,
+    createdAt: now,
+    updatedAt: now,
+    raw: {},
+  },
+  {
+    id: "mock-linear-issue-2",
+    identifier: "ADE-102",
+    title: "Chat actions drawer parity",
+    description: "Unify Proof, Agents, and Handoff into one tabbed drawer.",
+    url: "https://linear.app/ade/issue/ADE-102/chat-actions-drawer-parity",
+    projectId: "mock-linear-project",
+    projectSlug: "desktop-polish",
+    projectName: "Desktop polish",
+    teamId: "mock-linear-team",
+    teamKey: "ADE",
+    teamName: "ADE",
+    stateId: "mock-linear-state-todo",
+    stateName: "Todo",
+    stateType: "unstarted",
+    priority: 3,
+    priorityLabel: "medium",
+    labels: [],
+    metadataTags: [],
+    assigneeId: null,
+    assigneeName: null,
+    creatorId: "mock-linear-user",
+    creatorName: "Mock Linear User",
+    blockerIssueIds: [],
+    hasOpenBlockers: false,
+    dueDate: null,
+    estimate: 2,
+    archivedAt: null,
+    completedAt: null,
+    canceledAt: null,
+    startedAt: null,
+    createdAt: now,
+    updatedAt: now,
+    raw: {},
+  },
+];
+
+const MOCK_LINEAR_PICKER = {
+  projects: [
+    {
+      id: "mock-linear-project",
+      name: "Desktop polish",
+      slug: "desktop-polish",
+      teamName: "ADE",
+      teamKey: "ADE",
+    },
+  ],
+  users: [
+    {
+      id: "mock-linear-user",
+      name: "Mock Linear User",
+      displayName: "Mock Linear User",
+      email: "mock@example.com",
+      avatarUrl: null,
+      active: true,
+    },
+  ],
+  states: [
+    { id: "mock-linear-state-started", name: "In Progress", type: "started", teamId: "mock-linear-team" },
+    { id: "mock-linear-state-todo", name: "Todo", type: "unstarted", teamId: "mock-linear-team" },
+  ],
+};
 
 /** Browser mock lane health; matches `LaneHealthCheck` in shared types. */
 function mockBrowserLaneHealth(laneId: string) {
@@ -4380,6 +4496,118 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         })(),
       }),
     },
+    appControl: {
+      getStatus: resolved({
+        platform: "darwin",
+        supported: false,
+        activeSession: null,
+        providers: [{
+          provider: "cdp",
+          available: false,
+          detail: "Browser preview does not run App Control.",
+        }],
+      }),
+      launch: resolvedArg({} as any),
+      launchInTerminal: resolvedArg({} as any),
+      connect: resolvedArg({} as any),
+      stop: resolved({ ok: true as const, previousSession: null }),
+      screenshot: resolvedArg({ dataUrl: null } as any),
+      getSnapshot: resolvedArg({
+        screenshot: null,
+        elements: [],
+        hitElement: null,
+        screen: { width: 0, height: 0, scale: 1 },
+      } as any),
+      inspectPoint: resolvedArg({} as any),
+      selectPoint: resolvedArg({} as any),
+      click: resolved({ ok: true as const }),
+      typeText: resolved({ ok: true as const }),
+      scroll: resolved({ ok: true as const }),
+      dispatchKey: resolved({ ok: true as const }),
+      listTargets: resolved([]),
+      attachToTarget: resolvedArg({} as any),
+      onEvent: () => () => {},
+    },
+    iosSimulator: {
+      getStatus: resolved({
+        platform: "darwin",
+        supported: false,
+        tools: [],
+        activeDevice: null,
+        activeSession: null,
+      }),
+      listDevices: resolved([]),
+      listLaunchTargets: resolved([]),
+      launch: resolvedArg({} as any),
+      attachToChatSession: resolved(null),
+      shutdown: resolvedArg({ ok: true } as any),
+      screenshot: resolvedArg({} as any),
+      getScreenSnapshot: resolvedArg({} as any),
+      getInspectorSnapshot: resolved(null),
+      inspectPoint: resolvedArg({} as any),
+      getPreviewCapability: resolvedArg({ supported: false } as any),
+      listPreviewTargets: resolved([]),
+      renderPreview: resolvedArg({} as any),
+      openPreviewWorkspace: resolved({ ok: true as const, path: "/tmp" }),
+      startStream: resolvedArg({ streaming: false, streamUrl: null } as any),
+      stopStream: resolvedArg({ streaming: false, streamUrl: null } as any),
+      getStreamStatus: resolvedArg({ streaming: false, streamUrl: null } as any),
+      getSimulatorWindowState: resolvedArg({ visible: false } as any),
+      listSimulatorWindowSources: resolved([]),
+      tap: resolved({ ok: true as const }),
+      typeText: resolved({ ok: true as const }),
+      drag: resolved({ ok: true as const }),
+      swipe: resolved({ ok: true as const }),
+      selectPoint: resolvedArg({} as any),
+      onEvent: () => () => {},
+    },
+    builtInBrowser: {
+      getStatus: resolved({
+        attached: false,
+        partition: "persist:ade-browser",
+        visible: false,
+        bounds: { x: 0, y: 0, width: 0, height: 0 },
+        activeTabId: null,
+        tabs: [],
+        url: null,
+        title: null,
+        isLoading: false,
+        canGoBack: false,
+        canGoForward: false,
+        isInspecting: false,
+        hasSelection: false,
+      }),
+      showPanel: resolvedArg({} as any),
+      setBounds: resolvedArg({} as any),
+      attachWebview: resolvedArg({} as any),
+      navigate: resolvedArg({} as any),
+      createTab: resolvedArg({} as any),
+      switchTab: resolvedArg({} as any),
+      closeTab: resolvedArg({} as any),
+      reload: resolvedArg({} as any),
+      goBack: resolvedArg({} as any),
+      goForward: resolvedArg({} as any),
+      stop: resolvedArg({} as any),
+      startInspect: resolvedArg({} as any),
+      stopInspect: resolved(async () => {}),
+      captureScreenshot: resolvedArg({} as any),
+      selectPoint: resolvedArg({} as any),
+      selectCurrent: resolvedArg({} as any),
+      clearSelection: resolved({ ok: true as const }),
+      onEvent: () => () => {},
+    },
+    terminal: {
+      list: async (_args: any = {}) => [] as any[],
+      read: async () => ({ output: "", truncated: false, exitCode: null }),
+      preview: async () => ({ output: "", truncated: false }),
+      write: resolved({ ok: true as const }),
+      signal: resolved({ ok: true as const }),
+      activeForChat: async () => null,
+      reattachChatCli: async () => ({
+        ok: false as const,
+        reason: "Browser mock does not attach chat CLI terminals.",
+      }),
+    },
     cto: {
       getState: resolvedArg({
         identity: ADE_DB_SNAPSHOT?.ctoState?.identity ?? {
@@ -4531,17 +4759,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       onLinearWorkflowEvent: noop,
       getLinearProjects: resolvedArg([]),
       getLinearQuickView: resolvedArg({
-        connection: {
-          tokenStored: true,
-          connected: true,
-          viewerId: "mock-linear-user",
-          viewerName: "Mock Linear User",
-          checkedAt: now,
-          authMode: "manual",
-          oauthAvailable: true,
-          tokenExpiresAt: null,
-          message: null,
-        },
+        connection: MOCK_LINEAR_CONNECTION,
         organization: {
           id: "mock-linear-org",
           name: "ADE",
@@ -4601,8 +4819,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             private: false,
           },
         ],
-        assignedIssues: [],
-        recentIssues: [],
+        assignedIssues: MOCK_LINEAR_ISSUES,
+        recentIssues: MOCK_LINEAR_ISSUES,
         fetchedAt: now,
         sdk: {
           packageName: "@linear/sdk",
@@ -4616,26 +4834,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           ],
         },
       }),
-      getLinearIssuePickerData: resolvedArg({
-        projects: [],
-        users: [],
-        states: [],
-      }),
+      getLinearIssuePickerData: resolvedArg(MOCK_LINEAR_PICKER),
       searchLinearIssues: resolvedArg({
-        issues: [],
+        issues: MOCK_LINEAR_ISSUES,
         pageInfo: { hasNextPage: false, endCursor: null },
       }),
-      getLinearConnectionStatus: resolvedArg({
-        tokenStored: false,
-        connected: false,
-        viewerId: null,
-        viewerName: null,
-        checkedAt: now,
-        authMode: null,
-        oauthAvailable: true,
-        tokenExpiresAt: null,
-        message: "Linear token not configured.",
-      }),
+      getLinearConnectionStatus: resolvedArg(MOCK_LINEAR_CONNECTION),
       setLinearOAuthClient: resolvedArg({
         tokenStored: false,
         connected: false,
@@ -5556,4 +5760,5 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     updateDismissInstalledNotice: resolved(undefined),
     onUpdateEvent: noop,
   };
+  void attachBrowserRuntimeBridge();
 } // window

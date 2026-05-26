@@ -125,6 +125,8 @@ export type CtoLinearProject = {
   slug: string;
   teamName: string;
   teamKey?: string | null;
+  icon?: string | null;
+  color?: string | null;
 };
 
 export type CtoSearchLinearIssuesArgs = {

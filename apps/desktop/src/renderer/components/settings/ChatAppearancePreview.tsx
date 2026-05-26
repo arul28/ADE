@@ -1,7 +1,7 @@
 import React from "react";
 import { ChatMarkdown } from "../chat/chatMarkdown";
 import { buildChatAppearanceRootStyle } from "../chat/chatAppearance";
-import { ChatSurfaceShell } from "../chat/ChatSurfaceShell";
+import { CHAT_SHELL_HEADER_CLASS, ChatSurfaceShell } from "../chat/ChatSurfaceShell";
 import { providerChatAccent } from "../chat/chatSurfaceTheme";
 import { ChatWorkLogBlock } from "../chat/ChatWorkLogBlock";
 import type { ChatWorkLogEntry } from "../chat/chatTranscriptRows";
@@ -140,7 +140,7 @@ function PreviewUsageRow({ provider }: { provider: PreviewProviderKey }) {
 function PreviewShellHeader({ provider }: { provider: PreviewProviderKey }) {
   const { name, Logo } = PREVIEW_PROVIDER_META[provider];
   return (
-    <div className="space-y-1.5 px-3 py-2.5">
+    <div className={CHAT_SHELL_HEADER_CLASS}>
       <div className="flex items-center gap-2">
         <div className="flex min-w-0 shrink items-center gap-1.5">
           <Logo size={16} className="shrink-0 opacity-90" />

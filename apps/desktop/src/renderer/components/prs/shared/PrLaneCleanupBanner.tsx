@@ -1,5 +1,6 @@
 import React from "react";
-import { Archive, CheckCircle, GitBranch, Trash, Warning } from "@phosphor-icons/react";
+import { Archive, CheckCircle, Trash, Warning } from "@phosphor-icons/react";
+import { LaneIcon } from "../../ui/vcsIcons";
 import type { LaneSummary, PrSummary } from "../../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton, dangerButton } from "../../lanes/laneDesignTokens";
 import { branchNameFromRef } from "./laneBranchTargets";
@@ -180,7 +181,7 @@ export function PrLaneCleanupBanner({
         gap: 10,
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-          <GitBranch size={14} style={{ color: pr.state === "merged" ? COLORS.success : COLORS.textMuted, flexShrink: 0 }} />
+          <LaneIcon size={14} style={{ color: pr.state === "merged" ? COLORS.success : COLORS.textMuted, flexShrink: 0 }} />
           <span style={{ fontFamily: SANS_FONT, fontSize: titleSize, fontWeight: 600, color: COLORS.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             Manage Lane: {lane.name}
           </span>

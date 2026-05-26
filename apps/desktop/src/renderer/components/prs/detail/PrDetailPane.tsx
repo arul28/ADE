@@ -1,10 +1,11 @@
 import React from "react";
 import {
-  GitBranch, GithubLogo, CheckCircle, XCircle, Circle,
+  GithubLogo, CheckCircle, XCircle, Circle,
   CircleNotch, Sparkle, ArrowRight, Eye, Code,
   PencilSimple, X, Check, ArrowsClockwise, Play,
   CaretDown, CaretRight, Stack as Layers,
 } from "@phosphor-icons/react";
+import { BranchIcon, LaneIcon } from "../../ui/vcsIcons";
 import type {
   PrWithConflicts, PrCheck, PrReview, PrComment, PrStatus, PrDetail,
   PrFile, PrCommit, PrActionRun, PrActivityEvent, PrReviewThread,
@@ -2082,11 +2083,12 @@ export function PrDetailPane({
               <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted, fontWeight: 500 }}>{pr.repoOwner}/{pr.repoName}</span>
               <span style={{ color: COLORS.border }}>|</span>
               <span style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "color-mix(in srgb, var(--color-accent) 12%, transparent)", padding: "2px 8px", borderRadius: 6, border: "1px solid color-mix(in srgb, var(--color-accent) 20%, transparent)" }}>
-                <GitBranch size={12} style={{ color: COLORS.accent }} />
+                <BranchIcon size={12} style={{ color: COLORS.accent }} />
                 <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.accent }}>{pr.headBranch}</span>
               </span>
               <ArrowRight size={10} style={{ color: COLORS.textDim }} />
               <span style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "color-mix(in srgb, var(--color-info) 12%, transparent)", padding: "2px 8px", borderRadius: 6, border: "1px solid color-mix(in srgb, var(--color-info) 20%, transparent)" }}>
+                <BranchIcon size={12} style={{ color: COLORS.info }} />
                 <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.info }}>{pr.baseBranch}</span>
               </span>
             </div>
@@ -2168,7 +2170,7 @@ export function PrDetailPane({
             ) : null}
             {onShowInGraph ? (
               <button type="button" onClick={() => onShowInGraph(pr.laneId)} style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.info, borderColor: "color-mix(in srgb, var(--color-info) 40%, transparent)" })}>
-                <GitBranch size={14} /> Graph
+                <LaneIcon size={14} /> Graph
               </button>
             ) : null}
             <button type="button" onClick={() => void window.ade.prs.openInGitHub(pr.id)} style={outlineButton({ height: 30, padding: "0 10px" })}>

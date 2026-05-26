@@ -1,8 +1,8 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { TabNav } from "./TabNav";
 import { useAppStore } from "../../state/appStore";
@@ -40,6 +40,7 @@ describe("TabNav", () => {
         app: {
           revealPath: async () => undefined,
           getInfo: async () => ({ isPackaged: false }) as any,
+          openExternal: vi.fn().mockResolvedValue(undefined),
         },
       },
     });
@@ -63,5 +64,17 @@ describe("TabNav", () => {
     const prs = screen.getByRole("link", { name: "PRs" });
     const review = screen.getByRole("link", { name: "Review" });
     expect(prs.nextElementSibling).toBe(review);
+  });
+
+  it("opens the connected GitHub profile from the sidebar avatar", () => {
+    render(
+      <MemoryRouter initialEntries={["/work"]}>
+        <TabNav githubStatus={{ userLogin: "arul28" } as any} />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Open GitHub profile for arul28" }));
+
+    expect(globalThis.window.ade.app.openExternal).toHaveBeenCalledWith("https://github.com/arul28");
   });
 });
