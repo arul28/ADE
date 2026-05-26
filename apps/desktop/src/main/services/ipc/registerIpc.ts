@@ -6064,6 +6064,7 @@ export function registerIpc({
       );
     }
     if (!patchRes.ok) {
+      await ctx.agentChatService.deleteSession({ sessionId: created.id });
       throw new Error(
         `spawn manifest patch failed: ${("error" in patchRes ? patchRes.error : "unknown")}`,
       );
