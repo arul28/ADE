@@ -241,6 +241,8 @@ export function ManageLaneDialog({
   const isAttached = !isBatch && lanes[0]?.laneType === "attached";
   const hasNonAttached = lanes.some((l) => l.laneType !== "attached" && l.laneType !== "primary");
   const isMixed = hasAttached && hasNonAttached;
+  const singleLaneId = singleLane?.id ?? null;
+  const singleLaneType = singleLane?.laneType ?? null;
   let worktreeDeleteLabel: string;
   let localDeleteLabel: string;
   let remoteDeleteLabel: string;
@@ -263,17 +265,19 @@ export function ManageLaneDialog({
   const [activeTab, setActiveTab] = useState<ManageLaneTab>("delete");
 
   const tabDefs = React.useMemo((): ManageLaneTabDef[] => {
-    const defs: ManageLaneTabDef[] = [];
-    defs.push({ id: "delete", label: "Delete", icon: Trash });
-    if (singleLane) {
-      defs.push({ id: "appearance", label: "Appearance", icon: Palette });
-    }
-    if (singleLane && singleLane.laneType !== "primary") {
-      defs.push({ id: "stack", label: "Restack", icon: TreeStructure });
-    }
-    defs.push({ id: "archive", label: "Archive", icon: Archive });
-    return defs;
-  }, [singleLane]);
+    return [
+      { id: "delete" as const, label: "Delete", icon: Trash, show: true },
+      { id: "appearance" as const, label: "Appearance", icon: Palette, show: !!singleLaneType },
+      { id: "stack" as const, label: "Restack", icon: TreeStructure, show: !!singleLaneType && singleLaneType !== "primary" },
+      { id: "archive" as const, label: "Archive", icon: Archive, show: true },
+    ]
+      .filter((t) => t.show)
+      .map(({ show: _, ...tab }) => tab);
+  }, [singleLaneType]);
+  const defaultTab = React.useMemo((): ManageLaneTab => {
+    const preferredOrder: ManageLaneTab[] = ["appearance", "stack", "archive", "delete"];
+    return preferredOrder.find((id) => tabDefs.some((tab) => tab.id === id)) ?? tabDefs[0]?.id ?? "archive";
+  }, [tabDefs]);
 
   // Reset transient state when dialog closes or active lane changes.
   useEffect(() => {
@@ -282,22 +286,18 @@ export function ManageLaneDialog({
       setDeleteProgress(null);
       return;
     }
-    // Land users on a non-destructive tab by default. Explicit "delete"/"archive"
-    // intent is handled by the laneActionKind effect below.
-    const preferredOrder: ManageLaneTab[] = ["appearance", "stack", "archive", "delete"];
-    const firstAvailable = preferredOrder.find((id) => tabDefs.some((tab) => tab.id === id));
-    setActiveTab(firstAvailable ?? tabDefs[0]?.id ?? "archive");
-  }, [open, singleLane?.id, isBatch, tabDefs]);
+    setActiveTab(defaultTab);
+  }, [open, singleLaneId, isBatch, defaultTab]);
 
   // Fetch pre-flight risk for the single-lane case.
   useEffect(() => {
-    if (!open || !singleLane || singleLane.laneType === "primary") {
+    if (!open || !singleLaneId || singleLaneType === "primary") {
       setDeleteRisk(null);
       return;
     }
     let cancelled = false;
     void window.ade.lanes
-      .getDeleteRisk({ laneId: singleLane.id })
+      .getDeleteRisk({ laneId: singleLaneId })
       .then((risk) => {
         if (!cancelled) setDeleteRisk(risk);
       })
@@ -307,19 +307,19 @@ export function ManageLaneDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, singleLane?.id]);
+  }, [open, singleLaneId, singleLaneType]);
 
   // Stream live delete progress for the active lane.
   useEffect(() => {
-    if (!open || !singleLane) return;
+    if (!open || !singleLaneId) return;
     const unsubscribe = window.ade.lanes.onDeleteEvent((event) => {
-      if (event.progress.laneId !== singleLane.id) return;
+      if (event.progress.laneId !== singleLaneId) return;
       setDeleteProgress(event.progress);
     });
     return () => {
       unsubscribe?.();
     };
-  }, [open, singleLane?.id]);
+  }, [open, singleLaneId]);
 
   const requiresTypeConfirm =
     isBatch ||
@@ -334,8 +334,8 @@ export function ManageLaneDialog({
 
   useEffect(() => {
     if (tabDefs.some((tab) => tab.id === activeTab)) return;
-    setActiveTab(tabDefs[0]?.id ?? "archive");
-  }, [activeTab, tabDefs]);
+    setActiveTab(defaultTab);
+  }, [activeTab, defaultTab, tabDefs]);
 
   useEffect(() => {
     if (laneActionKind === "delete") setActiveTab("delete");
