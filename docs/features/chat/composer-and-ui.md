@@ -11,7 +11,7 @@ stream plus session metadata.
 
 | Path | Role |
 |---|---|
-| `AgentChatPane.tsx` | Top-level pane; IPC wiring, session state, presentation profile resolution, lane navigation, parallel launch orchestration, mounting of sub-panels and composer. Visible Work grid tiles flush user/lifecycle/live events immediately and poll-recover active transcripts so inactive-but-visible tiles stay current. Draft chats preserve user-touched model/reasoning/permission controls across late lane-session hydration, and composer text is keyed by session id or lane draft key so switching draft lanes does not reuse another draft's text. Accepts an optional `draftContextTargetId` prop so the Work sidebar can target an unsaved draft composer for context insertions (attachments, iOS/App Control/browser selections, draft text) even before a chat session exists — window event handlers match on either `sessionId` or `draftTargetId`. When auto-creating a lane the draft resolves the primary lane for the `onLaneChange` callback so the sidebar lane context stays in sync. |
+| `AgentChatPane.tsx` | Top-level pane; IPC wiring, session state, presentation profile resolution, lane navigation, parallel launch orchestration, mounting of sub-panels and composer. Visible Work grid tiles flush user/lifecycle/live events immediately and poll-recover active transcripts so inactive-but-visible tiles stay current. Draft chats preserve user-touched model/reasoning/permission controls across late lane-session hydration, and composer text is keyed by session id or lane draft key so switching draft lanes does not reuse another draft's text. Accepts an optional `draftContextTargetId` prop so the Work sidebar can target an unsaved draft composer for context insertions (attachments, iOS/App Control/browser selections, draft text) even before a chat session exists; window event handlers match on either `sessionId` or `draftTargetId`. When auto-creating a lane the draft resolves the primary lane for the `onLaneChange` callback so the sidebar lane context stays in sync. Composer draft state (text, model, reasoning, attachments, context items) is persisted to `localStorage` under the `ade.chat.composerDraft.v1` key family and restored on scope change through `ComposerDraftStorageSnapshot`. Draft launches are tracked through `DraftLaunchJob` state machines with multi-step progress (`creating-lane` -> `starting-session` -> `sending-prompt` -> `ready` / `failed`); the composer is cleared optimistically at job start and the `DraftLaunchSnapshot` captures the full control state so the async launch uses frozen settings. |
 | `AgentChatMessageList.tsx` | Virtualized message list (`@tanstack/react-virtual`). Renders transcript rows and turn dividers, and keeps sticky-bottom sessions pinned across streamed row growth and late virtual-height measurements. Plan-approval rows with non-empty body text render a scrollable markdown block (capped at `360px`) beneath the header so the user can review plan content inline. |
 | `AgentChatComposer.tsx` | Text input, attachments, model selector, permission controls, slash commands, pending-input answering, and parallel model-slot controls. |
 | `ChatSurfaceShell.tsx` | Floating chat header, body, footer layout. Backdrop-blur glass-morphism styling. |
@@ -209,10 +209,19 @@ and a footer that contains the composer.
   ask the main process for a lane name before creating a new Work lane.
   The request includes a temporary `chat-YYYYMMDD-HHMMSS` fallback so
   prompt-derived fallback names remain unique when model naming is
-  unavailable. Foreground launches call `onSessionCreated` with
-  `{ activate: true, source: "draft-launch" }` so Work selects the new
-  lane/session; background launches pass `activate: false`, keep the
-  current Work focus, and show a dismissible notice with an Open action.
+  unavailable. Each launch creates a `DraftLaunchJob` that tracks
+  progress through `creating-lane` / `starting-session` /
+  `sending-prompt` / `ready` / `failed` states. The composer is cleared
+  optimistically when the job starts so the user can begin composing the
+  next prompt immediately; the `DraftLaunchSnapshot` freezes the model,
+  reasoning effort, execution mode, and native controls at capture time
+  so the async create/send flow uses the settings the user had when they
+  pressed Send. Foreground launches auto-open the result only if the job
+  is still the latest foreground job (tracked by
+  `latestForegroundDraftLaunchJobIdRef`); background launches keep the
+  current Work focus and render a dismissible job strip with an Open
+  action. Failed jobs offer a Restore button that merges the snapshot
+  back into the composer. Up to 8 concurrent jobs are tracked.
 
 - **Border beam.** On standard (non-grid-tile) layout the composer
   shell is wrapped in `BorderBeam` (`colorVariant="colorful"` at rest,
@@ -523,6 +532,24 @@ These modules are pure and unit-testable:
 
 ## Fragile and tricky wiring
 
+- **Draft launch job lifecycle.** `DraftLaunchJob` tracks multi-step
+  async launches. The composer is cleared immediately when the job
+  starts, not when it finishes. If the launch fails, the Restore action
+  merges the snapshot back via `restoreDraftLaunchSnapshot`, which
+  appends rather than replaces existing draft text and merges context
+  items by id. `latestForegroundDraftLaunchJobIdRef` prevents stale
+  foreground jobs from auto-opening when a newer foreground launch
+  superseded them. The `DraftLaunchSnapshot` captures the full
+  composer control state (model, reasoning, execution mode, native
+  controls) so `createSessionForLane` receives a `launchState` that
+  overrides the live composer state during the async gap.
+- **Composer draft persistence.** `ComposerDraftStorageSnapshot` is
+  persisted to `localStorage` on every draft/model/attachment change
+  and restored on scope switch. `composerDraftHydratingRef` suppresses
+  the first write-back after hydration so the restore does not
+  immediately re-persist with a new timestamp. Normalization
+  (`normalizeStoredComposerDraft`) validates every field defensively
+  so corrupt stored data degrades gracefully instead of crashing.
 - **Session creation and first turn race.** When a new session is
   created from the composer, the pane awaits the `onSessionCreated`
   callback and the session-list refresh before sending the first agent

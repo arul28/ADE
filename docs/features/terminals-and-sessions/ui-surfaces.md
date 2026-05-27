@@ -660,7 +660,11 @@ for how the PTY service consumes the delay).
 wraps the same state but scopes to a single lane for the Lanes tab.
 Its `launchPtySession` also accepts `WorkPtyLaunchArgs` and returns
 `WorkPtyLaunchResult`, forwarding `startupDelayMs` and respecting
-`disposition` the same way.
+`disposition` the same way. The lane-scoped launcher builds an
+optimistic `TerminalSessionSummary` from the `ptyCreate` result and
+upserts it into the session list immediately, then fires the forced
+session-list refresh as fire-and-forget so the tab opens without
+blocking on the IPC round-trip.
 
 ## Session delta hook: `useSessionDelta.ts`
 

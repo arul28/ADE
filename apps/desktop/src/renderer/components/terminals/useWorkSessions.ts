@@ -1317,7 +1317,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         ...(launchFields.initialInput !== undefined ? { initialInput: launchFields.initialInput } : {}),
         ...(launchFields.initialInputDelayMs !== undefined ? { initialInputDelayMs: launchFields.initialInputDelayMs } : {}),
         ...launchFields,
-        ...(launchFields.initialInput !== undefined ? { awaitInitialInput: true } : {}),
       });
       const startedAt = new Date().toISOString();
       const optimisticSession: TerminalSessionSummary = {

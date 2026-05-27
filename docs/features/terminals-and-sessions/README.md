@@ -295,7 +295,7 @@ Renderer surfaces:
   and schedules a background refresh on window focus /
   `visibilitychange` and on chat events, so returning to Work after a
   tab switch always renders the current session set. Fresh PTY launches
-  are inserted as short-lived optimistic sessions before the forced
+  are inserted as optimistic sessions before the forced
   session-list refresh returns, which keeps the new terminal tab visible
   even when the runtime cache responds with a stale list. During project
   switches it hydrates the destination project's cached rows but marks them

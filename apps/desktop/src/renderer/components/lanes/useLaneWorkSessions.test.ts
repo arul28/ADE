@@ -200,9 +200,9 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
   });
 
   // -----------------------------------------------------------------------
-  // launchPtySession: refresh() must complete before focusSession / openSessionTab
+  // launchPtySession: focus/open immediately; refresh reconciles in background.
   // -----------------------------------------------------------------------
-  it("launchPtySession: awaits refresh() before calling focusSession and openSessionTab", async () => {
+  it("launchPtySession: opens the optimistic terminal before the forced refresh completes", async () => {
     const callOrder: string[] = [];
 
     const { result } = renderHook(() => useLaneWorkSessions("lane-1"));
@@ -238,33 +238,31 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
       }
     });
 
-    // Act: start launchPtySession
-    let launchPromise!: Promise<unknown>;
-    act(() => {
-      launchPromise = result.current.launchPtySession({
+    await act(async () => {
+      await result.current.launchPtySession({
         laneId: "lane-1",
         profile: "claude",
       });
     });
 
-    // Give the async function a tick to reach the refresh await
     await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
+      await Promise.resolve();
     });
 
-    // refresh-start should be recorded but NOT focusSession yet
+    // The tab opens while the reconcile refresh is still pending.
     expect(callOrder).toContain("refresh-start");
-    expect(callOrder).not.toContain("focusSession");
-    expect(callOrder).not.toContain("openSessionTab");
+    expect(callOrder).toContain("focusSession");
+    expect(callOrder).toContain("openSessionTab");
+    expect(callOrder).not.toContain("refresh-done");
 
     // Resolve the refresh promise
     await act(async () => {
       expect(refreshResolve).not.toBeNull();
       refreshResolve!();
-      await launchPromise;
+      await Promise.resolve();
     });
 
-    // Verify ordering: refresh-done BEFORE focusSession and openSessionTab
+    // Verify ordering: focus/open happen before refresh completes.
     const refreshDoneIdx = callOrder.indexOf("refresh-done");
     const focusIdx = callOrder.indexOf("focusSession");
     const openTabIdx = callOrder.indexOf("openSessionTab");
@@ -272,11 +270,11 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     expect(refreshDoneIdx).toBeGreaterThanOrEqual(0);
     expect(focusIdx).toBeGreaterThanOrEqual(0);
     expect(openTabIdx).toBeGreaterThanOrEqual(0);
-    expect(refreshDoneIdx).toBeLessThan(focusIdx);
-    expect(refreshDoneIdx).toBeLessThan(openTabIdx);
+    expect(focusIdx).toBeLessThan(refreshDoneIdx);
+    expect(openTabIdx).toBeLessThan(refreshDoneIdx);
   });
 
-  it("launchPtySession: waits for the queued force refresh when another refresh is already running", async () => {
+  it("launchPtySession: opens immediately when another refresh is already running", async () => {
     const callOrder: string[] = [];
     let refreshCallCount = 0;
     let initialRefreshResolve: (() => void) | null = null;
@@ -319,9 +317,8 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
 
     expect(callOrder).toContain("initial-refresh-start");
 
-    let launchPromise!: Promise<unknown>;
-    act(() => {
-      launchPromise = result.current.launchPtySession({
+    await act(async () => {
+      await result.current.launchPtySession({
         laneId: "lane-1",
         profile: "shell",
       });
@@ -331,8 +328,9 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
       await new Promise((r) => setTimeout(r, 0));
     });
 
-    expect(callOrder).not.toContain("focusSession");
-    expect(callOrder).not.toContain("openSessionTab");
+    expect(callOrder).toContain("focusSession");
+    expect(callOrder).toContain("openSessionTab");
+    expect(callOrder).not.toContain("initial-refresh-done");
 
     await act(async () => {
       expect(initialRefreshResolve).not.toBeNull();
@@ -341,13 +339,11 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     });
 
     expect(callOrder).toContain("queued-refresh-start");
-    expect(callOrder).not.toContain("focusSession");
-    expect(callOrder).not.toContain("openSessionTab");
 
     await act(async () => {
       expect(queuedRefreshResolve).not.toBeNull();
       queuedRefreshResolve!();
-      await launchPromise;
+      await Promise.resolve();
     });
 
     const queuedDoneIdx = callOrder.indexOf("queued-refresh-done");
@@ -357,8 +353,8 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     expect(queuedDoneIdx).toBeGreaterThanOrEqual(0);
     expect(focusIdx).toBeGreaterThanOrEqual(0);
     expect(openTabIdx).toBeGreaterThanOrEqual(0);
-    expect(queuedDoneIdx).toBeLessThan(focusIdx);
-    expect(queuedDoneIdx).toBeLessThan(openTabIdx);
+    expect(focusIdx).toBeLessThan(queuedDoneIdx);
+    expect(openTabIdx).toBeLessThan(queuedDoneIdx);
   });
 
   it("replays a queued refresh against the latest lane after switching lanes mid-refresh", async () => {
@@ -652,6 +648,7 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
         initialInputDelayMs: 750,
       }),
     );
+    expect((window as any).ade.pty.create.mock.calls.at(-1)?.[0]).not.toHaveProperty("awaitInitialInput");
   });
 
   it("continues an ended agent CLI session from lane work panes", async () => {

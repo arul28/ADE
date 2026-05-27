@@ -530,24 +530,47 @@ export function useLaneWorkSessions(laneId: string | null) {
         ...(launchFields.initialInput !== undefined ? { initialInput: launchFields.initialInput } : {}),
         ...(launchFields.initialInputDelayMs !== undefined ? { initialInputDelayMs: launchFields.initialInputDelayMs } : {}),
         ...launchFields,
-        ...(launchFields.initialInput !== undefined ? { awaitInitialInput: true } : {}),
       });
+      const startedAt = new Date().toISOString();
+      const optimisticSession: TerminalSessionSummary = {
+        id: result.sessionId,
+        laneId: args.laneId,
+        laneName: currentLane?.name ?? lanes.find((lane) => lane.id === args.laneId)?.name ?? args.laneId,
+        ptyId: result.ptyId,
+        tracked: args.tracked ?? true,
+        pinned: false,
+        manuallyNamed: false,
+        goal: null,
+        toolType: LAUNCH_PROFILE_TOOL_TYPE[args.profile],
+        title: args.title ?? LAUNCH_PROFILE_TITLE[args.profile],
+        status: "running",
+        startedAt,
+        endedAt: null,
+        archivedAt: null,
+        exitCode: null,
+        transcriptPath: "",
+        headShaStart: null,
+        headShaEnd: null,
+        lastOutputPreview: null,
+        summary: null,
+        runtimeState: "running",
+        resumeCommand: null,
+        resumeMetadata: null,
+        chatSessionId: null,
+      };
+      upsertSessionSnapshot(optimisticSession);
       // Invalidate all cache entries so other views (e.g. Work tab) pick up
       // the new session on their next refresh.
       invalidateSessionListCache();
-      // Refresh the session list *before* activating the tab so the new
-      // session exists in sessionsById when the UI resolves activeSession.
-      // Without this, activeItemId points to an unknown ID and the view
-      // falls back to the most recent session for several seconds.
-      await refresh({ showLoading: false, force: true });
       if (args.disposition !== "background") {
         selectLane(args.laneId);
         focusSession(result.sessionId);
         openSessionTab(result.sessionId);
       }
+      void refresh({ showLoading: false, force: true }).catch(() => {});
       return result;
     },
-    [focusSession, openSessionTab, refresh, selectLane],
+    [currentLane?.name, focusSession, lanes, openSessionTab, refresh, selectLane, upsertSessionSnapshot],
   );
 
   const handleOpenChatSession = useCallback((session: AgentChatSession) => {
