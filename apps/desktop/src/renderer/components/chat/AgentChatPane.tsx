@@ -1839,6 +1839,7 @@ export function AgentChatPane({
   isTileActive = true,
   isTileVisible = isTileActive,
   shouldAutofocusComposer = false,
+  draftContextTargetId = null,
   initialLinearIssueContext = null,
   initialLinearIssueContextSource = "lane_link",
   initialModelId = null,
@@ -1873,6 +1874,8 @@ export function AgentChatPane({
   /** Visible grid tiles hydrate transcripts even when they are not the focused tile. */
   isTileVisible?: boolean;
   shouldAutofocusComposer?: boolean;
+  /** Stable Work-sidebar target id for an unsaved draft composer. */
+  draftContextTargetId?: string | null;
   initialLinearIssueContext?: LaneLinearIssue | null;
   initialLinearIssueContextSource?: "manual" | "lane_link";
   initialModelId?: string | null;
@@ -4621,37 +4624,52 @@ export function AgentChatPane({
     const matchesThisChat = (sessionId: unknown): boolean => (
       typeof sessionId === "string" && sessionId === selectedSessionIdRef.current
     );
+    const matchesThisDraft = (targetId: unknown): boolean => (
+      selectedSessionIdRef.current == null
+      && forceDraft
+      && typeof targetId === "string"
+      && targetId === draftContextTargetId
+    );
+    const matchesThisComposer = (detail: { sessionId?: unknown; draftTargetId?: unknown } | undefined): boolean => (
+      matchesThisChat(detail?.sessionId) || matchesThisDraft(detail?.draftTargetId)
+    );
+
+    type ComposerEventDetail = { sessionId?: unknown; draftTargetId?: unknown; [key: string]: unknown };
+    const composerDetail = (event: Event): ComposerEventDetail | undefined => {
+      const detail = (event as CustomEvent<ComposerEventDetail>).detail;
+      return matchesThisComposer(detail) ? detail : undefined;
+    };
 
     const onAddAttachment = (event: Event) => {
-      const detail = (event as CustomEvent<{ sessionId?: unknown; attachment?: unknown }>).detail;
-      if (!matchesThisChat(detail?.sessionId)) return;
+      const detail = composerDetail(event);
+      if (!detail) return;
       const attachment = detail.attachment as AgentChatFileRef | undefined;
       if (!attachment?.path) return;
       addAttachment(attachment);
     };
     const onInsertDraft = (event: Event) => {
-      const detail = (event as CustomEvent<{ sessionId?: unknown; text?: unknown }>).detail;
-      if (!matchesThisChat(detail?.sessionId) || typeof detail.text !== "string") return;
+      const detail = composerDetail(event);
+      if (!detail || typeof detail.text !== "string") return;
       insertComposerDraft(detail.text);
     };
     const onAddIosContext = (event: Event) => {
-      const detail = (event as CustomEvent<{ sessionId?: unknown; item?: unknown }>).detail;
-      if (!matchesThisChat(detail?.sessionId) || !detail.item) return;
+      const detail = composerDetail(event);
+      if (!detail?.item) return;
       addIosElementContext(detail.item as IosElementContextItem);
     };
     const onAddAppControlContext = (event: Event) => {
-      const detail = (event as CustomEvent<{ sessionId?: unknown; item?: unknown }>).detail;
-      if (!matchesThisChat(detail?.sessionId) || !detail.item) return;
+      const detail = composerDetail(event);
+      if (!detail?.item) return;
       addAppControlContext(detail.item as AppControlContextItem);
     };
     const onAddBuiltInBrowserContext = (event: Event) => {
-      const detail = (event as CustomEvent<{ sessionId?: unknown; item?: unknown }>).detail;
-      if (!matchesThisChat(detail?.sessionId) || !detail.item) return;
+      const detail = composerDetail(event);
+      if (!detail?.item) return;
       void addBuiltInBrowserContext(detail.item);
     };
     const onAddMacosVmContext = (event: Event) => {
-      const detail = (event as CustomEvent<{ sessionId?: unknown; item?: unknown }>).detail;
-      if (!matchesThisChat(detail?.sessionId) || !detail.item) return;
+      const detail = composerDetail(event);
+      if (!detail?.item) return;
       addMacosVmContext(detail.item as MacosVmContextItem);
     };
     // Plan-panel annotation events (goal.md §10.7). The popover composes an
@@ -4685,7 +4703,16 @@ export function AgentChatPane({
       window.removeEventListener("ade:agent-chat:add-macos-vm-context", onAddMacosVmContext);
       window.removeEventListener("ade:agent-chat:add-plan-annotation", onAddPlanAnnotation);
     };
-  }, [addAppControlContext, addAttachment, addBuiltInBrowserContext, addIosElementContext, addMacosVmContext, insertComposerDraft]);
+  }, [
+    addAppControlContext,
+    addAttachment,
+    addBuiltInBrowserContext,
+    addIosElementContext,
+    addMacosVmContext,
+    draftContextTargetId,
+    forceDraft,
+    insertComposerDraft,
+  ]);
 
   const removeAttachment = useCallback((attachmentPath: string) => {
     linkedIosAttachmentPathsRef.current.delete(attachmentPath);
@@ -6527,15 +6554,22 @@ export function AgentChatPane({
       : (availableLanes ?? []),
     [availableLanes, showDraftLaunchControls],
   );
+  const primaryDraftLane = useMemo(() => (
+    availableLanes?.find((candidate) => candidate.laneType === "primary")
+      ?? availableLanes?.find((candidate) => candidate.name.trim().toLowerCase() === "primary")
+      ?? null
+  ), [availableLanes]);
+  const autoCreateToolsLane = primaryDraftLane ?? availableLanes?.[0] ?? null;
   const draftLaneSelectorValue = draftLaunchTargetIsAutoCreate ? AUTO_CREATE_LANE_OPTION_ID : (laneId ?? "");
   const handleDraftLaneSelectionChange = useCallback((nextLaneId: string) => {
     if (nextLaneId === AUTO_CREATE_LANE_OPTION_ID) {
       setDraftLaunchTargetId(AUTO_CREATE_LANE_OPTION_ID);
+      if (autoCreateToolsLane) onLaneChange?.(autoCreateToolsLane.id);
       return;
     }
     setDraftLaunchTargetId(null);
     onLaneChange?.(nextLaneId);
-  }, [onLaneChange]);
+  }, [autoCreateToolsLane, onLaneChange]);
 
   useEffect(() => {
     if (!showDraftLaunchControls && draftLaunchTargetId) {
@@ -8135,31 +8169,38 @@ export function AgentChatPane({
                             className="flex justify-center"
                             exit={{ opacity: 0, transition: { duration: 0.15 } }}
                           >
-                            <div className="inline-flex items-center gap-2">
-                              <LaneCombobox
-                                lanes={draftLaneSelectorLanes}
-                                value={draftLaneSelectorValue}
-                                onChange={handleDraftLaneSelectionChange}
-                                variant="pill"
-                                aria-label="Select lane"
-                              />
-                              {onOpenShellSession ? (
-                                <SmartTooltip
-                                  content={{
-                                    label: "Open shell",
-                                    description: "Launch a new shell in the selected lane.",
-                                  }}
-                                >
-                                  <button
-                                    type="button"
-                                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-muted-fg/70 transition-colors hover:bg-white/[0.08] hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
-                                    disabled={!laneId || draftLaunchTargetIsAutoCreate || shellLaunchBusy}
-                                    aria-label="Open shell in selected lane"
-                                    onClick={() => void launchShellForDraftLane()}
+                            <div className="flex flex-col items-center gap-1.5">
+                              <div className="inline-flex items-center gap-2">
+                                <LaneCombobox
+                                  lanes={draftLaneSelectorLanes}
+                                  value={draftLaneSelectorValue}
+                                  onChange={handleDraftLaneSelectionChange}
+                                  variant="pill"
+                                  aria-label="Select lane"
+                                />
+                                {onOpenShellSession ? (
+                                  <SmartTooltip
+                                    content={{
+                                      label: "Open shell",
+                                      description: "Launch a new shell in the selected lane.",
+                                    }}
                                   >
-                                    <Terminal size={14} weight="regular" />
-                                  </button>
-                                </SmartTooltip>
+                                    <button
+                                      type="button"
+                                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-muted-fg/70 transition-colors hover:bg-white/[0.08] hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
+                                      disabled={!laneId || draftLaunchTargetIsAutoCreate || shellLaunchBusy}
+                                      aria-label="Open shell in selected lane"
+                                      onClick={() => void launchShellForDraftLane()}
+                                    >
+                                      <Terminal size={14} weight="regular" />
+                                    </button>
+                                  </SmartTooltip>
+                                ) : null}
+                              </div>
+                              {draftLaunchTargetIsAutoCreate && autoCreateToolsLane ? (
+                                <div className="font-sans text-[10px] leading-4 text-muted-fg/55">
+                                  Tools use {autoCreateToolsLane.name} until the lane is created.
+                                </div>
                               ) : null}
                             </div>
                           </motion.div>

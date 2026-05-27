@@ -285,10 +285,10 @@ function installIosSimulatorApi(options: {
       error: null,
     }),
     openPreviewWorkspace: vi.fn(),
-    tap: vi.fn(),
-    typeText: vi.fn(),
-    drag: vi.fn(),
-    swipe: vi.fn(),
+    tap: vi.fn().mockResolvedValue(undefined),
+    typeText: vi.fn().mockResolvedValue(undefined),
+    drag: vi.fn().mockResolvedValue(undefined),
+    swipe: vi.fn().mockResolvedValue(undefined),
     selectPoint: vi.fn().mockResolvedValue({
       item: {
         kind: "ios_simulator_target",
@@ -653,10 +653,69 @@ describe("ChatIosSimulatorPanel", () => {
     fireEvent.pointerDown(liveSurface, { clientX: 50, clientY: 40, pointerId: 1 });
     fireEvent.pointerUp(liveSurface, { clientX: 50, clientY: 40, pointerId: 1 });
 
-    expect(await screen.findByText("Another chat is already connected to the simulator. Use Take over to claim it.")).toBeTruthy();
+    expect(await screen.findByText("Another chat is using the simulator")).toBeTruthy();
     expect(api.typeText).not.toHaveBeenCalled();
     expect(api.tap).not.toHaveBeenCalled();
     expect(api.drag).not.toHaveBeenCalled();
+  });
+
+  it("warns without renderer-blocking inspected context attachment when another chat owns the simulator", async () => {
+    vi.stubGlobal("PointerEvent", MouseEvent);
+    vi.stubGlobal("Image", class {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_value: string) {
+        queueMicrotask(() => this.onerror?.());
+      }
+    });
+    const onAddContext = vi.fn();
+    const { api } = installIosSimulatorApi({
+      status: {
+        ...activeStatus,
+        activeSession: {
+          ...activeStatus.activeSession!,
+          chatSessionId: "chat-2",
+        },
+      },
+      screenElements: [inspectElement],
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={onAddContext}
+      />,
+    );
+
+    expect(await screen.findByText("Another chat is using the simulator")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
+    const image = await screen.findByAltText("iOS Simulator snapshot") as HTMLImageElement;
+    const imageRect = {
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 393,
+      bottom: 852,
+      width: 393,
+      height: 852,
+      toJSON: () => ({}),
+    } as DOMRect;
+    image.getBoundingClientRect = () => imageRect;
+    if (image.parentElement) {
+      image.parentElement.getBoundingClientRect = () => imageRect;
+    }
+
+    fireEvent.pointerDown(image, { clientX: 50, clientY: 40 });
+
+    await waitFor(() => {
+      expect(api.selectPoint).toHaveBeenCalled();
+      expect(onAddContext).toHaveBeenCalledWith(expect.objectContaining({
+        label: "Continue",
+        source: "ade-inspector",
+      }));
+    });
   });
 
   it("selects an inspected simulator element and opens Preview Lab for its matching target", async () => {

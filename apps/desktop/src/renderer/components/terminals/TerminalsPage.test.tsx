@@ -3,7 +3,7 @@
 import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AgentChatSession, LaneSummary } from "../../../shared/types";
+import type { AgentChatSession, LaneSummary, TerminalSessionSummary, TerminalToolType } from "../../../shared/types";
 import type { AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import { TerminalsPage } from "./TerminalsPage";
 
@@ -20,6 +20,34 @@ const workMocks = vi.hoisted(() => {
     executionMode: "focused",
     createdAt: "2026-05-14T18:00:00.000Z",
     lastActivityAt: "2026-05-14T18:00:00.000Z",
+  });
+  const makeTerminalSession = (
+    id: string,
+    laneId: string,
+    toolType: TerminalToolType,
+    overrides: Partial<TerminalSessionSummary> = {},
+  ): TerminalSessionSummary => ({
+    id,
+    laneId,
+    laneName: laneId === "lane-primary" ? "Primary" : "Background lane",
+    ptyId: toolType === "codex-chat" ? null : `pty-${id}`,
+    tracked: true,
+    pinned: false,
+    goal: null,
+    toolType,
+    title: id,
+    status: "running",
+    startedAt: "2026-05-14T18:00:00.000Z",
+    endedAt: null,
+    exitCode: null,
+    transcriptPath: "/tmp/transcript",
+    headShaStart: null,
+    headShaEnd: null,
+    lastOutputPreview: null,
+    summary: null,
+    runtimeState: "running",
+    resumeCommand: null,
+    ...overrides,
   });
   const laneStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false };
   const makeLane = (id: string, name: string, laneType: LaneSummary["laneType"] = "worktree"): LaneSummary => ({
@@ -117,10 +145,20 @@ const workMocks = vi.hoisted(() => {
   return {
     backgroundSession: makeChatSession("chat-background", "lane-background"),
     foregroundSession: makeChatSession("chat-foreground", "lane-primary"),
-    currentWork: baseWork,
+    baseWork,
+    currentWork: baseWork as any,
     fns,
+    makeTerminalSession,
   };
 });
+
+const sidebarProps = vi.hoisted(() => ({
+  latest: null as null | {
+    laneId: string | null;
+    contextTarget: unknown;
+    contextDisabledReason: string | null;
+  },
+}));
 
 vi.mock("../../state/appStore", () => ({
   useAppStore: <T,>(selector: (state: { selectedLaneId: string }) => T): T =>
@@ -146,7 +184,14 @@ vi.mock("./SessionListPane", () => ({
 }));
 
 vi.mock("./WorkSidebar", () => ({
-  WorkSidebar: () => <div data-testid="work-sidebar" />,
+  WorkSidebar: (props: {
+    laneId: string | null;
+    contextTarget: unknown;
+    contextDisabledReason: string | null;
+  }) => {
+    sidebarProps.latest = props;
+    return <div data-testid="work-sidebar" />;
+  },
 }));
 
 vi.mock("./SessionContextMenu", () => ({
@@ -184,6 +229,8 @@ vi.mock("./WorkViewArea", () => ({
 describe("TerminalsPage chat session activation", () => {
   afterEach(() => {
     cleanup();
+    workMocks.currentWork = { ...workMocks.baseWork, closingPtyIds: new Set<string>() };
+    sidebarProps.latest = null;
     vi.clearAllMocks();
   });
 
@@ -222,5 +269,75 @@ describe("TerminalsPage chat session activation", () => {
       expect(workMocks.fns.focusSession).toHaveBeenCalledWith("chat-foreground");
       expect(workMocks.fns.openSessionTab).toHaveBeenCalledWith("chat-foreground");
     });
+  });
+
+  it("targets the visible Work draft when no saved session is active", async () => {
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      workSidebarOpen: true,
+      workSidebarTab: "browser",
+      draftLaneId: "lane-background",
+      draftKind: "chat",
+      closingPtyIds: new Set<string>(),
+    };
+
+    render(<TerminalsPage />);
+
+    expect(await screen.findByTestId("work-sidebar")).toBeTruthy();
+    expect(sidebarProps.latest).toEqual(expect.objectContaining({
+      laneId: "lane-background",
+      contextDisabledReason: null,
+      contextTarget: {
+        kind: "draft",
+        draftTargetId: "work:draft:lane-background:chat",
+        laneId: "lane-background",
+        draftKind: "chat",
+      },
+    }));
+  });
+
+  it("targets active chat sessions and running agent CLI sessions", async () => {
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+    const chatSession = workMocks.makeTerminalSession("chat-1", "lane-primary", "codex-chat");
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions: [chatSession],
+      visibleSessions: [chatSession],
+      activeItemId: "chat-1",
+      workSidebarOpen: true,
+      closingPtyIds: new Set<string>(),
+    };
+
+    const { rerender } = render(<TerminalsPage />);
+
+    expect(await screen.findByTestId("work-sidebar")).toBeTruthy();
+    expect(sidebarProps.latest?.contextTarget).toEqual({ kind: "chat", sessionId: "chat-1" });
+
+    const cliSession = workMocks.makeTerminalSession("term-codex", "lane-primary", "codex");
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions: [cliSession],
+      visibleSessions: [cliSession],
+      activeItemId: "term-codex",
+      workSidebarOpen: true,
+      closingPtyIds: new Set<string>(),
+    };
+
+    rerender(<TerminalsPage />);
+
+    expect(sidebarProps.latest?.contextTarget).toEqual({
+      kind: "pty",
+      sessionId: "term-codex",
+      ptyId: "pty-term-codex",
+      toolType: "codex",
+    });
+    expect(sidebarProps.latest?.contextDisabledReason).toBeNull();
   });
 });

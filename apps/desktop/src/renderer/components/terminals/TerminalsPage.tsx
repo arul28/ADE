@@ -11,7 +11,7 @@ import type { AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import { formatToolTypeLabel, isChatToolType } from "../../lib/sessions";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
-import { useAppStore } from "../../state/appStore";
+import { useAppStore, type WorkDraftKind } from "../../state/appStore";
 import { ADE_OPEN_BUILT_IN_BROWSER_EVENT } from "../../lib/openExternal";
 import {
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT,
@@ -50,7 +50,15 @@ function dispatchWorkSidebarBrowserResizeEvent(type: "start" | "end"): void {
 }
 
 function isPtyContextInsertableToolType(toolType: TerminalSessionSummary["toolType"]): boolean {
-  return toolType === "claude";
+  return toolType === "claude"
+    || toolType === "codex"
+    || toolType === "cursor-cli"
+    || toolType === "droid"
+    || toolType === "opencode";
+}
+
+function buildDraftContextTargetId(laneId: string, draftKind: WorkDraftKind): string {
+  return `work:draft:${laneId}:${draftKind}`;
 }
 
 async function allSettledWithConcurrency<T>(
@@ -419,12 +427,29 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
 
   const activeLaneId = useMemo(() => {
     if (activeWorkSession?.laneId) return activeWorkSession.laneId;
+    if (work.draftLaneId && sortedLanes.some((lane) => lane.id === work.draftLaneId)) return work.draftLaneId;
     if (selectedLaneId && sortedLanes.some((lane) => lane.id === selectedLaneId)) return selectedLaneId;
     return sortedLanes.find((lane) => lane.laneType === "primary")?.id ?? sortedLanes[0]?.id ?? null;
-  }, [activeWorkSession?.laneId, selectedLaneId, sortedLanes]);
+  }, [activeWorkSession?.laneId, selectedLaneId, sortedLanes, work.draftLaneId]);
+
+  const draftContextTargetId = useMemo(() => (
+    !activeWorkSession && activeLaneId
+      ? buildDraftContextTargetId(activeLaneId, work.draftKind)
+      : null
+  ), [activeLaneId, activeWorkSession, work.draftKind]);
 
   const contextTarget = useMemo<WorkSidebarContextTarget | null>(() => {
-    if (!activeWorkSession || activeWorkSession.laneId !== activeLaneId) return null;
+    if (!activeWorkSession) {
+      return draftContextTargetId && activeLaneId
+        ? {
+            kind: "draft",
+            draftTargetId: draftContextTargetId,
+            laneId: activeLaneId,
+            draftKind: work.draftKind,
+          }
+        : null;
+    }
+    if (activeWorkSession.laneId !== activeLaneId) return null;
     if (isChatToolType(activeWorkSession.toolType)) {
       return { kind: "chat", sessionId: activeWorkSession.id };
     }
@@ -441,11 +466,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       };
     }
     return null;
-  }, [activeLaneId, activeWorkSession]);
+  }, [activeLaneId, activeWorkSession, draftContextTargetId, work.draftKind]);
 
   let contextDisabledReason: string | null;
-  if (!activeWorkSession) {
-    contextDisabledReason = "Open a chat or agent CLI session in this lane to insert tool context.";
+  if (!activeWorkSession && contextTarget) {
+    // Draft context target is available -- no session needed.
+    contextDisabledReason = null;
+  } else if (!activeWorkSession) {
+    contextDisabledReason = "Select a lane before inserting tool context.";
   } else if (activeWorkSession.laneId !== activeLaneId) {
     contextDisabledReason = "Open a Work session in the active lane to insert tool context.";
   } else if (activeWorkSession.toolType === "shell" || activeWorkSession.toolType === "run-shell") {
@@ -588,6 +616,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         viewMode={work.viewMode}
         draftKind={work.draftKind}
         draftLaneId={work.draftLaneId}
+        draftContextTargetId={draftContextTargetId}
         setViewMode={work.setViewMode}
         onSelectItem={work.setActiveItemId}
         onCloseItem={work.closeTab}
@@ -634,6 +663,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       work.viewMode,
       work.draftKind,
       work.draftLaneId,
+      draftContextTargetId,
       work.setDraftLaneId,
       work.showDraftKind,
       work.setViewMode,

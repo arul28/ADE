@@ -708,8 +708,10 @@ function renderAutoCreateDraftPane(args?: {
   ) => void | Promise<void>;
   workDraftKind?: "chat" | "cli";
   onLaunchCliSession?: React.ComponentProps<typeof AgentChatPane>["onLaunchCliSession"];
+  onLaneChange?: React.ComponentProps<typeof AgentChatPane>["onLaneChange"];
+  lanes?: any[];
 }) {
-  const lanes = [
+  const lanes = args?.lanes ?? [
     {
       id: "lane-primary",
       name: "Primary",
@@ -745,7 +747,7 @@ function renderAutoCreateDraftPane(args?: {
                 embeddedWorkLayout
                 workDraftKind={args?.workDraftKind}
                 availableLanes={lanes}
-                onLaneChange={vi.fn()}
+                onLaneChange={args?.onLaneChange ?? vi.fn()}
                 onSessionCreated={args?.onSessionCreated}
                 onLaunchCliSession={args?.onLaunchCliSession}
               />
@@ -1484,6 +1486,9 @@ describe("AgentChatPane submit recovery", () => {
     renderPane(session);
 
     expect(await screen.findByRole("button", { name: "Implement" })).toBeTruthy();
+    expect((await screen.findAllByText("Inspect")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Patch").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Verify").length).toBeGreaterThan(0);
     const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
     expect(textbox.disabled).toBe(false);
 
@@ -2841,6 +2846,77 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(screen.getByTestId("location").textContent).toBe("/work?laneId=lane-created&sessionId=created-session");
     });
+  });
+
+  it("routes Work sidebar draft insertions into the visible draft composer", async () => {
+    installAdeMocks({ sessions: [] });
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId="lane-1"
+          forceDraftMode
+          embeddedWorkLayout
+          draftContextTargetId="work:draft:lane-1:chat"
+        />
+      </MemoryRouter>,
+    );
+
+    const textbox = await screen.findByRole("textbox") as HTMLTextAreaElement;
+    window.dispatchEvent(new CustomEvent("ade:agent-chat:insert-draft", {
+      detail: {
+        draftTargetId: "work:draft:lane-other:chat",
+        text: "wrong draft",
+      },
+    }));
+    expect(textbox.value).toBe("");
+
+    window.dispatchEvent(new CustomEvent("ade:agent-chat:insert-draft", {
+      detail: {
+        draftTargetId: "work:draft:lane-1:chat",
+        text: "Use the selected browser context.",
+      },
+    }));
+
+    await waitFor(() => {
+      expect(textbox.value).toBe("Use the selected browser context.");
+    });
+  });
+
+  it("keeps Auto-create selected while reporting Primary as the Work tools lane", async () => {
+    installAdeMocks({ sessions: [] });
+    const onLaneChange = vi.fn();
+    renderAutoCreateDraftPane({ onLaneChange });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+
+    expect(onLaneChange).toHaveBeenCalledWith("lane-primary");
+    expect(await screen.findByText("Auto-create lane")).toBeTruthy();
+    expect(await screen.findByText("Tools use Primary until the lane is created.")).toBeTruthy();
+  });
+
+  it("falls back to the first available Work tools lane when Auto-create has no Primary lane", async () => {
+    installAdeMocks({ sessions: [] });
+    const onLaneChange = vi.fn();
+    renderAutoCreateDraftPane({
+      onLaneChange,
+      lanes: [
+        {
+          id: "lane-worktree",
+          name: "current-lane",
+          laneType: "worktree",
+          branchRef: "refs/heads/current-lane",
+          worktreePath: "/tmp/project-under-test/current-lane",
+        },
+      ],
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+
+    expect(onLaneChange).toHaveBeenCalledWith("lane-worktree");
+    expect(await screen.findByText("Tools use current-lane until the lane is created.")).toBeTruthy();
   });
 
   it("background auto-create reports the new chat without stealing focus and shows a dismissible notice", async () => {

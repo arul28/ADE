@@ -78,6 +78,7 @@ vi.mock("../chat/ChatBuiltInBrowserPanel", async () => {
       sessionId: string | null;
       onAddAttachment?: (attachment: { path: string; type: "image" }) => void;
       onAddContext?: (item: unknown) => void;
+      onInsertDraft?: (text: string) => void;
     }) => React.createElement("div", { "data-testid": "browser-panel", "data-session-id": props.sessionId ?? "" }, [
       React.createElement("button", {
         key: "context",
@@ -100,6 +101,12 @@ vi.mock("../chat/ChatBuiltInBrowserPanel", async () => {
         disabled: !props.onAddAttachment,
         onClick: () => props.onAddAttachment?.({ path: ".ade/artifacts/browser.png", type: "image" }),
       }, "Add Browser attachment"),
+      React.createElement("button", {
+        key: "draft",
+        type: "button",
+        disabled: !props.onInsertDraft,
+        onClick: () => props.onInsertDraft?.("inspect this browser state"),
+      }, "Insert Browser draft"),
     ]),
   };
 });
@@ -390,8 +397,37 @@ describe("WorkSidebar context targets", () => {
     expect((screen.getByText("Add iOS attachment") as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("warns when App Control is attached to another lane and disables context insertion", async () => {
-    installAdeMock({ appControlSession: otherLaneAppControlSession });
+  it("dispatches draft target events without faking a chat session", () => {
+    const received: unknown[] = [];
+    window.addEventListener("ade:agent-chat:add-ios-context", (event) => {
+      received.push((event as CustomEvent).detail);
+    });
+
+    renderSidebar({
+      tab: "ios",
+      contextTarget: {
+        kind: "draft",
+        draftTargetId: "work:draft:lane-1:chat",
+        laneId: "lane-1",
+        draftKind: "chat",
+      },
+    });
+
+    expect(screen.getByTestId("ios-panel").getAttribute("data-session-id")).toBe("");
+    expect((screen.getByText("Add iOS context") as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByText("Add iOS context"));
+
+    expect(received).toEqual([expect.objectContaining({
+      draftTargetId: "work:draft:lane-1:chat",
+      laneId: "lane-1",
+      draftKind: "chat",
+      item: expect.objectContaining({ id: "ios-context-1" }),
+    })]);
+    expect(received[0]).not.toHaveProperty("sessionId");
+  });
+
+  it("warns when App Control is attached to another lane without disabling context insertion", async () => {
+    const { terminalWrite } = installAdeMock({ appControlSession: otherLaneAppControlSession });
 
     renderSidebar({
       tab: "app-control",
@@ -399,13 +435,15 @@ describe("WorkSidebar context targets", () => {
       lanes: [lane, laneTwo],
     });
 
-    expect(await screen.findByText(/This App Control view is attached to Lane 2, not Lane 1/)).toBeTruthy();
-    expect(screen.getByTestId("app-control-panel").getAttribute("data-control-disabled")).toMatch(/Lane 2/);
-    expect((screen.getByText("Add App Control context") as HTMLButtonElement).disabled).toBe(true);
+    expect(await screen.findByText(/This App Control view is running from Lane 2 while your context target is Lane 1/)).toBeTruthy();
+    expect(screen.getByTestId("app-control-panel").getAttribute("data-control-disabled")).toBe("");
+    expect((screen.getByText("Add App Control context") as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByText("Add App Control context"));
+    await waitFor(() => expect(terminalWrite).toHaveBeenCalledTimes(1));
   });
 
-  it("warns when the iOS Simulator is attached to another lane and disables context insertion", async () => {
-    installAdeMock({ iosSession: otherLaneIosSession });
+  it("warns when the iOS Simulator is attached to another lane without disabling context insertion", async () => {
+    const { terminalWrite } = installAdeMock({ iosSession: otherLaneIosSession });
 
     renderSidebar({
       tab: "ios",
@@ -413,9 +451,11 @@ describe("WorkSidebar context targets", () => {
       lanes: [lane, laneTwo],
     });
 
-    expect(await screen.findByText(/This iOS Simulator view is attached to Lane 2, not Lane 1/)).toBeTruthy();
-    expect(screen.getByTestId("ios-panel").getAttribute("data-control-disabled")).toMatch(/Lane 2/);
-    expect((screen.getByText("Add iOS context") as HTMLButtonElement).disabled).toBe(true);
+    expect(await screen.findByText(/This iOS Simulator view is running from Lane 2 while your context target is Lane 1/)).toBeTruthy();
+    expect(screen.getByTestId("ios-panel").getAttribute("data-control-disabled")).toBe("");
+    expect((screen.getByText("Add iOS context") as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByText("Add iOS context"));
+    await waitFor(() => expect(terminalWrite).toHaveBeenCalledTimes(1));
   });
 
   it("warns when the Browser view survives a lane switch", async () => {
@@ -451,7 +491,8 @@ describe("WorkSidebar context targets", () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByText(/This Browser view is attached to Lane 1, not Lane 2/)).toBeTruthy();
-    expect((screen.getByText("Add Browser context") as HTMLButtonElement).disabled).toBe(true);
+    expect(await screen.findByText(/This Browser view is running from Lane 1 while your context target is Lane 2/)).toBeTruthy();
+    expect((screen.getByText("Add Browser context") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByText("Add Browser attachment") as HTMLButtonElement).disabled).toBe(false);
   });
 });

@@ -189,10 +189,13 @@ Renderer surfaces:
   across the app — but it still flows selections to the active chat
   through the same dispatch path as the other tool tabs. The active
   Work session picks the sidebar's insertion target
-  (`WorkSidebarContextTarget`): chat sessions get the legacy
+  (`WorkSidebarContextTarget`): chat sessions (`kind: "chat"`) and
+  draft composers (`kind: "draft"`, carrying `draftTargetId`, `laneId`,
+  and `draftKind`) receive
   `ade:agent-chat:add-attachment` / `add-ios-context` /
   `add-app-control-context` / `add-builtin-browser-context` /
-  `insert-draft` events, while tracked agent
+  `insert-draft` events (draft targets include `draftTargetId` instead
+  of `sessionId` in the event detail), while tracked agent
   CLI PTYs (Claude / Codex / Cursor / OpenCode / Droid) receive the
   same iOS / App Control / browser / attachment / draft
   payloads formatted into prompt text by
@@ -202,12 +205,14 @@ Renderer surfaces:
   dispatches `ADE_WORK_PTY_CONTEXT_INSERTED_EVENT`
   (`apps/desktop/src/renderer/lib/workPtyContextEvents.ts`) so the
   matching `TerminalView` can briefly highlight the new content. When
-  no chat or tracked agent CLI session is open, attachment is disabled
-  with a banner; lane mismatches between the Work lane and an existing
-  App Control / iOS Simulator session also disable attachment with a
-  warning. The tab strip must stay reachable when the Work pane is
-  narrow: labels collapse to accessible icon buttons while preserving
-  stable hit targets and tooltips.
+  no chat, draft, or tracked agent CLI session is open, attachment is
+  disabled with a banner. Lane mismatches between the Work lane and an
+  existing App Control / iOS Simulator session are shown as an
+  informational warning banner but no longer block context insertion —
+  controls affect the running tool while inserted context goes to the
+  current chat, draft, or CLI target. The tab strip must stay reachable
+  when the Work pane is narrow: labels collapse to accessible icon
+  buttons while preserving stable hit targets and tooltips.
 - `apps/desktop/src/renderer/components/vm/MacVmPage.tsx` —
   dedicated `/vm` route for the lane-tied macOS VM. It shows host and
   Lume readiness, the single-VM lane reservation, stale attachment
@@ -260,11 +265,13 @@ Renderer surfaces:
   read consistently.
 - `apps/desktop/src/renderer/components/terminals/WorkStartSurface.tsx` —
   empty-state "start new chat / terminal" surface. It mounts
-  `AgentChatPane` in embedded draft mode and forwards
-  `onSessionCreated(session, options)` so foreground draft launches can
-  open in Work while background launches stay quiet and surface their
-  dismissible launch notice inside the pane. The `onLaunchPtySession`
-  prop is typed as `(args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>`.
+  `AgentChatPane` in embedded draft mode, passes `draftContextTargetId`
+  so the Work sidebar can insert context into the draft composer before
+  a session exists, and forwards `onSessionCreated(session, options)` so
+  foreground draft launches can open in Work while background launches
+  stay quiet and surface their dismissible launch notice inside the pane.
+  The `onLaunchPtySession` prop is typed as
+  `(args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>`.
 - `apps/desktop/src/renderer/components/terminals/TerminalView.tsx` —
   xterm.js wrapper; WebGL renderer with DOM fallback, fit retries, health
   counters.

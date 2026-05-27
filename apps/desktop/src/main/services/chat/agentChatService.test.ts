@@ -11632,6 +11632,53 @@ describe("createAgentChatService", () => {
       expect(persisted.reasoningEffort).toBe("xhigh");
     });
 
+    it("applies fresh Codex thread effective sandbox when it differs from requested flags", async () => {
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "default") return { approvalPolicy: "on-request", sandbox: "workspace-write" };
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
+      });
+      mockState.codexResponseOverrides.set("thread/start", () => ({
+        thread: { id: "thread-effective-start-readonly" },
+        approvalPolicy: "onRequest",
+        sandbox: "read-only",
+      }));
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        permissionMode: "default",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Inspect the repo.",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+
+      const threadStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
+      const threadStartParams = threadStartRequest?.params as { approvalPolicy?: unknown; sandbox?: unknown } | undefined;
+      expect(threadStartParams?.approvalPolicy).toBe("on-request");
+      expect(threadStartParams?.sandbox).toBe("workspace-write");
+
+      const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      const turnStartParams = turnStartRequest?.params as {
+        approvalPolicy?: unknown;
+        sandboxPolicy?: { type?: unknown };
+      } | undefined;
+      expect(turnStartParams?.approvalPolicy).toBe("on-request");
+      expect(turnStartParams?.sandboxPolicy?.type).toBe("readOnly");
+
+      const summary = await service.getSessionSummary(session.id);
+      expect(summary?.codexApprovalPolicy).toBe("on-request");
+      expect(summary?.codexSandbox).toBe("read-only");
+      expect(summary?.permissionMode).toBe("plan");
+    });
+
     it("re-resumes Codex threads when permission mode changes mid-session", async () => {
       vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
         if (mode === "full-auto") {
@@ -11675,6 +11722,11 @@ describe("createAgentChatService", () => {
       });
 
       mockState.codexRequestPayloads = [];
+      mockState.codexResponseOverrides.set("thread/resume", () => ({
+        thread: { id: "thread-after-mode-switch" },
+        approvalPolicy: "onRequest",
+        sandbox: "read-only",
+      }));
 
       await service.updateSession({
         sessionId: session.id,
@@ -12141,7 +12193,7 @@ describe("createAgentChatService", () => {
       expect(sessionService.reopen).toHaveBeenCalledWith(session.id);
     });
 
-    it("keeps requested Codex reasoning effort while applying effective policy on resume", async () => {
+    it("keeps requested Codex policy and reasoning effort across resume", async () => {
       mockState.codexResponseOverrides.set("thread/resume", () => ({
         thread: { id: "thread-effective-resume" },
         approvalPolicy: "onFailure",
@@ -12175,15 +12227,15 @@ describe("createAgentChatService", () => {
       expect(resumeParams?.effort).toBe("xhigh");
       expect(resumeParams?.reasoningEffort).toBeUndefined();
       expect(resumeParams?.reasoning_effort).toBeUndefined();
-      expect(resumed.codexApprovalPolicy).toBe("on-failure");
-      expect(resumed.codexSandbox).toBe("workspace-write");
-      expect(resumed.permissionMode).toBe("default");
+      expect(resumed.codexApprovalPolicy).toBe("never");
+      expect(resumed.codexSandbox).toBe("danger-full-access");
+      expect(resumed.permissionMode).toBe("full-auto");
       expect(resumed.reasoningEffort).toBe("xhigh");
 
       const persistedAfter = readPersistedChatState(session.id);
       expect(persistedAfter.threadId).toBe("thread-effective-resume");
-      expect(persistedAfter.codexApprovalPolicy).toBe("on-failure");
-      expect(persistedAfter.codexSandbox).toBe("workspace-write");
+      expect(persistedAfter.codexApprovalPolicy).toBe("never");
+      expect(persistedAfter.codexSandbox).toBe("danger-full-access");
       expect(persistedAfter.reasoningEffort).toBe("xhigh");
     });
 

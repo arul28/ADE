@@ -1515,6 +1515,84 @@ describe("AgentChatMessageList transcript rendering", () => {
   // "renders structured question blocks" tests removed: tested specific
   // CSS classes and rendering details that change with UI iterations.
 
+  it("renders completed Codex plan markdown without requiring expansion", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "plan",
+          itemId: "plan-1",
+          turnId: "turn-1",
+          state: "complete",
+          steps: [],
+          streamingText: [
+            "# Plan",
+            "",
+            "- Inspect the app-server wiring.",
+            "- Patch the native plan handoff.",
+          ].join("\n"),
+        },
+      },
+    ]);
+
+    expect(screen.getByText("Plan")).toBeTruthy();
+    expect(screen.getByText("Inspect the app-server wiring.")).toBeTruthy();
+    expect(screen.getByText("Patch the native plan handoff.")).toBeTruthy();
+  });
+
+  it("does not duplicate completed Codex plan markdown when structured steps exist", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "plan",
+          itemId: "plan-1",
+          turnId: "turn-1",
+          state: "complete",
+          steps: [{ text: "Inspect once", status: "pending" }],
+          streamingText: "- Inspect once",
+        },
+      },
+    ]);
+
+    expect(screen.getAllByText("Inspect once")).toHaveLength(1);
+  });
+
+  it("renders plan approval request bodies in the transcript", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "approval_request",
+          itemId: "approval-plan",
+          kind: "tool_call",
+          description: "Plan ready for approval",
+          turnId: "turn-1",
+          detail: {
+            request: {
+              requestId: "approval-plan",
+              itemId: "approval-plan",
+              source: "codex",
+              kind: "plan_approval",
+              title: "Plan Ready for Review",
+              description: "# Plan\n\n- Show the plan body.",
+              questions: [],
+              allowsFreeform: true,
+              blocking: true,
+              canProceedWithoutAnswer: false,
+            },
+          },
+        },
+      },
+    ]);
+
+    expect(screen.getByText("Presenting plan for approval")).toBeTruthy();
+    expect(screen.getByText("Show the plan body.")).toBeTruthy();
+  });
+
   it("renders structured ask-user requests inline and submits option answers", () => {
     const onApproval = vi.fn();
     renderMessageList([

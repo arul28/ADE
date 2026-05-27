@@ -24,7 +24,17 @@ globally-positioned overlays:
 
 The page handles session navigation (selection, tab open, "go to lane")
 and invalidates the shared session list cache before pushing a
-freshly-opened chat into the Work tab.
+freshly-opened chat into the Work tab. It also computes a
+`draftContextTargetId` (formatted as `work:draft:<laneId>:<draftKind>`)
+and a `contextTarget` that includes a `"draft"` kind when no active
+Work session is selected but a draft composer is mounted, so the Work
+sidebar can insert context (attachments, iOS/App Control/browser
+selections) into the draft composer before a chat session exists.
+Context insertion is enabled for draft targets — the "no session open"
+disabled message no longer appears when a draft is active. The page
+also determines PTY context insertability through
+`isPtyContextInsertableToolType`, which covers all tracked agent CLI
+tool types: `claude`, `codex`, `cursor-cli`, `droid`, and `opencode`.
 
 It also owns the sidebar's multi-select state:
 
@@ -312,15 +322,17 @@ Tabs:
 
 The sidebar picks a single insertion target per active Work session via
 `WorkSidebarContextTarget`: a chat (`kind: "chat"`) when the focused
-Work session is chat-typed, otherwise a tracked agent CLI PTY
+Work session is chat-typed, a draft composer (`kind: "draft"`, carrying
+`draftTargetId`, `laneId`, and `draftKind`) when no session is active
+but a draft composer is mounted, or a tracked agent CLI PTY
 (`kind: "pty"`, carrying `sessionId`, `ptyId`, and `toolType`) when the
 focused Work session is Claude / Codex / Cursor / OpenCode / Droid.
-Chat targets receive selections through window events
+Chat and draft targets receive selections through window events
 (`ade:agent-chat:add-attachment`, `add-ios-context`,
 `add-app-control-context`, `add-builtin-browser-context`,
-`insert-draft`); the matching `AgentChatPane`
-listens for its session id and feeds the payload into the same
-handlers that the in-pane drawers use. PTY targets get the same
+`insert-draft`); draft events carry `draftTargetId` instead of
+`sessionId` so the matching `AgentChatPane` can identify the correct
+draft composer. PTY targets get the same
 selections formatted into prompt text by
 `apps/desktop/src/renderer/lib/visualContextFormatting.ts`
 (`formatIosElementContextForPrompt`,
@@ -331,14 +343,15 @@ bracketed-paste payload (`\x1b[200~…\x1b[201~`) through
 `ADE_WORK_PTY_CONTEXT_INSERTED_EVENT`
 (`apps/desktop/src/renderer/lib/workPtyContextEvents.ts`) so the active
 `TerminalView` can show a brief "context inserted" affordance. When no
-chat or tracked agent CLI session is open in the active Work lane,
-attachment is disabled with the banner "Open a chat or agent CLI
-session in this lane before inserting tool context." The sidebar also
-owns its own `AppControlSession` / `IosSimulatorSession` subscriptions
-so it can detect lane mismatches (e.g. App Control was launched from a
-different lane) and disable attachment with a warning banner; the
-existing tool session can still be controlled, but it will not feed
-context into the mismatched lane until the user re-launches.
+chat, draft, or tracked agent CLI session is open in the active Work
+lane, attachment is disabled with the banner "Open a chat, draft, or
+agent CLI session in this lane before inserting tool context." The
+sidebar also owns its own `AppControlSession` / `IosSimulatorSession`
+subscriptions so it can detect lane mismatches (e.g. App Control was
+launched from a different lane); lane mismatches are surfaced as an
+informational warning banner but no longer block context insertion —
+controls affect the running tool while inserted context goes to the
+current chat, draft, or CLI target.
 
 Toggling and tab selection go through `useWorkSessions` setters
 (`setWorkSidebarOpen`, `setWorkSidebarTab`, `setWorkSidebarWidthPct`).
@@ -456,7 +469,10 @@ Font stack defaults: `ui-monospace`, `SFMono-Regular`, `Menlo`,
 
 ## Empty state: `WorkStartSurface.tsx`
 
-Rendered when the Work view has no open sessions. Contains:
+Rendered when the Work view has no open sessions. Accepts a
+`draftContextTargetId` prop that is forwarded to the embedded
+`AgentChatPane` so the Work sidebar can target the draft composer
+for context insertions. Contains:
 
 - A three-mode liquid-glass pill (`ModeSwitcherPills` in
   `WorkViewArea.tsx`) toggling `draftKind` between **Chat** (compose a

@@ -13,6 +13,7 @@ import type { WorkPtyLaunchArgs, WorkPtyLaunchResult } from "./cliLaunch";
 type WorkStartSurfaceProps = {
   draftKind: WorkDraftKind;
   draftLaneId?: string | null;
+  draftContextTargetId?: string | null;
   lanes: LaneSummary[];
   onOpenChatSession: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
   onLaunchPtySession: (args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>;
@@ -26,6 +27,7 @@ type WorkStartSurfaceProps = {
 export function WorkStartSurface({
   draftKind,
   draftLaneId = null,
+  draftContextTargetId = null,
   lanes,
   onOpenChatSession,
   onLaunchPtySession,
@@ -125,6 +127,7 @@ export function WorkStartSurface({
           hideSessionTabs
           hideLaneToolDrawers
           forceDraftMode
+          draftContextTargetId={draftContextTargetId}
           embeddedWorkLayout
           workDraftKind={draftKind}
           initialLinearIssueContext={initialLinearIssueContext}

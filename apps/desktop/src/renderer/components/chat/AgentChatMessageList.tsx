@@ -2817,6 +2817,11 @@ function renderEvent(
             </>
           )}
         </div>
+        {isPlanApproval && bodyText.trim().length > 0 ? (
+          <div className="mt-2 max-h-[360px] overflow-y-auto rounded-lg border border-white/[0.06] bg-black/15 px-3 py-2">
+            <MarkdownBlock markdown={bodyText} onOpenWorkspacePath={options?.onOpenWorkspacePath} />
+          </div>
+        ) : null}
       </div>
     );
   }
