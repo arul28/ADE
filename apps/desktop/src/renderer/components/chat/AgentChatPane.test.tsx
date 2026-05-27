@@ -3007,7 +3007,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Launch this in the background." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Launch in background" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
 
     await waitFor(() => {
       expect(onSessionCreated).toHaveBeenCalledWith(
@@ -3339,13 +3339,13 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Launch this and let me keep typing." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Launch in background" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
 
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalled();
       expect(screen.getByText(/Creating lane for chat/i)).toBeTruthy();
       expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
-      expect((screen.getByRole("button", { name: "Launch in background" }) as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByRole("button", { name: "Auto-create in background" }) as HTMLButtonElement).disabled).toBe(true);
     });
     expect((textbox as HTMLTextAreaElement).disabled).toBe(false);
     expect((textbox as HTMLTextAreaElement).value).toBe("");
@@ -3353,7 +3353,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.change(textbox, { target: { value: "Next thought while it launches." } });
     expect((textbox as HTMLTextAreaElement).value).toBe("Next thought while it launches.");
     expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false);
-    expect((screen.getByRole("button", { name: "Launch in background" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Auto-create in background" }) as HTMLButtonElement).disabled).toBe(false);
 
     resolveSuggestedName("still-editable-lane");
     await waitFor(() => {
@@ -3383,7 +3383,7 @@ describe("AgentChatPane submit recovery", () => {
     const textbox = await screen.findByRole("textbox");
     for (let index = 1; index <= 9; index += 1) {
       fireEvent.change(textbox, { target: { value: `Launch background chat ${index}.` } });
-      fireEvent.click(await screen.findByRole("button", { name: "Launch in background" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
       await waitFor(() => {
         expect(suggestLaneName).toHaveBeenCalledTimes(index);
       });
@@ -3422,14 +3422,14 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "First auto lane." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Launch in background" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalledTimes(1);
       expect((textbox as HTMLTextAreaElement).value).toBe("");
     });
 
     fireEvent.change(textbox, { target: { value: "Second auto lane." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Launch in background" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalledTimes(2);
       expect(screen.getAllByText(/Creating lane for chat/i)).toHaveLength(2);
@@ -3714,7 +3714,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Launch this CLI session in the background." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Launch in background" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
 
     await waitFor(() => {
       expect(onLaunchCliSession).toHaveBeenCalledWith(expect.objectContaining({

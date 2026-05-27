@@ -2717,12 +2717,6 @@ export function AgentChatPane({
     const lane = lanes.find((entry) => entry.id === scopedLaneId);
     return lane?.worktreePath ?? projectRoot;
   }, [laneId, lanes, projectRoot, selectedSession?.laneId]);
-  const activeLaneWorktreePath = useMemo(() => {
-    if (!laneId) return projectRoot;
-    const lane = lanes.find((entry) => entry.id === laneId);
-    return lane?.worktreePath ?? projectRoot;
-  }, [laneId, lanes, projectRoot]);
-
   const selectedEvents = selectedSessionId ? eventsBySession[selectedSessionId] ?? EMPTY_CHAT_EVENTS : EMPTY_CHAT_EVENTS;
   const optimisticOutgoingMessageRef = useRef<typeof optimisticOutgoingMessage>(null);
   const selectedEventsForDisplay = useMemo(() => {
