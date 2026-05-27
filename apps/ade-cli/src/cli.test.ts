@@ -3002,6 +3002,29 @@ describe("ADE CLI", () => {
     }
   });
 
+  it("tool claim commands require an explicit or ADE-provided lane", () => {
+    const previousLane = process.env.ADE_LANE_ID;
+    const previousChat = process.env.ADE_CHAT_SESSION_ID;
+    try {
+      delete process.env.ADE_LANE_ID;
+      delete process.env.ADE_CHAT_SESSION_ID;
+
+      expect(() => buildCliPlan(["ios-sim", "claim"])).toThrow(/requires --lane/);
+      expect(() => buildCliPlan(["app-control", "claim"])).toThrow(/requires --lane/);
+      expect(() => buildCliPlan(["browser", "claim"])).toThrow(/requires --lane/);
+
+      process.env.ADE_LANE_ID = "lane-env-1";
+      expect(buildCliPlan(["ios-sim", "claim"]).kind).toBe("execute");
+      expect(buildCliPlan(["app-control", "claim"]).kind).toBe("execute");
+      expect(buildCliPlan(["browser", "claim"]).kind).toBe("execute");
+    } finally {
+      if (previousLane === undefined) delete process.env.ADE_LANE_ID;
+      else process.env.ADE_LANE_ID = previousLane;
+      if (previousChat === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+      else process.env.ADE_CHAT_SESSION_ID = previousChat;
+    }
+  });
+
   it("ios-sim inspect requires both coordinates and forwards them", () => {
     expect(() => buildCliPlan(["ios-sim", "inspect"])).toThrow(/--x|--y/);
     const plan = buildCliPlan([

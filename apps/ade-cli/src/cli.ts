@@ -1820,6 +1820,14 @@ function readToolClaimArgs(args: string[]): ToolClaimArgs {
   };
 }
 
+function readRequiredToolClaimArgs(args: string[], label: string): ToolClaimArgs {
+  const claimArgs = readToolClaimArgs(args);
+  if (!claimArgs.laneId) {
+    throw new CliUsageError(`${label} claim requires --lane <lane-id> or ADE_LANE_ID.`);
+  }
+  return claimArgs;
+}
+
 function readPrId(args: string[]): string | null {
   return readValue(args, ["--pr", "--pr-id"]) ?? null;
 }
@@ -5615,6 +5623,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
       ],
     };
   if (sub === "claim") {
+    const claimArgs = readRequiredToolClaimArgs(args, "iOS simulator");
     return {
       kind: "execute",
       label: "iOS simulator claim",
@@ -5623,7 +5632,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "result",
           "ios_simulator",
           "claim",
-          collectGenericObjectArgs(args, readToolClaimArgs(args)),
+          collectGenericObjectArgs(args, claimArgs),
         ),
       ],
     };
@@ -6115,6 +6124,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "claim") {
+    const claimArgs = readRequiredToolClaimArgs(args, "App Control");
     return {
       kind: "execute",
       label: "App Control claim",
@@ -6123,7 +6133,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
           "result",
           "app_control",
           "claim",
-          collectGenericObjectArgs(args, readToolClaimArgs(args)),
+          collectGenericObjectArgs(args, claimArgs),
         ),
       ],
     };
@@ -7019,6 +7029,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "claim") {
+    const claimArgs = readRequiredToolClaimArgs(args, "browser");
     return {
       kind: "execute",
       label: "browser claim",
@@ -7027,7 +7038,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
           "result",
           "built_in_browser",
           "claim",
-          collectGenericObjectArgs(args, readToolClaimArgs(args)),
+          collectGenericObjectArgs(args, claimArgs),
         ),
       ],
     };
