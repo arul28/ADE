@@ -313,6 +313,9 @@ export function LinearQuickViewButton({
       setBatchModal(null);
       close();
       window.location.hash = "#/lanes";
+    } catch (err) {
+      console.error("[Linear] Batch create lanes failed:", err);
+      setBatchModal(null);
     } finally {
       setBusyModal(null);
       setBatchProgress(null);
@@ -329,6 +332,9 @@ export function LinearQuickViewButton({
         setBatchProgress({ completed: i + 1, total: batchIssues.length, action: "Creating lanes + chats" });
       }
       setBatchModal(null);
+    } catch (err) {
+      console.error("[Linear] Batch resolve (new lanes) failed:", err);
+      setBatchModal(null);
     } finally {
       setBusyModal(null);
       setBatchProgress(null);
@@ -343,6 +349,9 @@ export function LinearQuickViewButton({
         openWorkDraft(laneId, batchIssues[i], "manual", modelId);
         setBatchProgress({ completed: i + 1, total: batchIssues.length, action: "Assigning to lane" });
       }
+      setBatchModal(null);
+    } catch (err) {
+      console.error("[Linear] Batch resolve (existing lane) failed:", err);
       setBatchModal(null);
     } finally {
       setBusyModal(null);
