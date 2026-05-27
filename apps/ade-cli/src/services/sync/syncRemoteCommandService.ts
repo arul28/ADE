@@ -125,6 +125,7 @@ import {
   LAUNCH_PROFILE_TOOL_TYPE,
   resolveCleanShellLaunchFields,
   validateLaunchProfilePermissionMode,
+  type TrackedCliLaunchCommand,
 } from "../../../../desktop/src/shared/cliLaunch";
 import { normalizePrCreationStrategy } from "../../../../desktop/src/shared/prStrategy";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
@@ -548,7 +549,6 @@ const DEFAULT_CLI_COLS = 120;
 const DEFAULT_CLI_ROWS = 36;
 const MAX_CLI_COLS = 400;
 const MAX_CLI_ROWS = 200;
-const CLAUDE_INITIAL_INPUT_CONFIRM_DELAY_MS = 1200;
 
 function clampCliDimension(value: number | undefined, fallback: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.floor(value ?? fallback)));
@@ -2023,7 +2023,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     const title = initialInputMeta.title || LAUNCH_PROFILE_TITLE[provider];
     const preassignedSessionId = provider === "claude" ? randomUUID() : undefined;
 
-    function resolveLaunch(): { startupCommand?: string; command?: string; args?: string[]; env?: Record<string, string> } {
+    function resolveLaunch(): Partial<TrackedCliLaunchCommand> {
       if (provider === "shell") {
         return resolveCleanShellLaunchFields({
           platform: process.platform,
@@ -2037,11 +2037,12 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
         sessionId: preassignedSessionId,
         model: parsed.modelId ?? parsed.model ?? undefined,
         reasoningEffort: parsed.reasoningEffort ?? undefined,
-        initialPrompt: provider === "codex" ? parsed.initialInput : null,
+        initialPrompt: parsed.initialInput,
         laneWorktreePath: resolveLaneWorktreePathForSync(args, parsed.laneId),
       });
     }
 
+    const launch = resolveLaunch();
     const result = await args.ptyService.create({
       ...(preassignedSessionId ? { sessionId: preassignedSessionId } : {}),
       allowNewSessionId: Boolean(preassignedSessionId),
@@ -2051,35 +2052,9 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       toolType,
       cols,
       rows,
-      ...resolveLaunch(),
+      ...launch,
+      ...(launch.initialInput ? { awaitInitialInput: true } : {}),
     });
-
-    if (parsed.initialInput && provider !== "shell" && provider !== "codex") {
-      const written = args.ptyService.writeBySessionId(result.sessionId, `${parsed.initialInput}\r`);
-      if (!written) {
-        try {
-          args.ptyService.dispose({ ptyId: result.ptyId, sessionId: result.sessionId });
-        } catch (err) {
-          args.logger.warn("sync_remote.start_cli_session_initial_input_cleanup_failed", {
-            sessionId: result.sessionId,
-            err: String(err),
-          });
-        }
-        throw new Error("work.startCliSession created a terminal session but could not write initialInput.");
-      }
-      if (provider === "claude") {
-        const confirmTimer = setTimeout(() => {
-          const confirmWritten = args.ptyService.writeBySessionId(result.sessionId, "\r");
-          if (!confirmWritten) {
-            args.logger.warn("sync_remote.start_cli_session_claude_initial_input_confirm_failed", {
-              sessionId: result.sessionId,
-              ptyId: result.ptyId,
-            });
-          }
-        }, CLAUDE_INITIAL_INPUT_CONFIRM_DELAY_MS);
-        confirmTimer.unref?.();
-      }
-    }
 
     if (initialInputMeta.goal) {
       const session = args.sessionService.get(result.sessionId);

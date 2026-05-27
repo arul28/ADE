@@ -272,6 +272,8 @@ export const IPC = {
   appControlLaunchInTerminal: "ade.appControl.launchInTerminal",
   appControlConnect: "ade.appControl.connect",
   appControlStop: "ade.appControl.stop",
+  appControlFocusWindow: "ade.appControl.focusWindow",
+  appControlMinimizeWindow: "ade.appControl.minimizeWindow",
   appControlScreenshot: "ade.appControl.screenshot",
   appControlGetSnapshot: "ade.appControl.getSnapshot",
   appControlInspectPoint: "ade.appControl.inspectPoint",

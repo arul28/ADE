@@ -90,52 +90,28 @@ function metadataCandidates(metadata: ArtifactMetadataLike): string[] {
 function canonicalizeProofArtifactKey(value: string | null | undefined): ComputerUseProofArtifactKind | null {
   const token = normalizeArtifactToken(value);
   if (!token) return null;
-  if (
-    token === "screenshot"
-    || token === "screen_capture"
-    || token === "screen_shot"
-    || token.includes("screenshot")
-    || token.includes("screen_capture")
-  ) {
+  if (token.includes("screenshot") || token.includes("screen_capture") || token === "screen_shot") {
     return "screenshot";
   }
   if (
-    token === "browser_verification"
-    || token === "verification"
-    || token === "browser_check"
-    || token.includes("browser_verification")
-    || token.includes("verification")
-    || token.includes("verified")
+    token.includes("browser_verification") ||
+    token === "browser_check" ||
+    token === "browser_verified" ||
+    token.includes("playwright_verification") ||
+    token === "web_verification"
   ) {
     return "browser_verification";
   }
   if (
-    token === "browser_trace"
-    || token === "trace"
-    || token === "playwright_trace"
-    || token.includes("browser_trace")
-    || token.includes("playwright_trace")
-    || token.endsWith("_trace")
+    token.includes("browser_trace") ||
+    token.includes("playwright_trace")
   ) {
     return "browser_trace";
   }
-  if (
-    token === "video"
-    || token === "video_recording"
-    || token === "screen_recording"
-    || token.includes("video_record")
-    || token.includes("screen_record")
-    || token.endsWith("_video")
-  ) {
+  if (token.includes("video_record") || token.includes("screen_record") || token === "video" || token.endsWith("_video")) {
     return "video_recording";
   }
-  if (
-    token === "console_logs"
-    || token === "console"
-    || token === "logs"
-    || token.includes("console_log")
-    || token.includes("console")
-  ) {
+  if (token.includes("console_logs") || token === "console_log" || token.includes("browser_console")) {
     return "console_logs";
   }
   return null;

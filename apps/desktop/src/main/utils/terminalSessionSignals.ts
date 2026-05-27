@@ -1,5 +1,7 @@
 import type {
   AgentChatClaudePermissionMode,
+  AgentChatCodexApprovalPolicy,
+  AgentChatCodexSandbox,
   AgentChatPermissionMode,
   TerminalResumeLaunchConfig,
   TerminalResumeMetadata,
@@ -14,10 +16,13 @@ import {
   resolveClaudeCliModelForLaunch,
   sanitizeTrackedCliResumeTargetId,
 } from "../../shared/cliLaunch";
+import { decodeOpenCodeRegistryId } from "../../shared/modelRegistry";
+import { parseCommandLine } from "../../shared/shell";
 
 const OSC_133_REGEX = /\u001b\]133;([ABCD])(?:;[^\u0007\u001b]*)?(?:\u0007|\u001b\\)/g;
 const RESUME_BACKTICK_REGEX = /`([^`\r\n]*(?:claude|codex|cursor-agent|droid|opencode)\s+[^`\r\n]*(?:--resume|-r|resume|--continue|-c|--session|-s)[^`\r\n]*)`/gi;
-const RESUME_COMMAND_REGEX = /\b((?:claude|codex|cursor-agent|droid|opencode)\s+[^\r\n`]*?(?:--resume(?:=|\s+)?[^\s`\r\n]*|-r\s+[^\s`\r\n]+|resume(?:\s+[^\s`\r\n]+)?|--continue|-c(?:\s|$)|--session(?:=|\s+)[^\s`\r\n]+|-s\s+[^\s`\r\n]+)[^\r\n`]*?)(?=\s+(?:claude|codex|cursor-agent|droid|opencode)\s|$)/gi;
+const RESUME_HINT_PREFIX_REGEX = /\b(?:resume|continue)\s+with\s+(.+)$/i;
+const RESUME_COMMAND_LINE_REGEX = /^(?:.*?(?:[%$#❯›]\s+))?((?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+)*(?:claude|codex|cursor-agent|droid|opencode)\s+.+)$/i;
 
 function shellQuote(value: string): string {
   if (!value.length) return "''";
@@ -30,6 +35,20 @@ function commandArrayToLine(parts: string[]): string {
 }
 
 export const sanitizeResumeTargetId = sanitizeTrackedCliResumeTargetId;
+
+function resolveCursorCliModelForLaunch(model: string | null | undefined): string {
+  return normalizeCliFlagValue(model) ?? "auto";
+}
+
+function normalizeDroidCliModel(model: string | null | undefined): string | null {
+  const normalized = normalizeCliFlagValue(model);
+  if (!normalized) return null;
+  const slash = normalized.indexOf("/");
+  if (slash > 0 && normalized.slice(0, slash).toLowerCase() === "droid") {
+    return normalized.slice(slash + 1).trim() || null;
+  }
+  return normalized;
+}
 
 function normalizeCommand(raw: string): string {
   return raw
@@ -48,6 +67,59 @@ function stripLeadingEnvAssignments(command: string): string {
   }
 }
 
+function extractCliFlagValue(command: string, flag: string): string | null {
+  const escapedFlag = flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = command.match(new RegExp(String.raw`(?:^|\s)${escapedFlag}(?:=(?:"([^"]*)"|'([^']*)'|([^\s]+))|\s+(?:"([^"]*)"|'([^']*)'|([^\s]+)))`, "i"));
+  const value = match ? (match[1] ?? match[2] ?? match[3] ?? match[4] ?? match[5] ?? match[6] ?? "") : "";
+  return normalizeCliFlagValue(value);
+}
+
+function extractCodexReasoningEffort(command: string): string | null {
+  const match = command.match(/model_reasoning_effort=(?:\\?["']?)([A-Za-z0-9_-]+)/i);
+  return normalizeCliFlagValue(match?.[1] ?? "");
+}
+
+function extractDroidSettings(command: string): Record<string, unknown> | null {
+  const match = command.match(/\bprintf\s+%s\s+(.+?)\s+>\s+(?:"\$ADE_DROID_SETTINGS"|'?\$ADE_DROID_SETTINGS'?)/i);
+  const encoded = match?.[1]?.trim();
+  if (!encoded) return null;
+  try {
+    const [json] = parseCommandLine(encoded);
+    if (!json) return null;
+    const parsed = JSON.parse(json);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function droidPermissionModeFromSettings(settings: Record<string, unknown> | null): AgentChatPermissionMode | null {
+  const defaults = settings?.sessionDefaultSettings;
+  if (!defaults || typeof defaults !== "object" || Array.isArray(defaults)) return null;
+  const defaultRecord = defaults as Record<string, unknown>;
+  const interactionMode = String(defaultRecord.interactionMode ?? "").toLowerCase();
+  const autonomyLevel = String(defaultRecord.autonomyLevel ?? "").toLowerCase();
+  if (interactionMode === "spec" || autonomyLevel === "off") return "plan";
+  if (autonomyLevel === "high") return "full-auto";
+  if (autonomyLevel === "medium") return "default";
+  if (autonomyLevel === "low") return "edit";
+  return null;
+}
+
+function droidStringSetting(settings: Record<string, unknown> | null, key: string): string | null {
+  const value = settings?.[key];
+  return typeof value === "string" ? normalizeCliFlagValue(value) : null;
+}
+
+function droidSpecStringSetting(settings: Record<string, unknown> | null, key: string): string | null {
+  const defaults = settings?.sessionDefaultSettings;
+  if (!defaults || typeof defaults !== "object" || Array.isArray(defaults)) return null;
+  const value = (defaults as Record<string, unknown>)[key];
+  return typeof value === "string" ? normalizeCliFlagValue(value) : null;
+}
+
 function toolFromCommand(raw: string): TerminalToolType | null {
   const normalized = stripLeadingEnvAssignments(raw).trim().toLowerCase();
   if (normalized.startsWith("claude ")) return "claude";
@@ -63,7 +135,7 @@ export function providerFromTool(toolType: TerminalToolType | null | undefined):
   if (toolType === "codex" || toolType === "codex-orchestrated" || toolType === "codex-chat") return "codex";
   if (toolType === "cursor-cli") return "cursor";
   if (toolType === "droid") return "droid";
-  if (toolType === "opencode") return "opencode";
+  if (toolType === "opencode" || toolType === "opencode-orchestrated" || toolType === "opencode-chat") return "opencode";
   return null;
 }
 
@@ -90,21 +162,34 @@ function permissionModeToCursorFlags(permissionMode: AgentChatPermissionMode | n
   return [];
 }
 
-function droidSettingsJson(permissionMode: AgentChatPermissionMode | null | undefined): string {
-  if (permissionMode === "full-auto") {
-    return JSON.stringify({ sessionDefaultSettings: { interactionMode: "auto", autonomyLevel: "high" } });
+function droidSettingsJson(args: {
+  permissionMode: AgentChatPermissionMode | null | undefined;
+  model?: string | null;
+  reasoningEffort?: string | null;
+}): string {
+  const sessionDefaultSettings = (() => {
+    if (args.permissionMode === "full-auto") return { interactionMode: "auto", autonomyLevel: "high" };
+    if (args.permissionMode === "default") return { interactionMode: "auto", autonomyLevel: "medium" };
+    if (args.permissionMode === "edit") return { interactionMode: "auto", autonomyLevel: "low" };
+    return { interactionMode: "spec", autonomyLevel: "off" };
+  })();
+  const model = normalizeDroidCliModel(args.model);
+  const reasoningEffort = normalizeCliFlagValue(args.reasoningEffort);
+  const settings: Record<string, unknown> = { sessionDefaultSettings };
+  if (model) settings.model = model;
+  if (reasoningEffort) settings.reasoningEffort = reasoningEffort;
+  if (args.permissionMode === "plan") {
+    const specDefaults = sessionDefaultSettings as Record<string, unknown>;
+    if (model) specDefaults.specModeModel = model;
+    if (reasoningEffort) specDefaults.specModeReasoningEffort = reasoningEffort;
   }
-  if (permissionMode === "default") {
-    return JSON.stringify({ sessionDefaultSettings: { interactionMode: "auto", autonomyLevel: "medium" } });
-  }
-  if (permissionMode === "edit") {
-    return JSON.stringify({ sessionDefaultSettings: { interactionMode: "auto", autonomyLevel: "low" } });
-  }
-  return JSON.stringify({ sessionDefaultSettings: { interactionMode: "spec", autonomyLevel: "off" } });
+  return JSON.stringify(settings);
 }
 
 function buildDroidCommandLine(args: {
   permissionMode: AgentChatPermissionMode | null | undefined;
+  model?: string | null;
+  reasoningEffort?: string | null;
   resumeTarget?: string | null;
 }): string {
   const droidArgs = ["droid", "--settings", "$ADE_DROID_SETTINGS", "--resume"];
@@ -112,7 +197,7 @@ function buildDroidCommandLine(args: {
   const droidCommand = commandArrayToLine(droidArgs).replace(shellQuote("$ADE_DROID_SETTINGS"), "\"$ADE_DROID_SETTINGS\"");
   return [
     "ADE_DROID_SETTINGS=\"$(mktemp \"${TMPDIR:-/tmp}/ade-droid-settings.XXXXXX.json\")\"",
-    `printf %s ${shellQuote(droidSettingsJson(args.permissionMode))} > "$ADE_DROID_SETTINGS"`,
+    `printf %s ${shellQuote(droidSettingsJson(args))} > "$ADE_DROID_SETTINGS"`,
     `${droidCommand}; ADE_DROID_STATUS=$?; rm -f "$ADE_DROID_SETTINGS"; exit $ADE_DROID_STATUS`,
   ].join(" && ");
 }
@@ -132,6 +217,14 @@ function openCodeConfigEnv(permissionMode: AgentChatPermissionMode | null | unde
   return permission ? JSON.stringify({ permission }) : null;
 }
 
+function normalizeOpenCodeCliModel(model: string | null | undefined): string | null {
+  const normalized = normalizeCliFlagValue(model);
+  if (!normalized) return null;
+  const decoded = decodeOpenCodeRegistryId(normalized);
+  if (!decoded) return normalized;
+  return `${decoded.openCodeProviderId}/${decoded.openCodeModelId}`;
+}
+
 function permissionModeToOpenCodeArgs(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
   return permissionMode === "plan" ? ["--agent", "plan"] : [];
 }
@@ -141,7 +234,7 @@ function buildOpenCodeResumeCommand(args: {
   targetId: string | null;
   model?: string | null;
 }): string {
-  const commandArgs = ["opencode", ...permissionModeToOpenCodeArgs(args.permissionMode), ...modelToCliFlag(args.model)];
+  const commandArgs = ["opencode", ...permissionModeToOpenCodeArgs(args.permissionMode), ...modelToCliFlag(normalizeOpenCodeCliModel(args.model))];
   if (args.targetId) {
     commandArgs.push("--session", args.targetId);
   } else {
@@ -166,7 +259,7 @@ export function buildOpenCodeReplayResumeCommand(args: {
     "run",
     "--interactive",
     ...permissionModeToOpenCodeArgs(args.permissionMode),
-    ...modelToCliFlag(args.model),
+    ...modelToCliFlag(normalizeOpenCodeCliModel(args.model)),
   ];
   if (args.targetId) {
     commandArgs.push("--session", args.targetId);
@@ -256,7 +349,17 @@ export function parseTrackedCliLaunchConfig(
   const normalized = startupCommand.trim();
   if (!normalized.length) return null;
 
-  const permissionMode = extractTrackedCliPermissionMode(normalized, provider);
+  const droidSettings = provider === "droid" ? extractDroidSettings(normalized) : null;
+  const permissionMode = droidPermissionModeFromSettings(droidSettings)
+    ?? extractTrackedCliPermissionMode(normalized, provider);
+  const model = droidStringSetting(droidSettings, "model")
+    ?? droidSpecStringSetting(droidSettings, "specModeModel")
+    ?? extractCliFlagValue(normalized, "--model");
+  const reasoningEffort = droidStringSetting(droidSettings, "reasoningEffort")
+    ?? droidSpecStringSetting(droidSettings, "specModeReasoningEffort")
+    ?? (provider === "codex"
+    ? extractCodexReasoningEffort(normalized)
+    : (extractCliFlagValue(normalized, "--effort") ?? extractCliFlagValue(normalized, "--reasoning-effort")));
 
   if (provider === "claude") {
     const effectivePermissionMode = permissionMode ?? "default";
@@ -272,55 +375,34 @@ export function parseTrackedCliLaunchConfig(
     }
     return {
       permissionMode: effectivePermissionMode,
+      ...(model ? { model } : {}),
+      ...(reasoningEffort ? { reasoningEffort } : {}),
       claudePermissionMode,
     };
   }
 
   if (provider === "codex") {
-    if (permissionMode === "full-auto") {
-      return {
-        permissionMode,
-        codexApprovalPolicy: "never",
-        codexSandbox: "danger-full-access",
-        codexConfigSource: "flags",
-      };
-    }
-
-    if (permissionMode === "edit") {
-      return {
-        permissionMode,
-        codexApprovalPolicy: "untrusted",
-        codexSandbox: "workspace-write",
-        codexConfigSource: "flags",
-      };
-    }
-
-    if (permissionMode === "default") {
-      return {
-        permissionMode,
-        codexApprovalPolicy: "on-request",
-        codexSandbox: "workspace-write",
-        codexConfigSource: "flags",
-      };
-    }
-
-    if (permissionMode === "plan") {
-      return {
-        permissionMode,
-        codexApprovalPolicy: "on-request",
-        codexSandbox: "read-only",
-        codexConfigSource: "flags",
-      };
-    }
-
-    return {
-      permissionMode: "config-toml",
-      codexConfigSource: "config-toml",
+    const base = {
+      ...(model ? { model } : {}),
+      ...(reasoningEffort ? { reasoningEffort } : {}),
     };
+    const codexPolicies: Record<string, { codexApprovalPolicy: AgentChatCodexApprovalPolicy; codexSandbox: AgentChatCodexSandbox }> = {
+      "full-auto": { codexApprovalPolicy: "never", codexSandbox: "danger-full-access" },
+      edit: { codexApprovalPolicy: "untrusted", codexSandbox: "workspace-write" },
+      default: { codexApprovalPolicy: "on-request", codexSandbox: "workspace-write" },
+      plan: { codexApprovalPolicy: "on-request", codexSandbox: "read-only" },
+    };
+    const policy = permissionMode ? codexPolicies[permissionMode] : undefined;
+    if (policy) {
+      return { permissionMode, ...base, ...policy, codexConfigSource: "flags" };
+    }
+    return { permissionMode: "config-toml", ...base, codexConfigSource: "config-toml" };
   }
 
   return {
     ...(permissionMode ? { permissionMode } : {}),
+    ...(model ? { model } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
   };
 }
 
@@ -394,14 +476,18 @@ export function buildTrackedCliResumeCommand(
   if (!metadata) return null;
   const provider = metadata.provider;
   const permissionMode = overrides.permissionMode ?? metadata.launch.permissionMode ?? null;
+  const model = overrides.model !== undefined ? overrides.model : metadata.launch.model;
+  const reasoningEffort = overrides.reasoningEffort !== undefined
+    ? overrides.reasoningEffort
+    : metadata.launch.reasoningEffort;
   const targetId = sanitizeResumeTargetId(metadata.targetId) ?? "";
 
   if (provider === "claude") {
     const parts = ["claude", ...permissionModeToClaudeFlag(permissionMode)];
-    const model = resolveClaudeCliModelForLaunch(overrides.model);
-    if (model) parts.push("--model", model);
-    const reasoningEffort = normalizeCliFlagValue(overrides.reasoningEffort);
-    if (reasoningEffort) parts.push("--effort", reasoningEffort);
+    const claudeModel = resolveClaudeCliModelForLaunch(model);
+    if (claudeModel) parts.push("--model", claudeModel);
+    const claudeReasoningEffort = normalizeCliFlagValue(reasoningEffort);
+    if (claudeReasoningEffort) parts.push("--effort", claudeReasoningEffort);
     parts.push("--resume");
     if (targetId.length) parts.push(targetId);
     return commandArrayToLine(parts);
@@ -411,8 +497,8 @@ export function buildTrackedCliResumeCommand(
     const parts = [
       "codex",
       "--no-alt-screen",
-      ...modelToCliFlag(overrides.model),
-      ...codexReasoningEffortFlags(overrides.reasoningEffort),
+      ...modelToCliFlag(model),
+      ...codexReasoningEffortFlags(reasoningEffort),
       ...permissionModeToCodexFlags(permissionMode),
     ];
     parts.push("resume");
@@ -421,7 +507,10 @@ export function buildTrackedCliResumeCommand(
   }
 
   if (provider === "cursor") {
-    const parts = ["cursor-agent", ...permissionModeToCursorFlags(permissionMode), ...modelToCliFlag(overrides.model)];
+    const cursorModel = overrides.model !== undefined
+      ? resolveCursorCliModelForLaunch(overrides.model)
+      : resolveCursorCliModelForLaunch(metadata.launch.model);
+    const parts = ["cursor-agent", ...permissionModeToCursorFlags(permissionMode), ...modelToCliFlag(cursorModel)];
     if (targetId.length) {
       parts.push("--resume", targetId);
     } else {
@@ -431,15 +520,16 @@ export function buildTrackedCliResumeCommand(
   }
 
   if (provider === "droid") {
-    return buildDroidCommandLine({ permissionMode, resumeTarget: targetId || null });
+    return buildDroidCommandLine({ permissionMode, model, reasoningEffort, resumeTarget: targetId || null });
   }
 
-  return buildOpenCodeResumeCommand({ permissionMode, targetId: targetId || null, model: overrides.model });
+  return buildOpenCodeResumeCommand({ permissionMode, targetId: targetId || null, model });
 }
 
 function canonicalizePreferredTool(preferredTool: TerminalToolType | null | undefined): TerminalToolType | null | undefined {
   if (preferredTool === "claude-orchestrated") return "claude";
   if (preferredTool === "codex-orchestrated") return "codex";
+  if (preferredTool === "opencode-orchestrated") return "opencode";
   return preferredTool;
 }
 
@@ -471,9 +561,9 @@ export function normalizeResumeCommand(
 export function defaultResumeCommandForTool(toolType: TerminalToolType | null | undefined): string | null {
   if (toolType === "claude" || toolType === "claude-orchestrated") return "claude --resume";
   if (toolType === "codex" || toolType === "codex-orchestrated") return "codex resume";
-  if (toolType === "cursor-cli") return "cursor-agent --continue";
+  if (toolType === "cursor-cli") return "cursor-agent --model auto --continue";
   if (toolType === "droid") return "droid --resume";
-  if (toolType === "opencode") return "opencode --continue";
+  if (toolType === "opencode" || toolType === "opencode-orchestrated") return "opencode --continue";
   return null;
 }
 
@@ -491,7 +581,16 @@ export function extractResumeCommandFromOutput(
   const cleaned = stripAnsiCodes(text);
   const candidates = [
     ...Array.from(cleaned.matchAll(RESUME_BACKTICK_REGEX)).map((m) => m[1] ?? ""),
-    ...Array.from(cleaned.matchAll(RESUME_COMMAND_REGEX)).map((m) => m[1] ?? ""),
+    ...cleaned
+      .split(/\r?\n/)
+      .flatMap((line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return [];
+        const hinted = trimmed.match(RESUME_HINT_PREFIX_REGEX)?.[1]?.trim();
+        if (hinted && toolFromCommand(hinted)) return [hinted];
+        const command = trimmed.match(RESUME_COMMAND_LINE_REGEX)?.[1]?.trim();
+        return command ? [command] : [];
+      }),
   ];
 
   for (const candidate of candidates) {

@@ -9,9 +9,20 @@ import {
   resolveTrackedCliResumeCommand,
   withCodexNoAltScreen,
 } from "./cliLaunch";
-import { ADE_CLI_AGENT_GUIDANCE, ADE_CLI_INLINE_GUIDANCE } from "../../../shared/adeCliGuidance";
+import { ADE_CLI_AGENT_GUIDANCE } from "../../../shared/adeCliGuidance";
 import { ADE_AGENT_SKILLS_DIRS_ENV } from "../../../shared/agentSkillRoots";
 import type { AgentChatPermissionMode, TerminalSessionSummary } from "../../../shared/types";
+
+const originalPlatform = process.platform;
+
+function withProcessPlatform<T>(platform: NodeJS.Platform, fn: () => T): T {
+  Object.defineProperty(process, "platform", { value: platform, configurable: true });
+  try {
+    return fn();
+  } finally {
+    Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+  }
+}
 
 describe("withCodexNoAltScreen", () => {
   it("returns non-codex commands unchanged", () => {
@@ -52,7 +63,7 @@ describe("defaultTrackedCliStartupCommand", () => {
   });
 
   it("returns launch binaries for the other tracked CLI providers", () => {
-    expect(defaultTrackedCliStartupCommand("cursor")).toBe("cursor-agent");
+    expect(defaultTrackedCliStartupCommand("cursor")).toBe("cursor-agent --model auto");
     expect(defaultTrackedCliStartupCommand("droid")).toBe("droid");
     expect(defaultTrackedCliStartupCommand("opencode")).toBe("opencode");
   });
@@ -175,14 +186,14 @@ describe("buildTrackedCliStartupCommand", () => {
     it("adds the dangerous bypass flag for full-auto", () => {
       const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "full-auto" });
       expect(command).toContain("codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox");
-      expect(command).toContain("only normal reason to skip ADE CLI");
+      expect(command).not.toContain("only normal reason to skip ADE CLI");
     });
 
     it("adds supported workspace-write defaults for default", () => {
       const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "default" });
       expect(command).toContain("codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request");
       expect(command).not.toContain("mcp_servers.linear");
-      expect(command).toContain("only normal reason to skip ADE CLI");
+      expect(command).not.toContain("only normal reason to skip ADE CLI");
     });
 
     it("does not synthesize Codex MCP server config for any permission preset", () => {
@@ -199,19 +210,19 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(command).toContain("codex --no-alt-screen");
       expect(command).not.toContain("--full-auto");
       expect(command).not.toContain("mcp_servers.linear");
-      expect(command).toContain("only normal reason to skip ADE CLI");
+      expect(command).not.toContain("only normal reason to skip ADE CLI");
     });
 
     it("adds untrusted approval and workspace-write sandbox for edit", () => {
       const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "edit" });
       expect(command).toContain("codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted");
-      expect(command).toContain("only normal reason to skip ADE CLI");
+      expect(command).not.toContain("only normal reason to skip ADE CLI");
     });
 
     it("adds on-request approval and read-only sandbox for plan", () => {
       const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "plan" });
       expect(command).toContain("codex --no-alt-screen --sandbox read-only --ask-for-approval on-request");
-      expect(command).toContain("only normal reason to skip ADE CLI");
+      expect(command).not.toContain("only normal reason to skip ADE CLI");
     });
 
     it("uses the selected lane worktree to seed skill roots", () => {
@@ -222,9 +233,10 @@ describe("buildTrackedCliStartupCommand", () => {
         laneWorktreePath: "/repo/.ade/worktrees/chat-lane",
       });
 
-      expect(launch.args.at(-1)).toContain("/repo/.ade/worktrees/chat-lane/.claude/skills");
-      expect(launch.args.at(-1)).toContain("/repo/.ade/worktrees/chat-lane/.agents/skills");
-      expect(launch.args.at(-1)).toContain("/repo/.ade/worktrees/chat-lane/apps/desktop/resources/agent-skills");
+      expect(launch.initialInput).toContain("/repo/.ade/worktrees/chat-lane/.claude/skills");
+      expect(launch.initialInput).toContain("/repo/.ade/worktrees/chat-lane/.agents/skills");
+      expect(launch.initialInput).toContain("/repo/.ade/worktrees/chat-lane/apps/desktop/resources/agent-skills");
+      expect(launch.startupCommand).not.toContain("/repo/.ade/worktrees/chat-lane/.claude/skills");
       expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]?.startsWith(
         "/repo/.ade/worktrees/chat-lane/.cursor/skills",
       )).toBe(true);
@@ -244,41 +256,92 @@ describe("buildTrackedCliStartupCommand", () => {
         "-c",
         "model_reasoning_effort=\"medium\"",
       ]));
-      expect(launch.args.at(-1)).toContain("ADE session guidance");
-      expect(launch.args.at(-1)).toContain("User prompt:");
-      expect(launch.args.at(-1)).toContain("Fix the failing Work tests.");
+      expect(launch.args.join("\n")).not.toContain("ADE session guidance");
+      expect(launch.initialInput).toContain("ADE session guidance");
+      expect(launch.initialInput).toContain("User prompt:");
+      expect(launch.initialInput).toContain("Fix the failing Work tests.");
       expect(launch.startupCommand).toContain("model_reasoning_effort");
-      expect(launch.startupCommand).toContain("Fix the failing Work tests.");
+      expect(launch.startupCommand).not.toContain("Fix the failing Work tests.");
+    });
+
+    it("keeps legacy Codex migration-prompt models on the argv prompt path", () => {
+      const launch = buildTrackedCliLaunchCommand({
+        provider: "codex",
+        permissionMode: "default",
+        model: "gpt-5.3-codex",
+        initialPrompt: "Use the legacy model.",
+      });
+      expect(launch.args.at(-1)).toContain("Use the legacy model.");
+      expect(launch.initialInput).toBeUndefined();
     });
   });
 
   describe("additional CLI providers", () => {
     it("launches Cursor through a pre-created resumable chat", () => {
       const launch = buildTrackedCliLaunchCommand({ provider: "cursor", permissionMode: "plan", model: "cursor-fast", initialPrompt: "Review this lane." });
-      expect(launch.command).toBeUndefined();
+      expect(launch.command).toBe("/bin/bash");
+      expect(launch.args).toEqual(["-lc", launch.startupCommand]);
       expect(launch.startupCommand).toContain("cursor-agent create-chat");
       expect(launch.startupCommand).toContain("cursor-agent --mode plan --model cursor-fast --resume \"$ADE_CURSOR_CHAT_ID\"");
+      expect(launch.startupCommand).toContain("printf '%s\\n' \"[ADE] Continue with cursor-agent --resume ${ADE_CURSOR_CHAT_ID}\"");
       expect(launch.startupCommand).toContain("Continue with cursor-agent --resume");
-      expect(launch.startupCommand).toContain("Review this lane.");
-      expect(launch.startupCommand).toContain("ADE session guidance");
+      expect(launch.startupCommand).not.toContain("Review this lane.");
+      expect(launch.startupCommand).not.toContain("ADE session guidance");
+      expect(launch.initialInput).toContain("Review this lane.");
+      expect(launch.initialInput).toContain("ADE session guidance");
+      expect(launch.initialInputDelayMs).toBe(750);
       expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
     });
 
-    it("launches Droid through exec with model, reasoning, autonomy, guidance, and prompt", () => {
+    it("launches Cursor through a Windows-safe pre-created resumable chat", () => {
+      withProcessPlatform("win32", () => {
+        const launch = buildTrackedCliLaunchCommand({ provider: "cursor", permissionMode: "plan", model: "cursor-fast", initialPrompt: "Review this lane." });
+        expect(launch.command).toBe("powershell.exe");
+        expect(launch.args).toEqual(["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", launch.startupCommand]);
+        expect(launch.startupCommand).toContain("cursor-agent create-chat");
+        expect(launch.startupCommand).toContain("cursor-agent --resume $env:ADE_CURSOR_CHAT_ID");
+        expect(launch.startupCommand).toContain("'--mode' 'plan'");
+        expect(launch.startupCommand).toContain("'--model' 'cursor-fast'");
+        expect(launch.initialInput).toContain("Review this lane.");
+        expect(launch.initialInputDelayMs).toBe(750);
+      });
+    });
+
+    it("launches Droid as an interactive CLI with model, reasoning, autonomy, guidance, and prompt", () => {
       const launch = buildTrackedCliLaunchCommand({
         provider: "droid",
         permissionMode: "edit",
-        model: "sonnet",
+        model: "droid/claude-sonnet-4-6",
         reasoningEffort: "high",
         initialPrompt: "Run the Droid path.",
       });
-      expect(launch.command).toBe("droid");
-      expect(launch.args).toEqual(expect.arrayContaining(["exec", "--model", "sonnet", "--reasoning-effort", "high", "--auto", "low"]));
-      expect(launch.args.at(-1)).toContain("ADE session guidance");
-      expect(launch.args.at(-1)).toContain("ADE_AGENT_SKILLS_DIRS");
-      expect(launch.args.at(-1)).toContain("Run the Droid path.");
-      expect(launch.startupCommand).toContain("droid exec --model sonnet --reasoning-effort high --auto low");
+      expect(launch.command).toBe("/bin/bash");
+      expect(launch.args).toEqual(["-lc", launch.startupCommand]);
+      expect(launch.startupCommand).toContain("droid --settings \"$ADE_DROID_SETTINGS\"");
+      expect(launch.startupCommand).toContain("Run the Droid path.");
+      expect(launch.startupCommand).toContain("ADE session guidance");
+      expect(launch.startupCommand).toContain("\\\"model\\\":\\\"claude-sonnet-4-6\\\"");
+      expect(launch.startupCommand).toContain("\\\"reasoningEffort\\\":\\\"high\\\"");
+      expect(launch.startupCommand).toContain("\\\"autonomyLevel\\\":\\\"low\\\"");
       expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
+    });
+
+    it("launches Droid through PowerShell on Windows", () => {
+      withProcessPlatform("win32", () => {
+        const launch = buildTrackedCliLaunchCommand({
+          provider: "droid",
+          permissionMode: "edit",
+          model: "droid/claude-sonnet-4-6",
+          reasoningEffort: "high",
+          initialPrompt: "Run the Droid path.",
+        });
+        expect(launch.command).toBe("powershell.exe");
+        expect(launch.args).toEqual(["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", launch.startupCommand]);
+        expect(launch.startupCommand).toContain("$env:ADE_DROID_SETTINGS");
+        expect(launch.startupCommand).toContain("& 'droid' '--settings' $env:ADE_DROID_SETTINGS");
+        expect(launch.startupCommand).toContain("Run the Droid path.");
+        expect(launch.startupCommand).toContain("\"model\":\"claude-sonnet-4-6\"");
+      });
     });
 
     it("launches OpenCode with inline permission config", () => {
@@ -296,15 +359,44 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.startupCommand).toContain("Use OpenCode.");
     });
 
+    it("normalizes ADE OpenCode registry model ids before launching the CLI", () => {
+      const launch = buildTrackedCliLaunchCommand({
+        provider: "opencode",
+        permissionMode: "full-auto",
+        model: "opencode/opencode/big-pickle",
+        initialPrompt: "Use OpenCode.",
+      });
+      expect(launch.args).toEqual(expect.arrayContaining(["--model", "opencode/big-pickle"]));
+      expect(launch.startupCommand).toContain("--model \"opencode/big-pickle\"");
+      expect(launch.startupCommand).not.toContain("opencode/opencode/big-pickle");
+
+      const encoded = buildTrackedCliLaunchCommand({
+        provider: "opencode",
+        permissionMode: "full-auto",
+        model: `opencode/lmstudio/${encodeURIComponent("openai/gpt-oss-20b")}`,
+        initialPrompt: "Use OpenCode.",
+      });
+      expect(encoded.args).toEqual(expect.arrayContaining(["--model", "lmstudio/openai/gpt-oss-20b"]));
+    });
+
+    it("launches OpenCode config mode without inline permission config", () => {
+      const launch = buildTrackedCliLaunchCommand({
+        provider: "opencode",
+        permissionMode: "config-toml",
+        model: "github-copilot/gpt-5.4",
+        initialPrompt: "Use OpenCode config.",
+      });
+      expect(launch.args).toEqual(expect.arrayContaining(["--model", "github-copilot/gpt-5.4", "--prompt"]));
+      expect(launch.env?.OPENCODE_CONFIG_CONTENT).toBeUndefined();
+      expect(launch.startupCommand).not.toContain("OPENCODE_CONFIG_CONTENT=");
+    });
+
     it("rejects config-toml for providers that do not support it", () => {
       expect(() => buildTrackedCliLaunchCommand({ provider: "cursor", permissionMode: "config-toml" })).toThrow(
-        "config-toml is only supported for Codex",
+        "config-toml is only supported for Codex and OpenCode",
       );
       expect(() => buildTrackedCliLaunchCommand({ provider: "droid", permissionMode: "config-toml" })).toThrow(
-        "config-toml is only supported for Codex",
-      );
-      expect(() => buildTrackedCliLaunchCommand({ provider: "opencode", permissionMode: "config-toml" })).toThrow(
-        "config-toml is only supported for Codex",
+        "config-toml is only supported for Codex and OpenCode",
       );
     });
 
@@ -333,10 +425,11 @@ describe("buildTrackedCliStartupCommand", () => {
       }
       const codex = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: mode });
       expect(codex.length).toBeGreaterThan(0);
-      if (mode === "config-toml") continue;
-      expect(buildTrackedCliStartupCommand({ provider: "claude", permissionMode: mode }).length).toBeGreaterThan(0);
-      expect(buildTrackedCliStartupCommand({ provider: "cursor", permissionMode: mode }).length).toBeGreaterThan(0);
-      expect(buildTrackedCliStartupCommand({ provider: "droid", permissionMode: mode }).length).toBeGreaterThan(0);
+      if (mode !== "config-toml") {
+        expect(buildTrackedCliStartupCommand({ provider: "claude", permissionMode: mode }).length).toBeGreaterThan(0);
+        expect(buildTrackedCliStartupCommand({ provider: "cursor", permissionMode: mode }).length).toBeGreaterThan(0);
+        expect(buildTrackedCliStartupCommand({ provider: "droid", permissionMode: mode }).length).toBeGreaterThan(0);
+      }
       expect(buildTrackedCliStartupCommand({ provider: "opencode", permissionMode: mode }).length).toBeGreaterThan(0);
     }
   });
@@ -363,14 +456,14 @@ describe("tracked CLI resume helpers", () => {
       targetKind: "session",
       targetId: "chat-99",
       launch: { permissionMode: "full-auto" },
-    })).toBe("cursor-agent --force --resume chat-99");
+    })).toBe("cursor-agent --force --model auto --resume chat-99");
 
     expect(buildTrackedCliResumeCommand({
       provider: "opencode",
       targetKind: "session",
       targetId: "ses_99",
       launch: { permissionMode: "plan" },
-    })).toContain("opencode --agent plan --session ses_99");
+    }, { model: "opencode/opencode/big-pickle" })).toContain("--agent plan --model \"opencode/big-pickle\" --session ses_99");
   });
 
   it("adds provider model overrides to resumable CLI commands", () => {
@@ -391,12 +484,41 @@ describe("tracked CLI resume helpers", () => {
     }, { model: "gpt-5.4", reasoningEffort: "high", permissionMode: "plan" })).toBe(
       "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"high\\\"\" --sandbox read-only --ask-for-approval on-request resume thread-99",
     );
+
+    const droidResume = buildTrackedCliResumeCommand({
+      provider: "droid",
+      targetKind: "session",
+      targetId: "droid-session-1",
+      launch: { permissionMode: "default" },
+    }, { model: "droid/gpt-5.4", reasoningEffort: "xhigh", permissionMode: "full-auto" });
+    expect(droidResume).toContain("droid --settings \"$ADE_DROID_SETTINGS\" --resume droid-session-1");
+    expect(droidResume).toContain("\\\"model\\\":\\\"gpt-5.4\\\"");
+    expect(droidResume).toContain("\\\"reasoningEffort\\\":\\\"xhigh\\\"");
+    expect(droidResume).toContain("\\\"autonomyLevel\\\":\\\"high\\\"");
+  });
+
+  it("preserves stored model and reasoning when resuming tracked CLI sessions without overrides", () => {
+    expect(buildTrackedCliResumeCommand({
+      provider: "codex",
+      targetKind: "thread",
+      targetId: "thread-99",
+      launch: { permissionMode: "edit", model: "gpt-5.4", reasoningEffort: "medium" },
+    })).toBe(
+      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" --sandbox workspace-write --ask-for-approval untrusted resume thread-99",
+    );
+
+    expect(buildTrackedCliResumeCommand({
+      provider: "opencode",
+      targetKind: "session",
+      targetId: "ses_99",
+      launch: { permissionMode: "plan", model: "opencode/openai/gpt-5.4" },
+    })).toContain("--agent plan --model \"openai/gpt-5.4\" --session ses_99");
   });
 
   it("builds OpenCode interactive replay resume commands for freeze-frame continuation", () => {
     const command = buildOpenCodeReplayResumeCommand({
       permissionMode: "plan",
-      model: "openai/gpt-5.4",
+      model: `opencode/openai/${encodeURIComponent("gpt-5.4")}`,
       resumeTarget: "ses_99",
       prompt: "continue from the snapshot",
       replayLimit: 12,
@@ -428,7 +550,7 @@ describe("tracked CLI resume helpers", () => {
       targetKind: "session",
       targetId: null,
       launch: { permissionMode: "plan" },
-    })).toBe("cursor-agent --mode plan --continue");
+    })).toBe("cursor-agent --mode plan --model auto --continue");
 
     expect(buildTrackedCliResumeCommand({
       provider: "droid",

@@ -1200,7 +1200,7 @@ export type AiBudgets = Partial<Record<AiFeatureKey, AiBudgetLimit>>;
 
 export type AiCliPermissionMode = "read-only" | "edit" | "full-auto";
 export type AiCliSandboxPermissions = "read-only" | "workspace-write" | "danger-full-access";
-export type AiInProcessPermissionMode = "plan" | "edit" | "full-auto";
+export type AiInProcessPermissionMode = "plan" | "edit" | "full-auto" | "config-toml";
 
 export type AiCliPermissionSettings = {
   mode?: AiCliPermissionMode;

@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ModelDescriptor } from "../../../../shared/modelRegistry";
+import { createDynamicCursorCliModelDescriptor, type ModelDescriptor } from "../../../../shared/modelRegistry";
 
 vi.mock("@lobehub/icons", () => {
   const brand = () => {
@@ -36,6 +36,28 @@ vi.mock("@lobehub/icons", () => {
     XAI: brand(),
   };
 });
+
+vi.mock("@tanstack/react-virtual", () => ({
+  useVirtualizer: (options: {
+    count: number;
+    estimateSize: () => number;
+    getItemKey?: (index: number) => string | number;
+  }) => {
+    const size = options.estimateSize();
+    const renderedCount = options.count > 80 ? 36 : options.count;
+    return {
+      getTotalSize: () => options.count * size,
+      getVirtualItems: () => Array.from({ length: renderedCount }, (_, index) => ({
+        index,
+        key: options.getItemKey?.(index) ?? index,
+        start: index * size,
+        size,
+      })),
+      measureElement: vi.fn(),
+      scrollToIndex: vi.fn(),
+    };
+  },
+}));
 
 const favoriteStore = new Set<string>();
 const recentStore: string[] = [];
@@ -325,6 +347,78 @@ describe("ModelPicker", () => {
     expect(visibleIds).toContain(SONNET.id);
     expect(visibleIds).not.toContain(OPUS.id);
     expect(visibleIds).not.toContain(GPT.id);
+  });
+
+  it("virtualizes large Cursor model catalogs but still searches the full list", async () => {
+    const user = userEvent.setup();
+    providerAuthStatusInternal = { cursor: "ok" };
+    const cursorModels = Array.from({ length: 160 }, (_, index) =>
+      createDynamicCursorCliModelDescriptor(
+        `cursor-smoke-${index}`,
+        `Cursor Smoke Model ${index}`,
+        { cursorAvailability: { cli: true, sdk: false } },
+      ),
+    );
+    renderPicker({
+      value: cursorModels[0]!.id,
+      models: cursorModels,
+      availableModelIds: cursorModels.map((model) => model.id),
+      constrainToAvailableModelIds: true,
+      allowCliOnlyModels: true,
+    });
+
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    const listSizer = document.querySelector('[data-model-picker-virtual-list="true"]') as HTMLDivElement;
+    expect(listSizer).toBeTruthy();
+    expect(Number.parseFloat(listSizer.style.height)).toBeGreaterThan(6_000);
+    expect(screen.getAllByRole("option")).toHaveLength(36);
+
+    await user.type(screen.getByLabelText(/Search models/i), "Model 149");
+    const visibleIds = screen
+      .getAllByRole("option")
+      .map((el) => el.getAttribute("data-model-id"));
+    expect(visibleIds).toEqual([cursorModels[149]!.id]);
+  });
+
+  it("labels Cursor CLI-only and chat-only rows and keeps chat-only rows unavailable for CLI picking", async () => {
+    const user = userEvent.setup();
+    providerAuthStatusInternal = { cursor: "ok" };
+    const cliOnly = createDynamicCursorCliModelDescriptor("cli-only", "Cursor CLI Only", {
+      cursorAvailability: { cli: true, sdk: false },
+    });
+    const chatOnly = createDynamicCursorCliModelDescriptor("chat-only", "Cursor Chat Only", {
+      cursorAvailability: { cli: false, sdk: true },
+    });
+    const both = createDynamicCursorCliModelDescriptor("both", "Cursor Both", {
+      cursorAvailability: { cli: true, sdk: true },
+    });
+    const onOpenSignIn = vi.fn();
+    const { onChange } = renderPicker({
+      value: both.id,
+      models: [cliOnly, chatOnly, both],
+      availableModelIds: [both.id],
+      allowCliOnlyModels: true,
+      onOpenSignIn,
+    });
+
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    expect(screen.getByText("CLI only")).toBeTruthy();
+    expect(screen.getByText("Chat only")).toBeTruthy();
+    expect(screen.getByText("Cursor Both").parentElement?.textContent).not.toContain("only");
+
+    const chatOnlyRow = screen
+      .getAllByRole("option")
+      .find((el) => el.getAttribute("data-model-id") === chatOnly.id)!;
+    expect(chatOnlyRow.getAttribute("aria-disabled")).toBe("true");
+
+    const cliOnlyRow = screen
+      .getAllByRole("option")
+      .find((el) => el.getAttribute("data-model-id") === cliOnly.id)!;
+    await user.click(cliOnlyRow);
+    expect(onChange).toHaveBeenCalledWith(cliOnly.id);
+    expect(onChange).not.toHaveBeenCalledWith(chatOnly.id);
   });
 
   it("toggles favorites when the star button is clicked", async () => {

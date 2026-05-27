@@ -303,6 +303,28 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(refreshLanesSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("passes permission mode through to tracked CLI launch fields", async () => {
+    const { result } = renderHook(() => useWorkSessions());
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    await act(async () => {
+      await result.current.launchPtySession({
+        laneId: "lane-1",
+        profile: "codex",
+        permissionMode: "plan",
+      });
+    });
+
+    expect((window as any).ade.pty.create).toHaveBeenCalledWith(expect.objectContaining({
+      laneId: "lane-1",
+      toolType: "codex",
+      startupCommand: expect.stringContaining("codex --no-alt-screen --sandbox read-only --ask-for-approval on-request"),
+    }));
+  });
+
   it("does not retry lane recovery on every session refresh after a failure", async () => {
     fakeAppStoreState = {
       ...fakeAppStoreState,

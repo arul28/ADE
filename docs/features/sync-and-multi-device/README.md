@@ -159,7 +159,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
 - `syncProtocol.ts` (~150 lines) — envelope encode/decode with gzip
   threshold (`DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES = 4 * 1024`).
   Protocol version is `1`. Default host port is `8787`.
-- `syncRemoteCommandService.ts` (~2,520 lines) — command registry
+- `syncRemoteCommandService.ts` (~2,840 lines) — command registry
   (lanes, chat, git, PR, sessions, conflicts, files,
   `prs.getMobileSnapshot`, `lanes.presence.*`, `work.runQuickCommand`,
   `work.startCliSession`, …). Each registration carries a
@@ -415,7 +415,10 @@ is not supported.
   the service alongside the Node-side `bonjour-service` registration —
   iOS Bonjour browsers see the host even when the userland advertiser
   is throttled. The native child is killed on shutdown
-  (`stopNativeLanDiscovery`).
+  (`stopNativeLanDiscovery`). On startup the host also runs
+  `parseNativeLanDiscoveryProcessList` to detect orphaned `dns-sd -R`
+  processes from a previous ADE session that crashed without cleanup,
+  and kills them before starting its own advertisement.
 - **Machine-scoped pairing state**: phone pairing files live under the
   machine ADE home (`~/.ade/secrets/`): `sync-device-id`,
   `sync-bootstrap-token`, `sync-pin.json`, and

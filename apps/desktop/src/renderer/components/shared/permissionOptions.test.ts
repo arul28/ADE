@@ -74,12 +74,17 @@ describe("getPermissionOptions", () => {
     expect(options.find((o) => o.value === "auto")?.detail).toBe(
       "Claude judges each tool call. Uses a model classifier instead of asking you.",
     );
+    const plan = options.find((o) => o.value === "plan")!;
+    expect(plan.detail).toContain("run exploratory commands with normal approvals");
+    expect(plan.blocks ?? []).not.toContain("Bash");
   });
 
   it("returns openai CLI options for CLI-wrapped openai", () => {
     const options = getPermissionOptions({ family: "openai", isCliWrapped: true });
-    expect(options).toHaveLength(4);
-    expect(options.map((o) => o.value)).toEqual(["default", "plan", "full-auto", "config-toml"]);
+    expect(options).toHaveLength(5);
+    expect(options.map((o) => o.value)).toEqual(["default", "edit", "plan", "full-auto", "config-toml"]);
+    expect(options.find((o) => o.value === "config-toml")?.detail).toContain("--ask-for-approval");
+    expect(options.find((o) => o.value === "config-toml")?.detail).not.toContain("--approval-policy");
   });
 
   it("returns Droid autonomy options for CLI-wrapped factory", () => {

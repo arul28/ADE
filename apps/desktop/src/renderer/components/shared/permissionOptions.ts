@@ -116,10 +116,10 @@ export function getPermissionOptions(opts: {
       {
         value: "plan",
         label: "Plan",
-        shortDesc: "Read-only — no writes or shell execution",
-        detail: "Analysis-only mode. Claude can read files, search the codebase, and produce an implementation plan — but cannot write, edit, or execute any commands.",
-        allows: ["Read", "Grep", "Glob", "LS"],
-        blocks: ["Write", "Edit", "Bash", "WebFetch", "Task"],
+        shortDesc: "Read-only - no file edits",
+        detail: "Analysis-only mode. Claude can read files, search the codebase, run exploratory commands with normal approvals, and produce an implementation plan - but cannot write or edit files.",
+        allows: ["Read", "Grep", "Glob", "LS", "Exploratory Bash with approval"],
+        blocks: ["Write", "Edit", "MultiEdit"],
         safety: "safe",
       },
       {
@@ -147,6 +147,15 @@ export function getPermissionOptions(opts: {
         safety: "semi-auto",
       },
       {
+        value: "edit",
+        label: "Edit mode",
+        shortDesc: "Auto-approve trusted workspace changes",
+        detail: "Workspace-write sandbox with approval policy set to untrusted. Codex can read, edit, and run trusted workspace commands; untrusted operations still ask before running.",
+        allows: ["File reads", "Trusted file writes & patches inside the workspace", "Trusted shell commands in workspace-write sandbox"],
+        gates: ["Untrusted operations", "Edits outside the workspace", "Network access"],
+        safety: "semi-auto",
+      },
+      {
         value: "plan",
         label: "Plan mode",
         shortDesc: "Safe read-only browsing",
@@ -167,8 +176,8 @@ export function getPermissionOptions(opts: {
       {
         value: "config-toml",
         label: "Custom (config.toml)",
-        shortDesc: "No flags passed \u2014 uses config.toml",
-        detail: "No --approval-policy or --sandbox flags are passed to the Codex runtime. Runtime behavior is controlled by Codex config files (for example, ~/.codex/config.toml).",
+        shortDesc: "No flags passed - uses config.toml",
+        detail: "No --ask-for-approval or --sandbox flags are passed to the Codex runtime. Runtime behavior is controlled by Codex config files (for example, ~/.codex/config.toml).",
         allows: ["Determined by config.toml"],
         gates: [],
         safety: "custom",

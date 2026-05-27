@@ -2026,7 +2026,10 @@ describe("createSyncRemoteCommandService", () => {
       );
       const createCall = ptyService.create.mock.calls.at(-1)?.[0];
       expect(createCall?.args).toEqual(expect.arrayContaining(["--model", "gpt-5.5", "-c", "model_reasoning_effort=\"xhigh\""]));
-      expect(createCall?.args.at(-1)).toContain("fix the tests");
+      expect(createCall?.args).not.toContain(expect.stringContaining("fix the tests"));
+      expect(createCall?.initialInput).toContain("fix the tests");
+      expect(createCall?.initialInputDelayMs).toBe(750);
+      expect(createCall?.awaitInitialInput).toBe(true);
       expect(ptyService.writeBySessionId).not.toHaveBeenCalled();
       expect(sessionService.updateMeta).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "pty-1",
@@ -2145,29 +2148,20 @@ describe("createSyncRemoteCommandService", () => {
       expect(call?.startupCommand).toContain("--permission-mode auto");
     });
 
-    it("work.startCliSession passes Claude model and confirms initial input", async () => {
-      vi.useFakeTimers();
-      try {
-        await service.execute(makePayload("work.startCliSession", {
-          laneId: "lane-1",
-          provider: "claude",
-          model: "anthropic/claude-opus-4-7-1m",
-          initialInput: "hello?",
-        }));
+    it("work.startCliSession passes Claude model and initial input in the launch command", async () => {
+      await service.execute(makePayload("work.startCliSession", {
+        laneId: "lane-1",
+        provider: "claude",
+        model: "anthropic/claude-opus-4-7-1m",
+        initialInput: "hello?",
+      }));
 
-        const call = ptyService.create.mock.calls.at(-1)?.[0];
-        expect(call?.args).toEqual(expect.arrayContaining(["--model", "opus[1m]"]));
-        expect(call?.startupCommand).toContain("opus[1m]");
-        expect(ptyService.writeBySessionId).toHaveBeenCalledTimes(1);
-        expect(ptyService.writeBySessionId).toHaveBeenNthCalledWith(1, "pty-1", "hello?\r");
-
-        await vi.advanceTimersByTimeAsync(1200);
-
-        expect(ptyService.writeBySessionId).toHaveBeenCalledTimes(2);
-        expect(ptyService.writeBySessionId).toHaveBeenNthCalledWith(2, "pty-1", "\r");
-      } finally {
-        vi.useRealTimers();
-      }
+      const call = ptyService.create.mock.calls.at(-1)?.[0];
+      expect(call?.args).toEqual(expect.arrayContaining(["--model", "opus[1m]"]));
+      expect(call?.args?.at(-1)).toContain("hello?");
+      expect(call?.startupCommand).toContain("opus[1m]");
+      expect(call?.startupCommand).toContain("hello?");
+      expect(ptyService.writeBySessionId).not.toHaveBeenCalled();
     });
 
     it("work.sendToSession sends through the durable session continuation path", async () => {
@@ -2196,15 +2190,23 @@ describe("createSyncRemoteCommandService", () => {
       }))).rejects.toThrow("work.sendToSession requires text.");
     });
 
-    it("work.startCliSession disposes the created session when initial input cannot be written", async () => {
-      ptyService.writeBySessionId.mockReturnValueOnce(false);
-
-      await expect(service.execute(makePayload("work.startCliSession", {
+    it("work.startCliSession sends Cursor initial input after the launch command", async () => {
+      await service.execute(makePayload("work.startCliSession", {
         laneId: "lane-1",
         provider: "cursor",
         initialInput: "fix the tests",
-      }))).rejects.toThrow("could not write initialInput");
-      expect(ptyService.dispose).toHaveBeenCalledWith({ ptyId: "pty-proc", sessionId: "pty-1" });
+      }));
+
+      const call = ptyService.create.mock.calls.at(-1)?.[0];
+      expect(call?.startupCommand).toContain("cursor-agent create-chat");
+      expect(call?.startupCommand).toContain("cursor-agent --resume");
+      expect(call?.initialInput).toContain("fix the tests");
+      expect(call?.initialInputDelayMs).toBe(750);
+      expect(call?.awaitInitialInput).toBe(true);
+      expect(call?.command).toBe("/bin/bash");
+      expect(call?.args).toEqual(["-lc", call?.startupCommand]);
+      expect(ptyService.writeBySessionId).not.toHaveBeenCalled();
+      expect(ptyService.dispose).not.toHaveBeenCalled();
     });
 
     it("work.stopRuntime disposes pty if session has a ptyId", async () => {

@@ -88,16 +88,20 @@ if (typeof Element !== "undefined" && !Element.prototype.scrollTo) {
 // jsdom doesn't implement matchMedia; stub it for components that read
 // `prefers-color-scheme` or `prefers-reduced-motion` (e.g. border-beam).
 if (typeof window !== "undefined" && typeof window.matchMedia !== "function") {
-  window.matchMedia = ((query: string) => ({
-    matches: false,
-    media: query,
-    onchange: null,
-    addListener: () => {},
-    removeListener: () => {},
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    dispatchEvent: () => false,
-  })) as typeof window.matchMedia;
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    writable: true,
+    value: ((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    })) as typeof window.matchMedia,
+  });
 }
 
 function ensureWritableWindowAde(): void {

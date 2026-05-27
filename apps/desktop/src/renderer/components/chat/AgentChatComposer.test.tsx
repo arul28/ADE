@@ -477,6 +477,7 @@ describe("AgentChatComposer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Codex approval preset" }));
 
     expect(screen.getByRole("option", { name: "Default permissions" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Edit mode" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "Plan mode" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "Full access" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "Custom (config.toml)" })).toBeTruthy();
@@ -504,6 +505,24 @@ describe("AgentChatComposer", () => {
   it("maps Codex preset buttons to the underlying approval and sandbox controls", () => {
     const onCodexPresetChange = vi.fn();
     renderComposer({ onCodexPresetChange });
+
+    fireEvent.click(screen.getByRole("button", { name: "Codex approval preset" }));
+    fireEvent.click(screen.getByRole("option", { name: "Plan mode" }));
+
+    expect(onCodexPresetChange).toHaveBeenCalledWith({
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "read-only",
+      codexConfigSource: "flags",
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Codex approval preset" }));
+    fireEvent.click(screen.getByRole("option", { name: "Edit mode" }));
+
+    expect(onCodexPresetChange).toHaveBeenCalledWith({
+      codexApprovalPolicy: "untrusted",
+      codexSandbox: "workspace-write",
+      codexConfigSource: "flags",
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "Codex approval preset" }));
     fireEvent.click(screen.getByRole("option", { name: "Full access" }));
@@ -566,6 +585,29 @@ describe("AgentChatComposer", () => {
     fireEvent.change(autonomySelect, { target: { value: "auto-high" } });
 
     expect(onDroidPermissionModeChange).toHaveBeenCalledWith("auto-high");
+  });
+
+  it("renders OpenCode config permission mode", () => {
+    const onOpenCodePermissionModeChange = vi.fn();
+    renderComposer({
+      sessionProvider: "opencode",
+      modelId: "opencode/openai/gpt-5.4",
+      availableModelIds: ["opencode/openai/gpt-5.4"],
+      opencodePermissionMode: "edit",
+      onOpenCodePermissionModeChange,
+    });
+
+    const permissionsSelect = screen.getByRole("combobox", { name: "Permissions" }) as HTMLSelectElement;
+    expect(Array.from(permissionsSelect.options).map((option) => option.value)).toEqual([
+      "plan",
+      "edit",
+      "full-auto",
+      "config-toml",
+    ]);
+
+    fireEvent.change(permissionsSelect, { target: { value: "config-toml" } });
+
+    expect(onOpenCodePermissionModeChange).toHaveBeenCalledWith("config-toml");
   });
 
   it("can hide native permission controls for fixed-mode surfaces", () => {

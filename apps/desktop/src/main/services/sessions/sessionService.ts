@@ -62,6 +62,8 @@ type ClaudeSessionRow = {
   updatedAt: string;
 };
 
+export const STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS = 2 * 60 * 1000;
+
 const SESSION_COLUMNS = `
   s.id as id,
   s.lane_id as laneId,
@@ -124,6 +126,12 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
     permissionMode = record.permissionMode as LaunchPermissionMode;
   }
   const claudePermissionMode = typeof launchRecord.claudePermissionMode === "string" ? launchRecord.claudePermissionMode : null;
+  const model = typeof launchRecord.model === "string" && launchRecord.model.trim().length
+    ? launchRecord.model.trim()
+    : null;
+  const reasoningEffort = typeof launchRecord.reasoningEffort === "string" && launchRecord.reasoningEffort.trim().length
+    ? launchRecord.reasoningEffort.trim()
+    : null;
   const codexApprovalPolicy = typeof launchRecord.codexApprovalPolicy === "string" ? launchRecord.codexApprovalPolicy : null;
   const codexSandbox = typeof launchRecord.codexSandbox === "string" ? launchRecord.codexSandbox : null;
   const codexConfigSource = typeof launchRecord.codexConfigSource === "string" ? launchRecord.codexConfigSource : null;
@@ -134,6 +142,8 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
     targetId,
     launch: {
       ...(permissionMode ? { permissionMode } : {}),
+      ...(model ? { model } : {}),
+      ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(claudePermissionMode ? { claudePermissionMode: claudePermissionMode as TerminalResumeMetadata["launch"]["claudePermissionMode"] } : {}),
       ...(codexApprovalPolicy ? { codexApprovalPolicy: codexApprovalPolicy as TerminalResumeMetadata["launch"]["codexApprovalPolicy"] } : {}),
       ...(codexSandbox ? { codexSandbox: codexSandbox as TerminalResumeMetadata["launch"]["codexSandbox"] } : {}),
@@ -503,12 +513,14 @@ export function createSessionService({ db }: { db: AdeDb }) {
       excludeToolTypes,
       liveOwnerPids,
       liveOwnerIdentities,
+      freshActivityGraceMs,
     }: {
       endedAt?: string;
       status?: TerminalSessionStatus;
       excludeToolTypes?: string[];
       liveOwnerPids?: Set<number>;
       liveOwnerIdentities?: Array<{ pid: number; startedAt: string }>;
+      freshActivityGraceMs?: number;
     } = {}): number {
       const normalizedExcludedToolTypes = Array.isArray(excludeToolTypes)
         ? excludeToolTypes
@@ -543,9 +555,25 @@ export function createSessionService({ db }: { db: AdeDb }) {
           ? ` and (owner_pid is null or owner_process_started_at is null or not (${ownerIdentities.map(() => "(owner_pid = ? and owner_process_started_at = ?)").join(" or ")}))`
           : ownerParams.length
             ? ` and (owner_pid is null or owner_pid not in (${ownerParams.map(() => "?").join(", ")}))`
-          : "";
-      const whereSql = `status = 'running'${exclusionSql}${ownerGuardSql}`;
-      const params = [...normalizedExcludedToolTypes, ...(ownerIdentities.length ? ownerIdentityParams : ownerParams)];
+            : "";
+      const graceMs = typeof freshActivityGraceMs === "number" && Number.isFinite(freshActivityGraceMs)
+        ? Math.max(0, freshActivityGraceMs)
+        : 0;
+      const endedAtMs = endedAt ? Date.parse(endedAt) : NaN;
+      const cutoffMs = (Number.isFinite(endedAtMs) ? endedAtMs : Date.now()) - graceMs;
+      const activityCutoff = graceMs > 0 && Number.isFinite(cutoffMs)
+        ? new Date(cutoffMs).toISOString()
+        : null;
+      const activityGuardSql = activityCutoff
+        ? " and started_at < ? and (last_output_at is null or last_output_at < ?)"
+        : "";
+      const activityParams = activityCutoff ? [activityCutoff, activityCutoff] : [];
+      const whereSql = `status = 'running'${exclusionSql}${ownerGuardSql}${activityGuardSql}`;
+      const params = [
+        ...normalizedExcludedToolTypes,
+        ...(ownerIdentities.length ? ownerIdentityParams : ownerParams),
+        ...activityParams,
+      ];
       const rows = db.all<{ id: string }>(
         `select id from terminal_sessions where ${whereSql}`,
         params,
@@ -553,7 +581,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       if (!rows.length) return 0;
 
       const finalEndedAt = endedAt ?? new Date().toISOString();
-      const finalStatus = status ?? "disposed";
+      const finalStatus = status ?? "detached";
       db.run(
         `update terminal_sessions set ended_at = ?, exit_code = ?, status = ?, pty_id = null where ${whereSql}`,
         [

@@ -1369,6 +1369,65 @@ describe("ADE CLI", () => {
       name: "git_push",
       arguments: { laneId: "lane-1", forceWithLease: true, setUpstream: true },
     });
+
+    const tag = buildCliPlan([
+      "git",
+      "tag",
+      "abc123",
+      "--name",
+      "v1.2.3",
+      "--message",
+      "Release 1.2.3",
+      "--lane",
+      "lane-1",
+    ]);
+    expect(tag.kind).toBe("execute");
+    if (tag.kind !== "execute") return;
+    expect(tag.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "git",
+        action: "createTag",
+        args: { laneId: "lane-1", commitSha: "abc123", tagName: "v1.2.3", message: "Release 1.2.3" },
+      },
+    });
+
+    const reset = buildCliPlan([
+      "git",
+      "reset",
+      "def456",
+      "--hard",
+      "--lane",
+      "lane-1",
+    ]);
+    expect(reset.kind).toBe("execute");
+    if (reset.kind !== "execute") return;
+    expect(reset.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "git",
+        action: "resetToCommit",
+        args: { laneId: "lane-1", commitSha: "def456", mode: "hard" },
+      },
+    });
+
+    const reachable = buildCliPlan([
+      "git",
+      "is-reachable",
+      "fed789",
+      "--lane",
+      "lane-1",
+    ]);
+    expect(reachable.kind).toBe("execute");
+    if (reachable.kind !== "execute") return;
+    expect(reachable.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "git",
+        action: "isCommitInLaneHistory",
+        args: { laneId: "lane-1", commitSha: "fed789" },
+      },
+    });
   });
 
   it("resolves stash OIDs before CLI pop and drop actions", () => {
@@ -1561,7 +1620,7 @@ describe("ADE CLI", () => {
       "--force-with-lease",
     ]);
     expect(plan.kind).toBe("execute");
-    if (plan.kind !== "execute") return;
+    if (plan.kind !== "execute") throw new Error(`expected execute plan, got ${plan.kind}`);
     expect(plan.steps[0]?.params).toEqual({
       name: "git_push",
       arguments: {
@@ -2119,6 +2178,34 @@ describe("ADE CLI", () => {
         cols: 120,
         rows: 36,
         tracked: true,
+      }),
+    });
+  });
+
+  it("forwards model and reasoning flags for provider shell launches", () => {
+    const plan = buildCliPlan([
+      "shell",
+      "start-cli",
+      "codex",
+      "--lane",
+      "lane-1",
+      "--model",
+      "gpt-5.4",
+      "--reasoning",
+      "high",
+      "--message",
+      "fix the tests",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") throw new Error(`expected execute plan, got ${plan.kind}`);
+    expect(plan.steps[0]?.params).toEqual({
+      name: "start_cli_session",
+      arguments: expect.objectContaining({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        reasoningEffort: "high",
+        initialInput: "fix the tests",
       }),
     });
   });

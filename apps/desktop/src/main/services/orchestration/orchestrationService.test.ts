@@ -711,7 +711,7 @@ describe("orchestration permission profile (canary)", () => {
   });
 
   it("opencode worker mode is full-auto", () => {
-    const allowed: AgentChatOpenCodePermissionMode[] = ["plan", "edit", "full-auto"];
+    const allowed: AgentChatOpenCodePermissionMode[] = ["plan", "edit", "full-auto", "config-toml"];
     expect(allowed).toContain(PERMISSION_PROFILE.opencode.opencodePermissionMode);
     expect(PERMISSION_PROFILE.opencode.opencodePermissionMode).toBe("full-auto");
   });

@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import {
   ArrowClockwise,
+  ArrowSquareOut,
   CaretDown,
   Desktop,
   Keyboard,
   Link,
+  Minus,
   Play,
   SpinnerGap,
   Stop,
@@ -39,6 +41,23 @@ type ChatAppControlPanelProps = {
 type MessageTone = "info" | "error";
 type Message = { tone: MessageTone; text: string };
 type AppControlMode = "control" | "inspect";
+type LiveFrameDims = {
+  width: number;
+  height: number;
+  viewportWidth: number;
+  viewportHeight: number;
+  scale: number;
+  scaleX: number;
+  scaleY: number;
+};
+type MappedPoint = {
+  viewportX: number;
+  viewportY: number;
+  imageX: number;
+  imageY: number;
+  leftPct: number;
+  topPct: number;
+};
 
 type PanelUiState = {
   launchCommand: string;
@@ -267,22 +286,26 @@ export function ChatAppControlPanel({
   const [pendingTargetId, setPendingTargetId] = useState<string | null>(null);
   const [liveFrameActive, setLiveFrameActive] = useState(false);
   const [liveFrameInitialSrc, setLiveFrameInitialSrc] = useState<string | null>(null);
-  const liveFrameDimsRef = useRef<{ width: number; height: number; scale: number } | null>(null);
+  const liveFrameDimsRef = useRef<LiveFrameDims | null>(null);
   const liveFrameActiveRef = useRef(false);
   const liveFrameSrcRef = useRef<string | null>(null);
   const liveFramePendingSrcRef = useRef<string | null>(null);
   const liveFrameRafRef = useRef<number | null>(null);
+  const liveFrameLastAtRef = useRef<number | null>(null);
+  const [frameHealthTick, setFrameHealthTick] = useState(0);
   const activeTargetIdRef = useRef<string | null>(null);
-  const scrollPendingRef = useRef<{ x: number; y: number; deltaX: number; deltaY: number; scale: number } | null>(null);
+  const scrollPendingRef = useRef<{ x: number; y: number; deltaX: number; deltaY: number; coordinateSpace: "viewport" } | null>(null);
   const scrollRafRef = useRef<number | null>(null);
   // Stable refs so the non-passive wheel listener (attached imperatively) reads
   // the latest values without re-binding on every render.
   const scrollEnabledRef = useRef<boolean>(false);
-  const [hoveredElementId, setHoveredElementId] = useState<string | null>(null);
+  const hoverInspectSeqRef = useRef(0);
+  const hoverInspectTimerRef = useRef<number | null>(null);
+  const [hoverElement, setHoverElement] = useState<AppControlElement | null>(null);
   const [selectedElement, setSelectedElement] = useState<AppControlElement | null>(null);
   const [selectedPoint, setSelectedPoint] = useState<{ x: number; y: number } | null>(null);
   const [selectedContextItem, setSelectedContextItem] = useState<AppControlContextItem | null>(null);
-  const [controlPulse, setControlPulse] = useState<{ x: number; y: number; nonce: number } | null>(null);
+  const [controlPulse, setControlPulse] = useState<{ leftPct: number; topPct: number; nonce: number } | null>(null);
   const [screenshotBlank, setScreenshotBlank] = useState(false);
   const [typeText, setTypeText] = useState("");
   const [mode, setMode] = useState<AppControlMode>(initialUiState.mode);
@@ -296,6 +319,17 @@ export function ChatAppControlPanel({
   const sessionStatus = useMemo(() => statusInfo(activeSession), [activeSession]);
   const controlsDisabled = Boolean(controlDisabledReason);
   const controlsDisabledMessage = controlDisabledReason ?? "This App Control session is read-only from the current lane.";
+  const sessionConnected = activeSession?.status === "connected";
+  const waitingForCdp = Boolean(
+    activeSession
+    && (activeSession.status === "starting" || activeSession.status === "running")
+    && activeSession.cdpPort
+    && !activeSession.cdpEndpoint,
+  );
+  const hasActiveSession = Boolean(activeSession) && !["exited", "stopped", "failed"].includes(activeSession?.status ?? "");
+  const canLaunch = launchCommand.trim().length > 0 && !hasActiveSession && !controlsDisabled;
+  const canStop = hasActiveSession && !controlsDisabled;
+  const canType = mode === "control" && typeText.trim().length > 0 && sessionConnected && !controlsDisabled;
 
   useEffect(() => {
     activeTargetIdRef.current = activeSession?.cdpTargetId ?? null;
@@ -348,6 +382,67 @@ export function ChatAppControlPanel({
     liveFrameActiveRef.current = liveFrameActive;
   }, [liveFrameActive, mode]);
 
+  useEffect(() => {
+    if (!liveFrameActive) return undefined;
+    const timer = window.setInterval(() => setFrameHealthTick((value) => value + 1), 2_000);
+    return () => window.clearInterval(timer);
+  }, [liveFrameActive]);
+
+  const getDisplayedMetrics = useCallback((): LiveFrameDims | null => {
+    if (liveFrameActive) {
+      const live = liveFrameDimsRef.current;
+      if (live && live.width > 0 && live.height > 0 && live.viewportWidth > 0 && live.viewportHeight > 0) {
+        return live;
+      }
+    }
+    const sw = snapshot?.screenshot?.width ?? 0;
+    const sh = snapshot?.screenshot?.height ?? 0;
+    if (sw <= 0 || sh <= 0) return null;
+    const scaleX = snapshot?.screen.scaleX ?? snapshot?.screen.scale ?? 1;
+    const scaleY = snapshot?.screen.scaleY ?? snapshot?.screen.scale ?? scaleX;
+    return {
+      width: sw,
+      height: sh,
+      viewportWidth: snapshot?.screen.viewportWidth && snapshot.screen.viewportWidth > 0
+        ? snapshot.screen.viewportWidth
+        : sw / scaleX,
+      viewportHeight: snapshot?.screen.viewportHeight && snapshot.screen.viewportHeight > 0
+        ? snapshot.screen.viewportHeight
+        : sh / scaleY,
+      scale: snapshot?.screen.scale ?? scaleX,
+      scaleX,
+      scaleY,
+    };
+  }, [liveFrameActive, snapshot]);
+
+  const mapClientPoint = useCallback((clientX: number, clientY: number, image: HTMLImageElement | null = imageRef.current): MappedPoint | null => {
+    if (!image) return null;
+    const rect = image.getBoundingClientRect();
+    const metrics = getDisplayedMetrics();
+    if (!metrics || rect.width <= 0 || rect.height <= 0) return null;
+    const xRatio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    const yRatio = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
+    return {
+      viewportX: Math.round(xRatio * metrics.viewportWidth),
+      viewportY: Math.round(yRatio * metrics.viewportHeight),
+      imageX: Math.round(xRatio * metrics.width),
+      imageY: Math.round(yRatio * metrics.height),
+      leftPct: xRatio * 100,
+      topPct: yRatio * 100,
+    };
+  }, [getDisplayedMetrics]);
+
+  const overlayStyleForElement = useCallback((element: AppControlElement): CSSProperties | null => {
+    const metrics = getDisplayedMetrics();
+    if (!metrics || metrics.viewportWidth <= 0 || metrics.viewportHeight <= 0) return null;
+    return {
+      left: `${(element.frame.x / metrics.viewportWidth) * 100}%`,
+      top: `${(element.frame.y / metrics.viewportHeight) * 100}%`,
+      width: `${(element.frame.width / metrics.viewportWidth) * 100}%`,
+      height: `${(element.frame.height / metrics.viewportHeight) * 100}%`,
+    };
+  }, [getDisplayedMetrics]);
+
   // Wheel forwarding: must be a NON-passive listener so preventDefault works,
   // and React's synthetic onWheel is passive in modern React. Attach
   // imperatively via addEventListener({ passive: false }).
@@ -356,13 +451,8 @@ export function ChatAppControlPanel({
     if (!img) return undefined;
     const handler = (event: WheelEvent) => {
       if (!scrollEnabledRef.current) return;
-      const dims = liveFrameDimsRef.current;
-      const rect = img.getBoundingClientRect();
-      if (!dims || rect.width <= 0 || rect.height <= 0) return;
-      const xRatio = (event.clientX - rect.left) / rect.width;
-      const yRatio = (event.clientY - rect.top) / rect.height;
-      const x = Math.max(0, Math.round(xRatio * dims.width));
-      const y = Math.max(0, Math.round(yRatio * dims.height));
+      const point = mapClientPoint(event.clientX, event.clientY, img);
+      if (!point) return;
       const deltaX = event.deltaX;
       const deltaY = event.deltaY;
       if (deltaX === 0 && deltaY === 0) return;
@@ -370,14 +460,20 @@ export function ChatAppControlPanel({
       const pending = scrollPendingRef.current;
       if (pending) {
         scrollPendingRef.current = {
-          x,
-          y,
+          x: point.viewportX,
+          y: point.viewportY,
           deltaX: pending.deltaX + deltaX,
           deltaY: pending.deltaY + deltaY,
-          scale: dims.scale,
+          coordinateSpace: "viewport",
         };
       } else {
-        scrollPendingRef.current = { x, y, deltaX, deltaY, scale: dims.scale };
+        scrollPendingRef.current = {
+          x: point.viewportX,
+          y: point.viewportY,
+          deltaX,
+          deltaY,
+          coordinateSpace: "viewport",
+        };
       }
       if (scrollRafRef.current == null) {
         scrollRafRef.current = window.requestAnimationFrame(() => {
@@ -395,7 +491,7 @@ export function ChatAppControlPanel({
     // that should re-bind is the live/empty mount flip. Only depending on
     // liveFrameActive here is intentional — re-binding on every snapshot
     // refresh would create a brief gap where wheel events get missed.
-  }, [controlsDisabled, liveFrameActive]);
+  }, [controlsDisabled, liveFrameActive, mapClientPoint]);
 
   useEffect(() => {
     setScreenshotBlank(false);
@@ -403,7 +499,7 @@ export function ChatAppControlPanel({
 
   useEffect(() => {
     if (mode !== "inspect") {
-      setHoveredElementId(null);
+      setHoverElement(null);
     }
   }, [mode]);
 
@@ -412,6 +508,29 @@ export function ChatAppControlPanel({
     const timer = window.setTimeout(() => setControlPulse(null), 600);
     return () => window.clearTimeout(timer);
   }, [controlPulse]);
+
+  useEffect(() => {
+    return () => {
+      if (hoverInspectTimerRef.current != null) {
+        window.clearTimeout(hoverInspectTimerRef.current);
+        hoverInspectTimerRef.current = null;
+      }
+      hoverInspectSeqRef.current += 1;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (mode !== "inspect") return undefined;
+    const handler = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setHoverElement(null);
+      setSelectedPoint(null);
+      setAttachmentAck(null);
+      setMode("control");
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [mode]);
 
   const refreshStatus = useCallback(async () => {
     const nextStatus = await window.ade.appControl.getStatus();
@@ -446,6 +565,19 @@ export function ChatAppControlPanel({
 
   useEffect(() => {
     let cancelled = false;
+    function resetSessionState(): void {
+      setSnapshot(null);
+      setSelectedElement(null);
+      setSelectedPoint(null);
+      setSelectedContextItem(null);
+      setHoverElement(null);
+      setLiveFrameActive(false);
+      setLiveFrameInitialSrc(null);
+      liveFrameDimsRef.current = null;
+      liveFrameLastAtRef.current = null;
+      liveFrameSrcRef.current = null;
+      liveFramePendingSrcRef.current = null;
+    }
     void refreshStatus().then((nextStatus) => {
       if (!cancelled && nextStatus.activeSession?.status === "connected") {
         void refreshSnapshot().catch(() => {});
@@ -463,6 +595,7 @@ export function ChatAppControlPanel({
             setLiveFrameActive(false);
             setLiveFrameInitialSrc(null);
             liveFrameDimsRef.current = null;
+            liveFrameLastAtRef.current = null;
             liveFrameSrcRef.current = null;
             liveFramePendingSrcRef.current = null;
             if (imageRef.current) imageRef.current.removeAttribute("src");
@@ -477,36 +610,19 @@ export function ChatAppControlPanel({
         ) {
           // Either the app hasn't connected yet, or it just disappeared. Drop
           // the last screenshot so the panel doesn't keep claiming to be live.
-          setSnapshot(null);
-          setSelectedElement(null);
-          setSelectedPoint(null);
-          setSelectedContextItem(null);
-          setHoveredElementId(null);
-          setLiveFrameActive(false);
-          setLiveFrameInitialSrc(null);
-          liveFrameDimsRef.current = null;
-          liveFrameSrcRef.current = null;
-          liveFramePendingSrcRef.current = null;
+          resetSessionState();
         }
         void refreshStatus().catch(() => {});
       }
       if (event.type === "session-stopped") {
         void refreshStatus().catch(() => {});
-        setSnapshot(null);
-        setSelectedElement(null);
-        setSelectedPoint(null);
-        setSelectedContextItem(null);
-        setHoveredElementId(null);
-        setLiveFrameActive(false);
-        setLiveFrameInitialSrc(null);
-        liveFrameDimsRef.current = null;
-        liveFrameSrcRef.current = null;
-        liveFramePendingSrcRef.current = null;
+        resetSessionState();
       }
       if (event.type === "frame") {
         if (event.frame.cdpTargetId !== activeTargetIdRef.current) return;
         const src = `data:${event.frame.mimeType};base64,${event.frame.data}`;
         liveFrameSrcRef.current = src;
+        liveFrameLastAtRef.current = Date.now();
         if (!liveFrameActiveRef.current) setLiveFrameInitialSrc(src);
         // Hot-path: avoid React state churn at 30+ fps. Stash the latest data
         // URL and let a single requestAnimationFrame paint the freshest one
@@ -516,7 +632,15 @@ export function ChatAppControlPanel({
           liveFrameDimsRef.current = {
             width: event.frame.width,
             height: event.frame.height,
-            scale: event.frame.scale || 1,
+            viewportWidth: event.frame.viewportWidth && event.frame.viewportWidth > 0
+              ? event.frame.viewportWidth
+              : Math.round(event.frame.width / (event.frame.scale || 1)),
+            viewportHeight: event.frame.viewportHeight && event.frame.viewportHeight > 0
+              ? event.frame.viewportHeight
+              : Math.round(event.frame.height / (event.frame.scale || 1)),
+            scale: event.frame.scale || event.frame.scaleX || 1,
+            scaleX: event.frame.scaleX || event.frame.scale || 1,
+            scaleY: event.frame.scaleY || event.frame.scale || 1,
           };
         }
         if (liveFrameRafRef.current == null) {
@@ -694,6 +818,24 @@ export function ChatAppControlPanel({
     [controlsDisabled, controlsDisabledMessage, runBusy],
   );
 
+  const focusWindow = useCallback(
+    () =>
+      runBusy("focus-window", async () => {
+        if (controlsDisabled) throw new Error(controlsDisabledMessage);
+        await window.ade.appControl.focusWindow();
+      }),
+    [controlsDisabled, controlsDisabledMessage, runBusy],
+  );
+
+  const minimizeWindow = useCallback(
+    () =>
+      runBusy("minimize-window", async () => {
+        if (controlsDisabled) throw new Error(controlsDisabledMessage);
+        await window.ade.appControl.minimizeWindow();
+      }),
+    [controlsDisabled, controlsDisabledMessage, runBusy],
+  );
+
   const attachSelection = useCallback(
     async (x: number, y: number) => {
       if (modeRef.current !== "inspect") {
@@ -712,23 +854,13 @@ export function ChatAppControlPanel({
         projectRoot,
         x,
         y,
-        scale: snapshot?.screen.scale ?? null,
+        coordinateSpace: "viewport",
         includeScreenshot: false,
       });
-      const element =
-        snapshot?.elements
-          .filter(
-            (candidate) =>
-              x >= candidate.pixelFrame.x &&
-              y >= candidate.pixelFrame.y &&
-              x <= candidate.pixelFrame.x + candidate.pixelFrame.width &&
-              y <= candidate.pixelFrame.y + candidate.pixelFrame.height,
-          )
-          .sort((a, b) => a.pixelFrame.width * a.pixelFrame.height - b.pixelFrame.width * b.pixelFrame.height)[0]
-        ?? null;
+      const element = result.snapshot?.hitElement ?? null;
       let attachmentPath: string | null = null;
       let screenshotDataUrl = result.item.screenshotDataUrl ?? null;
-      if (snapshot) {
+      if (snapshot && (onAddAttachment || screenshotDataUrl)) {
         const cropFrame = element?.pixelFrame ?? result.item.frame;
         if (cropFrame) {
           const crop = await cropFrameDataUrl(snapshot, cropFrame);
@@ -786,53 +918,69 @@ export function ChatAppControlPanel({
     (event: MouseEvent<HTMLImageElement>) => {
       event.preventDefault();
       event.stopPropagation();
-      const image = imageRef.current;
-      if (!image) return;
-      const rect = image.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-      const xRatio = (event.clientX - rect.left) / rect.width;
-      const yRatio = (event.clientY - rect.top) / rect.height;
-      // When the screencast is live, the rendered image is the live frame,
-      // not the static snapshot. Use whichever dimensions actually back the
-      // image so click coordinates land where the user pointed.
-      const liveDims = liveFrameDimsRef.current;
-      const useLive = liveFrameActive && liveDims != null && liveDims.width > 0 && liveDims.height > 0;
-      const sourceWidth = useLive ? liveDims.width : snapshot?.screenshot?.width ?? 0;
-      const sourceHeight = useLive ? liveDims.height : snapshot?.screenshot?.height ?? 0;
-      const sourceScale = useLive ? liveDims.scale : snapshot?.screen.scale ?? 1;
-      if (sourceWidth <= 0 || sourceHeight <= 0) return;
+      const point = mapClientPoint(event.clientX, event.clientY, event.currentTarget);
+      if (!point) return;
       if (controlsDisabled) {
         setMessage({ tone: "error", text: controlsDisabledMessage });
         return;
       }
-      if (!useLive && screenshotBlank) {
+      if (!liveFrameActive && screenshotBlank) {
         setMessage({
           tone: "error",
           text: "The renderer is attached but the screenshot is blank. Open the app window or menu bar item, then refresh the snapshot.",
         });
         return;
       }
-      const x = Math.round(xRatio * sourceWidth);
-      const y = Math.round(yRatio * sourceHeight);
       const activeMode = modeRef.current;
       if (activeMode === "inspect") {
-        void runBusy("select", () => attachSelection(x, y));
+        void runBusy("select", () => attachSelection(point.viewportX, point.viewportY));
         return;
       }
       if (activeMode !== "control") return;
-      setControlPulse({ x, y, nonce: Date.now() });
+      setControlPulse({ leftPct: point.leftPct, topPct: point.topPct, nonce: Date.now() });
       // Fire-and-forget: do NOT block on the CDP round-trip and do NOT refresh
       // the snapshot. The screencast is live, so the rendered image already
       // updates on its own; gating busy/disabled state through every click
       // makes the dropdown and Stop button flash and feel locked.
       window.ade.appControl
-        .click({ x, y, scale: sourceScale })
+        .click({ x: point.viewportX, y: point.viewportY, coordinateSpace: "viewport" })
         .catch((error) => {
           setMessage({ tone: "error", text: `Click failed: ${errorMessage(error)}` });
         });
       setMessage(null);
     },
-    [attachSelection, controlsDisabled, controlsDisabledMessage, liveFrameActive, runBusy, screenshotBlank, snapshot],
+    [attachSelection, controlsDisabled, controlsDisabledMessage, liveFrameActive, mapClientPoint, runBusy, screenshotBlank],
+  );
+
+  const inspectHoverAt = useCallback(
+    (point: MappedPoint) => {
+      if (controlsDisabled || !sessionConnected || screenshotBlank) return;
+      if (hoverInspectTimerRef.current != null) {
+        window.clearTimeout(hoverInspectTimerRef.current);
+        hoverInspectTimerRef.current = null;
+      }
+      const requestSeq = hoverInspectSeqRef.current + 1;
+      hoverInspectSeqRef.current = requestSeq;
+      hoverInspectTimerRef.current = window.setTimeout(() => {
+        hoverInspectTimerRef.current = null;
+        void window.ade.appControl
+          .inspectPoint({
+            projectRoot,
+            x: point.viewportX,
+            y: point.viewportY,
+            coordinateSpace: "viewport",
+            includeScreenshot: false,
+          })
+          .then((result) => {
+            if (hoverInspectSeqRef.current !== requestSeq || modeRef.current !== "inspect") return;
+            setHoverElement(result.snapshot.hitElement);
+          })
+          .catch(() => {
+            if (hoverInspectSeqRef.current === requestSeq) setHoverElement(null);
+          });
+      }, 60);
+    },
+    [controlsDisabled, projectRoot, screenshotBlank, sessionConnected],
   );
 
   const typeIntoApp = useCallback(
@@ -864,20 +1012,12 @@ export function ChatAppControlPanel({
   }, [onInsertDraft]);
 
   const screenshot = snapshot?.screenshot ?? null;
-  const hoverElement =
-    snapshot?.elements.find((element) => element.id === hoveredElementId) ?? null;
+  // frameHealthTick * 0 is intentional: it refreshes age from a ref-backed timestamp.
+  const liveFrameAgeMs = liveFrameActive && liveFrameLastAtRef.current != null
+    ? Date.now() - liveFrameLastAtRef.current + frameHealthTick * 0
+    : null;
+  const liveFrameStale = liveFrameAgeMs != null && liveFrameAgeMs > 4_000;
   const focusElement = hoverElement ?? selectedElement;
-  const sessionConnected = activeSession?.status === "connected";
-  const waitingForCdp = Boolean(
-    activeSession
-    && (activeSession.status === "starting" || activeSession.status === "running")
-    && activeSession.cdpPort
-    && !activeSession.cdpEndpoint,
-  );
-  const hasActiveSession = Boolean(activeSession) && !["exited", "stopped", "failed"].includes(activeSession?.status ?? "");
-  const canLaunch = launchCommand.trim().length > 0 && !hasActiveSession && !controlsDisabled;
-  const canStop = hasActiveSession && !controlsDisabled;
-  const canType = mode === "control" && typeText.trim().length > 0 && sessionConnected && !controlsDisabled;
 
   const processOptions = useMemo(() => {
     return processes.map((proc) => {
@@ -886,22 +1026,6 @@ export function ChatAppControlPanel({
       return { id: proc.id, label: `${cmd}  ·  ${cwd}` };
     });
   }, [processes]);
-
-  // Hit-testing/overlays must align with the dimensions of the actually-rendered
-  // <img>, which switches to the live screencast frame when liveFrameActive.
-  // Without this, inspect-mode coordinate math and selection outlines drift
-  // off the rendered image as soon as live streaming starts.
-  const getDisplayedDims = (): { width: number; height: number } | null => {
-    if (liveFrameActive) {
-      const live = liveFrameDimsRef.current;
-      if (live && live.width > 0 && live.height > 0) {
-        return { width: live.width, height: live.height };
-      }
-    }
-    const sw = snapshot?.screenshot?.width ?? 0;
-    const sh = snapshot?.screenshot?.height ?? 0;
-    return sw > 0 && sh > 0 ? { width: sw, height: sh } : null;
-  };
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 font-sans text-[12px] text-fg/75">
@@ -1002,6 +1126,31 @@ export function ChatAppControlPanel({
               <Terminal size={11} />
               Terminal
             </button>
+          ) : null}
+          {sessionConnected ? (
+            <>
+              <button
+                type="button"
+                disabled={Boolean(busy) || controlsDisabled}
+                onClick={focusWindow}
+                className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-white/[0.07] bg-white/[0.03] px-2 text-[10px] font-medium text-fg/65 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-45"
+                title="Show the controlled app window"
+                aria-label="Show controlled app window"
+              >
+                {busy === "focus-window" ? <SpinnerGap size={12} className="animate-spin" /> : <ArrowSquareOut size={11} />}
+                Show
+              </button>
+              <button
+                type="button"
+                disabled={Boolean(busy) || controlsDisabled}
+                onClick={minimizeWindow}
+                className="inline-flex h-7 shrink-0 items-center justify-center rounded-md border border-white/[0.07] bg-white/[0.03] px-2 text-fg/65 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-45"
+                title="Minimize the controlled app window"
+                aria-label="Minimize controlled app window"
+              >
+                {busy === "minimize-window" ? <SpinnerGap size={12} className="animate-spin" /> : <Minus size={11} />}
+              </button>
+            </>
           ) : null}
           {canStop ? (
             <button
@@ -1198,6 +1347,11 @@ export function ChatAppControlPanel({
             {snapshot.title ?? snapshot.url}
           </div>
         ) : null}
+        {liveFrameStale ? (
+          <div className="absolute right-2 top-9 z-10 rounded-md border border-amber-300/20 bg-amber-500/12 px-2 py-1 text-[10px] font-medium text-amber-100/85 backdrop-blur">
+            Stream stale
+          </div>
+        ) : null}
 
         {screenshot || liveFrameActive ? (
           <div className="relative flex h-full min-h-0 w-full items-center justify-center overflow-auto p-2">
@@ -1220,13 +1374,14 @@ export function ChatAppControlPanel({
                   const blank = Boolean(snapshot?.elements.length) && imageLooksBlank(event.currentTarget);
                   setScreenshotBlank(blank);
                   if (blank) {
-                    setHoveredElementId(null);
+                    setHoverElement(null);
                     setSelectedElement(null);
                     setSelectedPoint(null);
                   }
                 }}
                 onError={() => {
                   liveFrameActiveRef.current = false;
+                  liveFrameLastAtRef.current = null;
                   liveFrameSrcRef.current = null;
                   liveFramePendingSrcRef.current = null;
                   setLiveFrameInitialSrc(null);
@@ -1236,28 +1391,18 @@ export function ChatAppControlPanel({
                 onClick={handleImageClick}
                 onMouseMove={(event) => {
                   if (mode !== "inspect") return;
-                  if (screenshotBlank || !snapshot?.elements.length || !screenshot) return;
-                  const dims = getDisplayedDims();
-                  if (!dims) return;
-                  const rect = event.currentTarget.getBoundingClientRect();
-                  const x = (event.clientX - rect.left) * (dims.width / rect.width);
-                  const y = (event.clientY - rect.top) * (dims.height / rect.height);
-                  const hit =
-                    snapshot.elements
-                      .filter(
-                        (element) =>
-                          x >= element.pixelFrame.x &&
-                          y >= element.pixelFrame.y &&
-                          x <= element.pixelFrame.x + element.pixelFrame.width &&
-                          y <= element.pixelFrame.y + element.pixelFrame.height,
-                      )
-                      .sort(
-                        (a, b) =>
-                          a.pixelFrame.width * a.pixelFrame.height - b.pixelFrame.width * b.pixelFrame.height,
-                      )[0] ?? null;
-                  setHoveredElementId(hit?.id ?? null);
+                  const point = mapClientPoint(event.clientX, event.clientY, event.currentTarget);
+                  if (!point) return;
+                  inspectHoverAt(point);
                 }}
-                onMouseLeave={() => setHoveredElementId(null)}
+                onMouseLeave={() => {
+                  if (hoverInspectTimerRef.current != null) {
+                    window.clearTimeout(hoverInspectTimerRef.current);
+                    hoverInspectTimerRef.current = null;
+                  }
+                  hoverInspectSeqRef.current += 1;
+                  setHoverElement(null);
+                }}
               />
               {screenshotBlank ? (
                 <div className="absolute inset-0 flex items-center justify-center rounded-sm border border-amber-300/18 bg-black/70 px-4 text-center backdrop-blur-sm">
@@ -1267,72 +1412,54 @@ export function ChatAppControlPanel({
                 </div>
               ) : null}
               {/* Inspect-only: persistent outline for the attached/selected element */}
-              {mode === "inspect" && selectedElement && screenshot && !screenshotBlank ? (() => {
-                const dims = getDisplayedDims();
-                if (!dims) return null;
+              {mode === "inspect" && selectedElement && (screenshot || liveFrameActive) && !screenshotBlank ? (() => {
+                const style = overlayStyleForElement(selectedElement);
+                if (!style) return null;
                 return (
                   <div
                     key={`selected-${selectedElement.id}`}
                     className="pointer-events-none absolute rounded-sm border-2 border-sky-300/85 bg-sky-300/10 shadow-[0_0_0_9999px_rgba(0,0,0,0.18)]"
-                    style={{
-                      left: `${(selectedElement.pixelFrame.x / dims.width) * 100}%`,
-                      top: `${(selectedElement.pixelFrame.y / dims.height) * 100}%`,
-                      width: `${(selectedElement.pixelFrame.width / dims.width) * 100}%`,
-                      height: `${(selectedElement.pixelFrame.height / dims.height) * 100}%`,
-                    }}
+                    style={style}
                   />
                 );
               })() : null}
               {/* Inspect-only: hover affordance to telegraph what's selectable */}
-              {mode === "inspect" && hoverElement && screenshot && !screenshotBlank && hoverElement.id !== selectedElement?.id ? (() => {
-                const dims = getDisplayedDims();
-                if (!dims) return null;
+              {mode === "inspect" && hoverElement && (screenshot || liveFrameActive) && !screenshotBlank && hoverElement.id !== selectedElement?.id ? (() => {
+                const style = overlayStyleForElement(hoverElement);
+                if (!style) return null;
                 return (
                   <div
                     key={`hover-${hoverElement.id}`}
                     className="pointer-events-none absolute rounded-sm border border-sky-200/60 bg-sky-200/5"
-                    style={{
-                      left: `${(hoverElement.pixelFrame.x / dims.width) * 100}%`,
-                      top: `${(hoverElement.pixelFrame.y / dims.height) * 100}%`,
-                      width: `${(hoverElement.pixelFrame.width / dims.width) * 100}%`,
-                      height: `${(hoverElement.pixelFrame.height / dims.height) * 100}%`,
-                    }}
+                    style={style}
                   />
                 );
               })() : null}
               {/* Inspect-only: coordinate marker when no element matched */}
-              {mode === "inspect" && selectedPoint && screenshot && !screenshotBlank && !selectedElement ? (() => {
-                const dims = getDisplayedDims();
-                if (!dims) return null;
+              {mode === "inspect" && selectedPoint && (screenshot || liveFrameActive) && !screenshotBlank && !selectedElement ? (() => {
+                const metrics = getDisplayedMetrics();
+                if (!metrics) return null;
                 return (
                   <div
                     className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-sky-300/90 bg-sky-300/40"
                     style={{
-                      left: `${(selectedPoint.x / dims.width) * 100}%`,
-                      top: `${(selectedPoint.y / dims.height) * 100}%`,
+                      left: `${(selectedPoint.x / metrics.viewportWidth) * 100}%`,
+                      top: `${(selectedPoint.y / metrics.viewportHeight) * 100}%`,
                     }}
                   />
                 );
               })() : null}
               {/* Control-only: brief click pulse so the user gets feedback without persistent chrome */}
-              {mode === "control" && controlPulse && !screenshotBlank ? (() => {
-                // Use whichever dims back the rendered image right now; live
-                // frame dims when streaming, static screenshot dims otherwise.
-                const liveDims = liveFrameDimsRef.current;
-                const w = liveFrameActive && liveDims && liveDims.width > 0 ? liveDims.width : screenshot?.width ?? 0;
-                const h = liveFrameActive && liveDims && liveDims.height > 0 ? liveDims.height : screenshot?.height ?? 0;
-                if (w <= 0 || h <= 0) return null;
-                return (
-                  <div
-                    key={`pulse-${controlPulse.nonce}`}
-                    className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border border-sky-200/70 bg-sky-200/35 motion-safe:animate-ping"
-                    style={{
-                      left: `${(controlPulse.x / w) * 100}%`,
-                      top: `${(controlPulse.y / h) * 100}%`,
-                    }}
-                  />
-                );
-              })() : null}
+              {mode === "control" && controlPulse && !screenshotBlank ? (
+                <div
+                  key={`pulse-${controlPulse.nonce}`}
+                  className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border border-sky-200/70 bg-sky-200/35 motion-safe:animate-ping"
+                  style={{
+                    left: `${controlPulse.leftPct}%`,
+                    top: `${controlPulse.topPct}%`,
+                  }}
+                />
+              ) : null}
             </div>
           </div>
         ) : (

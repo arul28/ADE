@@ -29,6 +29,15 @@ describe("derivePreviewFromChunk", () => {
     expect(out.preview).toBe("ERROR permission denied");
   });
 
+  it("strips Kitty graphics protocol control data before extracting preview", () => {
+    const out = derivePreviewFromChunk({
+      previousLine: "",
+      previousPreview: null,
+      chunk: "\u001b_Gi=31337,s=1,v=1,a=q,t=d,f=24;AAAA\u001b\\Ready\n"
+    });
+    expect(out.preview).toBe("Ready");
+  });
+
   it("continues partial lines across chunks", () => {
     const first = derivePreviewFromChunk({
       previousLine: "",
@@ -41,5 +50,14 @@ describe("derivePreviewFromChunk", () => {
       chunk: "...\n"
     });
     expect(second.preview).toBe("Waiting for input...");
+  });
+
+  it("keeps the prior preview when Codex ghost prompt suggestions render", () => {
+    const out = derivePreviewFromChunk({
+      previousLine: "",
+      previousPreview: "MATRIX_CODEX_DONE",
+      chunk: "› Explain this codebase"
+    });
+    expect(out.preview).toBe("MATRIX_CODEX_DONE");
   });
 });

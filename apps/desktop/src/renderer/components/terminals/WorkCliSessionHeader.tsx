@@ -52,6 +52,7 @@ function runtimeLabel(session: TerminalSessionSummary): string {
   if (session.status === "running") return "Running";
   if (session.status === "failed") return "Failed";
   if (session.status === "completed") return "Completed";
+  if (session.status === "detached") return "Ended";
   if (session.status === "disposed") return "Disposed";
   return formatToolTypeLabel(session.toolType);
 }

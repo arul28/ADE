@@ -11,6 +11,15 @@ function isLocalModel(model: ModelDescriptor): boolean {
   return LOCAL_FAMILIES.has(model.family) || model.authTypes.includes("local");
 }
 
+function cursorAvailabilityBadge(model: ModelDescriptor): string | null {
+  if (model.family !== "cursor") return null;
+  const availability = model.cursorAvailability;
+  if (!availability) return null;
+  if (availability.cli && !availability.sdk) return "CLI only";
+  if (availability.sdk && !availability.cli) return "Chat only";
+  return null;
+}
+
 function subProviderLabel(model: ModelDescriptor): string | null {
   const sub = (model as ModelDescriptor & { subProvider?: string }).subProvider;
   if (typeof sub === "string" && sub.trim().length) return sub.trim();
@@ -72,6 +81,7 @@ export const ModelListRow = memo(function ModelListRow({
 }: ModelListRowProps) {
   const sub = subProviderLabel(model);
   const localBadge = isLocalModel(model);
+  const cursorBadge = cursorAvailabilityBadge(model);
 
   const handleSelect = useCallback(() => {
     if (!isAvailable) {
@@ -220,6 +230,14 @@ export const ModelListRow = memo(function ModelListRow({
                 >
                   <Lightning size={8} weight="fill" />
                   <span>Local</span>
+                </span>
+              ) : null}
+              {cursorBadge ? (
+                <span
+                  className="inline-flex shrink-0 items-center rounded-sm bg-sky-500/[0.10] px-1 py-px text-[9px] font-semibold uppercase leading-none text-sky-200/80"
+                  title={cursorBadge === "CLI only" ? "Available for Cursor CLI sessions" : "Available for Cursor chat sessions"}
+                >
+                  {cursorBadge}
                 </span>
               ) : null}
             </span>

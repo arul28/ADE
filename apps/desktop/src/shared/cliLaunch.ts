@@ -12,6 +12,7 @@ import {
 } from "./agentSkillRoots";
 import { buildAdeCliAgentGuidance, buildAdeCliInlineGuidance } from "./adeCliGuidance";
 import { isProviderSlashCommandInput } from "./chatSlashCommands";
+import { decodeOpenCodeRegistryId } from "./modelRegistry";
 import { commandArrayToLine, quoteShellArg } from "./shell";
 
 export type CliProvider = "claude" | "codex" | "cursor" | "droid" | "opencode";
@@ -20,6 +21,8 @@ export type TrackedCliLaunchCommand = {
   command?: string;
   args: string[];
   startupCommand: string;
+  initialInput?: string;
+  initialInputDelayMs?: number;
   env?: Record<string, string>;
 };
 
@@ -183,8 +186,8 @@ export function validateLaunchProfilePermissionMode(
   if (mode === "auto" && profile !== "claude") {
     throw new Error("permissionMode auto is only supported for Claude CLI sessions.");
   }
-  if (mode === "config-toml" && profile !== "codex") {
-    throw new Error("permissionMode config-toml is only supported for Codex CLI sessions.");
+  if (mode === "config-toml" && profile !== "codex" && profile !== "opencode") {
+    throw new Error("permissionMode config-toml is only supported for Codex and OpenCode CLI sessions.");
   }
 }
 
@@ -244,7 +247,7 @@ export function withCodexNoAltScreen(command: string): string {
 
 export function defaultTrackedCliStartupCommand(provider: CliProvider): string {
   if (provider === "codex") return withCodexNoAltScreen("codex");
-  if (provider === "cursor") return "cursor-agent";
+  if (provider === "cursor") return "cursor-agent --model auto";
   if (provider === "droid") return "droid";
   if (provider === "opencode") return "opencode";
   return "claude";
@@ -345,47 +348,76 @@ export function buildTrackedCliLaunchCommand(args: {
   }
 
   if (args.provider === "codex") {
+    const codexModel = resolveCodexCliModelForLaunch(args.model);
+    const initialInput = workTabCliPrompt(initialPrompt, skillRoots);
     const commandArgs: string[] = [
       "--no-alt-screen",
-      ...modelToCliFlag(resolveCodexCliModelForLaunch(args.model)),
+      ...modelToCliFlag(codexModel),
       ...codexReasoningEffortFlags(args.reasoningEffort),
       ...permissionModeToCodexFlags(args.permissionMode),
-      workTabCliPrompt(initialPrompt, skillRoots),
     ];
+    const usePromptArg = codexModel === "gpt-5.3-codex";
+    if (usePromptArg) commandArgs.push(initialInput);
     return {
       command: "codex",
       args: commandArgs,
       startupCommand: commandArrayToLine(["codex", ...commandArgs]),
+      ...(usePromptArg ? {} : { initialInput, initialInputDelayMs: 750 }),
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
   }
 
   if (args.provider === "cursor") {
     const prompt = workTabCliPrompt(initialPrompt, skillRoots);
-    const commandArgs = [...permissionModeToCursorFlags(args.permissionMode), ...modelToCliFlag(args.model), prompt];
+    const cursorModel = resolveCursorCliModelForLaunch(args.model);
     const startupCommand = buildCursorPrecreatedChatCommand({
       permissionMode: args.permissionMode,
-      model: args.model,
-      prompt,
+      model: cursorModel,
+    });
+    const platform = typeof process !== "undefined" && typeof process.platform === "string" ? process.platform : "";
+    const useDirectShellLaunch = platform !== "win32";
+    const windowsStartupCommand = buildCursorPrecreatedChatPowerShellCommand({
+      permissionMode: args.permissionMode,
+      model: cursorModel,
     });
     return {
-      args: commandArgs,
-      startupCommand,
+      ...(useDirectShellLaunch
+        ? { command: "/bin/bash", args: ["-lc", startupCommand] }
+        : { command: "powershell.exe", args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", windowsStartupCommand] }),
+      startupCommand: useDirectShellLaunch ? startupCommand : windowsStartupCommand,
+      initialInput: prompt,
+      initialInputDelayMs: 750,
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
   }
 
   if (args.provider === "droid") {
     const prompt = workTabCliPrompt(initialPrompt, skillRoots);
-    return {
-      command: "droid",
-      args: ["exec", ...modelToCliFlag(args.model), ...droidReasoningEffortFlags(args.reasoningEffort), ...permissionModeToDroidExecFlags(args.permissionMode), prompt],
-      startupCommand: buildDroidExecCommandLine({
+    const platform = typeof process !== "undefined" && typeof process.platform === "string" ? process.platform : "";
+    if (platform === "win32") {
+      const startupCommand = droidPowerShellCommand({
         permissionMode: args.permissionMode,
         model: args.model,
         reasoningEffort: args.reasoningEffort,
         prompt,
-      }),
+      });
+      return {
+        command: "powershell.exe",
+        args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", startupCommand],
+        startupCommand,
+        ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
+      };
+    }
+    const startupCommand = buildDroidCommandLine({
+      permissionMode: args.permissionMode,
+      model: args.model,
+      reasoningEffort: args.reasoningEffort,
+      prompt,
+    });
+    return {
+      command: "/bin/bash",
+      args: ["-lc", startupCommand],
+      startupCommand,
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
   }
@@ -417,6 +449,20 @@ export function normalizeCliFlagValue(value: string | null | undefined): string 
 export function modelToCliFlag(model: string | null | undefined): string[] {
   const normalized = normalizeCliFlagValue(model);
   return normalized ? ["--model", normalized] : [];
+}
+
+function normalizeDroidCliModel(model: string | null | undefined): string | null {
+  const normalized = normalizeCliFlagValue(model);
+  if (!normalized) return null;
+  const slash = normalized.indexOf("/");
+  if (slash > 0 && normalized.slice(0, slash).toLowerCase() === "droid") {
+    return normalized.slice(slash + 1).trim() || null;
+  }
+  return normalized;
+}
+
+function resolveCursorCliModelForLaunch(model: string | null | undefined): string {
+  return normalizeCliFlagValue(model) ?? "auto";
 }
 
 export function resolveCodexCliModelForLaunch(model: string | null | undefined): string | null {
@@ -521,22 +567,70 @@ function permissionModeToDroidExecFlags(permissionMode: AgentChatPermissionMode 
   return [];
 }
 
-function droidSettingsJson(permissionMode: AgentChatPermissionMode | null | undefined): string {
+function droidSettingsJson(args: {
+  permissionMode: AgentChatPermissionMode | null | undefined;
+  model?: string | null;
+  reasoningEffort?: string | null;
+}): string {
   const sessionDefaultSettings = (() => {
-    if (permissionMode === "full-auto") return { interactionMode: "auto", autonomyLevel: "high" };
-    if (permissionMode === "default") return { interactionMode: "auto", autonomyLevel: "medium" };
-    if (permissionMode === "edit") return { interactionMode: "auto", autonomyLevel: "low" };
+    if (args.permissionMode === "full-auto") return { interactionMode: "auto", autonomyLevel: "high" };
+    if (args.permissionMode === "default") return { interactionMode: "auto", autonomyLevel: "medium" };
+    if (args.permissionMode === "edit") return { interactionMode: "auto", autonomyLevel: "low" };
     return { interactionMode: "spec", autonomyLevel: "off" };
   })();
-  return JSON.stringify({ sessionDefaultSettings });
+  const model = normalizeDroidCliModel(args.model);
+  const reasoningEffort = normalizeCliFlagValue(args.reasoningEffort);
+  const settings: Record<string, unknown> = { sessionDefaultSettings };
+  if (model) settings.model = model;
+  if (reasoningEffort) settings.reasoningEffort = reasoningEffort;
+  if (args.permissionMode === "plan") {
+    const specDefaults = sessionDefaultSettings as Record<string, unknown>;
+    if (model) specDefaults.specModeModel = model;
+    if (reasoningEffort) specDefaults.specModeReasoningEffort = reasoningEffort;
+  }
+  return JSON.stringify(settings);
+}
+
+function quotePowerShellArg(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function droidPowerShellCommand(args: {
+  permissionMode: AgentChatPermissionMode | null | undefined;
+  model?: string | null;
+  reasoningEffort?: string | null;
+  prompt?: string;
+  resumeTarget?: string | null;
+}): string {
+  const settingsJson = droidSettingsJson(args);
+  const droidArgs = ["--settings", "$env:ADE_DROID_SETTINGS"];
+  if (args.resumeTarget !== undefined) {
+    droidArgs.push("--resume");
+    if (args.resumeTarget) droidArgs.push(args.resumeTarget);
+  }
+  if (args.prompt) droidArgs.push(args.prompt);
+  const argv = [
+    quotePowerShellArg("droid"),
+    ...droidArgs.map((arg) => arg === "$env:ADE_DROID_SETTINGS" ? arg : quotePowerShellArg(arg)),
+  ].join(" ");
+  return [
+    "$env:ADE_DROID_SETTINGS = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), [System.IO.Path]::GetRandomFileName() + '.json')",
+    `Set-Content -LiteralPath $env:ADE_DROID_SETTINGS -NoNewline -Value ${quotePowerShellArg(settingsJson)}`,
+    `& ${argv}`,
+    "$ADE_DROID_STATUS = $LASTEXITCODE",
+    "Remove-Item -LiteralPath $env:ADE_DROID_SETTINGS -ErrorAction SilentlyContinue",
+    "exit $ADE_DROID_STATUS",
+  ].join("; ");
 }
 
 function buildDroidCommandLine(args: {
   permissionMode: AgentChatPermissionMode | null | undefined;
+  model?: string | null;
+  reasoningEffort?: string | null;
   prompt?: string;
   resumeTarget?: string | null;
 }): string {
-  const settingsJson = droidSettingsJson(args.permissionMode);
+  const settingsJson = droidSettingsJson(args);
   const droidArgs = ["droid", "--settings", "$ADE_DROID_SETTINGS"];
   if (args.resumeTarget !== undefined) {
     droidArgs.push("--resume");
@@ -561,7 +655,7 @@ function buildDroidExecCommandLine(args: {
   return commandArrayToLine([
     "droid",
     "exec",
-    ...modelToCliFlag(args.model),
+    ...modelToCliFlag(normalizeDroidCliModel(args.model)),
     ...droidReasoningEffortFlags(args.reasoningEffort),
     ...permissionModeToDroidExecFlags(args.permissionMode),
     args.prompt,
@@ -571,24 +665,46 @@ function buildDroidExecCommandLine(args: {
 function buildCursorPrecreatedChatCommand(args: {
   permissionMode: AgentChatPermissionMode | null | undefined;
   model?: string | null;
-  prompt: string;
 }): string {
   const commandArgs = [
     "cursor-agent",
     ...permissionModeToCursorFlags(args.permissionMode),
-    ...modelToCliFlag(args.model),
+    ...modelToCliFlag(resolveCursorCliModelForLaunch(args.model)),
     "--resume",
     "$ADE_CURSOR_CHAT_ID",
-    args.prompt,
   ];
   const command = commandArrayToLine(commandArgs)
     .replace(quoteShellArg("$ADE_CURSOR_CHAT_ID"), "\"$ADE_CURSOR_CHAT_ID\"");
   return [
     "ADE_CURSOR_CHAT_ID=\"$(cursor-agent create-chat)\"",
     "[ -n \"$ADE_CURSOR_CHAT_ID\" ] || { echo \"[ADE] cursor-agent create-chat returned no chat id\" >&2; exit 1; }",
-    "printf %s\\\\n \"[ADE] Continue with cursor-agent --resume ${ADE_CURSOR_CHAT_ID}\"",
+    "printf '%s\\n' \"[ADE] Continue with cursor-agent --resume ${ADE_CURSOR_CHAT_ID}\"",
     command,
   ].join(" && ");
+}
+
+function buildCursorPrecreatedChatPowerShellCommand(args: {
+  permissionMode: AgentChatPermissionMode | null | undefined;
+  model?: string | null;
+}): string {
+  const commandArgs = [
+    ...permissionModeToCursorFlags(args.permissionMode),
+    ...modelToCliFlag(resolveCursorCliModelForLaunch(args.model)),
+    "--resume",
+    "$env:ADE_CURSOR_CHAT_ID",
+  ];
+  const argv = [
+    quotePowerShellArg("cursor-agent"),
+    ...commandArgs.map((arg) => arg === "$env:ADE_CURSOR_CHAT_ID" ? arg : quotePowerShellArg(arg)),
+  ].join(" ");
+  return [
+    "$ADE_CURSOR_CHAT_OUTPUT = & cursor-agent create-chat | Select-Object -First 1",
+    "$env:ADE_CURSOR_CHAT_ID = if ($null -eq $ADE_CURSOR_CHAT_OUTPUT) { '' } else { $ADE_CURSOR_CHAT_OUTPUT.Trim() }",
+    "if (-not $env:ADE_CURSOR_CHAT_ID) { Write-Error '[ADE] cursor-agent create-chat returned no chat id'; exit 1 }",
+    "Write-Output \"[ADE] Continue with cursor-agent --resume $env:ADE_CURSOR_CHAT_ID\"",
+    `& ${argv}`,
+    "exit $LASTEXITCODE",
+  ].join("; ");
 }
 
 const OPENCODE_INLINE_CONFIG_ENV = "OPENCODE_CONFIG_CONTENT";
@@ -615,6 +731,14 @@ function permissionModeToOpenCodeArgs(permissionMode: AgentChatPermissionMode | 
   return permissionMode === "plan" ? ["--agent", "plan"] : [];
 }
 
+function normalizeOpenCodeCliModel(model: string | null | undefined): string | null {
+  const normalized = normalizeCliFlagValue(model);
+  if (!normalized) return null;
+  const decoded = decodeOpenCodeRegistryId(normalized);
+  if (!decoded) return normalized;
+  return `${decoded.openCodeProviderId}/${decoded.openCodeModelId}`;
+}
+
 function buildOpenCodeCommandParts(args: {
   permissionMode: AgentChatPermissionMode | null | undefined;
   model?: string | null;
@@ -623,7 +747,7 @@ function buildOpenCodeCommandParts(args: {
   continueLast?: boolean;
 }): { args: string[]; startupCommand: string; env?: Record<string, string> } {
   const commandArgs = [...permissionModeToOpenCodeArgs(args.permissionMode)];
-  commandArgs.push(...modelToCliFlag(args.model));
+  commandArgs.push(...modelToCliFlag(normalizeOpenCodeCliModel(args.model)));
   if (args.resumeTarget) {
     commandArgs.push("--session", args.resumeTarget);
   } else if (args.continueLast) {
@@ -653,7 +777,7 @@ export function buildOpenCodeReplayResumeCommand(args: {
     "run",
     "--interactive",
     ...permissionModeToOpenCodeArgs(args.permissionMode),
-    ...modelToCliFlag(args.model),
+    ...modelToCliFlag(normalizeOpenCodeCliModel(args.model)),
   ];
   if (args.resumeTarget) {
     commandArgs.push("--session", args.resumeTarget);
@@ -673,15 +797,19 @@ export function buildTrackedCliResumeCommand(
   overrides: { model?: string | null; reasoningEffort?: string | null; permissionMode?: AgentChatPermissionMode | null } = {},
 ): string {
   const permissionMode = overrides.permissionMode ?? metadata.launch.permissionMode;
+  const model = overrides.model !== undefined ? overrides.model : metadata.launch.model;
+  const reasoningEffort = overrides.reasoningEffort !== undefined
+    ? overrides.reasoningEffort
+    : metadata.launch.reasoningEffort;
   validateLaunchProfilePermissionMode(metadata.provider, permissionMode);
 
   const targetId = sanitizeTrackedCliResumeTargetId(metadata.targetId) ?? "";
   if (metadata.provider === "claude") {
     const parts = ["claude", ...permissionModeToClaudeFlag(permissionMode)];
-    const model = resolveClaudeCliModelForLaunch(overrides.model);
-    if (model) parts.push("--model", model);
-    const reasoningEffort = normalizeCliFlagValue(overrides.reasoningEffort);
-    if (reasoningEffort) parts.push("--effort", reasoningEffort);
+    const claudeModel = resolveClaudeCliModelForLaunch(model);
+    if (claudeModel) parts.push("--model", claudeModel);
+    const claudeReasoningEffort = normalizeCliFlagValue(reasoningEffort);
+    if (claudeReasoningEffort) parts.push("--effort", claudeReasoningEffort);
     parts.push("--resume");
     if (targetId) parts.push(targetId);
     return commandArrayToLine(parts);
@@ -691,8 +819,8 @@ export function buildTrackedCliResumeCommand(
     const parts = [
       "codex",
       "--no-alt-screen",
-      ...modelToCliFlag(overrides.model),
-      ...codexReasoningEffortFlags(overrides.reasoningEffort),
+      ...modelToCliFlag(model),
+      ...codexReasoningEffortFlags(reasoningEffort),
       ...permissionModeToCodexFlags(permissionMode),
     ];
     parts.push("resume");
@@ -701,10 +829,13 @@ export function buildTrackedCliResumeCommand(
   }
 
   if (metadata.provider === "cursor") {
+    const cursorModel = overrides.model !== undefined
+      ? resolveCursorCliModelForLaunch(overrides.model)
+      : resolveCursorCliModelForLaunch(metadata.launch.model);
     const parts = [
       "cursor-agent",
       ...permissionModeToCursorFlags(permissionMode),
-      ...modelToCliFlag(overrides.model),
+      ...modelToCliFlag(cursorModel),
     ];
     if (targetId) {
       parts.push("--resume", targetId);
@@ -717,13 +848,15 @@ export function buildTrackedCliResumeCommand(
   if (metadata.provider === "droid") {
     return buildDroidCommandLine({
       permissionMode,
+      model,
+      reasoningEffort,
       resumeTarget: targetId || null,
     });
   }
 
   const opencode = buildOpenCodeCommandParts({
     permissionMode,
-    model: overrides.model,
+    model,
     resumeTarget: targetId || null,
     continueLast: !targetId,
   });
@@ -753,14 +886,25 @@ export function resolveLaunchFields<P extends LaunchProfile>(args: {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
-}): { startupCommand?: string; command?: string; args?: string[]; env?: Record<string, string> } {
+  initialInput?: string;
+  initialInputDelayMs?: number;
+}): {
+  startupCommand?: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  initialInput?: string;
+  initialInputDelayMs?: number;
+} {
   validateLaunchProfilePermissionMode(args.profile, args.permissionMode);
 
   const callerHasOverride =
     args.startupCommand !== undefined
     || args.command !== undefined
     || args.args !== undefined
-    || args.env !== undefined;
+    || args.env !== undefined
+    || args.initialInput !== undefined
+    || args.initialInputDelayMs !== undefined;
 
   if (callerHasOverride) {
     return {
@@ -768,6 +912,8 @@ export function resolveLaunchFields<P extends LaunchProfile>(args: {
       ...(args.command !== undefined ? { command: args.command } : {}),
       ...(args.args !== undefined ? { args: args.args } : {}),
       ...(args.env !== undefined ? { env: args.env } : {}),
+      ...(args.initialInput !== undefined ? { initialInput: args.initialInput } : {}),
+      ...(args.initialInputDelayMs !== undefined ? { initialInputDelayMs: args.initialInputDelayMs } : {}),
     };
   }
 
@@ -782,5 +928,7 @@ export function resolveLaunchFields<P extends LaunchProfile>(args: {
     ...(defaultLaunch.command !== undefined ? { command: defaultLaunch.command } : {}),
     args: defaultLaunch.args,
     ...(defaultLaunch.env ? { env: defaultLaunch.env } : {}),
+    ...(defaultLaunch.initialInput !== undefined ? { initialInput: defaultLaunch.initialInput } : {}),
+    ...(defaultLaunch.initialInputDelayMs !== undefined ? { initialInputDelayMs: defaultLaunch.initialInputDelayMs } : {}),
   };
 }

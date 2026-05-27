@@ -968,6 +968,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade git rebase continue --lane <lane>         Continue an in-progress rebase
     $ ade git conflict show --lane <lane> --text    Inspect merge/rebase conflict state
     $ ade git conflict resolve --kind rebase        Continue after manual conflict resolution
+    $ ade git tag <sha> --name v1.0.0 --lane <lane> Create a tag on a commit
+    $ ade git reset <sha> --soft --lane <lane>      Reset HEAD to a commit (soft/mixed/hard)
+    $ ade git is-reachable <sha> --lane <lane>      Check if a commit is in the lane history
     $ ade diff changes --lane <lane> --text         Inspect changed files
 `,
   operations: `${ADE_BANNER}
@@ -1285,6 +1288,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade app-control attach-target --target <id>  Attach to one renderer target
     $ ade app-control logs --text                  Read the active App Control launch terminal
     $ ade app-control terminal write --data "y\\n" Answer a prompt in that terminal
+    $ ade app-control focus --text                 Raise the controlled app window on demand
+    $ ade app-control minimize --text              Minimize the controlled app window
     $ ade app-control stop --text                  Signal the App Control terminal session
     $ ade app-control actions --text               List every callable app_control action
     $ ade terminal read --terminal <id> --text     Read a specific chat terminal
@@ -1298,6 +1303,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   Input:
     $ ade app-control click 120 420                Click screenshot coordinates
+    $ ade app-control click 120 420 --coords viewport
     $ ade app-control scroll --x 120 --y 420 --delta-y 600
     $ ade app-control key --key Enter
     $ ade app-control type "hello" --text          Type text into the focused element
@@ -3167,6 +3173,71 @@ function buildGitPlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "tag" || sub === "create-tag") {
+    const commitSha = requireValue(
+      readValue(args, ["--commit", "--sha"]) ?? firstPositional(args),
+      "commitSha",
+    );
+    const tagName = requireValue(
+      readValue(args, ["--name", "--tag", "--tag-name"]) ?? firstPositional(args),
+      "tagName",
+    );
+    const message = readValue(args, ["--message", "-m"]);
+    return {
+      kind: "execute",
+      label: "git tag",
+      steps: [
+        actionStep(
+          "result",
+          "git",
+          "createTag",
+          withLane({ commitSha, tagName, ...(message ? { message } : {}) }),
+        ),
+      ],
+    };
+  }
+  if (sub === "reset" || sub === "reset-to-commit") {
+    const commitSha = requireValue(
+      readValue(args, ["--commit", "--sha"]) ?? firstPositional(args),
+      "commitSha",
+    );
+    const mode =
+      readValue(args, ["--mode"]) ??
+      (readFlag(args, ["--soft"]) ? "soft" : readFlag(args, ["--hard"]) ? "hard" : "mixed");
+    if (mode !== "soft" && mode !== "mixed" && mode !== "hard") {
+      throw new CliUsageError("git reset --mode must be soft, mixed, or hard.");
+    }
+    return {
+      kind: "execute",
+      label: "git reset",
+      steps: [
+        actionStep(
+          "result",
+          "git",
+          "resetToCommit",
+          withLane({ commitSha, mode }),
+        ),
+      ],
+    };
+  }
+  if (sub === "is-reachable" || sub === "is-commit-reachable" || sub === "commit-reachable") {
+    const commitSha = requireValue(
+      readValue(args, ["--commit", "--sha"]) ?? firstPositional(args),
+      "commitSha",
+    );
+    return {
+      kind: "execute",
+      label: "git is-reachable",
+      steps: [
+        actionStep(
+          "result",
+          "git",
+          "isCommitInLaneHistory",
+          withLane({ commitSha }),
+        ),
+      ],
+    };
+  }
   const actionAliases: Record<string, string> = {
     commits: "listRecentCommits",
     sync: "sync",
@@ -4435,6 +4506,9 @@ function buildCliSessionStartPlan(
       LAUNCH_PROFILE_TITLE[provider] ??
       undefined,
     initialInput,
+    model: readValue(args, ["--model"]),
+    modelId: readValue(args, ["--model-id"]),
+    reasoningEffort: readValue(args, ["--reasoning", "--reasoning-effort"]),
     cols: readIntOption(args, ["--cols"], 120),
     rows: readIntOption(args, ["--rows"], 36),
     cwd: readValue(args, ["--cwd"]),
@@ -6178,6 +6252,34 @@ function buildAppControlPlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "focus" || sub === "reveal" || sub === "front") {
+    return {
+      kind: "execute",
+      label: "App Control focus window",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "focusWindow",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
+  }
+  if (sub === "minimize" || sub === "hide") {
+    return {
+      kind: "execute",
+      label: "App Control minimize window",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "minimizeWindow",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
+  }
   if (sub === "screenshot" || sub === "capture") {
     return {
       kind: "execute",
@@ -6203,6 +6305,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
           "getSnapshot",
           collectGenericObjectArgs(args, {
             projectRoot: readValue(args, ["--project-root", "--root"]),
+            coordinateSpace: readValue(args, ["--coordinate-space", "--coords"]),
           }),
         ),
       ],
@@ -6221,6 +6324,8 @@ function buildAppControlPlan(args: string[]): CliPlan {
             projectRoot: readValue(args, ["--project-root", "--root"]),
             x: readCoordinate("--x", 0),
             y: readCoordinate("--y", 1),
+            scale: readNumberOption(args, ["--scale"]),
+            coordinateSpace: readValue(args, ["--coordinate-space", "--coords"]),
             includeScreenshot: readFlag(args, [
               "--screenshot",
               "--include-screenshot",
@@ -6243,6 +6348,8 @@ function buildAppControlPlan(args: string[]): CliPlan {
             projectRoot: readValue(args, ["--project-root", "--root"]),
             x: readCoordinate("--x", 0),
             y: readCoordinate("--y", 1),
+            scale: readNumberOption(args, ["--scale"]),
+            coordinateSpace: readValue(args, ["--coordinate-space", "--coords"]),
           }),
         ),
       ],
@@ -6260,6 +6367,8 @@ function buildAppControlPlan(args: string[]): CliPlan {
           collectGenericObjectArgs(args, {
             x: readCoordinate("--x", 0),
             y: readCoordinate("--y", 1),
+            scale: readNumberOption(args, ["--scale"]),
+            coordinateSpace: readValue(args, ["--coordinate-space", "--coords"]),
           }),
         ),
       ],
@@ -6280,6 +6389,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
             deltaX: readNumberOption(args, ["--delta-x", "--dx"]) ?? 0,
             deltaY: readNumberOption(args, ["--delta-y", "--dy"]) ?? 0,
             scale: readNumberOption(args, ["--scale"]),
+            coordinateSpace: readValue(args, ["--coordinate-space", "--coords"]),
           }),
         ),
       ],

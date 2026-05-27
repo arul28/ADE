@@ -18,6 +18,7 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import { runGit } from "../git/git";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
+import { getPathEnvValue, setPathEnvValue, splitPathEntries } from "../ai/cliExecutableResolver";
 import type {
   PtyDataEvent,
   PtyExitEvent,
@@ -41,6 +42,7 @@ import type {
   TerminalSnapshotCell,
   TerminalSnapshotRow,
   TerminalResumeMetadata,
+  TerminalResumeProvider,
   TerminalRuntimeState,
   TerminalSessionStatus,
   TerminalSessionSummary,
@@ -58,6 +60,7 @@ import {
   extractResumeCommandFromOutput,
   normalizeResumeCommand,
   parseTrackedCliLaunchConfig,
+  parseTrackedCliResumeCommand,
   providerFromTool,
   runtimeStateFromOsc133Chunk,
   sanitizeResumeTargetId,
@@ -104,9 +107,12 @@ const CLI_USER_TITLE_FALLBACK_MAX_LEN = 72;
 const CODEX_ADE_GUIDANCE_SCAN_BYTES = 160 * 1024;
 const CODEX_THREAD_NAME_SCAN_BYTES = 512 * 1024;
 const CLAUDE_TITLE_SCAN_BYTES = 512 * 1024;
+const CLAUDE_STORAGE_MATCH_START_SKEW_MS = 1_000;
+const CLAUDE_STORAGE_MATCH_END_SKEW_MS = 5_000;
 const PTY_DATA_BATCH_INTERVAL_MS = 16;
 const PTY_DATA_BATCH_MAX_CHARS = 64 * 1024;
 const PTY_DATA_SUMMARY_INTERVAL_MS = 10_000;
+const PTY_LIVE_SESSION_RESYNC_INTERVAL_MS = 1_000;
 const DEFAULT_TERMINAL_READ_MAX_BYTES = 220_000;
 const LIVE_TRANSCRIPT_TAIL_BUFFER_CHARS = 2_000_000;
 const TERMINAL_SNAPSHOT_DEBOUNCE_MS = 500;
@@ -114,10 +120,81 @@ const TERMINAL_SNAPSHOT_SCROLLBACK = 2_000;
 const TERMINAL_SNAPSHOT_TRANSCRIPT_FALLBACK_BYTES = 220_000;
 const PTY_SEND_DEFAULT_COLS = 100;
 const PTY_SEND_DEFAULT_ROWS = 30;
-const CLAUDE_INITIAL_INPUT_CONFIRM_DELAY_MS = 1200;
 const OPENCODE_REPLAY_RESUME_ENV = "ADE_OPENCODE_REPLAY_RESUME";
+const AGENT_CLI_INPUT_CLEAR_TO_END_KEY = "\x05";
+const AGENT_CLI_INPUT_CLEAR_TO_START_KEY = "\x15";
+const AGENT_CLI_BRACKETED_PASTE_START = "\x1b[200~";
+const AGENT_CLI_BRACKETED_PASTE_END = "\x1b[201~";
+const AGENT_CLI_INPUT_CHUNK_SIZE = 64;
+const AGENT_CLI_INPUT_CHUNK_DELAY_MS = 5;
+const AGENT_CLI_INPUT_CLEAR_DELAY_MS = 25;
+const AGENT_CLI_LINE_SUBMIT_KEY = "\r";
+const AGENT_CLI_SUBMIT_DELAY_MS = 25;
+const CODEX_CLI_PASTE_SUBMIT_DELAY_MS = 180;
+const CURSOR_CLI_PASTE_SUBMIT_DELAY_MS = 500;
+const AGENT_CLI_READY_TIMEOUT_MS = 20_000;
+const AGENT_CLI_READY_POLL_MS = 100;
+const AGENT_CLI_READY_QUIET_MS = 600;
+const PTY_PROCESS_TREE_KILL_DELAY_MS = 1500;
+const PTY_PROCESS_TREE_MAX_DEPTH = 12;
 
 let cachedOpenCodeReplayResumeSupport: boolean | null = null;
+
+function isPidLive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function childPidsOf(pid: number): number[] {
+  if (!Number.isFinite(pid) || pid <= 0) return [];
+  try {
+    const result = spawnSync("pgrep", ["-P", String(Math.trunc(pid))], {
+      encoding: "utf8",
+      timeout: 1000,
+    });
+    if (result.error || result.status === 1) return [];
+    return String(result.stdout ?? "")
+      .split(/\s+/)
+      .map((value) => Number.parseInt(value, 10))
+      .filter((value) => Number.isFinite(value) && value > 0);
+  } catch {
+    return [];
+  }
+}
+
+function collectDescendantPids(rootPid: number): number[] {
+  const root = Math.trunc(rootPid);
+  if (!Number.isFinite(root) || root <= 0) return [];
+  const seen = new Set<number>([root]);
+  const descendants: number[] = [];
+  let frontier = [root];
+  for (let depth = 0; depth < PTY_PROCESS_TREE_MAX_DEPTH && frontier.length > 0; depth += 1) {
+    const next: number[] = [];
+    for (const parent of frontier) {
+      for (const child of childPidsOf(parent)) {
+        if (seen.has(child)) continue;
+        seen.add(child);
+        descendants.push(child);
+        next.push(child);
+      }
+    }
+    frontier = next;
+  }
+  return descendants;
+}
+
+function killPidBestEffort(pid: number, signal: NodeJS.Signals): void {
+  if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return;
+  try {
+    process.kill(Math.trunc(pid), signal);
+  } catch {
+    // The process may have already exited.
+  }
+}
 
 type CodexStorageSessionMatch = {
   id: string;
@@ -129,6 +206,13 @@ type ClaudeStorageSessionMatch = {
   id: string;
   filePath: string;
   title: string | null;
+};
+
+type ClaudeStorageSessionLookupArgs = {
+  cwd: string;
+  startedAt?: string | null;
+  endedAt?: string | null;
+  maxStartDeltaMs?: number;
 };
 
 function hasEnvValue(env: NodeJS.ProcessEnv, key: string): boolean {
@@ -159,6 +243,10 @@ function openCodeSupportsReplayResume(): boolean {
     cachedOpenCodeReplayResumeSupport = false;
     return false;
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function hasEnvKey(env: NodeJS.ProcessEnv, key: string): boolean {
@@ -362,6 +450,7 @@ type PtyEntry = {
   transcriptBytesWritten: number;
   transcriptLimitReached: boolean;
   lastPreviewWriteAt: number;
+  lastSessionResyncCheckAt: number;
   previewCurrentLine: string;
   latestPreviewLine: string | null;
   lastPreviewWritten: string | null;
@@ -385,9 +474,45 @@ type PtyEntry = {
   /** Output-snippet title timer (skipped for interactive Claude/Codex; see CLI user-title path). */
   aiTitleTimer: ReturnType<typeof setTimeout> | null;
   startupTimer: ReturnType<typeof setTimeout> | null;
+  initialInputTimer: ReturnType<typeof setTimeout> | null;
   cliUserTitleLineBuffer: string;
   cliUserTitleCommitted: boolean;
 };
+
+function terminatePtyProcessTree(
+  entry: Pick<PtyEntry, "pty" | "sessionId" | "toolTypeHint">,
+  signal: NodeJS.Signals,
+  logger: Logger,
+): void {
+  const rootPid = typeof entry.pty.pid === "number" && Number.isFinite(entry.pty.pid)
+    ? Math.trunc(entry.pty.pid)
+    : null;
+  const descendants = rootPid ? collectDescendantPids(rootPid) : [];
+  for (const pid of [...descendants].reverse()) {
+    killPidBestEffort(pid, signal);
+  }
+  try {
+    entry.pty.kill(signal);
+  } catch {
+    if (rootPid) killPidBestEffort(rootPid, signal);
+  }
+  if (signal === "SIGKILL" || (!rootPid && descendants.length === 0)) return;
+  const pidsToReap = Array.from(new Set([...(rootPid ? [rootPid] : []), ...descendants]));
+  if (!pidsToReap.length) return;
+  const timer = setTimeout(() => {
+    const stillLive = pidsToReap.filter((pid) => isPidLive(pid));
+    for (const pid of stillLive) killPidBestEffort(pid, "SIGKILL");
+    if (stillLive.length > 0) {
+      logger.warn("pty.process_tree_force_killed", {
+        sessionId: entry.sessionId,
+        toolType: entry.toolTypeHint,
+        rootPid,
+        pids: stillLive,
+      });
+    }
+  }, PTY_PROCESS_TREE_KILL_DELAY_MS);
+  timer.unref?.();
+}
 
 type RuntimeStateEntry = {
   state: TerminalRuntimeState;
@@ -449,6 +574,16 @@ function quotePosixShellArg(value: string): string {
 function buildDirectCommandShellFallback(command: string, args: string[]): string | null {
   if (process.platform === "win32") return null;
   return ["exec", command, ...args].map(quotePosixShellArg).join(" ");
+}
+
+function directShellLaunchForCommandLine(commandLine: string): Pick<PtyCreateArgs, "command" | "args"> {
+  if (process.platform === "win32") return {};
+  const trimmed = commandLine.trim();
+  if (!trimmed) return {};
+  return {
+    command: "/bin/bash",
+    args: ["--noprofile", "--norc", "-lc", trimmed],
+  };
 }
 
 function isOpenCodeToolType(toolType: TerminalToolType | null): boolean {
@@ -573,7 +708,7 @@ function buildInitialResumeMetadata(args: {
   const isCodex = args.toolType === "codex" || args.toolType === "codex-orchestrated";
   const isCursor = args.toolType === "cursor-cli";
   const isDroid = args.toolType === "droid";
-  const isOpenCode = args.toolType === "opencode";
+  const isOpenCode = args.toolType === "opencode" || args.toolType === "opencode-orchestrated";
 
   // Extract pre-assigned --session-id from Claude startup command
   const preAssignedId = isClaude ? extractClaudeSessionIdFromCommand(args.startupCommand) : null;
@@ -610,14 +745,19 @@ function buildInitialResumeMetadata(args: {
   return null;
 }
 
-function isTrackedCliToolType(toolType: TerminalToolType | null): toolType is "claude" | "codex" | "cursor-cli" | "droid" | "opencode" | "claude-orchestrated" | "codex-orchestrated" {
+function isTrackedCliToolType(toolType: TerminalToolType | null): toolType is "claude" | "codex" | "cursor-cli" | "droid" | "opencode" | "claude-orchestrated" | "codex-orchestrated" | "opencode-orchestrated" {
   return toolType === "claude"
     || toolType === "codex"
     || toolType === "cursor-cli"
     || toolType === "droid"
     || toolType === "opencode"
     || toolType === "claude-orchestrated"
-    || toolType === "codex-orchestrated";
+    || toolType === "codex-orchestrated"
+    || toolType === "opencode-orchestrated";
+}
+
+function isCodexTrackedCliToolType(toolType: TerminalToolType | null | undefined): toolType is "codex" | "codex-orchestrated" {
+  return toolType === "codex" || toolType === "codex-orchestrated";
 }
 
 function isClaudeTrackedCliToolType(toolType: TerminalToolType | null | undefined): toolType is "claude" | "claude-orchestrated" {
@@ -638,6 +778,105 @@ function inferSessionCwdFromTranscriptPath(transcriptPath: string | null | undef
   const markerIndex = normalized.indexOf("/.ade/transcripts/");
   if (markerIndex < 0) return null;
   return transcriptPath.slice(0, markerIndex) || null;
+}
+
+function isNodeModulesBinPath(value: string): boolean {
+  const normalized = value.replace(/\\/g, "/").toLowerCase();
+  return normalized.endsWith("/node_modules/.bin");
+}
+
+function looksLikeCodexCommand(command: string | null | undefined): boolean {
+  const trimmed = String(command ?? "").trim();
+  return /^codex(?:\s|$)/.test(trimmed);
+}
+
+function shouldPreferUserCodexPath(args: {
+  toolType: TerminalToolType | null;
+  directCommand?: string | null;
+  startupCommand?: string | null;
+}): boolean {
+  return isCodexTrackedCliToolType(args.toolType)
+    || looksLikeCodexCommand(args.directCommand)
+    || looksLikeCodexCommand(args.startupCommand);
+}
+
+function withUserCodexCliPathPriority(
+  env: NodeJS.ProcessEnv,
+  args: { toolType: TerminalToolType | null; directCommand?: string | null; startupCommand?: string | null },
+): NodeJS.ProcessEnv {
+  if (!shouldPreferUserCodexPath(args)) return env;
+  const pathValue = getPathEnvValue(env);
+  const entries = splitPathEntries(pathValue);
+  const nodeModulesEntries = entries.filter(isNodeModulesBinPath);
+  if (nodeModulesEntries.length === 0) return env;
+  const nonNodeModulesEntries = entries.filter((entry) => !isNodeModulesBinPath(entry));
+  const next = { ...env };
+  // ADE's dev/package dependency bin can shadow the user's already-updated
+  // Codex CLI and send every Work launch into Codex's update-and-restart flow.
+  // Keep node_modules bins as a last-resort fallback, but never let them win.
+  setPathEnvValue(next, [...nonNodeModulesEntries, ...nodeModulesEntries].join(path.delimiter));
+  return next;
+}
+
+function isCodexCliUpdateTranscript(text: string): boolean {
+  const normalized = stripAnsi(text).replace(/\r/g, "\n").toLowerCase();
+  if (!normalized.trim()) return false;
+  return normalized.includes("update available!")
+    || normalized.includes("updating codex via")
+    || normalized.includes("npm install -g @openai/codex")
+    || normalized.includes("update ran successfully! please restart codex")
+    || normalized.includes("please restart codex");
+}
+
+function hasProviderStorageBackfillEvidence(provider: TerminalResumeProvider, text: string): boolean {
+  const visible = stripAnsi(text).replace(/\r/g, "\n");
+  const normalized = visible.toLowerCase();
+  if (!normalized.trim()) return false;
+  if (provider === "codex") {
+    if (isCodexCliUpdateTranscript(visible)) return false;
+    return /OpenAI Codex/i.test(visible)
+      || /\bmodel:\s*(?!loading\b)\S+/i.test(visible)
+      || visible.includes("›");
+  }
+  if (provider === "claude") {
+    return normalized.includes("claude code") || visible.includes("❯");
+  }
+  if (provider === "droid") {
+    return /\bfactory droid\b/i.test(visible)
+      || /\bdroid\s+(?:session|chat|workspace|permission|autonomy|mode|ready)\b/i.test(visible);
+  }
+  if (provider === "opencode") {
+    if (
+      normalized.includes("login required")
+      || normalized.includes("authentication required")
+      || normalized.includes("not authenticated")
+      || normalized.includes("please log in")
+      || normalized.includes("sign in")
+      || normalized.includes("api key required")
+      || normalized.includes("no api key")
+      || normalized.includes("provider not configured")
+      || normalized.includes("no provider configured")
+      || normalized.includes("update available")
+      || normalized.includes("update required")
+    ) {
+      return false;
+    }
+    return /^\s*opencode\s*$/im.test(visible)
+      || normalized.includes("message opencode")
+      || normalized.includes("what do you want")
+      || normalized.includes("thought for")
+      || normalized.includes("tokens");
+  }
+  return false;
+}
+
+function resumeProviderDisplayName(provider: TerminalResumeProvider): string {
+  if (provider === "codex") return "Codex";
+  if (provider === "claude") return "Claude";
+  if (provider === "cursor") return "Cursor";
+  if (provider === "droid") return "Droid";
+  if (provider === "opencode") return "OpenCode";
+  return "Agent";
 }
 
 const MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
@@ -693,6 +932,7 @@ export function createPtyService({
   const missingResumeTargetBackfillFailures = new Map<string, { toolType: TerminalToolType | null; checkedAtMs: number }>();
   const claudeTitleCaptureKeys = new Set<string>();
   const resumeRuntimeFlights = new Map<string, Promise<PtyCreateResult>>();
+  const submitInputFlights = new Map<string, Promise<boolean>>();
   // Dedup concurrent reattachChatCli calls for the same chatSessionId so we
   // never spawn two PTYs racing to `claude --resume <same-id>`.
   const reattachChatCliFlights = new Map<string, Promise<ChatTerminalReattachResult>>();
@@ -707,6 +947,22 @@ export function createPtyService({
   const terminalSnapshotDir = path.join(projectRoot, ".ade", "cache", "terminal-snapshots");
   const ownerPid = processRegistry?.pid ?? null;
   const ownerProcessStartedAt = processRegistry?.startedAt ?? null;
+
+  const isOwnedByLivePeerRuntime = (session: {
+    ownerPid?: number | null;
+    ownerProcessStartedAt?: string | null;
+  }): boolean => {
+    if (ownerPid == null) return false;
+    if (session.ownerPid == null) return false;
+    if (session.ownerPid === ownerPid) return false;
+    const ownerStartedAt = typeof session.ownerProcessStartedAt === "string"
+      ? session.ownerProcessStartedAt.trim()
+      : "";
+    if (ownerStartedAt) {
+      return processRegistry?.isProcessIdentityLive(session.ownerPid, ownerStartedAt) === true;
+    }
+    return processRegistry?.isPidLive(session.ownerPid) === true;
+  };
 
   const getSessionIntelligence = () => {
     const ai = projectConfigService?.get().effective.ai;
@@ -1298,34 +1554,70 @@ export function createPtyService({
   /**
    * Try to find the Claude session from Claude's local JSONL storage.
    * Claude Code stores conversations at ~/.claude/projects/<escaped-cwd>/<uuid>.jsonl.
-   * We find the most recently modified JSONL in the project dir and return its UUID
-   * plus any runtime-generated title Claude has already written.
+   * When ADE has launch timing, only accept one timestamped JSONL inside this
+   * PTY's lifetime; otherwise fall back to the most recently modified direct
+   * session file for older rows.
    */
-  const resolveClaudeSessionFromStorage = (cwd: string): ClaudeStorageSessionMatch | null => {
+  const resolveClaudeSessionFromStorage = (args: ClaudeStorageSessionLookupArgs): ClaudeStorageSessionMatch | null => {
     try {
-      const claudeProjectDir = claudeProjectDirForCwd(cwd);
+      const claudeProjectDir = claudeProjectDirForCwd(args.cwd);
       if (!fs.existsSync(claudeProjectDir)) return null;
 
-      // Find the most recently modified .jsonl that is a direct session (not in subagents/)
+      const requestedStartedAtMs = Date.parse(args.startedAt ?? "");
+      const hasStartedAt = Number.isFinite(requestedStartedAtMs);
+      const requestedEndedAtMs = Date.parse(args.endedAt ?? "");
+      const hasEndedAt = Number.isFinite(requestedEndedAtMs);
+      const maxStartDeltaMs = typeof args.maxStartDeltaMs === "number" ? args.maxStartDeltaMs : 10 * 60_000;
+      const windowStartMs = requestedStartedAtMs - CLAUDE_STORAGE_MATCH_START_SKEW_MS;
+      const windowEndMs = (hasEndedAt ? requestedEndedAtMs : requestedStartedAtMs + maxStartDeltaMs)
+        + CLAUDE_STORAGE_MATCH_END_SKEW_MS;
       const entries = fs.readdirSync(claudeProjectDir, { withFileTypes: true }) as Array<string | fs.Dirent>;
       let newest: { name: string; mtimeMs: number } | null = null;
+      const timestampMatches: Array<{ name: string; score: number; mtimeMs: number }> = [];
       for (const entry of entries) {
         const name = typeof entry === "string" ? entry : entry.name;
         const isFile = typeof entry === "string" ? true : entry.isFile();
         if (!isFile || !name.endsWith(".jsonl")) continue;
-        const stat = fs.statSync(path.join(claudeProjectDir, name));
+        const uuid = name.replace(/\.jsonl$/, "");
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuid)) continue;
+
+        const filePath = path.join(claudeProjectDir, name);
+        const stat = fs.statSync(filePath);
+        if (hasStartedAt) {
+          const firstLine = readJsonlFirstLine(filePath);
+          if (!firstLine) continue;
+          let firstRecord: Record<string, unknown>;
+          try {
+            firstRecord = JSON.parse(firstLine) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+          const recordCwd = typeof firstRecord.cwd === "string" ? firstRecord.cwd.trim() : "";
+          if (recordCwd && recordCwd !== args.cwd) continue;
+          const timestamp = typeof firstRecord.timestamp === "string" ? firstRecord.timestamp : "";
+          const timestampMs = Date.parse(timestamp);
+          if (!Number.isFinite(timestampMs)) continue;
+          if (timestampMs < windowStartMs || timestampMs > windowEndMs) continue;
+          const score = Math.abs(timestampMs - requestedStartedAtMs);
+          if (score > maxStartDeltaMs) continue;
+          timestampMatches.push({ name, score, mtimeMs: stat.mtimeMs });
+          continue;
+        }
+
         if (!newest || stat.mtimeMs > newest.mtimeMs) {
           newest = { name, mtimeMs: stat.mtimeMs };
         }
       }
-      if (!newest) return null;
+      if (hasStartedAt && timestampMatches.length !== 1) return null;
+      const selected = hasStartedAt
+        ? timestampMatches[0]!
+        : newest;
+      if (!selected) return null;
       // UUID is the filename without .jsonl extension
-      const uuid = newest.name.replace(/\.jsonl$/, "");
-      // Basic UUID format check
-      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuid)) return null;
+      const uuid = selected.name.replace(/\.jsonl$/, "");
       // Only consider if modified within the last 5 minutes (to avoid picking up stale sessions)
-      if (Date.now() - newest.mtimeMs > 5 * 60 * 1000) return null;
-      const filePath = path.join(claudeProjectDir, newest.name);
+      if (!hasStartedAt && Date.now() - selected.mtimeMs > 5 * 60 * 1000) return null;
+      const filePath = path.join(claudeProjectDir, selected.name);
       return {
         id: uuid,
         filePath,
@@ -1749,6 +2041,18 @@ export function createPtyService({
 
     // Strategy 1: Try parsing the transcript for an explicit resume command
     const transcript = await sessionService.readTranscriptTail(session.transcriptPath, 220_000);
+    if (isCodexTrackedCliToolType(effectiveToolType) && isCodexCliUpdateTranscript(transcript)) {
+      missingResumeTargetBackfillFailures.set(sessionId, {
+        toolType: effectiveToolType,
+        checkedAtMs: Date.now(),
+      });
+      logger.warn("pty.resume_target_backfill_skipped_codex_update", {
+        sessionId,
+        toolType: effectiveToolType,
+        reason,
+      });
+      return false;
+    }
     const detected = extractResumeCommandFromOutput(transcript, effectiveToolType);
     if (detected) {
       missingResumeTargetBackfillFailures.delete(sessionId);
@@ -1759,9 +2063,18 @@ export function createPtyService({
 
     // Strategy 2: Read the session/thread ID from the CLI's local storage
     const cwd = sessionCwd ?? inferSessionCwdFromTranscriptPath(session.transcriptPath);
+    const effectiveProvider = providerFromTool(effectiveToolType);
+    const hasStorageBackfillEvidence = effectiveProvider
+      ? hasProviderStorageBackfillEvidence(effectiveProvider, transcript)
+      : false;
 
-    if (isClaudeTrackedCliToolType(effectiveToolType) && cwd) {
-      const claudeSession = resolveClaudeSessionFromStorage(cwd);
+    if (isClaudeTrackedCliToolType(effectiveToolType) && cwd && hasStorageBackfillEvidence) {
+      const claudeSession = resolveClaudeSessionFromStorage({
+        cwd,
+        startedAt: session.startedAt,
+        endedAt: session.endedAt,
+        maxStartDeltaMs: 10 * 60_000,
+      });
       if (claudeSession) {
         const resumeCmd = `claude --resume ${claudeSession.id}`;
         missingResumeTargetBackfillFailures.delete(sessionId);
@@ -1777,7 +2090,7 @@ export function createPtyService({
     // fallback. Fresh launches still use the live capture watcher below; this
     // path handles existing tracked sessions whose transcript did not yield a
     // usable Codex thread id before the user types to continue.
-    if ((effectiveToolType === "codex" || effectiveToolType === "codex-orchestrated") && cwd) {
+    if ((effectiveToolType === "codex" || effectiveToolType === "codex-orchestrated") && cwd && hasStorageBackfillEvidence) {
       const codexSession = resolveCodexSessionFromStorage({
         cwd,
         startedAt: session.startedAt,
@@ -1794,7 +2107,7 @@ export function createPtyService({
       }
     }
 
-    if (effectiveToolType === "droid" && cwd && reason !== "resume-launch") {
+    if (effectiveToolType === "droid" && cwd && reason !== "resume-launch" && hasStorageBackfillEvidence) {
       const droidSessionId = resolveDroidSessionIdFromStorage({
         cwd,
         startedAt: session.startedAt,
@@ -1809,7 +2122,7 @@ export function createPtyService({
       }
     }
 
-    if (effectiveToolType === "opencode" && cwd && reason !== "resume-launch") {
+    if ((effectiveToolType === "opencode" || effectiveToolType === "opencode-orchestrated") && cwd && reason !== "resume-launch" && hasStorageBackfillEvidence) {
       const opencodeSessionId = resolveOpenCodeSessionIdFromCli({
         cwd,
         startedAt: session.startedAt,
@@ -2103,6 +2416,10 @@ export function createPtyService({
       clearTimeout(entry.startupTimer);
       entry.startupTimer = null;
     }
+    if (entry.initialInputTimer) {
+      clearTimeout(entry.initialInputTimer);
+      entry.initialInputTimer = null;
+    }
     clearToolAutoCloseTimer(ptyId);
     cleanupEntryPaths(entry);
     flushPreview(entry);
@@ -2247,6 +2564,53 @@ export function createPtyService({
     }
   };
 
+  const resyncLiveSessionRowIfNeeded = (entry: PtyEntry, ptyId: string): void => {
+    if (!entry.tracked || entry.disposed) return;
+    const now = Date.now();
+    if (now - entry.lastSessionResyncCheckAt < PTY_LIVE_SESSION_RESYNC_INTERVAL_MS) return;
+    entry.lastSessionResyncCheckAt = now;
+
+    const session = sessionService.get(entry.sessionId);
+    if (!session) return;
+    if (session.status === "running" && session.ptyId === ptyId) return;
+    const previousStatus = session.status;
+    const previousPtyId = session.ptyId ?? null;
+    const previousEndedAt = session.endedAt ?? null;
+    const toolType = session.toolType ?? entry.toolTypeHint ?? null;
+    if (
+      ownerPid != null
+      && session.ownerPid != null
+      && session.ownerPid !== ownerPid
+      && processRegistry?.isProcessIdentityLive(session.ownerPid, session.ownerProcessStartedAt)
+    ) {
+      logger.warn("pty.live_session_row_resync_skipped_owned_by_peer", {
+        ptyId,
+        sessionId: entry.sessionId,
+        ownerPid: session.ownerPid,
+        currentPid: ownerPid,
+        previousStatus,
+      });
+      return;
+    }
+
+    sessionService.reattach({
+      sessionId: entry.sessionId,
+      ptyId,
+      startedAt: session.startedAt,
+      ...(ownerPid != null ? { ownerPid } : {}),
+      ...(ownerProcessStartedAt != null ? { ownerProcessStartedAt } : {}),
+    });
+    setRuntimeState(entry.sessionId, "running");
+    logger.warn("pty.live_session_row_resynced", {
+      ptyId,
+      sessionId: entry.sessionId,
+      previousStatus,
+      previousPtyId,
+      previousEndedAt,
+      toolType,
+    });
+  };
+
   const cleanupEntryPaths = (entry: PtyEntry) => {
     for (const cleanupPath of entry.cleanupPaths) {
       try {
@@ -2327,6 +2691,161 @@ export function createPtyService({
   const liveEntryBySessionId = (sessionId: string): [string, PtyEntry] | null => (
     Array.from(ptys.entries()).find(([, entry]) => entry.sessionId === sessionId && !entry.disposed) ?? null
   );
+
+  const codexReadyRegion = (text: string): string => {
+    const lastPrompt = text.lastIndexOf("›");
+    if (lastPrompt < 0) return text;
+    const lastHeader = text.lastIndexOf("OpenAI Codex", lastPrompt);
+    const lastModel = text.lastIndexOf("model:", lastPrompt);
+    const start = Math.max(0, lastHeader >= 0 ? lastHeader : lastModel >= 0 ? lastModel : lastPrompt - 4000);
+    return text.slice(start);
+  };
+
+  const lastIndexOfAny = (text: string, needles: readonly string[]): number => {
+    return needles.reduce((latest, needle) => Math.max(latest, text.lastIndexOf(needle)), -1);
+  };
+
+  const providerReadyMarkerVisible = (provider: TerminalResumeProvider, text: string): boolean => {
+    const normalized = text.toLowerCase();
+    if (provider === "codex") {
+      const codexText = codexReadyRegion(text);
+      if (isCodexCliUpdateTranscript(codexText)) return false;
+      const hasPrompt = codexText.includes("›");
+      const hasSessionMarker = /OpenAI Codex/i.test(codexText) || /\bmodel:\s*\S+/i.test(codexText);
+      const loadingIndex = codexText.search(/\bmodel:\s*loading\b/i);
+      const loadedModelMatches = Array.from(codexText.matchAll(/\bmodel:\s*(?!loading\b)\S+/gi));
+      const lastLoadedModelIndex = loadedModelMatches.at(-1)?.index ?? -1;
+      const startingIndex = codexText.lastIndexOf("Starting MCP servers");
+      const startupSettledIndex = Math.max(
+        codexText.lastIndexOf("MCP startup incomplete"),
+        codexText.lastIndexOf("MCP client for `"),
+      );
+      const noActiveThreadIndex = codexText.lastIndexOf("No active thread is available");
+      const lastPromptIndex = codexText.lastIndexOf("›");
+      return hasPrompt
+        && hasSessionMarker
+        && (loadingIndex < 0 || lastLoadedModelIndex > loadingIndex)
+        && (startingIndex < 0 || startupSettledIndex > startingIndex)
+        && (noActiveThreadIndex < 0 || lastPromptIndex > noActiveThreadIndex);
+    }
+    if (provider === "claude") {
+      return text.includes("❯");
+    }
+    if (provider === "cursor") {
+      const lastBlockerIndex = lastIndexOfAny(normalized, [
+        "workspace trust required",
+        "do you trust the content of this directory",
+        "login required",
+        "authentication required",
+        "not authenticated",
+        "please log in",
+        "sign in",
+        "update available",
+        "update required",
+      ]);
+      const lastReadyPromptIndex = Math.max(
+        normalized.lastIndexOf("plan, search, build anything"),
+        normalized.lastIndexOf("use /skills"),
+        normalized.lastIndexOf("add a follow-up"),
+      );
+      return lastReadyPromptIndex >= 0 && lastReadyPromptIndex > lastBlockerIndex;
+    }
+    if (provider === "opencode") {
+      const lastBlockerIndex = lastIndexOfAny(normalized, [
+        "login required",
+        "authentication required",
+        "not authenticated",
+        "please log in",
+        "sign in",
+        "api key required",
+        "no api key",
+        "provider not configured",
+        "no provider configured",
+        "update available",
+        "update required",
+      ]);
+      const lastReadyIndex = lastIndexOfAny(normalized, [
+        "opencode",
+        "what do you want",
+        "message opencode",
+        "thought for",
+        "tokens",
+      ]);
+      return lastReadyIndex >= 0 && lastReadyIndex > lastBlockerIndex;
+    }
+    if (provider === "droid") {
+      const lastBlockerIndex = lastIndexOfAny(normalized, [
+        "login required",
+        "authentication required",
+        "not authenticated",
+        "please log in",
+        "sign in",
+        "api key required",
+        "no api key",
+        "factory api key",
+        "update available",
+        "update required",
+      ]);
+      const lastReadyIndex = lastIndexOfAny(normalized, [
+        "what do you want",
+        "what would you like",
+        "message droid",
+      ]);
+      return lastReadyIndex >= 0 && lastReadyIndex > lastBlockerIndex;
+    }
+    return false;
+  };
+
+  const waitForAgentCliInputReady = async (sessionId: string, provider: TerminalResumeProvider): Promise<boolean> => {
+    const deadline = Date.now() + AGENT_CLI_READY_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      const live = liveEntryBySessionId(sessionId);
+      if (!live) return false;
+      const entry = live[1];
+      if (entry.disposed) return false;
+      const outputTail = stripAnsi(entry.recentOutputTail).replace(/\r/g, "\n");
+      const visibleText = entry.terminalSnapshot
+        ? visibleRowsFromTerminal(entry.terminalSnapshot.terminal)
+          .map((row) => row.text)
+          .join("\n")
+        : "";
+      const readinessText = visibleText.trim().length > 0 ? visibleText : outputTail;
+      const runtime = runtimeStates.get(sessionId);
+      const quietForMs = runtime ? Date.now() - runtime.lastActivityAt : 0;
+      if (providerReadyMarkerVisible(provider, readinessText) && quietForMs >= AGENT_CLI_READY_QUIET_MS) {
+        return true;
+      }
+      await delay(AGENT_CLI_READY_POLL_MS);
+    }
+    logger.warn("pty.agent_cli_ready_wait_timeout", { sessionId, provider });
+    return false;
+  };
+
+  const writeAgentCliInput = async (
+    write: (data: string) => boolean,
+    inputText: string,
+    provider: TerminalResumeProvider,
+  ): Promise<boolean> => {
+    // Codex binds Ctrl-U to "kill to beginning of line"; move to end first so
+    // saved single-line drafts are cleared even when the cursor starts at col 0.
+    // Send these as separate PTY writes. Some full-screen TUIs process batched
+    // control bytes before their prompt state settles, leaving restored drafts
+    // in the composer underneath ADE's pasted prompt.
+    if (!write(AGENT_CLI_INPUT_CLEAR_TO_END_KEY)) return false;
+    await delay(AGENT_CLI_INPUT_CLEAR_DELAY_MS);
+    if (!write(AGENT_CLI_INPUT_CLEAR_TO_START_KEY)) return false;
+    await delay(AGENT_CLI_INPUT_CLEAR_DELAY_MS);
+    if (provider === "codex") {
+      return write(`${AGENT_CLI_BRACKETED_PASTE_START}${inputText}${AGENT_CLI_BRACKETED_PASTE_END}`);
+    }
+    for (let index = 0; index < inputText.length; index += AGENT_CLI_INPUT_CHUNK_SIZE) {
+      if (!write(inputText.slice(index, index + AGENT_CLI_INPUT_CHUNK_SIZE))) return false;
+      if (index + AGENT_CLI_INPUT_CHUNK_SIZE < inputText.length) {
+        await delay(AGENT_CLI_INPUT_CHUNK_DELAY_MS);
+      }
+    }
+    return true;
+  };
 
   const computeRuntimeState = (sessionId: string, fallbackStatus: TerminalSessionStatus): TerminalRuntimeState => {
     const runtime = runtimeStates.get(sessionId);
@@ -2454,7 +2973,7 @@ export function createPtyService({
           sessionService.reattach({
             sessionId: existingSession.id,
             ptyId: attachedPtyId,
-            startedAt: new Date(attachedEntry.createdAt).toISOString(),
+            startedAt: existingSession.startedAt,
             ...(ownerPid != null ? { ownerPid } : {}),
             ...(ownerProcessStartedAt != null ? { ownerProcessStartedAt } : {}),
           });
@@ -2478,6 +2997,7 @@ export function createPtyService({
       const tracked = existingSession?.tracked ?? (args.tracked !== false);
       const toolTypeHint = normalizeToolType(args.toolType ?? existingSession?.toolType ?? null);
       const requestedStartupCommand = typeof args.startupCommand === "string" ? args.startupCommand.trim() : "";
+      const requestedInitialInput = typeof args.initialInput === "string" ? args.initialInput : "";
       let initialResumeCommand = existingSession?.resumeCommand ?? defaultResumeCommandForTool(toolTypeHint);
       let initialResumeMetadata = existingSession?.resumeMetadata ?? buildInitialResumeMetadata({
         toolType: toolTypeHint,
@@ -2528,6 +3048,10 @@ export function createPtyService({
           .catch(() => {});
       }
 
+      const requestedDirectCommand = typeof args.command === "string" ? args.command.trim() : "";
+      const directCommand = resolveDirectOpenCodeCommand(requestedDirectCommand, toolTypeHint);
+      const directArgs = Array.isArray(args.args) ? args.args.filter((value): value is string => typeof value === "string") : [];
+
       const laneRuntimeEnv = (await getLaneRuntimeEnv?.(laneId)) ?? {};
       const explicitNoColor = hasEnvKey(args.env ?? {}, "NO_COLOR") || hasEnvKey(laneRuntimeEnv, "NO_COLOR");
       const baseLaunchEnv = {
@@ -2540,7 +3064,7 @@ export function createPtyService({
         laneId,
         chatSessionId,
       });
-      const launchEnv = withInteractiveTerminalColorEnv(
+      let launchEnv = withInteractiveTerminalColorEnv(
         getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv,
         { preserveNoColor: explicitNoColor },
       );
@@ -2557,12 +3081,14 @@ export function createPtyService({
           startupCommand = withBundledOpenCodeCommandLine(initialResumeCommand, toolTypeHint);
         }
       }
+      launchEnv = withUserCodexCliPathPriority(launchEnv, {
+        toolType: toolTypeHint,
+        directCommand,
+        startupCommand,
+      });
 
       let pty: IPty;
       let selectedShell: ShellSpec | null = null;
-      const requestedDirectCommand = typeof args.command === "string" ? args.command.trim() : "";
-      const directCommand = resolveDirectOpenCodeCommand(requestedDirectCommand, toolTypeHint);
-      const directArgs = Array.isArray(args.args) ? args.args.filter((value): value is string => typeof value === "string") : [];
       const useCleanInteractiveShell = toolTypeHint === "shell" && !directCommand && !startupCommand;
       const shellCandidates = resolveShellCandidates({ clean: useCleanInteractiveShell });
       let launchedDirectCommand = false;
@@ -2676,7 +3202,7 @@ export function createPtyService({
         sessionService.reattach({
           sessionId,
           ptyId,
-          startedAt,
+          startedAt: existingSession.startedAt,
           ...(ownerPid != null ? { ownerPid } : {}),
           ...(ownerProcessStartedAt != null ? { ownerProcessStartedAt } : {}),
         });
@@ -2702,6 +3228,7 @@ export function createPtyService({
         transcriptBytesWritten,
         transcriptLimitReached: transcriptBytesWritten >= MAX_TRANSCRIPT_BYTES,
         lastPreviewWriteAt: 0,
+        lastSessionResyncCheckAt: 0,
         previewCurrentLine: "",
         latestPreviewLine: null,
         lastPreviewWritten: null,
@@ -2724,6 +3251,7 @@ export function createPtyService({
         recentOutputTail: "",
         aiTitleTimer: null,
         startupTimer: null,
+        initialInputTimer: null,
         cliUserTitleLineBuffer: "",
         cliUserTitleCommitted: false,
       };
@@ -2747,6 +3275,7 @@ export function createPtyService({
         // emit ptyData after ptyExit while transcript summarization is in
         // flight.
         if (entry.disposed) return;
+        resyncLiveSessionRowIfNeeded(entry, ptyId);
         appendRecentOutput(entry, data);
         writeTranscript(entry, data);
         feedTerminalSnapshot(entry, data);
@@ -2786,7 +3315,7 @@ export function createPtyService({
               if (entry.disposed) return;
               logger.info("pty.tool_exit_auto_close", { ptyId, sessionId, toolType: entry.toolTypeHint });
               try {
-                entry.pty.kill();
+                terminatePtyProcessTree(entry, "SIGTERM", logger);
               } catch {
                 // If kill fails, force close via closeEntry
                 closeEntry(ptyId, 0);
@@ -2859,6 +3388,83 @@ export function createPtyService({
           entry.startupTimer.unref?.();
         } else {
           writeStartupCommand();
+        }
+      }
+
+      if (requestedInitialInput.length > 0) {
+        const normalizedInitialInput = requestedInitialInput.replace(/\r\n?/g, "\n");
+        const writeInitialInput = async (): Promise<void> => {
+          entry.initialInputTimer = null;
+          if (entry.disposed) throw new Error("Terminal session closed before initial input could be sent.");
+          const provider = providerFromTool(toolTypeHint);
+          try {
+            if (provider) {
+              const ready = await waitForAgentCliInputReady(sessionId, provider);
+              if (!ready) {
+                logger.warn("pty.initial_input_skipped_not_ready", {
+                  ptyId,
+                  sessionId,
+                  cwd,
+                  toolType: toolTypeHint,
+                  provider,
+                });
+                throw new Error(`${provider} CLI did not become ready; initial input was not sent.`);
+              }
+              if (entry.disposed) throw new Error("Terminal session closed before initial input could be sent.");
+            }
+            if (provider) {
+              const submittedInitialInput = normalizedInitialInput.trim();
+              if (submittedInitialInput.length > 0) {
+                const wrote = await writeAgentCliInput((data) => {
+                  pty.write(data);
+                  return true;
+                }, submittedInitialInput, provider);
+                if (!wrote) throw new Error("PTY rejected initial input writes.");
+                const submitDelayMs = provider === "codex"
+                  ? CODEX_CLI_PASTE_SUBMIT_DELAY_MS
+                  : provider === "cursor"
+                    ? CURSOR_CLI_PASTE_SUBMIT_DELAY_MS
+                    : AGENT_CLI_SUBMIT_DELAY_MS;
+                await delay(submitDelayMs);
+                pty.write(AGENT_CLI_LINE_SUBMIT_KEY);
+              }
+            } else {
+              pty.write(`\x1b[200~${normalizedInitialInput}\x1b[201~\r`);
+            }
+            setRuntimeState(sessionId, "running");
+            scheduleIdleTransition(sessionId);
+          } catch (err) {
+            logger.warn("pty.initial_input_failed", {
+              ptyId,
+              sessionId,
+              cwd,
+              toolType: toolTypeHint,
+              err: String(err),
+            });
+            throw err;
+          }
+        };
+        const initialInputDelayMs = Math.max(0, Math.min(10_000, Math.floor(Number(args.initialInputDelayMs ?? 0) || 0)));
+        if (args.awaitInitialInput) {
+          try {
+            if (initialInputDelayMs > 0) await delay(initialInputDelayMs);
+            await writeInitialInput();
+          } catch (err) {
+            try {
+              terminatePtyProcessTree(entry, "SIGTERM", logger);
+            } catch {
+              // best effort
+            }
+            closeEntry(ptyId, 1);
+            throw err;
+          }
+        } else if (initialInputDelayMs > 0) {
+          entry.initialInputTimer = setTimeout(() => {
+            void writeInitialInput().catch(() => {});
+          }, initialInputDelayMs);
+          entry.initialInputTimer.unref?.();
+        } else {
+          void writeInitialInput().catch(() => {});
         }
       }
 
@@ -2968,10 +3574,51 @@ export function createPtyService({
         };
       };
 
+      const session = sessionService.get(sessionId);
+      if (session?.tracked === false) throw new Error(`Terminal session '${sessionId}' is not tracked and cannot be continued.`);
+      if (session && (session.toolType === "shell" || session.toolType === "run-shell" || isPersistedChatToolType(session.toolType))) {
+        throw new Error(`Terminal session '${sessionId}' is not an agent CLI session.`);
+      }
+      const writeSubmittedText = async (
+        targetSessionId: string,
+        inputText: string,
+        provider: TerminalResumeProvider,
+        options: { waitForReady?: boolean } = {},
+      ): Promise<boolean> => {
+        const previous = submitInputFlights.get(targetSessionId) ?? Promise.resolve(true);
+        const submitKey = AGENT_CLI_LINE_SUBMIT_KEY;
+        const flight = previous
+          .catch(() => true)
+          .then(async () => {
+            if (options.waitForReady) {
+              const ready = await waitForAgentCliInputReady(targetSessionId, provider);
+              if (!ready) return false;
+            }
+            const textWritten = await writeAgentCliInput(
+              (data) => service.writeBySessionId(targetSessionId, data),
+              inputText,
+              provider,
+            );
+            if (!textWritten) return false;
+            await delay(provider === "codex" ? CODEX_CLI_PASTE_SUBMIT_DELAY_MS : AGENT_CLI_SUBMIT_DELAY_MS);
+            return service.writeBySessionId(targetSessionId, submitKey);
+          });
+        submitInputFlights.set(targetSessionId, flight);
+        try {
+          return await flight;
+        } finally {
+          if (submitInputFlights.get(targetSessionId) === flight) {
+            submitInputFlights.delete(targetSessionId);
+          }
+        }
+      };
+
       const live = liveEntryBySessionId(sessionId);
       if (live) {
         const [ptyId, entry] = live;
-        const written = service.writeBySessionId(sessionId, `${text}\r`);
+        const provider = session?.resumeMetadata?.provider ?? providerFromTool(session?.toolType ?? entry.toolTypeHint);
+        if (!provider) throw new Error(`Terminal session '${sessionId}' does not have a resumable CLI provider.`);
+        const written = await writeSubmittedText(sessionId, text, provider);
         if (!written) throw new Error(`Terminal session '${sessionId}' is not accepting input.`);
         return buildResult(
           { ptyId, sessionId, pid: entry.pty.pid ?? null },
@@ -2979,25 +3626,43 @@ export function createPtyService({
         );
       }
 
-      const session = sessionService.get(sessionId);
       if (!session) throw new Error(`Terminal session '${sessionId}' was not found.`);
-      if (!session.tracked) throw new Error(`Terminal session '${sessionId}' is not tracked and cannot be continued.`);
-      if (session.toolType === "shell" || session.toolType === "run-shell" || isPersistedChatToolType(session.toolType)) {
-        throw new Error(`Terminal session '${sessionId}' is not an agent CLI session.`);
-      }
 
       const provider = session.resumeMetadata?.provider ?? providerFromTool(session.toolType);
       if (!provider) throw new Error(`Terminal session '${sessionId}' does not have a resumable CLI provider.`);
+      const parsedResumeCommand = parseTrackedCliResumeCommand(session.resumeCommand, session.toolType);
+      const storedResumeTargetId = sanitizeResumeTargetId(session.resumeMetadata?.targetId ?? null)
+        ?? (parsedResumeCommand?.provider === provider
+          ? sanitizeResumeTargetId(parsedResumeCommand.targetId ?? null)
+          : null);
+      if (
+        provider === "codex"
+        && isCodexTrackedCliToolType(session.toolType)
+        && !storedResumeTargetId
+      ) {
+        const transcript = await sessionService.readTranscriptTail(session.transcriptPath, 220_000);
+        if (isCodexCliUpdateTranscript(transcript)) {
+          throw new Error(
+            "Codex updated and exited before ADE could create a resumable thread. Start a new Codex session.",
+          );
+        }
+      }
+      if (!storedResumeTargetId) {
+        const displayName = resumeProviderDisplayName(provider);
+        throw new Error(
+          `${displayName} exited before ADE could capture a concrete resume target. Start a new ${displayName} session.`,
+        );
+      }
 
       const requestedModel = typeof args.model === "string" && args.model.trim().length
         ? args.model.trim()
-        : null;
+        : undefined;
       const requestedReasoningEffort = typeof args.reasoningEffort === "string" && args.reasoningEffort.trim().length
         ? args.reasoningEffort.trim()
-        : null;
+        : undefined;
       const requestedPermissionMode = typeof args.permissionMode === "string" && args.permissionMode.trim().length
         ? args.permissionMode
-        : null;
+        : undefined;
       const openCodeReplayCommand = provider === "opencode"
         && session.resumeMetadata?.provider === "opencode"
         && openCodeSupportsReplayResume()
@@ -3043,6 +3708,7 @@ export function createPtyService({
           tracked: session.tracked,
           toolType: session.toolType,
           startupCommand: resumeCommand,
+          ...directShellLaunchForCommandLine(resumeCommand),
         });
         resumeRuntimeFlights.set(sessionId, resumeFlight);
         void resumeFlight
@@ -3059,7 +3725,7 @@ export function createPtyService({
         return buildResult(created, { resumed: true, reusedExistingRuntime: false });
       }
 
-      const written = service.writeBySessionId(created.sessionId, `${text}\r`);
+      const written = await writeSubmittedText(created.sessionId, text, provider, { waitForReady: true });
       if (!written) {
         try {
           service.dispose({ ptyId: created.ptyId, sessionId: created.sessionId });
@@ -3067,19 +3733,6 @@ export function createPtyService({
           // Best effort; preserve the send failure for the caller.
         }
         throw new Error(`Terminal session '${sessionId}' could not receive the message.`);
-      }
-
-      if (provider === "claude") {
-        const confirmTimer = setTimeout(() => {
-          const confirmWritten = service.writeBySessionId(created.sessionId, "\r");
-          if (!confirmWritten) {
-            logger.warn("pty.send_to_session_claude_initial_input_confirm_failed", {
-              sessionId: created.sessionId,
-              ptyId: created.ptyId,
-            });
-          }
-        }, CLAUDE_INITIAL_INPUT_CONFIRM_DELAY_MS);
-        confirmTimer.unref?.();
       }
 
       return buildResult(created, { resumed: true, reusedExistingRuntime: false });
@@ -3104,10 +3757,10 @@ export function createPtyService({
       const limit = typeof args.limit === "number" && Number.isFinite(args.limit)
         ? Math.max(1, Math.min(500, Math.floor(args.limit)))
         : 200;
-      const summaries = sessionService.list({
+      const summaries = service.enrichSessions(sessionService.list({
         ...(laneId ? { laneId } : {}),
         limit,
-      });
+      }));
       return summaries
         .filter((summary) => !isPersistedChatToolType(summary.toolType))
         .filter((summary) => {
@@ -3187,11 +3840,7 @@ export function createPtyService({
         }
 
         const resumeCommand = session.resumeMetadata
-          ? buildTrackedCliResumeCommand(session.resumeMetadata, {
-            model: null,
-            reasoningEffort: null,
-            permissionMode: null,
-          })
+          ? buildTrackedCliResumeCommand(session.resumeMetadata)
           : normalizeResumeCommand(session.resumeCommand, session.toolType);
         if (!resumeCommand) {
           throw new Error(`Chat CLI session '${chatSessionId}' has no resume command available.`);
@@ -3212,6 +3861,7 @@ export function createPtyService({
           tracked: true,
           toolType: session.toolType,
           startupCommand: resumeCommand,
+          ...directShellLaunchForCommandLine(resumeCommand),
         });
 
         logger.info("pty.reattach_chat_cli", {
@@ -3248,7 +3898,9 @@ export function createPtyService({
       const maxBytes = typeof args.maxBytes === "number" && Number.isFinite(args.maxBytes)
         ? Math.max(1, Math.min(MAX_TRANSCRIPT_BYTES, Math.floor(args.maxBytes)))
         : DEFAULT_TERMINAL_READ_MAX_BYTES;
-      const full = await sessionService.readTranscriptTail(session.transcriptPath, maxBytes, { raw: true });
+      const diskTail = await sessionService.readTranscriptTail(session.transcriptPath, maxBytes, { raw: true });
+      const live = liveEntryBySessionId(terminalId)?.[1].recentOutputTail ?? "";
+      const full = mergeTranscriptTailWithLiveOutput(diskTail, live, maxBytes);
       const since = typeof args.since === "number" && Number.isFinite(args.since)
         ? Math.max(0, Math.floor(args.since))
         : 0;
@@ -3410,7 +4062,7 @@ export function createPtyService({
         if (args.signal === "SIGINT") {
           entry.pty.write("\x03");
         } else {
-          entry.pty.kill(args.signal);
+          terminatePtyProcessTree(entry, args.signal, logger);
         }
       } catch (err) {
         logger.warn("pty.signal_failed", { ptyId: liveId, signal: args.signal, err: String(err) });
@@ -3519,6 +4171,11 @@ export function createPtyService({
     enrichSessions<T extends TerminalSessionSummary>(rows: T[]): T[] {
       return rows.map((row) => {
         const live = liveEntryBySessionId(row.id);
+        const ownedByLivePeer = !live && row.status === "running" && isOwnedByLivePeerRuntime(row);
+        const runningWithoutReachablePty = !live
+          && row.status === "running"
+          && !isPersistedChatToolType(row.toolType ?? null);
+        const isDetachedFromThisRuntime = ownedByLivePeer || runningWithoutReachablePty;
         const fallbackStatus = live ? "running" : row.status;
         return {
           ...row,
@@ -3529,8 +4186,13 @@ export function createPtyService({
                 endedAt: null,
                 exitCode: null,
               }
-            : {}),
-          runtimeState: computeRuntimeState(row.id, fallbackStatus),
+            : isDetachedFromThisRuntime
+              ? {
+                  ptyId: null,
+                  status: "detached" as const,
+                }
+              : {}),
+          runtimeState: isDetachedFromThisRuntime ? "exited" : computeRuntimeState(row.id, fallbackStatus),
           chatSessionId: live
             ? terminalChatSessions.get(row.id) ?? live[1].chatSessionId ?? row.chatSessionId ?? null
             : terminalChatSessions.get(row.id) ?? row.chatSessionId ?? null,
@@ -3599,16 +4261,16 @@ export function createPtyService({
         clearTimeout(entry.startupTimer);
         entry.startupTimer = null;
       }
+      if (entry.initialInputTimer) {
+        clearTimeout(entry.initialInputTimer);
+        entry.initialInputTimer = null;
+      }
       clearToolAutoCloseTimer(ptyId);
       flushQueuedPtyData(entry, { ptyId, sessionId: entry.sessionId });
       cleanupEntryPaths(entry);
       // Release the live-tail buffer; see closeEntry for rationale.
       entry.recentOutputTail = "";
-      try {
-        entry.pty.kill();
-      } catch {
-        // ignore
-      }
+      terminatePtyProcessTree(entry, "SIGTERM", logger);
       const endedAt = new Date().toISOString();
       sessionService.end({ sessionId: entry.sessionId, endedAt, exitCode: null, status: "disposed" });
       scheduleTranscriptDependentWork(entry, "dispose");

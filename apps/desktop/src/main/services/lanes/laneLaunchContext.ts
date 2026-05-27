@@ -378,34 +378,18 @@ export function syncMacosVmLaunchCacheFromEvent(
     provider?: MacosVmLaunchProvider | null;
   } = {},
 ): void {
-  const laneId = (() => {
-    if (payload.type === "vm-updated") {
-      return payload.vm.laneId?.trim() ?? "";
-    }
-    if (payload.type === "operation") {
-      return payload.laneId?.trim() ?? "";
-    }
-    return "";
-  })();
+  const laneId = payload.type === "vm-updated"
+    ? payload.vm.laneId?.trim() ?? ""
+    : payload.type === "operation"
+      ? payload.laneId?.trim() ?? ""
+      : "";
   if (!laneId) return;
 
-  const shouldInvalidate = (() => {
-    if (payload.type !== "operation") return false;
-    return (
-      payload.state === "started"
-      && MACOS_VM_LAUNCH_CACHE_STATE_CHANGING_OPERATIONS.has(payload.operation)
-    );
-  })();
-  const shouldRefresh = (() => {
-    if (payload.type === "vm-updated") return true;
-    if (payload.type === "operation") {
-      return (
-        payload.state === "completed"
-        && MACOS_VM_LAUNCH_CACHE_STATE_CHANGING_OPERATIONS.has(payload.operation)
-      );
-    }
-    return false;
-  })();
+  const isStateChangingOp = payload.type === "operation"
+    && MACOS_VM_LAUNCH_CACHE_STATE_CHANGING_OPERATIONS.has(payload.operation);
+  const shouldInvalidate = isStateChangingOp && payload.state === "started";
+  const shouldRefresh = payload.type === "vm-updated"
+    || (isStateChangingOp && payload.state === "completed");
   if (!shouldInvalidate && !shouldRefresh) return;
 
   invalidateVmLaneLaunchCache(laneId, options.projectRoot);

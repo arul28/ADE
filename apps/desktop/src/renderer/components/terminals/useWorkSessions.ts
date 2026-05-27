@@ -321,7 +321,7 @@ function mapUrlStatusFilter(statusParamRaw: string): WorkStatusFilter | null {
   if (statusParam === "awaiting-input" || statusParam === "awaiting") return "awaiting-input";
   if (statusParam === "ended") return "ended";
   if (statusParam === "all") return "all";
-  if (statusParam === "completed" || statusParam === "failed" || statusParam === "disposed") return "ended";
+  if (statusParam === "completed" || statusParam === "failed" || statusParam === "disposed" || statusParam === "detached") return "ended";
   return null;
 }
 
@@ -1298,10 +1298,13 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       // we substitute the profile's default launch.
       const launchFields = resolveLaunchFields({
         profile: args.profile,
+        ...(args.permissionMode !== undefined ? { permissionMode: args.permissionMode } : {}),
         ...(args.startupCommand !== undefined ? { startupCommand: args.startupCommand } : {}),
         ...(args.command !== undefined ? { command: args.command } : {}),
         ...(args.args !== undefined ? { args: args.args } : {}),
         ...(args.env !== undefined ? { env: args.env } : {}),
+        ...(args.initialInput !== undefined ? { initialInput: args.initialInput } : {}),
+        ...(args.initialInputDelayMs !== undefined ? { initialInputDelayMs: args.initialInputDelayMs } : {}),
       });
       const result = await window.ade.pty.create({
         laneId: args.laneId,
@@ -1311,7 +1314,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         tracked: args.tracked ?? true,
         toolType: LAUNCH_PROFILE_TOOL_TYPE[args.profile],
         ...(args.startupDelayMs !== undefined ? { startupDelayMs: args.startupDelayMs } : {}),
+        ...(launchFields.initialInput !== undefined ? { initialInput: launchFields.initialInput } : {}),
+        ...(launchFields.initialInputDelayMs !== undefined ? { initialInputDelayMs: launchFields.initialInputDelayMs } : {}),
         ...launchFields,
+        ...(launchFields.initialInput !== undefined ? { awaitInitialInput: true } : {}),
       });
       const startedAt = new Date().toISOString();
       const optimisticSession: TerminalSessionSummary = {

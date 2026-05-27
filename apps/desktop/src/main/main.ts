@@ -38,7 +38,10 @@ import { createPortAllocationService } from "./services/lanes/portAllocationServ
 import { createLaneProxyService } from "./services/lanes/laneProxyService";
 import { createOAuthRedirectService } from "./services/lanes/oauthRedirectService";
 import { createRuntimeDiagnosticsService } from "./services/lanes/runtimeDiagnosticsService";
-import { createSessionService } from "./services/sessions/sessionService";
+import {
+  createSessionService,
+  STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS,
+} from "./services/sessions/sessionService";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
 import { createPtyService } from "./services/pty/ptyService";
 import { createProcessRegistryService } from "./services/runtime/processRegistryService";
@@ -2025,16 +2028,26 @@ app.whenReady().then(async () => {
       projectRoot,
     });
     processRegistry.start();
-    const reconciledSessions = sessionService.reconcileStaleRunningSessions({
-      status: "disposed",
-      liveOwnerPids: processRegistry.listLivePids(),
-      liveOwnerIdentities: processRegistry.listLiveProcessIdentities(),
-    });
-    if (reconciledSessions > 0) {
-      logger.warn("sessions.reconciled_stale_running", {
-        count: reconciledSessions,
+    const reconcileStaleRunningSessions = (reason: "startup" | "fresh-activity-grace-expired") => {
+      const reconciledSessions = sessionService.reconcileStaleRunningSessions({
+        status: "detached",
+        liveOwnerPids: processRegistry.listLivePids(),
+        liveOwnerIdentities: processRegistry.listLiveProcessIdentities(),
+        freshActivityGraceMs: STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS,
       });
-    }
+      if (reconciledSessions > 0) {
+        logger.warn("sessions.reconciled_stale_running", {
+          count: reconciledSessions,
+          reason,
+        });
+      }
+    };
+    reconcileStaleRunningSessions("startup");
+    const staleSessionReconcileTimer = setTimeout(
+      () => reconcileStaleRunningSessions("fresh-activity-grace-expired"),
+      STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS + 1_000,
+    );
+    staleSessionReconcileTimer.unref?.();
     const diffService = createDiffService({ laneService });
     const projectConfigService = createProjectConfigService({
       projectRoot,
@@ -4046,6 +4059,7 @@ app.whenReady().then(async () => {
       configReloadService,
       rpcSocketServer,
       rpcSocketPath,
+      disposeTimers: [staleSessionReconcileTimer],
     };
   };
 
@@ -4218,6 +4232,7 @@ app.whenReady().then(async () => {
       projectId: "",
       adeDir: "",
       getActiveRpcConnectionCount: () => 0,
+      disposeTimers: [],
       disposeHeadWatcher: () => {},
       keybindingsService: null,
       agentToolsService: null,
@@ -4296,6 +4311,9 @@ app.whenReady().then(async () => {
         : null;
     // Tear down the ADE RPC socket BEFORE service disposal so in-flight requests
     // do not race with services that are being shut down.
+    for (const timer of ctx.disposeTimers ?? []) {
+      clearTimeout(timer);
+    }
     try {
       if (normalizedRoot) {
         rpcSocketCleanupByRoot.get(normalizedRoot)?.();

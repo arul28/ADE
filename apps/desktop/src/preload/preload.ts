@@ -5502,6 +5502,14 @@ contextBridge.exposeInMainWorld("ade", {
             ipcRenderer.invoke(IPC.appControlStop, args),
           ),
       ),
+    focusWindow: async (): Promise<{ ok: true }> =>
+      callProjectRuntimeActionOr("app_control", "focusWindow", {}, () =>
+        ipcRenderer.invoke(IPC.appControlFocusWindow),
+      ),
+    minimizeWindow: async (): Promise<{ ok: true }> =>
+      callProjectRuntimeActionOr("app_control", "minimizeWindow", {}, () =>
+        ipcRenderer.invoke(IPC.appControlMinimizeWindow),
+      ),
     screenshot: async (): Promise<AppControlScreenshot> =>
       callProjectRuntimeActionOr("app_control", "screenshot", {}, () =>
         ipcRenderer.invoke(IPC.appControlScreenshot),
@@ -5538,6 +5546,7 @@ contextBridge.exposeInMainWorld("ade", {
       deltaX: number;
       deltaY: number;
       scale?: number | null;
+      coordinateSpace?: "screenshot" | "viewport" | null;
     }): Promise<{ ok: true }> =>
       callProjectRuntimeActionOr("app_control", "scroll", { args }, () =>
         ipcRenderer.invoke(IPC.appControlScroll, args),

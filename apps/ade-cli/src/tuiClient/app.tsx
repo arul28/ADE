@@ -191,11 +191,11 @@ const PROVIDER_OPTIONS: Array<{ value: AdeCodeProvider; label: string }> = [
   { value: "lmstudio", label: "LM Studio" },
 ];
 const PROVIDERS = new Set<AdeCodeProvider>(PROVIDER_OPTIONS.map((provider) => provider.value));
-const CODEX_PRESETS = ["default", "plan", "full-auto", "config-toml"] as const;
+const CODEX_PRESETS = ["default", "edit", "plan", "full-auto", "config-toml"] as const;
 const MODEL_CATALOG_CLIENT_REFRESH_TTL_MS = 5 * 60_000;
 const MODEL_CATALOG_LOCAL_CLIENT_REFRESH_TTL_MS = 30_000;
 const CLAUDE_PERMISSION_OPTIONS = ["default", "auto", "plan", "acceptEdits", "bypassPermissions"] as const;
-const OPENCODE_PERMISSION_OPTIONS = ["plan", "edit", "full-auto"] as const;
+const OPENCODE_PERMISSION_OPTIONS = ["plan", "edit", "full-auto", "config-toml"] as const;
 const DROID_PERMISSION_OPTIONS = ["read-only", "auto-low", "auto-medium", "auto-high"] as const;
 const SETTINGS_AI_ROUTE = "/settings?tab=ai#ai-providers";
 type PaneFocus = "drawer" | "chat" | "details" | "addMode";
@@ -491,6 +491,7 @@ function modelReasoningEfforts(modelState: AdeCodeModelState, models: AgentChatM
 function resolveCodexPreset(modelState: AdeCodeModelState): CodexPreset | "custom" {
   if (modelState.codexConfigSource === "config-toml") return "config-toml";
   if (modelState.codexApprovalPolicy === "never" && modelState.codexSandbox === "danger-full-access") return "full-auto";
+  if (modelState.codexApprovalPolicy === "untrusted" && modelState.codexSandbox === "workspace-write") return "edit";
   if (
     (modelState.codexApprovalPolicy === "on-request" || modelState.codexApprovalPolicy === "untrusted")
     && modelState.codexSandbox === "read-only"
@@ -517,6 +518,14 @@ function codexPresetPatch(preset: CodexPreset): Pick<AdeCodeModelState, "codexAp
       codexSandbox: "read-only",
       codexConfigSource: "flags",
       permissionMode: "plan",
+    };
+  }
+  if (preset === "edit") {
+    return {
+      codexApprovalPolicy: "untrusted",
+      codexSandbox: "workspace-write",
+      codexConfigSource: "flags",
+      permissionMode: "edit",
     };
   }
   if (preset === "config-toml") {

@@ -216,7 +216,6 @@ import { detectAllAuth } from "../ai/authDetector";
 import type {
   AskUserToolInput,
   AskUserToolResult,
-  PermissionMode,
   UniversalToolSetOptions,
 } from "../ai/tools/universalTools";
 import {
@@ -287,7 +286,9 @@ import {
   type DroidSdkPooled,
 } from "./droidSdkPool";
 import {
+  discoverCursorCliModelDescriptors,
   discoverCursorSdkModelDescriptors,
+  mergeCursorModelDescriptorSources,
   resolveCursorSdkModelSelectionParams,
 } from "./cursorModelsDiscovery";
 import { discoverDroidSdkModelDescriptors } from "./droidModelsDiscovery";
@@ -738,7 +739,7 @@ type OpenCodeRuntime = {
   busy: boolean;
   eventAbortController: AbortController | null;
   activeTurnId: string | null;
-  permissionMode: PermissionMode;
+  permissionMode: AgentChatOpenCodePermissionMode;
   pendingApprovals: Map<string, PendingOpenCodeApproval>;
   pendingSteers: QueuedSteer[];
   interrupted: boolean;
@@ -975,6 +976,57 @@ function isCurrentCodexLifecycleTurn(
   }
   if (!activeTurnId || !turnId) return true;
   return activeTurnId === turnId;
+}
+
+type CodexActiveTurnMismatch = {
+  expectedTurnId: string;
+  foundTurnId: string;
+};
+
+function trimCodexTurnIdToken(value: string): string {
+  return value.trim().replace(/[.,;:)]+$/g, "");
+}
+
+function parseCodexActiveTurnMismatch(error: unknown): CodexActiveTurnMismatch | null {
+  const record = asRecord(error);
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === "string"
+      ? error
+      : typeof record?.message === "string"
+        ? record.message
+        : String(error ?? "");
+  const match = /expected active turn id\s+(\S+)\s+but found\s+(\S+)/i.exec(message);
+  if (!match) return null;
+  const expectedTurnId = trimCodexTurnIdToken(match[1] ?? "");
+  const foundTurnId = trimCodexTurnIdToken(match[2] ?? "");
+  if (!expectedTurnId || !foundTurnId) return null;
+  if (/^(?:none|null|undefined)$/i.test(foundTurnId)) return null;
+  return { expectedTurnId, foundTurnId };
+}
+
+function adoptCodexActiveTurnId(
+  managed: ManagedChatSession,
+  runtime: CodexRuntime,
+  logger: Logger | null | undefined,
+  foundTurnId: string,
+  context: string,
+  options: { markStarted?: boolean } = {},
+): void {
+  const previousTurnId = runtime.activeTurnId ?? runtime.startedTurnId ?? null;
+  if (previousTurnId === foundTurnId) return;
+  logger?.warn("agent_chat.codex_adopting_active_turn_id", {
+    sessionId: managed.session.id,
+    context,
+    previousTurnId,
+    foundTurnId,
+  });
+  runtime.awaitingTurnStart = false;
+  runtime.canAttachResumedTurnStart = false;
+  runtime.activeTurnId = foundTurnId;
+  if (options.markStarted !== false) {
+    runtime.startedTurnId = foundTurnId;
+  }
 }
 
 function isCodexInProgressTurnStatus(value: unknown): boolean {
@@ -3462,9 +3514,9 @@ function applyCodexEffectiveThreadState(
   managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
 }
 
-function normalizeOpenCodePermissionMode(mode: string | undefined): PermissionMode | undefined {
-  if (mode === "default" || mode === "config-toml") return "edit";
-  if (mode === "plan" || mode === "edit" || mode === "full-auto") return mode;
+function normalizeOpenCodePermissionMode(mode: string | undefined): AgentChatOpenCodePermissionMode | undefined {
+  if (mode === "default") return "edit";
+  if (mode === "plan" || mode === "edit" || mode === "full-auto" || mode === "config-toml") return mode;
   return undefined;
 }
 
@@ -3487,7 +3539,7 @@ const VALID_CLAUDE_PERMISSION_MODES = new Set(["default", "auto", "plan", "accep
 const VALID_CODEX_APPROVAL_POLICIES = new Set(["untrusted", "on-request", "on-failure", "never"]);
 const VALID_CODEX_SANDBOXES = new Set(["read-only", "workspace-write", "danger-full-access"]);
 const VALID_CODEX_CONFIG_SOURCES = new Set(["flags", "config-toml"]);
-const VALID_OPENCODE_PERMISSION_MODES = new Set(["plan", "edit", "full-auto"]);
+const VALID_OPENCODE_PERMISSION_MODES = new Set(["plan", "edit", "full-auto", "config-toml"]);
 const VALID_DROID_PERMISSION_MODES = new Set(["read-only", "auto-low", "auto-medium", "auto-high"]);
 
 function normalizePersistedEnum<T extends string>(value: unknown, validSet: Set<string>): T | undefined {
@@ -3607,7 +3659,7 @@ function legacyPermissionModeToOpenCodePermissionMode(
   mode: AgentChatSession["permissionMode"] | undefined,
 ): AgentChatOpenCodePermissionMode | undefined {
   if (!mode) return undefined;
-  return mode === "default" || mode === "config-toml" ? "edit" : normalizeOpenCodePermissionMode(mode);
+  return mode === "default" ? "edit" : normalizeOpenCodePermissionMode(mode);
 }
 
 function legacyPermissionModeToDroidPermissionMode(
@@ -3708,6 +3760,7 @@ function syncLegacyPermissionMode(session: Pick<
     case "plan":
     case "edit":
     case "full-auto":
+    case "config-toml":
       return session.opencodePermissionMode;
     default:
       return undefined;
@@ -6626,7 +6679,7 @@ export function createAgentChatService(args: {
     enforceManagedLocalHarnessPermissionMode(managed, descriptor);
 
     const chatConfig = resolveChatConfig();
-    const permMode: PermissionMode = resolveSessionOpenCodePermissionMode(
+    const permMode = resolveSessionOpenCodePermissionMode(
       managed.session,
       chatConfig.opencodePermissionMode,
     );
@@ -6784,10 +6837,10 @@ export function createAgentChatService(args: {
     })();
 
     const opencodePermissionMode = (() => {
-      if (chat.opencodePermissionMode === "plan" || chat.opencodePermissionMode === "edit" || chat.opencodePermissionMode === "full-auto") {
+      if (chat.opencodePermissionMode === "plan" || chat.opencodePermissionMode === "edit" || chat.opencodePermissionMode === "full-auto" || chat.opencodePermissionMode === "config-toml") {
         return chat.opencodePermissionMode;
       }
-      if (inProcessMode === "plan" || inProcessMode === "edit" || inProcessMode === "full-auto") {
+      if (inProcessMode === "plan" || inProcessMode === "edit" || inProcessMode === "full-auto" || inProcessMode === "config-toml") {
         return inProcessMode;
       }
       if (claudePermissionMode === "bypassPermissions") return "full-auto" as const;
@@ -11498,8 +11551,11 @@ export function createAgentChatService(args: {
         managed.session.codexFastMode === true && modelSupportsFastMode(runtime.modelDescriptor)
           ? "fast"
           : openCodeReasoningVariant;
+      const openCodeAgent = runtime.permissionMode === "config-toml"
+        ? null
+        : mapPermissionModeToOpenCodeAgent(runtime.permissionMode);
       const openCodePromptBody = {
-        agent: mapPermissionModeToOpenCodeAgent(runtime.permissionMode),
+        ...(openCodeAgent ? { agent: openCodeAgent } : {}),
         model: resolveOpenCodeModelSelection(runtime.modelDescriptor),
         ...(toolSelection ? { tools: toolSelection } : {}),
         ...(openCodeVariant ? { variant: openCodeVariant } : {}),
@@ -13565,6 +13621,25 @@ export function createAgentChatService(args: {
       && runtime.awaitingTurnStart
       && !runtime.activeTurnId
       && !runtime.startedTurnId;
+    const activeCodexTurnId = runtime.activeTurnId ?? runtime.startedTurnId;
+    if (
+      method === "turn/started"
+      && turnIdFromParams
+      && activeCodexTurnId
+      && turnIdFromParams !== activeCodexTurnId
+      && !isTerminalTurn
+      && !isIgnoredTurn
+      && isCodexInProgressTurnStatus(startedTurn?.status)
+    ) {
+      adoptCodexActiveTurnId(
+        managed,
+        runtime,
+        logger,
+        turnIdFromParams,
+        "turn_started_notification_mismatch",
+        { markStarted: false },
+      );
+    }
     if (
       turnIdFromParams
       && !isExpectedTurnStart
@@ -19619,11 +19694,32 @@ export function createAgentChatService(args: {
         input.push({ type: "mention", name, path: stagedPath });
       }
 
-      await runtime.request("turn/steer", {
-        threadId: managed.session.threadId,
-        expectedTurnId: runtime.activeTurnId,
-        input,
-      });
+      let deliveredTurnId = runtime.activeTurnId;
+      const steerActiveTurn = async (expectedTurnId: string): Promise<void> => {
+        await runtime.request("turn/steer", {
+          threadId: managed.session.threadId,
+          expectedTurnId,
+          input,
+        });
+      };
+      try {
+        await steerActiveTurn(deliveredTurnId);
+      } catch (error) {
+        const mismatch = parseCodexActiveTurnMismatch(error);
+        if (!mismatch || mismatch.expectedTurnId !== deliveredTurnId) {
+          throw error;
+        }
+        adoptCodexActiveTurnId(
+          managed,
+          runtime,
+          logger,
+          mismatch.foundTurnId,
+          "turn_steer_mismatch",
+        );
+        persistChatState(managed);
+        deliveredTurnId = mismatch.foundTurnId;
+        await steerActiveTurn(deliveredTurnId);
+      }
       emitChatEvent(managed, {
         type: "user_message",
         text: preparedSteer.visibleText,
@@ -19632,7 +19728,7 @@ export function createAgentChatService(args: {
         ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
         steerId,
         deliveryState: "delivered",
-        turnId: runtime.activeTurnId,
+        turnId: deliveredTurnId,
       });
       return { steerId, queued: false };
     }
@@ -20000,12 +20096,33 @@ export function createAgentChatService(args: {
       const runtime = await ensureCodexSessionRuntime(managed);
       await runtime.collaborationModesReady?.catch(() => {});
       if (!managed.session.threadId || !runtime.activeTurnId) return;
-      rememberInterruptedCodexTurn(runtime, runtime.activeTurnId);
-      await runtime.request("turn/interrupt", {
-        threadId: managed.session.threadId,
-        turnId: runtime.activeTurnId
-      });
-      stopActiveCodexSubagents(managed, runtime, runtime.activeTurnId ?? undefined, "Interrupted by user");
+      let interruptedTurnId = runtime.activeTurnId;
+      const interruptActiveTurn = async (turnId: string): Promise<void> => {
+        rememberInterruptedCodexTurn(runtime, turnId);
+        await runtime.request("turn/interrupt", {
+          threadId: managed.session.threadId,
+          turnId,
+        });
+      };
+      try {
+        await interruptActiveTurn(interruptedTurnId);
+      } catch (error) {
+        const mismatch = parseCodexActiveTurnMismatch(error);
+        if (!mismatch || mismatch.expectedTurnId !== interruptedTurnId) {
+          throw error;
+        }
+        adoptCodexActiveTurnId(
+          managed,
+          runtime,
+          logger,
+          mismatch.foundTurnId,
+          "turn_interrupt_mismatch",
+        );
+        persistChatState(managed);
+        interruptedTurnId = mismatch.foundTurnId;
+        await interruptActiveTurn(interruptedTurnId);
+      }
+      stopActiveCodexSubagents(managed, runtime, interruptedTurnId, "Interrupted by user");
       return;
     }
 
@@ -21032,16 +21149,38 @@ export function createAgentChatService(args: {
 
     if (provider === "cursor") {
       const apiKey = getCursorSdkApiKey();
-      if (!apiKey) return [];
       try {
-        const ordered = await discoverCursorSdkModelDescriptors(apiKey, {
-          mode: args.activateRuntime ? "probe" : "cached-only",
-        });
+        const auth = await detectAuth();
+        const cursorCli = auth.find((entry) =>
+          entry.type === "cli-subscription" && entry.cli === "cursor" && entry.authenticated !== false,
+        );
+        const cursorCliPath = cursorCli?.type === "cli-subscription" && cursorCli.cli === "cursor"
+          ? cursorCli.path
+          : null;
+        const [cliDescriptors, sdkDescriptors] = await Promise.all([
+          cursorCliPath
+            ? discoverCursorCliModelDescriptors(cursorCliPath, {
+                mode: args.activateRuntime ? "probe" : "cached-or-fallback",
+              }).catch(() => [])
+            : Promise.resolve([]),
+          apiKey
+            ? discoverCursorSdkModelDescriptors(apiKey, {
+                mode: args.activateRuntime ? "probe" : "cached-only",
+              }).catch(() => [])
+            : Promise.resolve([]),
+        ]);
+        const ordered = mergeCursorModelDescriptorSources({ cliDescriptors, sdkDescriptors });
         const preferred = pickDefaultCursorDescriptorFromCliList(ordered);
         return ordered.map((d) => ({
           id: d.id,
           displayName: d.displayName,
-          description: `${d.displayName} (Cursor SDK)`,
+          description: `${d.displayName} (${
+            d.cursorAvailability?.cli && d.cursorAvailability?.sdk
+              ? "Cursor CLI + chat"
+              : d.cursorAvailability?.cli
+                ? "Cursor CLI"
+                : "Cursor chat"
+          })`,
           isDefault: preferred ? d.id === preferred.id : false,
           reasoningEfforts: d.reasoningTiers?.map((tier) => ({
             effort: tier,
@@ -21054,6 +21193,7 @@ export function createAgentChatService(args: {
           ...(d.serviceTiers?.length ? { serviceTiers: d.serviceTiers } : {}),
           color: d.color,
           ...(d.aliases?.length ? { aliases: d.aliases } : {}),
+          ...(d.cursorAvailability ? { cursorAvailability: d.cursorAvailability } : {}),
         }));
       } catch {
         return [];
@@ -21311,6 +21451,7 @@ export function createAgentChatService(args: {
             : descriptor.serviceTiers?.length
               ? { serviceTiers: descriptor.serviceTiers }
               : {}),
+          ...(info.cursorAvailability ? { cursorAvailability: info.cursorAvailability } : descriptor.cursorAvailability ? { cursorAvailability: descriptor.cursorAvailability } : {}),
         };
         descriptors.push(patched);
         descriptorInfo.set(catalogDescriptorInfoKey(provider, patched.family, patched.id), { provider, info });
@@ -21406,6 +21547,11 @@ export function createAgentChatService(args: {
                     ? { serviceTiers: descriptor.serviceTiers }
                     : {}),
                 color: descriptor.color,
+                ...(entry?.info.cursorAvailability
+                  ? { cursorAvailability: entry.info.cursorAvailability }
+                  : descriptor.cursorAvailability
+                    ? { cursorAvailability: descriptor.cursorAvailability }
+                    : {}),
                 isAvailable: Boolean(entry),
                 connected: providerMeta?.connected ?? Boolean(entry),
                 requiresConfiguration: !entry && (group.key === "opencode" || group.key === "ollama" || group.key === "lmstudio"),
@@ -21468,17 +21614,39 @@ export function createAgentChatService(args: {
 
     // Interrupt active codex turn before teardown
     if (managed.runtime?.kind === "codex") {
+      const runtime = managed.runtime;
       try {
-        if (managed.session.threadId && managed.runtime.activeTurnId) {
-          rememberInterruptedCodexTurn(managed.runtime, managed.runtime.activeTurnId);
-          await managed.runtime.request("turn/interrupt", {
-            threadId: managed.session.threadId,
-            turnId: managed.runtime.activeTurnId
-          });
+        if (managed.session.threadId && runtime.activeTurnId) {
+          let interruptedTurnId = runtime.activeTurnId;
+          const interruptTurnForDispose = async (turnId: string): Promise<void> => {
+            rememberInterruptedCodexTurn(runtime, turnId);
+            await runtime.request("turn/interrupt", {
+              threadId: managed.session.threadId,
+              turnId,
+            });
+          };
+          try {
+            await interruptTurnForDispose(interruptedTurnId);
+          } catch (error) {
+            const mismatch = parseCodexActiveTurnMismatch(error);
+            if (!mismatch || mismatch.expectedTurnId !== interruptedTurnId) {
+              throw error;
+            }
+            adoptCodexActiveTurnId(
+              managed,
+              runtime,
+              logger,
+              mismatch.foundTurnId,
+              "dispose_interrupt_mismatch",
+            );
+            persistChatState(managed);
+            interruptedTurnId = mismatch.foundTurnId;
+            await interruptTurnForDispose(interruptedTurnId);
+          }
           stopActiveCodexSubagents(
             managed,
-            managed.runtime,
-            managed.runtime.activeTurnId ?? undefined,
+            runtime,
+            interruptedTurnId,
             "Interrupted while closing the session",
           );
         }

@@ -328,7 +328,7 @@ function coerceAiChatConfig(value: unknown): AiConfig["chat"] {
   const sessionBudgetUsd = asNumber(value.sessionBudgetUsd);
   if (sessionBudgetUsd != null && sessionBudgetUsd > 0) chat.sessionBudgetUsd = sessionBudgetUsd;
   const opencodePermissionMode = asString(value.opencodePermissionMode)?.trim();
-  if (opencodePermissionMode === "plan" || opencodePermissionMode === "edit" || opencodePermissionMode === "full-auto") {
+  if (opencodePermissionMode === "plan" || opencodePermissionMode === "edit" || opencodePermissionMode === "full-auto" || opencodePermissionMode === "config-toml") {
     chat.opencodePermissionMode = opencodePermissionMode;
   }
   return Object.keys(chat).length ? chat : undefined;
@@ -1339,7 +1339,7 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     if (inProcess) {
       const entry: NonNullable<NonNullable<AiConfig["permissions"]>["inProcess"]> = {};
       const mode = asString(inProcess.mode)?.trim();
-      if (mode === "plan" || mode === "edit" || mode === "full-auto") {
+      if (mode === "plan" || mode === "edit" || mode === "full-auto" || mode === "config-toml") {
         entry.mode = mode;
       }
       if (Object.keys(entry).length) permissions.inProcess = entry;

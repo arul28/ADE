@@ -12,8 +12,9 @@ type FakeCdpTarget = {
 
 const mockState = vi.hoisted(() => ({
   httpResponses: [] as Array<FakeCdpTarget[] | Promise<FakeCdpTarget[]>>,
-  sockets: [] as Array<{ url: string; sent: string[] }>,
+  sockets: [] as Array<{ url: string; sent: string[]; emitMessage: (payload: unknown) => void }>,
   runtimeValues: [] as unknown[],
+  cdpResults: [] as Array<{ method: string; result: unknown }>,
   screenshotData: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
 }));
 
@@ -65,7 +66,11 @@ vi.mock("ws", async () => {
 
     constructor(readonly url: string) {
       super();
-      mockState.sockets.push({ url, sent: this.sent });
+      mockState.sockets.push({
+        url,
+        sent: this.sent,
+        emitMessage: (payload: unknown) => this.emit("message", Buffer.from(JSON.stringify(payload))),
+      });
       queueMicrotask(() => this.emit("open"));
     }
 
@@ -73,11 +78,20 @@ vi.mock("ws", async () => {
       this.sent.push(payload);
       const message = JSON.parse(payload) as { id: number; method: string };
       if (this.readyState === FakeWebSocket.OPEN) {
-        const result = message.method === "Runtime.evaluate"
+        const queuedResultIndex = mockState.cdpResults.findIndex((entry) => entry.method === message.method);
+        const result = queuedResultIndex >= 0
+          ? mockState.cdpResults.splice(queuedResultIndex, 1)[0]!.result
+          : message.method === "Runtime.evaluate" || message.method === "Runtime.callFunctionOn"
           ? { result: { value: mockState.runtimeValues.shift() ?? {} } }
           : message.method === "Page.captureScreenshot"
             ? { data: mockState.screenshotData }
-            : {};
+            : message.method === "Browser.getWindowForTarget"
+              ? { windowId: 7 }
+              : message.method === "DOM.getNodeForLocation"
+                ? { backendNodeId: 101 }
+                : message.method === "DOM.resolveNode"
+                  ? { object: { objectId: "node-101" } }
+                  : {};
         this.emit("message", Buffer.from(JSON.stringify({ id: message.id, result })));
       }
       callback?.();
@@ -133,6 +147,7 @@ describe("appControlService", () => {
     mockState.httpResponses.length = 0;
     mockState.sockets.length = 0;
     mockState.runtimeValues.length = 0;
+    mockState.cdpResults.length = 0;
   });
 
   it("lets manual target switches win over an in-flight health poll", async () => {
@@ -191,6 +206,135 @@ describe("appControlService", () => {
     ]);
   });
 
+  it("dispatches viewport-space clicks without screenshot scale conversion", async () => {
+    const targetA = target("a");
+    mockState.httpResponses.push([targetA]);
+
+    const service = createAppControlService({
+      projectRoot: "/tmp/project",
+      logger: createLogger(),
+    });
+
+    await service.connect({ cdpPort: 12345, force: true });
+    const socket = mockState.sockets.at(-1);
+    expect(socket).toBeTruthy();
+    socket!.sent.length = 0;
+
+    await service.click({ x: 20, y: 40, scale: 2, coordinateSpace: "viewport" });
+
+    const mouseEvents = socket!.sent
+      .map((payload) => JSON.parse(payload) as { method: string; params?: { type?: string; x?: number; y?: number } })
+      .filter((message) => message.method === "Input.dispatchMouseEvent");
+    expect(mouseEvents.map((event) => ({ x: event.params?.x, y: event.params?.y }))).toEqual([
+      { x: 20, y: 40 },
+      { x: 20, y: 40 },
+    ]);
+  });
+
+  it("normalizes screenshot-space input with independent screencast x/y scales", async () => {
+    const targetA = target("a");
+    mockState.httpResponses.push([targetA]);
+
+    const service = createAppControlService({
+      projectRoot: "/tmp/project",
+      logger: createLogger(),
+    });
+
+    await service.connect({ cdpPort: 12345, force: true });
+    const socket = mockState.sockets.at(-1);
+    expect(socket).toBeTruthy();
+    socket!.emitMessage({
+      method: "Page.screencastFrame",
+      params: {
+        data: mockState.screenshotData,
+        sessionId: 1,
+        metadata: { deviceWidth: 0.5, deviceHeight: 0.25, pageScaleFactor: 2 },
+      },
+    });
+    socket!.sent.length = 0;
+
+    await service.click({ x: 20, y: 40 });
+
+    const mouseEvents = socket!.sent
+      .map((payload) => JSON.parse(payload) as { method: string; params?: { type?: string; x?: number; y?: number } })
+      .filter((message) => message.method === "Input.dispatchMouseEvent");
+    expect(mouseEvents.map((event) => ({ x: event.params?.x, y: event.params?.y }))).toEqual([
+      { x: 10, y: 10 },
+      { x: 10, y: 10 },
+    ]);
+  });
+
+  it("uses CDP node lookup for point inspection", async () => {
+    const targetA = target("a");
+    mockState.httpResponses.push([targetA]);
+    mockState.runtimeValues.push({
+      url: "app://test",
+      title: "Test app",
+      viewport: { width: 100, height: 80, devicePixelRatio: 2 },
+      elements: [{
+        tagName: "button",
+        role: "button",
+        label: "Save",
+        value: null,
+        selector: "button.save",
+        testId: "save-button",
+        rect: { x: 10, y: 10, width: 40, height: 20 },
+        metadata: {},
+      }],
+    });
+
+    const service = createAppControlService({
+      projectRoot: "/tmp/project",
+      logger: createLogger(),
+    });
+
+    await service.connect({ cdpPort: 12345, force: true });
+    const result = await service.inspectPoint({
+      x: 20,
+      y: 20,
+      coordinateSpace: "viewport",
+      includeScreenshot: false,
+    });
+
+    expect(result.snapshot.hitElement?.label).toBe("Save");
+    const socket = mockState.sockets.at(-1);
+    const methods = socket!.sent.map((payload) => JSON.parse(payload) as { method: string }).map((message) => message.method);
+    expect(methods).toContain("DOM.getNodeForLocation");
+    expect(methods).toContain("Runtime.callFunctionOn");
+  });
+
+  it("returns coordinate fallback context for point inspection when CDP misses the DOM", async () => {
+    const targetA = target("a");
+    mockState.httpResponses.push([targetA]);
+    mockState.cdpResults.push({ method: "DOM.getNodeForLocation", result: {} });
+    mockState.runtimeValues.push({
+      url: "app://test",
+      title: "Test app",
+      viewport: { width: 100, height: 80, devicePixelRatio: 2 },
+      elements: [],
+    });
+
+    const service = createAppControlService({
+      projectRoot: "/tmp/project",
+      logger: createLogger(),
+    });
+
+    await service.connect({ cdpPort: 12345, force: true });
+    const result = await service.inspectPoint({
+      x: 20,
+      y: 40,
+      coordinateSpace: "viewport",
+      includeScreenshot: false,
+    });
+
+    expect(result.source).toBe("coordinate-fallback");
+    expect(result.item).toEqual(expect.objectContaining({
+      provider: "coordinate-fallback",
+      componentId: "App coordinate",
+      frame: expect.objectContaining({ width: 1, height: 1 }),
+    }));
+  });
+
   it("uses an in-page click fallback when the Electron target is hidden", async () => {
     const targetA = target("a");
     mockState.httpResponses.push([targetA]);
@@ -235,5 +379,72 @@ describe("appControlService", () => {
     expect(screenshot.width).toBe(1);
     expect(screenshot.height).toBe(1);
     expect(vi.getTimerCount()).toBe(timerCountBeforeCapture);
+  });
+
+  it("raises and minimizes the controlled window only through explicit window controls", async () => {
+    const targetA = target("a");
+    mockState.httpResponses.push([targetA]);
+
+    const service = createAppControlService({
+      projectRoot: "/tmp/project",
+      logger: createLogger(),
+    });
+
+    await service.connect({ cdpPort: 12345, force: true });
+    const socket = mockState.sockets.at(-1);
+    expect(socket).toBeTruthy();
+    socket!.sent.length = 0;
+
+    await service.focusWindow();
+    await service.minimizeWindow();
+
+    const messages = socket!.sent.map((payload) => JSON.parse(payload) as { method: string; params?: { bounds?: { windowState?: string } } });
+    expect(messages.filter((message) => message.method === "Browser.setWindowBounds").map((message) => message.params?.bounds?.windowState)).toEqual([
+      "normal",
+      "minimized",
+    ]);
+    expect(messages.filter((message) => message.method === "Page.bringToFront")).toHaveLength(1);
+  });
+
+  it("fails closed when explicit CDP window controls are unavailable", async () => {
+    const targetA = target("a");
+    mockState.httpResponses.push([targetA]);
+    mockState.cdpResults.push({ method: "Browser.getWindowForTarget", result: {} });
+
+    const service = createAppControlService({
+      projectRoot: "/tmp/project",
+      logger: createLogger(),
+    });
+
+    await service.connect({ cdpPort: 12345, force: true });
+    const socket = mockState.sockets.at(-1);
+    expect(socket).toBeTruthy();
+    socket!.sent.length = 0;
+
+    await expect(service.focusWindow()).rejects.toThrow("Could not show the controlled app window");
+    const messages = socket!.sent.map((payload) => JSON.parse(payload) as { method: string });
+    expect(messages.map((message) => message.method)).toEqual(["Browser.getWindowForTarget"]);
+  });
+
+  it("wraps non-macOS CDP window-control failures with action context", async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+    try {
+      const targetA = target("a");
+      mockState.httpResponses.push([targetA]);
+      mockState.cdpResults.push({ method: "Browser.getWindowForTarget", result: {} });
+
+      const service = createAppControlService({
+        projectRoot: "/tmp/project",
+        logger: createLogger(),
+      });
+
+      await service.connect({ cdpPort: 12345, force: true });
+      await expect(service.minimizeWindow()).rejects.toThrow(
+        "Could not minimize the controlled app window: The active CDP target does not expose a browser window id.",
+      );
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    }
   });
 });

@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  CLAUDE_INITIAL_INPUT_CONFIRM_DELAY_MS,
   createAdeRpcRequestHandler,
   _resetGlobalAskUserRateLimit,
   resolveComputerUseOwners,
@@ -1869,7 +1868,9 @@ describe("adeRpcServer", () => {
     );
     const createCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0];
     expect(createCall?.args).toEqual(expect.arrayContaining(["--model", "gpt-5.5", "-c", "model_reasoning_effort=\"xhigh\""]));
-    expect(createCall?.args.at(-1)).toContain("fix failing tests");
+    expect(createCall?.args).not.toContain(expect.stringContaining("fix failing tests"));
+    expect(createCall?.initialInput).toContain("fix failing tests");
+    expect(createCall?.initialInputDelayMs).toBe(750);
     expect(fixture.runtime.ptyService.writeBySessionId).not.toHaveBeenCalled();
     expect(fixture.runtime.sessionService.updateMeta).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: "session-1",
@@ -2039,50 +2040,38 @@ describe("adeRpcServer", () => {
     expect(response.structuredContent.permissionMode).toBe("auto");
   });
 
-  it("confirms Claude Code initial input after startup", async () => {
-    vi.useFakeTimers();
-    try {
-      const fixture = createRuntime();
-      fixture.runtime.sessionService.get.mockReturnValue({
-        id: "session-1",
-        laneId: "lane-1",
-        ptyId: "pty-1",
-        tracked: true,
-        toolType: "claude",
-        title: "Claude Code",
-        status: "running",
-        resumeCommand: null,
-        resumeMetadata: null,
-      });
-      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+  it("embeds Claude Code initial input in the launch command", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockReturnValue({
+      id: "session-1",
+      laneId: "lane-1",
+      ptyId: "pty-1",
+      tracked: true,
+      toolType: "claude",
+      title: "Claude Code",
+      status: "running",
+      resumeCommand: null,
+      resumeMetadata: null,
+    });
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-      await initialize(handler, { role: "orchestrator" });
-      const response = await callTool(handler, "start_cli_session", {
-        laneId: "lane-1",
-        provider: "claude",
-        permissionMode: "default",
-        initialInput: "hello?",
-      });
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "claude",
+      permissionMode: "default",
+      initialInput: "hello?",
+    });
 
-      expect(response?.isError).toBeUndefined();
-      expect(fixture.runtime.ptyService.writeBySessionId).toHaveBeenCalledTimes(1);
-      expect(fixture.runtime.ptyService.writeBySessionId).toHaveBeenNthCalledWith(1, "session-1", "hello?\r");
-
-      await vi.advanceTimersByTimeAsync(CLAUDE_INITIAL_INPUT_CONFIRM_DELAY_MS);
-
-      expect(fixture.runtime.ptyService.writeBySessionId).toHaveBeenCalledTimes(2);
-      expect(fixture.runtime.ptyService.writeBySessionId).toHaveBeenNthCalledWith(2, "session-1", "\r");
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(response?.isError).toBeUndefined();
+    const createCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0];
+    expect(createCall?.args?.at(-1)).toContain("hello?");
+    expect(createCall?.startupCommand).toContain("hello?");
+    expect(fixture.runtime.ptyService.writeBySessionId).not.toHaveBeenCalled();
   });
 
-  it("preserves the initial input write error if cleanup fails", async () => {
+  it("sends Cursor initial input after the launch command", async () => {
     const fixture = createRuntime();
-    fixture.runtime.ptyService.writeBySessionId.mockReturnValueOnce(false);
-    fixture.runtime.ptyService.dispose.mockImplementationOnce(() => {
-      throw new Error("already disposed");
-    });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
     await initialize(handler, { role: "orchestrator" });
@@ -2092,11 +2081,16 @@ describe("adeRpcServer", () => {
       initialInput: "fix failing tests",
     });
 
-    expect(response.isError).toBe(true);
-    expect(fixture.runtime.ptyService.dispose).toHaveBeenCalledWith({ ptyId: "pty-1", sessionId: "session-1" });
-    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
-      "Created terminal session could not receive the initial input.",
-    );
+    expect(response?.isError).toBeUndefined();
+    const createCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0];
+    expect(createCall?.command).toBe("/bin/bash");
+    expect(createCall?.args).toEqual(["-lc", createCall?.startupCommand]);
+    expect(createCall?.startupCommand).toContain("cursor-agent create-chat");
+    expect(createCall?.startupCommand).toContain("cursor-agent --resume");
+    expect(createCall?.initialInput).toContain("fix failing tests");
+    expect(createCall?.initialInputDelayMs).toBe(750);
+    expect(fixture.runtime.ptyService.writeBySessionId).not.toHaveBeenCalled();
+    expect(fixture.runtime.ptyService.dispose).not.toHaveBeenCalled();
   });
 
   it("preassigns Claude session ids for start_cli_session launches", async () => {

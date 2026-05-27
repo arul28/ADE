@@ -101,6 +101,8 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.appControlScreenshot:
     case IPC.appControlConnect:
     case IPC.appControlStop:
+    case IPC.appControlFocusWindow:
+    case IPC.appControlMinimizeWindow:
     case IPC.appControlClick:
     case IPC.appControlTypeText:
     case IPC.builtInBrowserNavigate:

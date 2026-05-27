@@ -954,14 +954,13 @@ function scheduleFrameWriteFlush(runtime: CachedRuntime) {
   const flush = () => {
     runtime.flushRafId = null;
     runtime.flushTimer = null;
-    // Write to xterm even while parked: xterm.write only updates the internal
-    // buffer, so it is safe to call when the host is detached. Writing through
-    // keeps the terminal state current so switching back shows the latest
-    // output instead of a stale snapshot (issue #157).
     flushFrameWriteChunksSync(runtime);
   };
   if (runtime.refs === 0 || !runtime.visible || document.visibilityState !== "visible") {
-    runtime.flushTimer = setTimeout(flush, 16);
+    // Hidden or parked terminals can stream heavily while the user is looking
+    // elsewhere. Keep only the bounded pending tail and write it when the
+    // terminal is revealed; that avoids doing xterm layout/buffer work for
+    // invisible CLI sessions.
     return;
   }
   runtime.flushRafId = requestAnimationFrame(flush);

@@ -718,14 +718,73 @@ describe("WorkViewArea", () => {
     expect(local.getByText(/final answer/)).toBeTruthy();
     expect(local.queryByText("Resume this session with:")).toBeNull();
     expect(local.getByLabelText("Continue Claude Code session")).toBeTruthy();
-    expect(local.getByRole("button", { name: /Select model/i })).toBeTruthy();
-    expect(local.getByLabelText("Claude Code permission mode")).toBeTruthy();
+    expect(local.queryByRole("button", { name: /Select model/i })).toBeNull();
+    expect(local.queryByLabelText("Claude Code permission mode")).toBeNull();
     expect(local.queryByText("Resume")).toBeNull();
     expect(local.getAllByTestId("work-cli-session-header").some((header) => header.getAttribute("data-session-id") === "session-1")).toBe(true);
     expect(local.queryAllByTestId("terminal-view")).toHaveLength(0);
     expect(terminalPreviewMock).toHaveBeenCalledWith({ terminalId: "session-1", maxBytes: 160_000 });
     expect(slashCommandsMock).toHaveBeenCalledWith({ laneId: "lane-1", provider: "claude" });
-    expect(modelsMock).toHaveBeenCalledWith({ provider: "claude" });
+    expect(modelsMock).not.toHaveBeenCalled();
+  });
+
+  it("does not hydrate hidden tab session previews or continuation commands", async () => {
+    const activeSession = {
+      ...makeSession(),
+      id: "session-active",
+      toolType: "claude" as const,
+      resumeCommand: "claude --resume active-thread",
+      resumeMetadata: {
+        provider: "claude" as const,
+        targetKind: "session" as const,
+        targetId: "active-thread",
+        launch: { permissionMode: "default" as const },
+      },
+    };
+    const hiddenSession = {
+      ...makeSession(),
+      id: "session-hidden",
+      title: "Hidden session",
+      toolType: "claude" as const,
+      resumeCommand: "claude --resume hidden-thread",
+      resumeMetadata: {
+        provider: "claude" as const,
+        targetKind: "session" as const,
+        targetId: "hidden-thread",
+        launch: { permissionMode: "default" as const },
+      },
+    };
+
+    const view = render(
+      <WorkViewArea
+        gridLayoutId="work:grid:test"
+        lanes={[]}
+        sessions={[activeSession, hiddenSession]}
+        visibleSessions={[activeSession, hiddenSession]}
+        tabGroups={[]}
+        tabVisibleSessionIds={[activeSession.id, hiddenSession.id]}
+        activeItemId={activeSession.id}
+        viewMode="tabs"
+        draftKind="chat"
+        setViewMode={() => {}}
+        onSelectItem={() => {}}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={resolvePtyLaunch}
+        onShowDraftKind={() => {}}
+        onToggleTabGroupCollapsed={() => {}}
+        closingPtyIds={new Set()}
+      />,
+    );
+    const local = within(view.container);
+
+    expect(await local.findByLabelText("Continue Claude Code session")).toBeTruthy();
+    expect(local.getAllByText("Existing session").length).toBeGreaterThan(0);
+    expect(local.getByText("Hidden session")).toBeTruthy();
+    expect(terminalPreviewMock).toHaveBeenCalledTimes(1);
+    expect(terminalPreviewMock).toHaveBeenCalledWith({ terminalId: "session-active", maxBytes: 160_000 });
+    expect(slashCommandsMock).toHaveBeenCalledTimes(1);
+    expect(slashCommandsMock).toHaveBeenCalledWith({ laneId: "lane-1", provider: "claude" });
   });
 
   it("uses colored terminal snapshots for closed TUI sessions", async () => {
@@ -917,6 +976,58 @@ describe("WorkViewArea", () => {
     expect(local.queryAllByTestId("terminal-view")).toHaveLength(0);
   });
 
+  it("shows unreachable agent CLI sessions as ended with continuation controls", async () => {
+    terminalPreviewMock.mockResolvedValueOnce({
+      terminalId: "session-1",
+      source: "transcript",
+      transcript: "peer-owned transcript\n",
+      capturedAt: "2026-04-06T12:10:00.000Z",
+      snapshot: null,
+    });
+    const session = {
+      ...makeSession(),
+      toolType: "codex" as const,
+      status: "detached" as const,
+      endedAt: null,
+      runtimeState: "exited" as const,
+      resumeCommand: "codex resume thread-1",
+      resumeMetadata: {
+        provider: "codex" as const,
+        targetKind: "thread" as const,
+        targetId: "thread-1",
+        launch: { permissionMode: "plan" as const },
+      },
+    };
+
+    const view = render(
+      <WorkViewArea
+        gridLayoutId="work:grid:test"
+        lanes={[]}
+        sessions={[session]}
+        visibleSessions={[session]}
+        tabGroups={[]}
+        tabVisibleSessionIds={[session.id]}
+        activeItemId={session.id}
+        viewMode="tabs"
+        draftKind="chat"
+        setViewMode={() => {}}
+        onSelectItem={() => {}}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={resolvePtyLaunch}
+        onShowDraftKind={() => {}}
+        onToggleTabGroupCollapsed={() => {}}
+        closingPtyIds={new Set()}
+      />,
+    );
+    const local = within(view.container);
+
+    expect(await local.findByText("Session ended")).toBeTruthy();
+    expect(local.getByText(/peer-owned transcript/)).toBeTruthy();
+    expect(local.getByLabelText("Continue Codex session")).toBeTruthy();
+    expect(local.queryAllByTestId("terminal-view")).toHaveLength(0);
+  });
+
   it("treats fully styled blank snapshot rows as TUI content", async () => {
     const bgCell = () => ({
       text: " ",
@@ -1047,21 +1158,14 @@ describe("WorkViewArea", () => {
     );
 
     const textarea = await within(view.container).findByLabelText("Continue Codex session");
-    await waitFor(() => {
-      expect(within(view.container).getByRole("button", { name: /Select model/i })).toBeTruthy();
-    });
     fireEvent.change(textarea, { target: { value: "fix the test" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
 
-    await waitFor(() => expect(onContinue).toHaveBeenCalledWith(session, "fix the test", {
-      model: "gpt-5.4",
-      permissionMode: "plan",
-      reasoningEffort: "high",
-    }));
+    await waitFor(() => expect(onContinue).toHaveBeenCalledWith(session, "fix the test"));
     expect((textarea as HTMLTextAreaElement).value).toBe("");
   });
 
-  it("keeps a changed continuation permission when session metadata is refreshed with the same values", async () => {
+  it("does not show resume-time model or permission controls", async () => {
     const session = {
       ...makeSession(),
       toolType: "codex" as const,
@@ -1073,15 +1177,15 @@ describe("WorkViewArea", () => {
         launch: { permissionMode: "plan" as const },
       },
     };
-    const renderView = (nextSession: typeof session) => (
+    const view = render(
       <WorkViewArea
         gridLayoutId="work:grid:test"
         lanes={[]}
-        sessions={[nextSession]}
-        visibleSessions={[nextSession]}
+        sessions={[session]}
+        visibleSessions={[session]}
         tabGroups={[]}
-        tabVisibleSessionIds={[nextSession.id]}
-        activeItemId={nextSession.id}
+        tabVisibleSessionIds={[session.id]}
+        activeItemId={session.id}
         viewMode="tabs"
         draftKind="chat"
         setViewMode={() => {}}
@@ -1092,29 +1196,13 @@ describe("WorkViewArea", () => {
         onShowDraftKind={() => {}}
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
-      />
+      />,
     );
-
-    const view = render(renderView(session));
     const local = within(view.container);
 
-    const picker = await local.findByLabelText("Codex permission mode");
-    expect(picker.textContent).toContain("Plan mode");
-    fireEvent.click(picker);
-    fireEvent.click(await screen.findByText("Full access"));
-    expect(local.getByLabelText("Codex permission mode").textContent).toContain("Full access");
-
-    const refreshedSession = {
-      ...session,
-      title: "Updated title",
-      resumeMetadata: {
-        ...session.resumeMetadata,
-        launch: { ...session.resumeMetadata.launch },
-      },
-    };
-    view.rerender(renderView(refreshedSession));
-
-    expect(local.getByLabelText("Codex permission mode").textContent).toContain("Full access");
+    expect(await local.findByLabelText("Continue Codex session")).toBeTruthy();
+    expect(local.queryByRole("button", { name: /Select model/i })).toBeNull();
+    expect(local.queryByLabelText("Codex permission mode")).toBeNull();
   });
 
   it("shows provider-specific slash command suggestions in the continuation composer", async () => {

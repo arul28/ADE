@@ -8,6 +8,7 @@ import type {
   AppControlClickArgs,
   AppControlConnectArgs,
   AppControlContextItem,
+  AppControlCoordinateSpace,
   AppControlElement,
   AppControlEventPayload,
   AppControlFrame,
@@ -71,6 +72,27 @@ type CdpRuntimeEvaluateResponse<T> = {
   exceptionDetails?: unknown;
 };
 
+type CdpDomGetNodeForLocationResponse = {
+  backendNodeId?: number;
+  frameId?: string;
+  nodeId?: number;
+};
+
+type CdpDomResolveNodeResponse = {
+  object?: {
+    objectId?: string;
+  };
+};
+
+type CdpRuntimeCallFunctionOnResponse<T> = {
+  result?: {
+    type?: string;
+    value?: T;
+    description?: string;
+  };
+  exceptionDetails?: unknown;
+};
+
 type CdpInputPageState = {
   hasFocus: boolean;
   visibilityState: string;
@@ -102,6 +124,11 @@ type DomSnapshotPayload = {
     rect: AppControlFrame;
     metadata: Record<string, unknown>;
   }>;
+};
+
+type PointViewport = {
+  x: number;
+  y: number;
 };
 
 type ResolvedLaunch = {
@@ -426,6 +453,39 @@ function pngDimensions(buffer: Buffer): { width: number; height: number } | null
   };
 }
 
+function jpegDimensions(buffer: Buffer): { width: number; height: number } | null {
+  if (buffer.length < 4 || buffer[0] !== 0xff || buffer[1] !== 0xd8) return null;
+  let offset = 2;
+  while (offset + 9 < buffer.length) {
+    if (buffer[offset] !== 0xff) {
+      offset += 1;
+      continue;
+    }
+    const marker = buffer[offset + 1];
+    offset += 2;
+    if (marker === 0xd9 || marker === 0xda) break;
+    if (offset + 2 > buffer.length) return null;
+    const segmentLength = buffer.readUInt16BE(offset);
+    if (segmentLength < 2 || offset + segmentLength > buffer.length) return null;
+    const isStartOfFrame =
+      marker >= 0xc0
+      && marker <= 0xcf
+      && ![0xc4, 0xc8, 0xcc].includes(marker);
+    if (isStartOfFrame && segmentLength >= 7) {
+      return {
+        height: buffer.readUInt16BE(offset + 3),
+        width: buffer.readUInt16BE(offset + 5),
+      };
+    }
+    offset += segmentLength;
+  }
+  return null;
+}
+
+function imageDimensions(buffer: Buffer): { width: number; height: number } | null {
+  return pngDimensions(buffer) ?? jpegDimensions(buffer);
+}
+
 function cdpDomSnapshotScript(maxElements: number): string {
   return `(() => {
     const roleFor = (el) => {
@@ -512,11 +572,10 @@ function cdpDomSnapshotScript(maxElements: number): string {
   })()`;
 }
 
-function cdpPointSnapshotScript(point: { x: number; y: number; scale?: number | null }): string {
+function cdpPointSnapshotScript(point: PointViewport): string {
   const pointJson = JSON.stringify({
     x: point.x,
     y: point.y,
-    scale: typeof point.scale === "number" && Number.isFinite(point.scale) && point.scale > 0 ? point.scale : null,
   });
   return `(() => {
     const point = ${pointJson};
@@ -558,9 +617,8 @@ function cdpPointSnapshotScript(point: { x: number; y: number; scale?: number | 
       return parts.length ? parts.join(" > ") : null;
     };
     const viewport = { width: window.innerWidth, height: window.innerHeight, devicePixelRatio: window.devicePixelRatio || 1 };
-    const scale = Number.isFinite(point.scale) && point.scale > 0 ? point.scale : viewport.devicePixelRatio || 1;
-    const cssX = point.x / scale;
-    const cssY = point.y / scale;
+    const cssX = point.x;
+    const cssY = point.y;
     const seen = new Set();
     const candidates = [];
     const isElement = (value) => value && value.nodeType === Node.ELEMENT_NODE;
@@ -626,6 +684,151 @@ function cdpPointSnapshotScript(point: { x: number; y: number; scale?: number | 
     };
   })()`;
 }
+
+const CDP_NODE_METADATA_FUNCTION = String.raw`
+function() {
+  const roleFor = (el) => {
+    const explicit = el.getAttribute("role");
+    if (explicit) return explicit;
+    const tag = el.tagName.toLowerCase();
+    if (tag === "button") return "button";
+    if (tag === "a") return "link";
+    if (tag === "input") return el.type === "checkbox" ? "checkbox" : "textbox";
+    if (tag === "textarea") return "textbox";
+    if (tag === "select") return "combobox";
+    if (/^h[1-6]$/.test(tag)) return "heading";
+    return null;
+  };
+  const escapeIdent = (value) => {
+    if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(value);
+    return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+  };
+  const quoteAttr = (value) => String(value).replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+  const selectorFor = (node) => {
+    if (!node) return null;
+    const testId = node.getAttribute("data-testid")
+      || node.getAttribute("data-test")
+      || node.getAttribute("data-test-id")
+      || node.getAttribute("data-qa")
+      || node.getAttribute("data-cy");
+    if (node.id) return "#" + escapeIdent(node.id);
+    if (testId) return node.tagName.toLowerCase() + "[data-testid=\"" + quoteAttr(testId) + "\"]";
+    const parts = [];
+    let current = node;
+    while (current && current.nodeType === Node.ELEMENT_NODE && current !== document.body && parts.length < 6) {
+      let part = current.tagName.toLowerCase();
+      const classes = Array.from(current.classList || []).filter((value) => !/[:\\[\\]\\/]/.test(value)).slice(0, 2);
+      if (classes.length) part += "." + classes.map((value) => escapeIdent(value)).join(".");
+      const parent = current.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter((child) => child.tagName === current.tagName);
+        if (siblings.length > 1) part += ":nth-of-type(" + (siblings.indexOf(current) + 1) + ")";
+      }
+      parts.unshift(part);
+      current = parent;
+    }
+    return parts.length ? parts.join(" > ") : null;
+  };
+  const textFor = (el) => {
+    const labelledBy = el.getAttribute("aria-labelledby");
+    const labelledByText = labelledBy
+      ? labelledBy
+          .split(/\s+/)
+          .map((id) => document.getElementById(id)?.textContent || "")
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .trim()
+      : "";
+    const aria = el.getAttribute("aria-label") || labelledByText || el.getAttribute("alt") || el.getAttribute("title") || "";
+    const text = (aria || el.innerText || el.textContent || el.getAttribute("name") || "").replace(/\s+/g, " ").trim();
+    return text.slice(0, 180) || null;
+  };
+  const isInteractive = (el) => Boolean(
+    roleFor(el)
+    || el.getAttribute("data-testid")
+    || el.getAttribute("data-test")
+    || el.getAttribute("data-test-id")
+    || el.getAttribute("data-qa")
+    || el.getAttribute("data-cy")
+    || el.matches("button,a,input,textarea,select,summary,[tabindex],[contenteditable='true'],[onclick]")
+  );
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    if (!rect || rect.width < 1 || rect.height < 1) return false;
+    const style = window.getComputedStyle(el);
+    return style.visibility !== "hidden" && style.display !== "none" && Number(style.opacity || "1") >= 0.05;
+  };
+  const pickElement = (raw) => {
+    let element = raw && raw.nodeType === Node.ELEMENT_NODE
+      ? raw
+      : raw && raw.parentElement
+        ? raw.parentElement
+        : null;
+    if (!element) return null;
+    const stack = [];
+    let current = element;
+    while (current && current !== document.body && current !== document.documentElement) {
+      stack.push(current);
+      current = current.parentElement;
+    }
+    const interactive = stack.find((candidate) => isInteractive(candidate) && visible(candidate));
+    if (interactive) return interactive;
+    const labelled = stack.find((candidate) => textFor(candidate) && visible(candidate));
+    return labelled || (visible(element) ? element : null);
+  };
+  const element = pickElement(this);
+  const viewport = { width: window.innerWidth, height: window.innerHeight, devicePixelRatio: window.devicePixelRatio || 1 };
+  if (!element) {
+    return {
+      url: location.href || null,
+      title: document.title || null,
+      viewport,
+      elements: []
+    };
+  }
+  const rect = element.getBoundingClientRect();
+  const tagName = element.tagName ? element.tagName.toLowerCase() : null;
+  const role = roleFor(element);
+  const testId = element.getAttribute("data-testid")
+    || element.getAttribute("data-test")
+    || element.getAttribute("data-test-id")
+    || element.getAttribute("data-qa")
+    || element.getAttribute("data-cy")
+    || null;
+  const isPasswordInput = element.tagName === "INPUT"
+    && typeof element.type === "string"
+    && element.type.toLowerCase() === "password";
+  return {
+    url: location.href || null,
+    title: document.title || null,
+    viewport,
+    elements: [{
+      tagName,
+      role,
+      label: textFor(element),
+      value: isPasswordInput ? null : ("value" in element && typeof element.value === "string" ? element.value.slice(0, 180) : null),
+      selector: selectorFor(element),
+      testId,
+      rect: {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height
+      },
+      metadata: {
+        id: element.id || null,
+        className: typeof element.className === "string" ? element.className.slice(0, 240) : null,
+        ariaLabel: element.getAttribute("aria-label"),
+        name: element.getAttribute("name"),
+        href: element instanceof HTMLAnchorElement ? element.href : element.getAttribute("href"),
+        type: element.getAttribute("type"),
+        disabled: "disabled" in element ? Boolean(element.disabled) : null,
+        checked: "checked" in element ? Boolean(element.checked) : null
+      }
+    }]
+  };
+}
+`;
 
 function cdpDomClickScript(point: { x: number; y: number }): string {
   const pointJson = JSON.stringify({
@@ -1000,7 +1203,6 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     screencastEndpoint = cdpEndpoint;
     try {
       await client.send("Page.enable");
-      await client.send("Page.bringToFront").catch(() => {});
     } catch {
       // continue — startScreencast will fail loudly if it really isn't ready
     }
@@ -1024,17 +1226,34 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
       const data = typeof record.data === "string" ? record.data : "";
       if (!data) return;
       const meta = record.metadata ?? {};
-      const screenW = typeof meta.deviceWidth === "number" ? meta.deviceWidth : 0;
-      const screenH = typeof meta.deviceHeight === "number" ? meta.deviceHeight : 0;
-      const scale = typeof meta.pageScaleFactor === "number" && meta.pageScaleFactor > 0 ? meta.pageScaleFactor : 1;
+      const buffer = Buffer.from(data, "base64");
+      const encodedDimensions = imageDimensions(buffer);
+      const viewportWidth = typeof meta.deviceWidth === "number" && meta.deviceWidth > 0
+        ? meta.deviceWidth
+        : encodedDimensions?.width ?? 0;
+      const viewportHeight = typeof meta.deviceHeight === "number" && meta.deviceHeight > 0
+        ? meta.deviceHeight
+        : encodedDimensions?.height ?? 0;
+      const bitmapWidth = encodedDimensions?.width ?? viewportWidth;
+      const bitmapHeight = encodedDimensions?.height ?? viewportHeight;
+      const scaleX = viewportWidth > 0 && bitmapWidth > 0 ? bitmapWidth / viewportWidth : 1;
+      const scaleY = viewportHeight > 0 && bitmapHeight > 0 ? bitmapHeight / viewportHeight : scaleX;
+      const devicePixelRatio = typeof meta.pageScaleFactor === "number" && meta.pageScaleFactor > 0
+        ? meta.pageScaleFactor
+        : scaleX || 1;
       const frame: AppControlScreencastFrame = {
         sessionId,
         cdpTargetId: targetId,
         data,
         mimeType: "image/jpeg",
-        width: screenW,
-        height: screenH,
-        scale,
+        width: bitmapWidth,
+        height: bitmapHeight,
+        scale: scaleX || 1,
+        viewportWidth,
+        viewportHeight,
+        devicePixelRatio,
+        scaleX,
+        scaleY,
         capturedAt: typeof meta.timestamp === "number"
           ? new Date(meta.timestamp * 1000).toISOString()
           : nowIso(),
@@ -1156,7 +1375,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
         updateSession({
           cdpEndpoint: null,
           cdpTargetId: activeSession.cdpTargetId,
-          status: "exited",
+          status: terminalAlive ? "running" : "exited",
           lastError: listError ? listError.message : "App Control lost the CDP target. The app may have quit.",
         });
         if (terminalAlive) startCdpPoller(sessionId, port);
@@ -1175,7 +1394,11 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     stopCdpPoller();
     stopCdpHealthCheck();
     updateSession({
-      status: activeSession.status === "stopping" ? "stopped" : event.exitCode === 0 ? "exited" : "failed",
+      status: activeSession.status === "stopping"
+        ? "stopped"
+        : event.exitCode === 0
+          ? "exited"
+          : "failed",
       lastError: event.exitCode === 0 ? null : `Terminal exited with code ${event.exitCode ?? "unknown"}.`,
     });
   }) ?? null;
@@ -1506,21 +1729,42 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     }
   };
 
-  const preparePageForCapture = async (client: CdpClient): Promise<void> => {
-    try {
-      const windowInfo = await client.send<{ windowId?: number }>("Browser.getWindowForTarget");
-      if (typeof windowInfo.windowId === "number") {
+  const enablePageDomain = async (client: CdpClient): Promise<void> => {
+    await client.send("Page.enable").catch(() => {});
+  };
+
+  const setWindowState = async (windowState: "normal" | "minimized"): Promise<{ ok: true }> => {
+    await withCdp(async (client) => {
+      let browserWindowError: Error | null = null;
+      try {
+        const windowInfo = await client.send<{ windowId?: number }>("Browser.getWindowForTarget");
+        if (typeof windowInfo.windowId !== "number") {
+          throw new Error("The active CDP target does not expose a browser window id.");
+        }
         await client.send("Browser.setWindowBounds", {
           windowId: windowInfo.windowId,
-          bounds: { windowState: "normal" },
-        }).catch(() => {});
+          bounds: { windowState },
+        });
+        if (windowState === "normal") {
+          await client.send("Page.bringToFront").catch(() => {});
+        }
+        return;
+      } catch (error) {
+        browserWindowError = error instanceof Error ? error : new Error(String(error));
       }
-    } catch {
-      // Some Electron targets do not expose Browser window bounds.
-    }
-    await client.send("Page.enable").catch(() => {});
-    await client.send("Page.bringToFront").catch(() => {});
-    await delay(100);
+      if (process.platform === "darwin") {
+        throw new Error(
+          `Could not ${windowState === "normal" ? "show" : "minimize"} the controlled app window: `
+          + `${browserWindowError?.message ?? "CDP window controls are unavailable."} `
+          + "ADE does not fall back to title-only macOS scripting because it can target the wrong app window.",
+        );
+      }
+      throw new Error(
+        `Could not ${windowState === "normal" ? "show" : "minimize"} the controlled app window: `
+        + `${browserWindowError?.message ?? "CDP window controls are unavailable."}`,
+      );
+    });
+    return { ok: true };
   };
 
   const captureScreenshotWithClient = async (client: CdpClient, session: AppControlSession): Promise<AppControlScreenshot> => {
@@ -1543,7 +1787,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
         dataUrl: `data:${lastScreencastFrame.mimeType};base64,${lastScreencastFrame.data}`,
       };
     }
-    await preparePageForCapture(client);
+    await enablePageDomain(client);
     // Bound the captureScreenshot call independently of the global CDP timeout.
     // A backgrounded or slow renderer can sit on this for 15s otherwise, and
     // the caller (getSnapshot) almost always has the option to fall back to a
@@ -1560,7 +1804,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
       if (captureTimeoutHandle) clearTimeout(captureTimeoutHandle);
     });
     const buffer = Buffer.from(response.data, "base64");
-    const dimensions = pngDimensions(buffer) ?? { width: 0, height: 0 };
+    const dimensions = imageDimensions(buffer) ?? { width: 0, height: 0 };
     return {
       sessionId: session.id,
       cdpTargetId: session.cdpTargetId,
@@ -1584,8 +1828,33 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
 
   const readPointSnapshotWithClient = async (
     client: CdpClient,
-    point: { x: number; y: number; scale?: number | null },
+    point: PointViewport,
   ): Promise<DomSnapshotPayload | null> => {
+    try {
+      await client.send("DOM.enable").catch(() => {});
+      const located = await client.send<CdpDomGetNodeForLocationResponse>("DOM.getNodeForLocation", {
+        x: Math.max(0, Math.round(point.x)),
+        y: Math.max(0, Math.round(point.y)),
+        includeUserAgentShadowDOM: true,
+        ignorePointerEventsNone: true,
+      });
+      const backendNodeId = located.backendNodeId;
+      if (typeof backendNodeId === "number") {
+        const resolved = await client.send<CdpDomResolveNodeResponse>("DOM.resolveNode", { backendNodeId });
+        const objectId = resolved.object?.objectId;
+        if (objectId) {
+          const called = await client.send<CdpRuntimeCallFunctionOnResponse<DomSnapshotPayload>>("Runtime.callFunctionOn", {
+            objectId,
+            functionDeclaration: CDP_NODE_METADATA_FUNCTION,
+            returnByValue: true,
+            awaitPromise: true,
+          });
+          if (called.result?.value) return called.result.value;
+        }
+      }
+    } catch {
+      // Fall back to in-page hit testing when a target omits DOM.getNodeForLocation.
+    }
     const evaluated = await client.send<CdpRuntimeEvaluateResponse<DomSnapshotPayload>>("Runtime.evaluate", {
       expression: cdpPointSnapshotScript(point),
       returnByValue: true,
@@ -1636,6 +1905,8 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     });
     const x = typeof snapshotArgs.x === "number" ? snapshotArgs.x : null;
     const y = typeof snapshotArgs.y === "number" ? snapshotArgs.y : null;
+    const hitX = snapshotArgs.coordinateSpace === "viewport" && x != null ? x * scaleX : x;
+    const hitY = snapshotArgs.coordinateSpace === "viewport" && y != null ? y * scaleY : y;
     return {
       session,
       capturedAt: shot?.capturedAt ?? nowIso(),
@@ -1644,9 +1915,14 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
         width: screenWidth || viewport.width,
         height: screenHeight || viewport.height,
         scale,
+        viewportWidth: viewport.width,
+        viewportHeight: viewport.height,
+        devicePixelRatio: viewport.devicePixelRatio,
+        scaleX,
+        scaleY,
       },
       elements,
-      hitElement: x == null || y == null ? null : findSmallestElementAt(elements, x, y),
+      hitElement: hitX == null || hitY == null ? null : findSmallestElementAt(elements, hitX, hitY),
       providers: [
         { provider: "screenshot", available: Boolean(shot), error: screenshotError },
         { provider: "cdp", available: true, elementCount: elements.length },
@@ -1690,8 +1966,15 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
         screenshotError = error instanceof Error ? error.message : String(error);
       }
     }
-    const dom = await readPointSnapshotWithClient(client, point);
-    return buildSnapshot(session, shot, dom, { projectRoot: point.projectRoot, x: point.x, y: point.y }, screenshotError);
+    const viewportPoint = await normalizeViewportPoint(client, point);
+    const dom = await readPointSnapshotWithClient(client, viewportPoint);
+    return buildSnapshot(
+      session,
+      shot,
+      dom,
+      { projectRoot: point.projectRoot, x: viewportPoint.x, y: viewportPoint.y, coordinateSpace: "viewport" },
+      screenshotError,
+    );
   };
 
   const getViewportScale = async (client: CdpClient): Promise<number> => {
@@ -1702,6 +1985,30 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     });
     const scale = evaluated.result?.value?.devicePixelRatio;
     return typeof scale === "number" && Number.isFinite(scale) && scale > 0 ? scale : 1;
+  };
+
+  const normalizeViewportPoint = async (
+    client: CdpClient,
+    point: { x: number; y: number; scale?: number | null; coordinateSpace?: AppControlCoordinateSpace | null },
+  ): Promise<PointViewport> => {
+    if (point.coordinateSpace === "viewport") {
+      return {
+        x: Math.max(0, round(point.x)),
+        y: Math.max(0, round(point.y)),
+      };
+    }
+    const explicitScale = typeof point.scale === "number" && Number.isFinite(point.scale) && point.scale > 0
+      ? point.scale
+      : null;
+    const fallbackScale = explicitScale ?? await getViewportScale(client);
+    const scaleX = explicitScale
+      ?? (lastScreencastFrame?.scaleX && lastScreencastFrame.scaleX > 0 ? lastScreencastFrame.scaleX : fallbackScale);
+    const scaleY = explicitScale
+      ?? (lastScreencastFrame?.scaleY && lastScreencastFrame.scaleY > 0 ? lastScreencastFrame.scaleY : scaleX);
+    return {
+      x: Math.max(0, round(point.x / scaleX)),
+      y: Math.max(0, round(point.y / scaleY)),
+    };
   };
 
   const getInputPageState = async (client: CdpClient): Promise<CdpInputPageState> => {
@@ -1724,10 +2031,6 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
       awaitPromise: true,
     });
     return evaluated.result?.value ?? { ok: false, target: null, label: null };
-  };
-
-  const focusCdpTargetForInput = async (client: CdpClient): Promise<void> => {
-    await client.send("Page.bringToFront").catch(() => {});
   };
 
   const getSnapshot = async (snapshotArgs: AppControlSnapshotArgs = {}): Promise<AppControlSnapshot> => withCdp(async (client, session) => {
@@ -1818,10 +2121,28 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     selectedAt: nowIso(),
   });
 
+  const screenshotPointFromInspectArgs = (
+    point: AppControlInspectPointArgs,
+    snapshot: AppControlSnapshot,
+  ): { x: number; y: number } => point.coordinateSpace === "viewport"
+    ? {
+      x: point.x * (snapshot.screen.scaleX ?? snapshot.screen.scale),
+      y: point.y * (snapshot.screen.scaleY ?? snapshot.screen.scale),
+    }
+    : { x: point.x, y: point.y };
+
   const inspectPoint = async (point: AppControlInspectPointArgs): Promise<AppControlInspectResult> => {
     const snapshot = await withCdp((client, session) => getPointSnapshotWithClient(client, session, point));
     if (!snapshot.hitElement) {
-      return { item: null, source: "none", snapshot };
+      return {
+        item: coordinateFallbackItem(
+          screenshotPointFromInspectArgs(point, snapshot),
+          snapshot,
+          point.includeScreenshot ? snapshot.screenshot?.dataUrl : null,
+        ),
+        source: "coordinate-fallback",
+        snapshot,
+      };
     }
     return {
       item: contextItemFromElement(snapshot.hitElement, snapshot, point.includeScreenshot ? snapshot.screenshot?.dataUrl : null, point.projectRoot),
@@ -1832,25 +2153,22 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
 
   const selectPoint = async (point: AppControlInspectPointArgs): Promise<AppControlSelectResult> => {
     const snapshot = await withCdp((client, session) => getPointSnapshotWithClient(client, session, point));
+    const fallbackPoint = screenshotPointFromInspectArgs(point, snapshot);
     const item = snapshot.hitElement
       ? contextItemFromElement(snapshot.hitElement, snapshot, snapshot.screenshot?.dataUrl, point.projectRoot)
-      : coordinateFallbackItem({ x: point.x, y: point.y }, snapshot, snapshot.screenshot?.dataUrl);
+      : coordinateFallbackItem(fallbackPoint, snapshot, snapshot.screenshot?.dataUrl);
     lastSelectedItem = item;
     emit({ type: "selection", item });
-    return { item, source: snapshot.hitElement?.provider ?? "coordinate-fallback" };
+    return { item, source: snapshot.hitElement?.provider ?? "coordinate-fallback", snapshot };
   };
 
   const click = async (clickArgs: AppControlClickArgs): Promise<{ ok: true }> => {
     await withCdp(async (client) => {
-      await focusCdpTargetForInput(client);
-      const scale = typeof clickArgs.scale === "number" && Number.isFinite(clickArgs.scale) && clickArgs.scale > 0
-        ? clickArgs.scale
-        : await getViewportScale(client);
-      const x = clickArgs.x / scale;
-      const y = clickArgs.y / scale;
+      await enablePageDomain(client);
+      const point = await normalizeViewportPoint(client, clickArgs);
       const pageState = await getInputPageState(client).catch(() => null);
       if (pageState?.visibilityState === "hidden") {
-        const domResult = await dispatchDomClick(client, { x, y });
+        const domResult = await dispatchDomClick(client, point);
         if (domResult.ok) return;
       }
       // Send the click directly. Some Electron renderers can stall a standalone
@@ -1859,15 +2177,15 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
       // Chromium still targets the element under the point.
       await client.send("Input.dispatchMouseEvent", {
         type: "mousePressed",
-        x,
-        y,
+        x: point.x,
+        y: point.y,
         button: "left",
         clickCount: 1,
       });
       await client.send("Input.dispatchMouseEvent", {
         type: "mouseReleased",
-        x,
-        y,
+        x: point.x,
+        y: point.y,
         button: "left",
         clickCount: 1,
       });
@@ -1879,23 +2197,28 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     const text = typeArgs.text;
     if (!text) return { ok: true };
     await withCdp(async (client) => {
-      await focusCdpTargetForInput(client);
+      await enablePageDomain(client);
       await client.send("Input.insertText", { text });
     });
     return { ok: true };
   };
 
-  const scroll = async (scrollArgs: { x: number; y: number; deltaX: number; deltaY: number; scale?: number | null }): Promise<{ ok: true }> => {
-    const scale = typeof scrollArgs.scale === "number" && scrollArgs.scale > 0 ? scrollArgs.scale : 1;
-    const x = Math.max(0, Math.round(scrollArgs.x / scale));
-    const y = Math.max(0, Math.round(scrollArgs.y / scale));
+  const scroll = async (scrollArgs: {
+    x: number;
+    y: number;
+    deltaX: number;
+    deltaY: number;
+    scale?: number | null;
+    coordinateSpace?: AppControlCoordinateSpace | null;
+  }): Promise<{ ok: true }> => {
     const deltaX = Math.round(scrollArgs.deltaX);
     const deltaY = Math.round(scrollArgs.deltaY);
     await withCdp(async (client) => {
+      const point = await normalizeViewportPoint(client, scrollArgs);
       await client.send("Input.dispatchMouseEvent", {
         type: "mouseWheel",
-        x,
-        y,
+        x: Math.round(point.x),
+        y: Math.round(point.y),
         deltaX,
         deltaY,
         button: "none",
@@ -1931,7 +2254,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     if (typeof keyArgs.windowsVirtualKeyCode === "number") payload.windowsVirtualKeyCode = keyArgs.windowsVirtualKeyCode;
     if (typeof keyArgs.nativeVirtualKeyCode === "number") payload.nativeVirtualKeyCode = keyArgs.nativeVirtualKeyCode;
     await withCdp(async (client) => {
-      await focusCdpTargetForInput(client);
+      await enablePageDomain(client);
       await client.send("Input.dispatchKeyEvent", payload);
     });
     return { ok: true };
@@ -2030,12 +2353,17 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     return args.ptyService!.signalTerminal({ terminalId, signal: terminalArgs.signal ?? "SIGINT" });
   };
 
+  const focusWindow = (): Promise<{ ok: true }> => setWindowState("normal");
+  const minimizeWindow = (): Promise<{ ok: true }> => setWindowState("minimized");
+
   return {
     getStatus,
     launch,
     launchInTerminal: launch,
     connect,
     stop,
+    focusWindow,
+    minimizeWindow,
     screenshot,
     getSnapshot,
     inspectPoint,

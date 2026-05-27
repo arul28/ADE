@@ -2,6 +2,9 @@
 // Avoids new deps; covers CSI/OSC + common single-byte escapes.
 
 const OSC_REGEX = /\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g; // ESC ] ... BEL or ST (ESC \)
+const APC_REGEX = /\u001b_[\s\S]*?(?:\u0007|\u001b\\)/g; // ESC _ ... BEL or ST (Kitty graphics protocol)
+const DCS_REGEX = /\u001bP[\s\S]*?(?:\u0007|\u001b\\)/g; // ESC P ... BEL or ST
+const PM_REGEX = /\u001b\^[\s\S]*?(?:\u0007|\u001b\\)/g; // ESC ^ ... BEL or ST
 const CSI_REGEX = /\u001b\[[0-?]*[ -/]*[@-~]/g; // ESC [ ... cmd
 const CHARSET_REGEX = /\u001b[\(\)][0-9A-Za-z]/g; // ESC ( B / ESC ) 0 etc
 const TWO_CHAR_ESC_REGEX = /\u001b(?:[@-Z\\-_]|[0-9=>])/g; // ESC followed by a single byte
@@ -36,6 +39,9 @@ export function stripAnsiWithOptions(
   // Order matters: strip complex sequences before stripping generic ESC prefixes.
   const strippedEscapes = input
     .replace(OSC_REGEX, "")
+    .replace(APC_REGEX, "")
+    .replace(DCS_REGEX, "")
+    .replace(PM_REGEX, "")
     .replace(CSI_REGEX, "")
     .replace(CHARSET_REGEX, "")
     .replace(TWO_CHAR_ESC_REGEX, "");

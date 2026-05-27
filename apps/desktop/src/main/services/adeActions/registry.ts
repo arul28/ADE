@@ -655,7 +655,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   graph_state: ["get", "set"],
   computer_use_artifacts: ["getOwnerSnapshot", "ingest", "listArtifacts", "readArtifactPreview", "routeArtifact", "updateArtifactReview"],
   ios_simulator: ["getStatus", "listDevices", "listLaunchTargets", "launch", "attachToChatSession", "shutdown", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint", "getPreviewCapability", "listPreviewTargets", "renderPreview", "openPreviewWorkspace", "startStream", "stopStream", "getStreamStatus", "tap", "typeText", "drag", "swipe", "selectPoint"],
-  app_control: ["getStatus", "launch", "launchInTerminal", "connect", "stop", "screenshot", "getSnapshot", "inspectPoint", "selectPoint", "click", "typeText", "scroll", "dispatchKey", "listTargets", "attachToTarget", "readTerminal", "writeTerminal", "signalTerminal"],
+  app_control: ["getStatus", "launch", "launchInTerminal", "connect", "stop", "focusWindow", "minimizeWindow", "screenshot", "getSnapshot", "inspectPoint", "selectPoint", "click", "typeText", "scroll", "dispatchKey", "listTargets", "attachToTarget", "readTerminal", "writeTerminal", "signalTerminal"],
   built_in_browser: ["getStatus", "showPanel", "setBounds", "navigate", "createTab", "switchTab", "closeTab", "reload", "goBack", "goForward", "stop", "startInspect", "stopInspect", "captureScreenshot", "selectPoint", "selectCurrent", "clearSelection"],
   // Note: detachLane is intentionally NOT in this allowlist — it lives on
   // laneService.detachVmLane, not on macosVmService. Wire it through a lane

@@ -135,8 +135,9 @@ export function createDefaultStage(
         prTiming: "none",
       };
     case "worker_run":
+    default:
       return {
-        type,
+        type: "worker_run",
         runMode: "autopilot",
         workerSelector: { mode: "none" },
         laneSelection: "fresh_issue_lane",
@@ -155,14 +156,6 @@ export function createDefaultStage(
       return {
         type,
         runMode: "manual",
-      };
-    default:
-      return {
-        type: "worker_run",
-        runMode: "autopilot",
-        workerSelector: { mode: "none" },
-        laneSelection: "fresh_issue_lane",
-        prTiming: "none",
       };
   }
 }

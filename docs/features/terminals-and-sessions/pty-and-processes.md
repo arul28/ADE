@@ -148,6 +148,11 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
   viewport / buffer-type / serialized scrollback + per-cell visible
   rows). Flushed on PTY exit, on resize, and on every
   `terminal.preview` call.
+- initial input: `initialInputTimer` — deferred initial-input write for
+  callers that pass `args.initialInput` with an `initialInputDelayMs`
+- live session resync: `lastSessionResyncCheckAt` — last time the PTY
+  entry re-synced its session row to keep the DB in step with the
+  in-memory state
 - teardown: `disposed`, `createdAt`, `cleanupPaths`
 
 ### Create flow (`create(args)`)
@@ -213,8 +218,17 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
     launch path uses (`workCliStartupDelayMs = 180` in
     `AgentChatPane`) to give the spawned shell a beat to finish
     drawing its initial prompt before the CLI invocation is typed in,
-    avoiding a half-rendered command in the user's scrollback. Returns
-    `{ ptyId, sessionId, pid }`.
+    avoiding a half-rendered command in the user's scrollback.
+11. If `args.initialInput` is a non-empty string, `create` schedules
+    writing it into the PTY after an optional `initialInputDelayMs` delay
+    (clamped 0--10 000 ms). The initial input is submitted using the
+    agent CLI input protocol (bracketed paste envelope, chunked writes,
+    provider-specific submit delay) so the provider sees it as a real
+    first user turn rather than a half-typed shell line. This replaces
+    the older pattern where callers embedded the prompt in the provider
+    argv or typed it as a post-create PTY write. The timer is cleared
+    on `closeEntry` / `dispose` and the callback bails out if the PTY
+    was disposed in the meantime. Returns `{ ptyId, sessionId, pid }`.
 
 The launch env is built layer by layer: `process.env`, the lane
 runtime env (from `getLaneRuntimeEnv`), the caller's `args.env`, then
@@ -243,6 +257,35 @@ runtime state changes, when the preview changes more than 1.2 s after
 the previous signal, or as a 10 s heartbeat. Runtime states:
 `running`, `waiting-input`, `idle`, `exited`, `killed`. `idle` is
 inferred from OSC 133 prompt markers.
+
+### Process tree termination
+
+`terminatePtyProcessTree(entry, signal, logger)` replaces the older
+single-process `entry.pty.kill(signal)` call. On POSIX it walks the PTY
+root PID's descendant tree via `pgrep -P` (up to
+`PTY_PROCESS_TREE_MAX_DEPTH = 12` levels), signals every descendant in
+reverse depth order, then kills the root. For non-`SIGKILL` signals a
+follow-up timer (`PTY_PROCESS_TREE_KILL_DELAY_MS = 1500 ms`) checks
+whether any descendants survived and sends them `SIGKILL`. This ensures
+that a `SIGTERM` on a tracked agent CLI session kills both the shell and
+any child processes the agent spawned (language servers, dev servers,
+etc.) instead of leaving orphaned process trees.
+
+### Live session row resync
+
+`resyncLiveSessionRowIfNeeded(entry, ptyId)` runs on every PTY data
+batch (throttled to once per `PTY_LIVE_SESSION_RESYNC_INTERVAL_MS =
+1 000 ms`). It reads the session row from `sessionService.get` and
+fixes two drift scenarios:
+
+- The DB row says `ended` / `detached` / `disposed` / `completed` but
+  the PTY is still alive and producing output. The service re-opens the
+  row to `running` so the UI no longer shows a stale "ended" badge.
+- The DB row's `pty_id` does not match the current in-memory PTY. The
+  service rebinds it.
+
+This guards against races where an external reconciler or a crash
+recovery pass marks a row dead while the PTY is still healthy.
 
 ### Session-id writes and resizes
 
@@ -326,9 +369,9 @@ reasoningEffort?, permissionMode? })` is the single entry point for
 continuation if needed." It collapses the legacy resume / reattach /
 write paths into one call:
 
-1. If a live PTY is currently attached, write `text + \r` through
-   `writeBySessionId` and return `{ ptyId, sessionId, pid, resumed:
-   false, reusedExistingRuntime: true }`.
+1. If a live PTY is currently attached, submit `text` using the agent
+   CLI input protocol (see below) and return `{ ptyId, sessionId, pid,
+   resumed: false, reusedExistingRuntime: true }`.
 2. Otherwise require a tracked agent CLI row (Claude, Codex, Cursor,
    OpenCode, Droid; chats and shells are rejected with a clear error).
    Resolve the provider from `resumeMetadata.provider`, fall back to
@@ -342,15 +385,40 @@ write paths into one call:
    in-flight continuation per session id) so rapid sends do not spawn
    parallel PTYs against the same row.
 5. Spawn the continuation through `service.create({ sessionId, ... })`
-   in the same row, write `text + \r`, and return the new
-   `{ ptyId, sessionId, pid, session, resumed: true,
-   reusedExistingRuntime: false }`. Claude continuations also schedule
-   a 1.2 s confirmation `\r` (`CLAUDE_INITIAL_INPUT_CONFIRM_DELAY_MS`)
-   to dismiss the SDK's initial prompt confirmation step.
+   in the same row, submit `text` via the agent CLI input protocol,
+   and return the new `{ ptyId, sessionId, pid, session, resumed: true,
+   reusedExistingRuntime: false }`.
 
 The renderer's Work continuation composer, the iOS Work tab's
 "continue" path (`work.sendToSession` remote command), and the TUI's
 `send_to_session` JSON-RPC tool all go through this single function.
+
+### Agent CLI input protocol
+
+All `sendToSession` text submissions (and `initialInput` writes from
+`create`) go through a structured input protocol instead of a raw
+`pty.write(text + "\r")`. The protocol:
+
+1. **Line clear** — send `Ctrl-U` + `Ctrl-E` to clear any partial
+   input the TUI may have buffered.
+2. **Bracketed paste envelope** — wrap the text in `ESC[200~…ESC[201~`
+   so the TUI interprets multi-line content as a single paste event
+   rather than submitting on each newline.
+3. **Chunked write** — the bracketed payload is written in
+   `AGENT_CLI_INPUT_CHUNK_SIZE = 64` byte chunks with
+   `AGENT_CLI_INPUT_CHUNK_DELAY_MS = 5 ms` between them, preventing
+   PTY input buffer overflows on large prompts.
+4. **Submit** — after the paste, a carriage return (`\r`) is sent
+   with a provider-specific delay: `AGENT_CLI_SUBMIT_DELAY_MS = 25 ms`
+   (general), `CODEX_CLI_PASTE_SUBMIT_DELAY_MS = 180 ms` (Codex),
+   `CURSOR_CLI_PASTE_SUBMIT_DELAY_MS = 500 ms` (Cursor). The
+   different delays account for each provider's TUI paste-processing
+   timing.
+5. **Ready wait** — for continuation sends, the protocol waits up to
+   `AGENT_CLI_READY_TIMEOUT_MS = 20 s` for the TUI to produce output
+   (at least `AGENT_CLI_READY_QUIET_MS = 600 ms` of silence after
+   initial output) before writing the input, so the prompt text does
+   not race ahead of the provider's startup banner.
 
 ### AI-driven titles
 
@@ -409,7 +477,11 @@ resolved. Strategies, in order:
    `-r`, `-c`, `-s`, `resume`).
 2. Read Claude's local storage: `~/.claude/projects/<escaped-cwd>/*.jsonl`,
    newest file modified in the last 5 minutes, filename is the session
-   UUID.
+   UUID. The lookup accepts optional `startedAt` / `endedAt` and a
+   `maxStartDeltaMs` gate so the backfill can reject JSONL files whose
+   creation timestamp drifts too far from the ADE session window
+   (`CLAUDE_STORAGE_MATCH_START_SKEW_MS = 1 s`,
+   `CLAUDE_STORAGE_MATCH_END_SKEW_MS = 5 s`).
 3. Read Codex's rollout storage:
    `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`. The scan now covers
    up to 7 days of dated directories and up to 80 candidate files.
@@ -502,9 +574,12 @@ codex writers.
 
 ### Dispose and orphan disposal
 
-`dispose({ ptyId, sessionId? })` kills the PTY (SIGHUP on POSIX), ends
+`dispose({ ptyId, sessionId? })` kills the PTY process tree via
+`terminatePtyProcessTree(entry, "SIGTERM", logger)` (see above), ends
 the session row via `sessionService.end`, schedules transcript cleanup
-work, and broadcasts a final `ptyExit` event.
+work, and broadcasts a final `ptyExit` event. The `signal` override on
+the dispose args selects the initial signal (`SIGTERM` by default);
+the tree kill always escalates to `SIGKILL` after the grace timer.
 
 Two forms of cleanup:
 

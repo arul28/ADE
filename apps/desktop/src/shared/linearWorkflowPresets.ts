@@ -282,13 +282,18 @@ export function deriveVisualPlan(workflow: LinearWorkflowDefinition): LinearWork
   const reviewStep = getStep(workflow, "request_human_review");
   const waitTargetStep = getStep(workflow, "wait_for_target_status");
   const waitTargetStatus = resolveWorkflowTargetWaitStatus(workflow, waitTargetStep);
-  const completionContract: LinearWorkflowCompletionContract = getStep(workflow, "wait_for_pr")
-    ? (workflow.closeout?.reviewReadyWhen === "pr_ready" ? "wait_for_review_ready" : "wait_for_pr_created")
-    : waitTargetStatus === "runtime_completed"
-      ? "wait_for_runtime_success"
-      : waitTargetStatus === "explicit_completion"
-        ? "wait_for_explicit_completion"
-        : "complete_on_launch";
+  let completionContract: LinearWorkflowCompletionContract;
+  if (getStep(workflow, "wait_for_pr")) {
+    completionContract = workflow.closeout?.reviewReadyWhen === "pr_ready"
+      ? "wait_for_review_ready"
+      : "wait_for_pr_created";
+  } else if (waitTargetStatus === "runtime_completed") {
+    completionContract = "wait_for_runtime_success";
+  } else if (waitTargetStatus === "explicit_completion") {
+    completionContract = "wait_for_explicit_completion";
+  } else {
+    completionContract = "complete_on_launch";
+  }
   return {
     startState: getStep(workflow, "set_linear_state")?.state ?? "",
     completionContract,
@@ -384,13 +389,8 @@ export function rebuildWorkflowSteps(
   return {
     ...workflow,
     target: workflow.target.prStrategy
-      ? {
-          ...workflow.target,
-          prTiming: nextPlan.prTiming,
-        }
-      : {
-          ...workflow.target,
-        },
+      ? { ...workflow.target, prTiming: nextPlan.prTiming }
+      : workflow.target,
     steps,
     closeout: {
       ...(workflow.closeout ?? {}),

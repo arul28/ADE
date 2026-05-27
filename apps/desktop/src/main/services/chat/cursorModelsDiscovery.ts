@@ -426,13 +426,6 @@ function getCachedCursorSdkModels(apiKey?: string | null): CursorCliModelRow[] |
   return null;
 }
 
-function getRecentCursorSdkFailure(apiKey?: string | null): typeof sdkLastFailure {
-  const normalizedApiKey = apiKey?.trim() || undefined;
-  const keyHash = hashKeyForCache(normalizedApiKey);
-  if (!sdkLastFailure || sdkLastFailure.keyHash !== keyHash) return null;
-  if (Date.now() - sdkLastFailure.at > TTL_MS) return null;
-  return sdkLastFailure;
-}
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -620,6 +613,55 @@ function cursorRowsToDescriptors(rows: CursorCliModelRow[]): ModelDescriptor[] {
   return sortCursorCliDescriptorsForPicker(descriptors);
 }
 
+export function mergeCursorModelDescriptorSources(args: {
+  cliDescriptors?: readonly ModelDescriptor[];
+  sdkDescriptors?: readonly ModelDescriptor[];
+}): ModelDescriptor[] {
+  const merged = new Map<string, ModelDescriptor>();
+  const sourceByKey = new Map<string, { cli: boolean; sdk: boolean }>();
+  const keyFor = (descriptor: ModelDescriptor): string => descriptor.providerModelId.trim().toLowerCase();
+  const add = (descriptor: ModelDescriptor, source: "cli" | "sdk"): void => {
+    const key = keyFor(descriptor);
+    if (!key) return;
+    const previous = merged.get(key);
+    const sourceFlags = sourceByKey.get(key) ?? { cli: false, sdk: false };
+    sourceFlags[source] = true;
+    sourceByKey.set(key, sourceFlags);
+
+    if (!previous) {
+      merged.set(key, descriptor);
+      return;
+    }
+
+    const aliases = [...new Set([...(previous.aliases ?? []), ...(descriptor.aliases ?? [])])];
+    const reasoningTiers = [...new Set([...(previous.reasoningTiers ?? []), ...(descriptor.reasoningTiers ?? [])])];
+    const serviceTiers = [...new Set([...(previous.serviceTiers ?? []), ...(descriptor.serviceTiers ?? [])])];
+    const prefer = source === "sdk" ? descriptor : previous;
+    merged.set(key, {
+      ...previous,
+      ...prefer,
+      id: previous.id,
+      shortId: previous.shortId,
+      providerModelId: previous.providerModelId,
+      displayName: prefer.displayName || previous.displayName,
+      color: prefer.color || previous.color,
+      ...(aliases.length ? { aliases } : {}),
+      ...(reasoningTiers.length ? { reasoningTiers } : {}),
+      ...(serviceTiers.length ? { serviceTiers } : {}),
+    });
+  };
+
+  for (const descriptor of args.cliDescriptors ?? []) add(descriptor, "cli");
+  for (const descriptor of args.sdkDescriptors ?? []) add(descriptor, "sdk");
+
+  return sortCursorCliDescriptorsForPicker(
+    [...merged.entries()].map(([key, descriptor]) => ({
+      ...descriptor,
+      cursorAvailability: sourceByKey.get(key) ?? { cli: false, sdk: false },
+    })),
+  );
+}
+
 export function resolveCursorSdkModelSelectionParams(args: {
   modelSdkId: string;
   reasoningEffort?: string | null;
@@ -783,11 +825,8 @@ export async function discoverCursorSdkModelDescriptors(
     ? await probeCursorSdkModelDiscovery(apiKey, { timeoutMs: options?.timeoutMs })
     : null;
   const rows = result?.rows ?? getCachedCursorSdkModels(apiKey) ?? [];
-  const recentFailure = getRecentCursorSdkFailure(apiKey);
-  const knownAuthFailure = result?.failureKind === "auth" || recentFailure?.kind === "auth";
   if (!rows.length && options?.mode === "cached-or-fallback") {
     warmCursorModelsFromSdk(apiKey);
   }
-  void knownAuthFailure;
   return cursorRowsToDescriptors(rows);
 }
