@@ -274,6 +274,10 @@ export function ManageLaneDialog({
       .filter((t) => t.show)
       .map(({ show: _, ...tab }) => tab);
   }, [singleLaneType]);
+  const defaultTab = React.useMemo((): ManageLaneTab => {
+    const preferredOrder: ManageLaneTab[] = ["appearance", "stack", "archive", "delete"];
+    return preferredOrder.find((id) => tabDefs.some((tab) => tab.id === id)) ?? tabDefs[0]?.id ?? "archive";
+  }, [tabDefs]);
 
   // Reset transient state when dialog closes or active lane changes.
   useEffect(() => {
@@ -282,8 +286,8 @@ export function ManageLaneDialog({
       setDeleteProgress(null);
       return;
     }
-    setActiveTab(tabDefs[0]?.id ?? "archive");
-  }, [open, singleLaneId, isBatch, tabDefs]);
+    setActiveTab(defaultTab);
+  }, [open, singleLaneId, isBatch, defaultTab]);
 
   // Fetch pre-flight risk for the single-lane case.
   useEffect(() => {
@@ -330,8 +334,8 @@ export function ManageLaneDialog({
 
   useEffect(() => {
     if (tabDefs.some((tab) => tab.id === activeTab)) return;
-    setActiveTab(tabDefs[0]?.id ?? "archive");
-  }, [activeTab, tabDefs]);
+    setActiveTab(defaultTab);
+  }, [activeTab, defaultTab, tabDefs]);
 
   useEffect(() => {
     if (laneActionKind === "delete") setActiveTab("delete");

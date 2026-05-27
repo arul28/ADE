@@ -104,10 +104,27 @@ describe("ManageLaneDialog tabs", () => {
     vi.clearAllMocks();
   });
 
-  it("opens on the first available tab", () => {
+  it("opens on the first non-destructive tab for a single lane", () => {
     render(<ManageLaneDialog {...makeProps()} />);
 
-    expect(selectedTabLabel()).toBe("Delete");
+    expect(selectedTabLabel()).toBe("Appearance");
+  });
+
+  it("opens on archive for batch lane management", () => {
+    const firstLane = makeLane({ id: "lane-1", name: "First lane" });
+    const secondLane = makeLane({ id: "lane-2", name: "Second lane" });
+
+    render(
+      <ManageLaneDialog
+        {...makeProps({
+          managedLane: null,
+          managedLanes: [firstLane, secondLane],
+          allLanes: [firstLane, secondLane],
+        })}
+      />,
+    );
+
+    expect(selectedTabLabel()).toBe("Archive");
   });
 
   it("does not reset the selected tab when the lane object refreshes", () => {
