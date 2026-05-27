@@ -4557,6 +4557,41 @@ describe("ptyService", () => {
         expect(result.ptyId).toBe(created.ptyId);
       });
 
+      it("prefers chat CLI over a newer App Control shell with the same chatSessionId", async () => {
+        const { service } = createChatHarness();
+        const chatCli = await service.create({
+          sessionId: "chat-app-control",
+          allowNewSessionId: true,
+          laneId: "lane-1",
+          title: "Claude Chat",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "chat-app-control",
+          tracked: true,
+          toolType: "claude-chat",
+          startupCommand: "claude --resume target",
+        });
+        const appControlShell = await service.create({
+          laneId: "lane-1",
+          title: "App Control",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "chat-app-control",
+          tracked: true,
+          toolType: "shell",
+          startupCommand: "npm run dev",
+        });
+
+        const active = service.activeForChat({ chatSessionId: "chat-app-control" });
+        expect(active?.terminalId).toBe(chatCli.sessionId);
+        expect(active?.terminalId).not.toBe(appControlShell.sessionId);
+
+        const reattached = await service.reattachChatCli({ chatSessionId: "chat-app-control" });
+        expect(reattached.relaunched).toBe(false);
+        expect(reattached.terminalId).toBe(chatCli.sessionId);
+        expect(reattached.ptyId).toBe(chatCli.ptyId);
+      });
+
       it("relaunches a new PTY for a disposed chat-CLI session", async () => {
         const { service, loadPty, sessionStore } = createChatHarness();
         const created = await service.create({

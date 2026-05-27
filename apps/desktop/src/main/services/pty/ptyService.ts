@@ -2438,14 +2438,13 @@ export function createPtyService({
     const finalRuntimeState = runtimeFromStatus(status);
     setRuntimeState(entry.sessionId, finalRuntimeState, { touch: false });
     runtimeStates.delete(entry.sessionId);
-    if (entry.chatSessionId && activeTerminalByChatSession.get(entry.chatSessionId) === entry.sessionId) {
-      const replacement = Array.from(ptys.values())
-        .filter((candidate) => (
-          candidate.sessionId !== entry.sessionId
-          && !candidate.disposed
-          && candidate.chatSessionId === entry.chatSessionId
-        ))
-        .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
+    if (
+      entry.chatSessionId
+      && isChatCliRoutingEntry(entry)
+      && activeTerminalByChatSession.get(entry.chatSessionId) === entry.sessionId
+    ) {
+      const replacement = liveChatCliEntriesFor(entry.chatSessionId)
+        .find((candidate) => candidate.sessionId !== entry.sessionId) ?? null;
       if (replacement) {
         activeTerminalByChatSession.set(entry.chatSessionId, replacement.sessionId);
       } else {
@@ -2692,6 +2691,36 @@ export function createPtyService({
     Array.from(ptys.entries()).find(([, entry]) => entry.sessionId === sessionId && !entry.disposed) ?? null
   );
 
+  const isChatCliRoutingEntry = (entry: PtyEntry): boolean =>
+    isPersistedChatToolType(entry.toolTypeHint);
+
+  const liveChatCliEntriesFor = (chatSessionId: string): PtyEntry[] =>
+    Array.from(ptys.values())
+      .filter((entry) => (
+        entry.chatSessionId === chatSessionId
+        && !entry.disposed
+        && isChatCliRoutingEntry(entry)
+      ))
+      .sort((a, b) => b.createdAt - a.createdAt);
+
+  const liveAuxiliaryEntriesFor = (chatSessionId: string): PtyEntry[] =>
+    Array.from(ptys.values())
+      .filter((entry) => (
+        entry.chatSessionId === chatSessionId
+        && !entry.disposed
+        && !isChatCliRoutingEntry(entry)
+      ))
+      .sort((a, b) => b.createdAt - a.createdAt);
+
+  const promoteActiveChatCliTerminal = (
+    chatSessionId: string,
+    sessionId: string,
+    toolType: TerminalToolType | null,
+  ): void => {
+    if (!isPersistedChatToolType(toolType)) return;
+    activeTerminalByChatSession.set(chatSessionId, sessionId);
+  };
+
   const codexReadyRegion = (text: string): string => {
     const lastPrompt = text.lastIndexOf("›");
     if (lastPrompt < 0) return text;
@@ -2858,8 +2887,15 @@ export function createPtyService({
       ?? live?.[1].chatSessionId
       ?? summary.chatSessionId
       ?? null;
-    const activeTerminalId = chatSessionId ? activeTerminalByChatSession.get(chatSessionId) ?? null : null;
     const fallbackStatus = live ? "running" : summary.status;
+    let active = false;
+    if (chatSessionId) {
+      if (isPersistedChatToolType(summary.toolType)) {
+        active = activeTerminalByChatSession.get(chatSessionId) === summary.id;
+      } else {
+        active = liveAuxiliaryEntriesFor(chatSessionId)[0]?.sessionId === summary.id;
+      }
+    }
     return {
       terminalId: summary.id,
       ptyId: live?.[0] ?? summary.ptyId ?? null,
@@ -2871,7 +2907,7 @@ export function createPtyService({
       goal: summary.goal,
       status: fallbackStatus,
       runtimeState: computeRuntimeState(summary.id, fallbackStatus),
-      active: Boolean(activeTerminalId && activeTerminalId === summary.id),
+      active,
       startedAt: summary.startedAt,
       endedAt: live ? null : summary.endedAt,
       exitCode: live ? null : summary.exitCode,
@@ -2891,17 +2927,8 @@ export function createPtyService({
     if (terminalId) return terminalId;
     const chatSessionId = cleanOptionalId(args.chatSessionId);
     if (!chatSessionId) return null;
-    const activeTerminalId = activeTerminalByChatSession.get(chatSessionId) ?? null;
-    if (activeTerminalId && liveEntryBySessionId(activeTerminalId)) return activeTerminalId;
-    const replacement = Array.from(ptys.values())
-      .filter((entry) => entry.chatSessionId === chatSessionId && !entry.disposed)
-      .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
-    if (replacement) {
-      activeTerminalByChatSession.set(chatSessionId, replacement.sessionId);
-      return replacement.sessionId;
-    }
-    activeTerminalByChatSession.delete(chatSessionId);
-    return null;
+    // Auxiliary terminals (shell, App Control, etc.) — never route chat-CLI rows.
+    return liveAuxiliaryEntriesFor(chatSessionId)[0]?.sessionId ?? null;
   };
 
   const service = {
@@ -2963,7 +2990,7 @@ export function createPtyService({
         if (chatSessionId) {
           attachedEntry.chatSessionId = chatSessionId;
           terminalChatSessions.set(existingSession.id, chatSessionId);
-          activeTerminalByChatSession.set(chatSessionId, existingSession.id);
+          promoteActiveChatCliTerminal(chatSessionId, existingSession.id, existingSession.toolType);
           if (existingSession.chatSessionId !== chatSessionId) {
             try { sessionService.setChatSessionId(existingSession.id, chatSessionId); } catch {}
           }
@@ -3262,7 +3289,7 @@ export function createPtyService({
       ptys.set(ptyId, entry);
       if (chatSessionId) {
         terminalChatSessions.set(sessionId, chatSessionId);
-        activeTerminalByChatSession.set(chatSessionId, sessionId);
+        promoteActiveChatCliTerminal(chatSessionId, sessionId, toolTypeHint);
         if (existingSession && existingSession.chatSessionId !== chatSessionId) {
           try { sessionService.setChatSessionId(sessionId, chatSessionId); } catch {}
         }
@@ -3804,20 +3831,17 @@ export function createPtyService({
     activeForChat(args: ChatTerminalActiveForChatArgs): ChatTerminalSession | null {
       const chatSessionId = cleanOptionalId(args.chatSessionId);
       if (!chatSessionId) return null;
-      const terminalId = activeTerminalByChatSession.get(chatSessionId) ?? null;
-      if (terminalId && liveEntryBySessionId(terminalId)) {
-        const session = sessionService.get(terminalId);
-        return session ? terminalSessionFromSummary(session) : null;
+      const chatCli = liveChatCliEntriesFor(chatSessionId)[0] ?? null;
+      if (chatCli) {
+        const session = sessionService.get(chatCli.sessionId);
+        if (session) {
+          promoteActiveChatCliTerminal(chatSessionId, chatCli.sessionId, session.toolType);
+          return terminalSessionFromSummary(session);
+        }
       }
-      const replacement = Array.from(ptys.values())
-        .filter((entry) => entry.chatSessionId === chatSessionId && !entry.disposed)
-        .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
-      if (!replacement) {
-        activeTerminalByChatSession.delete(chatSessionId);
-        return null;
-      }
-      activeTerminalByChatSession.set(chatSessionId, replacement.sessionId);
-      const session = sessionService.get(replacement.sessionId);
+      const auxiliary = liveAuxiliaryEntriesFor(chatSessionId)[0] ?? null;
+      if (!auxiliary) return null;
+      const session = sessionService.get(auxiliary.sessionId);
       return session ? terminalSessionFromSummary(session) : null;
     },
 
@@ -3830,9 +3854,22 @@ export function createPtyService({
       const activeTerminalId = activeTerminalByChatSession.get(chatSessionId) ?? null;
       if (activeTerminalId) {
         const liveActive = liveEntryBySessionId(activeTerminalId);
-        if (liveActive) {
+        if (liveActive && isChatCliRoutingEntry(liveActive[1])) {
           return {
             terminalId: activeTerminalId,
+            ptyId: liveActive[0],
+            pid: liveActive[1].pty.pid ?? null,
+            relaunched: false,
+          };
+        }
+      }
+      const liveChatCli = liveChatCliEntriesFor(chatSessionId)[0] ?? null;
+      if (liveChatCli) {
+        const liveActive = liveEntryBySessionId(liveChatCli.sessionId);
+        if (liveActive) {
+          promoteActiveChatCliTerminal(chatSessionId, liveChatCli.sessionId, liveChatCli.toolTypeHint);
+          return {
+            terminalId: liveChatCli.sessionId,
             ptyId: liveActive[0],
             pid: liveActive[1].pty.pid ?? null,
             relaunched: false,
