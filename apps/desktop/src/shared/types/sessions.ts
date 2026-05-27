@@ -137,6 +137,8 @@ export type PtyCreateArgs = {
   /** Optional input to send to the PTY after the process starts. */
   initialInput?: string;
   initialInputDelayMs?: number;
+  /** When true, create rejects if initialInput cannot be delivered. */
+  awaitInitialInput?: boolean;
   command?: string;
   args?: string[];
   env?: Record<string, string>;

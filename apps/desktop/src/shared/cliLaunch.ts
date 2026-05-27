@@ -370,18 +370,21 @@ export function buildTrackedCliLaunchCommand(args: {
   if (args.provider === "cursor") {
     const prompt = workTabCliPrompt(initialPrompt, skillRoots);
     const cursorModel = resolveCursorCliModelForLaunch(args.model);
-    const commandArgs = [...permissionModeToCursorFlags(args.permissionMode), ...modelToCliFlag(cursorModel)];
     const startupCommand = buildCursorPrecreatedChatCommand({
       permissionMode: args.permissionMode,
       model: cursorModel,
     });
     const platform = typeof process !== "undefined" && typeof process.platform === "string" ? process.platform : "";
     const useDirectShellLaunch = platform !== "win32";
+    const windowsStartupCommand = buildCursorPrecreatedChatPowerShellCommand({
+      permissionMode: args.permissionMode,
+      model: cursorModel,
+    });
     return {
       ...(useDirectShellLaunch
         ? { command: "/bin/bash", args: ["-lc", startupCommand] }
-        : { args: commandArgs }),
-      startupCommand,
+        : { command: "powershell.exe", args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", windowsStartupCommand] }),
+      startupCommand: useDirectShellLaunch ? startupCommand : windowsStartupCommand,
       initialInput: prompt,
       initialInputDelayMs: 750,
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
@@ -390,6 +393,21 @@ export function buildTrackedCliLaunchCommand(args: {
 
   if (args.provider === "droid") {
     const prompt = workTabCliPrompt(initialPrompt, skillRoots);
+    const platform = typeof process !== "undefined" && typeof process.platform === "string" ? process.platform : "";
+    if (platform === "win32") {
+      const startupCommand = droidPowerShellCommand({
+        permissionMode: args.permissionMode,
+        model: args.model,
+        reasoningEffort: args.reasoningEffort,
+        prompt,
+      });
+      return {
+        command: "powershell.exe",
+        args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", startupCommand],
+        startupCommand,
+        ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
+      };
+    }
     const startupCommand = buildDroidCommandLine({
       permissionMode: args.permissionMode,
       model: args.model,
@@ -573,6 +591,38 @@ function droidSettingsJson(args: {
   return JSON.stringify(settings);
 }
 
+function quotePowerShellArg(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function droidPowerShellCommand(args: {
+  permissionMode: AgentChatPermissionMode | null | undefined;
+  model?: string | null;
+  reasoningEffort?: string | null;
+  prompt?: string;
+  resumeTarget?: string | null;
+}): string {
+  const settingsJson = droidSettingsJson(args);
+  const droidArgs = ["--settings", "$env:ADE_DROID_SETTINGS"];
+  if (args.resumeTarget !== undefined) {
+    droidArgs.push("--resume");
+    if (args.resumeTarget) droidArgs.push(args.resumeTarget);
+  }
+  if (args.prompt) droidArgs.push(args.prompt);
+  const argv = [
+    quotePowerShellArg("droid"),
+    ...droidArgs.map((arg) => arg === "$env:ADE_DROID_SETTINGS" ? arg : quotePowerShellArg(arg)),
+  ].join(" ");
+  return [
+    "$env:ADE_DROID_SETTINGS = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), [System.IO.Path]::GetRandomFileName() + '.json')",
+    `Set-Content -LiteralPath $env:ADE_DROID_SETTINGS -NoNewline -Value ${quotePowerShellArg(settingsJson)}`,
+    `& ${argv}`,
+    "$ADE_DROID_STATUS = $LASTEXITCODE",
+    "Remove-Item -LiteralPath $env:ADE_DROID_SETTINGS -ErrorAction SilentlyContinue",
+    "exit $ADE_DROID_STATUS",
+  ].join("; ");
+}
+
 function buildDroidCommandLine(args: {
   permissionMode: AgentChatPermissionMode | null | undefined;
   model?: string | null;
@@ -631,6 +681,30 @@ function buildCursorPrecreatedChatCommand(args: {
     "printf '%s\\n' \"[ADE] Continue with cursor-agent --resume ${ADE_CURSOR_CHAT_ID}\"",
     command,
   ].join(" && ");
+}
+
+function buildCursorPrecreatedChatPowerShellCommand(args: {
+  permissionMode: AgentChatPermissionMode | null | undefined;
+  model?: string | null;
+}): string {
+  const commandArgs = [
+    ...permissionModeToCursorFlags(args.permissionMode),
+    ...modelToCliFlag(resolveCursorCliModelForLaunch(args.model)),
+    "--resume",
+    "$env:ADE_CURSOR_CHAT_ID",
+  ];
+  const argv = [
+    quotePowerShellArg("cursor-agent"),
+    ...commandArgs.map((arg) => arg === "$env:ADE_CURSOR_CHAT_ID" ? arg : quotePowerShellArg(arg)),
+  ].join(" ");
+  return [
+    "$ADE_CURSOR_CHAT_OUTPUT = & cursor-agent create-chat | Select-Object -First 1",
+    "$env:ADE_CURSOR_CHAT_ID = if ($null -eq $ADE_CURSOR_CHAT_OUTPUT) { '' } else { $ADE_CURSOR_CHAT_OUTPUT.Trim() }",
+    "if (-not $env:ADE_CURSOR_CHAT_ID) { Write-Error '[ADE] cursor-agent create-chat returned no chat id'; exit 1 }",
+    "Write-Output \"[ADE] Continue with cursor-agent --resume $env:ADE_CURSOR_CHAT_ID\"",
+    `& ${argv}`,
+    "exit $LASTEXITCODE",
+  ].join("; ");
 }
 
 const OPENCODE_INLINE_CONFIG_ENV = "OPENCODE_CONFIG_CONTENT";

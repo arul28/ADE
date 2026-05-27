@@ -2042,6 +2042,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       });
     }
 
+    const launch = resolveLaunch();
     const result = await args.ptyService.create({
       ...(preassignedSessionId ? { sessionId: preassignedSessionId } : {}),
       allowNewSessionId: Boolean(preassignedSessionId),
@@ -2051,7 +2052,8 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       toolType,
       cols,
       rows,
-      ...resolveLaunch(),
+      ...launch,
+      ...(launch.initialInput ? { awaitInitialInput: true } : {}),
     });
 
     if (initialInputMeta.goal) {

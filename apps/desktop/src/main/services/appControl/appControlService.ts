@@ -1729,7 +1729,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     }
   };
 
-  const preparePageForCapture = async (client: CdpClient): Promise<void> => {
+  const enablePageDomain = async (client: CdpClient): Promise<void> => {
     await client.send("Page.enable").catch(() => {});
   };
 
@@ -1759,7 +1759,10 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
           + "ADE does not fall back to title-only macOS scripting because it can target the wrong app window.",
         );
       }
-      throw browserWindowError;
+      throw new Error(
+        `Could not ${windowState === "normal" ? "show" : "minimize"} the controlled app window: `
+        + `${browserWindowError?.message ?? "CDP window controls are unavailable."}`,
+      );
     });
     return { ok: true };
   };
@@ -1784,7 +1787,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
         dataUrl: `data:${lastScreencastFrame.mimeType};base64,${lastScreencastFrame.data}`,
       };
     }
-    await preparePageForCapture(client);
+    await enablePageDomain(client);
     // Bound the captureScreenshot call independently of the global CDP timeout.
     // A backgrounded or slow renderer can sit on this for 15s otherwise, and
     // the caller (getSnapshot) almost always has the option to fall back to a
@@ -2030,10 +2033,6 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     return evaluated.result?.value ?? { ok: false, target: null, label: null };
   };
 
-  const focusCdpTargetForInput = async (client: CdpClient): Promise<void> => {
-    await client.send("Page.enable").catch(() => {});
-  };
-
   const getSnapshot = async (snapshotArgs: AppControlSnapshotArgs = {}): Promise<AppControlSnapshot> => withCdp(async (client, session) => {
     // Tolerate screenshot failure so that a slow or backgrounded renderer
     // doesn't take the whole snapshot down. The DOM elements still arrive,
@@ -2122,10 +2121,28 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     selectedAt: nowIso(),
   });
 
+  const screenshotPointFromInspectArgs = (
+    point: AppControlInspectPointArgs,
+    snapshot: AppControlSnapshot,
+  ): { x: number; y: number } => point.coordinateSpace === "viewport"
+    ? {
+      x: point.x * (snapshot.screen.scaleX ?? snapshot.screen.scale),
+      y: point.y * (snapshot.screen.scaleY ?? snapshot.screen.scale),
+    }
+    : { x: point.x, y: point.y };
+
   const inspectPoint = async (point: AppControlInspectPointArgs): Promise<AppControlInspectResult> => {
     const snapshot = await withCdp((client, session) => getPointSnapshotWithClient(client, session, point));
     if (!snapshot.hitElement) {
-      return { item: null, source: "none", snapshot };
+      return {
+        item: coordinateFallbackItem(
+          screenshotPointFromInspectArgs(point, snapshot),
+          snapshot,
+          point.includeScreenshot ? snapshot.screenshot?.dataUrl : null,
+        ),
+        source: "coordinate-fallback",
+        snapshot,
+      };
     }
     return {
       item: contextItemFromElement(snapshot.hitElement, snapshot, point.includeScreenshot ? snapshot.screenshot?.dataUrl : null, point.projectRoot),
@@ -2136,12 +2153,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
 
   const selectPoint = async (point: AppControlInspectPointArgs): Promise<AppControlSelectResult> => {
     const snapshot = await withCdp((client, session) => getPointSnapshotWithClient(client, session, point));
-    const fallbackPoint = point.coordinateSpace === "viewport"
-      ? {
-        x: point.x * (snapshot.screen.scaleX ?? snapshot.screen.scale),
-        y: point.y * (snapshot.screen.scaleY ?? snapshot.screen.scale),
-      }
-      : { x: point.x, y: point.y };
+    const fallbackPoint = screenshotPointFromInspectArgs(point, snapshot);
     const item = snapshot.hitElement
       ? contextItemFromElement(snapshot.hitElement, snapshot, snapshot.screenshot?.dataUrl, point.projectRoot)
       : coordinateFallbackItem(fallbackPoint, snapshot, snapshot.screenshot?.dataUrl);
@@ -2152,7 +2164,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
 
   const click = async (clickArgs: AppControlClickArgs): Promise<{ ok: true }> => {
     await withCdp(async (client) => {
-      await focusCdpTargetForInput(client);
+      await enablePageDomain(client);
       const point = await normalizeViewportPoint(client, clickArgs);
       const pageState = await getInputPageState(client).catch(() => null);
       if (pageState?.visibilityState === "hidden") {
@@ -2185,7 +2197,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     const text = typeArgs.text;
     if (!text) return { ok: true };
     await withCdp(async (client) => {
-      await focusCdpTargetForInput(client);
+      await enablePageDomain(client);
       await client.send("Input.insertText", { text });
     });
     return { ok: true };
@@ -2242,7 +2254,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     if (typeof keyArgs.windowsVirtualKeyCode === "number") payload.windowsVirtualKeyCode = keyArgs.windowsVirtualKeyCode;
     if (typeof keyArgs.nativeVirtualKeyCode === "number") payload.nativeVirtualKeyCode = keyArgs.nativeVirtualKeyCode;
     await withCdp(async (client) => {
-      await focusCdpTargetForInput(client);
+      await enablePageDomain(client);
       await client.send("Input.dispatchKeyEvent", payload);
     });
     return { ok: true };

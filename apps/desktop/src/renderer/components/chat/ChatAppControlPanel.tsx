@@ -1012,6 +1012,7 @@ export function ChatAppControlPanel({
   }, [onInsertDraft]);
 
   const screenshot = snapshot?.screenshot ?? null;
+  // frameHealthTick * 0 is intentional: it refreshes age from a ref-backed timestamp.
   const liveFrameAgeMs = liveFrameActive && liveFrameLastAtRef.current != null
     ? Date.now() - liveFrameLastAtRef.current + frameHealthTick * 0
     : null;

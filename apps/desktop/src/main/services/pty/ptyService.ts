@@ -2773,11 +2773,30 @@ export function createPtyService({
       ]);
       return lastReadyIndex >= 0 && lastReadyIndex > lastBlockerIndex;
     }
+    if (provider === "droid") {
+      const lastBlockerIndex = lastIndexOfAny(normalized, [
+        "login required",
+        "authentication required",
+        "not authenticated",
+        "please log in",
+        "sign in",
+        "api key required",
+        "no api key",
+        "factory api key",
+        "update available",
+        "update required",
+      ]);
+      const lastReadyIndex = lastIndexOfAny(normalized, [
+        "what do you want",
+        "what would you like",
+        "message droid",
+      ]);
+      return lastReadyIndex >= 0 && lastReadyIndex > lastBlockerIndex;
+    }
     return false;
   };
 
   const waitForAgentCliInputReady = async (sessionId: string, provider: TerminalResumeProvider): Promise<boolean> => {
-    if (provider === "droid") return true;
     const deadline = Date.now() + AGENT_CLI_READY_TIMEOUT_MS;
     while (Date.now() < deadline) {
       const live = liveEntryBySessionId(sessionId);
@@ -3374,32 +3393,33 @@ export function createPtyService({
 
       if (requestedInitialInput.length > 0) {
         const normalizedInitialInput = requestedInitialInput.replace(/\r\n?/g, "\n");
-        const writeInitialInput = async () => {
+        const writeInitialInput = async (): Promise<void> => {
           entry.initialInputTimer = null;
-          if (entry.disposed) return;
+          if (entry.disposed) throw new Error("Terminal session closed before initial input could be sent.");
           const provider = providerFromTool(toolTypeHint);
-          if (provider) {
-            const ready = await waitForAgentCliInputReady(sessionId, provider);
-            if (!ready) {
-              logger.warn("pty.initial_input_skipped_not_ready", {
-                ptyId,
-                sessionId,
-                cwd,
-                toolType: toolTypeHint,
-                provider,
-              });
-              return;
-            }
-            if (entry.disposed) return;
-          }
           try {
+            if (provider) {
+              const ready = await waitForAgentCliInputReady(sessionId, provider);
+              if (!ready) {
+                logger.warn("pty.initial_input_skipped_not_ready", {
+                  ptyId,
+                  sessionId,
+                  cwd,
+                  toolType: toolTypeHint,
+                  provider,
+                });
+                throw new Error(`${provider} CLI did not become ready; initial input was not sent.`);
+              }
+              if (entry.disposed) throw new Error("Terminal session closed before initial input could be sent.");
+            }
             if (provider) {
               const submittedInitialInput = normalizedInitialInput.trim();
               if (submittedInitialInput.length > 0) {
-                await writeAgentCliInput((data) => {
+                const wrote = await writeAgentCliInput((data) => {
                   pty.write(data);
                   return true;
                 }, submittedInitialInput, provider);
+                if (!wrote) throw new Error("PTY rejected initial input writes.");
                 const submitDelayMs = provider === "codex"
                   ? CODEX_CLI_PASTE_SUBMIT_DELAY_MS
                   : provider === "cursor"
@@ -3421,14 +3441,30 @@ export function createPtyService({
               toolType: toolTypeHint,
               err: String(err),
             });
+            throw err;
           }
         };
         const initialInputDelayMs = Math.max(0, Math.min(10_000, Math.floor(Number(args.initialInputDelayMs ?? 0) || 0)));
-        if (initialInputDelayMs > 0) {
-          entry.initialInputTimer = setTimeout(writeInitialInput, initialInputDelayMs);
+        if (args.awaitInitialInput) {
+          try {
+            if (initialInputDelayMs > 0) await delay(initialInputDelayMs);
+            await writeInitialInput();
+          } catch (err) {
+            try {
+              terminatePtyProcessTree(entry, "SIGTERM", logger);
+            } catch {
+              // best effort
+            }
+            closeEntry(ptyId, 1);
+            throw err;
+          }
+        } else if (initialInputDelayMs > 0) {
+          entry.initialInputTimer = setTimeout(() => {
+            void writeInitialInput().catch(() => {});
+          }, initialInputDelayMs);
           entry.initialInputTimer.unref?.();
         } else {
-          writeInitialInput();
+          void writeInitialInput().catch(() => {});
         }
       }
 

@@ -93,16 +93,25 @@ function canonicalizeProofArtifactKey(value: string | null | undefined): Compute
   if (token.includes("screenshot") || token.includes("screen_capture") || token === "screen_shot") {
     return "screenshot";
   }
-  if (token.includes("verification") || token.includes("verified") || token === "browser_check") {
+  if (
+    token.includes("browser_verification") ||
+    token === "browser_check" ||
+    token === "browser_verified" ||
+    token.includes("playwright_verification") ||
+    token === "web_verification"
+  ) {
     return "browser_verification";
   }
-  if (token.includes("browser_trace") || token.includes("playwright_trace") || token === "trace" || token.endsWith("_trace")) {
+  if (
+    token.includes("browser_trace") ||
+    token.includes("playwright_trace")
+  ) {
     return "browser_trace";
   }
   if (token.includes("video_record") || token.includes("screen_record") || token === "video" || token.endsWith("_video")) {
     return "video_recording";
   }
-  if (token.includes("console") || token === "logs") {
+  if (token.includes("console_logs") || token === "console_log" || token.includes("browser_console")) {
     return "console_logs";
   }
   return null;

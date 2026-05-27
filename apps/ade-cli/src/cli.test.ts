@@ -1369,6 +1369,65 @@ describe("ADE CLI", () => {
       name: "git_push",
       arguments: { laneId: "lane-1", forceWithLease: true, setUpstream: true },
     });
+
+    const tag = buildCliPlan([
+      "git",
+      "tag",
+      "abc123",
+      "--name",
+      "v1.2.3",
+      "--message",
+      "Release 1.2.3",
+      "--lane",
+      "lane-1",
+    ]);
+    expect(tag.kind).toBe("execute");
+    if (tag.kind !== "execute") return;
+    expect(tag.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "git",
+        action: "createTag",
+        args: { laneId: "lane-1", commitSha: "abc123", tagName: "v1.2.3", message: "Release 1.2.3" },
+      },
+    });
+
+    const reset = buildCliPlan([
+      "git",
+      "reset",
+      "def456",
+      "--hard",
+      "--lane",
+      "lane-1",
+    ]);
+    expect(reset.kind).toBe("execute");
+    if (reset.kind !== "execute") return;
+    expect(reset.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "git",
+        action: "resetToCommit",
+        args: { laneId: "lane-1", commitSha: "def456", mode: "hard" },
+      },
+    });
+
+    const reachable = buildCliPlan([
+      "git",
+      "is-reachable",
+      "fed789",
+      "--lane",
+      "lane-1",
+    ]);
+    expect(reachable.kind).toBe("execute");
+    if (reachable.kind !== "execute") return;
+    expect(reachable.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "git",
+        action: "isCommitInLaneHistory",
+        args: { laneId: "lane-1", commitSha: "fed789" },
+      },
+    });
   });
 
   it("resolves stash OIDs before CLI pop and drop actions", () => {

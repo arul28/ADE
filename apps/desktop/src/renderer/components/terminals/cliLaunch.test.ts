@@ -13,6 +13,17 @@ import { ADE_CLI_AGENT_GUIDANCE } from "../../../shared/adeCliGuidance";
 import { ADE_AGENT_SKILLS_DIRS_ENV } from "../../../shared/agentSkillRoots";
 import type { AgentChatPermissionMode, TerminalSessionSummary } from "../../../shared/types";
 
+const originalPlatform = process.platform;
+
+function withProcessPlatform<T>(platform: NodeJS.Platform, fn: () => T): T {
+  Object.defineProperty(process, "platform", { value: platform, configurable: true });
+  try {
+    return fn();
+  } finally {
+    Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+  }
+}
+
 describe("withCodexNoAltScreen", () => {
   it("returns non-codex commands unchanged", () => {
     expect(withCodexNoAltScreen("claude")).toBe("claude");
@@ -282,6 +293,20 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
     });
 
+    it("launches Cursor through a Windows-safe pre-created resumable chat", () => {
+      withProcessPlatform("win32", () => {
+        const launch = buildTrackedCliLaunchCommand({ provider: "cursor", permissionMode: "plan", model: "cursor-fast", initialPrompt: "Review this lane." });
+        expect(launch.command).toBe("powershell.exe");
+        expect(launch.args).toEqual(["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", launch.startupCommand]);
+        expect(launch.startupCommand).toContain("cursor-agent create-chat");
+        expect(launch.startupCommand).toContain("cursor-agent --resume $env:ADE_CURSOR_CHAT_ID");
+        expect(launch.startupCommand).toContain("'--mode' 'plan'");
+        expect(launch.startupCommand).toContain("'--model' 'cursor-fast'");
+        expect(launch.initialInput).toContain("Review this lane.");
+        expect(launch.initialInputDelayMs).toBe(750);
+      });
+    });
+
     it("launches Droid as an interactive CLI with model, reasoning, autonomy, guidance, and prompt", () => {
       const launch = buildTrackedCliLaunchCommand({
         provider: "droid",
@@ -299,6 +324,24 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.startupCommand).toContain("\\\"reasoningEffort\\\":\\\"high\\\"");
       expect(launch.startupCommand).toContain("\\\"autonomyLevel\\\":\\\"low\\\"");
       expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
+    });
+
+    it("launches Droid through PowerShell on Windows", () => {
+      withProcessPlatform("win32", () => {
+        const launch = buildTrackedCliLaunchCommand({
+          provider: "droid",
+          permissionMode: "edit",
+          model: "droid/claude-sonnet-4-6",
+          reasoningEffort: "high",
+          initialPrompt: "Run the Droid path.",
+        });
+        expect(launch.command).toBe("powershell.exe");
+        expect(launch.args).toEqual(["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", launch.startupCommand]);
+        expect(launch.startupCommand).toContain("$env:ADE_DROID_SETTINGS");
+        expect(launch.startupCommand).toContain("& 'droid' '--settings' $env:ADE_DROID_SETTINGS");
+        expect(launch.startupCommand).toContain("Run the Droid path.");
+        expect(launch.startupCommand).toContain("\"model\":\"claude-sonnet-4-6\"");
+      });
     });
 
     it("launches OpenCode with inline permission config", () => {

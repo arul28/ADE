@@ -530,6 +530,7 @@ export function useLaneWorkSessions(laneId: string | null) {
         ...(launchFields.initialInput !== undefined ? { initialInput: launchFields.initialInput } : {}),
         ...(launchFields.initialInputDelayMs !== undefined ? { initialInputDelayMs: launchFields.initialInputDelayMs } : {}),
         ...launchFields,
+        ...(launchFields.initialInput !== undefined ? { awaitInitialInput: true } : {}),
       });
       // Invalidate all cache entries so other views (e.g. Work tab) pick up
       // the new session on their next refresh.

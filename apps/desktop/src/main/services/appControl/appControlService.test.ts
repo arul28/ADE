@@ -303,6 +303,38 @@ describe("appControlService", () => {
     expect(methods).toContain("Runtime.callFunctionOn");
   });
 
+  it("returns coordinate fallback context for point inspection when CDP misses the DOM", async () => {
+    const targetA = target("a");
+    mockState.httpResponses.push([targetA]);
+    mockState.cdpResults.push({ method: "DOM.getNodeForLocation", result: {} });
+    mockState.runtimeValues.push({
+      url: "app://test",
+      title: "Test app",
+      viewport: { width: 100, height: 80, devicePixelRatio: 2 },
+      elements: [],
+    });
+
+    const service = createAppControlService({
+      projectRoot: "/tmp/project",
+      logger: createLogger(),
+    });
+
+    await service.connect({ cdpPort: 12345, force: true });
+    const result = await service.inspectPoint({
+      x: 20,
+      y: 40,
+      coordinateSpace: "viewport",
+      includeScreenshot: false,
+    });
+
+    expect(result.source).toBe("coordinate-fallback");
+    expect(result.item).toEqual(expect.objectContaining({
+      provider: "coordinate-fallback",
+      componentId: "App coordinate",
+      frame: expect.objectContaining({ width: 1, height: 1 }),
+    }));
+  });
+
   it("uses an in-page click fallback when the Electron target is hidden", async () => {
     const targetA = target("a");
     mockState.httpResponses.push([targetA]);
@@ -389,8 +421,30 @@ describe("appControlService", () => {
     expect(socket).toBeTruthy();
     socket!.sent.length = 0;
 
-    await expect(service.focusWindow()).rejects.toThrow("active CDP target does not expose a browser window id");
+    await expect(service.focusWindow()).rejects.toThrow("Could not show the controlled app window");
     const messages = socket!.sent.map((payload) => JSON.parse(payload) as { method: string });
     expect(messages.map((message) => message.method)).toEqual(["Browser.getWindowForTarget"]);
+  });
+
+  it("wraps non-macOS CDP window-control failures with action context", async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+    try {
+      const targetA = target("a");
+      mockState.httpResponses.push([targetA]);
+      mockState.cdpResults.push({ method: "Browser.getWindowForTarget", result: {} });
+
+      const service = createAppControlService({
+        projectRoot: "/tmp/project",
+        logger: createLogger(),
+      });
+
+      await service.connect({ cdpPort: 12345, force: true });
+      await expect(service.minimizeWindow()).rejects.toThrow(
+        "Could not minimize the controlled app window: The active CDP target does not expose a browser window id.",
+      );
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    }
   });
 });

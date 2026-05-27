@@ -960,6 +960,83 @@ describe("ptyService", () => {
       }
     });
 
+    it("rejects awaited initialInput when the agent CLI never becomes ready", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty, logger } = createHarness();
+
+        const pending = service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+          startupCommand: "codex --no-alt-screen",
+          initialInput: "please keep going",
+          awaitInitialInput: true,
+        }).then(
+          () => null,
+          (error: unknown) => error,
+        );
+
+        await Promise.resolve();
+        mockPty._emitter.emit("data", [
+          "Update available! 0.130.0 -> 0.134.0\n",
+          "› Update now (runs npm install -g @openai/codex)\n",
+          "  Skip\n",
+        ].join(""));
+        await vi.advanceTimersByTimeAsync(20_500);
+
+        await expect(pending).resolves.toEqual(
+          expect.objectContaining({
+            message: expect.stringContaining("codex CLI did not become ready"),
+          }),
+        );
+        expect(mockPty.write).not.toHaveBeenCalled();
+        expect(logger.warn).toHaveBeenCalledWith(
+          "pty.initial_input_skipped_not_ready",
+          expect.objectContaining({ provider: "codex" }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("waits for Droid readiness markers before sending initialInput", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty } = createHarness();
+
+        await service.create({
+          laneId: "lane-1",
+          title: "Droid CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "droid",
+          command: "droid",
+          args: [],
+          startupCommand: "droid",
+          initialInput: "print cwd",
+        });
+
+        mockPty._emitter.emit("data", "Factory Droid\nBooting runtime...\n");
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(mockPty.write).not.toHaveBeenCalled();
+
+        mockPty._emitter.emit("data", "Message Droid\n");
+        await vi.advanceTimersByTimeAsync(599);
+        expect(mockPty.write).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(mockPty.write).toHaveBeenCalledTimes(1);
+        expect(mockPty.write).toHaveBeenNthCalledWith(1, "\x05");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("skips Cursor initialInput when the workspace trust prompt never reaches a composer", async () => {
       vi.useFakeTimers();
       try {
