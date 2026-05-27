@@ -148,7 +148,6 @@ import type {
   ReviewStartRunArgs,
   AdeActionRegistryEntry,
   UsageSnapshot,
-  UsageThresholdEvent,
   BudgetCheckResult,
   BudgetCapScope,
   BudgetCapProvider,
@@ -1026,7 +1025,6 @@ declare global {
         getBudgetConfig: () => Promise<BudgetCapConfig>;
         saveBudgetConfig: (config: BudgetCapConfig) => Promise<BudgetCapConfig>;
         onUpdate: (cb: (snapshot: UsageSnapshot) => void) => () => void;
-        onThreshold: (cb: (event: UsageThresholdEvent) => void) => () => void;
       };
       orchestration: {
         runCreate: (args: {

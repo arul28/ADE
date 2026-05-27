@@ -32,9 +32,7 @@ import type {
   ProjectInfo,
   OpenProjectBinding,
   TerminalSessionSummary,
-  UsageThresholdEvent,
 } from "../../../shared/types";
-import { OPEN_USAGE_EVENT } from "../usage/HeaderUsageControl";
 import {
   eventMatchesBinding,
   getEffectiveBinding,
@@ -131,86 +129,6 @@ function shortId(id: string): string {
   const trimmed = (id ?? "").trim();
   if (!trimmed) return "";
   return trimmed.length <= 8 ? trimmed : trimmed.slice(0, 8);
-}
-
-function usageProviderLabel(provider: UsageThresholdEvent["provider"]): string {
-  switch (provider) {
-    case "claude": return "Claude";
-    case "codex": return "Codex";
-    default: return provider.charAt(0).toUpperCase() + provider.slice(1);
-  }
-}
-
-function usageProviderColor(provider: UsageThresholdEvent["provider"]): string {
-  switch (provider) {
-    case "claude": return "#A78BFA";
-    case "codex": return "#22C55E";
-    default: return "#60A5FA";
-  }
-}
-
-function formatUsageResetCountdown(resetsAt: string, nowMs: number): string {
-  const resetMs = Math.max(0, new Date(resetsAt).getTime() - nowMs);
-  if (resetMs <= 0) return "resets now";
-  const days = Math.floor(resetMs / 86_400_000);
-  const hours = Math.floor((resetMs % 86_400_000) / 3_600_000);
-  if (days > 0) return `${days}d ${hours}h until reset`;
-  return `${hours}h until reset`;
-}
-
-const USAGE_ALERT_DISMISS_STORAGE_KEY = "ade:usage-threshold-dismissed";
-
-function normalizeResetsAt(resetsAt: string): string {
-  const ms = new Date(resetsAt).getTime();
-  return Number.isFinite(ms) ? String(ms) : resetsAt.trim();
-}
-
-function usageAlertKey(event: UsageThresholdEvent): string {
-  return `${event.provider}:${event.threshold}:${normalizeResetsAt(event.resetsAt)}`;
-}
-
-function readDismissedUsageAlerts(): Set<string> {
-  try {
-    const raw = window.localStorage.getItem(USAGE_ALERT_DISMISS_STORAGE_KEY);
-    if (!raw) return new Set();
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return new Set();
-    const now = Date.now();
-    return new Set(
-      parsed.filter((value): value is string => {
-        if (typeof value !== "string") return false;
-        const parts = value.split(":");
-        const resetMs = Number(parts[2]);
-        // Drop entries whose reset cycle has already passed
-        if (Number.isFinite(resetMs) && resetMs < now) return false;
-        return true;
-      }),
-    );
-  } catch {
-    return new Set();
-  }
-}
-
-function persistDismissedUsageAlerts(keys: Set<string>): void {
-  try {
-    window.localStorage.setItem(USAGE_ALERT_DISMISS_STORAGE_KEY, JSON.stringify([...keys]));
-  } catch {
-    // localStorage can be unavailable in private/test environments.
-  }
-}
-
-function markUsageAlertDismissed(
-  dismissed: Set<string>,
-  event: UsageThresholdEvent,
-): void {
-  const normalizedReset = normalizeResetsAt(event.resetsAt);
-  // Only dismiss thresholds up to and including the current one so that higher
-  // thresholds (e.g. 50%, 75%, 100%) can still fire later in the same cycle.
-  for (const threshold of [25, 50, 75, 100] as const) {
-    if (threshold > event.threshold) break;
-    dismissed.add(`${event.provider}:${threshold}:${normalizedReset}`);
-  }
-  persistDismissedUsageAlerts(dismissed);
 }
 
 function describeGithubBanner(status: GitHubStatus): { message: string; linkLabel: string } {
@@ -345,25 +263,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     LinearWorkflowToast[]
   >([]);
   const linearToastTimersRef = useRef<Map<string, number>>(new Map());
-  const [usageThresholdToasts, setUsageThresholdToasts] = useState<
-    Array<{ id: string; event: UsageThresholdEvent }>
-  >([]);
-  const usageToastTimersRef = useRef<Map<string, number>>(new Map());
-  const dismissedUsageAlertsRef = useRef(readDismissedUsageAlerts());
-  /** Remove a usage toast from the in-memory list without persisting to localStorage. */
-  const expireUsageToast = (id: string) => {
-    setUsageThresholdToasts((prev) => prev.filter((t) => t.id !== id));
-    const timer = usageToastTimersRef.current.get(id);
-    if (timer != null) window.clearTimeout(timer);
-    usageToastTimersRef.current.delete(id);
-  };
-  /** Explicitly dismiss a usage toast (user clicked "X") — persists to localStorage. */
-  const dismissUsageToast = (id: string, event?: UsageThresholdEvent) => {
-    if (event) {
-      markUsageAlertDismissed(dismissedUsageAlertsRef.current, event);
-    }
-    expireUsageToast(id);
-  };
   const [staleCliNotice, setStaleCliNotice] =
     useState<StaleCliNotice | null>(null);
   const dismissedStaleCliNoticeKeyRef = useRef<string | null>(null);
@@ -1043,45 +942,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  const usageAlertLastSeenRef = useRef<Map<string, number>>(new Map());
-
-  useEffect(() => {
-    const onThreshold = window.ade?.usage?.onThreshold;
-    if (typeof onThreshold !== "function") return;
-    const unsub = onThreshold((event) => {
-      const key = usageAlertKey(event);
-      if (dismissedUsageAlertsRef.current.has(key)) return;
-
-      const now = Date.now();
-      const lastSeen = usageAlertLastSeenRef.current.get(key) ?? 0;
-      if (now - lastSeen < 300_000) return;
-      usageAlertLastSeenRef.current.set(key, now);
-
-      const id = globalThis.crypto?.randomUUID
-        ? globalThis.crypto.randomUUID()
-        : `${Date.now()}-${Math.random()}`;
-      setUsageThresholdToasts((prev) => {
-        const withoutLowerSameProvider = prev.filter(
-          ({ event: existing }) =>
-            !(existing.provider === event.provider && existing.threshold < event.threshold),
-        );
-        if (withoutLowerSameProvider.some(({ event: existing }) => usageAlertKey(existing) === key)) {
-          return withoutLowerSameProvider;
-        }
-        return [{ id, event }, ...withoutLowerSameProvider].slice(0, 4);
-      });
-      const timer = window.setTimeout(() => expireUsageToast(id), 30_000);
-      usageToastTimersRef.current.set(id, timer);
-    });
-    return () => {
-      unsub();
-      for (const timer of usageToastTimersRef.current.values()) {
-        window.clearTimeout(timer);
-      }
-      usageToastTimersRef.current.clear();
-    };
-  }, []);
-
   const tintClass = useMemo(() => {
     const tintMap: Record<string, string> = {
       "/project": "tab-tint-project",
@@ -1298,52 +1158,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               children
             )}
           </div>
-          {staleCliNotice || prToasts.length > 0 || usageThresholdToasts.length > 0 ? (
+          {staleCliNotice || prToasts.length > 0 ? (
             <div className="pointer-events-none absolute bottom-2 right-2 z-[95] flex w-[min(380px,calc(100vw-20px))] flex-col gap-1.5">
-              {usageThresholdToasts.map(({ id, event }) => {
-                const providerColor = usageProviderColor(event.provider);
-                const providerLabel = usageProviderLabel(event.provider);
-                const countdown = formatUsageResetCountdown(event.resetsAt, Date.now());
-                return (
-                  <div
-                    key={id}
-                    className="pointer-events-auto flex w-72 overflow-hidden rounded-lg border border-white/[0.08] bg-[color:var(--ade-shell-surface,#1A1830)] shadow-xl shadow-black/40"
-                  >
-                    <div className="w-1 shrink-0" style={{ backgroundColor: providerColor }} />
-                    <div className="flex min-w-0 flex-1 flex-col gap-1 px-3 py-2.5">
-                      <div className="flex items-center justify-between gap-2">
-                        <button
-                          type="button"
-                          className="text-[12px] font-medium text-fg/90 hover:underline"
-                          onClick={() => {
-                            window.dispatchEvent(new CustomEvent(OPEN_USAGE_EVENT));
-                            dismissUsageToast(id, event);
-                          }}
-                          title="Open usage"
-                        >
-                          {providerLabel} usage at {event.threshold}%
-                        </button>
-                        <button
-                          type="button"
-                          className="shrink-0 rounded p-0.5 text-muted-fg transition-colors hover:bg-fg/[0.05] hover:text-fg"
-                          onClick={() => dismissUsageToast(id, event)}
-                          aria-label="Dismiss usage notification"
-                          title="Dismiss"
-                        >
-                          <span className="text-[11px]">&times;</span>
-                        </button>
-                      </div>
-                      <span className="text-[11px] text-muted-fg/55">{countdown}</span>
-                      <div className="h-1 overflow-hidden rounded-full bg-white/[0.06]">
-                        <div
-                          className="h-full rounded-full"
-                          style={{ width: `${Math.min(100, event.percent ?? event.threshold)}%`, backgroundColor: providerColor }}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
               {staleCliNotice ? (
                 <div className="pointer-events-auto overflow-hidden rounded-xl border border-amber-500/25 bg-card/95 px-3 py-3 shadow-float backdrop-blur">
                   <div className="flex items-start gap-3">

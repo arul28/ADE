@@ -45,7 +45,6 @@ function windowPercentFor(
   return clampPercent(window.percentUsed);
 }
 
-const OPEN_USAGE_EVENT = "ade-open-usage-drawer";
 const HEADER_USAGE_REFRESH_INTERVAL_MS = 120_000;
 const HEADER_USAGE_FOCUS_REFRESH_STALE_MS = 60_000;
 const HEADER_USAGE_PROVIDER_STATUS_REFRESH_MS = 300_000;
@@ -77,7 +76,7 @@ function percentStyle(percent: number | null): React.CSSProperties {
 }
 
 function formatUsageTitle(usage: HeaderUsageWindowSummary): string {
-  return `5h ${percentLabel(usage.fiveHourPercent)}, ${usage.planLabel} ${percentLabel(usage.planPercent)}`;
+  return `${usage.planLabel} ${percentLabel(usage.planPercent)}, 5h ${percentLabel(usage.fiveHourPercent)}`;
 }
 
 function HeaderProviderUsageChip({
@@ -94,9 +93,7 @@ function HeaderProviderUsageChip({
     >
       <ProviderLogo provider={provider} size={14} />
       <span className="inline-flex items-center gap-0.5 font-mono text-[9px] font-semibold tabular-nums">
-        <span className="text-muted-fg">5h</span>
-        <span style={percentStyle(usage.fiveHourPercent)}>{percentLabel(usage.fiveHourPercent)}</span>
-        <span className="ml-1 text-muted-fg">{usage.planLabel}</span>
+        <span className="text-muted-fg">{usage.planLabel}</span>
         <span style={percentStyle(usage.planPercent)}>{percentLabel(usage.planPercent)}</span>
       </span>
     </div>
@@ -112,7 +109,8 @@ export function HeaderUsageControl({
 } = {}) {
   const [open, setOpen] = useState(false);
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
-  const [providerConnections, setProviderConnections] = useState<AiProviderConnections | null>(null);
+  const [providerConnections, setProviderConnections] =
+    useState<AiProviderConnections | null | undefined>(undefined);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const snapshotRef = useRef<UsageSnapshot | null>(null);
 
@@ -193,8 +191,8 @@ export function HeaderUsageControl({
     };
   }, [applySnapshot]);
 
-  // Fetch provider connection status so we can hide providers whose CLI is
-  // not installed on this machine.
+  // Fetch provider connection status so the header only shows configured
+  // Claude/Codex usage meters.
   useEffect(() => {
     if (!window.ade?.ai?.getStatus) return;
     const aiBridge = window.ade.ai;
@@ -216,19 +214,18 @@ export function HeaderUsageControl({
     };
   }, []);
 
-  // Listen for programmatic open requests (used by the threshold toast).
-  useEffect(() => {
-    const handler = () => setOpen(true);
-    window.addEventListener(OPEN_USAGE_EVENT, handler);
-    return () => window.removeEventListener(OPEN_USAGE_EVENT, handler);
-  }, []);
-
   const detectedProviders = useMemo<UsageProvider[]>(() => {
-    if (!providerConnections) return TRACKED_PROVIDERS;
-    return TRACKED_PROVIDERS.filter(
-      (provider) => providerConnections[provider]?.runtimeDetected !== false,
+    const providersWithUsage = TRACKED_PROVIDERS.filter((provider) =>
+      snapshot?.windows.some((window) => window.provider === provider),
     );
-  }, [providerConnections]);
+    if (!providerConnections) {
+      return providersWithUsage;
+    }
+    const configuredProviders = TRACKED_PROVIDERS.filter(
+      (provider) => providerConnections[provider]?.usageAvailable || providerConnections[provider]?.authAvailable,
+    );
+    return configuredProviders.length > 0 ? configuredProviders : providersWithUsage;
+  }, [providerConnections, snapshot?.windows]);
 
   useEffect(() => {
     if (!open) return;
@@ -287,7 +284,7 @@ export function HeaderUsageControl({
       {providersWithUsage.length > 0 ? (
         <span className="shrink-0 text-[10px] tabular-nums text-muted-fg/55">
           {providersWithUsage.map(({ provider, usage }) => (
-            `${PROVIDER_LABEL[provider]} ${percentLabel(usage.fiveHourPercent)}`
+            `${PROVIDER_LABEL[provider]} ${percentLabel(usage.planPercent)}`
           )).join(" · ")}
         </span>
       ) : null}
@@ -389,5 +386,3 @@ export function HeaderUsageControl({
     </>
   );
 }
-
-export { OPEN_USAGE_EVENT };

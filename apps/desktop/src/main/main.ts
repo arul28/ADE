@@ -188,28 +188,6 @@ type RemoteOpenProjectBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
 const AUTO_UPDATER_CACHE_DIR_NAME = "ade-desktop-updater";
 const ADE_BROWSER_WEBVIEW_PARTITION = "persist:ade-browser";
 
-// ── Usage threshold IPC-level dedup ─────────────────────────────
-// Even with the shared module-level ThresholdState in usageTrackingService,
-// a small race window exists where two service instances could fire before the
-// shared state is written back.  This map acts as a final IPC gate.
-const thresholdEventDedup = new Map<string, number>();
-const THRESHOLD_DEDUP_TTL_MS = 10 * 60_000; // 10 minutes
-
-/** Returns true if the event should be emitted (not a duplicate). Prunes stale entries. */
-function shouldEmitThresholdEvent(event: { provider: string; threshold: number; resetsAt: string }): boolean {
-  const parsedTime = new Date(event.resetsAt).getTime();
-  const resetsAtKey = Number.isNaN(parsedTime) ? event.resetsAt : parsedTime;
-  const dedupKey = `${event.provider}:${event.threshold}:${resetsAtKey}`;
-  const now = Date.now();
-  const lastEmitted = thresholdEventDedup.get(dedupKey);
-  if (lastEmitted && now - lastEmitted < THRESHOLD_DEDUP_TTL_MS) return false;
-  thresholdEventDedup.set(dedupKey, now);
-  for (const [k, t] of thresholdEventDedup) {
-    if (now - t > THRESHOLD_DEDUP_TTL_MS) thresholdEventDedup.delete(k);
-  }
-  return true;
-}
-
 type AdePackageChannel = "alpha" | "beta";
 
 function normalizeAdePackageChannel(value: unknown): AdePackageChannel | null {
@@ -3515,10 +3493,6 @@ app.whenReady().then(async () => {
       onUpdate: (snapshot) => {
         emitProjectEvent(projectRoot, IPC.usageEvent, snapshot);
       },
-      onThresholdEvent: (event) => {
-        if (!shouldEmitThresholdEvent(event)) return;
-        emitProjectEvent(projectRoot, IPC.usageThresholdEvent, event);
-      },
     });
     scheduleBackgroundProjectTask(
       "usage.start",
@@ -4185,10 +4159,6 @@ app.whenReady().then(async () => {
       pollIntervalMs: 120_000,
       onUpdate: (snapshot) => {
         emitProjectEvent(projectRoot, IPC.usageEvent, snapshot);
-      },
-      onThresholdEvent: (event) => {
-        if (!shouldEmitThresholdEvent(event)) return;
-        emitProjectEvent(projectRoot, IPC.usageThresholdEvent, event);
       },
     });
     usageTrackingService.start();

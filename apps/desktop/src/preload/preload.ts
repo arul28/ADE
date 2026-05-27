@@ -518,7 +518,6 @@ import type {
   TestSuiteDefinition,
   WriteTextAtomicArgs,
   UsageSnapshot,
-  UsageThresholdEvent,
   BudgetCheckResult,
   BudgetCapScope,
   BudgetCapProvider,
@@ -1500,9 +1499,6 @@ const remoteMacosVmEventCallbacks = new Set<
 const remoteUsageUpdateEventCallbacks = new Set<
   (payload: UsageSnapshot) => void
 >();
-const remoteUsageThresholdEventCallbacks = new Set<
-  (payload: UsageThresholdEvent) => void
->();
 const remoteAutomationsEventCallbacks = new Set<
   (payload: AutomationsEventPayload) => void
 >();
@@ -1575,11 +1571,6 @@ const subscribeLocalUsageUpdateEvents =
   createLocalIpcEventSubscription<UsageSnapshot>(
     IPC.usageEvent,
     "usage update",
-  );
-const subscribeLocalUsageThresholdEvents =
-  createLocalIpcEventSubscription<UsageThresholdEvent>(
-    IPC.usageThresholdEvent,
-    "usage threshold",
   );
 const subscribeLocalAutomationsEvents =
   createLocalIpcEventSubscription<AutomationsEventPayload>(
@@ -1678,7 +1669,6 @@ function hasRemoteRuntimeEventSubscribers(): boolean {
     remoteProjectStateEventCallbacks.size > 0 ||
     remoteMacosVmEventCallbacks.size > 0 ||
     remoteUsageUpdateEventCallbacks.size > 0 ||
-    remoteUsageThresholdEventCallbacks.size > 0 ||
     remoteAutomationsEventCallbacks.size > 0 ||
     remoteConflictEventCallbacks.size > 0 ||
     remoteGitHubStatusChangedCallbacks.size > 0 ||
@@ -1913,20 +1903,6 @@ function dispatchRemoteRuntimeEventPayload(
         cb(payload.snapshot as unknown as UsageSnapshot);
       } catch (error) {
         console.error("preload remote usage listener failed", error);
-      }
-    }
-  }
-
-  const usageThresholdEvent = toWrappedEvent<UsageThresholdEvent>(
-    payload,
-    "usage_threshold",
-  );
-  if (usageThresholdEvent) {
-    for (const cb of [...remoteUsageThresholdEventCallbacks]) {
-      try {
-        cb(usageThresholdEvent);
-      } catch (error) {
-        console.error("preload remote usage threshold listener failed", error);
       }
     }
   }
@@ -2556,16 +2532,6 @@ function subscribeRemoteUsageUpdateEvents(
   };
 }
 
-function subscribeRemoteUsageThresholdEvents(
-  cb: (payload: UsageThresholdEvent) => void,
-): () => void {
-  remoteUsageThresholdEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteUsageThresholdEventCallbacks.delete(cb);
-  };
-}
-
 function subscribeRemoteAutomationsEvents(
   cb: (payload: AutomationsEventPayload) => void,
 ): () => void {
@@ -2695,17 +2661,6 @@ function subscribeUsageUpdateEvents(
 ): () => void {
   const removeLocal = subscribeLocalUsageUpdateEvents(cb);
   const removeRemote = subscribeRemoteUsageUpdateEvents(cb);
-  return () => {
-    removeRemote();
-    removeLocal();
-  };
-}
-
-function subscribeUsageThresholdEvents(
-  cb: (payload: UsageThresholdEvent) => void,
-): () => void {
-  const removeLocal = subscribeLocalUsageThresholdEvents(cb);
-  const removeRemote = subscribeRemoteUsageThresholdEvents(cb);
   return () => {
     removeRemote();
     removeLocal();
@@ -4174,7 +4129,6 @@ contextBridge.exposeInMainWorld("ade", {
         () => ipcRenderer.invoke(IPC.usageSaveBudgetConfig, config),
       ),
     onUpdate: subscribeUsageUpdateEvents,
-    onThreshold: subscribeUsageThresholdEvents,
   },
   lanes: {
     list: async (args: ListLanesArgs = {}): Promise<LaneSummary[]> => {

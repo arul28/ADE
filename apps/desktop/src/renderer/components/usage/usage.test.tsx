@@ -158,9 +158,9 @@ function makeAiStatus(providerConnections: Partial<AiProviderConnections> = {}):
     },
     features: [],
     providerConnections: {
-      // Both CLIs detected by default so usage components render both cards.
-      claude: makeProviderConnection("claude", { runtimeDetected: true, authAvailable: true }),
-      codex: makeProviderConnection("codex", { runtimeDetected: true, authAvailable: true }),
+      // Both providers are set up by default so usage components render both cards.
+      claude: makeProviderConnection("claude", { runtimeDetected: true, authAvailable: true, usageAvailable: true }),
+      codex: makeProviderConnection("codex", { runtimeDetected: true, authAvailable: true, usageAvailable: true }),
       cursor: makeProviderConnection("cursor"),
       droid: makeProviderConnection("droid"),
       ...providerConnections,
@@ -277,21 +277,21 @@ describe("usage components", () => {
       vi.mocked(window.ade.ai.getStatus).mockResolvedValue(
         makeAiStatus({
           claude: makeProviderConnection("claude", { runtimeDetected: false, authAvailable: false }),
-          codex: makeProviderConnection("codex", { runtimeDetected: true, authAvailable: true }),
+          codex: makeProviderConnection("codex", { runtimeDetected: true, authAvailable: true, usageAvailable: true }),
         }),
       );
     });
 
-    it("force-refreshes on mount and renders top-bar usage numbers before the drawer is opened", async () => {
+    it("force-refreshes on mount and renders weekly top-bar usage before the drawer is opened", async () => {
       render(<HeaderUsageControl />);
 
       await waitFor(() => {
         expect(window.ade.usage.refresh).toHaveBeenCalledTimes(1);
       });
 
-      expect(await screen.findByText("9%")).toBeTruthy();
       expect(await screen.findByText("19%")).toBeTruthy();
-      expect(screen.getByRole("button", { name: /Codex 5h 9%, wk 19%/ })).toBeTruthy();
+      expect(screen.queryByText("9%")).toBeNull();
+      expect(screen.getByRole("button", { name: /Codex wk 19%, 5h 9%/ })).toBeTruthy();
     });
 
     it("does not let a slower cached startup read overwrite the fresh refresh result", async () => {
@@ -301,15 +301,15 @@ describe("usage components", () => {
 
       render(<HeaderUsageControl />);
 
-      expect(await screen.findByText("9%")).toBeTruthy();
+      expect(await screen.findByText("19%")).toBeTruthy();
 
       await act(async () => {
         cachedSnapshot.resolve(makeEmptySnapshot());
         await cachedSnapshot.promise;
       });
 
-      expect(screen.getByText("9%")).toBeTruthy();
       expect(screen.getByText("19%")).toBeTruthy();
+      expect(screen.queryByText("9%")).toBeNull();
     });
 
     it("keeps refreshing while the drawer stays closed", async () => {

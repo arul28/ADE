@@ -19,7 +19,6 @@ import type {
   CostSnapshot,
   ExtraUsage,
   UsageSnapshot,
-  UsageThresholdEvent,
 } from "../../../shared/types";
 import { isRecord, nowIso, getErrorMessage, safeJsonParse } from "../shared/utils";
 import {
@@ -53,9 +52,6 @@ function isBenignStdinCloseError(error: unknown): boolean {
 
 const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
-
-const USAGE_THRESHOLDS = [25, 50, 75, 100] as const;
-const TRACKED_PROVIDERS: UsageProvider[] = ["claude", "codex"];
 
 // Per-million token prices for cost estimation
 const TOKEN_PRICES: Record<string, { input: number; output: number }> = {
@@ -886,11 +882,6 @@ function calculatePacingByProvider(windows: UsageWindow[]): UsageSnapshot["pacin
 
 // ── Service Factory ──────────────────────────────────────────────
 
-// Module-level shared state — all createUsageTrackingService instances reference this
-// so that threshold firings from one project don't re-fire from another project's copy.
-let sharedThresholdState: ThresholdState | null = null;
-let sharedThresholdStore: ThresholdStore | null = null;
-
 export type UsageTrackingService = ReturnType<typeof createUsageTrackingService>;
 
 type UsageTrackingDependencies = {
@@ -900,96 +891,15 @@ type UsageTrackingDependencies = {
   scanCodexLogs?: () => Promise<TokenEntry[]>;
 };
 
-type ThresholdState = Partial<Record<UsageProvider, { resetsAt: string; firedThresholds: number[] }>>;
-
-type ThresholdStore = {
-  load: () => ThresholdState;
-  save: (state: ThresholdState) => void;
-};
-
-function normalizeResetAtKey(resetsAt: string): string {
-  const trimmed = resetsAt.trim();
-  if (!trimmed) return "";
-  const ms = new Date(trimmed).getTime();
-  return Number.isFinite(ms) ? String(ms) : trimmed;
-}
-
-function createFileThresholdStore(filePath: string, logger: Logger): ThresholdStore {
-  return {
-    load: () => {
-      try {
-        const raw = fs.readFileSync(filePath, "utf8");
-        const parsed = safeJsonParse<ThresholdState>(raw, {});
-        return parsed;
-      } catch {
-        return {};
-      }
-    },
-    save: (state) => {
-      try {
-        fs.mkdirSync(path.dirname(filePath), { recursive: true });
-        fs.writeFileSync(filePath, JSON.stringify(state), "utf8");
-      } catch (err) {
-        logger.warn("usage.threshold_persist_failed", { error: getErrorMessage(err) });
-      }
-    },
-  };
-}
-
-function detectThresholdCrossings(
-  windows: UsageWindow[],
-  prevState: ThresholdState,
-): { events: UsageThresholdEvent[]; nextState: ThresholdState } {
-  const nextState: ThresholdState = { ...prevState };
-  const events: UsageThresholdEvent[] = [];
-  for (const provider of TRACKED_PROVIDERS) {
-    const primaryWindow =
-      windows.find((w) => w.provider === provider && w.windowType === "weekly") ??
-      windows.find((w) => w.provider === provider && w.windowType === "monthly");
-    if (!primaryWindow || !primaryWindow.resetsAt) continue;
-
-    const resetKey = normalizeResetAtKey(primaryWindow.resetsAt);
-    const prev = prevState[provider];
-    const cycleChanged = !prev || normalizeResetAtKey(prev.resetsAt) !== resetKey;
-    const firedThresholds = cycleChanged ? [] : [...(prev?.firedThresholds ?? [])];
-
-    const percent = Math.max(0, Math.min(100, primaryWindow.percentUsed));
-    let highestNewThreshold: (typeof USAGE_THRESHOLDS)[number] | null = null;
-    for (const threshold of USAGE_THRESHOLDS) {
-      if (percent >= threshold && !firedThresholds.includes(threshold)) {
-        firedThresholds.push(threshold);
-        highestNewThreshold = threshold;
-      }
-    }
-    if (highestNewThreshold != null) {
-      events.push({
-        provider,
-        threshold: highestNewThreshold,
-        percent,
-        resetsAt: primaryWindow.resetsAt,
-        firedAt: nowIso(),
-      });
-    }
-    nextState[provider] = { resetsAt: primaryWindow.resetsAt, firedThresholds };
-  }
-  return { events, nextState };
-}
-
 export function createUsageTrackingService({
   logger,
   pollIntervalMs: configuredInterval,
   onUpdate,
-  onThresholdEvent,
-  thresholdStatePath,
-  thresholdStore,
   dependencies,
 }: {
   logger: Logger;
   pollIntervalMs?: number;
   onUpdate?: (snapshot: UsageSnapshot) => void;
-  onThresholdEvent?: (event: UsageThresholdEvent) => void;
-  thresholdStatePath?: string;
-  thresholdStore?: ThresholdStore;
   dependencies?: UsageTrackingDependencies;
 }) {
   const pollIntervalMs = Math.max(
@@ -1007,38 +917,6 @@ export function createUsageTrackingService({
   const runCodexUsagePoll = dependencies?.pollCodexUsage ?? (() => pollCodexUsage(logger));
   const scanClaudeCostLogs = dependencies?.scanClaudeLogs ?? scanClaudeLogs;
   const scanCodexCostLogs = dependencies?.scanCodexLogs ?? scanCodexLogs;
-
-  // If a test passes a custom store, use that directly (no singleton sharing).
-  // Otherwise, share a single store + state across all service instances to prevent
-  // multiple projects from firing the same threshold event.
-  const isTestInjected = thresholdStore != null;
-  let resolvedThresholdStore: ThresholdStore;
-  let localThresholdState: ThresholdState | null = null;
-  if (isTestInjected) {
-    resolvedThresholdStore = thresholdStore;
-    localThresholdState = resolvedThresholdStore.load();
-  } else {
-    if (!sharedThresholdStore) {
-      sharedThresholdStore = createFileThresholdStore(
-        thresholdStatePath ?? path.join(os.homedir(), ".ade", "usage-thresholds.json"),
-        logger,
-      );
-      sharedThresholdState = sharedThresholdStore.load();
-    }
-    resolvedThresholdStore = sharedThresholdStore;
-  }
-
-  function getThresholdState(): ThresholdState {
-    return isTestInjected ? localThresholdState! : sharedThresholdState!;
-  }
-
-  function setThresholdState(next: ThresholdState): void {
-    if (isTestInjected) {
-      localThresholdState = next;
-    } else {
-      sharedThresholdState = next;
-    }
-  }
 
   const emptySnapshot = (): UsageSnapshot => ({
     windows: [],
@@ -1127,24 +1005,6 @@ export function createUsageTrackingService({
         lastSnapshot = snapshot;
 
         try {
-          const currentState = getThresholdState();
-          const { events, nextState } = detectThresholdCrossings(allWindows, currentState);
-          if (events.length > 0 || JSON.stringify(nextState) !== JSON.stringify(currentState)) {
-            setThresholdState(nextState);
-            resolvedThresholdStore.save(nextState);
-          }
-          for (const event of events) {
-            try {
-              onThresholdEvent?.(event);
-            } catch {
-              // Never crash on listener error
-            }
-          }
-        } catch (err) {
-          logger.warn("usage.threshold_detection_failed", { error: getErrorMessage(err) });
-        }
-
-        try {
           onUpdate?.(snapshot);
         } catch {
           // Never crash on callback error
@@ -1214,7 +1074,6 @@ export function createUsageTrackingService({
 export const _testing = {
   MIN_POLL_INTERVAL_MS,
   MAX_POLL_INTERVAL_MS,
-  USAGE_THRESHOLDS,
   readClaudeCredentials,
   readCodexCredentials,
   isCodexTokenStale,
@@ -1236,6 +1095,4 @@ export const _testing = {
   findJsonlFiles,
   resolveTokenPrice,
   pollCodexViaCliRpc,
-  detectThresholdCrossings,
-  normalizeResetAtKey,
 };

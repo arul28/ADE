@@ -3,7 +3,6 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { UsageWindow } from "../../../shared/types";
 
 const mockState = vi.hoisted(() => ({
   spawn: vi.fn(),
@@ -24,7 +23,6 @@ import { createUsageTrackingService, _testing } from "./usageTrackingService";
 
 const {
   aggregateCosts,
-  bucketDaily7d,
   calculatePacing,
   MIN_POLL_INTERVAL_MS,
   MAX_POLL_INTERVAL_MS,
@@ -33,8 +31,6 @@ const {
   parseClaudeWindows,
   parseCodexRateLimitWindows,
   calculatePacingByProvider,
-  detectThresholdCrossings,
-  normalizeResetAtKey,
   pollCodexViaCliRpc,
   resolveTokenPrice,
 } = _testing;
@@ -461,103 +457,6 @@ describe("parseCodexRateLimitWindows", () => {
   });
 });
 
-describe("detectThresholdCrossings", () => {
-  const weeklyReset = "2099-05-15T07:00:00.000Z";
-  const makeWindow = (
-    provider: "claude" | "codex",
-    percent: number,
-    resetsAt = weeklyReset,
-    windowType: UsageWindow["windowType"] = "weekly",
-  ): UsageWindow => ({
-    provider,
-    windowType,
-    percentUsed: percent,
-    resetsAt,
-    resetsInMs: 86_400_000,
-  });
-
-  it("fires the lowest crossed thresholds for a fresh cycle", () => {
-    const { events, nextState } = detectThresholdCrossings(
-      [makeWindow("claude", 30)],
-      {},
-    );
-    expect(events.map((e) => e.threshold)).toEqual([25]);
-    expect(nextState.claude?.firedThresholds).toEqual([25]);
-  });
-
-  it("uses the weekly window before monthly so threshold state is stable", () => {
-    const monthlyReset = "2099-06-01T07:00:00.000Z";
-    const prev = { claude: { resetsAt: weeklyReset, firedThresholds: [25, 50] } };
-    const { events, nextState } = detectThresholdCrossings(
-      [
-        makeWindow("claude", 90, monthlyReset, "monthly"),
-        makeWindow("claude", 60, weeklyReset, "weekly"),
-      ],
-      prev,
-    );
-    expect(events).toEqual([]);
-    expect(nextState.claude?.resetsAt).toBe(weeklyReset);
-    expect(nextState.claude?.firedThresholds).toEqual([25, 50]);
-  });
-
-  it("fires only the highest crossed threshold on a cold start", () => {
-    const { events, nextState } = detectThresholdCrossings(
-      [makeWindow("claude", 80)],
-      {},
-    );
-    expect(events.map((e) => e.threshold)).toEqual([75]);
-    expect(nextState.claude?.firedThresholds).toEqual([25, 50, 75]);
-  });
-
-  it("fires the next highest threshold when usage increases later in the cycle", () => {
-    const prev = { claude: { resetsAt: weeklyReset, firedThresholds: [25, 50] } };
-    const { events, nextState } = detectThresholdCrossings(
-      [makeWindow("claude", 80)],
-      prev,
-    );
-    expect(events.map((e) => e.threshold)).toEqual([75]);
-    expect(nextState.claude?.firedThresholds).toEqual([25, 50, 75]);
-  });
-
-  it("does not refire thresholds already recorded for the same cycle", () => {
-    const prev = { claude: { resetsAt: weeklyReset, firedThresholds: [25, 50] } };
-    const { events, nextState } = detectThresholdCrossings(
-      [makeWindow("claude", 60)],
-      prev,
-    );
-    expect(events).toEqual([]);
-    expect(nextState.claude?.firedThresholds).toEqual([25, 50]);
-  });
-
-  it("resets fired thresholds when the cycle reset date changes", () => {
-    const prev = { claude: { resetsAt: "2099-05-08T07:00:00.000Z", firedThresholds: [25, 50, 75] } };
-    const { events, nextState } = detectThresholdCrossings(
-      [makeWindow("claude", 30, weeklyReset)],
-      prev,
-    );
-    expect(events.map((e) => e.threshold)).toEqual([25]);
-    expect(nextState.claude?.firedThresholds).toEqual([25]);
-  });
-
-  it("treats reset timestamps as the same cycle when only the string format differs", () => {
-    const prev = { claude: { resetsAt: weeklyReset, firedThresholds: [25, 50] } };
-    const { events, nextState } = detectThresholdCrossings(
-      [makeWindow("claude", 60, "2099-05-15T07:00:00Z")],
-      prev,
-    );
-    expect(events).toEqual([]);
-    expect(nextState.claude?.firedThresholds).toEqual([25, 50]);
-  });
-});
-
-describe("normalizeResetAtKey", () => {
-  it("normalizes equivalent ISO timestamps to the same key", () => {
-    expect(normalizeResetAtKey("2099-05-15T07:00:00.000Z")).toBe(
-      normalizeResetAtKey("2099-05-15T07:00:00Z"),
-    );
-  });
-});
-
 describe("pollCodexViaCliRpc", () => {
   const originalPlatform = process.platform;
   const originalComSpec = process.env.ComSpec;
@@ -704,19 +603,9 @@ describe("createUsageTrackingService", () => {
     scanCodexLogs: vi.fn(async () => [] as never[]),
   });
 
-  const createInMemoryThresholdStore = () => {
-    let state: Record<string, unknown> = {};
-    return {
-      load: () => ({ ...state }),
-      save: (next: Record<string, unknown>) => {
-        state = { ...next };
-      },
-    };
-  };
-
   it("returns an empty snapshot before polling", () => {
     const logger = createLogger();
-    const service = createUsageTrackingService({ logger, thresholdStore: createInMemoryThresholdStore() });
+    const service = createUsageTrackingService({ logger });
 
     const snapshot = service.getUsageSnapshot();
     expect(snapshot.windows).toEqual([]);
@@ -733,12 +622,12 @@ describe("createUsageTrackingService", () => {
     const dependencies = createFastDependencies();
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
 
-    const service1 = createUsageTrackingService({ logger, pollIntervalMs: 100, dependencies, thresholdStore: createInMemoryThresholdStore() });
+    const service1 = createUsageTrackingService({ logger, pollIntervalMs: 100, dependencies });
     service1.start();
     expect(setIntervalSpy).toHaveBeenLastCalledWith(expect.any(Function), MIN_POLL_INTERVAL_MS);
     service1.dispose();
 
-    const service2 = createUsageTrackingService({ logger, pollIntervalMs: 60 * 60 * 1000, dependencies, thresholdStore: createInMemoryThresholdStore() });
+    const service2 = createUsageTrackingService({ logger, pollIntervalMs: 60 * 60 * 1000, dependencies });
     service2.start();
     expect(setIntervalSpy).toHaveBeenLastCalledWith(expect.any(Function), MAX_POLL_INTERVAL_MS);
     service2.dispose();
@@ -753,7 +642,6 @@ describe("createUsageTrackingService", () => {
       logger,
       onUpdate,
       dependencies: createFastDependencies(),
-      thresholdStore: createInMemoryThresholdStore(),
     });
 
     const snapshot = await service.poll();
@@ -783,7 +671,7 @@ describe("createUsageTrackingService", () => {
   it("forceRefresh invalidates cost cache and re-polls", async () => {
     const logger = createLogger();
     const dependencies = createFastDependencies();
-    const service = createUsageTrackingService({ logger, dependencies, thresholdStore: createInMemoryThresholdStore() });
+    const service = createUsageTrackingService({ logger, dependencies });
 
     const s1 = await service.forceRefresh();
     expect(s1).toBeDefined();
@@ -803,7 +691,6 @@ describe("createUsageTrackingService", () => {
       logger,
       onUpdate,
       dependencies: createFastDependencies(),
-      thresholdStore: createInMemoryThresholdStore(),
     });
 
     // Should not throw
@@ -818,7 +705,6 @@ describe("createUsageTrackingService", () => {
     const service = createUsageTrackingService({
       logger,
       dependencies: createFastDependencies(),
-      thresholdStore: createInMemoryThresholdStore(),
     });
 
     // Fire two polls concurrently
@@ -829,50 +715,6 @@ describe("createUsageTrackingService", () => {
     service.dispose();
   });
 
-  it("shares threshold state across instances so the same event does not fire twice", async () => {
-    const logger = createLogger();
-    const onThreshold1 = vi.fn();
-    const onThreshold2 = vi.fn();
-
-    const highUsageWindows: UsageWindow[] = [
-      {
-        provider: "claude",
-        windowType: "weekly",
-        percentUsed: 80,
-        resetsAt: new Date(Date.now() + 3600_000).toISOString(),
-        resetsInMs: 3600_000,
-      },
-    ];
-
-    const makeDeps = (windows: UsageWindow[]) => ({
-      pollClaudeUsage: vi.fn(async () => ({ windows, extraUsage: null, errors: [] as never[] })),
-      pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
-      scanClaudeLogs: vi.fn(async () => [] as never[]),
-      scanCodexLogs: vi.fn(async () => [] as never[]),
-    });
-
-    const service1 = createUsageTrackingService({
-      logger,
-      onThresholdEvent: onThreshold1,
-      dependencies: makeDeps(highUsageWindows),
-    });
-    const service2 = createUsageTrackingService({
-      logger,
-      onThresholdEvent: onThreshold2,
-      dependencies: makeDeps(highUsageWindows),
-    });
-
-    await service1.poll();
-    await service2.poll();
-
-    // The first service should fire threshold events for 75% crossing
-    expect(onThreshold1.mock.calls.length).toBeGreaterThan(0);
-    // The second service should NOT fire because shared state already recorded the crossing
-    expect(onThreshold2.mock.calls.length).toBe(0);
-
-    service1.dispose();
-    service2.dispose();
-  });
 });
 
 // ── Local Cost Scanning with real files ──────────────────────────

@@ -689,7 +689,6 @@ export const IPC = {
   usageGetBudgetConfig: "ade.usage.getBudgetConfig",
   usageSaveBudgetConfig: "ade.usage.saveBudgetConfig",
   usageEvent: "ade.usage.event",
-  usageThresholdEvent: "ade.usage.thresholdEvent",
   ctoGetState: "ade.cto.getState",
   ctoEnsureSession: "ade.cto.ensureSession",
   ctoListSessionLogs: "ade.cto.listSessionLogs",

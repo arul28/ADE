@@ -3545,7 +3545,6 @@ describe("preload OAuth bridge", () => {
     await bridge.app.getWindowSession();
 
     const usageUpdate = vi.fn();
-    const usageThreshold = vi.fn();
     const automations = vi.fn();
     const conflicts = vi.fn();
     const rebase = vi.fn();
@@ -3558,7 +3557,6 @@ describe("preload OAuth bridge", () => {
 
     const unsubscribers = [
       bridge.usage.onUpdate(usageUpdate),
-      bridge.usage.onThreshold(usageThreshold),
       bridge.automations.onEvent(automations),
       bridge.conflicts.onEvent(conflicts),
       bridge.rebase.onEvent(rebase),
@@ -3585,7 +3583,6 @@ describe("preload OAuth bridge", () => {
     };
 
     const usageSnapshot = { windows: [], pacing: {}, costs: [], extraUsage: [], lastPolledAt: "now", errors: [] };
-    const threshold = { provider: "claude", threshold: 75, percent: 80, resetsAt: "later", firedAt: "now" };
     const automationEvent = { type: "runs-updated", automationId: "auto-1" };
     const conflictEvent = { type: "rebase-started", laneId: "lane-1", timestamp: "now" };
     const githubStatus = {
@@ -3621,7 +3618,6 @@ describe("preload OAuth bridge", () => {
     const appControlEvent = { type: "session-updated", session: null };
 
     emit(1, { type: "usage", snapshot: usageSnapshot });
-    emit(2, { type: "usage_threshold", event: threshold });
     emit(3, { ...automationEvent, source: "automations" });
     emit(4, { type: "conflict_event", event: conflictEvent });
     emit(5, { type: "github_status_changed", event: githubStatus });
@@ -3632,7 +3628,6 @@ describe("preload OAuth bridge", () => {
     emit(10, { type: "app_control_event", event: appControlEvent });
 
     expect(usageUpdate).toHaveBeenCalledWith(usageSnapshot);
-    expect(usageThreshold).toHaveBeenCalledWith(threshold);
     expect(automations).toHaveBeenCalledWith(automationEvent);
     expect(conflicts).toHaveBeenCalledWith(conflictEvent);
     expect(rebase).toHaveBeenCalledWith(conflictEvent);

@@ -127,14 +127,6 @@ export type UsageSnapshot = {
   errors: string[];
 };
 
-export type UsageThresholdEvent = {
-  provider: UsageProvider;
-  threshold: 25 | 50 | 75 | 100;
-  percent: number;
-  resetsAt: string;
-  firedAt: string;
-};
-
 // ---------------------------------------------------------------------------
 // Budget cap types for shared automation usage enforcement
 // ---------------------------------------------------------------------------
