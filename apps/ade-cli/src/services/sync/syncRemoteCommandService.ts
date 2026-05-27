@@ -2053,7 +2053,6 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       cols,
       rows,
       ...launch,
-      ...(launch.initialInput ? { awaitInitialInput: true } : {}),
     });
 
     if (initialInputMeta.goal) {

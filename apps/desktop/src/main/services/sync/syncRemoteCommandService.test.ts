@@ -2029,7 +2029,7 @@ describe("createSyncRemoteCommandService", () => {
       expect(createCall?.args).not.toContain(expect.stringContaining("fix the tests"));
       expect(createCall?.initialInput).toContain("fix the tests");
       expect(createCall?.initialInputDelayMs).toBe(750);
-      expect(createCall?.awaitInitialInput).toBe(true);
+      expect(createCall).not.toHaveProperty("awaitInitialInput");
       expect(ptyService.writeBySessionId).not.toHaveBeenCalled();
       expect(sessionService.updateMeta).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "pty-1",
@@ -2202,7 +2202,7 @@ describe("createSyncRemoteCommandService", () => {
       expect(call?.startupCommand).toContain("cursor-agent --resume");
       expect(call?.initialInput).toContain("fix the tests");
       expect(call?.initialInputDelayMs).toBe(750);
-      expect(call?.awaitInitialInput).toBe(true);
+      expect(call).not.toHaveProperty("awaitInitialInput");
       expect(call?.command).toBe("/bin/bash");
       expect(call?.args).toEqual(["-lc", call?.startupCommand]);
       expect(ptyService.writeBySessionId).not.toHaveBeenCalled();

@@ -24,6 +24,7 @@ import type { BuiltInBrowserService } from "./builtInBrowserService";
 
 const ALLOWED_METHODS = new Set([
   "getStatus",
+  "claim",
   "showPanel",
   "setBounds",
   "navigate",

@@ -24,7 +24,16 @@ import {
 } from "../shared/ModelPicker/runtimeCatalogCache";
 import {
   AgentChatPane,
+  buildParallelLaunchPrompt,
+  cleanupSubagentAutoOpenStorage,
+  cleanupTransientParallelLaunchLanes,
+  formatParallelLaunchFailureMessage,
+  getSubagentAutoOpenStorageKey,
   isMatchingOptimisticUserMessage,
+  mergeChatHistorySnapshot,
+  parallelLaneModelSuffix,
+  resolveNextSelectedSessionId,
+  shouldPromoteSessionForComputerUse,
   type AgentChatSessionCreatedOptions,
 } from "./AgentChatPane";
 
@@ -305,6 +314,9 @@ function installAdeMocks(options?: {
         if (typeof args.provider === "string") overrides.provider = args.provider as AgentChatSession["provider"];
         if (typeof args.model === "string") overrides.model = args.model;
         if (typeof args.modelId === "string") overrides.modelId = args.modelId;
+        if (typeof args.interactionMode === "string") {
+          overrides.interactionMode = args.interactionMode as AgentChatSession["interactionMode"];
+        }
         return buildCreatedSession("created-session", overrides);
       });
   const createLane = vi.fn().mockResolvedValue({
@@ -454,6 +466,9 @@ function installAdeMocks(options?: {
     appControl: {
       getStatus: vi.fn().mockResolvedValue({ supported: true }),
       onEvent: vi.fn().mockImplementation(() => () => undefined),
+    },
+    orchestration: {
+      runCreate: vi.fn().mockResolvedValue({ runId: "run-1" }),
     },
   } as any;
 
@@ -706,7 +721,7 @@ function renderAutoCreateDraftPane(args?: {
     session: AgentChatSession,
     options?: AgentChatSessionCreatedOptions,
   ) => void | Promise<void>;
-  workDraftKind?: "chat" | "cli";
+  workDraftKind?: "chat" | "cli" | "chat-orchestrator";
   onLaunchCliSession?: React.ComponentProps<typeof AgentChatPane>["onLaunchCliSession"];
   onLaneChange?: React.ComponentProps<typeof AgentChatPane>["onLaneChange"];
   lanes?: any[];
@@ -758,6 +773,20 @@ function renderAutoCreateDraftPane(args?: {
       </Routes>
     </MemoryRouter>,
   );
+}
+
+function composerDraftStorageKeyForTest(args: {
+  projectRoot: string;
+  companionStateKey: string;
+  workDraftKind?: "chat" | "cli" | "chat-orchestrator";
+}) {
+  return [
+    "ade.chat.composerDraft.v1",
+    args.projectRoot,
+    args.companionStateKey,
+    "standard",
+    args.workDraftKind ?? "chat",
+  ].map(encodeURIComponent).join(":");
 }
 
 async function clickEnabledModelOption(name: RegExp | string) {
@@ -2919,6 +2948,38 @@ describe("AgentChatPane submit recovery", () => {
     expect(await screen.findByText("Tools use current-lane until the lane is created.")).toBeTruthy();
   });
 
+  it("keeps orchestrator lead mode on the first Claude draft send", async () => {
+    const { send, create } = installAdeMocks({ sessions: [], includeClaudeModel: true });
+
+    renderAutoCreateDraftPane({ workDraftKind: "chat-orchestrator" });
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Coordinate the release checklist." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({
+        interactionMode: "orchestrator-lead",
+        provider: "claude",
+      }));
+      expect(window.ade.orchestration.runCreate).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        leadSessionId: "created-session",
+      });
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "created-session",
+        interactionMode: "orchestrator-lead",
+      }));
+    });
+  });
+
   it("background auto-create reports the new chat without stealing focus and shows a dismissible notice", async () => {
     const onSessionCreated = vi.fn();
     const { createLane, suggestLaneName } = installAdeMocks({ sessions: [] });
@@ -2946,15 +3007,15 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Launch this in the background." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Launch in background" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
 
     await waitFor(() => {
       expect(onSessionCreated).toHaveBeenCalledWith(
         expect.objectContaining({ id: "created-session", laneId: "lane-created" }),
         { activate: false, source: "draft-launch" },
       );
-      expect(screen.getByText("Launched in background-lane")).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Dismiss launch notice" })).toBeTruthy();
+      expect(screen.getByText(/Launched chat in background-lane/i)).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Dismiss launch status" })).toBeTruthy();
     });
     expect(screen.getByTestId("location").textContent).toBe("/work");
 
@@ -3007,6 +3068,48 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("merges a failed launch restore into a new draft instead of discarding the restore snapshot", async () => {
+    const { createLane, suggestLaneName } = installAdeMocks({
+      sessions: [],
+      sendError: new Error("send failed"),
+    });
+    suggestLaneName.mockResolvedValue("failing-draft-lane");
+    createLane.mockResolvedValue({
+      id: "lane-created",
+      name: "failing-draft-lane",
+      laneType: "worktree",
+      branchRef: "refs/heads/failing-draft-lane",
+      worktreePath: "/tmp/project-under-test/failing-draft-lane",
+      parentLaneId: "lane-primary",
+    });
+
+    renderAutoCreateDraftPane();
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Failed launch draft." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Launch failed: send failed/i)).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "New draft stays." } });
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("New draft stays.\n\nFailed launch draft.");
+    expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
+  });
+
   it("deletes an auto-created draft lane when session creation fails", async () => {
     const onSessionCreated = vi.fn();
     const { send, createLane, suggestLaneName, deleteChat, deleteLane } = installAdeMocks({
@@ -3047,7 +3150,175 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("keeps the draft box editable while auto-create launch disables send actions", async () => {
+  it("restores the Work draft bucket after remount with text, model, and attachment refs", async () => {
+    installAdeMocks({ sessions: [] });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    window.localStorage.setItem(composerDraftStorageKeyForTest({
+      projectRoot: "/tmp/project-under-test",
+      companionStateKey: "draft:lane-1",
+    }), JSON.stringify({
+      version: 1,
+      text: "Persist this Work draft.",
+      modelId: "openai/gpt-5.4",
+      reasoningEffort: null,
+      codexFastMode: false,
+      executionMode: "focused",
+      controls: {},
+      attachments: [{ path: "/tmp/project-under-test/spec.md", type: "file" }],
+      contextAttachments: [],
+      iosContextItems: [],
+      appControlContextItems: [],
+      builtInBrowserContextItems: [],
+      macosVmContextItems: [],
+      draftLaunchTargetId: null,
+      updatedAt: "2026-05-27T00:00:00.000Z",
+    }));
+
+    const firstRender = renderAutoCreateDraftPane();
+
+    expect(await screen.findByDisplayValue("Persist this Work draft.")).toBeTruthy();
+    expect(screen.getByText("spec.md")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: new RegExp(`Select model \\(current: ${escapeRegExp(codexLabel)}\\)`, "i") })).toBeTruthy();
+
+    firstRender.unmount();
+    renderAutoCreateDraftPane();
+
+    expect(await screen.findByDisplayValue("Persist this Work draft.")).toBeTruthy();
+    expect(screen.getByText("spec.md")).toBeTruthy();
+  });
+
+  it("debounces persisted draft writes without storing screenshot data URLs", async () => {
+    installAdeMocks({ sessions: [] });
+    const storageKey = composerDraftStorageKeyForTest({
+      projectRoot: "/tmp/project-under-test",
+      companionStateKey: "draft:lane-1",
+    });
+    window.localStorage.setItem(storageKey, JSON.stringify({
+      version: 1,
+      text: "Persisted with visual context.",
+      modelId: "openai/gpt-5.4",
+      reasoningEffort: null,
+      codexFastMode: false,
+      executionMode: "focused",
+      controls: {},
+      attachments: [],
+      contextAttachments: [],
+      iosContextItems: [{
+        kind: "ios_element",
+        id: "ios-context-1",
+        componentId: "ContinueButton",
+        sourceFile: null,
+        sourceLine: null,
+        frame: { x: 1, y: 2, width: 3, height: 4 },
+        metadata: {},
+        accessibilityIdentifier: null,
+        screenshotDataUrl: "data:image/png;base64,ios",
+        selectedAt: "2026-05-27T00:00:00.000Z",
+      }],
+      appControlContextItems: [{
+        kind: "app_control_element",
+        id: "app-context-1",
+        provider: "coordinate-fallback",
+        componentId: "SendButton",
+        sourceFile: null,
+        sourceLine: null,
+        frame: { x: 1, y: 2, width: 3, height: 4 },
+        metadata: {},
+        screenshotDataUrl: "data:image/png;base64,app",
+        selectedAt: "2026-05-27T00:00:00.000Z",
+      }],
+      builtInBrowserContextItems: [{
+        kind: "built_in_browser_element",
+        id: "browser-context-1",
+        provider: "cdp",
+        componentId: "button.primary",
+        url: "https://example.com",
+        title: "Example",
+        sourceFile: null,
+        sourceLine: null,
+        frame: { x: 1, y: 2, width: 3, height: 4 },
+        pixelFrame: { x: 1, y: 2, width: 3, height: 4 },
+        metadata: {},
+        screenshotDataUrl: "data:image/png;base64,browser",
+        selectedAt: "2026-05-27T00:00:00.000Z",
+      }],
+      macosVmContextItems: [{
+        kind: "macos_vm_target",
+        id: "vm-context-1",
+        laneId: "lane-1",
+        laneName: "Lane 1",
+        vmName: "ADE VM",
+        provider: "lume",
+        state: "running",
+        hostLanePath: "/tmp/project-under-test",
+        guestLanePath: "/workspace",
+        runCommand: "npm test",
+        sshCommand: null,
+        vncUrl: null,
+        windowTitleQuery: "ADE",
+        screenshotDataUrl: "data:image/png;base64,vm",
+        selectedAt: "2026-05-27T00:00:00.000Z",
+        metadata: {},
+      }],
+      draftLaunchTargetId: null,
+      updatedAt: "2026-05-27T00:00:00.000Z",
+    }));
+
+    renderAutoCreateDraftPane();
+
+    const textbox = await screen.findByRole("textbox");
+    await waitFor(() => {
+      expect(textbox.textContent).toContain("Persisted with visual context.");
+    });
+    textbox.textContent = "Persisted with visual context and edits.";
+    fireEvent.input(textbox);
+
+    await waitFor(() => {
+      const raw = window.localStorage.getItem(storageKey);
+      expect(raw).toBeTruthy();
+      expect(raw).not.toContain("data:image/png;base64");
+      const stored = JSON.parse(raw!);
+      expect(stored.text.trim()).toBe("Persisted with visual context and edits.");
+      expect(stored.iosContextItems[0]).not.toHaveProperty("screenshotDataUrl");
+      expect(stored.appControlContextItems[0]).not.toHaveProperty("screenshotDataUrl");
+      expect(stored.builtInBrowserContextItems[0].screenshotDataUrl).toBeNull();
+      expect(stored.macosVmContextItems[0]).not.toHaveProperty("screenshotDataUrl");
+    });
+  });
+
+  it("ignores malformed persisted draft attachment/context entries instead of crashing", async () => {
+    installAdeMocks({ sessions: [] });
+    window.localStorage.setItem(composerDraftStorageKeyForTest({
+      projectRoot: "/tmp/project-under-test",
+      companionStateKey: "draft:lane-1",
+    }), JSON.stringify({
+      version: 1,
+      text: "Persisted with bad refs.",
+      modelId: "openai/gpt-5.4",
+      controls: {},
+      attachments: [
+        { type: "file" },
+        { path: 42, type: "image" },
+        { path: "/tmp/project-under-test/valid.md" },
+      ],
+      contextAttachments: [
+        { type: "linear_issue", issue: { id: null } },
+        { type: "orchestration_annotation", item: { runId: "run-1", anchor: {}, capturedAt: "now" } },
+      ],
+      iosContextItems: [{ kind: "ios_element", id: "bad" }],
+      appControlContextItems: [{ kind: "app_control_element", componentId: "missing-id" }],
+      builtInBrowserContextItems: [{ kind: "built_in_browser_element" }],
+      macosVmContextItems: [{ kind: "macos_vm_target", id: "vm-1" }],
+    }));
+
+    renderAutoCreateDraftPane();
+
+    expect(await screen.findByDisplayValue("Persisted with bad refs.")).toBeTruthy();
+    expect(screen.getByText("valid.md")).toBeTruthy();
+    expect(screen.queryByText("undefined")).toBeNull();
+  });
+
+  it("clears the submitted draft and keeps the composer usable while auto-create launch is pending", async () => {
     const { suggestLaneName } = installAdeMocks({ sessions: [] });
     let resolveSuggestedName!: (value: string) => void;
     suggestLaneName.mockImplementation(() => new Promise<string>((resolve) => {
@@ -3068,22 +3339,113 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Launch this and let me keep typing." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Launch in background" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
 
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalled();
+      expect(screen.getByText(/Creating lane for chat/i)).toBeTruthy();
       expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
-      expect((screen.getByRole("button", { name: "Launching" }) as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByRole("button", { name: "Auto-create in background" }) as HTMLButtonElement).disabled).toBe(true);
     });
     expect((textbox as HTMLTextAreaElement).disabled).toBe(false);
+    expect((textbox as HTMLTextAreaElement).value).toBe("");
 
     fireEvent.change(textbox, { target: { value: "Next thought while it launches." } });
     expect((textbox as HTMLTextAreaElement).value).toBe("Next thought while it launches.");
+    expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Auto-create in background" }) as HTMLButtonElement).disabled).toBe(false);
 
     resolveSuggestedName("still-editable-lane");
     await waitFor(() => {
-      expect(screen.getByText("Launched in auto-created-lane")).toBeTruthy();
+      expect(screen.getByText(/Launched chat in auto-created-lane/i)).toBeTruthy();
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Next thought while it launches.");
+    });
+  });
+
+  it("keeps every in-flight background draft launch visible past the completed-notice cap", async () => {
+    const { suggestLaneName } = installAdeMocks({ sessions: [] });
+    suggestLaneName.mockImplementation(() => new Promise<string>(() => {
+      // keep the launch in-flight
+    }));
+
+    renderAutoCreateDraftPane();
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+
+    const textbox = await screen.findByRole("textbox");
+    for (let index = 1; index <= 9; index += 1) {
+      fireEvent.change(textbox, { target: { value: `Launch background chat ${index}.` } });
+      fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
+      await waitFor(() => {
+        expect(suggestLaneName).toHaveBeenCalledTimes(index);
+      });
+    }
+
+    expect(screen.getAllByTestId("draft-launch-job")).toHaveLength(9);
+    expect(screen.getAllByText(/Creating lane for chat/i)).toHaveLength(9);
+  });
+
+  it("allows multiple background auto-create launches to stay pending at the same time", async () => {
+    const { suggestLaneName, createLane, create, send } = installAdeMocks({ sessions: [] });
+    const suggestResolvers: Array<(value: string) => void> = [];
+    suggestLaneName.mockImplementation(() => new Promise<string>((resolve) => {
+      suggestResolvers.push(resolve);
+    }));
+    createLane.mockImplementation(async ({ name }: { name: string; parentLaneId: string }) => ({
+      id: `lane-${name}`,
+      name,
+      laneType: "worktree",
+      branchRef: `refs/heads/${name}`,
+      worktreePath: `/tmp/project-under-test/${name}`,
+      parentLaneId: "lane-primary",
+    }));
+
+    renderAutoCreateDraftPane();
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "First auto lane." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
+    await waitFor(() => {
+      expect(suggestLaneName).toHaveBeenCalledTimes(1);
+      expect((textbox as HTMLTextAreaElement).value).toBe("");
+    });
+
+    fireEvent.change(textbox, { target: { value: "Second auto lane." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
+    await waitFor(() => {
+      expect(suggestLaneName).toHaveBeenCalledTimes(2);
+      expect(screen.getAllByText(/Creating lane for chat/i)).toHaveLength(2);
+    });
+
+    await act(async () => {
+      suggestResolvers[0]?.("first-lane");
+      suggestResolvers[1]?.("second-lane");
+    });
+
+    await waitFor(() => {
+      expect(createLane).toHaveBeenCalledTimes(2);
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(screen.getByText(/Launched chat in first-lane/i)).toBeTruthy();
+      expect(screen.getByText(/Launched chat in second-lane/i)).toBeTruthy();
     });
   });
 
@@ -3352,7 +3714,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Launch this CLI session in the background." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Launch in background" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
 
     await waitFor(() => {
       expect(onLaunchCliSession).toHaveBeenCalledWith(expect.objectContaining({
@@ -3362,8 +3724,8 @@ describe("AgentChatPane submit recovery", () => {
         tracked: true,
         disposition: "background",
       }));
-      expect(screen.getByText("Launched in background-cli-lane")).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Dismiss launch notice" })).toBeTruthy();
+      expect(screen.getByText(/Launched CLI session in background-cli-lane/i)).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Dismiss launch status" })).toBeTruthy();
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
     expect(launchArgs.startupCommand).not.toContain("Launch this CLI session in the background.");
@@ -4106,5 +4468,250 @@ describe("AgentChatPane submit recovery", () => {
       && args.state.createdLaneIds.includes("lane-child-1"),
     )).toBe(true);
     errorSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pure function unit tests (consolidated from AgentChatPane.test.ts)
+// ---------------------------------------------------------------------------
+
+describe("resolveNextSelectedSessionId", () => {
+  function buildMinimalSession(sessionId: string): AgentChatSessionSummary {
+    return {
+      sessionId,
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude",
+      endedAt: null,
+      lastOutputPreview: null,
+      summary: null,
+      startedAt: "2026-03-16T00:00:00.000Z",
+      lastActivityAt: "2026-03-16T00:00:00.000Z",
+      status: "idle",
+      title: null,
+      goal: null,
+      completion: null,
+      reasoningEffort: null,
+      executionMode: "focused",
+    };
+  }
+
+  it("keeps the pending newly created session selected while list refresh still only contains the older chat", () => {
+    const rows = [buildMinimalSession("claude-existing")];
+
+    expect(resolveNextSelectedSessionId({
+      rows,
+      current: null,
+      pendingSelectedSessionId: "codex-new",
+      optimisticSessionIds: new Set(["codex-new"]),
+      draftSelectionLocked: false,
+      forceDraft: false,
+      preferDraftStart: false,
+    })).toBe("codex-new");
+  });
+
+  it("falls back to the newest persisted chat once no pending selection exists", () => {
+    const rows = [buildMinimalSession("claude-existing"), buildMinimalSession("older")];
+
+    expect(resolveNextSelectedSessionId({
+      rows,
+      current: null,
+      pendingSelectedSessionId: null,
+      optimisticSessionIds: new Set(),
+      draftSelectionLocked: false,
+      forceDraft: false,
+      preferDraftStart: false,
+    })).toBe("claude-existing");
+  });
+});
+
+describe("shouldPromoteSessionForComputerUse", () => {
+  it("promotes older light sessions when the session profile isn't already workflow", () => {
+    expect(shouldPromoteSessionForComputerUse({ sessionProfile: "light" })).toBe(true);
+    expect(shouldPromoteSessionForComputerUse({ sessionProfile: undefined })).toBe(true);
+    expect(shouldPromoteSessionForComputerUse({ sessionProfile: "workflow" })).toBe(false);
+  });
+});
+
+describe("mergeChatHistorySnapshot", () => {
+  function envelope(
+    timestamp: string,
+    sequence: number,
+    text: string,
+  ): AgentChatEventEnvelope {
+    return {
+      sessionId: "session-1",
+      timestamp,
+      sequence,
+      event: {
+        type: "text",
+        text,
+        messageId: `message-${text}`,
+      },
+    };
+  }
+
+  it("keeps live events after a provider sequence reset", () => {
+    const beforeRestart = envelope("2026-04-30T23:14:47.751Z", 1003, "before restart");
+    const afterRestartUser = envelope("2026-04-30T23:19:57.083Z", 1, "after restart user");
+    const afterRestartReply = envelope("2026-04-30T23:21:34.621Z", 66, "after restart reply");
+    const stillLive = envelope("2026-04-30T23:25:10.427Z", 146, "still live");
+
+    const merged = mergeChatHistorySnapshot(
+      [beforeRestart, afterRestartUser, afterRestartReply],
+      [beforeRestart, afterRestartUser, afterRestartReply, stillLive],
+    );
+
+    expect(merged.map((entry) => entry.event.type === "text" ? entry.event.text : "")).toEqual([
+      "before restart",
+      "after restart user",
+      "after restart reply",
+      "still live",
+    ]);
+  });
+
+  it("keeps same-millisecond live tail events without trusting global sequence order", () => {
+    const snapshotLast = envelope("2026-04-30T23:25:10.427Z", 146, "snapshot last");
+    const sameMillisecondTail = envelope("2026-04-30T23:25:10.427Z", 1, "same millisecond tail");
+
+    const merged = mergeChatHistorySnapshot(
+      [snapshotLast],
+      [snapshotLast, sameMillisecondTail],
+    );
+
+    expect(merged.map((entry) => entry.event.type === "text" ? entry.event.text : "")).toEqual([
+      "snapshot last",
+      "same millisecond tail",
+    ]);
+  });
+});
+
+describe("subagent auto-open storage", () => {
+  function createStorageShim(initial: Record<string, string> = {}) {
+    const entries = new Map(Object.entries(initial));
+    return {
+      get length() {
+        return entries.size;
+      },
+      key(index: number) {
+        return Array.from(entries.keys())[index] ?? null;
+      },
+      getItem(key: string) {
+        return entries.get(key) ?? null;
+      },
+      setItem(key: string, value: string) {
+        entries.set(key, value);
+      },
+      removeItem(key: string) {
+        entries.delete(key);
+      },
+    };
+  }
+
+  it("expires timestamped auto-open markers and migrates legacy markers", () => {
+    const now = Date.parse("2026-05-14T12:00:00.000Z");
+    const freshKey = getSubagentAutoOpenStorageKey("fresh-session");
+    const staleKey = getSubagentAutoOpenStorageKey("stale-session");
+    const legacyKey = getSubagentAutoOpenStorageKey("legacy-session");
+    const storage = createStorageShim();
+
+    storage.setItem(freshKey, JSON.stringify({ firedAt: now - 60_000 }));
+    storage.setItem(staleKey, JSON.stringify({ firedAt: now - 8 * 24 * 60 * 60 * 1000 }));
+    storage.setItem(legacyKey, "1");
+    storage.setItem("ade.chat.other", "keep");
+
+    cleanupSubagentAutoOpenStorage(storage, now);
+
+    expect(storage.getItem(freshKey)).toBe(JSON.stringify({ firedAt: now - 60_000 }));
+    expect(storage.getItem(staleKey)).toBeNull();
+    expect(storage.getItem(legacyKey)).toBe(JSON.stringify({ firedAt: now }));
+    expect(storage.getItem("ade.chat.other")).toBe("keep");
+  });
+});
+
+describe("parallel launch helpers", () => {
+  it("keeps same-family model lane suffixes distinct", () => {
+    expect(parallelLaneModelSuffix(getModelById("openai/gpt-5.4"))).toBe("codex-gpt-5-4");
+    expect(parallelLaneModelSuffix(getModelById("openai/gpt-5.4-mini"))).toBe("codex-gpt-5-4-mini");
+  });
+
+  it("preserves the default attachment review request when project docs are prepended", () => {
+    const result = buildParallelLaunchPrompt({
+      text: "",
+      attachmentCount: 2,
+    });
+
+    expect(result.displayText).toBe("Please review the attached files.");
+    expect(result.sendText).toBe("Please review the attached files.");
+  });
+
+  it("uses an issue-context prompt for context-only parallel launches", () => {
+    const result = buildParallelLaunchPrompt({
+      text: "",
+      attachmentCount: 0,
+      contextAttachmentCount: 1,
+    });
+
+    expect(result.displayText).toBe("Use the attached issue context.");
+    expect(result.sendText).toBe("Use the attached issue context.");
+  });
+
+  it("force-cleans transient lanes and refreshes lane state after rollback", async () => {
+    const deleteLane = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("Lane has uncommitted changes."));
+    const refreshLanes = vi.fn().mockResolvedValue(undefined);
+    const onCleanupError = vi.fn();
+
+    const issues = await cleanupTransientParallelLaunchLanes({
+      laneIds: ["lane-a", "lane-b"],
+      deleteLane,
+      refreshLanes,
+      onCleanupError,
+    });
+
+    expect(deleteLane).toHaveBeenNthCalledWith(1, { laneId: "lane-a", force: true });
+    expect(deleteLane).toHaveBeenNthCalledWith(2, { laneId: "lane-b", force: true });
+    expect(refreshLanes).toHaveBeenCalledTimes(1);
+    expect(onCleanupError).toHaveBeenCalledWith(expect.objectContaining({
+      phase: "delete",
+      laneId: "lane-b",
+    }));
+    expect(issues).toEqual([
+      expect.objectContaining({
+        phase: "delete",
+        laneId: "lane-b",
+      }),
+    ]);
+  });
+
+  it("treats already-deleted lanes as cleaned up during rollback retries", async () => {
+    const deleteLane = vi.fn().mockRejectedValue(new Error("Lane not found."));
+    const refreshLanes = vi.fn().mockResolvedValue(undefined);
+    const onCleanupError = vi.fn();
+
+    const issues = await cleanupTransientParallelLaunchLanes({
+      laneIds: ["lane-a"],
+      deleteLane,
+      refreshLanes,
+      onCleanupError,
+    });
+
+    expect(deleteLane).toHaveBeenCalledWith({ laneId: "lane-a", force: true });
+    expect(refreshLanes).toHaveBeenCalledTimes(1);
+    expect(onCleanupError).not.toHaveBeenCalled();
+    expect(issues).toEqual([]);
+  });
+
+  it("formats rollback failures so leaked child lanes are surfaced to the user", () => {
+    expect(formatParallelLaunchFailureMessage({
+      launchError: "Lane 2 failed to send.",
+      cleanupIssues: [
+        { phase: "delete", laneId: "lane-a", error: new Error("locked") },
+        { phase: "refresh", laneId: null, error: new Error("refresh failed") },
+      ],
+    })).toBe(
+      "Lane 2 failed to send. Cleanup could not delete lane lane-a; lane list refresh also failed. Check the lane list before retrying.",
+    );
   });
 });

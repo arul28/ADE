@@ -1154,12 +1154,16 @@ const HELP_BY_COMMAND: Record<string, string> = {
   If another session tries to launch with a different chatSessionId, the call
   fails with code IOS_SIMULATOR_OWNED_BY_OTHER_SESSION. Run "ios-sim shutdown"
   (or "shutdown --force") to release before re-launching from a different chat.
+  The visible Work tools pane is attributed by an explicit lane claim. ADE
+  reads ADE_LANE_ID/ADE_CHAT_SESSION_ID for agent CLI calls, and you can run
+  "ios-sim claim --lane <lane-id>" to re-attribute an existing drawer session.
 
   Discovery and lifecycle:
     $ ade ios-sim status --text                    Show Xcode/idb readiness (getStatus)
     $ ade ios-sim devices --text                   List installed/available simulators (listDevices)
     $ ade ios-sim apps --device <udid> --text      List launchable apps (listLaunchTargets)
     $ ade --socket ios-sim launch --target <id>    Build/install/launch and update drawer state
+    $ ade --socket ios-sim claim --lane <lane-id>  Attribute the drawer session to a lane
     $ ade --socket ios-sim launch --bundle-id com.example Launch installed app
     $ ade --socket ios-sim shutdown                Tear down session, streams, helper processes (alias: stop)
     $ ade --socket ios-sim shutdown --force        Force-release a session owned by another chat
@@ -1279,6 +1283,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   Discovery and lifecycle:
     $ ade app-control status --text                Show active session and provider readiness
+    $ ade app-control claim --lane <lane-id>       Attribute the active renderer to a lane
     $ ade app-control launch --command "npm run dev" --text
     $ ade app-control launch pnpm dev --text       Launch via the visible chat terminal
     $ ade app-control launch --command "pnpm dev" --cwd apps/desktop --text
@@ -1314,10 +1319,13 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Browser commands control ADE's global built-in browser pane. Use desktop
   socket mode so CLI calls, chat link clicks, terminal localhost links, and the
   Work sidebar all share the same browser tabs. The browser is global, not
-  lane-scoped.
+  lane-scoped, but its visible Work attribution comes from explicit CLI claims.
+  ADE reads ADE_LANE_ID/ADE_CHAT_SESSION_ID for agent CLI calls; use
+  "browser claim --lane <lane-id>" to claim an already-open browser for a lane.
 
   Tabs and navigation:
     $ ade --socket browser status --text           Show active tab and tab list
+    $ ade --socket browser claim --lane <lane-id>  Attribute the Browser panel to a lane
     $ ade --socket browser panel --text            Open the Work sidebar Browser panel
     $ ade --socket browser open https://example.com --text
     $ ade --socket browser open localhost:5173 --new-tab --text
@@ -1348,6 +1356,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --background         Create a new tab without activating it.
     --no-panel           Keep the Work sidebar panel hidden; alias: --hidden.
     --tab, --tab-id <id> Target tab for switch/close/open.
+    --lane, --lane-id <id> Claim lane for panel/open/new-tab/switch/claim.
+    --chat-session <id>  Claim chat/session for panel/open/new-tab/switch/claim.
 `,
   tests: `${ADE_BANNER}
   Tests
@@ -1785,6 +1795,37 @@ function collectGenericObjectArgs(
 
 function readLaneId(args: string[]): string | null {
   return readValue(args, ["--lane", "--lane-id"]) ?? null;
+}
+
+type ToolClaimArgs = {
+  laneId?: string;
+  chatSessionId?: string;
+};
+
+function readToolClaimArgs(args: string[]): ToolClaimArgs {
+  const laneId = asString(
+    readValue(args, ["--lane", "--lane-id"]) ?? process.env.ADE_LANE_ID,
+  );
+  const chatSessionId = asString(
+    readValue(args, [
+      "--chat-session",
+      "--chat-session-id",
+      "--session",
+      "--session-id",
+    ]) ?? process.env.ADE_CHAT_SESSION_ID,
+  );
+  return {
+    ...(laneId ? { laneId } : {}),
+    ...(chatSessionId ? { chatSessionId } : {}),
+  };
+}
+
+function readRequiredToolClaimArgs(args: string[], label: string): ToolClaimArgs {
+  const claimArgs = readToolClaimArgs(args);
+  if (!claimArgs.laneId) {
+    throw new CliUsageError(`${label} claim requires --lane <lane-id> or ADE_LANE_ID.`);
+  }
+  return claimArgs;
 }
 
 function readPrId(args: string[]): string | null {
@@ -5581,6 +5622,21 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
         ),
       ],
     };
+  if (sub === "claim") {
+    const claimArgs = readRequiredToolClaimArgs(args, "iOS simulator");
+    return {
+      kind: "execute",
+      label: "iOS simulator claim",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "claim",
+          collectGenericObjectArgs(args, claimArgs),
+        ),
+      ],
+    };
+  }
   if (
     sub === "apps" ||
     sub === "targets" ||
@@ -5604,6 +5660,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "launch" || sub === "open") {
+    const claimArgs = readToolClaimArgs(args);
     return {
       kind: "execute",
       label: "iOS simulator launch",
@@ -5615,15 +5672,13 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           collectGenericObjectArgs(args, {
             deviceUdid: readValue(args, ["--device", "--udid"]),
             projectRoot: readValue(args, ["--project-root", "--root"]),
-            laneId: readValue(args, ["--lane", "--lane-id"]),
+            laneId: claimArgs.laneId,
             targetId: readValue(args, ["--target", "--target-id"]),
             bundleId: readValue(args, ["--bundle-id", "--bundle"]),
             appBundlePath: readValue(args, ["--app-bundle", "--app"]),
             projectPath: readValue(args, ["--project", "--xcodeproj"]),
             scheme: readValue(args, ["--scheme"]),
-            chatSessionId:
-              readValue(args, ["--chat-session", "--session"]) ??
-              process.env.ADE_CHAT_SESSION_ID,
+            chatSessionId: claimArgs.chatSessionId,
             build: !readFlag(args, ["--no-build"]),
             mode: readValue(args, ["--mode"]) ?? "live",
             keepSimulatorInBackground: !readFlag(args, ["--foreground"]),
@@ -6068,6 +6123,21 @@ function buildAppControlPlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "claim") {
+    const claimArgs = readRequiredToolClaimArgs(args, "App Control");
+    return {
+      kind: "execute",
+      label: "App Control claim",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "claim",
+          collectGenericObjectArgs(args, claimArgs),
+        ),
+      ],
+    };
+  }
   if (sub === "terminal") {
     const mode = firstPositional(args) ?? "read";
     if (mode === "read" || mode === "logs" || mode === "tail") {
@@ -6127,22 +6197,17 @@ function buildAppControlPlan(args: string[]): CliPlan {
     );
   }
   if (sub === "launch" || sub === "open" || sub === "start") {
+    const claimArgs = readToolClaimArgs(args);
     const trailingCommand = readTrailingCommand(args);
     const command = readValue(args, ["--command", "--cmd"]) ?? trailingCommand;
     const appKind = readValue(args, ["--kind", "--app-kind"]) ?? "electron";
     const projectRoot = readValue(args, ["--project-root", "--root"]);
-    const laneId = readValue(args, ["--lane", "--lane-id"]);
+    const laneId = claimArgs.laneId;
     const cwd = readValue(args, ["--cwd", "--working-directory"]);
     const debugPort = readNumberOption(args, ["--debug-port", "--port"]);
     const cdpPort = readNumberOption(args, ["--cdp-port"]);
     const label = readValue(args, ["--label", "--name"]);
-    const chatSessionId =
-      readValue(args, [
-        "--chat-session",
-        "--chat-session-id",
-        "--session",
-        "--session-id",
-      ]) ?? process.env.ADE_CHAT_SESSION_ID;
+    const chatSessionId = claimArgs.chatSessionId;
     const force = readFlag(args, ["--force", "-f"]) ? true : undefined;
     const positionalCommand = args
       .filter((arg) => arg !== "--" && !arg.startsWith("-"))
@@ -6179,6 +6244,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "connect" || sub === "attach") {
+    const claimArgs = readToolClaimArgs(args);
     return {
       kind: "execute",
       label: "App Control connect",
@@ -6190,14 +6256,12 @@ function buildAppControlPlan(args: string[]): CliPlan {
           collectGenericObjectArgs(args, {
             appKind: readValue(args, ["--kind", "--app-kind"]) ?? "electron",
             projectRoot: readValue(args, ["--project-root", "--root"]),
-            laneId: readValue(args, ["--lane", "--lane-id"]),
+            laneId: claimArgs.laneId,
             cdpPort:
               readNumberOption(args, ["--cdp-port", "--port"]) ??
               Number(numericPositionals()[0]),
             label: readValue(args, ["--label", "--name"]),
-            chatSessionId:
-              readValue(args, ["--chat-session", "--session"]) ??
-              process.env.ADE_CHAT_SESSION_ID,
+            chatSessionId: claimArgs.chatSessionId,
             force: readFlag(args, ["--force", "-f"]) ? true : undefined,
           }),
         ),
@@ -6964,6 +7028,21 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "claim") {
+    const claimArgs = readRequiredToolClaimArgs(args, "browser");
+    return {
+      kind: "execute",
+      label: "browser claim",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "claim",
+          collectGenericObjectArgs(args, claimArgs),
+        ),
+      ],
+    };
+  }
   if (
     sub === "panel" ||
     sub === "show" ||
@@ -6971,6 +7050,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
     sub === "reveal"
   ) {
     const panelArgs: JsonObject = {};
+    Object.assign(panelArgs, readToolClaimArgs(args));
     maybePut(panelArgs, "url", readValue(args, ["--url"]));
     maybePut(panelArgs, "tabId", readValue(args, ["--tab", "--tab-id"]));
     return {
@@ -6996,6 +7076,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
     ]);
     const newTab = readFlag(args, ["--new-tab"]);
     const noPanel = readFlag(args, ["--no-panel", "--hidden"]);
+    const claimArgs = readToolClaimArgs(args);
     const genericArgs = collectGenericObjectArgs(args);
     const genericUrl =
       typeof genericArgs.url === "string" ? genericArgs.url : null;
@@ -7010,6 +7091,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
           tabId,
           newTab: newTab && !activeTab ? true : undefined,
           openPanel: !noPanel,
+          ...claimArgs,
           ...genericArgs,
         }),
       ],
@@ -7019,6 +7101,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
     const background = readFlag(args, ["--background"]);
     const noPanel = readFlag(args, ["--no-panel", "--hidden"]);
     const explicitUrl = readValue(args, ["--url"]);
+    const claimArgs = readToolClaimArgs(args);
     const genericArgs = collectGenericObjectArgs(args);
     const genericUrl =
       typeof genericArgs.url === "string" ? genericArgs.url : null;
@@ -7032,6 +7115,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
           url,
           activate: background ? false : undefined,
           openPanel: !noPanel,
+          ...claimArgs,
           ...genericArgs,
         }),
       ],
@@ -7040,6 +7124,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
   if (sub === "switch" || sub === "activate") {
     const noPanel = readFlag(args, ["--no-panel", "--hidden"]);
     const explicitTabId = readValue(args, ["--tab", "--tab-id"]);
+    const claimArgs = readToolClaimArgs(args);
     const genericArgs = collectGenericObjectArgs(args);
     const genericTabId =
       typeof genericArgs.tabId === "string" ? genericArgs.tabId : null;
@@ -7053,6 +7138,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
             "tabId",
           ),
           openPanel: !noPanel,
+          ...claimArgs,
           ...genericArgs,
         }),
       ],
@@ -11809,8 +11895,10 @@ function formatIosSimStatus(value: unknown): string {
           : null,
       ],
       ["active app", activeSession.bundleId],
+      ["lane", activeSession.laneId],
       ["mode", activeSession.mode],
       ["chat session", activeSession.chatSessionId],
+      ["claimed", activeSession.claimedAt],
     ]),
     "",
     renderTable(
@@ -12206,6 +12294,7 @@ function formatAppControlStatus(value: unknown): string {
       ["active app", session.label],
       ["session", session.id],
       ["status", session.status],
+      ["lane", session.laneId],
       ["cdp port", session.cdpPort],
       ["terminal", session.terminalSessionId],
       ["pty", session.terminalPtyId],
@@ -12243,6 +12332,9 @@ function formatBrowserStatus(value: unknown): string {
       ["forward", status.canGoForward],
       ["inspecting", status.isInspecting ?? status.inspecting],
       ["selection", status.hasSelection],
+      ["owner lane", status.ownerLaneId],
+      ["owner chat", status.ownerChatSessionId],
+      ["owner claimed", status.ownerClaimedAt],
     ]),
     "",
     renderTable(

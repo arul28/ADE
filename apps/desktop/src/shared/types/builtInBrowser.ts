@@ -16,7 +16,12 @@ export type BuiltInBrowserAttachWebviewArgs = {
   webContentsId: number;
 };
 
-export type BuiltInBrowserNavigateArgs = {
+export type BuiltInBrowserClaimArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+};
+
+export type BuiltInBrowserNavigateArgs = BuiltInBrowserClaimArgs & {
   url: string;
   tabId?: string | null;
   newTab?: boolean;
@@ -46,20 +51,23 @@ export type BuiltInBrowserStatus = {
   canGoForward: boolean;
   isInspecting: boolean;
   hasSelection: boolean;
+  ownerLaneId: string | null;
+  ownerChatSessionId: string | null;
+  ownerClaimedAt: string | null;
 };
 
-export type BuiltInBrowserTabArgs = {
+export type BuiltInBrowserTabArgs = BuiltInBrowserClaimArgs & {
   tabId: string;
   openPanel?: boolean;
 };
 
-export type BuiltInBrowserCreateTabArgs = {
+export type BuiltInBrowserCreateTabArgs = BuiltInBrowserClaimArgs & {
   url?: string | null;
   activate?: boolean;
   openPanel?: boolean;
 };
 
-export type BuiltInBrowserOpenPanelArgs = {
+export type BuiltInBrowserOpenPanelArgs = BuiltInBrowserClaimArgs & {
   url?: string | null;
   tabId?: string | null;
 };

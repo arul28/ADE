@@ -52,6 +52,7 @@ const activeStatus: IosSimulatorStatus = {
     mode: "live",
     bridgeUrl: null,
     startedAt: "2026-04-29T00:00:00.000Z",
+    claimedAt: "2026-04-29T00:00:01.000Z",
   },
 };
 

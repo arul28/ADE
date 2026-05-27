@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AppControlContextItem,
   AppControlSession,
+  BuiltInBrowserStatus,
   IosElementContextItem,
   IosSimulatorSession,
   LaneSummary,
@@ -20,6 +21,7 @@ vi.mock("../chat/ChatIosSimulatorPanel", async () => {
     ChatIosSimulatorPanel: (props: {
       sessionId: string | null;
       controlDisabledReason?: string | null;
+      ignoreChatOwnership?: boolean;
       onAddAttachment?: (attachment: { path: string; type: "image" }) => void;
       onAddContext?: (item: IosElementContextItem) => void;
       onInsertDraft?: (text: string) => void;
@@ -27,6 +29,7 @@ vi.mock("../chat/ChatIosSimulatorPanel", async () => {
       "data-testid": "ios-panel",
       "data-session-id": props.sessionId ?? "",
       "data-control-disabled": props.controlDisabledReason ?? "",
+      "data-ignore-chat-ownership": props.ignoreChatOwnership ? "true" : "false",
     }, [
       React.createElement("button", {
         key: "context",
@@ -223,6 +226,7 @@ const otherLaneIosSession: IosSimulatorSession = {
   mode: "live",
   bridgeUrl: null,
   startedAt: "2026-05-13T00:00:00.000Z",
+  claimedAt: "2026-05-13T00:00:01.000Z",
 };
 
 const iosContextItem: IosElementContextItem = {
@@ -252,9 +256,29 @@ const appControlContextItem: AppControlContextItem = {
   selectedAt: "2026-05-13T00:00:00.000Z",
 };
 
+const defaultBrowserStatus: BuiltInBrowserStatus = {
+  attached: false,
+  partition: "persist:ade-browser",
+  visible: false,
+  bounds: { x: 0, y: 0, width: 0, height: 0 },
+  activeTabId: null,
+  tabs: [],
+  url: null,
+  title: null,
+  isLoading: false,
+  canGoBack: false,
+  canGoForward: false,
+  isInspecting: false,
+  hasSelection: false,
+  ownerLaneId: null,
+  ownerChatSessionId: null,
+  ownerClaimedAt: null,
+};
+
 function installAdeMock(options: {
   appControlSession?: AppControlSession | null;
   iosSession?: IosSimulatorSession | null;
+  browserStatus?: BuiltInBrowserStatus | null;
 } = {}) {
   const terminalWrite = vi.fn().mockResolvedValue({ ok: true });
   Object.defineProperty(window, "ade", {
@@ -265,6 +289,8 @@ function installAdeMock(options: {
         onEvent: vi.fn(() => () => {}),
       },
       builtInBrowser: {
+        getStatus: vi.fn().mockResolvedValue(options.browserStatus ?? defaultBrowserStatus),
+        onEvent: vi.fn(() => () => {}),
         stopInspect: vi.fn().mockResolvedValue(undefined),
         setBounds: vi.fn().mockResolvedValue(undefined),
       },
@@ -426,7 +452,7 @@ describe("WorkSidebar context targets", () => {
     expect(received[0]).not.toHaveProperty("sessionId");
   });
 
-  it("warns when App Control is attached to another lane without disabling context insertion", async () => {
+  it("warns when App Control is attached to another lane while keeping Work controls usable", async () => {
     const { terminalWrite } = installAdeMock({ appControlSession: otherLaneAppControlSession });
 
     renderSidebar({
@@ -435,14 +461,14 @@ describe("WorkSidebar context targets", () => {
       lanes: [lane, laneTwo],
     });
 
-    expect(await screen.findByText(/This App Control view is running from Lane 2 while your context target is Lane 1/)).toBeTruthy();
+    expect(await screen.findByText(/This App Control view is claimed by Lane 2, not Lane 1/)).toBeTruthy();
     expect(screen.getByTestId("app-control-panel").getAttribute("data-control-disabled")).toBe("");
     expect((screen.getByText("Add App Control context") as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(screen.getByText("Add App Control context"));
     await waitFor(() => expect(terminalWrite).toHaveBeenCalledTimes(1));
   });
 
-  it("warns when the iOS Simulator is attached to another lane without disabling context insertion", async () => {
+  it("warns when the iOS Simulator is attached to another lane while keeping Work controls usable", async () => {
     const { terminalWrite } = installAdeMock({ iosSession: otherLaneIosSession });
 
     renderSidebar({
@@ -451,48 +477,49 @@ describe("WorkSidebar context targets", () => {
       lanes: [lane, laneTwo],
     });
 
-    expect(await screen.findByText(/This iOS Simulator view is running from Lane 2 while your context target is Lane 1/)).toBeTruthy();
+    expect(await screen.findByText(/This iOS Simulator view is claimed by Lane 2, not Lane 1/)).toBeTruthy();
     expect(screen.getByTestId("ios-panel").getAttribute("data-control-disabled")).toBe("");
+    expect(screen.getByTestId("ios-panel").getAttribute("data-ignore-chat-ownership")).toBe("true");
     expect((screen.getByText("Add iOS context") as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(screen.getByText("Add iOS context"));
     await waitFor(() => expect(terminalWrite).toHaveBeenCalledTimes(1));
   });
 
-  it("warns when the Browser view survives a lane switch", async () => {
-    const { rerender } = render(
-      <MemoryRouter>
-        <WorkSidebar
-          active
-          laneId="lane-1"
-          lanes={[lane, laneTwo]}
-          activeSession={activeSession}
-          tab="browser"
-          onTabChange={vi.fn()}
-          onClose={vi.fn()}
-          contextTarget={{ kind: "pty", sessionId: "term-1", ptyId: "pty-1", toolType: "claude" }}
-          contextDisabledReason={null}
-        />
-      </MemoryRouter>,
-    );
+  it("does not assign Browser ownership from the currently visible lane", async () => {
+    installAdeMock();
 
-    rerender(
-      <MemoryRouter>
-        <WorkSidebar
-          active
-          laneId="lane-2"
-          lanes={[lane, laneTwo]}
-          activeSession={{ ...activeSession, laneId: "lane-2", laneName: "Lane 2" }}
-          tab="browser"
-          onTabChange={vi.fn()}
-          onClose={vi.fn()}
-          contextTarget={{ kind: "pty", sessionId: "term-2", ptyId: "pty-2", toolType: "claude" }}
-          contextDisabledReason={null}
-        />
-      </MemoryRouter>,
-    );
+    renderSidebar({
+      tab: "browser",
+      laneId: "lane-2",
+      lanes: [lane, laneTwo],
+      activeSession: { ...activeSession, laneId: "lane-2", laneName: "Lane 2" },
+      contextTarget: { kind: "pty", sessionId: "term-2", ptyId: "pty-2", toolType: "claude" },
+    });
 
-    expect(await screen.findByText(/This Browser view is running from Lane 1 while your context target is Lane 2/)).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText(/This Browser view is claimed/)).toBeNull());
     expect((screen.getByText("Add Browser context") as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByText("Add Browser attachment") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("warns from the Browser service claim without blocking context insertion", async () => {
+    installAdeMock({
+      browserStatus: {
+        ...defaultBrowserStatus,
+        ownerLaneId: "lane-1",
+        ownerChatSessionId: "session-1",
+        ownerClaimedAt: "2026-05-13T00:00:00.000Z",
+      },
+    });
+
+    renderSidebar({
+      tab: "browser",
+      laneId: "lane-2",
+      lanes: [lane, laneTwo],
+      activeSession: { ...activeSession, laneId: "lane-2", laneName: "Lane 2" },
+      contextTarget: { kind: "pty", sessionId: "term-2", ptyId: "pty-2", toolType: "claude" },
+    });
+
+    expect(await screen.findByText(/This Browser view is claimed by Lane 1, not Lane 2/)).toBeTruthy();
+    expect((screen.getByText("Add Browser context") as HTMLButtonElement).disabled).toBe(false);
   });
 });

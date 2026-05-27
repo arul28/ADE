@@ -82,11 +82,18 @@ vi.mock("@xterm/xterm", () => ({
     blur = vi.fn();
     write = vi.fn();
     refresh = vi.fn();
+    scrollLines = vi.fn();
     resize = vi.fn((cols: number, rows: number) => {
       this.cols = cols;
       this.rows = rows;
     });
     scrollToBottom = vi.fn();
+    buffer = {
+      active: {
+        baseY: 0,
+        viewportY: 0,
+      },
+    };
     dispose = vi.fn();
     clearTextureAtlas = vi.fn();
     getSelection = vi.fn(() => "");
@@ -1254,6 +1261,83 @@ describe("TerminalView", () => {
     expect(terminal?.scrollToBottom).toHaveBeenCalled();
     expect(terminal?.refresh).toHaveBeenCalled();
     expect(window.ade.terminal.preview).not.toHaveBeenCalled();
+  });
+
+  it("does not force live PTY output back to the bottom after the user scrolls up", async () => {
+    render(<TerminalView ptyId="pty-user-scrollback" sessionId="session-user-scrollback" isActive />);
+    await flushAnimationFrame();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      buffer: { active: { baseY: number; viewportY: number } };
+      write: ReturnType<typeof vi.fn>;
+      refresh: ReturnType<typeof vi.fn>;
+      scrollToBottom: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal).toBeTruthy();
+
+    terminal!.buffer.active.baseY = 120;
+    terminal!.buffer.active.viewportY = 40;
+    terminal?.write.mockClear();
+    terminal?.refresh.mockClear();
+    terminal?.scrollToBottom.mockClear();
+
+    for (const listener of mockState.ptyDataListeners) {
+      listener({ ptyId: "pty-user-scrollback", sessionId: "session-user-scrollback", data: "background output\n" });
+    }
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(16);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(16);
+    });
+
+    expect(terminal?.write).toHaveBeenCalledWith("background output\n");
+    expect(terminal?.refresh).toHaveBeenCalled();
+    expect(terminal?.scrollToBottom).not.toHaveBeenCalled();
+  });
+
+  it("uses wheel gestures to scroll main-buffer history when mouse tracking is active", async () => {
+    render(<TerminalView ptyId="pty-wheel-history" sessionId="session-wheel-history" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      element: HTMLElement | null;
+      buffer: { active: { baseY: number; viewportY: number } };
+      scrollLines: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal?.element).toBeTruthy();
+
+    const viewport = document.createElement("div");
+    viewport.className = "xterm-viewport";
+    Object.defineProperty(viewport, "scrollHeight", {
+      configurable: true,
+      value: 720,
+    });
+    Object.defineProperty(viewport, "clientHeight", {
+      configurable: true,
+      value: 360,
+    });
+    terminal!.element!.appendChild(viewport);
+    terminal!.buffer.active.baseY = 200;
+    terminal!.buffer.active.viewportY = 180;
+
+    for (const listener of mockState.ptyDataListeners) {
+      listener({
+        ptyId: "pty-wheel-history",
+        sessionId: "session-wheel-history",
+        data: "\x1b[?1000h\x1b[?1002h\x1b[?1006h",
+      });
+    }
+
+    const event = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      deltaY: -96,
+    });
+    viewport.dispatchEvent(event);
+
+    expect(terminal?.scrollLines).toHaveBeenCalledWith(-3);
+    expect(event.defaultPrevented).toBe(true);
   });
 
   it("does not replay transcript hydration over live PTY output that already painted", async () => {

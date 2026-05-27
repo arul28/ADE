@@ -889,25 +889,37 @@ function flushFrameWriteChunksSync(runtime: CachedRuntime) {
   const merged = runtime.frameWriteChunks.join("");
   runtime.frameWriteChunks.length = 0;
   runtime.frameWriteBytes = 0;
+  const followOutput = shouldFollowTerminalOutput(runtime);
   try {
     runtime.term.write(merged);
     if (hasRenderableTerminalText(merged)) {
       runtime.hasAppliedTerminalContent = true;
     }
-    scheduleVisibleFrameRefresh(runtime);
+    scheduleVisibleFrameRefresh(runtime, { scrollToBottom: followOutput });
   } catch {
     // ignore write errors after disposal
   }
 }
 
-function scheduleVisibleFrameRefresh(runtime: CachedRuntime) {
+function shouldFollowTerminalOutput(runtime: CachedRuntime): boolean {
+  try {
+    const buffer = runtime.term.buffer.active;
+    return buffer.viewportY >= buffer.baseY - 1;
+  } catch {
+    return true;
+  }
+}
+
+function scheduleVisibleFrameRefresh(runtime: CachedRuntime, options: { scrollToBottom: boolean }) {
   if (runtime.disposed || runtime.refs === 0 || !runtime.visible || !runtime.active) return;
   if (document.visibilityState !== "visible") return;
   requestAnimationFrame(() => {
     if (runtime.disposed || runtime.refs === 0 || !runtime.visible || !runtime.active) return;
     if (document.visibilityState !== "visible") return;
     try {
-      runtime.term.scrollToBottom();
+      if (options.scrollToBottom) {
+        runtime.term.scrollToBottom();
+      }
       runtime.term.refresh(0, Math.max(0, runtime.term.rows - 1));
     } catch {
       // ignore refresh failures after disposal
@@ -1784,17 +1796,19 @@ export function TerminalView({
       if (!viewport) return;
       const viewportScrollable = viewport.scrollHeight > viewport.clientHeight + 1;
       const hasScrollback = runtime.term.buffer.active.baseY > 0;
-      if (viewportScrollable || !hasScrollback) return;
+      const mouseTrackingActive = isTerminalMouseTrackingActive(runtime);
+      if (!hasScrollback || (viewportScrollable && !mouseTrackingActive)) return;
       const direction = ev.deltaY > 0 ? 1 : -1;
       const magnitude = Math.max(1, Math.min(12, Math.round(Math.abs(ev.deltaY) / 32)));
       try {
         runtime.term.scrollLines(direction * magnitude);
         ev.preventDefault();
+        ev.stopPropagation();
       } catch {
         // ignore
       }
     };
-    el.addEventListener("wheel", onWheel, { passive: false });
+    el.addEventListener("wheel", onWheel, { passive: false, capture: true });
 
     const intObs = new IntersectionObserver((entries) => {
       for (const entry of entries) {
@@ -1901,7 +1915,7 @@ export function TerminalView({
       window.removeEventListener("resize", onWindowResize);
       window.removeEventListener(WORK_SURFACE_REVEALED_EVENT, onWorkSurfaceRevealed);
       window.visualViewport?.removeEventListener("resize", onWindowResize);
-      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("wheel", onWheel, { capture: true });
 
       if (runtime.host.parentElement === el) {
         flushPendingFrameWrites(runtime);

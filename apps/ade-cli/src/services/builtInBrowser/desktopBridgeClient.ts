@@ -41,6 +41,7 @@ async function raceWithTimeout<T>(
 
 export type BuiltInBrowserDesktopBridgeClient = {
   getStatus: (args?: unknown) => Promise<unknown>;
+  claim: (args?: unknown) => Promise<unknown>;
   showPanel: (args?: unknown) => Promise<unknown>;
   setBounds: (args: unknown) => Promise<unknown>;
   navigate: (args: unknown) => Promise<unknown>;
@@ -144,6 +145,7 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
 
   return {
     getStatus: (args) => callBridge("getStatus", args),
+    claim: (args) => callBridge("claim", args),
     showPanel: (args) => callBridge("showPanel", args),
     setBounds: (args) => callBridge("setBounds", args),
     navigate: (args) => callBridge("navigate", args),

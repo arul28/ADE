@@ -2960,6 +2960,71 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("ios-sim launch and claim carry the agent lane claim", () => {
+    const previousLane = process.env.ADE_LANE_ID;
+    const previousChat = process.env.ADE_CHAT_SESSION_ID;
+    try {
+      process.env.ADE_LANE_ID = "lane-env-1";
+      process.env.ADE_CHAT_SESSION_ID = "chat-env-1";
+      const launch = buildCliPlan(["ios-sim", "launch", "--target", "app"]);
+      expect(launch.kind).toBe("execute");
+      if (launch.kind !== "execute") return;
+      expect(launch.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "ios_simulator",
+          action: "launch",
+          args: {
+            targetId: "app",
+            laneId: "lane-env-1",
+            chatSessionId: "chat-env-1",
+          },
+        },
+      });
+
+      const claim = buildCliPlan(["ios-sim", "claim", "--lane", "lane-explicit"]);
+      expect(claim.kind).toBe("execute");
+      if (claim.kind !== "execute") return;
+      expect(claim.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "ios_simulator",
+          action: "claim",
+          args: {
+            laneId: "lane-explicit",
+            chatSessionId: "chat-env-1",
+          },
+        },
+      });
+    } finally {
+      if (previousLane === undefined) delete process.env.ADE_LANE_ID;
+      else process.env.ADE_LANE_ID = previousLane;
+      if (previousChat === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+      else process.env.ADE_CHAT_SESSION_ID = previousChat;
+    }
+  });
+
+  it("tool claim commands require an explicit or ADE-provided lane", () => {
+    const previousLane = process.env.ADE_LANE_ID;
+    const previousChat = process.env.ADE_CHAT_SESSION_ID;
+    try {
+      delete process.env.ADE_LANE_ID;
+      delete process.env.ADE_CHAT_SESSION_ID;
+
+      expect(() => buildCliPlan(["ios-sim", "claim"])).toThrow(/requires --lane/);
+      expect(() => buildCliPlan(["app-control", "claim"])).toThrow(/requires --lane/);
+      expect(() => buildCliPlan(["browser", "claim"])).toThrow(/requires --lane/);
+
+      process.env.ADE_LANE_ID = "lane-env-1";
+      expect(buildCliPlan(["ios-sim", "claim"]).kind).toBe("execute");
+      expect(buildCliPlan(["app-control", "claim"]).kind).toBe("execute");
+      expect(buildCliPlan(["browser", "claim"]).kind).toBe("execute");
+    } finally {
+      if (previousLane === undefined) delete process.env.ADE_LANE_ID;
+      else process.env.ADE_LANE_ID = previousLane;
+      if (previousChat === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+      else process.env.ADE_CHAT_SESSION_ID = previousChat;
+    }
+  });
+
   it("ios-sim inspect requires both coordinates and forwards them", () => {
     expect(() => buildCliPlan(["ios-sim", "inspect"])).toThrow(/--x|--y/);
     const plan = buildCliPlan([
@@ -3315,6 +3380,63 @@ describe("ADE CLI", () => {
         args: { command: "pnpm dev" },
       },
     });
+  });
+
+  it("app-control launch, connect, and claim carry the agent lane claim", () => {
+    const previousLane = process.env.ADE_LANE_ID;
+    const previousChat = process.env.ADE_CHAT_SESSION_ID;
+    try {
+      process.env.ADE_LANE_ID = "lane-env-1";
+      process.env.ADE_CHAT_SESSION_ID = "chat-env-1";
+      const launch = buildCliPlan(["app-control", "launch", "--command", "npm run dev"]);
+      expect(launch.kind).toBe("execute");
+      if (launch.kind !== "execute") return;
+      expect(launch.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "app_control",
+          action: "launch",
+          args: {
+            command: "npm run dev",
+            laneId: "lane-env-1",
+            chatSessionId: "chat-env-1",
+          },
+        },
+      });
+
+      const connect = buildCliPlan(["app-control", "connect", "--cdp-port", "9222"]);
+      expect(connect.kind).toBe("execute");
+      if (connect.kind !== "execute") return;
+      expect(connect.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "app_control",
+          action: "connect",
+          args: {
+            cdpPort: 9222,
+            laneId: "lane-env-1",
+            chatSessionId: "chat-env-1",
+          },
+        },
+      });
+
+      const claim = buildCliPlan(["app-control", "claim", "--lane", "lane-explicit"]);
+      expect(claim.kind).toBe("execute");
+      if (claim.kind !== "execute") return;
+      expect(claim.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "app_control",
+          action: "claim",
+          args: {
+            laneId: "lane-explicit",
+            chatSessionId: "chat-env-1",
+          },
+        },
+      });
+    } finally {
+      if (previousLane === undefined) delete process.env.ADE_LANE_ID;
+      else process.env.ADE_LANE_ID = previousLane;
+      if (previousChat === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+      else process.env.ADE_CHAT_SESSION_ID = previousChat;
+    }
   });
 
   it("macos-vm lifecycle commands map to macos_vm actions", () => {
@@ -3826,6 +3948,57 @@ describe("ADE CLI", () => {
         args: { x: 120, y: 420, includeScreenshot: false },
       },
     });
+  });
+
+  it("browser open and claim commands carry the agent lane claim", () => {
+    const previousLane = process.env.ADE_LANE_ID;
+    const previousChat = process.env.ADE_CHAT_SESSION_ID;
+    try {
+      process.env.ADE_LANE_ID = "lane-env-1";
+      process.env.ADE_CHAT_SESSION_ID = "chat-env-1";
+
+      const open = buildCliPlan(["browser", "open", "localhost:5173"]);
+      expect(open.kind).toBe("execute");
+      if (open.kind !== "execute") return;
+      expect(open.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "built_in_browser",
+          action: "navigate",
+          args: {
+            url: "localhost:5173",
+            openPanel: true,
+            laneId: "lane-env-1",
+            chatSessionId: "chat-env-1",
+          },
+        },
+      });
+
+      const claim = buildCliPlan([
+        "browser",
+        "claim",
+        "--lane",
+        "lane-explicit",
+        "--chat-session",
+        "chat-explicit",
+      ]);
+      expect(claim.kind).toBe("execute");
+      if (claim.kind !== "execute") return;
+      expect(claim.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "built_in_browser",
+          action: "claim",
+          args: {
+            laneId: "lane-explicit",
+            chatSessionId: "chat-explicit",
+          },
+        },
+      });
+    } finally {
+      if (previousLane === undefined) delete process.env.ADE_LANE_ID;
+      else process.env.ADE_LANE_ID = previousLane;
+      if (previousChat === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+      else process.env.ADE_CHAT_SESSION_ID = previousChat;
+    }
   });
 
   it("update commands map to auto-update actions", () => {

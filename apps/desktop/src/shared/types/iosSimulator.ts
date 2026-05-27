@@ -70,6 +70,11 @@ export type IosSimulatorListLaunchTargetsArgs = {
   projectRoot?: string | null;
 };
 
+export type IosSimulatorClaimArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+};
+
 export type IosSimulatorLaunchArgs = {
   deviceUdid?: string | null;
   projectRoot?: string | null;
@@ -103,6 +108,7 @@ export type IosSimulatorSession = {
   keepSimulatorInBackground?: boolean | null;
   bridgeUrl: string | null;
   startedAt: string;
+  claimedAt: string | null;
 };
 
 export type IosSimulatorScreenshot = {

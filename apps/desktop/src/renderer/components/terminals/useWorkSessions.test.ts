@@ -249,6 +249,8 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       await result.current.launchPtySession({
         laneId: "lane-1",
         profile: "claude",
+        initialInput: "queued prompt",
+        initialInputDelayMs: 750,
       });
     });
 
@@ -260,6 +262,13 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(callOrder).toContain("openSessionTab");
     expect(callOrder).toContain("refresh-start");
     expect(callOrder).not.toContain("refresh-done");
+    expect((window as any).ade.pty.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        initialInput: "queued prompt",
+        initialInputDelayMs: 750,
+      }),
+    );
+    expect((window as any).ade.pty.create.mock.calls.at(-1)?.[0]).not.toHaveProperty("awaitInitialInput");
 
     // Resolve the refresh promise
     await act(async () => {

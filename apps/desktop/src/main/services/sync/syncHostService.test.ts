@@ -1737,7 +1737,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     expect(startCliCreateCall?.args).not.toContain(expect.stringContaining("fix from phone"));
     expect(startCliCreateCall?.initialInput).toContain("fix from phone");
     expect(startCliCreateCall?.initialInputDelayMs).toBe(750);
-    expect(startCliCreateCall?.awaitInitialInput).toBe(true);
+    expect(startCliCreateCall).not.toHaveProperty("awaitInitialInput");
     expect(writeBySessionId).toHaveBeenCalledTimes(1);
     expect(updateSessionMeta).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: "session-1",

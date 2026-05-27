@@ -50,6 +50,7 @@ import type {
   AutomationSimulateRequest,
   AutomationSimulateResult,
   ReviewLaunchContext,
+  BuiltInBrowserClaimArgs,
   AppControlClickArgs,
   AppControlConnectArgs,
   AppControlCoordinateSpace,
@@ -2043,7 +2044,7 @@ export function registerIpc({
     const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
     const newTab = record.newTab === true ? true : undefined;
     const openPanel = optionalBoolean(record.openPanel);
-    return { url, tabId, newTab, openPanel };
+    return { url, tabId, newTab, openPanel, ...parseBuiltInBrowserClaimArgs(record, channel) };
   };
 
   function optionalBuiltInBrowserString(
@@ -2067,12 +2068,21 @@ export function registerIpc({
     return undefined;
   }
 
+  const parseBuiltInBrowserClaimArgs = (record: Record<string, unknown>, channel: string): BuiltInBrowserClaimArgs => {
+    const laneId = optionalBuiltInBrowserString(record, "laneId", channel, 128);
+    const chatSessionId = optionalBuiltInBrowserString(record, "chatSessionId", channel, 128);
+    return {
+      ...(laneId ? { laneId } : {}),
+      ...(chatSessionId ? { chatSessionId } : {}),
+    };
+  };
+
   const parseBuiltInBrowserTabArgs = (value: unknown, channel: string): BuiltInBrowserTabArgs => {
     const record = builtInBrowserRecord(value, channel, true);
     const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
     if (!tabId) return invalidBuiltInBrowserArg(channel, "tabId must be a non-empty string");
     const openPanel = optionalBoolean(record.openPanel);
-    return { tabId, openPanel };
+    return { tabId, openPanel, ...parseBuiltInBrowserClaimArgs(record, channel) };
   };
 
   const parseBuiltInBrowserCreateTabArgs = (value: unknown, channel: string): BuiltInBrowserCreateTabArgs => {
@@ -2080,14 +2090,14 @@ export function registerIpc({
     const url = optionalBuiltInBrowserString(record, "url", channel, 4096);
     const activate = record.activate === false ? false : undefined;
     const openPanel = optionalBoolean(record.openPanel);
-    return { url, activate, openPanel };
+    return { url, activate, openPanel, ...parseBuiltInBrowserClaimArgs(record, channel) };
   };
 
   const parseBuiltInBrowserOpenPanelArgs = (value: unknown, channel: string): BuiltInBrowserOpenPanelArgs => {
     const record = builtInBrowserRecord(value, channel, false);
     const url = optionalBuiltInBrowserString(record, "url", channel, 4096);
     const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
-    return { url, tabId };
+    return { url, tabId, ...parseBuiltInBrowserClaimArgs(record, channel) };
   };
 
   const parseBuiltInBrowserSelectPointArgs = (value: unknown, channel: string): BuiltInBrowserSelectPointArgs => {

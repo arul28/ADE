@@ -3444,6 +3444,22 @@ export function createPtyService({
             throw err;
           }
         };
+        const failInitialInputLaunch = (err: unknown): void => {
+          if (entry.disposed) return;
+          logger.warn("pty.initial_input_launch_failed", {
+            ptyId,
+            sessionId,
+            cwd,
+            toolType: toolTypeHint,
+            err: String(err),
+          });
+          try {
+            terminatePtyProcessTree(entry, "SIGTERM", logger);
+          } catch {
+            // best effort
+          }
+          closeEntry(ptyId, 1);
+        };
         const initialInputDelayMs = Math.max(0, Math.min(10_000, Math.floor(Number(args.initialInputDelayMs ?? 0) || 0)));
         if (args.awaitInitialInput) {
           try {
@@ -3460,11 +3476,11 @@ export function createPtyService({
           }
         } else if (initialInputDelayMs > 0) {
           entry.initialInputTimer = setTimeout(() => {
-            void writeInitialInput().catch(() => {});
+            void writeInitialInput().catch(failInitialInputLaunch);
           }, initialInputDelayMs);
           entry.initialInputTimer.unref?.();
         } else {
-          void writeInitialInput().catch(() => {});
+          void writeInitialInput().catch(failInitialInputLaunch);
         }
       }
 

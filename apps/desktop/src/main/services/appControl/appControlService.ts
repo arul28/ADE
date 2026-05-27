@@ -5,6 +5,7 @@ import net from "node:net";
 import path from "node:path";
 import { WebSocket, type RawData } from "ws";
 import type {
+  AppControlClaimArgs,
   AppControlClickArgs,
   AppControlConnectArgs,
   AppControlContextItem,
@@ -37,6 +38,10 @@ const MAX_DOM_ELEMENTS = 450;
 const SOURCE_FILE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".html", ".css"]);
 const SOURCE_SKIP_DIRS = new Set([".git", ".ade", "node_modules", "dist", "build", "out", "coverage", ".next", ".vite"]);
 const SOURCE_FILE_CACHE_MAX = 200;
+
+function cleanClaimId(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
 
 type CreateAppControlServiceArgs = {
   projectRoot: string;
@@ -1431,6 +1436,20 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     };
   };
 
+  const claim = (claimArgs: AppControlClaimArgs = {}): AppControlStatus => {
+    if (!activeSession) return getStatus();
+    const laneId = cleanClaimId(claimArgs.laneId);
+    const chatSessionId = cleanClaimId(claimArgs.chatSessionId);
+    if (!laneId && !chatSessionId) return getStatus();
+    activeSession = {
+      ...activeSession,
+      ...(laneId ? { laneId } : {}),
+      ...(chatSessionId ? { chatSessionId } : {}),
+    };
+    emit({ type: "session-updated", session: activeSession });
+    return getStatus();
+  };
+
   const resolveLaunch = (launchArgs: AppControlLaunchArgs, debugPort: number): ResolvedLaunch => {
     const projectRoot = normalizeProjectRoot(launchArgs.projectRoot, args.projectRoot);
     const debugFlags = [
@@ -2358,6 +2377,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
 
   return {
     getStatus,
+    claim,
     launch,
     launchInTerminal: launch,
     connect,

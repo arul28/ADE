@@ -473,6 +473,37 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     });
   });
 
+  it("tracks explicit lane claims instead of inferring Browser ownership from the visible sidebar", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+
+    expect(service.getStatus()).toMatchObject({
+      ownerLaneId: null,
+      ownerChatSessionId: null,
+      ownerClaimedAt: null,
+    });
+
+    await service.createTab({
+      url: "https://example.test",
+      activate: true,
+      openPanel: true,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+
+    const status = service.getStatus();
+    expect(status.ownerLaneId).toBe("lane-1");
+    expect(status.ownerChatSessionId).toBe("chat-1");
+    expect(status.ownerClaimedAt).toEqual(expect.any(String));
+    const openEvent = collector.events.findLast((event) => event.type === "open-request");
+    expect(openEvent).toMatchObject({
+      type: "open-request",
+      status: {
+        ownerLaneId: "lane-1",
+        ownerChatSessionId: "chat-1",
+      },
+    });
+  });
+
   it("showPanel can navigate to a URL before opening the panel", async () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
 
