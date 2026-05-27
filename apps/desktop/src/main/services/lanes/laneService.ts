@@ -10,6 +10,7 @@ import { isWithinDir, normalizeBranchName } from "../shared/utils";
 import { fetchRemoteTrackingBranch, resolveQueueRebaseOverride, type QueueRebaseOverride } from "../shared/queueRebase";
 import { detectConflictKind } from "../git/gitConflictState";
 import { shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
+import { allocateLaneColor } from "../../../shared/laneColorPalette";
 import { linearIssueBranchName, sanitizeLinearIssueBranchName } from "../../../shared/linearIssueBranch";
 import {
   finalizeLaneLinearIssue,
@@ -1107,6 +1108,13 @@ export function createLaneService({
       [projectId]
     );
 
+  const allocateLaneColorForProject = (): string => {
+    const usedColors = getAllLaneRows(false)
+      .map((row) => row.color)
+      .filter((color): color is string => typeof color === "string" && color.trim().length > 0);
+    return allocateLaneColor(usedColors);
+  };
+
   const getChildrenRows = (laneId: string, includeArchived = false) =>
     db.all<LaneRow>(
       includeArchived
@@ -1566,15 +1574,16 @@ export function createLaneService({
       const laneId = randomUUID();
       const now = new Date().toISOString();
       const displayName = inferLaneNameFromManagedWorktree(candidate);
+      const laneColor = allocateLaneColorForProject();
       db.run(
         `
           insert into lanes(
             id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
             attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
           )
-          values(?, ?, ?, null, 'worktree', ?, ?, ?, null, 0, null, null, null, null, 'active', ?, null)
+          values(?, ?, ?, null, 'worktree', ?, ?, ?, null, 0, null, ?, null, null, 'active', ?, null)
         `,
-        [laneId, projectId, displayName, defaultBaseRef, branchRef, worktreePath, now]
+        [laneId, projectId, displayName, defaultBaseRef, branchRef, worktreePath, laneColor, now]
       );
 
       const row = getLaneRow(laneId);
@@ -2034,13 +2043,14 @@ export function createLaneService({
     );
     linkExistingDependencyInstalls(worktreePath);
 
+    const laneColor = allocateLaneColorForProject();
     db.run(
       `
         insert into lanes(
           id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
           attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder, runtime_placement, status, created_at, archived_at
         )
-        values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, null, null, null, ?, ?, 'active', ?, null)
+        values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, ?, null, null, ?, ?, 'active', ?, null)
       `,
       [
         laneId,
@@ -2051,6 +2061,7 @@ export function createLaneService({
         branchRef,
         worktreePath,
         args.parentLaneId,
+        laneColor,
         args.folder ?? null,
         runtimePlacement,
         now
@@ -2887,6 +2898,7 @@ export function createLaneService({
         if (parent && parent.status === "archived") throw new Error("Parent lane is archived");
 
         const baseRef = args.baseBranch?.trim() || defaultBaseRef;
+        const laneColor = allocateLaneColorForProject();
 
         db.run(
           `
@@ -2894,9 +2906,9 @@ export function createLaneService({
               id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
               attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
             )
-            values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, null, null, null, 'active', ?, null)
+            values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, ?, null, null, 'active', ?, null)
           `,
-          [laneId, projectId, displayName, args.description ?? null, baseRef, branchRef, worktreePath, parentLaneId, now]
+          [laneId, projectId, displayName, args.description ?? null, baseRef, branchRef, worktreePath, parentLaneId, laneColor, now]
         );
         laneInserted = true;
         invalidateLaneListCache();
@@ -4718,6 +4730,7 @@ export function createLaneService({
 
       const parentLaneId = null;
       const baseRef = defaultBaseRef;
+      const laneColor = allocateLaneColorForProject();
 
       db.run(
         `
@@ -4725,9 +4738,9 @@ export function createLaneService({
           id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
           attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
         )
-        values(?, ?, ?, ?, 'attached', ?, ?, ?, ?, 0, ?, null, null, null, 'active', ?, null)
+        values(?, ?, ?, ?, 'attached', ?, ?, ?, ?, 0, ?, ?, null, null, 'active', ?, null)
       `,
-        [laneId, projectId, laneName, args.description ?? null, baseRef, branchRef, attachedPath, attachedPath, parentLaneId, now]
+        [laneId, projectId, laneName, args.description ?? null, baseRef, branchRef, attachedPath, attachedPath, parentLaneId, laneColor, now]
       );
       invalidateLaneListCache();
 

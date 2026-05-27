@@ -1036,35 +1036,20 @@ app.whenReady().then(async () => {
   ): RemoteOpenProjectBinding | null => {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const record = value as Record<string, unknown>;
-    const targetId =
-      typeof record.targetId === "string" ? record.targetId.trim() : "";
-    const projectId =
-      typeof record.projectId === "string" ? record.projectId.trim() : "";
-    const rootPath =
-      typeof record.rootPath === "string" ? record.rootPath.trim() : "";
+    const targetId = readString(record, "targetId");
+    const projectId = readString(record, "projectId");
+    const rootPath = readString(record, "rootPath");
     if (record.kind !== "remote" || !targetId || !projectId || !rootPath) {
       return null;
     }
-    const runtimeName =
-      typeof record.runtimeName === "string" && record.runtimeName.trim()
-        ? record.runtimeName.trim()
-        : "Remote";
-    const displayName =
-      typeof record.displayName === "string" && record.displayName.trim()
-        ? record.displayName.trim()
-        : path.basename(rootPath);
-    const key =
-      typeof record.key === "string" && record.key.trim()
-        ? record.key.trim()
-        : `remote:${targetId}:${projectId}`;
     return {
       kind: "remote",
-      key,
+      key: readString(record, "key") ?? `remote:${targetId}:${projectId}`,
       targetId,
-      runtimeName,
+      runtimeName: readString(record, "runtimeName") ?? "Remote",
       projectId,
       rootPath,
-      displayName,
+      displayName: readString(record, "displayName") ?? path.basename(rootPath),
     };
   };
   const savedRemoteProjectBinding = parseSavedRemoteProjectBinding(

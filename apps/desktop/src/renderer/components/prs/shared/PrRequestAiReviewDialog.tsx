@@ -1,5 +1,6 @@
 import { memo, useCallback, useState } from "react";
-import { ArrowRight, GitBranch, Lock, Play, Sparkle } from "@phosphor-icons/react";
+import { ArrowRight, Lock, Play, Sparkle } from "@phosphor-icons/react";
+import { BranchIcon } from "../../ui/vcsIcons";
 
 import { getDefaultModelDescriptor } from "../../../../shared/modelRegistry";
 import type { LaneSummary, PrWithConflicts } from "../../../../shared/types";
@@ -34,7 +35,7 @@ function ScopeNode({
       )}
     >
       <div className="flex min-w-0 items-center gap-1.5">
-        <GitBranch
+        <BranchIcon
           size={12}
           weight="bold"
           className={emphasized ? "shrink-0 text-sky-400" : "shrink-0 text-[#8FA1B8]"}

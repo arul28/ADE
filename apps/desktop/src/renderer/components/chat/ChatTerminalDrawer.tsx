@@ -582,19 +582,20 @@ export const ChatTerminalToggle = memo(function ChatTerminalToggle({
   open,
   onToggle,
 }: ChatTerminalToggleProps) {
+  const label = open ? "Close terminal" : "Open terminal";
   return (
     <button
       type="button"
       onClick={onToggle}
       className={cn(
-        "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2.5 font-sans text-[10px] font-medium transition-all",
+        "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border font-sans transition-all",
         open
           ? "border-violet-400/20 bg-violet-500/[0.08] text-violet-200/80"
           : "border-white/[0.08] bg-white/[0.03] text-fg/45 hover:border-white/[0.12] hover:text-fg/65",
       )}
-      title={open ? "Close terminal" : "Open terminal"}
+      title={label}
+      aria-label={label}
     >
-      <span>Terminal</span>
       <TerminalIcon size={13} weight={open ? "fill" : "regular"} />
     </button>
   );

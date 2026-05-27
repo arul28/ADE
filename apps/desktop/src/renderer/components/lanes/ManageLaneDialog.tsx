@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from "react";
 import {
   ArrowSquareOut,
-  GitBranch,
   WarningCircle,
   Archive,
   Trash,
@@ -17,6 +16,7 @@ import {
   TreeStructure,
 } from "@phosphor-icons/react";
 import { Button } from "../ui/Button";
+import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type {
   LaneDeleteProgress,
   LaneDeleteRisk,
@@ -55,8 +55,9 @@ function ManageLaneHeaderDetails({ lanes, isBatch }: { lanes: LaneSummary[]; isB
         <div className="max-h-[min(28vh,160px)] space-y-1.5 overflow-y-auto pr-1">
           {lanes.map((lane) => (
             <div key={lane.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-              <GitBranch size={11} className="shrink-0 text-muted-fg/60" />
+              <LaneIcon size={11} className="shrink-0 text-muted-fg/60" />
               <span className="font-semibold text-fg">{lane.name}</span>
+              <BranchIcon size={10} className="shrink-0 text-muted-fg/50" />
               <span className="truncate font-mono text-muted-fg/60">{lane.branchRef}</span>
               <span className="rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-fg">
                 {lane.laneType}
@@ -79,7 +80,7 @@ function ManageLaneHeaderDetails({ lanes, isBatch }: { lanes: LaneSummary[]; isB
   return (
     <div data-tour="lanes.manageDialog.laneInfo" className="min-w-0">
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-        <GitBranch size={14} weight="duotone" className="shrink-0 text-accent/80" />
+        <LaneIcon size={14} weight="duotone" className="shrink-0 text-accent/80" />
         <span className="text-base font-semibold tracking-tight text-accent">{lane.name}</span>
         {lane.status.dirty ? (
           <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase text-amber-400">
@@ -349,7 +350,7 @@ export function ManageLaneDialog({
       open={open}
       onOpenChange={onOpenChange}
       title={isBatch ? `Manage ${lanes.length} Lanes` : "Manage Lane"}
-      icon={GitBranch}
+      icon={LaneIcon}
       headerExtra={headerExtra}
       widthClassName="w-[calc(100vw-1rem)] max-w-[720px] sm:max-w-[min(720px,calc(100vw-2rem))]"
       busy={laneActionBusy}
@@ -580,7 +581,7 @@ function buildDeleteRemovalPreview(
         ? ` · ${risk.unpushedCommitCount} unpushed`
         : "";
     items.push({
-      icon: <GitBranch size={12} className="text-red-300/80" />,
+      icon: <BranchIcon size={12} className="text-red-300/80" />,
       label: `Local branch · ${branchLabel}${unpushed}`,
     });
   }
@@ -588,7 +589,7 @@ function buildDeleteRemovalPreview(
   if (deleteMode === "remote_branch" && branchLabel) {
     const remote = remoteName.trim() || "origin";
     items.push({
-      icon: <GitBranch size={12} className="text-red-300/80" />,
+      icon: <BranchIcon size={12} className="text-red-300/80" />,
       label: `Remote · ${remote}/${branchLabel}`,
       hint: risk && !risk.remoteBranchExists ? "Not on remote yet" : undefined,
     });

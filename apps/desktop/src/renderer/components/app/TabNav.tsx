@@ -17,6 +17,7 @@ import {
 import { cn } from "../ui/cn";
 import { useAppStore } from "../../state/appStore";
 import { revealLabel } from "../../lib/platform";
+import { openExternalUrl } from "../../lib/openExternal";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import type { GitHubStatus } from "../../../shared/types";
 import { readStoredPrsRoute } from "../prs/prsRouteState";
@@ -43,6 +44,10 @@ function primaryTabPath(pathname: string): string {
   const match = mainItems.find((item) => pathname === item.to || pathname.startsWith(`${item.to}/`));
   if (match) return match.to;
   return pathname === settingsItem.to || pathname.startsWith(`${settingsItem.to}/`) ? settingsItem.to : pathname;
+}
+
+function githubProfileUrl(login: string): string {
+  return `https://github.com/${encodeURIComponent(login)}`;
 }
 
 export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null }) {
@@ -230,19 +235,24 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
 
         {/* GitHub profile avatar — only shows when token is stored, a login is known, and the image loads */}
         {githubLogin && !avatarBroken ? (
-          <div className="ade-shell-sidebar-item group relative flex w-full items-center">
+          <button
+            type="button"
+            className="ade-shell-sidebar-item group relative flex w-full cursor-pointer items-center border-none text-left transition-colors duration-100"
+            onClick={() => openExternalUrl(githubProfileUrl(githubLogin))}
+            aria-label={`Open GitHub profile for ${githubLogin}`}
+            title={`@${githubLogin} on GitHub`}
+          >
             <span className="ade-shell-sidebar-icon-slot flex items-center justify-center shrink-0">
               <img
                 src={`https://github.com/${encodeURIComponent(githubLogin)}.png?size=64`}
                 alt=""
-                title={githubLogin}
                 onError={() => setAvatarBroken(true)}
                 className={cn(SIDEBAR_AVATAR_SIZE_CLASS, "rounded-full object-cover")}
                 draggable={false}
               />
             </span>
             <span className="ade-tab-label whitespace-nowrap">{githubLogin}</span>
-          </div>
+          </button>
         ) : null}
 
         {/* Divider line before settings */}

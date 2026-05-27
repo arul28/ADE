@@ -246,7 +246,7 @@ function readRuntimeInfo(value) {
   return { version, buildHash, defaultRole, projectRoot };
 }
 
-function jsonRpcRequestSequence(socketPath, requests, options = {}) {
+export function jsonRpcRequestSequence(socketPath, requests, options = {}) {
   const timeoutMs = options.timeoutMs ?? 2000;
   const allowCloseBeforeResponse = options.allowCloseBeforeResponse === true;
   return new Promise((resolve, reject) => {
@@ -335,7 +335,7 @@ function jsonRpcRequestSequence(socketPath, requests, options = {}) {
   });
 }
 
-function jsonRpcRequest(socketPath, method, params, options = {}) {
+export function jsonRpcRequest(socketPath, method, params, options = {}) {
   return jsonRpcRequestSequence(socketPath, [{ method, params }], options);
 }
 

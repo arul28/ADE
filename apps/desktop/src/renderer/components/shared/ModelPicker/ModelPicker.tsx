@@ -352,7 +352,7 @@ const ModelPickerTrigger = memo(
           className={cn(
             "inline-flex min-w-0 items-center gap-1.5 rounded-md border font-sans transition-colors duration-150",
             compact
-              ? "h-7 px-1.5 text-[10px]"
+              ? "h-6 px-1 text-[9px]"
               : "h-8 px-2 text-[11px] sm:text-[12px]",
             "border-white/[0.06] bg-white/[0.03] text-fg/80",
             "hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg",
@@ -407,15 +407,17 @@ const FastModeButton = memo(function FastModeButton({
       disabled={disabled || !onToggle}
       onClick={() => onToggle?.(!active)}
       className={cn(
-        "inline-flex shrink-0 items-center gap-1 rounded-md border font-sans font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-45",
-        compact ? "h-7 px-1.5 text-[10px]" : "h-8 px-2 text-[11px]",
+        "inline-flex shrink-0 items-center justify-center rounded-md border font-sans font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-45",
+        compact
+          ? "ade-chat-composer-fast-toggle h-6 gap-0.5 px-1.5 text-[9px]"
+          : "h-8 gap-1 px-2 text-[11px]",
         active
           ? "border-amber-300/30 bg-amber-400/12 text-amber-100 shadow-[0_0_0_1px_rgba(251,191,36,0.08)]"
           : "border-white/[0.07] bg-white/[0.025] text-muted-fg/60 hover:bg-white/[0.06] hover:text-fg/80",
       )}
     >
-      <Lightning size={compact ? 11 : 13} weight="fill" />
-      <span>Fast</span>
+      <Lightning size={compact ? 10 : 13} weight="fill" />
+      <span className={cn(compact ? "ade-chat-composer-fast-label" : undefined)}>Fast</span>
     </button>
   );
 });

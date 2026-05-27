@@ -1,11 +1,12 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { CaretDown, CaretRight, Funnel, GitBranch, MagnifyingGlass, Plus, Square, Terminal, Trash, X } from "@phosphor-icons/react";
+import { CaretDown, CaretRight, Funnel, MagnifyingGlass, Plus, Square, Terminal, Trash, X } from "@phosphor-icons/react";
+import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { SessionCard } from "./SessionCard";
 import { LaneCombobox } from "./LaneCombobox";
 import { sortLanesForTabs } from "../lanes/laneUtils";
-import type { WorkDraftKind, WorkSessionListOrganization, WorkStatusFilter } from "../../state/appStore";
+import type { WorkDraftKind, WorkSessionListOrganization } from "../../state/appStore";
 import { iconGlyph } from "../graph/graphHelpers";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
@@ -14,12 +15,7 @@ import { laneSurfaceTint } from "../lanes/laneDesignTokens";
 import { isChatToolType } from "../../lib/sessions";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 
-const STATUS_FILTER_OPTIONS: Array<{ value: WorkStatusFilter; label: string; description: string }> = [
-  { value: "all", label: "All", description: "Show sessions in every state." },
-  { value: "running", label: "Running", description: "Show live sessions that are still working." },
-  { value: "awaiting-input", label: "Awaiting", description: "Show sessions waiting for a response or approval." },
-  { value: "ended", label: "Ended", description: "Show sessions that have finished." },
-];
+
 const FILTER_OPTION_GRID_CLASS = "grid min-w-0 flex-1 gap-0.5 [grid-template-columns:repeat(auto-fit,minmax(2.4rem,1fr))]";
 const FILTER_OPTION_BUTTON_CLASS = "ade-chat-drawer-row min-w-0 truncate rounded-md px-1.5 py-1 text-center text-[10px] font-medium";
 
@@ -74,12 +70,12 @@ function StickyGroupHeader({
   const laneTint = laneSurfaceTint(accentColor, isLane ? "pastel" : "soft");
   const laneLabelColor = isLane && laneTint.text ? laneTint.text : accentColor ?? undefined;
   return (
-    <div className={cn(isLane ? "mb-2" : "mt-0.5 first:mt-0")}>
+    <div className={cn(isLane ? "mb-1.5" : "mt-0.5 first:mt-0")}>
       <button
         type="button"
         className={cn(
-          "sticky top-0 z-10 flex w-full items-center text-left transition-colors backdrop-blur-xl cursor-pointer select-none",
-          isLane ? "gap-2 rounded-lg px-3 py-3" : "gap-1.5 rounded-md px-2 py-1.5",
+          "ade-lane-group-header sticky top-0 z-10 flex w-full items-center text-left transition-colors backdrop-blur-xl cursor-pointer select-none",
+          isLane ? "gap-1.5 rounded-lg px-2.5 py-1.5" : "gap-1.5 rounded-md px-2 py-1.5",
           laneTint.text ? "hover:brightness-[1.03]" : "hover:bg-white/[0.04]",
         )}
         style={{
@@ -97,33 +93,36 @@ function StickyGroupHeader({
         data-section-id={sectionId}
       >
         {isLane ? (
-          <div className="flex w-full min-w-0 items-center gap-2">
+          <div className="flex w-full min-w-0 items-center gap-1">
             {collapsed ? (
-              <CaretRight size={14} className="shrink-0 text-muted-fg/35" />
+              <CaretRight size={12} className="shrink-0 text-muted-fg/35" />
             ) : (
-              <CaretDown size={14} className="shrink-0 text-muted-fg/35" />
+              <CaretDown size={12} className="shrink-0 text-muted-fg/35" />
             )}
             {icon}
             <span
-              className="min-w-0 flex-1 truncate text-[15px] font-semibold leading-snug text-fg/90"
+              className="ade-lane-group-header-lane ade-lane-branch-inline-lane min-w-0 flex-1 truncate text-[13px] font-semibold leading-tight text-fg/90"
               style={laneLabelColor ? { color: laneLabelColor } : undefined}
+              title={label}
             >
               {label}
             </span>
-            {showBranchCluster ? (
-              <div
-                className="flex min-w-0 max-w-[min(50%,12rem)] shrink items-center gap-1.5"
-                style={{ color: "var(--color-muted-fg)" }}
-              >
-                <GitBranch size={12} weight="regular" className="shrink-0 opacity-60" aria-hidden />
-                <span className="truncate text-[12px] font-medium leading-snug text-muted-fg/75" title={branchText}>
-                  {branchText}
-                </span>
-              </div>
-            ) : null}
-            <span className="shrink-0 rounded-full bg-white/[0.08] px-2 py-0.5 text-[11px] font-semibold text-muted-fg/60">
-              {count}
-            </span>
+            <div className="flex shrink-0 items-center gap-1">
+              {showBranchCluster ? (
+                <div
+                  className="ade-lane-group-header-branch ade-lane-branch-inline-branch flex min-w-0 max-w-[5.5rem] items-center gap-0.5 overflow-hidden"
+                  style={{ color: "var(--color-muted-fg)" }}
+                >
+                  <BranchIcon size={11} weight="regular" className="shrink-0 opacity-60" />
+                  <span className="min-w-0 truncate text-[11px] font-medium leading-tight text-muted-fg/75" title={branchText}>
+                    {branchText}
+                  </span>
+                </div>
+              ) : null}
+              <span className="shrink-0 rounded-full bg-white/[0.08] px-1.5 py-px text-[10px] font-semibold tabular-nums text-muted-fg/60">
+                {count}
+              </span>
+            </div>
           </div>
         ) : (
           <>
@@ -149,7 +148,7 @@ function StickyGroupHeader({
         <div
           className={cn(
             "space-y-px pb-0.5",
-            isLane && "mt-1.5 pl-3",
+            isLane && "mt-1 pl-2.5",
           )}
         >
           {children}
@@ -167,8 +166,6 @@ export const SessionListPane = React.memo(function SessionListPane({
   loading: _loading,
   filterLaneId,
   setFilterLaneId,
-  filterStatus,
-  setFilterStatus,
   q,
   setQ,
   selectedSessionId,
@@ -197,8 +194,6 @@ export const SessionListPane = React.memo(function SessionListPane({
   loading: boolean;
   filterLaneId: string;
   setFilterLaneId: (v: string) => void;
-  filterStatus: WorkStatusFilter;
-  setFilterStatus: (v: WorkStatusFilter) => void;
   q: string;
   setQ: (v: string) => void;
   selectedSessionId: string | null;
@@ -490,10 +485,10 @@ export const SessionListPane = React.memo(function SessionListPane({
         const laneHeaderTint = laneSurfaceTint(laneAccent, "pastel");
         const laneIcon = (
           <span
-            className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
+            className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center"
             style={{ color: laneHeaderTint.text ?? laneAccent ?? "var(--color-muted-fg)" }}
           >
-            {lane.icon ? iconGlyph(lane.icon) : <Terminal size={14} weight="regular" />}
+            {lane.icon ? iconGlyph(lane.icon) : <LaneIcon size={12} weight="regular" />}
           </span>
         );
         return (
@@ -522,7 +517,7 @@ export const SessionListPane = React.memo(function SessionListPane({
           <StickyGroupHeader
             key={laneId}
             sectionId={laneId}
-            icon={<GitBranch size={14} weight="regular" className="h-4 w-4 shrink-0 text-muted-fg/55" />}
+            icon={<LaneIcon size={12} weight="regular" className="h-3.5 w-3.5 shrink-0 text-muted-fg/55" />}
             label={label}
             variant="lane"
             count={list.length}
@@ -577,13 +572,12 @@ export const SessionListPane = React.memo(function SessionListPane({
       style={{ background: "var(--work-sidebar-bg)" }}
     >
       {/* Compact toolbar */}
-      <div className="shrink-0 px-2 pt-2 pb-1.5 space-y-1.5">
-        {/* Search + filter row */}
-        <div className="flex items-center gap-1.5">
-          <div className="relative flex-1 min-w-0">
-            <MagnifyingGlass size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-fg/40" />
+      <div className="ade-session-list-toolbar shrink-0 space-y-1.5 px-2 pt-2 pb-1.5">
+        <div className="ade-session-list-toolbar-row flex min-w-0 items-center gap-1.5 overflow-hidden">
+          <div className="ade-session-list-toolbar-search relative min-w-0 flex-1">
+            <MagnifyingGlass size={11} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted-fg/40" />
             <input
-              className="h-7 w-full rounded-lg border pl-7 pr-2 text-[11px] text-fg outline-none placeholder:text-muted-fg/30"
+              className="h-7 w-full min-w-0 rounded-lg border pl-7 pr-2 text-[11px] text-fg outline-none placeholder:text-muted-fg/30"
               style={{
                 borderColor: "rgba(255,255,255,0.06)",
                 background: "rgba(255,255,255,0.03)",
@@ -596,7 +590,7 @@ export const SessionListPane = React.memo(function SessionListPane({
           <SmartTooltip content={{ label: "New Chat", description: "Start a new AI chat session." }}>
             <button
               type="button"
-              className="inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[10px] font-medium transition-colors"
+              className="ade-session-list-toolbar-new-chat inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[10px] font-medium transition-colors"
               style={{
                 border: "1px solid rgba(168,130,255,0.35)",
                 background: "rgba(168,130,255,0.08)",
@@ -609,38 +603,13 @@ export const SessionListPane = React.memo(function SessionListPane({
               data-tour="work.newSession"
             >
               <Plus size={10} weight="bold" />
-              New Chat
+              <span className="ade-session-list-toolbar-new-chat-label">New Chat</span>
             </button>
           </SmartTooltip>
-          <SmartTooltip
-            content={{
-              label: "New orchestrator chat",
-              description: "Spawn a lead chat that coordinates workers and validators in this lane.",
-            }}
-          >
+          <SmartTooltip content={{ label: "Filters", description: "Toggle the filter panel to organize sessions by lane or time." }}>
             <button
               type="button"
-              data-testid="session-list-new-orchestrator-chat"
-              className="inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[10px] font-medium transition-colors"
-              style={{
-                // Purple-accent tone (goal.md §10.1) — distinct from regular New Chat.
-                border: "1px solid rgba(168,130,255,0.5)",
-                background: "rgba(168,130,255,0.18)",
-                color: "rgba(220,210,255,0.95)",
-                cursor: "pointer",
-                whiteSpace: "nowrap",
-              }}
-              onClick={() => onShowDraftKind("chat-orchestrator")}
-              aria-label="Start a new orchestrator chat"
-            >
-              <Plus size={10} weight="bold" />
-              Orchestrator
-            </button>
-          </SmartTooltip>
-          <SmartTooltip content={{ label: "Filters", description: "Toggle the filter panel to organize sessions by lane, status, or time." }}>
-            <button
-              type="button"
-              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors"
+              className="ade-session-list-toolbar-filter inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors"
               style={{
                 border: "1px solid rgba(255,255,255,0.06)",
                 background: filterOpen ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.03)",
@@ -658,29 +627,6 @@ export const SessionListPane = React.memo(function SessionListPane({
         {/* Expandable filter panel */}
         {filterOpen ? (
           <div className="ade-chat-drawer-glass space-y-1.5 p-2">
-            <div className="flex items-start gap-1">
-              <span className="w-10 shrink-0 pt-1.5 text-[9px] font-medium uppercase tracking-wider text-muted-fg/50">Status</span>
-              <div className={FILTER_OPTION_GRID_CLASS}>
-                {STATUS_FILTER_OPTIONS.map((opt) => (
-                  <SmartTooltip
-                    key={opt.value}
-                    content={{ label: opt.label, description: opt.description }}
-                  >
-                    <button
-                      type="button"
-                      className={FILTER_OPTION_BUTTON_CLASS}
-                      data-active={filterStatus === opt.value ? "true" : undefined}
-                      style={{
-                        color: filterStatus === opt.value ? "var(--color-fg)" : "var(--color-muted-fg)",
-                      }}
-                      onClick={() => setFilterStatus(opt.value)}
-                    >
-                      {opt.label}
-                    </button>
-                  </SmartTooltip>
-                ))}
-              </div>
-            </div>
             <div className="flex items-start gap-1">
               <span className="w-10 shrink-0 pt-1.5 text-[9px] font-medium uppercase tracking-wider text-muted-fg/50">Group</span>
               <div className={FILTER_OPTION_GRID_CLASS}>

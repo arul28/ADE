@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from "react";
+import type { ReactNode } from "react";
 import type { ChatSurfaceMode } from "../../../shared/types";
 import { cn } from "../ui/cn";
 
@@ -13,17 +13,11 @@ function ensureOrchestratorComposerStyles(): void {
   const sheet = document.createElement("style");
   sheet.id = orchestratorComposerStyleId;
   sheet.textContent = `
-    @keyframes ade-orchestrator-composer-spin {
-      to { transform: rotate(360deg); }
-    }
     @keyframes ade-orchestrator-composer-pulse {
       0%, 100% { opacity: 0.28; transform: scale(0.98); }
       50% { opacity: 0.46; transform: scale(1.02); }
     }
     @media (prefers-reduced-motion: reduce) {
-      [data-chat-composer-orchestrator-effects] {
-        animation: none !important;
-      }
       [data-chat-composer-orchestrator-glow] {
         animation: none !important;
       }
@@ -69,33 +63,16 @@ export function ChatComposerShell({
       data-chat-composer-orchestrator-active={orchestratorActive ? "true" : undefined}
     >
       {orchestratorActive ? (
-        <>
-          <div
-            data-chat-composer-orchestrator-glow=""
-            aria-hidden
-            className="pointer-events-none absolute -inset-8 rounded-[calc(var(--chat-radius-shell)+24px)] blur-3xl"
-            style={{
-              background: ORCHESTRATOR_COMPOSER_GRADIENT,
-              animation: "ade-orchestrator-composer-pulse 4.8s ease-in-out infinite",
-              willChange: "opacity, transform",
-            }}
-          />
-          <div
-            data-chat-composer-orchestrator-effects=""
-            aria-hidden
-            className="pointer-events-none absolute -inset-[1.5px] rounded-[calc(var(--chat-radius-shell)+1.5px)]"
-            style={{
-              background: ORCHESTRATOR_COMPOSER_GRADIENT,
-              animation: "ade-orchestrator-composer-spin 9s linear infinite",
-              padding: 2,
-              WebkitMask: "linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)",
-              WebkitMaskComposite: "xor",
-              maskComposite: "exclude",
-              opacity: 0.92,
-              willChange: "transform",
-            } as CSSProperties}
-          />
-        </>
+        <div
+          data-chat-composer-orchestrator-glow=""
+          aria-hidden
+          className="pointer-events-none absolute -inset-8 rounded-[calc(var(--chat-radius-shell)+24px)] blur-3xl"
+          style={{
+            background: ORCHESTRATOR_COMPOSER_GRADIENT,
+            animation: "ade-orchestrator-composer-pulse 4.8s ease-in-out infinite",
+            willChange: "opacity, transform",
+          }}
+        />
       ) : null}
       <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[var(--chat-radius-shell)]">
         <div className="absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />

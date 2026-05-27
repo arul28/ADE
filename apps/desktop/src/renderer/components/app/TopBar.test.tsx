@@ -412,11 +412,11 @@ describe("TopBar", () => {
     try {
       render(<TopBar />);
 
-      expect(screen.getByText("Phone sync")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Mobile, not connected" })).toBeTruthy();
       expect(globalThis.window.ade.sync.getStatus).not.toHaveBeenCalled();
 
       await advancePhoneSyncStartupDelay();
-      expect(screen.getByText("1 phone connected to ADE Desktop")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Mobile, connected" })).toBeTruthy();
 
       fireEvent.click(screen.getByTitle("Connect a phone to this machine"));
 
@@ -449,7 +449,7 @@ describe("TopBar", () => {
       render(<TopBar />);
 
       await advancePhoneSyncStartupDelay();
-      expect(screen.getByText("Phone sync ready")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Mobile, not connected" })).toBeTruthy();
 
       await act(async () => {
         syncEventHandler?.({
@@ -462,7 +462,7 @@ describe("TopBar", () => {
         });
       });
 
-      expect(screen.getByText("1 phone connected to ADE Desktop")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Mobile, connected" })).toBeTruthy();
     } finally {
       vi.useRealTimers();
     }
@@ -486,7 +486,7 @@ describe("TopBar", () => {
       render(<TopBar />);
 
       await advancePhoneSyncStartupDelay();
-      expect(screen.getByText("Phone sync unavailable")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Mobile, not connected" })).toBeTruthy();
       expect(screen.queryByText("Phone sync ready")).toBeNull();
     } finally {
       vi.useRealTimers();
@@ -533,14 +533,14 @@ describe("TopBar", () => {
         await flushMicrotasks(2);
       });
 
-      expect(screen.getByText("Phone sync ready")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Mobile, not connected" })).toBeTruthy();
 
       await act(async () => {
         window.dispatchEvent(new Event("focus"));
         await flushMicrotasks(2);
       });
 
-      expect(screen.getByText("1 phone connected to ADE Desktop")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Mobile, connected" })).toBeTruthy();
       expect(getStatus).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
@@ -658,7 +658,8 @@ describe("TopBar", () => {
     expect(document.body.querySelector("[data-linear-quick-view-backdrop]")).toBeTruthy();
     expect(quickViewDialog.getAttribute("style")).toContain("rgba(123, 138, 240, 0.55)");
 
-    fireEvent.click(screen.getByRole("button", { name: /create lane/i }));
+    fireEvent.click(screen.getByRole("button", { name: /create lane attached to issue/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^create lane$/i }));
 
     await waitFor(() => {
       expect(createLane).toHaveBeenCalledWith(expect.objectContaining({

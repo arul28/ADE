@@ -13,6 +13,8 @@
     "dev:clean": "node ./scripts/clear-vite-cache.cjs && node ./scripts/normalize-runtime-binaries.cjs && node ./scripts/ensure-electron.cjs && node ./scripts/dev.cjs --force-vite",
     "predev:vite": "node ./scripts/export-browser-mock-ade-snapshot.mjs --optional",
     "dev:vite": "vite --port 5173 --strictPort",
+    "dev:vite:live": "node ./scripts/dev-vite-live.mjs",
+    "dev:browser-bridge": "node ./scripts/browser-runtime-bridge.mjs",
     "export:browser-mock-ade": "node ./scripts/export-browser-mock-ade-snapshot.mjs",
     "build": "tsup && vite build",
     "dist:win": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run validate:win:artifacts && npm run build && electron-builder --win --x64 --publish never && npm run validate:win:release",

@@ -5,7 +5,6 @@ import {
   ArrowRight,
   CaretDown,
   ClockCounterClockwise,
-  GitBranch,
   MagnifyingGlass,
   Play,
   Plus,
@@ -15,6 +14,7 @@ import {
   Checks,
   CopySimple,
 } from "@phosphor-icons/react";
+import { BranchIcon } from "../ui/vcsIcons";
 import { getDefaultModelDescriptor } from "../../../shared/modelRegistry";
 import type { LaneSummary } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
@@ -379,7 +379,7 @@ function ScopeBranchNode({
       )}
     >
       <div className="flex min-w-0 items-center gap-1.5">
-        <GitBranch size={12} weight="bold" className={emphasized ? "shrink-0 text-teal-400" : "shrink-0 text-[#8FA1B8]"} />
+        <BranchIcon size={12} weight="bold" className={emphasized ? "shrink-0 text-teal-400" : "shrink-0 text-[#8FA1B8]"} />
         <span className="truncate font-mono text-[11px] font-semibold text-[#F5FAFF]">{label}</span>
       </div>
       <div className="mt-0.5 truncate text-[10px] text-[#94A3B8]">{caption}</div>
@@ -1616,7 +1616,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
         icon={ClockCounterClockwise}
         action={(
           <Button size="sm" variant="ghost" onClick={() => setShowLearnings((prev) => !prev)}>
-            <GitBranch size={12} />
+            <Sparkle size={12} />
             {showLearnings ? "Hide learnings" : "Learnings"}
           </Button>
         )}
@@ -1676,7 +1676,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[var(--color-bg)]">
       {selectedRun ? (
         <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto px-5 py-5">
-          <SectionCard title="Review scope" icon={GitBranch}>
+          <SectionCard title="Review scope" icon={BranchIcon}>
             {selectedRunScopeVisual ? <ReviewLaunchScopeVisual {...selectedRunScopeVisual} /> : null}
           </SectionCard>
 

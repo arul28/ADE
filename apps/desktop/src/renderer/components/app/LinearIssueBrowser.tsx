@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowSquareOut,
   CaretDown,
+  CaretRight,
   CircleNotch,
-  GitBranch,
   MagnifyingGlass,
   Plus,
+  Sparkle,
   Warning,
 } from "@phosphor-icons/react";
+import { BranchIcon } from "../ui/vcsIcons";
 
 import type {
   CtoGetLinearIssuePickerDataResult,
@@ -23,11 +24,12 @@ import { Button } from "../ui/Button";
 import {
   issueProjectLabel,
   issueUpdatedLabel,
-  LinearIssueRow,
   linearPriorityLabel,
   toLaneLinearIssue,
 } from "../lanes/LinearIssuePicker";
 import { LinearPriorityIcon, LinearStateIcon, LINEAR_BRAND } from "../lanes/linearBrand";
+import { LinearProjectIcon } from "../lanes/linearProjectIcon";
+import { LinearIssueOpenLink, type LinearIssueResolveModalKind } from "./LinearIssueResolveModals";
 
 type BrowserIssue = NormalizedLinearIssue | LaneLinearIssue;
 type IssueSort = "updated_desc" | "created_desc" | "priority" | "due_soon" | "identifier_asc";
@@ -41,7 +43,14 @@ type LinearIssueBrowserFilters = {
   sort: IssueSort;
 };
 
+const STATE_TABS = [
+  { value: "all", label: "All issues" },
+  { value: "active", label: "Active" },
+  { value: "backlog", label: "Backlog" },
+] as const;
+
 const ACTIVE_LINEAR_STATE_TYPES = ["backlog", "unstarted", "started"];
+const STATE_GROUP_ORDER = ["started", "unstarted", "backlog", "triage", "completed", "canceled", "duplicate"] as const;
 const FILTER_STORAGE_PREFIX = "ade.linear.quickView.filters.v1:";
 
 const DEFAULT_FILTERS: LinearIssueBrowserFilters = {
@@ -51,17 +60,6 @@ const DEFAULT_FILTERS: LinearIssueBrowserFilters = {
   priority: "",
   query: "",
   sort: "updated_desc",
-};
-
-const STATE_LABELS: Record<string, string> = {
-  active: "Active",
-  all: "All states",
-  backlog: "Backlog",
-  unstarted: "Todo",
-  started: "In progress",
-  completed: "Done",
-  canceled: "Canceled",
-  triage: "Triage",
 };
 
 const PRIORITY_OPTIONS = [
@@ -110,14 +108,7 @@ function safeSaveFilters(projectRoot: string | null | undefined, filters: Linear
   const key = storageKey(projectRoot);
   if (!key || typeof window === "undefined") return;
   try {
-    if (
-      filters.projectId === DEFAULT_FILTERS.projectId &&
-      filters.statePreset === DEFAULT_FILTERS.statePreset &&
-      filters.assigneeId === DEFAULT_FILTERS.assigneeId &&
-      filters.priority === DEFAULT_FILTERS.priority &&
-      filters.query === DEFAULT_FILTERS.query &&
-      filters.sort === DEFAULT_FILTERS.sort
-    ) {
+    if (!hasActiveFilters(filters)) {
       window.localStorage.removeItem(key);
       return;
     }
@@ -170,15 +161,59 @@ function formatDate(value: string | null | undefined): string {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(date);
 }
 
+function hasActiveFilters(filters: LinearIssueBrowserFilters): boolean {
+  return (
+    filters.projectId !== DEFAULT_FILTERS.projectId
+    || filters.statePreset !== DEFAULT_FILTERS.statePreset
+    || filters.assigneeId !== DEFAULT_FILTERS.assigneeId
+    || filters.priority !== DEFAULT_FILTERS.priority
+    || filters.query !== DEFAULT_FILTERS.query
+    || filters.sort !== DEFAULT_FILTERS.sort
+  );
+}
+
+function formatLinearListDate(value: string | null | undefined): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date);
+}
+
+function stateGroupRank(stateType: string): number {
+  const index = STATE_GROUP_ORDER.indexOf(stateType as typeof STATE_GROUP_ORDER[number]);
+  return index === -1 ? 99 : index;
+}
+
+function groupIssuesByState(issues: BrowserIssue[]): Array<{
+  key: string;
+  stateName: string;
+  stateType: string;
+  issues: BrowserIssue[];
+}> {
+  const order: string[] = [];
+  const groups = new Map<string, { stateName: string; stateType: string; issues: BrowserIssue[] }>();
+  for (const issue of issues) {
+    const key = issue.stateId || `${issue.stateType}:${issue.stateName}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = { stateName: issue.stateName, stateType: issue.stateType, issues: [] };
+      groups.set(key, group);
+      order.push(key);
+    }
+    group.issues.push(issue);
+  }
+  return order
+    .map((key) => ({ key, ...groups.get(key)! }))
+    .sort((left, right) => (
+      stateGroupRank(left.stateType) - stateGroupRank(right.stateType)
+      || left.stateName.localeCompare(right.stateName)
+    ));
+}
+
 function stateTypesForPreset(preset: string): string[] {
   if (preset === "all") return [];
   if (preset === "active") return ACTIVE_LINEAR_STATE_TYPES;
   return preset ? [preset] : [];
-}
-
-function openLinearUrl(url: string | null | undefined): void {
-  if (!url) return;
-  void window.ade.app.openExternal(url);
 }
 
 export function linearBrowserIssueToLaneIssue(issue: BrowserIssue): LaneLinearIssue {
@@ -205,6 +240,7 @@ export function LinearIssueBrowser({
   onConnectionVisibilityChange,
   onQuickViewChange,
   onLoadingChange,
+  resolveActions,
 }: {
   projectRoot?: string | null;
   featuredIssue?: LaneLinearIssue | null;
@@ -221,6 +257,11 @@ export function LinearIssueBrowser({
   onConnectionVisibilityChange?: (visible: boolean) => void;
   onQuickViewChange?: (quickView: CtoLinearQuickView | null) => void;
   onLoadingChange?: (loading: boolean) => void;
+  resolveActions?: {
+    onOpenModal: (kind: LinearIssueResolveModalKind, issue: BrowserIssue) => void;
+    busyModal?: LinearIssueResolveModalKind | null;
+    disabled?: boolean;
+  };
 }) {
   const [quickView, setQuickView] = useState<CtoLinearQuickView | null>(null);
   const quickViewRef = useRef<CtoLinearQuickView | null>(null);
@@ -234,6 +275,7 @@ export function LinearIssueBrowser({
   const [loadingIssues, setLoadingIssues] = useState(false);
   const [localActionIssueId, setLocalActionIssueId] = useState<string | null>(null);
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(featuredIssue?.id ?? null);
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
   const quickViewRequestIdRef = useRef(0);
   const searchRequestIdRef = useRef(0);
@@ -378,27 +420,6 @@ export function LinearIssueBrowser({
 
   const selectedIssue = displayIssues.find((issue) => issue.id === selectedIssueId) ?? displayIssues[0] ?? null;
 
-  const stateOptions = useMemo(() => {
-    const seen = new Set<string>();
-    const dynamic = catalog.states
-      .filter((state) => {
-        if (seen.has(state.type)) return false;
-        seen.add(state.type);
-        return true;
-      })
-      .sort((left, right) => left.type.localeCompare(right.type))
-      .map((state) => ({ value: state.type, label: STATE_LABELS[state.type] ?? state.type }));
-    const options = [
-      { value: "all", label: "All states" },
-      { value: "active", label: "Active" },
-      ...dynamic,
-    ];
-    if (filters.statePreset && !options.some((option) => option.value === filters.statePreset)) {
-      options.push({ value: filters.statePreset, label: STATE_LABELS[filters.statePreset] ?? filters.statePreset });
-    }
-    return options;
-  }, [catalog.states, filters.statePreset]);
-
   const assigneeOptions = useMemo(
     () => [
       { value: "", label: "Anyone" },
@@ -416,6 +437,8 @@ export function LinearIssueBrowser({
     }));
   }, [catalog.projects, quickView?.projects]);
 
+  const issueGroups = useMemo(() => groupIssuesByState(displayIssues), [displayIssues]);
+
   const handleIssueAction = useCallback(async (issue: BrowserIssue) => {
     const busyIssueId = actionBusyIssueId ?? localActionIssueId;
     if (busyIssueId || actionDisabled) return;
@@ -432,11 +455,13 @@ export function LinearIssueBrowser({
 
   const showSettingsAction = Boolean(error && onOpenLinearSettings && isConnectionError(error));
   const busyIssueId = actionBusyIssueId ?? localActionIssueId;
+  const filtersActive = hasActiveFilters(filters);
+  const issueCountLabel = issues.length > 0 ? `${issues.length}${pageInfo.hasNextPage ? "+" : ""}` : null;
 
   return (
-    <div className="min-h-[560px] overflow-hidden">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
       {error ? (
-        <div className="mx-4 mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-red-500/25 px-3 py-2 text-[12px] text-red-100" style={{ backgroundColor: "#321B20" }}>
+        <div className="mx-4 mt-3 flex shrink-0 flex-wrap items-center gap-2 rounded-lg border border-red-500/25 px-3 py-2 text-[12px] text-red-100" style={{ backgroundColor: "#321B20" }}>
           <Warning size={14} className="shrink-0" />
           <span className="min-w-0 flex-1">{error}</span>
           {showSettingsAction ? (
@@ -447,77 +472,88 @@ export function LinearIssueBrowser({
         </div>
       ) : null}
 
-      <div className="grid min-h-0 md:grid-cols-[232px_minmax(0,1fr)_334px]">
-        <aside className="min-h-0 border-r border-white/10 bg-black/10 px-3 py-3">
-          <div className="mb-3 flex items-center justify-between">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-fg/55">
-              Projects
-            </div>
-            <button
-              type="button"
-              className="text-[11px] text-muted-fg/60 transition-colors hover:text-fg"
-              onClick={resetFilters}
-            >
-              Clear
-            </button>
-          </div>
-
-          <div className="space-y-2">
-            <button
-              type="button"
-              className={cn(
-                "flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-[12px] transition-colors",
-                !filters.projectId ? "border-white/12 bg-white/[0.06] text-fg" : "border-white/[0.06] bg-white/[0.025] text-muted-fg/75 hover:bg-white/[0.05]",
-              )}
+      <div className="grid min-h-0 flex-1 overflow-hidden md:grid-cols-[232px_minmax(0,1fr)_334px]">
+        <aside className="flex min-h-0 flex-col overflow-hidden border-r border-white/10 bg-black/10">
+          <div className="shrink-0 border-b border-white/[0.06] px-3 py-2">
+            <ScopeNavButton
+              active={!filters.projectId}
+              title="All issues"
+              subtitle="Across your workspace"
+              count={!filters.projectId ? issueCountLabel : null}
               onClick={() => updateFilters({ projectId: "" })}
-            >
-              <span>All issues</span>
-              <span className="text-[10px] text-muted-fg/50">
-                {issues.length > 0 ? `${issues.length}${pageInfo.hasNextPage ? "+" : ""}` : ""}
-              </span>
-            </button>
+            />
           </div>
 
-          <div className="mt-2 max-h-[350px] space-y-1.5 overflow-y-auto pr-1">
-            {loadingCatalog && projectFilters.length === 0 ? (
-              <div className="rounded-lg border border-white/[0.06] px-3 py-6 text-center text-[12px] text-muted-fg/50">
-                Loading projects...
-              </div>
-            ) : projectFilters.length > 0 ? (
-              projectFilters.map((projectEntry) => (
-                <ProjectFilterButton
-                  key={projectEntry.id}
-                  project={projectEntry}
-                  active={filters.projectId === projectEntry.id}
-                  onClick={() => updateFilters({ projectId: projectEntry.id })}
-                />
-              ))
-            ) : (
-              <div className="rounded-lg border border-white/[0.06] px-3 py-6 text-center text-[12px] text-muted-fg/50">
-                No visible projects.
-              </div>
-            )}
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-2 py-2">
+            <div className="mb-1.5 flex shrink-0 items-center justify-between gap-2 px-1">
+              <span className="text-[11px] text-muted-fg/50">By project</span>
+              {filtersActive ? (
+                <button
+                  type="button"
+                  className="text-[11px] text-muted-fg/55 transition-colors hover:text-fg"
+                  onClick={resetFilters}
+                >
+                  Reset filters
+                </button>
+              ) : null}
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+              {loadingCatalog && projectFilters.length === 0 ? (
+                <div className="rounded-lg border border-white/[0.06] px-3 py-6 text-center text-[12px] text-muted-fg/50">
+                  Loading projects...
+                </div>
+              ) : projectFilters.length > 0 ? (
+                projectFilters.map((projectEntry) => (
+                  <ProjectFilterButton
+                    key={projectEntry.id}
+                    project={projectEntry}
+                    active={filters.projectId === projectEntry.id}
+                    count={filters.projectId === projectEntry.id ? issueCountLabel : null}
+                    onClick={() => updateFilters({ projectId: projectEntry.id })}
+                  />
+                ))
+              ) : (
+                <div className="rounded-lg border border-white/[0.06] px-3 py-6 text-center text-[12px] text-muted-fg/50">
+                  No visible projects.
+                </div>
+              )}
+            </div>
           </div>
         </aside>
 
-        <section className="min-h-0 border-r border-white/10 px-4 py-3">
-          <div className="mb-3 grid gap-2">
+        <section className="flex min-h-0 flex-col overflow-hidden border-r border-white/10">
+          <div className="shrink-0 space-y-2 border-b border-white/[0.06] px-3 py-2.5">
             <div className="relative">
-              <MagnifyingGlass size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-fg/45" />
+              <MagnifyingGlass size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-fg/45" />
               <input
                 value={filters.query}
                 onChange={(event) => updateFilters({ query: event.target.value })}
-                placeholder="Search all Linear issues"
-                className="h-9 w-full rounded-lg border border-white/[0.07] bg-black/20 pl-8 pr-3 text-[12px] text-fg outline-none transition-colors placeholder:text-muted-fg/40 focus:border-white/18"
+                placeholder="Search issues…"
+                className="h-8 w-full rounded-md border border-white/[0.07] bg-black/20 pl-8 pr-3 text-[12px] text-fg outline-none transition-colors placeholder:text-muted-fg/40 focus:border-white/18"
               />
             </div>
-            <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-              <FilterSelect
-                label="State"
-                value={filters.statePreset}
-                options={stateOptions}
-                onChange={(value) => updateFilters({ statePreset: value })}
-              />
+
+            <div className="flex items-center gap-1">
+              {STATE_TABS.map((tab) => (
+                <button
+                  key={tab.value}
+                  type="button"
+                  className={cn(
+                    "rounded-md px-2 py-1 text-[11px] transition-colors",
+                    filters.statePreset === tab.value
+                      ? "bg-white/[0.08] text-fg"
+                      : "text-muted-fg/60 hover:bg-white/[0.04] hover:text-fg/85",
+                  )}
+                  onClick={() => updateFilters({ statePreset: tab.value })}
+                >
+                  {tab.label}
+                </button>
+              ))}
+              {loadingIssues ? <CircleNotch size={11} className="ml-auto animate-spin text-muted-fg/50" /> : null}
+            </div>
+
+            <div className="grid grid-cols-3 gap-1.5">
               <FilterSelect
                 label="Assignee"
                 value={filters.assigneeId}
@@ -539,35 +575,40 @@ export function LinearIssueBrowser({
             </div>
           </div>
 
-          <div className="mb-2 flex items-center justify-between">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-fg/55">
-              Issues
-            </div>
-            <div className="flex items-center gap-2 text-[11px] text-muted-fg/55">
-              {filters.projectId
-                ? projectFilters.find((projectEntry) => projectEntry.id === filters.projectId)?.name ?? "Project issues"
-                : "All issues"}
-              {loadingIssues ? <CircleNotch size={11} className="animate-spin" /> : null}
-            </div>
-          </div>
-
-          <div className="max-h-[438px] overflow-y-auto rounded-lg border border-white/[0.06] bg-black/20">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             {loadingQuickView && !quickView && displayIssues.length === 0 ? (
               <div className="grid h-44 place-items-center text-[12px] text-muted-fg/55">
                 <CircleNotch size={16} className="animate-spin" />
               </div>
             ) : displayIssues.length > 0 ? (
               <>
-                {displayIssues.map((issue) => (
-                  <LinearIssueRow
-                    key={issueListKey(issue)}
-                    issue={issue}
-                    active={selectedIssue?.id === issue.id}
-                    eyebrow={featuredIssue?.id === issue.id ? featuredIssueLabel : undefined}
-                    busy={busyIssueId === issue.id}
-                    onClick={() => setSelectedIssueId(issue.id)}
-                  />
-                ))}
+                {issueGroups.map((group) => {
+                  const collapsed = collapsedGroups[group.key] === true;
+                  return (
+                    <div key={group.key}>
+                      <button
+                        type="button"
+                        className="sticky top-0 z-[1] flex h-8 w-full items-center gap-1.5 border-b border-white/[0.05] bg-[color:var(--ade-shell-surface,#121019)] px-3 text-left text-[12px] text-muted-fg/70 transition-colors hover:text-fg/85"
+                        onClick={() => setCollapsedGroups((current) => ({ ...current, [group.key]: !collapsed }))}
+                      >
+                        {collapsed ? <CaretRight size={11} className="shrink-0" /> : <CaretDown size={11} className="shrink-0" />}
+                        <LinearStateIcon stateType={group.stateType} size={12} />
+                        <span className="font-medium text-fg/85">{group.stateName}</span>
+                        <span className="text-[11px] tabular-nums text-muted-fg/45">{group.issues.length}</span>
+                      </button>
+                      {!collapsed ? group.issues.map((issue) => (
+                        <LinearBrowserIssueRow
+                          key={issueListKey(issue)}
+                          issue={issue}
+                          active={selectedIssue?.id === issue.id}
+                          eyebrow={featuredIssue?.id === issue.id ? featuredIssueLabel : undefined}
+                          busy={busyIssueId === issue.id}
+                          onClick={() => setSelectedIssueId(issue.id)}
+                        />
+                      )) : null}
+                    </div>
+                  );
+                })}
                 {pageInfo.hasNextPage ? (
                   <button
                     type="button"
@@ -597,44 +638,127 @@ export function LinearIssueBrowser({
           actionDisabled={actionDisabled || Boolean(busyIssueId && busyIssueId !== selectedIssue?.id)}
           showBranchPreview={showBranchPreview}
           onIssueAction={handleIssueAction}
+          resolveActions={resolveActions}
         />
       </div>
     </div>
   );
 }
 
-function ProjectFilterButton({
-  project,
+function ScopeNavButton({
   active,
+  title,
+  subtitle,
+  count,
   onClick,
 }: {
-  project: CtoLinearProject & { quick: CtoLinearQuickViewProject | null };
   active: boolean;
+  title: string;
+  subtitle: string;
+  count: string | null;
   onClick: () => void;
 }) {
   return (
     <button
       type="button"
       className={cn(
-        "flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors",
-        active ? "border-white/12 bg-white/[0.06]" : "border-white/[0.06] bg-white/[0.025] hover:bg-white/[0.05]",
+        "flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left transition-colors",
+        active
+          ? "bg-white/[0.06] text-fg"
+          : "text-muted-fg/75 hover:bg-white/[0.04]",
       )}
       onClick={onClick}
     >
-      <span
-        className="h-2 w-2 shrink-0 rounded-full"
-        style={{ background: project.quick?.color ?? LINEAR_BRAND.primaryBright }}
+      <span className="min-w-0 truncate text-[12px]">
+        <span className="font-medium">{title}</span>
+        <span className="text-muted-fg/45"> · </span>
+        <span className="text-muted-fg/55">{subtitle}</span>
+      </span>
+      {count ? <span className="shrink-0 text-[10px] tabular-nums text-muted-fg/50">{count}</span> : null}
+    </button>
+  );
+}
+
+function ProjectFilterButton({
+  project,
+  active,
+  count,
+  onClick,
+}: {
+  project: CtoLinearProject & { quick: CtoLinearQuickViewProject | null };
+  active: boolean;
+  count: string | null;
+  onClick: () => void;
+}) {
+  const quick = project.quick;
+
+  return (
+    <button
+      type="button"
+      className={cn(
+        "flex h-8 w-full items-center gap-2 rounded-md px-2 text-left transition-colors",
+        active ? "bg-white/[0.06] text-fg" : "text-muted-fg/80 hover:bg-white/[0.04] hover:text-fg",
+      )}
+      onClick={onClick}
+      title={project.name}
+    >
+      <LinearProjectIcon
+        icon={project.icon ?? quick?.icon}
+        color={project.color ?? quick?.color}
+        name={project.name}
+        size={15}
       />
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-[12px] font-medium text-fg">{project.name}</span>
-        <span className="block truncate text-[10.5px] text-muted-fg/50">
-          {project.teamName}
-          {project.quick?.statusName ? ` · ${project.quick.statusName}` : ""}
+      <span className="min-w-0 flex-1 truncate text-[12px]">{project.name}</span>
+      <span className="shrink-0 text-[11px] tabular-nums text-muted-fg/45">
+        {count ?? (quick?.issueCount != null ? String(quick.issueCount) : "0")}
+      </span>
+    </button>
+  );
+}
+
+function linearIssueListDate(issue: BrowserIssue): string {
+  return formatLinearListDate(issue.createdAt) || formatLinearListDate(issue.updatedAt);
+}
+
+function LinearBrowserIssueRow({
+  issue,
+  active,
+  eyebrow,
+  busy,
+  onClick,
+}: {
+  issue: BrowserIssue;
+  active: boolean;
+  eyebrow?: string;
+  busy?: boolean;
+  onClick: () => void;
+}) {
+  const listDate = linearIssueListDate(issue);
+
+  return (
+    <button
+      type="button"
+      className={cn(
+        "group flex h-[34px] w-full items-center gap-3 border-b border-white/[0.04] px-3 text-left transition-colors disabled:opacity-50",
+        active ? "bg-white/[0.06]" : "hover:bg-white/[0.03]",
+      )}
+      onClick={onClick}
+      disabled={busy}
+    >
+      <span className="w-[54px] shrink-0 truncate font-mono text-[11px] text-muted-fg/50">
+        {issue.identifier}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-[13px] text-fg/90">
+        {eyebrow ? (
+          <span className="mr-1.5 text-[10px] uppercase tracking-wide text-muted-fg/45">{eyebrow}</span>
+        ) : null}
+        {issue.title}
+      </span>
+      {listDate ? (
+        <span className="shrink-0 text-[11px] tabular-nums text-muted-fg/45">
+          {listDate}
         </span>
-      </span>
-      <span className="shrink-0 text-[10px] text-muted-fg/50">
-        {project.quick?.issueCount ?? ""}
-      </span>
+      ) : null}
     </button>
   );
 }
@@ -670,6 +794,32 @@ function FilterSelect({
   );
 }
 
+const RESOLVE_ACTIONS: Array<{
+  kind: LinearIssueResolveModalKind;
+  label: string;
+  description: string;
+  icon: React.ReactNode;
+}> = [
+  {
+    kind: "create-lane",
+    label: "Create lane attached to issue",
+    description: "New lane with this issue linked to the lane.",
+    icon: <Plus size={14} weight="bold" />,
+  },
+  {
+    kind: "resolve-new-lane",
+    label: "Resolve issue in new chat in new lane",
+    description: "New lane plus a Work chat with the issue linked to that chat.",
+    icon: <Sparkle size={14} weight="fill" />,
+  },
+  {
+    kind: "resolve-existing-lane",
+    label: "Resolve issue in new chat in existing lane",
+    description: "Pick a lane and start a chat with the issue linked to that chat only.",
+    icon: <BranchIcon size={14} />,
+  },
+];
+
 function IssueDetails({
   issue,
   actionLabel,
@@ -679,6 +829,7 @@ function IssueDetails({
   actionDisabled,
   showBranchPreview,
   onIssueAction,
+  resolveActions,
 }: {
   issue: BrowserIssue | null;
   actionLabel: string;
@@ -688,10 +839,15 @@ function IssueDetails({
   actionDisabled: boolean;
   showBranchPreview: boolean;
   onIssueAction: (issue: BrowserIssue) => void | Promise<void>;
+  resolveActions?: {
+    onOpenModal: (kind: LinearIssueResolveModalKind, issue: BrowserIssue) => void;
+    busyModal?: LinearIssueResolveModalKind | null;
+    disabled?: boolean;
+  };
 }) {
   if (!issue) {
     return (
-      <aside className="grid min-h-[420px] place-items-center px-4 py-8 text-center text-[12px] text-muted-fg/55">
+      <aside className="grid min-h-0 place-items-center overflow-hidden px-4 py-8 text-center text-[12px] text-muted-fg/55">
         Select an issue to preview it.
       </aside>
     );
@@ -702,7 +858,7 @@ function IssueDetails({
   const normalizedIssue = "raw" in issue ? issue : null;
   const description = issue.description?.trim() ?? "";
   return (
-    <aside className="flex min-h-0 flex-col">
+    <aside className="flex min-h-0 flex-col overflow-hidden">
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
         <div className="flex items-center gap-2">
           <LinearPriorityIcon priority={issue.priority} size={12} />
@@ -714,7 +870,7 @@ function IssueDetails({
         <div className="mt-2 text-[14px] font-semibold leading-snug">{issue.title}</div>
         {showBranchPreview ? (
           <div className="mt-2 rounded-md bg-black/25 px-2 py-1.5 font-mono text-[10.5px] text-fg/80">
-            <GitBranch size={11} className="mr-1 inline" />
+            <BranchIcon size={11} className="mr-1 inline" />
             {branchName}
           </div>
         ) : null}
@@ -757,21 +913,50 @@ function IssueDetails({
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 border-t border-white/10 px-4 py-3">
-        <Button
-          variant="primary"
-          disabled={actionBusy || actionDisabled}
-          onClick={() => void onIssueAction(issue)}
-        >
-          {actionBusy ? <CircleNotch size={14} className="animate-spin" /> : actionIcon ?? <Plus size={14} />}
-          {actionBusy ? actionBusyLabel ?? actionLabel : actionLabel}
-        </Button>
-        {issue.url ? (
-          <Button variant="outline" onClick={() => openLinearUrl(issue.url)}>
-            <ArrowSquareOut size={13} />
-            Open
-          </Button>
-        ) : null}
+      <div className="border-t border-white/10 px-4 py-3">
+        {resolveActions ? (
+          <div className="space-y-2">
+            <div className="space-y-1.5">
+              {RESOLVE_ACTIONS.map((action) => {
+                const busy = resolveActions.busyModal === action.kind;
+                const disabled = resolveActions.disabled || Boolean(resolveActions.busyModal && !busy);
+                return (
+                  <button
+                    key={action.kind}
+                    type="button"
+                    disabled={disabled}
+                    className="flex w-full items-start gap-2.5 rounded-lg border border-white/[0.07] bg-white/[0.02] px-2.5 py-2 text-left transition-colors hover:border-white/[0.12] hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-45"
+                    onClick={() => resolveActions.onOpenModal(action.kind, issue)}
+                  >
+                    <span
+                      className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-md text-[color:var(--color-accent,#A78BFA)]"
+                      style={{ background: "rgba(167, 139, 250, 0.12)" }}
+                    >
+                      {busy ? <CircleNotch size={13} className="animate-spin" /> : action.icon}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[11.5px] font-medium leading-snug text-fg/90">{action.label}</span>
+                      <span className="mt-0.5 block text-[10.5px] leading-relaxed text-muted-fg/55">{action.description}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <LinearIssueOpenLink url={issue.url} />
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="primary"
+              disabled={actionBusy || actionDisabled}
+              onClick={() => void onIssueAction(issue)}
+            >
+              {actionBusy ? <CircleNotch size={14} className="animate-spin" /> : actionIcon ?? <Plus size={14} />}
+              {actionBusy ? actionBusyLabel ?? actionLabel : actionLabel}
+            </Button>
+            <LinearIssueOpenLink url={issue.url} />
+          </div>
+        )}
       </div>
     </aside>
   );

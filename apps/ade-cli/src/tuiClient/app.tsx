@@ -345,7 +345,6 @@ export function mergeOptimisticChatSessions(
     optimisticSessions.delete(sessionId);
   }
   const pending = [...optimisticSessions.values()]
-    .filter((session) => !seen.has(session.sessionId))
     .sort((left, right) => {
       const rightMs = Date.parse(right.lastActivityAt ?? right.startedAt);
       const leftMs = Date.parse(left.lastActivityAt ?? left.startedAt);
@@ -1417,8 +1416,7 @@ export function isPromptWordBackspace(input: string, key: { ctrl?: boolean; meta
 }
 
 export function isPromptLineBackspace(input: string, key: { ctrl?: boolean; meta?: boolean; backspace?: boolean; delete?: boolean }): boolean {
-  if (isCtrlInput(input, key, "u")) return true;
-  return false;
+  return isCtrlInput(input, key, "u");
 }
 
 type PromptEditResult = { value: string; cursor: number };

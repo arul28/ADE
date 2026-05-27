@@ -287,24 +287,15 @@ export function CommitHistoryView({
               if (!node) return null;
               const cx = columnCenterX(node.column);
               const cy = rowCenterY(node.rowIndex);
-              const fill = node.isHead
-                ? "#22C55E"
-                : node.isMerge
-                  ? "#3B82F6"
-                  : "var(--color-card)";
-              const stroke = node.isHead
-                ? "#22C55E"
-                : node.isMerge
-                  ? "#3B82F6"
-                  : "rgba(255,255,255,0.35)";
+              const color = node.isHead ? "#22C55E" : node.isMerge ? "#3B82F6" : null;
               return (
                 <circle
                   key={node.sha}
                   cx={cx}
                   cy={cy}
                   r={node.isMerge ? 5 : 4}
-                  fill={fill}
-                  stroke={stroke}
+                  fill={color ?? "var(--color-card)"}
+                  stroke={color ?? "rgba(255,255,255,0.35)"}
                   strokeWidth={2}
                 />
               );

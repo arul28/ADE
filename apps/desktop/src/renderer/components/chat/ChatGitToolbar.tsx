@@ -1,9 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  GitBranch,
-  GitCommit,
-  ArrowUp,
   GitPullRequest,
   CircleNotch,
   CheckCircle,
@@ -17,14 +14,7 @@ import {
 import { AnimatePresence, motion } from "motion/react";
 import { cn } from "../ui/cn";
 import type { DiffChanges, PrSummary, PrCheck } from "../../../shared/types";
-import {
-  beginLaneGitActionRuntime,
-  patchLaneGitActionRuntimeStateIfCurrent,
-  scheduleLaneGitActionRuntimeClear,
-  useLaneGitActionRuntimeState,
-} from "../lanes/LaneGitActionsPane";
-import { getLaneAccent } from "../lanes/laneColorPalette";
-import { useAppStore } from "../../state/appStore";
+import { useLaneGitActionRuntimeState } from "../lanes/LaneGitActionsPane";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 
 // ---------------------------------------------------------------------------
@@ -104,24 +94,6 @@ function summarizeChecks(checks: PrCheck[]): { passed: number; failed: number; r
   return { passed, failed, running, total: checks.length };
 }
 
-function LaneLogoMark({ color, size = 16 }: { color: string; size?: number }) {
-  return (
-    <span
-      aria-hidden
-      className="inline-flex shrink-0 items-center justify-center rounded-[5px]"
-      style={{
-        width: size,
-        height: size,
-        background: `color-mix(in srgb, ${color} 30%, transparent)`,
-        border: `1px solid color-mix(in srgb, ${color} 48%, transparent)`,
-        color,
-      }}
-    >
-      <GitBranch size={10} weight="bold" />
-    </span>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -131,22 +103,8 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
 }: ChatGitToolbarProps) {
   const navigate = useNavigate();
   const runtime = useLaneGitActionRuntimeState(laneId);
-  const lane = useAppStore((s) => s.lanes.find((l) => l.id === laneId) ?? null);
-  const laneName = lane?.name ?? null;
-  const laneAccent = getLaneAccent(lane, 0);
-
-  const openLaneInLanesTab = useCallback(() => {
-    const params = new URLSearchParams({
-      laneId,
-      focus: "single",
-    });
-    navigate(`/lanes?${params.toString()}`);
-  }, [laneId, navigate]);
 
   const [dirtyCount, setDirtyCount] = useState(0);
-  const [diffStats, setDiffStats] = useState<{ adds: number; dels: number; files: number } | null>(null);
-  const [commitOpen, setCommitOpen] = useState(false);
-  const [commitMsg, setCommitMsg] = useState("");
   const [linkedPr, setLinkedPr] = useState<PrSummary | null>(null);
   const [prMenuOpen, setPrMenuOpen] = useState(false);
   const [prChecks, setPrChecks] = useState<PrCheck[] | null>(null);
@@ -164,11 +122,6 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         window.ade.diff.getChanges({ laneId }),
       ]);
       setDirtyCount(dirtyFileCount(changes));
-      const staged = changes.staged.length;
-      const unstaged = changes.unstaged.length;
-      const totalAdds = changes.staged.reduce((acc, f) => acc + (f.additions ?? 0), 0) + changes.unstaged.reduce((acc, f) => acc + (f.additions ?? 0), 0);
-      const totalDels = changes.staged.reduce((acc, f) => acc + (f.deletions ?? 0), 0) + changes.unstaged.reduce((acc, f) => acc + (f.deletions ?? 0), 0);
-      setDiffStats({ adds: totalAdds, dels: totalDels, files: staged + unstaged });
     } catch {
       // best-effort
     }
@@ -213,90 +166,6 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     });
     return unsubscribe;
   }, [laneId, linkedPr, refreshPr]);
-
-  // -----------------------------------------------------------------------
-  // Shared action wrapper — mirrors LaneGitActionsPane.runAction
-  // -----------------------------------------------------------------------
-
-  const runAction = useCallback(
-    async (actionName: string, fn: () => Promise<void>) => {
-      const v = beginLaneGitActionRuntime(laneId, {
-        busyAction: actionName,
-        notice: null,
-        error: null,
-      });
-      try {
-        await fn();
-        patchLaneGitActionRuntimeStateIfCurrent(laneId, v, {
-          busyAction: null,
-          notice: `${actionName} completed`,
-          error: null,
-        });
-        scheduleLaneGitActionRuntimeClear(laneId, v, 3_000, { notice: null });
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        patchLaneGitActionRuntimeStateIfCurrent(laneId, v, {
-          busyAction: null,
-          notice: null,
-          error: `${actionName} failed: ${message}`,
-        });
-      }
-    },
-    [laneId],
-  );
-
-  // -----------------------------------------------------------------------
-  // Actions
-  // -----------------------------------------------------------------------
-
-  const handleGenerateMessage = useCallback(async () => {
-    const v = beginLaneGitActionRuntime(laneId, {
-      busyAction: "Generating message",
-      notice: null,
-      error: null,
-    });
-    try {
-      const result = await window.ade.git.generateCommitMessage({ laneId });
-      setCommitMsg(result.message);
-      patchLaneGitActionRuntimeStateIfCurrent(laneId, v, {
-        busyAction: null,
-        notice: null,
-        error: null,
-      });
-    } catch (err: unknown) {
-      patchLaneGitActionRuntimeStateIfCurrent(laneId, v, {
-        busyAction: null,
-        notice: null,
-        error: err instanceof Error ? err.message : "Failed to generate message",
-      });
-    }
-  }, [laneId]);
-
-  const handleCommit = useCallback(async () => {
-    const msg = commitMsg.trim();
-    if (!msg) {
-      // Auto-generate message when empty
-      await handleGenerateMessage();
-      return;
-    }
-    await runAction("Commit", async () => {
-      // Stage all unstaged changes before committing
-      const changes = await window.ade.diff.getChanges({ laneId });
-      const unstagedPaths = changes.unstaged.map((f) => f.path);
-      if (unstagedPaths.length > 0) {
-        await window.ade.git.stageAll({ laneId, paths: unstagedPaths });
-      }
-      await window.ade.git.commit({ laneId, message: msg });
-      setCommitMsg("");
-      setCommitOpen(false);
-    });
-  }, [laneId, commitMsg, runAction, handleGenerateMessage]);
-
-  const handlePush = useCallback(async () => {
-    await runAction("Push", async () => {
-      await window.ade.git.push({ laneId });
-    });
-  }, [laneId, runAction]);
 
   const handlePr = useCallback(() => {
     if (linkedPr) {
@@ -374,19 +243,6 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     }
   }, [linkedPr]);
 
-  const handleCommitKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLInputElement>) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        void handleCommit();
-      } else if (e.key === "Escape") {
-        setCommitOpen(false);
-        setCommitMsg("");
-      }
-    },
-    [handleCommit],
-  );
-
   const isBusy = Boolean(runtime.busyAction);
 
   // -----------------------------------------------------------------------
@@ -418,7 +274,6 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   }, [linkedPr, prMenuOpen]);
 
   // Slide-out panel that appears to the right of the PR badge when toggled.
-  // Mirrors the inline expansion pattern used by the commit input above.
   const prMenu = useMemo(() => {
     if (!linkedPr) return null;
     const summary = prChecks ? summarizeChecks(prChecks) : null;
@@ -524,101 +379,12 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
 
   return (
     <div className="flex items-center gap-1.5">
-      {/* Lane name (navigates to lane detail) */}
-      {laneId ? (
-        <button
-          type="button"
-          onClick={openLaneInLanesTab}
-          title={`Open ${laneName ?? "lane"} in Lanes`}
-          aria-label={`Open ${laneName ?? "lane"} in Lanes tab`}
-          className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-violet-400/10 bg-violet-500/[0.04] px-2.5 font-mono text-[10px] text-violet-200/60 cursor-pointer transition-colors hover:border-violet-400/20 hover:bg-violet-500/[0.08]"
-        >
-          <LaneLogoMark color={laneAccent} />
-          <span className="max-w-[140px] truncate">{laneName ?? laneId}</span>
-        </button>
-      ) : null}
-
       {/* Dirty count badge */}
       {dirtyCount > 0 ? (
         <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 font-mono text-[9px] font-bold bg-amber-500/15 text-amber-300/80">
           {dirtyCount}
         </span>
       ) : null}
-
-      {/* Commit button / inline input */}
-      <AnimatePresence mode="wait">
-        {commitOpen ? (
-          <motion.div
-            key="commit-input"
-            className="flex items-center gap-1"
-            initial={{ width: 0, opacity: 0 }}
-            animate={{ width: "auto", opacity: 1 }}
-            exit={{ width: 0, opacity: 0 }}
-            transition={{ duration: 0.15, ease: "easeOut" }}
-          >
-            <input
-              type="text"
-              autoFocus
-              value={commitMsg}
-              onChange={(e) => setCommitMsg(e.target.value)}
-              onKeyDown={handleCommitKeyDown}
-              placeholder="Commit message (empty = auto-generate)..."
-              className="h-[22px] w-[200px] rounded-full border border-white/[0.08] bg-white/[0.03] px-2 font-mono text-[10px] text-fg/70 placeholder:text-fg/25 outline-none focus:border-white/[0.14]"
-              disabled={isBusy}
-            />
-            <button
-              type="button"
-              className={cn(btnBase)}
-              onClick={() => void handleCommit()}
-              disabled={isBusy}
-            >
-              {runtime.busyAction === "Commit" || runtime.busyAction === "Generating message" ? (
-                <CircleNotch size={10} className="animate-spin" />
-              ) : (
-                <GitCommit size={10} weight="bold" />
-              )}
-              <span>Stage & Commit</span>
-            </button>
-          </motion.div>
-        ) : (
-          <motion.button
-            key="commit-btn"
-            type="button"
-            className={cn(btnBase)}
-            onClick={() => setCommitOpen(true)}
-            disabled={isBusy}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.1 }}
-          >
-            <GitCommit size={10} weight="bold" />
-            <span>Stage & Commit</span>
-            {diffStats && diffStats.files > 0 ? (
-              <span className="ml-0.5 inline-flex items-center gap-1 font-mono text-[9px]">
-                <span className="text-emerald-400/60">+{diffStats.adds}</span>
-                <span className="text-red-400/60">-{diffStats.dels}</span>
-                <span className="text-fg/30">{diffStats.files}f</span>
-              </span>
-            ) : null}
-          </motion.button>
-        )}
-      </AnimatePresence>
-
-      {/* Push */}
-      <button
-        type="button"
-        className={cn(btnBase)}
-        onClick={() => void handlePush()}
-        disabled={isBusy}
-      >
-        {runtime.busyAction === "Push" ? (
-          <CircleNotch size={10} className="animate-spin" />
-        ) : (
-          <ArrowUp size={10} weight="bold" />
-        )}
-        <span>Push</span>
-      </button>
 
       {/* PR badge or create button. When the badge is open it expands into a
           slide-out with action buttons + live PR status preview. */}
@@ -667,4 +433,4 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
 });
 
 const btnBase =
-  "inline-flex items-center gap-1.5 rounded-lg border border-white/[0.06] bg-white/[0.02] px-2.5 py-1 font-sans text-[10px] font-medium text-fg/50 transition-all hover:border-violet-400/15 hover:bg-violet-500/[0.04] hover:text-fg/80 disabled:pointer-events-none disabled:opacity-40";
+  "inline-flex items-center gap-1 rounded-md border border-white/[0.06] bg-white/[0.02] px-2 py-0.5 font-sans text-[10px] font-medium text-fg/50 transition-all hover:border-violet-400/15 hover:bg-violet-500/[0.04] hover:text-fg/80 disabled:pointer-events-none disabled:opacity-40";

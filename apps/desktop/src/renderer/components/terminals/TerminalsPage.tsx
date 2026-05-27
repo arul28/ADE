@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SidebarSimple } from "@phosphor-icons/react";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
 import { useWorkSessions } from "./useWorkSessions";
 import { SessionListPane } from "./SessionListPane";
@@ -18,6 +17,12 @@ import {
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT,
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
+import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
+import {
+  consumeLinearIssueWorkContext,
+  peekLinearIssueWorkContext,
+  type PendingLinearIssueWorkContext,
+} from "../../lib/linearIssueWorkNavigation";
 
 const TERMINALS_TILING_TREE: PaneSplit = {
   type: "split",
@@ -84,10 +89,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const [infoPopover, setInfoPopover] = useState<InfoPopoverState>(null);
   const [sessionActionError, setSessionActionError] = useState<string | null>(null);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
+  const [pendingLinearIssueWork, setPendingLinearIssueWork] = useState<PendingLinearIssueWorkContext | null>(null);
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
   const workContentPaneRef = useRef<HTMLDivElement | null>(null);
   const workSidebarPaneRef = useRef<HTMLDivElement | null>(null);
+  const [workHeaderMount, setWorkHeaderMount] = useState<HTMLDivElement | null>(null);
 
   const selectableSessions = useMemo(
     () => [...work.runningFiltered, ...work.awaitingInputFiltered, ...work.endedFiltered],
@@ -186,7 +193,20 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     (session: TerminalSessionSummary) => {
       work.selectLane(session.laneId);
       work.focusSession(session.id);
-      work.navigate(`/lanes?laneId=${encodeURIComponent(session.laneId)}&sessionId=${encodeURIComponent(session.id)}`);
+      const params = new URLSearchParams({
+        laneId: session.laneId,
+        focus: "single",
+        sessionId: session.id,
+      });
+      work.navigate(`/lanes?${params.toString()}`);
+    },
+    [work],
+  );
+
+  const handleGoToLaneById = useCallback(
+    (laneId: string) => {
+      work.selectLane(laneId);
+      work.navigate(openLaneInLanesTabPath(laneId));
     },
     [work],
   );
@@ -472,8 +492,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     };
   }, [active, setViewMode, setWorkSidebarTab, showDraftKind]);
 
-  const expandSessionsPane = useCallback(() => {
-    work.setWorkFocusSessionsHidden(false);
+  const toggleSessionsPane = useCallback(() => {
+    work.setWorkFocusSessionsHidden(!work.workFocusSessionsHidden);
   }, [work]);
   const toggleWorkSidebar = useCallback(() => {
     work.setWorkSidebarOpen(!work.workSidebarOpen);
@@ -542,6 +562,21 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     document.addEventListener("mouseup", onUp);
   }, [work]);
 
+  useEffect(() => {
+    const laneId = work.draftLaneId?.trim() || "";
+    if (!laneId || work.activeItemId) {
+      setPendingLinearIssueWork(null);
+      return;
+    }
+    setPendingLinearIssueWork(peekLinearIssueWorkContext(laneId));
+  }, [work.activeItemId, work.draftLaneId, work.draftKind]);
+
+  const handleInitialLinearIssueContextConsumed = useCallback(() => {
+    const laneId = work.draftLaneId?.trim() || "";
+    if (laneId) consumeLinearIssueWorkContext(laneId);
+    setPendingLinearIssueWork(null);
+  }, [work.draftLaneId]);
+
   const workViewArea = useMemo(
     () => (
       <WorkViewArea
@@ -568,9 +603,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         onContextMenu={handleContextMenu}
         onContinueCliSession={handleContinueCliSession}
         sessionsPaneCollapsed={work.workFocusSessionsHidden}
-        onExpandSessionsPane={expandSessionsPane}
+        onToggleSessionsPane={toggleSessionsPane}
         sessionsPaneListCount={work.filtered.length}
         sessionsPaneRunningCount={work.runningSessions.length}
+        headerMountEl={work.workFocusSessionsHidden ? null : workHeaderMount}
         sessionsListLoading={work.loading}
         workSidebarOpen={work.workSidebarOpen}
         onToggleWorkSidebar={toggleWorkSidebar}
@@ -582,7 +618,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           work.openSessionTab(sessionId);
           work.setActiveItemId(sessionId);
         }}
-        onGoToLane={work.selectLane}
+        onGoToLane={handleGoToLaneById}
+        initialLinearIssueContext={pendingLinearIssueWork?.issue ?? null}
+        initialLinearIssueContextSource={pendingLinearIssueWork?.contextSource ?? "lane_link"}
+        initialModelId={pendingLinearIssueWork?.modelId ?? null}
+        onInitialLinearIssueContextConsumed={handleInitialLinearIssueContextConsumed}
       />
     ),
     [
@@ -610,7 +650,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       work.loading,
       work.workFocusSessionsHidden,
       work.workSidebarOpen,
-      expandSessionsPane,
+      toggleSessionsPane,
+      workHeaderMount,
       toggleWorkSidebar,
       handleOpenChatSession,
       handleContinueCliSession,
@@ -619,7 +660,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       handleStopRunningSession,
       work.reorderLaneSessions,
       work.openSessionTab,
-      work.selectLane,
+      handleGoToLaneById,
+      pendingLinearIssueWork,
+      handleInitialLinearIssueContextConsumed,
     ],
   );
 
@@ -679,41 +722,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     ],
   );
 
-  const runningCount = work.runningSessions.length;
-  const setFocusHidden = work.setWorkFocusSessionsHidden;
-
-  const sessionsHeaderActions = useMemo(
-    () => (
-      <span data-tour="work.sessionsHeader" className="inline-flex items-center gap-1.5">
-        {runningCount > 0 ? (
-          <span
-            className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium"
-            style={{ color: "var(--color-success)", background: "rgba(34, 197, 94, 0.08)" }}
-            title={`${runningCount} running`}
-          >
-            <span className="ade-status-dot ade-status-dot-active" style={{ width: 4, height: 4 }} />
-            {runningCount}
-          </span>
-        ) : null}
-        <button
-          type="button"
-          className="ade-shell-control rounded p-0.5"
-          data-variant="ghost"
-          title="Hide sidebar"
-          onClick={() => setFocusHidden(true)}
-        >
-          <SidebarSimple size={13} weight="regular" />
-        </button>
-      </span>
-    ),
-    [runningCount, setFocusHidden],
-  );
-
   const paneConfigs: Record<string, PaneConfig> = useMemo(
     () => ({
       sessions: {
-        title: "Work",
-        headerActions: sessionsHeaderActions,
+        title: "",
+        minimizable: false,
         // tour anchor: wraps the sessions panel so the Work tour anchors
         // at the whole pane, not just an inner element.
         children: (
@@ -726,8 +739,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             loading={work.loading}
             filterLaneId={work.filterLaneId}
             setFilterLaneId={work.setFilterLaneId}
-            filterStatus={work.filterStatus}
-            setFilterStatus={work.setFilterStatus}
             q={work.q}
             setQ={work.setQ}
             selectedSessionId={work.selectedSessionId}
@@ -776,7 +787,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       handleBulkDeleteSelected,
       handleInfoClick,
       handleContextMenu,
-      sessionsHeaderActions,
       workViewWithSidebar,
     ],
   );
@@ -797,12 +807,15 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           {workViewWithSidebar}
         </div>
       ) : (
-        <PaneTilingLayout
-          layoutId="work:tiling:v3"
-          tree={TERMINALS_TILING_TREE}
-          panes={paneConfigs}
-          className="ade-work-surface min-h-0 flex-1"
-        />
+        <div className="ade-work-unified-chrome flex min-h-0 flex-1 flex-col">
+          <div ref={setWorkHeaderMount} className="ade-work-unified-top-chrome shrink-0" />
+          <PaneTilingLayout
+            layoutId="work:tiling:v3"
+            tree={TERMINALS_TILING_TREE}
+            panes={paneConfigs}
+            className="ade-work-surface min-h-0 flex-1"
+          />
+        </div>
       )}
 
       <SessionContextMenu

@@ -27,6 +27,7 @@ export function buildAdeCliAgentGuidance(skillRoots: readonly string[] = getAdeA
   "- If skills are not auto-listed by your runtime, look for them in project/user `.agents/skills`, `.ade/skills`, `.claude/skills`, or ADE's bundled `agent-skills` resources, then read that skill's `SKILL.md` on demand.",
   `- ${formatAdeAgentSkillRootsForPrompt(skillRoots)}`,
   "- ADE also sets `ADE_AGENT_SKILLS_DIRS` for ADE-launched CLI sessions when skill roots are known so CLI runtimes can discover the same skills.",
+  "- When a bundled skill applies *differently* in this project (a missing flag, a port conflict, a required setup step, a workaround for a local quirk), propose appending a one-line note to `<repo>/CLAUDE.md` or `<repo>/AGENTS.md` — whichever the project already uses — so the next agent picks it up automatically. Propose the edit; do not silently write to user-curated docs. If neither file exists, ask the user which they prefer before creating one.",
   "",
   "### Minimum operating rules",
   "- Start with `ade doctor --text` when the ADE environment is unclear. Use `ade help <command>` for exact flags and `ade actions list --text` as the escape hatch for service actions without a typed command.",

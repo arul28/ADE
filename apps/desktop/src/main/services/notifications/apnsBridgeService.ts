@@ -154,14 +154,18 @@ export function createApnsBridgeService(args: ApnsBridgeServiceArgs) {
           ? meta.apnsBundleId.trim()
           : configuredBundleId;
       if (!deviceBundleId) return { ok: false, reason: "No APNs bundle id found for this device or project." };
-      let deviceEnv: "production" | "sandbox";
-      if (meta.apnsEnv === "production") {
-        deviceEnv = "production";
-      } else if (meta.apnsEnv === "sandbox") {
-        deviceEnv = "sandbox";
-      } else {
-        deviceEnv = apnsConfig?.env === "production" ? "production" : "sandbox";
-      }
+      const deviceEnv: "production" | "sandbox" =
+        meta.apnsEnv === "production" || meta.apnsEnv === "sandbox"
+          ? meta.apnsEnv
+          : apnsConfig?.env === "production" ? "production" : "sandbox";
+
+      const laTopic = `${deviceBundleId}.push-type.liveactivity`;
+
+      const resolveActivityUpdateToken = (): string | null => {
+        const tokens = Object.values((meta.apnsActivityUpdateTokens ?? {}) as Record<string, unknown>)
+          .filter((token): token is string => typeof token === "string" && token.length > 0);
+        return tokens[0] ?? null;
+      };
 
       let deviceToken: string | null;
       let topic: string;
@@ -172,23 +176,19 @@ export function createApnsBridgeService(args: ApnsBridgeServiceArgs) {
         if (!deviceToken) {
           return { ok: false, reason: "Device has no Live Activity push-to-start token yet (iOS 17.2+ registers this shortly after launch)." };
         }
-        topic = `${deviceBundleId}.push-type.liveactivity`;
+        topic = laTopic;
         pushType = "liveactivity";
         payload = buildLiveActivityStartPayload();
       } else if (kind === "la_update_running" || kind === "la_update_attention" || kind === "la_update_multi") {
-        const tokens = Object.values((meta.apnsActivityUpdateTokens ?? {}) as Record<string, unknown>)
-          .filter((token): token is string => typeof token === "string" && token.length > 0);
-        deviceToken = tokens[0] ?? null;
+        deviceToken = resolveActivityUpdateToken();
         if (!deviceToken) return { ok: false, reason: "No active Live Activity on device to update. Start one first (or fire 'Live Activity - start')." };
-        topic = `${deviceBundleId}.push-type.liveactivity`;
+        topic = laTopic;
         pushType = "liveactivity";
         payload = buildLiveActivityUpdatePayload(kind);
       } else if (kind === "la_end") {
-        const tokens = Object.values((meta.apnsActivityUpdateTokens ?? {}) as Record<string, unknown>)
-          .filter((token): token is string => typeof token === "string" && token.length > 0);
-        deviceToken = tokens[0] ?? null;
+        deviceToken = resolveActivityUpdateToken();
         if (!deviceToken) return { ok: false, reason: "No active Live Activity on device to end." };
-        topic = `${deviceBundleId}.push-type.liveactivity`;
+        topic = laTopic;
         pushType = "liveactivity";
         payload = buildLiveActivityEndPayload();
       } else {
@@ -317,22 +317,12 @@ function buildLiveActivityStartPayload(): Record<string, unknown> {
 
 function buildLiveActivityUpdatePayload(kind: "la_update_running" | "la_update_attention" | "la_update_multi"): Record<string, unknown> {
   const nowUnix = Math.floor(Date.now() / 1000);
-  let variant: "running" | "attention" | "multi";
-  let relevanceScore: number;
-  let alert: { title: string; body: string };
-  if (kind === "la_update_attention") {
-    variant = "attention";
-    relevanceScore = 100;
-    alert = { title: "Claude - Push test", body: "Approval needed - tap Approve/Deny in the island." };
-  } else if (kind === "la_update_multi") {
-    variant = "multi";
-    relevanceScore = 60;
-    alert = { title: "ADE", body: "3 chats running - 1 CI failing - 2 reviews pending" };
-  } else {
-    variant = "running";
-    relevanceScore = 40;
-    alert = { title: "Claude - Push test", body: "Reading src/auth/oauth.ts" };
-  }
+  const variants: Record<typeof kind, { variant: "running" | "attention" | "multi"; relevanceScore: number; alert: { title: string; body: string } }> = {
+    la_update_attention: { variant: "attention", relevanceScore: 100, alert: { title: "Claude - Push test", body: "Approval needed - tap Approve/Deny in the island." } },
+    la_update_multi: { variant: "multi", relevanceScore: 60, alert: { title: "ADE", body: "3 chats running - 1 CI failing - 2 reviews pending" } },
+    la_update_running: { variant: "running", relevanceScore: 40, alert: { title: "Claude - Push test", body: "Reading src/auth/oauth.ts" } },
+  };
+  const { variant, relevanceScore, alert } = variants[kind];
   return {
     aps: {
       timestamp: nowUnix,

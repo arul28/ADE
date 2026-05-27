@@ -21,7 +21,6 @@ import type {
   TerminalToolType,
 } from "../../../shared/types";
 import type { WorkSidebarTab } from "../../state/appStore";
-import { formatToolTypeLabel } from "../../lib/sessions";
 import {
   formatAppControlContextForPrompt,
   formatBuiltInBrowserContextForPrompt,
@@ -38,19 +37,45 @@ import { ChatIosSimulatorPanel } from "../chat/ChatIosSimulatorPanel";
 import { FilesPage } from "../files/FilesPage";
 import { LaneDiffPane } from "../lanes/LaneDiffPane";
 import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
-import { SmartTooltip } from "../ui/SmartTooltip";
+import { GlowMenu, type GlowMenuItem } from "../ui/GlowMenu";
 import { cn } from "../ui/cn";
 
-const WORK_SIDEBAR_TABS: Array<{
-  id: WorkSidebarTab;
-  label: string;
-  Icon: typeof GitBranch;
-}> = [
-  { id: "git", label: "Git", Icon: GitBranch },
-  { id: "files", label: "Files", Icon: FolderOpen },
-  { id: "ios", label: "iOS Sim", Icon: DeviceMobile },
-  { id: "app-control", label: "App Control", Icon: Desktop },
-  { id: "browser", label: "Browser", Icon: Globe },
+const WORK_SIDEBAR_TABS: Array<GlowMenuItem<WorkSidebarTab>> = [
+  {
+    id: "git",
+    label: "Git",
+    icon: GitBranch,
+    gradient: "radial-gradient(circle, rgba(52,211,153,0.42) 0%, transparent 70%)",
+    color: "#34d399",
+  },
+  {
+    id: "files",
+    label: "Files",
+    icon: FolderOpen,
+    gradient: "radial-gradient(circle, rgba(251,191,36,0.38) 0%, transparent 70%)",
+    color: "#fbbf24",
+  },
+  {
+    id: "ios",
+    label: "iOS Sim",
+    icon: DeviceMobile,
+    gradient: "radial-gradient(circle, rgba(96,165,250,0.4) 0%, transparent 70%)",
+    color: "#60a5fa",
+  },
+  {
+    id: "app-control",
+    label: "App Control",
+    icon: Desktop,
+    gradient: "radial-gradient(circle, rgba(167,139,250,0.42) 0%, transparent 70%)",
+    color: "#a78bfa",
+  },
+  {
+    id: "browser",
+    label: "Browser",
+    icon: Globe,
+    gradient: "radial-gradient(circle, rgba(34,211,238,0.38) 0%, transparent 70%)",
+    color: "#22d3ee",
+  },
 ];
 
 export type WorkSidebarContextTarget =
@@ -205,15 +230,17 @@ export function WorkSidebar({
   useEffect(() => {
     if (!active) return undefined;
     if (tab !== "app-control") return undefined;
+    const appControl = window.ade?.appControl;
+    if (!appControl?.getStatus || !appControl.onEvent) return undefined;
     let cancelled = false;
-    void window.ade.appControl.getStatus()
+    void appControl.getStatus()
       .then((status) => {
         if (!cancelled) setAppControlSession(status.activeSession ?? null);
       })
       .catch(() => {
         if (!cancelled) setAppControlSession(null);
       });
-    const unsubscribe = window.ade.appControl.onEvent((event) => {
+    const unsubscribe = appControl.onEvent((event) => {
       if (event.type === "session-started" || event.type === "session-updated") {
         setAppControlSession(event.session ?? null);
       } else if (event.type === "session-stopped") {
@@ -229,15 +256,17 @@ export function WorkSidebar({
   useEffect(() => {
     if (!active) return undefined;
     if (tab !== "ios") return undefined;
+    const iosSimulator = window.ade?.iosSimulator;
+    if (!iosSimulator?.getStatus || !iosSimulator.onEvent) return undefined;
     let cancelled = false;
-    void window.ade.iosSimulator.getStatus()
+    void iosSimulator.getStatus()
       .then((status) => {
         if (!cancelled) setIosSession(status.activeSession ?? null);
       })
       .catch(() => {
         if (!cancelled) setIosSession(null);
       });
-    const unsubscribe = window.ade.iosSimulator.onEvent((event) => {
+    const unsubscribe = iosSimulator.onEvent((event) => {
       if (event.type === "session-started" || event.type === "session-updated") {
         setIosSession(event.session ?? null);
       } else if (event.type === "session-released") {
@@ -501,68 +530,36 @@ export function WorkSidebar({
     tab,
   ]);
 
-  const activeSessionLabel = activeSession
-    ? `${formatToolTypeLabel(activeSession.toolType)} · ${activeSession.laneName}`
-    : activeLane?.name ?? "No active session";
-
   return (
     <aside
       ref={sidebarRef}
       className="flex h-full min-h-0 min-w-[280px] flex-col border-l border-white/[0.08] bg-surface/85"
     >
-      <div className="flex min-h-[42px] shrink-0 items-center gap-2 border-b border-white/[0.08] px-2 py-1.5">
-        <div className="ade-liquid-glass-pill flex min-w-0 flex-1 items-center gap-0.5 rounded-full p-0.5">
-          {WORK_SIDEBAR_TABS.map(({ id, label, Icon }) => {
-            const active = id === tab;
-            return (
-              <SmartTooltip
-                key={id}
-                content={{
-                  label,
-                  description: `${label} tools for the active Work lane.`,
-                }}
-              >
-                <button
-                  type="button"
-                  className={cn(
-                    "inline-flex h-7 min-w-0 shrink-0 cursor-pointer items-center rounded-full border-none bg-transparent text-[10px] font-medium transition-all",
-                    compactTabs ? "w-8 justify-center px-0" : "gap-1.5 px-2",
-                    active ? "ade-work-tab-active text-fg" : "text-muted-fg",
-                  )}
-                  onClick={() => {
-                    if (tab === "browser" && id !== "browser") hideBuiltInBrowserView();
-                    onTabChange(id);
-                  }}
-                  aria-pressed={active}
-                  aria-label={label}
-                  title={label}
-                >
-                  <Icon size={12} weight={active ? "fill" : "regular"} className="shrink-0" />
-                  <span className={compactTabs ? "sr-only" : "truncate"}>{label}</span>
-                </button>
-              </SmartTooltip>
-            );
-          })}
-        </div>
+      <div className="flex min-h-[42px] shrink-0 items-stretch border-b border-white/[0.08]">
+        <GlowMenu
+          variant="flat"
+          className="min-w-0"
+          items={WORK_SIDEBAR_TABS}
+          activeItem={tab}
+          compact={compactTabs}
+          onItemClick={(nextTab) => {
+            if (tab === "browser" && nextTab !== "browser") hideBuiltInBrowserView();
+            onTabChange(nextTab);
+          }}
+        />
         <button
           type="button"
-          className="ade-shell-control inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md"
+          className="ade-shell-control inline-flex w-9 shrink-0 items-center justify-center self-stretch rounded-none border-l border-white/[0.08] text-muted-fg/70 transition-colors hover:bg-white/[0.04] hover:text-fg"
           data-variant="ghost"
           onClick={() => {
             if (tab === "browser") hideBuiltInBrowserView();
             onClose();
           }}
-          title="Close Work sidebar"
-          aria-label="Close Work sidebar"
+          title="Close Tools sidebar"
+          aria-label="Close Tools sidebar"
         >
           <X size={13} />
         </button>
-      </div>
-      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.05] px-3 py-1.5 text-[10px] text-muted-fg/65">
-        <span className="min-w-0 truncate">{activeLane?.name ?? "No lane"}</span>
-        <span className="shrink-0 truncate text-muted-fg/45" title={activeSessionLabel}>
-          {activeSessionLabel}
-        </span>
       </div>
       <div className="min-h-0 flex-1 overflow-hidden">
         {content}

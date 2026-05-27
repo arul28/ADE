@@ -2,7 +2,8 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
-import { Check, CaretDown, FileCode, GitBranch, GitPullRequest, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise, UsersThree, CircleNotch } from "@phosphor-icons/react";
+import { Check, CaretDown, FileCode, GitPullRequest, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise, UsersThree, CircleNotch } from "@phosphor-icons/react";
+import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import { useAppStore, useAppStoreApi, type LaneInspectorTab } from "../../state/appStore";
 import { buildIntegrationSourcesByLaneId } from "../../lib/integrationLanes";
 import { EmptyState } from "../ui/EmptyState";
@@ -2855,7 +2856,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         {/* Numbered title group */}
         <div className="flex items-center gap-2 shrink-0">
           <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.accent }}>05</span>
-          <GitBranch size={18} style={{ color: COLORS.accent }} />
+          <LaneIcon size={18} style={{ color: COLORS.accent }} />
           <span style={{ fontFamily: SANS_FONT, fontSize: 20, fontWeight: 700, color: COLORS.textPrimary }}>LANES</span>
           <span style={inlineBadge(COLORS.accent, { fontSize: 9 })}>{filteredLanes.length}</span>
         </div>
@@ -2892,7 +2893,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                 aria-disabled={!canSwitchBranchLane}
                 title={branchLaneSwitchDisabledReason ?? undefined}
               >
-                <GitBranch size={14} />
+                <BranchIcon size={14} />
                 <span>{branchLane.branchRef}</span>
                 <CaretDown size={12} style={{ opacity: canSwitchBranchLane ? 0.6 : 0.3 }} />
               </button>

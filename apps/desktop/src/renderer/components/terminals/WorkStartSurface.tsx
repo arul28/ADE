@@ -18,6 +18,8 @@ type WorkStartSurfaceProps = {
   onLaunchPtySession: (args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>;
   onDraftLaneChange?: (laneId: string) => void;
   initialLinearIssueContext?: LaneLinearIssue | null;
+  initialLinearIssueContextSource?: "manual" | "lane_link";
+  initialModelId?: string | null;
   onInitialLinearIssueContextConsumed?: () => void;
 };
 
@@ -29,6 +31,8 @@ export function WorkStartSurface({
   onLaunchPtySession,
   onDraftLaneChange,
   initialLinearIssueContext = null,
+  initialLinearIssueContextSource = "lane_link",
+  initialModelId = null,
   onInitialLinearIssueContextConsumed,
 }: WorkStartSurfaceProps) {
   const globallySelectedLaneId = useAppStore((s) => s.selectedLaneId);
@@ -124,6 +128,8 @@ export function WorkStartSurface({
           embeddedWorkLayout
           workDraftKind={draftKind}
           initialLinearIssueContext={initialLinearIssueContext}
+          initialLinearIssueContextSource={initialLinearIssueContextSource}
+          initialModelId={initialModelId}
           onInitialLinearIssueContextConsumed={onInitialLinearIssueContextConsumed}
           onSessionCreated={onOpenChatSession}
           onLaunchCliSession={onLaunchPtySession}

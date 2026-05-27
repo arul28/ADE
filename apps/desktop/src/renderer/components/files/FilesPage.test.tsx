@@ -631,6 +631,45 @@ describe("FilesPage", () => {
     expect(mergeEditor?.value).toContain("<<<<<<< HEAD");
   });
 
+  it("hides the workspace selector chrome when embedded in the Work sidebar", async () => {
+    const laneId = "lane-work-chat";
+    useAppStore.setState({
+      selectedLaneId: laneId,
+      lanes: [{ id: laneId, name: "Work chat lane", branchRef: "refs/heads/feat/work-chat" }] as any,
+    });
+    vi.mocked(window.ade.files.listWorkspaces).mockResolvedValue([
+      {
+        id: "primary",
+        kind: "primary",
+        laneId: null,
+        name: "ADE",
+        branchRef: "refs/heads/main",
+        rootPath: projectRoot,
+        isReadOnlyByDefault: false,
+      },
+      {
+        id: "lane-ws",
+        kind: "worktree",
+        laneId,
+        name: "Work chat lane",
+        branchRef: "refs/heads/feat/work-chat",
+        rootPath: `${projectRoot}/.ade/worktrees/work-chat`,
+        isReadOnlyByDefault: false,
+      },
+    ]);
+
+    renderFilesPage(undefined, { embedded: true, preferredLaneId: laneId });
+
+    await waitFor(() => {
+      expect(window.ade.files.listTree).toHaveBeenCalledWith(expect.objectContaining({
+        workspaceId: "lane-ws",
+      }));
+    });
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.queryByTestId("files.header")).toBeNull();
+    expect(screen.getByText("EXPLORER")).toBeTruthy();
+  });
+
   it("remaps clean open tabs when files are renamed", async () => {
     renderFilesPage({
       openFilePath: "src/index.ts",

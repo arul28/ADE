@@ -16,12 +16,12 @@ import {
   DesktopTower,
   Folder,
   FolderOpen,
-  GitBranch,
   MagnifyingGlass,
   Stack,
   Warning,
   X,
 } from "@phosphor-icons/react";
+import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import { motion, AnimatePresence } from "motion/react";
 import { useNavigate } from "react-router-dom";
 import type {
@@ -1642,7 +1642,7 @@ export function CommandPalette({
                                               "0 0 0 1px rgba(167,139,250,0.30) inset",
                                           }}
                                         >
-                                          <GitBranch
+                                          <LaneIcon
                                             size={12}
                                             weight="bold"
                                             className="text-[var(--color-accent)]"
@@ -2033,7 +2033,7 @@ function BrowsePreview({
                   boxShadow: "0 0 0 1px rgba(167,139,250,0.35) inset",
                 }}
               >
-                <GitBranch
+                <LaneIcon
                   size={16}
                   weight="bold"
                   className="text-[var(--color-accent)]"
@@ -2089,7 +2089,7 @@ function RepoDetailBlocks({ detail }: { detail: ProjectDetail }) {
       <div className="flex flex-wrap items-center gap-2">
         {detail.branchName && (
           <StatusChip
-            icon={<GitBranch size={11} weight="bold" />}
+            icon={<BranchIcon size={11} weight="bold" />}
             tone="accent"
           >
             {detail.branchName}

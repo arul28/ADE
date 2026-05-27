@@ -1,9 +1,14 @@
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { CaretUpDown, Check, GitBranch, MagnifyingGlass } from "@phosphor-icons/react";
+import { CaretUpDown, Check, MagnifyingGlass } from "@phosphor-icons/react";
+import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
+import { LaneLogoMark, laneDisplayColor } from "./LaneChip";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { COLORS, laneSurfaceTint } from "../lanes/laneDesignTokens";
+
+/** Synthetic lane id for the draft-composer “auto-create lane” row. */
+export const AUTO_CREATE_LANE_OPTION_ID = "__ade_auto_create_lane__";
 
 /** `LaneSummary` is assignable; callers may also pass a minimal `{ id, name, color? }` without `branchRef`. */
 export type LaneComboboxLane = {
@@ -21,9 +26,23 @@ type LaneListItem = {
   branchLabel: string | null;
 };
 
+const POPOVER_GAP = 4;
+const VIEWPORT_PAD = 10;
+const POPOVER_PREFERRED_MAX_HEIGHT = 320;
+const POPOVER_MIN_HEIGHT = 160;
+
 function resolveBranchLabel(ref: string | null | undefined): string | null {
   if (!ref) return null;
   return branchNameFromRef(ref) || null;
+}
+
+function laneListIcon(item: LaneListItem) {
+  const color = item.color ? laneDisplayColor(item.color) : "var(--color-muted-fg)";
+  return item.color ? (
+    <LaneLogoMark color={color} size={12} />
+  ) : (
+    <LaneIcon size={12} weight="regular" style={{ color, opacity: 0.45, flexShrink: 0 }} />
+  );
 }
 
 type LaneComboboxProps = {
@@ -129,11 +148,14 @@ export function LaneCombobox({
     return () => document.removeEventListener("mousedown", handler);
   }, [open, close]);
 
-  // Focus search on open
+  // Focus search on open and sync keyboard highlight to the current selection.
   useEffect(() => {
-    if (open) {
-      requestAnimationFrame(() => searchInputRef.current?.focus());
-    }
+    if (!open) return;
+    requestAnimationFrame(() => searchInputRef.current?.focus());
+    const selectedIdx = items.findIndex((item) => item.id === value);
+    setHighlightedIndex(selectedIdx >= 0 ? selectedIdx : 0);
+    // Only re-sync when the menu opens — search filtering keeps its own highlight reset.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- open gate
   }, [open]);
 
   const handleKeyDown = useCallback(
@@ -177,14 +199,33 @@ export function LaneCombobox({
   const updatePosition = useCallback(() => {
     if (!triggerRef.current) return;
     const rect = triggerRef.current.getBoundingClientRect();
-    const spaceBelow = window.innerHeight - rect.bottom;
-    const openAbove = spaceBelow < 200 && rect.top > 200;
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+
+    const spaceBelow = viewportHeight - rect.bottom - VIEWPORT_PAD;
+    const spaceAbove = rect.top - VIEWPORT_PAD;
+    const openAbove = spaceBelow < spaceAbove;
+
+    const available = (openAbove ? spaceAbove : spaceBelow) - POPOVER_GAP;
+    const maxHeight = Math.max(
+      POPOVER_MIN_HEIGHT,
+      Math.min(POPOVER_PREFERRED_MAX_HEIGHT, available),
+    );
+
+    const width = Math.min(280, Math.max(rect.width, 260));
+    let left = rect.left;
+    if (left + width > viewportWidth - VIEWPORT_PAD) {
+      left = viewportWidth - width - VIEWPORT_PAD;
+    }
+    left = Math.max(VIEWPORT_PAD, left);
+
     setPopoverStyle({
-      left: rect.left,
-      width: Math.max(rect.width, 260),
+      left,
+      width,
+      maxHeight,
       ...(openAbove
-        ? { bottom: window.innerHeight - rect.top + 4 }
-        : { top: rect.bottom + 4 }),
+        ? { bottom: viewportHeight - rect.top + POPOVER_GAP }
+        : { top: rect.bottom + POPOVER_GAP }),
     });
   }, []);
   useEffect(() => {
@@ -287,10 +328,7 @@ export function LaneCombobox({
         style={triggerStyle}
       >
         {displayColor ? (
-          <span
-            className="ade-lane-popover-dot"
-            style={{ background: displayColor, flexShrink: 0 }}
-          />
+          <LaneLogoMark color={displayColor} size={11} />
         ) : null}
         {selectedBranchLabel ? (
           <div
@@ -316,7 +354,7 @@ export function LaneCombobox({
                 width: "100%",
               }}
             >
-              <GitBranch
+              <BranchIcon
                 size={9}
                 weight="regular"
                 style={{
@@ -324,7 +362,6 @@ export function LaneCombobox({
                   opacity: 0.55,
                   flexShrink: 0,
                 }}
-                aria-hidden
               />
               <span
                 className="truncate"
@@ -358,7 +395,7 @@ export function LaneCombobox({
               style={popoverStyle}
               onKeyDown={handleKeyDown}
             >
-              <div style={{ display: "flex", alignItems: "center", paddingLeft: 10 }}>
+              <div className="ade-lane-popover-search-row">
                 <MagnifyingGlass
                   size={12}
                   weight="regular"
@@ -370,16 +407,8 @@ export function LaneCombobox({
                   placeholder="Search lanes..."
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  style={{ borderBottom: "none", paddingLeft: 6 }}
                 />
               </div>
-              <div
-                style={{
-                  height: 1,
-                  background: "var(--work-pane-border)",
-                  flexShrink: 0,
-                }}
-              />
               <div ref={listRef} className="ade-lane-popover-list">
                 {items.length === 0 ? (
                   <div
@@ -393,28 +422,45 @@ export function LaneCombobox({
                     No lanes found
                   </div>
                 ) : (
-                  items.map((item, idx) => {
+                  items.map((item) => {
                     const isSelected = item.id === value;
-                    const isHighlighted = idx === highlightedIndex;
-                    const dot = item.color ? (
-                      <span className="ade-lane-popover-dot" style={{ background: item.color }} />
-                    ) : (
-                      <span
-                        className="ade-lane-popover-dot"
-                        style={{ background: "var(--color-muted-fg)", opacity: 0.3 }}
-                      />
-                    );
+                    const isAutoCreate = item.id === AUTO_CREATE_LANE_OPTION_ID;
+
+                    if (isAutoCreate) {
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          className="ade-lane-popover-item ade-lane-popover-item-featured"
+                          data-selected={isSelected ? "true" : undefined}
+                          onClick={() => selectItem(item.id)}
+                        >
+                          <span className="ade-orchestrator-rainbow-text">{item.name}</span>
+                          {isSelected ? (
+                            <Check
+                              size={12}
+                              weight="bold"
+                              style={{
+                                color: "var(--color-accent)",
+                                flexShrink: 0,
+                              }}
+                            />
+                          ) : null}
+                        </button>
+                      );
+                    }
+
                     const titleRow = (
                       <div
                         style={{
                           display: "flex",
                           width: "100%",
                           alignItems: "center",
-                          gap: 8,
+                          gap: 6,
                           minWidth: 0,
                         }}
                       >
-                        {dot}
+                        {laneListIcon(item)}
                         <span className="truncate" style={{ flex: 1, minWidth: 0 }}>
                           {item.name}
                         </span>
@@ -436,9 +482,7 @@ export function LaneCombobox({
                         type="button"
                         className="ade-lane-popover-item"
                         data-selected={isSelected ? "true" : undefined}
-                        data-highlighted={isHighlighted ? "true" : undefined}
                         onClick={() => selectItem(item.id)}
-                        onMouseEnter={() => setHighlightedIndex(idx)}
                         style={
                           item.branchLabel
                             ? {
@@ -454,31 +498,13 @@ export function LaneCombobox({
                         {item.branchLabel ? (
                           <>
                             {titleRow}
-                            <div
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 4,
-                                marginLeft: 14,
-                                marginTop: 3,
-                                minWidth: 0,
-                              }}
-                            >
-                              <GitBranch
+                            <div className="ade-lane-popover-branch-row">
+                              <BranchIcon
                                 size={10}
                                 weight="regular"
-                                style={{ color: "var(--color-muted-fg)", opacity: 0.55, flexShrink: 0 }}
-                                aria-hidden
+                                style={{ color: "var(--color-muted-fg)", opacity: 0.6, flexShrink: 0 }}
                               />
-                              <span
-                                className="truncate"
-                                style={{
-                                  fontSize: 10,
-                                  lineHeight: 1.2,
-                                  color: "var(--color-muted-fg)",
-                                  opacity: 0.92,
-                                }}
-                              >
+                              <span className="truncate ade-lane-popover-branch-label">
                                 {item.branchLabel}
                               </span>
                             </div>

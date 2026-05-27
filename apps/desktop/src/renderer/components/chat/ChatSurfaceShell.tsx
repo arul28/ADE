@@ -7,6 +7,9 @@ import { chatSurfaceVars } from "./chatSurfaceTheme";
 
 export type ChatSurfaceShellLayoutVariant = "standard" | "mobile";
 
+/** Shared padding for chat shell headers (title row, git toolbar, actions). */
+export const CHAT_SHELL_HEADER_CLASS = "space-y-1 px-2 py-1";
+
 export function ChatSurfaceShell({
   mode,
   accentColor,
@@ -55,17 +58,7 @@ export function ChatSurfaceShell({
   const inner = (
     <>
       {header ? (
-        <div
-          className="relative z-10 w-full min-w-0 max-w-full overflow-visible rounded-t-none rounded-b-[var(--chat-radius-shell)]"
-          style={{
-            backdropFilter: "blur(30px)",
-            WebkitBackdropFilter: "blur(30px)",
-            background: "var(--chat-panel-bg)",
-            borderStyle: "solid",
-            borderWidth: "0 0 1px 0",
-            borderColor: "var(--chat-panel-border)",
-          }}
-        >
+        <div className="ade-chat-shell-header relative z-10 w-full min-w-0 max-w-full overflow-visible rounded-none">
           {header}
         </div>
       ) : null}

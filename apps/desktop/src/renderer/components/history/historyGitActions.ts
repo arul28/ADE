@@ -397,14 +397,12 @@ export async function runHistoryGitAction(args: {
       case "reset_soft":
       case "reset_mixed":
       case "reset_hard": {
-        const mode =
-          actionId === "reset_soft" ? "soft" : actionId === "reset_mixed" ? "mixed" : "hard";
-        const detail =
-          mode === "hard"
-            ? " This discards uncommitted worktree changes."
-            : mode === "mixed"
-              ? " This keeps file changes but unstages them."
-              : " This keeps changes staged.";
+        const resetModes = {
+          reset_soft: { mode: "soft" as const, detail: " This keeps changes staged." },
+          reset_mixed: { mode: "mixed" as const, detail: " This keeps file changes but unstages them." },
+          reset_hard: { mode: "hard" as const, detail: " This discards uncommitted worktree changes." },
+        };
+        const { mode, detail } = resetModes[actionId];
         if (!window.confirm(`Reset this lane to ${commit.shortSha}?${detail}`)) return;
         await window.ade.git.resetToCommit({ laneId, commitSha: commit.sha, mode });
         onNotice?.(`Reset lane to ${commit.shortSha}`);

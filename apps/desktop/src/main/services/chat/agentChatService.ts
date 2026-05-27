@@ -3895,8 +3895,7 @@ function lockedOrchestrationPermissionMode(
   // All orchestration roles use full-auto (bypassPermissions). The lead's
   // security comes from the tool-set restriction (no write tools), not the
   // permission mode. Plan mode would block orchestration tools.
-  if (role === "lead" || role === "worker" || role === "validator") return "full-auto";
-  return null;
+  return role ? "full-auto" : null;
 }
 
 function enforceOrchestrationLockedPermissionMode(
