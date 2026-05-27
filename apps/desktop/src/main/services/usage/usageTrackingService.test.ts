@@ -836,14 +836,11 @@ describe("createUsageTrackingService", () => {
 
     const highUsageWindows: UsageWindow[] = [
       {
-        name: "claude",
         provider: "claude",
-        startAt: new Date(Date.now() - 3600_000).toISOString(),
-        endAt: new Date(Date.now() + 3600_000).toISOString(),
-        resetAt: new Date(Date.now() + 3600_000).toISOString(),
-        usageLimit: 1000,
-        usageCurrent: 800,
-        planTier: "pro",
+        windowType: "weekly",
+        percentUsed: 80,
+        resetsAt: new Date(Date.now() + 3600_000).toISOString(),
+        resetsInMs: 3600_000,
       },
     ];
 
