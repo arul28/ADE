@@ -1160,18 +1160,21 @@ export function ChatIosSimulatorPanel({
     return owner !== sessionId ? owner : null;
   }, [activeSession?.chatSessionId, sessionId]);
   const ownedByOtherChat = otherChatSessionId !== null;
-  const controlsOwnedElsewhere = controlsDisabled;
-  const inputBlockedMessage = controlsDisabledMessage;
+  const contextControlsBlocked = controlsDisabled;
+  const simulatorMutationBlocked = ownedByOtherChat || controlsDisabled;
+  const inputBlockedMessage = ownedByOtherChat
+    ? "Another chat is already connected to the simulator. Use Take over to claim it."
+    : controlsDisabledMessage;
 
   const toggleSimulatorWindowMode = useCallback(() => {
-    if (!activeSession || controlsOwnedElsewhere) return;
+    if (!activeSession || contextControlsBlocked) return;
     const enable = simulatorWindowSessionId !== activeSession.id;
     liveDeviceStreamFailureTimestampsRef.current = [];
     setSimulatorWindowSessionId(enable ? activeSession.id : null);
     setMessage(enable
       ? "Opening Simulator.app and switching to window streaming..."
       : "Switching back to the headless simulator stream...");
-  }, [activeSession, controlsOwnedElsewhere, simulatorWindowSessionId]);
+  }, [activeSession, contextControlsBlocked, simulatorWindowSessionId]);
 
   const changeMediaZoom = useCallback((delta: number) => {
     setMediaZoom((current) => {
@@ -1485,7 +1488,7 @@ export function ChatIosSimulatorPanel({
   }, [refreshStatus, startWindowCaptureVisual]);
 
   const retryAdeStream = useCallback(() => {
-    if (!activeDevice || !activeSession || activeSession.deviceUdid !== activeDevice.udid || controlsOwnedElsewhere) return;
+    if (!activeDevice || !activeSession || activeSession.deviceUdid !== activeDevice.udid || contextControlsBlocked) return;
     liveDeviceStreamFailureTimestampsRef.current = [];
     setSimulatorWindowSessionId(null);
     setMessage("Retrying ADE simulator stream...");
@@ -1502,7 +1505,7 @@ export function ChatIosSimulatorPanel({
         setMessage(`ADE simulator stream failed. ${message}`);
       }
     })();
-  }, [activeDevice, activeSession, controlsOwnedElsewhere, startDeviceBackedLiveVisual, stopRendererLiveVisual]);
+  }, [activeDevice, activeSession, contextControlsBlocked, startDeviceBackedLiveVisual, stopRendererLiveVisual]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -2114,8 +2117,8 @@ export function ChatIosSimulatorPanel({
   ]);
 
   const launch = useCallback(async (options: { previewTarget?: IosSimulatorPreviewTarget | null } = {}) => {
-    if (controlsDisabled) {
-      setMessage(controlsDisabledMessage);
+    if (simulatorMutationBlocked) {
+      setMessage(inputBlockedMessage);
       return;
     }
     const previewTarget = options.previewTarget ?? null;
@@ -2154,7 +2157,7 @@ export function ChatIosSimulatorPanel({
       setLaunchBusy(false);
       setBusy(false);
     }
-  }, [activeTarget?.id, controlsDisabled, controlsDisabledMessage, laneId, projectRoot, refreshSnapshot, refreshStatus, selectedDeviceUdid, selectedTargetId, sessionId]);
+  }, [activeTarget?.id, inputBlockedMessage, laneId, projectRoot, refreshSnapshot, refreshStatus, selectedDeviceUdid, selectedTargetId, sessionId, simulatorMutationBlocked]);
 
   useEffect(() => {
     launchRef.current = launch;
@@ -2222,7 +2225,7 @@ export function ChatIosSimulatorPanel({
   const sendTypedText = useCallback(async () => {
     const text = typedText;
     if (!text.trim()) return;
-    if (controlsOwnedElsewhere) {
+    if (simulatorMutationBlocked) {
       setMessage(inputBlockedMessage);
       return;
     }
@@ -2233,7 +2236,7 @@ export function ChatIosSimulatorPanel({
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
-  }, [armWindowCaptureRecoveryAfterInput, controlsOwnedElsewhere, inputBlockedMessage, projectRoot, selectedDeviceUdid, typedText]);
+  }, [armWindowCaptureRecoveryAfterInput, inputBlockedMessage, projectRoot, selectedDeviceUdid, simulatorMutationBlocked, typedText]);
 
   const updateInspectBounds = useCallback(() => {
     const image = imageRef.current;
@@ -2754,7 +2757,7 @@ export function ChatIosSimulatorPanel({
   }, [liveVisualKind, mapLivePointToSimulatorPixel, mediaHeight, mediaWidth]);
 
   const handleSnapshotInteractPointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
-    if (controlsOwnedElsewhere) {
+    if (simulatorMutationBlocked) {
       setMessage(inputBlockedMessage);
       return;
     }
@@ -2767,13 +2770,13 @@ export function ChatIosSimulatorPanel({
       clientY: event.clientY,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
-  }, [controlsOwnedElsewhere, inputBlockedMessage, liveSimulatorPointFromPointer]);
+  }, [inputBlockedMessage, liveSimulatorPointFromPointer, simulatorMutationBlocked]);
 
   const handleSnapshotInteractPointerUp = useCallback((event: PointerEvent<HTMLDivElement>) => {
     const start = dragStartRef.current;
     dragStartRef.current = null;
     if (!start) return;
-    if (controlsOwnedElsewhere) {
+    if (simulatorMutationBlocked) {
       setMessage(inputBlockedMessage);
       return;
     }
@@ -2803,11 +2806,11 @@ export function ChatIosSimulatorPanel({
         setMessage(error instanceof Error ? error.message : String(error));
       }
     })();
-  }, [armWindowCaptureRecoveryAfterInput, controlsOwnedElsewhere, inputBlockedMessage, liveSimulatorPointFromPointer, projectRoot, selectedDeviceUdid, snapshot?.screen.scale]);
+  }, [armWindowCaptureRecoveryAfterInput, inputBlockedMessage, liveSimulatorPointFromPointer, projectRoot, selectedDeviceUdid, simulatorMutationBlocked, snapshot?.screen.scale]);
 
   const handleVideoKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
-    if (controlsOwnedElsewhere) {
+    if (simulatorMutationBlocked) {
       setMessage(inputBlockedMessage);
       return;
     }
@@ -2826,7 +2829,7 @@ export function ChatIosSimulatorPanel({
         setMessage(error instanceof Error ? error.message : String(error));
       });
     }
-  }, [armWindowCaptureRecoveryAfterInput, controlsOwnedElsewhere, inputBlockedMessage, projectRoot, selectedDeviceUdid]);
+  }, [armWindowCaptureRecoveryAfterInput, inputBlockedMessage, projectRoot, selectedDeviceUdid, simulatorMutationBlocked]);
 
   const providerSummary = snapshot?.providers.map((provider) => {
     if (provider.source === "screenshot") return "screenshot";
@@ -2925,11 +2928,11 @@ export function ChatIosSimulatorPanel({
     && (liveVisual.status !== "error" || (liveVisual.kind === "mjpeg" && Boolean(liveVisual.url)));
   const canShowSnapshot = mode === "inspect" && Boolean(snapshotImage);
   const hasActiveSession = Boolean(activeSession);
-  const interactionDisabled = controlsOwnedElsewhere || showSetupChecklist;
+  const interactionDisabled = simulatorMutationBlocked || showSetupChecklist;
   const canRetryDeviceBackedStream = mode === "interact"
     && liveVisualKind === "mjpeg"
     && hasActiveSession
-    && !controlsOwnedElsewhere
+    && !contextControlsBlocked
     && Boolean(activeDevice);
   const showStreamRecoveryActions = canRetryDeviceBackedStream
     && (liveVisual?.status === "reconnecting" || liveVisual?.status === "error");
@@ -2978,7 +2981,7 @@ export function ChatIosSimulatorPanel({
               event.stopPropagation();
               if (!simulatorWindowModeEnabled) toggleSimulatorWindowMode();
             }}
-            disabled={!activeSession || controlsOwnedElsewhere || simulatorWindowModeEnabled}
+            disabled={!activeSession || contextControlsBlocked || simulatorWindowModeEnabled}
           >
             <Desktop size={11} />
             iOS window
@@ -3078,7 +3081,7 @@ export function ChatIosSimulatorPanel({
             <div className="font-sans text-[10px] text-muted-fg/52">
               {activeSurface === "simulator" ? "Simulator mode" : "Preview mode"}
             </div>
-            {activeSurface === "simulator" && hasActiveSession && !controlsOwnedElsewhere ? (
+            {activeSurface === "simulator" && hasActiveSession && !contextControlsBlocked ? (
               <div className="group relative">
                 <button
                   type="button"
@@ -3138,12 +3141,12 @@ export function ChatIosSimulatorPanel({
                     .then(() => refreshLaunchTargets(selectedDeviceUdid ?? activeDevice?.udid ?? undefined))
                     .catch((error) => setMessage(error instanceof Error ? error.message : String(error)));
                 }}
-                disabled={controlsOwnedElsewhere}
+                disabled={contextControlsBlocked}
                 title="Refresh simulator state"
               >
                 <ArrowClockwise size={14} />
               </button>
-              {hasActiveSession && !controlsOwnedElsewhere ? (
+              {hasActiveSession && !simulatorMutationBlocked ? (
                 <button
                   type="button"
                   className="inline-flex h-8 items-center gap-1 rounded-md border border-rose-400/22 bg-rose-500/8 px-2 font-sans text-[11px] font-medium text-rose-200/80 transition-colors hover:bg-rose-500/12 disabled:cursor-not-allowed disabled:opacity-45"
@@ -3182,7 +3185,7 @@ export function ChatIosSimulatorPanel({
                 <Play size={13} weight="fill" />
                 Launch
               </button>
-              {hasActiveSession && !controlsOwnedElsewhere ? (
+              {hasActiveSession && !simulatorMutationBlocked ? (
                 <button
                   type="button"
                   className="inline-flex h-8 items-center gap-1.5 rounded-md border border-cyan-400/20 bg-cyan-500/10 px-2 font-sans text-[11px] font-medium text-cyan-100/85 transition-colors hover:bg-cyan-500/15 disabled:cursor-not-allowed disabled:opacity-45"
@@ -3756,7 +3759,7 @@ export function ChatIosSimulatorPanel({
                     setHoveredElement(null);
                   }}
                   onPointerDown={(event) => event.stopPropagation()}
-                  disabled={!snapshot?.screenshot.dataUrl || controlsOwnedElsewhere}
+                  disabled={!snapshot?.screenshot.dataUrl || contextControlsBlocked}
                   title="Drag a screenshot region to insert it with simulator context"
                 >
                   <ImageSquare size={11} />
@@ -3770,7 +3773,7 @@ export function ChatIosSimulatorPanel({
                   event.stopPropagation();
                   void refreshSnapshot({ priority: true }).catch(() => {});
                 }}
-                disabled={!hasActiveSession || snapshotRefreshing || controlsOwnedElsewhere}
+                disabled={!hasActiveSession || snapshotRefreshing || contextControlsBlocked}
                 title="Refresh inspector snapshot"
               >
                 <ArrowClockwise size={11} className={snapshotRefreshing ? "animate-spin" : undefined} />
@@ -3881,7 +3884,7 @@ export function ChatIosSimulatorPanel({
       </div>
 
       {!mediaExpanded ? <div className="shrink-0 space-y-2">
-        {mode === "interact" && !controlsOwnedElsewhere && !showSetupChecklist ? (
+        {mode === "interact" && !simulatorMutationBlocked && !showSetupChecklist ? (
           <div className="flex items-center gap-2">
             <input
               className="min-w-0 flex-1 rounded-md border border-white/[0.07] bg-black/20 px-2 py-1.5 font-sans text-[11px] text-fg/75 outline-none"
@@ -3912,7 +3915,7 @@ export function ChatIosSimulatorPanel({
             {footerStatus}
           </div>
         ) : null}
-        {mode === "interact" && !controlAvailable && !showSetupChecklist && !controlsOwnedElsewhere ? (
+        {mode === "interact" && !controlAvailable && !showSetupChecklist && !simulatorMutationBlocked ? (
           <div className="rounded-md border border-amber-400/15 bg-amber-500/10 px-2 py-1.5 font-sans text-[11px] text-amber-100/70">
             Install a supported full Xcode for native touch input, or idb + idb_companion for fallback tap, drag, and text.
           </div>

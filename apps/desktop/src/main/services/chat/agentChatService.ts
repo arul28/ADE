@@ -3470,6 +3470,8 @@ function shouldPreserveRequestedCodexPolicy(
   runtime: { approvalPolicy?: AgentChatCodexApprovalPolicy; sandbox?: AgentChatCodexSandbox },
 ): boolean {
   if (!requested) return false;
+  // Resume responses can echo stale thread policy from before ADE re-sent the
+  // picker/config flags. Fresh starts still adopt the runtime-reported policy.
   if (runtime.sandbox && runtime.sandbox !== requested.sandbox) return true;
   if (!runtime.approvalPolicy || runtime.approvalPolicy === requested.approvalPolicy) return false;
   return requested.approvalPolicy === "never" || requested.approvalPolicy === "untrusted";

@@ -6559,16 +6559,17 @@ export function AgentChatPane({
       ?? availableLanes?.find((candidate) => candidate.name.trim().toLowerCase() === "primary")
       ?? null
   ), [availableLanes]);
+  const autoCreateToolsLane = primaryDraftLane ?? availableLanes?.[0] ?? null;
   const draftLaneSelectorValue = draftLaunchTargetIsAutoCreate ? AUTO_CREATE_LANE_OPTION_ID : (laneId ?? "");
   const handleDraftLaneSelectionChange = useCallback((nextLaneId: string) => {
     if (nextLaneId === AUTO_CREATE_LANE_OPTION_ID) {
       setDraftLaunchTargetId(AUTO_CREATE_LANE_OPTION_ID);
-      if (primaryDraftLane) onLaneChange?.(primaryDraftLane.id);
+      if (autoCreateToolsLane) onLaneChange?.(autoCreateToolsLane.id);
       return;
     }
     setDraftLaunchTargetId(null);
     onLaneChange?.(nextLaneId);
-  }, [onLaneChange, primaryDraftLane]);
+  }, [autoCreateToolsLane, onLaneChange]);
 
   useEffect(() => {
     if (!showDraftLaunchControls && draftLaunchTargetId) {
@@ -8168,31 +8169,38 @@ export function AgentChatPane({
                             className="flex justify-center"
                             exit={{ opacity: 0, transition: { duration: 0.15 } }}
                           >
-                            <div className="inline-flex items-center gap-2">
-                              <LaneCombobox
-                                lanes={draftLaneSelectorLanes}
-                                value={draftLaneSelectorValue}
-                                onChange={handleDraftLaneSelectionChange}
-                                variant="pill"
-                                aria-label="Select lane"
-                              />
-                              {onOpenShellSession ? (
-                                <SmartTooltip
-                                  content={{
-                                    label: "Open shell",
-                                    description: "Launch a new shell in the selected lane.",
-                                  }}
-                                >
-                                  <button
-                                    type="button"
-                                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-muted-fg/70 transition-colors hover:bg-white/[0.08] hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
-                                    disabled={!laneId || draftLaunchTargetIsAutoCreate || shellLaunchBusy}
-                                    aria-label="Open shell in selected lane"
-                                    onClick={() => void launchShellForDraftLane()}
+                            <div className="flex flex-col items-center gap-1.5">
+                              <div className="inline-flex items-center gap-2">
+                                <LaneCombobox
+                                  lanes={draftLaneSelectorLanes}
+                                  value={draftLaneSelectorValue}
+                                  onChange={handleDraftLaneSelectionChange}
+                                  variant="pill"
+                                  aria-label="Select lane"
+                                />
+                                {onOpenShellSession ? (
+                                  <SmartTooltip
+                                    content={{
+                                      label: "Open shell",
+                                      description: "Launch a new shell in the selected lane.",
+                                    }}
                                   >
-                                    <Terminal size={14} weight="regular" />
-                                  </button>
-                                </SmartTooltip>
+                                    <button
+                                      type="button"
+                                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-muted-fg/70 transition-colors hover:bg-white/[0.08] hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
+                                      disabled={!laneId || draftLaunchTargetIsAutoCreate || shellLaunchBusy}
+                                      aria-label="Open shell in selected lane"
+                                      onClick={() => void launchShellForDraftLane()}
+                                    >
+                                      <Terminal size={14} weight="regular" />
+                                    </button>
+                                  </SmartTooltip>
+                                ) : null}
+                              </div>
+                              {draftLaunchTargetIsAutoCreate && autoCreateToolsLane ? (
+                                <div className="font-sans text-[10px] leading-4 text-muted-fg/55">
+                                  Tools use {autoCreateToolsLane.name} until the lane is created.
+                                </div>
                               ) : null}
                             </div>
                           </motion.div>

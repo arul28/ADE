@@ -615,7 +615,7 @@ describe("ChatIosSimulatorPanel", () => {
     expect(api.tap).not.toHaveBeenCalled();
   });
 
-  it("warns without renderer-blocking live simulator keyboard input when another chat owns the controls", async () => {
+  it("blocks live simulator input when another chat owns the controls", async () => {
     const { api } = installIosSimulatorApi({
       status: {
         ...activeStatus,
@@ -650,15 +650,12 @@ describe("ChatIosSimulatorPanel", () => {
     const liveSurface = canvas.closest("[tabindex]") as HTMLDivElement;
 
     fireEvent.keyDown(liveSurface, { key: "a" });
+    fireEvent.pointerDown(liveSurface, { clientX: 50, clientY: 40, pointerId: 1 });
+    fireEvent.pointerUp(liveSurface, { clientX: 50, clientY: 40, pointerId: 1 });
 
     expect(await screen.findByText("Another chat is using the simulator")).toBeTruthy();
-    await waitFor(() => {
-      expect(api.typeText).toHaveBeenCalledWith({
-        deviceUdid: device.udid,
-        projectRoot: "/tmp/project",
-        text: "a",
-      });
-    });
+    expect(api.typeText).not.toHaveBeenCalled();
+    expect(api.tap).not.toHaveBeenCalled();
     expect(api.drag).not.toHaveBeenCalled();
   });
 

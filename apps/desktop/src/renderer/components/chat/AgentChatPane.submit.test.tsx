@@ -709,8 +709,9 @@ function renderAutoCreateDraftPane(args?: {
   workDraftKind?: "chat" | "cli";
   onLaunchCliSession?: React.ComponentProps<typeof AgentChatPane>["onLaunchCliSession"];
   onLaneChange?: React.ComponentProps<typeof AgentChatPane>["onLaneChange"];
+  lanes?: any[];
 }) {
-  const lanes = [
+  const lanes = args?.lanes ?? [
     {
       id: "lane-primary",
       name: "Primary",
@@ -2892,6 +2893,30 @@ describe("AgentChatPane submit recovery", () => {
 
     expect(onLaneChange).toHaveBeenCalledWith("lane-primary");
     expect(await screen.findByText("Auto-create lane")).toBeTruthy();
+    expect(await screen.findByText("Tools use Primary until the lane is created.")).toBeTruthy();
+  });
+
+  it("falls back to the first available Work tools lane when Auto-create has no Primary lane", async () => {
+    installAdeMocks({ sessions: [] });
+    const onLaneChange = vi.fn();
+    renderAutoCreateDraftPane({
+      onLaneChange,
+      lanes: [
+        {
+          id: "lane-worktree",
+          name: "current-lane",
+          laneType: "worktree",
+          branchRef: "refs/heads/current-lane",
+          worktreePath: "/tmp/project-under-test/current-lane",
+        },
+      ],
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+
+    expect(onLaneChange).toHaveBeenCalledWith("lane-worktree");
+    expect(await screen.findByText("Tools use current-lane until the lane is created.")).toBeTruthy();
   });
 
   it("background auto-create reports the new chat without stealing focus and shows a dismissible notice", async () => {
