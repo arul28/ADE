@@ -407,6 +407,22 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       .join(",");
   }
 
+  function relocateRuntimeBundlePath(runtime: RunRuntime, bundlePath: string): void {
+    if (runtime.bundlePath === bundlePath) return;
+    if (runtime.watcher) {
+      void runtime.watcher.close().catch(() => undefined);
+      runtime.watcher = null;
+    }
+    if (runtime.watcherDebounceTimer) {
+      clearTimeout(runtime.watcherDebounceTimer);
+      runtime.watcherDebounceTimer = null;
+    }
+    runtime.bundlePath = bundlePath;
+    runtime.manifest = null;
+    runtime.planMd = null;
+    runtime.suspended = false;
+  }
+
   function getOrCreateRuntime(
     runId: string,
     bundlePath: string,
@@ -427,7 +443,9 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         suspended: false,
       };
       runs.set(runId, runtime);
+      return runtime;
     }
+    relocateRuntimeBundlePath(runtime, bundlePath);
     return runtime;
   }
 
@@ -1442,8 +1460,13 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     });
   }
 
+  function relocateRunBundle(runId: string, bundlePath: string): void {
+    getOrCreateRuntime(runId, bundlePath);
+  }
+
   return {
     runCreate,
+    relocateRunBundle,
     bundleRead,
     manifestReadSection,
     manifestPatch,

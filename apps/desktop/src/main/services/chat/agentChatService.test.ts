@@ -2822,6 +2822,63 @@ describe("createAgentChatService", () => {
       }
     });
 
+    it("repoints orchestration bundle path when lane placement changes", async () => {
+      const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead-placement");
+      const movedWorktree = path.join(tmpRoot, "lane-vm-mirror");
+      fs.mkdirSync(movedWorktree, { recursive: true });
+      try {
+        const { service, laneService } = createService({
+          getOrchestrationService: () => orchestrationService,
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+          modelId: "anthropic/claude-sonnet-4-6",
+          interactionMode: "orchestrator-lead",
+          orchestrationRunId: created.runId,
+          orchestrationRole: "lead",
+          orchestrationBundlePath: created.manifest.bundlePath,
+        });
+
+        const lanes = await laneService.list();
+        const lane1 = lanes.find((entry: { id: string }) => entry.id === "lane-1");
+        expect(lane1).toBeTruthy();
+        lane1.worktreePath = movedWorktree;
+        vi.mocked(laneService.getLaneBaseAndBranch).mockImplementation((laneId: string) => {
+          const lane = lanes.find((entry: { id: string }) => entry.id === laneId);
+          if (!lane) {
+            return {
+              baseRef: "main",
+              branchRef: "feature/selected",
+              worktreePath: tmpRoot,
+              laneType: "feature",
+              runtimePlacement: "local",
+            };
+          }
+          return {
+            baseRef: "main",
+            branchRef: lane.branchRef,
+            worktreePath: lane.worktreePath,
+            laneType: lane.laneType,
+            runtimePlacement: "local",
+          };
+        });
+
+        service.handleLanePlacementChanged({
+          laneId: "lane-1",
+          from: "macos-vm",
+          to: "local",
+        });
+
+        const expectedBundlePath = path.join(movedWorktree, ".ade", "orchestration", created.runId);
+        expect(readPersistedChatState(session.id).orchestrationBundlePath).toBe(expectedBundlePath);
+        expect(orchestrationService.getBundlePathForRun(created.runId)).toBe(expectedBundlePath);
+      } finally {
+        await orchestrationService.dispose();
+      }
+    });
+
     it("attaches ADE orchestration tools to OpenCode orchestrator sessions through MCP", async () => {
       vi.mocked(streamText).mockReturnValue({
         fullStream: (async function* () {

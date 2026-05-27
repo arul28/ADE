@@ -209,6 +209,24 @@ describe("orchestrationService", () => {
     await restarted.dispose();
   });
 
+  it("relocates in-memory runtime when the lane worktree bundle path changes", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const movedWorktree = path.join(lane, "vm-mirror-worktree");
+    await fsp.mkdir(movedWorktree, { recursive: true });
+    const { runId, manifest } = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+      title: "Placement move",
+    });
+    const movedBundlePath = path.join(movedWorktree, ".ade", "orchestration", runId);
+    expect(svc.getBundlePathForRun(runId)).toBe(manifest.bundlePath);
+
+    svc.relocateRunBundle(runId, movedBundlePath);
+    expect(svc.getBundlePathForRun(runId)).toBe(movedBundlePath);
+    await svc.dispose();
+  });
+
   it("skips stale discovery index entries whose manifest is gone", async () => {
     const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
     const stale = await svc.runCreate({

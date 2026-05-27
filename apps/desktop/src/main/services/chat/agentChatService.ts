@@ -23351,6 +23351,17 @@ export function createAgentChatService(args: {
           error: error instanceof Error ? error.message : String(error),
         });
       }
+      const runId = managed.session.orchestrationRunId?.trim();
+      const worktree = managed.laneWorktreePath?.trim();
+      if (runId && worktree) {
+        const nextBundlePath = path.join(worktree, ".ade", "orchestration", runId);
+        const currentBundlePath = managed.session.orchestrationBundlePath?.trim();
+        if (currentBundlePath !== nextBundlePath) {
+          managed.session.orchestrationBundlePath = nextBundlePath;
+          persistChatState(managed);
+          getOrchestrationService?.()?.relocateRunBundle(runId, nextBundlePath);
+        }
+      }
       const message = event.to === "local"
         ? "Lane detached from Mac VM; further turns run locally."
         : "Lane attached to Mac VM; further turns run inside the VM at /Volumes/My Shared Files.";
