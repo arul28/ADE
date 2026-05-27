@@ -1534,6 +1534,18 @@ const CTO_LINEAR_SYNC_TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
+    name: "getLinearIssueComments",
+    description: "Fetch comments on a Linear issue by its ID.",
+    inputSchema: {
+      type: "object",
+      required: ["issueId"],
+      additionalProperties: false,
+      properties: {
+        issueId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
     name: "getLinearSyncDashboard",
     description: "Read the ADE Linear sync dashboard.",
     inputSchema: { type: "object", additionalProperties: false, properties: {} }
@@ -1692,6 +1704,7 @@ const READ_ONLY_TOOLS = new Set([
   "getLinearQuickView",
   "getLinearIssuePickerData",
   "searchLinearIssues",
+  "getLinearIssueComments",
   "listLinearWorkflows",
   "getLinearRunStatus",
   "getLinearSyncDashboard",
@@ -3475,6 +3488,12 @@ async function runTool(args: {
         after: assertOptionalStringOrNull(toolArgs.after ?? null, "after"),
         includeArchived: asBoolean(toolArgs.includeArchived, false),
       });
+    }
+
+    if (name === "getLinearIssueComments") {
+      const issueId = assertNonEmptyString(toolArgs.issueId, "issueId");
+      const tracker = requireLinearIssueTracker(runtime);
+      return await tracker.fetchIssueComments(issueId);
     }
 
     if (name === "getLinearSyncDashboard") {

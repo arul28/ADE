@@ -721,7 +721,7 @@ describe("TopBar", () => {
     expect(await screen.findByRole("button", { name: /linear quick view/i })).toBeTruthy();
   });
 
-  it("does not poll Linear quick view visibility while it remains hidden", async () => {
+  it("keeps button hidden while disconnected but retries on a 3s interval", async () => {
     vi.useFakeTimers();
     const getLinearConnectionStatus = vi.fn(async () => ({
       tokenStored: true,
@@ -745,14 +745,16 @@ describe("TopBar", () => {
         vi.advanceTimersByTime(8_000);
         await flushMicrotasks(2);
       });
-      expect(getLinearConnectionStatus).toHaveBeenCalledTimes(1);
+      expect(getLinearConnectionStatus).toHaveBeenCalled();
       expect(screen.queryByRole("button", { name: /linear quick view/i })).toBeNull();
 
+      const callsBefore = getLinearConnectionStatus.mock.calls.length;
       await act(async () => {
-        vi.advanceTimersByTime(60_000);
+        vi.advanceTimersByTime(6_000);
         await flushMicrotasks(2);
       });
-      expect(getLinearConnectionStatus).toHaveBeenCalledTimes(1);
+      expect(getLinearConnectionStatus.mock.calls.length).toBeGreaterThan(callsBefore);
+      expect(screen.queryByRole("button", { name: /linear quick view/i })).toBeNull();
     } finally {
       vi.useRealTimers();
     }

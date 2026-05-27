@@ -112,6 +112,7 @@ import type {
   CtoListAgentSessionLogsArgs,
   CtoOnboardingState,
   CtoSystemPromptPreview,
+  CtoLinearIssueComment,
   CtoLinearProject,
   CtoLinearQuickView,
   CtoGetLinearIssuePickerDataResult,
@@ -8404,6 +8405,15 @@ contextBridge.exposeInMainWorld("ade", {
         "searchIssues",
         { args },
         () => ipcRenderer.invoke(IPC.ctoSearchLinearIssues, args),
+      ),
+    getLinearIssueComments: async (
+      args: { issueId: string },
+    ): Promise<CtoLinearIssueComment[]> =>
+      callProjectRuntimeActionOr(
+        "linear_issue_tracker",
+        "fetchIssueComments",
+        { args },
+        () => ipcRenderer.invoke(IPC.ctoGetLinearIssueComments, args),
       ),
     setLinearOAuthClient: async (
       args: CtoSetLinearOAuthClientArgs,

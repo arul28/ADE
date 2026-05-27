@@ -61,6 +61,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/linear ingress", description: "Inspect Linear ingress", placement: "right", argumentHint: "<status|events|webhook>" },
   { name: "/linear pull", description: "Pull a Linear ticket into chat context", placement: "right", argumentHint: "<id>" },
   { name: "/linear comment", description: "Comment on a Linear ticket", placement: "right", argumentHint: "<id> <text>" },
+  { name: "/linear comments", description: "Show comments on a Linear ticket", placement: "right", argumentHint: "<id>" },
   { name: "/linear status", description: "Show Linear sync status", placement: "right" },
   { name: "/linear assign", description: "Assign a Linear ticket", placement: "right", argumentHint: "<id> <user>" },
   { name: "/feedback", description: "Submit ADE feedback to GitHub issues", placement: "right" },

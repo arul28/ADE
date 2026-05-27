@@ -2,16 +2,23 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   CaretDown,
   CaretRight,
+  Check,
   CircleNotch,
+  GitBranch,
   MagnifyingGlass,
+  Minus,
   Plus,
   Sparkle,
   Warning,
 } from "@phosphor-icons/react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import rehypeSanitize from "rehype-sanitize";
 import { BranchIcon } from "../ui/vcsIcons";
 
 import type {
   CtoGetLinearIssuePickerDataResult,
+  CtoLinearIssueComment,
   CtoLinearProject,
   CtoLinearQuickView,
   CtoLinearQuickViewProject,
@@ -241,6 +248,7 @@ export function LinearIssueBrowser({
   onQuickViewChange,
   onLoadingChange,
   resolveActions,
+  batchActions,
 }: {
   projectRoot?: string | null;
   featuredIssue?: LaneLinearIssue | null;
@@ -262,6 +270,12 @@ export function LinearIssueBrowser({
     busyModal?: LinearIssueResolveModalKind | null;
     disabled?: boolean;
   };
+  batchActions?: {
+    onBatchCreateLanes: (issues: BrowserIssue[]) => void | Promise<void>;
+    onBatchResolveNewLanes: (issues: BrowserIssue[]) => void | Promise<void>;
+    onBatchResolveExistingLane: (issues: BrowserIssue[]) => void | Promise<void>;
+    batchProgress: { completed: number; total: number; action: string } | null;
+  };
 }) {
   const [quickView, setQuickView] = useState<CtoLinearQuickView | null>(null);
   const quickViewRef = useRef<CtoLinearQuickView | null>(null);
@@ -275,6 +289,9 @@ export function LinearIssueBrowser({
   const [loadingIssues, setLoadingIssues] = useState(false);
   const [localActionIssueId, setLocalActionIssueId] = useState<string | null>(null);
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(featuredIssue?.id ?? null);
+  const [selectedIssueIds, setSelectedIssueIds] = useState<Set<string>>(new Set());
+  const [lastCheckedId, setLastCheckedId] = useState<string | null>(null);
+  const anyChecked = selectedIssueIds.size > 0;
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
   const quickViewRequestIdRef = useRef(0);
@@ -419,6 +436,51 @@ export function LinearIssueBrowser({
   }, [displayIssues, selectedIssueId]);
 
   const selectedIssue = displayIssues.find((issue) => issue.id === selectedIssueId) ?? displayIssues[0] ?? null;
+
+  const handleToggleCheck = useCallback((issueId: string, event: React.MouseEvent) => {
+    setSelectedIssueIds((prev) => {
+      const next = new Set(prev);
+      if (event.shiftKey && lastCheckedId) {
+        const startIdx = displayIssues.findIndex((i) => i.id === lastCheckedId);
+        const endIdx = displayIssues.findIndex((i) => i.id === issueId);
+        if (startIdx !== -1 && endIdx !== -1) {
+          const [lo, hi] = startIdx < endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
+          for (let i = lo; i <= hi; i++) next.add(displayIssues[i].id);
+        } else {
+          // Anchor is stale (no longer in display list) — fall back to toggling clicked row
+          if (next.has(issueId)) next.delete(issueId);
+          else next.add(issueId);
+        }
+      } else {
+        if (next.has(issueId)) next.delete(issueId);
+        else next.add(issueId);
+      }
+      return next;
+    });
+    setLastCheckedId(issueId);
+  }, [displayIssues, lastCheckedId]);
+
+  const handleSelectAll = useCallback(() => {
+    setSelectedIssueIds((prev) => {
+      if (prev.size === displayIssues.length) return new Set();
+      return new Set(displayIssues.map((i) => i.id));
+    });
+  }, [displayIssues]);
+
+  // Clear selection when filters change
+  useEffect(() => {
+    setSelectedIssueIds(new Set());
+    setLastCheckedId(null);
+  }, [filters]);
+
+  // Prune stale selections when issues change
+  useEffect(() => {
+    const validIds = new Set(displayIssues.map((i) => i.id));
+    setSelectedIssueIds((prev) => {
+      const pruned = new Set([...prev].filter((id) => validIds.has(id)));
+      return pruned.size === prev.size ? prev : pruned;
+    });
+  }, [displayIssues]);
 
   const assigneeOptions = useMemo(
     () => [
@@ -575,6 +637,45 @@ export function LinearIssueBrowser({
             </div>
           </div>
 
+          {displayIssues.length > 0 && (
+            <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.05] px-3 py-1.5">
+              <span
+                role="checkbox"
+                tabIndex={0}
+                aria-checked={selectedIssueIds.size === 0 ? false : selectedIssueIds.size === displayIssues.length ? true : "mixed"}
+                aria-label="Select all issues"
+                onClick={handleSelectAll}
+                onKeyDown={(e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); handleSelectAll(); } }}
+                className={cn(
+                  "flex h-[14px] w-[14px] shrink-0 cursor-pointer items-center justify-center rounded-[3px] border transition-all",
+                  selectedIssueIds.size === displayIssues.length
+                    ? "border-[color:var(--color-accent,#A78BFA)] bg-[color:var(--color-accent,#A78BFA)]"
+                    : selectedIssueIds.size > 0
+                      ? "border-[color:var(--color-accent,#A78BFA)] bg-[color:var(--color-accent,#A78BFA)]/50"
+                      : "border-white/[0.15] bg-transparent hover:border-white/30",
+                )}
+              >
+                {selectedIssueIds.size === displayIssues.length && displayIssues.length > 0 ? (
+                  <Check size={10} weight="bold" className="text-[#0F0D14]" />
+                ) : selectedIssueIds.size > 0 ? (
+                  <Minus size={10} weight="bold" className="text-[#0F0D14]" />
+                ) : null}
+              </span>
+              <span className="text-[11px] text-muted-fg/55">
+                {selectedIssueIds.size > 0 ? `${selectedIssueIds.size} selected` : `${displayIssues.length} issues`}
+              </span>
+              {selectedIssueIds.size > 0 && (
+                <button
+                  type="button"
+                  className="ml-auto text-[10px] text-muted-fg/50 hover:text-fg/80 transition-colors"
+                  onClick={() => setSelectedIssueIds(new Set())}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          )}
+
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             {loadingQuickView && !quickView && displayIssues.length === 0 ? (
               <div className="grid h-44 place-items-center text-[12px] text-muted-fg/55">
@@ -603,6 +704,9 @@ export function LinearIssueBrowser({
                           active={selectedIssue?.id === issue.id}
                           eyebrow={featuredIssue?.id === issue.id ? featuredIssueLabel : undefined}
                           busy={busyIssueId === issue.id}
+                          checked={selectedIssueIds.has(issue.id)}
+                          anyChecked={anyChecked}
+                          onToggleCheck={(e) => handleToggleCheck(issue.id, e)}
                           onClick={() => setSelectedIssueId(issue.id)}
                         />
                       )) : null}
@@ -629,17 +733,25 @@ export function LinearIssueBrowser({
           </div>
         </section>
 
-        <IssueDetails
-          issue={selectedIssue}
-          actionLabel={actionLabel}
-          actionBusyLabel={actionBusyLabel}
-          actionIcon={actionIcon}
-          actionBusy={selectedIssue ? busyIssueId === selectedIssue.id : false}
-          actionDisabled={actionDisabled || Boolean(busyIssueId && busyIssueId !== selectedIssue?.id)}
-          showBranchPreview={showBranchPreview}
-          onIssueAction={handleIssueAction}
-          resolveActions={resolveActions}
-        />
+        {selectedIssueIds.size > 1 && batchActions ? (
+          <BatchActionView
+            selectedIssues={displayIssues.filter((i) => selectedIssueIds.has(i.id))}
+            onClearSelection={() => setSelectedIssueIds(new Set())}
+            batchActions={batchActions}
+          />
+        ) : (
+          <IssueDetails
+            issue={selectedIssue}
+            actionLabel={actionLabel}
+            actionBusyLabel={actionBusyLabel}
+            actionIcon={actionIcon}
+            actionBusy={selectedIssue ? busyIssueId === selectedIssue.id : false}
+            actionDisabled={actionDisabled || Boolean(busyIssueId && busyIssueId !== selectedIssue?.id)}
+            showBranchPreview={showBranchPreview}
+            onIssueAction={handleIssueAction}
+            resolveActions={resolveActions}
+          />
+        )}
       </div>
     </div>
   );
@@ -725,12 +837,18 @@ function LinearBrowserIssueRow({
   active,
   eyebrow,
   busy,
+  checked,
+  anyChecked: anyRowChecked,
+  onToggleCheck,
   onClick,
 }: {
   issue: BrowserIssue;
   active: boolean;
   eyebrow?: string;
   busy?: boolean;
+  checked: boolean;
+  anyChecked: boolean;
+  onToggleCheck: (event: React.MouseEvent) => void;
   onClick: () => void;
 }) {
   const listDate = linearIssueListDate(issue);
@@ -739,12 +857,26 @@ function LinearBrowserIssueRow({
     <button
       type="button"
       className={cn(
-        "group flex h-[34px] w-full items-center gap-3 border-b border-white/[0.04] px-3 text-left transition-colors disabled:opacity-50",
+        "group/row flex h-[34px] w-full items-center gap-3 border-b border-white/[0.04] px-3 text-left transition-colors disabled:opacity-50",
         active ? "bg-white/[0.06]" : "hover:bg-white/[0.03]",
       )}
       onClick={onClick}
       disabled={busy}
     >
+      <span
+        role="checkbox"
+        aria-checked={checked}
+        onClick={(e) => { e.stopPropagation(); onToggleCheck(e); }}
+        className={cn(
+          "flex h-[14px] w-[14px] shrink-0 items-center justify-center rounded-[3px] border transition-all cursor-pointer",
+          checked
+            ? "border-[color:var(--color-accent,#A78BFA)] bg-[color:var(--color-accent,#A78BFA)]"
+            : "border-white/[0.15] bg-transparent hover:border-white/30",
+          !anyRowChecked && !checked && "opacity-0 group-hover/row:opacity-100",
+        )}
+      >
+        {checked ? <Check size={10} weight="bold" className="text-[#0F0D14]" /> : null}
+      </span>
       <span className="w-[54px] shrink-0 truncate font-mono text-[11px] text-muted-fg/50">
         {issue.identifier}
       </span>
@@ -863,9 +995,20 @@ function IssueDetails({
         <div className="flex items-center gap-2">
           <LinearPriorityIcon priority={issue.priority} size={12} />
           <LinearStateIcon stateType={issue.stateType} size={12} />
-          <span className="rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-fg/80">
-            {issue.identifier}
-          </span>
+          {issue.url ? (
+            <a
+              href={issue.url}
+              onClick={(e) => { e.preventDefault(); window.ade?.app?.openExternal?.(issue.url!); }}
+              className="cursor-pointer rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-fg/80 hover:bg-white/[0.1] transition-colors"
+              title="Open in Linear"
+            >
+              {issue.identifier}
+            </a>
+          ) : (
+            <span className="rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-fg/80">
+              {issue.identifier}
+            </span>
+          )}
         </div>
         <div className="mt-2 text-[14px] font-semibold leading-snug">{issue.title}</div>
         {showBranchPreview ? (
@@ -876,24 +1019,21 @@ function IssueDetails({
         ) : null}
 
         {description ? (
-          <div className="mt-3 max-h-28 overflow-y-auto rounded-lg border border-white/[0.06] bg-white/[0.025] px-3 py-2 text-[12px] leading-relaxed text-muted-fg/80 whitespace-pre-wrap">
-            {description}
+          <div className="mt-3 overflow-y-auto rounded-lg border border-white/[0.06] bg-white/[0.025] px-3 py-2 text-[12px] leading-relaxed text-muted-fg/80">
+            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>
+              {description}
+            </ReactMarkdown>
           </div>
         ) : null}
 
-        {issue.labels.length > 0 ? (
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {issue.labels.map((label) => (
-              <span key={label} className="rounded-full border border-white/[0.07] bg-white/[0.035] px-2 py-0.5 text-[10px] text-muted-fg/75">
-                {label}
-              </span>
-            ))}
-          </div>
-        ) : null}
+        <IssueLabels issue={issue} normalizedIssue={normalizedIssue} />
 
         <div className="mt-3 grid gap-1.5 text-[11px] text-muted-fg/65">
           <InfoRow label="Project" value={issueProjectLabel(issue)} />
           <InfoRow label="Team" value={issue.teamName ?? issue.teamKey} />
+          {normalizedIssue?.cycleName && (
+            <InfoRow label="Cycle" value={normalizedIssue.cycleName} />
+          )}
           <InfoRow label="Status" value={issue.stateName} />
           <InfoRow label="Priority" value={linearPriorityLabel(issue)} />
           <InfoRow label="Assignee" value={issue.assigneeName ?? "Unassigned"} />
@@ -911,9 +1051,15 @@ function IssueDetails({
             </>
           ) : null}
         </div>
+
+        {normalizedIssue?.childIssues && normalizedIssue.childIssues.length > 0 ? (
+          <SubIssuesList issues={normalizedIssue.childIssues} />
+        ) : null}
+
+        <ActivitySection issueId={issue.id} />
       </div>
 
-      <div className="border-t border-white/10 px-4 py-3">
+      <div className="shrink-0 max-h-[280px] overflow-y-auto border-t border-white/10 px-4 py-3">
         {resolveActions ? (
           <div className="space-y-2">
             <div className="space-y-1.5">
@@ -962,11 +1108,209 @@ function IssueDetails({
   );
 }
 
+function IssueLabels({ issue, normalizedIssue }: { issue: BrowserIssue; normalizedIssue: NormalizedLinearIssue | null }) {
+  const labels = normalizedIssue?.labelColors ?? issue.labels.map((l) => ({ name: l, color: null as string | null }));
+  if (labels.length === 0) return null;
+  return (
+    <div className="mt-3 flex flex-wrap gap-1.5">
+      {labels.map((label) => (
+        <span
+          key={label.name}
+          className="rounded-full border px-2 py-0.5 text-[10px]"
+          style={{
+            borderColor: label.color ? `${label.color}44` : "rgba(255,255,255,0.07)",
+            backgroundColor: label.color ? `${label.color}18` : "rgba(255,255,255,0.035)",
+            color: label.color ?? "rgba(255,255,255,0.75)",
+          }}
+        >
+          {label.name}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline justify-between gap-2">
       <span className="text-muted-fg/45">{label}</span>
       <span className="truncate text-right text-fg/80" title={value}>{value}</span>
     </div>
+  );
+}
+
+function SubIssuesList({ issues }: { issues: NonNullable<NormalizedLinearIssue["childIssues"]> }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="mt-3">
+      <button
+        type="button"
+        className="flex items-center gap-1.5 text-[11px] font-medium text-muted-fg/65 hover:text-fg/80 transition-colors"
+        onClick={() => setExpanded(!expanded)}
+      >
+        {expanded ? <CaretDown size={10} /> : <CaretRight size={10} />}
+        Sub-issues ({issues.length})
+      </button>
+      {expanded && (
+        <div className="mt-1.5 space-y-1 pl-1">
+          {issues.map((child) => (
+            <div key={child.id} className="flex items-center gap-2 py-0.5">
+              <LinearStateIcon stateType={child.stateType} size={10} />
+              <span className="font-mono text-[10px] text-fg/60">{child.identifier}</span>
+              <span className="min-w-0 flex-1 truncate text-[11px] text-muted-fg/70">{child.title}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ActivitySection({ issueId }: { issueId: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [comments, setComments] = useState<CtoLinearIssueComment[] | null>(null);
+  const [commentError, setCommentError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const prevIssueIdRef = useRef(issueId);
+
+  if (prevIssueIdRef.current !== issueId) {
+    prevIssueIdRef.current = issueId;
+    setComments(null);
+    setCommentError(null);
+    setExpanded(false);
+  }
+
+  useEffect(() => {
+    if (!expanded || comments || commentError) return;
+    let cancelled = false;
+    setLoading(true);
+    const cto = window.ade?.cto as Record<string, unknown> | undefined;
+    const fn = cto?.getLinearIssueComments as ((args: { issueId: string }) => Promise<CtoLinearIssueComment[]>) | undefined;
+    if (!fn) { setLoading(false); setComments([]); return; }
+    void fn({ issueId })
+      .then((result) => { if (!cancelled) setComments(result ?? []); })
+      .catch(() => { if (!cancelled) setCommentError("Failed to load comments"); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [expanded, issueId, comments, commentError]);
+
+  return (
+    <div className="mt-3">
+      <button
+        type="button"
+        className="flex items-center gap-1.5 text-[11px] font-medium text-muted-fg/65 hover:text-fg/80 transition-colors"
+        onClick={() => setExpanded(!expanded)}
+      >
+        {expanded ? <CaretDown size={10} /> : <CaretRight size={10} />}
+        Activity
+      </button>
+      {expanded && (
+        <div className="mt-1.5 space-y-2 pl-1">
+          {loading ? (
+            <div className="text-[10px] text-muted-fg/40">Loading...</div>
+          ) : commentError ? (
+            <div className="text-[10px] text-red-400/70">{commentError}</div>
+          ) : comments && comments.length > 0 ? (
+            comments.map((comment) => (
+              <div key={comment.id} className="rounded-md border border-white/[0.05] bg-white/[0.02] px-2.5 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-medium text-fg/80">{comment.userDisplayName || comment.userName}</span>
+                  <span className="text-[10px] text-muted-fg/40">{formatDate(comment.createdAt)}</span>
+                </div>
+                <div className="mt-1 text-[11px] leading-relaxed text-muted-fg/70 whitespace-pre-wrap">
+                  {comment.body}
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="text-[10px] text-muted-fg/40">No comments</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const BATCH_ACTIONS_CONFIG = [
+  { key: "create", icon: <Plus size={13} />, label: "Create lanes for", sublabel: "New lane per issue" },
+  { key: "resolve-new", icon: <Sparkle size={13} />, label: "Resolve all in new lanes", sublabel: "Lane + chat per issue" },
+  { key: "resolve-existing", icon: <GitBranch size={13} />, label: "Assign all to one lane", sublabel: "Pick lane, chat per issue" },
+] as const;
+
+function BatchActionView({
+  selectedIssues,
+  onClearSelection,
+  batchActions,
+}: {
+  selectedIssues: BrowserIssue[];
+  onClearSelection: () => void;
+  batchActions: NonNullable<Parameters<typeof LinearIssueBrowser>[0]["batchActions"]>;
+}) {
+  const busy = Boolean(batchActions.batchProgress);
+
+  function handleAction(key: string): void {
+    switch (key) {
+      case "create": void batchActions.onBatchCreateLanes(selectedIssues); break;
+      case "resolve-new": void batchActions.onBatchResolveNewLanes(selectedIssues); break;
+      case "resolve-existing": void batchActions.onBatchResolveExistingLane(selectedIssues); break;
+    }
+  }
+
+  return (
+    <aside className="flex min-h-0 flex-col overflow-hidden">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        <div className="flex items-center justify-between">
+          <span className="text-[13px] font-semibold text-fg/90">{selectedIssues.length} issues selected</span>
+          <button type="button" className="text-[10px] text-muted-fg/50 hover:text-fg/80 transition-colors" onClick={onClearSelection}>
+            Clear
+          </button>
+        </div>
+        <div className="mt-2 space-y-1">
+          {selectedIssues.map((issue) => (
+            <div key={issue.id} className="flex items-center gap-2 rounded-md bg-white/[0.03] px-2 py-1">
+              <span className="rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-fg/80">{issue.identifier}</span>
+              <span className="min-w-0 flex-1 truncate text-[11px] text-muted-fg/70">{issue.title}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="shrink-0 border-t border-white/10 px-4 py-3">
+        <div className="space-y-1.5">
+          {BATCH_ACTIONS_CONFIG.map((action) => (
+            <button
+              key={action.key}
+              type="button"
+              disabled={busy}
+              className="flex w-full items-start gap-2.5 rounded-lg border border-white/[0.07] bg-white/[0.02] px-2.5 py-2 text-left transition-colors hover:border-white/[0.12] hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-45"
+              onClick={() => handleAction(action.key)}
+            >
+              <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-md text-[color:var(--color-accent,#A78BFA)]" style={{ background: "rgba(167, 139, 250, 0.12)" }}>
+                {action.icon}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-[11.5px] font-medium leading-snug text-fg/90">
+                  {action.key === "create" ? `${action.label} ${selectedIssues.length} issues` : action.label}
+                </span>
+                <span className="mt-0.5 block text-[10.5px] leading-relaxed text-muted-fg/55">{action.sublabel}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+        {batchActions.batchProgress && (
+          <div className="mt-2">
+            <div className="flex items-center justify-between text-[10px] text-muted-fg/55">
+              <span>{batchActions.batchProgress.action}</span>
+              <span>{batchActions.batchProgress.completed}/{batchActions.batchProgress.total}</span>
+            </div>
+            <div className="mt-1 h-1 overflow-hidden rounded-full bg-white/[0.06]">
+              <div
+                className="h-full rounded-full bg-[color:var(--color-accent,#A78BFA)] transition-all"
+                style={{ width: `${batchActions.batchProgress.total > 0 ? (batchActions.batchProgress.completed / batchActions.batchProgress.total) * 100 : 0}%` }}
+              />
+            </div>
+          </div>
+        )}
+      </div>
+    </aside>
   );
 }

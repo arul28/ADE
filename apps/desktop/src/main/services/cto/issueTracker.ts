@@ -87,6 +87,13 @@ export type IssueTracker = {
   addLabel(issueId: string, labelName: string): Promise<void>;
   uploadAttachment(args: { issueId: string; filePath: string; title?: string }): Promise<{ url: string; id?: string }>;
   createIssueAttachment(args: IssueTrackerIssueAttachmentInput): Promise<{ url: string; id?: string }>;
+  fetchIssueComments(issueId: string): Promise<Array<{
+    id: string;
+    body: string;
+    createdAt: string;
+    userName: string;
+    userDisplayName: string;
+  }>>;
   getConnectionStatus(): Promise<{
     connected: boolean;
     viewerId: string | null;

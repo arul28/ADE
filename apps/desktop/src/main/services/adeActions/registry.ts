@@ -583,6 +583,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "createComment",
     "fetchIssueById",
     "fetchIssuesByIds",
+    "fetchIssueComments",
     "getIssuePickerData",
     "getConnectionStatus",
     "getQuickView",

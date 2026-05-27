@@ -47,7 +47,10 @@ Source file: `apps/desktop/src/main/services/cto/linearIssueTracker.ts`.
 - `previousStateId`, `previousStateName`, `previousStateType` — populated
   from the stored snapshot row so `stateTransitions` triggers can match
 - `priority`, `priorityLabel` (`urgent|high|normal|low|none`)
-- `labels`, `metadataTags`
+- `labels`, `labelColors` (per-label `{ name, color }`)
+- `cycleId`, `cycleName`, `cycleStartsAt`, `cycleEndsAt`
+- `childIssues` (`id`, `identifier`, `title`, `stateId`, `stateName`, `stateType`)
+- `metadataTags`
 - `assigneeId`, `assigneeName`, `ownerId`, `creatorId`, `creatorName`
 - `blockerIssueIds`, `hasOpenBlockers`
 - `raw._snapshotHash`, `raw._previousSnapshotHash` — used to skip
@@ -338,6 +341,8 @@ Desktop IPC (renderer → main), from `apps/desktop/src/shared/ipc.ts`:
 - Sync: `ctoGetLinearSyncDashboard`, `ctoRunLinearSyncNow`,
   `ctoListLinearSyncQueue`, `ctoResolveLinearSyncQueueItem`,
   `ctoGetLinearWorkflowRunDetail`
+- Issue detail: `ctoGetLinearIssueComments` (comment thread for
+  the issue browser detail pane)
 - Ingress: `ctoGetLinearIngressStatus`, `ctoListLinearIngressEvents`,
   `ctoEnsureLinearWebhook`
 - Broadcast: `ctoLinearWorkflowEvent` (main → renderer)

@@ -72,6 +72,10 @@ export function createLinearIssueTracker(args: { client: LinearClient }): IssueT
       return args.client.createIssueAttachment(params);
     },
 
+    fetchIssueComments(issueId) {
+      return args.client.fetchIssueComments(issueId);
+    },
+
     async getConnectionStatus() {
       try {
         const identity = await args.client.getConnectionIdentity();

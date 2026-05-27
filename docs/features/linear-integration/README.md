@@ -170,8 +170,8 @@ Core Linear services on desktop
 
 - `linearCredentialService.ts` — token + OAuth client + auth mode storage and health check. Reads/writes through the per-machine `SyncCredentialStore` (`~/.ade/secrets/`) when one is passed in, with a one-time migration from the legacy project-local `linear-token.v1.bin` / `linear-oauth-client.v1.bin` files; falls back to the legacy project-scoped path when the machine store is unavailable. Environment overrides (`ADE_LINEAR_API`, `LINEAR_API_KEY`, `ADE_LINEAR_TOKEN`, `LINEAR_TOKEN`) still take precedence.
 - `linearOAuthService.ts` — OAuth authorization flow
-- `linearClient.ts` — GraphQL client wrapper
-- `linearIssueTracker.ts` — normalization into `NormalizedLinearIssue`
+- `linearClient.ts` — GraphQL client wrapper. The shared issue fragment includes cycle metadata, label colors, and enriched child-issue fields. `fetchIssueComments(issueId)` returns the comment thread for the issue detail pane.
+- `linearIssueTracker.ts` — normalization into `NormalizedLinearIssue`, plus `fetchIssueComments` forwarding
 - `linearTemplateService.ts` — session template resolution
 - `linearWorkflowFileService.ts` — YAML workflow files under
   `.ade/workflows/linear/**`. Every `save(config)` call invokes
@@ -197,10 +197,14 @@ Shared types and helpers:
   types, run statuses, event payloads, catalog types, the
   `NormalizedLinearIssue` shape (extended with `projectName`,
   `teamName`, `dueDate`, `estimate`, `archivedAt`, `completedAt`,
-  `canceledAt`, `startedAt`), `LinearConnectionStatus` (extended with
-  `organizationId` / `organizationName` / `organizationUrlKey` /
+  `canceledAt`, `startedAt`, `cycleId`, `cycleName`,
+  `cycleStartsAt`, `cycleEndsAt`, `labelColors`, and `childIssues`
+  with identifier/title/state), `LinearConnectionStatus` (extended
+  with `organizationId` / `organizationName` / `organizationUrlKey` /
   `organizationLogoUrl` so controllers can render the workspace
   brand), and the legacy `LinearSyncConfig` kept for migration reads.
+- `apps/desktop/src/shared/types/cto.ts` — `CtoGetLinearIssueCommentsArgs`
+  and `CtoLinearIssueComment` types for the issue detail comment thread.
 - `apps/desktop/src/shared/types/lanes.ts` — `LaneLinearIssue` (the
   lane-attached subset of a Linear issue that gets persisted with
   the lane row) plus the optional `linearIssue` field on
@@ -267,17 +271,31 @@ Renderer wiring:
   `LinearConnectionStatus.connected === true`). Opens a popover
   hosting the shared `LinearIssueBrowser`; selecting an issue
   creates a new lane via `lanes.create` with `linearIssue` set,
-  refreshes the lane store, and selects the new lane.
+  refreshes the lane store, and selects the new lane. Supports
+  batch flows: multi-select in the browser dispatches to batch
+  create lanes, batch resolve in new lanes, or batch resolve into
+  an existing lane. Caches the last-fetched workspace summary for
+  instant popover open and polls for Linear connection visibility
+  on a 3-second interval until connected.
 - `apps/desktop/src/renderer/components/app/LinearIssueBrowser.tsx`
-  — full filter/search surface. Reads `ade.cto.getLinearQuickView`
-  for the workspace summary and `ade.cto.searchLinearIssues` for
-  paginated results. Persists per-project filter state in
-  `localStorage` under `ade.linear.quickView.filters.v1:<projectRoot>`.
+  — full filter/search surface with multi-select. Reads
+  `ade.cto.getLinearQuickView` for the workspace summary,
+  `ade.cto.searchLinearIssues` for paginated results, and
+  `ade.cto.getLinearIssueComments` for the issue detail comment
+  thread (rendered with markdown). Supports checkbox selection
+  with shift-click range, select-all, and batch action dispatch.
+  Persists per-project filter state in `localStorage` under
+  `ade.linear.quickView.filters.v1:<projectRoot>`. The issue
+  detail pane displays cycle metadata and child-issue status.
 - `apps/desktop/src/renderer/components/app/LinearIssueResolveModals.tsx`
   — modal dialogs for resolving Linear issues directly from the
   quick-view or issue browser: create a new lane from the issue,
   attach to an existing lane, or launch an agent chat to work on the
-  issue with model selection and branch preview.
+  issue with model selection and branch preview. Also provides
+  batch modals: `BatchCreateLanesModal` (create one lane per
+  selected issue), `BatchResolveInNewLanesModal` (create lanes and
+  launch agents), and `BatchResolveInExistingLaneModal` (resolve
+  multiple issues into a single existing lane).
 - `apps/desktop/src/renderer/components/chat/AgentChatComposer.tsx`
   — the composer's Linear attach affordance opens a
   `LinearIssueContextDialog` that hosts the same
@@ -318,14 +336,17 @@ IPC wiring (`apps/desktop/src/main/services/ipc/registerIpc.ts`):
   `ctoGetLinearQuickView` (workspace summary used by the top-bar
   quick view), `ctoGetLinearIssuePickerData` (one-shot
   projects + states + assignees catalog for `LinearIssuePicker`),
-  and `ctoSearchLinearIssues` (paginated issue search consumed by
-  both `LinearIssuePicker` and `LinearIssueBrowser`).
+  `ctoSearchLinearIssues` (paginated issue search consumed by
+  both `LinearIssuePicker` and `LinearIssueBrowser`), and
+  `ctoGetLinearIssueComments` (comment thread for the issue detail
+  pane in the browser).
 - `IssueTracker` (`apps/desktop/src/main/services/cto/issueTracker.ts`)
-  grew matching `getQuickView(connection)` and
-  `searchIssues(query)` methods, both forwarded to `linearClient`
-  by `linearIssueTracker.ts`. `IssueTrackerIssueSearchQuery` covers
-  project / state-types / assignee / priority / free-text / cursor
-  pagination filters; the result is `{ issues, pageInfo }`.
+  exposes `getQuickView(connection)`, `searchIssues(query)`, and
+  `fetchIssueComments(issueId)` methods, all forwarded to
+  `linearClient` by `linearIssueTracker.ts`.
+  `IssueTrackerIssueSearchQuery` covers project / state-types /
+  assignee / priority / free-text / cursor pagination filters; the
+  result is `{ issues, pageInfo }`.
 
 Headless ADE CLI mode:
 
@@ -437,7 +458,11 @@ exposes that path in three places that all share the same primitives:
   active project counters) plus the shared
   `LinearIssueBrowser`; clicking an issue creates a fresh lane via
   `lanes.create`, refreshes the lane store, and selects the new
-  lane.
+  lane. Multi-select in the browser enables batch flows: create one
+  lane per selected issue, create lanes and launch agents, or resolve
+  multiple issues into an existing lane. The issue detail pane renders
+  the comment thread (via `getLinearIssueComments`) with markdown and
+  shows cycle and child-issue metadata.
 
 ## Database tables (selected)
 

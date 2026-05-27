@@ -499,7 +499,7 @@ Most services described here live under `apps/desktop/src/main/services/<domain>
 | `notifications/` | `apnsService.ts`, `apnsBridgeService.ts`, `notificationMapper.ts`, `notificationEventBus.ts` | APNs HTTP/2 client (ES256 JWT, key persisted via Electron `safeStorage` on the desktop or `EncryptedFileCredentialStore` under `.ade/secrets/` in the headless daemon), pure domain-event → `MappedNotification` mapping (13 categories / 4 families), event bus routing to APNs alert pushes + Live Activity update pushes + in-app WS delivery, filtered by per-device `NotificationPreferences`. `apnsBridgeService.ts` is the `notifications_apns` ADE action domain (`getStatus`, `saveConfig`, `uploadKey`, `clearKey`, `sendTestPush`) so the same Settings flow works whether the active project is local-bound or SSH-bound. |
 | `tests/` | `testService.ts` | Test-suite execution + run history. |
 | `updates/` | `autoUpdateService.ts` | Electron auto-update wrapper around `electron-updater`. Owns the renderer-visible `AutoUpdateSnapshot` (`idle \| checking \| downloading \| ready \| installing \| error`), uses `compareUpdateVersions` (SemVer-aware) to dedupe / supersede staged installers and to reconcile `pendingInstallUpdate` against the running version on next boot. `quitAndInstall()` is async: it re-runs `checkForUpdates({ allowReady: true })` to confirm the staged build is still latest, and only then flips to `installing` and calls `updater.quitAndInstall(false, true)`. |
-| `usage/` | `usageTrackingService.ts`, `budgetCapService.ts` | Token/cost accounting, budget enforcement. Local cost scans stream bounded recent Claude/Codex JSONL files instead of loading the whole history into memory. |
+| `usage/` | `usageTrackingService.ts`, `budgetCapService.ts` | Token/cost accounting, budget enforcement. Local cost scans stream bounded recent Claude/Codex JSONL files instead of loading the whole history into memory. Threshold state is shared at module level across all `createUsageTrackingService` instances so multiple project contexts don't fire duplicate threshold events; `main.ts` adds a final IPC-level dedup gate with a 10-minute TTL per `provider:threshold:resetCycle` key. |
 | `perf/` | `perfLog.ts`, `perfIpc.ts`, `metricsSampler.ts`, `aggregator.ts` | Opt-in local performance harness. `ADE_PERF_RUN_ID` opens a JSONL event log, samples Electron process metrics, records IPC durations, accepts renderer perf marks/web-vitals, and aggregates each run into `summary.json`. |
 
 Startup sequencing: every background service goes through `scheduleBackgroundProjectTask()` in `main.ts`, which provides explicit labels, `ADE_ENABLE_*` env gates, `project.startup_task_begin`/`_done`/`_enabled`/`_skipped` telemetry, and per-task delays. Integrations stay **dormant-until-configured**.
@@ -555,7 +555,7 @@ Domain stores co-located with their pages follow the same factory + context patt
 Feature-grouped under `apps/desktop/src/renderer/components/`:
 
 ```
-app/            # shell, App.tsx, TopBar, TabNav, LinearIssueBrowser, LinearIssueResolveModals, startup, splash
+app/            # shell, App.tsx, TopBar, TabNav, LinearIssueBrowser (multi-select + batch actions), LinearIssueResolveModals (single + batch), LinearQuickViewButton, startup, splash
 project/        # Play tab, run/test/process controls
 lanes/          # list/detail/inspector, stacks, laneDesignTokens.ts
 files/          # tree, editor, diffs

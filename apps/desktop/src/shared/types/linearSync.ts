@@ -545,6 +545,19 @@ export type NormalizedLinearIssue = {
   priority: number;
   priorityLabel: LinearPriorityLabel;
   labels: string[];
+  labelColors?: Array<{ name: string; color: string | null }>;
+  cycleId?: string | null;
+  cycleName?: string | null;
+  cycleStartsAt?: string | null;
+  cycleEndsAt?: string | null;
+  childIssues?: Array<{
+    id: string;
+    identifier: string;
+    title: string;
+    stateId: string;
+    stateName: string;
+    stateType: string;
+  }>;
   metadataTags?: string[];
   assigneeId: string | null;
   assigneeName: string | null;

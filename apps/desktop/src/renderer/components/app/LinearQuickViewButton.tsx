@@ -14,6 +14,9 @@ import { cn } from "../ui/cn";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { LinearIssueBrowser, linearBrowserIssueToLaneIssue } from "./LinearIssueBrowser";
 import {
+  BatchCreateLanesModal,
+  BatchResolveInExistingLaneModal,
+  BatchResolveInNewLanesModal,
   CreateLaneAttachedModal,
   ResolveInExistingLaneModal,
   ResolveInNewLaneModal,
@@ -21,7 +24,7 @@ import {
   type LinearIssueResolveModalKind,
 } from "./LinearIssueResolveModals";
 
-const INITIAL_VISIBILITY_CHECK_DELAY_MS = 8_000;
+const INITIAL_VISIBILITY_CHECK_DELAY_MS = 2_000;
 
 const HEADER_STATUS_MENU_ROW_CLASS =
   "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] font-medium text-muted-fg/80 transition-colors duration-150 hover:bg-white/[0.06] hover:text-fg/90";
@@ -74,9 +77,17 @@ export function LinearQuickViewButton({
   const [refreshKey, setRefreshKey] = useState(0);
   const [browserLoading, setBrowserLoading] = useState(false);
   const [busyModal, setBusyModal] = useState<LinearIssueResolveModalKind | null>(null);
+  const [batchProgress, setBatchProgress] = useState<{
+    completed: number;
+    total: number;
+    action: string;
+  } | null>(null);
   const { activeModal, activeIssue, openModal, closeModal } = useLinearIssueResolveModalState();
+  const [batchModal, setBatchModal] = useState<"batch-create-lanes" | "batch-resolve-new" | "batch-resolve-existing" | null>(null);
+  const [batchIssues, setBatchIssues] = useState<LaneLinearIssue[]>([]);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
+  const cachedQuickViewRef = useRef<CtoLinearQuickView | null>(null);
 
   const loadVisibility = useCallback(async (): Promise<boolean> => {
     if (!project?.rootPath || !window.ade.cto?.getLinearConnectionStatus) {
@@ -112,6 +123,10 @@ export function LinearQuickViewButton({
         .then(setVisible)
         .catch(() => setVisible(false));
     };
+    // If bridge already fired before this effect registered, check now
+    if ((window as any).__adeRuntimeBridge) {
+      onBridge();
+    }
     window.addEventListener("ade:runtime-bridge-ready", onBridge);
     return () => window.removeEventListener("ade:runtime-bridge-ready", onBridge);
   }, [loadVisibility]);
@@ -135,7 +150,28 @@ export function LinearQuickViewButton({
     };
   }, [loadVisibility, project?.rootPath]);
 
+  useEffect(() => {
+    if (visible) return;
+    if (!project?.rootPath) return;
+    let cancelled = false;
+    const interval = window.setInterval(() => {
+      void loadVisibility().then((v) => {
+        if (!cancelled && v) {
+          setVisible(true);
+          window.clearInterval(interval);
+        }
+      }).catch(() => {});
+    }, 3_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [loadVisibility, visible, project?.rootPath]);
+
   const openQuickView = useCallback(() => {
+    if (cachedQuickViewRef.current) {
+      setQuickView(cachedQuickViewRef.current);
+    }
     setOpen(true);
   }, []);
 
@@ -239,9 +275,89 @@ export function LinearQuickViewButton({
     }
   }, [activeIssue, closeModal, openWorkDraft]);
 
-  const handleResolveModalOpen = useCallback((kind: LinearIssueResolveModalKind, issue: NormalizedLinearIssue | LaneLinearIssue) => {
-    openModal(kind, linearBrowserIssueToLaneIssue(issue));
-  }, [openModal]);
+  const handleResolveModalOpen = useCallback(
+    (kind: LinearIssueResolveModalKind, issue: NormalizedLinearIssue | LaneLinearIssue) => {
+      openModal(kind, linearBrowserIssueToLaneIssue(issue));
+      setOpen(false); // Close the Linear pane so the modal is visible
+    },
+    [openModal],
+  );
+
+  const openBatchModal = useCallback((modal: NonNullable<typeof batchModal>, issues: Array<NormalizedLinearIssue | LaneLinearIssue>) => {
+    setBatchIssues(issues.map((i) => "raw" in i ? linearBrowserIssueToLaneIssue(i) : i as LaneLinearIssue));
+    setOpen(false);
+    setBatchModal(modal);
+  }, []);
+
+  const handleBatchCreateLanes = useCallback(
+    (issues: Array<NormalizedLinearIssue | LaneLinearIssue>) => openBatchModal("batch-create-lanes", issues),
+    [openBatchModal],
+  );
+  const handleBatchResolveNewLanes = useCallback(
+    (issues: Array<NormalizedLinearIssue | LaneLinearIssue>) => openBatchModal("batch-resolve-new", issues),
+    [openBatchModal],
+  );
+  const handleBatchResolveExistingLane = useCallback(
+    (issues: Array<NormalizedLinearIssue | LaneLinearIssue>) => openBatchModal("batch-resolve-existing", issues),
+    [openBatchModal],
+  );
+
+  const confirmBatchCreateLanes = useCallback(async () => {
+    setBusyModal("create-lane");
+    setBatchProgress({ completed: 0, total: batchIssues.length, action: "Creating lanes" });
+    try {
+      for (let i = 0; i < batchIssues.length; i++) {
+        await createLaneForIssue(batchIssues[i]);
+        setBatchProgress({ completed: i + 1, total: batchIssues.length, action: "Creating lanes" });
+      }
+      setBatchModal(null);
+      close();
+      window.location.hash = "#/lanes";
+    } catch (err) {
+      console.error("[Linear] Batch create lanes failed:", err);
+      setBatchModal(null);
+    } finally {
+      setBusyModal(null);
+      setBatchProgress(null);
+    }
+  }, [batchIssues, close, createLaneForIssue]);
+
+  const confirmBatchResolveNewLanes = useCallback(async (modelId: string) => {
+    setBusyModal("resolve-new-lane");
+    setBatchProgress({ completed: 0, total: batchIssues.length, action: "Creating lanes + chats" });
+    try {
+      for (let i = 0; i < batchIssues.length; i++) {
+        const lane = await createLaneForIssue(batchIssues[i]);
+        openWorkDraft(lane.id, batchIssues[i], "lane_link", modelId);
+        setBatchProgress({ completed: i + 1, total: batchIssues.length, action: "Creating lanes + chats" });
+      }
+      setBatchModal(null);
+    } catch (err) {
+      console.error("[Linear] Batch resolve (new lanes) failed:", err);
+      setBatchModal(null);
+    } finally {
+      setBusyModal(null);
+      setBatchProgress(null);
+    }
+  }, [batchIssues, createLaneForIssue, openWorkDraft]);
+
+  const confirmBatchResolveExistingLane = useCallback(async (laneId: string, modelId: string) => {
+    setBusyModal("resolve-existing-lane");
+    setBatchProgress({ completed: 0, total: batchIssues.length, action: "Assigning to lane" });
+    try {
+      for (let i = 0; i < batchIssues.length; i++) {
+        openWorkDraft(laneId, batchIssues[i], "manual", modelId);
+        setBatchProgress({ completed: i + 1, total: batchIssues.length, action: "Assigning to lane" });
+      }
+      setBatchModal(null);
+    } catch (err) {
+      console.error("[Linear] Batch resolve (existing lane) failed:", err);
+      setBatchModal(null);
+    } finally {
+      setBusyModal(null);
+      setBatchProgress(null);
+    }
+  }, [batchIssues, openWorkDraft]);
 
   if (!visible) return null;
 
@@ -376,8 +492,17 @@ export function LinearQuickViewButton({
                   disabled: Boolean(busyModal),
                 }}
                 onConnectionVisibilityChange={setVisible}
-                onQuickViewChange={setQuickView}
+                onQuickViewChange={(data) => {
+                  cachedQuickViewRef.current = data;
+                  setQuickView(data);
+                }}
                 onLoadingChange={setBrowserLoading}
+                batchActions={{
+                  onBatchCreateLanes: handleBatchCreateLanes,
+                  onBatchResolveNewLanes: handleBatchResolveNewLanes,
+                  onBatchResolveExistingLane: handleBatchResolveExistingLane,
+                  batchProgress,
+                }}
               />
             </div>
           </div>
@@ -406,6 +531,29 @@ export function LinearQuickViewButton({
         busy={busyModal === "resolve-existing-lane"}
         onOpenChange={(next) => { if (!next) closeModal(); }}
         onConfirm={handleResolveInExistingLane}
+      />
+
+      <BatchCreateLanesModal
+        open={batchModal === "batch-create-lanes"}
+        issues={batchIssues}
+        busy={Boolean(busyModal)}
+        onOpenChange={(next) => { if (!next) setBatchModal(null); }}
+        onConfirm={() => void confirmBatchCreateLanes()}
+      />
+      <BatchResolveInNewLanesModal
+        open={batchModal === "batch-resolve-new"}
+        issues={batchIssues}
+        busy={Boolean(busyModal)}
+        onOpenChange={(next) => { if (!next) setBatchModal(null); }}
+        onConfirm={(modelId) => void confirmBatchResolveNewLanes(modelId)}
+      />
+      <BatchResolveInExistingLaneModal
+        open={batchModal === "batch-resolve-existing"}
+        issues={batchIssues}
+        lanes={lanes}
+        busy={Boolean(busyModal)}
+        onOpenChange={(next) => { if (!next) setBatchModal(null); }}
+        onConfirm={(laneId, modelId) => void confirmBatchResolveExistingLane(laneId, modelId)}
       />
     </>
   );

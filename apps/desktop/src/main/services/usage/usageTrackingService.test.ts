@@ -828,6 +828,51 @@ describe("createUsageTrackingService", () => {
 
     service.dispose();
   });
+
+  it("shares threshold state across instances so the same event does not fire twice", async () => {
+    const logger = createLogger();
+    const onThreshold1 = vi.fn();
+    const onThreshold2 = vi.fn();
+
+    const highUsageWindows: UsageWindow[] = [
+      {
+        provider: "claude",
+        windowType: "weekly",
+        percentUsed: 80,
+        resetsAt: new Date(Date.now() + 3600_000).toISOString(),
+        resetsInMs: 3600_000,
+      },
+    ];
+
+    const makeDeps = (windows: UsageWindow[]) => ({
+      pollClaudeUsage: vi.fn(async () => ({ windows, extraUsage: null, errors: [] as never[] })),
+      pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
+      scanClaudeLogs: vi.fn(async () => [] as never[]),
+      scanCodexLogs: vi.fn(async () => [] as never[]),
+    });
+
+    const service1 = createUsageTrackingService({
+      logger,
+      onThresholdEvent: onThreshold1,
+      dependencies: makeDeps(highUsageWindows),
+    });
+    const service2 = createUsageTrackingService({
+      logger,
+      onThresholdEvent: onThreshold2,
+      dependencies: makeDeps(highUsageWindows),
+    });
+
+    await service1.poll();
+    await service2.poll();
+
+    // The first service should fire threshold events for 75% crossing
+    expect(onThreshold1.mock.calls.length).toBeGreaterThan(0);
+    // The second service should NOT fire because shared state already recorded the crossing
+    expect(onThreshold2.mock.calls.length).toBe(0);
+
+    service1.dispose();
+    service2.dispose();
+  });
 });
 
 // ── Local Cost Scanning with real files ──────────────────────────

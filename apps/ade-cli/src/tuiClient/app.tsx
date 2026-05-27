@@ -127,6 +127,7 @@ import { loadAdeCodeState, saveAdeCodeProjectState, scopedAdeCodeState } from ".
 import { SpinTickProvider } from "./spinTick";
 import { buildLinearToolRequest } from "./linearCommands";
 import {
+  formatLinearIssueComments,
   formatLinearStatus,
   formatPrChecks,
   formatPrComments,
@@ -6116,6 +6117,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       const result = await conn.actionList("linear_issue_tracker", "createComment", [parsed.first, parsed.rest]);
       setRightPane({ kind: "details", title: "Linear comment", body: renderObject(result, 12) });
       addNotice(`Commented on ${parsed.first}.`, "success");
+      return;
+    }
+    if (name === "/linear comments") {
+      const issueId = args?.trim();
+      if (!issueId) {
+        setRightPane({ kind: "details", title: "Linear comments", body: "Usage: /linear comments <issue-id>" });
+        return;
+      }
+      const comments = await conn.tool("getLinearIssueComments", { issueId });
+      setRightPane({ kind: "details", title: `Linear comments · ${issueId}`, body: formatLinearIssueComments(comments) });
       return;
     }
     if (name === "/linear assign") {
