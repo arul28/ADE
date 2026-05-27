@@ -3790,13 +3790,21 @@ function SubagentResultRow({
   const summary = ((event as { summary?: unknown }).summary as string | undefined)?.trim()
     ?? ((event as { description?: unknown }).description as string | undefined)?.trim()
     ?? "";
+  const status = (event as { status?: unknown }).status as string | undefined;
+  const failed = status === "failed" || status === "error";
+  const stopped = status === "stopped" || status === "cancelled";
+  const borderClass = failed ? "border-red-400/15" : stopped ? "border-amber-400/15" : "border-emerald-400/15";
+  const bgClass = failed ? "bg-red-500/[0.04]" : stopped ? "bg-amber-500/[0.04]" : "bg-emerald-500/[0.04]";
+  const labelColor = failed ? "text-red-200/75" : stopped ? "text-amber-200/75" : "text-emerald-200/75";
+  const textColor = failed ? "text-red-50/90" : stopped ? "text-amber-50/90" : "text-emerald-50/90";
+  const label = failed ? "Failed" : stopped ? "Stopped" : "Final result";
   return (
-    <div className="rounded-lg border border-emerald-400/15 bg-emerald-500/[0.04] px-3.5 py-2">
-      <div className="font-sans text-[10.5px] font-semibold uppercase tracking-[0.08em] text-emerald-200/75">
-        Final result
+    <div className={`rounded-lg ${borderClass} ${bgClass} px-3.5 py-2`}>
+      <div className={`font-sans text-[10.5px] font-semibold uppercase tracking-[0.08em] ${labelColor}`}>
+        {label}
       </div>
       {summary ? (
-        <div className="mt-1 whitespace-pre-wrap break-words font-sans text-[13px] leading-[1.55] text-emerald-50/90">
+        <div className={`mt-1 whitespace-pre-wrap break-words font-sans text-[13px] leading-[1.55] ${textColor}`}>
           {summary}
         </div>
       ) : (

@@ -611,8 +611,10 @@ function SessionSurface({
             session={session}
             lanes={lanes}
             compact={layoutVariant === "grid-tile"}
+            stopping={stopping}
             onInfoClick={onInfoClick}
             onContextMenu={onContextMenu}
+            onStopRunningSession={onStopRunningSession}
           />
           <TerminalView
             key={session.id}

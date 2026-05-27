@@ -1,5 +1,5 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { DotsThreeVertical, Info } from "@phosphor-icons/react";
+import { DotsThreeVertical, Info, StopCircle } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
@@ -47,15 +47,33 @@ function statusForCacheBadgeGate(
  */
 export function CliSurfaceTrailingActions({
   session,
+  stopping = false,
   onInfoClick,
   onContextMenu,
+  onStopRunningSession,
 }: {
   session: TerminalSessionSummary;
+  stopping?: boolean;
   onInfoClick?: (session: TerminalSessionSummary, event: ReactMouseEvent<HTMLElement>) => void;
   onContextMenu?: (session: TerminalSessionSummary, event: ReactMouseEvent<HTMLElement>) => void;
+  onStopRunningSession?: (session: TerminalSessionSummary) => void;
 }) {
+  const canStop = session.status === "running" && Boolean(session.ptyId) && Boolean(onStopRunningSession);
   return (
     <>
+      {canStop ? (
+        <SmartTooltip content={{ label: stopping ? "Stopping…" : "Stop session", description: "Terminate the running session." }}>
+          <button
+            type="button"
+            className={cn(WORK_SURFACE_HEADER_ACTION_BASE, "px-1.5 text-red-300/70 hover:text-red-200")}
+            onClick={() => onStopRunningSession?.(session)}
+            aria-label="Stop session"
+            disabled={stopping}
+          >
+            <StopCircle size={14} weight="regular" />
+          </button>
+        </SmartTooltip>
+      ) : null}
       {session.laneId ? (
         <QuickRunMenu
           laneId={session.laneId}
@@ -108,14 +126,18 @@ export function CliSessionWorkSurfaceHeader({
   session,
   lanes,
   compact = false,
+  stopping = false,
   onInfoClick,
   onContextMenu,
+  onStopRunningSession,
 }: {
   session: TerminalSessionSummary;
   lanes: LaneSummary[];
   compact?: boolean;
+  stopping?: boolean;
   onInfoClick?: (session: TerminalSessionSummary, event: ReactMouseEvent<HTMLElement>) => void;
   onContextMenu?: (session: TerminalSessionSummary, event: ReactMouseEvent<HTMLElement>) => void;
+  onStopRunningSession?: (session: TerminalSessionSummary) => void;
 }) {
   const navigate = useNavigate();
   const lane = lanes.find((entry) => entry.id === session.laneId) ?? null;
@@ -162,8 +184,10 @@ export function CliSessionWorkSurfaceHeader({
           />
           <CliSurfaceTrailingActions
             session={session}
+            stopping={stopping}
             onInfoClick={onInfoClick}
             onContextMenu={onContextMenu}
+            onStopRunningSession={onStopRunningSession}
           />
         </>
       }

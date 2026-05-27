@@ -97,8 +97,10 @@ new runtime or interfere with the existing socket.
 - **Never start a runtime or bridge.** Do not run `dev:vite:live`, `dev:browser-bridge`,
   or `ensureRuntime`. These may detect version mismatches and restart the user's running
   ADE beta/dev runtime.
-- **Never touch the ADE socket.** The Vite-only preview uses `browserMock.ts` to stub
-  `window.ade` — it does not need a runtime connection.
+- **Never start or manage the ADE socket directly.** The Vite-only preview uses
+  `browserMock.ts` to stub `window.ade` — it does not need a runtime connection.
+  The `--socket` flag on `ade actions run` above is fine; it connects to the
+  running desktop instance rather than managing the socket itself.
 - **Always run from the worktree.** All `cd` commands, file reads, and file edits must
   target paths under `$WORKTREE_ROOT`, never the main project checkout. When `grep` or
   `find` returns absolute paths rooted at the main checkout, translate them to the

@@ -22652,8 +22652,9 @@ export function createAgentChatService(args: {
     item: Record<string, unknown>,
     threadId: string,
     turnId: string | null,
+    itemIndex: number,
   ): AgentChatSubagentTranscriptMessage[] => {
-    const itemId = typeof item.id === "string" && item.id.length > 0 ? item.id : randomUUID();
+    const itemId = typeof item.id === "string" && item.id.length > 0 ? item.id : `no-id:${turnId ?? "?"}:${itemIndex}`;
     const itemType = typeof item.type === "string" ? item.type : "";
     const baseUuid = `codex-thread-item:${threadId}:${itemId}`;
     const baseMessage = (event: AgentChatEvent, role: AgentChatSubagentTranscriptMessage["type"], extras?: { uuidSuffix?: string; text?: string }): AgentChatSubagentTranscriptMessage => ({
@@ -22879,14 +22880,18 @@ export function createAgentChatService(args: {
         for (const turn of turns) {
           const turnId = typeof turn?.id === "string" ? turn.id : null;
           const items = Array.isArray(turn?.items) ? turn.items : [];
-          for (const item of items) {
+          for (let idx = 0; idx < items.length; idx++) {
+            const item = items[idx];
             if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-            collected.push(...codexThreadItemToTranscriptMessages(item as Record<string, unknown>, threadId, turnId));
+            collected.push(...codexThreadItemToTranscriptMessages(item as Record<string, unknown>, threadId, turnId, idx));
           }
         }
         cursor = typeof response?.nextCursor === "string" ? response.nextCursor : null;
         pages += 1;
       } while (cursor && pages < MAX_PAGES);
+      if (cursor && pages >= MAX_PAGES) {
+        logger.warn("agent_chat.codex_transcript_truncated", { threadId, pages: MAX_PAGES, itemCount: collected.length });
+      }
     } catch {
       // Codex app-server may not support thread/turns/list for spawned
       // subagent threads in older builds, or the runtime may be busy. Signal
