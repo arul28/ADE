@@ -968,6 +968,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade git rebase continue --lane <lane>         Continue an in-progress rebase
     $ ade git conflict show --lane <lane> --text    Inspect merge/rebase conflict state
     $ ade git conflict resolve --kind rebase        Continue after manual conflict resolution
+    $ ade git tag <sha> --name v1.0.0 --lane <lane> Create a tag on a commit
+    $ ade git reset <sha> --soft --lane <lane>      Reset HEAD to a commit (soft/mixed/hard)
+    $ ade git is-reachable <sha> --lane <lane>      Check if a commit is in the lane history
     $ ade diff changes --lane <lane> --text         Inspect changed files
 `,
   operations: `${ADE_BANNER}
@@ -3165,6 +3168,71 @@ function buildGitPlan(args: string[]): CliPlan {
           "result",
           "git",
           sub === "revert" ? "revertCommit" : "cherryPickCommit",
+          withLane({ commitSha }),
+        ),
+      ],
+    };
+  }
+  if (sub === "tag" || sub === "create-tag") {
+    const commitSha = requireValue(
+      readValue(args, ["--commit", "--sha"]) ?? firstPositional(args),
+      "commitSha",
+    );
+    const tagName = requireValue(
+      readValue(args, ["--name", "--tag", "--tag-name"]) ?? firstPositional(args),
+      "tagName",
+    );
+    const message = readValue(args, ["--message", "-m"]);
+    return {
+      kind: "execute",
+      label: "git tag",
+      steps: [
+        actionStep(
+          "result",
+          "git",
+          "createTag",
+          withLane({ commitSha, tagName, ...(message ? { message } : {}) }),
+        ),
+      ],
+    };
+  }
+  if (sub === "reset" || sub === "reset-to-commit") {
+    const commitSha = requireValue(
+      readValue(args, ["--commit", "--sha"]) ?? firstPositional(args),
+      "commitSha",
+    );
+    const mode =
+      readValue(args, ["--mode"]) ??
+      (readFlag(args, ["--soft"]) ? "soft" : readFlag(args, ["--hard"]) ? "hard" : "mixed");
+    if (mode !== "soft" && mode !== "mixed" && mode !== "hard") {
+      throw new CliUsageError("git reset --mode must be soft, mixed, or hard.");
+    }
+    return {
+      kind: "execute",
+      label: "git reset",
+      steps: [
+        actionStep(
+          "result",
+          "git",
+          "resetToCommit",
+          withLane({ commitSha, mode }),
+        ),
+      ],
+    };
+  }
+  if (sub === "is-reachable" || sub === "is-commit-reachable" || sub === "commit-reachable") {
+    const commitSha = requireValue(
+      readValue(args, ["--commit", "--sha"]) ?? firstPositional(args),
+      "commitSha",
+    );
+    return {
+      kind: "execute",
+      label: "git is-reachable",
+      steps: [
+        actionStep(
+          "result",
+          "git",
+          "isCommitInLaneHistory",
           withLane({ commitSha }),
         ),
       ],

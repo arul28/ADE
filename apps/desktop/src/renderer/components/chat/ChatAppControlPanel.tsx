@@ -50,7 +50,6 @@ type LiveFrameDims = {
   scaleX: number;
   scaleY: number;
 };
-type DisplayMetrics = LiveFrameDims;
 type MappedPoint = {
   viewportX: number;
   viewportY: number;
@@ -389,7 +388,7 @@ export function ChatAppControlPanel({
     return () => window.clearInterval(timer);
   }, [liveFrameActive]);
 
-  const getDisplayedMetrics = useCallback((): DisplayMetrics | null => {
+  const getDisplayedMetrics = useCallback((): LiveFrameDims | null => {
     if (liveFrameActive) {
       const live = liveFrameDimsRef.current;
       if (live && live.width > 0 && live.height > 0 && live.viewportWidth > 0 && live.viewportHeight > 0) {
@@ -566,6 +565,19 @@ export function ChatAppControlPanel({
 
   useEffect(() => {
     let cancelled = false;
+    function resetSessionState(): void {
+      setSnapshot(null);
+      setSelectedElement(null);
+      setSelectedPoint(null);
+      setSelectedContextItem(null);
+      setHoverElement(null);
+      setLiveFrameActive(false);
+      setLiveFrameInitialSrc(null);
+      liveFrameDimsRef.current = null;
+      liveFrameLastAtRef.current = null;
+      liveFrameSrcRef.current = null;
+      liveFramePendingSrcRef.current = null;
+    }
     void refreshStatus().then((nextStatus) => {
       if (!cancelled && nextStatus.activeSession?.status === "connected") {
         void refreshSnapshot().catch(() => {});
@@ -598,34 +610,13 @@ export function ChatAppControlPanel({
         ) {
           // Either the app hasn't connected yet, or it just disappeared. Drop
           // the last screenshot so the panel doesn't keep claiming to be live.
-          setSnapshot(null);
-          setSelectedElement(null);
-          setSelectedPoint(null);
-          setSelectedContextItem(null);
-          setHoverElement(null);
-          setLiveFrameActive(false);
-          setLiveFrameInitialSrc(null);
-          liveFrameDimsRef.current = null;
-          liveFrameLastAtRef.current = null;
-          liveFrameSrcRef.current = null;
-          liveFramePendingSrcRef.current = null;
+          resetSessionState();
         }
         void refreshStatus().catch(() => {});
       }
       if (event.type === "session-stopped") {
         void refreshStatus().catch(() => {});
-        setSnapshot(null);
-        setSelectedElement(null);
-        setHoverElement(null);
-        setSelectedPoint(null);
-        setSelectedContextItem(null);
-        setHoverElement(null);
-        setLiveFrameActive(false);
-        setLiveFrameInitialSrc(null);
-        liveFrameDimsRef.current = null;
-        liveFrameLastAtRef.current = null;
-        liveFrameSrcRef.current = null;
-        liveFramePendingSrcRef.current = null;
+        resetSessionState();
       }
       if (event.type === "frame") {
         if (event.frame.cdpTargetId !== activeTargetIdRef.current) return;
@@ -1458,18 +1449,16 @@ export function ChatAppControlPanel({
                 );
               })() : null}
               {/* Control-only: brief click pulse so the user gets feedback without persistent chrome */}
-              {mode === "control" && controlPulse && !screenshotBlank ? (() => {
-                return (
-                  <div
-                    key={`pulse-${controlPulse.nonce}`}
-                    className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border border-sky-200/70 bg-sky-200/35 motion-safe:animate-ping"
-                    style={{
-                      left: `${controlPulse.leftPct}%`,
-                      top: `${controlPulse.topPct}%`,
-                    }}
-                  />
-                );
-              })() : null}
+              {mode === "control" && controlPulse && !screenshotBlank ? (
+                <div
+                  key={`pulse-${controlPulse.nonce}`}
+                  className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border border-sky-200/70 bg-sky-200/35 motion-safe:animate-ping"
+                  style={{
+                    left: `${controlPulse.leftPct}%`,
+                    top: `${controlPulse.topPct}%`,
+                  }}
+                />
+              ) : null}
             </div>
           </div>
         ) : (

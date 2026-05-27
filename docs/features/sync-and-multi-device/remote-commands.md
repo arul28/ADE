@@ -8,7 +8,7 @@ action against its in-process services, and replies with `command_ack`
 and then `command_result`.
 
 Source file: `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts`
-(~2,520 lines). The desktop tree's
+(~2,840 lines). The desktop tree's
 `apps/desktop/src/main/services/sync/syncRemoteCommandService.ts` is a
 one-line re-export of the canonical module.
 
@@ -169,6 +169,10 @@ both via `SyncService.dispatchChatSteer` /
 - `commit`, `generateCommitMessage`, `listRecentCommits`,
   `listCommitFiles`, `getCommitMessage`, `getFileHistory`
 - `revertCommit`, `cherryPickCommit`, `createTag`, `resetToCommit`
+- `isCommitInLaneHistory` — checks whether a given `commitSha` is
+  reachable from the lane's current HEAD; used by controllers before
+  surfacing destructive operations on commits that may belong to a
+  different branch
 - `stashPush`, `stashList`, `stashApply`, `stashPop`, `stashDrop`
 - `fetch`, `pull`, `sync`, `push`, `getSyncStatus`
 - `undoLastHeadChange`, `redoLastHeadChange` — paired recovery
@@ -180,11 +184,14 @@ both via `SyncService.dispatchChatSteer` /
 `git.pull` accepts an optional `mode` argument
 (`"ff-only" | "rebase" | "merge"`, default `ff-only`) so controllers
 can pick the strategy without having to send three separate actions.
+Unknown mode values are rejected with a clear error.
 `git.resetToCommit` takes `{ laneId, commitSha, mode }` where `mode`
 is one of `soft | mixed | hard`; ADE records the operation as
 `git_reset_<mode>` so undo/redo lookups can pair it up later.
 `git.createTag` takes `{ laneId, commitSha, tagName, message? }`;
 omitting `message` creates a lightweight tag.
+`git.isCommitInLaneHistory` takes `{ laneId, commitSha }` and returns
+a boolean.
 
 **Files**
 - `files.writeTextAtomic`
@@ -270,9 +277,13 @@ A handful have more logic:
   process happened to start from.
   Claude launches mint a pre-assigned `--session-id` upfront via
   `randomUUID()` so continuation works as soon as the row exists.
-  After `ptyService.create` returns, any `initialInput`
-  is forwarded as keystrokes via `ptyService.writeBySessionId`. The
-  result is `SyncStartCliSessionResult` (`{ sessionId, ptyId,
+  When `initialInput` is present, it is passed to `ptyService.create`
+  as `args.initialInput` with an `initialInputDelayMs` (default
+  750 ms for CLI launches) so the agent CLI input protocol handles
+  bracketed-paste submission after the TUI has had time to initialize.
+  This replaces the older pattern of post-create `writeBySessionId`
+  keystrokes.
+  The result is `SyncStartCliSessionResult` (`{ sessionId, ptyId,
   session: TerminalSessionSummary | null }`) — the controller can
   immediately render the session card and call `terminal_subscribe`
   without an extra round-trip. The command-result journal persists

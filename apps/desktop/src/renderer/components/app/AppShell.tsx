@@ -34,7 +34,6 @@ import type {
   TerminalSessionSummary,
   UsageThresholdEvent,
 } from "../../../shared/types";
-import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
 import { OPEN_USAGE_EVENT } from "../usage/HeaderUsageControl";
 import {
   eventMatchesBinding,
@@ -148,14 +147,6 @@ function usageProviderLabel(provider: UsageThresholdEvent["provider"]): string {
   }
 }
 
-function usageProviderIcon(provider: UsageThresholdEvent["provider"]): typeof ClaudeLogo | null {
-  switch (provider) {
-    case "claude": return ClaudeLogo;
-    case "codex": return CodexLogo;
-    default: return null;
-  }
-}
-
 function formatUsageResetCountdown(resetsAt: string, nowMs: number): string {
   const resetMs = Math.max(0, new Date(resetsAt).getTime() - nowMs);
   if (resetMs <= 0) return "resets now";
@@ -167,8 +158,13 @@ function formatUsageResetCountdown(resetsAt: string, nowMs: number): string {
 
 const USAGE_ALERT_DISMISS_STORAGE_KEY = "ade:usage-threshold-dismissed";
 
+function normalizeResetsAt(resetsAt: string): string {
+  const ms = new Date(resetsAt).getTime();
+  return Number.isFinite(ms) ? String(ms) : resetsAt.trim();
+}
+
 function usageAlertKey(event: UsageThresholdEvent): string {
-  return `${event.provider}:${event.threshold}:${event.resetsAt}`;
+  return `${event.provider}:${event.threshold}:${normalizeResetsAt(event.resetsAt)}`;
 }
 
 function readDismissedUsageAlerts(): Set<string> {
@@ -195,8 +191,9 @@ function markUsageAlertDismissed(
   dismissed: Set<string>,
   event: UsageThresholdEvent,
 ): void {
+  const normalizedReset = normalizeResetsAt(event.resetsAt);
   for (const threshold of [25, 50, 75, 100] as const) {
-    dismissed.add(`${event.provider}:${threshold}:${event.resetsAt}`);
+    dismissed.add(`${event.provider}:${threshold}:${normalizedReset}`);
   }
   persistDismissedUsageAlerts(dismissed);
 }
@@ -1026,12 +1023,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  const usageAlertLastSeenRef = useRef<Map<string, number>>(new Map());
+
   useEffect(() => {
     const onThreshold = window.ade?.usage?.onThreshold;
     if (typeof onThreshold !== "function") return;
     const unsub = onThreshold((event) => {
       const key = usageAlertKey(event);
       if (dismissedUsageAlertsRef.current.has(key)) return;
+
+      const now = Date.now();
+      const lastSeen = usageAlertLastSeenRef.current.get(key) ?? 0;
+      if (now - lastSeen < 300_000) return;
+      usageAlertLastSeenRef.current.set(key, now);
 
       const id = globalThis.crypto?.randomUUID
         ? globalThis.crypto.randomUUID()
@@ -1258,10 +1262,56 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </aside>
         )}
 
-        <main className={cn("relative flex min-h-0 min-w-0 flex-1", tintClass)}>
+        <main className={cn("relative flex flex-col min-h-0 min-w-0 flex-1", tintClass)}>
           <TabBackground />
+          {usageThresholdToasts.length > 0 ? (
+            <div className="shrink-0 z-[2] flex flex-col">
+              {usageThresholdToasts.map(({ id, event }) => {
+                const tone = usageThresholdToneColor(event.threshold);
+                const providerLabel = usageProviderLabel(event.provider);
+                const countdown = formatUsageResetCountdown(event.resetsAt, Date.now());
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    className="group relative flex h-6 w-full items-center overflow-hidden text-[11px] transition-colors hover:brightness-110"
+                    style={{ background: `${tone}12` }}
+                    onClick={() => {
+                      window.dispatchEvent(new CustomEvent(OPEN_USAGE_EVENT));
+                      dismissUsageToast(id, event);
+                    }}
+                    title="Open usage"
+                  >
+                    <div
+                      className="absolute inset-y-0 left-0 transition-all"
+                      style={{
+                        width: `${Math.min(100, event.threshold)}%`,
+                        background: `${tone}25`,
+                      }}
+                    />
+                    <div className="relative z-[1] flex w-full items-center justify-center gap-2 px-3">
+                      <span className="font-medium" style={{ color: tone }}>
+                        {providerLabel} {event.threshold}%
+                      </span>
+                      <span style={{ color: `${tone}99` }}>·</span>
+                      <span style={{ color: `${tone}88` }}>{countdown}</span>
+                    </div>
+                    <div
+                      className="absolute inset-y-0 right-0 z-[2] flex items-center pr-2 opacity-0 group-hover:opacity-100 transition-opacity"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        dismissUsageToast(id, event);
+                      }}
+                    >
+                      <span className="text-[10px] text-muted-fg hover:text-fg cursor-pointer">✕</span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
           <div
-            className="relative z-[1] h-full min-h-0 w-full"
+            className="relative z-[1] min-h-0 flex-1 w-full"
             data-tab-revisit={!isFirstVisit || undefined}
           >
             {shouldHoldProjectRouteForOnboarding ? (
@@ -1274,7 +1324,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               children
             )}
           </div>
-          {staleCliNotice || prToasts.length > 0 || usageThresholdToasts.length > 0 ? (
+          {staleCliNotice || prToasts.length > 0 ? (
             <div className="pointer-events-none absolute bottom-2 right-2 z-[95] flex w-[min(380px,calc(100vw-20px))] flex-col gap-1.5">
               {staleCliNotice ? (
                 <div className="pointer-events-auto overflow-hidden rounded-xl border border-amber-500/25 bg-card/95 px-3 py-3 shadow-float backdrop-blur">
@@ -1473,60 +1523,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                           >
                             <ArrowSquareOut size={12} />
                             Open on GitHub
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-              {usageThresholdToasts.map(({ id, event }) => {
-                const tone = usageThresholdToneColor(event.threshold);
-                const providerLabel = usageProviderLabel(event.provider);
-                const ProviderIcon = usageProviderIcon(event.provider);
-                const countdown = formatUsageResetCountdown(event.resetsAt, Date.now());
-                return (
-                  <div
-                    key={id}
-                    className="pointer-events-auto overflow-hidden rounded-xl border bg-card/95 px-3 py-3 shadow-float backdrop-blur"
-                    style={{ borderColor: `${tone}55` }}
-                  >
-                    <div className="flex items-start gap-3">
-                      <div
-                        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
-                        style={{ background: `${tone}1f`, color: tone }}
-                      >
-                        {ProviderIcon ? <ProviderIcon size={16} /> : null}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-start justify-between gap-2">
-                          <div
-                            className="text-[13px] font-semibold leading-tight text-fg"
-                            style={{ color: tone }}
-                          >
-                            {providerLabel} at {event.threshold}% weekly
-                          </div>
-                          <button
-                            type="button"
-                            className="shrink-0 rounded p-1 text-muted-fg transition-colors hover:bg-fg/[0.05] hover:text-fg"
-                            onClick={() => dismissUsageToast(id, event)}
-                            aria-label="Dismiss usage threshold toast"
-                            title="Dismiss"
-                          >
-                            ×
-                          </button>
-                        </div>
-                        <div className="mt-1 text-[12px] text-muted-fg">{countdown}</div>
-                        <div className="mt-2 flex justify-end">
-                          <button
-                            type="button"
-                            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border/60 px-2.5 text-[11px] font-medium text-fg/85 transition-colors hover:border-fg/20 hover:bg-fg/[0.04] hover:text-fg"
-                            onClick={() => {
-                              window.dispatchEvent(new CustomEvent(OPEN_USAGE_EVENT));
-                              dismissUsageToast(id, event);
-                            }}
-                          >
-                            Open usage
                           </button>
                         </div>
                       </div>

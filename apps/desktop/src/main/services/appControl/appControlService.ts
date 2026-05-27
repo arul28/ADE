@@ -1394,7 +1394,11 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     stopCdpPoller();
     stopCdpHealthCheck();
     updateSession({
-      status: activeSession.status === "stopping" ? "stopped" : event.exitCode === 0 ? "exited" : "failed",
+      status: activeSession.status === "stopping"
+        ? "stopped"
+        : event.exitCode === 0
+          ? "exited"
+          : "failed",
       lastError: event.exitCode === 0 ? null : `Terminal exited with code ${event.exitCode ?? "unknown"}.`,
     });
   }) ?? null;

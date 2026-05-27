@@ -426,13 +426,6 @@ function getCachedCursorSdkModels(apiKey?: string | null): CursorCliModelRow[] |
   return null;
 }
 
-function getRecentCursorSdkFailure(apiKey?: string | null): typeof sdkLastFailure {
-  const normalizedApiKey = apiKey?.trim() || undefined;
-  const keyHash = hashKeyForCache(normalizedApiKey);
-  if (!sdkLastFailure || sdkLastFailure.keyHash !== keyHash) return null;
-  if (Date.now() - sdkLastFailure.at > TTL_MS) return null;
-  return sdkLastFailure;
-}
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -832,11 +825,8 @@ export async function discoverCursorSdkModelDescriptors(
     ? await probeCursorSdkModelDiscovery(apiKey, { timeoutMs: options?.timeoutMs })
     : null;
   const rows = result?.rows ?? getCachedCursorSdkModels(apiKey) ?? [];
-  const recentFailure = getRecentCursorSdkFailure(apiKey);
-  const knownAuthFailure = result?.failureKind === "auth" || recentFailure?.kind === "auth";
   if (!rows.length && options?.mode === "cached-or-fallback") {
     warmCursorModelsFromSdk(apiKey);
   }
-  void knownAuthFailure;
   return cursorRowsToDescriptors(rows);
 }

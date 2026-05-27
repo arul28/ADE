@@ -118,6 +118,7 @@ const mocks = vi.hoisted(() => {
     parseTrackedCliLaunchConfig: vi.fn(() => null),
     runtimeStateFromOsc133Chunk: vi.fn(() => "running"),
     resolveOpenCodeBinaryPath: vi.fn<[], string | null>(() => null),
+    execFileSync: vi.fn(() => ""),
     spawnSync: vi.fn(() => ({ status: 1, stdout: "", stderr: "" })),
   };
 });
@@ -162,6 +163,7 @@ vi.mock("node:crypto", () => ({
 }));
 
 vi.mock("node:child_process", () => ({
+  execFileSync: mocks.execFileSync,
   spawnSync: mocks.spawnSync,
 }));
 
@@ -832,6 +834,82 @@ describe("ptyService", () => {
       }
     });
 
+    it("does not send Codex initialInput into the update prompt", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty, logger } = createHarness();
+
+        await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+          startupCommand: "codex --no-alt-screen",
+          initialInput: "please keep going",
+        });
+
+        mockPty._emitter.emit("data", [
+          "Update available! 0.130.0 -> 0.134.0\n",
+          "› Update now (runs npm install -g @openai/codex)\n",
+          "  Skip\n",
+        ].join(""));
+
+        await vi.advanceTimersByTimeAsync(20_500);
+
+        expect(mockPty.write).not.toHaveBeenCalled();
+        expect(logger.warn).toHaveBeenCalledWith(
+          "pty.agent_cli_ready_wait_timeout",
+          expect.objectContaining({ provider: "codex" }),
+        );
+        expect(logger.warn).toHaveBeenCalledWith(
+          "pty.initial_input_skipped_not_ready",
+          expect.objectContaining({ provider: "codex" }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("moves node_modules bins behind user paths for Codex CLI launches", async () => {
+      const previousPath = process.env.PATH;
+      process.env.PATH = [
+        "/repo/apps/desktop/node_modules/.bin",
+        "/opt/homebrew/bin",
+        "/usr/bin",
+        "/tmp/project/node_modules/.bin",
+      ].join(path.delimiter);
+      try {
+        const { service, loadPty } = createHarness();
+
+        await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+          startupCommand: "codex --no-alt-screen",
+        });
+
+        const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+        const spawnArgs = ptyLib.spawn.mock.calls.at(-1);
+        const opts = spawnArgs?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+        expect(opts?.env?.PATH?.split(path.delimiter)).toEqual([
+          "/opt/homebrew/bin",
+          "/usr/bin",
+          "/repo/apps/desktop/node_modules/.bin",
+          "/tmp/project/node_modules/.bin",
+        ]);
+      } finally {
+        if (previousPath == null) delete process.env.PATH;
+        else process.env.PATH = previousPath;
+      }
+    });
+
     it("does not send Cursor initialInput into the workspace trust prompt", async () => {
       vi.useFakeTimers();
       try {
@@ -877,6 +955,113 @@ describe("ptyService", () => {
         await vi.advanceTimersByTimeAsync(1);
         expect(mockPty.write).toHaveBeenCalledTimes(4);
         expect(mockPty.write).toHaveBeenLastCalledWith("\r");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("skips Cursor initialInput when the workspace trust prompt never reaches a composer", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty, logger } = createHarness();
+
+        await service.create({
+          laneId: "lane-1",
+          title: "Cursor CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "cursor-cli",
+          command: "/bin/bash",
+          args: ["-lc", "cursor-agent --resume chat-1"],
+          startupCommand: "cursor-agent --resume chat-1",
+          initialInput: "print cwd",
+        });
+
+        mockPty._emitter.emit("data", [
+          "Cursor Agent\n",
+          "Workspace Trust Required\n",
+          "Do you trust the content of this directory?\n",
+          "[a] Trust this workspace\n",
+        ].join(""));
+        await vi.advanceTimersByTimeAsync(20_500);
+
+        expect(mockPty.write).not.toHaveBeenCalled();
+        expect(logger.warn).toHaveBeenCalledWith(
+          "pty.agent_cli_ready_wait_timeout",
+          expect.objectContaining({ provider: "cursor" }),
+        );
+        expect(logger.warn).toHaveBeenCalledWith(
+          "pty.initial_input_skipped_not_ready",
+          expect.objectContaining({ provider: "cursor" }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not treat a Cursor banner alone as an input-ready composer", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty, logger } = createHarness();
+
+        await service.create({
+          laneId: "lane-1",
+          title: "Cursor CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "cursor-cli",
+          command: "/bin/bash",
+          args: ["-lc", "cursor-agent --resume chat-1"],
+          startupCommand: "cursor-agent --resume chat-1",
+          initialInput: "print cwd",
+        });
+
+        mockPty._emitter.emit("data", "Cursor Agent\nv2026.05.24\n");
+        await vi.advanceTimersByTimeAsync(20_500);
+
+        expect(mockPty.write).not.toHaveBeenCalled();
+        expect(logger.warn).toHaveBeenCalledWith(
+          "pty.agent_cli_ready_wait_timeout",
+          expect.objectContaining({ provider: "cursor" }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not send OpenCode initialInput into an authentication prompt", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty, logger } = createHarness();
+
+        await service.create({
+          laneId: "lane-1",
+          title: "OpenCode CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "opencode",
+          command: "opencode",
+          args: ["--continue"],
+          startupCommand: "opencode --continue",
+          initialInput: "print cwd",
+        });
+
+        mockPty._emitter.emit("data", [
+          "opencode\n",
+          "Authentication required\n",
+          "Please log in or configure an API key.\n",
+        ].join(""));
+        await vi.advanceTimersByTimeAsync(20_500);
+
+        expect(mockPty.write).not.toHaveBeenCalled();
+        expect(logger.warn).toHaveBeenCalledWith(
+          "pty.agent_cli_ready_wait_timeout",
+          expect.objectContaining({ provider: "opencode" }),
+        );
+        expect(logger.warn).toHaveBeenCalledWith(
+          "pty.initial_input_skipped_not_ready",
+          expect.objectContaining({ provider: "opencode" }),
+        );
       } finally {
         vi.useRealTimers();
       }
@@ -1388,7 +1573,7 @@ describe("ptyService", () => {
 
     it("backfills a targetless Claude resume command before launching the resumed PTY", async () => {
       (mocks.extractResumeCommandFromOutput as any).mockReturnValueOnce("claude --resume claude-session-123");
-      const { service, sessionService, mockPty, loadPty } = createHarness();
+      const { service, sessionService, mockPty } = createHarness();
       sessionService.create({
         sessionId: "session-claude-picker",
         laneId: "lane-1",
@@ -1458,6 +1643,7 @@ describe("ptyService", () => {
         mocks.fileStats.set(filePath, { size: firstLine.length, mtimeMs: fakeNow.getTime() - 30_000, isDirectory: false });
 
         const { service, sessionService, mockPty } = createHarness();
+        sessionService.readTranscriptTail.mockResolvedValueOnce("OpenAI Codex\nmodel: gpt-5\n› ");
         sessionService.create({
           sessionId: "session-codex-picker",
           laneId: "lane-1",
@@ -1672,6 +1858,114 @@ describe("ptyService", () => {
       expect(mockPty.write).toHaveBeenNthCalledWith(4, "\r");
     });
 
+    it.each([
+      {
+        provider: "claude",
+        toolType: "claude",
+        title: "Claude CLI",
+        resumeCommand: "claude --resume",
+        expectedName: "Claude",
+      },
+      {
+        provider: "codex",
+        toolType: "codex",
+        title: "Codex CLI",
+        resumeCommand: "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume",
+        expectedName: "Codex",
+      },
+      {
+        provider: "cursor",
+        toolType: "cursor-cli",
+        title: "Cursor CLI",
+        resumeCommand: "cursor-agent --model auto --continue",
+        expectedName: "Cursor",
+      },
+      {
+        provider: "droid",
+        toolType: "droid",
+        title: "Droid CLI",
+        resumeCommand: "droid --resume",
+        expectedName: "Droid",
+      },
+      {
+        provider: "opencode",
+        toolType: "opencode",
+        title: "OpenCode CLI",
+        resumeCommand: "opencode --continue",
+        expectedName: "OpenCode",
+      },
+    ] as const)("sendToSession refuses targetless $expectedName resume sessions", async ({ provider, toolType, title, resumeCommand, expectedName }) => {
+      const { service, sessionService, loadPty } = createHarness();
+      sessionService.create({
+        sessionId: `session-${provider}-targetless`,
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title,
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: `/tmp/transcripts/session-${provider}-targetless.log`,
+        toolType,
+        resumeCommand,
+        resumeMetadata: {
+          provider,
+          targetKind: "session",
+          targetId: null,
+          launch: { permissionMode: "default" },
+        },
+      });
+      sessionService.end({
+        sessionId: `session-${provider}-targetless`,
+        endedAt: "2026-04-09T12:30:00.000Z",
+        exitCode: 0,
+        status: "completed",
+      });
+      sessionService.readTranscriptTail.mockResolvedValueOnce("normal transcript without updater text");
+
+      await expect(service.sendToSession({
+        sessionId: `session-${provider}-targetless`,
+        text: "keep going",
+      })).rejects.toThrow(new RegExp(`${expectedName} exited before ADE could capture a concrete resume target`));
+      expect(loadPty).not.toHaveBeenCalled();
+    });
+
+    it("sendToSession refuses Codex update-only sessions without relaunching", async () => {
+      const { service, sessionService, loadPty } = createHarness();
+      sessionService.create({
+        sessionId: "session-codex-update-only",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Codex CLI",
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: "/tmp/transcripts/session-codex-update-only.log",
+        toolType: "codex",
+        resumeCommand: "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume",
+        resumeMetadata: {
+          provider: "codex",
+          targetKind: "thread",
+          targetId: null,
+          launch: { permissionMode: "plan" },
+        },
+      });
+      sessionService.end({
+        sessionId: "session-codex-update-only",
+        endedAt: "2026-04-09T12:30:00.000Z",
+        exitCode: 0,
+        status: "completed",
+      });
+      sessionService.readTranscriptTail.mockResolvedValueOnce([
+        "Update available! 0.130.0 -> 0.134.0\n",
+        "Update ran successfully! Please restart Codex.\n",
+      ].join(""));
+      loadPty.mockClear();
+
+      await expect(service.sendToSession({
+        sessionId: "session-codex-update-only",
+        text: "continue",
+      })).rejects.toThrow(/before ADE could create a resumable thread/i);
+      expect(loadPty).not.toHaveBeenCalled();
+    });
+
     it("sendToSession resumes an ended tracked CLI session and writes the message", async () => {
       const { service, sessionService, mockPty, loadPty } = createHarness();
       sessionService.create({
@@ -1836,6 +2130,72 @@ describe("ptyService", () => {
         expect(mockPty.write).toHaveBeenNthCalledWith(2, "\x15");
         expect(mockPty.write).toHaveBeenNthCalledWith(3, "Print EXACT_CURSOR_RESUME_526 and stop");
         expect(mockPty.write).toHaveBeenNthCalledWith(4, "\r");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("sendToSession does not type into a resumed Cursor workspace trust prompt", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, sessionService, mockPty, loadPty, logger } = createHarness();
+        sessionService.create({
+          sessionId: "session-cursor-trust",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Cursor CLI",
+          startedAt: "2026-04-09T12:00:00.000Z",
+          transcriptPath: "/tmp/transcripts/session-cursor-trust.log",
+          toolType: "cursor-cli",
+          resumeCommand: "cursor-agent --model auto --resume cursor-chat-trust",
+          resumeMetadata: {
+            provider: "cursor",
+            targetKind: "session",
+            targetId: "cursor-chat-trust",
+            launch: { permissionMode: "default", model: "auto" },
+          },
+        });
+        sessionService.end({
+          sessionId: "session-cursor-trust",
+          endedAt: "2026-04-09T12:30:00.000Z",
+          exitCode: 0,
+          status: "completed",
+        });
+
+        const pending = service.sendToSession({
+          sessionId: "session-cursor-trust",
+          text: "Print EXACT_CURSOR_TRUST_TIMEOUT and stop",
+          cols: 120,
+          rows: 40,
+        }).then(
+          () => null,
+          (err: unknown) => err,
+        );
+        await Promise.resolve();
+        mockPty._emitter.emit("data", [
+          "Cursor Agent\n",
+          "Workspace Trust Required\n",
+          "Do you trust the content of this directory?\n",
+          "[a] Trust this workspace\n",
+        ].join(""));
+
+        await vi.advanceTimersByTimeAsync(20_500);
+
+        await expect(pending).resolves.toEqual(expect.objectContaining({
+          message: expect.stringMatching(/could not receive the message/),
+        }));
+        const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+        expect(spawn).toHaveBeenCalledWith(
+          "/bin/bash",
+          ["--noprofile", "--norc", "-lc", "cursor-agent --model auto --resume cursor-chat-trust"],
+          expect.any(Object),
+        );
+        expect(mockPty.write).not.toHaveBeenCalled();
+        expect(logger.warn).toHaveBeenCalledWith(
+          "pty.agent_cli_ready_wait_timeout",
+          expect.objectContaining({ provider: "cursor" }),
+        );
       } finally {
         vi.useRealTimers();
       }
@@ -2450,6 +2810,7 @@ describe("ptyService", () => {
         mocks.fileStats.set(filePath, { size: oversizedFirstLine.length + 100, mtimeMs: fakeNow.getTime() - 30_000, isDirectory: false });
 
         const { service, mockPty, sessionService } = createHarness();
+        sessionService.readTranscriptTail.mockResolvedValueOnce("OpenAI Codex\nmodel: gpt-5\n› ");
         const created = await service.create({
           laneId: "lane-1",
           title: "Codex CLI",
@@ -3163,6 +3524,7 @@ describe("ptyService", () => {
         mocks.fileStats.set(filePath, { size: firstLine.length, mtimeMs: fakeNow.getTime() - 30_000, isDirectory: false });
 
         const { service, sessionService } = createHarness();
+        sessionService.readTranscriptTail.mockResolvedValueOnce("OpenAI Codex\nmodel: gpt-5\n› ");
         sessionService.create({
           sessionId: "session-1",
           laneId: "lane-1",
@@ -3179,6 +3541,283 @@ describe("ptyService", () => {
         await vi.advanceTimersByTimeAsync(0);
 
         expect(sessionService.setResumeCommand).toHaveBeenCalledWith("session-1", "codex resume thread-abc");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not backfill a Codex resume target from storage for update-only transcripts", async () => {
+      vi.useFakeTimers();
+      try {
+        const fakeNow = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(fakeNow);
+
+        const homedir = os.homedir();
+        const sessionsBase = path.join(homedir, ".codex", "sessions");
+        const dirPath = path.join(sessionsBase, "2026", "04", "15");
+        const filePath = path.join(dirPath, "rollout-2026-04-15T21-30-00-thread-live.jsonl");
+        const startedAt = "2026-04-15T21:30:00.000Z";
+        const firstLine = JSON.stringify({
+          timestamp: startedAt,
+          type: "session_meta",
+          payload: {
+            id: "thread-live",
+            timestamp: startedAt,
+            cwd: "/tmp/worktree",
+          },
+        });
+
+        mocks.existsSyncResults.set(sessionsBase, true);
+        mocks.existsSyncResults.set(dirPath, true);
+        mocks.dirEntries.set(dirPath, [path.basename(filePath)]);
+        mocks.fileContents.set(filePath, `${firstLine}\n`);
+        mocks.fileStats.set(filePath, { size: firstLine.length, mtimeMs: fakeNow.getTime() - 30_000, isDirectory: false });
+
+        const { service, sessionService, logger } = createHarness();
+        sessionService.readTranscriptTail.mockResolvedValueOnce([
+          "Update available! 0.130.0 -> 0.134.0\n",
+          "Updating Codex via npm install -g @openai/codex...\n",
+          "Update ran successfully! Please restart Codex.\n",
+        ].join(""));
+        sessionService.create({
+          sessionId: "session-update-only",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Codex CLI",
+          startedAt,
+          transcriptPath: "/tmp/worktree/.ade/transcripts/session-update-only.log",
+          toolType: "codex",
+        });
+
+        await service.ensureResumeTargets(["session-update-only"]);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith(
+          "session-update-only",
+          expect.stringContaining("thread-live"),
+        );
+        expect(logger.warn).toHaveBeenCalledWith(
+          "pty.resume_target_backfill_skipped_codex_update",
+          expect.objectContaining({
+            sessionId: "session-update-only",
+            toolType: "codex",
+            reason: "session-list",
+          }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps the Codex update transcript guard scoped to Codex backfills", async () => {
+      (mocks.extractResumeCommandFromOutput as any).mockReturnValueOnce("claude --resume 11111111-1111-1111-1111-111111111111");
+
+      const { service, sessionService, logger } = createHarness();
+      sessionService.readTranscriptTail.mockResolvedValueOnce([
+        "Update available! 0.130.0 -> 0.134.0\n",
+        "Updating Codex via npm install -g @openai/codex...\n",
+        "Update ran successfully! Please restart Codex.\n",
+      ].join(""));
+      sessionService.create({
+        sessionId: "session-claude-with-codex-words",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Claude CLI",
+        startedAt: "2026-04-15T21:30:00.000Z",
+        transcriptPath: "/tmp/worktree/.ade/transcripts/session-claude-with-codex-words.log",
+        toolType: "claude",
+      });
+
+      await service.ensureResumeTargets(["session-claude-with-codex-words"]);
+
+      expect(mocks.extractResumeCommandFromOutput).toHaveBeenCalledWith(
+        expect.stringContaining("Update available"),
+        "claude",
+      );
+      expect(sessionService.setResumeCommand).toHaveBeenCalledWith(
+        "session-claude-with-codex-words",
+        "claude --resume 11111111-1111-1111-1111-111111111111",
+      );
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        "pty.resume_target_backfill_skipped_codex_update",
+        expect.anything(),
+      );
+    });
+
+    it("scores Claude storage backfills by ADE session start time instead of newest same-cwd file", async () => {
+      vi.useFakeTimers();
+      try {
+        const fakeNow = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(fakeNow);
+
+        const matchedId = "11111111-1111-1111-1111-111111111111";
+        const newerDifferentId = "22222222-2222-2222-2222-222222222222";
+        const claudeProjectDir = path.join(os.homedir(), ".claude", "projects", "-tmp-worktree");
+        const matchedPath = path.join(claudeProjectDir, `${matchedId}.jsonl`);
+        const newerDifferentPath = path.join(claudeProjectDir, `${newerDifferentId}.jsonl`);
+        const matchedFirstLine = JSON.stringify({
+          timestamp: "2026-04-15T21:30:00.000Z",
+          type: "user",
+          sessionId: matchedId,
+          cwd: "/tmp/worktree",
+        });
+        const newerDifferentFirstLine = JSON.stringify({
+          timestamp: "2026-04-15T22:00:00.000Z",
+          type: "user",
+          sessionId: newerDifferentId,
+          cwd: "/tmp/worktree",
+        });
+
+        mocks.existsSyncResults.set(claudeProjectDir, true);
+        mocks.dirEntries.set(claudeProjectDir, [
+          path.basename(matchedPath),
+          path.basename(newerDifferentPath),
+        ]);
+        mocks.fileContents.set(matchedPath, `${matchedFirstLine}\n`);
+        mocks.fileContents.set(newerDifferentPath, `${newerDifferentFirstLine}\n`);
+        mocks.fileStats.set(matchedPath, { size: matchedFirstLine.length, mtimeMs: fakeNow.getTime() - 4 * 60_000, isDirectory: false });
+        mocks.fileStats.set(newerDifferentPath, { size: newerDifferentFirstLine.length, mtimeMs: fakeNow.getTime() - 30_000, isDirectory: false });
+
+        const { service, sessionService } = createHarness();
+        sessionService.readTranscriptTail.mockResolvedValueOnce("Claude Code\n❯ ");
+        sessionService.create({
+          sessionId: "session-claude-storage",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Claude CLI",
+          startedAt: "2026-04-15T21:30:00.000Z",
+          transcriptPath: "/tmp/worktree/.ade/transcripts/session-claude-storage.log",
+          toolType: "claude",
+        });
+
+        await service.ensureResumeTargets(["session-claude-storage"]);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(sessionService.setResumeCommand).toHaveBeenCalledWith(
+          "session-claude-storage",
+          `claude --resume ${matchedId}`,
+        );
+        expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith(
+          "session-claude-storage",
+          `claude --resume ${newerDifferentId}`,
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not backfill Claude storage sessions outside the ADE PTY lifetime", async () => {
+      vi.useFakeTimers();
+      try {
+        const fakeNow = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(fakeNow);
+
+        const otherId = "33333333-3333-3333-3333-333333333333";
+        const claudeProjectDir = path.join(os.homedir(), ".claude", "projects", "-tmp-worktree");
+        const otherPath = path.join(claudeProjectDir, `${otherId}.jsonl`);
+        const otherFirstLine = JSON.stringify({
+          timestamp: "2026-04-15T21:31:00.000Z",
+          type: "user",
+          sessionId: otherId,
+          cwd: "/tmp/worktree",
+        });
+
+        mocks.existsSyncResults.set(claudeProjectDir, true);
+        mocks.dirEntries.set(claudeProjectDir, [path.basename(otherPath)]);
+        mocks.fileContents.set(otherPath, `${otherFirstLine}\n`);
+        mocks.fileStats.set(otherPath, { size: otherFirstLine.length, mtimeMs: fakeNow.getTime() - 30_000, isDirectory: false });
+
+        const { service, sessionService } = createHarness();
+        sessionService.readTranscriptTail.mockResolvedValueOnce("Claude Code\n❯ ");
+        sessionService.create({
+          sessionId: "session-claude-targetless",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Claude CLI",
+          startedAt: "2026-04-15T21:30:00.000Z",
+          transcriptPath: "/tmp/worktree/.ade/transcripts/session-claude-targetless.log",
+          toolType: "claude",
+        });
+        sessionService.end({
+          sessionId: "session-claude-targetless",
+          endedAt: "2026-04-15T21:30:02.000Z",
+          exitCode: 1,
+          status: "failed",
+        });
+
+        await service.ensureResumeTargets(["session-claude-targetless"]);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith(
+          "session-claude-targetless",
+          `claude --resume ${otherId}`,
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not guess between ambiguous Claude storage sessions in the same launch window", async () => {
+      vi.useFakeTimers();
+      try {
+        const fakeNow = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(fakeNow);
+
+        const firstId = "44444444-4444-4444-4444-444444444444";
+        const secondId = "55555555-5555-5555-5555-555555555555";
+        const claudeProjectDir = path.join(os.homedir(), ".claude", "projects", "-tmp-worktree");
+        const firstPath = path.join(claudeProjectDir, `${firstId}.jsonl`);
+        const secondPath = path.join(claudeProjectDir, `${secondId}.jsonl`);
+        const firstLine = JSON.stringify({
+          timestamp: "2026-04-15T21:30:00.500Z",
+          type: "user",
+          sessionId: firstId,
+          cwd: "/tmp/worktree",
+        });
+        const secondLine = JSON.stringify({
+          timestamp: "2026-04-15T21:30:01.000Z",
+          type: "user",
+          sessionId: secondId,
+          cwd: "/tmp/worktree",
+        });
+
+        mocks.existsSyncResults.set(claudeProjectDir, true);
+        mocks.dirEntries.set(claudeProjectDir, [path.basename(firstPath), path.basename(secondPath)]);
+        mocks.fileContents.set(firstPath, `${firstLine}\n`);
+        mocks.fileContents.set(secondPath, `${secondLine}\n`);
+        mocks.fileStats.set(firstPath, { size: firstLine.length, mtimeMs: fakeNow.getTime() - 60_000, isDirectory: false });
+        mocks.fileStats.set(secondPath, { size: secondLine.length, mtimeMs: fakeNow.getTime() - 30_000, isDirectory: false });
+
+        const { service, sessionService } = createHarness();
+        sessionService.readTranscriptTail.mockResolvedValueOnce("Claude Code\n❯ ");
+        sessionService.create({
+          sessionId: "session-claude-ambiguous",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Claude CLI",
+          startedAt: "2026-04-15T21:30:00.000Z",
+          transcriptPath: "/tmp/worktree/.ade/transcripts/session-claude-ambiguous.log",
+          toolType: "claude",
+        });
+        sessionService.end({
+          sessionId: "session-claude-ambiguous",
+          endedAt: "2026-04-15T21:30:02.000Z",
+          exitCode: 1,
+          status: "failed",
+        });
+
+        await service.ensureResumeTargets(["session-claude-ambiguous"]);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith(
+          "session-claude-ambiguous",
+          expect.stringMatching(/^claude --resume /),
+        );
       } finally {
         vi.useRealTimers();
       }
@@ -3240,6 +3879,7 @@ describe("ptyService", () => {
       });
 
       const { service, sessionService } = createHarness();
+      sessionService.readTranscriptTail.mockResolvedValueOnce("opencode\n");
       sessionService.create({
         sessionId: "session-opencode",
         laneId: "lane-1",
@@ -3262,6 +3902,86 @@ describe("ptyService", () => {
         }),
       );
       expect(sessionService.setResumeCommand).toHaveBeenCalledWith("session-opencode", "opencode --session ses_abc");
+    });
+
+    it("does not backfill OpenCode from session list without OpenCode transcript evidence", async () => {
+      const startedAt = "2026-04-15T21:30:00.000Z";
+      mocks.spawnSync.mockReturnValueOnce({
+        status: 0,
+        stdout: JSON.stringify([
+          {
+            id: "ses_false_match",
+            directory: "/tmp/worktree",
+            created: Date.parse(startedAt),
+            updated: Date.parse(startedAt) + 1000,
+          },
+        ]),
+        stderr: "",
+      });
+
+      const { service, sessionService } = createHarness();
+      sessionService.readTranscriptTail.mockResolvedValueOnce("simulated early exit for opencode\n");
+      sessionService.create({
+        sessionId: "session-opencode-false-match",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "OpenCode CLI",
+        startedAt,
+        transcriptPath: "/tmp/worktree/.ade/transcripts/session-opencode-false-match.log",
+        toolType: "opencode",
+      });
+
+      await service.ensureResumeTargets(["session-opencode-false-match"]);
+
+      expect(mocks.spawnSync).not.toHaveBeenCalled();
+      expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith(
+        "session-opencode-false-match",
+        "opencode --session ses_false_match",
+      );
+    });
+
+    it("does not backfill Droid storage without Droid transcript evidence", async () => {
+      vi.useFakeTimers();
+      try {
+        const fakeNow = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(fakeNow);
+        const startedAt = "2026-04-15T21:30:00.000Z";
+        const droidSessionsDir = path.join(os.homedir(), ".factory", "sessions");
+        const projectDir = path.join(droidSessionsDir, "-tmp-worktree");
+        const filePath = path.join(projectDir, "droid-session.jsonl");
+        const firstLine = JSON.stringify({
+          type: "session_start",
+          id: "droid_false_match",
+          cwd: "/tmp/worktree",
+        });
+        mocks.dirEntries.set(projectDir, [path.basename(filePath)]);
+        mocks.fileContents.set(filePath, `${firstLine}\n`);
+        mocks.fileStats.set(filePath, { size: firstLine.length, mtimeMs: Date.parse(startedAt), isDirectory: false });
+
+        const { service, sessionService } = createHarness();
+        sessionService.readTranscriptTail.mockResolvedValueOnce("simulated early exit for droid\n");
+        sessionService.create({
+          sessionId: "session-droid-false-match",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Droid CLI",
+          startedAt,
+          transcriptPath: "/tmp/worktree/.ade/transcripts/session-droid-false-match.log",
+          toolType: "droid",
+        });
+
+        await service.ensureResumeTargets(["session-droid-false-match"]);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith(
+          "session-droid-false-match",
+          "droid --resume droid_false_match",
+        );
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("captures Claude runtime titles for sessions that already have a resume target", async () => {

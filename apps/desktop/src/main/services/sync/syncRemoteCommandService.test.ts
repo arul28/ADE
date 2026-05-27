@@ -2189,7 +2189,7 @@ describe("createSyncRemoteCommandService", () => {
       }))).rejects.toThrow("work.sendToSession requires text.");
     });
 
-    it("work.startCliSession embeds Cursor initial input in the launch command", async () => {
+    it("work.startCliSession sends Cursor initial input after the launch command", async () => {
       await service.execute(makePayload("work.startCliSession", {
         laneId: "lane-1",
         provider: "cursor",
@@ -2197,7 +2197,10 @@ describe("createSyncRemoteCommandService", () => {
       }));
 
       const call = ptyService.create.mock.calls.at(-1)?.[0];
-      expect(call?.startupCommand).toContain("fix the tests");
+      expect(call?.startupCommand).toContain("cursor-agent create-chat");
+      expect(call?.startupCommand).toContain("cursor-agent --resume");
+      expect(call?.initialInput).toContain("fix the tests");
+      expect(call?.initialInputDelayMs).toBe(750);
       expect(call?.command).toBe("/bin/bash");
       expect(call?.args).toEqual(["-lc", call?.startupCommand]);
       expect(ptyService.writeBySessionId).not.toHaveBeenCalled();

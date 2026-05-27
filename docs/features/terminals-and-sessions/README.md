@@ -40,14 +40,19 @@ desktop fallback IPC path.
   transcript capture (capped at `MAX_TRANSCRIPT_BYTES = 64 MB`), runtime
   state, AI auto-titles, tool-type routing, continuation-target backfill,
   session-id based write/resize entry points used by mobile sync
-  terminal control, and `readTranscriptTail({ sessionId, ... })`, which
+  terminal control, `readTranscriptTail({ sessionId, ... })` which
   merges the on-disk transcript tail with the live PTY output tail so
   Work/TUI terminal hydration can replay output that is still buffered
-  in the transcript write stream. PTY create stamps the new
+  in the transcript write stream, agent CLI input protocol (bracketed
+  paste, chunked writes, provider-specific submit delays), process tree
+  termination (`terminatePtyProcessTree` walks descendant PIDs via
+  `pgrep` and escalates to `SIGKILL` after a grace timer), live session
+  row resync (re-opens rows that drifted to `ended` while the PTY is
+  still alive), and `initialInput` / `initialInputDelayMs` support for
+  deferred first-turn submission. PTY create stamps the new
   `terminal_sessions` row's `owner_pid` with the
   `processRegistryService` pid so cross-process reconcile/dispose paths
-  can tell live siblings from crashed owners. ~1,500 lines. Branch
-  rewrite.
+  can tell live siblings from crashed owners. ~4,080 lines.
 - `apps/desktop/src/main/services/pty/ptyService.test.ts` — PTY behavior
   tests. Branch updated.
 - `apps/desktop/src/main/services/sessions/sessionService.ts` — persistence
@@ -519,7 +524,11 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
    `resolveLaneLaunchContext`, allocates `ptyId` and `sessionId`
    (or reuses an existing ID when continuing an ended session), opens a transcript stream,
    spawns the shell or direct command, and inserts a
-   `terminal_sessions` row through `sessionService.create()`.
+   `terminal_sessions` row through `sessionService.create()`. When
+   `args.initialInput` is set, the service schedules a deferred write
+   using the agent CLI input protocol (bracketed paste, chunked
+   writes, provider-specific submit delay) after an optional
+   `initialInputDelayMs` delay.
 
 2. **Stream** — PTY `data` events are written to the transcript
    (capped at `MAX_TRANSCRIPT_BYTES = 64 MB`), throttled into a
@@ -557,8 +566,11 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
    service opens the transcript in append mode. When the runtime is still
    live, it submits to that PTY directly. When the PTY is gone, it rebuilds
    the provider resume command, creates a new PTY bound to the same durable
-   session id, then submits the text with the same text-plus-Enter sequence.
-   This keeps identity, lane association, and transcript history intact.
+   session id, then submits the text using the agent CLI input protocol
+   (line clear, bracketed paste, chunked writes, provider-specific submit
+   delay). For continuations the protocol waits for the TUI to become
+   ready (up to 20 s) before writing. This keeps identity, lane
+   association, and transcript history intact.
 
 7. **Reconcile** — on startup, `reconcileStaleRunningSessions` marks
    orphaned `running` rows as `detached`. Ownership is gated through
@@ -627,7 +639,7 @@ PTY:
 | Channel | Purpose |
 |---|---|
 | `ade.pty.create` | create or reattach; returns `{ ptyId, sessionId, pid }`. Accepts an optional `chatSessionId` to mark the terminal as chat-owned. |
-| `ade.pty.sendToSession` | send-or-continue. Args: `{ sessionId, text, cols?, rows?, model?, reasoningEffort?, permissionMode? }`. Submits text into the live PTY when one is attached; otherwise validates that the row is a tracked agent CLI session, rebuilds the resume command via `buildTrackedCliResumeCommand` (honouring runtime overrides), spawns the continuation PTY in the same `terminal_sessions` row, and then submits the user's text. Submission is serialized per session and writes text followed by the provider submit sequence: Kitty Enter (`ESC [ 13 u`) for Codex, Claude, Cursor, and OpenCode; carriage return for Droid. Returns `PtySendToSessionResult` (`{ ptyId, sessionId, pid, session, resumed, reusedExistingRuntime }`). |
+| `ade.pty.sendToSession` | send-or-continue. Args: `{ sessionId, text, cols?, rows?, model?, reasoningEffort?, permissionMode? }`. Submits text into the live PTY when one is attached; otherwise validates that the row is a tracked agent CLI session, rebuilds the resume command via `buildTrackedCliResumeCommand` (honouring runtime overrides), spawns the continuation PTY in the same `terminal_sessions` row, and then submits the user's text. Submission uses the agent CLI input protocol: line clear, bracketed paste envelope, chunked 64-byte writes with 5 ms inter-chunk delay, then a carriage return with a provider-specific submit delay (25 ms general, 180 ms Codex, 500 ms Cursor). For continuations the protocol waits up to 20 s for the TUI to become ready before writing. Returns `PtySendToSessionResult` (`{ ptyId, sessionId, pid, session, resumed, reusedExistingRuntime }`). |
 | `ade.pty.write` | write bytes to PTY |
 | `ade.pty.resize` | cols/rows resize |
 | `ade.pty.dispose` | close PTY; optional `sessionId` used for logging |

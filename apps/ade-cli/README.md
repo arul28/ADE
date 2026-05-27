@@ -239,6 +239,9 @@ ade git push --lane lane-id
 ade git pull --lane lane-id --rebase
 ade git undo --lane lane-id
 ade git redo --lane lane-id
+ade git tag abc123 --name v1.0.0 --lane lane-id
+ade git reset abc123 --soft --lane lane-id
+ade git is-reachable abc123 --lane lane-id
 ade git branches --lane lane-id --text
 ade git user-identity --lane lane-id --text
 ade history list --lane lane-id --status succeeded --text
@@ -268,6 +271,8 @@ ade --socket ios-sim apps --text
 ade --socket ios-sim launch --target target-id --text
 ade --socket ios-sim preview-render --source apps/ios/ADE/Views/Home.swift --index 0 --text
 ade --socket app-control launch --command "npm run dev" --text
+ade --socket app-control focus --text
+ade --socket app-control minimize --text
 ade --socket browser open http://localhost:5173 --new-tab --text
 ade --socket macos-vm status --lane lane-id --text
 ade --socket macos-vm start --lane lane-id --create --no-display --text

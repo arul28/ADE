@@ -18,6 +18,7 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import { runGit } from "../git/git";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
+import { getPathEnvValue, setPathEnvValue, splitPathEntries } from "../ai/cliExecutableResolver";
 import type {
   PtyDataEvent,
   PtyExitEvent,
@@ -59,6 +60,7 @@ import {
   extractResumeCommandFromOutput,
   normalizeResumeCommand,
   parseTrackedCliLaunchConfig,
+  parseTrackedCliResumeCommand,
   providerFromTool,
   runtimeStateFromOsc133Chunk,
   sanitizeResumeTargetId,
@@ -105,6 +107,8 @@ const CLI_USER_TITLE_FALLBACK_MAX_LEN = 72;
 const CODEX_ADE_GUIDANCE_SCAN_BYTES = 160 * 1024;
 const CODEX_THREAD_NAME_SCAN_BYTES = 512 * 1024;
 const CLAUDE_TITLE_SCAN_BYTES = 512 * 1024;
+const CLAUDE_STORAGE_MATCH_START_SKEW_MS = 1_000;
+const CLAUDE_STORAGE_MATCH_END_SKEW_MS = 5_000;
 const PTY_DATA_BATCH_INTERVAL_MS = 16;
 const PTY_DATA_BATCH_MAX_CHARS = 64 * 1024;
 const PTY_DATA_SUMMARY_INTERVAL_MS = 10_000;
@@ -202,6 +206,13 @@ type ClaudeStorageSessionMatch = {
   id: string;
   filePath: string;
   title: string | null;
+};
+
+type ClaudeStorageSessionLookupArgs = {
+  cwd: string;
+  startedAt?: string | null;
+  endedAt?: string | null;
+  maxStartDeltaMs?: number;
 };
 
 function hasEnvValue(env: NodeJS.ProcessEnv, key: string): boolean {
@@ -745,6 +756,10 @@ function isTrackedCliToolType(toolType: TerminalToolType | null): toolType is "c
     || toolType === "opencode-orchestrated";
 }
 
+function isCodexTrackedCliToolType(toolType: TerminalToolType | null | undefined): toolType is "codex" | "codex-orchestrated" {
+  return toolType === "codex" || toolType === "codex-orchestrated";
+}
+
 function isClaudeTrackedCliToolType(toolType: TerminalToolType | null | undefined): toolType is "claude" | "claude-orchestrated" {
   return toolType === "claude" || toolType === "claude-orchestrated";
 }
@@ -763,6 +778,105 @@ function inferSessionCwdFromTranscriptPath(transcriptPath: string | null | undef
   const markerIndex = normalized.indexOf("/.ade/transcripts/");
   if (markerIndex < 0) return null;
   return transcriptPath.slice(0, markerIndex) || null;
+}
+
+function isNodeModulesBinPath(value: string): boolean {
+  const normalized = value.replace(/\\/g, "/").toLowerCase();
+  return normalized.endsWith("/node_modules/.bin");
+}
+
+function looksLikeCodexCommand(command: string | null | undefined): boolean {
+  const trimmed = String(command ?? "").trim();
+  return /^codex(?:\s|$)/.test(trimmed);
+}
+
+function shouldPreferUserCodexPath(args: {
+  toolType: TerminalToolType | null;
+  directCommand?: string | null;
+  startupCommand?: string | null;
+}): boolean {
+  return isCodexTrackedCliToolType(args.toolType)
+    || looksLikeCodexCommand(args.directCommand)
+    || looksLikeCodexCommand(args.startupCommand);
+}
+
+function withUserCodexCliPathPriority(
+  env: NodeJS.ProcessEnv,
+  args: { toolType: TerminalToolType | null; directCommand?: string | null; startupCommand?: string | null },
+): NodeJS.ProcessEnv {
+  if (!shouldPreferUserCodexPath(args)) return env;
+  const pathValue = getPathEnvValue(env);
+  const entries = splitPathEntries(pathValue);
+  const nodeModulesEntries = entries.filter(isNodeModulesBinPath);
+  if (nodeModulesEntries.length === 0) return env;
+  const nonNodeModulesEntries = entries.filter((entry) => !isNodeModulesBinPath(entry));
+  const next = { ...env };
+  // ADE's dev/package dependency bin can shadow the user's already-updated
+  // Codex CLI and send every Work launch into Codex's update-and-restart flow.
+  // Keep node_modules bins as a last-resort fallback, but never let them win.
+  setPathEnvValue(next, [...nonNodeModulesEntries, ...nodeModulesEntries].join(path.delimiter));
+  return next;
+}
+
+function isCodexCliUpdateTranscript(text: string): boolean {
+  const normalized = stripAnsi(text).replace(/\r/g, "\n").toLowerCase();
+  if (!normalized.trim()) return false;
+  return normalized.includes("update available!")
+    || normalized.includes("updating codex via")
+    || normalized.includes("npm install -g @openai/codex")
+    || normalized.includes("update ran successfully! please restart codex")
+    || normalized.includes("please restart codex");
+}
+
+function hasProviderStorageBackfillEvidence(provider: TerminalResumeProvider, text: string): boolean {
+  const visible = stripAnsi(text).replace(/\r/g, "\n");
+  const normalized = visible.toLowerCase();
+  if (!normalized.trim()) return false;
+  if (provider === "codex") {
+    if (isCodexCliUpdateTranscript(visible)) return false;
+    return /OpenAI Codex/i.test(visible)
+      || /\bmodel:\s*(?!loading\b)\S+/i.test(visible)
+      || visible.includes("›");
+  }
+  if (provider === "claude") {
+    return normalized.includes("claude code") || visible.includes("❯");
+  }
+  if (provider === "droid") {
+    return /\bfactory droid\b/i.test(visible)
+      || /\bdroid\s+(?:session|chat|workspace|permission|autonomy|mode|ready)\b/i.test(visible);
+  }
+  if (provider === "opencode") {
+    if (
+      normalized.includes("login required")
+      || normalized.includes("authentication required")
+      || normalized.includes("not authenticated")
+      || normalized.includes("please log in")
+      || normalized.includes("sign in")
+      || normalized.includes("api key required")
+      || normalized.includes("no api key")
+      || normalized.includes("provider not configured")
+      || normalized.includes("no provider configured")
+      || normalized.includes("update available")
+      || normalized.includes("update required")
+    ) {
+      return false;
+    }
+    return /^\s*opencode\s*$/im.test(visible)
+      || normalized.includes("message opencode")
+      || normalized.includes("what do you want")
+      || normalized.includes("thought for")
+      || normalized.includes("tokens");
+  }
+  return false;
+}
+
+function resumeProviderDisplayName(provider: TerminalResumeProvider): string {
+  if (provider === "codex") return "Codex";
+  if (provider === "claude") return "Claude";
+  if (provider === "cursor") return "Cursor";
+  if (provider === "droid") return "Droid";
+  if (provider === "opencode") return "OpenCode";
+  return "Agent";
 }
 
 const MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
@@ -1440,34 +1554,70 @@ export function createPtyService({
   /**
    * Try to find the Claude session from Claude's local JSONL storage.
    * Claude Code stores conversations at ~/.claude/projects/<escaped-cwd>/<uuid>.jsonl.
-   * We find the most recently modified JSONL in the project dir and return its UUID
-   * plus any runtime-generated title Claude has already written.
+   * When ADE has launch timing, only accept one timestamped JSONL inside this
+   * PTY's lifetime; otherwise fall back to the most recently modified direct
+   * session file for older rows.
    */
-  const resolveClaudeSessionFromStorage = (cwd: string): ClaudeStorageSessionMatch | null => {
+  const resolveClaudeSessionFromStorage = (args: ClaudeStorageSessionLookupArgs): ClaudeStorageSessionMatch | null => {
     try {
-      const claudeProjectDir = claudeProjectDirForCwd(cwd);
+      const claudeProjectDir = claudeProjectDirForCwd(args.cwd);
       if (!fs.existsSync(claudeProjectDir)) return null;
 
-      // Find the most recently modified .jsonl that is a direct session (not in subagents/)
+      const requestedStartedAtMs = Date.parse(args.startedAt ?? "");
+      const hasStartedAt = Number.isFinite(requestedStartedAtMs);
+      const requestedEndedAtMs = Date.parse(args.endedAt ?? "");
+      const hasEndedAt = Number.isFinite(requestedEndedAtMs);
+      const maxStartDeltaMs = typeof args.maxStartDeltaMs === "number" ? args.maxStartDeltaMs : 10 * 60_000;
+      const windowStartMs = requestedStartedAtMs - CLAUDE_STORAGE_MATCH_START_SKEW_MS;
+      const windowEndMs = (hasEndedAt ? requestedEndedAtMs : requestedStartedAtMs + maxStartDeltaMs)
+        + CLAUDE_STORAGE_MATCH_END_SKEW_MS;
       const entries = fs.readdirSync(claudeProjectDir, { withFileTypes: true }) as Array<string | fs.Dirent>;
       let newest: { name: string; mtimeMs: number } | null = null;
+      const timestampMatches: Array<{ name: string; score: number; mtimeMs: number }> = [];
       for (const entry of entries) {
         const name = typeof entry === "string" ? entry : entry.name;
         const isFile = typeof entry === "string" ? true : entry.isFile();
         if (!isFile || !name.endsWith(".jsonl")) continue;
-        const stat = fs.statSync(path.join(claudeProjectDir, name));
+        const uuid = name.replace(/\.jsonl$/, "");
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuid)) continue;
+
+        const filePath = path.join(claudeProjectDir, name);
+        const stat = fs.statSync(filePath);
+        if (hasStartedAt) {
+          const firstLine = readJsonlFirstLine(filePath);
+          if (!firstLine) continue;
+          let firstRecord: Record<string, unknown>;
+          try {
+            firstRecord = JSON.parse(firstLine) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+          const recordCwd = typeof firstRecord.cwd === "string" ? firstRecord.cwd.trim() : "";
+          if (recordCwd && recordCwd !== args.cwd) continue;
+          const timestamp = typeof firstRecord.timestamp === "string" ? firstRecord.timestamp : "";
+          const timestampMs = Date.parse(timestamp);
+          if (!Number.isFinite(timestampMs)) continue;
+          if (timestampMs < windowStartMs || timestampMs > windowEndMs) continue;
+          const score = Math.abs(timestampMs - requestedStartedAtMs);
+          if (score > maxStartDeltaMs) continue;
+          timestampMatches.push({ name, score, mtimeMs: stat.mtimeMs });
+          continue;
+        }
+
         if (!newest || stat.mtimeMs > newest.mtimeMs) {
           newest = { name, mtimeMs: stat.mtimeMs };
         }
       }
-      if (!newest) return null;
+      if (hasStartedAt && timestampMatches.length !== 1) return null;
+      const selected = hasStartedAt
+        ? timestampMatches[0]!
+        : newest;
+      if (!selected) return null;
       // UUID is the filename without .jsonl extension
-      const uuid = newest.name.replace(/\.jsonl$/, "");
-      // Basic UUID format check
-      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuid)) return null;
+      const uuid = selected.name.replace(/\.jsonl$/, "");
       // Only consider if modified within the last 5 minutes (to avoid picking up stale sessions)
-      if (Date.now() - newest.mtimeMs > 5 * 60 * 1000) return null;
-      const filePath = path.join(claudeProjectDir, newest.name);
+      if (!hasStartedAt && Date.now() - selected.mtimeMs > 5 * 60 * 1000) return null;
+      const filePath = path.join(claudeProjectDir, selected.name);
       return {
         id: uuid,
         filePath,
@@ -1891,6 +2041,18 @@ export function createPtyService({
 
     // Strategy 1: Try parsing the transcript for an explicit resume command
     const transcript = await sessionService.readTranscriptTail(session.transcriptPath, 220_000);
+    if (isCodexTrackedCliToolType(effectiveToolType) && isCodexCliUpdateTranscript(transcript)) {
+      missingResumeTargetBackfillFailures.set(sessionId, {
+        toolType: effectiveToolType,
+        checkedAtMs: Date.now(),
+      });
+      logger.warn("pty.resume_target_backfill_skipped_codex_update", {
+        sessionId,
+        toolType: effectiveToolType,
+        reason,
+      });
+      return false;
+    }
     const detected = extractResumeCommandFromOutput(transcript, effectiveToolType);
     if (detected) {
       missingResumeTargetBackfillFailures.delete(sessionId);
@@ -1901,9 +2063,18 @@ export function createPtyService({
 
     // Strategy 2: Read the session/thread ID from the CLI's local storage
     const cwd = sessionCwd ?? inferSessionCwdFromTranscriptPath(session.transcriptPath);
+    const effectiveProvider = providerFromTool(effectiveToolType);
+    const hasStorageBackfillEvidence = effectiveProvider
+      ? hasProviderStorageBackfillEvidence(effectiveProvider, transcript)
+      : false;
 
-    if (isClaudeTrackedCliToolType(effectiveToolType) && cwd) {
-      const claudeSession = resolveClaudeSessionFromStorage(cwd);
+    if (isClaudeTrackedCliToolType(effectiveToolType) && cwd && hasStorageBackfillEvidence) {
+      const claudeSession = resolveClaudeSessionFromStorage({
+        cwd,
+        startedAt: session.startedAt,
+        endedAt: session.endedAt,
+        maxStartDeltaMs: 10 * 60_000,
+      });
       if (claudeSession) {
         const resumeCmd = `claude --resume ${claudeSession.id}`;
         missingResumeTargetBackfillFailures.delete(sessionId);
@@ -1919,7 +2090,7 @@ export function createPtyService({
     // fallback. Fresh launches still use the live capture watcher below; this
     // path handles existing tracked sessions whose transcript did not yield a
     // usable Codex thread id before the user types to continue.
-    if ((effectiveToolType === "codex" || effectiveToolType === "codex-orchestrated") && cwd) {
+    if ((effectiveToolType === "codex" || effectiveToolType === "codex-orchestrated") && cwd && hasStorageBackfillEvidence) {
       const codexSession = resolveCodexSessionFromStorage({
         cwd,
         startedAt: session.startedAt,
@@ -1936,7 +2107,7 @@ export function createPtyService({
       }
     }
 
-    if (effectiveToolType === "droid" && cwd && reason !== "resume-launch") {
+    if (effectiveToolType === "droid" && cwd && reason !== "resume-launch" && hasStorageBackfillEvidence) {
       const droidSessionId = resolveDroidSessionIdFromStorage({
         cwd,
         startedAt: session.startedAt,
@@ -1951,7 +2122,7 @@ export function createPtyService({
       }
     }
 
-    if ((effectiveToolType === "opencode" || effectiveToolType === "opencode-orchestrated") && cwd && reason !== "resume-launch") {
+    if ((effectiveToolType === "opencode" || effectiveToolType === "opencode-orchestrated") && cwd && reason !== "resume-launch" && hasStorageBackfillEvidence) {
       const opencodeSessionId = resolveOpenCodeSessionIdFromCli({
         cwd,
         startedAt: session.startedAt,
@@ -2530,11 +2701,17 @@ export function createPtyService({
     return text.slice(start);
   };
 
+  const lastIndexOfAny = (text: string, needles: readonly string[]): number => {
+    return needles.reduce((latest, needle) => Math.max(latest, text.lastIndexOf(needle)), -1);
+  };
+
   const providerReadyMarkerVisible = (provider: TerminalResumeProvider, text: string): boolean => {
     const normalized = text.toLowerCase();
     if (provider === "codex") {
       const codexText = codexReadyRegion(text);
+      if (isCodexCliUpdateTranscript(codexText)) return false;
       const hasPrompt = codexText.includes("›");
+      const hasSessionMarker = /OpenAI Codex/i.test(codexText) || /\bmodel:\s*\S+/i.test(codexText);
       const loadingIndex = codexText.search(/\bmodel:\s*loading\b/i);
       const loadedModelMatches = Array.from(codexText.matchAll(/\bmodel:\s*(?!loading\b)\S+/gi));
       const lastLoadedModelIndex = loadedModelMatches.at(-1)?.index ?? -1;
@@ -2546,42 +2723,67 @@ export function createPtyService({
       const noActiveThreadIndex = codexText.lastIndexOf("No active thread is available");
       const lastPromptIndex = codexText.lastIndexOf("›");
       return hasPrompt
+        && hasSessionMarker
         && (loadingIndex < 0 || lastLoadedModelIndex > loadingIndex)
         && (startingIndex < 0 || startupSettledIndex > startingIndex)
         && (noActiveThreadIndex < 0 || lastPromptIndex > noActiveThreadIndex);
     }
     if (provider === "claude") {
-      return normalized.includes("claude code") || text.includes("❯");
+      return text.includes("❯");
     }
     if (provider === "cursor") {
-      const lastTrustPromptIndex = Math.max(
-        normalized.lastIndexOf("workspace trust required"),
-        normalized.lastIndexOf("do you trust the content of this directory"),
-      );
+      const lastBlockerIndex = lastIndexOfAny(normalized, [
+        "workspace trust required",
+        "do you trust the content of this directory",
+        "login required",
+        "authentication required",
+        "not authenticated",
+        "please log in",
+        "sign in",
+        "update available",
+        "update required",
+      ]);
       const lastReadyPromptIndex = Math.max(
         normalized.lastIndexOf("plan, search, build anything"),
         normalized.lastIndexOf("use /skills"),
         normalized.lastIndexOf("add a follow-up"),
       );
-      if (lastTrustPromptIndex >= 0 && lastReadyPromptIndex < lastTrustPromptIndex) {
-        return false;
-      }
-      return lastReadyPromptIndex >= 0 || normalized.includes("cursor agent");
+      return lastReadyPromptIndex >= 0 && lastReadyPromptIndex > lastBlockerIndex;
     }
     if (provider === "opencode") {
-      return normalized.includes("opencode") || normalized.includes("thought for") || normalized.includes("tokens");
+      const lastBlockerIndex = lastIndexOfAny(normalized, [
+        "login required",
+        "authentication required",
+        "not authenticated",
+        "please log in",
+        "sign in",
+        "api key required",
+        "no api key",
+        "provider not configured",
+        "no provider configured",
+        "update available",
+        "update required",
+      ]);
+      const lastReadyIndex = lastIndexOfAny(normalized, [
+        "opencode",
+        "what do you want",
+        "message opencode",
+        "thought for",
+        "tokens",
+      ]);
+      return lastReadyIndex >= 0 && lastReadyIndex > lastBlockerIndex;
     }
-    return true;
+    return false;
   };
 
-  const waitForAgentCliInputReady = async (sessionId: string, provider: TerminalResumeProvider): Promise<void> => {
-    if (provider === "droid") return;
+  const waitForAgentCliInputReady = async (sessionId: string, provider: TerminalResumeProvider): Promise<boolean> => {
+    if (provider === "droid") return true;
     const deadline = Date.now() + AGENT_CLI_READY_TIMEOUT_MS;
     while (Date.now() < deadline) {
       const live = liveEntryBySessionId(sessionId);
-      if (!live) return;
+      if (!live) return false;
       const entry = live[1];
-      if (entry.disposed) return;
+      if (entry.disposed) return false;
       const outputTail = stripAnsi(entry.recentOutputTail).replace(/\r/g, "\n");
       const visibleText = entry.terminalSnapshot
         ? visibleRowsFromTerminal(entry.terminalSnapshot.terminal)
@@ -2592,11 +2794,12 @@ export function createPtyService({
       const runtime = runtimeStates.get(sessionId);
       const quietForMs = runtime ? Date.now() - runtime.lastActivityAt : 0;
       if (providerReadyMarkerVisible(provider, readinessText) && quietForMs >= AGENT_CLI_READY_QUIET_MS) {
-        return;
+        return true;
       }
       await delay(AGENT_CLI_READY_POLL_MS);
     }
     logger.warn("pty.agent_cli_ready_wait_timeout", { sessionId, provider });
+    return false;
   };
 
   const writeAgentCliInput = async (
@@ -2826,6 +3029,10 @@ export function createPtyService({
           .catch(() => {});
       }
 
+      const requestedDirectCommand = typeof args.command === "string" ? args.command.trim() : "";
+      const directCommand = resolveDirectOpenCodeCommand(requestedDirectCommand, toolTypeHint);
+      const directArgs = Array.isArray(args.args) ? args.args.filter((value): value is string => typeof value === "string") : [];
+
       const laneRuntimeEnv = (await getLaneRuntimeEnv?.(laneId)) ?? {};
       const explicitNoColor = hasEnvKey(args.env ?? {}, "NO_COLOR") || hasEnvKey(laneRuntimeEnv, "NO_COLOR");
       const baseLaunchEnv = {
@@ -2838,7 +3045,7 @@ export function createPtyService({
         laneId,
         chatSessionId,
       });
-      const launchEnv = withInteractiveTerminalColorEnv(
+      let launchEnv = withInteractiveTerminalColorEnv(
         getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv,
         { preserveNoColor: explicitNoColor },
       );
@@ -2855,12 +3062,14 @@ export function createPtyService({
           startupCommand = withBundledOpenCodeCommandLine(initialResumeCommand, toolTypeHint);
         }
       }
+      launchEnv = withUserCodexCliPathPriority(launchEnv, {
+        toolType: toolTypeHint,
+        directCommand,
+        startupCommand,
+      });
 
       let pty: IPty;
       let selectedShell: ShellSpec | null = null;
-      const requestedDirectCommand = typeof args.command === "string" ? args.command.trim() : "";
-      const directCommand = resolveDirectOpenCodeCommand(requestedDirectCommand, toolTypeHint);
-      const directArgs = Array.isArray(args.args) ? args.args.filter((value): value is string => typeof value === "string") : [];
       const useCleanInteractiveShell = toolTypeHint === "shell" && !directCommand && !startupCommand;
       const shellCandidates = resolveShellCandidates({ clean: useCleanInteractiveShell });
       let launchedDirectCommand = false;
@@ -3170,7 +3379,17 @@ export function createPtyService({
           if (entry.disposed) return;
           const provider = providerFromTool(toolTypeHint);
           if (provider) {
-            await waitForAgentCliInputReady(sessionId, provider);
+            const ready = await waitForAgentCliInputReady(sessionId, provider);
+            if (!ready) {
+              logger.warn("pty.initial_input_skipped_not_ready", {
+                ptyId,
+                sessionId,
+                cwd,
+                toolType: toolTypeHint,
+                provider,
+              });
+              return;
+            }
             if (entry.disposed) return;
           }
           try {
@@ -3336,7 +3555,8 @@ export function createPtyService({
           .catch(() => true)
           .then(async () => {
             if (options.waitForReady) {
-              await waitForAgentCliInputReady(targetSessionId, provider);
+              const ready = await waitForAgentCliInputReady(targetSessionId, provider);
+              if (!ready) return false;
             }
             const textWritten = await writeAgentCliInput(
               (data) => service.writeBySessionId(targetSessionId, data),
@@ -3374,6 +3594,29 @@ export function createPtyService({
 
       const provider = session.resumeMetadata?.provider ?? providerFromTool(session.toolType);
       if (!provider) throw new Error(`Terminal session '${sessionId}' does not have a resumable CLI provider.`);
+      const parsedResumeCommand = parseTrackedCliResumeCommand(session.resumeCommand, session.toolType);
+      const storedResumeTargetId = sanitizeResumeTargetId(session.resumeMetadata?.targetId ?? null)
+        ?? (parsedResumeCommand?.provider === provider
+          ? sanitizeResumeTargetId(parsedResumeCommand.targetId ?? null)
+          : null);
+      if (
+        provider === "codex"
+        && isCodexTrackedCliToolType(session.toolType)
+        && !storedResumeTargetId
+      ) {
+        const transcript = await sessionService.readTranscriptTail(session.transcriptPath, 220_000);
+        if (isCodexCliUpdateTranscript(transcript)) {
+          throw new Error(
+            "Codex updated and exited before ADE could create a resumable thread. Start a new Codex session.",
+          );
+        }
+      }
+      if (!storedResumeTargetId) {
+        const displayName = resumeProviderDisplayName(provider);
+        throw new Error(
+          `${displayName} exited before ADE could capture a concrete resume target. Start a new ${displayName} session.`,
+        );
+      }
 
       const requestedModel = typeof args.model === "string" && args.model.trim().length
         ? args.model.trim()

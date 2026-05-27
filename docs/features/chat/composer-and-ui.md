@@ -270,7 +270,7 @@ power the TUI picker (`apps/ade-cli/src/tuiClient/components/ModelPicker/`).
 | Module | Role |
 |---|---|
 | `ModelPicker.tsx` | Trigger + popover entry point. Owns runtime-catalog loading via `runtimeCatalogCache`, fast-mode chip, and the favorites/recents fan-out. |
-| `ModelPickerContent.tsx` | The popover body: search bar, rail, list, empty state. |
+| `ModelPickerContent.tsx` | The popover body: search bar, rail, virtualized list (`@tanstack/react-virtual`), empty state. New props: `hidePermissionRail` (forward-compat hook for orchestrated surfaces that suppress permission-related affordances), `allowCliOnlyModels` (include CLI-restricted models in the list), `allowRegistryExpansion` (when false, skip merging `MODEL_REGISTRY` entries into the runtime catalog — useful for constrained surfaces). Estimated row height `MODEL_ROW_ESTIMATED_HEIGHT = 44`. |
 | `ModelPickerRail.tsx` | Left-rail tabs (Favorites / Recents / per-provider groups). Reads `AuthStatus` per family to render auth gates and the OpenCode "Install OpenCode" CTA from `providerEmptyState`. |
 | `ModelListRow.tsx` | A single model row (favorite star, brand logo, display name, sub-provider chip, availability tone). |
 | `ReasoningEffortPicker.tsx` | Standalone reasoning-effort dropdown, mounted next to the model trigger and inside per-slot parallel-launch controls. |

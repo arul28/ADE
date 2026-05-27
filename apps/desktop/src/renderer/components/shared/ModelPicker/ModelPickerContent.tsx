@@ -398,6 +398,18 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     getItemKey: getVirtualModelKey,
     overscan: 8,
   });
+  const virtualRows = modelListVirtualizer.getVirtualItems();
+  const renderedVirtualRows = virtualRows.length > 0 || visibleModels.length === 0
+    ? virtualRows
+    : visibleModels.slice(0, 36).map((_, index) => ({
+        key: getVirtualModelKey(index),
+        index,
+        start: index * MODEL_ROW_ESTIMATED_HEIGHT,
+      }));
+  const virtualListHeight = Math.max(
+    modelListVirtualizer.getTotalSize(),
+    visibleModels.length * MODEL_ROW_ESTIMATED_HEIGHT,
+  );
   useEffect(() => {
     modelListVirtualizer.scrollToIndex(0, { align: "start" });
   }, [activeProviderTabKey, modelListVirtualizer, selection, query]);
@@ -675,11 +687,11 @@ export const ModelPickerContent = memo(function ModelPickerContent({
               <div
                 data-model-picker-virtual-list="true"
                 style={{
-                  height: modelListVirtualizer.getTotalSize(),
+                  height: virtualListHeight,
                   position: "relative",
                 }}
               >
-                {modelListVirtualizer.getVirtualItems().map((virtualRow) => {
+                {renderedVirtualRows.map((virtualRow) => {
                   const m = visibleModels[virtualRow.index];
                   if (!m) return null;
                   const isFocused = virtualRow.index === focusedIndex;

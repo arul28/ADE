@@ -1,5 +1,7 @@
 import type {
   AgentChatClaudePermissionMode,
+  AgentChatCodexApprovalPolicy,
+  AgentChatCodexSandbox,
   AgentChatPermissionMode,
   TerminalResumeLaunchConfig,
   TerminalResumeMetadata,
@@ -380,56 +382,21 @@ export function parseTrackedCliLaunchConfig(
   }
 
   if (provider === "codex") {
-    if (permissionMode === "full-auto") {
-      return {
-        permissionMode,
-        ...(model ? { model } : {}),
-        ...(reasoningEffort ? { reasoningEffort } : {}),
-        codexApprovalPolicy: "never",
-        codexSandbox: "danger-full-access",
-        codexConfigSource: "flags",
-      };
-    }
-
-    if (permissionMode === "edit") {
-      return {
-        permissionMode,
-        ...(model ? { model } : {}),
-        ...(reasoningEffort ? { reasoningEffort } : {}),
-        codexApprovalPolicy: "untrusted",
-        codexSandbox: "workspace-write",
-        codexConfigSource: "flags",
-      };
-    }
-
-    if (permissionMode === "default") {
-      return {
-        permissionMode,
-        ...(model ? { model } : {}),
-        ...(reasoningEffort ? { reasoningEffort } : {}),
-        codexApprovalPolicy: "on-request",
-        codexSandbox: "workspace-write",
-        codexConfigSource: "flags",
-      };
-    }
-
-    if (permissionMode === "plan") {
-      return {
-        permissionMode,
-        ...(model ? { model } : {}),
-        ...(reasoningEffort ? { reasoningEffort } : {}),
-        codexApprovalPolicy: "on-request",
-        codexSandbox: "read-only",
-        codexConfigSource: "flags",
-      };
-    }
-
-    return {
-      permissionMode: "config-toml",
+    const base = {
       ...(model ? { model } : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
-      codexConfigSource: "config-toml",
     };
+    const codexPolicies: Record<string, { codexApprovalPolicy: AgentChatCodexApprovalPolicy; codexSandbox: AgentChatCodexSandbox }> = {
+      "full-auto": { codexApprovalPolicy: "never", codexSandbox: "danger-full-access" },
+      edit: { codexApprovalPolicy: "untrusted", codexSandbox: "workspace-write" },
+      default: { codexApprovalPolicy: "on-request", codexSandbox: "workspace-write" },
+      plan: { codexApprovalPolicy: "on-request", codexSandbox: "read-only" },
+    };
+    const policy = permissionMode ? codexPolicies[permissionMode] : undefined;
+    if (policy) {
+      return { permissionMode, ...base, ...policy, codexConfigSource: "flags" };
+    }
+    return { permissionMode: "config-toml", ...base, codexConfigSource: "config-toml" };
   }
 
   return {
