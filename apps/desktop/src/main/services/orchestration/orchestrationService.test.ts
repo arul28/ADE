@@ -1091,4 +1091,48 @@ describe("orchestration watcher resilience", () => {
     off();
     await svc.dispose();
   });
+
+  it("returns etag_conflict instead of overwriting a newer on-disk manifest", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const { manifest } = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+      title: "Initial",
+    });
+
+    const manifestPath = path.join(manifest.bundlePath, "manifest.json");
+    const external = JSON.parse(await fsp.readFile(manifestPath, "utf-8")) as {
+      title: string;
+      serverGeneration: number;
+      etag: string;
+    };
+    external.title = "external-title";
+    external.serverGeneration += 5;
+    external.etag = `g${external.serverGeneration}-external`;
+    await fsp.writeFile(manifestPath, JSON.stringify(external, null, 2));
+
+    const patchRes = await svc.manifestPatch(
+      {
+        runId: manifest.runId,
+        ifMatchEtag: manifest.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [{ op: "replace", path: "/title", value: "patched-title" }],
+      },
+      manifest.bundlePath,
+    );
+
+    expect(patchRes.ok).toBe(false);
+    if (patchRes.ok) return;
+    expect(patchRes.error).toBe("etag_conflict");
+
+    const onDisk = JSON.parse(await fsp.readFile(manifestPath, "utf-8")) as {
+      title: string;
+      serverGeneration: number;
+    };
+    expect(onDisk.title).toBe("external-title");
+    expect(onDisk.serverGeneration).toBeGreaterThan(manifest.serverGeneration);
+    await svc.dispose();
+  });
 });
