@@ -1160,10 +1160,8 @@ export function ChatIosSimulatorPanel({
     return owner !== sessionId ? owner : null;
   }, [activeSession?.chatSessionId, sessionId]);
   const ownedByOtherChat = otherChatSessionId !== null;
-  const controlsOwnedElsewhere = ownedByOtherChat || controlsDisabled;
-  const inputBlockedMessage = ownedByOtherChat
-    ? "Another chat is already connected to the simulator. Use Take over to claim it."
-    : controlsDisabledMessage;
+  const controlsOwnedElsewhere = controlsDisabled;
+  const inputBlockedMessage = controlsDisabledMessage;
 
   const toggleSimulatorWindowMode = useCallback(() => {
     if (!activeSession || controlsOwnedElsewhere) return;

@@ -20,7 +20,7 @@ import type {
   TerminalSessionSummary,
   TerminalToolType,
 } from "../../../shared/types";
-import type { WorkSidebarTab } from "../../state/appStore";
+import type { WorkDraftKind, WorkSidebarTab } from "../../state/appStore";
 import {
   formatAppControlContextForPrompt,
   formatBuiltInBrowserContextForPrompt,
@@ -80,9 +80,10 @@ const WORK_SIDEBAR_TABS: Array<GlowMenuItem<WorkSidebarTab>> = [
 
 export type WorkSidebarContextTarget =
   | { kind: "chat"; sessionId: string }
+  | { kind: "draft"; draftTargetId: string; laneId: string; draftKind: WorkDraftKind }
   | { kind: "pty"; sessionId: string; ptyId: string; toolType: TerminalToolType | null };
 
-const NO_CONTEXT_TARGET_ERROR = "Open a chat or agent CLI session in this lane before inserting tool context.";
+const NO_CONTEXT_TARGET_ERROR = "Open a chat, draft, or agent CLI session in this lane before inserting tool context.";
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
 
@@ -103,13 +104,25 @@ function laneMismatchMessage(
 ): string {
   const ownerLane = laneDisplayName(lanes, ownerLaneId);
   const activeLane = laneDisplayName(lanes, activeLaneId);
-  return `This ${toolName} view is attached to ${ownerLane}, not ${activeLane}. Quit this view, then restart it from a chat or Claude Code session in ${activeLane} before inserting context.`;
+  return `This ${toolName} view is running from ${ownerLane} while your context target is ${activeLane}. Controls affect the running ${toolName}; inserted context goes to the current chat, draft, or CLI.`;
 }
 
-function dispatchAgentChatEvent<T>(eventName: string, sessionId: string, key: string, value: T): void {
+function dispatchAgentChatEvent<T>(
+  eventName: string,
+  target: Extract<WorkSidebarContextTarget, { kind: "chat" | "draft" }>,
+  key: string,
+  value: T,
+): void {
+  const targetDetail = target.kind === "chat"
+    ? { sessionId: target.sessionId }
+    : {
+        draftTargetId: target.draftTargetId,
+        laneId: target.laneId,
+        draftKind: target.draftKind,
+      };
   window.dispatchEvent(new CustomEvent(eventName, {
     detail: {
-      sessionId,
+      ...targetDetail,
       [key]: value,
     },
   }));
@@ -293,7 +306,7 @@ export function WorkSidebar({
     return null;
   }
   const laneMismatchReason = resolveLaneMismatchReason();
-  const contextDisabledReason = laneMismatchReason ?? targetDisabledReason;
+  const contextDisabledReason = targetDisabledReason;
   const canInsertContext = Boolean(contextTarget && !contextDisabledReason);
   const panelSessionId = contextTarget?.kind === "chat" ? contextTarget.sessionId : null;
 
@@ -348,8 +361,8 @@ export function WorkSidebar({
     formatForPty: (value: T) => string | null,
   ) => {
     withContextTarget(NO_CONTEXT_TARGET_ERROR, (target) => {
-      if (target.kind === "chat") {
-        dispatchAgentChatEvent(eventName, target.sessionId, key, value);
+      if (target.kind === "chat" || target.kind === "draft") {
+        dispatchAgentChatEvent(eventName, target, key, value);
         return;
       }
       const text = formatForPty(value);
@@ -397,9 +410,9 @@ export function WorkSidebar({
     );
   }, [insertContext]);
   const insertDraft = useCallback((text: string) => {
-    withContextTarget("Open a chat or agent CLI session in this lane before inserting draft text.", (target) => {
-      if (target.kind === "chat") {
-        dispatchAgentChatEvent("ade:agent-chat:insert-draft", target.sessionId, "text", text);
+    withContextTarget("Open a chat, draft, or agent CLI session in this lane before inserting draft text.", (target) => {
+      if (target.kind === "chat" || target.kind === "draft") {
+        dispatchAgentChatEvent("ade:agent-chat:insert-draft", target, "text", text);
         return;
       }
       insertIntoPty(target, text, "draft");
@@ -412,6 +425,7 @@ export function WorkSidebar({
       return (
         <div className="flex h-full min-h-0 flex-col">
           {contextDisabledReason ? <WarningBanner message={contextDisabledReason} /> : null}
+          {laneMismatchReason ? <WarningBanner message={laneMismatchReason} /> : null}
           <div className="min-h-0 flex-1 overflow-hidden">
             <ChatBuiltInBrowserPanel
               sessionId={panelSessionId}
@@ -488,7 +502,7 @@ export function WorkSidebar({
         sessionId={panelSessionId}
         laneId={laneId}
         projectRoot={laneRoot}
-        controlDisabledReason={laneMismatchReason}
+        controlDisabledReason={null}
         onAddAttachment={canInsertContext ? addAttachment : undefined}
         onAddContext={canInsertContext ? addIosContext : undefined}
         onInsertDraft={canInsertContext ? insertDraft : undefined}
@@ -498,7 +512,7 @@ export function WorkSidebar({
         sessionId={panelSessionId}
         laneId={laneId}
         projectRoot={laneRoot}
-        controlDisabledReason={laneMismatchReason}
+        controlDisabledReason={null}
         onAddAttachment={canInsertContext ? addAttachment : undefined}
         onAddContext={canInsertContext ? addAppControlContext : undefined}
         onInsertDraft={canInsertContext ? insertDraft : undefined}
@@ -507,6 +521,7 @@ export function WorkSidebar({
     return (
       <div className="flex h-full min-h-0 flex-col">
         {contextDisabledReason ? <WarningBanner message={contextDisabledReason} /> : null}
+        {laneMismatchReason ? <WarningBanner message={laneMismatchReason} /> : null}
         <div className="min-h-0 flex-1 overflow-auto px-3 py-3">{panel}</div>
       </div>
     );

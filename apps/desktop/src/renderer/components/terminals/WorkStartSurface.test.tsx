@@ -9,7 +9,8 @@ const selectLane = vi.fn();
 const agentChatPaneProps = vi.hoisted(() => ({
   latest: null as null | {
     laneId: string | null;
-    workDraftKind?: "chat" | "cli";
+    workDraftKind?: "chat" | "cli" | "chat-orchestrator";
+    draftContextTargetId?: string | null;
     onOpenShellSession?: (laneId: string) => void | Promise<void>;
     onLaunchCliSession?: unknown;
   },
@@ -23,7 +24,8 @@ vi.mock("../../state/appStore", () => ({
 vi.mock("../chat/AgentChatPane", () => ({
   AgentChatPane: (props: {
     laneId: string | null;
-    workDraftKind?: "chat" | "cli";
+    workDraftKind?: "chat" | "cli" | "chat-orchestrator";
+    draftContextTargetId?: string | null;
     onOpenShellSession?: (laneId: string) => void | Promise<void>;
     onLaunchCliSession?: unknown;
   }) => {
@@ -112,6 +114,7 @@ describe("WorkStartSurface", () => {
       <WorkStartSurface
         draftKind="chat"
         draftLaneId="lane-local"
+        draftContextTargetId="work:draft:lane-local:chat"
         lanes={[{ id: "lane-local", name: "Local", runtimePlacement: "local" } as any]}
         onOpenChatSession={vi.fn()}
         onLaunchPtySession={vi.fn()}
@@ -119,6 +122,7 @@ describe("WorkStartSurface", () => {
     );
 
     expect(await screen.findByTestId("agent-chat-pane")).toBeTruthy();
+    expect(agentChatPaneProps.latest?.draftContextTargetId).toBe("work:draft:lane-local:chat");
     expect(screen.queryByTestId("work-vm-banner")).toBeNull();
     expect(screen.queryByTestId("work-vm-not-ready")).toBeNull();
   });

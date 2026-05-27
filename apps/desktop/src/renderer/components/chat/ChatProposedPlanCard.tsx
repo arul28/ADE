@@ -1,6 +1,7 @@
 import React, { useCallback, useState } from "react";
 import { ListChecks, CopySimple } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
+import { ChatMarkdown } from "./chatMarkdown";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 
 /* ── Types ── */
@@ -25,13 +26,14 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
   onReject,
 }: ChatProposedPlanCardProps) {
   const [copied, setCopied] = useState(false);
-  const bodyText = description ?? question ?? "The agent has prepared a plan.";
+  const bodyText = description?.trim() || question?.trim() || "The agent has prepared a plan.";
 
   const handleCopy = useCallback(() => {
+    if (!navigator.clipboard) return;
     void navigator.clipboard.writeText(bodyText).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    });
+    }).catch(() => {});
   }, [bodyText]);
 
   return (
@@ -48,8 +50,8 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
         </span>
       </div>
 
-      <div className="mb-3 text-[12px] leading-relaxed text-fg/65">
-        Review the plan in the right pane, then choose to start or keep refining.
+      <div className="mb-3 max-h-[min(34vh,360px)] overflow-y-auto rounded-lg border border-white/[0.06] bg-black/15 px-3 py-2 text-[12px] leading-relaxed text-fg/75">
+        <ChatMarkdown tone="neutral">{bodyText}</ChatMarkdown>
       </div>
 
       <div className="flex items-center gap-1.5">

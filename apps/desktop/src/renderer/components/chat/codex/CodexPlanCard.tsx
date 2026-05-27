@@ -2,6 +2,7 @@ import { useState } from "react";
 import { motion } from "motion/react";
 import type { AgentChatEvent, AgentChatPlanStep } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
+import { ChatMarkdown } from "../chatMarkdown";
 
 type PlanEvent = Extract<AgentChatEvent, { type: "plan" }>;
 
@@ -10,6 +11,14 @@ type CodexPlanCardProps = {
 };
 
 const VIOLET = "#A78BFA";
+
+function PlanMarkdown({ markdown }: { markdown: string }) {
+  return (
+    <div className="ade-prose-themed prose prose-invert max-w-none text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.55] text-fg/72 prose-headings:mb-2 prose-headings:mt-3 prose-headings:text-fg/90 prose-p:my-2 prose-ul:my-2 prose-ul:pl-5 prose-ol:my-2 prose-ol:pl-5 prose-li:my-1">
+      <ChatMarkdown tone="neutral">{markdown}</ChatMarkdown>
+    </div>
+  );
+}
 
 function PlanGlyph({ status }: { status: AgentChatPlanStep["status"] }) {
   if (status === "in_progress") {
@@ -36,13 +45,18 @@ function PlanGlyph({ status }: { status: AgentChatPlanStep["status"] }) {
 
 export function CodexPlanCard({ event }: CodexPlanCardProps) {
   const [liveOpen, setLiveOpen] = useState(false);
+  const steps = Array.isArray(event.steps) ? event.steps : [];
   const hasStreaming = Boolean(event.streamingText && event.streamingText.trim().length);
-  const stateLabel = event.state === "complete"
-    ? "Plan ready"
-    : event.state === "active" || event.state === "delta"
-      ? "Planning"
-      : "Plan";
+  let stateLabel: string;
+  switch (event.state) {
+    case "complete": stateLabel = "Plan ready"; break;
+    case "active":
+    case "delta":    stateLabel = "Planning"; break;
+    default:         stateLabel = "Plan";
+  }
   const streamingTrimmed = (event.streamingText ?? "").trim();
+  const showCompletedMarkdownInline = hasStreaming && event.state === "complete" && !steps.length;
+  const showMarkdownToggle = hasStreaming && !showCompletedMarkdownInline;
 
   return (
     <motion.div
@@ -56,11 +70,11 @@ export function CodexPlanCard({ event }: CodexPlanCardProps) {
         <h3 className="text-[length:calc(var(--chat-font-size)*13/14)] font-semibold tracking-[-0.005em] text-violet-100">
           {stateLabel}
         </h3>
-        {event.steps.length ? (
+        {steps.length ? (
           <span className="text-[length:calc(var(--chat-font-size)*11/14)] text-violet-200/45">
-            {event.steps.filter((s) => s.status === "completed").length}
+            {steps.filter((s) => s.status === "completed").length}
             /
-            {event.steps.length}
+            {steps.length}
           </span>
         ) : null}
       </div>
@@ -71,9 +85,9 @@ export function CodexPlanCard({ event }: CodexPlanCardProps) {
         </p>
       ) : null}
 
-      {event.steps.length ? (
+      {steps.length ? (
         <ul className="space-y-1 px-4 pb-3 pt-1">
-          {event.steps.map((step, idx) => {
+          {steps.map((step, idx) => {
             const isActive = step.status === "in_progress";
             const isComplete = step.status === "completed";
             return (
@@ -98,7 +112,13 @@ export function CodexPlanCard({ event }: CodexPlanCardProps) {
         </div>
       ) : null}
 
-      {hasStreaming ? (
+      {showCompletedMarkdownInline ? (
+        <div className="border-t border-violet-400/10 px-4 pb-3 pt-2">
+          <PlanMarkdown markdown={streamingTrimmed} />
+        </div>
+      ) : null}
+
+      {showMarkdownToggle ? (
         <div className="flex items-center justify-end gap-2 border-t border-violet-400/10 px-4 py-1.5">
           <button
             type="button"
@@ -107,14 +127,14 @@ export function CodexPlanCard({ event }: CodexPlanCardProps) {
             aria-expanded={liveOpen}
           >
             <span aria-hidden>{liveOpen ? "▾" : "▸"}</span>
-            <span>live</span>
+            <span>{event.state === "complete" ? "details" : "live"}</span>
           </button>
         </div>
       ) : null}
 
-      {hasStreaming && liveOpen ? (
+      {showMarkdownToggle && liveOpen ? (
         <div className="border-t border-violet-400/10 bg-violet-950/15 px-4 py-2 text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.5] text-fg/55">
-          {streamingTrimmed}
+          <PlanMarkdown markdown={streamingTrimmed} />
         </div>
       ) : null}
     </motion.div>

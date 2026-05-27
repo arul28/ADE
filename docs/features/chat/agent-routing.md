@@ -159,10 +159,15 @@ persistExtendedHistory: true }`. The return envelope is consumed by
 `reasoningEffort`. That snapshot becomes the session state, so the
 picker chips always show what the runtime actually applied. On resume,
 the persisted chat state is re-written after normalization instead of
-being re-copied from the on-disk file — the server's reading of
-`.codex/config.toml` wins over a stale persisted pair. Turns use the
-Codex-native `effort` key (`turn/start({ threadId, input, effort?,
-serviceTier? })`) instead of the lifecycle `reasoningEffort` name.
+being re-copied from the on-disk file. For ADE-controlled flag modes,
+the explicit policy sent with `thread/resume` remains authoritative when
+the lifecycle response echoes an older thread policy; this keeps a
+manual picker switch from snapping back to Plan before the next
+`turn/start`. When `codexConfigSource` is `config-toml`, ADE sends no
+policy override and the server's reading of `.codex/config.toml` wins
+over a stale persisted pair. Turns use the Codex-native `effort` key
+(`turn/start({ threadId, input, effort?, serviceTier? })`) instead of
+the lifecycle `reasoningEffort` name.
 
 #### Codex service tiers (Fast Mode)
 

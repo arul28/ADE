@@ -3465,10 +3465,24 @@ function normalizeCodexRuntimeSandbox(value: unknown): AgentChatCodexSandbox | u
   return typeof type === "string" ? CODEX_SANDBOX_CAMEL_CASE_ALIASES[type] : undefined;
 }
 
+function shouldPreserveRequestedCodexPolicy(
+  requested: { approvalPolicy: AgentChatCodexApprovalPolicy; sandbox: AgentChatCodexSandbox } | null,
+  runtime: { approvalPolicy?: AgentChatCodexApprovalPolicy; sandbox?: AgentChatCodexSandbox },
+): boolean {
+  if (!requested) return false;
+  if (runtime.sandbox && runtime.sandbox !== requested.sandbox) return true;
+  if (!runtime.approvalPolicy || runtime.approvalPolicy === requested.approvalPolicy) return false;
+  return requested.approvalPolicy === "never" || requested.approvalPolicy === "untrusted";
+}
+
 function applyCodexEffectiveThreadState(
   managed: ManagedChatSession,
   response: CodexThreadLifecycleResponse | null | undefined,
   options: {
+    requestedCodexPolicy?: {
+      approvalPolicy: AgentChatCodexApprovalPolicy;
+      sandbox: AgentChatCodexSandbox;
+    } | null;
     requestedReasoningEffort?: string | null;
     onReasoningMismatch?: (mismatch: {
       requestedReasoningEffort: string;
@@ -3478,15 +3492,24 @@ function applyCodexEffectiveThreadState(
 ): void {
   if (!response) return;
 
+  const requestedCodexPolicy = options.requestedCodexPolicy ?? null;
   const approvalPolicy = normalizePersistedCodexApprovalPolicy(response.approvalPolicy);
-  if (approvalPolicy) {
-    managed.session.codexApprovalPolicy = approvalPolicy;
+  const sandbox = normalizeCodexRuntimeSandbox(response.sandbox);
+  const runtime = {
+    ...(approvalPolicy ? { approvalPolicy } : {}),
+    ...(sandbox ? { sandbox } : {}),
+  };
+  const preserveRequestedPolicy = shouldPreserveRequestedCodexPolicy(requestedCodexPolicy, runtime);
+
+  if (preserveRequestedPolicy && requestedCodexPolicy) {
+    managed.session.codexApprovalPolicy = requestedCodexPolicy.approvalPolicy;
+    managed.session.codexSandbox = requestedCodexPolicy.sandbox;
+  } else {
+    if (approvalPolicy) managed.session.codexApprovalPolicy = approvalPolicy;
+    if (sandbox) managed.session.codexSandbox = sandbox;
   }
 
-  const sandbox = normalizeCodexRuntimeSandbox(response.sandbox);
-  if (sandbox) {
-    managed.session.codexSandbox = sandbox;
-  }
+  managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
 
   const reasoningEffort = validateReasoningEffort(
     "codex",
@@ -19258,6 +19281,7 @@ export function createAgentChatService(args: {
               persistExtendedHistory: true
             });
             applyCodexEffectiveThreadState(managed, resumeResponse, {
+              requestedCodexPolicy: codexPolicy,
               requestedReasoningEffort: resumeReasoningEffort,
               onReasoningMismatch: (mismatch) => logger.warn("agent_chat.codex_reasoning_runtime_mismatch", {
                 sessionId: managed.session.id,
@@ -20246,6 +20270,7 @@ export function createAgentChatService(args: {
             persistExtendedHistory: true
           });
           applyCodexEffectiveThreadState(managed, resumeResponse, {
+            requestedCodexPolicy: codexPolicy,
             requestedReasoningEffort: managed.session.reasoningEffort,
             onReasoningMismatch: (mismatch) => logger.warn("agent_chat.codex_reasoning_runtime_mismatch", {
               sessionId: managed.session.id,

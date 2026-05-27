@@ -1163,6 +1163,7 @@ export function WorkViewArea({
   viewMode,
   draftKind,
   draftLaneId = null,
+  draftContextTargetId = null,
   onContinueCliSession,
   setViewMode,
   onSelectItem,
@@ -1203,6 +1204,7 @@ export function WorkViewArea({
   viewMode: WorkViewMode;
   draftKind: WorkDraftKind;
   draftLaneId?: string | null;
+  draftContextTargetId?: string | null;
   setViewMode: (mode: WorkViewMode) => void;
   onSelectItem: (sessionId: string) => void;
   onCloseItem: (sessionId: string) => void;
@@ -1479,6 +1481,7 @@ export function WorkViewArea({
               <WorkStartSurface
                 draftKind={draftKind}
                 draftLaneId={draftLaneId}
+                draftContextTargetId={draftContextTargetId}
                 lanes={lanes}
                 onOpenChatSession={onOpenChatSession}
                 onLaunchPtySession={onLaunchPtySession}
@@ -1542,6 +1545,7 @@ export function WorkViewArea({
             <WorkStartSurface
               draftKind={draftKind}
               draftLaneId={draftLaneId}
+              draftContextTargetId={draftContextTargetId}
               lanes={lanes}
               onOpenChatSession={onOpenChatSession}
               onLaunchPtySession={onLaunchPtySession}
