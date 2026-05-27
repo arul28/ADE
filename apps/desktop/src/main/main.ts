@@ -197,7 +197,9 @@ const THRESHOLD_DEDUP_TTL_MS = 10 * 60_000; // 10 minutes
 
 /** Returns true if the event should be emitted (not a duplicate). Prunes stale entries. */
 function shouldEmitThresholdEvent(event: { provider: string; threshold: number; resetsAt: string }): boolean {
-  const dedupKey = `${event.provider}:${event.threshold}:${new Date(event.resetsAt).getTime()}`;
+  const parsedTime = new Date(event.resetsAt).getTime();
+  const resetsAtKey = Number.isNaN(parsedTime) ? event.resetsAt : parsedTime;
+  const dedupKey = `${event.provider}:${event.threshold}:${resetsAtKey}`;
   const now = Date.now();
   const lastEmitted = thresholdEventDedup.get(dedupKey);
   if (lastEmitted && now - lastEmitted < THRESHOLD_DEDUP_TTL_MS) return false;

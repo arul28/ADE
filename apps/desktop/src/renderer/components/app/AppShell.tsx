@@ -350,14 +350,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   >([]);
   const usageToastTimersRef = useRef<Map<string, number>>(new Map());
   const dismissedUsageAlertsRef = useRef(readDismissedUsageAlerts());
-  const dismissUsageToast = (id: string, event?: UsageThresholdEvent) => {
-    if (event) {
-      markUsageAlertDismissed(dismissedUsageAlertsRef.current, event);
-    }
+  /** Remove a usage toast from the in-memory list without persisting to localStorage. */
+  const expireUsageToast = (id: string) => {
     setUsageThresholdToasts((prev) => prev.filter((t) => t.id !== id));
     const timer = usageToastTimersRef.current.get(id);
     if (timer != null) window.clearTimeout(timer);
     usageToastTimersRef.current.delete(id);
+  };
+  /** Explicitly dismiss a usage toast (user clicked "X") — persists to localStorage. */
+  const dismissUsageToast = (id: string, event?: UsageThresholdEvent) => {
+    if (event) {
+      markUsageAlertDismissed(dismissedUsageAlertsRef.current, event);
+    }
+    expireUsageToast(id);
   };
   const [staleCliNotice, setStaleCliNotice] =
     useState<StaleCliNotice | null>(null);
@@ -1065,7 +1070,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         }
         return [{ id, event }, ...withoutLowerSameProvider].slice(0, 4);
       });
-      const timer = window.setTimeout(() => dismissUsageToast(id, event), 30_000);
+      const timer = window.setTimeout(() => expireUsageToast(id), 30_000);
       usageToastTimersRef.current.set(id, timer);
     });
     return () => {

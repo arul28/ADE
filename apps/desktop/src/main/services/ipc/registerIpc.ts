@@ -9317,6 +9317,7 @@ export function registerIpc({
   ipcMain.handle(
     IPC.ctoGetLinearIssueComments,
     async (_event, arg: { issueId: string }): Promise<CtoLinearIssueComment[]> => {
+      if (typeof arg?.issueId !== "string" || !arg.issueId.trim()) return [];
       const ctx = getCtx();
       if (!ctx.linearIssueTracker) return [];
       return ctx.linearIssueTracker.fetchIssueComments(arg.issueId);

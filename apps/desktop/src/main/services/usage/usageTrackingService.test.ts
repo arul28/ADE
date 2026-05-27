@@ -831,8 +831,8 @@ describe("createUsageTrackingService", () => {
 
   it("shares threshold state across instances so the same event does not fire twice", async () => {
     const logger = createLogger();
-    const onUpdate1 = vi.fn();
-    const onUpdate2 = vi.fn();
+    const onThreshold1 = vi.fn();
+    const onThreshold2 = vi.fn();
 
     const highUsageWindows: UsageWindow[] = [
       {
@@ -853,22 +853,22 @@ describe("createUsageTrackingService", () => {
 
     const service1 = createUsageTrackingService({
       logger,
-      onUpdate: onUpdate1,
+      onThresholdEvent: onThreshold1,
       dependencies: makeDeps(highUsageWindows),
     });
     const service2 = createUsageTrackingService({
       logger,
-      onUpdate: onUpdate2,
+      onThresholdEvent: onThreshold2,
       dependencies: makeDeps(highUsageWindows),
     });
 
     await service1.poll();
     await service2.poll();
 
-    const allEvents1 = onUpdate1.mock.calls.flatMap(([snap]) => snap.thresholdEvents ?? []);
-    const allEvents2 = onUpdate2.mock.calls.flatMap(([snap]) => snap.thresholdEvents ?? []);
-    const totalEvents = allEvents1.length + allEvents2.length;
-    expect(totalEvents).toBeLessThanOrEqual(allEvents1.length > 0 ? allEvents1.length : allEvents2.length > 0 ? allEvents2.length : 0);
+    // The first service should fire threshold events for 75% crossing
+    expect(onThreshold1.mock.calls.length).toBeGreaterThan(0);
+    // The second service should NOT fire because shared state already recorded the crossing
+    expect(onThreshold2.mock.calls.length).toBe(0);
 
     service1.dispose();
     service2.dispose();

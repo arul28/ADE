@@ -272,8 +272,8 @@ export function LinearIssueBrowser({
   };
   batchActions?: {
     onBatchCreateLanes: (issues: BrowserIssue[]) => void | Promise<void>;
-    onBatchResolveNewLanes: (issues: BrowserIssue[], modelId: string) => void | Promise<void>;
-    onBatchResolveExistingLane: (issues: BrowserIssue[], laneId: string, modelId: string) => void | Promise<void>;
+    onBatchResolveNewLanes: (issues: BrowserIssue[]) => void | Promise<void>;
+    onBatchResolveExistingLane: (issues: BrowserIssue[]) => void | Promise<void>;
     batchProgress: { completed: number; total: number; action: string } | null;
   };
 }) {
@@ -446,6 +446,10 @@ export function LinearIssueBrowser({
         if (startIdx !== -1 && endIdx !== -1) {
           const [lo, hi] = startIdx < endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
           for (let i = lo; i <= hi; i++) next.add(displayIssues[i].id);
+        } else {
+          // Anchor is stale (no longer in display list) — fall back to toggling clicked row
+          if (next.has(issueId)) next.delete(issueId);
+          else next.add(issueId);
         }
       } else {
         if (next.has(issueId)) next.delete(issueId);
@@ -637,8 +641,11 @@ export function LinearIssueBrowser({
             <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.05] px-3 py-1.5">
               <span
                 role="checkbox"
-                aria-checked={selectedIssueIds.size === displayIssues.length && displayIssues.length > 0}
+                tabIndex={0}
+                aria-checked={selectedIssueIds.size === 0 ? false : selectedIssueIds.size === displayIssues.length ? true : "mixed"}
+                aria-label="Select all issues"
                 onClick={handleSelectAll}
+                onKeyDown={(e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); handleSelectAll(); } }}
                 className={cn(
                   "flex h-[14px] w-[14px] shrink-0 cursor-pointer items-center justify-center rounded-[3px] border transition-all",
                   selectedIssueIds.size === displayIssues.length
@@ -1162,17 +1169,19 @@ function SubIssuesList({ issues }: { issues: NonNullable<NormalizedLinearIssue["
 function ActivitySection({ issueId }: { issueId: string }) {
   const [expanded, setExpanded] = useState(false);
   const [comments, setComments] = useState<CtoLinearIssueComment[] | null>(null);
+  const [commentError, setCommentError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const prevIssueIdRef = useRef(issueId);
 
   if (prevIssueIdRef.current !== issueId) {
     prevIssueIdRef.current = issueId;
     setComments(null);
+    setCommentError(null);
     setExpanded(false);
   }
 
   useEffect(() => {
-    if (!expanded || comments) return;
+    if (!expanded || comments || commentError) return;
     let cancelled = false;
     setLoading(true);
     const cto = window.ade?.cto as Record<string, unknown> | undefined;
@@ -1180,10 +1189,10 @@ function ActivitySection({ issueId }: { issueId: string }) {
     if (!fn) { setLoading(false); setComments([]); return; }
     void fn({ issueId })
       .then((result) => { if (!cancelled) setComments(result ?? []); })
-      .catch(() => { if (!cancelled) setComments([]); })
+      .catch(() => { if (!cancelled) setCommentError("Failed to load comments"); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [expanded, issueId, comments]);
+  }, [expanded, issueId, comments, commentError]);
 
   return (
     <div className="mt-3">
@@ -1199,6 +1208,8 @@ function ActivitySection({ issueId }: { issueId: string }) {
         <div className="mt-1.5 space-y-2 pl-1">
           {loading ? (
             <div className="text-[10px] text-muted-fg/40">Loading...</div>
+          ) : commentError ? (
+            <div className="text-[10px] text-red-400/70">{commentError}</div>
           ) : comments && comments.length > 0 ? (
             comments.map((comment) => (
               <div key={comment.id} className="rounded-md border border-white/[0.05] bg-white/[0.02] px-2.5 py-2">
@@ -1240,8 +1251,8 @@ function BatchActionView({
   function handleAction(key: string): void {
     switch (key) {
       case "create": void batchActions.onBatchCreateLanes(selectedIssues); break;
-      case "resolve-new": void batchActions.onBatchResolveNewLanes(selectedIssues, ""); break;
-      case "resolve-existing": void batchActions.onBatchResolveExistingLane(selectedIssues, "", ""); break;
+      case "resolve-new": void batchActions.onBatchResolveNewLanes(selectedIssues); break;
+      case "resolve-existing": void batchActions.onBatchResolveExistingLane(selectedIssues); break;
     }
   }
 

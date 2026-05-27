@@ -26,8 +26,6 @@ import {
 
 const INITIAL_VISIBILITY_CHECK_DELAY_MS = 2_000;
 
-let cachedQuickView: CtoLinearQuickView | null = null;
-
 const HEADER_STATUS_MENU_ROW_CLASS =
   "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] font-medium text-muted-fg/80 transition-colors duration-150 hover:bg-white/[0.06] hover:text-fg/90";
 
@@ -89,6 +87,7 @@ export function LinearQuickViewButton({
   const [batchIssues, setBatchIssues] = useState<LaneLinearIssue[]>([]);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
+  const cachedQuickViewRef = useRef<CtoLinearQuickView | null>(null);
 
   const loadVisibility = useCallback(async (): Promise<boolean> => {
     if (!project?.rootPath || !window.ade.cto?.getLinearConnectionStatus) {
@@ -170,8 +169,8 @@ export function LinearQuickViewButton({
   }, [loadVisibility, visible, project?.rootPath]);
 
   const openQuickView = useCallback(() => {
-    if (cachedQuickView) {
-      setQuickView(cachedQuickView);
+    if (cachedQuickViewRef.current) {
+      setQuickView(cachedQuickViewRef.current);
     }
     setOpen(true);
   }, []);
@@ -485,7 +484,7 @@ export function LinearQuickViewButton({
                 }}
                 onConnectionVisibilityChange={setVisible}
                 onQuickViewChange={(data) => {
-                  cachedQuickView = data;
+                  cachedQuickViewRef.current = data;
                   setQuickView(data);
                 }}
                 onLoadingChange={setBrowserLoading}

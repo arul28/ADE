@@ -6120,12 +6120,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
     if (name === "/linear comments") {
-      if (!args) {
+      const issueId = args?.trim();
+      if (!issueId) {
         setRightPane({ kind: "details", title: "Linear comments", body: "Usage: /linear comments <issue-id>" });
         return;
       }
-      const comments = await conn.tool("getLinearIssueComments", { issueId: args.trim() });
-      setRightPane({ kind: "details", title: `Linear comments · ${args.trim()}`, body: formatLinearIssueComments(comments) });
+      const comments = await conn.tool("getLinearIssueComments", { issueId });
+      setRightPane({ kind: "details", title: `Linear comments · ${issueId}`, body: formatLinearIssueComments(comments) });
       return;
     }
     if (name === "/linear assign") {
