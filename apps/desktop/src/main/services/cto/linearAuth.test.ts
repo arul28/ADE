@@ -971,6 +971,189 @@ describe("linearClient", () => {
     expect(result.issues[0]?.identifier).toBe("ABC-7");
   });
 
+  it("normalizes label colors, cycle info, and child issues from GraphQL response", async () => {
+    const fetchImpl = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          data: {
+            issues: {
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes: [
+                {
+                  id: "issue-rich",
+                  identifier: "ABC-99",
+                  title: "Rich issue",
+                  description: "",
+                  url: null,
+                  priority: 1,
+                  createdAt: "2026-03-05T00:00:00.000Z",
+                  updatedAt: "2026-03-05T00:00:00.000Z",
+                  project: { id: "proj-1", slug: "acme-platform" },
+                  team: { id: "team-1", key: "ACME" },
+                  state: { id: "state-1", name: "In Progress", type: "started" },
+                  assignee: null,
+                  creator: { id: "user-1" },
+                  labels: {
+                    nodes: [
+                      { id: "l1", name: "Bug", color: "#EF4444" },
+                      { id: "l2", name: "P0", color: null },
+                    ],
+                  },
+                  cycle: {
+                    id: "cycle-1",
+                    name: "Sprint 42",
+                    startsAt: "2026-03-01",
+                    endsAt: "2026-03-14",
+                  },
+                  children: {
+                    nodes: [
+                      {
+                        id: "child-1",
+                        identifier: "ABC-100",
+                        title: "Sub-task A",
+                        state: { id: "s-done", name: "Done", type: "completed" },
+                      },
+                      {
+                        id: "child-2",
+                        identifier: "ABC-101",
+                        title: "Sub-task B",
+                        state: { id: "s-ip", name: "In Progress", type: "started" },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+
+    const client = createLinearClient({
+      credentials: {
+        getTokenOrThrow: () => "Bearer test-token",
+        getStatus: () => ({ authMode: "oauth" }),
+      } as any,
+      fetchImpl: fetchImpl as any,
+      logger: null,
+    });
+
+    const issues = await client.fetchCandidateIssues({
+      projectSlugs: ["acme-platform"],
+      stateTypes: ["started"],
+    });
+
+    expect(issues).toHaveLength(1);
+    const issue = issues[0]!;
+    expect(issue.labelColors).toEqual([
+      { name: "Bug", color: "#EF4444" },
+      { name: "P0", color: null },
+    ]);
+    expect(issue.cycleId).toBe("cycle-1");
+    expect(issue.cycleName).toBe("Sprint 42");
+    expect(issue.cycleStartsAt).toBe("2026-03-01");
+    expect(issue.cycleEndsAt).toBe("2026-03-14");
+    expect(issue.childIssues).toEqual([
+      { id: "child-1", identifier: "ABC-100", title: "Sub-task A", stateId: "s-done", stateName: "Done", stateType: "completed" },
+      { id: "child-2", identifier: "ABC-101", title: "Sub-task B", stateId: "s-ip", stateName: "In Progress", stateType: "started" },
+    ]);
+    expect(issue.hasOpenBlockers).toBe(true);
+  });
+
+  it("returns null cycle fields when issue has no cycle", async () => {
+    const fetchImpl = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          data: {
+            issues: {
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes: [makeIssueNode("no-cycle", "2026-03-05T00:00:00.000Z")],
+            },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+
+    const client = createLinearClient({
+      credentials: {
+        getTokenOrThrow: () => "Bearer test-token",
+        getStatus: () => ({ authMode: "oauth" }),
+      } as any,
+      fetchImpl: fetchImpl as any,
+      logger: null,
+    });
+
+    const issues = await client.fetchCandidateIssues({
+      projectSlugs: ["acme-platform"],
+      stateTypes: ["unstarted"],
+    });
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.cycleId).toBeNull();
+    expect(issues[0]!.cycleName).toBeNull();
+    expect(issues[0]!.childIssues).toEqual([]);
+    expect(issues[0]!.labelColors).toEqual([{ name: "bug", color: null }]);
+  });
+
+  it("fetches issue comments with user attribution", async () => {
+    const fetchImpl = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          data: {
+            issue: {
+              comments: {
+                nodes: [
+                  {
+                    id: "comment-1",
+                    body: "Looks good",
+                    createdAt: "2026-03-05T12:00:00.000Z",
+                    user: { id: "u1", name: "alex", displayName: "Alex M" },
+                  },
+                  {
+                    id: "comment-2",
+                    body: "Merged",
+                    createdAt: "2026-03-05T13:00:00.000Z",
+                    user: { id: "u2", name: "bot", displayName: null },
+                  },
+                  { id: null, body: null, createdAt: null, user: null },
+                ],
+              },
+            },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+
+    const client = createLinearClient({
+      credentials: {
+        getTokenOrThrow: () => "Bearer test-token",
+        getStatus: () => ({ authMode: "oauth" }),
+      } as any,
+      fetchImpl: fetchImpl as any,
+      logger: null,
+    });
+
+    const comments = await client.fetchIssueComments("issue-1");
+    expect(comments).toHaveLength(2);
+    expect(comments[0]).toEqual({
+      id: "comment-1",
+      body: "Looks good",
+      createdAt: "2026-03-05T12:00:00.000Z",
+      userName: "alex",
+      userDisplayName: "Alex M",
+    });
+    expect(comments[1]).toEqual({
+      id: "comment-2",
+      body: "Merged",
+      createdAt: "2026-03-05T13:00:00.000Z",
+      userName: "bot",
+      userDisplayName: "bot",
+    });
+  });
+
   it("strips a pasted bearer prefix from manual API keys", async () => {
     const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
       expect(init?.headers).toMatchObject({ authorization: "lin_api_test" });

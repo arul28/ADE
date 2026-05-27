@@ -828,6 +828,54 @@ describe("createUsageTrackingService", () => {
 
     service.dispose();
   });
+
+  it("shares threshold state across instances so the same event does not fire twice", async () => {
+    const logger = createLogger();
+    const onUpdate1 = vi.fn();
+    const onUpdate2 = vi.fn();
+
+    const highUsageWindows: UsageWindow[] = [
+      {
+        name: "claude",
+        provider: "claude",
+        startAt: new Date(Date.now() - 3600_000).toISOString(),
+        endAt: new Date(Date.now() + 3600_000).toISOString(),
+        resetAt: new Date(Date.now() + 3600_000).toISOString(),
+        usageLimit: 1000,
+        usageCurrent: 800,
+        planTier: "pro",
+      },
+    ];
+
+    const makeDeps = (windows: UsageWindow[]) => ({
+      pollClaudeUsage: vi.fn(async () => ({ windows, extraUsage: null, errors: [] as never[] })),
+      pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
+      scanClaudeLogs: vi.fn(async () => [] as never[]),
+      scanCodexLogs: vi.fn(async () => [] as never[]),
+    });
+
+    const service1 = createUsageTrackingService({
+      logger,
+      onUpdate: onUpdate1,
+      dependencies: makeDeps(highUsageWindows),
+    });
+    const service2 = createUsageTrackingService({
+      logger,
+      onUpdate: onUpdate2,
+      dependencies: makeDeps(highUsageWindows),
+    });
+
+    await service1.poll();
+    await service2.poll();
+
+    const allEvents1 = onUpdate1.mock.calls.flatMap(([snap]) => snap.thresholdEvents ?? []);
+    const allEvents2 = onUpdate2.mock.calls.flatMap(([snap]) => snap.thresholdEvents ?? []);
+    const totalEvents = allEvents1.length + allEvents2.length;
+    expect(totalEvents).toBeLessThanOrEqual(allEvents1.length > 0 ? allEvents1.length : allEvents2.length > 0 ? allEvents2.length : 0);
+
+    service1.dispose();
+    service2.dispose();
+  });
 });
 
 // ── Local Cost Scanning with real files ──────────────────────────
