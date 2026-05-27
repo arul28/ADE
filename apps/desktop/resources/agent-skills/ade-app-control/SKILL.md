@@ -12,11 +12,13 @@ App Control is a live desktop drawer service. Prefer socket-backed commands:
 ```bash
 ade help app-control
 ade --socket app-control status --text
+ade --socket app-control claim --lane <lane-id> --text
 ade --socket app-control launch --command "npm run dev" --text
 ade --socket app-control connect --cdp-port <port> --text
 ```
 
 ADE sets `ADE_APP_CONTROL_CDP_PORT` and `ADE_APP_CONTROL_DEBUG_FLAGS` for launches. Custom Electron launchers should forward one of those values to `--remote-debugging-port`.
+ADE-launched agents pass `ADE_LANE_ID` / `ADE_CHAT_SESSION_ID` through `launch`, `connect`, and `claim`; use `claim` when attaching to a renderer that is already running so the Work tools pane attributes it to the agent's lane instead of the visible chat.
 
 ## Inspect
 
@@ -70,4 +72,3 @@ ade --socket app-control snapshot --text         # forces the drawer to repaint
 ```
 
 If `targets` shows a `/devtools/page/<id>` entry with the dev URL (`http://localhost:5173/...`), CDP is healthy — the drawer banner is just lagging until the next snapshot.
-

@@ -313,6 +313,7 @@ describe("iosSimulatorService single-owner lock contract", () => {
       mode: "snapshot" as const,
       bridgeUrl: null,
       startedAt: new Date().toISOString(),
+      claimedAt: null,
     };
     const error = new IosSimulatorOwnedBySessionError(previousSession);
     expect(error.code).toBe(IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE);
@@ -320,6 +321,66 @@ describe("iosSimulatorService single-owner lock contract", () => {
     expect(error.currentChatSessionId).toBe("chat-A");
     expect(error.message).toContain(IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE);
     expect(error.message).toContain("chat-A");
+  });
+
+  it("can claim an active simulator drawer session for a lane without relaunching it", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const events: IosSimulatorEventPayload[] = [];
+    const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
+      if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
+        return { stdout: simulatorDevicesJson, stderr: "" };
+      }
+      if (command === "xcrun" && commandArgs[1] === "bootstatus") return { stdout: "", stderr: "" };
+      if (command === "xcrun" && commandArgs[1] === "listapps") {
+        return {
+          stdout: `"com.example.app" = {\n  CFBundleDisplayName = "Example";\n};\n`,
+          stderr: "",
+        };
+      }
+      if (command === "xcrun" && commandArgs[1] === "launch") return { stdout: "com.example.app: 123\n", stderr: "" };
+      return { stdout: "", stderr: "" };
+    });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({
+      run: runMock,
+      commandExists: () => true,
+    });
+    const service = createIosSimulatorService({
+      projectRoot: os.tmpdir(),
+      logger: noopLogger,
+      onEvent: (payload) => events.push(payload),
+    });
+
+    try {
+      await service.launch({
+        bundleId: "com.example.app",
+        build: false,
+        laneId: "lane-old",
+        chatSessionId: "chat-old",
+      });
+
+      const claimed = await service.claim({ laneId: "lane-1", chatSessionId: "chat-1" });
+
+      expect(claimed.activeSession).toMatchObject({
+        laneId: "lane-1",
+        chatSessionId: "chat-1",
+        bundleId: "com.example.app",
+        claimedAt: expect.any(String),
+      });
+      expect(runMock.mock.calls.filter(([command, commandArgs]) => (
+        command === "xcrun" && commandArgs[1] === "launch"
+      ))).toHaveLength(1);
+      expect(events.findLast((event) => event.type === "session-updated")).toMatchObject({
+        session: {
+          laneId: "lane-1",
+          chatSessionId: "chat-1",
+          claimedAt: expect.any(String),
+        },
+      });
+    } finally {
+      service.dispose();
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
   });
 });
 

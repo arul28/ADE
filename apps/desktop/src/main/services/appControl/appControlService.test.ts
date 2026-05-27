@@ -180,6 +180,25 @@ describe("appControlService", () => {
     expect(service.getStatus().activeSession?.cdpEndpoint).toBe(targetB.webSocketDebuggerUrl);
   });
 
+  it("can claim an active renderer for a lane without relaunching it", async () => {
+    const targetA = target("a");
+    mockState.httpResponses.push([targetA]);
+
+    const service = createAppControlService({
+      projectRoot: "/tmp/project",
+      logger: createLogger(),
+    });
+
+    await service.connect({ cdpPort: 12345, force: true });
+    const claimed = service.claim({ laneId: "lane-1", chatSessionId: "chat-1" });
+
+    expect(claimed.activeSession).toMatchObject({
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      cdpPort: 12345,
+    });
+  });
+
   it("dispatches clicks without a blocking mouseMoved prelude", async () => {
     const targetA = target("a");
     mockState.httpResponses.push([targetA]);

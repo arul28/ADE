@@ -232,7 +232,7 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
 
   it("exposes the browser panel and tab control surface", () => {
     const actions = ADE_ACTION_ALLOWLIST.built_in_browser ?? [];
-    for (const name of ["showPanel", "navigate", "createTab", "switchTab", "closeTab"]) {
+    for (const name of ["claim", "showPanel", "navigate", "createTab", "switchTab", "closeTab"]) {
       expect(actions).toContain(name);
     }
   });

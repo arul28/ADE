@@ -274,6 +274,26 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     expect(openTabIdx).toBeLessThan(refreshDoneIdx);
   });
 
+  it("launchPtySession: keeps the optimistic terminal when the forced refresh is stale", async () => {
+    const { result } = renderHook(() => useLaneWorkSessions("lane-1"));
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    listSessionsCachedMock.mockResolvedValue([]);
+
+    await act(async () => {
+      await result.current.launchPtySession({
+        laneId: "lane-1",
+        profile: "shell",
+      });
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(result.current.sessions.map((session) => session.id)).toContain("new-pty-session");
+  });
+
   it("launchPtySession: opens immediately when another refresh is already running", async () => {
     const callOrder: string[] = [];
     let refreshCallCount = 0;

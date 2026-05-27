@@ -40,6 +40,11 @@ export type AppControlStatus = {
   }>;
 };
 
+export type AppControlClaimArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+};
+
 export type AppControlLaunchArgs = {
   appKind?: AppControlAppKind | null;
   projectRoot?: string | null;

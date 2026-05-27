@@ -314,6 +314,9 @@ function installAdeMocks(options?: {
         if (typeof args.provider === "string") overrides.provider = args.provider as AgentChatSession["provider"];
         if (typeof args.model === "string") overrides.model = args.model;
         if (typeof args.modelId === "string") overrides.modelId = args.modelId;
+        if (typeof args.interactionMode === "string") {
+          overrides.interactionMode = args.interactionMode as AgentChatSession["interactionMode"];
+        }
         return buildCreatedSession("created-session", overrides);
       });
   const createLane = vi.fn().mockResolvedValue({
@@ -463,6 +466,9 @@ function installAdeMocks(options?: {
     appControl: {
       getStatus: vi.fn().mockResolvedValue({ supported: true }),
       onEvent: vi.fn().mockImplementation(() => () => undefined),
+    },
+    orchestration: {
+      runCreate: vi.fn().mockResolvedValue({ runId: "run-1" }),
     },
   } as any;
 
@@ -715,7 +721,7 @@ function renderAutoCreateDraftPane(args?: {
     session: AgentChatSession,
     options?: AgentChatSessionCreatedOptions,
   ) => void | Promise<void>;
-  workDraftKind?: "chat" | "cli";
+  workDraftKind?: "chat" | "cli" | "chat-orchestrator";
   onLaunchCliSession?: React.ComponentProps<typeof AgentChatPane>["onLaunchCliSession"];
   onLaneChange?: React.ComponentProps<typeof AgentChatPane>["onLaneChange"];
   lanes?: any[];
@@ -2942,6 +2948,38 @@ describe("AgentChatPane submit recovery", () => {
     expect(await screen.findByText("Tools use current-lane until the lane is created.")).toBeTruthy();
   });
 
+  it("keeps orchestrator lead mode on the first Claude draft send", async () => {
+    const { send, create } = installAdeMocks({ sessions: [], includeClaudeModel: true });
+
+    renderAutoCreateDraftPane({ workDraftKind: "chat-orchestrator" });
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Coordinate the release checklist." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({
+        interactionMode: "orchestrator-lead",
+        provider: "claude",
+      }));
+      expect(window.ade.orchestration.runCreate).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        leadSessionId: "created-session",
+      });
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "created-session",
+        interactionMode: "orchestrator-lead",
+      }));
+    });
+  });
+
   it("background auto-create reports the new chat without stealing focus and shows a dismissible notice", async () => {
     const onSessionCreated = vi.fn();
     const { createLane, suggestLaneName } = installAdeMocks({ sessions: [] });
@@ -3149,6 +3187,105 @@ describe("AgentChatPane submit recovery", () => {
     expect(screen.getByText("spec.md")).toBeTruthy();
   });
 
+  it("debounces persisted draft writes without storing screenshot data URLs", async () => {
+    installAdeMocks({ sessions: [] });
+    const storageKey = composerDraftStorageKeyForTest({
+      projectRoot: "/tmp/project-under-test",
+      companionStateKey: "draft:lane-1",
+    });
+    window.localStorage.setItem(storageKey, JSON.stringify({
+      version: 1,
+      text: "Persisted with visual context.",
+      modelId: "openai/gpt-5.4",
+      reasoningEffort: null,
+      codexFastMode: false,
+      executionMode: "focused",
+      controls: {},
+      attachments: [],
+      contextAttachments: [],
+      iosContextItems: [{
+        kind: "ios_element",
+        id: "ios-context-1",
+        componentId: "ContinueButton",
+        sourceFile: null,
+        sourceLine: null,
+        frame: { x: 1, y: 2, width: 3, height: 4 },
+        metadata: {},
+        accessibilityIdentifier: null,
+        screenshotDataUrl: "data:image/png;base64,ios",
+        selectedAt: "2026-05-27T00:00:00.000Z",
+      }],
+      appControlContextItems: [{
+        kind: "app_control_element",
+        id: "app-context-1",
+        provider: "coordinate-fallback",
+        componentId: "SendButton",
+        sourceFile: null,
+        sourceLine: null,
+        frame: { x: 1, y: 2, width: 3, height: 4 },
+        metadata: {},
+        screenshotDataUrl: "data:image/png;base64,app",
+        selectedAt: "2026-05-27T00:00:00.000Z",
+      }],
+      builtInBrowserContextItems: [{
+        kind: "built_in_browser_element",
+        id: "browser-context-1",
+        provider: "cdp",
+        componentId: "button.primary",
+        url: "https://example.com",
+        title: "Example",
+        sourceFile: null,
+        sourceLine: null,
+        frame: { x: 1, y: 2, width: 3, height: 4 },
+        pixelFrame: { x: 1, y: 2, width: 3, height: 4 },
+        metadata: {},
+        screenshotDataUrl: "data:image/png;base64,browser",
+        selectedAt: "2026-05-27T00:00:00.000Z",
+      }],
+      macosVmContextItems: [{
+        kind: "macos_vm_target",
+        id: "vm-context-1",
+        laneId: "lane-1",
+        laneName: "Lane 1",
+        vmName: "ADE VM",
+        provider: "lume",
+        state: "running",
+        hostLanePath: "/tmp/project-under-test",
+        guestLanePath: "/workspace",
+        runCommand: "npm test",
+        sshCommand: null,
+        vncUrl: null,
+        windowTitleQuery: "ADE",
+        screenshotDataUrl: "data:image/png;base64,vm",
+        selectedAt: "2026-05-27T00:00:00.000Z",
+        metadata: {},
+      }],
+      draftLaunchTargetId: null,
+      updatedAt: "2026-05-27T00:00:00.000Z",
+    }));
+
+    renderAutoCreateDraftPane();
+
+    const textbox = await screen.findByRole("textbox");
+    await waitFor(() => {
+      expect(textbox.textContent).toContain("Persisted with visual context.");
+    });
+    textbox.textContent = "Persisted with visual context and edits.";
+    fireEvent.input(textbox);
+
+    await waitFor(() => {
+      const raw = window.localStorage.getItem(storageKey);
+      expect(raw).toBeTruthy();
+      expect(raw).not.toContain("data:image/png;base64");
+      const stored = JSON.parse(raw!);
+      expect(stored.text.trim()).toBe("Persisted with visual context and edits.");
+      expect(stored.iosContextItems[0]).not.toHaveProperty("screenshotDataUrl");
+      expect(stored.appControlContextItems[0]).not.toHaveProperty("screenshotDataUrl");
+      expect(stored.builtInBrowserContextItems[0].screenshotDataUrl).toBeNull();
+      expect(stored.macosVmContextItems[0]).not.toHaveProperty("screenshotDataUrl");
+    });
+  });
+
   it("ignores malformed persisted draft attachment/context entries instead of crashing", async () => {
     installAdeMocks({ sessions: [] });
     window.localStorage.setItem(composerDraftStorageKeyForTest({
@@ -3223,6 +3360,37 @@ describe("AgentChatPane submit recovery", () => {
       expect(screen.getByText(/Launched chat in auto-created-lane/i)).toBeTruthy();
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Next thought while it launches.");
     });
+  });
+
+  it("keeps every in-flight background draft launch visible past the completed-notice cap", async () => {
+    const { suggestLaneName } = installAdeMocks({ sessions: [] });
+    suggestLaneName.mockImplementation(() => new Promise<string>(() => {
+      // keep the launch in-flight
+    }));
+
+    renderAutoCreateDraftPane();
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+
+    const textbox = await screen.findByRole("textbox");
+    for (let index = 1; index <= 9; index += 1) {
+      fireEvent.change(textbox, { target: { value: `Launch background chat ${index}.` } });
+      fireEvent.click(await screen.findByRole("button", { name: "Launch in background" }));
+      await waitFor(() => {
+        expect(suggestLaneName).toHaveBeenCalledTimes(index);
+      });
+    }
+
+    expect(screen.getAllByTestId("draft-launch-job")).toHaveLength(9);
+    expect(screen.getAllByText(/Creating lane for chat/i)).toHaveLength(9);
   });
 
   it("allows multiple background auto-create launches to stay pending at the same time", async () => {

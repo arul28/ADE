@@ -13,6 +13,7 @@ import type {
   AgentChatFileRef,
   AppControlContextItem,
   AppControlSession,
+  BuiltInBrowserStatus,
   GitCommitSummary,
   IosElementContextItem,
   IosSimulatorSession,
@@ -104,7 +105,7 @@ function laneMismatchMessage(
 ): string {
   const ownerLane = laneDisplayName(lanes, ownerLaneId);
   const activeLane = laneDisplayName(lanes, activeLaneId);
-  return `This ${toolName} view is running from ${ownerLane} while your context target is ${activeLane}. Controls affect the running ${toolName}; inserted context goes to the current chat, draft, or CLI.`;
+  return `This ${toolName} view is claimed by ${ownerLane}, not ${activeLane}. You can still view, inspect, and attach context here. Claim it from ${activeLane} to move ownership.`;
 }
 
 function dispatchAgentChatEvent<T>(
@@ -167,7 +168,6 @@ export function WorkSidebar({
   active = true,
   laneId,
   lanes,
-  activeSession,
   tab,
   onTabChange,
   onClose,
@@ -190,7 +190,7 @@ export function WorkSidebar({
   const [selectedCommit, setSelectedCommit] = useState<GitCommitSummary | null>(null);
   const [appControlSession, setAppControlSession] = useState<AppControlSession | null>(null);
   const [iosSession, setIosSession] = useState<IosSimulatorSession | null>(null);
-  const [browserViewLaneId, setBrowserViewLaneId] = useState<string | null>(tab === "browser" ? laneId : null);
+  const [browserStatus, setBrowserStatus] = useState<BuiltInBrowserStatus | null>(null);
   const sidebarRef = useRef<HTMLElement | null>(null);
   const [compactTabs, setCompactTabs] = useState(false);
 
@@ -230,15 +230,29 @@ export function WorkSidebar({
     };
   }, [active, tab]);
 
-  const previousTabForBrowserOwnerRef = useRef<WorkSidebarTab>(tab);
   useEffect(() => {
-    if (!active) return;
-    const previousTab = previousTabForBrowserOwnerRef.current;
-    if (tab === "browser" && (previousTab !== "browser" || !browserViewLaneId)) {
-      setBrowserViewLaneId(laneId);
-    }
-    previousTabForBrowserOwnerRef.current = tab;
-  }, [active, browserViewLaneId, laneId, tab]);
+    if (!active) return undefined;
+    if (tab !== "browser") return undefined;
+    const browser = window.ade?.builtInBrowser;
+    if (!browser?.getStatus || !browser.onEvent) return undefined;
+    let cancelled = false;
+    void browser.getStatus()
+      .then((status) => {
+        if (!cancelled) setBrowserStatus(status);
+      })
+      .catch(() => {
+        if (!cancelled) setBrowserStatus(null);
+      });
+    const unsubscribe = browser.onEvent((event) => {
+      if (event.type === "status" || event.type === "open-request") {
+        setBrowserStatus(event.status);
+      }
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [active, tab]);
 
   useEffect(() => {
     if (!active) return undefined;
@@ -292,10 +306,10 @@ export function WorkSidebar({
     };
   }, [active, tab]);
 
-  function resolveLaneMismatchReason(): string | null {
+  function resolveToolAttributionReason(): string | null {
     if (!laneId) return null;
-    if (tab === "browser" && browserViewLaneId && browserViewLaneId !== laneId) {
-      return laneMismatchMessage("Browser", browserViewLaneId, laneId, lanes);
+    if (tab === "browser" && browserStatus?.ownerLaneId && browserStatus.ownerLaneId !== laneId) {
+      return laneMismatchMessage("Browser", browserStatus.ownerLaneId, laneId, lanes);
     }
     if (tab === "app-control" && appControlSession?.laneId && appControlSession.laneId !== laneId) {
       return laneMismatchMessage("App Control", appControlSession.laneId, laneId, lanes);
@@ -305,8 +319,9 @@ export function WorkSidebar({
     }
     return null;
   }
-  const laneMismatchReason = resolveLaneMismatchReason();
+  const toolAttributionReason = resolveToolAttributionReason();
   const contextDisabledReason = targetDisabledReason;
+  const warningReason = toolAttributionReason ?? contextDisabledReason;
   const canInsertContext = Boolean(contextTarget && !contextDisabledReason);
   const panelSessionId = contextTarget?.kind === "chat" ? contextTarget.sessionId : null;
 
@@ -424,8 +439,7 @@ export function WorkSidebar({
     if (tab === "browser") {
       return (
         <div className="flex h-full min-h-0 flex-col">
-          {contextDisabledReason ? <WarningBanner message={contextDisabledReason} /> : null}
-          {laneMismatchReason ? <WarningBanner message={laneMismatchReason} /> : null}
+          {warningReason ? <WarningBanner message={warningReason} /> : null}
           <div className="min-h-0 flex-1 overflow-hidden">
             <ChatBuiltInBrowserPanel
               sessionId={panelSessionId}
@@ -503,6 +517,7 @@ export function WorkSidebar({
         laneId={laneId}
         projectRoot={laneRoot}
         controlDisabledReason={null}
+        ignoreChatOwnership
         onAddAttachment={canInsertContext ? addAttachment : undefined}
         onAddContext={canInsertContext ? addIosContext : undefined}
         onInsertDraft={canInsertContext ? insertDraft : undefined}
@@ -520,8 +535,7 @@ export function WorkSidebar({
     );
     return (
       <div className="flex h-full min-h-0 flex-col">
-        {contextDisabledReason ? <WarningBanner message={contextDisabledReason} /> : null}
-        {laneMismatchReason ? <WarningBanner message={laneMismatchReason} /> : null}
+        {warningReason ? <WarningBanner message={warningReason} /> : null}
         <div className="min-h-0 flex-1 overflow-auto px-3 py-3">{panel}</div>
       </div>
     );
@@ -532,10 +546,9 @@ export function WorkSidebar({
     addIosContext,
     panelSessionId,
     canInsertContext,
-    contextDisabledReason,
     insertDraft,
     laneId,
-    laneMismatchReason,
+    warningReason,
     laneRoot,
     navigate,
     selectedCommit,

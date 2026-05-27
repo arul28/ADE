@@ -8,6 +8,7 @@ description: Use this skill when using ADE's built-in browser pane, shared brows
 ## Scope
 
 The ADE browser is global, not lane-scoped. Use socket mode so CLI calls and the Work sidebar share the same tabs.
+The Work tools attribution is claim-based: `ade browser open`, `panel`, `new-tab`, and `switch` carry `ADE_LANE_ID` / `ADE_CHAT_SESSION_ID` automatically when ADE launched the agent. If you attach to an already-open tab, run `ade --socket browser claim --lane <lane-id> --text` first so the sidebar shows the right owner lane.
 
 ## How `ade browser` reaches the desktop
 
@@ -24,6 +25,7 @@ Override the bridge socket path with `ADE_DESKTOP_BRIDGE_SOCKET_PATH` for dev la
 ```bash
 ade help browser
 ade --socket browser panel --text
+ade --socket browser claim --lane <lane-id> --text
 ade --socket browser status --text
 ade --socket browser open <url> --new-tab --text
 ade --socket browser tabs --text
@@ -44,4 +46,3 @@ ade --socket browser clear-selection --text
 - Open localhost URLs and chat-output links in the ADE browser when the user expects them to show in the Work sidebar.
 - Because tabs are global, confirm the active tab before taking a screenshot or selecting context.
 - If there is no active browser panel/session, report the blocker rather than pretending to inspect the page.
-

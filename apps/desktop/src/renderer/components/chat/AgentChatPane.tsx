@@ -164,6 +164,7 @@ const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
 const LAST_LAUNCH_CONFIG_KEY_PREFIX = "ade.chat.lastLaunchConfig.v1";
 const COMPOSER_DRAFT_STORAGE_KEY_PREFIX = "ade.chat.composerDraft.v1";
+const COMPOSER_DRAFT_WRITE_DEBOUNCE_MS = 350;
 const SUBAGENT_AUTOOPEN_FIRED_KEY_PREFIX = "ade.chat.subagentAutoOpenFired";
 const SUBAGENT_AUTOOPEN_FIRED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const workCliStartupDelayMs = 180;
@@ -246,6 +247,7 @@ const CHAT_HISTORY_READ_MAX_BYTES = 2_000_000;
 const MAX_RETAINED_CHAT_SESSION_HISTORIES = 6;
 const MAX_SELECTED_CHAT_SESSION_EVENTS = 20_000;
 const MAX_BACKGROUND_CHAT_SESSION_EVENTS = 1_000;
+const MAX_DRAFT_LAUNCH_JOBS = 8;
 
 type DraftLaunchSnapshot = {
   text: string;
@@ -311,6 +313,22 @@ type StartedDraftLaunch = {
   sessionId: string;
   draftKind: DraftLaunchKind;
 };
+
+function isDraftLaunchJobTerminal(status: DraftLaunchJobStatus): boolean {
+  return status === "ready" || status === "failed";
+}
+
+function pruneDraftLaunchJobs(jobs: DraftLaunchJob[]): DraftLaunchJob[] {
+  const active = jobs.filter((job) => !isDraftLaunchJobTerminal(job.status));
+  const terminal = jobs.filter((job) => isDraftLaunchJobTerminal(job.status));
+  const remainingTerminalSlots = active.length > 0
+    ? Math.max(MAX_DRAFT_LAUNCH_JOBS - active.length, 1)
+    : MAX_DRAFT_LAUNCH_JOBS;
+  return [
+    ...active,
+    ...terminal.slice(0, remainingTerminalSlots),
+  ];
+}
 
 function createTemporaryAutoLaneName(date = new Date()): string {
   const pad = (value: number) => String(value).padStart(2, "0");
@@ -1788,10 +1806,28 @@ function readComposerDraftSnapshot(
 
 function writeComposerDraftSnapshot(storageKey: string, snapshot: ComposerDraftStorageSnapshot): void {
   try {
-    window.localStorage.setItem(storageKey, JSON.stringify(snapshot));
+    window.localStorage.setItem(storageKey, JSON.stringify(stripComposerDraftScreenshots(snapshot)));
   } catch {
     // ignore
   }
+}
+
+function stripComposerDraftScreenshots(snapshot: ComposerDraftStorageSnapshot): ComposerDraftStorageSnapshot {
+  return {
+    ...snapshot,
+    iosContextItems: snapshot.iosContextItems.map((item) => (
+      item.screenshotDataUrl ? { ...item, screenshotDataUrl: undefined } : item
+    )),
+    appControlContextItems: snapshot.appControlContextItems.map((item) => (
+      item.screenshotDataUrl ? { ...item, screenshotDataUrl: undefined } : item
+    )),
+    builtInBrowserContextItems: snapshot.builtInBrowserContextItems.map((item) => (
+      item.screenshotDataUrl ? { ...item, screenshotDataUrl: null } : item
+    )),
+    macosVmContextItems: snapshot.macosVmContextItems.map((item) => (
+      item.screenshotDataUrl ? { ...item, screenshotDataUrl: undefined } : item
+    )),
+  };
 }
 
 function resolveCliRegistryModelId(provider: "codex" | "claude" | "cursor" | "droid", value: string | null | undefined): string | null {
@@ -2350,6 +2386,11 @@ export function AgentChatPane({
   const [sendOnEnter, setSendOnEnter] = useState(true);
   const [draft, setDraft] = useState("");
   const draftsPerSessionRef = useRef<Map<string, string>>(new Map());
+  const composerDraftWriteTimerRef = useRef<number | null>(null);
+  const pendingComposerDraftWriteRef = useRef<{
+    storageKey: string;
+    snapshot: ComposerDraftStorageSnapshot;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const [shellLaunchBusy, setShellLaunchBusy] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -5113,6 +5154,24 @@ export function AgentChatPane({
     nativeControlsRef.current = currentNativeControls;
   }, [currentNativeControls]);
 
+  const flushPendingComposerDraftWrite = useCallback(() => {
+    if (composerDraftWriteTimerRef.current != null) {
+      window.clearTimeout(composerDraftWriteTimerRef.current);
+      composerDraftWriteTimerRef.current = null;
+    }
+    const pending = pendingComposerDraftWriteRef.current;
+    pendingComposerDraftWriteRef.current = null;
+    if (pending) {
+      writeComposerDraftSnapshot(pending.storageKey, pending.snapshot);
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      flushPendingComposerDraftWrite();
+    };
+  }, [composerDraftStorageKeyValue, flushPendingComposerDraftWrite]);
+
   // Save/restore per-session (or per-lane draft) composer state when scope changes.
   const composerDraftTextRef = useRef(draft);
   useEffect(() => {
@@ -5175,7 +5234,7 @@ export function AgentChatPane({
       return;
     }
     draftsPerSessionRef.current.set(companionStateKey, draft);
-    writeComposerDraftSnapshot(composerDraftStorageKeyValue, {
+    const snapshot: ComposerDraftStorageSnapshot = {
       version: 1,
       text: draft,
       modelId,
@@ -5194,7 +5253,22 @@ export function AgentChatPane({
       macosVmContextItems,
       draftLaunchTargetId,
       updatedAt: new Date().toISOString(),
-    });
+    };
+    pendingComposerDraftWriteRef.current = {
+      storageKey: composerDraftStorageKeyValue,
+      snapshot,
+    };
+    if (composerDraftWriteTimerRef.current != null) {
+      window.clearTimeout(composerDraftWriteTimerRef.current);
+    }
+    composerDraftWriteTimerRef.current = window.setTimeout(() => {
+      const pending = pendingComposerDraftWriteRef.current;
+      pendingComposerDraftWriteRef.current = null;
+      composerDraftWriteTimerRef.current = null;
+      if (pending) {
+        writeComposerDraftSnapshot(pending.storageKey, pending.snapshot);
+      }
+    }, COMPOSER_DRAFT_WRITE_DEBOUNCE_MS);
   }, [
     appControlContextItems,
     attachments,
@@ -5344,15 +5418,10 @@ export function AgentChatPane({
             opencodePermissionMode: harnessPermissionMode,
           }
         : baseNativeControls;
-      const nativeControlPayload = harnessPermissionMode
-        ? {
-            ...summarizeNativeControls(provider, launchControls),
-            ...(provider === "cursor" ? { cursorConfigValues: launchControls.cursorConfigValues } : {}),
-          }
-        : {
-            ...summarizeNativeControls(provider, launchControls),
-            ...(provider === "cursor" ? { cursorConfigValues: launchControls.cursorConfigValues } : {}),
-          };
+      const nativeControlPayload = {
+        ...summarizeNativeControls(provider, launchControls),
+        ...(provider === "cursor" ? { cursorConfigValues: launchControls.cursorConfigValues } : {}),
+      };
       // Orchestrator-lead draft: force the interactionMode so the lead chat
       // boots with the orchestrator skill + tool gates (`goal.md` §10.1).
       const orchestratorOverrides: Partial<Parameters<typeof window.ade.agentChat.create>[0]> =
@@ -5424,18 +5493,6 @@ export function AgentChatPane({
         draftSelectionLockedRef.current = false;
         setSelectedSessionId(created.id);
       }
-      // Only rebind the iOS simulator to a freshly created chat when the user
-      // has opened the simulator drawer for THIS chat. The eager-create path
-      // would otherwise steal ownership from a chat that is currently using
-      // the simulator (e.g. switching to a new lane creates a new session
-      // before any user gesture occurs).
-      if (options.select && iosSimulatorOpen && targetLaneId === laneId) {
-        try {
-          void window.ade.iosSimulator
-            ?.attachToChatSession?.({ chatSessionId: created.id })
-            ?.catch(() => { /* attach is best-effort; sim may not be running or already owned */ });
-        } catch { /* iosSimulator API may be unavailable in some environments */ }
-      }
       if (desc?.isCliWrapped && (desc.family === "anthropic" || desc.family === "cursor")) {
         window.ade.agentChat.warmupModel({
           sessionId: created.id,
@@ -5447,7 +5504,7 @@ export function AgentChatPane({
       if (options.notify) notifySessionCreated(created, options.notifyOptions);
       if (targetLaneId === laneId) void refreshSessions().catch(() => {});
       return created;
-  }, [codexFastMode, constrainedModelSelectionError, currentNativeControls, executionMode, initialNativeControls, iosSimulatorOpen, laneId, lastLaunchConfigStorageKey, modelId, notifySessionCreated, patchSessionSummary, reasoningEffort, refreshSessions, touchSession, workDraftKind]);
+  }, [codexFastMode, constrainedModelSelectionError, currentNativeControls, executionMode, initialNativeControls, laneId, lastLaunchConfigStorageKey, modelId, notifySessionCreated, patchSessionSummary, reasoningEffort, refreshSessions, touchSession, workDraftKind]);
 
   const createSession = useCallback(async (): Promise<string | null> => {
     if (createSessionPromiseRef.current) {
@@ -5601,9 +5658,9 @@ export function AgentChatPane({
   }, [applyLaunchConfigToComposer, companionStateKey, draftLaunchConfigScopeKey]);
 
   const patchDraftLaunchJob = useCallback((jobId: string, patch: Partial<DraftLaunchJob>) => {
-    setDraftLaunchJobs((current) => current.map((job) => (
+    setDraftLaunchJobs((current) => pruneDraftLaunchJobs(current.map((job) => (
       job.id === jobId ? { ...job, ...patch } : job
-    )));
+    ))));
   }, []);
 
   const dismissDraftLaunchJob = useCallback((jobId: string) => {
@@ -5717,6 +5774,9 @@ export function AgentChatPane({
     try {
       createdSession = await createSessionForLane(targetLane.laneId, { select: false, launchState: prepared });
       touchSession(createdSession.id);
+      const sendInteractionMode = createdSession.provider === "claude"
+        ? createdSession.interactionMode ?? prepared.interactionMode
+        : null;
       await window.ade.agentChat.send({
         sessionId: createdSession.id,
         text: prepared.finalText,
@@ -5725,7 +5785,7 @@ export function AgentChatPane({
         contextAttachments: prepared.selectedContextAttachments,
         reasoningEffort: prepared.reasoningEffort,
         executionMode: prepared.executionMode,
-        interactionMode: createdSession.provider === "claude" ? prepared.interactionMode : null,
+        interactionMode: sendInteractionMode,
         ...(createdSession.provider === "cursor" ? { runtime: "local" as const } : {}),
       });
       notifySessionCreated(createdSession, {
@@ -5848,14 +5908,14 @@ export function AgentChatPane({
     };
     setPromptSuggestion(null);
     setError(null);
-    setDraftLaunchJobs((current) => [
+    setDraftLaunchJobs((current) => pruneDraftLaunchJobs([
       job,
       ...current.map((entry) => (
         mode === "foreground" && entry.mode === "foreground"
           ? { ...entry, autoOpen: false }
           : entry
       )),
-    ].slice(0, 8));
+    ]));
     clearDraftLaunchComposer(snapshot);
 
     let targetLane: DraftLaunchLaneTarget | null = null;
@@ -6638,6 +6698,14 @@ export function AgentChatPane({
       const sendMessageOrSteerIfBusy = async (retryOnStaleSteer = true) => {
         try {
           setOptimisticOutgoingMessageSynced({ sessionId, envelope: optimisticEnvelope(sessionId) });
+          const sendInteractionMode: AgentChatInteractionMode | null =
+            sessionProvider === "claude"
+              ? (
+                workDraftKind === "chat-orchestrator" || selectedSession?.interactionMode === "orchestrator-lead"
+                  ? "orchestrator-lead"
+                  : interactionMode
+              )
+              : null;
           await window.ade.agentChat.send({
             sessionId,
             text: finalText,
@@ -6646,7 +6714,7 @@ export function AgentChatPane({
             contextAttachments: selectedContextAttachments,
             reasoningEffort,
             executionMode: launchModeEditable ? executionMode : null,
-            interactionMode: sessionProvider === "claude" ? interactionMode : null,
+            interactionMode: sendInteractionMode,
             ...(sessionProvider === "cursor" ? { runtime: cursorRuntime } : {}),
           });
         } catch (sendError) {

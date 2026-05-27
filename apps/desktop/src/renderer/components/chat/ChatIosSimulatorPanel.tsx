@@ -65,6 +65,7 @@ type ChatIosSimulatorPanelProps = {
   laneId?: string | null;
   projectRoot: string | null;
   controlDisabledReason?: string | null;
+  ignoreChatOwnership?: boolean;
   onAddContext?: (item: IosElementContextItem) => void;
   onAddAttachment?: (attachment: AgentChatFileRef) => void;
   onInsertDraft?: (text: string) => void;
@@ -889,6 +890,7 @@ export function ChatIosSimulatorPanel({
   laneId = null,
   projectRoot,
   controlDisabledReason = null,
+  ignoreChatOwnership = false,
   onAddContext,
   onAddAttachment,
   onInsertDraft,
@@ -1154,11 +1156,12 @@ export function ChatIosSimulatorPanel({
       : "No preview target selected";
 
   const otherChatSessionId = useMemo(() => {
+    if (ignoreChatOwnership) return null;
     const owner = activeSession?.chatSessionId ?? null;
     if (!owner) return null;
     if (!sessionId) return owner;
     return owner !== sessionId ? owner : null;
-  }, [activeSession?.chatSessionId, sessionId]);
+  }, [activeSession?.chatSessionId, ignoreChatOwnership, sessionId]);
   const ownedByOtherChat = otherChatSessionId !== null;
   const contextControlsBlocked = controlsDisabled;
   const simulatorMutationBlocked = ownedByOtherChat || controlsDisabled;

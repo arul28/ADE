@@ -36,6 +36,7 @@ const EMPTY_WORK_STATE: WorkProjectViewState = {
 };
 
 const laneSessionsCacheByScope = new Map<string, TerminalSessionSummary[]>();
+const OPTIMISTIC_PTY_SESSION_TTL_MS = 2 * 60 * 1000;
 
 export function __clearLaneWorkSessionCacheForTests(): void {
   laneSessionsCacheByScope.clear();
@@ -50,6 +51,49 @@ type QueuedRefresh = {
     reject: (reason: unknown) => void;
   };
 };
+
+type PendingOptimisticSession = {
+  session: TerminalSessionSummary;
+  createdAtMs: number;
+};
+
+function compareSessionsByStartedAtDesc(left: TerminalSessionSummary, right: TerminalSessionSummary): number {
+  return new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime();
+}
+
+function upsertSessionByStartedAt(
+  sessions: readonly TerminalSessionSummary[],
+  session: TerminalSessionSummary,
+): TerminalSessionSummary[] {
+  return [session, ...sessions.filter((entry) => entry.id !== session.id)].sort(compareSessionsByStartedAtDesc);
+}
+
+function mergePendingOptimisticSession(
+  persisted: TerminalSessionSummary,
+  optimistic: TerminalSessionSummary,
+): { session: TerminalSessionSummary; keepPending: boolean } {
+  const optimisticPtyId = optimistic.ptyId?.trim() || null;
+  if (!optimisticPtyId) return { session: persisted, keepPending: false };
+
+  if (persisted.status !== "running") {
+    return { session: persisted, keepPending: false };
+  }
+
+  const persistedPtyId = persisted.ptyId?.trim() || null;
+  if (persistedPtyId === optimisticPtyId) {
+    return { session: persisted, keepPending: false };
+  }
+
+  return {
+    session: {
+      ...persisted,
+      ptyId: optimisticPtyId,
+      toolType: persisted.toolType ?? optimistic.toolType,
+      runtimeState: persisted.runtimeState ?? optimistic.runtimeState,
+    },
+    keepPending: true,
+  };
+}
 
 function arraysEqual(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
@@ -91,6 +135,7 @@ export function useLaneWorkSessions(laneId: string | null) {
   const laneIdRef = useRef<string | null>(laneId);
   const projectRootRef = useRef<string | null>(projectRoot);
   const scopeKeyRef = useRef("");
+  const pendingOptimisticSessionsRef = useRef<Map<string, PendingOptimisticSession>>(new Map());
 
   const currentLane = useMemo(
     () => (laneId ? lanes.find((lane) => lane.id === laneId) ?? null : null),
@@ -102,6 +147,13 @@ export function useLaneWorkSessions(laneId: string | null) {
     if (!normalizedProjectRoot || !laneId) return "";
     return `${normalizedProjectRoot}::${laneId}`;
   }, [projectRoot, laneId]);
+  const pendingOptimisticScopeKeyRef = useRef(scopeKey);
+
+  useEffect(() => {
+    if (pendingOptimisticScopeKeyRef.current === scopeKey) return;
+    pendingOptimisticSessionsRef.current.clear();
+    pendingOptimisticScopeKeyRef.current = scopeKey;
+  }, [scopeKey]);
 
   useEffect(() => {
     laneIdRef.current = laneId;
@@ -159,12 +211,41 @@ export function useLaneWorkSessions(laneId: string | null) {
       if (showLoading) setLoading(true);
       try {
         const requestedScopeKey = scopeKeyRef.current;
-        const rows = await listSessionsCached(
-          { laneId: targetLaneId, limit: 200 },
-          { force: Boolean(options.force), projectRoot: targetProjectRoot },
-        );
+        const rows = (
+          await listSessionsCached(
+            { laneId: targetLaneId, limit: 200 },
+            { force: Boolean(options.force), projectRoot: targetProjectRoot },
+          )
+        ).filter((session) => !isRunOwnedSession(session));
         if (scopeKeyRef.current !== requestedScopeKey) return;
-        const nextSessions = rows.filter((session) => !isRunOwnedSession(session));
+        const pending = pendingOptimisticSessionsRef.current;
+        if (pending.size > 0) {
+          const now = Date.now();
+          const rowIndexById = new Map(rows.map((session, index) => [session.id, index] as const));
+          for (const [sessionId, entry] of [...pending.entries()]) {
+            const expired = now - entry.createdAtMs > OPTIMISTIC_PTY_SESSION_TTL_MS;
+            const existingIndex = rowIndexById.get(sessionId);
+            if (existingIndex != null) {
+              const persisted = rows[existingIndex];
+              if (expired || !persisted) {
+                pending.delete(sessionId);
+                continue;
+              }
+              const merged = mergePendingOptimisticSession(persisted, entry.session);
+              rows[existingIndex] = merged.session;
+              if (!merged.keepPending) pending.delete(sessionId);
+              continue;
+            }
+            if (expired) {
+              pending.delete(sessionId);
+              continue;
+            }
+            rows.push(entry.session);
+            rowIndexById.set(sessionId, rows.length - 1);
+          }
+          rows.sort(compareSessionsByStartedAtDesc);
+        }
+        const nextSessions = rows;
         setSessions(nextSessions);
         if (requestedScopeKey) {
           laneSessionsCacheByScope.set(requestedScopeKey, nextSessions);
@@ -204,12 +285,13 @@ export function useLaneWorkSessions(laneId: string | null) {
       laneName,
     });
     optimistic.startedAt = new Date().toISOString();
+    pendingOptimisticSessionsRef.current.set(optimistic.id, {
+      session: optimistic,
+      createdAtMs: Date.now(),
+    });
     hasLoadedOnceRef.current = true;
     setSessions((prev) => {
-      const next = [optimistic, ...prev.filter((entry) => entry.id !== session.id)];
-      next.sort((left, right) => (
-        new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime()
-      ));
+      const next = upsertSessionByStartedAt(prev, optimistic);
       if (scopeKey) {
         laneSessionsCacheByScope.set(scopeKey, next);
       }
@@ -221,10 +303,7 @@ export function useLaneWorkSessions(laneId: string | null) {
     if (!laneId || session.laneId !== laneId) return;
     hasLoadedOnceRef.current = true;
     setSessions((prev) => {
-      const next = [session, ...prev.filter((entry) => entry.id !== session.id)];
-      next.sort((left, right) => (
-        new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime()
-      ));
+      const next = upsertSessionByStartedAt(prev, session);
       if (scopeKey) {
         laneSessionsCacheByScope.set(scopeKey, next);
       }
@@ -558,6 +637,10 @@ export function useLaneWorkSessions(laneId: string | null) {
         resumeMetadata: null,
         chatSessionId: null,
       };
+      pendingOptimisticSessionsRef.current.set(result.sessionId, {
+        session: optimisticSession,
+        createdAtMs: Date.now(),
+      });
       upsertSessionSnapshot(optimisticSession);
       // Invalidate all cache entries so other views (e.g. Work tab) pick up
       // the new session on their next refresh.

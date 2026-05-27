@@ -15,6 +15,7 @@ import type {
   IosScreenElement,
   IosScreenSnapshot,
   IosScreenSnapshotArgs,
+  IosSimulatorClaimArgs,
   IosSimulatorOpenPreviewWorkspaceArgs,
   IosSimulatorListPreviewsArgs,
   IosSimulatorPreviewCapability,
@@ -1520,6 +1521,10 @@ function readString(record: Record<string, unknown>, keys: string[]): string | n
     if (typeof value === "number" || typeof value === "boolean") return String(value);
   }
   return null;
+}
+
+function cleanClaimId(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
 function readNumber(record: Record<string, unknown>, keys: string[]): number | null {
@@ -3430,6 +3435,25 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return activeSession;
   };
 
+  const claim = async (claimArgs: IosSimulatorClaimArgs = {}): Promise<IosSimulatorStatus> => {
+    if (!activeSession) return getStatus();
+    const laneId = cleanClaimId(claimArgs.laneId);
+    const chatSessionId = cleanClaimId(claimArgs.chatSessionId);
+    if (!laneId && !chatSessionId) return getStatus();
+    const nextLaneId = laneId || activeSession.laneId;
+    const nextChatSessionId = chatSessionId || activeSession.chatSessionId;
+    const changed = nextLaneId !== activeSession.laneId
+      || nextChatSessionId !== activeSession.chatSessionId;
+    activeSession = {
+      ...activeSession,
+      laneId: nextLaneId,
+      chatSessionId: nextChatSessionId,
+      claimedAt: changed ? nowIso() : activeSession.claimedAt,
+    };
+    emit({ type: "session-updated", session: activeSession });
+    return getStatus();
+  };
+
   const launch = async (launchArgs: IosSimulatorLaunchArgs = {}): Promise<IosSimulatorSession> => {
     if (process.platform !== "darwin") {
       throw new Error("iOS Simulator control is only available on macOS.");
@@ -3529,6 +3553,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
       const launchEnvironment = normalizeLaunchEnvironment(launchArgs.environment);
       const launchArguments = normalizeLaunchArguments(launchArgs.arguments);
+      const startedAt = nowIso();
       const session: IosSimulatorSession = {
         id: randomUUID(),
         deviceUdid: device.udid,
@@ -3543,7 +3568,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         mode: normalizeLaunchMode(launchArgs.mode),
         keepSimulatorInBackground: launchArgs.keepSimulatorInBackground ?? true,
         bridgeUrl: null,
-        startedAt: nowIso(),
+        startedAt,
+        claimedAt: launchArgs.laneId || launchArgs.chatSessionId ? startedAt : null,
       };
       activeSession = session;
       const childEnv: NodeJS.ProcessEnv = {
@@ -4773,6 +4799,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   return {
     getStatus,
+    claim,
     listDevices,
     listLaunchTargets,
     launch,

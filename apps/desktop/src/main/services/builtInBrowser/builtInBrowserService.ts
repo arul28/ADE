@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import type {
   BuiltInBrowserBoundsArgs,
   BuiltInBrowserAttachWebviewArgs,
+  BuiltInBrowserClaimArgs,
   BuiltInBrowserContextItem,
   BuiltInBrowserCreateTabArgs,
   BuiltInBrowserEventPayload,
@@ -109,6 +110,9 @@ export function createBuiltInBrowserService(args: {
   let handlingInspectNode = false;
   let browserSessionConfigured = false;
   let lastEmittedStatusKey: string | null = null;
+  let ownerLaneId: string | null = null;
+  let ownerChatSessionId: string | null = null;
+  let ownerClaimedAt: string | null = null;
   const configuredWebContents = new WeakSet<WebContents>();
 
   const logger = (): Logger | null => {
@@ -411,7 +415,32 @@ export function createBuiltInBrowserService(args: {
       canGoForward: wc?.canGoForward() ?? false,
       isInspecting: inspecting,
       hasSelection: lastSelectedItem !== null,
+      ownerLaneId,
+      ownerChatSessionId,
+      ownerClaimedAt,
     };
+  }
+
+  const claimOwnerFromInput = (input: BuiltInBrowserClaimArgs = {}): boolean => {
+    const laneId = stringOrNull(input.laneId);
+    const chatSessionId = stringOrNull(input.chatSessionId);
+    let changed = false;
+    if (laneId && laneId !== ownerLaneId) {
+      ownerLaneId = laneId;
+      changed = true;
+    }
+    if (chatSessionId && chatSessionId !== ownerChatSessionId) {
+      ownerChatSessionId = chatSessionId;
+      changed = true;
+    }
+    if (changed) ownerClaimedAt = new Date().toISOString();
+    return changed;
+  };
+
+  function claim(input: BuiltInBrowserClaimArgs = {}): BuiltInBrowserStatus {
+    claimOwnerFromInput(input);
+    emitStatus();
+    return getStatus();
   }
 
   const requestOpenPanel = (input: BuiltInBrowserOpenPanelArgs = {}): BuiltInBrowserStatus => {
@@ -429,13 +458,14 @@ export function createBuiltInBrowserService(args: {
   };
 
   async function showPanel(input: BuiltInBrowserOpenPanelArgs = {}): Promise<BuiltInBrowserStatus> {
+    claimOwnerFromInput(input);
     const tabId = stringOrNull(input.tabId);
     const url = stringOrNull(input.url);
     if (url) {
-      return navigate({ url, tabId, openPanel: true });
+      return navigate({ url, tabId, openPanel: true, laneId: input.laneId, chatSessionId: input.chatSessionId });
     }
     if (tabId) {
-      return switchTab({ tabId, openPanel: true });
+      return switchTab({ tabId, openPanel: true, laneId: input.laneId, chatSessionId: input.chatSessionId });
     }
     return requestOpenPanel(input);
   }
@@ -533,6 +563,7 @@ export function createBuiltInBrowserService(args: {
       existingTab = tabs.find((entry) => entry.id === input.tabId) ?? null;
       if (!existingTab) throw new Error(`Browser tab not found: ${input.tabId}`);
     }
+    claimOwnerFromInput(input);
     const switchingTabs = input.newTab || (input.tabId && input.tabId !== activeTabId);
     await stopInspectQuietly("built_in_browser.navigate_stop_inspect_failed");
     if (switchingTabs) {
@@ -552,7 +583,7 @@ export function createBuiltInBrowserService(args: {
     attachViewsToCurrentWindow();
     await wc.loadURL(targetUrl);
     if (input.openPanel) {
-      requestOpenPanel({ url: targetUrl, tabId: tab.id });
+      requestOpenPanel({ url: targetUrl, tabId: tab.id, laneId: input.laneId, chatSessionId: input.chatSessionId });
     }
     emitStatus();
     return getStatus();
@@ -564,6 +595,7 @@ export function createBuiltInBrowserService(args: {
     }
     // Normalize URL up front so we don't leave an orphan tab on invalid input.
     const normalizedUrl = input.url ? normalizeBrowserUrl(input.url) : null;
+    claimOwnerFromInput(input);
     const willActivate = input.activate !== false || !activeTabId;
     if (willActivate) {
       await stopInspectQuietly("built_in_browser.create_tab_stop_inspect_failed");
@@ -577,7 +609,7 @@ export function createBuiltInBrowserService(args: {
       await tab.webContents.loadURL(normalizedUrl);
     }
     if (input.openPanel) {
-      requestOpenPanel({ url: normalizedUrl, tabId: tab.id });
+      requestOpenPanel({ url: normalizedUrl, tabId: tab.id, laneId: input.laneId, chatSessionId: input.chatSessionId });
     }
     emitStatus();
     return getStatus();
@@ -588,6 +620,7 @@ export function createBuiltInBrowserService(args: {
     if (!tabId) throw new Error("Browser tab id is required.");
     const tab = tabs.find((entry) => entry.id === tabId);
     if (!tab) throw new Error(`Browser tab not found: ${tabId}`);
+    claimOwnerFromInput(input);
     const wasDifferentTab = tab.id !== activeTabId;
     if (wasDifferentTab) {
       await stopInspectQuietly("built_in_browser.switch_tab_stop_inspect_failed");
@@ -598,7 +631,7 @@ export function createBuiltInBrowserService(args: {
     }
     attachViewsToCurrentWindow();
     if (input.openPanel) {
-      requestOpenPanel({ tabId: tab.id });
+      requestOpenPanel({ tabId: tab.id, laneId: input.laneId, chatSessionId: input.chatSessionId });
     }
     emitStatus();
     return getStatus();
@@ -632,6 +665,11 @@ export function createBuiltInBrowserService(args: {
     if (activeTabId === tabId) {
       activeTabId = tabs[Math.max(0, index - 1)]?.id ?? tabs[0]?.id ?? null;
       clearSelectionInternal();
+    }
+    if (!tabs.length) {
+      ownerLaneId = null;
+      ownerChatSessionId = null;
+      ownerClaimedAt = null;
     }
     attachViewsToCurrentWindow();
     emitStatus();
@@ -844,6 +882,9 @@ export function createBuiltInBrowserService(args: {
     win = null;
     tabs = [];
     activeTabId = null;
+    ownerLaneId = null;
+    ownerChatSessionId = null;
+    ownerClaimedAt = null;
   }
 
   const attachDebuggerListeners = (wc: WebContents): void => {
@@ -971,7 +1012,11 @@ export function createBuiltInBrowserService(args: {
     sourceLine: null,
     frame: metadata.frame,
     pixelFrame: scaleFrame(metadata.frame, metadata.pixelRatio),
-    metadata: metadata.metadata,
+    metadata: {
+      ...metadata.metadata,
+      ownerLaneId,
+      ownerChatSessionId,
+    },
     screenshotDataUrl,
     selectedAt: new Date().toISOString(),
   });
@@ -1077,6 +1122,7 @@ export function createBuiltInBrowserService(args: {
   return {
     attachToWindow,
     getStatus,
+    claim,
     showPanel,
     setBounds,
     attachWebview,

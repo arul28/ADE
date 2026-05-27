@@ -837,7 +837,7 @@ describe("ptyService", () => {
     it("does not send Codex initialInput into the update prompt", async () => {
       vi.useFakeTimers();
       try {
-        const { service, mockPty, logger } = createHarness();
+        const { service, mockPty, logger, sessionService } = createHarness();
 
         await service.create({
           laneId: "lane-1",
@@ -868,6 +868,14 @@ describe("ptyService", () => {
           "pty.initial_input_skipped_not_ready",
           expect.objectContaining({ provider: "codex" }),
         );
+        expect(logger.warn).toHaveBeenCalledWith(
+          "pty.initial_input_launch_failed",
+          expect.objectContaining({ toolType: "codex" }),
+        );
+        expect(sessionService.end).toHaveBeenCalledWith(expect.objectContaining({
+          exitCode: 1,
+          status: "failed",
+        }));
       } finally {
         vi.useRealTimers();
       }
@@ -1040,7 +1048,7 @@ describe("ptyService", () => {
     it("skips Cursor initialInput when the workspace trust prompt never reaches a composer", async () => {
       vi.useFakeTimers();
       try {
-        const { service, mockPty, logger } = createHarness();
+        const { service, mockPty, logger, sessionService } = createHarness();
 
         await service.create({
           laneId: "lane-1",
@@ -1071,6 +1079,14 @@ describe("ptyService", () => {
           "pty.initial_input_skipped_not_ready",
           expect.objectContaining({ provider: "cursor" }),
         );
+        expect(logger.warn).toHaveBeenCalledWith(
+          "pty.initial_input_launch_failed",
+          expect.objectContaining({ toolType: "cursor-cli" }),
+        );
+        expect(sessionService.end).toHaveBeenCalledWith(expect.objectContaining({
+          exitCode: 1,
+          status: "failed",
+        }));
       } finally {
         vi.useRealTimers();
       }

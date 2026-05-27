@@ -951,8 +951,8 @@ export function AgentChatComposer({
   hideNativeControls?: boolean;
   /**
    * Orchestration role lock (see `goal.md` §10.10).
-   *   - `"lead"`: hide permission picker AND model picker (lead's model is
-   *     fixed at create-time).
+   *   - `"lead"`: hide permission picker AND model picker once the lead
+   *     session exists (lead's model is fixed at create-time).
    *   - `"worker"` / `"validator"`: hide permission picker; show model +
    *     fast + reasoning rows.
    *   - `null` / undefined: default behaviour (regular chat composer).
@@ -1533,7 +1533,12 @@ export function AgentChatComposer({
         return;
       }
       if (!(node instanceof HTMLElement)) return;
-      if (node.dataset.iosContextId || node.dataset.appControlContextId || node.dataset.builtInBrowserContextId) {
+      if (
+        node.dataset.iosContextId
+        || node.dataset.appControlContextId
+        || node.dataset.builtInBrowserContextId
+        || node.dataset.macosVmContextId
+      ) {
         parts.push(" ");
         return;
       }
@@ -1579,7 +1584,15 @@ export function AgentChatComposer({
         offset += node.textContent?.length ?? 0;
         return;
       }
-      if (node instanceof HTMLElement && (node.dataset.iosContextId || node.dataset.appControlContextId || node.dataset.builtInBrowserContextId)) return;
+      if (
+        node instanceof HTMLElement
+        && (
+          node.dataset.iosContextId
+          || node.dataset.appControlContextId
+          || node.dataset.builtInBrowserContextId
+          || node.dataset.macosVmContextId
+        )
+      ) return;
       node.childNodes.forEach(visit);
     };
     editor.childNodes.forEach(visit);
@@ -2833,6 +2846,10 @@ export function AgentChatComposer({
     && !composerInputLocked
     && !hasPendingImageAttachments
     && singleReady;
+  const normalizedBackgroundLaunchLabel = backgroundLaunchLabel.trim() || "Background";
+  const backgroundLaunchActionLabel = normalizedBackgroundLaunchLabel === "Background"
+    ? "Launch in background"
+    : `${normalizedBackgroundLaunchLabel} in background`;
 
   function sendButtonTitle(): string {
     if (composerInputLocked) return composerInputLockMessage ?? "Resolve the pending request before sending.";
@@ -3552,7 +3569,7 @@ export function AgentChatComposer({
                 />
               </>
             ) : null}
-            {!parallelChatMode && orchestrationRole !== "lead" ? (
+            {!parallelChatMode && (orchestrationRole !== "lead" || !sessionId) ? (
               <>
                 <ModelPicker
                   value={modelId}
@@ -3851,7 +3868,7 @@ export function AgentChatComposer({
                       </button>
                     </SmartTooltip>
                     {onSubmitInBackground && !parallelChatMode && !cloudMode ? (
-                      <SmartTooltip forceEnabled content={{ label: "Launch in background", description: "Start this chat without leaving the new chat pane." }}>
+                      <SmartTooltip forceEnabled content={{ label: backgroundLaunchActionLabel, description: "Start this chat without leaving the new chat pane." }}>
                         <button
                           type="button"
                           className={cn(
@@ -3862,7 +3879,7 @@ export function AgentChatComposer({
                           )}
                           disabled={!backgroundSendEnabled}
                           onClick={onSubmitInBackground}
-                          aria-label={backgroundLaunchBusy ? "Launching" : "Launch in background"}
+                          aria-label={backgroundLaunchBusy ? "Launching" : backgroundLaunchActionLabel}
                         >
                           <RocketLaunch size={14} weight="fill" />
                         </button>

@@ -907,6 +907,29 @@ describe("AgentChatComposer", () => {
     expect(onStopOrchestratorChat).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps model controls visible for active worker orchestration sessions", () => {
+    renderComposer({
+      orchestrationRole: "worker",
+      sessionId: "worker-session",
+    });
+
+    expect(screen.getByRole("button", { name: /Select model/i })).toBeTruthy();
+  });
+
+  it("hides lead model controls only after the lead session exists", () => {
+    const props = buildComposerProps({
+      orchestrationRole: "lead",
+      sessionId: null,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+
+    expect(screen.getByRole("button", { name: /Select model/i })).toBeTruthy();
+
+    view.rerender(<AgentChatComposer {...props} sessionId="lead-session" />);
+
+    expect(screen.queryByRole("button", { name: /Select model/i })).toBeNull();
+  });
+
   it("renders the issue context menu outside the clipped composer shell", () => {
     const { container } = renderComposer({
       draft: "",
