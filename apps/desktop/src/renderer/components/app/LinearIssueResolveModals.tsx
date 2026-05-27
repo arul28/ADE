@@ -277,6 +277,194 @@ export function ResolveInExistingLaneModal({
   );
 }
 
+function BatchIssueList({ issues }: { issues: LaneLinearIssue[] }) {
+  return (
+    <div className="max-h-48 overflow-y-auto rounded-lg border border-white/[0.06] bg-black/20">
+      {issues.map((issue) => (
+        <div key={issue.id} className="flex items-center gap-2 border-b border-white/[0.04] px-3 py-1.5 last:border-b-0">
+          <LinearPriorityIcon priority={issue.priority} size={11} />
+          <LinearStateIcon stateType={issue.stateType} size={11} />
+          <span className="rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-fg/80">{issue.identifier}</span>
+          <span className="min-w-0 flex-1 truncate text-[12px] text-fg/85">{issue.title}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function BatchCreateLanesModal({
+  open,
+  issues,
+  busy,
+  onOpenChange,
+  onConfirm,
+}: {
+  open: boolean;
+  issues: LaneLinearIssue[];
+  busy?: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+}) {
+  if (!issues.length) return null;
+
+  return (
+    <LaneDialogShell
+      open={open}
+      onOpenChange={onOpenChange}
+      title={`Create ${issues.length} lanes`}
+      description="Creates a new lane for each selected issue with the issue linked as the primary lane attachment."
+      icon={Plus}
+      widthClassName="w-[min(560px,calc(100vw-24px))]"
+      busy={busy}
+    >
+      <div className="space-y-1.5">
+        <div className="text-[11px] font-medium text-muted-fg/70">{issues.length} issues selected</div>
+        <BatchIssueList issues={issues} />
+      </div>
+      <ModalFooter
+        busy={busy}
+        confirmLabel={`Create ${issues.length} lanes`}
+        onCancel={() => onOpenChange(false)}
+        onConfirm={onConfirm}
+      />
+    </LaneDialogShell>
+  );
+}
+
+export function BatchResolveInNewLanesModal({
+  open,
+  issues,
+  busy,
+  onOpenChange,
+  onConfirm,
+}: {
+  open: boolean;
+  issues: LaneLinearIssue[];
+  busy?: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: (modelId: string) => void;
+}) {
+  const { recents } = useModelRecents();
+  const [modelId, setModelId] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    setModelId((current) => current || recents[0] || "");
+  }, [open, recents]);
+
+  if (!issues.length) return null;
+
+  return (
+    <LaneDialogShell
+      open={open}
+      onOpenChange={onOpenChange}
+      title={`Create ${issues.length} lanes and open chats`}
+      description="Creates a lane for each selected issue, then opens Work with a new chat for each."
+      icon={Sparkle}
+      widthClassName="w-[min(560px,calc(100vw-24px))]"
+      busy={busy}
+    >
+      <div className="space-y-1.5">
+        <div className="text-[11px] font-medium text-muted-fg/70">{issues.length} issues selected</div>
+        <BatchIssueList issues={issues} />
+      </div>
+      <div className="mt-4">
+        <ModelPickerField modelId={modelId} onModelChange={setModelId} />
+      </div>
+      <ModalFooter
+        busy={busy}
+        confirmLabel="Create lanes and open chats"
+        onCancel={() => onOpenChange(false)}
+        onConfirm={() => {
+          if (!modelId.trim()) return;
+          void onConfirm(modelId.trim());
+        }}
+      />
+    </LaneDialogShell>
+  );
+}
+
+export function BatchResolveInExistingLaneModal({
+  open,
+  issues,
+  lanes,
+  busy,
+  onOpenChange,
+  onConfirm,
+}: {
+  open: boolean;
+  issues: LaneLinearIssue[];
+  lanes: LaneSummary[];
+  busy?: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: (laneId: string, modelId: string) => void;
+}) {
+  const { recents } = useModelRecents();
+  const selectableLanes = useMemo(
+    () => lanes.filter((lane) => lane.laneType !== "primary"),
+    [lanes],
+  );
+  const [laneId, setLaneId] = useState("");
+  const [modelId, setModelId] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    setLaneId((current) => (
+      current && selectableLanes.some((lane) => lane.id === current)
+        ? current
+        : selectableLanes[0]?.id ?? ""
+    ));
+    setModelId((current) => current || recents[0] || "");
+  }, [open, recents, selectableLanes]);
+
+  if (!issues.length) return null;
+
+  return (
+    <LaneDialogShell
+      open={open}
+      onOpenChange={onOpenChange}
+      title={`Open ${issues.length} chats in existing lane`}
+      description="Opens Work with a new chat for each selected issue in the lane you choose."
+      icon={GitBranch}
+      widthClassName="w-[min(560px,calc(100vw-24px))]"
+      busy={busy}
+    >
+      <div className="space-y-1.5">
+        <div className="text-[11px] font-medium text-muted-fg/70">{issues.length} issues selected</div>
+        <BatchIssueList issues={issues} />
+      </div>
+      <div className="mt-4 space-y-4">
+        <div className="space-y-1.5">
+          <div className="text-[11px] font-medium text-muted-fg/70">Lane</div>
+          {selectableLanes.length > 0 ? (
+            <LaneCombobox
+              lanes={selectableLanes}
+              value={laneId}
+              onChange={setLaneId}
+              fullWidth
+              aria-label="Select lane"
+            />
+          ) : (
+            <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-3 py-2 text-[11px] text-amber-100/90">
+              No lanes available yet. Create a lane first or use the new-lane option.
+            </div>
+          )}
+        </div>
+        <ModelPickerField modelId={modelId} onModelChange={setModelId} />
+      </div>
+      <ModalFooter
+        busy={busy}
+        confirmLabel="Open chats in lane"
+        onCancel={() => onOpenChange(false)}
+        onConfirm={() => {
+          if (!laneId.trim() || !modelId.trim() || !selectableLanes.length) return;
+          void onConfirm(laneId.trim(), modelId.trim());
+        }}
+      />
+    </LaneDialogShell>
+  );
+}
+
 export function openLinearIssueExternalUrl(url: string | null | undefined): void {
   if (!url) return;
   void window.ade.app.openExternal(url);

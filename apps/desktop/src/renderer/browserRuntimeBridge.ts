@@ -93,6 +93,8 @@ function patchLinearMethods(ade: any) {
     bridgePost("/action", { domain: "linear_issue_tracker", action: "getIssuePickerData" });
   ade.cto.searchLinearIssues = async (args: Record<string, unknown> = {}) =>
     bridgePost("/action", { domain: "linear_issue_tracker", action: "searchIssues", args });
+  ade.cto.getLinearIssueComments = async (args: Record<string, unknown> = {}) =>
+    bridgePost("/action", { domain: "linear_issue_tracker", action: "fetchIssueComments", args });
   ade.cto.getLinearProjects = async () =>
     bridgePost("/action", { domain: "linear_issue_tracker", action: "listProjects" });
   ade.cto.setLinearToken = async (args: { token: string }) => {

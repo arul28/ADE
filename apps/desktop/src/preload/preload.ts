@@ -8405,6 +8405,23 @@ contextBridge.exposeInMainWorld("ade", {
         { args },
         () => ipcRenderer.invoke(IPC.ctoSearchLinearIssues, args),
       ),
+    getLinearIssueComments: async (
+      args: { issueId: string },
+    ): Promise<
+      Array<{
+        id: string;
+        body: string;
+        createdAt: string;
+        userName: string;
+        userDisplayName: string;
+      }>
+    > =>
+      callProjectRuntimeActionOr(
+        "linear_issue_tracker",
+        "fetchIssueComments",
+        { args },
+        () => ipcRenderer.invoke(IPC.ctoGetLinearIssueComments, args),
+      ),
     setLinearOAuthClient: async (
       args: CtoSetLinearOAuthClientArgs,
     ): Promise<LinearConnectionStatus> => {

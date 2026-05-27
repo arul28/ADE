@@ -150,6 +150,18 @@ export type CtoSearchLinearIssuesResult = {
   };
 };
 
+export type CtoGetLinearIssueCommentsArgs = {
+  issueId: string;
+};
+
+export type CtoLinearIssueComment = {
+  id: string;
+  body: string;
+  createdAt: string;
+  userName: string;
+  userDisplayName: string;
+};
+
 export type CtoGetLinearIssuePickerDataResult = {
   projects: CtoLinearProject[];
   users: LinearCatalogUser[];

@@ -734,6 +734,7 @@ export const IPC = {
   ctoGetLinearQuickView: "ade.cto.getLinearQuickView",
   ctoGetLinearIssuePickerData: "ade.cto.getLinearIssuePickerData",
   ctoSearchLinearIssues: "ade.cto.searchLinearIssues",
+  ctoGetLinearIssueComments: "ade.cto.getLinearIssueComments",
   ctoSetLinearOAuthClient: "ade.cto.setLinearOAuthClient",
   ctoClearLinearOAuthClient: "ade.cto.clearLinearOAuthClient",
   ctoStartLinearOAuth: "ade.cto.startLinearOAuth",

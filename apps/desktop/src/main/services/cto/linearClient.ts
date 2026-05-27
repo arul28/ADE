@@ -77,6 +77,17 @@ function toNormalizedIssue(node: Record<string, unknown>): NormalizedLinearIssue
     .filter((entry): entry is string => entry != null)
     .map((entry) => entry.toLowerCase());
 
+  const labelColors: Array<{ name: string; color: string | null }> = labelsNodes.map((ln: unknown) => ({
+    name: isRecord(ln) ? asString(ln.name) ?? "" : "",
+    color: isRecord(ln) ? asString(ln.color) ?? null : null,
+  }));
+
+  const cycle = isRecord(node.cycle) ? node.cycle : null;
+  const cycleId = cycle ? asString(cycle.id) ?? null : null;
+  const cycleName = cycle ? asString(cycle.name) ?? null : null;
+  const cycleStartsAt = cycle ? asString(cycle.startsAt) ?? null : null;
+  const cycleEndsAt = cycle ? asString(cycle.endsAt) ?? null : null;
+
   const blockersNodes = isRecord(node.children) ? asArray(node.children.nodes) : [];
   const blockerIssueIds = blockersNodes
     .map((entry) => (isRecord(entry) ? asString(entry.id) : null))
@@ -87,6 +98,25 @@ function toNormalizedIssue(node: Record<string, unknown>): NormalizedLinearIssue
     const childState = isRecord(entry.state) ? asString(entry.state.type) : null;
     return childState != null && childState !== "completed" && childState !== "canceled";
   });
+
+  const childIssues: Array<{
+    id: string;
+    identifier: string;
+    title: string;
+    stateId: string;
+    stateName: string;
+    stateType: string;
+  }> = blockersNodes
+    .filter((c: unknown): c is Record<string, unknown> => isRecord(c))
+    .map((c) => ({
+      id: asString(c.id) ?? "",
+      identifier: asString(c.identifier) ?? "",
+      title: asString(c.title) ?? "",
+      stateId: isRecord(c.state) ? asString(c.state.id) ?? "" : "",
+      stateName: isRecord(c.state) ? asString(c.state.name) ?? "" : "",
+      stateType: isRecord(c.state) ? asString(c.state.type) ?? "" : "",
+    }))
+    .filter((c) => c.id);
 
   const assignee = isRecord(node.assignee) ? node.assignee : null;
   const owner = isRecord(node.creator) ? node.creator : null;
@@ -115,6 +145,12 @@ function toNormalizedIssue(node: Record<string, unknown>): NormalizedLinearIssue
     priority: Number.isFinite(priority) ? priority : 0,
     priorityLabel: mapPriorityLabel(Number.isFinite(priority) ? priority : 0),
     labels,
+    labelColors,
+    cycleId,
+    cycleName,
+    cycleStartsAt,
+    cycleEndsAt,
+    childIssues,
     metadataTags,
     assigneeId: assignee ? asString(assignee.id) : null,
     assigneeName: assignee ? (asString(assignee.displayName) ?? asString(assignee.name)) : null,
@@ -455,11 +491,14 @@ export function createLinearClient(args: LinearClientArgs) {
     state { id name type }
     assignee { id name displayName }
     creator { id name displayName }
-    labels { nodes { id name } }
+    labels { nodes { id name color } }
+    cycle { id name startsAt endsAt }
     children {
       nodes {
         id
-        state { type }
+        identifier
+        title
+        state { id name type }
       }
     }
   `;
@@ -1258,6 +1297,65 @@ export function createLinearClient(args: LinearClientArgs) {
     };
   };
 
+  const fetchIssueComments = async (issueId: string): Promise<Array<{
+    id: string;
+    body: string;
+    createdAt: string;
+    userName: string;
+    userDisplayName: string;
+  }>> => {
+    const data = await request<{
+      issue?: {
+        comments?: {
+          nodes?: Array<Record<string, unknown>>;
+        };
+      };
+    }>({
+      query: `
+        query IssueComments($issueId: String!) {
+          issue(id: $issueId) {
+            comments(first: 50, orderBy: createdAt) {
+              nodes {
+                id
+                body
+                createdAt
+                user {
+                  id
+                  name
+                  displayName
+                }
+              }
+            }
+          }
+        }
+      `,
+      variables: { issueId },
+      maxRetries: 2,
+    });
+
+    const nodes = isRecord(data.issue) && isRecord(data.issue.comments)
+      ? asArray(data.issue.comments.nodes)
+      : [];
+
+    return nodes
+      .map((node) => {
+        if (!isRecord(node)) return null;
+        const id = asString(node.id);
+        const body = asString(node.body);
+        const createdAt = asString(node.createdAt);
+        if (!id || !body || !createdAt) return null;
+        const user = isRecord(node.user) ? node.user : null;
+        return {
+          id,
+          body,
+          createdAt,
+          userName: user ? asString(user.name) ?? "" : "",
+          userDisplayName: user ? asString(user.displayName) ?? asString(user.name) ?? "" : "",
+        };
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry != null);
+  };
+
   return {
     request,
     getViewer,
@@ -1281,6 +1379,7 @@ export function createLinearClient(args: LinearClientArgs) {
     addLabel,
     uploadAttachment,
     createIssueAttachment,
+    fetchIssueComments,
   };
 }
 

@@ -187,6 +187,13 @@ type RemoteOpenProjectBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
 
 const AUTO_UPDATER_CACHE_DIR_NAME = "ade-desktop-updater";
 const ADE_BROWSER_WEBVIEW_PARTITION = "persist:ade-browser";
+
+// ── Usage threshold IPC-level dedup ─────────────────────────────
+// Even with the shared module-level ThresholdState in usageTrackingService,
+// a small race window exists where two service instances could fire before the
+// shared state is written back.  This map acts as a final IPC gate.
+const thresholdEventDedup = new Map<string, number>();
+const THRESHOLD_DEDUP_TTL_MS = 10 * 60_000; // 10 minutes
 type AdePackageChannel = "alpha" | "beta";
 
 function normalizeAdePackageChannel(value: unknown): AdePackageChannel | null {
@@ -3493,6 +3500,14 @@ app.whenReady().then(async () => {
         emitProjectEvent(projectRoot, IPC.usageEvent, snapshot);
       },
       onThresholdEvent: (event) => {
+        const dedupKey = `${event.provider}:${event.threshold}:${new Date(event.resetsAt).getTime()}`;
+        const now = Date.now();
+        const lastEmitted = thresholdEventDedup.get(dedupKey);
+        if (lastEmitted && now - lastEmitted < THRESHOLD_DEDUP_TTL_MS) return;
+        thresholdEventDedup.set(dedupKey, now);
+        for (const [k, t] of thresholdEventDedup) {
+          if (now - t > THRESHOLD_DEDUP_TTL_MS) thresholdEventDedup.delete(k);
+        }
         emitProjectEvent(projectRoot, IPC.usageThresholdEvent, event);
       },
     });
@@ -4163,6 +4178,14 @@ app.whenReady().then(async () => {
         emitProjectEvent(projectRoot, IPC.usageEvent, snapshot);
       },
       onThresholdEvent: (event) => {
+        const dedupKey = `${event.provider}:${event.threshold}:${new Date(event.resetsAt).getTime()}`;
+        const now = Date.now();
+        const lastEmitted = thresholdEventDedup.get(dedupKey);
+        if (lastEmitted && now - lastEmitted < THRESHOLD_DEDUP_TTL_MS) return;
+        thresholdEventDedup.set(dedupKey, now);
+        for (const [k, t] of thresholdEventDedup) {
+          if (now - t > THRESHOLD_DEDUP_TTL_MS) thresholdEventDedup.delete(k);
+        }
         emitProjectEvent(projectRoot, IPC.usageThresholdEvent, event);
       },
     });

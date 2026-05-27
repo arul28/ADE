@@ -886,6 +886,11 @@ function calculatePacingByProvider(windows: UsageWindow[]): UsageSnapshot["pacin
 
 // ── Service Factory ──────────────────────────────────────────────
 
+// Module-level shared state — all createUsageTrackingService instances reference this
+// so that threshold firings from one project don't re-fire from another project's copy.
+let sharedThresholdState: ThresholdState | null = null;
+let sharedThresholdStore: ThresholdStore | null = null;
+
 export type UsageTrackingService = ReturnType<typeof createUsageTrackingService>;
 
 type UsageTrackingDependencies = {
@@ -1003,13 +1008,24 @@ export function createUsageTrackingService({
   const scanClaudeCostLogs = dependencies?.scanClaudeLogs ?? scanClaudeLogs;
   const scanCodexCostLogs = dependencies?.scanCodexLogs ?? scanCodexLogs;
 
-  const resolvedThresholdStore: ThresholdStore =
-    thresholdStore ??
-    createFileThresholdStore(
-      thresholdStatePath ?? path.join(os.homedir(), ".ade", "usage-thresholds.json"),
-      logger,
-    );
-  let thresholdState: ThresholdState = resolvedThresholdStore.load();
+  // If a test passes a custom store, use that directly (no singleton sharing).
+  // Otherwise, share a single store + state across all service instances to prevent
+  // multiple projects from firing the same threshold event.
+  const isTestInjected = thresholdStore != null;
+  let resolvedThresholdStore: ThresholdStore;
+  if (isTestInjected) {
+    resolvedThresholdStore = thresholdStore;
+  } else {
+    if (!sharedThresholdStore) {
+      sharedThresholdStore = createFileThresholdStore(
+        thresholdStatePath ?? path.join(os.homedir(), ".ade", "usage-thresholds.json"),
+        logger,
+      );
+      sharedThresholdState = sharedThresholdStore.load();
+    }
+    resolvedThresholdStore = sharedThresholdStore;
+  }
+  let localThresholdState: ThresholdState | null = isTestInjected ? resolvedThresholdStore.load() : null;
 
   const emptySnapshot = (): UsageSnapshot => ({
     windows: [],
@@ -1098,9 +1114,14 @@ export function createUsageTrackingService({
         lastSnapshot = snapshot;
 
         try {
-          const { events, nextState } = detectThresholdCrossings(allWindows, thresholdState);
-          if (events.length > 0 || JSON.stringify(nextState) !== JSON.stringify(thresholdState)) {
-            thresholdState = nextState;
+          const currentState = isTestInjected ? localThresholdState! : sharedThresholdState!;
+          const { events, nextState } = detectThresholdCrossings(allWindows, currentState);
+          if (events.length > 0 || JSON.stringify(nextState) !== JSON.stringify(currentState)) {
+            if (isTestInjected) {
+              localThresholdState = nextState;
+            } else {
+              sharedThresholdState = nextState;
+            }
             resolvedThresholdStore.save(nextState);
           }
           for (const event of events) {

@@ -133,17 +133,19 @@ function shortId(id: string): string {
   return trimmed.length <= 8 ? trimmed : trimmed.slice(0, 8);
 }
 
-function usageThresholdToneColor(threshold: number): string {
-  if (threshold >= 100) return "#EF4444";
-  if (threshold >= 75) return "#F59E0B";
-  return "#22C55E";
-}
-
 function usageProviderLabel(provider: UsageThresholdEvent["provider"]): string {
   switch (provider) {
     case "claude": return "Claude";
     case "codex": return "Codex";
-    default: return provider;
+    default: return provider.charAt(0).toUpperCase() + provider.slice(1);
+  }
+}
+
+function usageProviderColor(provider: string): string {
+  switch (provider) {
+    case "claude": return "#A78BFA";
+    case "codex": return "#22C55E";
+    default: return "#60A5FA";
   }
 }
 
@@ -169,11 +171,21 @@ function usageAlertKey(event: UsageThresholdEvent): string {
 
 function readDismissedUsageAlerts(): Set<string> {
   try {
-    const raw = window.sessionStorage.getItem(USAGE_ALERT_DISMISS_STORAGE_KEY);
+    const raw = window.localStorage.getItem(USAGE_ALERT_DISMISS_STORAGE_KEY);
     if (!raw) return new Set();
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return new Set();
-    return new Set(parsed.filter((value): value is string => typeof value === "string"));
+    const now = Date.now();
+    return new Set(
+      parsed.filter((value): value is string => {
+        if (typeof value !== "string") return false;
+        const parts = value.split(":");
+        const resetMs = Number(parts[2]);
+        // Drop entries whose reset cycle has already passed
+        if (Number.isFinite(resetMs) && resetMs < now) return false;
+        return true;
+      }),
+    );
   } catch {
     return new Set();
   }
@@ -181,9 +193,9 @@ function readDismissedUsageAlerts(): Set<string> {
 
 function persistDismissedUsageAlerts(keys: Set<string>): void {
   try {
-    window.sessionStorage.setItem(USAGE_ALERT_DISMISS_STORAGE_KEY, JSON.stringify([...keys]));
+    window.localStorage.setItem(USAGE_ALERT_DISMISS_STORAGE_KEY, JSON.stringify([...keys]));
   } catch {
-    // sessionStorage can be unavailable in private/test environments.
+    // localStorage can be unavailable in private/test environments.
   }
 }
 
@@ -192,8 +204,12 @@ function markUsageAlertDismissed(
   event: UsageThresholdEvent,
 ): void {
   const normalizedReset = normalizeResetsAt(event.resetsAt);
+  // Only dismiss thresholds up to and including the current one so that higher
+  // thresholds (e.g. 50%, 75%, 100%) can still fire later in the same cycle.
   for (const threshold of [25, 50, 75, 100] as const) {
-    dismissed.add(`${event.provider}:${threshold}:${normalizedReset}`);
+    if (threshold <= event.threshold) {
+      dismissed.add(`${event.provider}:${threshold}:${normalizedReset}`);
+    }
   }
   persistDismissedUsageAlerts(dismissed);
 }
@@ -1050,7 +1066,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         }
         return [{ id, event }, ...withoutLowerSameProvider].slice(0, 4);
       });
-      const timer = window.setTimeout(() => dismissUsageToast(id, event), 6_000);
+      const timer = window.setTimeout(() => dismissUsageToast(id, event), 30_000);
       usageToastTimersRef.current.set(id, timer);
     });
     return () => {
@@ -1264,52 +1280,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
         <main className={cn("relative flex flex-col min-h-0 min-w-0 flex-1", tintClass)}>
           <TabBackground />
-          {usageThresholdToasts.length > 0 ? (
-            <div className="shrink-0 z-[2] flex flex-col">
-              {usageThresholdToasts.map(({ id, event }) => {
-                const tone = usageThresholdToneColor(event.threshold);
-                const providerLabel = usageProviderLabel(event.provider);
-                const countdown = formatUsageResetCountdown(event.resetsAt, Date.now());
-                return (
-                  <button
-                    key={id}
-                    type="button"
-                    className="group relative flex h-6 w-full items-center overflow-hidden text-[11px] transition-colors hover:brightness-110"
-                    style={{ background: `${tone}12` }}
-                    onClick={() => {
-                      window.dispatchEvent(new CustomEvent(OPEN_USAGE_EVENT));
-                      dismissUsageToast(id, event);
-                    }}
-                    title="Open usage"
-                  >
-                    <div
-                      className="absolute inset-y-0 left-0 transition-all"
-                      style={{
-                        width: `${Math.min(100, event.threshold)}%`,
-                        background: `${tone}25`,
-                      }}
-                    />
-                    <div className="relative z-[1] flex w-full items-center justify-center gap-2 px-3">
-                      <span className="font-medium" style={{ color: tone }}>
-                        {providerLabel} {event.threshold}%
-                      </span>
-                      <span style={{ color: `${tone}99` }}>·</span>
-                      <span style={{ color: `${tone}88` }}>{countdown}</span>
-                    </div>
-                    <div
-                      className="absolute inset-y-0 right-0 z-[2] flex items-center pr-2 opacity-0 group-hover:opacity-100 transition-opacity"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        dismissUsageToast(id, event);
-                      }}
-                    >
-                      <span className="text-[10px] text-muted-fg hover:text-fg cursor-pointer">✕</span>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          ) : null}
           <div
             className="relative z-[1] min-h-0 flex-1 w-full"
             data-tab-revisit={!isFirstVisit || undefined}
@@ -1324,8 +1294,52 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               children
             )}
           </div>
-          {staleCliNotice || prToasts.length > 0 ? (
+          {staleCliNotice || prToasts.length > 0 || usageThresholdToasts.length > 0 ? (
             <div className="pointer-events-none absolute bottom-2 right-2 z-[95] flex w-[min(380px,calc(100vw-20px))] flex-col gap-1.5">
+              {usageThresholdToasts.map(({ id, event }) => {
+                const providerColor = usageProviderColor(event.provider);
+                const providerLabel = usageProviderLabel(event.provider);
+                const countdown = formatUsageResetCountdown(event.resetsAt, Date.now());
+                return (
+                  <div
+                    key={id}
+                    className="pointer-events-auto flex w-72 overflow-hidden rounded-lg border border-white/[0.08] bg-[color:var(--ade-shell-surface,#1A1830)] shadow-xl shadow-black/40"
+                  >
+                    <div className="w-1 shrink-0" style={{ backgroundColor: providerColor }} />
+                    <div className="flex min-w-0 flex-1 flex-col gap-1 px-3 py-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          className="text-[12px] font-medium text-fg/90 hover:underline"
+                          onClick={() => {
+                            window.dispatchEvent(new CustomEvent(OPEN_USAGE_EVENT));
+                            dismissUsageToast(id, event);
+                          }}
+                          title="Open usage"
+                        >
+                          {providerLabel} usage at {event.threshold}%
+                        </button>
+                        <button
+                          type="button"
+                          className="shrink-0 rounded p-0.5 text-muted-fg transition-colors hover:bg-fg/[0.05] hover:text-fg"
+                          onClick={() => dismissUsageToast(id, event)}
+                          aria-label="Dismiss usage notification"
+                          title="Dismiss"
+                        >
+                          <span className="text-[11px]">&times;</span>
+                        </button>
+                      </div>
+                      <span className="text-[11px] text-muted-fg/55">{countdown}</span>
+                      <div className="h-1 overflow-hidden rounded-full bg-white/[0.06]">
+                        <div
+                          className="h-full rounded-full"
+                          style={{ width: `${Math.min(100, event.percent ?? event.threshold)}%`, backgroundColor: providerColor }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
               {staleCliNotice ? (
                 <div className="pointer-events-auto overflow-hidden rounded-xl border border-amber-500/25 bg-card/95 px-3 py-3 shadow-float backdrop-blur">
                   <div className="flex items-start gap-3">
