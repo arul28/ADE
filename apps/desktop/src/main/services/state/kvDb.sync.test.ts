@@ -178,6 +178,59 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
     repaired.close();
   });
 
+  it("does not replicate queue_landing_state overhaul wipe deletes to synced peers", async () => {
+    const dbPathA = makeDbPath("ade-kvdb-sync-queue-wipe-a-");
+    const dbA = await openKvDb(dbPathA, createLogger() as any);
+    const projectId = "project-queue-wipe";
+    const groupId = "group-queue-wipe";
+    const queueId = "queue-wipe-1";
+
+    dbA.run(
+      `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)
+       values (?, ?, ?, ?, ?, ?)`,
+      [projectId, "/repo/queue-wipe", "Queue Wipe", "main", "2026-03-15T00:00:00.000Z", "2026-03-15T00:00:00.000Z"],
+    );
+    dbA.run(
+      `insert into pr_groups(id, project_id, group_type, name, auto_rebase, ci_gating, target_branch, created_at)
+       values (?, ?, ?, ?, 0, 0, ?, ?)`,
+      [groupId, projectId, "stack", "Stack", "main", "2026-03-15T00:00:00.000Z"],
+    );
+    dbA.run(
+      `insert into queue_landing_state(
+        id, group_id, project_id, state, entries_json, config_json, current_position, started_at
+      ) values (?, ?, ?, ?, ?, ?, 0, ?)`,
+      [queueId, groupId, projectId, "active", "[]", "{}", "2026-03-15T00:00:00.000Z"],
+    );
+
+    const dbB = await openKvDb(makeDbPath("ade-kvdb-sync-queue-wipe-b-"), createLogger() as any);
+    const baselineChanges = dbA.sync.exportChangesSince(0);
+    expect(baselineChanges.some((change) => change.table === "queue_landing_state")).toBe(true);
+    dbB.sync.applyChanges(baselineChanges);
+    expect(
+      dbB.get<{ id: string }>("select id from queue_landing_state where id = ?", [queueId])?.id,
+    ).toBe(queueId);
+
+    const versionBeforeWipe = dbA.sync.getDbVersion();
+    dbA.run("delete from kv where key = ?", ["queue_landing_state.wiped_for_stacked_overhaul.v1"]);
+    dbA.close();
+
+    const dbAReopened = await openKvDb(dbPathA, createLogger() as any);
+    expect(
+      dbAReopened.get<{ id: string }>("select id from queue_landing_state where id = ?", [queueId]),
+    ).toBeNull();
+
+    const wipeChanges = dbAReopened.sync.exportChangesSince(versionBeforeWipe);
+    expect(wipeChanges.some((change) => change.table === "queue_landing_state")).toBe(false);
+
+    dbB.sync.applyChanges(wipeChanges);
+    expect(
+      dbB.get<{ id: string }>("select id from queue_landing_state where id = ?", [queueId])?.id,
+    ).toBe(queueId);
+
+    dbAReopened.close();
+    dbB.close();
+  });
+
   it("ignores CRDT changes for legacy unified_memories tables removed in #329", async () => {
     const db2 = await openKvDb(makeDbPath("ade-kvdb-sync-mem-skip-"), createLogger() as any);
     const legacyChange = {
