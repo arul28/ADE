@@ -11768,6 +11768,55 @@ describe("createAgentChatService", () => {
       expect(turnStartParams?.effort).toBe("medium");
     });
 
+    it("keeps stricter Codex approval policy when resume echoes stale looser policy with the same sandbox", async () => {
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "default") {
+          return { approvalPolicy: "on-request", sandbox: "workspace-write" };
+        }
+        if (mode === "edit") {
+          return { approvalPolicy: "untrusted", sandbox: "workspace-write" };
+        }
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
+      });
+      mockState.codexResponseOverrides.set("thread/resume", () => ({
+        thread: { id: "thread-stale-untrusted" },
+        approvalPolicy: "unlessTrusted",
+        sandbox: { type: "workspaceWrite" },
+      }));
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        permissionMode: "default",
+      });
+
+      await service.dispose({ sessionId: session.id });
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        threadId: "thread-stale-untrusted",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+        permissionMode: "default",
+      });
+
+      const resumed = await service.resumeSession({ sessionId: session.id });
+
+      const resumeRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/resume");
+      const resumeParams = resumeRequest?.params as { approvalPolicy?: unknown; sandbox?: unknown } | undefined;
+      expect(resumeParams?.approvalPolicy).toBe("on-request");
+      expect(resumeParams?.sandbox).toBe("workspace-write");
+      expect(resumed.codexApprovalPolicy).toBe("on-request");
+      expect(resumed.codexSandbox).toBe("workspace-write");
+      expect(resumed.permissionMode).toBe("default");
+
+      const persistedAfter = readPersistedChatState(session.id);
+      expect(persistedAfter.codexApprovalPolicy).toBe("on-request");
+      expect(persistedAfter.codexSandbox).toBe("workspace-write");
+    });
+
     it("keeps Codex planner approval guard scoped to the turn that started in plan mode", async () => {
       vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
         if (mode === "full-auto") {
