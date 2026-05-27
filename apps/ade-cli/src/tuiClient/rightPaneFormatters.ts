@@ -282,3 +282,17 @@ export function formatLinearStatus(value: unknown): string {
   ];
   return rows.map(([key, rowValue]) => `${key.padEnd(10)} ${rowValue}`).join("\n");
 }
+
+export function formatLinearIssueComments(value: unknown): string {
+  const items = Array.isArray(value) ? value.filter(isRecord) : [];
+  if (!items.length) return "No comments on this issue.";
+  const lines = [`${items.length} comment${items.length === 1 ? "" : "s"}`];
+  for (const item of items.slice(0, 20)) {
+    const who = pickString(item, ["userDisplayName", "userName"]) ?? "unknown";
+    const when = shortIso(item.createdAt);
+    const body = truncate(item.body, 80);
+    lines.push("", `${who}${when ? `  ${when}` : ""}`, body || "(empty)");
+  }
+  if (items.length > 20) lines.push("", `… and ${items.length - 20} more`);
+  return lines.join("\n");
+}

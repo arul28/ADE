@@ -1392,6 +1392,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --role cto linear picker-data --text     Read projects/users/states for the issue picker
     $ ade --role cto linear search-issues --query "auth" --state-type started,unstarted --first 50
                                                     Search issues for the lane Linear-issue picker
+    $ ade --role cto linear issue-comments --issue-id <id>
+                                                    Fetch comments on a Linear issue
     $ ade linear workflows --text                   List configured workflows
     $ ade linear sync dashboard --text              Show sync dashboard
     $ ade linear sync run                           Trigger a sync run
@@ -8018,6 +8020,21 @@ function buildLinearPlan(args: string[]): CliPlan {
           "result",
           "searchLinearIssues",
           collectGenericObjectArgs(args, input),
+        ),
+      ],
+    };
+  }
+  if (sub === "issue-comments" || sub === "comments") {
+    const issueId = readValue(args, ["--issue-id", "--issue"]) ?? firstPositional(args);
+    if (!issueId) throw new CliUsageError("linear issue-comments requires --issue-id <id> or a positional issue ID.");
+    return {
+      kind: "execute",
+      label: "Linear issue comments",
+      steps: [
+        actionCallStep(
+          "result",
+          "getLinearIssueComments",
+          collectGenericObjectArgs(args, { issueId }),
         ),
       ],
     };

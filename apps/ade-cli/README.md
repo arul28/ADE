@@ -234,6 +234,7 @@ ade lanes create "lin-123" --linear-issue-json '{"id":"...","identifier":"LIN-12
 ade lanes reparent lane-child --parent lane-parent --stack-base-branch main
 ade --role cto linear quick-view --text
 ade --role cto linear search-issues --query "auth" --state-type started,unstarted --first 50
+ade --role cto linear issue-comments --issue-id <linear-issue-uuid>
 ade git commit --lane lane-id
 ade git push --lane lane-id
 ade git pull --lane lane-id --rebase

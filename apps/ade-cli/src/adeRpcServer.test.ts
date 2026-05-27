@@ -654,6 +654,9 @@ function createRuntime() {
         issues: [{ id: "issue-1", identifier: "ADE-123", title: "Test", _query: query }],
         pageInfo: { hasNextPage: false, endCursor: null },
       })),
+      fetchIssueComments: vi.fn(async (issueId: string) => [
+        { id: "comment-1", body: "First comment", createdAt: "2026-03-17T19:00:00.000Z", userName: "arul", userDisplayName: "Arul" },
+      ]),
     } as any,
     linearSyncService: {
       getDashboard: vi.fn(() => ({ enabled: true, running: false, ingressMode: "webhook-first", reconciliationIntervalSec: 60, lastPollAt: null, lastSuccessAt: null, lastError: null, queue: { queued: 1, blocked: 0, failed: 0 }, workflowRuns: { active: 1, waiting: 0 }, recentIssues: [] })),
@@ -1582,6 +1585,21 @@ describe("adeRpcServer", () => {
         pageInfo: expect.objectContaining({ hasNextPage: false }),
       }),
     );
+  });
+
+  it("fetches Linear issue comments via getLinearIssueComments", async () => {
+    const { runtime } = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "cto-1", role: "cto" });
+    const result = await callTool(handler, "getLinearIssueComments", {
+      issueId: "issue-1",
+    });
+
+    expect((runtime.linearIssueTracker as any).fetchIssueComments).toHaveBeenCalledWith("issue-1");
+    expect(result.structuredContent).toEqual([
+      expect.objectContaining({ id: "comment-1", body: "First comment" }),
+    ]);
   });
 
   it("forwards employeeOverride and laneId when resuming a Linear sync queue item", async () => {

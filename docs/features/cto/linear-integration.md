@@ -8,8 +8,8 @@ CTO owns Linear intake, routing, dispatch, sync, and closeout. Automations never
 
 - `linearCredentialService.ts` — token store (personal API key). Exposes `getStatus`, `getTokenOrThrow`, `setToken`, `clearToken`.
 - `linearOAuthService.ts` — PKCE loopback OAuth on port 19836. `SESSION_TTL_MS = 10 min`. Authorize at `linear.app/oauth/authorize`, exchange at `api.linear.app/oauth/token`.
-- `linearClient.ts` — GraphQL client; used by both desktop and headless ADE CLI. Surfaces `getQuickView(connection)` (workspace + active project counters consumed by the top-bar quick view) and `searchIssues(query)` (paginated issue search consumed by `LinearIssuePicker` and `LinearIssueBrowser`) alongside the existing `fetchIssueById` / `listProjects` / `listLabels` / `listUsers` calls.
-- `linearIssueTracker.ts` + `issueTracker.ts` — issue cache, snapshot hashes, change detection. The `IssueTracker` interface includes the matching `getQuickView(connection)` and `searchIssues(query)` shims so renderer-side surfaces have the same entry point as the dispatcher.
+- `linearClient.ts` — GraphQL client; used by both desktop and headless ADE CLI. Surfaces `getQuickView(connection)` (workspace + active project counters consumed by the top-bar quick view), `searchIssues(query)` (paginated issue search consumed by `LinearIssuePicker` and `LinearIssueBrowser`), and `fetchIssueComments(issueId)` (comment thread for the issue detail pane) alongside the existing `fetchIssueById` / `listProjects` / `listLabels` / `listUsers` calls. The shared GraphQL issue fragment also fetches cycle metadata (`id`, `name`, `startsAt`, `endsAt`), label colors, and richer child-issue data (`identifier`, `title`, full state).
+- `linearIssueTracker.ts` + `issueTracker.ts` — issue cache, snapshot hashes, change detection. The `IssueTracker` interface includes the matching `getQuickView(connection)`, `searchIssues(query)`, and `fetchIssueComments(issueId)` shims so renderer-side surfaces have the same entry point as the dispatcher.
 - `flowPolicyService.ts` — canonical `LinearWorkflowConfig` aggregate: intake rules, workflows, files, migration info, legacy config. File-backed via `linearWorkflowFileService`.
 - `linearWorkflowFileService.ts` — persists workflows as YAML under the project's ADE config area.
 - `linearTemplateService.ts` — template metadata registry.
@@ -27,7 +27,7 @@ CTO owns Linear intake, routing, dispatch, sync, and closeout. Automations never
 - `renderer/components/cto/LinearSyncPanel.tsx` — workflow list (via `WorkflowListSidebar`), pipeline builder, sync dashboard, run timeline, "Watch It Live" monitor.
 - `renderer/components/cto/pipeline/` — the visual builder (see `pipeline-builder.md`).
 - `renderer/components/lanes/LinearIssuePicker.tsx`, `LinearIssueBadge.tsx`, `linearBrand.tsx` — shared issue picker, lane-list badge, and brand-token / icon family used by every Linear surface in the app.
-- `renderer/components/app/LinearQuickViewButton.tsx`, `LinearIssueBrowser.tsx` — top-bar quick view that opens the full filter/search browser, lets the user create a lane straight from a Linear issue (`lanes.create` with `linearIssue` set), and persists per-project filter state under `ade.linear.quickView.filters.v1:<projectRoot>`.
+- `renderer/components/app/LinearQuickViewButton.tsx`, `LinearIssueBrowser.tsx`, `LinearIssueResolveModals.tsx` — top-bar quick view that opens the full filter/search browser, lets the user create a lane straight from a Linear issue (`lanes.create` with `linearIssue` set), and persists per-project filter state under `ade.linear.quickView.filters.v1:<projectRoot>`. The issue browser supports multi-select with checkboxes (including shift-click range selection and select-all), batch lane creation, batch agent-resolve in new lanes, and batch resolve into an existing lane via dedicated batch modals in `LinearIssueResolveModals.tsx`. The issue detail pane renders the comment thread (via `getLinearIssueComments`) with markdown, and displays cycle and child-issue metadata. The quick-view button caches the last-fetched workspace summary for instant popover open and polls for Linear connection visibility on a 3-second interval until connected.
 - `renderer/components/settings/LinearSection.tsx` — Settings > Integrations panel for managing the Linear token / OAuth session and surfacing the connected workspace.
 
 ### Lane / commit / PR integration (developer-driven path)
@@ -42,7 +42,8 @@ Detailed wiring lives in [`../linear-integration/README.md`](../linear-integrati
 
 ### Shared
 
-- `apps/desktop/src/shared/types/linearSync.ts` — `LinearWorkflowDefinition`, `LinearWorkflowTarget`, `LinearWorkflowTrigger`, `LinearWorkflowStep`, run status, closeout types.
+- `apps/desktop/src/shared/types/linearSync.ts` — `LinearWorkflowDefinition`, `LinearWorkflowTarget`, `LinearWorkflowTrigger`, `LinearWorkflowStep`, run status, closeout types. `NormalizedLinearIssue` carries cycle metadata (`cycleId`, `cycleName`, `cycleStartsAt`, `cycleEndsAt`), per-label colors (`labelColors`), and structured child issues (`childIssues[]` with `identifier`, `title`, and full state).
+- `apps/desktop/src/shared/types/cto.ts` — `CtoGetLinearIssueCommentsArgs` and `CtoLinearIssueComment` types for the issue-comment thread surface.
 - `apps/desktop/src/shared/linearWorkflowPresets.ts` — visual plan translation.
 
 ### Runtime daemon

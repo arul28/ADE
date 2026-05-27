@@ -17,8 +17,8 @@ The runtime is organized around one contract: the CTO tab should be usable as a 
 - `workerAdapterRuntimeService.ts` — adapter lifecycle for the three supported worker adapters: `claude-local`, `codex-local`, and `process`.
 - `linearCredentialService.ts` — personal API key + OAuth client + auth-mode storage and token status. Backed by the per-machine credential store (`~/.ade/secrets/`) when injected, with a one-time migration from the legacy project-scoped files. See [Linear integration](../linear-integration/README.md#source-file-map).
 - `linearOAuthService.ts` — PKCE loopback OAuth flow on port 19836.
-- `linearClient.ts` — Linear GraphQL client (shared by desktop and headless ADE CLI).
-- `linearIssueTracker.ts` / `issueTracker.ts` — Linear issue cache and change detection.
+- `linearClient.ts` — Linear GraphQL client (shared by desktop and headless ADE CLI). The shared issue fragment fetches cycle metadata, label colors, and enriched child-issue fields. `fetchIssueComments(issueId)` returns the comment thread for the issue detail pane.
+- `linearIssueTracker.ts` / `issueTracker.ts` — Linear issue cache, change detection, and `fetchIssueComments` forwarding.
 - `flowPolicyService.ts` — canonical `LinearWorkflowConfig` (intake, workflows, migration), file-backed via `linearWorkflowFileService`.
 - `linearWorkflowFileService.ts` — repo YAML persistence for workflows.
 - `linearTemplateService.ts` — workflow template metadata.
@@ -56,7 +56,8 @@ The runtime is organized around one contract: the CTO tab should be usable as a 
 
 - `apps/desktop/src/shared/ctoPersonalityPresets.ts` — `CTO_PERSONALITY_PRESETS` (strategic, professional, hands_on, casual, minimal, custom) with label, description, and `systemOverlay` body.
 - `apps/desktop/src/shared/linearWorkflowPresets.ts` — `LinearWorkflowVisualPlan` type, `deriveVisualPlan`, `rebuildWorkflowSteps`, completion contract tables, step synthesis.
-- `apps/desktop/src/shared/types/linearSync.ts` — `LinearWorkflowDefinition`, `LinearWorkflowTarget`, trigger groups, step types, closeout types.
+- `apps/desktop/src/shared/types/linearSync.ts` — `LinearWorkflowDefinition`, `LinearWorkflowTarget`, trigger groups, step types, closeout types. `NormalizedLinearIssue` carries cycle metadata, per-label colors, and structured child issues.
+- `apps/desktop/src/shared/types/cto.ts` — `CtoGetLinearIssueCommentsArgs` and `CtoLinearIssueComment` types for the issue detail comment thread.
 - `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` — complete operator tool surface registered for CTO chat sessions.
 
 ### iOS companion (apps/ios/ADE/Views/Cto/)
