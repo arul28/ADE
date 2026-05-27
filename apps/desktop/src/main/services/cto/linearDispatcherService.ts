@@ -2402,17 +2402,21 @@ export function createLinearDispatcherService(args: {
         targetStatus: currentTargetStatus,
       });
     } else if (action === "approve") {
-      if (currentStepRow && currentStep?.type === "request_human_review") {
-        updateStep(currentStepRow.id, {
-          status: "completed",
-          completedAt: nowIso(),
-          payload: {
-            reviewState: "approved",
-            reviewerIdentityKey: reviewContext?.reviewerIdentityKey ?? null,
-            note: note ?? null,
-          },
-        });
+      if (run.status !== "awaiting_human_review") {
+        throw new Error("This workflow run is not awaiting supervisor review.");
       }
+      if (!currentStep || currentStep.type !== "request_human_review" || !currentStepRow) {
+        throw new Error("This workflow run is not on a human review step.");
+      }
+      updateStep(currentStepRow.id, {
+        status: "completed",
+        completedAt: nowIso(),
+        payload: {
+          reviewState: "approved",
+          reviewerIdentityKey: reviewContext?.reviewerIdentityKey ?? null,
+          note: note ?? null,
+        },
+      });
       updateRun(run.id, {
         reviewState: "approved",
         latestReviewNote: note ?? null,
@@ -2429,6 +2433,12 @@ export function createLinearDispatcherService(args: {
         });
       }
     } else if (action === "reject") {
+      if (run.status !== "awaiting_human_review") {
+        throw new Error("This workflow run is not awaiting supervisor review.");
+      }
+      if (!currentStep || currentStep.type !== "request_human_review" || !reviewContext) {
+        throw new Error("This workflow run is not on a human review step.");
+      }
       updateRun(run.id, {
         reviewState: reviewContext?.rejectAction === "loop_back" ? "changes_requested" : "rejected",
         latestReviewNote: note ?? "Rejected by reviewer.",
