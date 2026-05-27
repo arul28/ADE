@@ -2756,6 +2756,9 @@ button:active, [role="button"]:active {
 .ade-work-glass-header-left {
   flex-shrink: 0;
   min-width: 0;
+  width: var(--ade-sessions-pane-w, auto);
+  min-width: var(--ade-sessions-pane-w, 0);
+  box-sizing: border-box;
 }
 
 .ade-work-glass-header-left > * {
@@ -3163,7 +3166,7 @@ button:active, [role="button"]:active {
   padding: 0 6px;
   min-width: 118px;
   font-size: 9.5px;
-  border-radius: 5px;
+  border-radius: 4px;
 }
 
 .ade-work-tab--grouped .ade-work-tab-close {
@@ -3211,10 +3214,13 @@ button:active, [role="button"]:active {
   align-items: stretch;
   min-width: 0;
   flex-shrink: 0;
-  gap: var(--ade-work-band-gap, 4px);
+  gap: 0;
   height: 100%;
   min-height: var(--ade-work-band-expanded-h, 28px);
   max-height: var(--ade-work-header-side-h, 28px);
+  background: var(--lane-tab-tint, color-mix(in srgb, var(--lane-band-color, var(--color-fg)) 6%, transparent));
+  border-radius: 7px;
+  padding-right: 2px;
 }
 
 .ade-work-lane-band-header {
@@ -3240,24 +3246,24 @@ button:active, [role="button"]:active {
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  width: 14px;
-  min-width: 14px;
+  width: 18px;
+  min-width: 18px;
   height: 100%;
   min-height: var(--ade-work-tab-h, 28px);
   max-height: var(--ade-work-header-side-h, 28px);
   padding: 0;
   border: none;
-  border-radius: 4px;
+  border-radius: 5px 0 0 5px;
   color: var(--lane-band-label-color, color-mix(in srgb, var(--color-fg) 55%, transparent));
   background: transparent;
   cursor: pointer;
-  opacity: 0.55;
+  opacity: 0.65;
   transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
 }
 
 .ade-work-lane-band-collapse:hover {
-  opacity: 0.95;
-  background: color-mix(in srgb, var(--lane-band-color, var(--color-fg)) 10%, transparent);
+  opacity: 1;
+  background: color-mix(in srgb, var(--lane-band-color, var(--color-fg)) 12%, transparent);
 }
 
 .ade-work-lane-band-collapse.ade-work-lane-band--active {
@@ -3274,10 +3280,11 @@ button:active, [role="button"]:active {
   display: flex;
   flex-wrap: nowrap;
   align-items: stretch;
-  gap: 4px;
-  padding: 0;
+  gap: 2px;
+  padding: 2px 0;
   min-width: 0;
   height: 100%;
+  box-sizing: border-box;
 }
 
 .ade-work-lane-band--collapsed {

@@ -98,10 +98,11 @@ function sanitizeCommandName(value: unknown): string | null {
 }
 
 function resolveCommandName(args: CreateAdeCliServiceArgs): string {
-  const explicit = sanitizeCommandName(args.env?.ADE_CLI_INSTALL_NAME ?? process.env.ADE_CLI_INSTALL_NAME);
+  const env = args.env ?? process.env;
+  const explicit = sanitizeCommandName(env.ADE_CLI_INSTALL_NAME);
   if (explicit) return explicit;
-  const channel = normalizePackageChannel(args.env?.ADE_PACKAGE_CHANNEL ?? process.env.ADE_PACKAGE_CHANNEL);
-  if (channel) return `ade-${channel}`;
+  const channel = normalizePackageChannel(env.ADE_PACKAGE_CHANNEL);
+  if (args.isPackaged && channel) return `ade-${channel}`;
   return args.isPackaged ? "ade" : "ade-dev";
 }
 

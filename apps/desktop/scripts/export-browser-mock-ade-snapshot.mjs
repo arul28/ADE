@@ -28,6 +28,18 @@ const args = process.argv.slice(2);
 const optional = args.includes("--optional");
 const positionalRoot = args.find((arg) => !arg.startsWith("-"));
 
+function resolveWorktreeParentRoot(dir) {
+  const sep = path.sep;
+  const parts = dir.split(sep);
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    if (parts[i] === "worktrees" && i > 0 && parts[i - 1] === ".ade") {
+      const root = parts.slice(0, i - 1).join(sep) || sep;
+      return path.resolve(root);
+    }
+  }
+  return null;
+}
+
 function resolveProjectRoot() {
   if (process.env.ADE_PROJECT_ROOT) {
     return path.resolve(process.env.ADE_PROJECT_ROOT);
@@ -43,6 +55,8 @@ function resolveProjectRoot() {
     path.resolve(cwd, "../../.."),
     REPO_ROOT_FROM_SCRIPT,
   ];
+  const worktreeParent = resolveWorktreeParentRoot(cwd) ?? resolveWorktreeParentRoot(REPO_ROOT_FROM_SCRIPT);
+  if (worktreeParent) candidates.push(worktreeParent);
   for (const candidate of candidates) {
     if (existsSync(path.join(candidate, ".ade", "ade.db"))) {
       return candidate;

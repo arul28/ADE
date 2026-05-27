@@ -82,6 +82,22 @@ Desktop release:
 - Validation commands are documented in the "Validation" section above.
 - The desktop test suite is large; CI shards it. For local iteration, run a single file or one CI-style shard rather than the full suite.
 
+### Working in ADE lanes (worktrees)
+
+- When an agent session runs inside an ADE lane, its working directory is the lane's worktree (e.g. `/path/to/ADE/.ade/worktrees/<lane-slug>/`). **All file reads, edits, and writes MUST target paths under that worktree, never under the main project-root checkout.**
+- `grep`, `find`, and Explore agents may return absolute paths rooted at the main checkout. Before editing, translate those paths to the worktree: replace the project root prefix with the worktree root. For example, `/Users/admin/Projects/ADE/apps/desktop/src/foo.ts` becomes `<worktree>/apps/desktop/src/foo.ts`.
+- Use relative paths from your working directory whenever possible — they resolve to the worktree automatically.
+- If `ADE_REPO_ROOT` is set in the environment, use it as the canonical base for all file operations.
+- When launching dev servers (Vite, Electron, etc.) for a lane, run them from the worktree, not the main checkout: `cd <worktree>/apps/desktop && npm run dev:vite`.
+
+### Running the ADE desktop web renderer (Vite-only preview)
+
+- The desktop renderer can run standalone in a browser without Electron via `npm run dev:vite` in `apps/desktop`. This starts Vite on port 5173 with a browser mock for `window.ade`.
+- To seed the mock with real data from the ADE database, run `npm run export:browser-mock-ade` in `apps/desktop` first, or let the `predev:vite` hook do it automatically. The export script reads `.ade/ade.db` from the primary project root and writes a snapshot to `src/renderer/browser-mock-ade-snapshot.generated.json`.
+- This works from any lane worktree: `cd <worktree>/apps/desktop && npm run dev:vite`. The export script detects worktree paths and resolves the `.ade/ade.db` location from the parent project root.
+- For live data (connected to the ADE runtime socket instead of mock data), use `npm run dev:vite:live`. This starts both Vite and a browser-runtime bridge. Note: this calls `ensureRuntime` which may restart a stale dev runtime — avoid if the ADE beta or another runtime is already running on the target socket.
+- Open `http://localhost:5173/work` in a browser or ADE's built-in browser to view the Work tab.
+
 ### Inspecting the local Electron desktop app with Codex Computer Use on macOS
 
 - To inspect ADE desktop parity locally with Codex Computer Use, launch the dev app from the worktree with `npm run dev` in `apps/desktop`.

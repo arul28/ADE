@@ -1119,7 +1119,17 @@ app.whenReady().then(async () => {
 
   const builtInBrowserService = createBuiltInBrowserService({
     getLogger: () => getActiveContext().logger,
-    onEvent: (payload) => broadcast(IPC.builtInBrowserEvent, payload),
+    onEvent: (payload, targetWindow) => {
+      if (targetWindow && !targetWindow.isDestroyed()) {
+        try {
+          targetWindow.webContents.send(IPC.builtInBrowserEvent, payload);
+        } catch {
+          // ignore stale window sends
+        }
+        return;
+      }
+      broadcast(IPC.builtInBrowserEvent, payload);
+    },
   });
 
   // Side-channel JSON-RPC server that lets the runtime daemon proxy

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { motion } from "motion/react";
@@ -28,6 +28,8 @@ import {
   CopySimple,
   Brain,
   Image,
+  ImageSquare,
+  Sparkle,
   Code,
   Paperclip,
 } from "@phosphor-icons/react";
@@ -3648,6 +3650,233 @@ function extractSubagentMessageText(
   return "";
 }
 
+/**
+ * Returns the AgentChatEvent embedded in a subagent transcript entry, or null
+ * if the entry came from a Claude SDK session message (different shape).
+ *
+ * Codex/Cursor sessions store the full ADE event (with type/itemId/turnId/…)
+ * inside transcript.message so the drill-in can render typed cards. Claude SDK
+ * transcripts use the upstream session message shape and fall back to the
+ * simpler role+text rendering.
+ */
+function readSubagentEvent(
+  transcript: import("../../../shared/types").AgentChatSubagentTranscriptMessage,
+): AgentChatEvent | null {
+  const message = transcript.message;
+  if (!message || typeof message !== "object" || Array.isArray(message)) return null;
+  const candidate = message as { type?: unknown };
+  if (typeof candidate.type !== "string" || candidate.type.length === 0) return null;
+  // The codex transcript pipe stamps `message: event` directly. Anything with
+  // a string `type` is assumed to be an AgentChatEvent. The render switch
+  // below tolerates unknown types by skipping them.
+  return message as AgentChatEvent;
+}
+
+function SubagentTimelineRow({
+  icon,
+  tone,
+  children,
+}: {
+  icon: ReactNode;
+  tone: "violet" | "amber" | "emerald" | "rose" | "cyan" | "fg";
+  children: ReactNode;
+}) {
+  const railClass = {
+    violet: "bg-[color:var(--color-accent,#A78BFA)]/55",
+    amber: "bg-amber-400/55",
+    emerald: "bg-emerald-400/55",
+    rose: "bg-rose-400/55",
+    cyan: "bg-cyan-400/55",
+    fg: "bg-fg/20",
+  }[tone];
+
+  return (
+    <li className="relative flex items-stretch gap-3.5 py-2.5">
+      <div className="relative flex w-5 shrink-0 justify-center">
+        <span aria-hidden className={cn("absolute inset-y-0 left-1/2 -translate-x-1/2 w-px", railClass)} />
+        <span
+          aria-hidden
+          className={cn(
+            "relative z-10 mt-1 inline-flex h-5 w-5 items-center justify-center rounded-full",
+            "bg-[color:var(--chat-surface-bg,#0d0d0d)] ring-1 ring-inset ring-white/10",
+          )}
+        >
+          {icon}
+        </span>
+      </div>
+      <div className="min-w-0 flex-1 pb-1">{children}</div>
+    </li>
+  );
+}
+
+function SubagentReasoningCard({
+  event,
+}: {
+  event: Extract<AgentChatEvent, { type: "reasoning" }>;
+}) {
+  const text = event.text.trim();
+  if (!text) return null;
+  return (
+    <div className="rounded-lg border border-violet-400/15 bg-violet-500/[0.025] px-3.5 py-2">
+      <div className="font-sans text-[10.5px] font-semibold uppercase tracking-[0.08em] text-violet-200/70">
+        Reasoning
+      </div>
+      <div className="mt-1 whitespace-pre-wrap break-words font-sans text-[12.5px] italic leading-[1.55] text-violet-100/85">
+        {text}
+      </div>
+    </div>
+  );
+}
+
+function SubagentTextCard({
+  event,
+}: {
+  event: Extract<AgentChatEvent, { type: "text" }>;
+}) {
+  const text = (event.text ?? "").trim();
+  if (!text) return null;
+  return (
+    <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3.5 py-2.5">
+      <div className="font-sans text-[10.5px] font-semibold uppercase tracking-[0.08em] text-[color:var(--color-accent-bright,#C4B5FD)]/80">
+        Agent
+      </div>
+      <div className="mt-1 whitespace-pre-wrap break-words font-sans text-[13px] leading-[1.55] text-fg/85">
+        {text}
+      </div>
+    </div>
+  );
+}
+
+function SubagentWebSearchCard({
+  event,
+}: {
+  event: Extract<AgentChatEvent, { type: "web_search" }>;
+}) {
+  const isActive = event.status === "running";
+  const tone = event.status === "failed" ? "text-rose-200/85" : "text-fg/80";
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3.5 py-2 font-sans text-[12px]">
+      <Globe size={11} weight="regular" className="text-fg/40" />
+      <span className="font-medium text-fg/55">
+        {isActive ? "Searching" : event.status === "failed" ? "Search failed" : "Searched"}
+      </span>
+      <span className={cn("min-w-0 flex-1 truncate", tone)}>{event.query || "(no query)"}</span>
+    </div>
+  );
+}
+
+function SubagentSpawnedRow({
+  event,
+}: {
+  event: Extract<AgentChatEvent, { type: "subagent_started" }>;
+}) {
+  const description = (
+    event as { description?: unknown }
+  ).description as string | undefined;
+  const agentType = (event as { agentType?: unknown }).agentType as string | undefined;
+  const label = (description ?? agentType ?? "subagent").trim() || "subagent";
+  return (
+    <div className="font-sans text-[12px] leading-snug text-fg/55">
+      <span className="text-fg/40">Spawned</span> <span className="text-fg/75">{label}</span>
+    </div>
+  );
+}
+
+function SubagentResultRow({
+  event,
+}: {
+  event: Extract<AgentChatEvent, { type: "subagent_result" }>;
+}) {
+  const summary = ((event as { summary?: unknown }).summary as string | undefined)?.trim()
+    ?? ((event as { description?: unknown }).description as string | undefined)?.trim()
+    ?? "";
+  return (
+    <div className="rounded-lg border border-emerald-400/15 bg-emerald-500/[0.04] px-3.5 py-2">
+      <div className="font-sans text-[10.5px] font-semibold uppercase tracking-[0.08em] text-emerald-200/75">
+        Final result
+      </div>
+      {summary ? (
+        <div className="mt-1 whitespace-pre-wrap break-words font-sans text-[13px] leading-[1.55] text-emerald-50/90">
+          {summary}
+        </div>
+      ) : (
+        <div className="mt-1 font-sans text-[12px] italic text-fg/45">No summary recorded.</div>
+      )}
+    </div>
+  );
+}
+
+function SubagentTimelineCard({
+  event,
+}: {
+  event: AgentChatEvent;
+}) {
+  switch (event.type) {
+    case "reasoning":
+      return (
+        <SubagentTimelineRow icon={<Brain size={11} weight="duotone" className="text-violet-300" />} tone="violet">
+          <SubagentReasoningCard event={event} />
+        </SubagentTimelineRow>
+      );
+    case "text":
+      return (
+        <SubagentTimelineRow
+          icon={<span aria-hidden className="text-[10px] font-bold text-[color:var(--color-accent-bright,#C4B5FD)]">A</span>}
+          tone="violet"
+        >
+          <SubagentTextCard event={event} />
+        </SubagentTimelineRow>
+      );
+    case "plan":
+      return (
+        <SubagentTimelineRow icon={<ListChecks size={11} weight="regular" className="text-violet-300/85" />} tone="violet">
+          <CodexPlanCard event={event} />
+        </SubagentTimelineRow>
+      );
+    case "command":
+      return (
+        <SubagentTimelineRow icon={<Terminal size={11} weight="regular" className="text-fg/55" />} tone={event.status === "failed" ? "rose" : "fg"}>
+          <CommandEventCard event={event} />
+        </SubagentTimelineRow>
+      );
+    case "file_change":
+      return (
+        <SubagentTimelineRow icon={<FileCode size={11} weight="regular" className="text-cyan-300/80" />} tone="cyan">
+          <FileChangeEventCard event={event} />
+        </SubagentTimelineRow>
+      );
+    case "web_search":
+      return (
+        <SubagentTimelineRow icon={<Globe size={11} weight="regular" className="text-fg/55" />} tone="fg">
+          <SubagentWebSearchCard event={event} />
+        </SubagentTimelineRow>
+      );
+    case "codex_image_generation":
+      return (
+        <SubagentTimelineRow icon={<ImageSquare size={11} weight="regular" className="text-fuchsia-300/85" />} tone="violet">
+          <CodexImageGenerationCard event={event} />
+        </SubagentTimelineRow>
+      );
+    case "subagent_started":
+      return (
+        <SubagentTimelineRow icon={<Sparkle size={11} weight="duotone" className="text-fg/45" />} tone="fg">
+          <SubagentSpawnedRow event={event} />
+        </SubagentTimelineRow>
+      );
+    case "subagent_result":
+      return (
+        <SubagentTimelineRow icon={<Check size={11} weight="bold" className="text-emerald-300/85" />} tone="emerald">
+          <SubagentResultRow event={event} />
+        </SubagentTimelineRow>
+      );
+    default:
+      // Skip noisy/internal events (activity, tokens, status, etc.). When in
+      // doubt show a tiny dim row so we know data was recorded but isn't yet
+      // typed — that prevents transcripts from looking falsely empty.
+      return null;
+  }
+}
+
 function SubagentTranscriptView({
   snapshotName,
   messages,
@@ -3678,7 +3907,30 @@ function SubagentTranscriptView({
     );
   }
 
-  if (messages.length === 0) {
+  // Partition into rich (typed-card) entries and legacy (role+text) entries.
+  // Codex/Cursor transcripts ship the full AgentChatEvent in `message`, so
+  // they render through the typed switch. Claude SDK transcripts have a
+  // different `message` shape and fall back to the role+text layout.
+  const richEntries: Array<{
+    key: string;
+    event: AgentChatEvent;
+  }> = [];
+  const legacyEntries: Array<{
+    key: string;
+    message: import("../../../shared/types").AgentChatSubagentTranscriptMessage;
+  }> = [];
+  for (let i = 0; i < messages.length; i += 1) {
+    const m = messages[i];
+    const key = m.uuid ?? `idx-${i}`;
+    const event = readSubagentEvent(m);
+    if (event) {
+      richEntries.push({ key, event });
+    } else {
+      legacyEntries.push({ key, message: m });
+    }
+  }
+
+  if (richEntries.length === 0 && legacyEntries.length === 0) {
     return (
       <div className={cn("flex min-h-0 flex-1 flex-col px-8 pt-12 font-sans", className)}>
         <p className="text-[13.5px] leading-6 text-fg/55">
@@ -3695,46 +3947,50 @@ function SubagentTranscriptView({
         className,
       )}
     >
-      <ol className="mx-auto w-full max-w-3xl px-6 pb-10 pt-6">
-        {messages.map((message, index) => {
-          const text = extractSubagentMessageText(message);
-          const role: string = message.type;
-          const isUser = role === "user";
-          const isSystem = role === "system";
-          const roleLabel = isUser ? "you" : isSystem ? "system" : "agent";
-          const accentClass = isUser
-            ? "text-fg/65"
-            : isSystem
-              ? "text-fg/40"
-              : "text-[color:var(--color-accent-bright,#C4B5FD)]";
+      {richEntries.length ? (
+        <ol className="mx-auto w-full max-w-3xl px-6 pb-6 pt-5">
+          {richEntries.map((entry) => (
+            <SubagentTimelineCard key={entry.key} event={entry.event} />
+          ))}
+        </ol>
+      ) : null}
+      {legacyEntries.length ? (
+        <ol className="mx-auto w-full max-w-3xl px-6 pb-10 pt-2">
+          {legacyEntries.map((entry, index) => {
+            const text = extractSubagentMessageText(entry.message);
+            const role: string = entry.message.type;
+            const isUser = role === "user";
+            const isSystem = role === "system";
+            const roleLabel = isUser ? "you" : isSystem ? "system" : "agent";
+            const accentClass = isUser
+              ? "text-fg/65"
+              : isSystem
+                ? "text-fg/40"
+                : "text-[color:var(--color-accent-bright,#C4B5FD)]";
 
-          return (
-            <li
-              key={message.uuid ?? `${index}-${role}`}
-              className="grid grid-cols-[88px_minmax(0,1fr)] gap-x-5 border-b border-white/[0.03] py-3 last:border-b-0"
-            >
-              <div className="pt-1 text-right">
-                <span
+            return (
+              <li
+                key={entry.key ?? `${index}-${role}`}
+                className="grid grid-cols-[88px_minmax(0,1fr)] gap-x-5 border-b border-white/[0.03] py-3 last:border-b-0"
+              >
+                <div className="pt-1 text-right">
+                  <span className={cn("text-[10.5px] font-medium tracking-[0.04em]", accentClass)}>
+                    {roleLabel}
+                  </span>
+                </div>
+                <div
                   className={cn(
-                    "text-[10.5px] font-medium tracking-[0.04em]",
-                    accentClass,
+                    "min-w-0 whitespace-pre-wrap break-words text-[13px] leading-[1.6]",
+                    isSystem ? "text-fg/55" : "text-fg/85",
                   )}
                 >
-                  {roleLabel}
-                </span>
-              </div>
-              <div
-                className={cn(
-                  "min-w-0 whitespace-pre-wrap break-words text-[13px] leading-[1.6]",
-                  isSystem ? "text-fg/55" : "text-fg/85",
-                )}
-              >
-                {text || <span className="text-fg/35">No content recorded.</span>}
-              </div>
-            </li>
-          );
-        })}
-      </ol>
+                  {text || <span className="text-fg/35">No content recorded.</span>}
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      ) : null}
     </div>
   );
 }

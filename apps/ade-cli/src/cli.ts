@@ -10515,6 +10515,8 @@ async function spawnMachineRuntimeDaemon(
   }
   if (runtimeBuildHash) {
     env.ADE_RUNTIME_BUILD_HASH = runtimeBuildHash;
+  } else {
+    delete env.ADE_RUNTIME_BUILD_HASH;
   }
 
   const child = spawn(serviceCommand.command, args, {

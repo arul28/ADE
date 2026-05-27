@@ -103,6 +103,25 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const workContentPaneRef = useRef<HTMLDivElement | null>(null);
   const workSidebarPaneRef = useRef<HTMLDivElement | null>(null);
   const [workHeaderMount, setWorkHeaderMount] = useState<HTMLDivElement | null>(null);
+  const unifiedChromeRef = useRef<HTMLDivElement | null>(null);
+  const sessionsPaneRoRef = useRef<ResizeObserver | null>(null);
+
+  const sessionsPaneRefCb = useCallback((el: HTMLDivElement | null) => {
+    if (sessionsPaneRoRef.current) {
+      sessionsPaneRoRef.current.disconnect();
+      sessionsPaneRoRef.current = null;
+    }
+    if (!el) {
+      unifiedChromeRef.current?.style.removeProperty("--ade-sessions-pane-w");
+      return;
+    }
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(([entry]) => {
+      unifiedChromeRef.current?.style.setProperty("--ade-sessions-pane-w", `${entry.contentRect.width}px`);
+    });
+    ro.observe(el);
+    sessionsPaneRoRef.current = ro;
+  }, []);
 
   const selectableSessions = useMemo(
     () => [...work.runningFiltered, ...work.awaitingInputFiltered, ...work.endedFiltered],
@@ -757,7 +776,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         // tour anchor: wraps the sessions panel so the Work tour anchors
         // at the whole pane, not just an inner element.
         children: (
-          <div className="h-full min-h-0 flex flex-col" data-tour="work.sessionsPane">
+          <div ref={sessionsPaneRefCb} className="h-full min-h-0 flex flex-col" data-tour="work.sessionsPane">
           <SessionListPane
             lanes={sortedLanes}
             runningFiltered={work.runningFiltered}
@@ -834,7 +853,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           {workViewWithSidebar}
         </div>
       ) : (
-        <div className="ade-work-unified-chrome flex min-h-0 flex-1 flex-col">
+        <div ref={unifiedChromeRef} className="ade-work-unified-chrome flex min-h-0 flex-1 flex-col">
           <div ref={setWorkHeaderMount} className="ade-work-unified-top-chrome shrink-0" />
           <PaneTilingLayout
             layoutId="work:tiling:v3"

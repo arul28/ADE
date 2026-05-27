@@ -901,7 +901,7 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
   const layout = resolveAdeLayout(args.projectRoot);
   const storeDir = path.join(layout.cacheDir, "macos-vms");
   const storePath = path.join(storeDir, MACOS_VM_STATE_FILE);
-  const adeHome = env.ADE_HOME?.trim() || process.env.ADE_HOME?.trim() || path.join(layout.cacheDir, "runtime-home");
+  const adeHome = env.ADE_HOME?.trim() || path.join(layout.cacheDir, "runtime-home");
   const globalLeasePath = path.join(adeHome, "cache", "macos-vms", MACOS_VM_GLOBAL_LEASE_FILE);
   const vncCredentialStorePath = path.join(layout.secretsDir, MACOS_VM_VNC_CREDENTIALS_FILE);
   const projectRoot = path.resolve(args.projectRoot);
@@ -964,7 +964,7 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
   });
 
   const leaseMatchesCurrentProjectLane = (lease: MacosVmGlobalLease, lane: LaneContext): boolean => (
-    path.resolve(lease.projectRoot) === projectRoot && lease.laneId === lane.id
+    path.resolve(lease.projectRoot) === path.resolve(projectRoot) && lease.laneId === lane.id
   );
 
   const reconcileGlobalLease = (

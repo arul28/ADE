@@ -231,8 +231,9 @@ describe("ChatBuiltInBrowserPanel", () => {
 
     render(<ChatBuiltInBrowserPanel sessionId="chat-1" onAddContext={onAddContext} />);
 
-    expect(await screen.findByText("Submit")).toBeTruthy();
-    fireEvent.click(screen.getByTitle("Insert the selected browser element as context"));
+    const attachButton = await screen.findByTitle("Insert the selected browser element as context");
+    expect(attachButton.textContent).toContain("Attach");
+    fireEvent.click(attachButton);
 
     await waitFor(() => {
       expect(api.selectCurrent).toHaveBeenCalled();

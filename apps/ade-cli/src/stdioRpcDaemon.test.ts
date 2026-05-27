@@ -416,6 +416,7 @@ describe("ade rpc --stdio daemon bridge", () => {
       ADE_HOME: adeHome,
       NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
       ADE_CLI_VERSION: "2.0.0",
+      ADE_RUNTIME_BUILD_HASH: "",
     };
     const tcpDaemon = startServeProcess({
       cliPath,

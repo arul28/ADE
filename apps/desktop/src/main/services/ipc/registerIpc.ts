@@ -1935,7 +1935,7 @@ export function registerIpc({
     event: IpcMainInvokeEvent,
     channel: string,
     limit: { windowMs: number; max: number } = { windowMs: 10_000, max: 60 },
-  ): void => {
+  ): BrowserWindow => {
     const win = BrowserWindow.fromWebContents(event.sender);
     const senderUrl = event.senderFrame?.url || event.sender.getURL();
     if (!win || win.isDestroyed() || !isTrustedAppControlRendererUrl(senderUrl)) {
@@ -1947,6 +1947,7 @@ export function registerIpc({
       throw new Error("Built-in browser is only available to the ADE renderer.");
     }
     assertBuiltInBrowserRateLimit(event, channel, limit);
+    return win;
   };
 
   const guardMacosVmIpc = (
@@ -6722,93 +6723,93 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.builtInBrowserGetStatus, async (event) => {
-    guardBuiltInBrowserIpc(event, IPC.builtInBrowserGetStatus, { windowMs: 10_000, max: 120 });
-    return ensureBuiltInBrowser().getStatus();
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserGetStatus, { windowMs: 10_000, max: 120 });
+    return ensureBuiltInBrowser().getStatus(win);
   });
 
   ipcMain.handle(IPC.builtInBrowserShowPanel, async (event, arg) => {
-    guardBuiltInBrowserIpc(event, IPC.builtInBrowserShowPanel, { windowMs: 10_000, max: 80 });
-    return ensureBuiltInBrowser().showPanel(parseBuiltInBrowserOpenPanelArgs(arg, IPC.builtInBrowserShowPanel));
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserShowPanel, { windowMs: 10_000, max: 80 });
+    return ensureBuiltInBrowser().showPanel(parseBuiltInBrowserOpenPanelArgs(arg, IPC.builtInBrowserShowPanel), win);
   });
 
   ipcMain.handle(IPC.builtInBrowserSetBounds, async (event, arg) => {
-    guardBuiltInBrowserIpc(event, IPC.builtInBrowserSetBounds, { windowMs: 10_000, max: 900 });
-    return ensureBuiltInBrowser().setBounds(parseBuiltInBrowserBoundsArgs(arg, IPC.builtInBrowserSetBounds));
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSetBounds, { windowMs: 10_000, max: 900 });
+    return ensureBuiltInBrowser().setBounds(parseBuiltInBrowserBoundsArgs(arg, IPC.builtInBrowserSetBounds), win);
   });
 
   ipcMain.handle(IPC.builtInBrowserAttachWebview, async (event, arg) => {
-    guardBuiltInBrowserIpc(event, IPC.builtInBrowserAttachWebview, { windowMs: 10_000, max: 120 });
-    return ensureBuiltInBrowser().attachWebview(parseBuiltInBrowserAttachWebviewArgs(arg, IPC.builtInBrowserAttachWebview));
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserAttachWebview, { windowMs: 10_000, max: 120 });
+    return ensureBuiltInBrowser().attachWebview(parseBuiltInBrowserAttachWebviewArgs(arg, IPC.builtInBrowserAttachWebview), win);
   });
 
   ipcMain.handle(IPC.builtInBrowserNavigate, async (event, arg) => {
-    guardBuiltInBrowserIpc(event, IPC.builtInBrowserNavigate, { windowMs: 60_000, max: 40 });
-    return ensureBuiltInBrowser().navigate(parseBuiltInBrowserNavigateArgs(arg, IPC.builtInBrowserNavigate));
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserNavigate, { windowMs: 60_000, max: 40 });
+    return ensureBuiltInBrowser().navigate(parseBuiltInBrowserNavigateArgs(arg, IPC.builtInBrowserNavigate), win);
   });
 
   ipcMain.handle(IPC.builtInBrowserCreateTab, async (event, arg) => {
-    guardBuiltInBrowserIpc(event, IPC.builtInBrowserCreateTab, { windowMs: 60_000, max: 40 });
-    return ensureBuiltInBrowser().createTab(parseBuiltInBrowserCreateTabArgs(arg, IPC.builtInBrowserCreateTab));
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserCreateTab, { windowMs: 60_000, max: 40 });
+    return ensureBuiltInBrowser().createTab(parseBuiltInBrowserCreateTabArgs(arg, IPC.builtInBrowserCreateTab), win);
   });
 
   ipcMain.handle(IPC.builtInBrowserSwitchTab, async (event, arg) => {
-    guardBuiltInBrowserIpc(event, IPC.builtInBrowserSwitchTab, { windowMs: 10_000, max: 120 });
-    return ensureBuiltInBrowser().switchTab(parseBuiltInBrowserTabArgs(arg, IPC.builtInBrowserSwitchTab));
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSwitchTab, { windowMs: 10_000, max: 120 });
+    return ensureBuiltInBrowser().switchTab(parseBuiltInBrowserTabArgs(arg, IPC.builtInBrowserSwitchTab), win);
   });
 
   ipcMain.handle(IPC.builtInBrowserCloseTab, async (event, arg) => {
-    guardBuiltInBrowserIpc(event, IPC.builtInBrowserCloseTab, { windowMs: 10_000, max: 80 });
-    return ensureBuiltInBrowser().closeTab(parseBuiltInBrowserTabArgs(arg, IPC.builtInBrowserCloseTab));
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserCloseTab, { windowMs: 10_000, max: 80 });
+    return ensureBuiltInBrowser().closeTab(parseBuiltInBrowserTabArgs(arg, IPC.builtInBrowserCloseTab), win);
   });
 
   ipcMain.handle(IPC.builtInBrowserReload, async (event) => {
-    guardBuiltInBrowserIpc(event, IPC.builtInBrowserReload, { windowMs: 10_000, max: 60 });
-    return ensureBuiltInBrowser().reload();
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserReload, { windowMs: 10_000, max: 60 });
+    return ensureBuiltInBrowser().reload(win);
   });
 
   ipcMain.handle(IPC.builtInBrowserGoBack, async (event) => {
-    guardBuiltInBrowserIpc(event, IPC.builtInBrowserGoBack, { windowMs: 10_000, max: 80 });
-    return ensureBuiltInBrowser().goBack();
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserGoBack, { windowMs: 10_000, max: 80 });
+    return ensureBuiltInBrowser().goBack(win);
   });
 
   ipcMain.handle(IPC.builtInBrowserGoForward, async (event) => {
-    guardBuiltInBrowserIpc(event, IPC.builtInBrowserGoForward, { windowMs: 10_000, max: 80 });
-    return ensureBuiltInBrowser().goForward();
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserGoForward, { windowMs: 10_000, max: 80 });
+    return ensureBuiltInBrowser().goForward(win);
   });
 
   ipcMain.handle(IPC.builtInBrowserStop, async (event) => {
-    guardBuiltInBrowserIpc(event, IPC.builtInBrowserStop, { windowMs: 10_000, max: 80 });
-    return ensureBuiltInBrowser().stop();
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStop, { windowMs: 10_000, max: 80 });
+    return ensureBuiltInBrowser().stop(win);
   });
 
   ipcMain.handle(IPC.builtInBrowserStartInspect, async (event) => {
-    guardBuiltInBrowserIpc(event, IPC.builtInBrowserStartInspect, { windowMs: 10_000, max: 40 });
-    return ensureBuiltInBrowser().startInspect();
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStartInspect, { windowMs: 10_000, max: 40 });
+    return ensureBuiltInBrowser().startInspect(win);
   });
 
   ipcMain.handle(IPC.builtInBrowserStopInspect, async (event) => {
-    guardBuiltInBrowserIpc(event, IPC.builtInBrowserStopInspect, { windowMs: 10_000, max: 80 });
-    return ensureBuiltInBrowser().stopInspect();
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStopInspect, { windowMs: 10_000, max: 80 });
+    return ensureBuiltInBrowser().stopInspect(win);
   });
 
   ipcMain.handle(IPC.builtInBrowserCaptureScreenshot, async (event) => {
-    guardBuiltInBrowserIpc(event, IPC.builtInBrowserCaptureScreenshot, { windowMs: 10_000, max: 30 });
-    return ensureBuiltInBrowser().captureScreenshot();
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserCaptureScreenshot, { windowMs: 10_000, max: 30 });
+    return ensureBuiltInBrowser().captureScreenshot(win);
   });
 
   ipcMain.handle(IPC.builtInBrowserSelectPoint, async (event, arg) => {
-    guardBuiltInBrowserIpc(event, IPC.builtInBrowserSelectPoint, { windowMs: 10_000, max: 80 });
-    return ensureBuiltInBrowser().selectPoint(parseBuiltInBrowserSelectPointArgs(arg, IPC.builtInBrowserSelectPoint));
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSelectPoint, { windowMs: 10_000, max: 80 });
+    return ensureBuiltInBrowser().selectPoint(parseBuiltInBrowserSelectPointArgs(arg, IPC.builtInBrowserSelectPoint), win);
   });
 
   ipcMain.handle(IPC.builtInBrowserSelectCurrent, async (event) => {
-    guardBuiltInBrowserIpc(event, IPC.builtInBrowserSelectCurrent, { windowMs: 10_000, max: 80 });
-    return ensureBuiltInBrowser().selectCurrent();
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSelectCurrent, { windowMs: 10_000, max: 80 });
+    return ensureBuiltInBrowser().selectCurrent(win);
   });
 
   ipcMain.handle(IPC.builtInBrowserClearSelection, async (event) => {
-    guardBuiltInBrowserIpc(event, IPC.builtInBrowserClearSelection, { windowMs: 10_000, max: 80 });
-    return ensureBuiltInBrowser().clearSelection();
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserClearSelection, { windowMs: 10_000, max: 80 });
+    return ensureBuiltInBrowser().clearSelection(win);
   });
 
   ipcMain.handle(IPC.macosVmGetStatus, async (event, arg = {}): Promise<MacosVmStatus> => {

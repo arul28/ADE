@@ -3052,37 +3052,37 @@ export function ChatIosSimulatorPanel({
   }, [shutdownSimulator]);
 
   return (
-    <div className={cn("flex h-full min-h-0 flex-col", mediaExpanded ? "gap-0" : "gap-2")}>
-      <div className={cn("space-y-2 shrink-0", mediaExpanded ? "hidden" : null)}>
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-white/[0.07] bg-white/[0.025] px-2 py-1.5">
-          <div className="flex rounded-md border border-white/[0.07] bg-black/15 p-0.5">
+    <div className={cn("flex h-full min-h-0 flex-col", mediaExpanded ? "gap-0" : "gap-1")}>
+      <div className={cn("space-y-1 shrink-0", mediaExpanded ? "hidden" : null)}>
+        <div className="flex flex-wrap items-center justify-between gap-1.5 px-0.5 py-0.5">
+          <div className="flex rounded border border-white/[0.08] bg-black/20 p-px">
             <button
               type="button"
               className={cn(
-                "inline-flex h-7 items-center gap-1 rounded px-2 font-sans text-[10px] font-medium transition-colors",
-                activeSurface === "simulator" ? "bg-emerald-500/15 text-emerald-100/90" : "text-muted-fg/50 hover:text-fg/75",
+                "inline-flex h-6 items-center gap-1 rounded-[3px] px-2 font-sans text-[10px] font-medium transition-colors",
+                activeSurface === "simulator" ? "bg-white/[0.10] text-fg/90" : "text-muted-fg/50 hover:text-fg/75",
               )}
               onClick={() => setMode(lastSimulatorMode)}
             >
-              <DeviceMobile size={12} />
+              <DeviceMobile size={11} />
               Simulator
             </button>
             <button
               type="button"
               className={cn(
-                "inline-flex h-7 items-center gap-1 rounded px-2 font-sans text-[10px] font-medium transition-colors",
-                activeSurface === "preview" ? "bg-violet-500/15 text-violet-100/90" : "text-muted-fg/50 hover:text-fg/75",
+                "inline-flex h-6 items-center gap-1 rounded-[3px] px-2 font-sans text-[10px] font-medium transition-colors",
+                activeSurface === "preview" ? "bg-white/[0.10] text-fg/90" : "text-muted-fg/50 hover:text-fg/75",
               )}
               onClick={() => setMode("preview")}
             >
-              <BracketsCurly size={12} />
+              <BracketsCurly size={11} />
               Preview
             </button>
           </div>
 
           <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <div className="font-sans text-[10px] text-muted-fg/52">
-              {activeSurface === "simulator" ? "Simulator mode" : "Preview mode"}
+            <div className="font-sans text-[9px] uppercase tracking-wider text-muted-fg/60">
+              {activeSurface === "simulator" ? "Simulator" : "Preview"}
             </div>
             {activeSurface === "simulator" && hasActiveSession && !contextControlsBlocked ? (
               <div className="group relative">
@@ -3092,7 +3092,7 @@ export function ChatIosSimulatorPanel({
                     "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 font-sans text-[10px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-45",
                     simulatorWindowModeEnabled
                       ? "border-cyan-300/25 bg-cyan-400/12 text-cyan-50/85 hover:bg-cyan-400/18"
-                      : "border-white/[0.07] bg-white/[0.03] text-muted-fg/62 hover:text-fg/86",
+                      : "border-white/[0.08] bg-white/[0.03] text-muted-fg/62 hover:text-fg/86",
                   )}
                   onClick={toggleSimulatorWindowMode}
                   disabled={busy || launchBusy}
@@ -3120,9 +3120,9 @@ export function ChatIosSimulatorPanel({
 
         {activeSurface === "simulator" ? (
           <>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1">
               <select
-                className="min-w-0 flex-1 rounded-md border border-white/[0.07] bg-black/20 px-2 py-1.5 font-sans text-[11px] text-fg/75 outline-none disabled:opacity-50"
+                className="min-w-0 flex-1 rounded border border-white/[0.08] bg-black/20 px-1.5 py-1 font-sans text-[10px] text-fg/75 outline-none disabled:opacity-50"
                 value={activeDevice?.udid ?? ""}
                 disabled={interactionDisabled}
                 onChange={(event) => {
@@ -3138,7 +3138,7 @@ export function ChatIosSimulatorPanel({
               </select>
               <button
                 type="button"
-                className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/[0.07] bg-white/[0.03] text-fg/55 transition-colors hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-45"
+                className="inline-flex h-7 w-7 items-center justify-center rounded border border-white/[0.08] bg-white/[0.03] text-fg/55 transition-colors hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-45"
                 onClick={() => {
                   void refreshStatus()
                     .then(() => refreshLaunchTargets(selectedDeviceUdid ?? activeDevice?.udid ?? undefined))
@@ -3152,7 +3152,7 @@ export function ChatIosSimulatorPanel({
               {hasActiveSession && !simulatorMutationBlocked ? (
                 <button
                   type="button"
-                  className="inline-flex h-8 items-center gap-1 rounded-md border border-rose-400/22 bg-rose-500/8 px-2 font-sans text-[11px] font-medium text-rose-200/80 transition-colors hover:bg-rose-500/12 disabled:cursor-not-allowed disabled:opacity-45"
+                  className="inline-flex h-7 items-center gap-1 rounded border border-rose-400/22 bg-rose-500/8 px-1.5 font-sans text-[10px] font-medium text-rose-200/80 transition-colors hover:bg-rose-500/12 disabled:cursor-not-allowed disabled:opacity-45"
                   onClick={handleStopSimulator}
                   disabled={busy}
                   title="Stop the running simulator"
@@ -3163,10 +3163,10 @@ export function ChatIosSimulatorPanel({
               ) : null}
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1">
               {visibleLaunchTargets.length > 1 ? (
                 <select
-                  className="min-w-0 flex-1 rounded-md border border-white/[0.07] bg-black/20 px-2 py-1.5 font-sans text-[11px] text-fg/75 outline-none"
+                  className="min-w-0 flex-1 rounded border border-white/[0.08] bg-black/20 px-1.5 py-1 font-sans text-[10px] text-fg/75 outline-none"
                   value={activeTarget?.id ?? ""}
                   onChange={(event) => setSelectedTargetId(event.currentTarget.value || null)}
                 >
@@ -3175,7 +3175,7 @@ export function ChatIosSimulatorPanel({
                   ))}
                 </select>
               ) : (
-                <div className="min-w-0 flex-1 rounded-md border border-white/[0.07] bg-black/20 px-2 py-1.5 font-sans text-[11px] text-fg/75">
+                <div className="min-w-0 flex-1 rounded-md border border-white/[0.08] bg-black/20 px-2 py-1.5 font-sans text-[11px] text-fg/75">
                   {activeTarget ? targetLabel(activeTarget) : "No launchable app found"}
                 </div>
               )}
@@ -3209,7 +3209,7 @@ export function ChatIosSimulatorPanel({
             <div className="flex items-center gap-2">
               {previewTargets.length ? (
                 <select
-                  className="min-w-0 flex-1 rounded-md border border-white/[0.07] bg-black/20 px-2 py-1.5 font-sans text-[11px] text-fg/75 outline-none"
+                  className="min-w-0 flex-1 rounded-md border border-white/[0.08] bg-black/20 px-2 py-1.5 font-sans text-[11px] text-fg/75 outline-none"
                   value={selectedPreviewTarget?.id ?? ""}
                   onChange={(event) => {
                     setSelectedPreviewTargetId(event.currentTarget.value || null);
@@ -3221,7 +3221,7 @@ export function ChatIosSimulatorPanel({
                   ))}
                 </select>
               ) : (
-                <div className="min-w-0 flex-1 rounded-md border border-white/[0.07] bg-black/20 px-2 py-1.5 font-sans text-[11px] text-muted-fg/60">
+                <div className="min-w-0 flex-1 rounded-md border border-white/[0.08] bg-black/20 px-2 py-1.5 font-sans text-[11px] text-muted-fg/60">
                   {previewStatusLabel(previewCapability, previewTargets)}
                 </div>
               )}
@@ -3257,7 +3257,7 @@ export function ChatIosSimulatorPanel({
             <div className="flex flex-wrap items-center gap-1.5">
               <button
                 type="button"
-                className="inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.07] bg-white/[0.03] px-2 font-sans text-[10px] font-medium text-muted-fg/60 transition-colors hover:text-fg/85"
+                className="inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-2 font-sans text-[10px] font-medium text-muted-fg/60 transition-colors hover:text-fg/85"
                 onClick={() => void refreshPreviewLab()}
                 disabled={previewRefreshing}
               >
@@ -3266,7 +3266,7 @@ export function ChatIosSimulatorPanel({
               </button>
               <button
                 type="button"
-                className="inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.07] bg-white/[0.03] px-2 font-sans text-[10px] font-medium text-muted-fg/60 transition-colors hover:text-fg/85"
+                className="inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-2 font-sans text-[10px] font-medium text-muted-fg/60 transition-colors hover:text-fg/85"
                 onClick={() => void openPreviewWorkspace()}
               >
                 <FileCode size={11} />
@@ -3274,7 +3274,7 @@ export function ChatIosSimulatorPanel({
               </button>
               <button
                 type="button"
-                className="inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.07] bg-white/[0.03] px-2 font-sans text-[10px] font-medium text-muted-fg/60 transition-colors hover:text-fg/85"
+                className="inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-2 font-sans text-[10px] font-medium text-muted-fg/60 transition-colors hover:text-fg/85"
                 onClick={() => void window.ade.app.openExternal(previewCapability?.docsUrl ?? XCODE_MCP_DOCS_URL)}
               >
                 <ArrowSquareOut size={11} />
@@ -3310,7 +3310,7 @@ export function ChatIosSimulatorPanel({
       ) : null}
 
       {!mediaExpanded && showBestPerformanceChecklist ? (
-        <details className="group shrink-0 rounded-md border border-white/[0.07] bg-white/[0.02] px-2.5 py-1.5 font-sans text-[10px] text-muted-fg/60">
+        <details className="group shrink-0 rounded-md border border-white/[0.08] bg-white/[0.02] px-2.5 py-1.5 font-sans text-[10px] text-muted-fg/60">
           <summary className="flex cursor-pointer list-none items-center gap-2 outline-none [&::-webkit-details-marker]:hidden">
             <Lightning size={12} className={bestPerformanceReady ? "text-emerald-200/75" : "text-amber-200/75"} />
             <span className="font-medium text-fg/72">Best simulator performance</span>
@@ -3339,7 +3339,7 @@ export function ChatIosSimulatorPanel({
         </details>
       ) : null}
 
-      <div className="relative min-h-0 flex-1 overflow-hidden rounded-md border border-white/[0.08] bg-black/35">
+      <div className="relative min-h-0 flex-1 overflow-hidden rounded border border-white/[0.08] bg-white/[0.02]">
         {showSetupChecklist && mode !== "preview" ? (
           <div className="flex h-full min-h-[300px] flex-col gap-3 px-4 py-4">
             <div className="flex items-center gap-2 font-sans text-[12px] font-medium text-fg/85">
@@ -3355,7 +3355,7 @@ export function ChatIosSimulatorPanel({
                 if (!desc) return null;
                 const hint = tool.installHint?.trim() ? tool.installHint : null;
                 return (
-                  <div key={tool.name} className="rounded-md border border-white/[0.07] bg-white/[0.02] px-3 py-2.5">
+                  <div key={tool.name} className="rounded-md border border-white/[0.08] bg-white/[0.02] px-3 py-2.5">
                     <div className="flex items-center gap-2">
                       <Circle size={11} weight="fill" className={desc.required ? "text-rose-300/75" : "text-muted-fg/40"} />
                       <div className="font-sans text-[11px] font-medium text-fg/85">{desc.title}</div>
@@ -3372,7 +3372,7 @@ export function ChatIosSimulatorPanel({
                         <code className="min-w-0 flex-1 truncate font-mono text-[10px] text-fg/75">{hint}</code>
                         <button
                           type="button"
-                          className="inline-flex shrink-0 items-center gap-1 rounded border border-white/[0.07] bg-white/[0.03] px-1.5 py-0.5 font-sans text-[9px] text-muted-fg/65 transition-colors hover:text-fg/85"
+                          className="inline-flex shrink-0 items-center gap-1 rounded border border-white/[0.08] bg-white/[0.03] px-1.5 py-0.5 font-sans text-[9px] text-muted-fg/65 transition-colors hover:text-fg/85"
                           onClick={() => void copyInstallHint(hint)}
                           title="Copy install command"
                         >
@@ -3388,7 +3388,7 @@ export function ChatIosSimulatorPanel({
           </div>
         ) : mode === "preview" ? (
           <div className="relative h-full min-h-[300px]">
-            <div className="pointer-events-auto absolute left-3 top-3 z-10 flex rounded-md border border-white/[0.07] bg-black/60 p-0.5 shadow-lg backdrop-blur">
+            <div className="pointer-events-auto absolute left-3 top-3 z-10 flex rounded-md border border-white/[0.08] bg-black/60 p-0.5 shadow-lg backdrop-blur">
               <button
                 type="button"
                 className={cn(
@@ -3465,7 +3465,7 @@ export function ChatIosSimulatorPanel({
                 </div>
                 {previewRefreshing ? (
                   <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/25 text-violet-50/75">
-                    <div className="flex items-center gap-2 rounded-md border border-white/[0.07] bg-black/55 px-3 py-2 font-sans text-[11px]">
+                    <div className="flex items-center gap-2 rounded-md border border-white/[0.08] bg-black/55 px-3 py-2 font-sans text-[11px]">
                       <SpinnerGap size={15} className="animate-spin" />
                       Rendering preview...
                     </div>
@@ -3582,7 +3582,7 @@ export function ChatIosSimulatorPanel({
             </div>
             <div className="space-y-2">
               {visibleLaunchProgress.map((step) => (
-                <div key={`${step.launchId}:${step.step}`} className="flex items-start gap-2 rounded-md border border-white/[0.07] bg-white/[0.03] px-3 py-2">
+                <div key={`${step.launchId}:${step.step}`} className="flex items-start gap-2 rounded-md border border-white/[0.08] bg-white/[0.03] px-3 py-2">
                   {step.status === "complete" || step.status === "skipped" ? (
                     <CheckCircle size={15} weight="fill" className="mt-0.5 shrink-0 text-emerald-300/85" />
                   ) : step.status === "failed" ? (
@@ -3610,7 +3610,7 @@ export function ChatIosSimulatorPanel({
             onPointerUp={handleSnapshotInteractPointerUp}
           >
             <div
-              className="pointer-events-auto absolute left-3 top-3 z-10 flex rounded-md border border-white/[0.07] bg-black/60 p-0.5 shadow-lg backdrop-blur"
+              className="pointer-events-auto absolute left-3 top-3 z-10 flex rounded-md border border-white/[0.08] bg-black/60 p-0.5 shadow-lg backdrop-blur"
               onPointerDown={(event) => event.stopPropagation()}
               onPointerUp={(event) => event.stopPropagation()}
             >
@@ -3676,7 +3676,7 @@ export function ChatIosSimulatorPanel({
               </div>
             ) : (
               <div className="flex h-full min-h-[300px] items-center justify-center px-4 text-muted-fg/55">
-                <div className="flex items-center gap-2 rounded-md border border-white/[0.07] bg-black/35 px-3 py-2">
+                <div className="flex items-center gap-2 rounded-md border border-white/[0.08] bg-black/35 px-3 py-2">
                   <SpinnerGap size={15} className="animate-spin text-cyan-100/75" />
                   <span className="font-sans text-[11px]">{liveVisualOverlayTitle ?? "Starting live view..."}</span>
                 </div>
@@ -3720,7 +3720,7 @@ export function ChatIosSimulatorPanel({
               onPointerDown={(event) => event.stopPropagation()}
             >
               <div className="flex items-center gap-1.5">
-                <div className="flex rounded-md border border-white/[0.07] bg-black/60 p-0.5 shadow-lg backdrop-blur">
+                <div className="flex rounded-md border border-white/[0.08] bg-black/60 p-0.5 shadow-lg backdrop-blur">
                   <button
                     type="button"
                     className="inline-flex h-7 items-center gap-1 rounded px-2 font-sans text-[10px] font-medium text-muted-fg/55 transition-colors hover:text-fg/85"
@@ -3752,7 +3752,7 @@ export function ChatIosSimulatorPanel({
                 <button
                   type="button"
                   className={cn(
-                    "inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.07] bg-black/60 px-2 font-sans text-[10px] font-medium shadow-lg backdrop-blur transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+                    "inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.08] bg-black/60 px-2 font-sans text-[10px] font-medium shadow-lg backdrop-blur transition-colors disabled:cursor-not-allowed disabled:opacity-40",
                     simulatorCaptureActive ? "text-amber-50/90 ring-1 ring-amber-300/30" : "text-muted-fg/65 hover:text-fg/90",
                   )}
                   onClick={(event) => {
@@ -3771,7 +3771,7 @@ export function ChatIosSimulatorPanel({
               </div>
               <button
                 type="button"
-                className="inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.07] bg-black/60 px-2 font-sans text-[10px] font-medium text-muted-fg/65 shadow-lg backdrop-blur transition-colors hover:text-fg/90 disabled:cursor-not-allowed disabled:opacity-40"
+                className="inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.08] bg-black/60 px-2 font-sans text-[10px] font-medium text-muted-fg/65 shadow-lg backdrop-blur transition-colors hover:text-fg/90 disabled:cursor-not-allowed disabled:opacity-40"
                 onClick={(event) => {
                   event.stopPropagation();
                   void refreshSnapshot({ priority: true }).catch(() => {});
@@ -3859,7 +3859,7 @@ export function ChatIosSimulatorPanel({
             </div>
             {snapshotRefreshing ? (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/20 text-cyan-50/70">
-                <div className="flex items-center gap-2 rounded-md border border-white/[0.07] bg-black/55 px-3 py-2 font-sans text-[11px]">
+                <div className="flex items-center gap-2 rounded-md border border-white/[0.08] bg-black/55 px-3 py-2 font-sans text-[11px]">
                   <SpinnerGap size={15} className="animate-spin" />
                   Loading inspector...
                 </div>
@@ -3886,11 +3886,11 @@ export function ChatIosSimulatorPanel({
         )}
       </div>
 
-      {!mediaExpanded ? <div className="shrink-0 space-y-2">
+      {!mediaExpanded ? <div className="shrink-0 space-y-1">
         {mode === "interact" && !simulatorMutationBlocked && !showSetupChecklist ? (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
             <input
-              className="min-w-0 flex-1 rounded-md border border-white/[0.07] bg-black/20 px-2 py-1.5 font-sans text-[11px] text-fg/75 outline-none"
+              className="min-w-0 flex-1 rounded border border-white/[0.08] bg-black/20 px-1.5 py-1 font-sans text-[10px] text-fg/75 outline-none"
               value={typedText}
               onChange={(event) => setTypedText(event.currentTarget.value)}
               onKeyDown={(event) => {
@@ -3900,7 +3900,7 @@ export function ChatIosSimulatorPanel({
             />
             <button
               type="button"
-              className="rounded-md border border-white/[0.07] bg-white/[0.03] px-2 py-1.5 font-sans text-[11px] text-fg/65 transition-colors hover:text-fg/90"
+              className="rounded border border-white/[0.08] bg-white/[0.03] px-1.5 py-1 font-sans text-[10px] text-fg/65 transition-colors hover:text-fg/90"
               onClick={() => void sendTypedText()}
             >
               Send
@@ -3908,18 +3908,18 @@ export function ChatIosSimulatorPanel({
           </div>
         ) : null}
         {simulatorWindowWarning ? (
-          <div className="flex items-start gap-2 rounded-md border border-amber-300/20 bg-amber-400/10 px-2 py-1.5 font-sans text-[11px] leading-4 text-amber-50/78">
-            <WarningCircle size={14} className="mt-0.5 shrink-0 text-amber-200/75" />
+          <div className="flex items-start gap-1.5 rounded border border-amber-300/20 bg-amber-400/10 px-1.5 py-1 font-sans text-[10px] leading-[14px] text-amber-50/78">
+            <WarningCircle size={12} className="mt-px shrink-0 text-amber-200/75" />
             <span>{simulatorWindowWarning}</span>
           </div>
         ) : null}
         {footerStatus ? (
-          <div className="max-h-36 overflow-auto whitespace-pre-wrap break-words rounded-md border border-white/[0.07] bg-white/[0.03] px-2 py-1.5 font-sans text-[11px] text-muted-fg/70">
+          <div className="max-h-24 overflow-auto whitespace-pre-wrap break-words rounded border border-white/[0.08] bg-white/[0.03] px-1.5 py-1 font-sans text-[10px] text-muted-fg/70">
             {footerStatus}
           </div>
         ) : null}
         {mode === "interact" && !controlAvailable && !showSetupChecklist && !simulatorMutationBlocked ? (
-          <div className="rounded-md border border-amber-400/15 bg-amber-500/10 px-2 py-1.5 font-sans text-[11px] text-amber-100/70">
+          <div className="rounded border border-amber-400/15 bg-amber-500/10 px-1.5 py-1 font-sans text-[10px] text-amber-100/70">
             Install a supported full Xcode for native touch input, or idb + idb_companion for fallback tap, drag, and text.
           </div>
         ) : null}

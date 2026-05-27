@@ -246,9 +246,12 @@ function captureStatusEvents(): {
   };
 }
 
+let fakeWindowId = 1;
+
 function fakeBrowserWindow() {
   const children: unknown[] = [];
   return {
+    id: fakeWindowId++,
     isDestroyed: () => false,
     contentView: {
       children,
@@ -270,6 +273,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
 
   beforeEach(() => {
     collector = captureStatusEvents();
+    fakeWindowId = 1;
     fakes.clearWebContentsInstances();
     fakes.clearBeforeSendHeadersHandlers();
     fakes.clearPermissionHandlers();
@@ -372,6 +376,78 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: false });
     expect(service.getStatus().tabs).toHaveLength(1);
     expect(wc?.audioMutedCalls.at(-1)).toBe(true);
+  });
+
+  it("keeps a visible browser view attached to its owner window when another ADE window focuses", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const winA = fakeBrowserWindow();
+    const winB = fakeBrowserWindow();
+    const browserWinA = winA as unknown as Parameters<typeof service.attachToWindow>[0];
+    const browserWinB = winB as unknown as Parameters<typeof service.attachToWindow>[0];
+
+    service.attachToWindow(browserWinA);
+    await service.createTab({ url: "https://a.example.test", activate: true }, browserWinA);
+    await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: true }, browserWinA);
+
+    expect(winA.contentView.children).toHaveLength(1);
+    expect(winB.contentView.children).toHaveLength(0);
+    expect(service.getStatus(browserWinA).visible).toBe(true);
+
+    service.attachToWindow(browserWinB);
+
+    expect(winA.contentView.children).toHaveLength(1);
+    expect(winB.contentView.children).toHaveLength(0);
+    expect(service.getStatus(browserWinA).visible).toBe(true);
+    expect(service.getStatus(browserWinB).visible).toBe(false);
+    expect(service.getStatus(browserWinB).tabs).toEqual([]);
+  });
+
+  it("scopes browser tabs and commands to the sender window", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const winA = fakeBrowserWindow();
+    const winB = fakeBrowserWindow();
+    const browserWinA = winA as unknown as Parameters<typeof service.attachToWindow>[0];
+    const browserWinB = winB as unknown as Parameters<typeof service.attachToWindow>[0];
+
+    service.attachToWindow(browserWinA);
+    await service.createTab({ url: "https://a.example.test", activate: true }, browserWinA);
+    service.attachToWindow(browserWinB);
+    await service.createTab({ url: "https://b.example.test", activate: true }, browserWinB);
+
+    expect(service.getStatus(browserWinA).tabs).toHaveLength(1);
+    expect(service.getStatus(browserWinA).url).toBe("https://a.example.test/");
+    expect(service.getStatus(browserWinB).tabs).toHaveLength(1);
+    expect(service.getStatus(browserWinB).url).toBe("https://b.example.test/");
+
+    await service.navigate({ url: "https://b-2.example.test" }, browserWinB);
+
+    expect(service.getStatus(browserWinA).url).toBe("https://a.example.test/");
+    expect(service.getStatus(browserWinB).url).toBe("https://b-2.example.test/");
+  });
+
+  it("targets browser events to the owning ADE window", async () => {
+    const targetedEvents: Array<{ payload: BuiltInBrowserEventPayload; targetWindow: unknown }> = [];
+    const service = createBuiltInBrowserService({
+      onEvent: (payload, targetWindow) => targetedEvents.push({ payload, targetWindow }),
+    });
+    const winA = fakeBrowserWindow();
+    const winB = fakeBrowserWindow();
+    const browserWinA = winA as unknown as Parameters<typeof service.attachToWindow>[0];
+    const browserWinB = winB as unknown as Parameters<typeof service.attachToWindow>[0];
+
+    service.attachToWindow(browserWinA);
+    targetedEvents.length = 0;
+    await service.createTab({ url: "https://a.example.test", activate: true }, browserWinA);
+
+    expect(targetedEvents.length).toBeGreaterThan(0);
+    expect(targetedEvents.every((event) => event.targetWindow === browserWinA)).toBe(true);
+
+    service.attachToWindow(browserWinB);
+    targetedEvents.length = 0;
+    await service.createTab({ url: "https://b.example.test", activate: true }, browserWinB);
+
+    expect(targetedEvents.length).toBeGreaterThan(0);
+    expect(targetedEvents.every((event) => event.targetWindow === browserWinB)).toBe(true);
   });
 
   it("keeps Google account sign-in inside ADE browser tabs", async () => {

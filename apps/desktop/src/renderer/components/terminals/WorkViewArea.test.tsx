@@ -67,14 +67,15 @@ vi.mock("./useWorkLaneContextMenu", () => ({
   useWorkLaneContextMenu: () => ({ trigger: () => {}, menu: null }),
 }));
 
-vi.mock("./WorkCliSessionHeader", () => ({
-  WorkCliSessionHeader: ({
+vi.mock("./CliSessionWorkSurfaceHeader", () => ({
+  CliSessionWorkSurfaceHeader: ({
     session,
   }: {
     session: TerminalSessionSummary;
   }) => (
     <div data-testid="work-cli-session-header" data-session-id={session.id} />
   ),
+  CliSurfaceTrailingActions: () => null,
 }));
 
 vi.mock("../chat/AgentChatPane", async () => {
