@@ -1013,8 +1013,10 @@ export function createUsageTrackingService({
   // multiple projects from firing the same threshold event.
   const isTestInjected = thresholdStore != null;
   let resolvedThresholdStore: ThresholdStore;
+  let localThresholdState: ThresholdState | null = null;
   if (isTestInjected) {
     resolvedThresholdStore = thresholdStore;
+    localThresholdState = resolvedThresholdStore.load();
   } else {
     if (!sharedThresholdStore) {
       sharedThresholdStore = createFileThresholdStore(
@@ -1025,7 +1027,18 @@ export function createUsageTrackingService({
     }
     resolvedThresholdStore = sharedThresholdStore;
   }
-  let localThresholdState: ThresholdState | null = isTestInjected ? resolvedThresholdStore.load() : null;
+
+  function getThresholdState(): ThresholdState {
+    return isTestInjected ? localThresholdState! : sharedThresholdState!;
+  }
+
+  function setThresholdState(next: ThresholdState): void {
+    if (isTestInjected) {
+      localThresholdState = next;
+    } else {
+      sharedThresholdState = next;
+    }
+  }
 
   const emptySnapshot = (): UsageSnapshot => ({
     windows: [],
@@ -1114,14 +1127,10 @@ export function createUsageTrackingService({
         lastSnapshot = snapshot;
 
         try {
-          const currentState = isTestInjected ? localThresholdState! : sharedThresholdState!;
+          const currentState = getThresholdState();
           const { events, nextState } = detectThresholdCrossings(allWindows, currentState);
           if (events.length > 0 || JSON.stringify(nextState) !== JSON.stringify(currentState)) {
-            if (isTestInjected) {
-              localThresholdState = nextState;
-            } else {
-              sharedThresholdState = nextState;
-            }
+            setThresholdState(nextState);
             resolvedThresholdStore.save(nextState);
           }
           for (const event of events) {

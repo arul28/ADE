@@ -18,6 +18,7 @@ import { BranchIcon } from "../ui/vcsIcons";
 
 import type {
   CtoGetLinearIssuePickerDataResult,
+  CtoLinearIssueComment,
   CtoLinearProject,
   CtoLinearQuickView,
   CtoLinearQuickViewProject,
@@ -1018,26 +1019,7 @@ function IssueDetails({
           </div>
         ) : null}
 
-        {(() => {
-          const coloredLabels = normalizedIssue?.labelColors ?? issue.labels.map((l) => ({ name: l, color: null as string | null }));
-          return coloredLabels.length > 0 ? (
-            <div className="mt-3 flex flex-wrap gap-1.5">
-              {coloredLabels.map((label) => (
-                <span
-                  key={label.name}
-                  className="rounded-full border px-2 py-0.5 text-[10px]"
-                  style={{
-                    borderColor: label.color ? `${label.color}44` : "rgba(255,255,255,0.07)",
-                    backgroundColor: label.color ? `${label.color}18` : "rgba(255,255,255,0.035)",
-                    color: label.color ?? "rgba(255,255,255,0.75)",
-                  }}
-                >
-                  {label.name}
-                </span>
-              ))}
-            </div>
-          ) : null;
-        })()}
+        <IssueLabels issue={issue} normalizedIssue={normalizedIssue} />
 
         <div className="mt-3 grid gap-1.5 text-[11px] text-muted-fg/65">
           <InfoRow label="Project" value={issueProjectLabel(issue)} />
@@ -1119,6 +1101,28 @@ function IssueDetails({
   );
 }
 
+function IssueLabels({ issue, normalizedIssue }: { issue: BrowserIssue; normalizedIssue: NormalizedLinearIssue | null }) {
+  const labels = normalizedIssue?.labelColors ?? issue.labels.map((l) => ({ name: l, color: null as string | null }));
+  if (labels.length === 0) return null;
+  return (
+    <div className="mt-3 flex flex-wrap gap-1.5">
+      {labels.map((label) => (
+        <span
+          key={label.name}
+          className="rounded-full border px-2 py-0.5 text-[10px]"
+          style={{
+            borderColor: label.color ? `${label.color}44` : "rgba(255,255,255,0.07)",
+            backgroundColor: label.color ? `${label.color}18` : "rgba(255,255,255,0.035)",
+            color: label.color ?? "rgba(255,255,255,0.75)",
+          }}
+        >
+          {label.name}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline justify-between gap-2">
@@ -1157,7 +1161,7 @@ function SubIssuesList({ issues }: { issues: NonNullable<NormalizedLinearIssue["
 
 function ActivitySection({ issueId }: { issueId: string }) {
   const [expanded, setExpanded] = useState(false);
-  const [comments, setComments] = useState<Array<{ id: string; body: string; createdAt: string; userName: string; userDisplayName: string }> | null>(null);
+  const [comments, setComments] = useState<CtoLinearIssueComment[] | null>(null);
   const [loading, setLoading] = useState(false);
   const prevIssueIdRef = useRef(issueId);
 
@@ -1172,7 +1176,7 @@ function ActivitySection({ issueId }: { issueId: string }) {
     let cancelled = false;
     setLoading(true);
     const cto = window.ade?.cto as Record<string, unknown> | undefined;
-    const fn = cto?.getLinearIssueComments as ((args: { issueId: string }) => Promise<Array<{ id: string; body: string; createdAt: string; userName: string; userDisplayName: string }>>) | undefined;
+    const fn = cto?.getLinearIssueComments as ((args: { issueId: string }) => Promise<CtoLinearIssueComment[]>) | undefined;
     if (!fn) { setLoading(false); setComments([]); return; }
     void fn({ issueId })
       .then((result) => { if (!cancelled) setComments(result ?? []); })
@@ -1216,6 +1220,12 @@ function ActivitySection({ issueId }: { issueId: string }) {
   );
 }
 
+const BATCH_ACTIONS_CONFIG = [
+  { key: "create", icon: <Plus size={13} />, label: "Create lanes for", sublabel: "New lane per issue" },
+  { key: "resolve-new", icon: <Sparkle size={13} />, label: "Resolve all in new lanes", sublabel: "Lane + chat per issue" },
+  { key: "resolve-existing", icon: <GitBranch size={13} />, label: "Assign all to one lane", sublabel: "Pick lane, chat per issue" },
+] as const;
+
 function BatchActionView({
   selectedIssues,
   onClearSelection,
@@ -1225,6 +1235,16 @@ function BatchActionView({
   onClearSelection: () => void;
   batchActions: NonNullable<Parameters<typeof LinearIssueBrowser>[0]["batchActions"]>;
 }) {
+  const busy = Boolean(batchActions.batchProgress);
+
+  function handleAction(key: string): void {
+    switch (key) {
+      case "create": void batchActions.onBatchCreateLanes(selectedIssues); break;
+      case "resolve-new": void batchActions.onBatchResolveNewLanes(selectedIssues, ""); break;
+      case "resolve-existing": void batchActions.onBatchResolveExistingLane(selectedIssues, "", ""); break;
+    }
+  }
+
   return (
     <aside className="flex min-h-0 flex-col overflow-hidden">
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
@@ -1245,48 +1265,25 @@ function BatchActionView({
       </div>
       <div className="shrink-0 border-t border-white/10 px-4 py-3">
         <div className="space-y-1.5">
-          <button
-            type="button"
-            disabled={Boolean(batchActions.batchProgress)}
-            className="flex w-full items-start gap-2.5 rounded-lg border border-white/[0.07] bg-white/[0.02] px-2.5 py-2 text-left transition-colors hover:border-white/[0.12] hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-45"
-            onClick={() => void batchActions.onBatchCreateLanes(selectedIssues)}
-          >
-            <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-md text-[color:var(--color-accent,#A78BFA)]" style={{ background: "rgba(167, 139, 250, 0.12)" }}>
-              <Plus size={13} />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-[11.5px] font-medium leading-snug text-fg/90">Create lanes for {selectedIssues.length} issues</span>
-              <span className="mt-0.5 block text-[10.5px] leading-relaxed text-muted-fg/55">New lane per issue</span>
-            </span>
-          </button>
-          <button
-            type="button"
-            disabled={Boolean(batchActions.batchProgress)}
-            className="flex w-full items-start gap-2.5 rounded-lg border border-white/[0.07] bg-white/[0.02] px-2.5 py-2 text-left transition-colors hover:border-white/[0.12] hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-45"
-            onClick={() => void batchActions.onBatchResolveNewLanes(selectedIssues, "")}
-          >
-            <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-md text-[color:var(--color-accent,#A78BFA)]" style={{ background: "rgba(167, 139, 250, 0.12)" }}>
-              <Sparkle size={13} />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-[11.5px] font-medium leading-snug text-fg/90">Resolve all in new lanes</span>
-              <span className="mt-0.5 block text-[10.5px] leading-relaxed text-muted-fg/55">Lane + chat per issue</span>
-            </span>
-          </button>
-          <button
-            type="button"
-            disabled={Boolean(batchActions.batchProgress)}
-            className="flex w-full items-start gap-2.5 rounded-lg border border-white/[0.07] bg-white/[0.02] px-2.5 py-2 text-left transition-colors hover:border-white/[0.12] hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-45"
-            onClick={() => void batchActions.onBatchResolveExistingLane(selectedIssues, "", "")}
-          >
-            <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-md text-[color:var(--color-accent,#A78BFA)]" style={{ background: "rgba(167, 139, 250, 0.12)" }}>
-              <GitBranch size={13} />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-[11.5px] font-medium leading-snug text-fg/90">Assign all to one lane</span>
-              <span className="mt-0.5 block text-[10.5px] leading-relaxed text-muted-fg/55">Pick lane, chat per issue</span>
-            </span>
-          </button>
+          {BATCH_ACTIONS_CONFIG.map((action) => (
+            <button
+              key={action.key}
+              type="button"
+              disabled={busy}
+              className="flex w-full items-start gap-2.5 rounded-lg border border-white/[0.07] bg-white/[0.02] px-2.5 py-2 text-left transition-colors hover:border-white/[0.12] hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-45"
+              onClick={() => handleAction(action.key)}
+            >
+              <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-md text-[color:var(--color-accent,#A78BFA)]" style={{ background: "rgba(167, 139, 250, 0.12)" }}>
+                {action.icon}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-[11.5px] font-medium leading-snug text-fg/90">
+                  {action.key === "create" ? `${action.label} ${selectedIssues.length} issues` : action.label}
+                </span>
+                <span className="mt-0.5 block text-[10.5px] leading-relaxed text-muted-fg/55">{action.sublabel}</span>
+              </span>
+            </button>
+          ))}
         </div>
         {batchActions.batchProgress && (
           <div className="mt-2">

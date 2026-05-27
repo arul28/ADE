@@ -446,6 +446,7 @@ import type {
   CtoGetLinearOAuthSessionArgs,
   CtoGetLinearOAuthSessionResult,
   CtoGetLinearIssuePickerDataResult,
+  CtoLinearIssueComment,
   CtoLinearQuickView,
   CtoSearchLinearIssuesArgs,
   CtoSearchLinearIssuesResult,
@@ -9315,13 +9316,7 @@ export function registerIpc({
 
   ipcMain.handle(
     IPC.ctoGetLinearIssueComments,
-    async (_event, arg: { issueId: string }): Promise<Array<{
-      id: string;
-      body: string;
-      createdAt: string;
-      userName: string;
-      userDisplayName: string;
-    }>> => {
+    async (_event, arg: { issueId: string }): Promise<CtoLinearIssueComment[]> => {
       const ctx = getCtx();
       if (!ctx.linearIssueTracker) return [];
       return ctx.linearIssueTracker.fetchIssueComments(arg.issueId);

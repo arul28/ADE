@@ -141,7 +141,7 @@ function usageProviderLabel(provider: UsageThresholdEvent["provider"]): string {
   }
 }
 
-function usageProviderColor(provider: string): string {
+function usageProviderColor(provider: UsageThresholdEvent["provider"]): string {
   switch (provider) {
     case "claude": return "#A78BFA";
     case "codex": return "#22C55E";
@@ -207,9 +207,8 @@ function markUsageAlertDismissed(
   // Only dismiss thresholds up to and including the current one so that higher
   // thresholds (e.g. 50%, 75%, 100%) can still fire later in the same cycle.
   for (const threshold of [25, 50, 75, 100] as const) {
-    if (threshold <= event.threshold) {
-      dismissed.add(`${event.provider}:${threshold}:${normalizedReset}`);
-    }
+    if (threshold > event.threshold) break;
+    dismissed.add(`${event.provider}:${threshold}:${normalizedReset}`);
   }
   persistDismissedUsageAlerts(dismissed);
 }

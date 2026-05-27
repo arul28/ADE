@@ -112,6 +112,7 @@ import type {
   CtoListAgentSessionLogsArgs,
   CtoOnboardingState,
   CtoSystemPromptPreview,
+  CtoLinearIssueComment,
   CtoLinearProject,
   CtoLinearQuickView,
   CtoGetLinearIssuePickerDataResult,
@@ -8407,15 +8408,7 @@ contextBridge.exposeInMainWorld("ade", {
       ),
     getLinearIssueComments: async (
       args: { issueId: string },
-    ): Promise<
-      Array<{
-        id: string;
-        body: string;
-        createdAt: string;
-        userName: string;
-        userDisplayName: string;
-      }>
-    > =>
+    ): Promise<CtoLinearIssueComment[]> =>
       callProjectRuntimeActionOr(
         "linear_issue_tracker",
         "fetchIssueComments",

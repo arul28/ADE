@@ -77,16 +77,18 @@ function toNormalizedIssue(node: Record<string, unknown>): NormalizedLinearIssue
     .filter((entry): entry is string => entry != null)
     .map((entry) => entry.toLowerCase());
 
-  const labelColors: Array<{ name: string; color: string | null }> = labelsNodes.map((ln: unknown) => ({
-    name: isRecord(ln) ? asString(ln.name) ?? "" : "",
-    color: isRecord(ln) ? asString(ln.color) ?? null : null,
-  }));
+  const labelColors = labelsNodes
+    .filter((ln: unknown): ln is Record<string, unknown> => isRecord(ln))
+    .map((ln) => ({
+      name: asString(ln.name) ?? "",
+      color: asString(ln.color) ?? null,
+    }));
 
   const cycle = isRecord(node.cycle) ? node.cycle : null;
-  const cycleId = cycle ? asString(cycle.id) ?? null : null;
-  const cycleName = cycle ? asString(cycle.name) ?? null : null;
-  const cycleStartsAt = cycle ? asString(cycle.startsAt) ?? null : null;
-  const cycleEndsAt = cycle ? asString(cycle.endsAt) ?? null : null;
+  const cycleId = cycle ? asString(cycle.id) : null;
+  const cycleName = cycle ? asString(cycle.name) : null;
+  const cycleStartsAt = cycle ? asString(cycle.startsAt) : null;
+  const cycleEndsAt = cycle ? asString(cycle.endsAt) : null;
 
   const blockersNodes = isRecord(node.children) ? asArray(node.children.nodes) : [];
   const blockerIssueIds = blockersNodes
@@ -99,23 +101,19 @@ function toNormalizedIssue(node: Record<string, unknown>): NormalizedLinearIssue
     return childState != null && childState !== "completed" && childState !== "canceled";
   });
 
-  const childIssues: Array<{
-    id: string;
-    identifier: string;
-    title: string;
-    stateId: string;
-    stateName: string;
-    stateType: string;
-  }> = blockersNodes
+  const childIssues = blockersNodes
     .filter((c: unknown): c is Record<string, unknown> => isRecord(c))
-    .map((c) => ({
-      id: asString(c.id) ?? "",
-      identifier: asString(c.identifier) ?? "",
-      title: asString(c.title) ?? "",
-      stateId: isRecord(c.state) ? asString(c.state.id) ?? "" : "",
-      stateName: isRecord(c.state) ? asString(c.state.name) ?? "" : "",
-      stateType: isRecord(c.state) ? asString(c.state.type) ?? "" : "",
-    }))
+    .map((c) => {
+      const cs = isRecord(c.state) ? c.state : null;
+      return {
+        id: asString(c.id) ?? "",
+        identifier: asString(c.identifier) ?? "",
+        title: asString(c.title) ?? "",
+        stateId: cs ? asString(cs.id) ?? "" : "",
+        stateName: cs ? asString(cs.name) ?? "" : "",
+        stateType: cs ? asString(cs.type) ?? "" : "",
+      };
+    })
     .filter((c) => c.id);
 
   const assignee = isRecord(node.assignee) ? node.assignee : null;

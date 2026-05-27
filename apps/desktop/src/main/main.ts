@@ -194,6 +194,20 @@ const ADE_BROWSER_WEBVIEW_PARTITION = "persist:ade-browser";
 // shared state is written back.  This map acts as a final IPC gate.
 const thresholdEventDedup = new Map<string, number>();
 const THRESHOLD_DEDUP_TTL_MS = 10 * 60_000; // 10 minutes
+
+/** Returns true if the event should be emitted (not a duplicate). Prunes stale entries. */
+function shouldEmitThresholdEvent(event: { provider: string; threshold: number; resetsAt: string }): boolean {
+  const dedupKey = `${event.provider}:${event.threshold}:${new Date(event.resetsAt).getTime()}`;
+  const now = Date.now();
+  const lastEmitted = thresholdEventDedup.get(dedupKey);
+  if (lastEmitted && now - lastEmitted < THRESHOLD_DEDUP_TTL_MS) return false;
+  thresholdEventDedup.set(dedupKey, now);
+  for (const [k, t] of thresholdEventDedup) {
+    if (now - t > THRESHOLD_DEDUP_TTL_MS) thresholdEventDedup.delete(k);
+  }
+  return true;
+}
+
 type AdePackageChannel = "alpha" | "beta";
 
 function normalizeAdePackageChannel(value: unknown): AdePackageChannel | null {
@@ -3500,14 +3514,7 @@ app.whenReady().then(async () => {
         emitProjectEvent(projectRoot, IPC.usageEvent, snapshot);
       },
       onThresholdEvent: (event) => {
-        const dedupKey = `${event.provider}:${event.threshold}:${new Date(event.resetsAt).getTime()}`;
-        const now = Date.now();
-        const lastEmitted = thresholdEventDedup.get(dedupKey);
-        if (lastEmitted && now - lastEmitted < THRESHOLD_DEDUP_TTL_MS) return;
-        thresholdEventDedup.set(dedupKey, now);
-        for (const [k, t] of thresholdEventDedup) {
-          if (now - t > THRESHOLD_DEDUP_TTL_MS) thresholdEventDedup.delete(k);
-        }
+        if (!shouldEmitThresholdEvent(event)) return;
         emitProjectEvent(projectRoot, IPC.usageThresholdEvent, event);
       },
     });
@@ -4178,14 +4185,7 @@ app.whenReady().then(async () => {
         emitProjectEvent(projectRoot, IPC.usageEvent, snapshot);
       },
       onThresholdEvent: (event) => {
-        const dedupKey = `${event.provider}:${event.threshold}:${new Date(event.resetsAt).getTime()}`;
-        const now = Date.now();
-        const lastEmitted = thresholdEventDedup.get(dedupKey);
-        if (lastEmitted && now - lastEmitted < THRESHOLD_DEDUP_TTL_MS) return;
-        thresholdEventDedup.set(dedupKey, now);
-        for (const [k, t] of thresholdEventDedup) {
-          if (now - t > THRESHOLD_DEDUP_TTL_MS) thresholdEventDedup.delete(k);
-        }
+        if (!shouldEmitThresholdEvent(event)) return;
         emitProjectEvent(projectRoot, IPC.usageThresholdEvent, event);
       },
     });

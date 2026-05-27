@@ -284,26 +284,24 @@ export function LinearQuickViewButton({
     [openModal],
   );
 
-  const handleBatchCreateLanes = useCallback(async (issues: Array<NormalizedLinearIssue | LaneLinearIssue>) => {
-    const laneIssues = issues.map((i) => "raw" in i ? linearBrowserIssueToLaneIssue(i) : i as LaneLinearIssue);
-    setBatchIssues(laneIssues);
+  const openBatchModal = useCallback((modal: NonNullable<typeof batchModal>, issues: Array<NormalizedLinearIssue | LaneLinearIssue>) => {
+    setBatchIssues(issues.map((i) => "raw" in i ? linearBrowserIssueToLaneIssue(i) : i as LaneLinearIssue));
     setOpen(false);
-    setBatchModal("batch-create-lanes");
+    setBatchModal(modal);
   }, []);
 
-  const handleBatchResolveNewLanes = useCallback(async (issues: Array<NormalizedLinearIssue | LaneLinearIssue>, _modelId: string) => {
-    const laneIssues = issues.map((i) => "raw" in i ? linearBrowserIssueToLaneIssue(i) : i as LaneLinearIssue);
-    setBatchIssues(laneIssues);
-    setOpen(false);
-    setBatchModal("batch-resolve-new");
-  }, []);
-
-  const handleBatchResolveExistingLane = useCallback(async (issues: Array<NormalizedLinearIssue | LaneLinearIssue>, _laneId: string, _modelId: string) => {
-    const laneIssues = issues.map((i) => "raw" in i ? linearBrowserIssueToLaneIssue(i) : i as LaneLinearIssue);
-    setBatchIssues(laneIssues);
-    setOpen(false);
-    setBatchModal("batch-resolve-existing");
-  }, []);
+  const handleBatchCreateLanes = useCallback(
+    (issues: Array<NormalizedLinearIssue | LaneLinearIssue>) => openBatchModal("batch-create-lanes", issues),
+    [openBatchModal],
+  );
+  const handleBatchResolveNewLanes = useCallback(
+    (issues: Array<NormalizedLinearIssue | LaneLinearIssue>) => openBatchModal("batch-resolve-new", issues),
+    [openBatchModal],
+  );
+  const handleBatchResolveExistingLane = useCallback(
+    (issues: Array<NormalizedLinearIssue | LaneLinearIssue>) => openBatchModal("batch-resolve-existing", issues),
+    [openBatchModal],
+  );
 
   const confirmBatchCreateLanes = useCallback(async () => {
     setBusyModal("create-lane");
