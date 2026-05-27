@@ -978,6 +978,7 @@ export async function createAdeRuntime(args: {
     pollIntervalMs: 120_000,
     onUpdate: (snapshot) => pushEvent("runtime", { type: "usage", snapshot }),
   });
+  usageTrackingService.start();
   const budgetCapService = createBudgetCapService({
     db,
     logger,
