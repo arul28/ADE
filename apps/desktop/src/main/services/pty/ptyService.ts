@@ -3054,11 +3054,15 @@ export function createPtyService({
 
       const laneRuntimeEnv = (await getLaneRuntimeEnv?.(laneId)) ?? {};
       const explicitNoColor = hasEnvKey(args.env ?? {}, "NO_COLOR") || hasEnvKey(laneRuntimeEnv, "NO_COLOR");
+      const explicitForceColor = hasEnvKey(args.env ?? {}, "FORCE_COLOR") || hasEnvKey(laneRuntimeEnv, "FORCE_COLOR");
       const baseLaunchEnv = {
         ...process.env,
         ...laneRuntimeEnv,
         ...(args.env ?? {})
       };
+      if (explicitNoColor && !explicitForceColor) {
+        delete baseLaunchEnv.FORCE_COLOR;
+      }
       const contextLaunchEnv = withAdeTerminalContextEnv(baseLaunchEnv, {
         projectRoot,
         laneId,

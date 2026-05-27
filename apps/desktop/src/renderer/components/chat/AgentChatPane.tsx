@@ -103,7 +103,6 @@ import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { ChatTasksPanel } from "./ChatTasksPanel";
 import { ChatFileChangesPanel } from "./ChatFileChangesPanel";
-import { CodexGoalBanner } from "./codex/CodexGoalBanner";
 import { CodexOpenInCliButton } from "./codex/CodexOpenInCliButton";
 import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./RewindFilesConfirmDialog";
 import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFilesPreview";
@@ -133,6 +132,7 @@ import {
   type WorkPtyLaunchResult,
 } from "../terminals/cliLaunch";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
+import { WorkSurfaceHeader } from "../work/WorkSurfaceHeader";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { getAgentChatModelsCached, getAiStatusCached, invalidateAiDiscoveryCache, peekAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
@@ -2788,8 +2788,12 @@ export function AgentChatPane({
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
   // The pane is runtime-agnostic — Codex emits subagent_started/progress/result
   // events for delegation and collabToolCall items (spawn_agent, etc.) just
-  // like Claude. Gate on whether we actually have snapshots to display.
-  const selectedSubagentPaneAvailable = selectedSubagentSnapshots.length > 0;
+  // like Claude. Gate on whether we have anything to display: snapshots OR an
+  // active Codex thread goal (so the pane hosts the goal card even before any
+  // subagents are spawned).
+  const selectedSubagentPaneAvailable =
+    selectedSubagentSnapshots.length > 0
+    || (selectedSession?.provider === "codex" && Boolean(selectedCodexGoal?.objective));
   // Latest snapshot for the currently drilled-in subagent — keeps the
   // breadcrumb status in sync as the agent transitions running → completed.
   const subagentViewSnapshot = useMemo(() => {
@@ -7218,6 +7222,23 @@ export function AgentChatPane({
         });
       }}
       selectedTaskId={subagentView?.taskId ?? null}
+      goal={selectedSession?.provider === "codex" ? selectedCodexGoal : null}
+      onEditGoal={
+        selectedSession?.provider === "codex" && selectedSessionId
+          ? (next) => {
+              const objective = next.replace(/\s*[\r\n]+\s*/g, " ").trim();
+              if (!objective) return;
+              void sendCodexControlMessage(selectedSessionId, `/goal set ${objective}`);
+            }
+          : undefined
+      }
+      onClearGoal={
+        selectedSession?.provider === "codex" && selectedSessionId
+          ? () => {
+              void sendCodexControlMessage(selectedSessionId, "/goal clear");
+            }
+          : undefined
+      }
     />
   ) : (
     <div className="flex h-full min-h-0 flex-col items-center justify-center px-4 py-8 text-center">
@@ -7517,30 +7538,8 @@ export function AgentChatPane({
       </div>
     </>
   );
-  const shellHeader = (
-    <div className={CHAT_SHELL_HEADER_CLASS}>
-      {/* Single-row header: title + git toolbar + actions */}
-      <div className="flex items-center gap-2">
-        <div className="flex min-w-0 shrink items-center gap-2">
-          <span className="min-w-0 shrink truncate font-sans text-[13px] font-bold tracking-tight text-white">
-            {resolvedTitle}
-          </span>
-          {showWorkspaceChrome && laneId ? (
-            <LaneChip
-              laneName={chatHeaderLaneName}
-              laneColor={chatHeaderLaneColor}
-              onClick={() => navigate(openLaneInLanesTabPath(laneId))}
-              aria-label={`Open ${chatHeaderLaneName} in Lanes tab`}
-            />
-          ) : null}
-          {showClaudeCacheTimer ? (
-            <ClaudeCacheTtlBadge idleSinceAt={selectedSession?.idleSinceAt} />
-          ) : null}
-        </div>
-
-        {showWorkspaceChrome && laneId ? <ChatGitToolbar laneId={laneId} /> : null}
-
-        <div className="ml-auto flex shrink-0 items-center gap-2">
+  const chatHeaderTrailingActions = (
+    <>
           {laneToolsVisible && iosSimulatorAvailable ? (
             <SmartTooltip
               content={{
@@ -7764,8 +7763,23 @@ export function AgentChatPane({
               Clear view
             </button>
           ) : null}
-        </div>
-      </div>
+    </>
+  );
+  const shellHeader = (
+    <div className={CHAT_SHELL_HEADER_CLASS}>
+      <WorkSurfaceHeader
+        title={resolvedTitle}
+        laneId={laneId}
+        laneChipName={chatHeaderLaneName}
+        laneChipColor={chatHeaderLaneColor}
+        showLaneChip={showWorkspaceChrome}
+        onLaneChipClick={laneId ? () => navigate(openLaneInLanesTabPath(laneId)) : undefined}
+        showCacheBadge={showClaudeCacheTimer}
+        cacheIdleSinceAt={selectedSession?.idleSinceAt ?? null}
+        showGitToolbar={showWorkspaceChrome}
+        trailingActions={chatHeaderTrailingActions}
+        className="space-y-0 p-0"
+      />
 
       {!lockSessionId && !hideSessionTabs ? (
         <div className="flex items-center gap-2">
@@ -8618,19 +8632,10 @@ export function AgentChatPane({
                         Live view of Cursor Cloud agent. Replies run in cloud.
                       </div>
                     ) : null}
-                    {selectedSession?.provider === "codex" && selectedCodexGoal?.objective && selectedSessionId ? (
-                      <CodexGoalBanner
-                        goal={selectedCodexGoal}
-                        onEdit={(next) => {
-                          const objective = next.replace(/\s*[\r\n]+\s*/g, " ").trim();
-                          if (!objective) return;
-                          void sendCodexControlMessage(selectedSessionId, `/goal set ${objective}`);
-                        }}
-                        onClear={() => {
-                          void sendCodexControlMessage(selectedSessionId, "/goal clear");
-                        }}
-                      />
-                    ) : null}
+                    {/* Codex thread goal is rendered in the Agents tab via
+                        ChatSubagentsPanel; the in-chat banner was removed so
+                        the chat header stays clean and goal context lives next
+                        to subagents + progress where it belongs. */}
                     {subagentView ? (
                       <button
                         type="button"

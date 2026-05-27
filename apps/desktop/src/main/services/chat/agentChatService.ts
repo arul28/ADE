@@ -10054,9 +10054,36 @@ export function createAgentChatService(args: {
           continue;
         }
 
-        // system:status — permission mode changes
+        // system:status — permission mode changes and turn-status signals.
+        //
+        // The SDK CLI emits SDKStatusMessage with the new permissionMode when
+        // it switches modes internally (e.g. after EnterPlanMode / ExitPlanMode
+        // resolve inside the bundled `claude` binary rather than through the
+        // host's canUseTool callback). The canUseTool interception above only
+        // catches the cases where the SDK routes plan-mode tools through the
+        // host; this branch is the safety net that keeps ADE's session state
+        // and the renderer's permission-mode badge in sync no matter which
+        // path the SDK takes.
         if (msg.type === "system" && (msg as any).subtype === "status") {
           const statusMsg = msg as any;
+          const reportedMode = typeof statusMsg.permissionMode === "string"
+            ? statusMsg.permissionMode
+            : null;
+          if (reportedMode) {
+            const wasPlan = managed.session.permissionMode === "plan";
+            const nowPlan = reportedMode === "plan";
+            if (wasPlan !== nowPlan) {
+              applyClaudePlanModeTransition(managed.session, nowPlan ? "plan" : "default");
+              persistChatState(managed);
+              emitChatEvent(managed, {
+                type: "system_notice",
+                noticeKind: "info",
+                message: nowPlan ? "Session entered plan mode" : "Session exited plan mode",
+                detail: buildClaudePlanModeNoticeDetail(nowPlan ? "entered_plan_mode" : "exited_plan_mode"),
+                turnId,
+              });
+            }
+          }
           if (statusMsg.status === "compacting") {
             emitChatEvent(managed, {
               type: "system_notice",
@@ -22610,6 +22637,276 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * Convert a raw codex ThreadItem (from `thread/turns/items/list` /
+   * `thread/turns/list?itemsView=full`) into one or more
+   * AgentChatSubagentTranscriptMessage entries whose `message` is the same
+   * AgentChatEvent shape the renderer's typed-card timeline already knows how
+   * to render. Returning multiple entries handles fileChange items that carry
+   * a batch of per-file changes.
+   *
+   * Unknown / low-signal item types (hookPrompt, enteredReviewMode,
+   * exitedReviewMode, contextCompaction) are dropped so the transcript stays
+   * focused on the agent's actual work product.
+   */
+  const codexThreadItemToTranscriptMessages = (
+    item: Record<string, unknown>,
+    threadId: string,
+    turnId: string | null,
+    itemIndex: number,
+  ): AgentChatSubagentTranscriptMessage[] => {
+    const itemId = typeof item.id === "string" && item.id.length > 0 ? item.id : `no-id:${turnId ?? "?"}:${itemIndex}`;
+    const itemType = typeof item.type === "string" ? item.type : "";
+    const baseUuid = `codex-thread-item:${threadId}:${itemId}`;
+    const baseMessage = (event: AgentChatEvent, role: AgentChatSubagentTranscriptMessage["type"], extras?: { uuidSuffix?: string; text?: string }): AgentChatSubagentTranscriptMessage => ({
+      type: role,
+      uuid: extras?.uuidSuffix ? `${baseUuid}:${extras.uuidSuffix}` : baseUuid,
+      sessionId: threadId,
+      parentToolUseId: null,
+      message: event,
+      ...(extras?.text ? { text: extras.text } : {}),
+    });
+
+    const mapCommandStatusLocal = (value: unknown): "running" | "completed" | "failed" => {
+      const status = typeof value === "string" ? value.toLowerCase() : "";
+      if (status === "failed" || status === "error") return "failed";
+      if (status === "inprogress" || status === "running" || status === "in_progress") return "running";
+      return "completed";
+    };
+    const mapFileChangeKind = (kind: unknown): "create" | "modify" | "delete" => {
+      const value = typeof kind === "string" ? kind.toLowerCase() : "";
+      if (value === "create" || value === "add" || value === "added") return "create";
+      if (value === "delete" || value === "remove" || value === "removed") return "delete";
+      return "modify";
+    };
+
+    switch (itemType) {
+      case "agentMessage": {
+        const text = typeof item.text === "string" ? item.text : "";
+        if (!text.trim()) return [];
+        return [baseMessage({ type: "text", text, itemId, ...(turnId ? { turnId } : {}) }, "assistant", { text })];
+      }
+      case "userMessage": {
+        const content = Array.isArray(item.content) ? item.content : [];
+        const text = content
+          .map((entry: unknown) => {
+            if (typeof entry === "string") return entry;
+            const record = entry as { text?: unknown; content?: unknown } | null;
+            if (record && typeof record.text === "string") return record.text;
+            return "";
+          })
+          .filter(Boolean)
+          .join("\n")
+          .trim();
+        if (!text) return [];
+        return [baseMessage({ type: "user_message", text, messageId: itemId, ...(turnId ? { turnId } : {}) }, "user", { text })];
+      }
+      case "reasoning": {
+        const summary = Array.isArray(item.summary) ? item.summary.filter((s): s is string => typeof s === "string") : [];
+        const content = Array.isArray(item.content) ? item.content.filter((s): s is string => typeof s === "string") : [];
+        const text = [...summary, ...content].join("\n").trim();
+        if (!text) return [];
+        return [baseMessage({ type: "reasoning", text, itemId, ...(turnId ? { turnId } : {}) }, "system", { text })];
+      }
+      case "plan": {
+        const text = typeof item.text === "string" ? item.text : "";
+        if (!text.trim()) return [];
+        return [
+          baseMessage(
+            {
+              type: "plan",
+              steps: [],
+              streamingText: text,
+              explanation: text,
+              state: "complete",
+              itemId,
+              ...(turnId ? { turnId } : {}),
+            },
+            "system",
+            { text },
+          ),
+        ];
+      }
+      case "commandExecution": {
+        const command = typeof item.command === "string" ? item.command : "command";
+        const cwd = typeof item.cwd === "string" ? item.cwd : "";
+        const output = typeof item.aggregatedOutput === "string" ? item.aggregatedOutput : "";
+        const exitCode = typeof item.exitCode === "number" ? item.exitCode : null;
+        const durationMs = typeof item.durationMs === "number" ? item.durationMs : null;
+        const status = mapCommandStatusLocal(item.status);
+        return [
+          baseMessage(
+            {
+              type: "command",
+              command,
+              cwd,
+              output,
+              itemId,
+              status,
+              ...(exitCode != null ? { exitCode } : {}),
+              ...(durationMs != null ? { durationMs } : {}),
+              ...(turnId ? { turnId } : {}),
+            },
+            "system",
+            { text: command },
+          ),
+        ];
+      }
+      case "fileChange": {
+        const changes = Array.isArray(item.changes) ? item.changes : [];
+        const status = mapCommandStatusLocal(item.status);
+        return changes
+          .map((change: unknown, index: number): AgentChatSubagentTranscriptMessage | null => {
+            const record = change as { path?: unknown; unifiedDiff?: unknown; kind?: unknown; type?: unknown } | null;
+            if (!record) return null;
+            const path = typeof record.path === "string" ? record.path : "";
+            if (!path) return null;
+            const diff = typeof record.unifiedDiff === "string" ? record.unifiedDiff : "";
+            const kind = mapFileChangeKind(record.kind ?? record.type);
+            return baseMessage(
+              {
+                type: "file_change",
+                path,
+                diff,
+                kind,
+                itemId,
+                status,
+                ...(turnId ? { turnId } : {}),
+              },
+              "system",
+              { uuidSuffix: `fc-${index}` },
+            );
+          })
+          .filter((entry): entry is AgentChatSubagentTranscriptMessage => entry !== null);
+      }
+      case "webSearch": {
+        const query = typeof item.query === "string" ? item.query : "";
+        if (!query.trim()) return [];
+        const actionRecord = (item.action ?? null) as { kind?: unknown } | null;
+        const action = actionRecord && typeof actionRecord.kind === "string" ? actionRecord.kind : undefined;
+        return [
+          baseMessage(
+            {
+              type: "web_search",
+              query,
+              itemId,
+              status: "completed",
+              ...(action ? { action } : {}),
+              ...(turnId ? { turnId } : {}),
+            },
+            "system",
+            { text: query },
+          ),
+        ];
+      }
+      case "imageGeneration": {
+        const status = mapCommandStatusLocal(item.status);
+        return [
+          baseMessage(
+            {
+              type: "codex_image_generation",
+              itemId,
+              status,
+              prompt: typeof item.prompt === "string" ? item.prompt : null,
+              revisedPrompt: typeof item.revisedPrompt === "string" ? item.revisedPrompt : null,
+              result: typeof item.result === "string" ? item.result : null,
+              savedPath: typeof item.savedPath === "string" ? item.savedPath : null,
+              ...(turnId ? { turnId } : {}),
+            },
+            "system",
+          ),
+        ];
+      }
+      case "mcpToolCall":
+      case "dynamicToolCall": {
+        const tool = typeof item.tool === "string" ? item.tool : itemType;
+        const server = typeof item.server === "string" ? item.server : null;
+        const slug = server ? `${server}:${tool}` : tool;
+        return [
+          baseMessage(
+            {
+              type: "tool_call",
+              tool: slug,
+              args: (item.arguments ?? null) as unknown,
+              itemId,
+              ...(turnId ? { turnId } : {}),
+            },
+            "system",
+            { text: `tool: ${slug}` },
+          ),
+        ];
+      }
+      default:
+        // hookPrompt, enteredReviewMode, exitedReviewMode, contextCompaction,
+        // collabAgentToolCall, imageView — all low-signal for a subagent
+        // transcript view, so we drop them rather than synthesizing fake events.
+        return [];
+    }
+  };
+
+  /**
+   * Pull the subagent's transcript directly from the Codex app-server by
+   * listing the turns of the subagent thread with `itemsView: "full"`. Each
+   * returned Turn already carries its items, so a single round-trip per page
+   * covers the whole thread. Returns the converted transcript messages, or
+   * `null` if Codex didn't return usable data (so the caller can fall back to
+   * the event-history filter).
+   */
+  const fetchCodexSubagentTranscriptFromAppServer = async (
+    runtime: CodexRuntime,
+    threadId: string,
+    options: { limit?: number; offset?: number } = {},
+  ): Promise<AgentChatSubagentTranscriptMessage[] | null> => {
+    type CodexTurnsListResponse = {
+      data?: Array<{ id?: unknown; items?: unknown; startedAt?: unknown }>;
+      nextCursor?: unknown;
+    };
+    const collected: AgentChatSubagentTranscriptMessage[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    const MAX_PAGES = 10;
+    try {
+      do {
+        const params: Record<string, unknown> = {
+          threadId,
+          itemsView: "full",
+          limit: 50,
+          // Ascending so we accumulate in chronological order; the protocol
+          // default is descending (newest first).
+          sortDirection: "ascending",
+        };
+        if (cursor) params.cursor = cursor;
+        const response = await runtime.request<CodexTurnsListResponse>("thread/turns/list", params);
+        const turns = Array.isArray(response?.data) ? response.data : [];
+        for (const turn of turns) {
+          const turnId = typeof turn?.id === "string" ? turn.id : null;
+          const items = Array.isArray(turn?.items) ? turn.items : [];
+          for (let idx = 0; idx < items.length; idx++) {
+            const item = items[idx];
+            if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+            collected.push(...codexThreadItemToTranscriptMessages(item as Record<string, unknown>, threadId, turnId, idx));
+          }
+        }
+        cursor = typeof response?.nextCursor === "string" ? response.nextCursor : null;
+        pages += 1;
+      } while (cursor && pages < MAX_PAGES);
+      if (cursor && pages >= MAX_PAGES) {
+        logger.warn("agent_chat.codex_transcript_truncated", { threadId, pages: MAX_PAGES, itemCount: collected.length });
+      }
+    } catch {
+      // Codex app-server may not support thread/turns/list for spawned
+      // subagent threads in older builds, or the runtime may be busy. Signal
+      // a fallback to the event-history filter instead of crashing the
+      // drill-in view.
+      return null;
+    }
+
+    if (collected.length === 0) return null;
+
+    const sliced = options.offset !== undefined ? collected.slice(options.offset) : collected;
+    return options.limit !== undefined ? sliced.slice(0, options.limit) : sliced;
+  };
+
+  /**
    * Fetch the transcript of a subagent run within an existing chat session.
    *
    * Dispatch by runtime kind:
@@ -22620,9 +22917,11 @@ export function createAgentChatService(args: {
    *   `runtime.handle.client.session.messages({ path: { id }, query: { directory }})`
    *   and translate the returned `{info, parts}[]` rows into the renderer's
    *   transcript message shape.
-   * - **Codex**: codex's app-server never streams per-thread activity into the
-   *   parent session, so the transcript is the subset of parent envelopes whose
-   *   `subagent_*` event carries `taskId === threadId` (the codex agentId).
+   * - **Codex**: prefer a live app-server pull of the subagent's own thread
+   *   via `thread/turns/list?itemsView=full` (this is what the Codex desktop
+   *   app does). Falls back to filtering the parent session's
+   *   `eventHistoryBySession` by `taskId === threadId` when the runtime is
+   *   idle or the call fails.
    * - **Cursor**: SDK `task` events tag every lifecycle envelope with the
    *   subagent's `agentId`; we filter the parent stream by that value.
    * - **Everything else (droid, lmstudio, …)**: `null`.
@@ -22696,9 +22995,37 @@ export function createAgentChatService(args: {
       }
     }
 
-    if (runtimeKind === "codex" || runtimeKind === "cursor") {
+    // Codex/Cursor: walk `eventHistoryBySession` and surface every event
+    // tagged with the subagent's taskId/agentId. We accept the branch when
+    // EITHER the live runtime is codex/cursor OR the persisted session is
+    // codex/cursor (runtime may be idle when a chat is opened from history,
+    // but the events were buffered when the runtime was live and are still
+    // sufficient to reconstruct the subagent transcript).
+    const treatAsCodexLike =
+      runtimeKind === "codex"
+      || runtimeKind === "cursor"
+      || (runtimeKind === null && (provider === "codex" || provider === "cursor"));
+
+    // When the codex runtime is live we can ask the app-server directly for
+    // the subagent's own thread. This matches the Codex desktop app behaviour
+    // and surfaces every reasoning/command/file_change/web_search item, not
+    // just ADE's aggregated `subagent_*` envelopes on the parent stream.
+    if (managed?.runtime?.kind === "codex") {
+      const liveTranscript = await fetchCodexSubagentTranscriptFromAppServer(
+        managed.runtime,
+        normalizedAgentId,
+        {
+          ...(normalizedLimit !== undefined ? { limit: normalizedLimit } : {}),
+          ...(normalizedOffset !== undefined ? { offset: normalizedOffset } : {}),
+        },
+      );
+      if (liveTranscript) return liveTranscript;
+    }
+
+    if (treatAsCodexLike) {
       const envelopes = eventHistoryBySession.get(normalizedSessionId) ?? [];
-      const matchKey = runtimeKind === "codex" ? "taskId" : "agentId";
+      const matchKey: "taskId" | "agentId" =
+        runtimeKind === "cursor" || provider === "cursor" ? "agentId" : "taskId";
       const matched: AgentChatSubagentTranscriptMessage[] = [];
       for (const envelope of envelopes) {
         const event = envelope.event as Record<string, unknown> & { type: string };

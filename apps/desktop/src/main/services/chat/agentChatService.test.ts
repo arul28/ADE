@@ -8437,6 +8437,229 @@ describe("createAgentChatService", () => {
       expect(empty).toEqual([]);
     });
 
+    it("pulls codex subagent transcript live from the app-server via thread/turns/list", async () => {
+      // When the codex runtime is alive, getSubagentTranscript should ask
+      // codex's app-server for the subagent thread's own turns/items —
+      // matching what the Codex desktop app does — instead of falling back
+      // to filtering ADE's parent event history.
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      // Track every request to the codex app-server so we can prove we
+      // actually called `thread/turns/list` instead of staying in the
+      // event-history fallback.
+      const appServerCalls: Array<{ method: string; params: unknown }> = [];
+      mockState.codexResponseOverrides.set("thread/turns/list", (payload) => {
+        appServerCalls.push({ method: "thread/turns/list", params: payload.params });
+        return {
+          data: [
+            {
+              id: "turn-sub-1",
+              startedAt: 1,
+              completedAt: 2,
+              durationMs: 1000,
+              status: "completed",
+              error: null,
+              itemsView: "full",
+              items: [
+                {
+                  id: "item-reasoning",
+                  type: "reasoning",
+                  summary: ["Mapping the dependency graph."],
+                  content: ["Need to confirm the call sites use the new helper."],
+                },
+                {
+                  id: "item-command",
+                  type: "commandExecution",
+                  command: "rg --files-with-matches \"oldFn\"",
+                  cwd: "/Users/admin/Projects/ADE",
+                  aggregatedOutput: "src/foo.ts\nsrc/bar.ts\n",
+                  exitCode: 0,
+                  durationMs: 35,
+                  status: "completed",
+                  commandActions: [],
+                  source: "shell",
+                  processId: null,
+                },
+                {
+                  id: "item-file",
+                  type: "fileChange",
+                  status: "completed",
+                  changes: [
+                    { path: "src/foo.ts", unifiedDiff: "--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -1 +1 @@\n-foo\n+bar\n", kind: "modify" },
+                  ],
+                },
+                {
+                  id: "item-text",
+                  type: "agentMessage",
+                  text: "Investigation complete. Two call sites updated.",
+                  phase: null,
+                  memoryCitation: null,
+                },
+              ],
+            },
+          ],
+          nextCursor: null,
+          backwardsCursor: null,
+        };
+      });
+
+      // Announce the subagent thread on the parent stream so ADE registers
+      // an active subagent the client can drill into. ADE only needs the
+      // threadId — the actual transcript will be pulled from the app-server.
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Spawn an investigation agent.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "collab-1",
+            type: "collabAgentToolCall",
+            tool: "spawnAgent",
+            status: "inProgress",
+            senderThreadId: "thread-main",
+            receiverThreadIds: ["agent-thread-live"],
+            prompt: "Investigate dependencies.",
+            agentsStates: {},
+          },
+        },
+      });
+
+      const transcript = await service.getSubagentTranscript({
+        sessionId: session.id,
+        agentId: "agent-thread-live",
+      });
+
+      expect(appServerCalls.length).toBeGreaterThanOrEqual(1);
+      expect(appServerCalls[0].method).toBe("thread/turns/list");
+      expect((appServerCalls[0].params as { threadId: string }).threadId).toBe("agent-thread-live");
+      expect((appServerCalls[0].params as { itemsView: string }).itemsView).toBe("full");
+
+      expect(transcript).not.toBeNull();
+      const types = transcript!.map((m) => (m.message as { type: string }).type);
+      expect(types).toEqual(["reasoning", "command", "file_change", "text"]);
+      const commandEvent = transcript!.find((m) => (m.message as { type: string }).type === "command")!.message as {
+        type: "command";
+        command: string;
+        output: string;
+        status: string;
+        exitCode: number;
+      };
+      expect(commandEvent.command).toContain("oldFn");
+      expect(commandEvent.output).toContain("src/foo.ts");
+      expect(commandEvent.status).toBe("completed");
+      expect(commandEvent.exitCode).toBe(0);
+      const fileEvent = transcript!.find((m) => (m.message as { type: string }).type === "file_change")!.message as {
+        type: "file_change";
+        path: string;
+        diff: string;
+        kind: string;
+      };
+      expect(fileEvent.path).toBe("src/foo.ts");
+      expect(fileEvent.diff).toContain("+bar");
+      expect(fileEvent.kind).toBe("modify");
+    });
+
+    it("falls back to event-history filter when codex app-server fails on thread/turns/list", async () => {
+      // Older codex builds may not support `thread/turns/list` for spawned
+      // subagent threads. The transcript pipe must still return data — fall
+      // back to ADE's aggregated `subagent_*` envelopes from the parent
+      // stream.
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      mockState.codexResponseOverrides.set("thread/turns/list", () => ({
+        error: { code: -32601, message: "Method not found" },
+      }));
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Spawn an investigation agent.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "collab-1",
+            type: "collabAgentToolCall",
+            tool: "spawnAgent",
+            status: "inProgress",
+            senderThreadId: "thread-main",
+            receiverThreadIds: ["agent-thread-fallback"],
+            prompt: "Investigate.",
+            agentsStates: {},
+          },
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "collab-2",
+            type: "collabAgentToolCall",
+            tool: "wait",
+            status: "completed",
+            senderThreadId: "thread-main",
+            receiverThreadIds: ["agent-thread-fallback"],
+            agentsStates: {
+              "agent-thread-fallback": {
+                status: "completed",
+                message: "Investigation summary recorded.",
+              },
+            },
+          },
+        },
+      });
+
+      const transcript = await service.getSubagentTranscript({
+        sessionId: session.id,
+        agentId: "agent-thread-fallback",
+      });
+      expect(transcript).not.toBeNull();
+      expect(transcript!.length).toBeGreaterThanOrEqual(2);
+      const types = transcript!.map((m) => (m.message as { type: string }).type);
+      expect(types).toContain("subagent_started");
+      expect(types).toContain("subagent_result");
+    });
+
     it("coalesces Codex spawn placeholders when the app-server reveals the agent thread later", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
@@ -9182,6 +9405,161 @@ describe("createAgentChatService", () => {
       const summary = await service.getSessionSummary(session.id);
       expect(summary?.permissionMode).toBe("edit");
       expect(summary?.claudePermissionMode).toBe("acceptEdits");
+    });
+
+    it("syncs session permissionMode and emits a plan-mode notice when the SDK status message reports a transition", async () => {
+      // The Claude Agent SDK handles EnterPlanMode/ExitPlanMode internally in
+      // the bundled `claude` binary and signals the host via an SDKStatusMessage
+      // (type: "system", subtype: "status") carrying the new permissionMode.
+      // ADE must update its session state and emit the standard plan-mode
+      // notice from this branch — without it, the renderer's prompt-box
+      // permission badge never reflects the SDK-side transition.
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-status-plan",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        // SDK reports the internal EnterPlanMode transition via a status
+        // message instead of routing through canUseTool.
+        yield {
+          type: "system",
+          subtype: "status",
+          status: null,
+          permissionMode: "plan",
+        };
+
+        // SDK later reports ExitPlanMode the same way.
+        yield {
+          type: "system",
+          subtype: "status",
+          status: null,
+          permissionMode: "default",
+        };
+
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "Plan flow completed via status." }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-status-plan",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Drive plan mode via status messages.",
+      });
+
+      const planTransitionNotices = events
+        .map((envelope) => envelope.event)
+        .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "system_notice" }> =>
+          event.type === "system_notice"
+          && (event.detail as { permissionModeTransition?: string } | undefined)?.permissionModeTransition !== undefined,
+        );
+      expect(planTransitionNotices.map((notice) =>
+        (notice.detail as { permissionModeTransition: string }).permissionModeTransition,
+      )).toEqual(["entered_plan_mode", "exited_plan_mode"]);
+
+      const summary = await service.getSessionSummary(session.id);
+      expect(summary?.permissionMode).not.toBe("plan");
+    });
+
+    it("ignores SDK status messages whose permissionMode matches the session's current mode", async () => {
+      // Status messages can arrive frequently. Only the transitions should
+      // emit notices — a redundant `permissionMode: "default"` while the
+      // session is already in a non-plan mode must be a no-op.
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-status-noop",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "system",
+          subtype: "status",
+          status: null,
+          permissionMode: "default",
+        };
+
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-status-noop",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Status message must not spuriously toggle plan mode.",
+      });
+
+      const planTransitionNotices = events
+        .map((envelope) => envelope.event)
+        .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "system_notice" }> =>
+          event.type === "system_notice"
+          && (event.detail as { permissionModeTransition?: string } | undefined)?.permissionModeTransition !== undefined,
+        );
+      expect(planTransitionNotices).toHaveLength(0);
     });
 
     it("emits todo_update events for Claude TodoWrite tool uses", async () => {

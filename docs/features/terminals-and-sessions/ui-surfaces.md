@@ -309,10 +309,12 @@ Tabs:
   tree fits a narrow column.
 - `ios` — `ChatIosSimulatorPanel` for the active lane (no chat scope).
 - `app-control` — `ChatAppControlPanel` for the active lane.
-- `browser` — `ChatBuiltInBrowserPanel` over the shared
-  `WebContentsView`-backed built-in browser. Unlike the other tabs the
-  browser is not lane-scoped (one browser instance per app), but it
-  flows selections back to the active chat through the same dispatch
+- `browser` — `ChatBuiltInBrowserPanel` over the built-in browser's
+  `WebContentsView` tabs for the current ADE window. Unlike the other
+  tabs the browser is not lane-scoped; each ADE window owns its own tab
+  set, active tab, bounds, and inspect state while all windows share the
+  same `persist:ade-browser` partition for authentication. Browser
+  selections flow back to the active chat through the same dispatch
   path. Switching off the tab and closing the sidebar both run
   `hideBuiltInBrowserView()`, which calls
   `window.ade.builtInBrowser.stopInspect()` and zeros the bounds with

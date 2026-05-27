@@ -129,6 +129,7 @@ describe("buildRemoteRuntimeEnvironmentPrefix", () => {
     expect(buildRemoteRuntimeEnvironmentPrefix({
       archLabel: "linux-x64",
       nativeDepsReady: false,
+      layout: resolveRemoteRuntimeLayout({} as NodeJS.ProcessEnv),
     })).toBe('ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ');
   });
 
@@ -136,6 +137,7 @@ describe("buildRemoteRuntimeEnvironmentPrefix", () => {
     expect(buildRemoteRuntimeEnvironmentPrefix({
       archLabel: "darwin-arm64",
       nativeDepsReady: true,
+      layout: resolveRemoteRuntimeLayout({} as NodeJS.ProcessEnv),
     })).toContain('NODE_PATH="$HOME/.ade/runtime/darwin-arm64/node_modules${NODE_PATH:+:$NODE_PATH}"');
   });
 
@@ -298,8 +300,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
   const originalPackageChannel = process.env.ADE_PACKAGE_CHANNEL;
 
   beforeEach(() => {
-    if (originalPackageChannel === undefined) delete process.env.ADE_PACKAGE_CHANNEL;
-    else process.env.ADE_PACKAGE_CHANNEL = originalPackageChannel;
+    delete process.env.ADE_PACKAGE_CHANNEL;
     connectSshWithRouteMock.mockReset();
     execSshMock.mockReset();
     openSshRuntimeTransportMock.mockReset();

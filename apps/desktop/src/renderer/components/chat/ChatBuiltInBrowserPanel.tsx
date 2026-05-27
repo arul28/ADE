@@ -1484,8 +1484,8 @@ export function ChatBuiltInBrowserPanel({
 
   return (
     <div className="flex h-full min-h-0 flex-col font-sans text-[12px] text-fg/75">
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-sky-300/10 bg-[#080b11] shadow-[0_18px_48px_rgba(0,0,0,0.32)]">
-        <div className="flex min-h-9 shrink-0 items-center gap-1 overflow-x-auto border-b border-white/[0.07] bg-[#10131d] px-2 py-1">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-white/[0.08] bg-[var(--color-bg)]">
+        <div className="flex h-[20px] shrink-0 items-end gap-0 overflow-x-auto bg-white/[0.02] pl-1.5 pr-1">
           {browserTabs.map((tab) => {
             const active = tab.id === activeTabId;
             const label = tab.title ?? tab.url ?? "New tab";
@@ -1493,10 +1493,10 @@ export function ChatBuiltInBrowserPanel({
               <div
                 key={tab.id}
                 className={cn(
-                  "group inline-flex h-7 max-w-[190px] shrink-0 items-center gap-1 rounded-t-md border border-b-0 px-2 text-[11px] transition-colors",
+                  "group relative inline-flex h-[18px] max-w-[180px] min-w-[70px] shrink-0 items-center gap-1 px-2 text-[9px] transition-all",
                   active
-                    ? "border-sky-300/20 bg-[#080b11] text-sky-50/90"
-                    : "border-transparent bg-white/[0.025] text-muted-fg/65 hover:bg-white/[0.06] hover:text-fg/80",
+                    ? "z-10 rounded-t-lg bg-[var(--color-bg)] text-fg/90"
+                    : "rounded-t-lg text-muted-fg/60 hover:bg-white/[0.04] hover:text-fg/75",
                 )}
                 title={tab.url ?? label}
               >
@@ -1508,19 +1508,23 @@ export function ChatBuiltInBrowserPanel({
                   className="inline-flex min-w-0 flex-1 items-center gap-1.5 text-left"
                   aria-current={active ? "page" : undefined}
                 >
-                  <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", tab.isLoading ? "animate-pulse bg-amber-300" : active ? "bg-sky-300" : "bg-muted-fg/35")} />
-                  <span className="min-w-0 truncate">{label}</span>
+                  {tab.isLoading ? (
+                    <SpinnerGap size={10} className="shrink-0 animate-spin text-sky-300/70" />
+                  ) : (
+                    <span className={cn("h-1 w-1 shrink-0 rounded-full", active ? "bg-[var(--color-accent)]" : "bg-muted-fg/25")} />
+                  )}
+                  <span className="min-w-0 truncate leading-none">{label}</span>
                 </button>
                 <button
                   type="button"
                   aria-label="Close tab"
-                  className="ml-1 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-fg/45 opacity-70 transition-colors hover:bg-white/[0.09] hover:text-fg/80 group-hover:opacity-100"
+                  className="ml-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm text-muted-fg/40 opacity-0 transition-all hover:bg-white/[0.1] hover:text-fg/80 group-hover:opacity-100"
                   onClick={(event) => {
                     event.stopPropagation();
                     handleCloseTab(tab.id);
                   }}
                 >
-                  <X size={9} />
+                  <X size={8} />
                 </button>
               </div>
             );
@@ -1529,31 +1533,21 @@ export function ChatBuiltInBrowserPanel({
             type="button"
             disabled={Boolean(busy) || !apiAvailable}
             onClick={handleNewTab}
-            className="inline-flex h-7 w-8 shrink-0 items-center justify-center rounded-md border border-white/[0.07] bg-white/[0.035] text-fg/72 transition-colors hover:bg-white/[0.07] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-45"
+            className="mb-px ml-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm text-muted-fg/50 transition-colors hover:bg-white/[0.06] hover:text-fg/75 disabled:cursor-not-allowed disabled:opacity-45"
             title="New tab"
             aria-label="New tab"
           >
-            {busy === "new-tab" ? <SpinnerGap size={12} className="animate-spin" /> : <Plus size={12} />}
+            {busy === "new-tab" ? <SpinnerGap size={11} className="animate-spin" /> : <Plus size={11} />}
           </button>
-          <div className="ml-auto flex shrink-0 items-center gap-1.5 pl-2">
-            <span className={cn("inline-flex h-5 items-center rounded-full border px-2 text-[9px] font-medium uppercase", STATUS_PILL_TONE[statusInfo.tone])} title={statusInfo.detail}>
-              {statusInfo.label}
-            </span>
-            {sessionLabel ? (
-              <span className="rounded border border-white/[0.07] bg-white/[0.03] px-1.5 py-0.5 font-mono text-[9px] uppercase text-muted-fg/55">
-                {sessionLabel}
-              </span>
-            ) : null}
-          </div>
         </div>
 
-        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-white/[0.07] bg-[#0d1018] px-2 py-2">
-          <div className="inline-flex h-8 shrink-0 items-center overflow-hidden rounded-md border border-white/[0.08] bg-black/25">
+        <div className="flex shrink-0 items-center gap-1.5 border-b border-white/[0.08] bg-white/[0.02] px-1.5 py-1">
+          <div className="inline-flex h-6 shrink-0 items-center overflow-hidden rounded border border-white/[0.08] bg-black/25">
             <button
               type="button"
               disabled={Boolean(busy) || !apiAvailable || !canGoBack}
               onClick={handleBack}
-              className="inline-flex h-full w-8 items-center justify-center text-fg/65 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-35"
+              className="inline-flex h-full w-6 items-center justify-center text-fg/65 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-35"
               title="Go back"
               aria-label="Go back"
             >
@@ -1563,7 +1557,7 @@ export function ChatBuiltInBrowserPanel({
               type="button"
               disabled={Boolean(busy) || !apiAvailable || !canGoForward}
               onClick={handleForward}
-              className="inline-flex h-full w-8 items-center justify-center border-l border-white/[0.06] text-fg/65 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-35"
+              className="inline-flex h-full w-6 items-center justify-center border-l border-white/[0.06] text-fg/65 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-35"
               title="Go forward"
               aria-label="Go forward"
             >
@@ -1573,7 +1567,7 @@ export function ChatBuiltInBrowserPanel({
               type="button"
               disabled={Boolean(busy) || !apiAvailable}
               onClick={loading ? handleStop : handleReload}
-              className="inline-flex h-full w-8 items-center justify-center border-l border-white/[0.06] text-fg/65 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-35"
+              className="inline-flex h-full w-6 items-center justify-center border-l border-white/[0.06] text-fg/65 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-35"
               title={loading ? "Stop loading" : "Reload"}
               aria-label={loading ? "Stop loading" : "Reload"}
             >
@@ -1589,7 +1583,7 @@ export function ChatBuiltInBrowserPanel({
 
           <form
             onSubmit={handleNavigate}
-            className="flex h-8 min-w-[220px] flex-1 items-center gap-1 rounded-md border border-white/[0.08] bg-black/24 pl-2 focus-within:border-sky-300/30"
+            className="flex h-6 min-w-[180px] flex-1 items-center gap-1 rounded border border-white/[0.08] bg-black/24 pl-1.5 focus-within:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
           >
             <input
               value={urlInput}
@@ -1606,7 +1600,7 @@ export function ChatBuiltInBrowserPanel({
             <button
               type="submit"
               disabled={Boolean(busy) || !apiAvailable || !urlInput.trim()}
-              className="inline-flex h-full shrink-0 items-center justify-center gap-1 rounded-r-md border-l border-white/[0.06] px-2 text-[11px] font-medium text-fg/75 transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
+              className="inline-flex h-full shrink-0 items-center justify-center gap-1 rounded-r border-l border-white/[0.06] px-1.5 text-[10px] font-medium text-fg/75 transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
               title="Open URL"
               aria-label="Open URL"
             >
@@ -1620,9 +1614,9 @@ export function ChatBuiltInBrowserPanel({
             disabled={Boolean(busy) || !apiAvailable}
             onClick={handleInspectToggle}
             className={cn(
-              "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2.5 text-[11px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-45",
+              "inline-flex h-6 shrink-0 items-center gap-1 rounded border px-1.5 text-[10px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-45",
               inspecting
-                ? "border-sky-300/25 bg-sky-500/15 text-sky-50/90 hover:bg-sky-500/22"
+                ? "border-[color-mix(in_srgb,var(--color-accent)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-accent)_15%,transparent)] text-fg/90 hover:bg-[color-mix(in_srgb,var(--color-accent)_22%,transparent)]"
                 : "border-white/[0.08] bg-white/[0.035] text-fg/72 hover:bg-white/[0.07] hover:text-fg/85",
             )}
             title={inspecting ? "Stop selecting elements" : "Select an element in the ADE browser"}
@@ -1635,7 +1629,7 @@ export function ChatBuiltInBrowserPanel({
             disabled={Boolean(busy) || !apiAvailable || !onAddContext}
             onClick={handleAttachScreenshot}
             className={cn(
-              "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2.5 text-[11px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-45",
+              "inline-flex h-6 shrink-0 items-center gap-1 rounded border px-1.5 text-[10px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-45",
               captureBase
                 ? "border-amber-300/25 bg-amber-500/12 text-amber-100/85 hover:bg-amber-500/18"
                 : "border-white/[0.08] bg-white/[0.035] text-fg/72 hover:bg-white/[0.07] hover:text-fg/85",
@@ -1650,7 +1644,7 @@ export function ChatBuiltInBrowserPanel({
               type="button"
               disabled={Boolean(busy) || !apiAvailable || !onAddContext}
               onClick={handleAttachSelection}
-              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.035] px-2.5 text-[11px] font-medium text-fg/72 transition-colors hover:bg-white/[0.07] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-45"
+              className="inline-flex h-6 shrink-0 items-center gap-1 rounded border border-white/[0.08] bg-white/[0.035] px-1.5 text-[10px] font-medium text-fg/72 transition-colors hover:bg-white/[0.07] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-45"
               title="Insert the selected browser element as context"
             >
               {busy === "select" ? <SpinnerGap size={12} className="animate-spin" /> : <Selection size={12} />}
@@ -1661,7 +1655,7 @@ export function ChatBuiltInBrowserPanel({
             type="button"
             disabled={!currentUrl}
             onClick={handleOpenExternal}
-            className="inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.035] px-2.5 text-[11px] font-medium text-fg/72 transition-colors hover:bg-white/[0.07] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-40"
+            className="inline-flex h-6 shrink-0 items-center justify-center gap-1 rounded border border-white/[0.08] bg-white/[0.035] px-1.5 text-[10px] font-medium text-fg/72 transition-colors hover:bg-white/[0.07] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-40"
             title="Open current page in the system browser"
           >
             <ArrowSquareOut size={12} />
@@ -1694,7 +1688,7 @@ export function ChatBuiltInBrowserPanel({
 
         <div
           ref={browserSurfaceRef}
-          className="relative flex min-h-[320px] min-w-0 flex-1 flex-col overflow-hidden bg-[#05070b]"
+          className="relative flex min-h-[320px] min-w-0 flex-1 flex-col overflow-hidden bg-black/20"
         >
           {captureImageDataUrl && captureBase?.width && captureBase.height ? (
             <div
@@ -1741,72 +1735,6 @@ export function ChatBuiltInBrowserPanel({
           ) : null}
         </div>
 
-        <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-white/[0.07] bg-[#0b0e15] px-2.5 py-2">
-          <div className="min-w-0 flex-1">
-            {selectedItem ? (
-              <div className="min-w-0">
-                <div className="flex min-w-0 items-center gap-1.5">
-                  <span className="truncate text-[11px] font-medium text-fg/85" title={contextItemLabel(selectedItem)}>
-                    {contextItemLabel(selectedItem)}
-                  </span>
-                  {contextItemSubLabel(selectedItem) ? (
-                    <span className="shrink-0 rounded border border-white/[0.07] bg-white/[0.03] px-1 py-0 font-mono text-[9px] uppercase text-muted-fg/60">
-                      {contextItemSubLabel(selectedItem)}
-                    </span>
-                  ) : null}
-                  {attachmentAck ? (
-                    <span className="shrink-0 rounded-full border border-emerald-300/25 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-100/85">
-                      Attached
-                    </span>
-                  ) : null}
-                </div>
-                <div className="truncate text-[10px] text-muted-fg/50" title={selectedItem.selector ?? selectedItem.url ?? undefined}>
-                  {selectedItem.selector ?? selectedItem.url ?? selectionFrame ?? "Browser context"}
-                </div>
-              </div>
-            ) : (
-              <div className="truncate text-[11px] text-muted-fg/55" title={statusInfo.detail}>
-                {captureBase ? "Drag on the page image to capture a precise region." : statusInfo.detail}
-              </div>
-            )}
-          </div>
-
-          <div
-            className={cn(
-              "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[10px] font-medium",
-              attachmentAck
-                ? "border-emerald-300/25 bg-emerald-500/10 text-emerald-100/85"
-                : "border-white/[0.07] bg-white/[0.03] text-muted-fg/60",
-            )}
-          >
-            <Paperclip size={11} />
-            {attachmentAck ?? (screenshotMeta ? `Last screenshot ${screenshotMeta}` : "Context ready")}
-          </div>
-          {selectedItem ? (
-            <button
-              type="button"
-              disabled={Boolean(busy) || !apiAvailable}
-              onClick={handleClearSelection}
-              className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-white/[0.07] bg-white/[0.03] px-2 text-[10px] font-medium text-muted-fg/65 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-45"
-              title="Clear browser context"
-            >
-              {busy === "clear-selection" ? <SpinnerGap size={11} className="animate-spin" /> : <X size={11} />}
-              Clear
-            </button>
-          ) : null}
-          {onInsertDraft ? (
-            <button
-              type="button"
-              disabled={!selectedItem}
-              onClick={handleInsertSelectionDraft}
-              className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-white/[0.07] bg-white/[0.03] px-2 text-[10px] font-medium text-fg/72 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-45"
-              title="Insert selected browser details into the draft"
-            >
-              <Paperclip size={11} />
-              Insert draft
-            </button>
-          ) : null}
-        </div>
       </div>
     </div>
   );

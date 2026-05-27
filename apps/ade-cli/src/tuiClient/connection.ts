@@ -454,12 +454,13 @@ function spawnDaemon(socketPath: string): boolean {
   const daemonArgs = cliEntrypoint
     ? [cliEntrypoint, "serve", "--socket", socketPath]
     : ["serve", "--socket", socketPath];
-  const env = {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     ADE_DEFAULT_ROLE: "cto",
     ADE_RPC_SOCKET_PATH: socketPath,
-    ...(buildHash ? { ADE_RUNTIME_BUILD_HASH: buildHash } : {}),
   };
+  if (buildHash) env.ADE_RUNTIME_BUILD_HASH = buildHash;
+  else delete env.ADE_RUNTIME_BUILD_HASH;
   const child = spawn(
     process.execPath,
     daemonArgs,

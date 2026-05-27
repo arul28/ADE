@@ -13,8 +13,9 @@ import { cn } from "../ui/cn";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import { derivePlan } from "./chatExecutionSummary";
 import type { ChatInfoPlanStep } from "../../../shared/chatSubagents";
-import type { AgentChatEventEnvelope } from "../../../shared/types";
+import type { AgentChatEventEnvelope, CodexThreadGoal } from "../../../shared/types";
 import { BottomDrawerSection } from "./BottomDrawerSection";
+import { CodexGoalCard } from "./codex/CodexGoalCard";
 
 /* ── Formatting helpers ── */
 
@@ -279,6 +280,9 @@ export function ChatSubagentsPanel({
   className,
   variant = "drawer",
   onClose,
+  goal,
+  onEditGoal,
+  onClearGoal,
 }: {
   snapshots: ChatSubagentSnapshot[];
   events: AgentChatEventEnvelope[];
@@ -288,6 +292,9 @@ export function ChatSubagentsPanel({
   className?: string;
   variant?: "drawer" | "pane";
   onClose?: () => void;
+  goal?: CodexThreadGoal | null;
+  onEditGoal?: (nextObjective: string) => void;
+  onClearGoal?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -346,10 +353,20 @@ export function ChatSubagentsPanel({
   const planTotal = plan?.steps.length ?? 0;
   const planPercent = planTotal > 0 ? Math.round((planComplete / planTotal) * 100) : 0;
 
-  const hasAnything = Boolean(plan) || foreground.length > 0 || background.length > 0;
+  const hasGoal = Boolean(goal?.objective?.trim());
+  const hasAnything = hasGoal || Boolean(plan) || foreground.length > 0 || background.length > 0;
 
   const body = (
     <div className="flex min-h-0 flex-1 flex-col font-sans">
+      {/* ── Goal (Codex thread goal) ─────────────────────────────── */}
+      {hasGoal && goal ? (
+        <CodexGoalCard
+          goal={goal}
+          onEdit={onEditGoal}
+          onClear={onClearGoal}
+        />
+      ) : null}
+
       {/* ── Progress ─────────────────────────────────────────────── */}
       {plan && plan.steps.length > 0 ? (
         <section className="pb-3">

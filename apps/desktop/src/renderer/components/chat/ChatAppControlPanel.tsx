@@ -1028,10 +1028,10 @@ export function ChatAppControlPanel({
   }, [processes]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-2 font-sans text-[12px] text-fg/75">
+    <div className="flex h-full min-h-0 flex-col gap-1 font-sans text-[11px] text-fg/75">
       {/* Top row: launch input + run-command picker + Run, or running command + Stop/Terminal */}
       {!hasActiveSession ? (
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-1">
           <input
             value={launchCommand}
             onChange={(event) => {
@@ -1040,7 +1040,7 @@ export function ChatAppControlPanel({
             }}
             placeholder='Launch command, e.g. "pnpm dev"'
             aria-label="App Control launch command"
-            className="min-w-0 flex-1 rounded-md border border-white/[0.07] bg-black/20 px-2 py-1.5 text-[11px] text-fg/80 outline-none placeholder:text-muted-fg/40 focus:border-sky-300/30"
+            className="min-w-0 flex-1 rounded border border-white/[0.08] bg-black/20 px-1.5 py-1 text-[10px] text-fg/80 outline-none placeholder:text-muted-fg/40 focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
             onKeyDown={(event) => {
               if (event.key === "Enter" && canLaunch) void launchSelected();
             }}
@@ -1061,7 +1061,7 @@ export function ChatAppControlPanel({
                   ? "Configure run commands in the Run tab to populate this picker."
                   : "Pick a configured run command to autopopulate the launch field."
               }
-              className="h-8 appearance-none rounded-md border border-white/[0.07] bg-white/[0.03] pl-2.5 pr-7 text-[11px] font-medium text-fg/72 outline-none transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45 focus:border-sky-300/30"
+              className="h-7 appearance-none rounded border border-white/[0.08] bg-white/[0.03] pl-2 pr-6 text-[10px] font-medium text-fg/72 outline-none transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45 focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
             >
               <option value="">
                 {processOptions.length === 0 ? "No run commands" : "Select run command…"}
@@ -1082,7 +1082,7 @@ export function ChatAppControlPanel({
             type="button"
             disabled={Boolean(busy) || !canLaunch}
             onClick={launchSelected}
-            className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border border-sky-400/25 bg-sky-500/15 px-3 text-[11px] font-medium text-sky-50/90 transition-colors hover:bg-sky-500/22 disabled:cursor-not-allowed disabled:opacity-45"
+            className="inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded border border-[color-mix(in_srgb,var(--color-accent)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-accent)_15%,transparent)] px-2 text-[10px] font-medium text-fg/90 transition-colors hover:bg-[color-mix(in_srgb,var(--color-accent)_22%,transparent)] disabled:cursor-not-allowed disabled:opacity-45"
             title="Launch command in the terminal"
             aria-label="Launch App Control command"
           >
@@ -1091,7 +1091,7 @@ export function ChatAppControlPanel({
           </button>
         </div>
       ) : (
-        <div className="flex shrink-0 flex-wrap items-center gap-2 rounded-md border border-white/[0.07] bg-white/[0.025] px-2.5 py-1.5">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 rounded-md border border-white/[0.08] bg-white/[0.025] px-2.5 py-1.5">
           <span
             className={cn(
               "inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full border px-2 text-[10px] font-medium uppercase tracking-wide",
@@ -1120,7 +1120,7 @@ export function ChatAppControlPanel({
                   label: activeSession.label,
                 });
               }}
-              className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-white/[0.07] bg-white/[0.03] px-2 text-[10px] font-medium text-fg/65 transition-colors hover:bg-white/[0.06] hover:text-fg/85"
+              className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-2 text-[10px] font-medium text-fg/65 transition-colors hover:bg-white/[0.06] hover:text-fg/85"
               title="Show the launch terminal"
             >
               <Terminal size={11} />
@@ -1133,7 +1133,7 @@ export function ChatAppControlPanel({
                 type="button"
                 disabled={Boolean(busy) || controlsDisabled}
                 onClick={focusWindow}
-                className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-white/[0.07] bg-white/[0.03] px-2 text-[10px] font-medium text-fg/65 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-45"
+                className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-2 text-[10px] font-medium text-fg/65 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-45"
                 title="Show the controlled app window"
                 aria-label="Show controlled app window"
               >
@@ -1144,7 +1144,7 @@ export function ChatAppControlPanel({
                 type="button"
                 disabled={Boolean(busy) || controlsDisabled}
                 onClick={minimizeWindow}
-                className="inline-flex h-7 shrink-0 items-center justify-center rounded-md border border-white/[0.07] bg-white/[0.03] px-2 text-fg/65 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-45"
+                className="inline-flex h-7 shrink-0 items-center justify-center rounded-md border border-white/[0.08] bg-white/[0.03] px-2 text-fg/65 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-45"
                 title="Minimize the controlled app window"
                 aria-label="Minimize controlled app window"
               >
@@ -1170,8 +1170,8 @@ export function ChatAppControlPanel({
 
       {/* Compact CDP attach row */}
       {!hasActiveSession ? (
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <span className="font-sans text-[10px] uppercase tracking-wide text-muted-fg/50">Or attach</span>
+        <div className="flex shrink-0 flex-wrap items-center gap-1">
+          <span className="font-sans text-[9px] uppercase tracking-wide text-muted-fg/50">Or attach</span>
           <input
             value={cdpPort}
             onChange={(event) => setCdpPort(event.target.value)}
@@ -1179,7 +1179,7 @@ export function ChatAppControlPanel({
             aria-label="CDP port"
             inputMode="numeric"
             disabled={controlsDisabled}
-            className="w-[100px] shrink-0 rounded-md border border-white/[0.07] bg-black/20 px-2 py-1.5 text-[11px] text-fg/80 outline-none placeholder:text-muted-fg/40 focus:border-sky-300/30"
+            className="w-[80px] shrink-0 rounded border border-white/[0.08] bg-black/20 px-1.5 py-1 text-[10px] text-fg/80 outline-none placeholder:text-muted-fg/40 focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
             onKeyDown={(event) => {
               if (event.key === "Enter" && cdpPort.trim()) void connectPort();
             }}
@@ -1188,7 +1188,7 @@ export function ChatAppControlPanel({
             type="button"
             disabled={Boolean(busy) || !cdpPort.trim() || controlsDisabled}
             onClick={connectPort}
-            className="inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-md border border-white/[0.07] bg-white/[0.03] px-2 text-[10px] font-medium text-fg/72 transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
+            className="inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-2 text-[10px] font-medium text-fg/72 transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
             title="Connect to a running Electron app via CDP"
           >
             {busy === "connect" ? <SpinnerGap size={11} className="animate-spin" /> : <Link size={11} />}
@@ -1198,7 +1198,7 @@ export function ChatAppControlPanel({
             <button
               type="button"
               onClick={requestDebugHelp}
-              className="ml-auto inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-white/[0.07] bg-white/[0.03] px-2 text-[10px] font-medium text-muted-fg/65 transition-colors hover:text-fg/85"
+              className="ml-auto inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-2 text-[10px] font-medium text-muted-fg/65 transition-colors hover:text-fg/85"
               title="Insert a draft asking the agent to wire CDP debug flags into this app"
             >
               <Wrench size={11} />
@@ -1220,7 +1220,7 @@ export function ChatAppControlPanel({
               if (!value) return;
               void attachToTargetId(value);
             }}
-            className="min-w-0 flex-1 rounded-md border border-white/[0.06] bg-black/30 px-2 py-1 text-[11px] text-fg/85 outline-none focus:border-sky-300/30"
+            className="min-w-0 flex-1 rounded-md border border-white/[0.06] bg-black/30 px-2 py-1 text-[11px] text-fg/85 outline-none focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
             aria-label="Switch the controlled window"
             disabled={Boolean(busy) || targets.length < 2 || controlsDisabled}
           >
@@ -1292,7 +1292,7 @@ export function ChatAppControlPanel({
       ) : null}
 
       {/* Snapshot surface */}
-      <div className="relative flex min-h-[260px] min-w-0 flex-1 flex-col overflow-hidden rounded-md border border-white/[0.08] bg-black/35">
+      <div className="relative flex min-h-[240px] min-w-0 flex-1 flex-col overflow-hidden rounded border border-white/[0.08] bg-white/[0.02]">
         <div className="absolute left-2 top-2 z-10 flex flex-col items-start gap-1">
           <button
             type="button"
@@ -1303,7 +1303,7 @@ export function ChatAppControlPanel({
                 setMessage({ tone: "info", text: "Snapshot refreshed." });
               })
             }
-            className="inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.07] bg-black/55 px-2 text-[10px] font-medium text-fg/72 backdrop-blur transition-colors hover:bg-black/70 disabled:cursor-not-allowed disabled:opacity-45"
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.08] bg-black/55 px-2 text-[10px] font-medium text-fg/72 backdrop-blur transition-colors hover:bg-black/70 disabled:cursor-not-allowed disabled:opacity-45"
             title="Re-capture screenshot and DOM snapshot"
           >
             {busy === "snapshot" ? (
@@ -1315,7 +1315,7 @@ export function ChatAppControlPanel({
           </button>
           <div
             className={cn(
-              "inline-flex items-center rounded-md border border-white/[0.07] bg-black/55 p-0.5 backdrop-blur",
+              "inline-flex items-center rounded-md border border-white/[0.08] bg-black/55 p-0.5 backdrop-blur",
               !hasActiveSession ? "opacity-45" : null,
             )}
             aria-label="App Control mode"
@@ -1327,9 +1327,9 @@ export function ChatAppControlPanel({
                 disabled={!hasActiveSession || controlsDisabled}
                 onClick={() => setMode(nextMode)}
                 className={cn(
-                  "h-6 rounded px-2 text-[10px] font-medium transition-colors disabled:cursor-not-allowed",
+                  "h-6 rounded-[3px] px-2 text-[10px] font-medium transition-colors disabled:cursor-not-allowed",
                   mode === nextMode
-                    ? "bg-white/[0.10] text-sky-50 shadow-sm"
+                    ? "bg-[color-mix(in_srgb,var(--color-accent)_18%,transparent)] text-fg/90 shadow-sm"
                     : "text-muted-fg/60 hover:bg-white/[0.06] hover:text-fg/80",
                 )}
               >
@@ -1341,7 +1341,7 @@ export function ChatAppControlPanel({
 
         {snapshot?.url ? (
           <div
-            className="absolute right-2 top-2 z-10 max-w-[60%] truncate rounded-md border border-white/[0.07] bg-black/55 px-2 py-1 text-[10px] text-muted-fg/65 backdrop-blur"
+            className="absolute right-2 top-2 z-10 max-w-[60%] truncate rounded-md border border-white/[0.08] bg-black/55 px-2 py-1 text-[10px] text-muted-fg/65 backdrop-blur"
             title={snapshot.url}
           >
             {snapshot.title ?? snapshot.url}
@@ -1478,8 +1478,8 @@ export function ChatAppControlPanel({
       </div>
 
       {/* Selection details + actions */}
-      <div className="flex shrink-0 flex-col gap-1.5">
-        <div className="min-w-0 rounded-md border border-white/[0.07] bg-white/[0.025] px-2.5 py-1.5">
+      <div className="flex shrink-0 flex-col gap-1">
+        <div className="min-w-0 rounded border border-white/[0.08] bg-white/[0.025] px-1.5 py-1">
           {mode === "control" ? (
             screenshotBlank ? (
               <div className="text-[11px] text-amber-100/80">
@@ -1499,7 +1499,7 @@ export function ChatAppControlPanel({
                   {elementLabel(focusElement)}
                 </span>
                 {elementSubLabel(focusElement) ? (
-                  <span className="shrink-0 rounded border border-white/[0.07] bg-white/[0.03] px-1 py-0 font-mono text-[9px] uppercase tracking-wide text-muted-fg/60">
+                  <span className="shrink-0 rounded border border-white/[0.08] bg-white/[0.03] px-1 py-0 font-mono text-[9px] uppercase tracking-wide text-muted-fg/60">
                     {elementSubLabel(focusElement)}
                   </span>
                 ) : null}
@@ -1550,14 +1550,14 @@ export function ChatAppControlPanel({
         </div>
 
         {mode === "control" ? (
-          <div className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md border border-white/[0.07] bg-black/20 pl-2 focus-within:border-sky-300/30">
-            <Keyboard size={12} className="shrink-0 text-muted-fg/55" />
+          <div className="flex min-w-0 flex-1 items-center gap-1 rounded border border-white/[0.08] bg-black/20 pl-1.5 focus-within:border-sky-300/30">
+            <Keyboard size={10} className="shrink-0 text-muted-fg/55" />
             <input
               value={typeText}
               onChange={(event) => setTypeText(event.target.value)}
               placeholder="Type into focused element"
               aria-label="Text to type into the focused app element"
-              className="h-8 min-w-0 flex-1 bg-transparent text-[11px] text-fg/80 outline-none placeholder:text-muted-fg/40"
+              className="h-7 min-w-0 flex-1 bg-transparent text-[10px] text-fg/80 outline-none placeholder:text-muted-fg/40"
               onKeyDown={(event) => {
                 if (event.key === "Enter") void typeIntoApp();
               }}
@@ -1566,7 +1566,7 @@ export function ChatAppControlPanel({
               type="button"
               disabled={Boolean(busy) || !canType}
               onClick={typeIntoApp}
-              className="inline-flex h-8 shrink-0 items-center justify-center rounded-r-md border-l border-white/[0.06] px-2 text-[11px] font-medium text-fg/75 transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
+              className="inline-flex h-7 shrink-0 items-center justify-center rounded-r border-l border-white/[0.06] px-1.5 text-[10px] font-medium text-fg/75 transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
               title="Send keystrokes to the focused element"
               aria-label="Type into focused app element"
             >
@@ -1580,7 +1580,7 @@ export function ChatAppControlPanel({
                 "inline-flex h-8 shrink-0 items-center rounded-md border px-2 text-[10px] font-medium",
                 attachmentAck
                   ? "border-emerald-300/25 bg-emerald-500/10 text-emerald-100/85"
-                  : "border-white/[0.07] bg-white/[0.03] text-muted-fg/60",
+                  : "border-white/[0.08] bg-white/[0.03] text-muted-fg/60",
               )}
             >
               {attachmentAck ? `Inserted ${attachmentAck} context` : "Inspect mode inserts clicked element context"}
@@ -1591,7 +1591,7 @@ export function ChatAppControlPanel({
               onClick={() => {
                 if (selectedPoint) void runBusy("select", () => attachSelection(selectedPoint.x, selectedPoint.y));
               }}
-              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-white/[0.07] bg-white/[0.03] px-2.5 text-[11px] font-medium text-fg/75 transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
+              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 text-[11px] font-medium text-fg/75 transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
               title="Attach the selected element again"
             >
               {busy === "select" ? <SpinnerGap size={12} className="animate-spin" /> : <ArrowClockwise size={12} />}

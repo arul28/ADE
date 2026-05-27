@@ -93,6 +93,149 @@ type BrowserTabState = {
 
 export function createBuiltInBrowserService(args: {
   getLogger?: () => Logger;
+  onEvent?: ((payload: BuiltInBrowserEventPayload, targetWindow?: BrowserWindow | null) => void) | null;
+}) {
+  type WindowBrowserService = ReturnType<typeof createBuiltInBrowserWindowService>;
+  type WindowBrowserEntry = {
+    win: BrowserWindow;
+    service: WindowBrowserService;
+    closedListener: () => void;
+  };
+
+  const windowServices = new Map<number, WindowBrowserEntry>();
+  let activeWindowId: number | null = null;
+  let fallbackService: WindowBrowserService | null = null;
+
+  const createServiceForWindow = (win: BrowserWindow): WindowBrowserService =>
+    createBuiltInBrowserWindowService({
+      getLogger: args.getLogger,
+      onEvent: (payload) => args.onEvent?.(payload, win),
+    });
+
+  const serviceForWindow = (win: BrowserWindow): WindowBrowserService => {
+    const existing = windowServices.get(win.id);
+    if (existing) return existing.service;
+
+    fallbackService?.dispose();
+    fallbackService = null;
+    const service = createServiceForWindow(win);
+    const closedListener = () => {
+      windowServices.delete(win.id);
+      if (activeWindowId === win.id) activeWindowId = null;
+      service.dispose();
+    };
+    windowServices.set(win.id, { win, service, closedListener });
+    win.once("closed", closedListener);
+    return service;
+  };
+
+  const activeService = (): WindowBrowserService => {
+    if (activeWindowId != null) {
+      const active = windowServices.get(activeWindowId);
+      if (active) return active.service;
+    }
+    const first = windowServices.values().next().value as WindowBrowserEntry | undefined;
+    if (first) return first.service;
+    if (!fallbackService) {
+      fallbackService = createBuiltInBrowserWindowService({
+        getLogger: args.getLogger,
+        onEvent: (payload) => args.onEvent?.(payload, null),
+      });
+    }
+    return fallbackService;
+  };
+
+  const isLiveWindow = (value: BrowserWindow | null | undefined): value is BrowserWindow =>
+    Boolean(
+      value
+      && typeof (value as { id?: unknown }).id === "number"
+      && typeof (value as { isDestroyed?: unknown }).isDestroyed === "function"
+      && !value.isDestroyed()
+    );
+
+  const serviceFor = (win?: BrowserWindow | null): WindowBrowserService =>
+    isLiveWindow(win) ? serviceForWindow(win) : activeService();
+
+  return {
+    attachToWindow(nextWin: BrowserWindow): void {
+      activeWindowId = nextWin.id;
+      serviceForWindow(nextWin).attachToWindow(nextWin);
+    },
+    getStatus(sourceWindow?: BrowserWindow | null): BuiltInBrowserStatus {
+      return serviceFor(sourceWindow).getStatus();
+    },
+    showPanel(input: BuiltInBrowserOpenPanelArgs = {}, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
+      return serviceFor(sourceWindow).showPanel(input);
+    },
+    setBounds(nextBounds: BuiltInBrowserBoundsArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
+      return serviceFor(sourceWindow).setBounds(nextBounds);
+    },
+    attachWebview(input: BuiltInBrowserAttachWebviewArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
+      return serviceFor(sourceWindow).attachWebview(input);
+    },
+    navigate(input: BuiltInBrowserNavigateArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
+      return serviceFor(sourceWindow).navigate(input);
+    },
+    createTab(input: BuiltInBrowserCreateTabArgs = {}, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
+      return serviceFor(sourceWindow).createTab(input);
+    },
+    switchTab(input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
+      return serviceFor(sourceWindow).switchTab(input);
+    },
+    closeTab(input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
+      return serviceFor(sourceWindow).closeTab(input);
+    },
+    reload(sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
+      return serviceFor(sourceWindow).reload();
+    },
+    goBack(sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
+      return serviceFor(sourceWindow).goBack();
+    },
+    goForward(sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
+      return serviceFor(sourceWindow).goForward();
+    },
+    stop(sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
+      return serviceFor(sourceWindow).stop();
+    },
+    startInspect(sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
+      return serviceFor(sourceWindow).startInspect();
+    },
+    stopInspect(sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
+      return serviceFor(sourceWindow).stopInspect();
+    },
+    captureScreenshot(sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserScreenshot> {
+      return serviceFor(sourceWindow).captureScreenshot();
+    },
+    selectPoint(input: BuiltInBrowserSelectPointArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserSelectResult> {
+      return serviceFor(sourceWindow).selectPoint(input);
+    },
+    selectCurrent(sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserSelectResult> {
+      return serviceFor(sourceWindow).selectCurrent();
+    },
+    clearSelection(sourceWindow?: BrowserWindow | null): Promise<{ ok: true }> {
+      return serviceFor(sourceWindow).clearSelection();
+    },
+    dispose(): void {
+      for (const entry of windowServices.values()) {
+        if (!entry.win.isDestroyed()) {
+          try {
+            entry.win.removeListener("closed", entry.closedListener);
+          } catch {
+            // ignore stale window links
+          }
+        }
+        entry.service.dispose();
+      }
+      windowServices.clear();
+      fallbackService?.dispose();
+      fallbackService = null;
+      activeWindowId = null;
+    },
+  };
+}
+
+function createBuiltInBrowserWindowService(args: {
+  getLogger?: () => Logger;
   onEvent?: ((payload: BuiltInBrowserEventPayload) => void) | null;
 }) {
   let win: BrowserWindow | null = null;

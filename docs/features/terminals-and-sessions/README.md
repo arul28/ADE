@@ -180,14 +180,15 @@ Renderer surfaces:
   diff), `files` (mounts `FilesPage` in `embedded` mode with the lane
   worktree pre-selected), `ios` (mounts `ChatIosSimulatorPanel` against
   the active lane), `app-control` (mounts `ChatAppControlPanel`), and
-  `browser` (mounts `ChatBuiltInBrowserPanel` over the shared
-  `WebContentsView`-backed built-in browser; the sidebar hides the
-  browser viewport whenever the user switches off the tab or closes
+  `browser` (mounts `ChatBuiltInBrowserPanel` over the current ADE
+  window's `WebContentsView`-backed built-in browser; the sidebar hides
+  the browser viewport whenever the user switches off the tab or closes
   the sidebar by setting bounds to `{ x: 0, y: 0, width: 0, height: 0,
   visible: false }` and stopping any inspect mode). The browser tab is
-  not lane-scoped — the built-in browser is a single shared instance
-  across the app — but it still flows selections to the active chat
-  through the same dispatch path as the other tool tabs. The active
+  not lane-scoped: each ADE window owns its own tabs and active inspect
+  state, while all windows share the same `persist:ade-browser`
+  partition for authentication. It still flows selections to the active
+  chat through the same dispatch path as the other tool tabs. The active
   Work session picks the sidebar's insertion target
   (`WorkSidebarContextTarget`): chat sessions (`kind: "chat"`) and
   draft composers (`kind: "draft"`, carrying `draftTargetId`, `laneId`,
@@ -255,14 +256,16 @@ Renderer surfaces:
   over lane bands, lane chips, collapsed lane pills, and grouped session
   headers, running inline actions in place and routing modal-bearing lane
   actions through `/lanes?action=...`.
-- `apps/desktop/src/renderer/components/terminals/WorkCliSessionHeader.tsx`
-  — small chat-style header rendered above tracked agent CLI terminals
-  (and their tabs). Shows the provider logo, primary title, status dot,
-  insertion-target label, info / overflow / stop-runtime buttons, and
-  the shared `ChatGitToolbar`. Replaces the older "terminal-only" tab
-  chrome on agent CLI sessions and reuses `formatToolTypeLabel` /
-  `primarySessionLabel` / `sessionStatusBucket` so chat and CLI rows
-  read consistently.
+- `apps/desktop/src/renderer/components/work/WorkSurfaceHeader.tsx` —
+  shared single-row Work surface header chrome used by both embedded
+  chats and tracked agent CLI terminals. It owns the title, lane chip,
+  Claude cache badge, lane git toolbar slot, and trailing-action
+  placement so chat and CLI surfaces share one visual shell.
+- `apps/desktop/src/renderer/components/terminals/CliSessionWorkSurfaceHeader.tsx`
+  — CLI adapter for `WorkSurfaceHeader`. It maps a
+  `TerminalSessionSummary` to the shared header, adds the status dot,
+  Run menu, info, and overflow actions, and intentionally leaves stop
+  controls to the sidebar card / chat composer paths.
 - `apps/desktop/src/renderer/components/terminals/WorkStartSurface.tsx` —
   empty-state "start new chat / terminal" surface. It mounts
   `AgentChatPane` in embedded draft mode, passes `draftContextTargetId`
