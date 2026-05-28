@@ -12,7 +12,7 @@ function modelInfo(overrides: Partial<AgentChatModelInfo> & { id: string }): Age
 
 describe("buildModelPickerLayout", () => {
   const models: AgentChatModelInfo[] = [
-    modelInfo({ id: "anthropic/claude-opus-4-7", displayName: "Claude Opus 4.7" }),
+    modelInfo({ id: "anthropic/claude-opus-4-8", displayName: "Claude Opus 4.8 1M" }),
     modelInfo({ id: "anthropic/claude-sonnet-4-6", displayName: "Claude Sonnet 4.6" }),
     modelInfo({ id: "openai/gpt-5", displayName: "GPT-5" }),
   ];
@@ -51,7 +51,7 @@ describe("buildModelPickerLayout", () => {
     const layout = buildModelPickerLayout({
       models,
       favorites: [],
-      recents: ["openai/gpt-5", "anthropic/claude-opus-4-7"],
+      recents: ["openai/gpt-5", "anthropic/claude-opus-4-8"],
       activeModelId: null,
       query: "",
       selection: { kind: "recents" },
@@ -60,7 +60,7 @@ describe("buildModelPickerLayout", () => {
     });
     expect(layout.entries.map((entry) => entry.modelId)).toEqual([
       "openai/gpt-5",
-      "anthropic/claude-opus-4-7",
+      "anthropic/claude-opus-4-8",
     ]);
   });
 
@@ -82,7 +82,7 @@ describe("buildModelPickerLayout", () => {
   it("marks favorites on the resulting entries", () => {
     const layout = buildModelPickerLayout({
       models,
-      favorites: ["anthropic/claude-opus-4-7"],
+      favorites: ["anthropic/claude-opus-4-8"],
       recents: [],
       activeModelId: null,
       query: "",
@@ -90,7 +90,7 @@ describe("buildModelPickerLayout", () => {
       focusedIndex: 0,
       searchMode: false,
     });
-    const opus = layout.entries.find((entry) => entry.modelId === "anthropic/claude-opus-4-7");
+    const opus = layout.entries.find((entry) => entry.modelId === "anthropic/claude-opus-4-8");
     expect(opus?.isFavorite).toBe(true);
   });
 

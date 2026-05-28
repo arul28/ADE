@@ -8,11 +8,11 @@ describe("buildModelPickerSearchText", () => {
       buildModelPickerSearchText({
         family: "opencode",
         providerDisplayName: "opencode",
-        name: "Claude Opus 4.7",
+        name: "Claude Opus 4.8 1M",
         subProvider: "GitHub Copilot",
         aliases: ["opus-latest"],
       }),
-    ).toBe("claude opus 4.7 github copilot opencode opencode opus-latest");
+    ).toBe("claude opus 4.8 1m github copilot opencode opencode opus-latest");
   });
 });
 
@@ -23,7 +23,7 @@ describe("scoreModelPickerSearch", () => {
         {
           family: "opencode",
           providerDisplayName: "opencode",
-          name: "Claude Opus 4.7",
+          name: "Claude Opus 4.8 1M",
           subProvider: "GitHub Copilot",
         },
         "coplt op",
@@ -49,7 +49,7 @@ describe("scoreModelPickerSearch", () => {
       {
         family: "opencode",
         providerDisplayName: "opencode",
-        name: "Claude Opus 4.7",
+        name: "Claude Opus 4.8 1M",
         subProvider: "GitHub Copilot",
       },
       "copilot opus",
@@ -58,7 +58,7 @@ describe("scoreModelPickerSearch", () => {
       {
         family: "opencode",
         providerDisplayName: "opencode",
-        name: "Claude Opus 4.7",
+        name: "Claude Opus 4.8 1M",
         subProvider: "GitHub Copilot",
       },
       "coplt op",
@@ -98,18 +98,18 @@ describe("scoreModelPickerSearch", () => {
       {
         family: "anthropic",
         providerDisplayName: "Claude",
-        name: "Claude Opus 4.7",
+        name: "Claude Opus 4.8 1M",
         isFavorite: true,
       },
-      "opus 4.7",
+      "opus 4.8",
     );
     const nonFavoriteExactScore = scoreModelPickerSearch(
       {
         family: "cursor",
         providerDisplayName: "Cursor",
-        name: "Opus 4.7",
+        name: "Opus 4.8 1M",
       },
-      "opus 4.7",
+      "opus 4.8",
     );
 
     expect(favoriteScore).not.toBeNull();
@@ -150,7 +150,7 @@ describe("scoreModelPickerSearch", () => {
         {
           family: "anthropic",
           providerDisplayName: "Claude",
-          name: "Claude Opus 4.7",
+        name: "Claude Opus 4.8 1M",
         },
         "",
       ),

@@ -2152,14 +2152,14 @@ describe("createSyncRemoteCommandService", () => {
       await service.execute(makePayload("work.startCliSession", {
         laneId: "lane-1",
         provider: "claude",
-        model: "anthropic/claude-opus-4-7-1m",
+        model: "anthropic/claude-opus-4-8",
         initialInput: "hello?",
       }));
 
       const call = ptyService.create.mock.calls.at(-1)?.[0];
-      expect(call?.args).toEqual(expect.arrayContaining(["--model", "opus[1m]"]));
+      expect(call?.args).toEqual(expect.arrayContaining(["--model", "claude-opus-4-8"]));
       expect(call?.args?.at(-1)).toContain("hello?");
-      expect(call?.startupCommand).toContain("opus[1m]");
+      expect(call?.startupCommand).toContain("claude-opus-4-8");
       expect(call?.startupCommand).toContain("hello?");
       expect(ptyService.writeBySessionId).not.toHaveBeenCalled();
     });

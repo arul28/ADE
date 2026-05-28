@@ -38,7 +38,7 @@ function renderControls(overrides: {
   onPermissionModeChange?: ReturnType<typeof vi.fn>;
 } = {}) {
   const props = {
-    modelId: overrides.modelId ?? "anthropic/claude-opus-4-7",
+    modelId: overrides.modelId ?? "anthropic/claude-opus-4-8",
     reasoningEffort: overrides.reasoningEffort ?? "high",
     permissionMode: overrides.permissionMode ?? "default",
     onModelChange: overrides.onModelChange ?? vi.fn(),
@@ -71,7 +71,7 @@ describe("PrResolverLaunchControls", () => {
   it("uses Work-tab Claude permission presets, including ask permissions", async () => {
     const user = userEvent.setup();
     const props = renderControls({
-      modelId: "anthropic/claude-opus-4-7",
+      modelId: "anthropic/claude-opus-4-8",
       permissionMode: "default",
     });
 
@@ -103,7 +103,7 @@ describe("PrResolverLaunchControls", () => {
   it("normalizes reasoning and permissions when switching models", async () => {
     const user = userEvent.setup();
     const props = renderControls({
-      modelId: "anthropic/claude-opus-4-7",
+      modelId: "anthropic/claude-opus-4-8",
       reasoningEffort: "xhigh",
       permissionMode: "config-toml",
     });

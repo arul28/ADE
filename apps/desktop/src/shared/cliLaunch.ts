@@ -12,6 +12,7 @@ import {
 } from "./agentSkillRoots";
 import { buildAdeCliAgentGuidance, buildAdeCliInlineGuidance } from "./adeCliGuidance";
 import { isProviderSlashCommandInput } from "./chatSlashCommands";
+import { resolveClaudeCliModelAlias } from "./claudeCliModels";
 import { decodeOpenCodeRegistryId } from "./modelRegistry";
 import { commandArrayToLine, quoteShellArg } from "./shell";
 
@@ -492,44 +493,7 @@ function workTabCliPrompt(initialPrompt: string | null, skillRoots: readonly str
 }
 
 export function resolveClaudeCliModelForLaunch(model: string | null | undefined): string | null {
-  const raw = String(model ?? "").trim();
-  if (!raw) return null;
-  const normalized = raw.toLowerCase();
-  const known: Record<string, string> = {
-    opus: "opus",
-    "opus-4-7": "opus",
-    "claude-opus-4-7": "opus",
-    "anthropic/claude-opus-4-7": "opus",
-    "anthropic/claude-opus-4-7-api": "opus",
-    "opus[1m]": "opus[1m]",
-    "opus-1m": "opus[1m]",
-    "opus-4-7-1m": "opus[1m]",
-    "claude-opus-4-7[1m]": "opus[1m]",
-    "claude-opus-4-7-1m": "opus[1m]",
-    "anthropic/claude-opus-4-7-1m": "opus[1m]",
-    sonnet: "sonnet",
-    "sonnet-4-6": "sonnet",
-    "sonnet-4-5": "sonnet",
-    "claude-sonnet-4-6": "sonnet",
-    "claude-sonnet-4-5": "sonnet",
-    "claude-sonnet-4-5-20241022": "sonnet",
-    "anthropic/claude-sonnet-4-6": "sonnet",
-    "anthropic/claude-sonnet-4-6-api": "sonnet",
-    haiku: "haiku",
-    "haiku-4-5": "haiku",
-    "claude-haiku-4-5": "haiku",
-    "claude-haiku-4-5-20251001": "haiku",
-    "anthropic/claude-haiku-4-5": "haiku",
-    "anthropic/claude-haiku-4-5-api": "haiku",
-  };
-  const mapped = known[normalized];
-  if (mapped) return mapped;
-  const hasOpus1mToken = normalized.includes("[1m]") || /(^|[^0-9])1m($|[^0-9])/.test(normalized);
-  if (normalized.includes("opus") && hasOpus1mToken) return "opus[1m]";
-  if (normalized.includes("sonnet")) return "sonnet";
-  if (normalized.includes("opus")) return "opus";
-  if (normalized.includes("haiku")) return "haiku";
-  return raw;
+  return resolveClaudeCliModelAlias(model, null);
 }
 
 function permissionModeToClaudeFlag(permissionMode: AgentChatPermissionMode | null | undefined): string[] {

@@ -3015,10 +3015,17 @@ function resolveClaudeTurnModelPayload(
     selectedDescriptor?.id === "anthropic/claude-opus-4-7-1m"
     || selectedDescriptor?.shortId === "opus-1m"
     || selectedDescriptor?.providerModelId.toLowerCase().includes("[1m]");
+  const selectedIsOpus48 = selectedDescriptor?.id === "anthropic/claude-opus-4-8";
   const shouldPreserveSelectedModel = (reportedModelId: string | undefined): boolean => {
     if (!reportedModelId || reportedModelId === session.modelId) return false;
-    if (!selectedIsOpusOneMillion) return false;
     const reportedDescriptor = getModelById(reportedModelId) ?? resolveModelAlias(reportedModelId);
+    if (selectedIsOpus48) {
+      return (
+        reportedDescriptor?.id === "anthropic/claude-opus-4-7"
+        || reportedDescriptor?.id === "anthropic/claude-opus-4-7-1m"
+      );
+    }
+    if (!selectedIsOpusOneMillion) return false;
     return reportedDescriptor?.id === "anthropic/claude-opus-4-7";
   };
 

@@ -2038,7 +2038,7 @@ describe("adeRpcServer", () => {
       laneId: "lane-1",
       provider: "claude",
       permissionMode: "default",
-      model: "anthropic/claude-opus-4-7-1m",
+      model: "anthropic/claude-opus-4-8",
       cols: 90,
       rows: 24,
     });
@@ -2053,9 +2053,9 @@ describe("adeRpcServer", () => {
       }),
     );
     const createCall = fixture.runtime.ptyService.create.mock.calls[0]?.[0] as { args?: string[]; startupCommand?: string };
-    expect(createCall.args).toEqual(expect.arrayContaining(["--model", "opus[1m]"]));
-    expect(createCall.startupCommand).toContain("opus[1m]");
-    expect(response.structuredContent.model).toBe("anthropic/claude-opus-4-7-1m");
+    expect(createCall.args).toEqual(expect.arrayContaining(["--model", "claude-opus-4-8"]));
+    expect(createCall.startupCommand).toContain("claude-opus-4-8");
+    expect(response.structuredContent.model).toBe("anthropic/claude-opus-4-8");
   });
 
   it("passes Claude auto permission mode to fresh Claude Code terminal launches", async () => {

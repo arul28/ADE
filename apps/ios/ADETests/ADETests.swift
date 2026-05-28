@@ -7423,12 +7423,19 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(anthropicProvider?.models.first?.id, "opencode/anthropic/claude-sonnet-4-6")
   }
 
-  func testWorkModelCatalogIncludesGPT55CodexMetadata() {
+  func testWorkModelCatalogIncludesFlagshipModelMetadata() {
     let groups = workModelCatalogGroups(currentModelId: "", currentProvider: "codex")
+    let claudeGroup = groups.first(where: { $0.key == "claude" })
+    let anthropicProvider = claudeGroup?.providers.first(where: { $0.key == "anthropic" })
+    let opus48 = anthropicProvider?.models.first(where: { $0.id == "claude-opus-4-8" })
     let codexGroup = groups.first(where: { $0.key == "codex" })
     let openAIProvider = codexGroup?.providers.first(where: { $0.key == "openai" })
     let gpt55 = openAIProvider?.models.first(where: { $0.id == "gpt-5.5" })
 
+    XCTAssertEqual(opus48?.displayName, "Claude Opus 4.8 1M")
+    XCTAssertEqual(opus48?.tier, .flagship)
+    XCTAssertEqual(opus48?.tagline, "Flagship · 1M context")
+    XCTAssertNotNil(ADEColor.modelBrand(for: "claude-opus-4-8"))
     XCTAssertEqual(gpt55?.displayName, "GPT-5.5")
     XCTAssertEqual(gpt55?.tier, .flagship)
     XCTAssertNotNil(ADEColor.modelBrand(for: "gpt-5.5"))
@@ -7436,6 +7443,8 @@ final class ADETests: XCTestCase {
   }
 
   func testMobileComposerReasoningTiersMirrorDesktopRegistry() {
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-8"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-4-8"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "opus"), ["low", "medium", "high", "xhigh", "max"])

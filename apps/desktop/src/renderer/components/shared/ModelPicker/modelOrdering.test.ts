@@ -5,12 +5,12 @@ import { sortModelItems } from "./modelOrdering";
 describe("sortModelItems", () => {
   it("preserves the original order when no options are provided", () => {
     const items = [
-      { modelId: "anthropic/claude-opus-4-7", label: "opus" },
+      { modelId: "anthropic/claude-opus-4-8", label: "opus" },
       { modelId: "openai/gpt-5", label: "gpt" },
       { modelId: "anthropic/claude-sonnet-4-6", label: "sonnet" },
     ];
     expect(sortModelItems(items).map((i) => i.modelId)).toEqual([
-      "anthropic/claude-opus-4-7",
+      "anthropic/claude-opus-4-8",
       "openai/gpt-5",
       "anthropic/claude-sonnet-4-6",
     ]);
@@ -19,15 +19,15 @@ describe("sortModelItems", () => {
   it("groups favorites first when groupFavorites is enabled", () => {
     const items = [
       { modelId: "openai/gpt-5" },
-      { modelId: "anthropic/claude-opus-4-7" },
+      { modelId: "anthropic/claude-opus-4-8" },
       { modelId: "anthropic/claude-sonnet-4-6" },
     ];
     const sorted = sortModelItems(items, {
-      favoriteModelIds: ["anthropic/claude-opus-4-7"],
+      favoriteModelIds: ["anthropic/claude-opus-4-8"],
       groupFavorites: true,
     });
     expect(sorted.map((i) => i.modelId)).toEqual([
-      "anthropic/claude-opus-4-7",
+      "anthropic/claude-opus-4-8",
       "openai/gpt-5",
       "anthropic/claude-sonnet-4-6",
     ]);
@@ -36,15 +36,15 @@ describe("sortModelItems", () => {
   it("does not move favorites when groupFavorites is false", () => {
     const items = [
       { modelId: "openai/gpt-5" },
-      { modelId: "anthropic/claude-opus-4-7" },
+      { modelId: "anthropic/claude-opus-4-8" },
     ];
     const sorted = sortModelItems(items, {
-      favoriteModelIds: ["anthropic/claude-opus-4-7"],
+      favoriteModelIds: ["anthropic/claude-opus-4-8"],
       groupFavorites: false,
     });
     expect(sorted.map((i) => i.modelId)).toEqual([
       "openai/gpt-5",
-      "anthropic/claude-opus-4-7",
+      "anthropic/claude-opus-4-8",
     ]);
   });
 

@@ -49,8 +49,8 @@ describe("modelRegistry", () => {
   });
 
   it("resolveModelSlug returns canonical id for registry input and codex-hinted refs", () => {
-    const byId = resolveModelSlug("  anthropic/claude-opus-4-7  ");
-    expect(byId).toBe("anthropic/claude-opus-4-7");
+    const byId = resolveModelSlug("  anthropic/claude-opus-4-8  ");
+    expect(byId).toBe("anthropic/claude-opus-4-8");
     expect(resolveModelSlug("gpt-5.4")).toBe("openai/gpt-5.4");
     expect(resolveModelSlug("gpt-5.5")).toBe("openai/gpt-5.5");
     expect(resolveModelSlug("gpt-5.4", "codex")).toBe("openai/gpt-5.4");
@@ -197,17 +197,23 @@ describe("modelRegistry", () => {
     expect(getRuntimeModelRefForDescriptor(descriptor!, "codex")).toBe("gpt-5.5");
   });
 
-  describe("Claude Opus 4.7 descriptors", () => {
-    it("exposes the standard Opus 4.7 with the expected context window and pricing", () => {
-      const opus = getModelById("anthropic/claude-opus-4-7");
+  describe("Claude Opus descriptors", () => {
+    it("adds Opus 4.8 1M at the top of the Claude model registry", () => {
+      expect(MODEL_REGISTRY.filter((model) => model.family === "anthropic").slice(0, 4).map((model) => model.id)).toEqual([
+        "anthropic/claude-opus-4-8",
+        "anthropic/claude-opus-4-7",
+        "anthropic/claude-opus-4-7-1m",
+        "anthropic/claude-sonnet-4-6",
+      ]);
+      const opus = getModelById("anthropic/claude-opus-4-8");
       expect(opus).toBeTruthy();
       expect(opus).toMatchObject({
-        displayName: "Claude Opus 4.7",
-        shortId: "opus",
+        displayName: "Claude Opus 4.8 1M",
+        shortId: "opus-4.8-1m",
         family: "anthropic",
         providerRoute: "claude-cli",
-        providerModelId: "claude-opus-4-7",
-        contextWindow: 200_000,
+        providerModelId: "claude-opus-4-8",
+        contextWindow: 1_000_000,
         maxOutputTokens: 128_000,
         inputPricePer1M: 5,
         outputPricePer1M: 25,
@@ -215,29 +221,26 @@ describe("modelRegistry", () => {
       expect(opus?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max"]);
     });
 
-    it("exposes the 1M Opus 4.7 variant with the xhigh reasoning tier and legacy aliases", () => {
-      const opus1m = getModelById("anthropic/claude-opus-4-7-1m");
-      expect(opus1m).toBeTruthy();
-      expect(opus1m).toMatchObject({
-        shortId: "opus-1m",
-        displayName: "Claude Opus 4.7 1M",
-        contextWindow: 1_000_000,
-        maxOutputTokens: 128_000,
-        providerModelId: "claude-opus-4-7[1m]",
+    it("keeps Opus 4.7 and Opus 4.7 1M as distinct selectable models", () => {
+      expect(getModelById("anthropic/claude-opus-4-7")).toMatchObject({
+        displayName: "Claude Opus 4.7",
+        shortId: "opus",
+        providerModelId: "claude-opus-4-7",
+        contextWindow: 200_000,
       });
-      expect(opus1m?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max"]);
-      expect(opus1m?.aliases).toContain("opus[1m]");
-      expect(opus1m?.aliases).toContain("claude-opus-4-7[1m]");
+      expect(getModelById("anthropic/claude-opus-4-7-1m")).toMatchObject({
+        displayName: "Claude Opus 4.7 1M",
+        shortId: "opus-1m",
+        providerModelId: "claude-opus-4-7[1m]",
+        contextWindow: 1_000_000,
+      });
+      expect(resolveModelAlias("opus")?.id).toBe("anthropic/claude-opus-4-7");
+      expect(resolveModelAlias("opus[1m]")?.id).toBe("anthropic/claude-opus-4-7-1m");
+      expect(resolveModelAlias("anthropic/claude-opus-4-7")?.id).toBe("anthropic/claude-opus-4-7");
+      expect(resolveModelAlias("anthropic/claude-opus-4-7-1m")?.id).toBe("anthropic/claude-opus-4-7-1m");
     });
 
-    it("resolves the legacy opus[1m] alias to the 4.7 1M descriptor", () => {
-      const resolved = resolveModelAlias("opus[1m]");
-      expect(resolved?.id).toBe("anthropic/claude-opus-4-7-1m");
-    });
-
-    it("keeps claude-opus-4-6 ids as compatibility aliases", () => {
-      const legacyIds = MODEL_REGISTRY.filter((m) => m.id.includes("claude-opus-4-6")).map((m) => m.id);
-      expect(legacyIds).toEqual([]);
+    it("keeps claude-opus-4-6 ids as compatibility aliases to their existing 4.7 targets", () => {
       expect(resolveModelAlias("anthropic/claude-opus-4-6")?.id).toBe("anthropic/claude-opus-4-7");
       expect(resolveModelAlias("anthropic/claude-opus-4-6-1m")?.id).toBe("anthropic/claude-opus-4-7-1m");
       expect(getModelById("anthropic/claude-opus-4-6")?.id).toBe("anthropic/claude-opus-4-7");

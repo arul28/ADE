@@ -1672,7 +1672,7 @@ describe("createAgentChatService", () => {
       expect(session.model).toBe("sonnet");
     });
 
-    it("derives Claude Opus 1M from bracketed model aliases", async () => {
+    it("keeps legacy bracketed 1M model aliases on Claude Opus 4.7 1M", async () => {
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -1684,7 +1684,13 @@ describe("createAgentChatService", () => {
       expect(session.model).toBe("claude-opus-4-7[1m]");
     });
 
-    it("preserves Claude Opus 1M in done events when the SDK reports base Opus", async () => {
+    it.each([
+      { reportedModel: "opus", usageModel: "claude-opus-4-8" },
+      { reportedModel: "claude-opus-4-7-1m", usageModel: "claude-opus-4-7-1m" },
+    ])("preserves Claude Opus 4.8 in done events when the SDK reports $reportedModel", async ({
+      reportedModel,
+      usageModel,
+    }) => {
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
@@ -1695,31 +1701,31 @@ describe("createAgentChatService", () => {
             yield {
               type: "system",
               subtype: "init",
-              session_id: "sdk-opus-1m",
-              model: "claude-opus-4-7",
+              session_id: "sdk-opus-4-8",
+              model: reportedModel,
               slash_commands: [],
             };
             yield {
               type: "result",
               subtype: "success",
               is_error: false,
-              session_id: "sdk-opus-1m",
+              session_id: "sdk-opus-4-8",
               usage: { input_tokens: 1, output_tokens: 1 },
-              modelUsage: { "claude-opus-4-7": { input_tokens: 1, output_tokens: 1 } },
+              modelUsage: { [usageModel]: { input_tokens: 1, output_tokens: 1 } },
             };
             return;
           }
           yield {
             type: "system",
             subtype: "init",
-            session_id: "sdk-opus-1m",
-            model: "claude-opus-4-7",
+            session_id: "sdk-opus-4-8",
+            model: reportedModel,
             slash_commands: [],
           };
           yield {
             type: "assistant",
             message: {
-              model: "claude-opus-4-7",
+              model: reportedModel,
               content: [{ type: "text", text: "Done" }],
               usage: { input_tokens: 1, output_tokens: 1 },
             },
@@ -1728,13 +1734,13 @@ describe("createAgentChatService", () => {
             type: "result",
             subtype: "success",
             is_error: false,
-            session_id: "sdk-opus-1m",
+            session_id: "sdk-opus-4-8",
             usage: { input_tokens: 1, output_tokens: 1 },
-            modelUsage: { "claude-opus-4-7": { input_tokens: 1, output_tokens: 1 } },
+            modelUsage: { [usageModel]: { input_tokens: 1, output_tokens: 1 } },
           };
         })()),
         close: vi.fn(),
-        sessionId: "sdk-opus-1m",
+        sessionId: "sdk-opus-4-8",
         setPermissionMode: vi.fn().mockResolvedValue(undefined),
       } as any);
 
@@ -1744,8 +1750,8 @@ describe("createAgentChatService", () => {
       const session = await service.createSession({
         laneId: "lane-1",
         provider: "claude",
-        model: "claude-opus-4-7[1m]",
-        modelId: "anthropic/claude-opus-4-7-1m",
+        model: "claude-opus-4-8",
+        modelId: "anthropic/claude-opus-4-8",
       });
 
       await service.runSessionTurn({
@@ -1755,8 +1761,8 @@ describe("createAgentChatService", () => {
 
       const doneEvent = events.filter((event) => event.event.type === "done").at(-1);
       expect(doneEvent?.event.type).toBe("done");
-      expect((doneEvent!.event as any).model).toBe("claude-opus-4-7[1m]");
-      expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-4-7-1m");
+      expect((doneEvent!.event as any).model).toBe("claude-opus-4-8");
+      expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-4-8");
     });
 
     it("honors an explicit initial chat title", async () => {
