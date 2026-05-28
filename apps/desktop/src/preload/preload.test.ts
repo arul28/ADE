@@ -1351,17 +1351,26 @@ describe("preload OAuth bridge", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.adeActionsListRegistry);
   });
 
-  it("uses the local ADE action registry when no remote project is bound", async () => {
+  it("routes ADE action registry listing through the local project runtime when bound", async () => {
+    const binding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "Project",
+    };
     const registry = [{ domain: "git", actions: [{ name: "status" }] }];
     const invoke = vi.fn(async (channel: string, payload?: unknown) => {
       if (channel === IPC.appGetWindowSession) {
-        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding: null };
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
       }
-      if (channel === IPC.adeActionsListRegistry) {
+      if (channel === IPC.localRuntimeListActionRegistry) {
         return registry;
       }
       if (channel === IPC.remoteRuntimeListActionRegistry) {
         throw new Error("local action registry should not use remote IPC");
+      }
+      if (channel === IPC.adeActionsListRegistry) {
+        throw new Error("bound local action registry should use ADE runtime");
       }
       throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(payload)}`);
     });
@@ -1387,11 +1396,52 @@ describe("preload OAuth bridge", () => {
     const bridge = (globalThis as any).__adeBridge;
     await expect(bridge.actions.listRegistry()).resolves.toEqual(registry);
 
-    expect(invoke).toHaveBeenCalledWith(IPC.adeActionsListRegistry);
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeListActionRegistry, {
+      rootPath: "/repo",
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.adeActionsListRegistry);
     expect(invoke).not.toHaveBeenCalledWith(
       IPC.remoteRuntimeListActionRegistry,
       expect.anything(),
     );
+  });
+
+  it("uses the in-process ADE action registry when no project runtime is bound", async () => {
+    const registry = [{ domain: "git", actions: [{ name: "status" }] }];
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding: null };
+      }
+      if (channel === IPC.adeActionsListRegistry) {
+        return registry;
+      }
+      if (channel === IPC.localRuntimeListActionRegistry || channel === IPC.remoteRuntimeListActionRegistry) {
+        throw new Error("unbound action registry should not use a project runtime");
+      }
+      throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(payload)}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.actions.listRegistry()).resolves.toEqual(registry);
+    expect(invoke).toHaveBeenCalledWith(IPC.adeActionsListRegistry);
   });
 
   it("uses in-process file IPC when no local runtime binding exists", async () => {
@@ -3096,6 +3146,72 @@ describe("preload OAuth bridge", () => {
       },
     });
     expect(invoke).not.toHaveBeenCalledWith(IPC.ptySendToSession, input);
+  });
+
+  it("routes PTY resumeSession through a remote project runtime when bound", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const input = {
+      sessionId: "session-1",
+      cols: 100,
+      rows: 30,
+    };
+    const result = {
+      ptyId: "pty-1",
+      sessionId: "session-1",
+      pid: 123,
+      session: null,
+      resumed: true,
+      reusedExistingRuntime: false,
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeCallAction) {
+        return { ok: true, domain: "pty", action: "resumeSession", result, statusHints: {} };
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.pty.resumeSession(input)).resolves.toEqual(result);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: {
+        domain: "pty",
+        action: "resumeSession",
+        args: input,
+      },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.ptyResumeSession, input);
   });
 
   it("routes App Control attachToTarget through the remote runtime with positional args", async () => {

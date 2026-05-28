@@ -485,6 +485,8 @@ export async function createAdeRuntime(args: {
         excludeToolTypes: ["claude-chat", "codex-chat", "opencode-chat", "cursor", "droid-chat"],
         liveOwnerPids: processRegistry.listLivePids(),
         liveOwnerIdentities: processRegistry.listLiveProcessIdentities(),
+        knownOwnerPids: processRegistry.listKnownPids(),
+        knownOwnerIdentities: processRegistry.listKnownProcessIdentities(),
         freshActivityGraceMs: STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS,
       });
       if (reconciledSessions > 0) {

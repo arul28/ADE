@@ -15,6 +15,7 @@ import type {
   RemoteRuntimeStreamEventsResult,
 } from "../../../shared/types/remoteRuntime";
 import type {
+  AdeActionRegistryEntry,
   LocalRuntimeStatus,
   SyncDeviceRecord,
   SyncDeviceRuntimeState,
@@ -623,6 +624,17 @@ export class LocalRuntimeConnectionPool {
     };
   }
 
+  async listActionRegistryForRoot(rootPath: string): Promise<AdeActionRegistryEntry[]> {
+    const project = await this.ensureProject(rootPath);
+    const entry = await this.connect();
+    const value = await entry.client.call("ade/actions/call", {
+      projectId: project.projectId,
+      name: "list_ade_actions",
+      arguments: { domain: "all" },
+    });
+    return normalizeAdeActionRegistry(value);
+  }
+
   async streamEventsForRoot(
     rootPath: string,
     request: RemoteRuntimeStreamEventsRequest = {},
@@ -928,6 +940,48 @@ function normalizeBufferedEvent(value: unknown): RemoteRuntimeBufferedEvent | nu
     category: record.category,
     payload,
   };
+}
+
+function normalizeAdeActionRegistry(value: unknown): AdeActionRegistryEntry[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Local ADE service did not return an action registry.");
+  }
+  const record = value as Record<string, unknown>;
+  if (record.ok === false) {
+    const error = record.error && typeof record.error === "object" && !Array.isArray(record.error)
+      ? record.error as Record<string, unknown>
+      : {};
+    throw new Error(typeof error.message === "string" ? error.message : "Local ADE service action registry lookup failed.");
+  }
+  const rawActions = Array.isArray(record.actions) ? record.actions : null;
+  if (!rawActions) {
+    throw new Error("Local ADE service did not return an action registry.");
+  }
+
+  const grouped = new Map<string, Map<string, { name: string; description?: string }>>();
+  for (const raw of rawActions) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const action = raw as Record<string, unknown>;
+    const domain = typeof action.domain === "string" && action.domain.trim() ? action.domain.trim() : null;
+    const name = typeof action.action === "string" && action.action.trim() ? action.action.trim() : null;
+    if (!domain || !name) continue;
+    const description = typeof action.description === "string" && action.description.trim()
+      ? action.description.trim()
+      : undefined;
+    let actions = grouped.get(domain);
+    if (!actions) {
+      actions = new Map();
+      grouped.set(domain, actions);
+    }
+    actions.set(name, description ? { name, description } : { name });
+  }
+
+  return Array.from(grouped.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([domain, actions]) => ({
+      domain,
+      actions: Array.from(actions.values()).sort((a, b) => a.name.localeCompare(b.name)),
+    }));
 }
 
 async function subscribeToRuntimeEvents(

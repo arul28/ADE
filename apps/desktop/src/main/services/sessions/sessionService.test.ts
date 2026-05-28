@@ -623,6 +623,95 @@ describe("sessionService resume metadata", () => {
     activeDisposers.push(async () => db.close());
   });
 
+  it("does not reconcile sessions owned by unknown synced machines when known owners are scoped locally", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "session-local-stale",
+      laneId: "lane-1",
+      ptyId: "pty-local-stale",
+      tracked: true,
+      title: "Local stale",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-local-stale.log",
+      toolType: "codex",
+      ownerPid: 99_999,
+      ownerProcessStartedAt: "2026-03-17T00:00:00.000Z",
+    });
+    service.create({
+      sessionId: "session-remote-owner",
+      laneId: "lane-1",
+      ptyId: "pty-remote-owner",
+      tracked: true,
+      title: "Remote owner",
+      startedAt: "2026-03-17T00:11:00.000Z",
+      transcriptPath: "/tmp/session-remote-owner.log",
+      toolType: "codex",
+      ownerPid: 88_888,
+      ownerProcessStartedAt: "2026-03-17T00:02:00.000Z",
+    });
+    service.create({
+      sessionId: "session-local-reused-pid",
+      laneId: "lane-1",
+      ptyId: "pty-local-reused-pid",
+      tracked: true,
+      title: "Local reused pid",
+      startedAt: "2026-03-17T00:11:30.000Z",
+      transcriptPath: "/tmp/session-local-reused-pid.log",
+      toolType: "codex",
+      ownerPid: 12_345,
+      ownerProcessStartedAt: "2026-03-17T00:04:00.000Z",
+    });
+    service.create({
+      sessionId: "session-legacy-ownerless",
+      laneId: "lane-1",
+      ptyId: "pty-legacy-ownerless",
+      tracked: true,
+      title: "Legacy",
+      startedAt: "2026-03-17T00:12:00.000Z",
+      transcriptPath: "/tmp/session-legacy-ownerless.log",
+      toolType: "claude",
+    });
+
+    const reconciled = service.reconcileStaleRunningSessions({
+      endedAt: "2026-03-17T00:20:00.000Z",
+      status: "detached",
+      liveOwnerPids: new Set([12_345]),
+      liveOwnerIdentities: [{ pid: 12_345, startedAt: "2026-03-17T00:05:00.000Z" }],
+      knownOwnerPids: new Set([12_345, 99_999]),
+      knownOwnerIdentities: [
+        { pid: 12_345, startedAt: "2026-03-17T00:05:00.000Z" },
+        { pid: 12_345, startedAt: "2026-03-17T00:04:00.000Z" },
+        { pid: 99_999, startedAt: "2026-03-17T00:00:00.000Z" },
+      ],
+    });
+
+    expect(reconciled).toBe(3);
+    expect(service.get("session-local-stale")).toEqual(expect.objectContaining({
+      status: "detached",
+      ptyId: null,
+    }));
+    expect(service.get("session-local-reused-pid")).toEqual(expect.objectContaining({
+      status: "detached",
+      ptyId: null,
+    }));
+    expect(service.get("session-legacy-ownerless")).toEqual(expect.objectContaining({
+      status: "detached",
+      ptyId: null,
+    }));
+    expect(service.get("session-remote-owner")).toEqual(expect.objectContaining({
+      status: "running",
+      ptyId: "pty-remote-owner",
+      ownerPid: 88_888,
+    }));
+
+    activeDisposers.push(async () => db.close());
+  });
+
   it("does not reconcile running sessions with fresh startup or output", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");

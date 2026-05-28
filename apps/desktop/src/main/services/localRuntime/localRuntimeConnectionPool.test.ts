@@ -301,6 +301,54 @@ describe("local runtime connection pool", () => {
     expect(pool.getStatus().connectionState).toBe("idle");
   });
 
+  it("normalizes local action registry entries from runtime action names", async () => {
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never, { disableSync: true });
+    const client = {
+      call: vi.fn(async () => ({
+        ok: true,
+        actions: [
+          { domain: "git", action: "push", name: "git.push", description: "Push changes" },
+          { domain: "git", action: "status", name: "git.status" },
+          { domain: "chat", action: "create", name: "chat.create" },
+        ],
+      })),
+      close: vi.fn(),
+    };
+    (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot = new Map([
+      [path.resolve("/repo"), { projectId: "project-1", rootPath: path.resolve("/repo") }],
+    ]);
+    (pool as unknown as { connection: Promise<unknown>; activeClient: unknown }).connection = Promise.resolve({
+      client,
+      child: null,
+      socketPath: "/tmp/ade.sock",
+    });
+    (pool as unknown as { activeClient: unknown }).activeClient = client;
+
+    const registry = await pool.listActionRegistryForRoot("/repo");
+
+    expect(client.call).toHaveBeenCalledWith("ade/actions/call", {
+      projectId: "project-1",
+      name: "list_ade_actions",
+      arguments: { domain: "all" },
+    });
+    expect(registry).toEqual([
+      { domain: "chat", actions: [{ name: "create" }] },
+      {
+        domain: "git",
+        actions: [
+          { name: "push", description: "Push changes" },
+          { name: "status" },
+        ],
+      },
+    ]);
+    pool.dispose();
+  });
+
   it("terminates an app-owned fallback runtime when disposed", async () => {
     vi.useFakeTimers();
     const child = {

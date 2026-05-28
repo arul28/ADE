@@ -2041,6 +2041,8 @@ app.whenReady().then(async () => {
         status: "detached",
         liveOwnerPids: processRegistry.listLivePids(),
         liveOwnerIdentities: processRegistry.listLiveProcessIdentities(),
+        knownOwnerPids: processRegistry.listKnownPids(),
+        knownOwnerIdentities: processRegistry.listKnownProcessIdentities(),
       });
       if (reconciledSessions > 0) {
         logger.warn("sessions.reconciled_stale_running", {

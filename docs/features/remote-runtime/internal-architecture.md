@@ -121,14 +121,14 @@ Preload also guards two classes of API against remote bindings:
 
 ## Per-target action registry
 
-The renderer's command palette needs to know which action domains a target supports. `ade.remoteRuntime.listActionRegistry { id, projectId }` IPC calls `RemoteConnectionPool.listActionRegistryForTarget`, which invokes `list_ade_actions` on the remote runtime and normalizes the result into `AdeActionRegistryEntry[]`. Preload's `ade.actions.listRegistry` checks the active binding: remote-bound windows go through the remote IPC, local-bound windows keep using the existing in-process IPC.
+The renderer's command palette needs to know which action domains a target supports. `ade.remoteRuntime.listActionRegistry { id, projectId }` IPC calls `RemoteConnectionPool.listActionRegistryForTarget`, which invokes `list_ade_actions` on the remote runtime and normalizes the result into `AdeActionRegistryEntry[]`. Preload's `ade.actions.listRegistry` checks the active binding: remote-bound windows query the remote runtime, local-bound windows query the local ADE runtime through `ade.localRuntime.listActionRegistry`, and the desktop in-process registry is only used when no project runtime is bound.
 
 ## Local runtime connection lifecycle
 
 `LocalRuntimeConnectionPool` handles the desktop side of the local runtime binding:
 
-- `connect()` first tries an existing `~/.ade/sock/ade.sock`. If that fails, it spawns `ade serve --socket <path>` detached (using the bundled CLI from `process.resourcesPath/ade-cli/cli.cjs` or the dev path), waits for the socket, and reconnects.
-- `initialize` is called immediately after connect. The pool compares `runtimeInfo.version` and `runtimeInfo.buildHash` with the expected desktop runtime; a mismatch closes that client and lets the next attach/spawn path choose the right daemon.
+- `connect()` first tries an existing `~/.ade/sock/ade.sock`. If that socket is unavailable, it spawns `ade serve --socket <path>` with the bundled CLI from `process.resourcesPath/ade-cli/cli.cjs` or the dev path, waits for the socket, and reconnects.
+- `initialize` is called immediately after connect. The pool compares `runtimeInfo.version`, `runtimeInfo.buildHash`, and `runtimeInfo.defaultRole` with the expected desktop runtime. A mismatch closes only that client: the primary `ade.sock` daemon is preserved, and the desktop starts or reuses a deterministic isolated socket (`ade-cto-<version>-<build>.sock`) for its own runtime instead of terminating the user's existing daemon.
 - `installServiceBestEffort()` runs `ade serve --install-service` once per session to register the per-user login service; the result feeds `LocalRuntimeStatus.serviceInstall`.
 - `getStatus()` periodically refreshes `serviceHealth` (`unsupported | not_installed | installed | running | error | unknown`) by calling `getRuntimeServiceStatus()` from the service manager.
 - The pool exposes typed entry points for action calls (`callActionForRoot`), sync calls (`callSyncForRoot`), event polling (`streamEventsForRoot`), and event subscription (`subscribeEventsForRoot`). All of them register the project with `projects.add` once and then carry `projectId` on every project-scoped request.

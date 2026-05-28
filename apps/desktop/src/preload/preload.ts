@@ -3971,6 +3971,12 @@ contextBridge.exposeInMainWorld("ade", {
           projectId: binding.projectId,
         });
       }
+      const localBinding = await getLocalProjectBinding({ fresh: true });
+      if (localBinding) {
+        return ipcRenderer.invoke(IPC.localRuntimeListActionRegistry, {
+          rootPath: localBinding.rootPath,
+        });
+      }
       return ipcRenderer.invoke(IPC.adeActionsListRegistry);
     },
   },

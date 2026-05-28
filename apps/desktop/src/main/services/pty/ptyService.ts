@@ -3072,16 +3072,30 @@ export function createPtyService({
     session: TerminalSessionSummary,
     provider: TerminalResumeProvider,
     overrides: ReturnType<typeof resumeLaunchOverrides> & { prompt?: string | null },
-  ): string | null => {
-    const metadataResumeCommand = session.resumeMetadata
-      ? buildTrackedCliResumeCommand(session.resumeMetadata, overrides)
+  ): { command: string | null; promptAtLaunch: boolean } => {
+    const prompt = typeof overrides.prompt === "string" && overrides.prompt.trim().length
+      ? overrides.prompt
+      : null;
+    const parsedResumeCommand = parseTrackedCliResumeCommand(session.resumeCommand, session.toolType);
+    const metadata = session.resumeMetadata
+      ?? (parsedResumeCommand?.provider === provider
+        ? {
+            provider,
+            targetKind: provider === "codex" ? "thread" : "session",
+            targetId: parsedResumeCommand.targetId,
+            launch: parseTrackedCliLaunchConfig(session.resumeCommand ?? "", session.toolType) ?? {},
+          } satisfies TerminalResumeMetadata
+        : null);
+    const metadataResumeCommand = metadata
+      ? buildTrackedCliResumeCommand(metadata, overrides)
       : null;
     const rawResumeCommand = metadataResumeCommand != null
       ? metadataResumeCommand
       : normalizeResumeCommand(session.resumeCommand, session.toolType);
-    return provider === "codex" && rawResumeCommand
+    const command = provider === "codex" && rawResumeCommand
       ? withCodexNoAltScreen(rawResumeCommand)
       : rawResumeCommand;
+    return { command, promptAtLaunch: Boolean(command && prompt && metadataResumeCommand) };
   };
 
   const getOrCreateResumeFlight = (
@@ -3819,12 +3833,12 @@ export function createPtyService({
           })
         : null;
       const resumeFlightAlreadyInProgress = resumeRuntimeFlights.has(sessionId);
-      const promptAtLaunch = !openCodeReplayCommand && !resumeFlightAlreadyInProgress && Boolean(resumableSession.resumeMetadata);
-      const resumeCommand = openCodeReplayCommand
-        ?? buildResumeCommandForSession(resumableSession, provider, {
+      const builtResume = buildResumeCommandForSession(resumableSession, provider, {
           ...overrides,
-          ...(promptAtLaunch ? { prompt: text } : {}),
+          ...(!openCodeReplayCommand && !resumeFlightAlreadyInProgress ? { prompt: text } : {}),
         });
+      const promptAtLaunch = !openCodeReplayCommand && !resumeFlightAlreadyInProgress && builtResume.promptAtLaunch;
+      const resumeCommand = openCodeReplayCommand ?? builtResume.command;
       if (!resumeCommand) {
         throw new Error(`Terminal session '${sessionId}' does not have a resume command.`);
       }
@@ -3835,7 +3849,9 @@ export function createPtyService({
         return buildSessionActionResult(created, { resumed: true, reusedExistingRuntime: false });
       }
 
-      const written = await writeSubmittedText(created.sessionId, text, provider);
+      const written = await writeSubmittedText(created.sessionId, text, provider, {
+        waitForReady: resumeFlightAlreadyInProgress || !resumeFlightCreated,
+      });
       if (!written) {
         logger.warn("pty.resume_send_input_failed_preserved", {
           sessionId,
@@ -3868,7 +3884,7 @@ export function createPtyService({
       const { session: resumableSession, provider } = resolvedResume instanceof Promise
         ? await resolvedResume
         : resolvedResume;
-      const resumeCommand = buildResumeCommandForSession(resumableSession, provider, resumeLaunchOverrides(args));
+      const { command: resumeCommand } = buildResumeCommandForSession(resumableSession, provider, resumeLaunchOverrides(args));
       if (!resumeCommand) {
         throw new Error(`Terminal session '${sessionId}' does not have a resume command.`);
       }

@@ -73,20 +73,17 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
 
   const writeOwnRow = (startedAtIso: string | null): void => {
     const lastSeen = nowIso();
+    const rowStartedAt = startedAtIso ?? ownStartedAt ?? lastSeen;
     db.run(
       `
         insert into runtime_processes (pid, role, project_root, started_at, last_seen)
         values (?, ?, ?, ?, ?)
-        on conflict(pid) do update set
+        on conflict(pid, started_at) do update set
           role = excluded.role,
           project_root = excluded.project_root,
-          started_at = case
-            when ? is not null then excluded.started_at
-            else runtime_processes.started_at
-          end,
           last_seen = excluded.last_seen
       `,
-      [pid, role, projectRoot, startedAtIso ?? lastSeen, lastSeen, startedAtIso],
+      [pid, role, projectRoot, rowStartedAt, lastSeen],
     );
   };
 
@@ -147,7 +144,11 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
       if (!started) return;
       started = false;
       try {
-        db.run("delete from runtime_processes where pid = ?", [pid]);
+        if (ownStartedAt) {
+          db.run("delete from runtime_processes where pid = ? and started_at = ?", [pid, ownStartedAt]);
+        } else {
+          db.run("delete from runtime_processes where pid = ?", [pid]);
+        }
       } catch (error) {
         logger.debug("process_registry.stop_failed", {
           pid,
@@ -170,10 +171,10 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
     listLiveProcessIdentities(): RuntimeProcessIdentity[] {
       const cutoffIso = new Date(Date.now() - livenessWindowMs).toISOString();
       const rows = db.all<{ pid: number; started_at: string }>(
-        "select pid, started_at from runtime_processes where last_seen >= ?",
+        "select pid, started_at from runtime_processes where last_seen >= ? order by started_at asc",
         [cutoffIso],
       );
-      const live = new Map<number, RuntimeProcessIdentity>();
+      const latestLiveByPid = new Map<number, RuntimeProcessIdentity>();
       for (const row of rows) {
         if (
           typeof row.pid === "number"
@@ -182,16 +183,48 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
           && row.started_at.trim().length > 0
           && pidLivenessCheck(row.pid)
         ) {
-          live.set(row.pid, { pid: row.pid, startedAt: row.started_at });
+          latestLiveByPid.set(row.pid, { pid: row.pid, startedAt: row.started_at });
         }
       }
       // Always include our own pid even if the heartbeat row hasn't been
       // written yet (e.g. start() not called, or first tick hasn't fired) —
       // we are demonstrably alive right now.
       if (ownStartedAt) {
-        live.set(pid, { pid, startedAt: ownStartedAt });
+        latestLiveByPid.set(pid, { pid, startedAt: ownStartedAt });
       }
-      return Array.from(live.values());
+      return Array.from(latestLiveByPid.values());
+    },
+
+    listKnownPids(): Set<number> {
+      return new Set(this.listKnownProcessIdentities().map((identity) => identity.pid));
+    },
+
+    /**
+     * Returns every process identity recorded in the local runtime registry,
+     * regardless of heartbeat age or current OS liveness. Callers use this as
+     * the boundary between "a stale process from this machine" and "a synced
+     * session owned by another machine that this process cannot validate."
+     */
+    listKnownProcessIdentities(): RuntimeProcessIdentity[] {
+      const rows = db.all<{ pid: number; started_at: string }>(
+        "select pid, started_at from runtime_processes",
+        [],
+      );
+      const known = new Map<string, RuntimeProcessIdentity>();
+      for (const row of rows) {
+        if (
+          typeof row.pid === "number"
+          && Number.isFinite(row.pid)
+          && typeof row.started_at === "string"
+          && row.started_at.trim().length > 0
+        ) {
+          known.set(`${row.pid}\0${row.started_at}`, { pid: row.pid, startedAt: row.started_at });
+        }
+      }
+      if (ownStartedAt) {
+        known.set(`${pid}\0${ownStartedAt}`, { pid, startedAt: ownStartedAt });
+      }
+      return Array.from(known.values());
     },
 
     /** Quick "is this peer still heartbeating" check. */
@@ -213,11 +246,11 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
       if (!startedAt) return false;
       if (candidatePid === pid && ownStartedAt === startedAt) return true;
       const cutoffIso = new Date(Date.now() - livenessWindowMs).toISOString();
-      const row = db.get<{ pid: number }>(
-        "select pid from runtime_processes where pid = ? and started_at = ? and last_seen >= ? limit 1",
-        [candidatePid, startedAt, cutoffIso],
+      const row = db.get<{ started_at: string }>(
+        "select started_at from runtime_processes where pid = ? and last_seen >= ? order by started_at desc limit 1",
+        [candidatePid, cutoffIso],
       );
-      return row != null && pidLivenessCheck(candidatePid);
+      return row?.started_at === startedAt && pidLivenessCheck(candidatePid);
     },
 
     /** Read-only view of every heartbeat row (live and stale). */
@@ -244,15 +277,31 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
     /** Sweeps rows whose last_seen is older than 10x the liveness window. */
     pruneStale(): number {
       const cutoffIso = new Date(Date.now() - livenessWindowMs * 10).toISOString();
+      const ownGuardSql = ownStartedAt
+        ? "not (pid = ? and started_at = ?) and last_seen < ?"
+        : "pid != ? and last_seen < ?";
+      const ownGuardParams = ownStartedAt
+        ? [pid, ownStartedAt, cutoffIso]
+        : [pid, cutoffIso];
+      const staleUnownedSql = `
+        ${ownGuardSql}
+        and not exists (
+          select 1
+            from terminal_sessions s
+           where s.status = 'running'
+             and s.owner_pid = runtime_processes.pid
+             and s.owner_process_started_at = runtime_processes.started_at
+        )
+      `;
       const row = db.get<{ count: number }>(
-        "select count(1) as count from runtime_processes where pid != ? and last_seen < ?",
-        [pid, cutoffIso],
+        `select count(1) as count from runtime_processes where ${staleUnownedSql}`,
+        ownGuardParams,
       );
       const count = Number(row?.count ?? 0);
       if (!Number.isFinite(count) || count <= 0) return 0;
       db.run(
-        "delete from runtime_processes where pid != ? and last_seen < ?",
-        [pid, cutoffIso],
+        `delete from runtime_processes where ${staleUnownedSql}`,
+        ownGuardParams,
       );
       return count;
     },

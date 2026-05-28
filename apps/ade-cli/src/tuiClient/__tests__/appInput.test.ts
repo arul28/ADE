@@ -18,6 +18,7 @@ import {
   isTerminalSessionFastPollActive,
   isTerminalSessionWorking,
   isTerminalSessionResumable,
+  shouldToggleLatestFailedLineOnBlankEnter,
   isTerminalControlToggle,
   isTerminalMouseTrackingEnabled,
   isChatTextSelectionRange,
@@ -105,6 +106,48 @@ describe("session activity helpers", () => {
       toolType: "shell",
       resumeMetadata: { provider: "claude", targetKind: "session", targetId: "session-1", launch: {} },
     })).toBe(true);
+  });
+
+  it("lets blank Enter resume a closed terminal instead of toggling the latest failed line", () => {
+    const terminal: ChatTerminalSession = {
+      terminalId: "terminal-1",
+      ptyId: null,
+      chatSessionId: null,
+      laneId: "lane-1",
+      laneName: "Lane 1",
+      title: "Claude Code",
+      toolType: "claude",
+      goal: null,
+      status: "completed",
+      runtimeState: "exited",
+      active: false,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      endedAt: "2026-01-01T00:01:00.000Z",
+      exitCode: 0,
+      pid: null,
+      resumeCommand: "claude --resume session-1",
+      lastOutputPreview: null,
+      summary: null,
+    };
+
+    expect(shouldToggleLatestFailedLineOnBlankEnter({
+      pane: "chat",
+      prompt: "",
+      latestFailedLineId: "1:command:2026-01-01T00:00:00.000Z",
+      pendingApproval: null,
+      rightPaneKind: "empty",
+      slashRowCount: 0,
+      activeTerminalSession: null,
+    })).toBe(true);
+    expect(shouldToggleLatestFailedLineOnBlankEnter({
+      pane: "chat",
+      prompt: "",
+      latestFailedLineId: "1:command:2026-01-01T00:00:00.000Z",
+      pendingApproval: null,
+      rightPaneKind: "empty",
+      slashRowCount: 0,
+      activeTerminalSession: terminal,
+    })).toBe(false);
   });
 });
 

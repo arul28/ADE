@@ -2161,6 +2161,41 @@ describe("ptyService", () => {
       );
     });
 
+    it("sendToSession rebuilds legacy resumeCommand-only sessions with the prompt at launch", async () => {
+      const { service, sessionService, mockPty, loadPty } = createHarness();
+      sessionService.create({
+        sessionId: "session-legacy-resume-command",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Codex CLI",
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: "/tmp/transcripts/session-legacy-resume-command.log",
+        toolType: "codex",
+        resumeCommand: "codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-legacy",
+        resumeMetadata: null,
+      });
+      sessionService.end({
+        sessionId: "session-legacy-resume-command",
+        endedAt: "2026-04-09T12:30:00.000Z",
+        exitCode: 0,
+        status: "completed",
+      });
+
+      await service.sendToSession({
+        sessionId: "session-legacy-resume-command",
+        text: "continue legacy thread",
+      });
+
+      const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+      expect(spawn).toHaveBeenCalledWith(
+        "/bin/bash",
+        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-legacy 'continue legacy thread'"],
+        expect.any(Object),
+      );
+      expect(mockPty.write).not.toHaveBeenCalled();
+    });
+
     it("resumeSession relaunches an ended tracked CLI session without writing a prompt", async () => {
       const { service, sessionService, mockPty, loadPty } = createHarness();
       sessionService.create({

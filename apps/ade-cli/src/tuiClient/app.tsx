@@ -267,6 +267,24 @@ export function isTerminalSessionResumable(session: ChatTerminalSession | null |
   );
 }
 
+export function shouldToggleLatestFailedLineOnBlankEnter(args: {
+  pane: PaneFocus;
+  prompt: string;
+  latestFailedLineId: string | null;
+  pendingApproval: PendingApproval | null;
+  rightPaneKind: RightPaneContent["kind"];
+  slashRowCount: number;
+  activeTerminalSession: ChatTerminalSession | null | undefined;
+}): boolean {
+  return args.pane === "chat"
+    && !args.prompt.trim()
+    && Boolean(args.latestFailedLineId)
+    && !args.pendingApproval
+    && args.rightPaneKind !== "form"
+    && args.slashRowCount === 0
+    && !isTerminalSessionResumable(args.activeTerminalSession);
+}
+
 function terminalSessionToChatSummary(session: ChatTerminalSession): AgentChatSessionSummary {
   const status: AgentChatSessionSummary["status"] = session.status === "running"
     ? session.runtimeState === "idle" ? "idle" : "active"
@@ -9161,11 +9179,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
 
-    if (pane === "chat" && key.return && !prompt.trim() && latestFailedLineId && !pendingApproval && rightPane.kind !== "form" && !slashRows.length) {
+    const expandableLineId = latestFailedLineId;
+    if (
+      key.return
+      && expandableLineId
+      && shouldToggleLatestFailedLineOnBlankEnter({
+        pane,
+        prompt,
+        latestFailedLineId: expandableLineId,
+        pendingApproval,
+        rightPaneKind: rightPane.kind,
+        slashRowCount: slashRows.length,
+        activeTerminalSession: activeTerminalSessionRef.current,
+      })
+    ) {
       setExpandedLineIds((prev) => {
         const next = new Set(prev);
-        if (next.has(latestFailedLineId)) next.delete(latestFailedLineId);
-        else next.add(latestFailedLineId);
+        if (next.has(expandableLineId)) next.delete(expandableLineId);
+        else next.add(expandableLineId);
         return next;
       });
       return;

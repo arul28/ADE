@@ -64,6 +64,7 @@ export const IPC = {
   remoteRuntimeStreamEvents: "ade.remoteRuntime.streamEvents",
   remoteRuntimeCheckLocalWork: "ade.remoteRuntime.checkLocalWork",
   remoteRuntimeDisconnect: "ade.remoteRuntime.disconnect",
+  localRuntimeListActionRegistry: "ade.localRuntime.listActionRegistry",
   localRuntimeCallAction: "ade.localRuntime.callAction",
   localRuntimeCallSync: "ade.localRuntime.callSync",
   localRuntimeStreamEvents: "ade.localRuntime.streamEvents",

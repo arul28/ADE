@@ -429,6 +429,7 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   "lane_list_snapshots",
   "pr_auto_link_ignores",
   "pull_request_ai_summaries",
+  "runtime_processes",
 ]);
 
 function listEligibleCrrTables(db: DatabaseSyncType): string[] {
@@ -1029,6 +1030,7 @@ function normalizeIncomingCrsqlChange(db: DatabaseSyncType, change: CrsqlChangeR
 type MigrationDb = {
   run: (sql: string, params?: SqlValue[]) => void;
   get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: SqlValue[]) => T | null;
+  all: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: SqlValue[]) => T[];
 };
 
 function parseAlterTableTarget(sql: string): string | null {
@@ -1311,19 +1313,52 @@ function migrate(db: MigrationDb) {
   try { db.run("alter table terminal_sessions add column owner_process_started_at text"); } catch {}
   try { db.run("create index if not exists idx_terminal_sessions_owner_process on terminal_sessions(owner_pid, owner_process_started_at)"); } catch {}
 
-  // Process liveness registry. Every ADE process (desktop main, TUI runtime,
-  // ade-serve daemon) writes its pid here on boot and refreshes last_seen
-  // on a timer. Reconcile / dispose paths use this to tell "row whose owner
-  // crashed" from "row a sibling process is actively managing."
+  // Machine-local process liveness registry. Every ADE process (desktop main,
+  // TUI runtime, ade-serve daemon) writes its process incarnation here on boot
+  // and refreshes last_seen on a timer. The composite key preserves stale
+  // local incarnations when the OS reuses a pid, so reconcile can detach the
+  // old owner without treating synced remote-machine rows as local.
   db.run(`
     create table if not exists runtime_processes (
-      pid integer primary key,
+      pid integer not null,
       role text not null,
       project_root text,
       started_at text not null,
-      last_seen text not null
+      last_seen text not null,
+      primary key (pid, started_at)
     )
   `);
+  try {
+    const runtimeProcessPk = db
+      .all<{ name: string; pk: number }>("pragma table_info('runtime_processes')")
+      .filter((column) => column.pk > 0)
+      .sort((left, right) => left.pk - right.pk)
+      .map((column) => column.name);
+    if (runtimeProcessPk.join("\0") !== "pid\0started_at") {
+      db.run("drop table if exists __ade_runtime_processes_v2");
+      db.run(`
+        create table __ade_runtime_processes_v2 (
+          pid integer not null,
+          role text not null,
+          project_root text,
+          started_at text not null,
+          last_seen text not null,
+          primary key (pid, started_at)
+        )
+      `);
+      db.run(`
+        insert or ignore into __ade_runtime_processes_v2 (pid, role, project_root, started_at, last_seen)
+        select pid, role, project_root, started_at, last_seen
+          from runtime_processes
+         where started_at is not null and length(trim(started_at)) > 0
+      `);
+      db.run("drop table runtime_processes");
+      db.run("alter table __ade_runtime_processes_v2 rename to runtime_processes");
+    }
+  } catch {
+    // Best-effort local bookkeeping migration; the next process heartbeat will
+    // recreate a usable row even if an older malformed table could not migrate.
+  }
   db.run("create index if not exists idx_runtime_processes_last_seen on runtime_processes(last_seen)");
 
   db.run(`
@@ -2866,6 +2901,9 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       },
       get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params: SqlValue[] = []) => {
         return getRow<T>(db, sql, params);
+      },
+      all: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params: SqlValue[] = []) => {
+        return allRows<T>(db, sql, params);
       },
     });
 

@@ -259,6 +259,7 @@ describe("registerRuntimeBridge", () => {
     const localRuntimeConnectionPool = {
       callActionForRoot: vi.fn(),
       callSyncForRoot: vi.fn(),
+      listActionRegistryForRoot: vi.fn(),
       subscribeEventsForRoot: vi.fn(async () => vi.fn()),
     };
     registerRuntimeBridge({
@@ -301,10 +302,50 @@ describe("registerRuntimeBridge", () => {
         request: { cursor: 0, limit: 10 },
       }),
     ).rejects.toThrow(/not available/i);
+    await expect(
+      ipcHandlers.get(IPC.localRuntimeListActionRegistry)?.(eventForSender(), {
+        rootPath: "/other-repo",
+      }),
+    ).rejects.toThrow(/not available/i);
 
     expect(localRuntimeConnectionPool.callActionForRoot).not.toHaveBeenCalled();
     expect(localRuntimeConnectionPool.callSyncForRoot).not.toHaveBeenCalled();
+    expect(localRuntimeConnectionPool.listActionRegistryForRoot).not.toHaveBeenCalled();
     expect(localRuntimeConnectionPool.subscribeEventsForRoot).not.toHaveBeenCalled();
+  });
+
+  it("forwards local action registry listing through the authorized local runtime root", async () => {
+    const registry = [
+      { domain: "chat", actions: [{ name: "codexOpenInCli" }] },
+      { domain: "git", actions: [{ name: "status" }] },
+    ];
+    const localRuntimeConnectionPool = {
+      listActionRegistryForRoot: vi.fn(async () => registry),
+    };
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+      localRuntimeConnectionPool: localRuntimeConnectionPool as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo", baseRef: "main" },
+        binding: localBinding("/repo"),
+        openProjectTabs: [
+          { rootPath: "/repo", displayName: "Repo", baseRef: "main" },
+          { rootPath: "/other-repo", displayName: "Other", baseRef: "main" },
+        ],
+      }),
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.localRuntimeListActionRegistry)?.(eventForSender(), {
+        rootPath: "/other-repo",
+      }),
+    ).resolves.toEqual(registry);
+
+    expect(localRuntimeConnectionPool.listActionRegistryForRoot).toHaveBeenCalledWith(
+      "/other-repo",
+    );
   });
 
   it("authorizes explicit local roots for sync and event streams from open tabs", async () => {

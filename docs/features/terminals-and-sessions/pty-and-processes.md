@@ -53,6 +53,7 @@ filesystem outside `readTranscriptTail`.
 - content refs: `transcript_path`, `last_output_preview`
 - git: `head_sha_start`, `head_sha_end`
 - resume: `resume_command`, `resume_metadata_json`
+- ownership: `owner_pid`, `owner_process_started_at`
 
 `mapRow()` converts the row into `TerminalSessionSummary` /
 `TerminalSessionDetail`. It parses `resumeMetadata` through
@@ -66,7 +67,8 @@ downstream code always sees a normalized command even for old rows.
   default, ordered by `started_at desc`.
 - `get(sessionId)` — single row with `TerminalSessionDetail`.
 - `create({ sessionId, laneId, ptyId, tracked, title, startedAt,
-  transcriptPath, toolType?, resumeCommand?, resumeMetadata? })` —
+  transcriptPath, toolType?, resumeCommand?, resumeMetadata?,
+  ownerPid?, ownerProcessStartedAt? })` —
   inserts with status `running`. Normalizes the tool type and
   resume command/metadata before writing.
 - `updateMeta(args)` — partial update, used by rename, pin, goal edit,
@@ -89,11 +91,13 @@ downstream code always sees a normalized command even for old rows.
   nulls `pty_id`.
 - `readTranscriptTail(transcriptPath, maxBytes, opts)` — async file
   read, can align to a line boundary and optionally strip ANSI.
-- `reconcileStaleRunningSessions({ endedAt?, status?, excludeToolTypes? })`
-  — on-startup cleanup. `excludeToolTypes` is still accepted but
-  `main.ts` no longer passes chat tool types; chat runtimes restart
-  fresh on app launch, so leaving stale `running` chat rows behind is
-  a net negative.
+- `reconcileStaleRunningSessions({ endedAt?, status?, excludeToolTypes?,
+  liveOwnerPids?, liveOwnerIdentities?, knownOwnerPids?,
+  knownOwnerIdentities? })` — on-startup cleanup. Runtime callers pass
+  both live and known process identities from the local
+  `runtime_processes` table. That lets ADE detach sessions owned by a
+  crashed local process without rewriting a still-running session that
+  arrived through sync from another machine.
 - `deleteSession(sessionId)` — remove a row outright. Emits
   `terminalSessionChanged` with `reason: "deleted"`. Used by both PTY
   cleanup and `agentChatService.deleteSession`.
@@ -111,6 +115,10 @@ downstream code always sees a normalized command even for old rows.
 - Continuation metadata is stored as a JSON blob. `normalizeResumeMetadata`
   accepts both the current `{ provider, targetKind, targetId, launch }`
   shape and legacy fields (`target`, `permissionMode` at the top level).
+- `runtime_processes` is machine-local bookkeeping, not replicated
+  project state. It is excluded from CRR setup; synced terminal rows may
+  describe sessions owned by another machine, and local reconcile must
+  treat unknown owner identities as remote rather than dead.
 
 ---
 

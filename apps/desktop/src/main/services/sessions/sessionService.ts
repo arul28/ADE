@@ -513,6 +513,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
       excludeToolTypes,
       liveOwnerPids,
       liveOwnerIdentities,
+      knownOwnerPids,
+      knownOwnerIdentities,
       freshActivityGraceMs,
     }: {
       endedAt?: string;
@@ -520,6 +522,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
       excludeToolTypes?: string[];
       liveOwnerPids?: Set<number>;
       liveOwnerIdentities?: Array<{ pid: number; startedAt: string }>;
+      knownOwnerPids?: Set<number>;
+      knownOwnerIdentities?: Array<{ pid: number; startedAt: string }>;
       freshActivityGraceMs?: number;
     } = {}): number {
       const normalizedExcludedToolTypes = Array.isArray(excludeToolTypes)
@@ -549,13 +553,71 @@ export function createSessionService({ db }: { db: AdeDb }) {
         identity.pid,
         identity.startedAt,
       ]);
-      const ownerGuardSql = liveOwnerPids === undefined
-        ? " and owner_pid is null"
-        : ownerIdentities.length
-          ? ` and (owner_pid is null or owner_process_started_at is null or not (${ownerIdentities.map(() => "(owner_pid = ? and owner_process_started_at = ?)").join(" or ")}))`
-          : ownerParams.length
+      const knownOwnerIdentityRows = knownOwnerIdentities
+        ? knownOwnerIdentities
+            .map((identity) => ({
+              pid: normalizeOwnerPid(identity?.pid),
+              startedAt: normalizeOwnerProcessStartedAt(identity?.startedAt),
+            }))
+            .filter((identity): identity is { pid: number; startedAt: string } => (
+              identity.pid != null && identity.startedAt != null
+            ))
+        : [];
+      const knownOwnerPidSet = new Set<number>([
+        ...(knownOwnerPids
+          ? Array.from(knownOwnerPids)
+              .map((pid) => normalizeOwnerPid(pid))
+              .filter((pid): pid is number => pid != null)
+          : []),
+        ...knownOwnerIdentityRows.map((identity) => identity.pid),
+      ]);
+      const knownOwnerParams = Array.from(knownOwnerPidSet);
+      const knownOwnerIdentityParams = knownOwnerIdentityRows.flatMap((identity) => [
+        identity.pid,
+        identity.startedAt,
+      ]);
+      const ownerGuardSql = (() => {
+        if (liveOwnerPids === undefined) return " and owner_pid is null";
+        const hasKnownOwnerScope = knownOwnerPids !== undefined || knownOwnerIdentities !== undefined;
+        if (!hasKnownOwnerScope) {
+          if (ownerIdentities.length) {
+            return ` and (owner_pid is null or owner_process_started_at is null or not (${ownerIdentities.map(() => "(owner_pid = ? and owner_process_started_at = ?)").join(" or ")}))`;
+          }
+          return ownerParams.length
             ? ` and (owner_pid is null or owner_pid not in (${ownerParams.map(() => "?").join(", ")}))`
             : "";
+        }
+
+        const staleKnownClauses = ["owner_pid is null"];
+        if (knownOwnerIdentityRows.length) {
+          const knownIdentitySql = knownOwnerIdentityRows.map(() => "(owner_pid = ? and owner_process_started_at = ?)").join(" or ");
+          const liveIdentitySql = ownerIdentities.length
+            ? ownerIdentities.map(() => "(owner_pid = ? and owner_process_started_at = ?)").join(" or ")
+            : "0";
+          staleKnownClauses.push(`(owner_process_started_at is not null and (${knownIdentitySql}) and not (${liveIdentitySql}))`);
+        }
+        if (knownOwnerParams.length) {
+          const knownPidSql = knownOwnerParams.map(() => "?").join(", ");
+          const livePidSql = ownerParams.length
+            ? ` and owner_pid not in (${ownerParams.map(() => "?").join(", ")})`
+            : "";
+          staleKnownClauses.push(`(owner_process_started_at is null and owner_pid in (${knownPidSql})${livePidSql})`);
+        }
+        return ` and (${staleKnownClauses.join(" or ")})`;
+      })();
+      const ownerGuardParams = (() => {
+        if (liveOwnerPids === undefined) return [];
+        const hasKnownOwnerScope = knownOwnerPids !== undefined || knownOwnerIdentities !== undefined;
+        if (!hasKnownOwnerScope) {
+          return ownerIdentities.length ? ownerIdentityParams : ownerParams;
+        }
+        return [
+          ...knownOwnerIdentityParams,
+          ...(knownOwnerIdentityRows.length ? ownerIdentityParams : []),
+          ...knownOwnerParams,
+          ...(knownOwnerParams.length ? ownerParams : []),
+        ];
+      })();
       const graceMs = typeof freshActivityGraceMs === "number" && Number.isFinite(freshActivityGraceMs)
         ? Math.max(0, freshActivityGraceMs)
         : 0;
@@ -571,7 +633,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       const whereSql = `status = 'running'${exclusionSql}${ownerGuardSql}${activityGuardSql}`;
       const params = [
         ...normalizedExcludedToolTypes,
-        ...(ownerIdentities.length ? ownerIdentityParams : ownerParams),
+        ...ownerGuardParams,
         ...activityParams,
       ];
       const rows = db.all<{ id: string }>(

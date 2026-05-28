@@ -63,21 +63,25 @@ and in tests.
 - `apps/desktop/src/main/services/sessions/sessionService.ts` — persistence
   layer for `terminal_sessions` rows. CRUD, continuation metadata
   normalization, `reattach`, `reconcileStaleRunningSessions`. Reconcile and
-  ownership-aware queries gate row sweeps on the live-pid set returned by
-  `processRegistryService.listLivePids()`: a `running` row whose `owner_pid`
-  is still in the set belongs to a live sibling and must be left alone, only
-  unowned or owner-crashed rows get marked `detached`. ~580 lines. Branch
-  rewrite.
+  ownership-aware queries gate row sweeps on both live owners and known local
+  owners from `processRegistryService`: a `running` row whose owner is live
+  belongs to a sibling and must be left alone; a row whose owner is known on
+  this machine but no longer live can be marked `detached`; a row with an
+  unknown owner identity is preserved because it may have synced from another
+  machine. ~580 lines. Branch rewrite.
 - `apps/desktop/src/main/services/runtime/processRegistryService.ts` — per-
-  process heartbeat registrar against the `runtime_processes` table. Every
-  ADE process (desktop main, TUI runtime, `ade serve` daemon) inserts a row
-  on boot keyed by `pid`, refreshes `last_seen` on a 5 s heartbeat, and
-  reports liveness through `isPidLive(candidatePid)` /
-  `listLivePids()`. The default liveness window is 3× the heartbeat
-  interval so a single missed tick doesn't false-positive a sibling as
-  dead. PTY create stamps the new row's `owner_pid` with the registry's
-  `pid`, and reconcile / dispose paths consult the registry before
-  sweeping. See [ARCHITECTURE.md §3.4](../../ARCHITECTURE.md#34-cross-process-ownership).
+  process heartbeat registrar against the machine-local `runtime_processes`
+  table, which is excluded from CRR replication because PIDs are OS-local.
+  Every ADE process (desktop main, TUI runtime, `ade serve` daemon) inserts a
+  row on boot keyed by the process incarnation (`pid`, `started_at`),
+  refreshes `last_seen` on a 5 s heartbeat, and
+  reports live and known owners through `isPidLive(candidatePid)`,
+  `listLivePids()`, `listLiveProcessIdentities()`, `listKnownPids()`, and
+  `listKnownProcessIdentities()`. The default liveness window is 3× the
+  heartbeat interval so a single missed tick doesn't false-positive a sibling
+  as dead. PTY create stamps new rows with the registry's owner identity, and
+  reconcile / dispose paths consult the registry before sweeping. See
+  [ARCHITECTURE.md §3.4](../../ARCHITECTURE.md#34-cross-process-ownership).
 - `apps/desktop/src/main/services/sessions/sessionService.test.ts` —
   session persistence tests.
 - `apps/desktop/src/main/services/sessions/sessionDeltaService.ts` —
@@ -597,12 +601,13 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
    runtime on a readiness timeout.
 
 7. **Reconcile** — on startup, `reconcileStaleRunningSessions` marks
-   orphaned `running` rows as `detached`. Ownership is gated through
-   `processRegistryService.listLivePids()`: a row whose `owner_pid` is
-   still in the live set belongs to a sibling process (another desktop
-   window, the `ade serve` daemon, an attached `ade code` TUI) and is
-   left alone, only owner-crashed or unowned rows get swept. Freshly
-   started or recently-outputting rows get a short grace window before
+   orphaned `running` rows as `detached`. Ownership is gated through the
+   process registry's live and known local owner sets: a row whose owner is
+   live belongs to a sibling process (another desktop window, the `ade serve`
+   daemon, an attached `ade code` TUI) and is left alone; a row whose owner is
+   known on this machine but no longer live can be swept; a row whose owner is
+   unknown is preserved because it may belong to another synced machine.
+   Freshly started or recently-outputting rows get a short grace window before
    they can be detached, so a new runtime cannot immediately close a CLI
    session created by the process it just replaced. The service
    still accepts an `excludeToolTypes` option, but `main.ts` no longer
@@ -741,13 +746,15 @@ Processes (managed):
   `transcriptBytesWritten` is not persisted.
 - Preview updates are throttled (~900 ms) and the string is capped at
   220 chars via `derivePreviewFromChunk`.
-- Reconcile and dispose paths gate on `processRegistryService.listLivePids()`.
-  Adding a new sweep path that operates on `terminal_sessions` without
-  consulting the registry will happily mark another process's live
-  sessions dead — always run the candidate row set through the registry
-  before disposing. The same heartbeat backs PTY cleanup: `owner_pid`
-  stamping happens inside `ptyService.create`, so any new lifecycle
-  surface that bypasses that helper needs to write `owner_pid` itself.
+- Reconcile and dispose paths gate on `processRegistryService` live and
+  known-owner sets. Adding a new sweep path that operates on
+  `terminal_sessions` without consulting the registry can mark another
+  process's live sessions dead or detach sessions owned by another synced
+  machine — always run the candidate row set through the registry before
+  disposing. The same heartbeat backs PTY cleanup: owner stamping happens
+  inside `ptyService.create`, so any new lifecycle surface that bypasses
+  that helper needs to write `owner_pid` and `owner_process_started_at`
+  itself.
 - `PaneTilingLayout` mounts every leaf pane in the Work grid; each
   `SessionSurface` still passes `terminalVisible={true}` for grid tiles
   because the tiling layout keeps them on screen. Do not unmount a grid

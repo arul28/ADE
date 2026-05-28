@@ -707,6 +707,30 @@ export function registerRuntimeBridge({
   );
 
   ipcMain.handle(
+    IPC.localRuntimeListActionRegistry,
+    async (
+      event,
+      arg: { rootPath?: string | null } = {},
+    ): Promise<AdeActionRegistryEntry[]> => {
+      if (!localRuntimeConnectionPool) {
+        throw new Error("Local ADE runtime connection is not available for this window.");
+      }
+      const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
+      const session = getWindowSession ? getWindowSession(windowId) : null;
+      const rootPath = resolveAuthorizedLocalRuntimeRootPath(
+        session,
+        arg?.rootPath,
+      );
+      if (!rootPath) {
+        throw new Error(
+          "Local runtime project is not available for this window.",
+        );
+      }
+      return await localRuntimeConnectionPool.listActionRegistryForRoot(rootPath);
+    },
+  );
+
+  ipcMain.handle(
     IPC.localRuntimeCallAction,
     async (
       event,
