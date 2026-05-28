@@ -81,10 +81,11 @@ export class RuntimeRpcClient {
     }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.failConnection(
-          new Error(
-            `Remote ADE service connection failed: timed out waiting for method ${method}.`,
-          ),
+        const pending = this.pending.get(id);
+        if (!pending) return;
+        this.pending.delete(id);
+        pending.reject(
+          new Error(`Remote ADE service timed out waiting for method ${method} (${timeoutMs}ms).`),
         );
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
