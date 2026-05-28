@@ -12,6 +12,7 @@ import type {
   AdoptAttachedLaneArgs,
   UnregisteredLaneCandidate,
   AppInfo,
+  LatestReleaseInfo,
   AppNavigationRequest,
   AutoUpdateSnapshot,
   ClearLocalAdeDataArgs,
@@ -647,6 +648,7 @@ declare global {
       app: {
         ping: () => Promise<"pong">;
         getInfo: () => Promise<AppInfo>;
+        getLatestRelease: () => Promise<LatestReleaseInfo | null>;
         getProject: () => Promise<ProjectInfo | null>;
         getWindowSession: () => Promise<{
           windowId: number | null;

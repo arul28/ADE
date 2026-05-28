@@ -57,6 +57,7 @@ const DEFAULT_BROWSER_MOCK_CLAUDE_MODEL =
 const BUILTIN_MOCK_PROJECT = {
   id: "browser-mock",
   name: "Browser Preview",
+  displayName: "Browser Preview",
   rootPath: "/tmp/mock",
   gitRemoteUrl: "https://github.com/acme/ade",
   gitDefaultBranch: "main",
@@ -81,6 +82,7 @@ const MOCK_PROJECT =
         ...BUILTIN_MOCK_PROJECT,
         id: ADE_DB_SNAPSHOT.project.id,
         name: ADE_DB_SNAPSHOT.project.name,
+        displayName: ADE_DB_SNAPSHOT.project.name,
         rootPath: ADE_DB_SNAPSHOT.project.rootPath,
         gitDefaultBranch:
           ADE_DB_SNAPSHOT.project.gitDefaultBranch ??
@@ -2834,9 +2836,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     availableProviders: {
       claude: {
         binary: {
-          present: false,
-          source: "missing",
-          path: null,
+          present: true,
+          source: "path",
+          path: "/opt/homebrew/bin/claude",
         },
         auth: {
           ready: false,
@@ -2849,7 +2851,16 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       droid: false,
     },
     models: { claude: [], codex: [], cursor: [], droid: [] },
-    features: [],
+    availableModelIds: [
+      "anthropic/claude-sonnet-4-6",
+      "anthropic/claude-haiku-4-5",
+      "openai/gpt-5-codex",
+    ],
+    features: [
+      { feature: "pr_descriptions", enabled: true },
+      { feature: "terminal_summaries", enabled: false },
+      { feature: "commit_messages", enabled: false },
+    ],
     providerConnections: {
       claude: BROWSER_MOCK_PROVIDER_CONNECTION("claude"),
       codex: BROWSER_MOCK_PROVIDER_CONNECTION("codex"),
@@ -2950,6 +2961,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       laneOverlayPolicies: [],
       git: { autoRebaseOnHeadChange: false },
       ai: {
+        featureModelOverrides: { pr_descriptions: "anthropic/claude-sonnet-4-6" },
         orchestrator: {
           defaultOrchestratorModel: { modelId: "anthropic/claude-sonnet-4-6" },
           teammatePlanMode: "auto",
@@ -3040,6 +3052,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             checkedAt: null,
           },
         },
+      }),
+      getLatestRelease: resolved({
+        version: "1.0.0",
+        htmlUrl: "https://github.com/arul28/ADE/releases/latest",
+        publishedAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
+        updateAvailable: false,
       }),
       getProject: resolved(MOCK_PROJECT),
       getWindowSession: resolved({
@@ -4147,6 +4165,11 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       attach: resolvedArg({ id: "mock", name: "mock" }),
       adoptAttached: resolvedArg({ id: "mock", name: "mock" }),
+      listUnregisteredWorktrees: resolved([
+        { path: "/Users/you/code/app-login", branch: "feat/login" },
+        { path: "/Users/you/code/app-api-fix", branch: "bugfix/api-timeout" },
+        { path: "/Users/you/experiments/spike", branch: "spike/new-renderer" },
+      ]),
       rename: resolvedArg(undefined),
       reparent: resolvedArg({}),
       updateAppearance: resolvedArg(undefined),
@@ -5089,12 +5112,17 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     github: {
       getStatus: resolved({
         tokenStored: true,
+        patTokenStored: false,
         tokenDecryptionFailed: false,
         storageScope: "app",
-        tokenType: "classic",
+        authSource: "gh",
+        tokenType: "oauth",
         repo: { owner: "arul28", name: "ADE" },
+        hasOrigin: true,
         userLogin: "arul",
         scopes: ["repo", "workflow"],
+        ghCliPath: "/opt/homebrew/bin/gh",
+        ghAuthError: null,
         checkedAt: new Date().toISOString(),
         repoAccessOk: true,
         repoAccessError: null,

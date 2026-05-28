@@ -37,6 +37,10 @@ import { z, type ZodType } from "zod";
 import { buildClaudeV2Message, inferAttachmentMediaType } from "./buildClaudeV2Message";
 import { ClaudeInputPump } from "./claudeInputPump";
 import {
+  isCorruptThinkingTranscriptError,
+  repairClaudeResumeTranscript,
+} from "./claudeThinkingTranscriptRepair";
+import {
   discoverClaudePluginPaths,
   discoverClaudePlugins,
   discoverClaudeOutputStyles,
@@ -5096,6 +5100,16 @@ export function createAgentChatService(args: {
         if (managed.session.permissionMode === "plan" || managed.session.interactionMode === "plan") {
           applyClaudePlanModeTransition(managed.session, "default");
           persistChatState(managed);
+          // Surface the transition so the composer's mode chip updates — parity
+          // with the manual-approval branch below. Without this, full-auto plan
+          // sessions exit plan mode on the backend but the UI stays on "plan".
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: "Session exited plan mode",
+            detail: buildClaudePlanModeNoticeDetail("exited_plan_mode"),
+            turnId: runtime.activeTurnId ?? undefined,
+          });
         }
         return { behavior: "allow", updatedInput: input };
       }
@@ -10973,7 +10987,7 @@ export function createAgentChatService(args: {
       } else {
         markSessionIdleWithFreshCache(managed);
         const isAuthFailure = isClaudeRuntimeAuthError(effectiveError);
-        const errorMessage = isAuthFailure
+        let errorMessage = isAuthFailure
           ? CLAUDE_RUNTIME_AUTH_ERROR
           : (effectiveError instanceof Error ? effectiveError.message : String(effectiveError));
         if (isAuthFailure) {
@@ -10981,6 +10995,28 @@ export function createAgentChatService(args: {
         } else {
           reportProviderRuntimeFailure("claude", errorMessage);
         }
+
+        // Self-heal a corrupted thinking history (reused message ids merge into
+        // an invalid multi-thinking-block message on resume). The query was
+        // already torn down above, so repairing the transcript and re-warming
+        // lets the next message resume cleanly.
+        if (!isAuthFailure && runtime.sdkSessionId && isCorruptThinkingTranscriptError(effectiveError)) {
+          const repair = repairClaudeResumeTranscript(runtime.sdkSessionId, managed.laneWorktreePath);
+          logger.warn("agent_chat.claude_thinking_transcript_repaired", {
+            sessionId: managed.session.id,
+            sdkSessionId: runtime.sdkSessionId,
+            responsesRekeyed: repair.responsesRekeyed,
+            reusedMessageIds: repair.reusedMessageIds,
+            at: "self_heal",
+          });
+          if (repair.repaired) {
+            errorMessage =
+              "This chat's reasoning history was corrupted and has been repaired automatically. Resend your message to continue.";
+            refreshReconstructionContext(managed);
+            prewarmClaudeQuery(managed);
+          }
+        }
+
         emitChatEvent(managed, {
           type: "error",
           message: errorMessage,
@@ -15248,6 +15284,21 @@ export function createAgentChatService(args: {
       model: options.model,
     });
 
+    // Repair a corrupted thinking history before resuming directly (the warm
+    // path already ran this in pre-warm). No-op for healthy transcripts.
+    if (!runtime.warmQuery && options.resume) {
+      const repair = repairClaudeResumeTranscript(options.resume, managed.laneWorktreePath);
+      if (repair.repaired) {
+        logger.warn("agent_chat.claude_thinking_transcript_repaired", {
+          sessionId: managed.session.id,
+          sdkSessionId: options.resume,
+          responsesRekeyed: repair.responsesRekeyed,
+          reusedMessageIds: repair.reusedMessageIds,
+          at: "resume",
+        });
+      }
+    }
+
     let sessionQuery: ClaudeQuery;
     try {
       sessionQuery = runtime.warmQuery
@@ -15483,6 +15534,22 @@ export function createAgentChatService(args: {
           resume: Boolean(options.resume),
           model: options.model,
         });
+
+        // Un-merge any reused message ids before the SDK loads this transcript,
+        // so a corrupted thinking history can't wedge the resume (see
+        // claudeThinkingTranscriptRepair). No-op for healthy transcripts.
+        if (options.resume) {
+          const repair = repairClaudeResumeTranscript(options.resume, managed.laneWorktreePath);
+          if (repair.repaired) {
+            logger.warn("agent_chat.claude_thinking_transcript_repaired", {
+              sessionId: managed.session.id,
+              sdkSessionId: options.resume,
+              responsesRekeyed: repair.responsesRekeyed,
+              reusedMessageIds: repair.reusedMessageIds,
+              at: "prewarm",
+            });
+          }
+        }
 
         if (runtime.warmupCancelled) {
           clearAssignedSessionId();
