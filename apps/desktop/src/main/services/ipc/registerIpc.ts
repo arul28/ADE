@@ -357,6 +357,8 @@ import type {
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
+  PtyResumeSessionArgs,
+  PtyResumeSessionResult,
   PtySendToSessionArgs,
   PtySendToSessionResult,
   ChatTerminalActiveForChatArgs,
@@ -1289,103 +1291,6 @@ export function registerIpc({
     resolveSyncService
       ? (await resolveSyncService()) ?? null
       : getOptionalSyncService();
-  const localRuntimeDaemonDisabled =
-    process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON === "1";
-  const allowLocalRuntimeFallback =
-    process.env.ADE_LOCAL_RUNTIME_FALLBACK === "1" ||
-    localRuntimeDaemonDisabled;
-
-  const unavailableSyncPlatform =
-    process.platform === "darwin"
-      ? "macOS"
-      : process.platform === "win32"
-        ? "windows"
-        : process.platform === "linux"
-          ? "linux"
-          : "unknown";
-  const buildUnavailableSyncSnapshot = (): SyncRoleSnapshot => {
-    const now = new Date().toISOString();
-    const unavailableSyncDevice: SyncDeviceRecord = {
-      deviceId: "local-runtime-disabled",
-      siteId: "local-runtime-disabled",
-      name: "Local desktop",
-      platform: unavailableSyncPlatform,
-      deviceType: "desktop",
-      createdAt: now,
-      updatedAt: now,
-      lastSeenAt: now,
-      lastHost: null,
-      lastPort: null,
-      tailscaleIp: null,
-      ipAddresses: [],
-      metadata: { unavailableReason: "local_runtime_daemon_disabled" },
-    };
-    const unavailableMessage = "Sync service unavailable in local runtime disabled mode.";
-    return {
-      mode: "standalone",
-      role: "brain",
-      localDevice: unavailableSyncDevice,
-      currentBrain: unavailableSyncDevice,
-      clusterState: null,
-      bootstrapToken: null,
-      pairingPin: null,
-      pairingPinConfigured: false,
-      pairingConnectInfo: null,
-      connectedPeers: [],
-      tailnetDiscovery: {
-        state: "disabled",
-        serviceName: "ade-sync",
-        servicePort: 0,
-        target: null,
-        updatedAt: now,
-        error: unavailableMessage,
-        stderr: null,
-      },
-      client: {
-        state: "disconnected",
-        host: null,
-        port: null,
-        connectedAt: null,
-        lastSeenAt: null,
-        latencyMs: null,
-        syncLag: null,
-        lastRemoteDbVersion: 0,
-        brainDeviceId: unavailableSyncDevice.deviceId,
-        hostName: unavailableSyncDevice.name,
-        error: unavailableMessage,
-        message: unavailableMessage,
-        savedDraft: null,
-      },
-      transferReadiness: {
-        ready: false,
-        blockers: [{
-          kind: "managed_process",
-          id: "local-runtime-disabled",
-          label: "Sync unavailable",
-          detail: unavailableMessage,
-        }],
-        survivableState: [],
-      },
-      survivableStateText: "",
-      blockingStateText: unavailableMessage,
-    };
-  };
-
-  const buildUnavailableSyncRuntimeDevice = (): SyncDeviceRuntimeState => {
-    const snapshot = buildUnavailableSyncSnapshot();
-    return {
-      ...snapshot.localDevice,
-      isLocal: true,
-      isBrain: false,
-      connectionState: "disconnected",
-      connectedAt: null,
-      lastAppliedAt: null,
-      remoteAddress: null,
-      remotePort: null,
-      latencyMs: null,
-      syncLag: null,
-    };
-  };
 
   const requireSyncService = async (): Promise<ReturnType<typeof createSyncService>> => {
     const service = await resolveOptionalSyncService();
@@ -1408,18 +1313,10 @@ export function registerIpc({
     event: { sender: Electron.WebContents },
     action: (pool: LocalRuntimeConnectionPool, rootPath: string) => Promise<T>,
   ): Promise<T | null> => {
-    if (localRuntimeDaemonDisabled) return null;
     if (!localRuntimeConnectionPool) return null;
     const rootPath = getLocalRuntimeRootForEvent(event);
     if (!rootPath) return null;
-    try {
-      return await action(localRuntimeConnectionPool, rootPath);
-    } catch (error) {
-      if (!allowLocalRuntimeFallback) {
-        throw error;
-      }
-      return null;
-    }
+    return await action(localRuntimeConnectionPool, rootPath);
   };
 
   // Backend services use Error.code for known failures (e.g.
@@ -3992,7 +3889,6 @@ export function registerIpc({
     if (runtimeStatus) return runtimeStatus;
     const service = await resolveOptionalSyncService();
     if (!service) {
-      if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
       throw new Error("Sync service is not available.");
     }
     return await service.getStatus({
@@ -4006,7 +3902,6 @@ export function registerIpc({
       pool.refreshSyncDiscoveryForRoot(rootPath)
     );
     if (runtimeStatus) return runtimeStatus;
-    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
     return await (await requireSyncService()).refreshDiscovery();
   });
 
@@ -4015,7 +3910,6 @@ export function registerIpc({
       pool.syncDevicesForRoot(rootPath)
     );
     if (runtimeDevices) return runtimeDevices;
-    if (localRuntimeDaemonDisabled) return [buildUnavailableSyncRuntimeDevice()];
     return await (await requireSyncService()).listDevices();
   });
 
@@ -4032,7 +3926,6 @@ export function registerIpc({
         })
       );
       if (runtimeDevice) return runtimeDevice;
-      if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot().localDevice;
       return await (await requireSyncService()).updateLocalDevice({
         name: typeof arg?.name === "string" ? arg.name : undefined,
         deviceType: arg?.deviceType,
@@ -4051,7 +3944,6 @@ export function registerIpc({
         )
       );
       if (runtimeStatus) return runtimeStatus;
-      if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
       return await (await requireSyncService()).connectToBrain(arg);
     },
   );
@@ -4061,7 +3953,6 @@ export function registerIpc({
       pool.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.disconnectFromBrain")
     );
     if (runtimeStatus) return runtimeStatus;
-    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
     return await (await requireSyncService()).disconnectFromBrain();
   });
 
@@ -4071,7 +3962,6 @@ export function registerIpc({
       pool.forgetSyncDeviceForRoot(rootPath, deviceId)
     );
     if (runtimeStatus) return runtimeStatus;
-    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
     return await (await requireSyncService()).forgetDevice(deviceId);
   });
 
@@ -4080,7 +3970,6 @@ export function registerIpc({
       pool.callSyncForRoot<SyncTransferReadiness>(rootPath, "sync.getTransferReadiness")
     );
     if (runtimeReadiness) return runtimeReadiness;
-    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot().transferReadiness;
     return await (await requireSyncService()).getTransferReadiness();
   });
 
@@ -4089,7 +3978,6 @@ export function registerIpc({
       pool.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.transferBrainToLocal")
     );
     if (runtimeStatus) return runtimeStatus;
-    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
     return await (await requireSyncService()).transferBrainToLocal();
   });
 
@@ -4098,7 +3986,6 @@ export function registerIpc({
       pool.syncPinForRoot(rootPath)
     );
     if (runtimePin) return runtimePin;
-    if (localRuntimeDaemonDisabled) return { pin: null };
     return { pin: (await requireSyncService()).getPin() };
   });
 
@@ -4108,7 +3995,6 @@ export function registerIpc({
       pool.setSyncPinForRoot(rootPath, normalizedPin)
     );
     if (runtimeStatus) return runtimeStatus;
-    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
     return await (await requireSyncService()).setPin(normalizedPin);
   });
 
@@ -4117,7 +4003,6 @@ export function registerIpc({
       pool.generateSyncPinForRoot(rootPath)
     );
     if (runtimeStatus) return runtimeStatus;
-    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
     return await (await requireSyncService()).generatePin();
   });
 
@@ -4126,7 +4011,6 @@ export function registerIpc({
       pool.clearSyncPinForRoot(rootPath)
     );
     if (runtimeStatus) return runtimeStatus;
-    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
     return await (await requireSyncService()).clearPin();
   });
 
@@ -4135,19 +4019,12 @@ export function registerIpc({
     async (event, arg: { laneIds?: string[] | null }): Promise<void> => {
       const laneIds = Array.isArray(arg?.laneIds) ? arg.laneIds : [];
       const rootPath = getLocalRuntimeRootForEvent(event);
-      if (!localRuntimeDaemonDisabled && localRuntimeConnectionPool && rootPath) {
-        try {
-          await localRuntimeConnectionPool.callSyncForRoot(rootPath, "sync.setActiveLanePresence", { laneIds });
-          return;
-        } catch (error) {
-          if (!allowLocalRuntimeFallback) {
-            throw error;
-          }
-        }
+      if (localRuntimeConnectionPool && rootPath) {
+        await localRuntimeConnectionPool.callSyncForRoot(rootPath, "sync.setActiveLanePresence", { laneIds });
+        return;
       }
       const service = await resolveOptionalSyncService();
       if (!service) {
-        if (localRuntimeDaemonDisabled) return;
         throw new Error("Sync service is not available.");
       }
       await service.setActiveLanePresence(laneIds);
@@ -5470,6 +5347,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.sessionsList, async (_event, arg: ListSessionsArgs): Promise<TerminalSessionSummary[]> => {
     const ctx = getCtx();
+    const ptyService = requirePtyService();
     return await withIpcTiming(
       ctx,
       "sessions.list",
@@ -5481,7 +5359,7 @@ export function registerIpc({
           .map((session) => session.id);
         if (missingResumeTargetIds.length > 0) {
           try {
-            await ctx.ptyService.ensureResumeTargets(missingResumeTargetIds);
+            await ptyService.ensureResumeTargets(missingResumeTargetIds);
             listedSessions = ctx.sessionService.list(arg);
           } catch (err) {
             ctx.logger.warn("sessions.resume_target_hydration_failed", {
@@ -5490,7 +5368,7 @@ export function registerIpc({
             });
           }
         }
-        let sessions = ctx.ptyService.enrichSessions(listedSessions);
+        let sessions = ptyService.enrichSessions(listedSessions);
         const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
         let allChats: AgentChatSessionSummary[] = [];
         try {
@@ -5525,12 +5403,13 @@ export function registerIpc({
 
   ipcMain.handle(IPC.sessionsGet, async (_event, arg: { sessionId: string }): Promise<TerminalSessionDetail | null> => {
     const ctx = getCtx();
+    const ptyService = requirePtyService();
     let session = ctx.sessionService.get(arg.sessionId);
     if (!session) return null;
     if (sessionNeedsResumeTargetHydration(session)) {
       const sessionId = session.id;
       try {
-        await ctx.ptyService.ensureResumeTargets([sessionId]);
+        await ptyService.ensureResumeTargets([sessionId]);
         const hydratedSession = ctx.sessionService.get(arg.sessionId);
         if (hydratedSession) session = hydratedSession;
       } catch (err) {
@@ -5540,9 +5419,9 @@ export function registerIpc({
         });
       }
     }
-    return ctx.ptyService.enrichSessions([session])[0] ?? {
+    return ptyService.enrichSessions([session])[0] ?? {
       ...session,
-      runtimeState: ctx.ptyService.getRuntimeState(session.id, session.status)
+      runtimeState: ptyService.getRuntimeState(session.id, session.status)
     };
   });
 
@@ -5559,7 +5438,7 @@ export function registerIpc({
     if (isChatToolType(session.toolType)) {
       throw new Error(`Session '${sessionId}' is an agent chat session. Use the chat delete flow instead.`);
     }
-    const enriched = ctx.ptyService.enrichSessions([session])[0] ?? session;
+    const enriched = requirePtyService().enrichSessions([session])[0] ?? session;
     if (enriched.status === "running" || enriched.ptyId) {
       throw new Error("Running terminal sessions must be closed before they can be deleted.");
     }
@@ -5577,7 +5456,7 @@ export function registerIpc({
     if (!session) return "";
     const maxBytes = typeof arg.maxBytes === "number" ? Math.max(1024, Math.min(16_000_000, arg.maxBytes)) : 160_000;
     const raw = arg.raw === true;
-    return ctx.ptyService.readTranscriptTail({
+    return requirePtyService().readTranscriptTail({
       sessionId: session.id,
       maxBytes,
       raw,
@@ -6970,57 +6849,64 @@ export function registerIpc({
     return laneService.detachVmLane(args);
   });
 
+  const requirePtyService = (): ReturnType<typeof createPtyService> => {
+    const service = getCtx().ptyService;
+    if (!service) {
+      throw new Error("ADE terminal service is not available for this project window. Reopen the project and try again.");
+    }
+    return service;
+  };
+
   ipcMain.handle(IPC.ptyCreate, async (_event, arg: PtyCreateArgs): Promise<PtyCreateResult> => {
-    const ctx = getCtx();
-    return await ctx.ptyService.create(arg);
+    return await requirePtyService().create(arg);
+  });
+
+  ipcMain.handle(IPC.ptyResumeSession, async (_event, arg: PtyResumeSessionArgs): Promise<PtyResumeSessionResult> => {
+    return await requirePtyService().resumeSession(arg);
   });
 
   ipcMain.handle(IPC.ptySendToSession, async (_event, arg: PtySendToSessionArgs): Promise<PtySendToSessionResult> => {
-    const ctx = getCtx();
-    return await ctx.ptyService.sendToSession(arg);
+    return await requirePtyService().sendToSession(arg);
   });
 
   ipcMain.handle(IPC.ptyWrite, async (_event, arg: { ptyId: string; data: string }): Promise<void> => {
-    const ctx = getCtx();
-    ctx.ptyService.write(arg);
+    requirePtyService().write(arg);
   });
 
   ipcMain.handle(IPC.ptyResize, async (_event, arg: { ptyId: string; cols: number; rows: number }): Promise<void> => {
-    const ctx = getCtx();
-    ctx.ptyService.resize(arg);
+    requirePtyService().resize(arg);
   });
 
   ipcMain.handle(IPC.ptyDispose, async (_event, arg: { ptyId: string; sessionId?: string }): Promise<void> => {
-    const ctx = getCtx();
-    ctx.ptyService.dispose(arg);
+    requirePtyService().dispose(arg);
   });
 
   ipcMain.handle(IPC.terminalList, async (_event, arg) =>
-    getCtx().ptyService.listTerminals(parseTerminalListArgs(arg)),
+    requirePtyService().listTerminals(parseTerminalListArgs(arg)),
   );
 
   ipcMain.handle(IPC.terminalRead, async (_event, arg) =>
-    getCtx().ptyService.readTerminal(parseTerminalReadArgs(arg)),
+    requirePtyService().readTerminal(parseTerminalReadArgs(arg)),
   );
 
   ipcMain.handle(IPC.terminalPreview, async (_event, arg) =>
-    getCtx().ptyService.previewTerminal(parseTerminalPreviewArgs(arg)),
+    requirePtyService().previewTerminal(parseTerminalPreviewArgs(arg)),
   );
 
   ipcMain.handle(IPC.terminalWrite, async (_event, arg) =>
-    await getCtx().ptyService.writeTerminal(parseTerminalWriteArgs(arg)),
+    await requirePtyService().writeTerminal(parseTerminalWriteArgs(arg)),
   );
 
   ipcMain.handle(IPC.terminalSignal, async (_event, arg) =>
-    getCtx().ptyService.signalTerminal(parseTerminalSignalArgs(arg)),
+    requirePtyService().signalTerminal(parseTerminalSignalArgs(arg)),
   );
 
   ipcMain.handle(IPC.terminalActiveForChat, async (_event, arg) =>
-    getCtx().ptyService.activeForChat(parseTerminalActiveForChatArgs(arg)),
+    requirePtyService().activeForChat(parseTerminalActiveForChatArgs(arg)),
   );
 
   ipcMain.handle(IPC.terminalReattachChatCli, async (_event, arg) =>
-    await getCtx().ptyService.reattachChatCli(parseTerminalReattachArgs(arg)),
+    await requirePtyService().reattachChatCli(parseTerminalReattachArgs(arg)),
   );
 
   ipcMain.handle(IPC.diffGetChanges, async (_event, arg: GetDiffChangesArgs) => {

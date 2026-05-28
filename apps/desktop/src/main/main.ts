@@ -38,13 +38,13 @@ import { createPortAllocationService } from "./services/lanes/portAllocationServ
 import { createLaneProxyService } from "./services/lanes/laneProxyService";
 import { createOAuthRedirectService } from "./services/lanes/oauthRedirectService";
 import { createRuntimeDiagnosticsService } from "./services/lanes/runtimeDiagnosticsService";
-import {
-  createSessionService,
-  STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS,
-} from "./services/sessions/sessionService";
+import { createSessionService } from "./services/sessions/sessionService";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
 import { createPtyService } from "./services/pty/ptyService";
-import { createProcessRegistryService } from "./services/runtime/processRegistryService";
+import {
+  createProcessRegistryService,
+  DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS,
+} from "./services/runtime/processRegistryService";
 import { createDiffService } from "./services/diffs/diffService";
 import { createFileService } from "./services/files/fileService";
 import { createConflictService } from "./services/conflicts/conflictService";
@@ -1223,10 +1223,7 @@ app.whenReady().then(async () => {
     ipcWindowScope.getStore() ?? null;
 
   const shouldUseInProcessProjectRuntime = (): boolean =>
-    process.env.NODE_ENV === "test"
-    || process.env.ADE_ENABLE_DESKTOP_IN_PROCESS_RUNTIME === "1"
-    || process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON === "1"
-    || process.env.ADE_LOCAL_RUNTIME_FALLBACK === "1";
+    process.env.NODE_ENV === "test";
 
   const projectForRoot = (projectRoot: string | null): ProjectInfo | null => {
     if (!projectRoot) return null;
@@ -2039,12 +2036,11 @@ app.whenReady().then(async () => {
       projectRoot,
     });
     processRegistry.start();
-    const reconcileStaleRunningSessions = (reason: "startup" | "fresh-activity-grace-expired") => {
+    const reconcileStaleRunningSessions = (reason: "startup" | "owner-liveness-expired") => {
       const reconciledSessions = sessionService.reconcileStaleRunningSessions({
         status: "detached",
         liveOwnerPids: processRegistry.listLivePids(),
         liveOwnerIdentities: processRegistry.listLiveProcessIdentities(),
-        freshActivityGraceMs: STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS,
       });
       if (reconciledSessions > 0) {
         logger.warn("sessions.reconciled_stale_running", {
@@ -2055,8 +2051,8 @@ app.whenReady().then(async () => {
     };
     reconcileStaleRunningSessions("startup");
     const staleSessionReconcileTimer = setTimeout(
-      () => reconcileStaleRunningSessions("fresh-activity-grace-expired"),
-      STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS + 1_000,
+      () => reconcileStaleRunningSessions("owner-liveness-expired"),
+      DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS + 1_000,
     );
     staleSessionReconcileTimer.unref?.();
     const diffService = createDiffService({ laneService });

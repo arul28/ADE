@@ -5233,12 +5233,10 @@ export function createAdeRpcRequestHandler(args: {
   };
 
   const callAction = async (actionName: string, actionArgs: Record<string, unknown>): Promise<unknown> => {
-    if (
-      READ_ONLY_TOOLS.has(actionName) ||
-      MUTATION_TOOLS.has(actionName) ||
-      actionName === "spawn_agent" ||
-      actionName === "ask_user"
-    ) {
+    if (READ_ONLY_TOOLS.has(actionName)) {
+      return await runTool({ runtime, session, name: actionName, toolArgs: actionArgs });
+    }
+    if (MUTATION_TOOLS.has(actionName) || actionName === "spawn_agent" || actionName === "ask_user") {
       return await runTool({ runtime, session, name: actionName, toolArgs: actionArgs });
     }
 
@@ -5384,6 +5382,10 @@ export function createAdeRpcRequestHandler(args: {
       if (method === "pty.sendToSession") {
         ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);
         return await runtime.ptyService.sendToSession(ptyArgs as Parameters<typeof runtime.ptyService.sendToSession>[0]);
+      }
+      if (method === "pty.resumeSession") {
+        ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);
+        return await runtime.ptyService.resumeSession(ptyArgs as Parameters<typeof runtime.ptyService.resumeSession>[0]);
       }
       if (method === "pty.write") {
         ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);

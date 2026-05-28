@@ -75,6 +75,7 @@ import {
   normalizeChatTerminalSession,
   previewTerminal,
   renameChat,
+  resumeTerminalSession,
   resizeTerminal,
   reloadClaudePlugins,
   respondToInput,
@@ -255,6 +256,15 @@ export function isTerminalSessionFastPollActive(session: TerminalSessionActivity
   return session.status === "running"
     && (session.runtimeState === "running" || session.runtimeState === "waiting-input")
     && isProcessLikelyAlive(session.pid);
+}
+
+export function isTerminalSessionResumable(session: ChatTerminalSession | null | undefined): boolean {
+  return Boolean(
+    session
+      && session.status !== "running"
+      && terminalSessionResumeProvider(session)
+      && (session.resumeMetadata || session.resumeCommand),
+  );
 }
 
 function terminalSessionToChatSummary(session: ChatTerminalSession): AgentChatSessionSummary {
@@ -2076,6 +2086,10 @@ function claudeTerminalRowsForPane(rows: number): number {
 }
 
 function terminalSessionProvider(session: ChatTerminalSession | null | undefined): AdeCodeProvider | null {
+  return terminalSessionResumeProvider(session) ?? (session ? "claude" : null);
+}
+
+function terminalSessionResumeProvider(session: ChatTerminalSession | null | undefined): AdeCodeProvider | null {
   const provider = session?.resumeMetadata?.provider ?? null;
   if (provider && PROVIDERS.has(provider as AdeCodeProvider)) return provider as AdeCodeProvider;
   const toolType = session?.toolType ?? "";
@@ -2084,7 +2098,7 @@ function terminalSessionProvider(session: ChatTerminalSession | null | undefined
   if (toolType.startsWith("droid")) return "droid";
   if (toolType.startsWith("opencode")) return "opencode";
   if (toolType.startsWith("claude")) return "claude";
-  return session ? "claude" : null;
+  return null;
 }
 
 function promptTextForTerminal(text: string, attachments: AgentChatFileRef[]): string {
@@ -5453,6 +5467,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     return await queued;
   }, [addNotice, chatRowBudget, refreshState, refreshTerminalPreview, selectActiveSessionId, setDraftChatMode, terminalPaneWidth]);
 
+  const resumeClosedTerminalSession = useCallback(async (terminal: ChatTerminalSession): Promise<boolean> => {
+    const conn = connectionRef.current;
+    if (!conn || !isTerminalSessionResumable(terminal)) return false;
+    lastLocalSendAtRef.current = Date.now();
+    const cols = clampTerminalPaneCols(terminalPaneWidth);
+    const terminalRows = claudeTerminalRowsForPane(chatRowBudget);
+    const resumed = await resumeTerminalSession({
+      connection: conn,
+      sessionId: terminal.terminalId,
+      cols,
+      rows: terminalRows,
+    });
+    pendingNewChatTitleRef.current = null;
+    setDraftChatMode(false);
+    activeTerminalSessionRef.current = normalizeChatTerminalSession(resumed.session);
+    selectActiveSessionId(resumed.sessionId);
+    await refreshState();
+    return true;
+  }, [chatRowBudget, refreshState, selectActiveSessionId, setDraftChatMode, terminalPaneWidth]);
+
   const startClaudeTerminalForPrompt = useCallback(async (text: string): Promise<string | null> => {
     const conn = connectionRef.current;
     const laneId = activeLaneIdRef.current;
@@ -6755,7 +6789,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         && (mention.attachment || (mention.insertText.length > 0 && text.includes(mention.insertText)))
       ))
       .map((mention) => ({ type: isImageFilePath(mention.filePath!) ? "image" : "file", path: mention.filePath! }));
-    if (!text && rightPane.kind !== "form" && !promptAttachments.length) return;
+    const activeTerminalForBlankResume = activeTerminalSessionRef.current;
+    const emptyPromptSubmission = !text && rightPane.kind !== "form" && !promptAttachments.length;
+    const blankResumeRequest = emptyPromptSubmission
+      && !pendingApproval
+      && isTerminalSessionResumable(activeTerminalForBlankResume);
+    if (emptyPromptSubmission && !blankResumeRequest) return;
     // Intercept ADE-owned slash commands before the connection gate so /model and
     // /plan work pre-chat (splash screen) where connectionRef.current is null.
     try {
@@ -6781,6 +6820,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         chatDraftRef.current = "";
       }
       setError(null);
+      if (blankResumeRequest && activeTerminalForBlankResume) {
+        await resumeClosedTerminalSession(activeTerminalForBlankResume);
+        return;
+      }
       if (pendingApproval?.mode === "approval") {
         const lowered = text.toLowerCase();
         if (pendingApproval.highStakes) {
@@ -6897,7 +6940,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
       addNotice(message, "error");
     }
-  }, [activeCommandProvider, activeFormField, addNotice, answerPendingInput, clearChatPromptDraft, ensureActiveSession, formValues, interceptLocalSlashCommand, pendingApproval, resolvePendingApproval, rightPane, runInlineCommand, runRightCommand, selectedMentions, sendOrSteerChatMessage, setChatScrollOffset, slashCommands, slashIndex, slashRows, startClaudeTerminalForPrompt, submitClaudePromptToTerminal, submitRightForm]);
+  }, [activeCommandProvider, activeFormField, addNotice, answerPendingInput, clearChatPromptDraft, ensureActiveSession, formValues, interceptLocalSlashCommand, pendingApproval, resolvePendingApproval, resumeClosedTerminalSession, rightPane, runInlineCommand, runRightCommand, selectedMentions, sendOrSteerChatMessage, setChatScrollOffset, slashCommands, slashIndex, slashRows, startClaudeTerminalForPrompt, submitClaudePromptToTerminal, submitRightForm]);
 
   const launchPromptInBackground = useCallback(async (value: string) => {
     const text = value.trim();

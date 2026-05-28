@@ -252,45 +252,6 @@ class LocalRuntimeCompatibilityError extends Error {
   }
 }
 
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    return code === "EPERM";
-  }
-}
-
-async function terminateProcess(
-  pid: number,
-  options: { gracefulTimeoutMs?: number; pollIntervalMs?: number } = {},
-): Promise<void> {
-  const gracefulTimeoutMs = options.gracefulTimeoutMs ?? 2_000;
-  const pollIntervalMs = options.pollIntervalMs ?? 50;
-  if (!isProcessAlive(pid)) return;
-  try {
-    process.kill(pid, "SIGTERM");
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ESRCH") return;
-  }
-  const deadline = Date.now() + gracefulTimeoutMs;
-  while (Date.now() < deadline) {
-    if (!isProcessAlive(pid)) return;
-    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-  }
-  if (!isProcessAlive(pid)) return;
-  try {
-    process.kill(pid, "SIGKILL");
-  } catch {}
-  const killDeadline = Date.now() + gracefulTimeoutMs;
-  while (Date.now() < killDeadline) {
-    if (!isProcessAlive(pid)) return;
-    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-  }
-}
-
 function closeRuntimeClient(client: RuntimeRpcClient): void {
   try {
     client.close();
@@ -761,7 +722,7 @@ export class LocalRuntimeConnectionPool {
     const layout = resolveMachineAdeLayout();
     const socketPath = process.env.ADE_RUNTIME_SOCKET_PATH?.trim() || layout.socketPath;
     const existing = await this.tryConnect(socketPath);
-    if (existing) return { client: existing, child: null, socketPath };
+    if (existing) return existing;
 
     const child = this.spawnRuntime(socketPath);
     try {
@@ -774,13 +735,13 @@ export class LocalRuntimeConnectionPool {
     }
   }
 
-  private async tryConnect(socketPath: string): Promise<RuntimeRpcClient | null> {
+  private async tryConnect(socketPath: string): Promise<LocalRuntimeConnection | null> {
     try {
-      return await this.connectClient(socketPath);
+      const client = await this.connectClient(socketPath);
+      return { client, child: null, socketPath };
     } catch (error) {
       if (error instanceof LocalRuntimeCompatibilityError) {
-        await this.replaceStaleRuntime(socketPath, error);
-        return null;
+        return await this.startIsolatedRuntime(socketPath, error);
       }
       this.logger.debug("local_runtime.connect_existing_failed", {
         socketPath,
@@ -790,37 +751,52 @@ export class LocalRuntimeConnectionPool {
     }
   }
 
-  private async replaceStaleRuntime(
-    socketPath: string,
+  private isolatedRuntimeSocketPath(primarySocketPath: string): string {
+    const buildHash = computeLocalRuntimeBuildHash()?.slice(0, 12) ?? "runtime";
+    const version = this.appVersion.replace(/[^a-zA-Z0-9_.-]+/g, "-") || "version";
+    const runtimeName = `ade-cto-${version}-${buildHash}.sock`;
+    if (isAdeRuntimeNamedPipePath(primarySocketPath)) {
+      return `${primarySocketPath}-${version}-${buildHash}`;
+    }
+    const dir = path.dirname(primarySocketPath);
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+    } catch {}
+    return path.join(dir, runtimeName);
+  }
+
+  private async startIsolatedRuntime(
+    primarySocketPath: string,
     reason: LocalRuntimeCompatibilityError,
-  ): Promise<void> {
-    this.logger.warn("local_runtime.replacing_stale", {
-      socketPath,
+  ): Promise<LocalRuntimeConnection> {
+    const socketPath = this.isolatedRuntimeSocketPath(primarySocketPath);
+    this.logger.warn("local_runtime.incompatible_preserved", {
+      primarySocketPath,
+      isolatedSocketPath: socketPath,
       pid: reason.pid,
       reason: reason.message,
     });
-    if (reason.pid != null) {
-      try {
-        await terminateProcess(reason.pid);
-      } catch (error) {
-        this.logger.warn("local_runtime.terminate_failed", {
-          pid: reason.pid,
-          error: error instanceof Error ? error.message : String(error),
-        });
+    try {
+      const client = await this.connectClient(socketPath);
+      return { client, child: null, socketPath };
+    } catch (error) {
+      if (error instanceof LocalRuntimeCompatibilityError) {
+        throw error;
       }
+      this.logger.debug("local_runtime.connect_isolated_failed", {
+        socketPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
-    if (!isAdeRuntimeNamedPipePath(socketPath)) {
-      try {
-        fs.unlinkSync(socketPath);
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code && code !== "ENOENT") {
-          this.logger.debug("local_runtime.socket_unlink_failed", {
-            socketPath,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
+    await unlinkSocketIfNotListening(socketPath);
+    const child = this.spawnRuntime(socketPath);
+    try {
+      await waitForSocket(socketPath);
+      const client = await this.connectClient(socketPath);
+      return { client, child, socketPath };
+    } catch (error) {
+      disposeOwnedRuntimeChild(child, socketPath, { unlinkSocket: true });
+      throw error;
     }
   }
 

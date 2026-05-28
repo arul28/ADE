@@ -480,11 +480,6 @@ export function codexReasoningEffortFlags(reasoningEffort: string | null | undef
   return effort ? ["-c", `model_reasoning_effort="${effort}"`] : [];
 }
 
-function droidReasoningEffortFlags(reasoningEffort: string | null | undefined): string[] {
-  const effort = normalizeCliFlagValue(reasoningEffort);
-  return effort ? ["--reasoning-effort", effort] : [];
-}
-
 function workTabCliPrompt(initialPrompt: string | null, skillRoots: readonly string[]): string {
   const preamble = workTabCliPreamblePrompt(skillRoots);
   if (!initialPrompt) return preamble;
@@ -557,13 +552,6 @@ function permissionModeToCursorFlags(permissionMode: AgentChatPermissionMode | n
   if (permissionMode === "full-auto") return ["--force"];
   if (permissionMode === "plan") return ["--mode", "plan"];
   if (permissionMode === "edit") return ["--mode", "ask"];
-  return [];
-}
-
-function permissionModeToDroidExecFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
-  if (permissionMode === "full-auto") return ["--auto", "high"];
-  if (permissionMode === "default") return ["--auto", "medium"];
-  if (permissionMode === "edit") return ["--auto", "low"];
   return [];
 }
 
@@ -644,22 +632,6 @@ function buildDroidCommandLine(args: {
     `printf %s ${quoteShellArg(settingsJson)} > "$ADE_DROID_SETTINGS"`,
     `${droidCommand}; ADE_DROID_STATUS=$?; rm -f "$ADE_DROID_SETTINGS"; exit $ADE_DROID_STATUS`,
   ].join(" && ");
-}
-
-function buildDroidExecCommandLine(args: {
-  permissionMode: AgentChatPermissionMode | null | undefined;
-  model?: string | null;
-  reasoningEffort?: string | null;
-  prompt: string;
-}): string {
-  return commandArrayToLine([
-    "droid",
-    "exec",
-    ...modelToCliFlag(normalizeDroidCliModel(args.model)),
-    ...droidReasoningEffortFlags(args.reasoningEffort),
-    ...permissionModeToDroidExecFlags(args.permissionMode),
-    args.prompt,
-  ]);
 }
 
 function buildCursorPrecreatedChatCommand(args: {
@@ -794,13 +766,19 @@ export function buildOpenCodeReplayResumeCommand(args: {
 
 export function buildTrackedCliResumeCommand(
   metadata: TerminalResumeMetadata,
-  overrides: { model?: string | null; reasoningEffort?: string | null; permissionMode?: AgentChatPermissionMode | null } = {},
+  overrides: {
+    model?: string | null;
+    reasoningEffort?: string | null;
+    permissionMode?: AgentChatPermissionMode | null;
+    prompt?: string | null;
+  } = {},
 ): string {
   const permissionMode = overrides.permissionMode ?? metadata.launch.permissionMode;
   const model = overrides.model !== undefined ? overrides.model : metadata.launch.model;
   const reasoningEffort = overrides.reasoningEffort !== undefined
     ? overrides.reasoningEffort
     : metadata.launch.reasoningEffort;
+  const prompt = normalizeCliFlagValue(overrides.prompt);
   validateLaunchProfilePermissionMode(metadata.provider, permissionMode);
 
   const targetId = sanitizeTrackedCliResumeTargetId(metadata.targetId) ?? "";
@@ -812,6 +790,7 @@ export function buildTrackedCliResumeCommand(
     if (claudeReasoningEffort) parts.push("--effort", claudeReasoningEffort);
     parts.push("--resume");
     if (targetId) parts.push(targetId);
+    if (prompt) parts.push(prompt);
     return commandArrayToLine(parts);
   }
 
@@ -825,6 +804,7 @@ export function buildTrackedCliResumeCommand(
     ];
     parts.push("resume");
     if (targetId) parts.push(targetId);
+    if (prompt) parts.push(prompt);
     return commandArrayToLine(parts);
   }
 
@@ -842,6 +822,7 @@ export function buildTrackedCliResumeCommand(
     } else {
       parts.push("--continue");
     }
+    if (prompt) parts.push(prompt);
     return commandArrayToLine(parts);
   }
 
@@ -850,6 +831,7 @@ export function buildTrackedCliResumeCommand(
       permissionMode,
       model,
       reasoningEffort,
+      ...(prompt ? { prompt } : {}),
       resumeTarget: targetId || null,
     });
   }
@@ -857,6 +839,7 @@ export function buildTrackedCliResumeCommand(
   const opencode = buildOpenCodeCommandParts({
     permissionMode,
     model,
+    ...(prompt ? { prompt } : {}),
     resumeTarget: targetId || null,
     continueLast: !targetId,
   });

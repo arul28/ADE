@@ -226,7 +226,8 @@ The primary route is the runtime daemon's `file` action domain.
 `callLocalProjectActionStrictIfBound("file", …)` for local-bound
 windows. A bound runtime failure is returned to the caller; the
 in-process IPC handler is used only when there is no runtime route
-(for example, local runtime daemon disabled). Both paths share the
+(for example, before a project binding exists or in tests /
+diagnostic harnesses without a runtime pool). Both paths share the
 same handler shapes; the desktop fallback handlers are registered in
 `registerIpc.ts`:
 

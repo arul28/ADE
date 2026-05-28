@@ -497,6 +497,24 @@ describe("tracked CLI resume helpers", () => {
     expect(droidResume).toContain("\\\"autonomyLevel\\\":\\\"high\\\"");
   });
 
+  it("adds provider prompt overrides to resumable CLI commands", () => {
+    expect(buildTrackedCliResumeCommand({
+      provider: "codex",
+      targetKind: "thread",
+      targetId: "thread-99",
+      launch: { permissionMode: "plan" },
+    }, { prompt: "fix failing tests" })).toBe(
+      "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-99 \"fix failing tests\"",
+    );
+
+    expect(buildTrackedCliResumeCommand({
+      provider: "opencode",
+      targetKind: "session",
+      targetId: "ses_99",
+      launch: { permissionMode: "default" },
+    }, { prompt: "continue from here" })).toContain("--session ses_99 --prompt \"continue from here\"");
+  });
+
   it("preserves stored model and reasoning when resuming tracked CLI sessions without overrides", () => {
     expect(buildTrackedCliResumeCommand({
       provider: "codex",

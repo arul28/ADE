@@ -468,31 +468,6 @@ describe("TopBar", () => {
     }
   });
 
-  it("labels disabled local runtime sync as unavailable", async () => {
-    vi.useFakeTimers();
-    const snapshot = makeSyncSnapshot();
-    globalThis.window.ade.sync.getStatus = vi.fn(async () => makeSyncSnapshot({
-      connectedPeers: [],
-      pairingConnectInfo: null,
-      localDevice: {
-        ...snapshot.localDevice,
-        deviceId: "local-runtime-disabled",
-        siteId: "local-runtime-disabled",
-        metadata: { unavailableReason: "local_runtime_daemon_disabled" },
-      },
-    })) as any;
-
-    try {
-      render(<TopBar />);
-
-      await advancePhoneSyncStartupDelay();
-      expect(screen.getByRole("button", { name: "Mobile, not connected" })).toBeTruthy();
-      expect(screen.queryByText("Phone sync ready")).toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   it("does not refresh phone sync status on an idle interval", async () => {
     vi.useFakeTimers();
     try {

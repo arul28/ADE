@@ -50,10 +50,10 @@ Host/provider findings:
 - No current ADE macOS VM records or leases were present to clear before retry:
   the checked current-lane, home, runtime-home, and Versic cache locations had no
   active `lease.json` or VM records.
-- The first perf launch intentionally ran with
-  `ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1` and did not enable the legacy desktop RPC
-  socket, so UI proof is authoritative for that run. Socket-backed CLI evidence
-  was collected from a second dev-desktop launch through
+- The first perf launch ran before the local-runtime-disable diagnostic mode was
+  removed and did not enable the legacy desktop RPC socket, so UI proof is
+  authoritative for that run. Socket-backed CLI evidence was collected from a
+  second dev-desktop launch through
   `ADE_RPC_SOCKET_PATH=/tmp/ade-runtime-dev.sock`.
 - The default `macos-tahoe-vanilla:latest` VM provisioned successfully but ADE's
   first start attempt timed out waiting for Lume to report `running`. A manual

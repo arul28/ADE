@@ -292,6 +292,7 @@ ade usage budget check --provider claude --scope global
 ade usage budget cumulative --scope global --text
 ade actions list
 ade actions run git.stageFile --arg laneId=lane-id --arg path=src/index.ts
+ade actions run pty.resumeSession --arg sessionId=session-id
 ade cursor cloud agents list --text
 ade cursor cloud agents create --repo https://github.com/owner/repo --prompt "fix flaky test" --auto-pr
 ade open ade://lane/<lane-uuid>

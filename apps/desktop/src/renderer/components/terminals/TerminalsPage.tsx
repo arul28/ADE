@@ -439,6 +439,37 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     [work],
   );
 
+  const handleResumeCliSession = useCallback(
+    async (session: TerminalSessionSummary) => {
+      setSessionActionError(null);
+      try {
+        const result = await window.ade.pty.resumeSession({
+          sessionId: session.id,
+          cols: 100,
+          rows: 30,
+        });
+        invalidateSessionListCache();
+        if (result.session) {
+          work.upsertSessionSnapshot(result.session);
+        }
+        try {
+          await work.refresh({ showLoading: false, force: true });
+        } catch {
+          // Best-effort after reattach; the PTY events will also refresh state.
+        }
+        work.selectLane(session.laneId);
+        work.focusSession(result.sessionId);
+        work.setActiveItemId(result.sessionId);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setSessionActionError(`Resume failed: ${message}`);
+        window.setTimeout(() => setSessionActionError(null), 6000);
+        throw err;
+      }
+    },
+    [work],
+  );
+
   const activeWorkSession = useMemo(
     () => (work.activeItemId ? work.sessions.find((session) => session.id === work.activeItemId) ?? null : null),
     [work.activeItemId, work.sessions],
@@ -647,6 +678,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         closingPtyIds={work.closingPtyIds}
         onContextMenu={handleContextMenu}
         onContinueCliSession={handleContinueCliSession}
+        onResumeCliSession={handleResumeCliSession}
         sessionsPaneCollapsed={work.workFocusSessionsHidden}
         onToggleSessionsPane={toggleSessionsPane}
         sessionsPaneListCount={work.filtered.length}
@@ -701,6 +733,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       toggleWorkSidebar,
       handleOpenChatSession,
       handleContinueCliSession,
+      handleResumeCliSession,
       handleContextMenu,
       handleInfoClick,
       handleStopRunningSession,

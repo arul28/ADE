@@ -180,8 +180,8 @@ describe("terminalSessionSignals", () => {
       targetKind: "session",
       targetId: "claude-session-1",
       launch: { permissionMode: "default" },
-    }, { model: "anthropic/claude-haiku-4-5", reasoningEffort: "low", permissionMode: "auto" })).toBe(
-      "claude --permission-mode auto --model haiku --effort low --resume claude-session-1",
+    }, { model: "anthropic/claude-haiku-4-5", reasoningEffort: "low", permissionMode: "auto", prompt: "keep going" })).toBe(
+      "claude --permission-mode auto --model haiku --effort low --resume claude-session-1 'keep going'",
     );
 
     expect(buildTrackedCliResumeCommand({
@@ -189,8 +189,8 @@ describe("terminalSessionSignals", () => {
       targetKind: "thread",
       targetId: "thread-99",
       launch: { permissionMode: "edit" },
-    }, { model: "gpt-5.4", reasoningEffort: "high", permissionMode: "plan" })).toBe(
-      "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"high\"' --sandbox read-only --ask-for-approval on-request resume thread-99",
+    }, { model: "gpt-5.4", reasoningEffort: "high", permissionMode: "plan", prompt: "fix tests" })).toBe(
+      "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"high\"' --sandbox read-only --ask-for-approval on-request resume thread-99 'fix tests'",
     );
   });
 

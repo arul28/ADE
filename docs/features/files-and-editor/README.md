@@ -21,8 +21,9 @@ client-side; every byte it reads or writes flows through
 routes file actions through the remote runtime first, then through the
 strict local-runtime route for local-bound windows. It only falls
 through to the legacy in-process IPC handlers when no runtime route is
-available, for example with no project binding or when the local daemon
-has been explicitly disabled. Watcher events arrive over the runtime's event stream
+available, for example before a project binding exists or in tests /
+diagnostic harnesses that run without a runtime pool. Watcher events
+arrive over the runtime's event stream
 (category `"runtime"`) and are dispatched into renderer subscribers
 through the same preload pump that powers lane / pty / process
 events. Remote-bound desktop windows therefore browse and edit files

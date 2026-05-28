@@ -429,6 +429,8 @@ import type {
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
+  PtyResumeSessionArgs,
+  PtyResumeSessionResult,
   PtySendToSessionArgs,
   PtySendToSessionResult,
   PtyDataEvent,
@@ -1585,6 +1587,9 @@ declare global {
       };
       pty: {
         create: (args: PtyCreateArgs) => Promise<PtyCreateResult>;
+        resumeSession: (
+          args: PtyResumeSessionArgs,
+        ) => Promise<PtyResumeSessionResult>;
         sendToSession: (
           args: PtySendToSessionArgs,
         ) => Promise<PtySendToSessionResult>;

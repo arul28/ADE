@@ -160,11 +160,15 @@ export type PtySendToSessionArgs = {
   permissionMode?: AgentChatPermissionMode | null;
 };
 
+export type PtyResumeSessionArgs = Omit<PtySendToSessionArgs, "text">;
+
 export type PtySendToSessionResult = PtyCreateResult & {
   session: TerminalSessionSummary | null;
   resumed: boolean;
   reusedExistingRuntime: boolean;
 };
+
+export type PtyResumeSessionResult = PtySendToSessionResult;
 
 export type PtyDataEvent = {
   ptyId: string;

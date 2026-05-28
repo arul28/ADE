@@ -300,9 +300,6 @@ async function main() {
 
   const electronEnv = {
     VITE_DEV_SERVER_URL: devServerUrl,
-    // Dev desktop should prefer in-process IPC when the local-runtime daemon is
-    // slow or wedged — otherwise first chat sends stall for 30s on callAction.
-    ADE_LOCAL_RUNTIME_FALLBACK: process.env.ADE_LOCAL_RUNTIME_FALLBACK ?? "1",
   };
   const launchElectron = () => {
     const electronArgs = ["electron", `--remote-debugging-port=${remoteDebugPort}`];

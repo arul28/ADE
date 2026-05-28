@@ -39,10 +39,21 @@ export type ProcessRegistryServiceOptions = {
    * fs hiccup) doesn't false-positive a sibling as dead.
    */
   livenessWindowMs?: number;
+  pidLivenessCheck?: (pid: number) => boolean;
 };
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 5_000;
-const DEFAULT_LIVENESS_WINDOW_MS = DEFAULT_HEARTBEAT_INTERVAL_MS * 3;
+export const DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS = DEFAULT_HEARTBEAT_INTERVAL_MS * 3;
+
+function defaultPidLivenessCheck(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(Math.trunc(pid), 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -53,7 +64,8 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
   const pid = options.pid ?? process.pid;
   const projectRoot = options.projectRoot ?? null;
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
-  const livenessWindowMs = options.livenessWindowMs ?? DEFAULT_LIVENESS_WINDOW_MS;
+  const livenessWindowMs = options.livenessWindowMs ?? DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS;
+  const pidLivenessCheck = options.pidLivenessCheck ?? defaultPidLivenessCheck;
 
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let started = false;
@@ -168,6 +180,7 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
           && Number.isFinite(row.pid)
           && typeof row.started_at === "string"
           && row.started_at.trim().length > 0
+          && pidLivenessCheck(row.pid)
         ) {
           live.set(row.pid, { pid: row.pid, startedAt: row.started_at });
         }
@@ -190,7 +203,7 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
         "select pid from runtime_processes where pid = ? and last_seen >= ? limit 1",
         [candidatePid, cutoffIso],
       );
-      return row != null;
+      return row != null && pidLivenessCheck(candidatePid);
     },
 
     /** Quick "is this exact peer process incarnation still heartbeating" check. */
@@ -204,7 +217,7 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
         "select pid from runtime_processes where pid = ? and started_at = ? and last_seen >= ? limit 1",
         [candidatePid, startedAt, cutoffIso],
       );
-      return row != null;
+      return row != null && pidLivenessCheck(candidatePid);
     },
 
     /** Read-only view of every heartbeat row (live and stale). */

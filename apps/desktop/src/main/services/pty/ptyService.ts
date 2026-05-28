@@ -24,6 +24,8 @@ import type {
   PtyExitEvent,
   PtyCreateArgs,
   PtyCreateResult,
+  PtyResumeSessionArgs,
+  PtyResumeSessionResult,
   PtySendToSessionArgs,
   PtySendToSessionResult,
   ChatTerminalActiveForChatArgs,
@@ -937,8 +939,6 @@ export function createPtyService({
   // Dedup concurrent reattachChatCli calls for the same chatSessionId so we
   // never spawn two PTYs racing to `claude --resume <same-id>`.
   const reattachChatCliFlights = new Map<string, Promise<ChatTerminalReattachResult>>();
-  /** Timers for auto-closing tool-typed PTYs when the CLI tool exits back to shell prompt */
-  const toolAutoCloseTimers = new Map<string, ReturnType<typeof setTimeout>>();
   let ptyDataSummaryTimer: ReturnType<typeof setTimeout> | null = null;
   let ptyDataSummaryStartedAt = Date.now();
   let ptyDataChunkCount = 0;
@@ -1258,21 +1258,6 @@ export function createPtyService({
 
     if (entry.cliUserTitleLineBuffer.length > 8000) {
       entry.cliUserTitleLineBuffer = entry.cliUserTitleLineBuffer.slice(-4000);
-    }
-  };
-
-  /** Only orchestrated worker sessions auto-close after the wrapped CLI exits back to shell. */
-  const TOOL_TYPES_WITH_AUTO_CLOSE = new Set<TerminalToolType>([
-    "claude-orchestrated",
-    "codex-orchestrated",
-    "opencode-orchestrated"
-  ]);
-
-  const clearToolAutoCloseTimer = (ptyId: string) => {
-    const timer = toolAutoCloseTimers.get(ptyId);
-    if (timer) {
-      clearTimeout(timer);
-      toolAutoCloseTimers.delete(ptyId);
     }
   };
 
@@ -2421,7 +2406,6 @@ export function createPtyService({
       clearTimeout(entry.initialInputTimer);
       entry.initialInputTimer = null;
     }
-    clearToolAutoCloseTimer(ptyId);
     cleanupEntryPaths(entry);
     flushPreview(entry);
     // Release the live-tail buffer (up to LIVE_TRANSCRIPT_TAIL_BUFFER_CHARS
@@ -2805,7 +2789,11 @@ export function createPtyService({
       const codexText = codexReadyRegion(text);
       if (isCodexCliUpdateTranscript(codexText)) return false;
       const hasPrompt = codexText.includes("›");
-      const hasSessionMarker = /OpenAI Codex/i.test(codexText) || /\bmodel:\s*\S+/i.test(codexText);
+      const hasSessionMarker =
+        /OpenAI Codex/i.test(codexText)
+        || /\bmodel:\s*\S+/i.test(codexText)
+        || /\/model\s+to\s+change/i.test(codexText)
+        || /\bgpt-[\w.-]+/i.test(codexText);
       const loadingIndex = codexText.search(/\bmodel:\s*loading\b/i);
       const loadedModelMatches = Array.from(codexText.matchAll(/\bmodel:\s*(?!loading\b)\S+/gi));
       const lastLoadedModelIndex = loadedModelMatches.at(-1)?.index ?? -1;
@@ -2994,6 +2982,141 @@ export function createPtyService({
     if (!chatSessionId) return null;
     // Auxiliary terminals (shell, App Control, etc.) — never route chat-CLI rows.
     return activeAuxiliaryEntryFor(chatSessionId)?.sessionId ?? null;
+  };
+
+  const buildSessionActionResult = (
+    created: PtyCreateResult,
+    flags: { resumed: boolean; reusedExistingRuntime: boolean },
+  ): PtySendToSessionResult => {
+    const session = sessionService.get(created.sessionId);
+    const enriched = session ? service.enrichSessions([session])[0] ?? session : null;
+    return {
+      ...created,
+      session: enriched,
+      resumed: flags.resumed,
+      reusedExistingRuntime: flags.reusedExistingRuntime,
+    };
+  };
+
+  const assertAgentCliSessionAction = (
+    sessionId: string,
+    session: TerminalSessionSummary | null,
+    action: "continued" | "resumed",
+  ): void => {
+    if (session?.tracked === false) {
+      throw new Error(`Terminal session '${sessionId}' is not tracked and cannot be ${action}.`);
+    }
+    if (session && (session.toolType === "shell" || session.toolType === "run-shell" || isPersistedChatToolType(session.toolType))) {
+      throw new Error(`Terminal session '${sessionId}' is not an agent CLI session.`);
+    }
+  };
+
+  const resolveEndedResumeSession = (
+    sessionId: string,
+    session: TerminalSessionSummary | null,
+  ): { session: TerminalSessionSummary; provider: TerminalResumeProvider } | Promise<{ session: TerminalSessionSummary; provider: TerminalResumeProvider }> => {
+    if (!session) throw new Error(`Terminal session '${sessionId}' was not found.`);
+
+    const provider = session.resumeMetadata?.provider ?? providerFromTool(session.toolType);
+    if (!provider) throw new Error(`Terminal session '${sessionId}' does not have a resumable CLI provider.`);
+
+    const throwMissingResumeTarget = (): never => {
+      const displayName = resumeProviderDisplayName(provider);
+      throw new Error(
+        `${displayName} exited before ADE could capture a concrete resume target. Start a new ${displayName} session.`,
+      );
+    };
+
+    const parsedResumeCommand = parseTrackedCliResumeCommand(session.resumeCommand, session.toolType);
+    const storedResumeTargetId = sanitizeResumeTargetId(session.resumeMetadata?.targetId ?? null)
+      ?? (parsedResumeCommand?.provider === provider
+        ? sanitizeResumeTargetId(parsedResumeCommand.targetId ?? null)
+        : null);
+    if (
+      provider === "codex"
+      && isCodexTrackedCliToolType(session.toolType)
+      && !storedResumeTargetId
+    ) {
+      return sessionService.readTranscriptTail(session.transcriptPath, 220_000)
+        .then((transcript) => {
+          if (isCodexCliUpdateTranscript(transcript)) {
+            throw new Error(
+              "Codex updated and exited before ADE could create a resumable thread. Start a new Codex session.",
+            );
+          }
+          return throwMissingResumeTarget();
+        });
+    }
+    if (!storedResumeTargetId) {
+      throwMissingResumeTarget();
+    }
+
+    return { session, provider };
+  };
+
+  const resumeLaunchOverrides = (
+    args: Pick<PtySendToSessionArgs, "model" | "reasoningEffort" | "permissionMode">,
+  ) => ({
+    model: typeof args.model === "string" && args.model.trim().length
+      ? args.model.trim()
+      : undefined,
+    reasoningEffort: typeof args.reasoningEffort === "string" && args.reasoningEffort.trim().length
+      ? args.reasoningEffort.trim()
+      : undefined,
+    permissionMode: typeof args.permissionMode === "string" && args.permissionMode.trim().length
+      ? args.permissionMode
+      : undefined,
+  });
+
+  const buildResumeCommandForSession = (
+    session: TerminalSessionSummary,
+    provider: TerminalResumeProvider,
+    overrides: ReturnType<typeof resumeLaunchOverrides> & { prompt?: string | null },
+  ): string | null => {
+    const metadataResumeCommand = session.resumeMetadata
+      ? buildTrackedCliResumeCommand(session.resumeMetadata, overrides)
+      : null;
+    const rawResumeCommand = metadataResumeCommand != null
+      ? metadataResumeCommand
+      : normalizeResumeCommand(session.resumeCommand, session.toolType);
+    return provider === "codex" && rawResumeCommand
+      ? withCodexNoAltScreen(rawResumeCommand)
+      : rawResumeCommand;
+  };
+
+  const getOrCreateResumeFlight = (
+    session: TerminalSessionSummary,
+    resumeCommand: string,
+    args: Pick<PtySendToSessionArgs, "cols" | "rows">,
+  ): { flight: Promise<PtyCreateResult>; created: boolean } => {
+    let flight = resumeRuntimeFlights.get(session.id);
+    if (flight) return { flight, created: false };
+
+    const { cols, rows } = clampDims(
+      typeof args.cols === "number" ? args.cols : PTY_SEND_DEFAULT_COLS,
+      typeof args.rows === "number" ? args.rows : PTY_SEND_DEFAULT_ROWS,
+    );
+    flight = service.create({
+      sessionId: session.id,
+      laneId: session.laneId,
+      cols,
+      rows,
+      title: session.goal?.trim() || session.title || "Terminal",
+      tracked: session.tracked,
+      toolType: session.toolType,
+      startupCommand: resumeCommand,
+      ...directShellLaunchForCommandLine(resumeCommand),
+    });
+    resumeRuntimeFlights.set(session.id, flight);
+    void flight
+      .finally(() => {
+        if (resumeRuntimeFlights.get(session.id) === flight) {
+          resumeRuntimeFlights.delete(session.id);
+        }
+      })
+      .catch(() => {});
+
+    return { flight, created: true };
   };
 
   const service = {
@@ -3386,39 +3509,10 @@ export function createPtyService({
         setRuntimeState(sessionId, runtimeState);
         if (runtimeState === "running") {
           scheduleIdleTransition(sessionId);
-          clearToolAutoCloseTimer(ptyId);
         } else {
           clearIdleTimer(sessionId);
         }
         emitRuntimeSignalThrottled(entry, runtimeState);
-
-        // Auto-close tool-typed PTYs when the CLI tool exits back to shell prompt.
-        // When a tool like claude/codex exits (via /exit, completion, etc.), the outer
-        // shell stays alive and returns to its prompt, detected as "waiting-input".
-        // We auto-dispose after a brief delay to let final output flush.
-        if (
-          runtimeState === "waiting-input" &&
-          (prevState === "running" || prevState === "idle") &&
-          entry.toolTypeHint &&
-          TOOL_TYPES_WITH_AUTO_CLOSE.has(entry.toolTypeHint) &&
-          !toolAutoCloseTimers.has(ptyId) &&
-          Date.now() - entry.createdAt > 5_000  // ignore initial shell prompt
-        ) {
-          toolAutoCloseTimers.set(
-            ptyId,
-            setTimeout(() => {
-              toolAutoCloseTimers.delete(ptyId);
-              if (entry.disposed) return;
-              logger.info("pty.tool_exit_auto_close", { ptyId, sessionId, toolType: entry.toolTypeHint });
-              try {
-                terminatePtyProcessTree(entry, "SIGTERM", logger);
-              } catch {
-                // If kill fails, force close via closeEntry
-                closeEntry(ptyId, 0);
-              }
-            }, 1500)
-          );
-        }
 
         // Continuation-command scanning runs an ANSI strip + 2 regex passes over a
         // 12KB rolling buffer on every output chunk. Claude/codex print the
@@ -3549,12 +3643,6 @@ export function createPtyService({
             toolType: toolTypeHint,
             err: String(err),
           });
-          try {
-            terminatePtyProcessTree(entry, "SIGTERM", logger);
-          } catch {
-            // best effort
-          }
-          closeEntry(ptyId, 1);
         };
         const initialInputDelayMs = Math.max(0, Math.min(10_000, Math.floor(Number(args.initialInputDelayMs ?? 0) || 0)));
         if (args.awaitInitialInput) {
@@ -3562,12 +3650,6 @@ export function createPtyService({
             if (initialInputDelayMs > 0) await delay(initialInputDelayMs);
             await writeInitialInput();
           } catch (err) {
-            try {
-              terminatePtyProcessTree(entry, "SIGTERM", logger);
-            } catch {
-              // best effort
-            }
-            closeEntry(ptyId, 1);
             throw err;
           }
         } else if (initialInputDelayMs > 0) {
@@ -3672,25 +3754,8 @@ export function createPtyService({
       if (!sessionId) throw new Error("Session id is required.");
       if (!text) throw new Error("Message text is required.");
 
-      const buildResult = (
-        created: PtyCreateResult,
-        flags: { resumed: boolean; reusedExistingRuntime: boolean },
-      ): PtySendToSessionResult => {
-        const session = sessionService.get(created.sessionId);
-        const enriched = session ? service.enrichSessions([session])[0] ?? session : null;
-        return {
-          ...created,
-          session: enriched,
-          resumed: flags.resumed,
-          reusedExistingRuntime: flags.reusedExistingRuntime,
-        };
-      };
-
       const session = sessionService.get(sessionId);
-      if (session?.tracked === false) throw new Error(`Terminal session '${sessionId}' is not tracked and cannot be continued.`);
-      if (session && (session.toolType === "shell" || session.toolType === "run-shell" || isPersistedChatToolType(session.toolType))) {
-        throw new Error(`Terminal session '${sessionId}' is not an agent CLI session.`);
-      }
+      assertAgentCliSessionAction(sessionId, session, "continued");
       const writeSubmittedText = async (
         targetSessionId: string,
         inputText: string,
@@ -3732,122 +3797,85 @@ export function createPtyService({
         if (!provider) throw new Error(`Terminal session '${sessionId}' does not have a resumable CLI provider.`);
         const written = await writeSubmittedText(sessionId, text, provider);
         if (!written) throw new Error(`Terminal session '${sessionId}' is not accepting input.`);
-        return buildResult(
+        return buildSessionActionResult(
           { ptyId, sessionId, pid: entry.pty.pid ?? null },
           { resumed: false, reusedExistingRuntime: true },
         );
       }
 
-      if (!session) throw new Error(`Terminal session '${sessionId}' was not found.`);
-
-      const provider = session.resumeMetadata?.provider ?? providerFromTool(session.toolType);
-      if (!provider) throw new Error(`Terminal session '${sessionId}' does not have a resumable CLI provider.`);
-      const parsedResumeCommand = parseTrackedCliResumeCommand(session.resumeCommand, session.toolType);
-      const storedResumeTargetId = sanitizeResumeTargetId(session.resumeMetadata?.targetId ?? null)
-        ?? (parsedResumeCommand?.provider === provider
-          ? sanitizeResumeTargetId(parsedResumeCommand.targetId ?? null)
-          : null);
-      if (
-        provider === "codex"
-        && isCodexTrackedCliToolType(session.toolType)
-        && !storedResumeTargetId
-      ) {
-        const transcript = await sessionService.readTranscriptTail(session.transcriptPath, 220_000);
-        if (isCodexCliUpdateTranscript(transcript)) {
-          throw new Error(
-            "Codex updated and exited before ADE could create a resumable thread. Start a new Codex session.",
-          );
-        }
-      }
-      if (!storedResumeTargetId) {
-        const displayName = resumeProviderDisplayName(provider);
-        throw new Error(
-          `${displayName} exited before ADE could capture a concrete resume target. Start a new ${displayName} session.`,
-        );
-      }
-
-      const requestedModel = typeof args.model === "string" && args.model.trim().length
-        ? args.model.trim()
-        : undefined;
-      const requestedReasoningEffort = typeof args.reasoningEffort === "string" && args.reasoningEffort.trim().length
-        ? args.reasoningEffort.trim()
-        : undefined;
-      const requestedPermissionMode = typeof args.permissionMode === "string" && args.permissionMode.trim().length
-        ? args.permissionMode
-        : undefined;
+      const resolvedResume = resolveEndedResumeSession(sessionId, session);
+      const { session: resumableSession, provider } = resolvedResume instanceof Promise
+        ? await resolvedResume
+        : resolvedResume;
+      const overrides = resumeLaunchOverrides(args);
       const openCodeReplayCommand = provider === "opencode"
-        && session.resumeMetadata?.provider === "opencode"
+        && resumableSession.resumeMetadata?.provider === "opencode"
         && openCodeSupportsReplayResume()
         ? buildOpenCodeReplayResumeCommand({
-            permissionMode: requestedPermissionMode ?? session.resumeMetadata.launch.permissionMode ?? null,
-            targetId: sanitizeResumeTargetId(session.resumeMetadata.targetId ?? null),
-            model: requestedModel,
+            permissionMode: overrides.permissionMode ?? resumableSession.resumeMetadata.launch.permissionMode ?? null,
+            targetId: sanitizeResumeTargetId(resumableSession.resumeMetadata.targetId ?? null),
+            model: overrides.model,
             prompt: text,
           })
         : null;
-      const metadataResumeCommand = openCodeReplayCommand
-        ?? (session.resumeMetadata
-        ? buildTrackedCliResumeCommand(session.resumeMetadata, {
-          model: requestedModel,
-          reasoningEffort: requestedReasoningEffort,
-          permissionMode: requestedPermissionMode,
-        })
-        : null);
-      const rawResumeCommand = metadataResumeCommand != null
-        ? metadataResumeCommand
-        : normalizeResumeCommand(session.resumeCommand, session.toolType);
-      const resumeCommand = provider === "codex" && rawResumeCommand
-        ? withCodexNoAltScreen(rawResumeCommand)
-        : rawResumeCommand;
+      const resumeFlightAlreadyInProgress = resumeRuntimeFlights.has(sessionId);
+      const promptAtLaunch = !openCodeReplayCommand && !resumeFlightAlreadyInProgress && Boolean(resumableSession.resumeMetadata);
+      const resumeCommand = openCodeReplayCommand
+        ?? buildResumeCommandForSession(resumableSession, provider, {
+          ...overrides,
+          ...(promptAtLaunch ? { prompt: text } : {}),
+        });
       if (!resumeCommand) {
         throw new Error(`Terminal session '${sessionId}' does not have a resume command.`);
       }
 
-      let resumeFlight = resumeRuntimeFlights.get(sessionId);
-      let replayResumeLaunch = false;
-      if (!resumeFlight) {
-        const { cols, rows } = clampDims(
-          typeof args.cols === "number" ? args.cols : PTY_SEND_DEFAULT_COLS,
-          typeof args.rows === "number" ? args.rows : PTY_SEND_DEFAULT_ROWS,
-        );
-        replayResumeLaunch = Boolean(openCodeReplayCommand);
-        resumeFlight = service.create({
-          sessionId,
-          laneId: session.laneId,
-          cols,
-          rows,
-          title: session.goal?.trim() || session.title || "Terminal",
-          tracked: session.tracked,
-          toolType: session.toolType,
-          startupCommand: resumeCommand,
-          ...directShellLaunchForCommandLine(resumeCommand),
-        });
-        resumeRuntimeFlights.set(sessionId, resumeFlight);
-        void resumeFlight
-          .finally(() => {
-            if (resumeRuntimeFlights.get(sessionId) === resumeFlight) {
-              resumeRuntimeFlights.delete(sessionId);
-            }
-          })
-          .catch(() => {});
+      const { flight, created: resumeFlightCreated } = getOrCreateResumeFlight(resumableSession, resumeCommand, args);
+      const created = await flight;
+      if ((resumeFlightCreated && Boolean(openCodeReplayCommand)) || promptAtLaunch) {
+        return buildSessionActionResult(created, { resumed: true, reusedExistingRuntime: false });
       }
 
-      const created = await resumeFlight;
-      if (replayResumeLaunch) {
-        return buildResult(created, { resumed: true, reusedExistingRuntime: false });
-      }
-
-      const written = await writeSubmittedText(created.sessionId, text, provider, { waitForReady: true });
+      const written = await writeSubmittedText(created.sessionId, text, provider);
       if (!written) {
-        try {
-          service.dispose({ ptyId: created.ptyId, sessionId: created.sessionId });
-        } catch {
-          // Best effort; preserve the send failure for the caller.
-        }
+        logger.warn("pty.resume_send_input_failed_preserved", {
+          sessionId,
+          ptyId: created.ptyId,
+          provider,
+        });
         throw new Error(`Terminal session '${sessionId}' could not receive the message.`);
       }
 
-      return buildResult(created, { resumed: true, reusedExistingRuntime: false });
+      return buildSessionActionResult(created, { resumed: true, reusedExistingRuntime: false });
+    },
+
+    async resumeSession(args: PtyResumeSessionArgs): Promise<PtyResumeSessionResult> {
+      const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+      if (!sessionId) throw new Error("Session id is required.");
+
+      const session = sessionService.get(sessionId);
+      assertAgentCliSessionAction(sessionId, session, "resumed");
+
+      const live = liveEntryBySessionId(sessionId);
+      if (live) {
+        const [ptyId, entry] = live;
+        return buildSessionActionResult(
+          { ptyId, sessionId, pid: entry.pty.pid ?? null },
+          { resumed: false, reusedExistingRuntime: true },
+        );
+      }
+
+      const resolvedResume = resolveEndedResumeSession(sessionId, session);
+      const { session: resumableSession, provider } = resolvedResume instanceof Promise
+        ? await resolvedResume
+        : resolvedResume;
+      const resumeCommand = buildResumeCommandForSession(resumableSession, provider, resumeLaunchOverrides(args));
+      if (!resumeCommand) {
+        throw new Error(`Terminal session '${sessionId}' does not have a resume command.`);
+      }
+
+      const { flight } = getOrCreateResumeFlight(resumableSession, resumeCommand, args);
+      const created = await flight;
+      return buildSessionActionResult(created, { resumed: true, reusedExistingRuntime: false });
     },
 
     write({ ptyId, data }: { ptyId: string; data: string }): void {
@@ -4375,7 +4403,6 @@ export function createPtyService({
         clearTimeout(entry.initialInputTimer);
         entry.initialInputTimer = null;
       }
-      clearToolAutoCloseTimer(ptyId);
       flushQueuedPtyData(entry, { ptyId, sessionId: entry.sessionId });
       cleanupEntryPaths(entry);
       // Release the live-tail buffer; see closeEntry for rationale.

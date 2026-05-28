@@ -164,6 +164,28 @@ describe("TerminalPane", () => {
     expect(frame).toContain("final answer");
   });
 
+  it("surfaces the blank-enter resume affordance for closed resumable sessions", () => {
+    const result = render(
+      <TerminalPane
+        title="Claude Code"
+        preview={preview([row("final answer")], {
+          status: "completed",
+          runtimeState: "exited",
+          resumeCommand: "claude --resume abc",
+        })}
+        liveChunks={[]}
+        attached={false}
+        width={80}
+        height={4}
+        hiddenBottomRows={2}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("closed, resumable");
+    expect(frame).toContain("Enter resumes");
+  });
+
   it("strips short terminal save and restore escapes from transcript fallback", async () => {
     const result = render(
       <TerminalPane

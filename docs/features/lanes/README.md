@@ -21,12 +21,9 @@ through `apps/desktop/src/preload/preload.ts`, which routes every
 runtime-backed method through `LocalRuntimeConnectionPool` for
 local-bound windows or through `RemoteConnectionPool` (SSH-attached) for
 remote-bound windows. The legacy in-process `laneService.ts` still exists
-on the desktop main process as a fallback target so older callers and
-tests keep working — preload calls the runtime first via
-`callProjectRuntimeActionOr("lane", …)` and only invokes the local IPC
-handler if no runtime is bound. When `ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1`
-is set for local development/diagnostics, preload skips the local daemon
-route entirely and goes straight to those in-process IPC fallbacks. For
+on the desktop main process for tests and desktop-only call paths —
+preload calls the runtime via `callProjectRuntimeActionOr("lane", …)` and
+only invokes the local IPC handler if no runtime is bound. For
 remote-bound windows the worktree is created on the remote machine; the
 desktop renders the same UX but the git operations, file watchers, PTYs,
 and processes execute on the remote host. The desktop main process keeps

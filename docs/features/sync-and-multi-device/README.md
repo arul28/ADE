@@ -93,8 +93,7 @@ running daemon).
 │   - sync.* preload calls route through                           │
 │     callProjectRuntimeSyncOr(method, params, fallback)           │
 │   - prefers the remote runtime if the window is bound,           │
-│     then the local runtime daemon, only then the in-process      │
-│     fallback (ADE_ENABLE_DESKTOP_SYNC_HOST=1)                    │
+│     otherwise the local runtime daemon                           │
 └──────────────────────────────────────────────────────────────────┘
                           │
                           ▼
@@ -208,16 +207,15 @@ which:
    remote runtime, the call goes over `IPC.remoteRuntimeCallSync` to
    the remote daemon.
 2. Otherwise, it calls `IPC.localRuntimeCallSync` against the local
-   daemon. Local-daemon failures that look safe to retry fall through.
-3. Only as a final fallback (and only when the desktop in-process host
-   was actually started) does the call hit the in-process IPC handler.
+   daemon. In-process sync IPC is used only when no runtime binding is
+   available, such as tests or diagnostics.
 
 During project transitions, mutating sync methods (`sync.setPin`,
 `sync.clearPin`, `sync.connectToBrain`, lane-presence updates, model-picker
 favorites/recents writes, and similar state changes) fail with the same
 "Project is switching" guard used by project runtime actions. Read/status
-calls can still fall through to safe fallbacks. Remote sync calls replay only
-for the explicit retry-safe allowlist (status/discovery/device/PIN reads,
+calls can still refresh after the new binding is established. Remote sync calls
+replay only for the explicit retry-safe allowlist (status/discovery/device/PIN reads,
 lane-presence announce, and model-picker reads); other sync mutations surface
 connection errors rather than being replayed after reconnect.
 

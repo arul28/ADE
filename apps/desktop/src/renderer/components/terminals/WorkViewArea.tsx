@@ -2,6 +2,7 @@ import { useMemo, useCallback, useEffect, useRef, useState, type CSSProperties }
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import {
+  ArrowClockwise,
   CaretDown,
   CaretRight,
   Chats,
@@ -39,7 +40,7 @@ import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/Agen
 import { ChatCommandMenu, handleCommandMenuKeyDown, type ChatCommandMenuHandle, type ChatCommandMenuItem } from "../chat/ChatCommandMenu";
 import { ChatComposerShell } from "../chat/ChatComposerShell";
 import { WorkStartSurface } from "./WorkStartSurface";
-import { CliSurfaceTrailingActions, CliSessionWorkSurfaceHeader } from "./CliSessionWorkSurfaceHeader";
+import { CliSessionWorkSurfaceHeader } from "./CliSessionWorkSurfaceHeader";
 import { isChatToolType, primarySessionLabel, stripTerminalLabelControls, truncateSessionLabel, formatToolTypeLabel } from "../../lib/sessions";
 import { sessionNeedsChatTabHighlight, sessionStatusDot } from "../../lib/terminalAttention";
 import type { WorkTabGroup } from "./useWorkSessions";
@@ -473,6 +474,7 @@ function ClosedCliSessionSurface({
   onInfoClick,
   onContextMenu,
   onContinue,
+  onResume,
 }: {
   session: TerminalSessionSummary;
   lanes: LaneSummary[];
@@ -480,9 +482,12 @@ function ClosedCliSessionSurface({
   onInfoClick?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
   onContextMenu?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
   onContinue?: (session: TerminalSessionSummary, text: string) => Promise<void> | void;
+  onResume?: (session: TerminalSessionSummary) => Promise<void> | void;
 }) {
   const [preview, setPreview] = useState<ChatTerminalPreviewResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [resumeError, setResumeError] = useState<string | null>(null);
+  const [resuming, setResuming] = useState(false);
   const label = primarySessionLabel(session);
   const showComposer = canContinueAgentCliSession(session);
   const exitLabel = terminalExitLabel(session.exitCode);
@@ -490,6 +495,19 @@ function ClosedCliSessionSurface({
     ? new Date(session.endedAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
     : null;
   const endedLabel = endedTime ? `Ended ${endedTime}` : "Session ended";
+
+  const handleResume = useCallback(async () => {
+    if (resuming) return;
+    setResuming(true);
+    setResumeError(null);
+    try {
+      await onResume?.(session);
+    } catch (err) {
+      setResumeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setResuming(false);
+    }
+  }, [onResume, resuming, session]);
 
   useEffect(() => {
     let cancelled = false;
@@ -536,10 +554,21 @@ function ClosedCliSessionSurface({
               {exitLabel ? ` · ${exitLabel}` : ""}
             </div>
           </div>
+          {showComposer && onResume ? (
+            <button
+              type="button"
+              disabled={resuming}
+              onClick={() => void handleResume()}
+              className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.04] px-2 text-[10px] font-medium text-fg/75 transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              {resuming ? <SpinnerGap size={12} className="animate-spin" /> : <ArrowClockwise size={12} />}
+              Resume
+            </button>
+          ) : null}
         </div>
-        {error ? (
+        {error || resumeError ? (
           <div className="shrink-0 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2 text-[11px] text-red-300">
-            {error}
+            {resumeError ?? error}
           </div>
         ) : null}
         {useSnapshotPreview ? (
@@ -569,6 +598,7 @@ function SessionSurface({
   stopping = false,
   onOpenChatSession,
   onContinueCliSession,
+  onResumeCliSession,
 }: {
   session: TerminalSessionSummary;
   lanes: LaneSummary[];
@@ -583,6 +613,7 @@ function SessionSurface({
   stopping?: boolean;
   onOpenChatSession: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
   onContinueCliSession?: (session: TerminalSessionSummary, text: string) => Promise<void> | void;
+  onResumeCliSession?: (session: TerminalSessionSummary) => Promise<void> | void;
 }) {
   const isChat = isChatToolType(session.toolType);
   const surfaceActive = pageActive && isActive;
@@ -648,6 +679,7 @@ function SessionSurface({
         onInfoClick={onInfoClick}
         onContextMenu={onContextMenu}
         onContinue={onContinueCliSession}
+        onResume={onResumeCliSession}
       />
     );
   }
@@ -1171,6 +1203,7 @@ export function WorkViewArea({
   draftLaneId = null,
   draftContextTargetId = null,
   onContinueCliSession,
+  onResumeCliSession,
   setViewMode,
   onSelectItem,
   onCloseItem,
@@ -1222,6 +1255,7 @@ export function WorkViewArea({
   closingPtyIds: Set<string>;
   onContextMenu?: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
   onContinueCliSession?: (session: TerminalSessionSummary, text: string) => Promise<void> | void;
+  onResumeCliSession?: (session: TerminalSessionSummary) => Promise<void> | void;
   onReorderLaneSessions?: (laneId: string, movedSessionId: string, targetSessionId: string, edge: "before" | "after") => void;
   onOpenSessionInTabsView?: (sessionId: string) => void;
   onGoToLane?: (laneId: string) => void;
@@ -1375,6 +1409,7 @@ export function WorkViewArea({
               stopping={Boolean(session.ptyId && closingPtyIds.has(session.ptyId))}
               onOpenChatSession={onOpenChatSession}
               onContinueCliSession={onContinueCliSession}
+              onResumeCliSession={onResumeCliSession}
             />
           </div>
         ),
@@ -1384,6 +1419,7 @@ export function WorkViewArea({
     activeItemId,
     closingPtyIds,
     handleContextMenu,
+    lanes,
     laneColorById,
     laneBranchById,
     onCloseItem,
@@ -1393,6 +1429,7 @@ export function WorkViewArea({
     onOpenChatSession,
     onOpenSessionInTabsView,
     onContinueCliSession,
+    onResumeCliSession,
     onSelectItem,
     onStopRunningSession,
     pageActive,
@@ -1732,6 +1769,7 @@ export function WorkViewArea({
               stopping={Boolean(session.ptyId && closingPtyIds.has(session.ptyId))}
               onOpenChatSession={onOpenChatSession}
               onContinueCliSession={onContinueCliSession}
+              onResumeCliSession={onResumeCliSession}
             />
           </div>
         );

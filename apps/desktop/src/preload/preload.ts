@@ -383,6 +383,8 @@ import type {
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
+  PtyResumeSessionArgs,
+  PtyResumeSessionResult,
   PtySendToSessionArgs,
   PtySendToSessionResult,
   PtyDataEvent,
@@ -956,39 +958,6 @@ const gitBranchesCache = createKeyedShortIpcCache<GitBranchSummary[]>(
   2_000,
 );
 
-const localRuntimeDaemonDisabled =
-  process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON === "1";
-
-const allowLocalRuntimeFallback =
-  process.env.ADE_LOCAL_RUNTIME_FALLBACK !== "0" &&
-  (
-    process.env.ADE_LOCAL_RUNTIME_FALLBACK === "1" ||
-    localRuntimeDaemonDisabled ||
-    process.env.ADE_PACKAGE_CHANNEL === "alpha"
-  );
-
-function isLocalRuntimeActionNotCallableError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /Action '[^']+\.[^']+' is not callable/i.test(message);
-}
-
-function isSafeLocalRuntimeFallbackError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return (
-    /\b(ECONNREFUSED|ECONNRESET|EPIPE|ENOENT|ETIMEDOUT)\b/i.test(message) ||
-    /Local runtime daemon is not available/i.test(message) ||
-    /ADE service connection (?:closed|failed)/i.test(message) ||
-    /IPC handler for 'ade\.localRuntime\.(?:callAction|callSync|streamEvents)' timed out/i.test(message) ||
-    isLocalRuntimeActionNotCallableError(error) ||
-    /Timed out waiting for remote ADE service method /i.test(message) ||
-    /Timed out connecting to ADE service socket/i.test(message) ||
-    /Unsupported database value/i.test(message) ||
-    /UNIQUE constraint failed: process_definitions\.id/i.test(message) ||
-    /no such function: crsql_internal_sync_bit/i.test(message) ||
-    /database is not open/i.test(message)
-  );
-}
-
 let currentProjectBinding: OpenProjectBinding | null = null;
 let projectBindingGeneration = 0;
 let projectBindingVersion = 0;
@@ -1003,13 +972,9 @@ function rememberProjectBinding(binding: OpenProjectBinding | null): void {
   if (previousKey !== nextKey) {
     projectBindingGeneration += 1;
     resetRemoteRuntimeEventDedup(nextKey);
-    resetLocalRuntimeEventPollingSuppression();
     clearPendingRemoteRuntimeEventPoll();
   }
-  if (
-    binding?.kind === "remote" ||
-    (binding?.kind === "local" && !localRuntimeDaemonDisabled)
-  ) {
+  if (binding) {
     ensureRemoteRuntimeEventPump();
   }
 }
@@ -1134,31 +1099,13 @@ async function callLocalProjectActionIfBound<T>(
   if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
     return { handled: false };
   }
-  if (localRuntimeDaemonDisabled) return { handled: false };
   const binding = await getLocalProjectBinding(options?.freshBinding ? { fresh: true } : undefined);
   if (!binding) return { handled: false };
-  try {
-    const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
-      rootPath: binding.rootPath,
-      request: { domain, action, ...request },
-    })) as RemoteRuntimeActionResult;
-    return { handled: true, result: response.result as T };
-  } catch (error) {
-    const canUseFallback =
-      allowLocalRuntimeFallback
-      || isLocalRuntimeActionNotCallableError(error)
-      // Chat turns must not stall behind a hung local-runtime daemon — fall back
-      // to in-process IPC for safe transport errors (timeouts, socket loss).
-      || (domain === "chat" && isSafeLocalRuntimeFallbackError(error));
-    if (!canUseFallback || !isSafeLocalRuntimeFallbackError(error)) {
-      throw error;
-    }
-    console.warn(
-      "Local ADE service action failed; using in-process fallback.",
-      error,
-    );
-    return { handled: false };
-  }
+  const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
+    rootPath: binding.rootPath,
+    request: { domain, action, ...request },
+  })) as RemoteRuntimeActionResult;
+  return { handled: true, result: response.result as T };
 }
 
 async function callLocalProjectActionStrictIfBound<T>(
@@ -1169,7 +1116,6 @@ async function callLocalProjectActionStrictIfBound<T>(
   if (shouldBypassProjectRuntimeDuringTransition(domain, action)) {
     return { handled: false };
   }
-  if (localRuntimeDaemonDisabled) return { handled: false };
   const binding = await getLocalProjectBinding();
   if (!binding) return { handled: false };
   const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
@@ -1402,28 +1348,14 @@ async function callLocalProjectSyncIfBound<T>(
   method: string,
   params: Record<string, unknown> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
-  if (localRuntimeDaemonDisabled) return { handled: false };
   const binding = await getLocalProjectBinding();
   if (!binding) return { handled: false };
-  try {
-    const result = (await ipcRenderer.invoke(IPC.localRuntimeCallSync, {
-      rootPath: binding.rootPath,
-      method,
-      params,
-    })) as T;
-    return { handled: true, result };
-  } catch (error) {
-    const canUseFallback =
-      allowLocalRuntimeFallback || isLocalRuntimeActionNotCallableError(error);
-    if (!canUseFallback || !isSafeLocalRuntimeFallbackError(error)) {
-      throw error;
-    }
-    console.warn(
-      "Local ADE service sync call failed; using in-process fallback.",
-      error,
-    );
-    return { handled: false };
-  }
+  const result = (await ipcRenderer.invoke(IPC.localRuntimeCallSync, {
+    rootPath: binding.rootPath,
+    method,
+    params,
+  })) as T;
+  return { handled: true, result };
 }
 
 async function callProjectRuntimeSyncOr<T>(
@@ -1597,29 +1529,11 @@ let remoteRuntimeEventEpoch: string | null = null;
 let remoteRuntimeEventStartedAtMs = 0;
 let remoteRuntimeSeenEventBindingKey: string | null = null;
 const remoteRuntimeSeenEventIds = new Set<number>();
-let localRuntimeEventSuppressedUntilMs = 0;
-let localRuntimeEventSuppressionLogged = false;
-
-function suppressLocalRuntimeEventPolling(): void {
-  localRuntimeEventSuppressedUntilMs = Math.max(
-    localRuntimeEventSuppressedUntilMs,
-    Date.now() + 30_000,
-  );
-}
-
-function resetLocalRuntimeEventPollingSuppression(): void {
-  localRuntimeEventSuppressedUntilMs = 0;
-  localRuntimeEventSuppressionLogged = false;
-}
 
 function clearPendingRemoteRuntimeEventPoll(): void {
   if (!remoteRuntimeEventTimer) return;
   clearTimeout(remoteRuntimeEventTimer);
   remoteRuntimeEventTimer = null;
-}
-
-function localRuntimeEventSuppressionDelayMs(): number {
-  return Math.max(0, localRuntimeEventSuppressedUntilMs - Date.now());
 }
 
 function resetRemoteRuntimeEventDedup(bindingKey: string | null): void {
@@ -1703,31 +1617,16 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
   if (remoteRuntimeEventInFlight || !hasRemoteRuntimeEventSubscribers()) return;
   remoteRuntimeEventInFlight = true;
   let nextDelayMs: number | null = null;
-  let pollingLocalRuntime = false;
   try {
     const binding = await getProjectRuntimeBinding();
-    if (
-      !binding ||
-      (binding.kind !== "remote" && binding.kind !== "local") ||
-      (binding.kind === "local" && localRuntimeDaemonDisabled)
-    ) {
+    if (!binding) {
       remoteRuntimeEventCursor = 0;
       remoteRuntimeEventBindingKey = null;
       remoteRuntimeEventGeneration = projectBindingGeneration;
       remoteRuntimeEventEpoch = null;
       remoteRuntimeEventStartedAtMs = 0;
       resetRemoteRuntimeEventDedup(null);
-      resetLocalRuntimeEventPollingSuppression();
       return;
-    }
-    pollingLocalRuntime = binding.kind === "local";
-    if (pollingLocalRuntime) {
-      const suppressionDelayMs = localRuntimeEventSuppressionDelayMs();
-      if (suppressionDelayMs > 0) {
-        nextDelayMs = Math.max(1_000, suppressionDelayMs);
-        return;
-      }
-      localRuntimeEventSuppressionLogged = false;
     }
 
     if (
@@ -1805,18 +1704,7 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
     }
     nextDelayMs = batch.hasMore ? 50 : 750;
   } catch (error) {
-    if (pollingLocalRuntime && isSafeLocalRuntimeFallbackError(error)) {
-      suppressLocalRuntimeEventPolling();
-      if (!localRuntimeEventSuppressionLogged) {
-        localRuntimeEventSuppressionLogged = true;
-        console.warn(
-          "Local ADE service event polling failed; backing off while the local service recovers.",
-          error,
-        );
-      }
-    } else {
-      console.warn("Remote ADE service event polling failed", error);
-    }
+    console.warn("ADE runtime event polling failed", error);
     nextDelayMs = 2_000;
   } finally {
     remoteRuntimeEventInFlight = false;
@@ -5871,6 +5759,19 @@ contextBridge.exposeInMainWorld("ade", {
       return runtime.handled
         ? runtime.result
         : ipcRenderer.invoke(IPC.ptyCreate, args);
+    },
+    resumeSession: async (
+      args: PtyResumeSessionArgs,
+    ): Promise<PtyResumeSessionResult> => {
+      const runtime =
+        await callProjectRuntimeActionIfBound<PtyResumeSessionResult>(
+          "pty",
+          "resumeSession",
+          { args },
+        );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.ptyResumeSession, args);
     },
     sendToSession: async (
       args: PtySendToSessionArgs,

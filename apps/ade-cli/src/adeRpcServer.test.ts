@@ -244,6 +244,14 @@ function createRuntime() {
         resumed: false,
         reusedExistingRuntime: true,
       })),
+      resumeSession: vi.fn(async () => ({
+        ptyId: "pty-1",
+        sessionId: "session-1",
+        pid: 123,
+        session: null,
+        resumed: true,
+        reusedExistingRuntime: false,
+      })),
       dispose: vi.fn(),
       writeBySessionId: vi.fn((sessionId: string, data: string): boolean => {
         void sessionId;
@@ -918,6 +926,14 @@ describe("adeRpcServer", () => {
     await expect(handler({
       jsonrpc: "2.0",
       id: 4,
+      method: "pty.resumeSession",
+      params: { args: { sessionId: "session-1", cols: 100, rows: 32 } },
+    })).resolves.toMatchObject({ sessionId: "session-1", resumed: true, reusedExistingRuntime: false });
+    expect(runtime.ptyService.resumeSession).toHaveBeenCalledWith({ sessionId: "session-1", cols: 100, rows: 32 });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 5,
       method: "pty.write",
       params: { args: { ptyId: "pty-1", data: "x" } },
     })).resolves.toBeNull();
@@ -925,7 +941,7 @@ describe("adeRpcServer", () => {
 
     await expect(handler({
       jsonrpc: "2.0",
-      id: 5,
+      id: 6,
       method: "pty.resize",
       params: { args: { ptyId: "pty-1", cols: 100, rows: 30 } },
     })).resolves.toBeNull();
@@ -933,7 +949,7 @@ describe("adeRpcServer", () => {
 
     await expect(handler({
       jsonrpc: "2.0",
-      id: 6,
+      id: 7,
       method: "pty.dispose",
       params: { args: { ptyId: "pty-1", sessionId: "session-1" } },
     })).resolves.toBeNull();
@@ -941,7 +957,7 @@ describe("adeRpcServer", () => {
 
     const listed = await handler({
       jsonrpc: "2.0",
-      id: 7,
+      id: 8,
       method: "pty.list",
       params: { args: { laneId: "lane-1", limit: 20 } },
     });
@@ -964,6 +980,11 @@ describe("adeRpcServer", () => {
         method: "pty.sendToSession",
         params: { args: { sessionId: "session-1", text: "continue" } },
         spy: runtime.ptyService.sendToSession,
+      },
+      {
+        method: "pty.resumeSession",
+        params: { args: { sessionId: "session-1" } },
+        spy: runtime.ptyService.resumeSession,
       },
       { method: "pty.write", params: { args: { ptyId: "pty-1", data: "x" } }, spy: runtime.ptyService.write },
       { method: "pty.resize", params: { args: { ptyId: "pty-1", cols: 100, rows: 30 } }, spy: runtime.ptyService.resize },
@@ -1041,26 +1062,34 @@ describe("adeRpcServer", () => {
     await expect(handler({
       jsonrpc: "2.0",
       id: 6,
+      method: "pty.resumeSession",
+      params: { args: { sessionId: peer.id } },
+    })).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 7,
       method: "pty.write",
       params: { args: { ptyId: peer.ptyId, data: "x" } },
     })).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
 
     await expect(handler({
       jsonrpc: "2.0",
-      id: 7,
+      id: 8,
       method: "pty.resize",
       params: { args: { ptyId: peer.ptyId, cols: 100, rows: 30 } },
     })).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
 
     await expect(handler({
       jsonrpc: "2.0",
-      id: 8,
+      id: 9,
       method: "pty.dispose",
       params: { args: { ptyId: peer.ptyId, sessionId: owned.id } },
     })).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
 
     expect(runtime.ptyService.create).not.toHaveBeenCalled();
     expect(runtime.ptyService.sendToSession).not.toHaveBeenCalled();
+    expect(runtime.ptyService.resumeSession).not.toHaveBeenCalled();
     expect(runtime.ptyService.write).not.toHaveBeenCalled();
     expect(runtime.ptyService.resize).not.toHaveBeenCalled();
     expect(runtime.ptyService.dispose).not.toHaveBeenCalled();
@@ -2150,6 +2179,18 @@ describe("adeRpcServer", () => {
       cols: 400,
       rows: 200,
     });
+  });
+
+  it("exposes pty.resumeSession through the service-backed action catalog", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "list_ade_actions", { domain: "pty" });
+
+    expect(response?.isError).toBeUndefined();
+    const names = (response.actions ?? []).map((action: { name: string }) => action.name);
+    expect(names).toContain("pty.resumeSession");
   });
 
   it("rejects invalid start_cli_session permission modes", async () => {

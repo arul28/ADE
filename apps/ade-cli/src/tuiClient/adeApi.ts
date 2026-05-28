@@ -41,6 +41,7 @@ import type { PrLaneSummary } from "../../../desktop/src/shared/types/prs";
 import type {
   ChatTerminalPreviewResult,
   ChatTerminalSession,
+  PtyResumeSessionResult,
   PtySendToSessionResult,
   TerminalSessionSummary,
 } from "../../../desktop/src/shared/types";
@@ -222,6 +223,19 @@ export async function sendToTerminalSession(args: {
   return await args.connection.action<PtySendToSessionResult>("pty", "sendToSession", {
     sessionId: args.sessionId,
     text: args.text,
+    cols: args.cols,
+    rows: args.rows,
+  });
+}
+
+export async function resumeTerminalSession(args: {
+  connection: AdeCodeConnection;
+  sessionId: string;
+  cols: number;
+  rows: number;
+}): Promise<PtyResumeSessionResult> {
+  return await args.connection.action<PtyResumeSessionResult>("pty", "resumeSession", {
+    sessionId: args.sessionId,
     cols: args.cols,
     rows: args.rows,
   });

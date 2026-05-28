@@ -325,6 +325,7 @@ export const IPC = {
   macosVmTypeText: "ade.macosVm.typeText",
   macosVmEvent: "ade.macosVm.event",
   ptyCreate: "ade.pty.create",
+  ptyResumeSession: "ade.pty.resumeSession",
   ptySendToSession: "ade.pty.sendToSession",
   ptyWrite: "ade.pty.write",
   ptyResize: "ade.pty.resize",

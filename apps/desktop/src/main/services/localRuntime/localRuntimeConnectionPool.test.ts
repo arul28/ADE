@@ -421,7 +421,7 @@ describe("local runtime connection pool", () => {
     }
   }, 45_000);
 
-  it("replaces a stale local daemon when versions diverge", async () => {
+  it("preserves an incompatible local daemon and starts an isolated runtime when versions diverge", async () => {
     const adeCliRoot = path.resolve(process.cwd(), "../ade-cli");
     const cliPath = path.join(adeCliRoot, "src", "cli.ts");
     const tsxLoaderPath = path.join(adeCliRoot, "node_modules", "tsx", "dist", "loader.mjs");
@@ -430,6 +430,7 @@ describe("local runtime connection pool", () => {
 
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-version-"));
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-version-project-"));
+    const secondProjectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-version-project-"));
     const socketPath = path.join(adeHome, "sock", "ade.sock");
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
@@ -461,6 +462,7 @@ describe("local runtime connection pool", () => {
       error: vi.fn(),
     };
     let pool: LocalRuntimeConnectionPool | null = null;
+    let secondPool: LocalRuntimeConnectionPool | null = null;
 
     try {
       await waitForRuntimeSocket(socketPath);
@@ -478,21 +480,11 @@ describe("local runtime connection pool", () => {
         appVersion: "2.0.0",
         runtimePid: oldPid,
       }));
-      expect(logger.warn).toHaveBeenCalledWith("local_runtime.replacing_stale", expect.objectContaining({
+      expect(logger.warn).toHaveBeenCalledWith("local_runtime.incompatible_preserved", expect.objectContaining({
         pid: oldPid,
-        socketPath,
+        primarySocketPath: socketPath,
+        isolatedSocketPath: expect.any(String),
       }));
-
-      const deadline = Date.now() + 5_000;
-      while (Date.now() < deadline) {
-        try {
-          process.kill(oldPid, 0);
-          await new Promise((resolve) => setTimeout(resolve, 50));
-        } catch {
-          break;
-        }
-      }
-      expect(() => process.kill(oldPid, 0)).toThrow();
 
       const client = await RawRuntimeSocketClient.connect(socketPath);
       try {
@@ -503,13 +495,40 @@ describe("local runtime connection pool", () => {
         });
         expect(initialized).toMatchObject({
           runtimeInfo: {
-            version: "2.0.0",
+            version: "1.0.0",
           },
         });
       } finally {
         client.close();
       }
+
+      expect(() => process.kill(oldPid, 0)).not.toThrow();
+      const connection = await (pool as unknown as { connection: Promise<{ socketPath: string }> }).connection;
+      expect(connection.socketPath).not.toBe(socketPath);
+      const isolatedClient = await RawRuntimeSocketClient.connect(connection.socketPath);
+      try {
+        const initialized = await isolatedClient.request("ade/initialize", {
+          protocolVersion: "2025-06-18",
+          clientName: "local-runtime-version-isolated-test",
+          identity: { role: "external", callerId: "local-runtime-version-isolated-test" },
+        });
+        expect(initialized).toMatchObject({
+          runtimeInfo: {
+            version: "2.0.0",
+          },
+        });
+      } finally {
+        isolatedClient.close();
+      }
+
+      secondPool = new LocalRuntimeConnectionPool("2.0.0", logger as never, { disableSync: true });
+      const secondRegistered = await secondPool.ensureProject(secondProjectRoot);
+      expect(fs.realpathSync(secondRegistered.rootPath)).toBe(fs.realpathSync(secondProjectRoot));
+      const secondConnection = await (secondPool as unknown as { connection: Promise<{ socketPath: string; child: unknown }> }).connection;
+      expect(secondConnection.socketPath).toBe(connection.socketPath);
+      expect(secondConnection.child).toBeNull();
     } finally {
+      secondPool?.dispose();
       pool?.dispose();
       await shutdownRuntime(socketPath);
       if (!oldDaemon.killed) {
@@ -524,6 +543,7 @@ describe("local runtime connection pool", () => {
       if (originalEnv.NODE_OPTIONS === undefined) delete process.env.NODE_OPTIONS;
       else process.env.NODE_OPTIONS = originalEnv.NODE_OPTIONS;
       removeTempDir(projectRoot);
+      removeTempDir(secondProjectRoot);
       removeTempDir(adeHome);
     }
   }, 45_000);
@@ -587,7 +607,7 @@ describe("local runtime connection pool", () => {
         expect.anything(),
       );
       expect(logger.warn).not.toHaveBeenCalledWith(
-        "local_runtime.replacing_stale",
+        "local_runtime.incompatible_preserved",
         expect.anything(),
       );
     } finally {
@@ -607,7 +627,7 @@ describe("local runtime connection pool", () => {
     }
   }, 45_000);
 
-  it("replaces a same-version local daemon when the packaged runtime build changed", async () => {
+  it("preserves a same-version local daemon and starts an isolated runtime when the packaged runtime build changed", async () => {
     const adeCliRoot = path.resolve(process.cwd(), "../ade-cli");
     const cliPath = path.join(adeCliRoot, "src", "cli.ts");
     const tsxLoaderPath = path.join(adeCliRoot, "node_modules", "tsx", "dist", "loader.mjs");
@@ -667,21 +687,11 @@ describe("local runtime connection pool", () => {
         expectedBuildHash,
         runtimePid: oldPid,
       }));
-      expect(logger.warn).toHaveBeenCalledWith("local_runtime.replacing_stale", expect.objectContaining({
+      expect(logger.warn).toHaveBeenCalledWith("local_runtime.incompatible_preserved", expect.objectContaining({
         pid: oldPid,
-        socketPath,
+        primarySocketPath: socketPath,
+        isolatedSocketPath: expect.any(String),
       }));
-
-      const deadline = Date.now() + 5_000;
-      while (Date.now() < deadline) {
-        try {
-          process.kill(oldPid, 0);
-          await new Promise((resolve) => setTimeout(resolve, 50));
-        } catch {
-          break;
-        }
-      }
-      expect(() => process.kill(oldPid, 0)).toThrow();
 
       const client = await RawRuntimeSocketClient.connect(socketPath);
       try {
@@ -693,11 +703,31 @@ describe("local runtime connection pool", () => {
         expect(initialized).toMatchObject({
           runtimeInfo: {
             version: "1.0.0",
-            buildHash: expectedBuildHash,
+            buildHash: "old-build",
           },
         });
       } finally {
         client.close();
+      }
+
+      expect(() => process.kill(oldPid, 0)).not.toThrow();
+      const connection = await (pool as unknown as { connection: Promise<{ socketPath: string }> }).connection;
+      expect(connection.socketPath).not.toBe(socketPath);
+      const isolatedClient = await RawRuntimeSocketClient.connect(connection.socketPath);
+      try {
+        const initialized = await isolatedClient.request("ade/initialize", {
+          protocolVersion: "2025-06-18",
+          clientName: "local-runtime-build-isolated-test",
+          identity: { role: "external", callerId: "local-runtime-build-isolated-test" },
+        });
+        expect(initialized).toMatchObject({
+          runtimeInfo: {
+            version: "1.0.0",
+            buildHash: expectedBuildHash,
+          },
+        });
+      } finally {
+        isolatedClient.close();
       }
     } finally {
       pool?.dispose();
@@ -718,7 +748,7 @@ describe("local runtime connection pool", () => {
     }
   }, 45_000);
 
-  it("replaces a same-version local daemon when its default role is not CTO", async () => {
+  it("preserves a same-version local daemon and starts an isolated runtime when its default role is not CTO", async () => {
     const adeCliRoot = path.resolve(process.cwd(), "../ade-cli");
     const cliPath = path.join(adeCliRoot, "src", "cli.ts");
     const tsxLoaderPath = path.join(adeCliRoot, "node_modules", "tsx", "dist", "loader.mjs");
@@ -779,9 +809,10 @@ describe("local runtime connection pool", () => {
         expectedDefaultRole: "cto",
         runtimePid: oldPid,
       }));
-      expect(logger.warn).toHaveBeenCalledWith("local_runtime.replacing_stale", expect.objectContaining({
+      expect(logger.warn).toHaveBeenCalledWith("local_runtime.incompatible_preserved", expect.objectContaining({
         pid: oldPid,
-        socketPath,
+        primarySocketPath: socketPath,
+        isolatedSocketPath: expect.any(String),
       }));
 
       const client = await RawRuntimeSocketClient.connect(socketPath);
@@ -795,11 +826,32 @@ describe("local runtime connection pool", () => {
           runtimeInfo: {
             version: "1.0.0",
             buildHash: expectedBuildHash,
-            defaultRole: "cto",
+            defaultRole: "agent",
           },
         });
       } finally {
         client.close();
+      }
+
+      expect(() => process.kill(oldPid, 0)).not.toThrow();
+      const connection = await (pool as unknown as { connection: Promise<{ socketPath: string }> }).connection;
+      expect(connection.socketPath).not.toBe(socketPath);
+      const isolatedClient = await RawRuntimeSocketClient.connect(connection.socketPath);
+      try {
+        const initialized = await isolatedClient.request("ade/initialize", {
+          protocolVersion: "2025-06-18",
+          clientName: "local-runtime-role-isolated-test",
+          identity: { role: "external", callerId: "local-runtime-role-isolated-test" },
+        });
+        expect(initialized).toMatchObject({
+          runtimeInfo: {
+            version: "1.0.0",
+            buildHash: expectedBuildHash,
+            defaultRole: "cto",
+          },
+        });
+      } finally {
+        isolatedClient.close();
       }
     } finally {
       pool?.dispose();

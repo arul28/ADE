@@ -190,10 +190,12 @@ function buildDroidCommandLine(args: {
   permissionMode: AgentChatPermissionMode | null | undefined;
   model?: string | null;
   reasoningEffort?: string | null;
+  prompt?: string | null;
   resumeTarget?: string | null;
 }): string {
   const droidArgs = ["droid", "--settings", "$ADE_DROID_SETTINGS", "--resume"];
   if (args.resumeTarget) droidArgs.push(args.resumeTarget);
+  if (args.prompt) droidArgs.push(args.prompt);
   const droidCommand = commandArrayToLine(droidArgs).replace(shellQuote("$ADE_DROID_SETTINGS"), "\"$ADE_DROID_SETTINGS\"");
   return [
     "ADE_DROID_SETTINGS=\"$(mktemp \"${TMPDIR:-/tmp}/ade-droid-settings.XXXXXX.json\")\"",
@@ -233,6 +235,7 @@ function buildOpenCodeResumeCommand(args: {
   permissionMode: AgentChatPermissionMode | null | undefined;
   targetId: string | null;
   model?: string | null;
+  prompt?: string | null;
 }): string {
   const commandArgs = ["opencode", ...permissionModeToOpenCodeArgs(args.permissionMode), ...modelToCliFlag(normalizeOpenCodeCliModel(args.model))];
   if (args.targetId) {
@@ -240,6 +243,7 @@ function buildOpenCodeResumeCommand(args: {
   } else {
     commandArgs.push("--continue");
   }
+  if (args.prompt) commandArgs.push("--prompt", args.prompt);
   const config = openCodeConfigEnv(args.permissionMode);
   const assignment = config ? `${OPENCODE_INLINE_CONFIG_ENV}=${shellQuote(config)} ` : "";
   return `${assignment}${commandArrayToLine(commandArgs)}`;
@@ -471,7 +475,12 @@ export function parseTrackedCliResumeCommand(
 
 export function buildTrackedCliResumeCommand(
   metadata: TerminalResumeMetadata | null | undefined,
-  overrides: { model?: string | null; reasoningEffort?: string | null; permissionMode?: AgentChatPermissionMode | null } = {},
+  overrides: {
+    model?: string | null;
+    reasoningEffort?: string | null;
+    permissionMode?: AgentChatPermissionMode | null;
+    prompt?: string | null;
+  } = {},
 ): string | null {
   if (!metadata) return null;
   const provider = metadata.provider;
@@ -481,6 +490,7 @@ export function buildTrackedCliResumeCommand(
     ? overrides.reasoningEffort
     : metadata.launch.reasoningEffort;
   const targetId = sanitizeResumeTargetId(metadata.targetId) ?? "";
+  const prompt = normalizeCliFlagValue(overrides.prompt);
 
   if (provider === "claude") {
     const parts = ["claude", ...permissionModeToClaudeFlag(permissionMode)];
@@ -490,6 +500,7 @@ export function buildTrackedCliResumeCommand(
     if (claudeReasoningEffort) parts.push("--effort", claudeReasoningEffort);
     parts.push("--resume");
     if (targetId.length) parts.push(targetId);
+    if (prompt) parts.push(prompt);
     return commandArrayToLine(parts);
   }
 
@@ -503,6 +514,7 @@ export function buildTrackedCliResumeCommand(
     ];
     parts.push("resume");
     if (targetId.length) parts.push(targetId);
+    if (prompt) parts.push(prompt);
     return commandArrayToLine(parts);
   }
 
@@ -516,14 +528,15 @@ export function buildTrackedCliResumeCommand(
     } else {
       parts.push("--continue");
     }
+    if (prompt) parts.push(prompt);
     return commandArrayToLine(parts);
   }
 
   if (provider === "droid") {
-    return buildDroidCommandLine({ permissionMode, model, reasoningEffort, resumeTarget: targetId || null });
+    return buildDroidCommandLine({ permissionMode, model, reasoningEffort, prompt, resumeTarget: targetId || null });
   }
 
-  return buildOpenCodeResumeCommand({ permissionMode, targetId: targetId || null, model });
+  return buildOpenCodeResumeCommand({ permissionMode, targetId: targetId || null, model, prompt });
 }
 
 function canonicalizePreferredTool(preferredTool: TerminalToolType | null | undefined): TerminalToolType | null | undefined {

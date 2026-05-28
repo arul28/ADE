@@ -10,8 +10,9 @@ terminal/session system:
 These services run inside the **active ADE runtime** (local daemon for
 local-bound windows, SSH-attached remote runtime for remote-bound
 windows). The same source files are also loaded by the desktop main
-process for the legacy in-process IPC fallback path; both paths share
-identical behavior. PTY data and exit events flow over the runtime's
+process for tests, diagnostics, and flows without a runtime binding;
+runtime-bound project work is not retried against desktop-local
+handlers after a daemon failure. PTY data and exit events flow over the runtime's
 event stream and the renderer subscribes via the preload runtime event
 pump. Remote-bound windows therefore have their PTYs spawn on the
 remote machine — `node-pty` runs on the remote host, the bytes stream
@@ -228,7 +229,10 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
     the older pattern where callers embedded the prompt in the provider
     argv or typed it as a post-create PTY write. The timer is cleared
     on `closeEntry` / `dispose` and the callback bails out if the PTY
-    was disposed in the meantime. Returns `{ ptyId, sessionId, pid }`.
+    was disposed in the meantime. When `awaitInitialInput` is false, a
+    readiness/write failure is logged and the PTY is preserved; ADE no
+    longer kills or ends the session just because the first input could
+    not be delivered. Returns `{ ptyId, sessionId, pid }`.
 
 The launch env is built layer by layer: `process.env`, the lane
 runtime env (from `getLaneRuntimeEnv`), the caller's `args.env`, then
@@ -388,23 +392,54 @@ write paths into one call:
    `buildTrackedCliResumeCommand(metadata, overrides)` — runtime
    `model` / `reasoningEffort` / `permissionMode` overrides flow into
    the command line so the continuation honours the user's current
-   model picker.
+   model picker. For the first ended-session continuation with
+   structured `resumeMetadata`, `text` is also passed as the provider
+   prompt argument.
 4. De-duplicate concurrent sends through `resumeRuntimeFlights` (one
    in-flight continuation per session id) so rapid sends do not spawn
    parallel PTYs against the same row.
 5. Spawn the continuation through `service.create({ sessionId, ... })`
-   in the same row, submit `text` via the agent CLI input protocol,
-   and return the new `{ ptyId, sessionId, pid, session, resumed: true,
+   in the same row. When the row has structured `resumeMetadata` and
+   no other resume flight is already running, the prompt is included in
+   the provider resume command and no follow-up PTY write is attempted.
+   OpenCode uses its replay-resume command when the installed CLI
+   supports it. If the code has to reuse an already-started resume
+   flight, it writes `text` after the PTY is attached. The return shape
+   is `{ ptyId, sessionId, pid, session, resumed: true,
    reusedExistingRuntime: false }`.
+
+Failed post-resume writes log `pty.resume_send_input_failed_preserved`
+and throw `Terminal session '<id>' could not receive the message.`;
+the resumed PTY is intentionally left running so the user can inspect
+or retry from the visible terminal.
+
+### Prompt-free resume (`resumeSession`)
+
+`ptyService.resumeSession({ sessionId, cols?, rows?, model?,
+reasoningEffort?, permissionMode? })` is the sibling entry point for
+"open this ended agent CLI session again without sending a new
+message."
+
+The validation and resume-target rules match `sendToSession`: the row
+must be a tracked agent CLI session, a concrete provider resume target
+must exist, and Codex update-only transcripts produce the explicit
+"start a new Codex session" error. If a live PTY is already attached,
+the call returns it with `resumed: false` and
+`reusedExistingRuntime: true`. Otherwise it rebuilds the provider
+resume command with the optional model / reasoning / permission
+overrides, launches a new PTY in the existing row, and returns
+`resumed: true`. No prompt is appended and no agent CLI input write is
+performed.
 
 The renderer's Work continuation composer, the iOS Work tab's
 "continue" path (`work.sendToSession` remote command), and the TUI's
-`send_to_session` JSON-RPC tool all go through this single function.
+`send_to_session` JSON-RPC tool all go through `sendToSession`.
 
 ### Agent CLI input protocol
 
-All `sendToSession` text submissions (and `initialInput` writes from
-`create`) go through a structured input protocol instead of a raw
+Live `sendToSession` text submissions, post-resume sends that could
+not be embedded in the launch command, and `initialInput` writes from
+`create` go through a structured input protocol instead of a raw
 `pty.write(text + "\r")`. The protocol:
 
 1. **Line clear** — send `Ctrl-U` + `Ctrl-E` to clear any partial
@@ -422,11 +457,12 @@ All `sendToSession` text submissions (and `initialInput` writes from
    `CURSOR_CLI_PASTE_SUBMIT_DELAY_MS = 500 ms` (Cursor). The
    different delays account for each provider's TUI paste-processing
    timing.
-5. **Ready wait** — for continuation sends, the protocol waits up to
-   `AGENT_CLI_READY_TIMEOUT_MS = 20 s` for the TUI to produce output
-   (at least `AGENT_CLI_READY_QUIET_MS = 600 ms` of silence after
-   initial output) before writing the input, so the prompt text does
-   not race ahead of the provider's startup banner.
+
+For fresh `initialInput` writes, ADE still waits up to
+`AGENT_CLI_READY_TIMEOUT_MS = 20 s` for the provider TUI to produce
+output and settle before writing. Ended-session continuations avoid
+that readiness race by passing the first follow-up prompt as a resume
+command argument whenever structured resume metadata is available.
 
 ### AI-driven titles
 
@@ -596,9 +632,9 @@ Two forms of cleanup:
 - `cleanupEntryPaths` — unlink `cleanupPaths` (per-session ADE CLI config
   files).
 
-`toolAutoCloseTimers` close a tool-typed PTY that has returned to the
-shell prompt. The timer is cleared on any new output or runtime state
-change.
+Returning to a `waiting-input` runtime state does not auto-close a PTY.
+The user, owning service, or worker orchestration layer must call
+`dispose` explicitly when a terminal should close.
 
 ---
 
@@ -823,9 +859,9 @@ processes.start  →  processService.startByDefinition
   active runs *and* recent history (up to 20 per `(lane, process)`).
   Callers that only want live runs need to filter by
   `isProcessActive(status)` themselves.
-- The `toolAutoCloseTimers` on the PTY side and the `healthInterval`
-  on the process side both fire after a grace period; they can race on
-  teardown. Always call `disposeAll()` last.
+- Managed-process `healthInterval` timers can still fire during
+  teardown. Always call `disposeAll()` last so PTYs and process
+  entries are cleaned up after dependent timers stop scheduling work.
 - Transcript paths for resumed sessions come from the existing row. If
   an old row references a deleted transcript file, `create` opens it
   in append mode and creates a new empty file — old history is gone.

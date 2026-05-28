@@ -14,10 +14,12 @@ SSH-backed RPC. The renderer's `window.ade.pty.*`, `window.ade.sessions.*`,
 `apps/desktop/src/preload/preload.ts` route through
 `callProjectRuntimeActionIfBound("pty", …)` /
 `callProjectRuntimeActionIfBound("session", …)` /
-`callProjectRuntimeActionIfBound("process", …)` first and fall back to
-the legacy in-process IPC handlers (the desktop's `ptyService.ts`,
+`callProjectRuntimeActionIfBound("process", …)` first and use the
+legacy in-process IPC handlers (the desktop's `ptyService.ts`,
 `sessionService.ts`, `processService.ts`) only when no runtime is
-bound. The same source files run on both paths. The macOS VM controls
+bound, such as tests or pre-binding diagnostics. A local-bound daemon
+failure is surfaced to the caller instead of being retried against the
+desktop process. The same source files run on both paths. The macOS VM controls
 (`window.ade.macosVm.*`) are local-only — they require local hardware
 access and are intentionally disabled for remote-bound windows.
 
@@ -33,8 +35,9 @@ snapshot (the most recent run) is what lives in the `process_runtime` table.
 
 ## Source file map
 
-Service files. Same sources back both the runtime daemon and the
-desktop fallback IPC path.
+Service files. Same sources back the runtime daemon and the limited
+desktop in-process path used before a binding exists, in diagnostics,
+and in tests.
 
 - `apps/desktop/src/main/services/pty/ptyService.ts` — PTY lifecycle,
   transcript capture (capped at `MAX_TRANSCRIPT_BYTES = 64 MB`), runtime
@@ -52,7 +55,9 @@ desktop fallback IPC path.
   deferred first-turn submission. PTY create stamps the new
   `terminal_sessions` row's `owner_pid` with the
   `processRegistryService` pid so cross-process reconcile/dispose paths
-  can tell live siblings from crashed owners. ~4,080 lines.
+  can tell live siblings from crashed owners. Also owns
+  `sendToSession` and `resumeSession` for tracked CLI continuation and
+  prompt-free relaunch. ~4,450 lines.
 - `apps/desktop/src/main/services/pty/ptyService.test.ts` — PTY behavior
   tests. Branch updated.
 - `apps/desktop/src/main/services/sessions/sessionService.ts` — persistence
@@ -97,7 +102,8 @@ Shared types and IPC:
   `TerminalSessionStatus`, `TerminalToolType`, `TerminalRuntimeState`,
   `TerminalResumeMetadata`, `PtyCreateArgs`, `SessionDeltaSummary`,
   `PtySendToSessionArgs` / `PtySendToSessionResult` (the
-  send-or-continue surface), the rich `ChatTerminalSession` /
+  send-or-continue surface), `PtyResumeSessionArgs` /
+  `PtyResumeSessionResult` (prompt-free tracked CLI relaunch), the rich `ChatTerminalSession` /
   `ChatTerminalListArgs` / `ChatTerminalReadArgs` /
   `ChatTerminalReadResult` / `ChatTerminalWriteArgs` /
   `ChatTerminalResizeArgs` / `ChatTerminalSignalArgs` /
@@ -129,7 +135,9 @@ Shared types and IPC:
 - `apps/desktop/src/shared/ipc.ts` — channels `ade.sessions.*`,
   `ade.pty.*` (including `ade.pty.sendToSession` — the send-or-continue
   channel that writes into a live agent CLI runtime or starts the
-  provider continuation internally), `ade.processes.*`, plus the
+  provider continuation internally — and `ade.pty.resumeSession`, which
+  relaunches an ended tracked CLI session without sending a prompt),
+  `ade.processes.*`, plus the
   chat-scoped `ade.terminal.*` family (`list`, `read`, `preview` —
   serialized xterm snapshot for the TUI / mobile renderers, `write`,
   `signal`, `activeForChat`), the lane-tied `ade.macosVm.*` family
@@ -149,7 +157,8 @@ IPC registration:
 - `apps/desktop/src/main/services/ipc/registerIpc.ts` — registers
   `sessionsList`, `sessionsGet`, `sessionsUpdateMeta`,
   `sessionsReadTranscriptTail`, `sessionsGetDelta`, `ptyCreate`,
-  `ptyWrite`, `ptyResize`, `ptyDispose`, the `processes.*` handlers,
+  `ptyResumeSession`, `ptySendToSession`, `ptyWrite`, `ptyResize`,
+  `ptyDispose`, the `processes.*` handlers,
   and the chat-scoped `terminalList` / `terminalRead` /
   `terminalWrite` / `terminalSignal` / `terminalActiveForChat`
   handlers. `terminalRead` delegates transcript-tail reads to
@@ -169,7 +178,10 @@ Renderer surfaces:
   (disposition `"background"`) upsert the optimistic session and
   refresh the list without stealing focus. Both chat and CLI draft
   launches respect the same disposition field through the unified
-  `WorkPtyLaunchArgs` / `WorkPtyLaunchResult` contract.
+  `WorkPtyLaunchArgs` / `WorkPtyLaunchResult` contract. Ended tracked
+  CLI sessions expose a prompt-free Resume action wired to
+  `window.ade.pty.resumeSession`, alongside the continuation composer
+  that sends a new prompt through `window.ade.pty.sendToSession`.
   Also owns the right-edge `WorkSidebar` toggle and resizer: when the
   sidebar is open and the view mode is not `grid`, the work view area
   shares its row with `WorkSidebar` via a flex container with a
@@ -242,13 +254,16 @@ Renderer surfaces:
   composer for ended tracked agent CLI sessions: when a Claude / Codex /
   Cursor / OpenCode / Droid PTY has exited, the surface keeps the
   transcript and renders a model / permission / slash-aware composer
-  whose send button calls `ade.pty.sendToSession`. The handler writes
-  into a live runtime when one is still attached, or starts a fresh
-  provider continuation internally and binds it back to the same
-  durable session id. Agent CLI input submission is serialized per session
-  and uses two writes: prompt text first, then the provider's submit
-  sequence. Codex, Claude, Cursor, and OpenCode use Kitty keyboard protocol
-  Enter; Droid uses carriage return for its line-oriented CLI. The
+  whose send button calls `ade.pty.sendToSession`. The same surface also
+  renders a Resume button that calls `ade.pty.resumeSession` when the
+  user wants the TUI back without sending a new prompt. `sendToSession`
+  writes into a live runtime when one is still attached, or starts a
+  fresh provider continuation bound back to the same durable session id.
+  For the first ended-session continuation with stored resume metadata,
+  the prompt is included in the provider resume command line, so ADE
+  does not wait for provider-specific readiness and then type into the
+  resumed TUI. Later sends that target an already-live PTY still use the
+  serialized agent CLI input protocol. The
   `onLaunchPtySession` prop is typed as
   `(args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>`.
 - `apps/desktop/src/renderer/components/terminals/useWorkLaneContextMenu.tsx`
@@ -565,22 +580,21 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
      title from the transcript tail.
    - `sessionDeltaService` can compute file-level git deltas using
      `headShaStart`/`headShaEnd`.
-   User-launched agent CLI sessions are not auto-disposed just because a
-   TUI returns to a waiting input prompt. Auto-close is reserved for
-   orchestrated worker PTYs (`*-orchestrated`) where the wrapped CLI has
-   exited back to the shell and no user-owned terminal is expected to stay
-   interactive.
+   No tracked CLI PTY is auto-disposed just because a TUI returns to a
+   waiting input prompt. Close/stop is explicit, so a resumed provider
+   TUI is preserved even if ADE cannot prove that it is ready for input.
 
 6. **Continue** — `work.sendToSession` reuses an existing session row
    when the user sends text to an ended agent CLI session and the PTY
    service opens the transcript in append mode. When the runtime is still
    live, it submits to that PTY directly. When the PTY is gone, it rebuilds
    the provider resume command, creates a new PTY bound to the same durable
-   session id, then submits the text using the agent CLI input protocol
-   (line clear, bracketed paste, chunked writes, provider-specific submit
-   delay). For continuations the protocol waits for the TUI to become
-   ready (up to 20 s) before writing. This keeps identity, lane
-   association, and transcript history intact.
+   session id, and includes the new prompt in that launch command when
+   resume metadata is available. If another send arrives while the resume
+   flight is already in progress, that later text is serialized and
+   written after the PTY is attached. This keeps identity, lane
+   association, and transcript history intact without killing the resumed
+   runtime on a readiness timeout.
 
 7. **Reconcile** — on startup, `reconcileStaleRunningSessions` marks
    orphaned `running` rows as `detached`. Ownership is gated through
@@ -649,7 +663,8 @@ PTY:
 | Channel | Purpose |
 |---|---|
 | `ade.pty.create` | create or reattach; returns `{ ptyId, sessionId, pid }`. Accepts an optional `chatSessionId` to mark the terminal as chat-owned. |
-| `ade.pty.sendToSession` | send-or-continue. Args: `{ sessionId, text, cols?, rows?, model?, reasoningEffort?, permissionMode? }`. Submits text into the live PTY when one is attached; otherwise validates that the row is a tracked agent CLI session, rebuilds the resume command via `buildTrackedCliResumeCommand` (honouring runtime overrides), spawns the continuation PTY in the same `terminal_sessions` row, and then submits the user's text. Submission uses the agent CLI input protocol: line clear, bracketed paste envelope, chunked 64-byte writes with 5 ms inter-chunk delay, then a carriage return with a provider-specific submit delay (25 ms general, 180 ms Codex, 500 ms Cursor). For continuations the protocol waits up to 20 s for the TUI to become ready before writing. Returns `PtySendToSessionResult` (`{ ptyId, sessionId, pid, session, resumed, reusedExistingRuntime }`). |
+| `ade.pty.resumeSession` | prompt-free tracked CLI relaunch. Args: `{ sessionId, cols?, rows?, model?, reasoningEffort?, permissionMode? }`. Reuses a live PTY when attached; otherwise validates the row, rebuilds the provider resume command, and spawns a continuation PTY in the same `terminal_sessions` row without writing a prompt. Returns `PtyResumeSessionResult` (`{ ptyId, sessionId, pid, session, resumed, reusedExistingRuntime }`). |
+| `ade.pty.sendToSession` | send-or-continue. Args: `{ sessionId, text, cols?, rows?, model?, reasoningEffort?, permissionMode? }`. Submits text into the live PTY when one is attached; otherwise validates that the row is a tracked agent CLI session, rebuilds the resume command via `buildTrackedCliResumeCommand` (honouring runtime overrides), spawns the continuation PTY in the same `terminal_sessions` row, and includes the user's text in the launch command when resume metadata is available. Later sends that land after a resume flight has started are serialized through the agent CLI input protocol: line clear, bracketed paste envelope, chunked 64-byte writes with 5 ms inter-chunk delay, then carriage return with a provider-specific submit delay. Returns `PtySendToSessionResult` (`{ ptyId, sessionId, pid, session, resumed, reusedExistingRuntime }`). |
 | `ade.pty.write` | write bytes to PTY |
 | `ade.pty.resize` | cols/rows resize |
 | `ade.pty.dispose` | close PTY; optional `sessionId` used for logging |

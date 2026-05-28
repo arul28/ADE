@@ -872,8 +872,8 @@ describe("ptyService", () => {
           "pty.initial_input_launch_failed",
           expect.objectContaining({ toolType: "codex" }),
         );
-        expect(sessionService.end).toHaveBeenCalledWith(expect.objectContaining({
-          exitCode: 1,
+        expect(mockPty.kill).not.toHaveBeenCalled();
+        expect(sessionService.end).not.toHaveBeenCalledWith(expect.objectContaining({
           status: "failed",
         }));
       } finally {
@@ -1083,8 +1083,8 @@ describe("ptyService", () => {
           "pty.initial_input_launch_failed",
           expect.objectContaining({ toolType: "cursor-cli" }),
         );
-        expect(sessionService.end).toHaveBeenCalledWith(expect.objectContaining({
-          exitCode: 1,
+        expect(mockPty.kill).not.toHaveBeenCalled();
+        expect(sessionService.end).not.toHaveBeenCalledWith(expect.objectContaining({
           status: "failed",
         }));
       } finally {
@@ -2059,7 +2059,7 @@ describe("ptyService", () => {
       expect(loadPty).not.toHaveBeenCalled();
     });
 
-    it("sendToSession resumes an ended tracked CLI session and writes the message", async () => {
+    it("sendToSession resumes an ended tracked CLI session with the message in the launch command", async () => {
       const { service, sessionService, mockPty, loadPty } = createHarness();
       sessionService.create({
         sessionId: "session-ended-send",
@@ -2095,7 +2095,6 @@ describe("ptyService", () => {
         permissionMode: "plan",
       });
       await Promise.resolve();
-      mockPty._emitter.emit("data", "OpenAI Codex\n› ");
       const result = await pending;
 
       expect(result).toEqual(expect.objectContaining({
@@ -2111,15 +2110,14 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"high\"' --sandbox read-only --ask-for-approval on-request resume thread-ended"],
+        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"high\"' --sandbox read-only --ask-for-approval on-request resume thread-ended 'fix failing tests'"],
         expect.any(Object),
       );
-      expect(mockPty.write).toHaveBeenCalledWith("\x1b[200~fix failing tests\x1b[201~");
-      expect(mockPty.write).toHaveBeenCalledWith("\r");
+      expect(mockPty.write).not.toHaveBeenCalled();
     });
 
     it("sendToSession preserves stored launch model and reasoning when no overrides are provided", async () => {
-      const { service, sessionService, mockPty, loadPty } = createHarness();
+      const { service, sessionService, loadPty } = createHarness();
       sessionService.create({
         sessionId: "session-ended-stored-launch",
         laneId: "lane-1",
@@ -2153,18 +2151,170 @@ describe("ptyService", () => {
         text: "continue",
       });
       await Promise.resolve();
-      mockPty._emitter.emit("data", "OpenAI Codex\n› ");
       await pending;
 
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"medium\"' --sandbox workspace-write --ask-for-approval untrusted resume thread-stored"],
+        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"medium\"' --sandbox workspace-write --ask-for-approval untrusted resume thread-stored continue"],
         expect.any(Object),
       );
     });
 
-    it("sendToSession treats Cursor's resumed follow-up composer as ready", async () => {
+    it("resumeSession relaunches an ended tracked CLI session without writing a prompt", async () => {
+      const { service, sessionService, mockPty, loadPty } = createHarness();
+      sessionService.create({
+        sessionId: "session-ended-resume-only",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Codex CLI",
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: "/tmp/transcripts/session-ended-resume-only.log",
+        toolType: "codex",
+        resumeCommand: "codex resume thread-resume-only",
+        resumeMetadata: {
+          provider: "codex",
+          targetKind: "thread",
+          targetId: "thread-resume-only",
+          launch: { permissionMode: "plan" },
+        },
+      });
+      sessionService.end({
+        sessionId: "session-ended-resume-only",
+        endedAt: "2026-04-09T12:30:00.000Z",
+        exitCode: 0,
+        status: "completed",
+      });
+
+      const result = await service.resumeSession({
+        sessionId: "session-ended-resume-only",
+        cols: 120,
+        rows: 40,
+      });
+
+      expect(result).toEqual(expect.objectContaining({
+        sessionId: "session-ended-resume-only",
+        resumed: true,
+        reusedExistingRuntime: false,
+      }));
+      const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+      expect(spawn).toHaveBeenCalledWith(
+        "/bin/bash",
+        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-resume-only"],
+        expect.any(Object),
+      );
+      expect(mockPty.write).not.toHaveBeenCalled();
+    });
+
+    it("sendToSession launches resumed Codex with the prompt argument when the composer is visible", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, sessionService, mockPty, loadPty } = createHarness();
+        sessionService.create({
+          sessionId: "session-codex-visible-composer",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Codex CLI",
+          startedAt: "2026-04-09T12:00:00.000Z",
+          transcriptPath: "/tmp/transcripts/session-codex-visible-composer.log",
+          toolType: "codex",
+          resumeCommand: "codex resume thread-visible-composer",
+          resumeMetadata: {
+            provider: "codex",
+            targetKind: "thread",
+            targetId: "thread-visible-composer",
+            launch: { permissionMode: "plan" },
+          },
+        });
+        sessionService.end({
+          sessionId: "session-codex-visible-composer",
+          endedAt: "2026-04-09T12:30:00.000Z",
+          exitCode: 0,
+          status: "completed",
+        });
+
+        const pending = service.sendToSession({
+          sessionId: "session-codex-visible-composer",
+          text: "continue from the visible prompt",
+        });
+        await Promise.resolve();
+        mockPty._emitter.emit("data", "› \ngpt-5.5 xhigh fast · ~/Projects/ADE\n");
+
+        await pending;
+
+        const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+        expect(spawn).toHaveBeenCalledWith(
+          "/bin/bash",
+          ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-visible-composer 'continue from the visible prompt'"],
+          expect.any(Object),
+        );
+        expect(mockPty.write).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("sendToSession does not wait for provider-specific readiness before resuming with a prompt", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, sessionService, mockPty, loadPty, logger } = createHarness();
+        sessionService.create({
+          sessionId: "session-codex-not-ready-preserve",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Codex CLI",
+          startedAt: "2026-04-09T12:00:00.000Z",
+          transcriptPath: "/tmp/transcripts/session-codex-not-ready-preserve.log",
+          toolType: "codex",
+          resumeCommand: "codex resume thread-not-ready-preserve",
+          resumeMetadata: {
+            provider: "codex",
+            targetKind: "thread",
+            targetId: "thread-not-ready-preserve",
+            launch: { permissionMode: "plan" },
+          },
+        });
+        sessionService.end({
+          sessionId: "session-codex-not-ready-preserve",
+          endedAt: "2026-04-09T12:30:00.000Z",
+          exitCode: 0,
+          status: "completed",
+        });
+
+        const pending = service.sendToSession({
+          sessionId: "session-codex-not-ready-preserve",
+          text: "this should not kill the resumed terminal",
+        });
+        await Promise.resolve();
+        mockPty._emitter.emit("data", "Starting MCP servers (0/9)\n");
+
+        await pending;
+
+        const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+        expect(spawn).toHaveBeenCalledWith(
+          "/bin/bash",
+          ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-not-ready-preserve 'this should not kill the resumed terminal'"],
+          expect.any(Object),
+        );
+        expect(mockPty.write).not.toHaveBeenCalled();
+        expect(mockPty.kill).not.toHaveBeenCalled();
+        expect(sessionService.end).not.toHaveBeenCalledWith(expect.objectContaining({
+          sessionId: "session-codex-not-ready-preserve",
+          status: "disposed",
+        }));
+        expect(logger.warn).not.toHaveBeenCalledWith(
+          "pty.resume_send_input_failed_preserved",
+          expect.anything(),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("sendToSession launches resumed Cursor with the prompt argument", async () => {
       vi.useFakeTimers();
       try {
         const { service, sessionService, mockPty, loadPty } = createHarness();
@@ -2201,17 +2351,13 @@ describe("ptyService", () => {
         await Promise.resolve();
         mockPty._emitter.emit("data", "Cursor Agent\nv2026.05.24\n→ Add a follow-up\n");
 
-        await vi.advanceTimersByTimeAsync(599);
-        expect(mockPty.write).toHaveBeenCalledTimes(0);
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", "cursor-agent --model auto --resume cursor-chat-1"],
+          ["--noprofile", "--norc", "-lc", "cursor-agent --model auto --resume cursor-chat-1 'Print EXACT_CURSOR_RESUME_526 and stop'"],
           expect.any(Object),
         );
 
-        await vi.advanceTimersByTimeAsync(1);
-        await vi.advanceTimersByTimeAsync(550);
         const result = await pending;
 
         expect(result).toEqual(expect.objectContaining({
@@ -2219,16 +2365,13 @@ describe("ptyService", () => {
           resumed: true,
           reusedExistingRuntime: false,
         }));
-        expect(mockPty.write).toHaveBeenNthCalledWith(1, "\x05");
-        expect(mockPty.write).toHaveBeenNthCalledWith(2, "\x15");
-        expect(mockPty.write).toHaveBeenNthCalledWith(3, "Print EXACT_CURSOR_RESUME_526 and stop");
-        expect(mockPty.write).toHaveBeenNthCalledWith(4, "\r");
+        expect(mockPty.write).not.toHaveBeenCalled();
       } finally {
         vi.useRealTimers();
       }
     });
 
-    it("sendToSession does not type into a resumed Cursor workspace trust prompt", async () => {
+    it("sendToSession launches resumed Cursor with a prompt even when provider-ready text is absent", async () => {
       vi.useFakeTimers();
       try {
         const { service, sessionService, mockPty, loadPty, logger } = createHarness();
@@ -2261,10 +2404,7 @@ describe("ptyService", () => {
           text: "Print EXACT_CURSOR_TRUST_TIMEOUT and stop",
           cols: 120,
           rows: 40,
-        }).then(
-          () => null,
-          (err: unknown) => err,
-        );
+        });
         await Promise.resolve();
         mockPty._emitter.emit("data", [
           "Cursor Agent\n",
@@ -2273,21 +2413,21 @@ describe("ptyService", () => {
           "[a] Trust this workspace\n",
         ].join(""));
 
-        await vi.advanceTimersByTimeAsync(20_500);
-
         await expect(pending).resolves.toEqual(expect.objectContaining({
-          message: expect.stringMatching(/could not receive the message/),
+          sessionId: "session-cursor-trust",
+          resumed: true,
+          reusedExistingRuntime: false,
         }));
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", "cursor-agent --model auto --resume cursor-chat-trust"],
+          ["--noprofile", "--norc", "-lc", "cursor-agent --model auto --resume cursor-chat-trust 'Print EXACT_CURSOR_TRUST_TIMEOUT and stop'"],
           expect.any(Object),
         );
         expect(mockPty.write).not.toHaveBeenCalled();
-        expect(logger.warn).toHaveBeenCalledWith(
+        expect(logger.warn).not.toHaveBeenCalledWith(
           "pty.agent_cli_ready_wait_timeout",
-          expect.objectContaining({ provider: "cursor" }),
+          expect.anything(),
         );
       } finally {
         vi.useRealTimers();
@@ -2388,14 +2528,17 @@ describe("ptyService", () => {
 
       expect(first.ptyId).toBe(second.ptyId);
       expect(loadPty).toHaveBeenCalledTimes(1);
+      const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+      expect(spawn).toHaveBeenCalledWith(
+        "/bin/bash",
+        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume thread-concurrent first"],
+        expect.any(Object),
+      );
       const writes = (mockPty.write as any).mock.calls.map((call: string[]) => call[0]);
-      const firstText = writes.indexOf("\x1b[200~first\x1b[201~");
-      const firstSubmit = writes.indexOf("\r", writes.indexOf("codex resume thread-concurrent\r") + 1);
       const secondText = writes.indexOf("\x1b[200~second\x1b[201~");
-      const secondSubmit = writes.indexOf("\r", firstSubmit + 1);
-      expect(firstText).toBeGreaterThanOrEqual(0);
-      expect(firstSubmit).toBeGreaterThan(firstText);
-      expect(secondText).toBeGreaterThan(firstSubmit);
+      const secondSubmit = writes.indexOf("\r", secondText + 1);
+      expect(writes).not.toContain("\x1b[200~first\x1b[201~");
+      expect(secondText).toBeGreaterThanOrEqual(0);
       expect(secondSubmit).toBeGreaterThan(secondText);
     });
 
@@ -3521,12 +3664,12 @@ describe("ptyService", () => {
       }
     });
 
-    it("still auto-closes orchestrated worker sessions after the wrapped CLI exits", async () => {
+    it("does not auto-close orchestrated worker sessions when they become waiting-input", async () => {
       vi.useFakeTimers();
       try {
         mocks.runtimeStateFromOsc133Chunk.mockReturnValue("waiting-input");
         const { service, mockPty, logger } = createHarness();
-        const { sessionId } = await service.create({
+        await service.create({
           laneId: "lane-1",
           title: "Claude worker",
           cols: 80,
@@ -3540,10 +3683,10 @@ describe("ptyService", () => {
         expect(mockPty.kill).not.toHaveBeenCalled();
 
         await vi.advanceTimersByTimeAsync(1);
-        expect(mockPty.kill).toHaveBeenCalledTimes(1);
-        expect(logger.info).toHaveBeenCalledWith(
+        expect(mockPty.kill).not.toHaveBeenCalled();
+        expect(logger.info).not.toHaveBeenCalledWith(
           "pty.tool_exit_auto_close",
-          expect.objectContaining({ sessionId, toolType: "claude-orchestrated" }),
+          expect.anything(),
         );
       } finally {
         vi.useRealTimers();

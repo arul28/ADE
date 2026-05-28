@@ -10,8 +10,6 @@ describe("preload OAuth bridge", () => {
   afterEach(() => {
     vi.resetModules();
     vi.doUnmock("electron");
-    delete process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON;
-    delete process.env.ADE_LOCAL_RUNTIME_FALLBACK;
     delete (globalThis as any).__adeBridge;
   });
 
@@ -835,8 +833,7 @@ describe("preload OAuth bridge", () => {
     expect(invoke).toHaveBeenCalledWith(IPC.lanesOpenFolder, { laneId: "lane-1" });
   });
 
-  it("skips local runtime IPC when the local runtime daemon is disabled", async () => {
-    process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON = "1";
+  it("surfaces local runtime action failures instead of falling back to in-process IPC", async () => {
     const binding = {
       kind: "local",
       key: "local:/repo",
@@ -846,6 +843,11 @@ describe("preload OAuth bridge", () => {
     const invoke = vi.fn(async (channel: string) => {
       if (channel === IPC.appGetWindowSession) {
         return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+      }
+      if (channel === IPC.localRuntimeCallAction) {
+        throw new Error(
+          "Error invoking remote method 'ade.localRuntime.callAction': Error: IPC handler for 'ade.localRuntime.callAction' timed out after 30000ms (callId=286)",
+        );
       }
       if (channel === IPC.lanesList) return [];
       throw new Error(`unexpected IPC: ${channel}`);
@@ -870,67 +872,16 @@ describe("preload OAuth bridge", () => {
     await import("./preload");
 
     const bridge = (globalThis as any).__adeBridge;
-    await expect(bridge.lanes.list()).resolves.toEqual([]);
-
-    expect(invoke).toHaveBeenCalledWith(IPC.appGetWindowSession);
-    expect(invoke).toHaveBeenCalledWith(IPC.lanesList, {});
-    expect(invoke).not.toHaveBeenCalledWith(
-      IPC.localRuntimeCallAction,
-      expect.anything(),
-    );
-  });
-
-  it("falls back to in-process IPC when a local runtime action times out", async () => {
-    process.env.ADE_LOCAL_RUNTIME_FALLBACK = "1";
-    const binding = {
-      kind: "local",
-      key: "local:/repo",
-      rootPath: "/repo",
-      displayName: "Project",
-    };
-    const lanes = [{ id: "lane-1", name: "Main" }];
-    const invoke = vi.fn(async (channel: string) => {
-      if (channel === IPC.appGetWindowSession) {
-        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
-      }
-      if (channel === IPC.localRuntimeCallAction) {
-        throw new Error(
-          "Error invoking remote method 'ade.localRuntime.callAction': Error: IPC handler for 'ade.localRuntime.callAction' timed out after 30000ms (callId=286)",
-        );
-      }
-      if (channel === IPC.lanesList) return lanes;
-      throw new Error(`unexpected IPC: ${channel}`);
-    });
-    const on = vi.fn();
-    const removeListener = vi.fn();
-    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
-      (globalThis as any).__bridgeName = name;
-      (globalThis as any).__adeBridge = value;
-    });
-
-    vi.doMock("electron", () => ({
-      contextBridge: { exposeInMainWorld },
-      ipcRenderer: { invoke, on, removeListener },
-      webFrame: {
-        getZoomLevel: vi.fn(() => 0),
-        setZoomLevel: vi.fn(),
-        getZoomFactor: vi.fn(() => 1),
-      },
-    }));
-
-    await import("./preload");
-
-    const bridge = (globalThis as any).__adeBridge;
-    await expect(bridge.lanes.list()).resolves.toEqual(lanes);
+    await expect(bridge.lanes.list()).rejects.toThrow(/timed out after 30000ms/);
 
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
       rootPath: "/repo",
       request: { domain: "lane", action: "list", args: {} },
     });
-    expect(invoke).toHaveBeenCalledWith(IPC.lanesList, {});
+    expect(invoke).not.toHaveBeenCalledWith(IPC.lanesList, {});
   });
 
-  it("falls back chat create to in-process IPC when local runtime callAction times out", async () => {
+  it("does not fall back chat create when local runtime callAction times out", async () => {
     const binding = {
       kind: "local",
       key: "local:/repo",
@@ -978,7 +929,7 @@ describe("preload OAuth bridge", () => {
       provider: "cursor",
       model: "composer-2.5-fast",
       modelId: "cursor/composer-2.5-fast",
-    })).resolves.toEqual(created);
+    })).rejects.toThrow(/timed out after 30000ms/);
 
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
       rootPath: "/repo",
@@ -988,13 +939,13 @@ describe("preload OAuth bridge", () => {
         args: expect.objectContaining({ laneId: "lane-1" }),
       },
     });
-    expect(invoke).toHaveBeenCalledWith(IPC.agentChatCreate, expect.objectContaining({
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatCreate, expect.objectContaining({
       laneId: "lane-1",
       provider: "cursor",
     }));
   });
 
-  it("falls back to in-process IPC when the local runtime does not expose a new action yet", async () => {
+  it("does not fall back when the local runtime does not expose a new action yet", async () => {
     const binding = {
       kind: "local",
       key: "local:/repo",
@@ -1039,13 +990,13 @@ describe("preload OAuth bridge", () => {
     await import("./preload");
 
     const bridge = (globalThis as any).__adeBridge;
-    await expect(bridge.agentChat.modelCatalog({ mode: "cached" })).resolves.toEqual(catalog);
+    await expect(bridge.agentChat.modelCatalog({ mode: "cached" })).rejects.toThrow(/not callable/);
 
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
       rootPath: "/repo",
       request: { domain: "chat", action: "modelCatalog", args: { mode: "cached" } },
     });
-    expect(invoke).toHaveBeenCalledWith(IPC.agentChatModelCatalog, { mode: "cached" });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatModelCatalog, { mode: "cached" });
   });
 
   it("routes local PR tab reads through the project runtime", async () => {
@@ -1650,7 +1601,7 @@ describe("preload OAuth bridge", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.filesListWorkspaces, expect.anything());
   });
 
-  it("backs off local runtime event polling after a safe local stream timeout", async () => {
+  it("keeps polling local runtime events after a stream timeout", async () => {
     vi.useFakeTimers();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
@@ -1696,12 +1647,12 @@ describe("preload OAuth bridge", () => {
         invoke.mock.calls.filter(([channel]) => channel === IPC.localRuntimeStreamEvents).length;
       expect(streamCallCount()).toBe(1);
       expect(warn).toHaveBeenCalledWith(
-        "Local ADE service event polling failed; backing off while the local service recovers.",
+        "ADE runtime event polling failed",
         expect.any(Error),
       );
 
       await vi.advanceTimersByTimeAsync(2_000);
-      expect(streamCallCount()).toBe(1);
+      expect(streamCallCount()).toBe(2);
 
       unsubscribe();
     } finally {
@@ -1710,7 +1661,7 @@ describe("preload OAuth bridge", () => {
     }
   });
 
-  it("clears local runtime event polling backoff when the project binding changes", async () => {
+  it("switches event polling to the new runtime binding", async () => {
     vi.useFakeTimers();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
@@ -1773,7 +1724,7 @@ describe("preload OAuth bridge", () => {
       expect(localStreamCallCount()).toBe(1);
 
       await vi.advanceTimersByTimeAsync(2_000);
-      expect(localStreamCallCount()).toBe(1);
+      expect(localStreamCallCount()).toBe(2);
       expect(remoteStreamCallCount()).toBe(0);
 
       const bindingListener = on.mock.calls.find(([channel]) => channel === IPC.appProjectBindingChanged)?.[1];
@@ -2351,7 +2302,6 @@ describe("preload OAuth bridge", () => {
   });
 
   it("guards git conflict actions against malformed lane args", async () => {
-    process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON = "1";
     const result = { success: true };
     const invoke = vi.fn(async (channel: string) => {
       if (channel === IPC.appGetWindowSession) {

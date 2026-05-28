@@ -202,7 +202,12 @@ preview and the plain transcript text via `snapshotLooksLikeTui(rows)`:
 when the snapshot contains TUI frame characters (`╭`, `─`, etc.) or
 enough styled cells to be obviously a TUI redraw, the snapshot wins so
 the user sees the Claude/Codex final screen instead of a flattened
-transcript with the alt-screen escape codes visible.
+transcript with the alt-screen escape codes visible. Ended tracked CLI
+surfaces expose two relaunch paths: **Resume** calls
+`ade.pty.resumeSession` and opens the provider TUI without sending a
+prompt, while the continuation composer calls `ade.pty.sendToSession`
+and sends the follow-up as part of the first resume launch when
+structured resume metadata is present.
 
 Constants:
 
@@ -549,11 +554,14 @@ Launch commands are built by `apps/desktop/src/shared/cliLaunch.ts`:
   thin wrapper that returns just the shell-typed `startupCommand`.
 - `resolveTrackedCliResumeCommand(session)` — internal runtime helper
   for rebuilding the command used behind the continuation composer.
-  It calls `buildTrackedCliResumeCommand(metadata)`, which knows how
+  It calls `buildTrackedCliResumeCommand(metadata, overrides)`, which knows how
   to format Claude (`claude --resume <uuid>`), Codex (`codex resume
   <thread>`), Cursor (`cursor-agent --resume <chatId>` / `--continue`),
   Droid (the same `--settings` preamble plus `droid --resume <id>`),
-  and OpenCode (`opencode --session <id>` / `--continue`).
+  and OpenCode (`opencode --session <id>` / `--continue`). The
+  `prompt` override is used by `sendToSession` for the first
+  ended-session follow-up; `resumeSession` rebuilds the same command
+  without a prompt.
 
 ## Context menu: `SessionContextMenu.tsx`
 

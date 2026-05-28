@@ -339,15 +339,6 @@ export function SyncDevicesSection() {
 }
 
 function isPhoneSyncReady(status: SyncRoleSnapshot): boolean {
-  const unavailableReason = typeof status.localDevice.metadata?.unavailableReason === "string"
-    ? status.localDevice.metadata.unavailableReason
-    : null;
-  if (
-    unavailableReason === "local_runtime_daemon_disabled"
-    || status.localDevice.deviceId === "local-runtime-disabled"
-  ) {
-    return false;
-  }
   return status.role === "brain" && Boolean(status.pairingConnectInfo);
 }
 

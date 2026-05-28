@@ -14,7 +14,7 @@ calls `fs.realpathSync` against the remote filesystem and refuses to
 spawn outside the remote worktree. The desktop renderer never bypasses
 the runtime to spawn directly.
 
-This document covers the gating, fallback behavior, and per-run
+This document covers the gating, diagnostic fallbacks, and per-run
 scoping that makes "which work runs where" a deterministic answer.
 
 ## Lane gating: `resolveLaneLaunchContext`

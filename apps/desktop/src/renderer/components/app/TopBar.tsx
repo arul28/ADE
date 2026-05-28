@@ -261,15 +261,6 @@ function getFocusableElements(root: HTMLElement): HTMLElement[] {
 
 function isSyncConnected(snapshot: SyncRoleSnapshot | null): boolean {
   if (!snapshot) return false;
-  const unavailableReason = typeof snapshot.localDevice.metadata?.unavailableReason === "string"
-    ? snapshot.localDevice.metadata.unavailableReason
-    : null;
-  if (
-    unavailableReason === "local_runtime_daemon_disabled"
-    || snapshot.localDevice.deviceId === "local-runtime-disabled"
-  ) {
-    return false;
-  }
   if (snapshot.client.state === "error") return false;
   if (snapshot.role === "brain") return snapshot.connectedPeers.length > 0;
   return snapshot.client.state === "connected";
@@ -483,15 +474,6 @@ function confirmProjectTabRemoval(projectName: string): boolean {
 
 function deriveSyncLabel(snapshot: SyncRoleSnapshot | null): string | null {
   if (!snapshot) return null;
-  const unavailableReason = typeof snapshot.localDevice.metadata?.unavailableReason === "string"
-    ? snapshot.localDevice.metadata.unavailableReason
-    : null;
-  if (
-    unavailableReason === "local_runtime_daemon_disabled"
-    || snapshot.localDevice.deviceId === "local-runtime-disabled"
-  ) {
-    return "Phone sync unavailable";
-  }
   if (snapshot.client.state === "error") return "Phone sync error";
   if (snapshot.role === "brain") {
     const count = snapshot.connectedPeers.length;

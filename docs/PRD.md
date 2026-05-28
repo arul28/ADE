@@ -12,7 +12,7 @@ ADE is a single-user development control plane that runs as a **runtime daemon o
 
 The clients of that runtime are equal:
 
-- **Electron desktop** (`apps/desktop/`) — multi-window UI. Local windows attach to the local runtime through `LocalRuntimeConnectionPool`. Windows can also be bound to a remote machine over SSH; that path runs `ade rpc --stdio` on the remote and routes runtime-backed APIs through `RemoteConnectionPool`. Some legacy in-process services remain as fallbacks.
+- **Electron desktop** (`apps/desktop/`) — multi-window UI. Local windows attach to the local runtime through `LocalRuntimeConnectionPool`. Windows can also be bound to a remote machine over SSH; that path runs `ade rpc --stdio` on the remote and routes runtime-backed APIs through `RemoteConnectionPool`. Runtime-bound windows do not retry project work against desktop-local handlers; the remaining in-process services are for pre-binding desktop flows, Electron-only side effects, diagnostics, and tests.
 - **ADE Code (`ade code`)** — terminal-native Work chat (Ink + React) in `apps/ade-cli/src/tuiClient/`. Defaults to attaching to the machine socket; starts `ade serve` if missing. `--embedded` keeps the legacy in-process fallback explicit.
 - **iOS app** (`apps/ios/`) — SwiftUI controller; connects to the runtime over WebSocket. The phone never runs agents.
 - **SSH-attached desktop** — a desktop window pointed at a remote runtime is the same client as a local window; the runtime daemon is what differs.
@@ -95,7 +95,7 @@ For the system-wide picture — runtime + clients, processes, data plane, IPC, s
 Quick pointers:
 
 - **Runtime daemon**: `apps/ade-cli/` — `ade serve` is the per-machine source of truth for projects, lanes, chats, processes, sync, and proof. Socket: `~/.ade/sock/ade.sock`. Login-service installers: `apps/ade-cli/src/serviceManager/installLaunchd.ts` (macOS), `installSystemd.ts` (Linux), `installWindows.ts` (Windows). Multi-project RPC: `apps/ade-cli/src/multiProjectRpcServer.ts`. Project registry/scope: `apps/ade-cli/src/services/projects/`. Sync host: `apps/ade-cli/src/services/sync/`. Credentials, agent registry, runtime-side service surfaces: `apps/ade-cli/src/services/`.
-- **Desktop client**: `apps/desktop/` — Electron main + preload + renderer. Multi-window. `LocalRuntimeConnectionPool` (`apps/desktop/src/main/services/localRuntime/`) speaks to the local runtime; `RemoteConnectionPool` (`apps/desktop/src/main/services/remoteRuntime/`) speaks to a runtime over SSH after `bootstrapRemoteRuntime` uploads the bundled `ade-<platform-arch>` binary. `preload.ts` routes runtime-backed APIs through those pools. Some legacy in-process services remain as fallback.
+- **Desktop client**: `apps/desktop/` — Electron main + preload + renderer. Multi-window. `LocalRuntimeConnectionPool` (`apps/desktop/src/main/services/localRuntime/`) speaks to the local runtime; `RemoteConnectionPool` (`apps/desktop/src/main/services/remoteRuntime/`) speaks to a runtime over SSH after `bootstrapRemoteRuntime` uploads the bundled `ade-<platform-arch>` binary. `preload.ts` routes runtime-backed APIs through those pools. In-process desktop services remain only for flows that have no runtime binding yet, Electron-only side effects, diagnostics, and tests.
 - **Terminal client**: `apps/ade-cli/src/tuiClient/` — `ade code` Ink + React Work chat.
 - **iOS client**: `apps/ios/` — SwiftUI controller over WebSocket to the runtime daemon.
 - **Renderer components**: `apps/desktop/src/renderer/components/<feature>/`.

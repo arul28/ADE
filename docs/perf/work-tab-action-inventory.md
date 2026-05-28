@@ -617,8 +617,8 @@ Perf event file:
 `~/.ade/perf-runs/work-inventory-shell-session-20260512-01/events.jsonl`.
 
 This was a real Electron Work UI run over the reset perf-pass repo with
-`NO_DEVTOOLS=1`, `ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1`,
-`ADE_LOCAL_RUNTIME_FALLBACK=1`, and `ADE_MODEL_OVERRIDE=gpt-5-codex`.
+`NO_DEVTOOLS=1`, the now-removed local-runtime-disable diagnostic mode, and
+`ADE_MODEL_OVERRIDE=gpt-5-codex`.
 
 Startup notes:
 

@@ -149,6 +149,7 @@ const terminalPreviewMock = vi.fn();
 const slashCommandsMock = vi.fn();
 const modelsMock = vi.fn();
 const sendToSessionMock = vi.fn();
+const resumeSessionMock = vi.fn();
 const resolvePtyLaunch = async () => ({ sessionId: "test-session", ptyId: "test-pty", pid: null });
 
 beforeEach(() => {
@@ -180,6 +181,8 @@ beforeEach(() => {
   });
   sendToSessionMock.mockReset();
   sendToSessionMock.mockResolvedValue({ sessionId: "session-1", ptyId: "pty-1", pid: 123, session: null, resumed: true, reusedExistingRuntime: false });
+  resumeSessionMock.mockReset();
+  resumeSessionMock.mockResolvedValue({ sessionId: "session-1", ptyId: "pty-1", pid: 123, session: null, resumed: true, reusedExistingRuntime: false });
   Object.defineProperty(window, "ade", {
     configurable: true,
     value: {
@@ -188,6 +191,7 @@ beforeEach(() => {
         slashCommands: slashCommandsMock,
       },
       pty: {
+        resumeSession: resumeSessionMock,
         sendToSession: sendToSessionMock,
       },
       terminal: {
@@ -371,7 +375,7 @@ describe("WorkViewArea", () => {
   it("shows the draft surface when no tab is active, even if tabs are open", () => {
     const session = makeSession();
 
-    const view = render(
+    render(
       <WorkViewArea
         gridLayoutId="work:grid:test"
         lanes={[{
@@ -540,7 +544,7 @@ describe("WorkViewArea", () => {
     const first = makeRunningSession("session-1", "pty-1");
     const second = makeRunningSession("session-2", "pty-2");
 
-    const view = render(
+    render(
       <WorkViewArea
         gridLayoutId="work:grid:test"
         lanes={[{
@@ -1106,6 +1110,7 @@ describe("WorkViewArea", () => {
 
   it("submits continuation text for ended agent CLI sessions", async () => {
     const onContinue = vi.fn().mockResolvedValue(undefined);
+    const onResume = vi.fn().mockResolvedValue(undefined);
     const session = {
       ...makeSession(),
       toolType: "codex" as const,
@@ -1155,8 +1160,12 @@ describe("WorkViewArea", () => {
         onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
         onContinueCliSession={onContinue}
+        onResumeCliSession={onResume}
       />,
     );
+
+    fireEvent.click(await within(view.container).findByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(onResume).toHaveBeenCalledWith(session));
 
     const textarea = await within(view.container).findByLabelText("Continue Codex session");
     fireEvent.change(textarea, { target: { value: "fix the test" } });

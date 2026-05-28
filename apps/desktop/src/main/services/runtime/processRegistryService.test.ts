@@ -113,6 +113,7 @@ describe("processRegistryService", () => {
       role: "desktop-main",
       heartbeatIntervalMs: 5_000,
       livenessWindowMs: 15_000,
+      pidLivenessCheck: (pid) => pid === 99_999,
     });
 
     expect(service.listLivePids()).toEqual(new Set([12_345, 99_999]));
@@ -122,6 +123,31 @@ describe("processRegistryService", () => {
     ]));
     expect(service.isProcessIdentityLive(99_999, "2026-03-17T00:00:10.000Z")).toBe(true);
     expect(service.isProcessIdentityLive(99_999, "2026-03-17T00:00:09.000Z")).toBe(false);
+    db.close();
+  });
+
+  it("excludes fresh heartbeat rows whose process no longer exists", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-17T00:00:20.000Z"));
+    const db = await createDb();
+    db.run(
+      "insert into runtime_processes(pid, role, project_root, started_at, last_seen) values (?, ?, ?, ?, ?)",
+      [99_999, "ade-serve-daemon", "/repo/ade", "2026-03-17T00:00:10.000Z", "2026-03-17T00:00:19.000Z"],
+    );
+    const service = createProcessRegistryService({
+      db,
+      logger: createLogger() as any,
+      pid: 12_345,
+      role: "desktop-main",
+      heartbeatIntervalMs: 5_000,
+      livenessWindowMs: 15_000,
+      pidLivenessCheck: () => false,
+    });
+
+    expect(service.listLivePids()).toEqual(new Set([12_345]));
+    expect(service.listLiveProcessIdentities()).toEqual([{ pid: 12_345, startedAt: "2026-03-17T00:00:20.000Z" }]);
+    expect(service.isPidLive(99_999)).toBe(false);
+    expect(service.isProcessIdentityLive(99_999, "2026-03-17T00:00:10.000Z")).toBe(false);
     db.close();
   });
 

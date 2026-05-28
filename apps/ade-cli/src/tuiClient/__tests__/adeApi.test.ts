@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import { cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, getAvailableModels, latestGoal, latestTokenStats, listLaneDiffStats, listPrsByLane, listTerminalSessions, sendChatMessage, signalTerminal, startClaudeTerminalSession, steerChatMessage } from "../adeApi";
+import { cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, getAvailableModels, latestGoal, latestTokenStats, listLaneDiffStats, listPrsByLane, listTerminalSessions, resumeTerminalSession, sendChatMessage, signalTerminal, startClaudeTerminalSession, steerChatMessage } from "../adeApi";
 import type { AdeCodeConnection } from "../types";
 
 const tmpPaths: string[] = [];
@@ -399,6 +399,40 @@ describe("startClaudeTerminalSession", () => {
           rows: 28,
           tracked: true,
         }),
+      },
+    ]);
+  });
+});
+
+describe("resumeTerminalSession", () => {
+  it("routes no-prompt terminal resumes through the PTY action domain", async () => {
+    const calls: Array<{ domain: string; action: string; args?: Record<string, unknown> }> = [];
+    const connection = {
+      action: async (domain: string, action: string, args?: Record<string, unknown>) => {
+        calls.push({ domain, action, args });
+        return {
+          sessionId: "term-1",
+          ptyId: "pty-1",
+          pid: 123,
+          session: null,
+          resumed: true,
+          reusedExistingRuntime: false,
+        };
+      },
+    } as unknown as AdeCodeConnection;
+
+    await expect(resumeTerminalSession({
+      connection,
+      sessionId: "term-1",
+      cols: 100,
+      rows: 28,
+    })).resolves.toMatchObject({ sessionId: "term-1", resumed: true });
+
+    expect(calls).toEqual([
+      {
+        domain: "pty",
+        action: "resumeSession",
+        args: { sessionId: "term-1", cols: 100, rows: 28 },
       },
     ]);
   });

@@ -713,7 +713,7 @@ export function registerRuntimeBridge({
       arg: { rootPath?: string | null; request: RemoteRuntimeActionRequest },
     ): Promise<RemoteRuntimeActionResult> => {
       if (!localRuntimeConnectionPool) {
-        throw new Error("Local runtime daemon is not available.");
+        throw new Error("Local ADE runtime connection is not available for this window.");
       }
       const request =
         arg?.request &&
@@ -757,7 +757,7 @@ export function registerRuntimeBridge({
       arg: { rootPath?: string | null; method: string; params?: Record<string, unknown> },
     ): Promise<unknown> => {
       if (!localRuntimeConnectionPool) {
-        throw new Error("Local runtime daemon is not available.");
+        throw new Error("Local ADE runtime connection is not available for this window.");
       }
       const method = typeof arg?.method === "string" ? arg.method.trim() : "";
       const params = isObjectRecord(arg?.params) ? arg.params : {};
@@ -790,7 +790,7 @@ export function registerRuntimeBridge({
       arg: { rootPath?: string | null; request?: RemoteRuntimeStreamEventsRequest },
     ): Promise<RemoteRuntimeStreamEventsResult> => {
       if (!localRuntimeConnectionPool) {
-        throw new Error("Local runtime daemon is not available.");
+        throw new Error("Local ADE runtime connection is not available for this window.");
       }
 
       const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;

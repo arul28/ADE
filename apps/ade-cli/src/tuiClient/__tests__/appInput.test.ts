@@ -17,6 +17,7 @@ import {
   isPromptWordBackspace,
   isTerminalSessionFastPollActive,
   isTerminalSessionWorking,
+  isTerminalSessionResumable,
   isTerminalControlToggle,
   isTerminalMouseTrackingEnabled,
   isChatTextSelectionRange,
@@ -50,6 +51,7 @@ import { clampTerminalPaneCols } from "../components/TerminalPane";
 import type { ChatInfoSnapshot } from "../types";
 import type { AgentChatSession, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
+import type { ChatTerminalSession } from "../../../../desktop/src/shared/types/sessions";
 
 describe("session activity helpers", () => {
   it("does not animate idle or input-blocked chat sessions", () => {
@@ -70,6 +72,39 @@ describe("session activity helpers", () => {
     expect(isTerminalSessionFastPollActive({ status: "running", runtimeState: "running", pid: null })).toBe(false);
     expect(isTerminalSessionFastPollActive({ status: "running", runtimeState: "idle", pid: process.pid })).toBe(false);
     expect(isTerminalSessionFastPollActive({ status: "completed", runtimeState: "exited", pid: process.pid })).toBe(false);
+  });
+
+  it("recognizes closed resumable terminal sessions", () => {
+    const session: ChatTerminalSession = {
+      terminalId: "terminal-1",
+      ptyId: null,
+      chatSessionId: null,
+      laneId: "lane-1",
+      laneName: "Lane 1",
+      title: "Claude Code",
+      toolType: "claude",
+      goal: null,
+      status: "completed",
+      runtimeState: "exited",
+      active: false,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      endedAt: "2026-01-01T00:01:00.000Z",
+      exitCode: 0,
+      pid: null,
+      resumeCommand: "claude --resume session-1",
+      lastOutputPreview: null,
+      summary: null,
+    };
+
+    expect(isTerminalSessionResumable(session)).toBe(true);
+    expect(isTerminalSessionResumable({ ...session, status: "running", runtimeState: "idle", active: true })).toBe(false);
+    expect(isTerminalSessionResumable({ ...session, resumeCommand: null, resumeMetadata: null })).toBe(false);
+    expect(isTerminalSessionResumable({ ...session, toolType: "shell" })).toBe(false);
+    expect(isTerminalSessionResumable({
+      ...session,
+      toolType: "shell",
+      resumeMetadata: { provider: "claude", targetKind: "session", targetId: "session-1", launch: {} },
+    })).toBe(true);
   });
 });
 

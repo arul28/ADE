@@ -426,7 +426,7 @@ export function TerminalPane({
     : preview?.session.status === "running"
       ? effectiveHiddenBottomRows > 0 ? "ADE prompt sends to Claude Code" : "live preview"
       : preview?.session.resumeCommand
-        ? "closed, resumable"
+        ? "closed, resumable · Enter resumes"
         : "closed";
 
   const content = (
