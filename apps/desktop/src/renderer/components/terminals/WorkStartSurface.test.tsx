@@ -13,6 +13,7 @@ const agentChatPaneProps = vi.hoisted(() => ({
     draftContextTargetId?: string | null;
     onOpenShellSession?: (laneId: string) => void | Promise<void>;
     onLaunchCliSession?: unknown;
+    suppressDraftLaunchNavigation?: boolean;
   },
 }));
 
@@ -28,6 +29,7 @@ vi.mock("../chat/AgentChatPane", () => ({
     draftContextTargetId?: string | null;
     onOpenShellSession?: (laneId: string) => void | Promise<void>;
     onLaunchCliSession?: unknown;
+    suppressDraftLaunchNavigation?: boolean;
   }) => {
     agentChatPaneProps.latest = props;
     return (
@@ -118,11 +120,13 @@ describe("WorkStartSurface", () => {
         lanes={[{ id: "lane-local", name: "Local", runtimePlacement: "local" } as any]}
         onOpenChatSession={vi.fn()}
         onLaunchPtySession={vi.fn()}
+        suppressDraftLaunchNavigation
       />,
     );
 
     expect(await screen.findByTestId("agent-chat-pane")).toBeTruthy();
     expect(agentChatPaneProps.latest?.draftContextTargetId).toBe("work:draft:lane-local:chat");
+    expect(agentChatPaneProps.latest?.suppressDraftLaunchNavigation).toBe(true);
     expect(screen.queryByTestId("work-vm-banner")).toBeNull();
     expect(screen.queryByTestId("work-vm-not-ready")).toBeNull();
   });

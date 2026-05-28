@@ -118,6 +118,46 @@ describe("SessionListPane", () => {
     expect(setSessionListOrganization).toHaveBeenCalledWith("by-time");
   });
 
+  it("shows an active marker only when the lane filter restricts lanes", () => {
+    const { rerender } = renderPane({ filterLaneId: "all" });
+
+    expect(screen.queryByTestId("work-lane-filter-active-indicator")).toBeNull();
+
+    const session = makeSession();
+    rerender(
+      <MemoryRouter>
+        <SessionListPane
+          lanes={[makeLane()]}
+          runningFiltered={[session]}
+          awaitingInputFiltered={[]}
+          endedFiltered={[]}
+          loading={false}
+          filterLaneId="lane-known"
+          setFilterLaneId={vi.fn()}
+          q=""
+          setQ={vi.fn()}
+          selectedSessionId={null}
+          draftKind="chat"
+          showingDraft={false}
+          onShowDraftKind={vi.fn()}
+          onSelectSession={vi.fn()}
+          onInfoClick={vi.fn()}
+          onContextMenu={vi.fn()}
+          sessionListOrganization="by-lane"
+          setSessionListOrganization={vi.fn()}
+          workCollapsedLaneIds={[]}
+          toggleWorkLaneCollapsed={vi.fn()}
+          workCollapsedSectionIds={[]}
+          toggleWorkSectionCollapsed={vi.fn()}
+          sessionsGroupedByLane={new Map([[session.laneId, [session]]])}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("button", { name: "Filters, lane filter active" })).toBeTruthy();
+    expect(screen.getByTestId("work-lane-filter-active-indicator")).toBeTruthy();
+  });
+
   it("bolds only the session name in sidebar cards", () => {
     const session = makeSession({
       id: "session-style",

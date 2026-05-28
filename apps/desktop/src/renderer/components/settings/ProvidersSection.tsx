@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
-  AgentChatEventEnvelope,
   AiConfig,
   AiApiKeyVerificationResult,
   AiClaudeAvailability,
@@ -38,6 +37,7 @@ import {
 } from "../lanes/laneDesignTokens";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
+import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
 
 type CliName = "claude" | "codex" | "cursor" | "droid";
 type ApiKeySource = "config" | "env" | "store";
@@ -211,39 +211,6 @@ function formatLocalModelLabel(modelId: string): string {
   return String(modelId ?? "").trim();
 }
 
-const AUTH_ERROR_SIGNALS = [
-  "invalid authentication credentials",
-  "authentication error",
-  "authentication_error",
-  "authentication failed",
-  "not authenticated",
-  "not logged in",
-  "login required",
-  "sign in",
-  "invalid api key",
-  "api error: 401",
-  "status 401",
-  "claude auth login",
-  "codex login",
-  "/login",
-];
-
-function isAuthRelatedChatMessage(message: string | null | undefined): boolean {
-  const normalized = String(message ?? "").trim().toLowerCase();
-  if (!normalized.length) return false;
-  return AUTH_ERROR_SIGNALS.some((signal) => normalized.includes(signal));
-}
-
-function shouldRefreshProvidersForChatEvent(envelope: AgentChatEventEnvelope): boolean {
-  const event = envelope.event;
-  if (event.type === "system_notice" && event.noticeKind === "auth") return true;
-  if (event.type === "error") return isAuthRelatedChatMessage(event.message);
-  if (event.type === "status" && event.turnStatus === "failed") {
-    return isAuthRelatedChatMessage(event.message);
-  }
-  return false;
-}
-
 function buildLocalProviderDrafts(
   snapshot: ProjectConfigSnapshot | null | undefined,
   status: (AiSettingsStatus & { runtimeConnections?: Record<string, AiRuntimeConnectionStatus> }) | null | undefined,
@@ -322,7 +289,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
 
   useEffect(() => {
     const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
-      if (!shouldRefreshProvidersForChatEvent(envelope)) return;
+      if (!shouldRefreshAiStatusForChatEvent(envelope)) return;
       if (pendingRefreshTimerRef.current != null) return;
       pendingRefreshTimerRef.current = window.setTimeout(() => {
         pendingRefreshTimerRef.current = null;

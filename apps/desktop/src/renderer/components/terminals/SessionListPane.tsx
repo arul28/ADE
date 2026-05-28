@@ -224,6 +224,8 @@ export const SessionListPane = React.memo(function SessionListPane({
 
   const isByLane = sessionListOrganization === "by-lane";
   const isByTime = sessionListOrganization === "by-time";
+  const normalizedFilterLaneId = filterLaneId.trim();
+  const laneFilterActive = normalizedFilterLaneId.length > 0 && normalizedFilterLaneId !== "all";
   const [filterOpen, setFilterOpen] = useState(false);
 
   const allSessions = useMemo(
@@ -609,17 +611,23 @@ export const SessionListPane = React.memo(function SessionListPane({
           <SmartTooltip content={{ label: "Filters", description: "Toggle the filter panel to organize sessions by lane or time." }}>
             <button
               type="button"
-              className="ade-session-list-toolbar-filter inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors"
+              className="ade-session-list-toolbar-filter relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors"
               style={{
                 border: "1px solid rgba(255,255,255,0.06)",
-                background: filterOpen ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.03)",
-                color: filterOpen ? "var(--color-fg)" : "var(--color-muted-fg)",
+                background: filterOpen || laneFilterActive ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.03)",
+                color: filterOpen || laneFilterActive ? "var(--color-fg)" : "var(--color-muted-fg)",
               }}
               onClick={() => setFilterOpen(!filterOpen)}
-              aria-label="Filters"
+              aria-label={laneFilterActive ? "Filters, lane filter active" : "Filters"}
               data-tour="work.laneFilter"
             >
               <Funnel size={12} weight={filterOpen ? "fill" : "regular"} />
+              {laneFilterActive ? (
+                <span
+                  data-testid="work-lane-filter-active-indicator"
+                  className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-[var(--color-accent)] shadow-[0_0_8px_var(--color-accent)]"
+                />
+              ) : null}
             </button>
           </SmartTooltip>
         </div>

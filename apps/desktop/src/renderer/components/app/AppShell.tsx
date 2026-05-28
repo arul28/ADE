@@ -38,6 +38,16 @@ import {
   getEffectiveBinding,
 } from "../../lib/keybindings";
 import { listSessionsCached } from "../../lib/sessionListCache";
+import {
+  AI_STATUS_CACHE_INVALIDATED_EVENT,
+  getAiStatusCached,
+  peekAiStatusCached,
+  type AiStatusCacheInvalidatedEventDetail,
+} from "../../lib/aiDiscoveryCache";
+import {
+  hasConfiguredAiProvider,
+  shouldRefreshAiStatusForChatEvent,
+} from "../../lib/aiProviderStatus";
 import { getStaleRunningCliSessionAgeHours, isRunOwnedSession } from "../../lib/sessions";
 import { summarizeTerminalAttention } from "../../lib/terminalAttention";
 import { getStoredZoomLevel, displayZoomToLevel } from "../../lib/zoom";
@@ -58,6 +68,8 @@ function primaryTabPath(pathname: string): string {
 }
 
 const PROJECT_ROUTE_STORAGE_PREFIX = "ade:project-route:";
+const AI_STATUS_STARTUP_DELAY_MS = 1_000;
+const AI_STATUS_CHAT_EVENT_REFRESH_MIN_GAP_MS = 30_000;
 const GITHUB_STATUS_STARTUP_DELAY_MS = 12_000;
 const GITHUB_STATUS_DISMISSED_BANNER_DELAY_MS = 30_000;
 
@@ -751,22 +763,63 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       setAiStatusLoaded(false);
       return;
     }
-    setAiStatusLoaded(false);
-    const aiTimer = window.setTimeout(() => {
-      void window.ade.ai.getStatus().then((status) => {
+    const cachedStatus = peekAiStatusCached(currentProjectRoot);
+    setAiStatus(cachedStatus);
+    setAiStatusLoaded(Boolean(cachedStatus));
+
+    let refreshSerial = 0;
+    let lastChatEventRefreshAt = 0;
+    let lastKnownHasProvider = hasConfiguredAiProvider(cachedStatus);
+    const refreshAiStatus = (options: { force?: boolean } = {}) => {
+      if (document.visibilityState !== "visible") return;
+      const serial = ++refreshSerial;
+      void getAiStatusCached({ projectRoot: currentProjectRoot, force: options.force === true }).then((status) => {
         if (cancelled) return;
+        if (serial !== refreshSerial) return;
+        lastKnownHasProvider = hasConfiguredAiProvider(status);
         setAiStatus(status);
       }).catch(() => {
         if (cancelled) return;
+        if (serial !== refreshSerial) return;
+        lastKnownHasProvider = false;
         setAiStatus(null);
       }).finally(() => {
         if (cancelled) return;
+        if (serial !== refreshSerial) return;
         setAiStatusLoaded(true);
       });
-    }, 1_000);
+    };
+
+    const aiTimer = window.setTimeout(
+      refreshAiStatus,
+      cachedStatus ? 0 : AI_STATUS_STARTUP_DELAY_MS,
+    );
+    const onFocus = () => refreshAiStatus();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refreshAiStatus();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    const unsubscribeChatEvents = window.ade.agentChat.onEvent((envelope) => {
+      if (lastKnownHasProvider && !shouldRefreshAiStatusForChatEvent(envelope)) return;
+      const now = Date.now();
+      if (now - lastChatEventRefreshAt < AI_STATUS_CHAT_EVENT_REFRESH_MIN_GAP_MS) return;
+      lastChatEventRefreshAt = now;
+      refreshAiStatus({ force: true });
+    });
+    const onAiStatusCacheInvalidated = (event: Event) => {
+      const detail = (event as CustomEvent<AiStatusCacheInvalidatedEventDetail>).detail;
+      if (detail && !detail.allProjects && detail.projectRoot !== currentProjectRoot) return;
+      refreshAiStatus({ force: true });
+    };
+    window.addEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onAiStatusCacheInvalidated);
     return () => {
       cancelled = true;
       window.clearTimeout(aiTimer);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onAiStatusCacheInvalidated);
+      unsubscribeChatEvents();
     };
   }, [currentProjectRoot]);
 
@@ -847,12 +900,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [providerMode]);
 
   const hasAnyAiProvider = useMemo(() => {
-    if (!aiStatus) return false;
-    const runtimeOrLocal =
-      aiStatus.providerConnections?.claude.authAvailable ||
-      aiStatus.providerConnections?.codex.authAvailable ||
-      aiStatus.providerConnections?.cursor?.authAvailable;
-    return Boolean(runtimeOrLocal || (aiStatus.detectedAuth?.length ?? 0) > 0);
+    return hasConfiguredAiProvider(aiStatus);
   }, [aiStatus]);
 
   const commandPaletteBinding = useMemo(

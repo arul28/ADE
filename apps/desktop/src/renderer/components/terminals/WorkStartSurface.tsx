@@ -22,6 +22,7 @@ type WorkStartSurfaceProps = {
   initialLinearIssueContextSource?: "manual" | "lane_link";
   initialModelId?: string | null;
   onInitialLinearIssueContextConsumed?: () => void;
+  suppressDraftLaunchNavigation?: boolean;
 };
 
 export function WorkStartSurface({
@@ -36,6 +37,7 @@ export function WorkStartSurface({
   initialLinearIssueContextSource = "lane_link",
   initialModelId = null,
   onInitialLinearIssueContextConsumed,
+  suppressDraftLaunchNavigation = false,
 }: WorkStartSurfaceProps) {
   const globallySelectedLaneId = useAppStore((s) => s.selectedLaneId);
   const lanesLoading = useAppStore((s) => s.lanesLoading);
@@ -129,6 +131,7 @@ export function WorkStartSurface({
           forceDraftMode
           draftContextTargetId={draftContextTargetId}
           embeddedWorkLayout
+          suppressDraftLaunchNavigation={suppressDraftLaunchNavigation}
           workDraftKind={draftKind}
           initialLinearIssueContext={initialLinearIssueContext}
           initialLinearIssueContextSource={initialLinearIssueContextSource}

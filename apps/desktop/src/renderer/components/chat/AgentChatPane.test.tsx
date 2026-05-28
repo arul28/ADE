@@ -680,6 +680,8 @@ function renderDrawerSessionPane(
 function renderParallelDraftPane(args?: {
   laneId?: string;
   availableModelIdsOverride?: string[];
+  initialEntry?: string;
+  suppressDraftLaunchNavigation?: boolean;
 }) {
   const laneId = args?.laneId ?? "lane-1";
   useAppStore.setState({
@@ -695,7 +697,7 @@ function renderParallelDraftPane(args?: {
   });
 
   return render(
-    <MemoryRouter initialEntries={["/work"]}>
+    <MemoryRouter initialEntries={[args?.initialEntry ?? "/work"]}>
       <Routes>
         <Route
           path="*"
@@ -705,6 +707,7 @@ function renderParallelDraftPane(args?: {
                 laneId={laneId}
                 forceDraftMode
                 embeddedWorkLayout
+                suppressDraftLaunchNavigation={args?.suppressDraftLaunchNavigation}
                 availableModelIdsOverride={args?.availableModelIdsOverride}
               />
               <LocationProbe />
@@ -2875,6 +2878,55 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(screen.getByTestId("location").textContent).toBe("/work?laneId=lane-created&sessionId=created-session");
     });
+  });
+
+  it("can keep foreground draft launches inside an embedded Lanes work pane", async () => {
+    const { send, create } = installAdeMocks({ sessions: [] });
+    const launchConfigKey = [
+      "ade.chat.lastLaunchConfig.v1",
+      "/tmp/project-under-test",
+      "lane-1",
+      "standard",
+      "chat",
+    ].map(encodeURIComponent).join(":");
+    window.localStorage.setItem(launchConfigKey, JSON.stringify({
+      version: 1,
+      modelId: "openai/gpt-5.4",
+      updatedAt: "2026-05-28T12:00:00.000Z",
+      controls: {
+        interactionMode: "default",
+        claudePermissionMode: "default",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+        opencodePermissionMode: "edit",
+        droidPermissionMode: "auto-low",
+        cursorModeId: "agent",
+        cursorConfigValues: {},
+      },
+    }));
+
+    renderParallelDraftPane({
+      initialEntry: "/lanes?laneId=lane-1",
+      suppressDraftLaunchNavigation: true,
+      availableModelIdsOverride: ["openai/gpt-5.4"],
+    });
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Stay in the lane work pane." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({
+        laneId: "lane-1",
+        modelId: "openai/gpt-5.4",
+      }));
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "created-session",
+        text: "Stay in the lane work pane.",
+      }));
+    });
+    expect(screen.getByTestId("location").textContent).toBe("/lanes?laneId=lane-1");
   });
 
   it("routes Work sidebar draft insertions into the visible draft composer", async () => {
