@@ -15,7 +15,7 @@ import type {
   TerminalSessionChangedEvent,
   TerminalSessionDetail,
 } from "../../../shared/types";
-import { getModelById } from "../../../shared/modelRegistry";
+import { createDynamicCursorCliModelDescriptor, getModelById } from "../../../shared/modelRegistry";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { useAppStore } from "../../state/appStore";
 import {
@@ -229,6 +229,48 @@ function seedRuntimeModelCatalog(): void {
   } as AgentChatModelCatalog, { mode: "cached" });
 }
 
+function seedCursorRuntimeModelCatalog(): { cliOnlyId: string; chatOnlyId: string; bothId: string } {
+  const cliOnly = createDynamicCursorCliModelDescriptor("cli-only", "Cursor CLI Only", {
+    cursorAvailability: { cli: true, sdk: false },
+  });
+  const chatOnly = createDynamicCursorCliModelDescriptor("chat-only", "Cursor Chat Only", {
+    cursorAvailability: { cli: false, sdk: true },
+  });
+  const both = createDynamicCursorCliModelDescriptor("both", "Cursor Both", {
+    cursorAvailability: { cli: true, sdk: true },
+  });
+  const models = [cliOnly, chatOnly, both];
+  rememberRuntimeCatalog({
+    fetchedAt: "2026-05-22T00:00:00.000Z",
+    groups: [{
+      key: "cursor",
+      displayName: "Cursor",
+      providers: [{
+        key: "cursor",
+        displayName: "Cursor",
+        badgeColor: "#8B5CF6",
+        modelCount: models.length,
+        subsections: [{
+          key: "cursor",
+          label: "Cursor",
+          models: models.map((model, index) => ({
+            id: model.id,
+            runtimeModelId: model.providerModelId,
+            provider: "cursor",
+            providerKey: "cursor",
+            groupKey: "cursor",
+            displayName: model.displayName,
+            isDefault: index === 2,
+            isAvailable: true,
+            cursorAvailability: model.cursorAvailability,
+          })),
+        }],
+      }],
+    }],
+  } as AgentChatModelCatalog, { mode: "cached" });
+  return { cliOnlyId: cliOnly.id, chatOnlyId: chatOnly.id, bothId: both.id };
+}
+
 function buildPendingInputTranscript(sessionId: string): string {
   return `${JSON.stringify({
     sessionId,
@@ -288,6 +330,7 @@ function installAdeMocks(options?: {
   sessions?: AgentChatSessionSummary[];
   eventHistory?: AgentChatEventHistorySnapshot | ((args: { sessionId: string; maxEvents?: number }) => Promise<AgentChatEventHistorySnapshot> | AgentChatEventHistorySnapshot);
   includeClaudeModel?: boolean;
+  cursorModels?: Array<{ id: string }>;
   parallelLaunchState?: AgentChatParallelLaunchState | null;
   linkedPr?: PrSummary | null;
 }) {
@@ -356,6 +399,7 @@ function installAdeMocks(options?: {
       models: vi.fn().mockImplementation(async ({ provider }: { provider: string }) => {
         if (provider === "codex") return [{ id: "gpt-5.4" }];
         if (provider === "claude") return options?.includeClaudeModel ? [{ id: "anthropic/claude-sonnet-4-6" }] : [];
+        if (provider === "cursor") return options?.cursorModels ?? [];
         if (provider === "opencode") return [{ id: "openai/gpt-5.4-mini" }];
         return [];
       }),
@@ -2575,6 +2619,30 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(screen.getByText("Handoff is not available for this chat.")).toBeTruthy();
     });
+  });
+
+  it("filters Cursor CLI-only models from chat handoff picking", async () => {
+    const { cliOnlyId, chatOnlyId, bothId } = seedCursorRuntimeModelCatalog();
+    const session = buildSession("session-1", { status: "idle" });
+    installAdeMocks({
+      cursorModels: [{ id: cliOnlyId }, { id: chatOnlyId }, { id: bothId }],
+    });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+
+    const handoffTextEl = await screen.findByText("Start a sibling chat on another model");
+    const handoffMenu = handoffTextEl.parentElement!.parentElement!;
+    fireEvent.click(within(handoffMenu as HTMLElement).getByRole("button", { name: /^Select model/ }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^Cursor$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Cursor Chat Only")).toBeTruthy();
+    });
+    expect(screen.getByText("Cursor Both")).toBeTruthy();
+    expect(screen.queryByText("Cursor CLI Only")).toBeNull();
   });
 
   it("hides chat handoff when the pane cannot open the created work chat", async () => {

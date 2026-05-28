@@ -9783,7 +9783,8 @@ function installRuntimeProcessErrorBoundary(label: string): () => void {
     write("unhandled rejection", reason);
   };
   const onUncaughtException = (error: Error): void => {
-    write("uncaught exception", error);
+    write("fatal uncaught exception", error);
+    process.exit(1);
   };
   process.on("unhandledRejection", onUnhandledRejection);
   process.on("uncaughtException", onUncaughtException);

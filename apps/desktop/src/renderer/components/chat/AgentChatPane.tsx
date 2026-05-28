@@ -3637,17 +3637,18 @@ export function AgentChatPane({
     if (selectedSessionModelId) {
       merged.add(selectedSessionModelId);
     }
+    const filtered = filterCursorModelIdsForDraftKind([...merged], "chat");
     const ordered = MODEL_REGISTRY
-      .filter((model) => !model.deprecated && merged.has(model.id))
+      .filter((model) => !model.deprecated && filtered.includes(model.id))
       .map((model) => model.id);
-    const extras = [...merged].filter((modelId) => !ordered.includes(modelId));
+    const extras = filtered.filter((modelId) => !ordered.includes(modelId));
     extras.sort((left, right) => {
       const leftLabel = getModelById(left)?.displayName ?? left;
       const rightLabel = getModelById(right)?.displayName ?? right;
       return leftLabel.localeCompare(rightLabel, undefined, { sensitivity: "base" });
     });
     return [...ordered, ...extras];
-  }, [availableModelIds, selectedSessionModelId]);
+  }, [availableModelIds, runtimeCatalogVersion, selectedSessionModelId]);
   const canShowHandoff = Boolean(
     lockSessionId
       && selectedSessionId
