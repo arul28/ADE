@@ -995,11 +995,15 @@ export class LocalRuntimeConnectionPool {
       flushOutput();
       this.logger.warn("local_runtime.exited", { code, signal, pid: outputBase.pid, socketPath });
       this.connection = null;
+      this.activeClient = null;
+      this.projectsByRoot.clear();
     });
     child.once("error", (error) => {
       flushOutput();
       this.logger.warn("local_runtime.spawn_failed", { error: error.message, pid: outputBase.pid, socketPath });
       this.connection = null;
+      this.activeClient = null;
+      this.projectsByRoot.clear();
     });
     return child;
   }

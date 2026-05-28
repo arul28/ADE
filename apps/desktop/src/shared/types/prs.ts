@@ -291,7 +291,8 @@ export type CreateLaneFromPrBranchBlockCode =
   | "fork_unavailable"
   | "branch_owned"
   | "default_branch"
-  | "worktree_collision";
+  | "worktree_collision"
+  | "project_repo_mismatch";
 
 export type CreateLaneFromPrBranchBlock = {
   code: CreateLaneFromPrBranchBlockCode;

@@ -127,6 +127,7 @@ import {
   validateLaunchProfilePermissionMode,
   type TrackedCliLaunchCommand,
 } from "../../../../desktop/src/shared/cliLaunch";
+import { parseDeeplink } from "../../../../desktop/src/shared/deeplinks";
 import { normalizePrCreationStrategy } from "../../../../desktop/src/shared/prStrategy";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
@@ -2576,14 +2577,11 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     if (!url) {
       throw new Error("deeplinks.open requires a url.");
     }
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      throw new Error("deeplinks.open requires a valid URL.");
-    }
-    if (parsed.protocol !== "ade:") {
-      throw new Error("deeplinks.open only supports ade:// URLs.");
+    const parsedDeeplink = parseDeeplink(url);
+    if (!parsedDeeplink.ok) {
+      const err = parsedDeeplink.error;
+      const reason = "reason" in err && typeof err.reason === "string" ? err.reason : err.kind;
+      throw new Error(`Invalid deeplink: ${reason}`);
     }
     if (!args.dispatchDeeplinkUrl) {
       return {
@@ -2591,7 +2589,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
         message: "Desktop navigation is unavailable in this runtime.",
       };
     }
-    return await args.dispatchDeeplinkUrl(parsed.toString());
+    return await args.dispatchDeeplinkUrl(url);
   });
   register("prs.getDetail", { viewerAllowed: true }, async (payload) => args.prService.getDetail(requirePrId(payload, "prs.getDetail")));
   register("prs.getStatus", { viewerAllowed: true }, async (payload) => args.prService.getStatus(requirePrId(payload, "prs.getStatus")));

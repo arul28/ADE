@@ -2209,6 +2209,45 @@ export function createPrService({
     args: CreateLaneFromPrBranchArgs,
   ): Promise<CreateLaneFromPrBranchPreflight> => {
     const { repo, prNumber } = await resolveCreateLaneFromPrBranchLocator(args);
+    let projectRepo: GitHubRepoRef | null = null;
+    try {
+      projectRepo = await githubService.getRepoOrThrow();
+    } catch {
+      projectRepo = null;
+    }
+    const finishEarly = (
+      block: CreateLaneFromPrBranchBlock,
+    ): CreateLaneFromPrBranchPreflight => ({
+      repoOwner: repo.owner,
+      repoName: repo.name,
+      githubPrNumber: prNumber,
+      githubUrl: `https://github.com/${repo.owner}/${repo.name}/pull/${prNumber}`,
+      title: `PR #${prNumber}`,
+      headBranch: null,
+      headSha: null,
+      headRepoOwner: null,
+      headRepoName: null,
+      remoteBranch: null,
+      importBranchRef: null,
+      targetLaneName: `PR #${prNumber}`,
+      baseBranch: null,
+      canCreate: false,
+      status: "blocked",
+      blockingConflict: block,
+      blockingConflicts: [block],
+    });
+    if (
+      projectRepo
+      && (
+        projectRepo.owner.toLowerCase() !== repo.owner.toLowerCase()
+        || projectRepo.name.toLowerCase() !== repo.name.toLowerCase()
+      )
+    ) {
+      return finishEarly(createLaneFromPrBranchBlock(
+        "project_repo_mismatch",
+        `This project's GitHub remote is ${projectRepo.owner}/${projectRepo.name}, but the request targets ${repo.owner}/${repo.name}. Open the matching project before creating a lane from this PR.`,
+      ));
+    }
     const pr = await fetchPr(repo, prNumber);
     const githubPrNumber = Number(pr?.number) || prNumber;
     const title = asString(pr?.title) || `PR #${githubPrNumber}`;
