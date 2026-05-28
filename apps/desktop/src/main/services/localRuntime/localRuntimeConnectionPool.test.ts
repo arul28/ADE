@@ -373,6 +373,7 @@ describe("local runtime connection pool", () => {
       error: vi.fn(),
     } as never, { disableSync: true });
     const rootPath = path.resolve("/repo");
+    const client = { close: vi.fn() };
     let child: ChildProcess | null = null;
 
     try {
@@ -380,11 +381,11 @@ describe("local runtime connection pool", () => {
         spawnRuntime: (path: string) => ChildProcess;
       }).spawnRuntime(socketPath);
       (pool as unknown as { connection: Promise<unknown>; activeClient: unknown }).connection = Promise.resolve({
-        client: { close: vi.fn() },
+        client,
         child,
         socketPath,
       });
-      (pool as unknown as { activeClient: unknown }).activeClient = { close: vi.fn() };
+      (pool as unknown as { activeClient: unknown }).activeClient = client;
       (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.set(rootPath, {
         projectId: "project-1",
         rootPath,
@@ -403,6 +404,7 @@ describe("local runtime connection pool", () => {
 
       expect(pool.getStatus().connectionState).toBe("idle");
       expect((pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.size).toBe(0);
+      expect(client.close).toHaveBeenCalledTimes(1);
     } finally {
       if (child && !child.killed) child.kill();
       if (originalAdeCliJs === undefined) delete process.env.ADE_CLI_JS;
@@ -428,6 +430,7 @@ describe("local runtime connection pool", () => {
       error: vi.fn(),
     } as never, { disableSync: true });
     const rootPath = path.resolve("/repo");
+    const replacementClient = { close: vi.fn() };
     let oldChild: ChildProcess | null = null;
     let replacementChild: ChildProcess | null = null;
 
@@ -440,11 +443,11 @@ describe("local runtime connection pool", () => {
       process.env.ADE_CLI_JS = replacementCliPath;
       replacementChild = spawnRuntime(replacementSocketPath);
       (pool as unknown as { connection: Promise<unknown>; activeClient: unknown }).connection = Promise.resolve({
-        client: { close: vi.fn() },
+        client: replacementClient,
         child: replacementChild,
         socketPath: replacementSocketPath,
       });
-      (pool as unknown as { activeClient: unknown }).activeClient = { close: vi.fn() };
+      (pool as unknown as { activeClient: unknown }).activeClient = replacementClient;
       (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.set(rootPath, {
         projectId: "project-1",
         rootPath,
@@ -461,6 +464,7 @@ describe("local runtime connection pool", () => {
 
       expect(pool.getStatus().connectionState).toBe("connected");
       expect((pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.size).toBe(1);
+      expect(replacementClient.close).not.toHaveBeenCalled();
     } finally {
       if (oldChild && !oldChild.killed) oldChild.kill();
       if (replacementChild && !replacementChild.killed) replacementChild.kill();

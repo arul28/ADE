@@ -998,10 +998,12 @@ export class LocalRuntimeConnectionPool {
     });
     const clearCurrentChildState = (): void => {
       if (this.ownedRuntimeChild !== child) return;
+      const client = this.activeClient;
       this.ownedRuntimeChild = null;
       this.connection = null;
       this.activeClient = null;
       this.projectsByRoot.clear();
+      if (client) closeRuntimeClient(client);
     };
     child.once("exit", (code, signal) => {
       flushOutput();

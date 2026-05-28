@@ -1207,7 +1207,11 @@ describe("createSyncRemoteCommandService", () => {
 
       await expect(withDispatch.execute(makePayload("deeplinks.open", {
         url: "https://example.com/open?type=pr&repo=arul28/ADE&number=383",
-      }))).rejects.toThrow("Invalid deeplink: unsupported_host");
+      }))).rejects.toThrow("Invalid deeplink: unsupported host 'example.com'");
+
+      await expect(withDispatch.execute(makePayload("deeplinks.open", {
+        url: "ftp://ade.app/open?type=pr&repo=arul28/ADE&number=383",
+      }))).rejects.toThrow("Invalid deeplink: unsupported scheme 'ftp'");
 
       expect(dispatchDeeplinkUrl).not.toHaveBeenCalled();
     });

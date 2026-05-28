@@ -2213,6 +2213,8 @@ export function createPrService({
     try {
       projectRepo = await githubService.getRepoOrThrow();
     } catch {
+      // Projects without a detectable GitHub origin keep the legacy preflight path;
+      // remote branch checks below still prevent importing a branch that origin lacks.
       projectRepo = null;
     }
     const finishEarly = (
