@@ -89,14 +89,17 @@ defaults to `guarded` unless explicitly whitelisted.
 
 ### Reasoning tiers (Claude)
 
-Claude's reasoning-tier vocabulary is `low | medium | high | max`
-(`CLAUDE_THINKING_LEVELS` in `shared/modelProfiles.ts`). `max` was added
-alongside the Claude Opus 4.7 1M entry (`anthropic/claude-opus-4-7-1m`,
-aliases `opus[1m]` / `claude-opus-4-7[1m]`, 1,000,000-token context,
-128 k output, tier `very_high`) — it's the first registry entry that
-advertises the full `low|medium|high|max` tier set. Passthrough to the
-provider config is unchanged (the tier string is forwarded directly to
-the CLI / SDK — no synthesized token budgets).
+Claude's global quick-pick vocabulary is `low | medium | high | max`
+(`CLAUDE_THINKING_LEVELS` in `shared/modelProfiles.ts`), while Opus
+registry rows can advertise the richer `low|medium|high|xhigh|max`
+set for model-specific pickers. The Claude registry now lists the
+new Opus 4.8 1M entry first (`anthropic/claude-opus-4-8`, display
+name `Claude Opus 4.8 1M`, provider model `claude-opus-4-8`,
+1,000,000-token context, 128 k output, tier `very_high`) and keeps
+the existing Opus 4.7 and Opus 4.7 1M entries intact (`opus` still
+targets 4.7; `opus[1m]` / `opus-1m` still target 4.7 1M). Passthrough
+to the provider config is unchanged (the tier string is forwarded
+directly to the CLI / SDK — no synthesized token budgets).
 
 ## Auth and credentials
 

@@ -174,11 +174,11 @@ describe("buildTrackedCliStartupCommand", () => {
         provider: "claude",
         permissionMode: "default",
         sessionId: "00000000-0000-0000-0000-000000000001",
-        model: "anthropic/claude-opus-4-7-1m",
+        model: "anthropic/claude-opus-4-8",
       });
-      expect(launch.args).toEqual(expect.arrayContaining(["--model", "opus[1m]"]));
+      expect(launch.args).toEqual(expect.arrayContaining(["--model", "claude-opus-4-8"]));
       expect(launch.startupCommand).toContain("--model");
-      expect(launch.startupCommand).toContain("opus[1m]");
+      expect(launch.startupCommand).toContain("claude-opus-4-8");
     });
   });
 

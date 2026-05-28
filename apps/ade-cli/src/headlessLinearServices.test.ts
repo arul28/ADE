@@ -553,13 +553,13 @@ describe("headlessLinearServices", () => {
     const claude = await services.agentChatService.ensureIdentitySession({
       identityKey: "agent:claude-model",
       laneId: "lane-1",
-      modelId: "anthropic/claude-opus-4-7-1m",
+      modelId: "anthropic/claude-opus-4-8",
     });
 
     expect(codex.model).toBe("gpt-5.5");
     expect(codex.modelId).toBe("openai/gpt-5.5");
-    expect(claude.model).toBe("opus-1m");
-    expect(claude.modelId).toBe("anthropic/claude-opus-4-7-1m");
+    expect(claude.model).toBe("opus-4.8-1m");
+    expect(claude.modelId).toBe("anthropic/claude-opus-4-8");
 
     services.dispose();
   });

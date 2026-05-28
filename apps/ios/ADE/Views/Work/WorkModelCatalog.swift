@@ -7,7 +7,7 @@ import SwiftUI
 /// branded row (logo + display name + tier hint) and send a `modelId` to
 /// `SyncService.updateChatSession`.
 struct WorkModelOption: Identifiable, Hashable {
-  /// Stable sync-contract id the host accepts (e.g. "claude-opus-4-7").
+  /// Stable sync-contract id the host accepts (e.g. "claude-opus-4-8").
   let id: String
   let displayName: String
   let tier: Tier
@@ -136,6 +136,7 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         key: "anthropic",
         displayName: "Anthropic",
         models: [
+          WorkModelOption(id: "claude-opus-4-8", displayName: "Claude Opus 4.8 1M", tier: .flagship, tagline: "Flagship · 1M context", provider: "claude"),
           WorkModelOption(id: "claude-opus-4-7", displayName: "Claude Opus 4.7", tier: .flagship, tagline: "Flagship · best for complex reasoning", provider: "claude"),
           WorkModelOption(id: "claude-opus-4-7-1m", displayName: "Claude Opus 4.7 1M", tier: .flagship, tagline: "1M-token context window", provider: "claude"),
           WorkModelOption(id: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", tier: .balanced, tagline: "Balanced · great default for coding", provider: "claude"),
@@ -254,6 +255,7 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         displayName: "Anthropic",
         models: [
           WorkModelOption(id: "opencode/anthropic/claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", tier: .balanced, tagline: "Balanced coder", provider: "claude"),
+          WorkModelOption(id: "opencode/anthropic/claude-opus-4-8", displayName: "Claude Opus 4.8 1M", tier: .flagship, tagline: "Flagship reasoning · 1M context", provider: "claude"),
           WorkModelOption(id: "opencode/anthropic/claude-opus-4-7", displayName: "Claude Opus 4.7", tier: .flagship, tagline: "Flagship reasoning", provider: "claude"),
           WorkModelOption(id: "opencode/anthropic/claude-haiku-4-5", displayName: "Claude Haiku 4.5", tier: .fast, tagline: "Fastest Anthropic", provider: "claude"),
         ]
@@ -509,6 +511,10 @@ private func workModelLookupKeys(_ raw: String?) -> [String] {
 
 private func workCanonicalClaudeRegistryId(for raw: String) -> String? {
   switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "claude-opus-4-8", "anthropic/claude-opus-4-8",
+       "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
+       "claude-opus-4-8-1m", "claude-opus-4-8[1m]", "anthropic/claude-opus-4-8-1m":
+    return "anthropic/claude-opus-4-8"
   case "opus", "claude-opus-4-7", "anthropic/claude-opus-4-7":
     return "anthropic/claude-opus-4-7"
   case "opus[1m]", "opus-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]", "anthropic/claude-opus-4-7-1m":
@@ -524,6 +530,10 @@ private func workCanonicalClaudeRegistryId(for raw: String) -> String? {
 
 private func workClaudeRuntimeModelId(for raw: String) -> String? {
   switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "claude-opus-4-8", "anthropic/claude-opus-4-8",
+       "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
+       "claude-opus-4-8-1m", "claude-opus-4-8[1m]", "anthropic/claude-opus-4-8-1m":
+    return "claude-opus-4-8"
   case "opus", "claude-opus-4-7", "anthropic/claude-opus-4-7":
     return "claude-opus-4-7"
   case "opus[1m]", "opus-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]", "anthropic/claude-opus-4-7-1m":
@@ -583,6 +593,10 @@ func workModelIdsEquivalent(_ lhs: String?, _ rhs: String?) -> Bool {
 
 func workKnownModelDisplayName(_ raw: String?) -> String? {
   switch raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "" {
+  case "anthropic/claude-opus-4-8", "claude-opus-4-8",
+       "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
+       "anthropic/claude-opus-4-8-1m", "claude-opus-4-8-1m", "claude-opus-4-8[1m]":
+    return "Claude Opus 4.8 1M"
   case "opus", "anthropic/claude-opus-4-7", "claude-opus-4-7":
     return "Claude Opus 4.7"
   case "opus[1m]", "opus-1m", "anthropic/claude-opus-4-7-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]":

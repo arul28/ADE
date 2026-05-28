@@ -1,9 +1,20 @@
 import { getDefaultModelDescriptor, getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 
-export type ClaudeCliModelAlias = "opus" | "opus[1m]" | "sonnet" | "haiku";
+export type ClaudeCliModelAlias = "opus" | "opus[1m]" | "claude-opus-4-8" | "sonnet" | "haiku";
 
 const CLAUDE_CLI_MODEL_ALIAS_MAP: Record<string, ClaudeCliModelAlias> = {
   opus: "opus",
+  "opus-4.8": "claude-opus-4-8",
+  "opus-4-8": "claude-opus-4-8",
+  "opus-4.8-1m": "claude-opus-4-8",
+  "opus-4.8[1m]": "claude-opus-4-8",
+  "opus-4-8-1m": "claude-opus-4-8",
+  "claude-opus-4-8": "claude-opus-4-8",
+  "claude-opus-4-8-1m": "claude-opus-4-8",
+  "claude-opus-4-8[1m]": "claude-opus-4-8",
+  "anthropic/claude-opus-4-8": "claude-opus-4-8",
+  "anthropic/claude-opus-4-8-1m": "claude-opus-4-8",
+  "anthropic/claude-opus-4-8-api": "claude-opus-4-8",
   "opus-4-7": "opus",
   "claude-opus-4-7": "opus",
   "anthropic/claude-opus-4-7": "opus",
@@ -31,8 +42,8 @@ const CLAUDE_CLI_MODEL_ALIAS_MAP: Record<string, ClaudeCliModelAlias> = {
 };
 
 /**
- * Normalize arbitrary Claude model strings into the CLI-safe aliases expected
- * by Claude Code (`opus`, `opus[1m]`, `sonnet`, `haiku`) where possible.
+ * Normalize arbitrary Claude model strings into CLI-safe values accepted by
+ * Claude Code (`claude-opus-4-8`, `opus`, `opus[1m]`, `sonnet`, `haiku`) where possible.
  */
 export function resolveClaudeCliModel(model: string | null | undefined): string {
   const raw = String(model ?? "").trim();
@@ -45,7 +56,7 @@ export function resolveClaudeCliModel(model: string | null | undefined): string 
   const hasOpus1mToken =
     normalized.includes("[1m]") || /(^|[^0-9])1m($|[^0-9])/.test(normalized);
   if (normalized.includes("opus") && hasOpus1mToken) {
-    return "opus[1m]";
+    return /4[-.]8/.test(normalized) ? "claude-opus-4-8" : "opus[1m]";
   }
   if (normalized.includes("sonnet")) return "sonnet";
   if (normalized.includes("opus")) return "opus";

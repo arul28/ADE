@@ -117,9 +117,13 @@ enum ADEColor {
   /// Keys cover both the registry id ("anthropic/claude-opus-4-7") and shortId ("opus").
   private static let modelColors: [String: UInt32] = [
     // Anthropic
+    "anthropic/claude-opus-4-8": 0xD97706,
+    "claude-opus-4-8": 0xD97706,
     "anthropic/claude-opus-4-7": 0xD97706,
+    "claude-opus-4-7": 0xD97706,
     "opus": 0xD97706,
     "anthropic/claude-opus-4-7-1m": 0xB45309,
+    "claude-opus-4-7-1m": 0xB45309,
     "opus-1m": 0xB45309,
     "opus[1m]": 0xB45309,
     "claude-opus-4-7[1m]": 0xB45309,
@@ -170,6 +174,14 @@ enum ADEColor {
     case "gpt-5.4-mini", "gpt-5.4-mini-codex", "openai/gpt-5.4-mini", "openai/gpt-5.4-mini-codex":
       append("openai/gpt-5.4-mini")
       append("gpt-5.4-mini")
+    case "anthropic/claude-opus-4-8", "claude-opus-4-8",
+         "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
+         "anthropic/claude-opus-4-8-1m", "claude-opus-4-8-1m", "claude-opus-4-8[1m]":
+      append("anthropic/claude-opus-4-8")
+      append("claude-opus-4-8")
+    case "opus", "anthropic/claude-opus-4-7", "claude-opus-4-7":
+      append("anthropic/claude-opus-4-7")
+      append("opus")
     case "opus[1m]", "opus-1m", "anthropic/claude-opus-4-7-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]":
       append("anthropic/claude-opus-4-7-1m")
       append("opus-1m")
@@ -216,6 +228,8 @@ enum ADEColor {
   /// the same effort actions as desktop and the ADE TUI.
   private static let modelReasoningTiers: [String: [String]] = [
     // Claude
+    "anthropic/claude-opus-4-8": ["low", "medium", "high", "xhigh", "max"],
+    "claude-opus-4-8": ["low", "medium", "high", "xhigh", "max"],
     "anthropic/claude-opus-4-7": ["low", "medium", "high", "xhigh", "max"],
     "claude-opus-4-7": ["low", "medium", "high", "xhigh", "max"],
     "opus": ["low", "medium", "high", "xhigh", "max"],

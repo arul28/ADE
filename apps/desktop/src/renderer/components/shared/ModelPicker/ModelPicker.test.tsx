@@ -176,18 +176,18 @@ const SONNET: ModelDescriptor = {
 };
 
 const OPUS: ModelDescriptor = {
-  id: "anthropic/claude-opus-4-7",
-  shortId: "opus",
-  displayName: "Claude Opus 4.7",
+  id: "anthropic/claude-opus-4-8",
+  shortId: "opus-4.8-1m",
+  displayName: "Claude Opus 4.8 1M",
   family: "anthropic",
   authTypes: ["cli-subscription"],
-  contextWindow: 200_000,
+  contextWindow: 1_000_000,
   maxOutputTokens: 128_000,
   capabilities: { tools: true, vision: true, reasoning: true, streaming: true },
-  reasoningTiers: ["low", "medium", "high"],
+  reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
   color: "#D97706",
   providerRoute: "claude-cli",
-  providerModelId: "claude-opus-4-7",
+  providerModelId: "claude-opus-4-8",
   cliCommand: "claude",
   isCliWrapped: true,
 };

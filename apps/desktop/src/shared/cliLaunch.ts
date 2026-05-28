@@ -497,6 +497,17 @@ export function resolveClaudeCliModelForLaunch(model: string | null | undefined)
   const normalized = raw.toLowerCase();
   const known: Record<string, string> = {
     opus: "opus",
+    "opus-4.8": "claude-opus-4-8",
+    "opus-4-8": "claude-opus-4-8",
+    "opus-4.8-1m": "claude-opus-4-8",
+    "opus-4.8[1m]": "claude-opus-4-8",
+    "opus-4-8-1m": "claude-opus-4-8",
+    "claude-opus-4-8": "claude-opus-4-8",
+    "claude-opus-4-8-1m": "claude-opus-4-8",
+    "claude-opus-4-8[1m]": "claude-opus-4-8",
+    "anthropic/claude-opus-4-8": "claude-opus-4-8",
+    "anthropic/claude-opus-4-8-1m": "claude-opus-4-8",
+    "anthropic/claude-opus-4-8-api": "claude-opus-4-8",
     "opus-4-7": "opus",
     "claude-opus-4-7": "opus",
     "anthropic/claude-opus-4-7": "opus",
@@ -525,7 +536,9 @@ export function resolveClaudeCliModelForLaunch(model: string | null | undefined)
   const mapped = known[normalized];
   if (mapped) return mapped;
   const hasOpus1mToken = normalized.includes("[1m]") || /(^|[^0-9])1m($|[^0-9])/.test(normalized);
-  if (normalized.includes("opus") && hasOpus1mToken) return "opus[1m]";
+  if (normalized.includes("opus") && hasOpus1mToken) {
+    return /4[-.]8/.test(normalized) ? "claude-opus-4-8" : "opus[1m]";
+  }
   if (normalized.includes("sonnet")) return "sonnet";
   if (normalized.includes("opus")) return "opus";
   if (normalized.includes("haiku")) return "haiku";
