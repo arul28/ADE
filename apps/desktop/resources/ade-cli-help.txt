@@ -317,6 +317,8 @@ _    ____  _____
     $ ade lanes show <lane> --text                  Inspect one lane status
     $ ade lanes create --name <name>                Create a lane from the current project context
     $ ade lanes create --linear-issue-json '{...}'  Create a lane linked to a Linear issue
+    $ ade lanes link-linear-issue <lane> --linear-issue-json '{...}'
+                                                    Link an existing lane to a Linear issue
     $ ade lanes create --branch-name <branch>       Override the auto-generated branch name
     $ ade lanes child --lane <parent> --name <name> Create a child lane under a parent
     $ ade lanes import --branch <branch>            Register an existing branch/worktree
@@ -364,6 +366,9 @@ _    ____  _____
     $ ade git rebase continue --lane <lane>         Continue an in-progress rebase
     $ ade git conflict show --lane <lane> --text    Inspect merge/rebase conflict state
     $ ade git conflict resolve --kind rebase        Continue after manual conflict resolution
+    $ ade git tag <sha> --name v1.0.0 --lane <lane> Create a tag on a commit
+    $ ade git reset <sha> --soft --lane <lane>      Reset HEAD to a commit (soft/mixed/hard)
+    $ ade git is-reachable <sha> --lane <lane>      Check if a commit is in the lane history
     $ ade diff changes --lane <lane> --text         Inspect changed files
 
 ## ade diff --help
@@ -553,6 +558,8 @@ _    ____  _____
     $ ade --role cto linear picker-data --text     Read projects/users/states for the issue picker
     $ ade --role cto linear search-issues --query "auth" --state-type started,unstarted --first 50
                                                     Search issues for the lane Linear-issue picker
+    $ ade --role cto linear issue-comments --issue-id <id>
+                                                    Fetch comments on a Linear issue
     $ ade linear workflows --text                   List configured workflows
     $ ade linear sync dashboard --text              Show sync dashboard
     $ ade linear sync run                           Trigger a sync run
@@ -678,51 +685,48 @@ _    ____  _____
   drawer simulator. Aliases: `ade ios` and `ade simulator` route to the same
   surface. For drawer/shared session state, prefer runtime socket mode
   (--socket) so launch/select/tap operate on the same long-lived ADE service.
-  Launch is headless by default; use --foreground only when you
-  need the native Simulator window in front. idb is optional for direct
-  pointer/text control and the low-latency MJPEG live stream.
+  Launch opens Simulator by default and ADE shows it in the drawer. Optional
+  simulator control tools enable tap, drag, type, and inspect actions.
 
-  Single-owner lock: a launched session is owned by one --chat-session at a time.
-  If another session tries to launch with a different chatSessionId, the call
-  fails with code IOS_SIMULATOR_OWNED_BY_OTHER_SESSION. Run "ios-sim shutdown"
-  (or "shutdown --force") to release before re-launching from a different chat.
+  A launched simulator session belongs to one chat at a time. Run
+  "ios-sim shutdown" before launching it from a different chat, or use
+  "shutdown --force" when you intentionally want to take over. Use
+  "ios-sim claim --lane <lane-id>" to attach the drawer session to a lane.
 
   Discovery and lifecycle:
-    $ ade ios-sim status --text                    Show Xcode/idb readiness (getStatus)
-    $ ade ios-sim devices --text                   List installed/available simulators (listDevices)
-    $ ade ios-sim apps --device <udid> --text      List launchable apps (listLaunchTargets)
-    $ ade --socket ios-sim launch --target <id>    Build/install/launch and update drawer state
+    $ ade ios-sim status --text                    Show simulator readiness
+    $ ade ios-sim devices --text                   List available simulators
+    $ ade ios-sim apps --device <udid> --text      List launchable apps
+    $ ade --socket ios-sim launch --target <id>    Build, install, and launch an app
+    $ ade --socket ios-sim claim --lane <lane-id>  Attribute the drawer session to a lane
     $ ade --socket ios-sim launch --bundle-id com.example Launch installed app
-    $ ade --socket ios-sim shutdown                Tear down session, streams, helper processes (alias: stop)
+    $ ade --socket ios-sim shutdown                Tear down the active simulator session (alias: stop)
     $ ade --socket ios-sim shutdown --force        Force-release a session owned by another chat
     $ ade ios-sim actions --text                   List every callable ios_simulator action
 
-  Project discovery scans root-level .xcodeproj bundles and apps/*/*.xcodeproj
-  projects; do not create symlink shims or fake schemes before checking
-  "ios-sim apps --text" and the build output.
+  ADE discovers Xcode projects from the project root and apps/* folders.
 
   Capture and inspection:
-    $ ade ios-sim screenshot --text                One-shot PNG via simctl (screenshot)
-    $ ade ios-sim snapshot --text                  Screenshot + selectable elements (getScreenSnapshot)
-    $ ade ios-sim inspector --text                 Published ADEInspector frames (getInspectorSnapshot)
-    $ ade ios-sim inspect --x 120 --y 420 --text   Hit-test a point in the inspector (inspectPoint)
+    $ ade ios-sim screenshot --text                Capture a screenshot
+    $ ade ios-sim snapshot --text                  Capture selectable UI context
+    $ ade ios-sim inspector --text                 Show current inspector data
+    $ ade ios-sim inspect --x 120 --y 420 --text   Inspect a point in the simulator
     $ ade ios-sim preview-status --text           Xcode MCP readiness for Preview Lab
     $ ade ios-sim previews --source <file> --text  List nearby #Preview definitions
     $ ade ios-sim preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
 
-  Streaming:
-    $ ade ios-sim live-start --fps 30              Auto live stream (IOSurface first)
-    $ ade ios-sim preview-start --fps 8            simctl screenshot-poll fallback
-    $ ade ios-sim window-start --fps 60            Native Simulator.app window capture diagnostic
-    $ ade ios-sim stream-status --text             Backend/fps/latency/URL (getStreamStatus)
-    $ ade ios-sim stream-stop                      Stop preview/live streaming (stopStream)
+  Live view:
+    $ ade ios-sim live-start --fps 60              Show the running simulator in ADE
+    $ ade ios-sim window-start --fps 60            Same live view, explicit alias
+    $ ade ios-sim stream-status --text             Show live view and input state
+    $ ade ios-sim stream-stop                      Stop the live view
 
   Input and selection:
-    $ ade --socket ios-sim select --x 120 --y 420  Return/select simulator UI context (chat-owned sessions auto-attach)
-    $ ade ios-sim tap 120 420                      Tap active simulator app (tap)
-    $ ade ios-sim drag 120 700 120 250             Drag active simulator app (drag)
-    $ ade ios-sim swipe 120 700 120 250            Swipe active simulator app (swipe)
-    $ ade ios-sim type "hello" --text              Type into the launched app (typeText)
+    $ ade --socket ios-sim select --x 120 --y 420  Add simulator UI context to chat
+    $ ade ios-sim tap 120 420                      Tap in the simulator
+    $ ade ios-sim drag 120 700 120 250             Drag in the simulator
+    $ ade ios-sim swipe 120 700 120 250            Swipe in the simulator
+    $ ade ios-sim type "hello" --text              Type into the launched app
 
 ## ade app-control --help
 _    ____  _____
@@ -754,6 +758,7 @@ _    ____  _____
 
   Discovery and lifecycle:
     $ ade app-control status --text                Show active session and provider readiness
+    $ ade app-control claim --lane <lane-id>       Attribute the active renderer to a lane
     $ ade app-control launch --command "npm run dev" --text
     $ ade app-control launch pnpm dev --text       Launch via the visible chat terminal
     $ ade app-control launch --command "pnpm dev" --cwd apps/desktop --text
@@ -763,6 +768,8 @@ _    ____  _____
     $ ade app-control attach-target --target <id>  Attach to one renderer target
     $ ade app-control logs --text                  Read the active App Control launch terminal
     $ ade app-control terminal write --data "y\n" Answer a prompt in that terminal
+    $ ade app-control focus --text                 Raise the controlled app window on demand
+    $ ade app-control minimize --text              Minimize the controlled app window
     $ ade app-control stop --text                  Signal the App Control terminal session
     $ ade app-control actions --text               List every callable app_control action
     $ ade terminal read --terminal <id> --text     Read a specific chat terminal
@@ -776,6 +783,7 @@ _    ____  _____
 
   Input:
     $ ade app-control click 120 420                Click screenshot coordinates
+    $ ade app-control click 120 420 --coords viewport
     $ ade app-control scroll --x 120 --y 420 --delta-y 600
     $ ade app-control key --key Enter
     $ ade app-control type "hello" --text          Type text into the focused element
@@ -792,10 +800,13 @@ _    ____  _____
   Browser commands control ADE's global built-in browser pane. Use desktop
   socket mode so CLI calls, chat link clicks, terminal localhost links, and the
   Work sidebar all share the same browser tabs. The browser is global, not
-  lane-scoped.
+  lane-scoped, but its visible Work attribution comes from explicit CLI claims.
+  ADE reads ADE_LANE_ID/ADE_CHAT_SESSION_ID for agent CLI calls; use
+  "browser claim --lane <lane-id>" to claim an already-open browser for a lane.
 
   Tabs and navigation:
     $ ade --socket browser status --text           Show active tab and tab list
+    $ ade --socket browser claim --lane <lane-id>  Attribute the Browser panel to a lane
     $ ade --socket browser panel --text            Open the Work sidebar Browser panel
     $ ade --socket browser open https://example.com --text
     $ ade --socket browser open localhost:5173 --new-tab --text
@@ -826,6 +837,8 @@ _    ____  _____
     --background         Create a new tab without activating it.
     --no-panel           Keep the Work sidebar panel hidden; alias: --hidden.
     --tab, --tab-id <id> Target tab for switch/close/open.
+    --lane, --lane-id <id> Claim lane for panel/open/new-tab/switch/claim.
+    --chat-session <id>  Claim chat/session for panel/open/new-tab/switch/claim.
 
 ## ade settings --help
 _    ____  _____

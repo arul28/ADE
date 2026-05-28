@@ -455,7 +455,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   status: `${ADE_BANNER}
   iOS Simulator: status
 
-  Shows macOS support, Xcode/idb/ffmpeg readiness, the active booted device,
+  Shows macOS support, Xcode and simulator-control readiness, the active booted device,
   and the drawer's active simulator session. Start here when a simulator action
   fails or when an agent needs to know whether ADE owns a running session.
 
@@ -512,13 +512,13 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --chat-session <id>         Owner chat session for the single-owner lock.
     --no-build                  Skip xcodebuild.
     --mode snapshot|live        Inspector launch mode; default live.
-    --foreground                Open and bring Simulator.app forward.
+    --background                Leave Simulator.app in the background without parking it under ADE.
     --arg KEY=VALUE             Extra service args for advanced launch options.
 `,
   shutdown: `${ADE_BANNER}
   iOS Simulator: shutdown
 
-  Stops streams, releases the drawer session, and tears down simulator helper processes.
+  Stops live view state, releases the drawer session, and clears related simulator work.
   Aliases: stop, teardown, end, end-session.
 
     $ ade --socket ios-sim shutdown --text
@@ -644,40 +644,32 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   "stream-start": `${ADE_BANNER}
   iOS Simulator: stream-start
 
-  Starts a visual stream. auto resolves to iosurface-indigo first when full
-  Xcode supports ADE's private helpers, then Simulator.app window capture when
-  visible-window capture is allowed, then idb MJPEG, then simctl screenshot
-  polling. The H.264+ffmpeg idb stream is recovery-only after idb MJPEG fails.
+  Starts ADE's live view for the running simulator. Simulator control tools
+  enable tap, drag, type, and inspect actions when available.
   Aliases:
   start-stream, stream, window-start,
-  start-window, mirror-start, live-start, start-live, preview-start, start-preview.
+  start-window, mirror-start, live-start, start-live.
 
     $ ade --socket ios-sim window-start --fps 60 --text
-    $ ade --socket ios-sim live-start --fps 30 --text
-    $ ade --socket ios-sim preview-start --fps 8 --text
+    $ ade --socket ios-sim live-start --fps 60 --text
 
   Flags:
     --device, --udid <id>  Simulator device.
     --fps <n>              Target fps.
-    --backend auto|iosurface-indigo|simulator-window-capture|idb-mjpeg|idb-h264-ffmpeg-mjpeg|simctl-screenshot-poll
-    --window, --mirror     Force window capture.
-    --idb, --live          Use auto backend resolution.
-    --simctl, --preview    Force simctl screenshot polling.
 `,
   "stream-status": `${ADE_BANNER}
   iOS Simulator: stream-status
 
-  Shows running backend, fallback/degradation reason, helper pid, fps, latency,
-  stream URL, frame count, input backend, and last error. Low idle fps is normal
-  on iosurface-indigo because frames are event-driven when the simulator is still.
+  Shows whether the live view is active, the refresh rate, frame count,
+  simulator control status, and last error.
 
     $ ade --socket ios-sim stream-status --text
 `,
   "stream-stop": `${ADE_BANNER}
   iOS Simulator: stream-stop
 
-  Stops the visual stream without necessarily releasing the simulator session.
-  Aliases: stop-stream, preview-stop, stop-preview, live-stop, stop-live.
+  Stops the live view without necessarily releasing the simulator session.
+  Aliases: stop-stream, live-stop, stop-live.
 
     $ ade --socket ios-sim stream-stop --text
 `,
@@ -697,7 +689,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   tap: `${ADE_BANNER}
   iOS Simulator: tap
 
-  Sends a tap through the active input backend, preferring Indigo with idb fallback.
+  Sends a tap when simulator controls are available.
 
     $ ade --socket ios-sim tap --x 120 --y 420 --text
     $ ade --socket ios-sim tap 120 420 --text
@@ -710,7 +702,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   drag: `${ADE_BANNER}
   iOS Simulator: drag / swipe
 
-  Sends a swipe through the active input backend. "swipe" is an alias of drag.
+  Sends a swipe to the active launched app. "swipe" is an alias of drag.
 
     $ ade --socket ios-sim drag --start-x 120 --start-y 700 --end-x 120 --end-y 250 --text
     $ ade --socket ios-sim swipe 120 700 120 250 --duration-ms 250 --text
@@ -725,7 +717,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   type: `${ADE_BANNER}
   iOS Simulator: type
 
-  Types text through idb into the active launched app. Alias: text.
+  Types text into the active launched app. Alias: text.
 
     $ ade --socket ios-sim type "hello" --text
     $ ade --socket ios-sim type --value "hello" --text
@@ -770,11 +762,7 @@ const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
   "start-mirror": "stream-start",
   "live-start": "stream-start",
   "start-live": "stream-start",
-  "preview-start": "stream-start",
-  "start-preview": "stream-start",
   "stop-stream": "stream-stop",
-  "preview-stop": "stream-stop",
-  "stop-preview": "stream-stop",
   "live-stop": "stream-stop",
   "stop-live": "stream-stop",
   swipe: "drag",
@@ -1147,55 +1135,48 @@ const HELP_BY_COMMAND: Record<string, string> = {
   drawer simulator. Aliases: \`ade ios\` and \`ade simulator\` route to the same
   surface. For drawer/shared session state, prefer runtime socket mode
   (--socket) so launch/select/tap operate on the same long-lived ADE service.
-  Launch is headless by default; use --foreground only when you
-  need the native Simulator window in front. idb is optional for direct
-  pointer/text control and the low-latency MJPEG live stream.
+  Launch opens Simulator by default and ADE shows it in the drawer. Optional
+  simulator control tools enable tap, drag, type, and inspect actions.
 
-  Single-owner lock: a launched session is owned by one --chat-session at a time.
-  If another session tries to launch with a different chatSessionId, the call
-  fails with code IOS_SIMULATOR_OWNED_BY_OTHER_SESSION. Run "ios-sim shutdown"
-  (or "shutdown --force") to release before re-launching from a different chat.
-  The visible Work tools pane is attributed by an explicit lane claim. ADE
-  reads ADE_LANE_ID/ADE_CHAT_SESSION_ID for agent CLI calls, and you can run
-  "ios-sim claim --lane <lane-id>" to re-attribute an existing drawer session.
+  A launched simulator session belongs to one chat at a time. Run
+  "ios-sim shutdown" before launching it from a different chat, or use
+  "shutdown --force" when you intentionally want to take over. Use
+  "ios-sim claim --lane <lane-id>" to attach the drawer session to a lane.
 
   Discovery and lifecycle:
-    $ ade ios-sim status --text                    Show Xcode/idb readiness (getStatus)
-    $ ade ios-sim devices --text                   List installed/available simulators (listDevices)
-    $ ade ios-sim apps --device <udid> --text      List launchable apps (listLaunchTargets)
-    $ ade --socket ios-sim launch --target <id>    Build/install/launch and update drawer state
+    $ ade ios-sim status --text                    Show simulator readiness
+    $ ade ios-sim devices --text                   List available simulators
+    $ ade ios-sim apps --device <udid> --text      List launchable apps
+    $ ade --socket ios-sim launch --target <id>    Build, install, and launch an app
     $ ade --socket ios-sim claim --lane <lane-id>  Attribute the drawer session to a lane
     $ ade --socket ios-sim launch --bundle-id com.example Launch installed app
-    $ ade --socket ios-sim shutdown                Tear down session, streams, helper processes (alias: stop)
+    $ ade --socket ios-sim shutdown                Tear down the active simulator session (alias: stop)
     $ ade --socket ios-sim shutdown --force        Force-release a session owned by another chat
     $ ade ios-sim actions --text                   List every callable ios_simulator action
 
-  Project discovery scans root-level .xcodeproj bundles and apps/*/*.xcodeproj
-  projects; do not create symlink shims or fake schemes before checking
-  "ios-sim apps --text" and the build output.
+  ADE discovers Xcode projects from the project root and apps/* folders.
 
   Capture and inspection:
-    $ ade ios-sim screenshot --text                One-shot PNG via simctl (screenshot)
-    $ ade ios-sim snapshot --text                  Screenshot + selectable elements (getScreenSnapshot)
-    $ ade ios-sim inspector --text                 Published ADEInspector frames (getInspectorSnapshot)
-    $ ade ios-sim inspect --x 120 --y 420 --text   Hit-test a point in the inspector (inspectPoint)
+    $ ade ios-sim screenshot --text                Capture a screenshot
+    $ ade ios-sim snapshot --text                  Capture selectable UI context
+    $ ade ios-sim inspector --text                 Show current inspector data
+    $ ade ios-sim inspect --x 120 --y 420 --text   Inspect a point in the simulator
     $ ade ios-sim preview-status --text           Xcode MCP readiness for Preview Lab
     $ ade ios-sim previews --source <file> --text  List nearby #Preview definitions
     $ ade ios-sim preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
 
-  Streaming:
-    $ ade ios-sim live-start --fps 30              Auto live stream (IOSurface first)
-    $ ade ios-sim preview-start --fps 8            simctl screenshot-poll fallback
-    $ ade ios-sim window-start --fps 60            Native Simulator.app window capture diagnostic
-    $ ade ios-sim stream-status --text             Backend/fps/latency/URL (getStreamStatus)
-    $ ade ios-sim stream-stop                      Stop preview/live streaming (stopStream)
+  Live view:
+    $ ade ios-sim live-start --fps 60              Show the running simulator in ADE
+    $ ade ios-sim window-start --fps 60            Same live view, explicit alias
+    $ ade ios-sim stream-status --text             Show live view and input state
+    $ ade ios-sim stream-stop                      Stop the live view
 
   Input and selection:
-    $ ade --socket ios-sim select --x 120 --y 420  Return/select simulator UI context (chat-owned sessions auto-attach)
-    $ ade ios-sim tap 120 420                      Tap active simulator app (tap)
-    $ ade ios-sim drag 120 700 120 250             Drag active simulator app (drag)
-    $ ade ios-sim swipe 120 700 120 250            Swipe active simulator app (swipe)
-    $ ade ios-sim type "hello" --text              Type into the launched app (typeText)
+    $ ade --socket ios-sim select --x 120 --y 420  Add simulator UI context to chat
+    $ ade ios-sim tap 120 420                      Tap in the simulator
+    $ ade ios-sim drag 120 700 120 250             Drag in the simulator
+    $ ade ios-sim swipe 120 700 120 250            Swipe in the simulator
+    $ ade ios-sim type "hello" --text              Type into the launched app
 `,
   "macos-vm": `${ADE_BANNER}
   macOS VM
@@ -5682,7 +5663,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
             chatSessionId: claimArgs.chatSessionId,
             build: !readFlag(args, ["--no-build"]),
             mode: readValue(args, ["--mode"]) ?? "live",
-            keepSimulatorInBackground: !readFlag(args, ["--foreground"]),
+            keepSimulatorInBackground: readFlag(args, ["--background", "--keep-background"]),
           }),
         ),
       ],
@@ -5851,8 +5832,6 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
     sub === "stream-start" ||
     sub === "start-stream" ||
     sub === "stream" ||
-    sub === "preview-start" ||
-    sub === "start-preview" ||
     sub === "live-start" ||
     sub === "start-live" ||
     sub === "window-start" ||
@@ -5860,39 +5839,14 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
     sub === "mirror-start" ||
     sub === "start-mirror"
   ) {
-    const forcedBackend =
-      sub === "preview-start" || sub === "start-preview"
-        ? "simctl-screenshot-poll"
-        : sub === "window-start" ||
-            sub === "start-window" ||
-            sub === "mirror-start" ||
-            sub === "start-mirror"
-          ? "simulator-window-capture"
-          : sub === "live-start" || sub === "start-live"
-            ? "auto"
-            : undefined;
-    const requestedBackend =
-      forcedBackend ??
-      (readFlag(args, ["--window", "--mirror"])
-        ? "simulator-window-capture"
-        : readFlag(args, ["--idb", "--live"])
-          ? "auto"
-          : readFlag(args, ["--simctl", "--preview"])
-            ? "simctl-screenshot-poll"
-            : (readValue(args, ["--backend"]) ?? "auto"));
-    const defaultFps =
-      requestedBackend === "simulator-window-capture"
-        ? 60
-        : requestedBackend === "iosurface-indigo" ||
-            requestedBackend === "idb-mjpeg" ||
-            requestedBackend === "idb-h264-ffmpeg-mjpeg"
-          ? 30
-          : requestedBackend === "simctl-screenshot-poll"
-            ? 8
-            : undefined;
+    const backendFlag = readValue(args, ["--backend"]);
+    if (backendFlag && backendFlag !== "auto" && backendFlag !== "simulator-window-capture") {
+      throw new Error("ios-sim live-start received an unsupported live view option.");
+    }
+    const requestedBackend = backendFlag ?? "simulator-window-capture";
     return {
       kind: "execute",
-      label: "iOS simulator stream start",
+      label: "iOS simulator live view start",
       steps: [
         actionStep(
           "result",
@@ -5900,7 +5854,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "startStream",
           collectGenericObjectArgs(args, {
             deviceUdid: readValue(args, ["--device", "--udid"]),
-            fps: readNumberOption(args, ["--fps"], defaultFps),
+            fps: readNumberOption(args, ["--fps"], 60),
             backend: requestedBackend,
           }),
         ),
@@ -5910,14 +5864,12 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
   if (
     sub === "stream-stop" ||
     sub === "stop-stream" ||
-    sub === "preview-stop" ||
-    sub === "stop-preview" ||
     sub === "live-stop" ||
     sub === "stop-live"
   ) {
     return {
       kind: "execute",
-      label: "iOS simulator stream stop",
+      label: "iOS simulator live view stop",
       steps: [
         actionStep(
           "result",
@@ -5931,7 +5883,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
   if (sub === "stream-status") {
     return {
       kind: "execute",
-      label: "iOS simulator stream status",
+      label: "iOS simulator live view status",
       steps: [
         actionStep(
           "result",
@@ -12007,24 +11959,15 @@ function formatIosSimApps(value: unknown): string {
 
 function formatIosSimStream(value: unknown): string {
   const status = isRecord(value) ? value : {};
-  return renderKeyValues("ADE iOS simulator stream", [
+  return renderKeyValues("ADE iOS simulator live view", [
     ["running", status.running],
-    ["requested backend", status.requestedBackend],
-    ["resolved backend", status.backend],
-    ["fallback reason", status.fallbackReason],
-    ["degradation reason", status.degradationReason],
     ["device", status.deviceUdid],
-    ["fps", status.fps ?? status.targetFps],
+    ["refresh rate", status.fps ?? status.targetFps],
     ["frames", status.frameCount],
-    ["avg latency ms", status.averageLatencyMs],
-    ["latency p50 ms", status.latencyP50Ms],
-    ["latency p95 ms", status.latencyP95Ms],
-    ["helper pid", status.helperPid],
-    ["input backend", status.inputBackend],
+    ["input", status.inputBackend],
     ["error code", isRecord(status.error) ? status.error.code : null],
     ["started", status.startedAt],
     ["last frame", status.lastFrameAt],
-    ["stream url", status.streamUrl],
     ["error", status.lastError],
   ]);
 }
@@ -12892,9 +12835,9 @@ function inferFormatter(
   if (label === "ios simulator devices") return "ios-sim-devices";
   if (label === "ios simulator launchable apps") return "ios-sim-apps";
   if (
-    label === "ios simulator stream start" ||
-    label === "ios simulator stream status" ||
-    label === "ios simulator stream stop"
+    label === "ios simulator live view start" ||
+    label === "ios simulator live view status" ||
+    label === "ios simulator live view stop"
   )
     return "ios-sim-stream";
   if (

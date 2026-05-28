@@ -400,12 +400,12 @@ Coverage states:
 | work.ios.mount | Mount iOS Sim tab | measured | `ChatIosSimulatorPanel.tsx` |
 | work.ios.surface.simulator | Select Simulator surface | measured | `ChatIosSimulatorPanel.tsx` |
 | work.ios.surface.preview | Select Preview surface | measured | `ChatIosSimulatorPanel.tsx` |
-| work.ios.window-toggle | Toggle Show iOS window / Use ADE stream | external-skip | `ChatIosSimulatorPanel.tsx` |
+| work.ios.live-window | Mirror running Simulator.app window | measured | `ChatIosSimulatorPanel.tsx` |
 | work.ios.device-select | Select simulator device | measured | `ChatIosSimulatorPanel.tsx` |
 | work.ios.refresh-state | Refresh simulator state | measured | `ChatIosSimulatorPanel.tsx` |
 | work.ios.stop | Stop running simulator | prompt-only | `ChatIosSimulatorPanel.tsx` |
 | work.ios.take-over | Take over simulator session owned by another chat | prompt-only | `ChatIosSimulatorPanel.tsx` |
-| work.ios.stream-retry | Retry/restoring ADE stream | measured | `ChatIosSimulatorPanel.tsx` |
+| work.ios.window-recover | Restore Simulator.app window capture | measured | `ChatIosSimulatorPanel.tsx` |
 | work.ios.target-select | Select launch target/app | measured | `ChatIosSimulatorPanel.tsx` |
 | work.ios.launch | Launch app in simulator | sandbox-only | `ChatIosSimulatorPanel.tsx` |
 | work.ios.apply | Rebuild/reinstall/relaunch active app | sandbox-only | `ChatIosSimulatorPanel.tsx` |
@@ -1805,7 +1805,7 @@ Rows promoted to `measured`:
 Command:
 
 ```bash
-npm --prefix apps/desktop run test -- src/renderer/components/chat/ChatIosSimulatorPanel.test.tsx -t "restarts the device-backed fallback stream after a stream error event"
+npm --prefix apps/desktop run test -- src/renderer/components/chat/ChatIosSimulatorPanel.test.tsx -t "shows a window live-view error without switching stream backends"
 ```
 
 Result: passed (`1` focused test).
@@ -1813,8 +1813,8 @@ Result: passed (`1` focused test).
 Rows promoted to `measured`:
 
 - `work.ios.stream-retry`: the simulator panel test emitted a `stream-error`
-  event after the initial stream start and verified `startStream` retried with
-  the selected device udid and `backend: "auto"`.
+  event after the initial stream start and verified the drawer kept the
+  `simulator-window-capture` backend instead of switching stream modes.
 
 ### Focused fixture evidence: iOS simulator state controls
 

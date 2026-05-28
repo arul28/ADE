@@ -7,7 +7,7 @@ export type IosSimulatorDevice = {
 };
 
 export type IosSimulatorToolStatus = {
-  name: "xcrun" | "xcodebuild" | "iosurface_indigo" | "simulator_window" | "idb" | "idb_companion" | "ffmpeg";
+  name: "xcrun" | "xcodebuild" | "simulator_window" | "idb" | "idb_companion";
   available: boolean;
   detail: string;
   installHint: string;
@@ -123,7 +123,7 @@ export type IosSimulatorStreamStatus = {
   deviceUdid: string | null;
   running: boolean;
   backend: IosSimulatorStreamBackend | null;
-  requestedBackend?: "auto" | IosSimulatorStreamBackend | null;
+  requestedBackend?: IosSimulatorStreamBackend | null;
   fallbackReason?: string | null;
   degradationReason?: string | null;
   fps: number | null;
@@ -142,15 +142,10 @@ export type IosSimulatorStreamStatus = {
   latencyP50Ms?: number | null;
   latencyP95Ms?: number | null;
   helperPid?: number | null;
-  inputBackend?: "indigo" | "idb" | null;
+  inputBackend?: "idb" | null;
 };
 
-export type IosSimulatorStreamBackend =
-  | "iosurface-indigo"
-  | "simctl-screenshot-poll"
-  | "idb-mjpeg"
-  | "idb-h264-ffmpeg-mjpeg"
-  | "simulator-window-capture";
+export type IosSimulatorStreamBackend = "simulator-window-capture";
 
 export type IosSimulatorWindowSource = {
   id: string;

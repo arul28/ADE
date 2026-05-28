@@ -291,19 +291,7 @@
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "notarize": true,
       "mergeASARs": false,
-      "x64ArchFiles": "Contents/Resources/app.asar.unpacked/{node_modules,vendor}/**/*",
-      "extraResources": [
-        {
-          "from": "native/ios-sim-helpers",
-          "to": "native/ios-sim-helpers",
-          "filter": [
-            "README.md",
-            "build.sh",
-            "sim-capture.swift",
-            "sim-input.m"
-          ]
-        }
-      ]
+      "x64ArchFiles": "Contents/Resources/app.asar.unpacked/{node_modules,vendor}/**/*"
     }
   }
 }
