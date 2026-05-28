@@ -361,7 +361,7 @@ describe("ChatIosSimulatorPanel", () => {
     await waitFor(() => expect(api.getStreamStatus).toHaveBeenCalled());
 
     expect(api.startStream).not.toHaveBeenCalled();
-    expect(api.stopStream).toHaveBeenCalled();
+    await waitFor(() => expect(api.stopStream).toHaveBeenCalled());
   });
 
   it("shows compact simulator readiness", async () => {
