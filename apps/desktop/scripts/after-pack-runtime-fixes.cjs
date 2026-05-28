@@ -242,10 +242,12 @@ module.exports = async function afterPack(context) {
   const resourcesRoot = resolveExtraResourcesRoot(context, appBundlePath);
   const bundledCliPath = path.join(resourcesRoot, "ade-cli", "cli.cjs");
   const bundledCliBootstrapPath = path.join(resourcesRoot, "ade-cli", "bootstrap.cjs");
+  const bundledCliPtyHostWorkerPath = path.join(resourcesRoot, "ade-cli", "ptyHostWorker.cjs");
   const bundledCliRpcPath = path.join(resourcesRoot, "ade-cli", "adeRpcServer.cjs");
   const bundledCliTuiPath = path.join(resourcesRoot, "ade-cli", "tuiClient", "cli.mjs");
   requireFile(bundledCliPath, "bundled ADE CLI entry");
   requireFile(bundledCliBootstrapPath, "bundled ADE CLI bootstrap entry");
+  requireFile(bundledCliPtyHostWorkerPath, "bundled ADE CLI PTY host worker");
   requireFile(bundledCliRpcPath, "bundled ADE CLI RPC entry");
   requireFile(bundledCliTuiPath, "bundled ADE CLI TUI entry");
 

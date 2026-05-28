@@ -489,6 +489,7 @@ describe("WorkViewArea", () => {
   it("closes an ended work tab from the tab strip", () => {
     const session = makeSession();
     const onCloseItem = vi.fn();
+    const onSelectItem = vi.fn();
 
     const view = render(
       <WorkViewArea
@@ -519,7 +520,7 @@ describe("WorkViewArea", () => {
         viewMode="tabs"
         draftKind="chat"
         setViewMode={() => {}}
-        onSelectItem={() => {}}
+        onSelectItem={onSelectItem}
         onCloseItem={onCloseItem}
         onOpenChatSession={() => {}}
         onLaunchPtySession={resolvePtyLaunch}
@@ -529,15 +530,18 @@ describe("WorkViewArea", () => {
       />,
     );
 
-    const closeTabs = Array.from(
-      view.container.querySelectorAll<HTMLElement>('[data-close-tab-session-id="session-1"]'),
-    );
-    expect(closeTabs.length).toBeGreaterThan(0);
-    const closeTab = closeTabs.find((node) => node.closest('[role="tab"]')) ?? closeTabs[closeTabs.length - 1]!;
-    fireEvent.click(closeTab);
+    const tab = view.getByRole("tab", { name: "Existing session" });
+    const closeButton = view.getByRole("button", { name: "Close Existing session" });
+    expect(closeButton.closest('[role="tab"]')).toBeNull();
+    fireEvent.mouseDown(closeButton);
+    fireEvent.click(closeButton);
 
     expect(onCloseItem).toHaveBeenCalledTimes(1);
     expect(onCloseItem).toHaveBeenCalledWith("session-1");
+    expect(onSelectItem).not.toHaveBeenCalled();
+
+    fireEvent.click(tab);
+    expect(onSelectItem).toHaveBeenCalledTimes(1);
   });
 
   it("keeps every running terminal tile mounted in grid mode", () => {

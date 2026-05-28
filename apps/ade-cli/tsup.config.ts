@@ -35,7 +35,8 @@ export default defineConfig([
     entry: {
       cli: "src/cli.ts",
       bootstrap: "src/bootstrap.ts",
-      adeRpcServer: "src/adeRpcServer.ts"
+      adeRpcServer: "src/adeRpcServer.ts",
+      ptyHostWorker: "../desktop/src/main/services/pty/ptyHostWorker.ts"
     },
     format: ["cjs"],
     platform: "node",

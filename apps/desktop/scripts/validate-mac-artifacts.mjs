@@ -339,6 +339,7 @@ async function validatePackagedRuntime(appPath, description) {
   const unpackedPath = await resolveRuntimeUnpackedPath(resourcesPath);
   const adeCliPath = path.join(resourcesPath, "ade-cli", "cli.cjs");
   const adeCliBootstrapPath = path.join(resourcesPath, "ade-cli", "bootstrap.cjs");
+  const adeCliPtyHostWorkerPath = path.join(resourcesPath, "ade-cli", "ptyHostWorker.cjs");
   const adeCliRpcPath = path.join(resourcesPath, "ade-cli", "adeRpcServer.cjs");
   const adeCliTuiPath = path.join(resourcesPath, "ade-cli", "tuiClient", "cli.mjs");
   const adeCliBinPath = path.join(resourcesPath, "ade-cli", "bin", "ade");
@@ -356,6 +357,7 @@ async function validatePackagedRuntime(appPath, description) {
   await assertPathExists(unpackedPath, "unpacked runtime payload");
   await assertPathExists(adeCliPath, "bundled ADE CLI entry");
   await assertPathExists(adeCliBootstrapPath, "bundled ADE CLI bootstrap entry");
+  await assertPathExists(adeCliPtyHostWorkerPath, "bundled ADE CLI PTY host worker");
   await assertPathExists(adeCliRpcPath, "bundled ADE CLI RPC entry");
   await assertPathExists(adeCliTuiPath, "bundled ADE CLI TUI entry");
   await assertPathExists(adeCliBinPath, "bundled ADE CLI wrapper");

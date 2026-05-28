@@ -396,6 +396,90 @@ describe("runtime session actions", () => {
     });
     expect(runtime.sessionService.readTranscriptTail).not.toHaveBeenCalled();
   });
+
+  it("disposes a live terminal before deleting through the runtime action service", async () => {
+    const terminalSession = {
+      id: "terminal-1",
+      toolType: "shell",
+      status: "running",
+      ptyId: null,
+    };
+    const disposedSession = {
+      ...terminalSession,
+      status: "disposed",
+      ptyId: null,
+    };
+    const deleteSession = vi.fn(() => true);
+    const dispose = vi.fn();
+    const runtime = {
+      sessionService: {
+        get: vi.fn()
+          .mockReturnValueOnce(terminalSession)
+          .mockReturnValueOnce(disposedSession),
+        list: vi.fn(),
+        deleteSession,
+      },
+      ptyService: {
+        enrichSessions: vi.fn((sessions: any[]) => {
+          const session = sessions[0];
+          if (session.status === "running") {
+            return [{
+              ...session,
+              status: "running",
+              ptyId: "pty-1",
+            }];
+          }
+          return sessions;
+        }),
+        isSessionOwnedByLivePeerRuntime: vi.fn(() => false),
+        dispose,
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const sessionService = getAdeActionDomainServices(runtime).session as {
+      deleteSession: (sessionId: string) => boolean;
+    } & Record<string, unknown>;
+
+    expect(sessionService.deleteSession(" terminal-1 ")).toBe(true);
+    expect(dispose).toHaveBeenCalledWith({ ptyId: "pty-1", sessionId: "terminal-1" });
+    expect(deleteSession).toHaveBeenCalledWith("terminal-1");
+  });
+
+  it("refuses to delete a terminal owned by another runtime through the runtime action service", () => {
+    const terminalSession = {
+      id: "terminal-1",
+      toolType: "shell",
+      status: "running",
+      ptyId: null,
+      ownerPid: 12345,
+    };
+    const deleteSession = vi.fn(() => true);
+    const dispose = vi.fn();
+    const runtime = {
+      sessionService: {
+        get: vi.fn(() => terminalSession),
+        list: vi.fn(),
+        deleteSession,
+      },
+      ptyService: {
+        enrichSessions: vi.fn((sessions: any[]) => [
+          {
+            ...sessions[0],
+            status: "detached",
+            ptyId: null,
+          },
+        ]),
+        isSessionOwnedByLivePeerRuntime: vi.fn(() => true),
+        dispose,
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const sessionService = getAdeActionDomainServices(runtime).session as {
+      deleteSession: (sessionId: string) => boolean;
+    } & Record<string, unknown>;
+
+    expect(() => sessionService.deleteSession("terminal-1")).toThrow("still owned by another ADE runtime");
+    expect(dispose).not.toHaveBeenCalled();
+    expect(deleteSession).not.toHaveBeenCalled();
+  });
 });
 
 describe("runtime computer-use artifact actions", () => {

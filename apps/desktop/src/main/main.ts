@@ -41,6 +41,7 @@ import { createRuntimeDiagnosticsService } from "./services/lanes/runtimeDiagnos
 import { createSessionService } from "./services/sessions/sessionService";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
 import { createPtyService } from "./services/pty/ptyService";
+import { createSupervisedPtyLoader } from "./services/pty/supervisedPtyHost";
 import {
   createProcessRegistryService,
   DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS,
@@ -1161,12 +1162,6 @@ app.whenReady().then(async () => {
       error: error instanceof Error ? error.message : String(error),
     });
   }
-
-  const loadPty = () => {
-    // node-pty is a native dependency; keep the require inside the main process runtime.
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    return require("node-pty") as NodePtyType;
-  };
 
   const normalizeProjectRoot = (projectRoot: string) =>
     path.resolve(projectRoot);
@@ -2548,6 +2543,15 @@ app.whenReady().then(async () => {
     };
 
     let syncServiceRef: ReturnType<typeof createSyncService> | null = null;
+    const ptyBackend = process.env.ADE_DISABLE_SUPERVISED_PTY_HOST === "1"
+      ? null
+      : createSupervisedPtyLoader({ logger });
+    const loadPty = ptyBackend
+      ?? (() => {
+        // node-pty is a native dependency; keep the require inside the main process runtime.
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        return require("node-pty") as NodePtyType;
+      });
     const ptyService = createPtyService({
       projectRoot,
       transcriptsDir: adePaths.transcriptsDir,
@@ -2577,6 +2581,7 @@ app.whenReady().then(async () => {
         });
       },
       loadPty,
+      disposePtyBackend: ptyBackend?.dispose,
     });
 
     const processService = createProcessService({
