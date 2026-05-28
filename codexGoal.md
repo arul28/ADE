@@ -751,3 +751,171 @@ Remaining high-priority work:
 4. Investigate the OpenCode Kitty graphics payload still visible in one old
    Work sidebar preview.
 5. Continue performance/resource measurement from real Work-tab UI evidence.
+
+---
+
+# Goal: Make Files tab folder/file clicks instant
+
+Added 2026-05-27 by Claude. Independent of the CLI sessions goal above.
+
+## Symptom
+
+Clicking a folder in the Files tab (primary workspace or any lane) can take
+seconds, and frequently throws "Remote ADE service connection failed: timed
+out waiting for method ade/actions/call." Once any single call times out, the
+RPC client used to mark itself closed and every subsequent click would reject
+instantly with the same message until the connection rebuilt — making one
+slow call look like a total outage.
+
+A live probe (`/tmp/probe-runtime.mjs` shape) against the running daemon
+shows `file.listTree` actually completes in **0–49 ms** for every folder in
+the ADE repo (root, `apps`, `apps/desktop`, `.ade`, `node_modules`). So the
+runtime itself is fast — the latency is in the architecture around it.
+
+## Why it's slow today
+
+A single folder click in ADE takes **6 hops**:
+
+```
+renderer click
+  → preload (window.ade.files.listTree)
+  → IPC (localRuntimeCallAction)
+  → main process (LocalRuntimeConnectionPool.callActionForRoot)
+  → unix socket (ade/actions/call JSON-RPC)
+  → daemon (ProjectScopeRegistry → fileService.listTree)
+  → fs.readdirSync + git status --porcelain
+  ← back through every layer
+```
+
+VS Code does **two hops** for the same interaction:
+
+```
+renderer click
+  → main process IPC (fs.readDir)
+  → fs.readdir
+  ← back
+```
+
+ADE routes everything through the daemon because the daemon is the source of
+truth for multiple clients (desktop, iOS via WebSocket, `ade code` CLI).
+That's the right design for write ops and shared state. But for **read-only
+file listing** on a workspace that only the local desktop is attached to,
+every extra hop is ceremony.
+
+Other production patterns that mature IDEs use and ADE is missing:
+
+- **OS-level recursive watcher in a separate process.** VS Code uses
+  `@parcel/watcher` in a `UtilityProcess` with excludes for `node_modules`,
+  `.git/objects`, etc., and pushes change events. ADE re-fetches on demand.
+- **Cancellation.** VS Code's `AsyncDataTree` cancels in-flight
+  `refreshPromise`s on collapse/navigation. ADE has no cancel path — once a
+  `listTree` is queued, it runs to completion.
+- **Request dedup.** Two clicks on the same folder fire two requests. VS
+  Code dedupes via `subTreeRefreshPromises` keyed by node.
+- **Exclude list for the tree.** `.ade/worktrees/` (each lane's full checkout,
+  multi-GB) is visible by default with `includeIgnored: true`. Click through
+  a worktree and the same scan happens against every duplicate `node_modules`.
+- **Background work isolated from the file path.** Lane delete, sync, AI
+  orchestration, git ops, and the cr-sqlite writer all run on the daemon's
+  one event loop. A heavy mutation can starve concurrent file reads.
+
+## The fix
+
+Four pieces, in order of impact:
+
+### 1. Bypass the daemon for read-only file ops on local workspaces
+
+The biggest single win. The preload already has a fallback path in
+`apps/desktop/src/preload/preload.ts:1367-1384`:
+
+```ts
+async function callProjectFileRuntimeActionOr<T>(action, request, local) {
+  const remote = await callRemoteProjectActionIfBound<T>("file", action, request);
+  if (remote.handled) return remote.result;
+  const localRuntime = await callLocalProjectActionStrictIfBound<T>("file", action, request);
+  return localRuntime.handled ? localRuntime.result : local();
+}
+```
+
+Today: remote → local daemon → direct IPC (only when no daemon binding).
+Change: for read-only file methods (`listTree`, `readFile`, `listWorkspaces`,
+`searchText`, `quickOpen`, `watchChanges`), invert the precedence when no
+remote runtime is bound and the workspace's root lives on the local
+filesystem. Go straight to the existing direct IPC handler
+(`IPC.filesListTree`), which runs `fileService.listTree` in the main process.
+
+Write ops (`writeText`, `rename`, `delete`, `createFile`, `createDirectory`)
+and git ops keep going through the daemon — they mutate shared state that
+other clients need to see.
+
+This change is local to the preload routing function plus the existing main-
+process IPC handlers (already exist for the fallback case). Expected folder
+click cost: **renderer → main IPC → fs.readdir → back ≈ 5 ms.**
+
+### 2. OS-level recursive watcher with excludes
+
+Add `@parcel/watcher` (same library VS Code uses) per workspace root in a
+`UtilityProcess` or worker thread. Watch the whole tree with a hardcoded
+exclude list:
+
+```
+node_modules/**
+.git/objects/**
+.git/lfs/**
+.ade/worktrees/**       ← Lanes own this; never show in Files tab
+.ade/cache/**
+.ade/transcripts/**
+dist/**
+build/**
+release/**
+release-beta/**
+release-alpha/**
+.next/**
+.vite/**
+```
+
+Watcher pushes coalesced (≈100 ms debounce) `fs.changed` events to the
+renderer. Files tab marks affected nodes dirty and re-fetches only the
+changed parent on next visible render. Replaces today's "refresh whole tree
+on any change" pattern.
+
+### 3. Renderer-side request dedup + cancellation
+
+In `FilesPage.tsx`, wrap `window.ade.files.listTree` with an in-flight map
+keyed by `${workspaceId}::${parentPath}`. Second call for the same key
+reuses the first's promise. On collapse/navigation, abort via
+`AbortController` threaded through preload → main → fileService (bail in the
+readdir loop).
+
+Match VS Code's `slow` flag: if a single `listTree` hasn't resolved in 800
+ms, flip the affected node into a "loading" state with a spinner. Never show
+a hard error to the user for a slow read.
+
+### 4. Default-exclude `.ade/worktrees/` from the primary Files tab
+
+Lanes have their own tab and their own workspace switcher. The Files tab
+showing the primary workspace should not also recurse into every worktree
+checkout. The existing security guard (`isVolatileAdeRuntimePath`) already
+refuses calls *into* `.ade/worktrees/`; this just hides the directory entry
+itself from the primary workspace's root listing in
+`fileService.listTreeNode`.
+
+## Out of scope for this proposal
+
+- The 8 s `LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS`. With #1 in place, most
+  file ops won't go through the daemon at all. The cascading-failure pattern
+  was already fixed on this branch (`runtimeRpcClient` per-call timeout no
+  longer tears down the connection).
+- Moving lane delete / sync / AI to a worker thread. Worth doing, but not on
+  the file-tree critical path once #1 lands.
+- Replacing the JSON-RPC daemon with something else. The daemon is the right
+  shape; the desktop just shouldn't pretend it's a remote client for
+  read-only reads against its own filesystem.
+
+## Acceptance
+
+A click on any folder in the Files tab — primary workspace or a lane — shows
+its contents in under 50 ms on the user's hardware, every time, with no
+spinner. No "timed out waiting for method ade/actions/call" error appears
+under normal use. The `local_runtime.action_slow` diagnostic log (added on
+this branch) stays silent for `file.listTree`.
