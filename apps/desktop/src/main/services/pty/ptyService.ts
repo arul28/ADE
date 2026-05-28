@@ -929,6 +929,7 @@ export function createPtyService({
   const exitListeners = new Set<PtyExitListener>();
   const terminalChatSessions = new Map<string, string>();
   const activeTerminalByChatSession = new Map<string, string>();
+  const activeAuxiliaryTerminalByChatSession = new Map<string, string>();
   const missingResumeTargetBackfillFailures = new Map<string, { toolType: TerminalToolType | null; checkedAtMs: number }>();
   const claudeTitleCaptureKeys = new Set<string>();
   const resumeRuntimeFlights = new Map<string, Promise<PtyCreateResult>>();
@@ -2438,18 +2439,28 @@ export function createPtyService({
     const finalRuntimeState = runtimeFromStatus(status);
     setRuntimeState(entry.sessionId, finalRuntimeState, { touch: false });
     runtimeStates.delete(entry.sessionId);
-    if (entry.chatSessionId && activeTerminalByChatSession.get(entry.chatSessionId) === entry.sessionId) {
-      const replacement = Array.from(ptys.values())
-        .filter((candidate) => (
-          candidate.sessionId !== entry.sessionId
-          && !candidate.disposed
-          && candidate.chatSessionId === entry.chatSessionId
-        ))
-        .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
+    if (
+      entry.chatSessionId
+      && isChatCliRoutingEntry(entry)
+      && activeTerminalByChatSession.get(entry.chatSessionId) === entry.sessionId
+    ) {
+      const replacement = liveChatCliEntriesFor(entry.chatSessionId)[0] ?? null;
       if (replacement) {
         activeTerminalByChatSession.set(entry.chatSessionId, replacement.sessionId);
       } else {
         activeTerminalByChatSession.delete(entry.chatSessionId);
+      }
+    }
+    if (
+      entry.chatSessionId
+      && isAuxiliaryRoutingEntry(entry)
+      && activeAuxiliaryTerminalByChatSession.get(entry.chatSessionId) === entry.sessionId
+    ) {
+      const replacement = liveAuxiliaryEntriesFor(entry.chatSessionId)[0] ?? null;
+      if (replacement) {
+        activeAuxiliaryTerminalByChatSession.set(entry.chatSessionId, replacement.sessionId);
+      } else {
+        activeAuxiliaryTerminalByChatSession.delete(entry.chatSessionId);
       }
     }
     try {
@@ -2692,6 +2703,89 @@ export function createPtyService({
     Array.from(ptys.entries()).find(([, entry]) => entry.sessionId === sessionId && !entry.disposed) ?? null
   );
 
+  const isChatCliRoutingEntry = (entry: PtyEntry): boolean =>
+    isPersistedChatToolType(entry.toolTypeHint);
+
+  const isAuxiliaryRoutingEntry = (entry: PtyEntry): boolean =>
+    !isChatCliRoutingEntry(entry);
+
+  const liveChatCliEntriesFor = (chatSessionId: string): PtyEntry[] =>
+    Array.from(ptys.values())
+      .filter((entry) => (
+        entry.chatSessionId === chatSessionId
+        && !entry.disposed
+        && isChatCliRoutingEntry(entry)
+      ))
+      .sort((a, b) => b.createdAt - a.createdAt);
+
+  const liveAuxiliaryEntriesFor = (chatSessionId: string): PtyEntry[] =>
+    Array.from(ptys.values())
+      .filter((entry) => (
+        entry.chatSessionId === chatSessionId
+        && !entry.disposed
+        && isAuxiliaryRoutingEntry(entry)
+      ))
+      .sort((a, b) => b.createdAt - a.createdAt);
+
+  const activeEntryFromMap = (
+    map: Map<string, string>,
+    chatSessionId: string,
+    predicate: (entry: PtyEntry) => boolean,
+  ): PtyEntry | null => {
+    const sessionId = map.get(chatSessionId) ?? null;
+    if (!sessionId) return null;
+    const live = liveEntryBySessionId(sessionId);
+    if (live && live[1].chatSessionId === chatSessionId && predicate(live[1])) return live[1];
+    map.delete(chatSessionId);
+    return null;
+  };
+
+  const activeChatCliEntryFor = (chatSessionId: string): PtyEntry | null => {
+    const active = activeEntryFromMap(activeTerminalByChatSession, chatSessionId, isChatCliRoutingEntry);
+    if (active) return active;
+    const replacement = liveChatCliEntriesFor(chatSessionId)[0] ?? null;
+    if (replacement) activeTerminalByChatSession.set(chatSessionId, replacement.sessionId);
+    return replacement;
+  };
+
+  const activeAuxiliaryEntryFor = (chatSessionId: string): PtyEntry | null => {
+    const active = activeEntryFromMap(activeAuxiliaryTerminalByChatSession, chatSessionId, isAuxiliaryRoutingEntry);
+    if (active) return active;
+    const replacement = liveAuxiliaryEntriesFor(chatSessionId)[0] ?? null;
+    if (replacement) activeAuxiliaryTerminalByChatSession.set(chatSessionId, replacement.sessionId);
+    return replacement;
+  };
+
+  const promoteActiveChatCliTerminal = (
+    chatSessionId: string,
+    sessionId: string,
+    toolType: TerminalToolType | null,
+  ): void => {
+    if (!isPersistedChatToolType(toolType)) return;
+    activeTerminalByChatSession.set(chatSessionId, sessionId);
+  };
+
+  const promoteActiveAuxiliaryTerminal = (
+    chatSessionId: string,
+    sessionId: string,
+    toolType: TerminalToolType | null,
+  ): void => {
+    if (isPersistedChatToolType(toolType)) return;
+    activeAuxiliaryTerminalByChatSession.set(chatSessionId, sessionId);
+  };
+
+  const promoteActiveChatTerminal = (
+    chatSessionId: string,
+    sessionId: string,
+    toolType: TerminalToolType | null,
+  ): void => {
+    if (isPersistedChatToolType(toolType)) {
+      promoteActiveChatCliTerminal(chatSessionId, sessionId, toolType);
+    } else {
+      promoteActiveAuxiliaryTerminal(chatSessionId, sessionId, toolType);
+    }
+  };
+
   const codexReadyRegion = (text: string): string => {
     const lastPrompt = text.lastIndexOf("›");
     if (lastPrompt < 0) return text;
@@ -2858,8 +2952,15 @@ export function createPtyService({
       ?? live?.[1].chatSessionId
       ?? summary.chatSessionId
       ?? null;
-    const activeTerminalId = chatSessionId ? activeTerminalByChatSession.get(chatSessionId) ?? null : null;
     const fallbackStatus = live ? "running" : summary.status;
+    let active = false;
+    if (chatSessionId) {
+      if (isPersistedChatToolType(summary.toolType)) {
+        active = activeChatCliEntryFor(chatSessionId)?.sessionId === summary.id;
+      } else {
+        active = activeAuxiliaryEntryFor(chatSessionId)?.sessionId === summary.id;
+      }
+    }
     return {
       terminalId: summary.id,
       ptyId: live?.[0] ?? summary.ptyId ?? null,
@@ -2871,7 +2972,7 @@ export function createPtyService({
       goal: summary.goal,
       status: fallbackStatus,
       runtimeState: computeRuntimeState(summary.id, fallbackStatus),
-      active: Boolean(activeTerminalId && activeTerminalId === summary.id),
+      active,
       startedAt: summary.startedAt,
       endedAt: live ? null : summary.endedAt,
       exitCode: live ? null : summary.exitCode,
@@ -2891,17 +2992,8 @@ export function createPtyService({
     if (terminalId) return terminalId;
     const chatSessionId = cleanOptionalId(args.chatSessionId);
     if (!chatSessionId) return null;
-    const activeTerminalId = activeTerminalByChatSession.get(chatSessionId) ?? null;
-    if (activeTerminalId && liveEntryBySessionId(activeTerminalId)) return activeTerminalId;
-    const replacement = Array.from(ptys.values())
-      .filter((entry) => entry.chatSessionId === chatSessionId && !entry.disposed)
-      .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
-    if (replacement) {
-      activeTerminalByChatSession.set(chatSessionId, replacement.sessionId);
-      return replacement.sessionId;
-    }
-    activeTerminalByChatSession.delete(chatSessionId);
-    return null;
+    // Auxiliary terminals (shell, App Control, etc.) — never route chat-CLI rows.
+    return activeAuxiliaryEntryFor(chatSessionId)?.sessionId ?? null;
   };
 
   const service = {
@@ -2963,7 +3055,7 @@ export function createPtyService({
         if (chatSessionId) {
           attachedEntry.chatSessionId = chatSessionId;
           terminalChatSessions.set(existingSession.id, chatSessionId);
-          activeTerminalByChatSession.set(chatSessionId, existingSession.id);
+          promoteActiveChatTerminal(chatSessionId, existingSession.id, attachedEntry.toolTypeHint);
           if (existingSession.chatSessionId !== chatSessionId) {
             try { sessionService.setChatSessionId(existingSession.id, chatSessionId); } catch {}
           }
@@ -3262,7 +3354,7 @@ export function createPtyService({
       ptys.set(ptyId, entry);
       if (chatSessionId) {
         terminalChatSessions.set(sessionId, chatSessionId);
-        activeTerminalByChatSession.set(chatSessionId, sessionId);
+        promoteActiveChatTerminal(chatSessionId, sessionId, toolTypeHint);
         if (existingSession && existingSession.chatSessionId !== chatSessionId) {
           try { sessionService.setChatSessionId(sessionId, chatSessionId); } catch {}
         }
@@ -3804,20 +3896,17 @@ export function createPtyService({
     activeForChat(args: ChatTerminalActiveForChatArgs): ChatTerminalSession | null {
       const chatSessionId = cleanOptionalId(args.chatSessionId);
       if (!chatSessionId) return null;
-      const terminalId = activeTerminalByChatSession.get(chatSessionId) ?? null;
-      if (terminalId && liveEntryBySessionId(terminalId)) {
-        const session = sessionService.get(terminalId);
-        return session ? terminalSessionFromSummary(session) : null;
+      const chatCli = activeChatCliEntryFor(chatSessionId);
+      if (chatCli) {
+        const session = sessionService.get(chatCli.sessionId);
+        if (session) {
+          promoteActiveChatCliTerminal(chatSessionId, chatCli.sessionId, session.toolType);
+          return terminalSessionFromSummary(session);
+        }
       }
-      const replacement = Array.from(ptys.values())
-        .filter((entry) => entry.chatSessionId === chatSessionId && !entry.disposed)
-        .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
-      if (!replacement) {
-        activeTerminalByChatSession.delete(chatSessionId);
-        return null;
-      }
-      activeTerminalByChatSession.set(chatSessionId, replacement.sessionId);
-      const session = sessionService.get(replacement.sessionId);
+      const auxiliary = activeAuxiliaryEntryFor(chatSessionId);
+      if (!auxiliary) return null;
+      const session = sessionService.get(auxiliary.sessionId);
       return session ? terminalSessionFromSummary(session) : null;
     },
 
@@ -3827,12 +3916,13 @@ export function createPtyService({
 
       // Fast path: an existing live PTY is already bound. Skip the dedup map to
       // keep the no-op cost low.
-      const activeTerminalId = activeTerminalByChatSession.get(chatSessionId) ?? null;
-      if (activeTerminalId) {
-        const liveActive = liveEntryBySessionId(activeTerminalId);
+      const liveChatCli = activeChatCliEntryFor(chatSessionId);
+      if (liveChatCli) {
+        const liveActive = liveEntryBySessionId(liveChatCli.sessionId);
         if (liveActive) {
+          promoteActiveChatCliTerminal(chatSessionId, liveChatCli.sessionId, liveChatCli.toolTypeHint);
           return {
-            terminalId: activeTerminalId,
+            terminalId: liveChatCli.sessionId,
             ptyId: liveActive[0],
             pid: liveActive[1].pty.pid ?? null,
             relaunched: false,
