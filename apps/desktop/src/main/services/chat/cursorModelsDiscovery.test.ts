@@ -131,11 +131,61 @@ describe("parseCursorCliModelsStdout", () => {
       "cursor/auto",
       "cursor/claude-4.6-sonnet-medium",
       "cursor/composer-2",
-      "cursor/composer-latest",
     ]);
     expect(descriptors.find((descriptor) => descriptor.id === "cursor/composer-2")?.aliases).toContain("composer-latest");
     expect(cursorModelsListMock).toHaveBeenCalledWith({ apiKey: "crsr_test" });
     expect(reportProviderRuntimeReadyMock).toHaveBeenCalledWith("cursor");
+  });
+
+  it("keeps Cursor SDK aliases on the canonical model row instead of creating duplicate rows", async () => {
+    cursorModelsListMock.mockResolvedValue([
+      {
+        id: "composer-2.5",
+        displayName: "Composer 2.5",
+        aliases: ["composer-2-5", "composer-latest", "composer"],
+      },
+    ]);
+
+    const descriptors = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
+
+    expect(descriptors.map((descriptor) => descriptor.id)).toEqual(["cursor/composer-2.5"]);
+    expect(descriptors[0]?.aliases).toEqual(["composer-2-5", "composer-latest", "composer"]);
+  });
+
+  it("merges Cursor CLI aliases into SDK canonical rows", async () => {
+    const cliDescriptors = [
+      {
+        id: "cursor/composer",
+        shortId: "composer",
+        displayName: "Composer CLI",
+        family: "cursor",
+        authTypes: ["api-key"],
+        contextWindow: 200_000,
+        maxOutputTokens: 32_000,
+        capabilities: { tools: true, vision: true, reasoning: true, streaming: true },
+        color: "#A78BFA",
+        providerRoute: "cursor-sdk",
+        providerModelId: "composer",
+        cliCommand: "cursor",
+        isCliWrapped: false,
+      } satisfies ModelDescriptor,
+    ];
+    const sdkDescriptors = [
+      {
+        ...cliDescriptors[0]!,
+        id: "cursor/composer-2.5",
+        shortId: "composer-2.5",
+        displayName: "Composer 2.5",
+        providerModelId: "composer-2.5",
+        aliases: ["composer"],
+      } satisfies ModelDescriptor,
+    ];
+
+    const merged = mergeCursorModelDescriptorSources({ cliDescriptors, sdkDescriptors });
+
+    expect(merged.map((descriptor) => descriptor.id)).toEqual(["cursor/composer-2.5"]);
+    expect(merged[0]?.cursorAvailability).toEqual({ cli: true, sdk: true });
+    expect(merged[0]?.aliases).toContain("composer");
   });
 
   it("merges Cursor CLI and SDK model availability by provider id", async () => {

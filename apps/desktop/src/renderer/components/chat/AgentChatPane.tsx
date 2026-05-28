@@ -1862,6 +1862,27 @@ function resolveCliRegistryModelId(provider: "codex" | "claude" | "cursor" | "dr
   return match?.id ?? null;
 }
 
+function cursorModelAllowedForDraftKind(
+  descriptor: ModelDescriptor | null | undefined,
+  workDraftKind: "chat" | "cli" | "chat-orchestrator",
+): boolean {
+  if (descriptor?.family !== "cursor") return true;
+  const availability = descriptor.cursorAvailability;
+  if (!availability) return true;
+  if (workDraftKind === "cli") return availability.cli !== false;
+  return availability.sdk !== false;
+}
+
+function filterCursorModelIdsForDraftKind(
+  modelIds: string[],
+  workDraftKind: "chat" | "cli" | "chat-orchestrator",
+): string[] {
+  return modelIds.filter((modelId) => {
+    const descriptor = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
+    return cursorModelAllowedForDraftKind(descriptor, workDraftKind);
+  });
+}
+
 function chatToolTypeForProvider(provider: string | null | undefined): TerminalToolType {
   switch (provider) {
     case "codex": return "codex-chat";
@@ -3507,15 +3528,15 @@ export function AgentChatPane({
       includeActiveSessionModel: !modelSelectionConstrained,
       policy: modelSwitchPolicy,
     });
-    if (modelSelectionConstrained) return base;
+    if (modelSelectionConstrained) return filterCursorModelIdsForDraftKind(base, workDraftKind);
     const catalog = getSharedRuntimeCatalog();
-    if (!catalog) return base;
+    if (!catalog) return filterCursorModelIdsForDraftKind(base, workDraftKind);
     const runtimeIds = descriptorsFromAgentChatModelCatalog(catalog).availableModelIds;
-    if (!runtimeIds.length) return base;
+    if (!runtimeIds.length) return filterCursorModelIdsForDraftKind(base, workDraftKind);
     const merged = new Set(base);
     for (const id of runtimeIds) merged.add(id);
-    return [...merged];
-  }, [availableModelIds, availableModelIdsOverride, modelSelectionConstrained, modelSwitchPolicy, selectedSessionModelId, selectedEvents.length, runtimeCatalogVersion]);
+    return filterCursorModelIdsForDraftKind([...merged], workDraftKind);
+  }, [availableModelIds, availableModelIdsOverride, modelSelectionConstrained, modelSwitchPolicy, selectedSessionModelId, selectedEvents.length, runtimeCatalogVersion, workDraftKind]);
   const modelPickerProviderAuthStatus = useMemo(
     () => (aiStatus ? familiesFromStatus(aiStatus) : undefined),
     [aiStatus],

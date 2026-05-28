@@ -28,6 +28,7 @@ import {
   type JsonRpcHandler,
   type JsonRpcId,
   type JsonRpcRequest,
+  type JsonRpcServerErrorContext,
   type JsonRpcTransport,
 } from "./jsonrpc";
 import { isAdeRuntimeNamedPipePath } from "../../desktop/src/shared/adeRuntimeIpc";
@@ -9748,6 +9749,50 @@ type NotifiableJsonRpcHandler = JsonRpcHandler & {
   ) => void;
 };
 
+function reportContainedJsonRpcError(
+  error: unknown,
+  context: JsonRpcServerErrorContext,
+): void {
+  const message = formatDiagnosticError(error);
+  try {
+    process.stderr.write(`ade jsonrpc ${context} error: ${message}\n`);
+  } catch {
+    // Stderr may be gone during shutdown; contained errors should stay contained.
+  }
+}
+
+function formatDiagnosticError(error: unknown): string {
+  if (error instanceof Error) return error.stack || error.message;
+  if (typeof error === "string") return error;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
+function installRuntimeProcessErrorBoundary(label: string): () => void {
+  const write = (kind: string, error: unknown): void => {
+    try {
+      process.stderr.write(`${label} contained ${kind}: ${formatDiagnosticError(error)}\n`);
+    } catch {
+      // Nothing useful can be done if stderr is already gone.
+    }
+  };
+  const onUnhandledRejection = (reason: unknown): void => {
+    write("unhandled rejection", reason);
+  };
+  const onUncaughtException = (error: Error): void => {
+    write("uncaught exception", error);
+  };
+  process.on("unhandledRejection", onUnhandledRejection);
+  process.on("uncaughtException", onUncaughtException);
+  return () => {
+    process.off("unhandledRejection", onUnhandledRejection);
+    process.off("uncaughtException", onUncaughtException);
+  };
+}
+
 function createHeadlessRpcServer(
   createHandler: () => JsonRpcHandler & { dispose?: () => void },
 ): HeadlessRpcServerState {
@@ -9769,7 +9814,10 @@ function createHeadlessRpcServer(
         if (!conn.destroyed) conn.destroy();
       },
     };
-    const stop = startJsonRpcServer(handler, transport, { nonFatal: true });
+    const stop = startJsonRpcServer(handler, transport, {
+      nonFatal: true,
+      onError: reportContainedJsonRpcError,
+    });
     (handler as NotifiableJsonRpcHandler).setNotifier?.((method, params) =>
       stop.notify(method, params),
     );
@@ -10834,6 +10882,7 @@ async function runNativeRpcStdio(options: GlobalOptions): Promise<void> {
     };
     stop = startJsonRpcServer(handler, createStdioTransport(), {
       nonFatal: true,
+      onError: reportContainedJsonRpcError,
     });
     unsubscribeNotifications = client.onAnyNotification((method, params) =>
       stop?.notify(method, params),
@@ -10879,6 +10928,7 @@ async function runServe(
     const { getRuntimeServiceStatus } = await import("./serviceManager");
     return getRuntimeServiceStatus();
   }
+  const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary("ade serve");
   const [
     { resolveMachineAdeLayout },
     { ProjectRegistry },
@@ -11175,6 +11225,7 @@ async function runServe(
   }
   return null;
   } finally {
+    removeRuntimeProcessErrorBoundary();
     if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
     else process.env.ADE_DEFAULT_ROLE = previousRole;
   }

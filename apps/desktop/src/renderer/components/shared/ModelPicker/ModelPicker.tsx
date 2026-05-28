@@ -45,6 +45,7 @@ export type ModelPickerProps = {
   onFastModeToggle?: (next: boolean) => void;
   fastModeSupported?: boolean;
   allowCliOnlyModels?: boolean;
+  cursorAvailabilityMode?: "chat" | "cli" | "all";
   /**
    * When invoked from a `model_selection` pending-input slot
    * (see `goal.md` §10.9), hide permission-related rail/picker rows. The
@@ -75,6 +76,7 @@ export const ModelPicker = memo(function ModelPicker({
   onFastModeToggle,
   fastModeSupported,
   allowCliOnlyModels = false,
+  cursorAvailabilityMode = allowCliOnlyModels ? "cli" : "chat",
   hidePermissionRail = false,
   className,
   triggerClassName,
@@ -307,6 +309,7 @@ export const ModelPicker = memo(function ModelPicker({
                 refreshingProvider={refreshingProvider}
                 hidePermissionRail={hidePermissionRail}
                 allowCliOnlyModels={allowCliOnlyModels}
+                cursorAvailabilityMode={cursorAvailabilityMode}
                 allowRegistryExpansion={!constrainToAvailableModelIds}
                 {...(onOpenSignIn ? { onOpenSignIn: handleOpenSignIn } : {})}
               />

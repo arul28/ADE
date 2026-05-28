@@ -107,7 +107,11 @@ import {
   type AdeRuntime,
   type AdeRuntimePaths,
 } from "../../../ade-cli/src/bootstrap";
-import { startJsonRpcServer, type JsonRpcTransport } from "../../../ade-cli/src/jsonrpc";
+import {
+  startJsonRpcServer,
+  type JsonRpcServerErrorContext,
+  type JsonRpcTransport,
+} from "../../../ade-cli/src/jsonrpc";
 import { resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
 import { EncryptedFileCredentialStore } from "../../../ade-cli/src/services/credentials/credentialStore";
@@ -3865,7 +3869,15 @@ app.whenReady().then(async () => {
           runtime: rpcRuntime,
           serverVersion: app.getVersion(),
         });
-        stop = startJsonRpcServer(rpcHandler, transport, { nonFatal: true });
+        stop = startJsonRpcServer(rpcHandler, transport, {
+          nonFatal: true,
+          onError(error: unknown, context: JsonRpcServerErrorContext) {
+            logger.warn("rpc.socket_server.contained_error", {
+              context,
+              message: error instanceof Error ? error.message : String(error),
+            });
+          },
+        });
         const unsubscribeChatEvents = rpcRuntime.agentChatService?.subscribeToEvents((event) => {
           stop?.notify("chat/event", event);
         }) ?? (() => {});

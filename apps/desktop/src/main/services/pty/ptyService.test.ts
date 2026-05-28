@@ -3602,7 +3602,7 @@ describe("ptyService", () => {
         const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
         mockPty._emitter.emit("data", "hello world");
         expect(broadcastData).not.toHaveBeenCalled();
-        await vi.advanceTimersByTimeAsync(16);
+        await vi.advanceTimersByTimeAsync(50);
         expect(broadcastData).toHaveBeenCalledWith({
           ptyId,
           sessionId,

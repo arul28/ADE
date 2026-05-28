@@ -6,6 +6,7 @@ import {
   JsonRpcErrorCode,
   startJsonRpcServer,
   type JsonRpcRequest,
+  type JsonRpcServerErrorContext,
   type JsonRpcTransport,
 } from "../../../../../ade-cli/src/jsonrpc";
 import type { Logger } from "../logging/logger";
@@ -88,7 +89,15 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         if (!conn.destroyed) conn.destroy();
       },
     };
-    const stop = startJsonRpcServer(handleRequest, transport, { nonFatal: true });
+    const stop = startJsonRpcServer(handleRequest, transport, {
+      nonFatal: true,
+      onError(error: unknown, context: JsonRpcServerErrorContext) {
+        logger.warn("built_in_browser_bridge.contained_rpc_error", {
+          context,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      },
+    });
     activeServerHandles.add(stop);
     conn.on("close", () => {
       activeSockets.delete(conn);

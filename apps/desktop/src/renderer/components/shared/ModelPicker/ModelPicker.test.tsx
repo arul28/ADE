@@ -381,7 +381,7 @@ describe("ModelPicker", () => {
     expect(visibleIds).toEqual([cursorModels[149]!.id]);
   });
 
-  it("labels Cursor CLI-only and chat-only rows and keeps chat-only rows unavailable for CLI picking", async () => {
+  it("filters Cursor rows by the current picker mode", async () => {
     const user = userEvent.setup();
     providerAuthStatusInternal = { cursor: "ok" };
     const cliOnly = createDynamicCursorCliModelDescriptor("cli-only", "Cursor CLI Only", {
@@ -405,13 +405,12 @@ describe("ModelPicker", () => {
     await user.click(screen.getByRole("button", { name: /Select model/i }));
 
     expect(screen.getByText("CLI only")).toBeTruthy();
-    expect(screen.getByText("Chat only")).toBeTruthy();
+    expect(screen.queryByText("Chat only")).toBeNull();
     expect(screen.getByText("Cursor Both").parentElement?.textContent).not.toContain("only");
 
-    const chatOnlyRow = screen
+    expect(screen
       .getAllByRole("option")
-      .find((el) => el.getAttribute("data-model-id") === chatOnly.id)!;
-    expect(chatOnlyRow.getAttribute("aria-disabled")).toBe("true");
+      .some((el) => el.getAttribute("data-model-id") === chatOnly.id)).toBe(false);
 
     const cliOnlyRow = screen
       .getAllByRole("option")
@@ -419,6 +418,36 @@ describe("ModelPicker", () => {
     await user.click(cliOnlyRow);
     expect(onChange).toHaveBeenCalledWith(cliOnly.id);
     expect(onChange).not.toHaveBeenCalledWith(chatOnly.id);
+  });
+
+  it("hides Cursor CLI-only rows from chat picking", async () => {
+    const user = userEvent.setup();
+    providerAuthStatusInternal = { cursor: "ok" };
+    const cliOnly = createDynamicCursorCliModelDescriptor("cli-only", "Cursor CLI Only", {
+      cursorAvailability: { cli: true, sdk: false },
+    });
+    const chatOnly = createDynamicCursorCliModelDescriptor("chat-only", "Cursor Chat Only", {
+      cursorAvailability: { cli: false, sdk: true },
+    });
+    const both = createDynamicCursorCliModelDescriptor("both", "Cursor Both", {
+      cursorAvailability: { cli: true, sdk: true },
+    });
+    renderPicker({
+      value: both.id,
+      models: [cliOnly, chatOnly, both],
+      availableModelIds: [chatOnly.id, both.id],
+    });
+
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    expect(screen.queryByText("CLI only")).toBeNull();
+    expect(screen.getByText("Chat only")).toBeTruthy();
+    const visibleIds = screen
+      .getAllByRole("option")
+      .map((el) => el.getAttribute("data-model-id"));
+    expect(visibleIds).toContain(chatOnly.id);
+    expect(visibleIds).toContain(both.id);
+    expect(visibleIds).not.toContain(cliOnly.id);
   });
 
   it("toggles favorites when the star button is clicked", async () => {

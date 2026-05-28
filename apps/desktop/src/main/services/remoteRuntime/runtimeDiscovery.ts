@@ -1,10 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import {
-  Bonjour,
-  type Browser,
-  type Service as BonjourService,
-} from "bonjour-service";
+import Bonjour from "bonjour-service";
 import { resolveTailscaleCliPath } from "../../../../../ade-cli/src/services/sync/resolveTailscaleCliPath";
 import type {
   RemoteRuntimeDiscoveredMachine,
@@ -16,6 +12,9 @@ export const ADE_SYNC_MDNS_SERVICE_TYPE = "ade-sync";
 const TAILSCALE_SSH_PORT = 22;
 const execFileAsync = promisify(execFile);
 
+type BonjourClient = InstanceType<typeof Bonjour>;
+type Browser = ReturnType<BonjourClient["find"]>;
+type BonjourService = Parameters<NonNullable<Parameters<BonjourClient["find"]>[1]>>[0];
 type BonjourServiceLike = Partial<BonjourService> & {
   rawTxt?: unknown;
 };
