@@ -919,3 +919,315 @@ its contents in under 50 ms on the user's hardware, every time, with no
 spinner. No "timed out waiting for method ade/actions/call" error appears
 under normal use. The `local_runtime.action_slow` diagnostic log (added on
 this branch) stays silent for `file.listTree`.
+
+---
+
+# Goal: Diagnose and fix remote machine Connect SSH handshake timeout
+
+Added 2026-05-27 by Codex. Independent of the Files tab timeout goal above,
+but in the same class of UX problem: ADE is surfacing a low-level timeout as a
+scary generic Electron IPC failure instead of telling the user what actually
+failed and what to do next.
+
+Do not start by changing beta runtime upload code. The reported error happens
+before ADE starts the remote ADE service.
+
+## Symptom
+
+From the Remote / nearby machines UI, selecting the nearby Mac Studio and
+clicking Connect shows:
+
+```text
+Error invoking remote method 'ade.remoteRuntime.connect': Error: Timed out while waiting for handshake
+```
+
+The user sees this in the ADE beta build after using nearby machine discovery.
+The beta build may matter for state isolation and packaging, but it is not the
+direct cause of this exact error unless later evidence shows SSH succeeds and
+the remote runtime bootstrap then fails.
+
+## Diagnosis
+
+The exact string `Timed out while waiting for handshake` is emitted by `ssh2`
+when its `readyTimeout` fires. ADE sets that timeout to 20 seconds in
+`apps/desktop/src/main/services/remoteRuntime/sshTransport.ts` while building
+the SSH connection config.
+
+The connection path is:
+
+```text
+RemoteTargetList Connect button
+  -> preload IPC ade.remoteRuntime.connect
+  -> RemoteConnectionService.connect(id)
+  -> RemoteConnectionPool.connect(id)
+  -> bootstrapRemoteRuntime(...)
+  -> connectSshWithRoute(target)
+  -> ssh2 Client.connect(...)
+```
+
+`bootstrapRemoteRuntime` only runs `uname`, checks/uploads the ADE runtime, and
+launches `ade rpc --stdio` after `connectSshWithRoute` returns a ready SSH
+client. Therefore this error means ADE did not complete SSH handshake to the
+selected host/port/user route. It is not a JSON-RPC initialize timeout and not
+a remote `ade rpc --stdio` crash.
+
+Current local evidence from this machine:
+
+- `tailscale status` reports `Logged out.`
+- `tailscale status --json` reports `BackendState: "NeedsLogin"` and the local
+  node key expired at `2026-05-26T21:57:58Z`.
+- MagicDNS for `aruls-mac-studio.tail7497a6.ts.net` does not resolve while
+  Tailscale is logged out.
+- `nc -vz -G 5 100.75.20.63 22` times out.
+- `~/.ade-beta/secrets/remote-machines.json` has the Studio saved from
+  Tailscale discovery with no `sshUser`, no `sshKeyPath`, no successful
+  `lastConnectedAt`, and routes for MagicDNS, host name, and `100.75.20.63`.
+- `~/.ade/secrets/remote-machines.json` has a prior known-good non-beta target
+  for `admin@100.75.20.63` with `/Users/arul/.ssh/id_ed25519` and a successful
+  `lastConnectedAt`.
+
+Backend simulation evidence:
+
+- A direct `ssh2` probe using the same library as ADE fails MagicDNS with
+  `getaddrinfo ENOTFOUND aruls-mac-studio.tail7497a6.ts.net`.
+- The same direct `ssh2` probe against `100.75.20.63:22` reproduces the exact
+  ADE error: `Timed out while waiting for handshake` with
+  `level: "client-timeout"`.
+- The timeout reproduces for both the beta target's implicit local user
+  (`arul`) and the known-good saved user/key (`admin` +
+  `/Users/arul/.ssh/id_ed25519`), which means the current failure happens
+  before authentication.
+- System OpenSSH also times out to `admin@100.75.20.63` with
+  `connect to address 100.75.20.63 port 22: Operation timed out`.
+- `ssh -G` for both the MagicDNS name and `100.75.20.63` shows default
+  host/user/port behavior with no relevant custom host entry; this repro is not
+  caused by ADE missing an obvious local SSH config alias.
+- `tailscale netcheck` shows ordinary internet/DERP reachability, so the local
+  machine has network access; the bad state is specifically Tailscale session /
+  tailnet routing for this peer.
+
+Likely root cause for the live repro: beta's nearby-machine flow saved a
+Tailscale-discovered SSH target that is not actually reachable from the current
+machine because local Tailscale is logged out / expired. ADE then tries SSH port
+22 against that route and lets the raw `ssh2` timeout escape through Electron
+IPC. Missing beta credentials (`sshUser` and `sshKeyPath`) make the target
+weaker than the known-good non-beta saved target, but the observed timeout is
+reachability/handshake first, not authentication failure.
+
+## Follow-up diagnosis after Tailscale login
+
+After the user logged back into Tailscale, the reported error changed to:
+
+```text
+Error invoking remote method 'ade.remoteRuntime.connect': Error: ADE service is not installed on the remote machine and no bundled ADE service is available for darwin-arm64.
+```
+
+This is a different failure stage and proves the original SSH handshake problem
+was resolved. ADE now reaches `bootstrapRemoteRuntime`, successfully connects
+over SSH, runs `uname -sm`, identifies the remote as `Darwin arm64`, then fails
+while trying to find either:
+
+1. an installed remote beta runtime at `$HOME/.ade-beta/bin/ade`, or
+2. a local packaged `runtime/ade-darwin-arm64` binary it can upload to the
+   remote machine.
+
+Remote evidence from `admin@100.75.20.63`:
+
+- `uname -sm` returns `Darwin arm64`.
+- `$HOME` for the SSH user is `/Users/admin`.
+- `/Users/admin/.ade-beta/bin/ade` does not exist.
+- Running with `ADE_HOME="$HOME/.ade-beta"` and
+  `PATH="$HOME/.ade-beta/bin:..."`, `ade --version` is `command not found`.
+
+Local packaging evidence from this checkout:
+
+- `apps/desktop/resources/runtime/ade-darwin-arm64` exists in the dev checkout.
+- `apps/desktop/release-alpha/mac-arm64/ADE Alpha.app/Contents/Resources/runtime/ade-darwin-arm64`
+  exists.
+- The searched local beta app,
+  `apps/desktop/release-beta/mac-arm64/Electron.app`, did not show
+  `Contents/Resources/runtime/ade-darwin-arm64` or the native deps archive in
+  the same way alpha/dev do.
+
+Why this happens in code:
+
+- `remoteBootstrap.ts` chooses the beta remote layout when
+  `ADE_PACKAGE_CHANNEL=beta`, so it looks for `$HOME/.ade-beta/bin/ade`.
+- It checks `${layout.binaryExpr} --version`; on this Studio that returns
+  nothing because the beta runtime binary is absent.
+- It calls `bundledRuntimePath(resourcesPath, "darwin-arm64")`, which only
+  succeeds if the packaged app resources contain one of:
+  - `Resources/runtime/ade-darwin-arm64`
+  - `Resources/app.asar.unpacked/runtime/ade-darwin-arm64`
+  - `resources/runtime/ade-darwin-arm64` relative to the current process cwd
+- In the beta app currently being used, ADE apparently cannot find that local
+  packaged runtime artifact, so it cannot upload a fresh remote runtime.
+- It then tries `ADE_HOME="$HOME/.ade-beta" PATH="$HOME/.ade-beta/bin:..." ade --version`.
+  That also fails because remote beta `ade` is not installed on PATH.
+- With no remote runtime version and no local uploadable binary, it throws:
+  `ADE service is not installed on the remote machine and no bundled ADE service is available for darwin-arm64.`
+
+So the answer to "does the older beta build matter?" is: yes, it can matter,
+but not because beta intentionally disables remote connections. The code has
+explicit beta-channel support:
+
+- desktop beta sets `ADE_PACKAGE_CHANNEL=beta` and `ADE_HOME=~/.ade-beta`;
+- `remoteBootstrap.ts` maps beta to remote `$HOME/.ade-beta/bin/ade`;
+- `buildRemoteRuntimeEnvironmentPrefix` exports `ADE_PACKAGE_CHANNEL="beta"`
+  and `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1` for the remote runtime command;
+- `package.json` includes `resources/runtime -> Contents/Resources/runtime`,
+  which is the local upload source for remote ADE service binaries;
+- `scripts/package-channel.mjs` materializes host runtime resources before
+  packaging channel builds.
+
+That means beta builds are supposed to be able to remote-connect. The failure
+mode is that Remote Connect needs the **CLI/runtime** side of beta, not merely
+the ADE beta GUI. If the remote has no `$HOME/.ade-beta/bin/ade`, the local beta
+app must contain the `darwin-arm64` runtime artifact so ADE can upload it. An
+older, raw, or incorrectly packaged beta build can fail this exact way if it
+lacks that artifact or if its resources path does not point at it.
+
+One strong clue that the local beta artifact is not a finished ADE Beta package:
+the searched app is named `Electron.app`, its `Info.plist` identifies it as
+`com.github.Electron` / `Electron`, and no `Contents/Resources/runtime` files
+were found under `apps/desktop/release-beta/mac-arm64/Electron.app`. A proper
+channel package should be branded as ADE Beta and include
+`Contents/Resources/runtime/ade-darwin-arm64` plus
+`ade-darwin-arm64.native.tar.gz`.
+
+This should be treated as the second bug after the SSH diagnostics bug:
+
+- The user-facing message is technically accurate but not actionable.
+- ADE should report the remote path it checked, the local resource paths it
+  checked, and the channel (`beta`) it is using.
+- Beta packaging should include the same runtime artifacts as dev/alpha, or the
+  remote bootstrap should fall back to a clearly documented installer path.
+- Having the ADE beta GUI open on the remote machine should not be implied as
+  sufficient unless the beta CLI/runtime install path is actually present.
+
+## Why ADE makes this confusing today
+
+- Discovery treats Tailscale peers as nearby SSH targets even when Tailscale is
+  not usable locally.
+- The nearby card still offers `Use host` for `tailscale-peer-offline` or
+  otherwise unreachable peers if a route string exists.
+- Bonjour `_ade-sync._tcp` discovery advertises ADE sync on its own port, but
+  the remote runtime connect form defaults SSH to port 22. Discovery does not
+  prove that SSH is listening on 22.
+- `RemoteTargetList` prefers `machine.tailscaleAddress` before
+  `machine.primaryRoute`, even though discovery may already have picked a LAN
+  primary route.
+- `connectSshWithRoute` throws the last raw `ssh2` error and does not preserve
+  a useful per-route/per-username attempt report.
+- After a non-auth error on a route, `connectSshWithRoute` skips the remaining
+  username candidates for that same route, which can hide whether `admin` would
+  have behaved differently than the local macOS username.
+- The renderer displays the Electron wrapper:
+  `Error invoking remote method 'ade.remoteRuntime.connect': ...`
+  instead of an ADE-owned message like "SSH to 100.75.20.63:22 timed out before
+  handshake. Tailscale is logged out on this Mac."
+- The `ssh2` config path only handles a subset of OpenSSH config
+  (`HostName`, `User`, `Port`, `IdentityFile`). If Terminal SSH works because
+  of `ProxyJump`, `ProxyCommand`, `Include`, certs, or other OpenSSH behavior,
+  ADE's native `ssh2` path may still fail.
+
+## The fix
+
+Implement this as remote-connection reliability and diagnostics, not as a
+blind beta retry.
+
+1. Normalize remote connect errors at the main-process boundary.
+   - Convert `ssh2` `client-timeout`, auth, DNS, refused, and network errors
+     into ADE-owned error objects/messages.
+   - Include stage (`tcp/ssh-handshake`, `auth`, `remote-command`,
+     `rpc-initialize`), host, port, username, route source, elapsed time, and
+     candidate count.
+   - Strip Electron IPC wrapper noise before the renderer displays the error.
+
+2. Add structured attempt diagnostics in `connectSshWithRoute`.
+   - Record every route + username candidate tried.
+   - Record skipped candidates and why they were skipped.
+   - Preserve the final user-facing error plus a compact debug payload for logs.
+   - Do not lose useful earlier errors when the final candidate is merely the
+     last timeout.
+
+3. Gate and preflight nearby machine connects.
+   - If `tailscale status` is logged out, `NeedsLogin`, expired, or DNS is not
+     usable, mark Tailscale-discovered peers as unavailable and do not offer a
+     blind `Use host` / Connect path.
+   - Add an SSH preflight for discovered machines before saving or connecting:
+     DNS resolution, TCP connect to selected SSH port, and a clear state for
+     "sync service found, SSH not verified".
+   - Keep Bonjour ADE sync discovery separate from SSH readiness; sync port
+     discovery must not imply SSH port 22 is reachable.
+
+4. Fix route and credential selection.
+   - Prefer a verified/reachable route over `tailscaleAddress` just because it
+     exists.
+   - Reuse known-good saved credentials/routes across ADE channels when the
+     target identity matches, or at least prompt to use the known-good
+     `admin@100.75.20.63` + key instead of saving a blank beta target.
+   - Consider continuing to the next username candidate after a timeout when a
+     known-good username exists, while still avoiding excessive hangs.
+
+5. Add an OpenSSH-backed probe or fallback.
+   - At minimum, detect when `ssh -G <host>` resolves materially different
+     settings than ADE's parsed subset and surface that in diagnostics.
+   - Preferably allow an OpenSSH transport path for hosts that need
+     ProxyJump/ProxyCommand/Include/certs or other behavior `ssh2` does not
+     implement.
+
+6. Split remote bootstrap timeouts by stage.
+   - TCP/connectivity timeout.
+   - SSH ready/handshake timeout.
+   - Authentication timeout/failure.
+   - Remote command startup/stderr.
+   - JSON-RPC initialize timeout.
+   Capture stderr from the `ade rpc --stdio` command so post-SSH runtime
+   failures do not look like transport timeouts.
+
+7. Verify beta packaging only after SSH is proven reachable.
+   - Beta uses local `~/.ade-beta` state and remote `$HOME/.ade-beta/bin/ade`.
+   - A normal version mismatch should upload or produce an explicit version /
+     capability error after SSH succeeds.
+   - Check packaged beta runtime artifacts and host-only fallback behavior, but
+     keep that as a separate post-handshake failure mode.
+   - Make the "remote runtime missing and no bundled runtime available" error
+     actionable by listing the remote path checked, local bundle paths checked,
+     resolved channel, remote arch, and next action.
+   - Ensure beta packages include `runtime/ade-darwin-arm64` and
+     `runtime/ade-darwin-arm64.native.tar.gz` for mac-arm64 releases, matching
+     dev/alpha behavior.
+
+## Tests / proof required
+
+- Unit tests for `ssh2` timeout normalization:
+  `level: "client-timeout"` becomes an ADE remote-connect error with stage,
+  host, port, username, route source, and no Electron wrapper.
+- Unit tests for Tailscale discovery states:
+  logged out / `NeedsLogin` / expired local node does not present peers as
+  connectable SSH targets.
+- Unit tests for discovered route priority:
+  verified LAN route beats stale Tailscale route; Tailscale route wins only when
+  it is the verified reachable route or no LAN route exists.
+- Unit tests for route/user candidate diagnostics, including skipped username
+  candidates after non-auth failures.
+- Renderer tests for the Remote targets UI:
+  unavailable Tailscale peers show a concrete blocked state and do not show a
+  blind Connect action.
+- Unit tests for beta remote bootstrap when SSH succeeds but both remote
+  `$HOME/.ade-beta/bin/ade` and local bundled `runtime/ade-darwin-arm64` are
+  missing. The thrown error should include channel, remote path, local checked
+  paths, arch, and an actionable install/package hint.
+- Packaging check for beta mac-arm64 output proving the app contains the
+  darwin-arm64 runtime binary and native deps archive in a path
+  `bundledRuntimePath` / `bundledNativeDepsPath` can actually find.
+- A live smoke after the fix:
+  1. With Tailscale logged out, ADE should fail fast with a clear local
+     Tailscale/login/reachability message.
+  2. After Tailscale login, ADE should either connect to the Mac Studio or fail
+     with the precise next stage (auth, remote runtime upload, RPC initialize),
+     not a generic handshake timeout.
+  3. Beta and non-beta should not diverge silently for the same machine
+     identity; if beta lacks credentials that non-beta has, the UI should make
+     that visible and actionable.
