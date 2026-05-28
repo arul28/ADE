@@ -208,6 +208,7 @@ export function descriptorsFromAgentChatModelCatalog(
           const serviceTiers = model.serviceTiers
             ?.map((entry) => entry.trim().toLowerCase())
             .filter(Boolean);
+          const useSubsectionAsProvider = family === "cursor" || family === "factory";
           const capabilities = {
             ...base.capabilities,
             ...(typeof model.supportsReasoning === "boolean" ? { reasoning: model.supportsReasoning } : {}),
@@ -228,8 +229,6 @@ export function descriptorsFromAgentChatModelCatalog(
               : base.serviceTiers?.length
                 ? { serviceTiers: base.serviceTiers }
                 : {}),
-            subProvider: model.providerName || provider.displayName || subsection.label || undefined,
-            subProviderKey: model.providerId || provider.key || subsection.key || undefined,
             catalogGroupKey: String(model.groupKey || group.key),
             catalogAvailable: model.isAvailable,
             catalogRequiresConfiguration: model.requiresConfiguration,
@@ -238,6 +237,12 @@ export function descriptorsFromAgentChatModelCatalog(
               : base.cursorAvailability
                 ? { cursorAvailability: base.cursorAvailability }
                 : {}),
+            subProvider: useSubsectionAsProvider
+              ? subsection.label || model.providerName || provider.displayName || undefined
+              : model.providerName || provider.displayName || subsection.label || undefined,
+            subProviderKey: useSubsectionAsProvider
+              ? subsection.key || model.providerId || provider.key || undefined
+              : model.providerId || provider.key || subsection.key || undefined,
           };
           if (filter && !filter(descriptor)) continue;
           merged.set(descriptor.id, descriptor);

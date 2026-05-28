@@ -116,4 +116,52 @@ describe("mergeSelectorModels", () => {
     });
     expect(resolveModelDescriptorWithRuntimeCatalog("cursor/composer-2")?.reasoningTiers).toEqual(["high"]);
   });
+
+  it("uses Cursor catalog subsections as picker sub-provider groups", () => {
+    const catalog: AgentChatModelCatalog = {
+      fetchedAt: new Date().toISOString(),
+      groups: [
+        {
+          key: "cursor",
+          displayName: "Cursor",
+          providers: [
+            {
+              key: "cursor",
+              displayName: "Cursor",
+              badgeColor: "#60A5FA",
+              modelCount: 1,
+              subsections: [
+                {
+                  key: "__cursor_line__:anthropic",
+                  label: "Anthropic",
+                  models: [
+                    {
+                      id: "cursor/claude-sonnet-4.6",
+                      runtimeModelId: "cursor/claude-sonnet-4.6",
+                      provider: "cursor",
+                      providerKey: "cursor",
+                      groupKey: "cursor",
+                      displayName: "Claude Sonnet 4.6",
+                      isDefault: false,
+                      isAvailable: true,
+                      supportsReasoning: true,
+                      supportsTools: true,
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = descriptorsFromAgentChatModelCatalog(catalog);
+
+    expect(result.models[0]).toMatchObject({
+      id: "cursor/claude-sonnet-4.6",
+      subProvider: "Anthropic",
+      subProviderKey: "__cursor_line__:anthropic",
+    });
+  });
 });

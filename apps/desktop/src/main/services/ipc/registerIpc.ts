@@ -15,6 +15,7 @@ import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../
 import { launchRebaseResolutionChat } from "../prs/prRebaseResolver";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
 import { getProjectDetail } from "../projects/projectDetailService";
+import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 import {
   removeProjectIconOverride,
   resolveProjectIcon,
@@ -5431,18 +5432,11 @@ export function registerIpc({
     if (!sessionId) {
       throw new Error("Session id is required.");
     }
-    const session = ctx.sessionService.get(sessionId);
-    if (!session) {
-      throw new Error(`Session '${sessionId}' was not found.`);
-    }
-    if (isChatToolType(session.toolType)) {
-      throw new Error(`Session '${sessionId}' is an agent chat session. Use the chat delete flow instead.`);
-    }
-    const enriched = requirePtyService().enrichSessions([session])[0] ?? session;
-    if (enriched.status === "running" || enriched.ptyId) {
-      throw new Error("Running terminal sessions must be closed before they can be deleted.");
-    }
-    ctx.sessionService.deleteSession(sessionId);
+    deleteTerminalSessionWithRuntimeCleanup({
+      sessionId,
+      sessionService: ctx.sessionService,
+      ptyService: requirePtyService(),
+    });
   });
 
   ipcMain.handle(IPC.sessionsUpdateMeta, async (_event, arg: UpdateSessionMetaArgs): Promise<TerminalSessionSummary | null> => {

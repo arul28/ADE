@@ -289,6 +289,7 @@ import {
   discoverCursorCliModelDescriptors,
   discoverCursorSdkModelDescriptors,
   mergeCursorModelDescriptorSources,
+  resolveCachedCursorModelAvailability,
   resolveCursorSdkModelSelectionParams,
 } from "./cursorModelsDiscovery";
 import { discoverDroidSdkModelDescriptors } from "./droidModelsDiscovery";
@@ -4314,6 +4315,17 @@ function getCursorSdkApiKey(): string | null {
   return env || null;
 }
 
+function assertCursorChatModelCanUseSdk(args: {
+  modelRef: string;
+  descriptor?: ModelDescriptor | null;
+}): void {
+  const availability = args.descriptor?.cursorAvailability
+    ?? resolveCachedCursorModelAvailability(args.modelRef, getCursorSdkApiKey());
+  if (!availability || availability.sdk !== false) return;
+  const label = args.descriptor?.displayName?.trim() || args.modelRef;
+  throw new Error(cursorChatModelUnavailableMessage(label));
+}
+
 function normalizeCursorConfigValueRecord(
   value: unknown,
 ): Record<string, AgentChatCursorConfigValue> | undefined {
@@ -4392,6 +4404,10 @@ function resolveCursorRuntimeModelSdkId(
   }
 
   return DEFAULT_CURSOR_MODEL;
+}
+
+function cursorChatModelUnavailableMessage(modelLabel: string): string {
+  return `Cursor chat cannot use "${modelLabel}" because Cursor reports it as CLI-only. Choose a Cursor chat model from the Cursor model list.`;
 }
 
 function resolveDroidRuntimeModelId(
@@ -15940,6 +15956,13 @@ export function createAgentChatService(args: {
       throw new Error(`Unknown model '${resolvedModelId}'.`);
     }
 
+    if (provider === "cursor") {
+      assertCursorChatModelCanUseSdk({
+        modelRef: resolvedDescriptor?.providerModelId ?? normalizedInputModel,
+        descriptor: resolvedDescriptor,
+      });
+    }
+
     let effectiveProvider: AgentChatProvider = provider;
     let normalizedModel = normalizedInputModel;
 
@@ -17616,6 +17639,10 @@ export function createAgentChatService(args: {
     const policy = resolveCursorSdkPolicy(managed.session);
     const displayModeId = resolveCursorDisplayModeId(managed.session, policy);
     const launchModelSdkId = resolveCursorRuntimeModelSdkId(managed.session);
+    assertCursorChatModelCanUseSdk({
+      modelRef: launchModelSdkId,
+      descriptor: resolveSessionModelDescriptor(managed.session),
+    });
     const launchModelParams = resolveCursorSdkModelParamsForSession(managed.session, launchModelSdkId);
     const poolKey = cursorSdkPoolKeyFor(managed, policy, launchModelSdkId, launchModelParams);
     const shouldSyncSessionModel = managed.session.model !== launchModelSdkId || !managed.session.modelId;
@@ -21975,6 +22002,12 @@ export function createAgentChatService(args: {
 
       const nextProvider: AgentChatProvider = resolveProviderGroupForModel(descriptor);
       const nextModel = descriptor.isCliWrapped ? descriptor.providerModelId : descriptor.id;
+      if (nextProvider === "cursor") {
+        assertCursorChatModelCanUseSdk({
+          modelRef: descriptor.providerModelId,
+          descriptor,
+        });
+      }
       const previousModelId = managed.session.modelId
         ?? resolveModelIdFromStoredValue(managed.session.model, managed.session.provider)
         ?? managed.session.model;

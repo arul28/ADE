@@ -133,6 +133,78 @@ describe("ChatTerminalDrawer", () => {
     expect(screen.getByTestId("terminal-view").textContent).toBe("terminal-2:pty-2");
   });
 
+  it("closes a restored terminal tab from a stable close target", async () => {
+    vi.mocked(window.ade.terminal.list).mockResolvedValueOnce([
+      {
+        terminalId: "terminal-1",
+        ptyId: "pty-1",
+        title: "First terminal",
+        status: "running",
+      },
+      {
+        terminalId: "terminal-2",
+        ptyId: "pty-2",
+        title: "Second terminal",
+        status: "running",
+      },
+    ] as any);
+
+    render(
+      <ChatTerminalDrawer
+        open
+        onToggle={vi.fn()}
+        laneId="lane-1"
+        chatSessionId="chat-1"
+        autoCreateOnOpen={false}
+      />,
+    );
+
+    expect(await screen.findByText("First terminal")).toBeTruthy();
+    expect(await screen.findByText("Second terminal")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close First terminal" }));
+
+    expect(window.ade.pty.dispose).toHaveBeenCalledWith({
+      ptyId: "pty-1",
+      sessionId: "terminal-1",
+    });
+    expect(screen.queryByText("First terminal")).toBeNull();
+    expect(screen.getByText("Second terminal")).toBeTruthy();
+  });
+
+  it("closes a restored terminal tab from the keyboard close target", async () => {
+    vi.mocked(window.ade.terminal.list).mockResolvedValueOnce([
+      {
+        terminalId: "terminal-1",
+        ptyId: "pty-1",
+        title: "First terminal",
+        status: "running",
+      },
+    ] as any);
+
+    render(
+      <ChatTerminalDrawer
+        open
+        onToggle={vi.fn()}
+        laneId="lane-1"
+        chatSessionId="chat-1"
+        autoCreateOnOpen={false}
+      />,
+    );
+
+    expect(await screen.findByText("First terminal")).toBeTruthy();
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "Close First terminal" }), {
+      key: " ",
+    });
+
+    expect(window.ade.pty.dispose).toHaveBeenCalledWith({
+      ptyId: "pty-1",
+      sessionId: "terminal-1",
+    });
+    expect(screen.queryByText("First terminal")).toBeNull();
+  });
+
   it("resizes the drawer by dragging the resize handle", async () => {
     const view = render(
       <ChatTerminalDrawer

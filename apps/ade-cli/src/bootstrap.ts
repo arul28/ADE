@@ -22,6 +22,7 @@ import { createConflictService } from "../../desktop/src/main/services/conflicts
 import { createGitOperationsService } from "../../desktop/src/main/services/git/gitOperationsService";
 import { createDiffService } from "../../desktop/src/main/services/diffs/diffService";
 import { createPtyService } from "../../desktop/src/main/services/pty/ptyService";
+import { createSupervisedPtyLoader } from "../../desktop/src/main/services/pty/supervisedPtyHost";
 import { createTestService } from "../../desktop/src/main/services/tests/testService";
 import { createKeybindingsService } from "../../desktop/src/main/services/keybindings/keybindingsService";
 import type { createAgentToolsService } from "../../desktop/src/main/services/agentTools/agentToolsService";
@@ -649,6 +650,9 @@ export async function createAdeRuntime(args: {
 
   const diffService = createDiffService({ laneService });
 
+  const ptyBackend = process.env.ADE_DISABLE_SUPERVISED_PTY_HOST === "1"
+    ? null
+    : createSupervisedPtyLoader({ logger });
   const ptyService = createPtyService({
     projectRoot,
     transcriptsDir: paths.transcriptsDir,
@@ -660,7 +664,8 @@ export async function createAdeRuntime(args: {
     broadcastExit: (event) => pushEvent("pty", { type: "pty_exit", event }),
     onSessionEnded: () => {},
     getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
-    loadPty: () => nodePty
+    loadPty: ptyBackend ?? (() => nodePty),
+    disposePtyBackend: ptyBackend?.dispose
   });
 
   const testService = createTestService({

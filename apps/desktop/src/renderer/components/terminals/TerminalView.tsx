@@ -97,13 +97,13 @@ type CachedRuntime = {
 };
 
 const HYDRATE_TAIL_BYTES = 2_000_000;
-// Maximum transcript bytes loaded when replaying a disposed chat-CLI session
-// (~200k lines of typical CLI output). Bounded to keep replay-mode allocations
-// well under the main-process MAX_TRANSCRIPT_BYTES cap (64 MB).
-const REPLAY_TRANSCRIPT_MAX_BYTES = 8_000_000;
+// Maximum transcript bytes loaded when replaying a disposed chat-CLI session.
+// Keep this small enough that reopening a noisy terminal cannot balloon the
+// renderer heap while the runtime still retains a larger disk transcript.
+const REPLAY_TRANSCRIPT_MAX_BYTES = 3_000_000;
 // Scrollback override for replay-mode runtimes so the entire flattened
 // transcript stays scrollable in the chat pane.
-const REPLAY_SCROLLBACK_LINES = 100_000;
+const REPLAY_SCROLLBACK_LINES = 30_000;
 const HYDRATION_BACKFILL_RETRY_MS = 250;
 const HYDRATION_VISIBLE_BLANK_BACKFILL_RETRY_MS = 100;
 const HYDRATION_BACKFILL_MAX_ATTEMPTS = 120;

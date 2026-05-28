@@ -70,22 +70,33 @@ const mocks = vi.hoisted(() => {
     }),
     chmodSync: vi.fn(),
     createWriteStream: vi.fn(() => {
-      const listeners = {
+      const listeners: Record<"finish" | "error", Set<(err?: Error) => void>> = {
         finish: new Set<() => void>(),
-        error: new Set<() => void>(),
+        error: new Set<(err?: Error) => void>(),
       };
       const stream: any = {
         writableFinished: false,
         destroyed: false,
         write: vi.fn(),
-        once: vi.fn((event: "finish" | "error", cb: () => void) => {
+        on: vi.fn((event: "finish" | "error", cb: (err?: Error) => void) => {
+          listeners[event].add(cb);
+          return stream;
+        }),
+        once: vi.fn((event: "finish" | "error", cb: (err?: Error) => void) => {
           listeners[event]?.add(cb);
           return stream;
         }),
-        removeListener: vi.fn((event: "finish" | "error", cb: () => void) => {
+        removeListener: vi.fn((event: "finish" | "error", cb: (err?: Error) => void) => {
           listeners[event]?.delete(cb);
           return stream;
         }),
+        destroy: vi.fn(() => {
+          stream.destroyed = true;
+          return stream;
+        }),
+        _emitError: (err: Error) => {
+          for (const listener of listeners.error) listener(err);
+        },
         end: vi.fn((cb?: () => void) => {
           Promise.resolve().then(() => {
             stream.writableFinished = true;
@@ -457,7 +468,73 @@ describe("ptyService", () => {
       expect(result.pid).toBe(12345);
     });
 
-    it("starts plain shell sessions without user startup files", async () => {
+    it("waits for a supervised PTY host spawn before returning", async () => {
+      const { service, mockPty } = createHarness();
+      let resolveReady!: () => void;
+      (mockPty as unknown as IPty & { __adePtyHostReady: Promise<void> }).__adePtyHostReady = new Promise<void>((resolve) => {
+        resolveReady = resolve;
+      });
+
+      let settled = false;
+      const resultPromise = service.create({
+        laneId: "lane-1",
+        title: "Hosted terminal",
+        cols: 80,
+        rows: 24,
+      }).then((result) => {
+        settled = true;
+        return result;
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(settled).toBe(false);
+
+      resolveReady();
+      const result = await resultPromise;
+      expect(settled).toBe(true);
+      expect(result.pid).toBe(12345);
+    });
+
+    it("keeps the PTY live when transcript persistence hits ENOSPC", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty, broadcastData, logger } = createHarness();
+        const created = await service.create({
+          laneId: "lane-1",
+          title: "Test terminal",
+          cols: 80,
+          rows: 24,
+        });
+        const stream = mocks.createWriteStream.mock.results.at(-1)?.value as {
+          write: ReturnType<typeof vi.fn>;
+          destroy: ReturnType<typeof vi.fn>;
+          _emitError: (err: Error) => void;
+        };
+        const error = new Error("ENOSPC: no space left on device, write") as NodeJS.ErrnoException;
+        error.code = "ENOSPC";
+
+        stream._emitError(error);
+        stream.write.mockClear();
+        mockPty._emitter.emit("data", "still live after disk-full transcript failure");
+        await vi.advanceTimersByTimeAsync(60);
+
+        expect(stream.destroy).toHaveBeenCalled();
+        expect(stream.write).not.toHaveBeenCalled();
+        expect(broadcastData).toHaveBeenCalledWith(expect.objectContaining({
+          sessionId: created.sessionId,
+          data: "still live after disk-full transcript failure",
+        }));
+        expect(logger.warn).toHaveBeenCalledWith("pty.transcript_write_failed", expect.objectContaining({
+          sessionId: created.sessionId,
+          code: "ENOSPC",
+        }));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("starts plain shell sessions as login shells with user startup files", async () => {
       const previousShell = process.env.SHELL;
       process.env.SHELL = "/bin/zsh";
       try {
@@ -473,9 +550,9 @@ describe("ptyService", () => {
         const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
         expect(ptyLib.spawn).toHaveBeenCalledWith(
           "/bin/zsh",
-          ["-f"],
+          ["-l"],
           expect.objectContaining({
-            env: expect.objectContaining({
+            env: expect.not.objectContaining({
               ZDOTDIR: "/var/empty",
             }),
           }),
@@ -3602,7 +3679,7 @@ describe("ptyService", () => {
         const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
         mockPty._emitter.emit("data", "hello world");
         expect(broadcastData).not.toHaveBeenCalled();
-        await vi.advanceTimersByTimeAsync(16);
+        await vi.advanceTimersByTimeAsync(50);
         expect(broadcastData).toHaveBeenCalledWith({
           ptyId,
           sessionId,

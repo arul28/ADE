@@ -839,4 +839,121 @@ describe("registerIpc sync bridge", () => {
       ],
     });
   });
+
+  it("disposes a live terminal runtime before deleting the session", async () => {
+    const terminalSession = {
+      id: "terminal-1",
+      toolType: "shell",
+      status: "running",
+      ptyId: null,
+    };
+    const disposedSession = {
+      ...terminalSession,
+      status: "disposed",
+      ptyId: null,
+    };
+    const dispose = vi.fn();
+    const deleteSession = vi.fn();
+    const enrichSessions = vi.fn((sessions: any[]) => {
+      const session = sessions[0];
+      if (session.status === "running") {
+        return [{
+          ...session,
+          status: "running",
+          ptyId: "pty-1",
+        }];
+      }
+      return sessions;
+    });
+    const getSession = vi.fn()
+      .mockReturnValueOnce(terminalSession)
+      .mockReturnValueOnce(disposedSession);
+
+    registerIpc({
+      getCtx: () => ({
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+        sessionService: {
+          get: getSession,
+          deleteSession,
+        },
+        ptyService: {
+          enrichSessions,
+          isSessionOwnedByLivePeerRuntime: vi.fn(() => false),
+          dispose,
+        },
+      }) as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo" } as any,
+        binding: localBinding("/repo"),
+      }),
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.sessionsDelete)?.(
+        eventForSender(),
+        { sessionId: " terminal-1 " },
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(enrichSessions).toHaveBeenCalledWith([terminalSession]);
+    expect(dispose).toHaveBeenCalledWith({ ptyId: "pty-1", sessionId: "terminal-1" });
+    expect(deleteSession).toHaveBeenCalledWith("terminal-1");
+  });
+
+  it("refuses to delete a running terminal owned by another ADE runtime", async () => {
+    const terminalSession = {
+      id: "terminal-1",
+      toolType: "shell",
+      status: "running",
+      ptyId: null,
+      ownerPid: 12345,
+    };
+    const dispose = vi.fn();
+    const deleteSession = vi.fn();
+
+    registerIpc({
+      getCtx: () => ({
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+        sessionService: {
+          get: vi.fn(() => terminalSession),
+          deleteSession,
+        },
+        ptyService: {
+          enrichSessions: vi.fn((sessions: any[]) => [
+            {
+              ...sessions[0],
+              status: "detached",
+              ptyId: null,
+            },
+          ]),
+          isSessionOwnedByLivePeerRuntime: vi.fn(() => true),
+          dispose,
+        },
+      }) as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo" } as any,
+        binding: localBinding("/repo"),
+      }),
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.sessionsDelete)?.(
+        eventForSender(),
+        { sessionId: "terminal-1" },
+      ),
+    ).rejects.toThrow("still owned by another ADE runtime");
+
+    expect(dispose).not.toHaveBeenCalled();
+    expect(deleteSession).not.toHaveBeenCalled();
+  });
 });

@@ -41,6 +41,7 @@ import { createRuntimeDiagnosticsService } from "./services/lanes/runtimeDiagnos
 import { createSessionService } from "./services/sessions/sessionService";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
 import { createPtyService } from "./services/pty/ptyService";
+import { createSupervisedPtyLoader } from "./services/pty/supervisedPtyHost";
 import {
   createProcessRegistryService,
   DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS,
@@ -107,7 +108,11 @@ import {
   type AdeRuntime,
   type AdeRuntimePaths,
 } from "../../../ade-cli/src/bootstrap";
-import { startJsonRpcServer, type JsonRpcTransport } from "../../../ade-cli/src/jsonrpc";
+import {
+  startJsonRpcServer,
+  type JsonRpcServerErrorContext,
+  type JsonRpcTransport,
+} from "../../../ade-cli/src/jsonrpc";
 import { resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
 import { EncryptedFileCredentialStore } from "../../../ade-cli/src/services/credentials/credentialStore";
@@ -1157,12 +1162,6 @@ app.whenReady().then(async () => {
       error: error instanceof Error ? error.message : String(error),
     });
   }
-
-  const loadPty = () => {
-    // node-pty is a native dependency; keep the require inside the main process runtime.
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    return require("node-pty") as NodePtyType;
-  };
 
   const normalizeProjectRoot = (projectRoot: string) =>
     path.resolve(projectRoot);
@@ -2544,6 +2543,15 @@ app.whenReady().then(async () => {
     };
 
     let syncServiceRef: ReturnType<typeof createSyncService> | null = null;
+    const ptyBackend = process.env.ADE_DISABLE_SUPERVISED_PTY_HOST === "1"
+      ? null
+      : createSupervisedPtyLoader({ logger });
+    const loadPty = ptyBackend
+      ?? (() => {
+        // node-pty is a native dependency; keep the require inside the main process runtime.
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        return require("node-pty") as NodePtyType;
+      });
     const ptyService = createPtyService({
       projectRoot,
       transcriptsDir: adePaths.transcriptsDir,
@@ -2573,6 +2581,7 @@ app.whenReady().then(async () => {
         });
       },
       loadPty,
+      disposePtyBackend: ptyBackend?.dispose,
     });
 
     const processService = createProcessService({
@@ -3865,7 +3874,15 @@ app.whenReady().then(async () => {
           runtime: rpcRuntime,
           serverVersion: app.getVersion(),
         });
-        stop = startJsonRpcServer(rpcHandler, transport, { nonFatal: true });
+        stop = startJsonRpcServer(rpcHandler, transport, {
+          nonFatal: true,
+          onError(error: unknown, context: JsonRpcServerErrorContext) {
+            logger.warn("rpc.socket_server.contained_error", {
+              context,
+              message: error instanceof Error ? error.message : String(error),
+            });
+          },
+        });
         const unsubscribeChatEvents = rpcRuntime.agentChatService?.subscribeToEvents((event) => {
           stop?.notify("chat/event", event);
         }) ?? (() => {});

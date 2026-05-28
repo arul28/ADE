@@ -1852,7 +1852,7 @@ describe("TerminalView", () => {
 
     expect(readTranscriptTailMock).toHaveBeenCalledWith({
       sessionId: "session-replay",
-      maxBytes: 8_000_000,
+      maxBytes: 3_000_000,
       raw: true,
     });
     const writes = terminal?.write.mock.calls.map(([value]) => String(value)) ?? [];
@@ -1866,7 +1866,7 @@ describe("TerminalView", () => {
     expect(replayWrite).toContain("\x1b[31mHello\x1b[0m");
     expect(replayWrite).toContain("\x1b[32massistant: hello!\x1b[0m");
     // Scrollback is enlarged so the entire conversation stays scrollable.
-    expect(terminal?.options.scrollback).toBe(100_000);
+    expect(terminal?.options.scrollback).toBe(30_000);
   });
 
   it("falls back to snapshot hydration when transcript.read returns no data for a disposed session", async () => {
@@ -2026,11 +2026,11 @@ describe("TerminalView", () => {
     render(<TerminalView ptyId="pty-live-running" sessionId="session-live-running" isActive />);
     await flushAllTimers();
 
-    // No call to readTranscriptTail with the replay-sized cap (8 MB) means the
+    // No call to readTranscriptTail with the replay-sized cap (3 MB) means the
     // replay path stayed off. Hydration backfills may still call it with the
     // ordinary HYDRATE_TAIL_BYTES cap, so we assert by maxBytes.
     const replaySized = readTranscriptTailMock.mock.calls.some(
-      ([call]) => (call as { maxBytes?: number })?.maxBytes === 8_000_000,
+      ([call]) => (call as { maxBytes?: number })?.maxBytes === 3_000_000,
     );
     expect(replaySized).toBe(false);
   });

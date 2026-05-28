@@ -123,6 +123,7 @@ export type ModelPickerContentProps = {
   refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
   onOpenSignIn?: () => void;
   allowCliOnlyModels?: boolean;
+  cursorAvailabilityMode?: "chat" | "cli" | "all";
   allowRegistryExpansion?: boolean;
 };
 
@@ -139,6 +140,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   onOpenSignIn,
   hidePermissionRail = false,
   allowCliOnlyModels = false,
+  cursorAvailabilityMode = allowCliOnlyModels ? "cli" : "chat",
   allowRegistryExpansion = true,
 }: ModelPickerContentProps) {
   // hidePermissionRail is currently a forward-compat hook (see prop docs).
@@ -185,6 +187,17 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       return status === "ok" || status === "limited";
     },
     [effectiveAuth],
+  );
+
+  const matchesCursorAvailabilityMode = useCallback(
+    (m: ModelDescriptor): boolean => {
+      if (m.family !== "cursor" || cursorAvailabilityMode === "all") return true;
+      const availability = m.cursorAvailability;
+      if (!availability) return true;
+      if (cursorAvailabilityMode === "cli") return availability.cli !== false;
+      return availability.sdk !== false;
+    },
+    [cursorAvailabilityMode],
   );
 
   const expandedModels = useMemo<readonly ModelDescriptor[]>(() => {
@@ -258,6 +271,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       if (opencodeBinaryKnown && !opencodeBinaryInstalled && isOpencodeRequiredFamily(m.family)) {
         return false;
       }
+      if (!matchesCursorAvailabilityMode(m)) return false;
       if (!authOnly) return true;
       // Prefer auth-derived gate; fall back to caller-provided `isAvailable` if no auth signal exists.
       if (Object.keys(effectiveAuth).length > 0) {
@@ -265,7 +279,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       }
       return isAvailable(m.id);
     },
-    [authOnly, effectiveAuth, familyIsReady, isAvailable, isOpencodeRequiredFamily, opencodeBinaryInstalled, opencodeBinaryKnown],
+    [authOnly, effectiveAuth, familyIsReady, isAvailable, isOpencodeRequiredFamily, matchesCursorAvailabilityMode, opencodeBinaryInstalled, opencodeBinaryKnown],
   );
 
   const searchActive = query.trim().length > 0;
@@ -416,15 +430,16 @@ export const ModelPickerContent = memo(function ModelPickerContent({
 
   const isAvailableForUse = useCallback(
     (m: ModelDescriptor): boolean => {
-      if (allowCliOnlyModels && m.family === "cursor" && m.cursorAvailability?.cli === true) {
-        return true;
+      if (!matchesCursorAvailabilityMode(m)) return false;
+      if (cursorAvailabilityMode === "cli" && m.family === "cursor" && m.cursorAvailability?.cli === true) {
+        return Object.keys(effectiveAuth).length > 0 ? familyIsReady(m.family) : true;
       }
       if (Object.keys(effectiveAuth).length > 0) {
         return familyIsReady(m.family) && isAvailable(m.id);
       }
       return isAvailable(m.id);
     },
-    [allowCliOnlyModels, effectiveAuth, familyIsReady, isAvailable],
+    [cursorAvailabilityMode, effectiveAuth, familyIsReady, isAvailable, matchesCursorAvailabilityMode],
   );
 
   const handleListKeyDown = useCallback(

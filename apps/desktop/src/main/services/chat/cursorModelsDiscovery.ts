@@ -1,4 +1,5 @@
 import {
+  type CursorModelAvailability,
   createDynamicCursorCliModelDescriptor,
   sortCursorCliDescriptorsForPicker,
   type ModelDescriptor,
@@ -585,14 +586,43 @@ function getCachedCursorModels(): CursorCliModelRow[] | null {
   return null;
 }
 
+function normalizeCursorModelLookupRef(value: unknown): string {
+  const raw = String(value ?? "").trim();
+  const withoutPrefix = raw.toLowerCase().startsWith("cursor/")
+    ? raw.slice("cursor/".length)
+    : raw;
+  return withoutPrefix.trim().toLowerCase();
+}
+
+function cursorRowMatchesRef(row: CursorCliModelRow, ref: string): boolean {
+  if (!ref) return false;
+  if (normalizeCursorModelLookupRef(row.id) === ref) return true;
+  return (row.aliases ?? []).some((alias) => normalizeCursorModelLookupRef(alias) === ref);
+}
+
+export function resolveCachedCursorModelAvailability(
+  modelRef: string | null | undefined,
+  apiKey?: string | null,
+): CursorModelAvailability | null {
+  const ref = normalizeCursorModelLookupRef(modelRef);
+  if (!ref) return null;
+  const cli = (getCachedCursorModels() ?? []).some((row) => cursorRowMatchesRef(row, ref));
+  const sdkRows = getCachedCursorSdkModels(apiKey);
+  if (!sdkRows) return cli ? { cli: true, sdk: false } : null;
+  const sdk = sdkRows.some((row) => cursorRowMatchesRef(row, ref));
+  return cli || sdk ? { cli, sdk } : null;
+}
+
 function cursorRowsToDescriptors(rows: CursorCliModelRow[]): ModelDescriptor[] {
   const seen = new Set<string>();
   const descriptors: ModelDescriptor[] = [];
   for (const row of rows) {
     const id = String(row.id ?? "").trim();
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
+    const normalizedId = id.toLowerCase();
+    if (!id || seen.has(normalizedId)) continue;
     const aliases = normalizeCursorAliasList(row.aliases, id) ?? [];
+    seen.add(normalizedId);
+    for (const alias of aliases) seen.add(alias.toLowerCase());
     const descriptorOptions = {
       ...(row.reasoningTiers?.length ? { reasoningTiers: row.reasoningTiers } : {}),
       ...(row.serviceTiers?.length ? { serviceTiers: row.serviceTiers } : {}),
@@ -601,14 +631,6 @@ function cursorRowsToDescriptors(rows: CursorCliModelRow[]): ModelDescriptor[] {
       ...descriptorOptions,
       ...(aliases.length ? { aliases } : {}),
     }));
-    for (const alias of aliases) {
-      if (seen.has(alias)) continue;
-      seen.add(alias);
-      descriptors.push(createDynamicCursorCliModelDescriptor(alias, `${row.displayName ?? id} (${alias})`, {
-        ...descriptorOptions,
-        aliases: [id],
-      }));
-    }
   }
   return sortCursorCliDescriptorsForPicker(descriptors);
 }
@@ -620,9 +642,39 @@ export function mergeCursorModelDescriptorSources(args: {
   const merged = new Map<string, ModelDescriptor>();
   const sourceByKey = new Map<string, { cli: boolean; sdk: boolean }>();
   const keyFor = (descriptor: ModelDescriptor): string => descriptor.providerModelId.trim().toLowerCase();
+  const refsFor = (descriptor: ModelDescriptor): string[] => {
+    const refs = [descriptor.providerModelId, ...(descriptor.aliases ?? [])]
+      .map((entry) => entry.trim().toLowerCase())
+      .filter(Boolean);
+    return [...new Set(refs)];
+  };
+  const keyByRef = new Map<string, string>();
+  const remapRefs = (fromKey: string, toKey: string): void => {
+    if (fromKey === toKey) return;
+    for (const [ref, key] of keyByRef.entries()) {
+      if (key === fromKey) keyByRef.set(ref, toKey);
+    }
+  };
   const add = (descriptor: ModelDescriptor, source: "cli" | "sdk"): void => {
-    const key = keyFor(descriptor);
-    if (!key) return;
+    const canonicalKey = keyFor(descriptor);
+    if (!canonicalKey) return;
+    const refs = refsFor(descriptor);
+    let key = refs.map((ref) => keyByRef.get(ref)).find((existing): existing is string => Boolean(existing))
+      ?? canonicalKey;
+
+    // Prefer the SDK's canonical id when an SDK row matches a previous CLI
+    // alias. Aliases stay searchable, but the picker shows one real model row.
+    if (source === "sdk" && key !== canonicalKey) {
+      const previous = merged.get(key);
+      const previousFlags = sourceByKey.get(key);
+      merged.delete(key);
+      sourceByKey.delete(key);
+      remapRefs(key, canonicalKey);
+      key = canonicalKey;
+      if (previous) merged.set(key, previous);
+      if (previousFlags) sourceByKey.set(key, previousFlags);
+    }
+
     const previous = merged.get(key);
     const sourceFlags = sourceByKey.get(key) ?? { cli: false, sdk: false };
     sourceFlags[source] = true;
@@ -630,25 +682,28 @@ export function mergeCursorModelDescriptorSources(args: {
 
     if (!previous) {
       merged.set(key, descriptor);
+      for (const ref of refs) keyByRef.set(ref, key);
       return;
     }
 
     const aliases = [...new Set([...(previous.aliases ?? []), ...(descriptor.aliases ?? [])])];
     const reasoningTiers = [...new Set([...(previous.reasoningTiers ?? []), ...(descriptor.reasoningTiers ?? [])])];
     const serviceTiers = [...new Set([...(previous.serviceTiers ?? []), ...(descriptor.serviceTiers ?? [])])];
-    const prefer = source === "sdk" ? descriptor : previous;
+    const preferred = source === "sdk" ? descriptor : previous;
     merged.set(key, {
       ...previous,
-      ...prefer,
-      id: previous.id,
-      shortId: previous.shortId,
-      providerModelId: previous.providerModelId,
-      displayName: prefer.displayName || previous.displayName,
-      color: prefer.color || previous.color,
+      ...preferred,
+      id: preferred.id,
+      shortId: preferred.shortId,
+      providerModelId: preferred.providerModelId,
+      displayName: preferred.displayName || previous.displayName,
+      color: preferred.color || previous.color,
       ...(aliases.length ? { aliases } : {}),
       ...(reasoningTiers.length ? { reasoningTiers } : {}),
       ...(serviceTiers.length ? { serviceTiers } : {}),
     });
+    for (const ref of refs) keyByRef.set(ref, key);
+    for (const ref of refsFor(previous)) keyByRef.set(ref, key);
   };
 
   for (const descriptor of args.cliDescriptors ?? []) add(descriptor, "cli");

@@ -5,6 +5,7 @@ export default defineConfig({
     "main/main": "src/main/main.ts",
     "main/cursorSdkWorker": "src/main/services/chat/cursorSdkWorker.ts",
     "main/droidSdkWorker": "src/main/services/chat/droidSdkWorker.ts",
+    "main/ptyHostWorker": "src/main/services/pty/ptyHostWorker.ts",
     "main/packagedRuntimeSmoke": "src/main/packagedRuntimeSmoke.ts",
     "preload/preload": "src/preload/preload.ts"
   },

@@ -16,6 +16,7 @@ import {
   buildLocalRuntimeNodePath,
   buildLocalRuntimeServeArgs,
   computeLocalRuntimeBuildHash,
+  createLocalRuntimeOutputLogger,
   LocalRuntimeConnectionPool,
   parseRuntimeServiceManagerOutput,
 } from "./localRuntimeConnectionPool";
@@ -207,6 +208,62 @@ describe("local runtime connection pool", () => {
     expect(env.NODE_PATH).toContain("app-x64.asar.unpacked");
     expect(env.NODE_PATH).toContain("app.asar.unpacked");
     expect(env.NODE_PATH).toContain("/custom/node_modules");
+  });
+
+  it("logs child runtime stderr by line and flushes partial output", () => {
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const output = createLocalRuntimeOutputLogger({
+      logger,
+      socketPath: "/tmp/ade.sock",
+      pid: 123,
+      stream: "stderr",
+    });
+
+    output.push(Buffer.from("first line\npartial"));
+    output.push(" rest");
+    output.flush();
+
+    expect(logger.warn).toHaveBeenNthCalledWith(1, "local_runtime.stderr", {
+      socketPath: "/tmp/ade.sock",
+      pid: 123,
+      line: "first line",
+    });
+    expect(logger.warn).toHaveBeenNthCalledWith(2, "local_runtime.stderr", {
+      socketPath: "/tmp/ade.sock",
+      pid: 123,
+      line: "partial rest",
+      partial: true,
+    });
+  });
+
+  it("caps very long runtime output lines before writing logs", () => {
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const output = createLocalRuntimeOutputLogger({
+      logger,
+      socketPath: "/tmp/ade.sock",
+      pid: 123,
+      stream: "stdout",
+    });
+
+    output.push(`${"x".repeat(4_100)}\n`);
+
+    expect(logger.info).toHaveBeenCalledWith("local_runtime.stdout", {
+      socketPath: "/tmp/ade.sock",
+      pid: 123,
+      line: "x".repeat(4_000),
+      truncated: true,
+      originalChars: 4_100,
+    });
   });
 
   it("reports local ADE service install and connection status", () => {

@@ -1121,15 +1121,6 @@ function WorkTab({
           dropEdge === "after" && "ade-work-tab--drop-after",
         )}
         style={cssVars}
-        role="tab"
-        tabIndex={0}
-        aria-selected={isActive}
-        onClick={onSelect}
-        onKeyDown={(e) => {
-          if (e.key !== "Enter" && e.key !== " ") return;
-          e.preventDefault();
-          onSelect();
-        }}
         onContextMenu={onContextMenu}
         draggable={dragProps?.draggable ?? false}
         onDragStart={dragProps?.onDragStart}
@@ -1139,34 +1130,52 @@ function WorkTab({
         onDrop={dragProps?.onDrop}
         onDragEnd={dragProps?.onDragEnd}
       >
-        <span
+        <button
+          type="button"
+          role="tab"
+          tabIndex={0}
+          aria-selected={isActive}
           className="ade-work-tab-select"
+          onClick={onSelect}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter" && e.key !== " ") return;
+            e.preventDefault();
+            onSelect();
+          }}
         >
           <ToolLogo toolType={session.toolType} size={grouped ? 11 : 12} className="ade-work-tab-logo shrink-0" />
           <span className="ade-work-tab-label">
             {truncateSessionLabel(primary, grouped ? 24 : 26)}
           </span>
-        </span>
-        <span
-          title={dot.label}
-          aria-hidden
-          className={cn(
-            "ade-work-tab-status pointer-events-none",
-            dot.cls,
-            dot.spinning && "animate-spin",
-          )}
-        />
+          <span
+            title={dot.label}
+            aria-hidden
+            className={cn(
+              "ade-work-tab-status pointer-events-none",
+              dot.cls,
+              dot.spinning && "animate-spin",
+            )}
+          />
+        </button>
         <button
           type="button"
           data-close-tab-session-id={session.id}
+          aria-label={`Close ${primary}`}
           title={isBusy ? "Removing..." : "Remove from Work view"}
-          className="ade-work-tab-close inline-flex items-center justify-center opacity-0 transition-opacity group-hover/tab:opacity-100"
+          draggable={false}
+          className="ade-work-tab-close inline-flex items-center justify-center opacity-0 transition-opacity group-hover/tab:opacity-100 focus-visible:opacity-100"
           style={{
             padding: 0,
             border: 0,
             background: "transparent",
             cursor: isBusy ? "default" : "pointer",
             color: "var(--color-muted-fg)",
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          onDragStart={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
           }}
           onClick={(e) => {
             e.stopPropagation();

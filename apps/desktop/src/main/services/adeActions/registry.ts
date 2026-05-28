@@ -82,6 +82,7 @@ import {
   spawnInNewTerminalWindow,
 } from "../chat/codexCliLauncher";
 import { createApnsBridgeService } from "../notifications/apnsBridgeService";
+import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 
 export const ADE_ACTION_DOMAIN_NAMES = [
   "lane",
@@ -1040,6 +1041,16 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
   if (!sessionService) return null;
   return {
     ...(sessionService as unknown as OpaqueService),
+    deleteSession: (arg?: { sessionId?: string } | string) => {
+      const sessionId = typeof arg === "string"
+        ? requireNonEmptyString(arg, "sessionId")
+        : requireNonEmptyString(arg?.sessionId, "sessionId");
+      return deleteTerminalSessionWithRuntimeCleanup({
+        sessionId,
+        sessionService,
+        ptyService: requireService(runtime.ptyService, "Terminal service not available."),
+      });
+    },
     readTranscriptTail: (args?: ReadTranscriptTailArgs) => {
       const sessionId = requireNonEmptyString(args?.sessionId, "sessionId");
       const maxBytes = typeof args?.maxBytes === "number" && Number.isFinite(args.maxBytes)

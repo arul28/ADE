@@ -209,6 +209,10 @@
         "to": "ade-cli/bootstrap.cjs"
       },
       {
+        "from": "../ade-cli/dist/ptyHostWorker.cjs",
+        "to": "ade-cli/ptyHostWorker.cjs"
+      },
+      {
         "from": "../ade-cli/dist/adeRpcServer.cjs",
         "to": "ade-cli/adeRpcServer.cjs"
       },

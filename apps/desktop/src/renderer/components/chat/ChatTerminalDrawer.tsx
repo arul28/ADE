@@ -521,20 +521,24 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
               </button>
               <button
                 type="button"
-                aria-label="Close tab"
+                aria-label={`Close ${tab.label}`}
+                onMouseDown={(event) => {
+                  event.stopPropagation();
+                }}
                 onClick={(event) => {
                   event.stopPropagation();
                   closeTab(tab.id);
                 }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
                     event.stopPropagation();
                     closeTab(tab.id);
                   }
                 }}
-                className="ml-0.5 text-white/30 opacity-0 transition-opacity group-hover:opacity-100 hover:text-white/60"
+                className="ml-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-white/35 opacity-60 transition-colors hover:bg-white/[0.06] hover:text-white/70 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/20"
               >
-                <X size={8} weight="bold" />
+                <X size={10} weight="bold" />
               </button>
             </div>
             );
@@ -554,7 +558,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
         <div className="flex-1" />
       </div>
 
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-hidden p-2">
         {activeTab ? (
           <TerminalView
             ptyId={activeTab.ptyId}

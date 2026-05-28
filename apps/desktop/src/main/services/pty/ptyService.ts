@@ -111,7 +111,7 @@ const CODEX_THREAD_NAME_SCAN_BYTES = 512 * 1024;
 const CLAUDE_TITLE_SCAN_BYTES = 512 * 1024;
 const CLAUDE_STORAGE_MATCH_START_SKEW_MS = 1_000;
 const CLAUDE_STORAGE_MATCH_END_SKEW_MS = 5_000;
-const PTY_DATA_BATCH_INTERVAL_MS = 16;
+const PTY_DATA_BATCH_INTERVAL_MS = 50;
 const PTY_DATA_BATCH_MAX_CHARS = 64 * 1024;
 const PTY_DATA_SUMMARY_INTERVAL_MS = 10_000;
 const PTY_LIVE_SESSION_RESYNC_INTERVAL_MS = 1_000;
@@ -451,6 +451,8 @@ type PtyEntry = {
   transcriptStream: fs.WriteStream | null;
   transcriptBytesWritten: number;
   transcriptLimitReached: boolean;
+  transcriptWriteDisabled: boolean;
+  transcriptLastErrorAt: number;
   lastPreviewWriteAt: number;
   lastSessionResyncCheckAt: number;
   previewCurrentLine: string;
@@ -479,6 +481,10 @@ type PtyEntry = {
   initialInputTimer: ReturnType<typeof setTimeout> | null;
   cliUserTitleLineBuffer: string;
   cliUserTitleCommitted: boolean;
+};
+
+type HostReadyPty = IPty & {
+  __adePtyHostReady?: Promise<void>;
 };
 
 function terminatePtyProcessTree(
@@ -537,6 +543,7 @@ type TerminalSnapshotMirror = {
   serializeAddon: SerializeAddonInstance;
   flushTimer: ReturnType<typeof setTimeout> | null;
   lastErrorAt: number;
+  writeDisabled: boolean;
 };
 
 function cleanShellSpec(file: string): ShellSpec {
@@ -547,7 +554,14 @@ function cleanShellSpec(file: string): ShellSpec {
   return { file, args: [], env: { ENV: "" } };
 }
 
-function resolveShellCandidates(options: { clean?: boolean } = {}): ShellSpec[] {
+function loginShellSpec(file: string): ShellSpec {
+  const name = path.basename(file).toLowerCase();
+  if (name === "zsh" || name === "bash") return { file, args: ["-l"] };
+  if (name === "fish") return { file, args: ["--login"] };
+  return { file, args: [] };
+}
+
+function resolveShellCandidates(options: { clean?: boolean; login?: boolean } = {}): ShellSpec[] {
   if (process.platform === "win32") {
     return options.clean
       ? [
@@ -564,7 +578,11 @@ function resolveShellCandidates(options: { clean?: boolean } = {}): ShellSpec[] 
   if (fromEnv) candidates.push(fromEnv);
   candidates.push("/bin/zsh", "/bin/bash", "/bin/sh");
   const uniq = Array.from(new Set(candidates.filter(Boolean)));
-  return uniq.map((file) => options.clean ? cleanShellSpec(file) : { file, args: [] });
+  return uniq.map((file) => {
+    if (options.clean) return cleanShellSpec(file);
+    if (options.login) return loginShellSpec(file);
+    return { file, args: [] };
+  });
 }
 
 function quotePosixShellArg(value: string): string {
@@ -881,10 +899,27 @@ function resumeProviderDisplayName(provider: TerminalResumeProvider): string {
   return "Agent";
 }
 
-const MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
-const TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] transcript limit reached (64MB). Further output omitted.\n";
+const MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
+const TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] transcript limit reached (16MB). Further output omitted.\n";
 const RESUME_TARGET_MISSING_COOLDOWN_MS = 10 * 60_000;
 const RESUME_SCAN_WINDOW_MS = 60_000;
+
+function isNoSpaceError(error: unknown): boolean {
+  const code = typeof error === "object" && error != null && "code" in error
+    ? String((error as { code?: unknown }).code ?? "")
+    : "";
+  if (code === "ENOSPC" || code === "EDQUOT") return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b(ENOSPC|EDQUOT|no space left on device|disk quota exceeded)\b/i.test(message);
+}
+
+function getPtyHostReadyPromise(pty: IPty): Promise<void> | null {
+  const ready = (pty as HostReadyPty).__adePtyHostReady;
+  if (ready && typeof ready.then === "function") {
+    return ready;
+  }
+  return null;
+}
 
 export function createPtyService({
   projectRoot,
@@ -901,7 +936,8 @@ export function createPtyService({
   broadcastExit,
   onSessionEnded,
   onSessionRuntimeSignal,
-  loadPty
+  loadPty,
+  disposePtyBackend
 }: {
   projectRoot: string;
   transcriptsDir: string;
@@ -924,6 +960,7 @@ export function createPtyService({
     at: string;
   }) => void;
   loadPty: () => typeof ptyNs;
+  disposePtyBackend?: () => void;
 }) {
   const ptys = new Map<string, PtyEntry>();
   const runtimeStates = new Map<string, RuntimeStateEntry>();
@@ -1045,7 +1082,7 @@ export function createPtyService({
       });
       const serializeAddon = new SerializeAddon();
       terminal.loadAddon(serializeAddon as Parameters<HeadlessTerminalInstance["loadAddon"]>[0]);
-      return { terminal, serializeAddon, flushTimer: null, lastErrorAt: 0 };
+      return { terminal, serializeAddon, flushTimer: null, lastErrorAt: 0, writeDisabled: false };
     } catch (err) {
       logger.warn("pty.terminal_snapshot_init_failed", { err: String(err) });
       return null;
@@ -1081,26 +1118,38 @@ export function createPtyService({
     if (!entry.tracked) return;
     const mirror = entry.terminalSnapshot;
     if (!mirror) return;
+    if (mirror.writeDisabled) return;
     const snapshot = buildTerminalSnapshot(entry);
     if (!snapshot) return;
+    let tmpPath: string | null = null;
     try {
       fs.mkdirSync(terminalSnapshotDir, { recursive: true });
       const finalPath = safeTerminalSnapshotPathFor(entry.sessionId);
-      const tmpPath = `${finalPath}.${process.pid}.${randomUUID()}.tmp`;
+      tmpPath = `${finalPath}.${process.pid}.${randomUUID()}.tmp`;
       fs.writeFileSync(tmpPath, `${JSON.stringify(snapshot)}\n`, "utf8");
       fs.renameSync(tmpPath, finalPath);
     } catch (err) {
+      if (tmpPath) {
+        try {
+          fs.unlinkSync(tmpPath);
+        } catch {
+          // Best effort; snapshot persistence must never block live terminal output.
+        }
+      }
       const now = Date.now();
       if (now - mirror.lastErrorAt > 10_000) {
         mirror.lastErrorAt = now;
         logger.warn("pty.terminal_snapshot_write_failed", { sessionId: entry.sessionId, err: String(err) });
+      }
+      if (isNoSpaceError(err)) {
+        mirror.writeDisabled = true;
       }
     }
   };
 
   const scheduleTerminalSnapshotWrite = (entry: PtyEntry, delayMs = TERMINAL_SNAPSHOT_DEBOUNCE_MS): void => {
     const mirror = entry.terminalSnapshot;
-    if (!mirror || !entry.tracked || entry.disposed) return;
+    if (!mirror || mirror.writeDisabled || !entry.tracked || entry.disposed) return;
     if (mirror.flushTimer) return;
     mirror.flushTimer = setTimeout(() => {
       mirror.flushTimer = null;
@@ -1527,6 +1576,30 @@ export function createPtyService({
           boundCwd: entry.boundCwd,
         });
       });
+  };
+
+  const disableTranscriptWrite = (entry: PtyEntry, err: unknown): void => {
+    if (entry.transcriptWriteDisabled) return;
+    entry.transcriptWriteDisabled = true;
+    entry.transcriptLimitReached = true;
+    const stream = entry.transcriptStream;
+    entry.transcriptStream = null;
+    const now = Date.now();
+    if (now - entry.transcriptLastErrorAt > 10_000) {
+      entry.transcriptLastErrorAt = now;
+      logger.warn("pty.transcript_write_failed", {
+        sessionId: entry.sessionId,
+        code: typeof err === "object" && err != null && "code" in err
+          ? String((err as { code?: unknown }).code ?? "")
+          : null,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    try {
+      stream?.destroy?.();
+    } catch {
+      // Transcript persistence is best effort; live PTY output continues.
+    }
   };
 
   function claudeProjectDirForCwd(cwd: string): string {
@@ -2482,6 +2555,11 @@ export function createPtyService({
 
   const writeTranscript = (entry: PtyEntry, data: string) => {
     if (!entry.tracked || !entry.transcriptStream) return;
+    if (entry.transcriptWriteDisabled) return;
+    if (entry.transcriptStream.destroyed) {
+      disableTranscriptWrite(entry, new Error("Transcript stream is closed"));
+      return;
+    }
     if (entry.transcriptLimitReached) return;
     try {
       const chunk = Buffer.from(data, "utf8");
@@ -2500,8 +2578,8 @@ export function createPtyService({
       }
       entry.transcriptStream.write(chunk);
       entry.transcriptBytesWritten += chunk.length;
-    } catch {
-      // ignore
+    } catch (err) {
+      disableTranscriptWrite(entry, err);
     }
   };
 
@@ -3240,14 +3318,47 @@ export function createPtyService({
 
       let transcriptStream: fs.WriteStream | null = null;
       let transcriptBytesWritten = 0;
+      let transcriptWriteDisabled = false;
+      let transcriptLastErrorAt = 0;
       if (tracked) {
-        fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
         try {
-          transcriptBytesWritten = fs.existsSync(transcriptPath) ? fs.statSync(transcriptPath).size : 0;
-        } catch {
-          transcriptBytesWritten = 0;
+          fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+          try {
+            transcriptBytesWritten = fs.existsSync(transcriptPath) ? fs.statSync(transcriptPath).size : 0;
+          } catch {
+            transcriptBytesWritten = 0;
+          }
+          transcriptStream = fs.createWriteStream(transcriptPath, { flags: "a" });
+          transcriptStream.on("error", (err) => {
+            const entry = ptys.get(ptyId);
+            if (entry) {
+              disableTranscriptWrite(entry, err);
+              return;
+            }
+            const now = Date.now();
+            if (now - transcriptLastErrorAt > 10_000) {
+              transcriptLastErrorAt = now;
+              logger.warn("pty.transcript_write_failed", {
+                sessionId,
+                code: typeof err === "object" && err != null && "code" in err
+                  ? String((err as { code?: unknown }).code ?? "")
+                  : null,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+            transcriptWriteDisabled = true;
+          });
+        } catch (err) {
+          transcriptWriteDisabled = true;
+          transcriptLastErrorAt = Date.now();
+          logger.warn("pty.transcript_open_failed", {
+            sessionId,
+            code: typeof err === "object" && err != null && "code" in err
+              ? String((err as { code?: unknown }).code ?? "")
+              : null,
+            error: err instanceof Error ? err.message : String(err),
+          });
         }
-        transcriptStream = fs.createWriteStream(transcriptPath, { flags: "a" });
       }
 
       if (!existingSession) {
@@ -3322,8 +3433,8 @@ export function createPtyService({
 
       let pty: IPty;
       let selectedShell: ShellSpec | null = null;
-      const useCleanInteractiveShell = toolTypeHint === "shell" && !directCommand && !startupCommand;
-      const shellCandidates = resolveShellCandidates({ clean: useCleanInteractiveShell });
+      const useLoginInteractiveShell = toolTypeHint === "shell" && !directCommand && !startupCommand;
+      const shellCandidates = resolveShellCandidates({ login: useLoginInteractiveShell });
       let launchedDirectCommand = false;
       try {
         const spawnHelperRepair = ensureNodePtySpawnHelperExecutable();
@@ -3352,6 +3463,8 @@ export function createPtyService({
               ? invocation.args.join(" ")
               : invocation.args;
             created = ptyLib.spawn(invocation.command, ptyArgs, opts);
+            const hostReady = getPtyHostReadyPromise(created);
+            if (hostReady) await hostReady;
             launchedDirectCommand = true;
           } catch (err) {
             lastErr = err;
@@ -3366,6 +3479,8 @@ export function createPtyService({
                 ...opts,
                 env: shell.env ? { ...launchEnv, ...shell.env } : launchEnv,
               });
+              const hostReady = getPtyHostReadyPromise(created);
+              if (hostReady) await hostReady;
               selectedShell = shell;
               launchedDirectCommand = false;
               break;
@@ -3460,6 +3575,8 @@ export function createPtyService({
         transcriptStream,
         transcriptBytesWritten,
         transcriptLimitReached: transcriptBytesWritten >= MAX_TRANSCRIPT_BYTES,
+        transcriptWriteDisabled,
+        transcriptLastErrorAt,
         lastPreviewWriteAt: 0,
         lastSessionResyncCheckAt: 0,
         previewCurrentLine: "",
@@ -4293,6 +4410,13 @@ export function createPtyService({
       return computeRuntimeState(sessionId, fallbackStatus);
     },
 
+    isSessionOwnedByLivePeerRuntime(session: {
+      ownerPid?: number | null;
+      ownerProcessStartedAt?: string | null;
+    }): boolean {
+      return isOwnedByLivePeerRuntime(session);
+    },
+
     list(args: Parameters<typeof sessionService.list>[0] = {}): TerminalSessionSummary[] {
       return service.enrichSessions(sessionService.list(args));
     },
@@ -4462,6 +4586,11 @@ export function createPtyService({
         } catch {
           // ignore
         }
+      }
+      try {
+        disposePtyBackend?.();
+      } catch {
+        // Backend teardown is best-effort; service disposal must never crash callers.
       }
     },
 

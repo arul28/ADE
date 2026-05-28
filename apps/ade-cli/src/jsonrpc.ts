@@ -63,6 +63,16 @@ export class JsonRpcError extends Error {
 
 type TransportMode = "jsonl" | "framed";
 
+export type JsonRpcServerErrorContext =
+  | "notification"
+  | "dispatch"
+  | "write";
+
+type JsonRpcServerErrorReporter = (
+  error: unknown,
+  context: JsonRpcServerErrorContext,
+) => void;
+
 function writeMessage(
   message: JsonRpcResponse | JsonRpcResponse[] | JsonRpcNotification,
   mode: TransportMode,
@@ -106,7 +116,8 @@ function isValidRequest(payload: unknown): payload is JsonRpcRequest {
 
 async function handleSingleMessage(
   message: unknown,
-  handler: JsonRpcHandler
+  handler: JsonRpcHandler,
+  onError?: JsonRpcServerErrorReporter,
 ): Promise<JsonRpcResponse | null> {
   if (!isValidRequest(message)) {
     return {
@@ -145,7 +156,11 @@ async function handleSingleMessage(
   }
 
   if (request.id === undefined) {
-    await handler(request);
+    try {
+      await handler(request);
+    } catch (error) {
+      onError?.(error, "notification");
+    }
     return null;
   }
 
@@ -275,8 +290,9 @@ async function dispatchPayload(args: {
   handler: JsonRpcHandler;
   transport: TransportMode;
   writeFn: (data: string) => void;
+  onError?: JsonRpcServerErrorReporter;
 }): Promise<void> {
-  const { payloadText, handler, transport, writeFn } = args;
+  const { payloadText, handler, transport, writeFn, onError } = args;
   const trimmed = payloadText.trim();
   if (!trimmed.length) return;
 
@@ -322,7 +338,7 @@ async function dispatchPayload(args: {
     }
 
     const results = (
-      await Promise.all(parsed.map((entry) => handleSingleMessage(entry, handler)))
+      await Promise.all(parsed.map((entry) => handleSingleMessage(entry, handler, onError)))
     ).filter((entry): entry is JsonRpcResponse => entry != null);
 
     if (results.length) {
@@ -331,7 +347,7 @@ async function dispatchPayload(args: {
     return;
   }
 
-  const response = await handleSingleMessage(parsed, handler);
+  const response = await handleSingleMessage(parsed, handler, onError);
   if (response) {
     writeMessage(response, transport, writeFn);
   }
@@ -347,6 +363,8 @@ export type JsonRpcServerHandle = (() => void) & {
 export interface JsonRpcServerOptions {
   /** When true, oversized buffers close the connection instead of calling process.exit(1). */
   nonFatal?: boolean;
+  /** Called for transport or notification failures that are contained by the server. */
+  onError?: JsonRpcServerErrorReporter;
 }
 
 export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTransport, options?: JsonRpcServerOptions): JsonRpcServerHandle {
@@ -355,6 +373,23 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
   let stopped = false;
   let draining = false;
   let responseTransport: TransportMode | null = null;
+
+  const reportError = (error: unknown, context: JsonRpcServerErrorContext): void => {
+    try {
+      options?.onError?.(error, context);
+    } catch {
+      // Error reporters must not become a second runtime-killing error path.
+    }
+  };
+
+  const closeTransport = (): void => {
+    stopped = true;
+    try {
+      transport.close();
+    } catch (error) {
+      reportError(error, "write");
+    }
+  };
 
   const drain = async (): Promise<void> => {
     if (draining || stopped) return;
@@ -378,9 +413,13 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
           payloadText: parsed.payloadText,
           handler,
           transport: responseTransport ?? "framed",
-          writeFn
+          writeFn,
+          onError: reportError,
         });
       }
+    } catch (error) {
+      reportError(error, "dispatch");
+      closeTransport();
     } finally {
       draining = false;
       if (!stopped && buffer.length) {
@@ -396,16 +435,19 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
     buffer = buffer.length ? (Buffer.concat([buffer, part]) as Buffer) : part;
 
     if (buffer.length > MAX_BUFFER_BYTES) {
-      writeMessage({
-        jsonrpc: "2.0",
-        id: null,
-        error: {
-          code: JsonRpcErrorCode.parseError,
-          message: `Input buffer exceeded maximum size of ${MAX_BUFFER_BYTES} bytes`
-        }
-      }, responseTransport ?? "framed", writeFn);
-      stopped = true;
-      transport.close();
+      try {
+        writeMessage({
+          jsonrpc: "2.0",
+          id: null,
+          error: {
+            code: JsonRpcErrorCode.parseError,
+            message: `Input buffer exceeded maximum size of ${MAX_BUFFER_BYTES} bytes`
+          }
+        }, responseTransport ?? "framed", writeFn);
+      } catch (error) {
+        reportError(error, "write");
+      }
+      closeTransport();
       if (!options?.nonFatal) {
         process.nextTick(() => process.exit(1));
       }
@@ -418,17 +460,21 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
   transport.onData(onData);
 
   const stop = (() => {
-    stopped = true;
-    transport.close();
+    closeTransport();
   }) as JsonRpcServerHandle;
 
   stop.notify = (method: string, params?: unknown): void => {
     if (stopped) return;
-    writeMessage({
-      jsonrpc: "2.0",
-      method,
-      ...(params !== undefined ? { params } : {}),
-    }, responseTransport ?? "framed", writeFn);
+    try {
+      writeMessage({
+        jsonrpc: "2.0",
+        method,
+        ...(params !== undefined ? { params } : {}),
+      }, responseTransport ?? "framed", writeFn);
+    } catch (error) {
+      reportError(error, "write");
+      closeTransport();
+    }
   };
 
   return stop;

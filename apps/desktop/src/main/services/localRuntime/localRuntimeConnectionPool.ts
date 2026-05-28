@@ -63,6 +63,8 @@ const LOCAL_RUNTIME_PROJECT_TIMEOUT_MS = 3_000;
 const LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS = 8_000;
 const LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS = 2_000;
 const PLACEHOLDER_RUNTIME_VERSION = "0.0.0";
+const LOCAL_RUNTIME_OUTPUT_LINE_MAX_CHARS = 4_000;
+const LOCAL_RUNTIME_OUTPUT_BUFFER_MAX_CHARS = 16_000;
 
 export function buildLocalRuntimeServeArgs(
   cliPath: string,
@@ -116,6 +118,57 @@ export function buildLocalRuntimeNodeEnv(
   const nodePath = buildLocalRuntimeNodePath({ ...nodePathOptions, existingNodePath: baseEnv.NODE_PATH });
   if (nodePath) env.NODE_PATH = nodePath;
   return env;
+}
+
+type RuntimeOutputStreamName = "stdout" | "stderr";
+
+export function createLocalRuntimeOutputLogger(args: {
+  logger: Logger;
+  socketPath: string;
+  pid: number | null;
+  stream: RuntimeOutputStreamName;
+}): { push: (chunk: Buffer | string) => void; flush: () => void } {
+  let pending = "";
+  const event = args.stream === "stderr" ? "local_runtime.stderr" : "local_runtime.stdout";
+  const log = args.stream === "stderr" ? args.logger.warn.bind(args.logger) : args.logger.info.bind(args.logger);
+
+  const emitLine = (rawLine: string, partial: boolean) => {
+    if (!rawLine) return;
+    const truncated = rawLine.length > LOCAL_RUNTIME_OUTPUT_LINE_MAX_CHARS;
+    log(event, {
+      socketPath: args.socketPath,
+      pid: args.pid,
+      line: truncated ? rawLine.slice(0, LOCAL_RUNTIME_OUTPUT_LINE_MAX_CHARS) : rawLine,
+      ...(truncated ? { truncated: true, originalChars: rawLine.length } : {}),
+      ...(partial ? { partial: true } : {}),
+    });
+  };
+
+  const flushCompleteLines = () => {
+    while (true) {
+      const newlineIndex = pending.indexOf("\n");
+      if (newlineIndex < 0) break;
+      const line = pending.slice(0, newlineIndex);
+      pending = pending.slice(newlineIndex + 1);
+      emitLine(line, false);
+    }
+    if (pending.length > LOCAL_RUNTIME_OUTPUT_BUFFER_MAX_CHARS) {
+      emitLine(pending, true);
+      pending = "";
+    }
+  };
+
+  return {
+    push(chunk) {
+      pending += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+      pending = pending.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      flushCompleteLines();
+    },
+    flush() {
+      emitLine(pending, true);
+      pending = "";
+    },
+  };
 }
 
 function resolveCliScriptPath(): string {
@@ -919,15 +972,33 @@ export class LocalRuntimeConnectionPool {
     if (buildHash) env.ADE_RUNTIME_BUILD_HASH = buildHash;
     const child = spawn(process.execPath, args, {
       env,
-      stdio: "ignore",
+      stdio: ["ignore", "pipe", "pipe"],
       detached: false,
     });
+    const outputBase = {
+      logger: this.logger,
+      socketPath,
+      pid: typeof child.pid === "number" ? child.pid : null,
+    };
+    const stdoutLogger = createLocalRuntimeOutputLogger({ ...outputBase, stream: "stdout" });
+    const stderrLogger = createLocalRuntimeOutputLogger({ ...outputBase, stream: "stderr" });
+    child.stdout?.on("data", stdoutLogger.push);
+    child.stderr?.on("data", stderrLogger.push);
+    const flushOutput = (): void => {
+      stdoutLogger.flush();
+      stderrLogger.flush();
+    };
+    child.once("close", () => {
+      flushOutput();
+    });
     child.once("exit", (code, signal) => {
-      this.logger.warn("local_runtime.exited", { code, signal });
+      flushOutput();
+      this.logger.warn("local_runtime.exited", { code, signal, pid: outputBase.pid, socketPath });
       this.connection = null;
     });
     child.once("error", (error) => {
-      this.logger.warn("local_runtime.spawn_failed", { error: error.message });
+      flushOutput();
+      this.logger.warn("local_runtime.spawn_failed", { error: error.message, pid: outputBase.pid, socketPath });
       this.connection = null;
     });
     return child;
