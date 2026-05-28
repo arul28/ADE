@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AiSettingsStatus } from "../../../shared/types";
+import type { AgentChatEventEnvelope, AiSettingsStatus } from "../../../shared/types";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { useAppStore } from "../../state/appStore";
 import { AppShell } from "./AppShell";
@@ -82,6 +82,7 @@ function resetStore() {
 
 describe("AppShell AI provider status", () => {
   const getStatusMock = vi.fn();
+  let chatEventListener: ((envelope: AgentChatEventEnvelope) => void) | null = null;
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -89,6 +90,7 @@ describe("AppShell AI provider status", () => {
     resetStore();
     invalidateAiDiscoveryCache();
     getStatusMock.mockReset();
+    chatEventListener = null;
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: {
@@ -98,7 +100,12 @@ describe("AppShell AI provider status", () => {
           onProjectBindingChanged: vi.fn(() => () => {}),
         },
         agentChat: {
-          onEvent: vi.fn(() => () => {}),
+          onEvent: vi.fn((listener: (envelope: AgentChatEventEnvelope) => void) => {
+            chatEventListener = listener;
+            return () => {
+              if (chatEventListener === listener) chatEventListener = null;
+            };
+          }),
         },
         ai: {
           getStatus: getStatusMock,
@@ -175,6 +182,43 @@ describe("AppShell AI provider status", () => {
     });
 
     expect(screen.queryByText(/No AI provider is configured yet/i)).toBeNull();
+    expect(getStatusMock).toHaveBeenLastCalledWith({
+      force: true,
+      refreshOpenCodeInventory: false,
+    });
+  });
+
+  it("refreshes provider status on auth-related chat failures after a provider was known", async () => {
+    getStatusMock
+      .mockResolvedValueOnce(makeAiStatus(true))
+      .mockResolvedValueOnce(makeAiStatus(false));
+    await getAiStatusCached({ projectRoot: project.rootPath });
+
+    render(
+      <MemoryRouter initialEntries={["/work"]}>
+        <AppShell>
+          <div>Work content</div>
+        </AppShell>
+      </MemoryRouter>,
+    );
+
+    await act(async () => {});
+    expect(screen.queryByText(/No AI provider is configured yet/i)).toBeNull();
+
+    await act(async () => {
+      chatEventListener?.({
+        sessionId: "session-1",
+        timestamp: "2026-05-28T12:00:00.000Z",
+        event: {
+          type: "error",
+          message: "Invalid API key.",
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText(/No AI provider is configured yet/i)).toBeTruthy();
     expect(getStatusMock).toHaveBeenLastCalledWith({
       force: true,
       refreshOpenCodeInventory: false,

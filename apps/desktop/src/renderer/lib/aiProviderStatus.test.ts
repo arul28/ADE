@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { AiSettingsStatus } from "../../shared/types";
-import { hasConfiguredAiProvider } from "./aiProviderStatus";
+import type { AgentChatEventEnvelope, AiSettingsStatus } from "../../shared/types";
+import { hasConfiguredAiProvider, shouldRefreshAiStatusForChatEvent } from "./aiProviderStatus";
 
 function makeStatus(overrides: Partial<AiSettingsStatus> = {}): AiSettingsStatus {
   return {
@@ -30,6 +30,14 @@ function makeStatus(overrides: Partial<AiSettingsStatus> = {}): AiSettingsStatus
     },
     features: [],
     ...overrides,
+  };
+}
+
+function chatEvent(event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope {
+  return {
+    sessionId: "session-1",
+    timestamp: "2026-05-28T00:00:00.000Z",
+    event,
   };
 }
 
@@ -291,5 +299,38 @@ describe("hasConfiguredAiProvider", () => {
         }),
       ),
     ).toBe(true);
+  });
+
+  it("detects auth-related chat events that should refresh provider status", () => {
+    expect(
+      shouldRefreshAiStatusForChatEvent(chatEvent({
+        type: "system_notice",
+        noticeKind: "auth",
+        message: "Please sign in again.",
+      })),
+    ).toBe(true);
+
+    expect(
+      shouldRefreshAiStatusForChatEvent(chatEvent({
+        type: "error",
+        message: "Invalid API key.",
+      })),
+    ).toBe(true);
+
+    expect(
+      shouldRefreshAiStatusForChatEvent(chatEvent({
+        type: "status",
+        turnStatus: "failed",
+        message: "Authentication failed.",
+      })),
+    ).toBe(true);
+
+    expect(
+      shouldRefreshAiStatusForChatEvent(chatEvent({
+        type: "status",
+        turnStatus: "failed",
+        message: "The command exited with status 1.",
+      })),
+    ).toBe(false);
   });
 });

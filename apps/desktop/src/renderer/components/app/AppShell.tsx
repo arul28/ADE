@@ -44,7 +44,10 @@ import {
   peekAiStatusCached,
   type AiStatusCacheInvalidatedEventDetail,
 } from "../../lib/aiDiscoveryCache";
-import { hasConfiguredAiProvider } from "../../lib/aiProviderStatus";
+import {
+  hasConfiguredAiProvider,
+  shouldRefreshAiStatusForChatEvent,
+} from "../../lib/aiProviderStatus";
 import { getStaleRunningCliSessionAgeHours, isRunOwnedSession } from "../../lib/sessions";
 import { summarizeTerminalAttention } from "../../lib/terminalAttention";
 import { getStoredZoomLevel, displayZoomToLevel } from "../../lib/zoom";
@@ -66,7 +69,6 @@ function primaryTabPath(pathname: string): string {
 
 const PROJECT_ROUTE_STORAGE_PREFIX = "ade:project-route:";
 const AI_STATUS_STARTUP_DELAY_MS = 1_000;
-const AI_STATUS_REFRESH_INTERVAL_MS = 300_000;
 const AI_STATUS_CHAT_EVENT_REFRESH_MIN_GAP_MS = 30_000;
 const GITHUB_STATUS_STARTUP_DELAY_MS = 12_000;
 const GITHUB_STATUS_DISMISSED_BANNER_DELAY_MS = 30_000;
@@ -792,15 +794,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       refreshAiStatus,
       cachedStatus ? 0 : AI_STATUS_STARTUP_DELAY_MS,
     );
-    const aiInterval = window.setInterval(refreshAiStatus, AI_STATUS_REFRESH_INTERVAL_MS);
     const onFocus = () => refreshAiStatus();
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") refreshAiStatus();
     };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibilityChange);
-    const unsubscribeChatEvents = window.ade.agentChat.onEvent(() => {
-      if (lastKnownHasProvider) return;
+    const unsubscribeChatEvents = window.ade.agentChat.onEvent((envelope) => {
+      if (lastKnownHasProvider && !shouldRefreshAiStatusForChatEvent(envelope)) return;
       const now = Date.now();
       if (now - lastChatEventRefreshAt < AI_STATUS_CHAT_EVENT_REFRESH_MIN_GAP_MS) return;
       lastChatEventRefreshAt = now;
@@ -815,7 +816,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
       window.clearTimeout(aiTimer);
-      window.clearInterval(aiInterval);
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onAiStatusCacheInvalidated);

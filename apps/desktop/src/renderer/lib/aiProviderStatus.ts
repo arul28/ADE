@@ -1,9 +1,27 @@
 import type {
+  AgentChatEventEnvelope,
   AiDetectedAuth,
   AiProviderConnectionStatus,
   AiRuntimeConnectionStatus,
   AiSettingsStatus,
 } from "../../shared/types";
+
+const AUTH_ERROR_SIGNALS = [
+  "invalid authentication credentials",
+  "authentication error",
+  "authentication_error",
+  "authentication failed",
+  "not authenticated",
+  "not logged in",
+  "login required",
+  "sign in",
+  "invalid api key",
+  "api error: 401",
+  "status 401",
+  "claude auth login",
+  "codex login",
+  "/login",
+];
 
 function hasUsableDetectedAuth(entry: AiDetectedAuth): boolean {
   if (entry.type === "cli-subscription") {
@@ -66,4 +84,20 @@ export function hasConfiguredAiProvider(
   }
 
   return Boolean(status.opencodeProviders?.some((provider) => provider.connected));
+}
+
+export function isAuthRelatedChatMessage(message: string | null | undefined): boolean {
+  const normalized = String(message ?? "").trim().toLowerCase();
+  if (!normalized.length) return false;
+  return AUTH_ERROR_SIGNALS.some((signal) => normalized.includes(signal));
+}
+
+export function shouldRefreshAiStatusForChatEvent(envelope: AgentChatEventEnvelope): boolean {
+  const event = envelope.event;
+  if (event.type === "system_notice" && event.noticeKind === "auth") return true;
+  if (event.type === "error") return isAuthRelatedChatMessage(event.message);
+  if (event.type === "status" && event.turnStatus === "failed") {
+    return isAuthRelatedChatMessage(event.message);
+  }
+  return false;
 }
