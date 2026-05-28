@@ -205,7 +205,11 @@ A run's steps advance via `currentStepIndex`. For each step type:
   on timeout the step is marked failed with `review_timeout` and the
   run advances rather than stalling. `rejectAction` drives the
   rejection path (`cancel`, `reopen_issue`, or `loop_back` which
-  resets `currentStepIndex` to `loopToStepId ?? "launch"`).
+  resets `currentStepIndex` to `loopToStepId ?? "launch"`). Approve
+  and reject actions are only valid while the run status is
+  `awaiting_human_review` and the current step row is still a
+  `request_human_review` step; early or stale resolutions throw
+  without mutating `reviewState`.
 - `emit_app_notification` — broadcasts a
   `linear-workflow-notification` event via
   `ctoLinearWorkflowEvent` IPC. The renderer listens in `CtoPage` and

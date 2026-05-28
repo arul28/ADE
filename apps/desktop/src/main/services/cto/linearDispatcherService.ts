@@ -2436,7 +2436,7 @@ export function createLinearDispatcherService(args: {
       if (run.status !== "awaiting_human_review") {
         throw new Error("This workflow run is not awaiting supervisor review.");
       }
-      if (!currentStep || currentStep.type !== "request_human_review" || !reviewContext) {
+      if (!currentStep || currentStep.type !== "request_human_review" || !currentStepRow || !reviewContext) {
         throw new Error("This workflow run is not on a human review step.");
       }
       updateRun(run.id, {

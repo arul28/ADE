@@ -2263,8 +2263,8 @@ describe("linearDispatcherService (file group)", () => {
       db.close();
     });
 
-    it("rejects early approve before the supervisor review gate is active", async () => {
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-early-approve-"));
+    it.each(["approve", "reject"] as const)("rejects early %s before the supervisor review gate is active", async (action) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-early-review-action-"));
       const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
       const policy = buildSupervisedWorkerPolicy();
 
@@ -2312,8 +2312,11 @@ describe("linearDispatcherService (file group)", () => {
       expect(detailBeforeReview?.run.status).not.toBe("awaiting_human_review");
 
       await expect(
-        dispatcher.resolveRunAction(run.id, "approve", "Pre-approved.", policy),
+        dispatcher.resolveRunAction(run.id, action, "Pre-resolved.", policy),
       ).rejects.toThrow("not awaiting supervisor review");
+      const detailAfterRejectedAction = await dispatcher.getRunDetail(run.id, policy);
+      expect(detailAfterRejectedAction?.run.status).toBe(detailBeforeReview?.run.status);
+      expect(detailAfterRejectedAction?.run.reviewState).not.toBe(action === "approve" ? "approved" : "rejected");
 
       const awaitingReview = await dispatcher.advanceRun(run.id, policy);
       expect(awaitingReview?.status).toBe("awaiting_human_review");
