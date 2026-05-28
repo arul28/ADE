@@ -5221,55 +5221,6 @@ export function createAdeRpcRequestHandler(args: {
     },
   };
 
-  const auditActionCall = async (
-    actionName: string,
-    actionArgs: Record<string, unknown>,
-    runner: () => Promise<unknown>
-  ): Promise<unknown> => {
-    const startedAt = Date.now();
-    const laneId = resolveRequestedOrSessionLaneId(runtime, session, actionArgs);
-    const operation = runtime.operationService.start({
-      laneId,
-      kind: "ade_action_call",
-      metadata: {
-        action: actionName,
-        callerId: session.identity.callerId,
-        role: session.identity.role,
-        chatSessionId: session.identity.chatSessionId,
-        runId: session.identity.runId,
-        stepId: session.identity.stepId,
-        attemptId: session.identity.attemptId,
-        ownerId: session.identity.ownerId,
-        args: sanitizeForAudit(actionArgs)
-      }
-    });
-
-    try {
-      const result = await runner();
-      runtime.operationService.finish({
-        operationId: operation.operationId,
-        status: "succeeded",
-        metadataPatch: {
-          resultStatus: "success",
-          durationMs: Date.now() - startedAt,
-          result: sanitizeForAudit(result)
-        }
-      });
-      return result;
-    } catch (error) {
-      runtime.operationService.finish({
-        operationId: operation.operationId,
-        status: "failed",
-        metadataPatch: {
-          resultStatus: "failed",
-          durationMs: Date.now() - startedAt,
-          errorMessage: error instanceof Error ? error.message : String(error)
-        }
-      });
-      throw error;
-    }
-  };
-
   const listActions = async (): Promise<Record<string, unknown>> => {
     const actionSpecs = await listToolSpecsForSession(runtime, session);
     return {
@@ -5282,18 +5233,16 @@ export function createAdeRpcRequestHandler(args: {
   };
 
   const callAction = async (actionName: string, actionArgs: Record<string, unknown>): Promise<unknown> => {
-    return await auditActionCall(actionName, actionArgs, async () => {
-      if (
-        READ_ONLY_TOOLS.has(actionName) ||
-        MUTATION_TOOLS.has(actionName) ||
-        actionName === "spawn_agent" ||
-        actionName === "ask_user"
-      ) {
-        return await runTool({ runtime, session, name: actionName, toolArgs: actionArgs });
-      }
+    if (
+      READ_ONLY_TOOLS.has(actionName) ||
+      MUTATION_TOOLS.has(actionName) ||
+      actionName === "spawn_agent" ||
+      actionName === "ask_user"
+    ) {
+      return await runTool({ runtime, session, name: actionName, toolArgs: actionArgs });
+    }
 
-      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported ADE action: ${actionName}`);
-    });
+    throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported ADE action: ${actionName}`);
   };
 
   const handler = (async (request: JsonRpcRequest): Promise<unknown | null> => {
@@ -5424,48 +5373,35 @@ export function createAdeRpcRequestHandler(args: {
       if (isCtoOnlyAdeAction("pty", ptyAction) && !callerHasRoleAtLeast(session.identity.role, "cto")) {
         throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported PTY method: ${method}`);
       }
-      const runPtyAction = async (runner: () => Promise<unknown> | unknown): Promise<unknown> =>
-        auditActionCall(method, ptyArgs, async () => runner());
       if (method === "pty.create") {
         ensurePtyCreateAuthorized(runtime, session, method, ptyArgs);
-        return await runPtyAction(async () => {
-          const result = await runtime.ptyService.create(ptyArgs as Parameters<typeof runtime.ptyService.create>[0]);
-          return {
-            ...result,
-            session: runtime.sessionService.get(result.sessionId),
-          };
-        });
+        const result = await runtime.ptyService.create(ptyArgs as Parameters<typeof runtime.ptyService.create>[0]);
+        return {
+          ...result,
+          session: runtime.sessionService.get(result.sessionId),
+        };
       }
       if (method === "pty.sendToSession") {
         ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);
-        return await runPtyAction(() =>
-          runtime.ptyService.sendToSession(ptyArgs as Parameters<typeof runtime.ptyService.sendToSession>[0]));
+        return await runtime.ptyService.sendToSession(ptyArgs as Parameters<typeof runtime.ptyService.sendToSession>[0]);
       }
       if (method === "pty.write") {
         ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);
-        return await runPtyAction(() => {
-          runtime.ptyService.write(ptyArgs as Parameters<typeof runtime.ptyService.write>[0]);
-          return null;
-        });
+        runtime.ptyService.write(ptyArgs as Parameters<typeof runtime.ptyService.write>[0]);
+        return null;
       }
       if (method === "pty.resize") {
         ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);
-        return await runPtyAction(() => {
-          runtime.ptyService.resize(ptyArgs as Parameters<typeof runtime.ptyService.resize>[0]);
-          return null;
-        });
+        runtime.ptyService.resize(ptyArgs as Parameters<typeof runtime.ptyService.resize>[0]);
+        return null;
       }
       if (method === "pty.dispose") {
         ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);
-        return await runPtyAction(() => {
-          runtime.ptyService.dispose(ptyArgs as Parameters<typeof runtime.ptyService.dispose>[0]);
-          return null;
-        });
+        runtime.ptyService.dispose(ptyArgs as Parameters<typeof runtime.ptyService.dispose>[0]);
+        return null;
       }
       if (method === "pty.list") {
-        return await runPtyAction(() => ({
-          sessions: listAuthorizedPtySessions(runtime, session, method, ptyArgs),
-        }));
+        return { sessions: listAuthorizedPtySessions(runtime, session, method, ptyArgs) };
       }
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported PTY method: ${method}`);
     }
