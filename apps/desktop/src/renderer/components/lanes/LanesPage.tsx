@@ -36,7 +36,7 @@ import {
   resolveLaneDeleteStartSelection,
   resolveLaneIdsDeepLinkSelection,
   resolveVisibleLaneIds,
-  runLaneDeleteBatchSequentially,
+  runLaneDeleteBatchWithConcurrency,
   selectLaneTabPrTag,
   shouldApplyLaneIdsDeepLink,
   sortLaneListRows,
@@ -1620,7 +1620,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         });
         if (runnable.length === 0) continue;
 
-        const results = await runLaneDeleteBatchSequentially(
+        const results = await runLaneDeleteBatchWithConcurrency(
           runnable,
           async (lane) => {
             const args = deleteArgsByLaneId.get(lane.id);

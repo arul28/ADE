@@ -4152,7 +4152,6 @@ export function createLaneService({
 
       broadcastDeleteEvent(progress);
 
-      await runGitWorktreeMutation(async () => {
       try {
         if (hasWorktree) {
           await runStep("git_status", async () => {
@@ -4342,7 +4341,6 @@ export function createLaneService({
         finalize("failed");
         throw error;
       }
-      });
     },
 
     cancelDelete(laneId: string): { cancelled: boolean; reason?: string } {

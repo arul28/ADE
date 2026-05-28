@@ -9,7 +9,7 @@ import {
   resolveCreateLaneRequest,
   resolveLaneIdsDeepLinkSelection,
   resolveVisibleLaneIds,
-  runLaneDeleteBatchSequentially,
+  runLaneDeleteBatchWithConcurrency,
   selectGithubLanePrTag,
   selectLaneTabPrTag,
   selectLanePrTag,
@@ -390,40 +390,47 @@ describe("selectLanePrTag", () => {
   });
 });
 
-describe("runLaneDeleteBatchSequentially", () => {
-  it("runs independent lane deletes one at a time and preserves failures", async () => {
+describe("runLaneDeleteBatchWithConcurrency", () => {
+  it("runs independent lane deletes two at a time and preserves failures", async () => {
     const lanes = [
       { id: "lane-a", parentLaneId: null },
       { id: "lane-b", parentLaneId: null },
       { id: "lane-c", parentLaneId: null },
     ];
-    const order: string[] = [];
+    const starts: string[] = [];
     let active = 0;
     let maxActive = 0;
+    let releaseFirstWave: (() => void) | null = null;
+    const firstWaveGate = new Promise<void>((resolve) => {
+      releaseFirstWave = resolve;
+    });
+    let firstWaveStarted: (() => void) | null = null;
+    const firstWaveStartedPromise = new Promise<void>((resolve) => {
+      firstWaveStarted = resolve;
+    });
 
-    const results = await runLaneDeleteBatchSequentially(lanes, async (lane) => {
+    const resultsPromise = runLaneDeleteBatchWithConcurrency(lanes, async (lane) => {
       active += 1;
       maxActive = Math.max(maxActive, active);
-      order.push(`start:${lane.id}`);
-      await Promise.resolve();
+      starts.push(lane.id);
+      if (starts.length === 2) firstWaveStarted?.();
+      if (lane.id !== "lane-c") await firstWaveGate;
       if (lane.id === "lane-b") {
         active -= 1;
-        order.push(`fail:${lane.id}`);
         throw new Error("locked");
       }
       active -= 1;
-      order.push(`done:${lane.id}`);
     });
 
-    expect(maxActive).toBe(1);
-    expect(order).toEqual([
-      "start:lane-a",
-      "done:lane-a",
-      "start:lane-b",
-      "fail:lane-b",
-      "start:lane-c",
-      "done:lane-c",
-    ]);
+    await firstWaveStartedPromise;
+    expect(starts).toEqual(["lane-a", "lane-b"]);
+    expect(maxActive).toBe(2);
+
+    expect(releaseFirstWave).not.toBeNull();
+    releaseFirstWave!();
+    const results = await resultsPromise;
+
+    expect(starts).toEqual(["lane-a", "lane-b", "lane-c"]);
     expect(results.map((result) => [result.lane.id, result.status])).toEqual([
       ["lane-a", "fulfilled"],
       ["lane-b", "rejected"],

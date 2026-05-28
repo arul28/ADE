@@ -12,6 +12,8 @@ export type LaneDeleteBatchResult<T> =
   | { status: "fulfilled"; lane: T }
   | { status: "rejected"; lane: T; reason: unknown };
 
+export const LANE_DELETE_BATCH_CONCURRENCY = 2;
+
 export type LaneTabPrTag = {
   source: "ade" | "github";
   id: string;
@@ -100,19 +102,34 @@ export function planLaneDeleteBatches<T extends Pick<LaneSummary, "id" | "parent
   return batches;
 }
 
-export async function runLaneDeleteBatchSequentially<T>(
+export async function runLaneDeleteBatchWithConcurrency<T>(
   lanes: T[],
   deleteLane: (lane: T) => Promise<void>,
+  concurrency = LANE_DELETE_BATCH_CONCURRENCY,
 ): Promise<LaneDeleteBatchResult<T>[]> {
-  const results: LaneDeleteBatchResult<T>[] = [];
-  for (const lane of lanes) {
-    try {
-      await deleteLane(lane);
-      results.push({ status: "fulfilled", lane });
-    } catch (reason) {
-      results.push({ status: "rejected", lane, reason });
+  if (lanes.length === 0) return [];
+
+  const results = new Array<LaneDeleteBatchResult<T>>(lanes.length);
+  const normalizedConcurrency = Number.isFinite(concurrency)
+    ? Math.floor(concurrency)
+    : LANE_DELETE_BATCH_CONCURRENCY;
+  const workerCount = Math.min(lanes.length, Math.max(1, normalizedConcurrency));
+  let nextIndex = 0;
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < lanes.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      const lane = lanes[index]!;
+      try {
+        await deleteLane(lane);
+        results[index] = { status: "fulfilled", lane };
+      } catch (reason) {
+        results[index] = { status: "rejected", lane, reason };
+      }
     }
-  }
+  }));
+
   return results;
 }
 
