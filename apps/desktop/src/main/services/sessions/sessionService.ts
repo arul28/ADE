@@ -10,6 +10,7 @@ import type {
   TerminalSessionStatus,
   TerminalSessionSummary,
   TerminalToolType,
+  ListSessionsArgs,
   UpdateSessionMetaArgs
 } from "../../../shared/types";
 import { stripAnsi } from "../../utils/ansiStrip";
@@ -328,7 +329,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
     updatedAt: row.updatedAt,
   });
 
-  const list =({ laneId, status, limit }: { laneId?: string; status?: TerminalSessionStatus; limit?: number } = {}) => {
+  const list =({ laneId, status, limit }: ListSessionsArgs = {}) => {
     const where: string[] = [];
     const params: (string | number | null)[] = [];
 
@@ -342,8 +343,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
     }
 
     const whereSql = where.length ? `where ${where.join(" and ")}` : "";
-    const limitSql = typeof limit === "number" ? "limit ?" : "limit 200";
-    if (typeof limit === "number") params.push(limit);
+    const limitSql = limit === null ? "" : "limit ?";
+    if (limit !== null) params.push(typeof limit === "number" ? limit : 200);
 
     const rows = db.all<SessionRow>(
       `

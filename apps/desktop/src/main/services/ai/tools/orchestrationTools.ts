@@ -744,9 +744,10 @@ function createRequestPlanApprovalTool(
       const result = typeof response === "string"
         ? { answer: response, decision: undefined as string | undefined }
         : response;
+      // Require an explicit approval decision — do not infer approval from free-text
+      // answers. Substring regexes false-positive on rejections like "Not approved".
       const approved = result.decision === "accept"
-        || result.decision === "accept_for_session"
-        || /\b(approve|approved|yes|start|proceed)\b/i.test(result.answer ?? "");
+        || result.decision === "accept_for_session";
       if (!approved) {
         return {
           ok: false as const,

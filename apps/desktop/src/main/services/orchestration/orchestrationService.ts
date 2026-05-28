@@ -60,6 +60,15 @@ class AsyncMutex {
   }
 }
 
+class OrchestrationPersistConflictError extends Error {
+  readonly onDisk: OrchestrationManifest;
+  constructor(onDisk: OrchestrationManifest) {
+    super("manifest on disk is newer than the in-flight write");
+    this.name = "OrchestrationPersistConflictError";
+    this.onDisk = onDisk;
+  }
+}
+
 const MANIFEST_FILE = "manifest.json";
 const PLAN_FILE = "plan.md";
 const GEN_FILE = ".gen";
@@ -71,6 +80,15 @@ const WATCHER_IDLE_CLOSE_MS = 30_000;
 const ORCHESTRATION_INDEX_VERSION = 1;
 const RUN_LIST_DEFAULT_LIMIT = 100;
 const RUN_LIST_MAX_LIMIT = 250;
+const RUN_SUSPENDED_MESSAGE =
+  "orchestration run is suspended (bundle changed externally); re-open the run or restore the correct branch";
+
+class OrchestrationRunSuspendedError extends Error {
+  constructor() {
+    super(RUN_SUSPENDED_MESSAGE);
+    this.name = "OrchestrationRunSuspendedError";
+  }
+}
 
 export type OrchestrationServiceEvents = {
   event: (payload: OrchestrationEventPayload) => void;
@@ -166,7 +184,11 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     await atomicWrite(genPath, `${gen}\n`);
   }
 
-  async function atomicWrite(target: string, contents: string): Promise<void> {
+  async function atomicWrite(
+    target: string,
+    contents: string,
+    options?: { beforeCommit?: () => Promise<void> },
+  ): Promise<void> {
     const dir = path.dirname(target);
     await fsp.mkdir(dir, { recursive: true });
     const tmp = `${target}.${process.pid}.${Date.now()}.${Math.random()
@@ -179,7 +201,15 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     } finally {
       await handle.close();
     }
-    await fsp.rename(tmp, target);
+    try {
+      if (options?.beforeCommit) {
+        await options.beforeCommit();
+      }
+      await fsp.rename(tmp, target);
+    } catch (err) {
+      await fsp.unlink(tmp).catch(() => undefined);
+      throw err;
+    }
   }
 
   function getLaneIndexMutex(laneId: string): AsyncMutex {
@@ -407,6 +437,27 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       .join(",");
   }
 
+  function relocateRuntimeBundlePath(runtime: RunRuntime, bundlePath: string): void {
+    if (runtime.bundlePath === bundlePath) return;
+    if (runtime.watcher) {
+      void runtime.watcher.close().catch(() => undefined);
+      runtime.watcher = null;
+    }
+    if (runtime.watcherDebounceTimer) {
+      clearTimeout(runtime.watcherDebounceTimer);
+      runtime.watcherDebounceTimer = null;
+    }
+    if (runtime.watcherIdleTimer) {
+      clearTimeout(runtime.watcherIdleTimer);
+      runtime.watcherIdleTimer = null;
+    }
+    runtime.bundlePath = bundlePath;
+    runtime.manifest = null;
+    runtime.planMd = null;
+    runtime.recentSelfWriteUntil = 0;
+    runtime.suspended = false;
+  }
+
   function getOrCreateRuntime(
     runId: string,
     bundlePath: string,
@@ -427,6 +478,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         suspended: false,
       };
       runs.set(runId, runtime);
+      return runtime;
     }
     return runtime;
   }
@@ -444,9 +496,10 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         );
       }
       if (manifest.runId !== runtime.runId) {
-        throw new Error(
-          `manifest.runId ${manifest.runId} does not match expected ${runtime.runId}`,
-        );
+        runtime.suspended = true;
+        runtime.manifest = null;
+        runtime.planMd = null;
+        return;
       }
       runtime.manifest = normalizeManifestShape(manifest);
     } catch (err) {
@@ -517,10 +570,12 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       }
       runtime.watcherDebounceTimer = setTimeout(() => {
         runtime.watcherDebounceTimer = null;
-        if (Date.now() < runtime.recentSelfWriteUntil) {
-          return; // suppress self-emitted events
-        }
-        void handleExternalChange(runtime, kind);
+        void runtime.mutex.run(async () => {
+          if (Date.now() < runtime.recentSelfWriteUntil) {
+            return; // suppress self-emitted events
+          }
+          await handleExternalChange(runtime, kind);
+        });
       }, WATCHER_DEBOUNCE_MS);
     };
     watcher.on("change", (full) => {
@@ -560,6 +615,8 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         // file), do not blindly etag-bump; mark suspended and ignore.
         if (next.runId !== runtime.runId) {
           runtime.suspended = true;
+          runtime.manifest = null;
+          runtime.planMd = null;
           emit({
             runId: runtime.runId,
             kind: "lifecycle",
@@ -603,10 +660,54 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     runtime: RunRuntime,
     manifest: OrchestrationManifest,
   ): Promise<void> {
-    const manifestPath = path.join(runtime.bundlePath, MANIFEST_FILE);
+    const bundlePath = runtime.bundlePath;
+    const manifestPath = path.join(bundlePath, MANIFEST_FILE);
+    manifest.bundlePath = bundlePath;
+    const expectedBaseGeneration =
+      runtime.manifest?.serverGeneration ?? manifest.serverGeneration - 1;
+    const expectedBaseEtag = runtime.manifest?.etag;
+    const rejectIfDiskAdvanced = async (): Promise<void> => {
+      try {
+        const raw = await fsp.readFile(manifestPath, "utf-8");
+        const onDisk = normalizeManifestShape(JSON.parse(raw) as OrchestrationManifest);
+        if (onDisk.runId !== runtime.runId) {
+          runtime.suspended = true;
+          runtime.manifest = null;
+          runtime.planMd = null;
+          throw new OrchestrationRunSuspendedError();
+        }
+        if (
+          onDisk.runId === runtime.runId &&
+          onDisk.serverGeneration > expectedBaseGeneration &&
+          onDisk.etag !== expectedBaseEtag
+        ) {
+          runtime.manifest = onDisk;
+          throw new OrchestrationPersistConflictError(onDisk);
+        }
+      } catch (err) {
+        if (
+          err instanceof OrchestrationPersistConflictError
+          || err instanceof OrchestrationRunSuspendedError
+        ) {
+          throw err;
+        }
+        const e = err as NodeJS.ErrnoException;
+        if (e?.code !== "ENOENT") {
+          throw err;
+        }
+      }
+    };
+    await rejectIfDiskAdvanced();
     markSelfWrite(runtime);
-    await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2));
-    await writeServerGeneration(runtime.bundlePath, manifest.serverGeneration);
+    try {
+      await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2), {
+        beforeCommit: rejectIfDiskAdvanced,
+      });
+    } catch (err) {
+      runtime.recentSelfWriteUntil = 0;
+      throw err;
+    }
+    await writeServerGeneration(bundlePath, manifest.serverGeneration);
     runtime.manifest = manifest;
     await appendRunIndexEntry(
       manifest.laneId,
@@ -619,6 +720,12 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     markSelfWrite(runtime);
     await atomicWrite(planPath, plan);
     runtime.planMd = plan;
+  }
+
+  function assertRunWritable(runtime: RunRuntime): void {
+    if (runtime.suspended) {
+      throw new OrchestrationRunSuspendedError();
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -726,6 +833,13 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     const runtime = getOrCreateRuntime(req.runId, bundlePath);
     return runtime.mutex.run(async () => {
       await loadIntoRuntime(runtime);
+      if (runtime.suspended) {
+        return {
+          ok: false,
+          error: "validation_failed",
+          message: RUN_SUSPENDED_MESSAGE,
+        };
+      }
       const current = runtime.manifest;
       if (!current) {
         return {
@@ -825,7 +939,27 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       ];
       next.history = ring;
 
-      await persistManifest(runtime, next);
+      try {
+        await persistManifest(runtime, next);
+      } catch (err) {
+        if (err instanceof OrchestrationRunSuspendedError) {
+          return {
+            ok: false,
+            error: "validation_failed",
+            message: RUN_SUSPENDED_MESSAGE,
+          };
+        }
+        if (err instanceof OrchestrationPersistConflictError) {
+          const latest = runtime.manifest ?? err.onDisk;
+          return {
+            ok: false,
+            error: "etag_conflict",
+            manifest: latest,
+            etag: latest.etag,
+          };
+        }
+        throw err;
+      }
       emit({
         runId: req.runId,
         kind: "manifest",
@@ -844,6 +978,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     const runtime = getOrCreateRuntime(req.runId, bundlePath);
     return runtime.mutex.run(async () => {
       await loadIntoRuntime(runtime);
+      assertRunWritable(runtime);
       if (!runtime.manifest) throw new Error(`run ${req.runId} not found`);
       const prev = runtime.planMd ?? "";
       const heading = req.section.startsWith("#")
@@ -871,6 +1006,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     const runtime = getOrCreateRuntime(req.runId, bundlePath);
     return runtime.mutex.run(async () => {
       await loadIntoRuntime(runtime);
+      assertRunWritable(runtime);
       if (!runtime.manifest) throw new Error(`run ${req.runId} not found`);
       if (runtime.manifest.etag !== req.ifMatchEtag) {
         return { error: "etag_conflict", etag: runtime.manifest.etag };
@@ -895,6 +1031,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     const runtime = getOrCreateRuntime(req.runId, bundlePath);
     return runtime.mutex.run(async () => {
       await loadIntoRuntime(runtime);
+      assertRunWritable(runtime);
       if (!runtime.manifest) throw new Error(`run ${req.runId} not found`);
       const id = `A-${runtime.manifest.assets.length + 1}-${shortRand()}`;
       const asset: OrchestrationAsset = {
@@ -930,7 +1067,11 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     const runtime = getOrCreateRuntime(req.runId, bundlePath);
     return runtime.mutex.run(async () => {
       await loadIntoRuntime(runtime);
-      const manifest = runtime.manifest!;
+      assertRunWritable(runtime);
+      if (!runtime.manifest) {
+        throw new Error(`run ${req.runId} not found`);
+      }
+      const manifest = runtime.manifest;
       const registeredAgent = manifest.agents.find(
         (agent) => agent.sessionId === req.sessionId,
       );
@@ -1009,6 +1150,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     const runtime = getOrCreateRuntime(req.runId, bundlePath);
     return runtime.mutex.run(async () => {
       await loadIntoRuntime(runtime);
+      assertRunWritable(runtime);
       const manifest = runtime.manifest;
       if (!manifest) throw new Error(`run ${req.runId} not found`);
       const task = manifest.tasks.find((entry) => entry.id === req.taskId);
@@ -1109,6 +1251,13 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     const runtime = getOrCreateRuntime(req.runId, bundlePath);
     return runtime.mutex.run(async () => {
       await loadIntoRuntime(runtime);
+      if (runtime.suspended) {
+        return {
+          ok: false,
+          error: "validation_failed",
+          message: RUN_SUSPENDED_MESSAGE,
+        };
+      }
       const manifest = runtime.manifest;
       if (!manifest) {
         return {
@@ -1240,11 +1389,23 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
               },
             },
           ];
-      const patchRes = await directPatch(
-        runtime,
-        patches,
-        `record validation ${req.taskId}/${req.stepId} ${req.status}`,
-      );
+      let patchRes: { manifest: OrchestrationManifest; etag: string };
+      try {
+        patchRes = await directPatch(
+          runtime,
+          patches,
+          `record validation ${req.taskId}/${req.stepId} ${req.status}`,
+        );
+      } catch (err) {
+        if (err instanceof OrchestrationRunSuspendedError) {
+          return {
+            ok: false,
+            error: "validation_failed",
+            message: RUN_SUSPENDED_MESSAGE,
+          };
+        }
+        throw err;
+      }
       return {
         ok: true,
         manifest: patchRes.manifest,
@@ -1262,6 +1423,9 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     const runtime = getOrCreateRuntime(req.runId, bundlePath);
     return runtime.mutex.run(async () => {
       await loadIntoRuntime(runtime);
+      if (runtime.suspended) {
+        return { ok: false, reason: RUN_SUSPENDED_MESSAGE };
+      }
       const manifest = runtime.manifest;
       if (!manifest) return { ok: false, reason: `run ${req.runId} not found` };
       if (!manifest.agents.some((agent) => agent.sessionId === req.sessionId)) {
@@ -1272,7 +1436,21 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       if (agent) agent.lastHeartbeatAt = nowIso();
       // Heartbeats are liveness metadata. They must not invalidate the optimistic
       // concurrency etag that agents use for the next manifest mutation.
-      await persistManifest(runtime, next);
+      try {
+        await persistManifest(runtime, next);
+      } catch (err) {
+        if (err instanceof OrchestrationRunSuspendedError) {
+          return { ok: false, reason: RUN_SUSPENDED_MESSAGE };
+        }
+        if (err instanceof OrchestrationPersistConflictError) {
+          return {
+            ok: false,
+            reason: "etag_conflict",
+            etag: err.onDisk.etag,
+          };
+        }
+        throw err;
+      }
       emit({
         runId: req.runId,
         kind: "manifest",
@@ -1396,6 +1574,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     patches: readonly ManifestPatchOp[],
     summary: string,
   ): Promise<{ manifest: OrchestrationManifest; etag: string }> {
+    assertRunWritable(runtime);
     if (!runtime.manifest) throw new Error("manifest not loaded");
     const next = normalizeManifestShape(applyPatches(runtime.manifest, patches));
     const updatedAt = nowIso();
@@ -1434,16 +1613,46 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     const runtime = getOrCreateRuntime(runId, bundlePath);
     return runtime.mutex.run(async () => {
       await loadIntoRuntime(runtime);
+      if (runtime.suspended) {
+        return { ok: false, error: "run_suspended", message: RUN_SUSPENDED_MESSAGE };
+      }
       if (!runtime.manifest) {
         return { ok: false, error: "run_not_found", message: `run ${runId} not found` };
       }
-      const result = await directPatch(runtime, patches, summary);
-      return { ok: true, manifest: result.manifest, etag: result.etag };
+      try {
+        const result = await directPatch(runtime, patches, summary);
+        return { ok: true, manifest: result.manifest, etag: result.etag };
+      } catch (err) {
+        if (err instanceof OrchestrationRunSuspendedError) {
+          return { ok: false, error: "run_suspended", message: RUN_SUSPENDED_MESSAGE };
+        }
+        if (err instanceof OrchestrationPersistConflictError) {
+          return {
+            ok: false,
+            error: "etag_conflict",
+            message: `manifest on disk advanced to generation ${err.onDisk.serverGeneration}`,
+          };
+        }
+        throw err;
+      }
+    });
+  }
+
+  async function relocateRunBundle(runId: string, bundlePath: string): Promise<void> {
+    const runtime = runs.get(runId);
+    if (!runtime) return;
+    await runtime.mutex.run(async () => {
+      relocateRuntimeBundlePath(runtime, bundlePath);
+      await loadIntoRuntime(runtime);
+      if (runtime.manifest) {
+        await startWatcher(runtime);
+      }
     });
   }
 
   return {
     runCreate,
+    relocateRunBundle,
     bundleRead,
     manifestReadSection,
     manifestPatch,
