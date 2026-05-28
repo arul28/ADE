@@ -6201,13 +6201,13 @@ export function registerIpc({
   const windowIssueMessage = (issue: IosSimulatorWindowState["issue"]): string | null => {
     switch (issue) {
       case "not-running":
-        return "Simulator.app is not running, so the live window stream cannot update. Launch the simulator from ADE again.";
+        return "The simulator is not running. Launch it from ADE again.";
       case "hidden":
-        return "Simulator.app is hidden. macOS stops updating hidden window capture, so ADE's visual stream can freeze until Simulator is shown again.";
+        return "The simulator is hidden. Show it to refresh the live view.";
       case "minimized":
-        return "Simulator.app is minimized. macOS stops updating minimized window capture, so ADE's visual stream can freeze until the window is restored.";
+        return "The simulator is minimized. Restore it to refresh the live view.";
       case "no-window":
-        return "Simulator.app is running but no simulator window is available for ADE to capture.";
+        return "The simulator is running, but ADE cannot find a visible simulator window.";
       default:
         return null;
     }
@@ -6344,7 +6344,6 @@ export function registerIpc({
   const followSimulatorWindowUnderAde = (window: BrowserWindow | null) => {
     if (!window || window.isDestroyed()) return;
     if (simulatorParkingWindow === window) {
-      scheduleSimulatorParking(window);
       return;
     }
     cleanupSimulatorParkingFollow?.();
@@ -6369,17 +6368,32 @@ export function registerIpc({
       if (simulatorParkingWindow === window) simulatorParkingWindow = null;
       cleanupSimulatorParkingFollow = null;
     };
-    scheduleSimulatorParking(window);
+  };
+  const activeSimulatorParkingWindow = (): BrowserWindow | null => {
+    if (!simulatorParkingWindow || simulatorParkingWindow.isDestroyed()) return null;
+    return simulatorParkingWindow;
+  };
+  const claimSimulatorParkingWindow = (
+    window: BrowserWindow | null,
+    options: { force?: boolean } = {},
+  ): BrowserWindow | null => {
+    const current = activeSimulatorParkingWindow();
+    if (current && !options.force) {
+      return current;
+    }
+    if (!window || window.isDestroyed()) return current;
+    followSimulatorWindowUnderAde(window);
+    return window;
   };
 
   ipcMain.handle(IPC.iosSimulatorLaunch, async (event, arg = {}) => {
     const result = await ensureIosSimulator().launch(arg);
     const keepSimulatorInBackgroundPayload = (arg as { keepSimulatorInBackground?: unknown } | null)?.keepSimulatorInBackground;
-    const keepSimulatorInBackground = keepSimulatorInBackgroundPayload === undefined ? true : keepSimulatorInBackgroundPayload === true;
+    const keepSimulatorInBackground = keepSimulatorInBackgroundPayload === true;
     if (!keepSimulatorInBackground) {
       const browserWindow = BrowserWindow.fromWebContents(event.sender);
-      await prepareSimulatorWindowForCapture(browserWindow, { placeBehindAde: false });
-      cleanupSimulatorParkingFollow?.();
+      const parkingWindow = claimSimulatorParkingWindow(browserWindow, { force: true });
+      await prepareSimulatorWindowForCapture(parkingWindow, { placeBehindAde: true });
     }
     return result;
   });
@@ -6422,7 +6436,15 @@ export function registerIpc({
   ipcMain.handle(IPC.iosSimulatorOpenPreviewWorkspace, async (_event, arg = {}) =>
     ensureIosSimulator().openPreviewWorkspace(arg));
 
-  ipcMain.handle(IPC.iosSimulatorStartStream, async (_event, arg = {}) => ensureIosSimulator().startStream(arg));
+  ipcMain.handle(IPC.iosSimulatorStartStream, async (event, arg = {}) => {
+    const result = await ensureIosSimulator().startStream(arg);
+    if (result.backend === "simulator-window-capture") {
+      const browserWindow = BrowserWindow.fromWebContents(event.sender);
+      const parkingWindow = claimSimulatorParkingWindow(browserWindow);
+      await prepareSimulatorWindowForCapture(parkingWindow, { placeBehindAde: true });
+    }
+    return result;
+  });
 
   ipcMain.handle(IPC.iosSimulatorStopStream, async () => ensureIosSimulator().stopStream());
 
@@ -6433,19 +6455,21 @@ export function registerIpc({
   ipcMain.handle(IPC.iosSimulatorListWindowSources, async (event) => {
     const status = await ensureIosSimulator().getStatus();
     if (!status.supported) return [];
-    const browserWindow = BrowserWindow.fromWebContents(event.sender);
     const readSources = async () => desktopCapturer.getSources({
       types: ["window"],
       thumbnailSize: { width: 320, height: 320 },
     });
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    const parkingWindow = status.activeSession
+      ? claimSimulatorParkingWindow(senderWindow)
+      : null;
     if (status.activeSession) {
-      await prepareSimulatorWindowForCapture(browserWindow, { placeBehindAde: true });
-      followSimulatorWindowUnderAde(browserWindow);
+      await prepareSimulatorWindowForCapture(parkingWindow, { placeBehindAde: true });
       await new Promise((resolve) => setTimeout(resolve, 350));
     }
     let sources = await readSources();
     if (status.activeSession && !sources.some((source) => simulatorWindowName.test(source.name))) {
-      await prepareSimulatorWindowForCapture(browserWindow, { placeBehindAde: true });
+      await prepareSimulatorWindowForCapture(parkingWindow, { placeBehindAde: true });
       await new Promise((resolve) => setTimeout(resolve, 650));
       sources = await readSources();
     }

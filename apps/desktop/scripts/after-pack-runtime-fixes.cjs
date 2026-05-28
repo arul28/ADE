@@ -254,16 +254,10 @@ module.exports = async function afterPack(context) {
   if (platform === "darwin") {
     const bundledCliBinPath = path.join(resourcesRoot, "ade-cli", "bin", "ade");
     const bundledCliInstallerPath = path.join(resourcesRoot, "ade-cli", "install-path.sh");
-    const iosSimHelperRoot = path.join(resourcesRoot, "native", "ios-sim-helpers");
-    const iosSimHelperBuildScript = path.join(iosSimHelperRoot, "build.sh");
     requireFile(bundledCliBinPath, "bundled ADE CLI wrapper");
     requireFile(bundledCliInstallerPath, "bundled ADE CLI PATH installer");
-    requireFile(iosSimHelperBuildScript, "bundled iOS simulator helper build script");
-    requireFile(path.join(iosSimHelperRoot, "sim-capture.swift"), "bundled iOS simulator capture helper source");
-    requireFile(path.join(iosSimHelperRoot, "sim-input.m"), "bundled iOS simulator input helper source");
     fs.chmodSync(bundledCliBinPath, 0o755);
     fs.chmodSync(bundledCliInstallerPath, 0o755);
-    fs.chmodSync(iosSimHelperBuildScript, 0o755);
     const channelWrapperPath = materializeChannelCliWrapper(resourcesRoot, packageChannel);
     if (channelWrapperPath) {
       console.log(`[afterPack] Added channel CLI wrapper: ${path.basename(channelWrapperPath)}`);

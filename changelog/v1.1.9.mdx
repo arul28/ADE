@@ -21,11 +21,10 @@ v1.1.9 ships five commits since v1.1.8: Cursor SDK-backed chat, stronger iOS Sim
   </Tab>
 
   <Tab title="iOS Simulator Control">
-    Simulator control gets native capture/input helpers, better stream behavior, and a richer chat panel for inspecting and driving the active iOS app.
+    Simulator control gets better session lifecycle behavior and a richer chat panel for inspecting and driving the active iOS app.
 
-    - **Native simulator helpers.** New `sim-capture` and `sim-input` helpers provide native screenshot/stream and HID input paths, with build scripts and helper docs under `apps/desktop/native/ios-sim-helpers`.
-    - **Simulator service hardening.** `iosSimulatorService` handles native stream lifecycle, companion spawn errors, shutdown cleanup, input fallback checks, and background keep-alive flags more explicitly.
-    - **Chat panel updates.** `ChatIosSimulatorPanel` keeps MJPEG URLs stable across preserved visuals, exposes richer simulator state, and avoids restarting idle native streams after a valid frame.
+    - **Simulator service hardening.** `iosSimulatorService` handles live-view lifecycle, companion spawn errors, shutdown cleanup, input readiness checks, and background keep-alive flags more explicitly.
+    - **Chat panel updates.** `ChatIosSimulatorPanel` exposes richer simulator state and keeps preserved visuals stable while sessions restart.
     - **ADE CLI surface.** The CLI and ADE RPC server document and expose the updated iOS Simulator actions so desktop chats can discover and drive the supported simulator flow.
   </Tab>
 

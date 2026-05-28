@@ -45,16 +45,16 @@ ade --socket ios-sim type --value "text" --text
 
 ## Streams
 
-Use `stream-status` to explain the active backend, latency, fallback reason, and blockers:
+Use `stream-status` to explain the active Simulator.app live view and blockers:
 
 ```bash
 ade --socket ios-sim window-start --fps 60 --text
-ade --socket ios-sim live-start --fps 30 --text
+ade --socket ios-sim live-start --fps 60 --text
 ade --socket ios-sim stream-status --text
 ade --socket ios-sim stream-stop --text
 ```
 
-Low idle fps is normal on `iosurface-indigo` because frames are event-driven when the simulator is still.
+`window-start` and `live-start` use the same primary path: ADE opens the user's running Simulator.app window, parks it under the owning ADE window, and mirrors it into the drawer. If tap/drag/type/inspect actions fail, check that `idb` and `idb_companion` are installed.
 
 ## Preview Lab
 

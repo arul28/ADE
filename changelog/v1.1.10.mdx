@@ -3,7 +3,7 @@ title: "v1.1.10"
 description: "Release notes for ADE v1.1.10 - May 2, 2026"
 ---
 
-v1.1.10 ships three commits since v1.1.9: stronger Cursor SDK model handling, a shared desktop-to-mobile model catalog, tighter iOS Simulator packaging and stream behavior, and an `asc`-backed internal TestFlight build path. The iOS companion ships in **TestFlight build 1** of 1.1.10.
+v1.1.10 ships three commits since v1.1.9: stronger Cursor SDK model handling, a shared desktop-to-mobile model catalog, tighter iOS Simulator packaging and live-view behavior, and an `asc`-backed internal TestFlight build path. The iOS companion ships in **TestFlight build 1** of 1.1.10.
 
 ---
 
@@ -20,9 +20,9 @@ v1.1.10 ships three commits since v1.1.9: stronger Cursor SDK model handling, a 
   </Tab>
 
   <Tab title="Runtime and simulator">
-    The release hardens packaged desktop behavior around simulator helpers, artifact validation, and run-tab state.
+    The release hardens packaged desktop behavior around the simulator live view, artifact validation, and run-tab state.
 
-    - **iOS Simulator helpers.** Packaged builds resolve native simulator helper caches more reliably, keep stream fallback state ordered, and preserve the intended IOSurface path for packaged desktop sessions.
+    - **iOS Simulator live view.** Packaged builds keep the live simulator view stable for desktop sessions.
     - **Release artifact checks.** Desktop packaging now audits macOS runtime artifacts more explicitly and validates universal app payload files during the release pipeline.
     - **Run session titles.** Generated terminal titles are sanitized before display so live run sessions keep cleaner names and status details.
     - **Internal TestFlight automation.** A self-hosted Mac workflow and `asc` script can bump, archive, upload, and distribute internal iOS builds from CI.
