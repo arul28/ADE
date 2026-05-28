@@ -313,13 +313,15 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
         const payload = (envelope.payload ?? {}) as SyncChangesetBatchPayload;
         const changes = Array.isArray(payload.changes) ? payload.changes : [];
         try {
+          let appliedCount = 0;
           if (changes.length) {
-            args.db.sync.applyChanges(changes);
+            const applyResult = args.db.sync.applyChanges(changes);
+            appliedCount = applyResult.appliedCount;
             args.onRemoteChangesApplied?.();
           }
           latestRemoteDbVersion = Math.max(latestRemoteDbVersion, Math.floor(payload.toDbVersion ?? latestRemoteDbVersion));
           if (connectionDraft) connectionDraft.lastRemoteDbVersion = latestRemoteDbVersion;
-          sendChangesetAck(payload, true, args.db.sync.getDbVersion(), changes.length);
+          sendChangesetAck(payload, true, args.db.sync.getDbVersion(), appliedCount);
           emitStatus();
         } catch (error) {
           sendChangesetAck(payload, false, args.db.sync.getDbVersion(), 0, error);

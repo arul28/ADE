@@ -1018,11 +1018,11 @@ export function createSyncService(args: SyncServiceArgs) {
         throw new Error("Machine sync is unavailable because the CRDT database extension is not loaded.");
       }
       await stopHostIfRunning();
-      deviceRegistryService.clearClusterRegistryForViewerJoin();
       writeSavedDraft(draft);
       syncPeerService.setSavedDraft(draft);
       try {
         await syncPeerService.connect(draft);
+        deviceRegistryService.clearClusterRegistryForViewerJoin();
         deviceRegistryService.touchLocalDevice({ lastSeenAt: nowIso() });
         syncPeerService.flushLocalChanges();
         await sleep(150);

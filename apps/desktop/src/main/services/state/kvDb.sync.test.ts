@@ -278,20 +278,20 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
 
   it("ignores CRDT changes for legacy unified_memories tables removed in #329", async () => {
     const db2 = await openKvDb(makeDbPath("ade-kvdb-sync-mem-skip-"), createLogger() as any);
-    const legacyChange = {
-      table: "unified_memories",
-      pk: Buffer.from([0x01, 0x06, 0, 0, 0, 0, 0, 1]).toString("base64"),
+    const legacyChanges = ["unified_memories", "unified_memories_fts_content"].map((table, index) => ({
+      table,
+      pk: Buffer.from([0x01, 0x06, 0, 0, 0, 0, 0, index + 1]).toString("base64"),
       cid: "id",
       val: null,
       col_version: 1,
-      db_version: 1,
+      db_version: index + 1,
       site_id: "a".repeat(32),
       cl: 1,
-      seq: 1,
-    };
+      seq: index,
+    }));
 
     const beforeVersion = db2.sync.getDbVersion();
-    const result = db2.sync.applyChanges([legacyChange as any]);
+    const result = db2.sync.applyChanges(legacyChanges as any);
     expect(result.appliedCount).toBe(0);
     expect(result.touchedTables).toEqual([]);
     expect(db2.sync.getDbVersion()).toBe(beforeVersion);
@@ -299,7 +299,7 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
     db2.close();
   });
 
-  it("silently skips CRDT changes for unknown future tables", async () => {
+  it("rejects CRDT changes for unknown future tables", async () => {
     const db2 = await openKvDb(makeDbPath("ade-kvdb-sync-future-table-"), createLogger() as any);
     const futureChange = {
       table: "missing_future_table",
@@ -314,9 +314,7 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
     };
 
     const beforeVersion = db2.sync.getDbVersion();
-    const result = db2.sync.applyChanges([futureChange as any]);
-    expect(result.appliedCount).toBe(0);
-    expect(result.touchedTables).toEqual([]);
+    expect(() => db2.sync.applyChanges([futureChange as any])).toThrow(/unknown_sync_table:missing_future_table/);
     expect(db2.sync.getDbVersion()).toBe(beforeVersion);
 
     db2.close();

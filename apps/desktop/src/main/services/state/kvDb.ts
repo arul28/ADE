@@ -11,6 +11,13 @@ import type { ApplyRemoteChangesResult, CrsqlChangeRow, SyncScalar } from "../..
 
 type DatabaseSyncConstructor = new (dbPath: string, options?: { allowExtension?: boolean }) => DatabaseSyncType;
 
+/** CRDT tables removed from the schema; inbound tombstones are ignored. */
+const SYNC_RETIRED_TABLES = new Set(["unified_memories", "unified_memories_fts"]);
+
+function isRetiredIncomingSyncTable(tableName: string): boolean {
+  return SYNC_RETIRED_TABLES.has(tableName) || tableName.startsWith("unified_memories_");
+}
+
 // Anchor createRequire to a synthetic CJS file so builtin resolution follows the active runtime.
 const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
 const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
@@ -208,6 +215,10 @@ function retrofitLegacyPrimaryKeyNotNullSchema(db: DatabaseSyncType): boolean {
   runStatement(db, "pragma foreign_keys = off");
   try {
     for (const table of tables) {
+      // CRR tables must be altered via crsql_begin_alter/commit_alter or rebuilt
+      // with rebuildCrrTableWithBackfill — never DROP/rename wholesale.
+      if (rawHasTable(db, `${table.name}__crsql_clock`)) continue;
+
       const tableInfo = allRows<{
         name: string;
         type: string;
@@ -3038,9 +3049,10 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       try {
         for (const rawChange of changes) {
           if (isLocalOnlyQueueWipeMarkerChange(rawChange)) continue;
-          // Skip changes for tables that no longer exist in the schema
-          // (e.g. unified_memories removed in #329).
-          if (!rawHasTable(db, rawChange.table)) continue;
+          if (!rawHasTable(db, rawChange.table)) {
+            if (isRetiredIncomingSyncTable(rawChange.table)) continue;
+            throw new Error(`unknown_sync_table:${rawChange.table}`);
+          }
           const change = normalizeIncomingCrsqlChange(db, rawChange);
           const result = runStatement(
             db,
