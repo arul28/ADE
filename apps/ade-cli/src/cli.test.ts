@@ -2960,6 +2960,62 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("ios-sim launch accepts simulator visibility flags", () => {
+    const background = buildCliPlan([
+      "ios-sim",
+      "launch",
+      "--target",
+      "app",
+      "--background",
+    ]);
+    expect(background.kind).toBe("execute");
+    if (background.kind !== "execute") return;
+    expect(background.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "ios_simulator",
+        action: "launch",
+        args: { targetId: "app", keepSimulatorInBackground: true },
+      },
+    });
+
+    const foreground = buildCliPlan([
+      "ios-sim",
+      "launch",
+      "--target",
+      "app",
+      "--foreground",
+    ]);
+    expect(foreground.kind).toBe("execute");
+    if (foreground.kind !== "execute") return;
+    expect(foreground.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "ios_simulator",
+        action: "launch",
+        args: { targetId: "app", keepSimulatorInBackground: false },
+      },
+    });
+  });
+
+  it("ios-sim preview stream aliases map to live view actions", () => {
+    const start = buildCliPlan(["ios-sim", "preview-start", "--fps", "30"]);
+    expect(start.kind).toBe("execute");
+    if (start.kind !== "execute") return;
+    expect(start.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "ios_simulator",
+        action: "startStream",
+        args: { fps: 30, backend: "simulator-window-capture" },
+      },
+    });
+
+    const stop = buildCliPlan(["ios-sim", "preview-stop"]);
+    expect(stop.kind).toBe("execute");
+    if (stop.kind !== "execute") return;
+    expect(stop.steps[0]?.params).toMatchObject({
+      arguments: { domain: "ios_simulator", action: "stopStream" },
+    });
+  });
+
   it("ios-sim launch and claim carry the agent lane claim", () => {
     const previousLane = process.env.ADE_LANE_ID;
     const previousChat = process.env.ADE_CHAT_SESSION_ID;

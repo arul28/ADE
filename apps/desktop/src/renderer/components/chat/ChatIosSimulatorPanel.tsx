@@ -898,7 +898,7 @@ export function ChatIosSimulatorPanel({
         ok: Boolean(idb?.available && companion?.available),
         detail: idb?.available && companion?.available
           ? "Tap, drag, type, and inspect actions are ready."
-          : "Install simulator control tools to enable tap, drag, typing, and inspection.",
+          : "Tap, drag, type, and inspect actions are unavailable on this Mac.",
       },
     ];
   }, [toolByName]);
@@ -975,6 +975,11 @@ export function ChatIosSimulatorPanel({
   const inputBlockedMessage = ownedByOtherChat
     ? "Another chat is already connected to the simulator. Use Take over to claim it."
     : controlsDisabledMessage;
+  const simulatorControlUnavailable = mode === "interact" && !controlAvailable;
+  const liveInputBlocked = simulatorMutationBlocked || simulatorControlUnavailable;
+  const liveInputBlockedMessage = simulatorMutationBlocked
+    ? inputBlockedMessage
+    : "Simulator controls are unavailable on this Mac.";
 
   const changeMediaZoom = useCallback((delta: number) => {
     setMediaZoom((current) => {
@@ -1614,8 +1619,8 @@ export function ChatIosSimulatorPanel({
   const sendTypedText = useCallback(async () => {
     const text = typedText;
     if (!text.trim()) return;
-    if (simulatorMutationBlocked) {
-      setMessage(inputBlockedMessage);
+    if (liveInputBlocked) {
+      setMessage(liveInputBlockedMessage);
       return;
     }
     setTypedText("");
@@ -1625,7 +1630,7 @@ export function ChatIosSimulatorPanel({
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
-  }, [armWindowCaptureRecoveryAfterInput, inputBlockedMessage, projectRoot, selectedDeviceUdid, simulatorMutationBlocked, typedText]);
+  }, [armWindowCaptureRecoveryAfterInput, liveInputBlocked, liveInputBlockedMessage, projectRoot, selectedDeviceUdid, typedText]);
 
   const updateInspectBounds = useCallback(() => {
     const image = imageRef.current;
@@ -2146,8 +2151,8 @@ export function ChatIosSimulatorPanel({
   }, [mapLivePointToSimulatorPixel, mediaHeight, mediaWidth]);
 
   const handleSnapshotInteractPointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
-    if (simulatorMutationBlocked) {
-      setMessage(inputBlockedMessage);
+    if (liveInputBlocked) {
+      setMessage(liveInputBlockedMessage);
       return;
     }
     const point = liveSimulatorPointFromPointer(event);
@@ -2159,14 +2164,14 @@ export function ChatIosSimulatorPanel({
       clientY: event.clientY,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
-  }, [inputBlockedMessage, liveSimulatorPointFromPointer, simulatorMutationBlocked]);
+  }, [liveInputBlocked, liveInputBlockedMessage, liveSimulatorPointFromPointer]);
 
   const handleSnapshotInteractPointerUp = useCallback((event: PointerEvent<HTMLDivElement>) => {
     const start = dragStartRef.current;
     dragStartRef.current = null;
     if (!start) return;
-    if (simulatorMutationBlocked) {
-      setMessage(inputBlockedMessage);
+    if (liveInputBlocked) {
+      setMessage(liveInputBlockedMessage);
       return;
     }
     const point = liveSimulatorPointFromPointer(event);
@@ -2195,12 +2200,12 @@ export function ChatIosSimulatorPanel({
         setMessage(error instanceof Error ? error.message : String(error));
       }
     })();
-  }, [armWindowCaptureRecoveryAfterInput, inputBlockedMessage, liveSimulatorPointFromPointer, projectRoot, selectedDeviceUdid, simulatorMutationBlocked, snapshot?.screen.scale]);
+  }, [armWindowCaptureRecoveryAfterInput, liveInputBlocked, liveInputBlockedMessage, liveSimulatorPointFromPointer, projectRoot, selectedDeviceUdid, snapshot?.screen.scale]);
 
   const handleVideoKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
-    if (simulatorMutationBlocked) {
-      setMessage(inputBlockedMessage);
+    if (liveInputBlocked) {
+      setMessage(liveInputBlockedMessage);
       return;
     }
     if (event.key === "Enter") {
@@ -2218,7 +2223,7 @@ export function ChatIosSimulatorPanel({
         setMessage(error instanceof Error ? error.message : String(error));
       });
     }
-  }, [armWindowCaptureRecoveryAfterInput, inputBlockedMessage, projectRoot, selectedDeviceUdid, simulatorMutationBlocked]);
+  }, [armWindowCaptureRecoveryAfterInput, liveInputBlocked, liveInputBlockedMessage, projectRoot, selectedDeviceUdid]);
 
   const providerSummary = snapshot
     ? snapshot.elements.length > 0
@@ -2244,9 +2249,13 @@ export function ChatIosSimulatorPanel({
   let simulatorModeHint: string | null = null;
   if (mode === "interact") {
     if (streamStatus?.running) {
-      simulatorModeHint = "Simulator is live. Tap, drag, or type to control it.";
+      simulatorModeHint = controlAvailable
+        ? "Simulator is live. Tap, drag, or type to control it."
+        : "Simulator is live.";
     } else {
-      simulatorModeHint = "Tap to control the simulator. Click and drag to scroll or swipe.";
+      simulatorModeHint = controlAvailable
+        ? "Tap to control the simulator. Click and drag to scroll or swipe."
+        : "Launch the simulator to start the live view.";
     }
   } else if (mode === "inspect") {
     simulatorModeHint = simulatorCaptureActive
@@ -2911,8 +2920,11 @@ export function ChatIosSimulatorPanel({
           </div>
         ) : canShowLiveVisual ? (
           <div
-            className="relative h-full min-h-[300px] cursor-pointer"
-            tabIndex={0}
+            className={cn(
+              "relative h-full min-h-[300px]",
+              controlAvailable ? "cursor-pointer" : "cursor-default",
+            )}
+            tabIndex={controlAvailable ? 0 : -1}
             onKeyDown={handleVideoKeyDown}
             onPointerLeave={() => setHoveredElement(null)}
             onPointerDown={handleSnapshotInteractPointerDown}
@@ -3188,7 +3200,7 @@ export function ChatIosSimulatorPanel({
       </div>
 
       {!mediaExpanded ? <div className="shrink-0 space-y-1">
-        {mode === "interact" && !simulatorMutationBlocked && !showSetupChecklist ? (
+        {mode === "interact" && controlAvailable && !simulatorMutationBlocked && !showSetupChecklist ? (
           <div className="flex items-center gap-1">
             <input
               className="min-w-0 flex-1 rounded border border-white/[0.08] bg-black/20 px-1.5 py-1 font-sans text-[10px] text-fg/75 outline-none"
@@ -3221,7 +3233,7 @@ export function ChatIosSimulatorPanel({
         ) : null}
         {mode === "interact" && !controlAvailable && !showSetupChecklist && !simulatorMutationBlocked ? (
           <div className="rounded border border-amber-400/15 bg-amber-500/10 px-1.5 py-1 font-sans text-[10px] text-amber-100/70">
-            Install simulator control tools to tap, drag, and type in the running simulator.
+            Simulator controls are unavailable on this Mac.
           </div>
         ) : null}
       </div> : null}

@@ -405,7 +405,7 @@ Coverage states:
 | work.ios.refresh-state | Refresh simulator state | measured | `ChatIosSimulatorPanel.tsx` |
 | work.ios.stop | Stop running simulator | prompt-only | `ChatIosSimulatorPanel.tsx` |
 | work.ios.take-over | Take over simulator session owned by another chat | prompt-only | `ChatIosSimulatorPanel.tsx` |
-| work.ios.window-recover | Restore Simulator.app window capture | measured | `ChatIosSimulatorPanel.tsx` |
+| work.ios.window-recover | Restore Simulator.app live view | measured | `ChatIosSimulatorPanel.tsx` |
 | work.ios.target-select | Select launch target/app | measured | `ChatIosSimulatorPanel.tsx` |
 | work.ios.launch | Launch app in simulator | sandbox-only | `ChatIosSimulatorPanel.tsx` |
 | work.ios.apply | Rebuild/reinstall/relaunch active app | sandbox-only | `ChatIosSimulatorPanel.tsx` |

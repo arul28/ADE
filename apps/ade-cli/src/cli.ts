@@ -660,8 +660,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   "stream-status": `${ADE_BANNER}
   iOS Simulator: stream-status
 
-  Shows whether the live view is active, the refresh rate, frame count,
-  simulator control status, and last error.
+  Shows whether the live view is active, the refresh rate, simulator control
+  status, and last error.
 
     $ ade --socket ios-sim stream-status --text
 `,
@@ -762,9 +762,13 @@ const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
   "start-mirror": "stream-start",
   "live-start": "stream-start",
   "start-live": "stream-start",
+  "preview-start": "stream-start",
+  "start-preview": "stream-start",
   "stop-stream": "stream-stop",
   "live-stop": "stream-stop",
   "stop-live": "stream-stop",
+  "preview-stop": "stream-stop",
+  "stop-preview": "stream-stop",
   swipe: "drag",
   text: "type",
 };
@@ -5643,6 +5647,26 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
   }
   if (sub === "launch" || sub === "open") {
     const claimArgs = readToolClaimArgs(args);
+    const keepSimulatorInBackground = readFlag(args, ["--background", "--keep-background"]);
+    const openSimulator = readFlag(args, ["--foreground", "--open-simulator"]);
+    const launchArgs: JsonObject = {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      projectRoot: readValue(args, ["--project-root", "--root"]),
+      laneId: claimArgs.laneId,
+      targetId: readValue(args, ["--target", "--target-id"]),
+      bundleId: readValue(args, ["--bundle-id", "--bundle"]),
+      appBundlePath: readValue(args, ["--app-bundle", "--app"]),
+      projectPath: readValue(args, ["--project", "--xcodeproj"]),
+      scheme: readValue(args, ["--scheme"]),
+      chatSessionId: claimArgs.chatSessionId,
+      build: !readFlag(args, ["--no-build"]),
+      mode: readValue(args, ["--mode"]) ?? "live",
+    };
+    if (keepSimulatorInBackground) {
+      launchArgs.keepSimulatorInBackground = true;
+    } else if (openSimulator) {
+      launchArgs.keepSimulatorInBackground = false;
+    }
     return {
       kind: "execute",
       label: "iOS simulator launch",
@@ -5651,20 +5675,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "result",
           "ios_simulator",
           "launch",
-          collectGenericObjectArgs(args, {
-            deviceUdid: readValue(args, ["--device", "--udid"]),
-            projectRoot: readValue(args, ["--project-root", "--root"]),
-            laneId: claimArgs.laneId,
-            targetId: readValue(args, ["--target", "--target-id"]),
-            bundleId: readValue(args, ["--bundle-id", "--bundle"]),
-            appBundlePath: readValue(args, ["--app-bundle", "--app"]),
-            projectPath: readValue(args, ["--project", "--xcodeproj"]),
-            scheme: readValue(args, ["--scheme"]),
-            chatSessionId: claimArgs.chatSessionId,
-            build: !readFlag(args, ["--no-build"]),
-            mode: readValue(args, ["--mode"]) ?? "live",
-            keepSimulatorInBackground: readFlag(args, ["--background", "--keep-background"]),
-          }),
+          collectGenericObjectArgs(args, launchArgs),
         ),
       ],
     };
@@ -5834,6 +5845,8 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
     sub === "stream" ||
     sub === "live-start" ||
     sub === "start-live" ||
+    sub === "preview-start" ||
+    sub === "start-preview" ||
     sub === "window-start" ||
     sub === "start-window" ||
     sub === "mirror-start" ||
@@ -5865,7 +5878,9 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
     sub === "stream-stop" ||
     sub === "stop-stream" ||
     sub === "live-stop" ||
-    sub === "stop-live"
+    sub === "stop-live" ||
+    sub === "preview-stop" ||
+    sub === "stop-preview"
   ) {
     return {
       kind: "execute",
@@ -11963,11 +11978,9 @@ function formatIosSimStream(value: unknown): string {
     ["running", status.running],
     ["device", status.deviceUdid],
     ["refresh rate", status.fps ?? status.targetFps],
-    ["frames", status.frameCount],
     ["input", status.inputBackend],
     ["error code", isRecord(status.error) ? status.error.code : null],
     ["started", status.startedAt],
-    ["last frame", status.lastFrameAt],
     ["error", status.lastError],
   ]);
 }

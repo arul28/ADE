@@ -6344,7 +6344,6 @@ export function registerIpc({
   const followSimulatorWindowUnderAde = (window: BrowserWindow | null) => {
     if (!window || window.isDestroyed()) return;
     if (simulatorParkingWindow === window) {
-      scheduleSimulatorParking(window);
       return;
     }
     cleanupSimulatorParkingFollow?.();
@@ -6369,7 +6368,6 @@ export function registerIpc({
       if (simulatorParkingWindow === window) simulatorParkingWindow = null;
       cleanupSimulatorParkingFollow = null;
     };
-    scheduleSimulatorParking(window);
   };
   const activeSimulatorParkingWindow = (): BrowserWindow | null => {
     if (!simulatorParkingWindow || simulatorParkingWindow.isDestroyed()) return null;
@@ -6381,7 +6379,6 @@ export function registerIpc({
   ): BrowserWindow | null => {
     const current = activeSimulatorParkingWindow();
     if (current && !options.force) {
-      scheduleSimulatorParking(current);
       return current;
     }
     if (!window || window.isDestroyed()) return current;
