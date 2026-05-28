@@ -11002,14 +11002,14 @@ export function createAgentChatService(args: {
         // lets the next message resume cleanly.
         if (!isAuthFailure && runtime.sdkSessionId && isCorruptThinkingTranscriptError(effectiveError)) {
           const repair = repairClaudeResumeTranscript(runtime.sdkSessionId, managed.laneWorktreePath);
-          logger.warn("agent_chat.claude_thinking_transcript_repaired", {
-            sessionId: managed.session.id,
-            sdkSessionId: runtime.sdkSessionId,
-            responsesRekeyed: repair.responsesRekeyed,
-            reusedMessageIds: repair.reusedMessageIds,
-            at: "self_heal",
-          });
           if (repair.repaired) {
+            logger.warn("agent_chat.claude_thinking_transcript_repaired", {
+              sessionId: managed.session.id,
+              sdkSessionId: runtime.sdkSessionId,
+              responsesRekeyed: repair.responsesRekeyed,
+              reusedMessageIds: repair.reusedMessageIds,
+              at: "self_heal",
+            });
             errorMessage =
               "This chat's reasoning history was corrupted and has been repaired automatically. Resend your message to continue.";
             refreshReconstructionContext(managed);

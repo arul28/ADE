@@ -35,6 +35,7 @@ export function GitHubCard() {
   };
 
   const disconnect = async () => {
+    if (!window.confirm("Disconnect GitHub token? ADE will fall back to gh auth or environment credentials when available.")) return;
     try {
       const next = await window.ade.github.clearToken();
       setStatus(next as GitHubStatus);

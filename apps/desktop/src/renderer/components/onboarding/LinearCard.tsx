@@ -6,16 +6,11 @@ import { InputPopover } from "./InputPopover";
 import { RescanButton } from "./RescanButton";
 import { LinearMark } from "../lanes/linearBrand";
 import { BRAND, CARD_BASE, SECTION_LABEL, logoTile, statusDot } from "./onboardingTheme";
+import { openExternalUrl } from "../../lib/openExternal";
 
 const openExternal = (url: string) => {
-  try {
-    const opener = (window.ade as unknown as { external?: { openExternal?: (u: string) => unknown } }).external;
-    if (opener?.openExternal) {
-      void opener.openExternal(url);
-      return;
-    }
-  } catch {/* ignore */}
-  window.open(url, "_blank", "noopener,noreferrer");
+  if (!/^https?:\/\//i.test(url)) throw new Error("Unsupported Linear OAuth URL protocol");
+  openExternalUrl(url);
 };
 
 export function LinearCard() {
@@ -24,6 +19,14 @@ export function LinearCard() {
   const [oauthBusy, setOauthBusy] = useState(false);
   const [oauthError, setOauthError] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
+  const oauthInFlightRef = useRef(false);
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current != null) {
+      window.clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     if (!window.ade.cto) {
@@ -42,16 +45,20 @@ export function LinearCard() {
   useEffect(() => {
     void refresh();
     return () => {
-      if (pollRef.current != null) window.clearInterval(pollRef.current);
+      stopPolling();
+      oauthInFlightRef.current = false;
     };
-  }, [refresh]);
+  }, [refresh, stopPolling]);
 
   const beginOAuth = async () => {
+    if (oauthInFlightRef.current) return;
     const cto = window.ade.cto;
     if (!cto) {
       setOauthError("Linear OAuth is not available in this build");
       return;
     }
+    stopPolling();
+    oauthInFlightRef.current = true;
     setOauthBusy(true);
     setOauthError(null);
     try {
@@ -62,25 +69,25 @@ export function LinearCard() {
         try {
           const update = await cto.getLinearOAuthSession({ sessionId });
           if (update.status === "completed") {
-            if (pollRef.current != null) {
-              window.clearInterval(pollRef.current);
-              pollRef.current = null;
-            }
+            stopPolling();
             await refresh();
+            oauthInFlightRef.current = false;
             setOauthBusy(false);
           } else if (update.status === "failed" || update.status === "expired") {
-            if (pollRef.current != null) {
-              window.clearInterval(pollRef.current);
-              pollRef.current = null;
-            }
+            stopPolling();
+            oauthInFlightRef.current = false;
             setOauthError(update.error ?? "OAuth failed");
             setOauthBusy(false);
           }
         } catch (e) {
+          stopPolling();
+          oauthInFlightRef.current = false;
           setOauthError(e instanceof Error ? e.message : String(e));
+          setOauthBusy(false);
         }
       }, 1500);
     } catch (e) {
+      oauthInFlightRef.current = false;
       setOauthError(e instanceof Error ? e.message : String(e));
       setOauthBusy(false);
     }
@@ -101,6 +108,7 @@ export function LinearCard() {
 
   const disconnect = async () => {
     if (!window.ade.cto) return;
+    if (!window.confirm("Disconnect Linear? You can reconnect from this setup card.")) return;
     try {
       const next = await window.ade.cto.clearLinearToken();
       setStatus(next as LinearConnectionStatus);

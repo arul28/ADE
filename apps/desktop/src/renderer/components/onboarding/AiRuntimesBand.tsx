@@ -181,9 +181,9 @@ export function AiRuntimesBand() {
         <RescanButton loading={loading} onClick={() => void refresh(true)} />
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 12 }}>
-        {RUNTIMES.map((rt, i) => (
-          <RuntimeCard key={rt.id} meta={rt} status={status} onSaveCursorKey={saveCursorKey} span={i < 3 ? 2 : 3} />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 12 }}>
+        {RUNTIMES.map((rt) => (
+          <RuntimeCard key={rt.id} meta={rt} status={status} onSaveCursorKey={saveCursorKey} />
         ))}
       </div>
 
@@ -226,8 +226,8 @@ export function AiRuntimesBand() {
         </div>
         <div style={{ marginTop: 12, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim }}>
           {hasAnyModel
-            ? "Each helper can use its own model · API keys in Settings · AI."
-            : "Connect a runtime to enable helpers · API keys in Settings · AI."}
+            ? "Each helper can use its own model · API keys in Settings · AI Connections."
+            : "Connect a runtime to enable helpers · API keys in Settings · AI Connections."}
         </div>
       </div>
     </section>
@@ -235,12 +235,11 @@ export function AiRuntimesBand() {
 }
 
 function RuntimeCard({
-  meta, status, onSaveCursorKey, span,
+  meta, status, onSaveCursorKey,
 }: {
   meta: RuntimeMeta;
   status: AiSettingsStatus | null;
   onSaveCursorKey: (key: string) => Promise<{ ok: boolean; message?: string }>;
-  span: number;
 }) {
   const phase = getPhase(meta, status);
   const tone = getTone(phase);
@@ -248,7 +247,7 @@ function RuntimeCard({
   const detail = getDetailText(meta, status, phase);
   const cta = getCta(meta, status, phase, onSaveCursorKey);
   return (
-    <div style={brandCard(meta.brand, { padding: 12, display: "flex", flexDirection: "column", gridColumn: `span ${span}` })}>
+    <div style={brandCard(meta.brand, { padding: 12, display: "flex", flexDirection: "column" })}>
       <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
         <Logo size={22} />
         <span style={{ fontSize: 12.5, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>

@@ -13,30 +13,39 @@ import { WorktreesCard } from "./WorktreesCard";
 export function ProjectSetupPage() {
   const navigate = useNavigate();
   const project = useAppStore((s) => s.project);
-  const [busy, setBusy] = useState(false);
+  const [busyAction, setBusyAction] = useState<"finish" | "skip" | null>(null);
   const [gitInstalled, setGitInstalled] = useState<boolean | null>(null);
+  const [setupError, setSetupError] = useState<string | null>(null);
 
   const finish = async () => {
-    setBusy(true);
+    setBusyAction("finish");
+    setSetupError(null);
     try {
       const next = await window.ade.onboarding.complete();
       publishOnboardingStatusUpdated(next);
       navigate("/work", { replace: true });
+    } catch (err) {
+      setSetupError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   };
 
   const skip = async () => {
-    setBusy(true);
+    setBusyAction("skip");
+    setSetupError(null);
     try {
       const next = await window.ade.onboarding.setDismissed(true);
       publishOnboardingStatusUpdated(next);
       navigate("/work", { replace: true });
+    } catch (err) {
+      setSetupError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   };
+
+  const busy = busyAction != null;
 
   return (
     <div style={pageStyle}>
@@ -55,7 +64,7 @@ export function ProjectSetupPage() {
           <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
             <div style={{ display: "flex", gap: 8 }}>
               <Button size="md" variant="ghost" disabled={busy} onClick={() => void skip()}>
-                Skip
+                {busyAction === "skip" ? "Skipping..." : "Skip"}
               </Button>
               <Button
                 size="md"
@@ -63,12 +72,17 @@ export function ProjectSetupPage() {
                 disabled={busy || gitInstalled !== true}
                 onClick={() => void finish()}
               >
-                {busy ? "Saving..." : "Finish setup"}
+                {busyAction === "finish" ? "Saving..." : "Finish setup"}
               </Button>
             </div>
             {gitInstalled === false ? (
               <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.warning }}>
                 Install git to finish setup
+              </span>
+            ) : null}
+            {setupError ? (
+              <span style={{ maxWidth: 320, textAlign: "right", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.danger }}>
+                {setupError}
               </span>
             ) : null}
           </div>

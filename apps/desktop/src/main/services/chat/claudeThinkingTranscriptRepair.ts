@@ -161,7 +161,7 @@ export function repairClaudeTranscriptFileSync(
       }
     }
 
-    const tmp = `${filePath}.repair-${process.pid}.tmp`;
+    const tmp = `${filePath}.repair-${process.pid}-${randomUUID()}.tmp`;
     try {
       fs.writeFileSync(tmp, lines.join("\n"), "utf8");
       fs.renameSync(tmp, filePath);

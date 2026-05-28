@@ -75,7 +75,7 @@ export function WorktreesCard() {
       const wt = toAttach[i]!;
       setProgress({ current: i + 1, total: toAttach.length });
       try {
-        const name = wt.branch || wt.path.split("/").pop() || "worktree";
+        const name = wt.branch || wt.path.split(/[\\/]/).filter(Boolean).pop() || "worktree";
         await window.ade.lanes.attach({ name, attachedPath: wt.path });
         ok += 1;
       } catch (err) {
@@ -101,7 +101,7 @@ export function WorktreesCard() {
     <section style={CARD_BASE}>
       <div style={sectionHeader}>
         <span style={SECTION_LABEL}>Add existing worktrees</span>
-        <RescanButton loading={busy} onClick={() => void load({ preselectAll: true })} />
+        <RescanButton loading={busy} onClick={() => void load({ keepSelected: selected })} />
       </div>
 
       {loading ? (

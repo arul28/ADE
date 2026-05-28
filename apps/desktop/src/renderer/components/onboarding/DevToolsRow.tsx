@@ -15,19 +15,27 @@ export function DevToolsRow({ onGitStatusChange }: Props) {
   const [adeCli, setAdeCli] = useState<AdeCliStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [installing, setInstalling] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
   const [installError, setInstallError] = useState<string | null>(null);
 
   const refresh = useCallback(async (force = false) => {
     setLoading(true);
+    setScanError(null);
     try {
-      const [tools, cli] = await Promise.all([
-        window.ade.devTools.detect(force),
-        window.ade.adeCli?.getStatus?.() ?? Promise.resolve(null),
-      ]);
+      const tools = await window.ade.devTools.detect(force);
       setDevTools(tools);
-      setAdeCli(cli);
       const git = tools.tools.find((t) => t.id === "git");
       onGitStatusChange(git?.installed ?? false);
+    } catch (e) {
+      setDevTools(null);
+      onGitStatusChange(false);
+      setScanError(e instanceof Error ? e.message : String(e));
+    }
+    try {
+      const cli = await (window.ade.adeCli?.getStatus?.() ?? Promise.resolve(null));
+      setAdeCli(cli);
+    } catch {
+      setAdeCli(null);
     } finally {
       setLoading(false);
     }
@@ -102,6 +110,11 @@ export function DevToolsRow({ onGitStatusChange }: Props) {
       {installError ? (
         <div style={{ marginTop: 10, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.danger }}>
           {installError}
+        </div>
+      ) : null}
+      {scanError ? (
+        <div style={{ marginTop: 10, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.danger }}>
+          {scanError}
         </div>
       ) : null}
     </section>

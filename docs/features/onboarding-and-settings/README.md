@@ -68,7 +68,8 @@ Shared types and IPC:
     applySuggestedConfig, complete, setDismissed)
   - `ade.projectConfig.*` (get, validate, save, diffAgainstDisk,
     confirmTrust, export)
-  - `ade.project.*` (listRecent, openRepo, switchProjectToPath)
+  - `ade.project.*` (listRecent, openRepo, switchProjectToPath,
+    getSnapshot, initializeOrRepair, runIntegrityCheck)
   - `ade.ai.*` and settings-specific channels per integration
 - `apps/desktop/src/main/services/ipc/registerIpc.ts` — handler
   registrations.
@@ -183,12 +184,16 @@ Renderer — settings:
   as a Settings tab.
 - `apps/desktop/src/renderer/components/settings/GeneralSection.tsx`
   — project setup re-entry, the compact `AdeCliSection`, and the
-  `AboutSection`. Setup status comes from `ade.onboarding.getStatus`;
-  the section no longer owns runtime daemon health, workspace fields,
-  or AI provider controls.
+  project health / repair surface. Setup status comes from
+  `ade.onboarding.getStatus`; runtime daemon health lives in the
+  `AboutSection`, and AI provider controls live in AI Connections.
+- `apps/desktop/src/renderer/components/settings/ProjectSection.tsx`
+  — project `.ade` structure snapshot, shared/local/secret config paths,
+  health warnings, structure repair, and integrity-check controls.
 - `apps/desktop/src/renderer/components/settings/AboutSection.tsx`
   — installed ADE version, packaged/dev badge, latest GitHub release
-  lookup, release notes link, and manual update check button.
+  lookup, release notes link, manual update check button, and runtime
+  daemon install / health status when available.
 - `apps/desktop/src/renderer/components/settings/AdeCliSection.tsx`
   — surfaces `window.ade.adeCli.getStatus()` / `installForUser()`.
   Status carries `terminalInstalled`, `agentPathReady`,
