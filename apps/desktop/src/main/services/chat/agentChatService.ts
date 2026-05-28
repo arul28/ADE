@@ -3020,7 +3020,10 @@ function resolveClaudeTurnModelPayload(
     if (!reportedModelId || reportedModelId === session.modelId) return false;
     const reportedDescriptor = getModelById(reportedModelId) ?? resolveModelAlias(reportedModelId);
     if (selectedIsOpus48) {
-      return reportedDescriptor?.id === "anthropic/claude-opus-4-7";
+      return (
+        reportedDescriptor?.id === "anthropic/claude-opus-4-7"
+        || reportedDescriptor?.id === "anthropic/claude-opus-4-7-1m"
+      );
     }
     if (!selectedIsOpusOneMillion) return false;
     return reportedDescriptor?.id === "anthropic/claude-opus-4-7";

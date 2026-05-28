@@ -1684,7 +1684,13 @@ describe("createAgentChatService", () => {
       expect(session.model).toBe("claude-opus-4-7[1m]");
     });
 
-    it("preserves Claude Opus 4.8 in done events when the SDK reports the opus alias", async () => {
+    it.each([
+      { reportedModel: "opus", usageModel: "claude-opus-4-8" },
+      { reportedModel: "claude-opus-4-7-1m", usageModel: "claude-opus-4-7-1m" },
+    ])("preserves Claude Opus 4.8 in done events when the SDK reports $reportedModel", async ({
+      reportedModel,
+      usageModel,
+    }) => {
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
@@ -1696,7 +1702,7 @@ describe("createAgentChatService", () => {
               type: "system",
               subtype: "init",
               session_id: "sdk-opus-4-8",
-              model: "opus",
+              model: reportedModel,
               slash_commands: [],
             };
             yield {
@@ -1705,7 +1711,7 @@ describe("createAgentChatService", () => {
               is_error: false,
               session_id: "sdk-opus-4-8",
               usage: { input_tokens: 1, output_tokens: 1 },
-              modelUsage: { "claude-opus-4-8": { input_tokens: 1, output_tokens: 1 } },
+              modelUsage: { [usageModel]: { input_tokens: 1, output_tokens: 1 } },
             };
             return;
           }
@@ -1713,13 +1719,13 @@ describe("createAgentChatService", () => {
             type: "system",
             subtype: "init",
             session_id: "sdk-opus-4-8",
-            model: "opus",
+            model: reportedModel,
             slash_commands: [],
           };
           yield {
             type: "assistant",
             message: {
-              model: "opus",
+              model: reportedModel,
               content: [{ type: "text", text: "Done" }],
               usage: { input_tokens: 1, output_tokens: 1 },
             },
@@ -1730,7 +1736,7 @@ describe("createAgentChatService", () => {
             is_error: false,
             session_id: "sdk-opus-4-8",
             usage: { input_tokens: 1, output_tokens: 1 },
-            modelUsage: { "claude-opus-4-8": { input_tokens: 1, output_tokens: 1 } },
+            modelUsage: { [usageModel]: { input_tokens: 1, output_tokens: 1 } },
           };
         })()),
         close: vi.fn(),
