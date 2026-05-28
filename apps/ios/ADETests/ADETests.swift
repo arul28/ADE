@@ -13,6 +13,65 @@ private func recentIso8601Fixture() -> String {
   return f.string(from: Date())
 }
 
+private actor LaneBatchDeleteRecorder {
+  private var started: [String] = []
+  private var active = 0
+  private var maxActive = 0
+  private var startedWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+  private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+  private var released = false
+
+  func start(_ laneId: String) {
+    started.append(laneId)
+    active += 1
+    maxActive = max(maxActive, active)
+    resumeStartedWaiters()
+  }
+
+  func finish() {
+    active = max(0, active - 1)
+  }
+
+  func waitForStartedCount(_ count: Int) async {
+    if started.count >= count { return }
+    await withCheckedContinuation { continuation in
+      startedWaiters.append((count: count, continuation: continuation))
+    }
+  }
+
+  func waitForRelease() async {
+    if released { return }
+    await withCheckedContinuation { continuation in
+      releaseWaiters.append(continuation)
+    }
+  }
+
+  func release() {
+    released = true
+    let waiters = releaseWaiters
+    releaseWaiters = []
+    for waiter in waiters {
+      waiter.resume()
+    }
+  }
+
+  func startedIds() -> [String] {
+    started
+  }
+
+  func maxActiveCount() -> Int {
+    maxActive
+  }
+
+  private func resumeStartedWaiters() {
+    let ready = startedWaiters.filter { started.count >= $0.count }
+    startedWaiters.removeAll { started.count >= $0.count }
+    for waiter in ready {
+      waiter.continuation.resume()
+    }
+  }
+}
+
 final class ADETests: XCTestCase {
   func testTerminalDisplayReplaysCarriageReturnProgressUpdates() {
     let output = sanitizeTerminalOutputForDisplay("Downloading 10%\rDownloading 80%\rDownloading 100%\nDone")
@@ -4977,6 +5036,82 @@ final class ADETests: XCTestCase {
       laneListEmptyStateMessage(scope: .all, searchText: "auth", hasFilters: true),
       "Try a different search or clear the filter."
     )
+  }
+
+  func testLaneDeleteDependencyBatchesKeepAncestorsAfterSelectedDescendants() {
+    let status = LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false)
+    let runtime = LaneRuntimeSummary(bucket: "ended", runningCount: 0, awaitingInputCount: 0, endedCount: 1, sessionCount: 1)
+
+    func snapshot(_ id: String, parentLaneId: String? = nil) -> LaneListSnapshot {
+      var snapshot = makeLaneListSnapshot(
+        id: id,
+        name: id,
+        laneType: "worktree",
+        baseRef: "main",
+        branchRef: "ade/\(id)",
+        worktreePath: "/project/.ade/worktrees/\(id)",
+        description: nil,
+        status: status,
+        runtime: runtime,
+        createdAt: "2026-03-20T00:00:00.000Z",
+        archivedAt: nil
+      )
+      snapshot.lane.parentLaneId = parentLaneId
+      return snapshot
+    }
+
+    let batches = laneDeleteDependencyBatches(snapshots: [
+      snapshot("lane-parent"),
+      snapshot("lane-child-b", parentLaneId: "lane-parent"),
+      snapshot("lane-grandchild", parentLaneId: "lane-child-a"),
+      snapshot("lane-child-a", parentLaneId: "lane-parent"),
+      snapshot("lane-sibling"),
+    ])
+
+    XCTAssertEqual(batches, [
+      ["lane-child-b", "lane-grandchild", "lane-sibling"],
+      ["lane-child-a"],
+      ["lane-parent"],
+    ])
+  }
+
+  @MainActor
+  func testLaneDeleteBatchRunnerStartsTwoDeletesAtOnceAndPreservesOrder() async {
+    enum DeleteError: Error {
+      case expected
+    }
+
+    let recorder = LaneBatchDeleteRecorder()
+
+    let task = Task { @MainActor in
+      await runLaneDeleteBatchWithConcurrency(laneIds: ["lane-a", "lane-b", "lane-c"]) { laneId -> String in
+        await recorder.start(laneId)
+        if laneId != "lane-c" {
+          await recorder.waitForRelease()
+        }
+        await recorder.finish()
+        if laneId == "lane-b" {
+          throw DeleteError.expected
+        }
+        return "\(laneId)-done"
+      }
+    }
+
+    await recorder.waitForStartedCount(2)
+    let firstStartedIds = await recorder.startedIds()
+    let firstMaxActiveCount = await recorder.maxActiveCount()
+    XCTAssertEqual(firstStartedIds, ["lane-a", "lane-b"])
+    XCTAssertEqual(firstMaxActiveCount, 2)
+
+    await recorder.release()
+    let results = await task.value
+
+    let finalMaxActiveCount = await recorder.maxActiveCount()
+    XCTAssertEqual(results.map(\.laneId), ["lane-a", "lane-b", "lane-c"])
+    XCTAssertEqual(finalMaxActiveCount, 2)
+    XCTAssertEqual(try? results[0].result.get(), "lane-a-done")
+    XCTAssertThrowsError(try results[1].result.get())
+    XCTAssertEqual(try? results[2].result.get(), "lane-c-done")
   }
 
   func testLaneCardRebaseWarningPrefersAutoRebaseStatusOverSuggestion() {

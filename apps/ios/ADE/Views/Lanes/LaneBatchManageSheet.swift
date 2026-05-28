@@ -1,5 +1,85 @@
 import SwiftUI
 
+let laneDeleteBatchConcurrency = 2
+
+struct LaneBatchOperationResult<Value> {
+  let laneId: String
+  let result: Result<Value, Error>
+}
+
+func laneDeleteDependencyBatches(snapshots: [LaneListSnapshot]) -> [[String]] {
+  let laneIds = snapshots.map(\.lane.id)
+  let parentById = Dictionary(uniqueKeysWithValues: snapshots.compactMap { snapshot -> (String, String)? in
+    guard let parentLaneId = snapshot.lane.parentLaneId else { return nil }
+    return (snapshot.lane.id, parentLaneId)
+  })
+  var remaining = Set(laneIds)
+  var batches: [[String]] = []
+
+  while !remaining.isEmpty {
+    let leafIds = laneIds.filter { laneId in
+      guard remaining.contains(laneId) else { return false }
+      return !laneIds.contains { candidateId in
+        remaining.contains(candidateId) && parentById[candidateId] == laneId
+      }
+    }
+
+    let batchIds = leafIds.isEmpty
+      ? laneIds.first(where: { remaining.contains($0) }).map { [$0] } ?? []
+      : leafIds
+    guard !batchIds.isEmpty else { break }
+    batches.append(batchIds)
+    for laneId in batchIds {
+      remaining.remove(laneId)
+    }
+  }
+
+  return batches
+}
+
+@MainActor
+func runLaneDeleteBatchWithConcurrency<Value>(
+  laneIds: [String],
+  concurrency: Int = laneDeleteBatchConcurrency,
+  operation: @escaping (String) async throws -> Value
+) async -> [LaneBatchOperationResult<Value>] {
+  guard !laneIds.isEmpty else { return [] }
+
+  let normalizedConcurrency = max(1, min(laneIds.count, min(concurrency, laneDeleteBatchConcurrency)))
+  var results: [LaneBatchOperationResult<Value>] = []
+  results.reserveCapacity(laneIds.count)
+
+  var index = 0
+  while index < laneIds.count {
+    let nextIndex = min(index + normalizedConcurrency, laneIds.count)
+    let chunk = Array(laneIds[index..<nextIndex])
+
+    if chunk.count == 1 {
+      results.append(await runLaneDeleteOperation(laneId: chunk[0], operation: operation))
+    } else {
+      async let first = runLaneDeleteOperation(laneId: chunk[0], operation: operation)
+      async let second = runLaneDeleteOperation(laneId: chunk[1], operation: operation)
+      results.append(contentsOf: await [first, second])
+    }
+
+    index = nextIndex
+  }
+
+  return results
+}
+
+@MainActor
+private func runLaneDeleteOperation<Value>(
+  laneId: String,
+  operation: (String) async throws -> Value
+) async -> LaneBatchOperationResult<Value> {
+  do {
+    return LaneBatchOperationResult(laneId: laneId, result: .success(try await operation(laneId)))
+  } catch {
+    return LaneBatchOperationResult(laneId: laneId, result: .failure(error))
+  }
+}
+
 struct LaneBatchManageSheet: View {
   @Environment(\.dismiss) private var dismiss
   @EnvironmentObject private var syncService: SyncService
@@ -23,34 +103,6 @@ struct LaneBatchManageSheet: View {
       .map(\.lane)
       .filter { $0.archivedAt == nil && $0.laneType != "primary" }
       .map(\.id)
-  }
-
-  private var laneIdsDescendantFirst: [String] {
-    let selectedIds = Set(laneIds)
-    let parentById = Dictionary(uniqueKeysWithValues: snapshots.compactMap { snapshot -> (String, String)? in
-      guard let parentLaneId = snapshot.lane.parentLaneId else { return nil }
-      return (snapshot.lane.id, parentLaneId)
-    })
-
-    func selectedAncestorDepth(for laneId: String, visited: Set<String> = []) -> Int {
-      guard !visited.contains(laneId),
-            let parentLaneId = parentById[laneId],
-            selectedIds.contains(parentLaneId)
-      else { return 0 }
-
-      var nextVisited = visited
-      nextVisited.insert(laneId)
-      return 1 + selectedAncestorDepth(for: parentLaneId, visited: nextVisited)
-    }
-
-    return laneIds.sorted { lhs, rhs in
-      let lhsDepth = selectedAncestorDepth(for: lhs)
-      let rhsDepth = selectedAncestorDepth(for: rhs)
-      if lhsDepth == rhsDepth {
-        return lhs < rhs
-      }
-      return lhsDepth > rhsDepth
-    }
   }
 
   var body: some View {
@@ -221,20 +273,29 @@ struct LaneBatchManageSheet: View {
     var deletedLaneIds: [String] = []
     var failures: [String] = []
 
-    let sortedIds = laneIdsDescendantFirst
+    let deleteBranch = deleteMode != .worktree
+    let deleteRemoteBranch = deleteMode == .remoteBranch
+    let remoteName = deleteRemoteName
+    let force = deleteForce
 
-    for laneId in sortedIds {
-      do {
+    for batch in laneDeleteDependencyBatches(snapshots: snapshots) {
+      let results = await runLaneDeleteBatchWithConcurrency(laneIds: batch) { laneId in
         try await syncService.deleteLane(
           laneId,
-          deleteBranch: deleteMode != .worktree,
-          deleteRemoteBranch: deleteMode == .remoteBranch,
-          remoteName: deleteRemoteName,
-          force: deleteForce
+          deleteBranch: deleteBranch,
+          deleteRemoteBranch: deleteRemoteBranch,
+          remoteName: remoteName,
+          force: force
         )
-        deletedLaneIds.append(laneId)
-      } catch {
-        failures.append("\(laneId) (\(error.localizedDescription))")
+      }
+
+      for result in results {
+        switch result.result {
+        case .success:
+          deletedLaneIds.append(result.laneId)
+        case .failure(let error):
+          failures.append("\(result.laneId) (\(error.localizedDescription))")
+        }
       }
     }
 

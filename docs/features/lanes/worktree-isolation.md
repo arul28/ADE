@@ -80,18 +80,34 @@ auto-clean it.
 
 ## Deleting a worktree
 
-`laneService.deleteLane()`:
+`laneService.delete()` runs a multi-step teardown rather than deleting
+the directory first:
 
 1. Fetch the row; reject if `is_edit_protected = 1` (primary).
-2. If managed worktree: `git worktree remove --force <path>`. If
-   Git reports success but residual files remain, ADE removes the
-   directory with `fs.promises.rm` and runs `git worktree prune` before
-   continuing. If attached: skip.
-3. If caller requested `deleteBranch`: `git branch -D <branch>`.
-4. Delete the lane row. Stale state in `key_value`, `operations`,
+2. Check worktree dirtiness when a managed worktree exists; dirty
+   lanes require the caller's force acknowledgement.
+3. Cancel auto-rebase and dismiss rebase suggestions for the lane.
+4. Stop ADE-managed processes, PTYs, and file watchers for the lane,
+   then run any lane-environment cleanup supplied by the runtime.
+5. If managed worktree: enter the shared worktree-mutation guard and
+   run `git worktree remove --force <path>`. If Git reports success
+   but residual files remain, ADE removes the directory with
+   `fs.promises.rm` and runs `git worktree prune` before continuing.
+   If attached: skip.
+6. If caller requested `deleteBranch`: `git branch -D <branch>`.
+   Optional remote branch cleanup uses `git push <remote> --delete
+   <branch>` and is non-fatal.
+7. Remove lane pack artifacts and delete the lane's database rows in
+   one transaction. Stale state in `key_value`, `operations`,
    `sessions`, etc. that references the lane is either cascaded
    (via FK ON DELETE) or retained for audit as documented on each
    table.
+
+Independent lane deletes can run through the pre-removal teardown at
+the same time. The shared guard is scoped to the actual
+`git worktree remove` registry mutation, which prevents concurrent
+Git worktree metadata edits without making lane creation wait for
+unrelated process, PTY, watcher, or environment cleanup.
 
 A worktree that has been manually removed from disk but still has a
 row is repaired by `laneService.removeStaleWorktrees()` at startup.
@@ -160,10 +176,12 @@ worktree, but a full parallel development environment.
 - **Git lock files**: a stray `.git/index.lock` in one worktree can
   block operations in that lane but not others. ADE does not auto-
   remove stale locks — users must.
-- **Stopping a running dev server on delete**: `deleteLane` does not
-  terminate processes launched inside the worktree. `runtimeDiagnosticsService`
-  may still report a port as responding for a short period after
-  delete; the proxy route is removed synchronously.
+- **Stopping a running dev server on delete**: ADE-managed processes,
+  PTYs, and watchers are stopped before worktree removal, but processes
+  that were launched outside ADE may still hold file handles or keep a
+  port alive briefly. The delete pipeline recovers residual files after
+  a successful `git worktree remove` and runtime diagnostics may lag
+  until the external process exits.
 - **Attached lane path resolution**: attached paths are stored as
   given after `path.resolve`. If the user renames the containing
   directory outside ADE, `ade.lanes.list` will still return the row
