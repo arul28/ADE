@@ -249,6 +249,8 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
   );
   const selectedConnectionError =
     selectedConnection?.state === "error" ? selectedConnection.lastError : null;
+  const selectedCompatibilityWarnings =
+    selectedConnection?.compatibilityWarnings ?? connected?.compatibilityWarnings ?? [];
 
   const loadTargets = useCallback(async () => {
     setLoading(true);
@@ -305,6 +307,8 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
       version:
         selectedConnection.version ??
         selectedConnection.target.runtimeBinaryVersion,
+      capabilities: selectedConnection.capabilities,
+      compatibilityWarnings: selectedConnection.compatibilityWarnings,
       projects: selectedConnection.projects,
     });
   }, [selectedConnection]);
@@ -386,6 +390,8 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
                       state: "connected" as const,
                       arch: result.arch,
                       version: result.version,
+                      capabilities: result.capabilities,
+                      compatibilityWarnings: result.compatibilityWarnings,
                       projects: result.projects,
                       lastError: null,
                       lastAttemptedAt: Date.now(),
@@ -400,6 +406,8 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
                   state: "connected" as const,
                   arch: result.arch,
                   version: result.version,
+                  capabilities: result.capabilities,
+                  compatibilityWarnings: result.compatibilityWarnings,
                   projects: result.projects,
                   lastError: null,
                   lastAttemptedAt: Date.now(),
@@ -929,17 +937,37 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
             {selectedConnection?.state === "connected" ||
             (!selectedConnection &&
               connected?.target.id === selectedTarget.id) ? (
-              <div
-                style={{
-                  color: COLORS.textMuted,
-                  fontFamily: SANS_FONT,
-                  fontSize: 12,
-                }}
-              >
-                ADE service{" "}
-                {selectedConnection?.version ?? connected?.version ?? "unknown"}{" "}
-                on {selectedConnection?.arch ?? connected?.arch ?? "unknown"}.
-              </div>
+              <>
+                <div
+                  style={{
+                    color: COLORS.textMuted,
+                    fontFamily: SANS_FONT,
+                    fontSize: 12,
+                  }}
+                >
+                  ADE service{" "}
+                  {selectedConnection?.version ?? connected?.version ?? "unknown"}{" "}
+                  on {selectedConnection?.arch ?? connected?.arch ?? "unknown"}.
+                </div>
+                {selectedCompatibilityWarnings.length > 0 ? (
+                  <div
+                    style={{
+                      display: "grid",
+                      gap: 4,
+                      color: COLORS.warning,
+                      fontFamily: SANS_FONT,
+                      fontSize: 12,
+                    }}
+                  >
+                    {selectedCompatibilityWarnings.map((warning) => (
+                      <div key={warning} style={{ display: "flex", gap: 6 }}>
+                        <Warning size={14} weight="fill" style={{ flexShrink: 0, marginTop: 1 }} />
+                        <span>{warning}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </>
             ) : (
               <div
                 style={{

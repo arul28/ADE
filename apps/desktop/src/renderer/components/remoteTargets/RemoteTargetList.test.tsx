@@ -171,6 +171,9 @@ describe("RemoteTargetList", () => {
       target,
       arch: "darwin-arm64",
       version: "1.0.0",
+      compatibilityWarnings: [
+        "Remote ADE service reported 0.9.0; local ADE is 1.0.0. ADE will connect because the RPC capabilities are compatible.",
+      ],
       projects: [project],
     });
     lanesMock.list.mockResolvedValue([]);
@@ -191,6 +194,7 @@ describe("RemoteTargetList", () => {
     );
     expect(screen.getByText("Connected")).toBeTruthy();
     expect(screen.getByText("ADE service 1.0.0 on darwin-arm64.")).toBeTruthy();
+    expect(screen.getByText(/RPC capabilities are compatible/i)).toBeTruthy();
     expect(screen.queryByText("/remote/ADE")).toBeNull();
     expect(screen.queryByRole("button", { name: "Open" })).toBeNull();
   });

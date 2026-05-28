@@ -577,26 +577,51 @@ export class LocalRuntimeConnectionPool {
     rootPath: string,
     request: RemoteRuntimeActionRequest,
   ): Promise<RemoteRuntimeActionResult> {
+    const tStart = Date.now();
     const project = await this.ensureProject(rootPath);
+    const tProject = Date.now();
     const entry = await this.connect();
+    const tConnect = Date.now();
     const actionCallOptions = request.domain === "file"
       ? { timeoutMs: LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS }
       : undefined;
-    const value = await entry.client.call(
-      "ade/actions/call",
-      {
-        projectId: project.projectId,
-        name: "run_ade_action",
-        arguments: {
+    let value: unknown = undefined;
+    let callError: Error | null = null;
+    try {
+      value = await entry.client.call(
+        "ade/actions/call",
+        {
+          projectId: project.projectId,
+          name: "run_ade_action",
+          arguments: {
+            domain: request.domain,
+            action: request.action,
+            ...(request.args ? { args: request.args } : {}),
+            ...(Object.prototype.hasOwnProperty.call(request, "arg") ? { arg: request.arg } : {}),
+            ...(request.argsList ? { argsList: request.argsList } : {}),
+          },
+        },
+        actionCallOptions,
+      );
+    } catch (error) {
+      callError = error instanceof Error ? error : new Error(String(error));
+    } finally {
+      const tCall = Date.now();
+      const totalMs = tCall - tStart;
+      if (totalMs > 500 || callError) {
+        this.logger.warn("local_runtime.action_slow", {
           domain: request.domain,
           action: request.action,
-          ...(request.args ? { args: request.args } : {}),
-          ...(Object.prototype.hasOwnProperty.call(request, "arg") ? { arg: request.arg } : {}),
-          ...(request.argsList ? { argsList: request.argsList } : {}),
-        },
-      },
-      actionCallOptions,
-    );
+          totalMs,
+          ensureProjectMs: tProject - tStart,
+          connectMs: tConnect - tProject,
+          daemonCallMs: tCall - tConnect,
+          timeoutMs: actionCallOptions?.timeoutMs ?? null,
+          error: callError?.message ?? null,
+        });
+      }
+    }
+    if (callError) throw callError;
 
     if (value && typeof value === "object" && !Array.isArray(value)) {
       const record = value as Record<string, unknown>;

@@ -24,6 +24,13 @@ Every other service talks to plain SQLite (`run`, `get`, `all`,
   of changes this device has generated since the given version.
 - `applyChanges(rows: CrsqlChangeRow[]): ApplyRemoteChangesResult` —
   apply remote changes locally.
+- `discardUnpublishedChangesForTables(tableNames: string[]): void` —
+  records a per-table, per-site high-water mark in the local-only
+  `local_crr_change_suppressions` table so subsequent
+  `exportChangesSince` calls filter local-site rows for those tables at
+  or below the current `db_version`. Used when local viewer state
+  (e.g. the device registry on a viewer join) must be cleared without
+  relaying those clears to sync peers.
 
 The canonical `syncHostService` and `syncPeerService`
 (`apps/ade-cli/src/services/sync/`) use those four primitives plus
@@ -230,7 +237,42 @@ Do not add tables to the replicated set that only matter on one
 device. Worktrees, PTY handles, transcripts, and caches are
 explicitly excluded. If a table is useful as "the host knows X", it
 should live outside `.ade/ade.db` or be designed so the host owns
-all writes and controllers only read.
+all writes and controllers only read. The local-only excluded set
+is enumerated in `kvDb.ts`'s `LOCAL_ONLY_CRR_EXCLUDED_TABLES` and
+includes `lane_detail_snapshots`, `lane_list_snapshots`,
+`local_crr_change_suppressions`, `pr_auto_link_ignores`,
+`pull_request_ai_summaries`, and `runtime_processes`.
+
+### Local clears that must not propagate
+
+Some bookkeeping tables are CRRs on every device but occasionally
+need to be wiped on one device without that wipe being relayed to
+peers — the canonical case is the device registry on a viewer join,
+where the daemon clears its local `devices` and `sync_cluster_state`
+rows before adopting the host's snapshot. The naive approach
+(running `DELETE FROM devices`) generates CRR tombstones that the
+peer would then ship back to the host, erasing the host's authoritative
+registry.
+
+`AdeDb.sync.discardUnpublishedChangesForTables(tableNames)` is the
+escape hatch:
+
+1. Capture the current `getDbVersion()` as the suppression
+   high-water mark.
+2. Upsert one row per `(table_name, site_id)` into
+   `local_crr_change_suppressions` with `through_db_version` set to
+   that mark (or `max(existing, new)` on conflict).
+3. `exportChangesSince(version)` consults the suppression map for the
+   local site id and drops any local-site rows whose `db_version <=
+   through_db_version` for a suppressed table. Foreign-site rows for
+   the same table are still exported normally.
+
+After the clear, the caller is expected to advance the peer client's
+outbound cursor (`syncPeerService.acknowledgeLocalDbVersion()`) so
+nothing in the suppressed range can ever be queued for transmission.
+`local_crr_change_suppressions` is itself in
+`LOCAL_ONLY_CRR_EXCLUDED_TABLES`, so the suppression bookkeeping never
+syncs.
 
 ## Changeset extraction and application
 

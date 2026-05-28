@@ -96,6 +96,26 @@ describe("RuntimeRpcClient", () => {
     });
   });
 
+  it("includes the failed method, JSON-RPC code, and details in remote errors", async () => {
+    const transport = new MockTransport();
+    const client = new RuntimeRpcClient(transport);
+
+    const pending = client.call("projects.create", { name: "ADE" });
+    transport.emitData({
+      jsonrpc: "2.0",
+      id: requestId(transport.writes[0]!),
+      error: {
+        code: -32601,
+        message: "Method not found",
+        data: { method: "projects.create" },
+      },
+    });
+
+    await expect(pending).rejects.toThrow(
+      'Remote ADE service method projects.create failed (code -32601): Method not found Details: {"method":"projects.create"}',
+    );
+  });
+
   it("clears pending calls when writes fail", async () => {
     const transport = new MockTransport();
     transport.writeError = new Error("broken pipe");

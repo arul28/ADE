@@ -1023,6 +1023,7 @@ export function createSyncService(args: SyncServiceArgs) {
       try {
         await syncPeerService.connect(draft);
         deviceRegistryService.clearClusterRegistryForViewerJoin();
+        syncPeerService.acknowledgeLocalDbVersion();
         deviceRegistryService.touchLocalDevice({ lastSeenAt: nowIso() });
         syncPeerService.flushLocalChanges();
         await sleep(150);

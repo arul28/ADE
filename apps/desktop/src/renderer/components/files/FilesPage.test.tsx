@@ -45,6 +45,12 @@ vi.mock("../shared/AdeDiffViewer", async () => {
   return { AdeDiffViewer };
 });
 
+vi.mock("../orchestration/PlanMarkdown", () => ({
+  PlanMarkdown: ({ source }: { source: string }) => (
+    <div data-testid="mock-plan-markdown">{source}</div>
+  ),
+}));
+
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: ({ count, estimateSize }: { count: number; estimateSize: () => number }) => {
     const size = estimateSize();
@@ -84,7 +90,7 @@ vi.mock("monaco-editor", () => {
         latestMockEditor = {
           setModel(next: ReturnType<typeof createModel> | null) {
             model = next;
-            element.textContent = next?.value ?? "";
+            if (next) element.textContent = next.value;
           },
           getValue() {
             return model?.value ?? "";
@@ -412,6 +418,52 @@ describe("FilesPage", () => {
     expect(watchArgs).not.toHaveProperty("includeIgnored");
   });
 
+  it("toggles Markdown files between source and rendered preview", async () => {
+    renderFilesPage({
+      openFilePath: ".ade/notes/project.md",
+      preferPrimaryWorkspace: true,
+    });
+
+    await waitForEditorText("# Project notes");
+    expect(screen.queryByTestId("files-markdown-preview")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Render markdown preview" }));
+
+    expect(await screen.findByTestId("files-markdown-preview")).toBeTruthy();
+    expect((await screen.findByTestId("mock-plan-markdown")).textContent).toContain("# Project notes");
+    expect(screen.queryByTestId("mock-monaco-editor")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show markdown source" }));
+
+    await waitForEditorText("# Project notes");
+    expect(screen.queryByTestId("files-markdown-preview")).toBeNull();
+  });
+
+  it("returns Markdown files to source mode after switching through a non-Markdown tab", async () => {
+    renderFilesPage({
+      openFilePath: "src/index.ts",
+      preferPrimaryWorkspace: true,
+    });
+
+    await waitForEditorText("value = 1");
+    fireEvent.click(screen.getByText(/QUICK OPEN/i));
+    fireEvent.change(screen.getByPlaceholderText(/Type to search files/i), {
+      target: { value: "project" },
+    });
+    fireEvent.click(await screen.findByText(".ade/notes/project.md"));
+
+    await waitForEditorText("# Project notes");
+    fireEvent.click(screen.getByRole("button", { name: "Render markdown preview" }));
+    expect(await screen.findByTestId("files-markdown-preview")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "index.ts" }));
+    await waitForEditorText("value = 1");
+
+    fireEvent.click(screen.getByRole("button", { name: "project.md" }));
+    await waitForEditorText("# Project notes");
+    expect(screen.queryByTestId("files-markdown-preview")).toBeNull();
+  });
+
   it("starts the workspace watcher before a file is opened without watching ADE runtime churn", async () => {
     renderFilesPage({ preferPrimaryWorkspace: true });
 
@@ -526,6 +578,36 @@ describe("FilesPage", () => {
       "export const value = 1;\n",
       "export const value = 2;\n",
     ]);
+  });
+
+  it("reselects already-open files without reading them from disk again", async () => {
+    currentTree = [
+      {
+        name: "src",
+        path: "src",
+        type: "directory",
+        children: [
+          {
+            name: "index.ts",
+            path: "src/index.ts",
+            type: "file",
+          },
+        ],
+      },
+    ];
+
+    renderFilesPage({
+      openFilePath: "src/index.ts",
+      preferPrimaryWorkspace: true,
+    });
+
+    await waitForEditorText("value = 1");
+    const readCount = (window.ade.files.readFile as any).mock.calls.length;
+    fireEvent.click(await screen.findByTitle("src"));
+    fireEvent.click(await screen.findByTitle("src/index.ts"));
+
+    await waitForEditorText("value = 1");
+    expect((window.ade.files.readFile as any).mock.calls).toHaveLength(readCount);
   });
 
   it("renders image files inline without starting the code editor", async () => {

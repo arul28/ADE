@@ -59,6 +59,18 @@ function connectResult(version: string): RemoteRuntimeConnectResult {
     target,
     arch: "linux-x64",
     version,
+    capabilities: {
+      projects: true,
+      machineProjects: {
+        browseDirectories: true,
+        getDetail: true,
+        getWorkSummary: true,
+        getDefaultParentDir: true,
+        create: true,
+        clone: true,
+        listMyGitHubRepos: true,
+      },
+    },
     projects: [],
   };
 }
@@ -366,6 +378,31 @@ describe("RemoteConnectionPool", () => {
       parentDir: "/srv",
     });
     expect(secondClient.call).not.toHaveBeenCalled();
+  });
+
+  it("fails machine project actions with a specific compatibility message when the remote lacks the capability", async () => {
+    const client = createClient();
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client,
+      ssh: createSsh(),
+      result: {
+        ...connectResult("0.9.0"),
+        capabilities: {
+          projects: true,
+          machineProjects: {
+            browseDirectories: false,
+          },
+        },
+      },
+    });
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+
+    await expect(
+      pool.callMachineForTarget(target, "projects.browseDirectories", {}),
+    ).rejects.toThrow(
+      /Remote ADE service 0\.9\.0 does not support browsing remote directories/i,
+    );
+    expect(client.call).not.toHaveBeenCalled();
   });
 
   it("reconnects after interrupted mutating actions and asks the caller to retry", async () => {

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import {
   Warning as AlertTriangle,
   ArrowSquareOut,
+  Eye,
   FileTs as FileCode2,
   FileText,
   FolderOpen,
@@ -38,6 +39,13 @@ import { HelpChip } from "../onboarding/HelpChip";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { FilesExplorer } from "./FilesExplorer";
 import { getFileIcon } from "./filePresentation";
+
+const LazyPlanMarkdown = React.lazy(() =>
+  import("../orchestration/PlanMarkdown").then((module) => ({
+    default: module.PlanMarkdown,
+  })),
+);
+
 type OpenTab = {
   path: string;
   content: string;
@@ -67,6 +75,12 @@ function getFilePreviewKind(file: FilePreviewLike | null | undefined): FilePrevi
 
 function isTextTab(tab: OpenTab | null | undefined): boolean {
   return Boolean(tab) && getFilePreviewKind(tab) === "text" && !tab?.isBinary;
+}
+
+function isMarkdownTab(tab: OpenTab | null | undefined): boolean {
+  if (!tab || !isTextTab(tab)) return false;
+  const lowerPath = tab.path.toLowerCase();
+  return tab.languageId === "markdown" || lowerPath.endsWith(".md") || lowerPath.endsWith(".mdx");
 }
 
 function formatFileSize(bytes: number | null | undefined): string | null {
@@ -148,6 +162,7 @@ type FilesPageSessionState = {
   openTabs: OpenTab[];
   activeTabPath: string | null;
   mode: EditorViewMode;
+  markdownPreviewEnabled: boolean;
   searchQuery: string;
   editorTheme: EditorThemeMode;
 };
@@ -298,6 +313,7 @@ function snapshotFilesPageSessionState(args: {
   openTabs: OpenTab[];
   activeTabPath: string | null;
   mode: EditorViewMode;
+  markdownPreviewEnabled: boolean;
   searchQuery: string;
   editorTheme: EditorThemeMode;
 }): FilesPageSessionState {
@@ -311,6 +327,7 @@ function snapshotFilesPageSessionState(args: {
     openTabs,
     activeTabPath,
     mode: args.mode,
+    markdownPreviewEnabled: args.markdownPreviewEnabled,
     searchQuery: args.searchQuery,
     editorTheme: args.editorTheme,
   };
@@ -613,6 +630,7 @@ export function FilesPage({
   const [openTabs, setOpenTabs] = useState<OpenTab[]>(() => initialSession?.openTabs.map((tab) => ({ ...tab })) ?? []);
   const [activeTabPath, setActiveTabPath] = useState<string | null>(initialSession?.activeTabPath ?? null);
   const [mode, setMode] = useState<EditorViewMode>(initialSession?.mode ?? "edit");
+  const [markdownPreviewEnabled, setMarkdownPreviewEnabled] = useState(initialSession?.markdownPreviewEnabled ?? false);
   const [editorTheme, setEditorTheme] = useState<EditorThemeMode>(initialSession?.editorTheme ?? readStoredEditorTheme());
 
   const [quickOpen, setQuickOpen] = useState("");
@@ -711,8 +729,16 @@ export function FilesPage({
   );
   const activeTabPreviewKind = getFilePreviewKind(activeTab);
   const activeTabIsText = isTextTab(activeTab);
+  const activeTabIsMarkdown = isMarkdownTab(activeTab);
+  const markdownPreviewActive = mode === "edit" && activeTabIsMarkdown && markdownPreviewEnabled;
+  const activeTabUsesCodeEditor = activeTabIsText && !markdownPreviewActive;
   const canEdit = Boolean(activeWorkspace) && (!activeWorkspace?.isReadOnlyByDefault || allowPrimaryEdit);
   const liveWatchEnabled = active && Boolean(workspaceId);
+
+  useEffect(() => {
+    if (activeTabIsMarkdown || !markdownPreviewEnabled) return;
+    setMarkdownPreviewEnabled(false);
+  }, [activeTabIsMarkdown, markdownPreviewEnabled]);
 
   useEffect(() => {
     if (!activeWorkspace?.rootPath) return;
@@ -733,6 +759,7 @@ export function FilesPage({
       openTabs,
       activeTabPath,
       mode,
+      markdownPreviewEnabled,
       searchQuery,
       editorTheme,
     }));
@@ -752,6 +779,7 @@ export function FilesPage({
     setOpenTabs(session?.openTabs.map((tab) => ({ ...tab })) ?? []);
     setActiveTabPath(session?.activeTabPath ?? null);
     setMode(session?.mode ?? "edit");
+    setMarkdownPreviewEnabled(session?.markdownPreviewEnabled ?? false);
     setSearchQuery(session?.searchQuery ?? "");
     setEditorTheme(session?.editorTheme ?? readStoredEditorTheme());
   }, [sessionKey]);
@@ -770,10 +798,11 @@ export function FilesPage({
       openTabs,
       activeTabPath,
       mode,
+      markdownPreviewEnabled,
       searchQuery,
       editorTheme,
     }));
-  }, [sessionKey, workspaceId, activeWorkspace?.rootPath, allowPrimaryEdit, selectedNodePath, openTabs, activeTabPath, mode, searchQuery, editorTheme]);
+  }, [sessionKey, workspaceId, activeWorkspace?.rootPath, allowPrimaryEdit, selectedNodePath, openTabs, activeTabPath, mode, markdownPreviewEnabled, searchQuery, editorTheme]);
 
   useEffect(() => {
     persistEditorTheme(editorTheme);
@@ -1078,6 +1107,16 @@ export function FilesPage({
     if (!workspaceId) return null;
     const requestedPath = normalizePath(filePath);
     const normalizedPath = nodeByComparablePath.get(normalizePathForWorkspaceComparison(requestedPath, workspaceComparisonRoot))?.path ?? requestedPath;
+    const existingOpenTab = findItemByWorkspacePath(openTabsRef.current, normalizedPath, workspaceComparisonRoot);
+    if (existingOpenTab && !options.forceReload) {
+      if (!options.preserveMode) {
+        setMode("edit");
+      }
+      setActiveTabPath(existingOpenTab.path);
+      setSelectedNodePath(existingOpenTab.path);
+      setError(null);
+      return existingOpenTab.path;
+    }
     try {
       const loaded = await window.ade.files.readFile({ workspaceId, path: normalizedPath });
       const nextTab = openTabFromFileContent(normalizedPath, loaded);
@@ -1725,7 +1764,7 @@ export function FilesPage({
 
   useEffect(() => {
     if (!activeTab) return;
-    if (!activeTabIsText) return;
+    if (!activeTabUsesCodeEditor) return;
     if (mode !== "edit") return;
     if (!editorHostEl) return;
     if (editorRef.current) return;
@@ -1798,7 +1837,7 @@ export function FilesPage({
   // in the effect below; including editorTheme here would dispose/recreate the editor on
   // every theme click and break the instance (race with async loadMonaco).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTabIsText, mode, editorHostEl, revealPendingLocation, workspaceComparisonRoot]);
+  }, [activeTabUsesCodeEditor, mode, editorHostEl, revealPendingLocation, workspaceComparisonRoot]);
 
   useEffect(() => {
     const monaco = monacoRef.current;
@@ -1808,13 +1847,13 @@ export function FilesPage({
 
   useEffect(() => {
     if (!editorRef.current || mode !== "edit") return;
-    editorRef.current.updateOptions({ readOnly: !canEdit || !activeTabIsText });
-  }, [mode, canEdit, activeTabIsText]);
+    editorRef.current.updateOptions({ readOnly: !canEdit || !activeTabUsesCodeEditor });
+  }, [mode, canEdit, activeTabUsesCodeEditor]);
 
   useEffect(() => {
     if (!editorRef.current || !monacoRef.current || mode !== "edit") return;
     const editor = editorRef.current;
-    if (!activeTab || !activeTabIsText) {
+    if (!activeTab || !activeTabUsesCodeEditor) {
       try {
         editor.setModel(null);
       } catch {
@@ -1833,7 +1872,7 @@ export function FilesPage({
     const language = activeTab.languageId || "plaintext";
     const modelKey = `${activeTab.path}::${language}`;
     if (modelRef.current && modelKeyRef.current === modelKey) {
-      editor.updateOptions({ readOnly: !canEdit || !activeTabIsText });
+      editor.updateOptions({ readOnly: !canEdit || !activeTabUsesCodeEditor });
       void revealPendingLocation();
       return;
     }
@@ -1851,18 +1890,18 @@ export function FilesPage({
     modelRef.current = monaco.editor.createModel(activeTab.content, language);
     modelKeyRef.current = modelKey;
     editor.setModel(modelRef.current);
-    editor.updateOptions({ readOnly: !canEdit || !activeTabIsText });
+    editor.updateOptions({ readOnly: !canEdit || !activeTabUsesCodeEditor });
     void revealPendingLocation();
-  }, [activeTab, activeTabIsText, mode, canEdit, editorStatus, revealPendingLocation]);
+  }, [activeTab, activeTabUsesCodeEditor, mode, canEdit, editorStatus, revealPendingLocation]);
 
   useEffect(() => {
-    if (!activeTab || !activeTabIsText || !editorRef.current || mode !== "edit") return;
+    if (!activeTab || !activeTabUsesCodeEditor || !editorRef.current || mode !== "edit") return;
     const current = editorRef.current.getValue();
     if (current === activeTab.content) return;
     editorApplyingRef.current = true;
     editorRef.current.setValue(activeTab.content);
     editorApplyingRef.current = false;
-  }, [activeTab, activeTabIsText, mode]);
+  }, [activeTab, activeTabUsesCodeEditor, mode]);
 
   useEffect(() => {
     setResolvedConflictKeys(new Set());
@@ -1870,16 +1909,14 @@ export function FilesPage({
 
   const conflictHunks = activeTab ? parseConflictHunks(activeTab.content) : [];
   const laneIdForDiff = activeWorkspace?.laneId;
-  const editorModeHint =
-    mode === "edit"
-      ? activeTabPreviewKind === "image"
-        ? "Image preview: view the file inline."
-        : activeTabIsText
-          ? "Code view: edit the file directly."
-          : "Preview unavailable: open externally to inspect this file type."
-      : mode === "diff"
-        ? "Changes view: compare this file against unstaged, staged, or commit versions."
-        : "Merge view: resolve conflict markers in this file.";
+  const editorModeHint = (() => {
+    if (mode === "diff") return "Changes view: compare this file against unstaged, staged, or commit versions.";
+    if (mode !== "edit") return "Merge view: resolve conflict markers in this file.";
+    if (activeTabPreviewKind === "image") return "Image preview: view the file inline.";
+    if (markdownPreviewActive) return "Markdown view: rendered preview for the current file.";
+    if (activeTabIsText) return "Code view: edit the file directly.";
+    return "Preview unavailable: open externally to inspect this file type.";
+  })();
 
   const applyConflictResolution = useCallback((hunk: ConflictHunk, choice: "ours" | "theirs" | "both") => {
     if (!activeTab) return;
@@ -1985,6 +2022,22 @@ export function FilesPage({
               );
             })}
           </div>
+          {activeTabIsMarkdown ? (
+            <SmartTooltip content={{ label: markdownPreviewEnabled ? "Show markdown source" : "Render markdown", description: markdownPreviewEnabled ? "Show the plain Markdown text." : "Preview this Markdown file with the plan renderer." }}>
+              <button
+                type="button"
+                aria-label={markdownPreviewEnabled ? "Show markdown source" : "Render markdown preview"}
+                style={{
+                  ...outlineButton({ height: embedded ? 20 : 24, padding: embedded ? "0 6px" : "0 8px", fontSize: embedded ? 8 : 9 }),
+                  color: markdownPreviewEnabled ? COLORS.accent : COLORS.textSecondary,
+                  borderColor: markdownPreviewEnabled ? COLORS.accent : COLORS.outlineBorder,
+                }}
+                onClick={() => setMarkdownPreviewEnabled((prev) => !prev)}
+              >
+                {markdownPreviewEnabled ? <FileCode2 size={11} weight="bold" /> : <Eye size={11} weight="bold" />}
+              </button>
+            </SmartTooltip>
+          ) : null}
           <SmartTooltip content={{ label: "Save", description: "Save the current file to disk.", shortcut: "\u2318S" }}>
             <button
               type="button"
@@ -2086,15 +2139,35 @@ export function FilesPage({
               <div className="h-full">
                 {activeTab && !activeTabIsText ? (
                   <FilePreviewSurface tab={activeTab} />
+                ) : activeTab && markdownPreviewActive ? (
+                  <div
+                    data-testid="files-markdown-preview"
+                    className="h-full overflow-auto"
+                    style={{
+                      background: COLORS.recessedBg,
+                      color: COLORS.textPrimary,
+                      padding: embedded ? 12 : 18,
+                    }}
+                  >
+                    <React.Suspense
+                      fallback={
+                        <div style={{ fontFamily: MONO_FONT, fontSize: 12, color: COLORS.textMuted }}>
+                          Rendering markdown...
+                        </div>
+                      }
+                    >
+                      <LazyPlanMarkdown source={activeTab.content} className="max-w-[880px]" />
+                    </React.Suspense>
+                  </div>
                 ) : activeTab ? (
                   <div ref={setEditorHostRef} className={cn("h-full", editorStatus === "failed" && "hidden")} />
                 ) : null}
-                {activeTab && activeTabIsText && editorStatus === "loading" ? (
+                {activeTab && activeTabUsesCodeEditor && editorStatus === "loading" ? (
                   <div className="flex h-full items-center justify-center" style={{ fontFamily: MONO_FONT, fontSize: 12, color: COLORS.textMuted }}>
                     <span className="animate-pulse">LOADING EDITOR...</span>
                   </div>
                 ) : null}
-                {activeTab && activeTabIsText && editorStatus === "failed" ? (
+                {activeTab && activeTabUsesCodeEditor && editorStatus === "failed" ? (
                   <textarea
                     value={activeTab?.content ?? ""}
                     readOnly={!canEdit || !activeTabIsText}
@@ -2216,6 +2289,7 @@ export function FilesPage({
     }
   }), [
     tree, expanded, activeWorkspace, activeTabPath, activeContextDir, openTabs, activeTab, activeTabIsText,
+    activeTabIsMarkdown, activeTabUsesCodeEditor, markdownPreviewActive, markdownPreviewEnabled,
     mode, canEdit, editorStatus, laneIdForDiff,
     searchQuery, inlineRenameRequest, selectedTreeNodePath, conflictHunks, editorTheme, editorModeHint,
     resolvedConflictKeys, createFileAt, createDirectoryAt, saveActive,

@@ -10353,6 +10353,7 @@ type MachineRuntimeInfo = {
   version: string | null;
   buildHash: string | null;
   defaultRole: string | null;
+  packageChannel: string | null;
   projectRoot: string | null;
   pid: number | null;
 };
@@ -10363,6 +10364,7 @@ function readMachineRuntimeInfo(value: unknown): MachineRuntimeInfo {
       version: null,
       buildHash: null,
       defaultRole: null,
+      packageChannel: null,
       projectRoot: null,
       pid: null,
     };
@@ -10372,6 +10374,7 @@ function readMachineRuntimeInfo(value: unknown): MachineRuntimeInfo {
     version: asString(value.runtimeInfo.version),
     buildHash: asString(value.runtimeInfo.buildHash),
     defaultRole: normalizeAdeRuntimeRole(value.runtimeInfo.defaultRole),
+    packageChannel: asString(value.runtimeInfo.packageChannel),
     projectRoot: asString(value.runtimeInfo.projectRoot),
     pid:
       typeof pid === "number" && Number.isFinite(pid) && pid > 0
@@ -10661,6 +10664,7 @@ async function runRuntimeCommand(
           version: runtimeInfo.version,
           buildHash: runtimeInfo.buildHash,
           defaultRole: runtimeInfo.defaultRole,
+          packageChannel: runtimeInfo.packageChannel,
           projectRoot: runtimeInfo.projectRoot,
           pid: runtimeInfo.pid,
           message: "ADE runtime daemon is running.",
@@ -10694,6 +10698,7 @@ async function runRuntimeCommand(
         version: runtimeInfo?.version ?? null,
         buildHash: runtimeInfo?.buildHash ?? null,
         defaultRole: runtimeInfo?.defaultRole ?? null,
+        packageChannel: runtimeInfo?.packageChannel ?? null,
         projectRoot: runtimeInfo?.projectRoot ?? null,
         pid: runtimeInfo?.pid ?? null,
         message: "ADE runtime daemon is running.",

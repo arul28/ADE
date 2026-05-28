@@ -159,7 +159,11 @@ Three modes, each driven by a tab's internal state (no service-side
 mode concept):
 
 - **Edit** — Monaco with read/write semantics, syntax highlighting,
-  Cmd+S saves atomically.
+  Cmd+S saves atomically. Markdown / `.md` / `.mdx` tabs add a per-tab
+  preview toggle (Eye icon in the tab toolbar) that swaps the Monaco
+  host for a lazily-imported `PlanMarkdown` renderer. The preference is
+  per tab and persisted in the page's per-session state alongside the
+  open tab list and active path.
 - **Diff** — `AdeDiffViewer` backed by `diffService`. Read-only views
   use `@pierre/diffs`; editable working-tree views use `MonacoDiffView`.
   Sources: staged vs working tree, HEAD vs working tree, or

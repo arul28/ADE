@@ -3,7 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_NOTIFICATION_PREFERENCES, normalizeNotificationPreferences } from "../../../shared/types/sync";
+import { isCrsqliteAvailable } from "../state/crsqliteExtension";
 import { openKvDb } from "../state/kvDb";
+import { nowIso } from "../shared/utils";
 import { createDeviceRegistryService } from "./deviceRegistryService";
 
 function createLogger() {
@@ -152,6 +154,51 @@ describe("deviceRegistryService", () => {
 
     dbA.close();
     dbB.close();
+  });
+
+  it("does not leave device-registry DELETE changesets after viewer join clear", async () => {
+    if (!isCrsqliteAvailable()) return;
+
+    const projectRoot = makeProjectRoot("ade-device-registry-viewer-clear-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    try {
+      const registry = createDeviceRegistryService({
+        db,
+        logger: createLogger() as any,
+        projectRoot,
+      });
+
+      const local = registry.ensureLocalDevice();
+      registry.upsertPeerMetadata(
+        {
+          deviceId: "peer-phone",
+          deviceName: "Phone",
+          platform: "iOS",
+          deviceType: "phone",
+          siteId: "site-phone",
+          dbVersion: 0,
+          capabilities: [],
+        },
+        { lastSeenAt: nowIso() },
+      );
+      expect(registry.listDevices().length).toBeGreaterThan(1);
+
+      const versionBeforeClear = db.sync.getDbVersion();
+      registry.clearClusterRegistryForViewerJoin();
+      expect(registry.listDevices()).toHaveLength(0);
+
+      const registryChanges = db.sync
+        .exportChangesSince(versionBeforeClear)
+        .filter((change) => change.table === "devices" || change.table === "sync_cluster_state");
+      expect(registryChanges).toHaveLength(0);
+
+      const recreated = registry.ensureLocalDevice();
+      expect(recreated.deviceId).toBe(local.deviceId);
+      expect(registry.listDevices()).toHaveLength(1);
+    } finally {
+      db.close();
+    }
   });
 
   it("persists notification preferences in device metadata across registry restarts", async () => {
