@@ -358,6 +358,122 @@ describe("local runtime connection pool", () => {
     expect(pool.getStatus().connectionState).toBe("idle");
   });
 
+  it("clears stale client and project state when an app-owned runtime exits", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-runtime-exit-"));
+    const cliPath = path.join(tempDir, "cli.cjs");
+    const socketPath = path.join(tempDir, "ade.sock");
+    const originalAdeCliJs = process.env.ADE_CLI_JS;
+    fs.writeFileSync(cliPath, "setTimeout(() => process.exit(0), 50);\n", "utf8");
+    process.env.ADE_CLI_JS = cliPath;
+
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never, { disableSync: true });
+    const rootPath = path.resolve("/repo");
+    const client = { close: vi.fn() };
+    let child: ChildProcess | null = null;
+
+    try {
+      child = (pool as unknown as {
+        spawnRuntime: (path: string) => ChildProcess;
+      }).spawnRuntime(socketPath);
+      (pool as unknown as { connection: Promise<unknown>; activeClient: unknown }).connection = Promise.resolve({
+        client,
+        child,
+        socketPath,
+      });
+      (pool as unknown as { activeClient: unknown }).activeClient = client;
+      (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.set(rootPath, {
+        projectId: "project-1",
+        rootPath,
+        displayName: "repo",
+        addedAt: 1,
+        lastOpenedAt: 1,
+        gitOriginUrl: null,
+      });
+
+      expect(pool.getStatus().connectionState).toBe("connected");
+
+      await new Promise<void>((resolve, reject) => {
+        child?.once("exit", () => resolve());
+        child?.once("error", reject);
+      });
+
+      expect(pool.getStatus().connectionState).toBe("idle");
+      expect((pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.size).toBe(0);
+      expect(client.close).toHaveBeenCalledTimes(1);
+    } finally {
+      if (child && !child.killed) child.kill();
+      if (originalAdeCliJs === undefined) delete process.env.ADE_CLI_JS;
+      else process.env.ADE_CLI_JS = originalAdeCliJs;
+      removeTempDir(tempDir);
+    }
+  });
+
+  it("does not clear a replacement connection when a superseded owned runtime exits", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-runtime-superseded-"));
+    const oldCliPath = path.join(tempDir, "old-cli.cjs");
+    const replacementCliPath = path.join(tempDir, "replacement-cli.cjs");
+    const socketPath = path.join(tempDir, "ade.sock");
+    const replacementSocketPath = path.join(tempDir, "ade-replacement.sock");
+    const originalAdeCliJs = process.env.ADE_CLI_JS;
+    fs.writeFileSync(oldCliPath, "setTimeout(() => process.exit(0), 100);\n", "utf8");
+    fs.writeFileSync(replacementCliPath, "setInterval(() => {}, 1000);\n", "utf8");
+
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never, { disableSync: true });
+    const rootPath = path.resolve("/repo");
+    const replacementClient = { close: vi.fn() };
+    let oldChild: ChildProcess | null = null;
+    let replacementChild: ChildProcess | null = null;
+
+    try {
+      const spawnRuntime = (pool as unknown as {
+        spawnRuntime: (path: string) => ChildProcess;
+      }).spawnRuntime.bind(pool);
+      process.env.ADE_CLI_JS = oldCliPath;
+      oldChild = spawnRuntime(socketPath);
+      process.env.ADE_CLI_JS = replacementCliPath;
+      replacementChild = spawnRuntime(replacementSocketPath);
+      (pool as unknown as { connection: Promise<unknown>; activeClient: unknown }).connection = Promise.resolve({
+        client: replacementClient,
+        child: replacementChild,
+        socketPath: replacementSocketPath,
+      });
+      (pool as unknown as { activeClient: unknown }).activeClient = replacementClient;
+      (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.set(rootPath, {
+        projectId: "project-1",
+        rootPath,
+        displayName: "repo",
+        addedAt: 1,
+        lastOpenedAt: 1,
+        gitOriginUrl: null,
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        oldChild?.once("exit", () => resolve());
+        oldChild?.once("error", reject);
+      });
+
+      expect(pool.getStatus().connectionState).toBe("connected");
+      expect((pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.size).toBe(1);
+      expect(replacementClient.close).not.toHaveBeenCalled();
+    } finally {
+      if (oldChild && !oldChild.killed) oldChild.kill();
+      if (replacementChild && !replacementChild.killed) replacementChild.kill();
+      if (originalAdeCliJs === undefined) delete process.env.ADE_CLI_JS;
+      else process.env.ADE_CLI_JS = originalAdeCliJs;
+      removeTempDir(tempDir);
+    }
+  });
+
   it("normalizes local action registry entries from runtime action names", async () => {
     const pool = new LocalRuntimeConnectionPool("1.2.3", {
       debug: vi.fn(),

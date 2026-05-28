@@ -127,6 +127,7 @@ import {
   validateLaunchProfilePermissionMode,
   type TrackedCliLaunchCommand,
 } from "../../../../desktop/src/shared/cliLaunch";
+import { parseDeeplink, type ParseError } from "../../../../desktop/src/shared/deeplinks";
 import { normalizePrCreationStrategy } from "../../../../desktop/src/shared/prStrategy";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
@@ -232,6 +233,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function asTrimmedString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function formatDeeplinkParseError(error: ParseError): string {
+  switch (error.kind) {
+    case "malformed":
+      return error.reason;
+    case "unsupported_scheme":
+      return `unsupported scheme '${error.scheme}'`;
+    case "unsupported_host":
+      return `unsupported host '${error.host}'`;
+    case "unknown_type":
+      return `unknown type '${error.type}'`;
+    case "empty":
+      return error.kind;
+  }
 }
 
 function asOptionalBoolean(value: unknown): boolean | undefined {
@@ -2576,14 +2592,9 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     if (!url) {
       throw new Error("deeplinks.open requires a url.");
     }
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      throw new Error("deeplinks.open requires a valid URL.");
-    }
-    if (parsed.protocol !== "ade:") {
-      throw new Error("deeplinks.open only supports ade:// URLs.");
+    const parsedDeeplink = parseDeeplink(url);
+    if (!parsedDeeplink.ok) {
+      throw new Error(`Invalid deeplink: ${formatDeeplinkParseError(parsedDeeplink.error)}`);
     }
     if (!args.dispatchDeeplinkUrl) {
       return {
@@ -2591,7 +2602,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
         message: "Desktop navigation is unavailable in this runtime.",
       };
     }
-    return await args.dispatchDeeplinkUrl(parsed.toString());
+    return await args.dispatchDeeplinkUrl(url);
   });
   register("prs.getDetail", { viewerAllowed: true }, async (payload) => args.prService.getDetail(requirePrId(payload, "prs.getDetail")));
   register("prs.getStatus", { viewerAllowed: true }, async (payload) => args.prService.getStatus(requirePrId(payload, "prs.getStatus")));
