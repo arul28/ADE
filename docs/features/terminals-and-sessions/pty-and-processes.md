@@ -316,6 +316,14 @@ user wants to send a message". It only accepts tracked chat-typed
 sessions (`isPersistedChatToolType(toolType)`) — non-chat sessions and
 untracked rows are rejected with a clear error.
 
+Chat-scoped PTYs are partitioned by tool type. Persisted chat tool
+types (`claude-chat`, `codex-chat`, `cursor`, `opencode-chat`,
+`droid-chat`) are the only sessions allowed to own the chat-CLI active
+route used by `activeForChat` and `reattachChatCli`. Auxiliary PTYs
+such as App Control or plain shells may carry the same `chatSessionId`
+so they nest under the parent chat, but they are tracked in a separate
+auxiliary active route for `terminal.read` / `write` / `signal`.
+
 Behaviour:
 
 - Fast path: if a live PTY is already bound to the chat session, the

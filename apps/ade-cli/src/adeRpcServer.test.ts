@@ -2897,8 +2897,8 @@ describe("adeRpcServer", () => {
   });
 
   it("rejects run_ade_action when the action is not a callable on the domain service", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    const { runtime, operationStart, operationFinish } = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
     await initialize(handler, { callerId: "agent-1", role: "agent" });
 
     const response = await callTool(handler, "run_ade_action", {
@@ -2911,6 +2911,11 @@ describe("adeRpcServer", () => {
     expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
       "Action 'git.nonexistent_action' is not callable.",
     );
+    expect(operationStart).toHaveBeenCalledTimes(1);
+    expect(operationFinish).toHaveBeenCalledWith(expect.objectContaining({
+      status: "failed",
+      metadataPatch: expect.objectContaining({ resultStatus: "error" }),
+    }));
   });
 
   it("reads ADE action status snapshots across operation/test/chat/pr", async () => {

@@ -4592,6 +4592,52 @@ describe("ptyService", () => {
         expect(reattached.ptyId).toBe(chatCli.ptyId);
       });
 
+      it("routes terminal operations to the App Control shell without making it the active chat CLI", async () => {
+        const { service, loadPty, sessionService } = createChatHarness();
+        const chatPty = createMockPty();
+        const appControlPty = createMockPty();
+        const spawn = vi.fn()
+          .mockReturnValueOnce(chatPty)
+          .mockReturnValueOnce(appControlPty);
+        loadPty.mockReturnValue({ spawn });
+
+        const chatCli = await service.create({
+          sessionId: "chat-app-control-routing",
+          allowNewSessionId: true,
+          laneId: "lane-1",
+          title: "Claude Chat",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "chat-app-control-routing",
+          tracked: true,
+          toolType: "claude-chat",
+          startupCommand: "claude --resume target",
+        });
+        const appControlShell = await service.create({
+          laneId: "lane-1",
+          title: "App Control",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "chat-app-control-routing",
+          tracked: true,
+          toolType: "shell",
+          startupCommand: "npm run dev",
+        });
+        (chatPty.write as ReturnType<typeof vi.fn>).mockClear();
+        (appControlPty.write as ReturnType<typeof vi.fn>).mockClear();
+        sessionService.readTranscriptTail.mockResolvedValueOnce("app control output");
+
+        const read = await service.readTerminal({ chatSessionId: "chat-app-control-routing" });
+        await service.writeTerminal({ chatSessionId: "chat-app-control-routing", data: "q\n" });
+        service.signalTerminal({ chatSessionId: "chat-app-control-routing", signal: "SIGINT" });
+
+        expect(read.terminalId).toBe(appControlShell.sessionId);
+        expect(appControlPty.write).toHaveBeenNthCalledWith(1, "q\n");
+        expect(appControlPty.write).toHaveBeenNthCalledWith(2, "\x03");
+        expect(chatPty.write).not.toHaveBeenCalled();
+        expect(service.activeForChat({ chatSessionId: "chat-app-control-routing" })?.terminalId).toBe(chatCli.sessionId);
+      });
+
       it("relaunches a new PTY for a disposed chat-CLI session", async () => {
         const { service, loadPty, sessionStore } = createChatHarness();
         const created = await service.create({

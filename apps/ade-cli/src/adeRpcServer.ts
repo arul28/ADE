@@ -5245,6 +5245,42 @@ export function createAdeRpcRequestHandler(args: {
     throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported ADE action: ${actionName}`);
   };
 
+  const callActionWithAudit = async (
+    actionName: string,
+    actionArgs: Record<string, unknown>,
+  ): Promise<unknown> => {
+    const operation = runtime.operationService.start({
+      kind: `ade_action.${actionName}`,
+      metadata: {
+        actionName,
+        callerId: session.identity.callerId,
+        callerRole: session.identity.role,
+        chatSessionId: session.identity.chatSessionId,
+        readOnly: READ_ONLY_TOOLS.has(actionName),
+      },
+    });
+    try {
+      const result = await callAction(actionName, actionArgs);
+      runtime.operationService.finish({
+        operationId: operation.operationId,
+        status: "succeeded",
+        metadataPatch: { resultStatus: "success" },
+      });
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      runtime.operationService.finish({
+        operationId: operation.operationId,
+        status: "failed",
+        metadataPatch: {
+          resultStatus: "error",
+          error: message,
+        },
+      });
+      throw error;
+    }
+  };
+
   const handler = (async (request: JsonRpcRequest): Promise<unknown | null> => {
     const method = typeof request.method === "string" ? request.method : "";
     const params = safeObject(request.params);
@@ -5440,7 +5476,7 @@ export function createAdeRpcRequestHandler(args: {
       const actionName = assertNonEmptyString(params.name, "name");
       const actionArgs = safeObject(params.arguments);
       try {
-        return await callAction(actionName, actionArgs);
+        return await callActionWithAudit(actionName, actionArgs);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return {
