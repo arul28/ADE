@@ -155,6 +155,7 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "prs.pipelineSettings.delete",
   "prs.pathToMerge.start",
   "prs.pathToMerge.stop",
+  "deeplinks.open",
 ] satisfies SyncRemoteCommandAction[];
 
 const IOS_FILE_REQUEST_ACTIONS = [
@@ -1159,6 +1160,56 @@ describe("createSyncRemoteCommandService", () => {
       expect(result).toHaveProperty("createCapabilities");
       expect(result).toHaveProperty("workflowCards");
       expect(result).toHaveProperty("live", true);
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // execute: deeplink commands
+  // ---------------------------------------------------------------
+
+  describe("execute — deeplink commands", () => {
+    function createServiceWithDeeplinkDispatch(
+      dispatchDeeplinkUrl?: (url: string) => Promise<{ ok: boolean; message?: string }>,
+    ): ReturnType<typeof createSyncRemoteCommandService> {
+      return createSyncRemoteCommandService({
+        laneService,
+        prService,
+        issueInventoryService,
+        queueLandingService,
+        ptyService,
+        sessionService,
+        fileService,
+        gitService,
+        diffService,
+        agentChatService,
+        workerAgentService,
+        conflictService,
+        processService,
+        logger: createLogger() as any,
+        dispatchDeeplinkUrl,
+      });
+    }
+
+    it("deeplinks.open accepts https://ade.app/open URLs and dispatches the original URL", async () => {
+      const dispatchDeeplinkUrl = vi.fn(async () => ({ ok: true }));
+      const withDispatch = createServiceWithDeeplinkDispatch(dispatchDeeplinkUrl);
+      const url = "https://ade.app/open?type=pr&repo=arul28/ADE&number=383";
+
+      const result = await withDispatch.execute(makePayload("deeplinks.open", { url }));
+
+      expect(dispatchDeeplinkUrl).toHaveBeenCalledWith(url);
+      expect(result).toEqual({ ok: true });
+    });
+
+    it("deeplinks.open rejects unsupported URLs before dispatching", async () => {
+      const dispatchDeeplinkUrl = vi.fn(async () => ({ ok: true }));
+      const withDispatch = createServiceWithDeeplinkDispatch(dispatchDeeplinkUrl);
+
+      await expect(withDispatch.execute(makePayload("deeplinks.open", {
+        url: "https://example.com/open?type=pr&repo=arul28/ADE&number=383",
+      }))).rejects.toThrow("Invalid deeplink: unsupported_host");
+
+      expect(dispatchDeeplinkUrl).not.toHaveBeenCalled();
     });
   });
 

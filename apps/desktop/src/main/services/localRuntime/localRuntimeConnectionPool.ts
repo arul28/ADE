@@ -407,6 +407,7 @@ function serviceHealthState(
 export class LocalRuntimeConnectionPool {
   private connection: Promise<LocalRuntimeConnection> | null = null;
   private activeClient: RuntimeRpcClient | null = null;
+  private ownedRuntimeChild: ChildProcess | null = null;
   private readonly projectsByRoot = new Map<string, RemoteRuntimeProjectRecord>();
   private serviceInstallStatus: LocalRuntimeStatus["serviceInstall"] = {
     state: "not_attempted",
@@ -792,6 +793,7 @@ export class LocalRuntimeConnectionPool {
     const pending = this.connection;
     this.connection = null;
     this.activeClient = null;
+    this.ownedRuntimeChild = null;
     this.projectsByRoot.clear();
     void pending?.then((entry) => {
       try { entry.client.close(); } catch {}
@@ -828,6 +830,7 @@ export class LocalRuntimeConnectionPool {
   private async tryConnect(socketPath: string): Promise<LocalRuntimeConnection | null> {
     try {
       const client = await this.connectClient(socketPath);
+      this.ownedRuntimeChild = null;
       return { client, child: null, socketPath };
     } catch (error) {
       if (error instanceof LocalRuntimeCompatibilityError) {
@@ -868,6 +871,7 @@ export class LocalRuntimeConnectionPool {
     });
     try {
       const client = await this.connectClient(socketPath);
+      this.ownedRuntimeChild = null;
       return { client, child: null, socketPath };
     } catch (error) {
       if (error instanceof LocalRuntimeCompatibilityError) {
@@ -975,6 +979,7 @@ export class LocalRuntimeConnectionPool {
       stdio: ["ignore", "pipe", "pipe"],
       detached: false,
     });
+    this.ownedRuntimeChild = child;
     const outputBase = {
       logger: this.logger,
       socketPath,
@@ -991,19 +996,22 @@ export class LocalRuntimeConnectionPool {
     child.once("close", () => {
       flushOutput();
     });
-    child.once("exit", (code, signal) => {
-      flushOutput();
-      this.logger.warn("local_runtime.exited", { code, signal, pid: outputBase.pid, socketPath });
+    const clearCurrentChildState = (): void => {
+      if (this.ownedRuntimeChild !== child) return;
+      this.ownedRuntimeChild = null;
       this.connection = null;
       this.activeClient = null;
       this.projectsByRoot.clear();
+    };
+    child.once("exit", (code, signal) => {
+      flushOutput();
+      this.logger.warn("local_runtime.exited", { code, signal, pid: outputBase.pid, socketPath });
+      clearCurrentChildState();
     });
     child.once("error", (error) => {
       flushOutput();
       this.logger.warn("local_runtime.spawn_failed", { error: error.message, pid: outputBase.pid, socketPath });
-      this.connection = null;
-      this.activeClient = null;
-      this.projectsByRoot.clear();
+      clearCurrentChildState();
     });
     return child;
   }
