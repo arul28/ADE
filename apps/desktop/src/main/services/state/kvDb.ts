@@ -30,6 +30,12 @@ export type AdeDbSyncApi = {
   getDbVersion: () => number;
   exportChangesSince: (version: number) => CrsqlChangeRow[];
   applyChanges: (changes: CrsqlChangeRow[]) => ApplyRemoteChangesResult;
+  /**
+   * Suppress unpublished local-site CRR rows for specific tables. Used when
+   * local viewer state must be cleared without relaying those clears to sync
+   * peers.
+   */
+  discardUnpublishedChangesForTables: (tableNames: string[]) => void;
 };
 
 /**
@@ -161,6 +167,30 @@ function rawHasColumn(db: DatabaseSyncType, tableName: string, columnName: strin
 function isReadonlyDatabaseError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /readonly database|SQLITE_READONLY/i.test(message);
+}
+
+function isCrsqlChangesReadOnlyError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /only insert and select statements are allowed against the crsql changes table/i.test(message);
+}
+
+function deleteCrsqlChangesRowsIfAllowed(
+  db: DatabaseSyncType,
+  tableName: string,
+  logger: Logger | undefined,
+  cleanupKind: string,
+): number {
+  try {
+    return runStatement(db, "delete from crsql_changes where [table] = ?", [tableName]).changes;
+  } catch (error) {
+    if (!isCrsqlChangesReadOnlyError(error)) throw error;
+    logger?.warn("db.crr_changes_cleanup_skipped", {
+      tableName,
+      cleanupKind,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return 0;
+  }
 }
 
 function defaultLiteralForType(typeName: string): string {
@@ -424,9 +454,12 @@ function writeMigrationBackupIfNeeded(dbPath: string): void {
   }
 }
 
+const LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE = "local_crr_change_suppressions";
+
 const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   "lane_detail_snapshots",
   "lane_list_snapshots",
+  LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE,
   "pr_auto_link_ignores",
   "pull_request_ai_summaries",
   "runtime_processes",
@@ -548,7 +581,7 @@ function deleteAllRowsWithoutCrrReplication(
       runStatement(db, "delete from crsql_master where tbl_name = ?", [tableName]);
     }
     if (rawHasTable(db, "crsql_changes") && rawHasColumn(db, "crsql_changes", "table")) {
-      runStatement(db, "delete from crsql_changes where [table] = ?", [tableName]);
+      deleteCrsqlChangesRowsIfAllowed(db, tableName, logger, "local-only-table-wipe");
     }
     try {
       getRow(db, "select crsql_as_table(?) as ok", [tableName]);
@@ -645,7 +678,7 @@ function removeExcludedCrrMetadata(db: DatabaseSyncType, logger?: Logger): void 
       deletedMetadataCount += runStatement(db, "delete from crsql_master where tbl_name = ?", [tableName]).changes;
     }
     if (hasChangesRows) {
-      deletedMetadataCount += runStatement(db, "delete from crsql_changes where [table] = ?", [tableName]).changes;
+      deletedMetadataCount += deleteCrsqlChangesRowsIfAllowed(db, tableName, logger, "excluded-table-metadata");
     }
 
     try {
@@ -735,7 +768,7 @@ function dropLegacyUnifiedMemoriesSchema(db: DatabaseSyncType, logger?: Logger):
       runStatement(db, "delete from crsql_master where tbl_name = ?", [baseTable]);
     }
     if (rawHasTable(db, "crsql_changes") && rawHasColumn(db, "crsql_changes", "table")) {
-      runStatement(db, "delete from crsql_changes where [table] = ?", [baseTable]);
+      deleteCrsqlChangesRowsIfAllowed(db, baseTable, logger, "legacy-unified-memories");
     }
     try {
       getRow(db, "select crsql_as_table(?) as ok", [baseTable]);
@@ -1042,6 +1075,16 @@ function parseAlterTableTarget(sql: string): string | null {
 function migrate(db: MigrationDb) {
   // Keep KV for UI layout persistence.
   db.run("create table if not exists kv (key text primary key, value text not null)");
+
+  db.run(`
+    create table if not exists local_crr_change_suppressions (
+      table_name text not null,
+      site_id text not null,
+      through_db_version integer not null,
+      created_at text not null,
+      primary key(table_name, site_id)
+    )
+  `);
 
   // Phase 0 + Phase 1 tables.
   db.run(`
@@ -3038,6 +3081,16 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     },
     exportChangesSince: (version: number) => {
       if (!crsqliteLoaded) return [];
+      const suppressions = new Map<string, number>(
+        allRows<{ table_name: string; through_db_version: number }>(
+          db,
+          `select table_name,
+                  through_db_version
+             from ${LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE}
+            where site_id = ?`,
+          [desiredSiteId],
+        ).map((row) => [String(row.table_name), Number(row.through_db_version)]),
+      );
       const rows = allRows<{
         table_name: string;
         pk: unknown;
@@ -3067,6 +3120,13 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
 
       return rows
         .filter((row) => !isLocalOnlyQueueWipeMarkerRawChange(row))
+        .filter((row) => {
+          const suppressedThroughVersion = suppressions.get(row.table_name);
+          if (suppressedThroughVersion == null || Number(row.db_version) > suppressedThroughVersion) {
+            return true;
+          }
+          return Buffer.from(row.site_id).toString("hex") !== desiredSiteId;
+        })
         .map((row) => ({
           table: row.table_name,
           pk: encodeSyncScalar(row.pk),
@@ -3123,6 +3183,30 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
         touchedTables: Array.from(touchedTables).sort(),
         rebuiltFts: false,
       };
+    },
+    discardUnpublishedChangesForTables: (tableNames: string[]) => {
+      const normalizedTableNames = Array.from(new Set(tableNames.map((tableName) => tableName.trim()).filter(Boolean)));
+      if (!crsqliteLoaded || normalizedTableNames.length === 0) return;
+      const throughDbVersion = sync.getDbVersion();
+      const createdAt = new Date().toISOString();
+      runStatement(db, "begin");
+      try {
+        for (const tableName of normalizedTableNames) {
+          runStatement(
+            db,
+            `insert into ${LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE}(table_name, site_id, through_db_version, created_at)
+             values (?, ?, ?, ?)
+             on conflict(table_name, site_id) do update set
+               through_db_version = max(${LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE}.through_db_version, excluded.through_db_version),
+               created_at = excluded.created_at`,
+            [tableName, desiredSiteId, throughDbVersion, createdAt]
+          );
+        }
+        runStatement(db, "commit");
+      } catch (err) {
+        runStatement(db, "rollback");
+        throw err;
+      }
     },
   };
 

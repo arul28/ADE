@@ -30,6 +30,7 @@ function createInMemoryAdeDb(): AdeDb {
       getDbVersion: () => 0,
       exportChangesSince: () => [],
       applyChanges: () => ({ appliedCount: 0, dbVersion: 0, touchedTables: [], rebuiltFts: false }),
+      discardUnpublishedChangesForTables: () => {},
     },
     flushNow: () => {},
     close: () => {}

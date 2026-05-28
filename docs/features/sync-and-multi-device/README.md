@@ -174,7 +174,16 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   pick a specific branch to stack onto instead of always using the
   selected parent lane's branch.
 - `deviceRegistryService.ts` (~670 lines) — synced `devices` table and
-  `sync_cluster_state` singleton.
+  `sync_cluster_state` singleton. When the local daemon joins another
+  host as a viewer (`syncService.connect`), it wipes its existing
+  `devices` and `sync_cluster_state` rows and then calls
+  `db.sync.discardUnpublishedChangesForTables(["devices",
+  "sync_cluster_state"])` so the resulting CRR DELETE rows are
+  suppressed from outbound changesets. `syncService.connect` then calls
+  `syncPeerService.acknowledgeLocalDbVersion()` to advance the
+  outbound cursor past the suppressed range, ensuring a fresh viewer
+  cannot accidentally erase the host's registry. See
+  `crdt-model.md` for the underlying suppression mechanism.
 - `syncPairingStore.ts` — validates `pairing_request` envelopes
   against `syncPinStore`, mints the durable per-device secret, and
   persists it into the `paired_devices` row (SQLite).

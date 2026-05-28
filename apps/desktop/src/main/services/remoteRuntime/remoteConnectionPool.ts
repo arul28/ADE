@@ -6,6 +6,7 @@ import type {
   RemoteRuntimeBufferedEvent,
   RemoteRuntimeConnectResult,
   RemoteRuntimeEventCategory,
+  RemoteRuntimeMachineProjectCapability,
   RemoteRuntimeStreamEventsRequest,
   RemoteRuntimeStreamEventsResult,
   RemoteRuntimeProjectRecord,
@@ -70,6 +71,26 @@ const RETRYABLE_REMOTE_SYNC_METHODS = new Set([
   "modelPicker.getRecents",
 ]);
 
+const MACHINE_PROJECT_METHOD_CAPABILITY = new Map<string, RemoteRuntimeMachineProjectCapability>([
+  ["projects.browseDirectories", "browseDirectories"],
+  ["projects.getDetail", "getDetail"],
+  ["projects.getWorkSummary", "getWorkSummary"],
+  ["projects.getDefaultParentDir", "getDefaultParentDir"],
+  ["projects.create", "create"],
+  ["projects.clone", "clone"],
+  ["projects.listMyGitHubRepos", "listMyGitHubRepos"],
+]);
+
+const MACHINE_PROJECT_CAPABILITY_LABEL: Record<RemoteRuntimeMachineProjectCapability, string> = {
+  browseDirectories: "browsing remote directories",
+  getDetail: "reading remote project details",
+  getWorkSummary: "checking remote worktree state",
+  getDefaultParentDir: "reading the default remote project folder",
+  create: "creating remote projects",
+  clone: "cloning remote projects",
+  listMyGitHubRepos: "listing GitHub repositories on the remote machine",
+};
+
 function shouldRetryRemoteRuntimeAction(
   request: RemoteRuntimeActionRequest,
 ): boolean {
@@ -78,6 +99,17 @@ function shouldRetryRemoteRuntimeAction(
   }
   return RETRYABLE_REMOTE_ACTION_PREFIXES.some((prefix) =>
     request.action.startsWith(prefix),
+  );
+}
+
+function assertMachineProjectCapability(entry: PoolEntry, method: string): void {
+  const capability = MACHINE_PROJECT_METHOD_CAPABILITY.get(method);
+  if (!capability) return;
+  if (entry.result.capabilities?.machineProjects?.[capability] === true) return;
+  const version = entry.result.version ? ` ${entry.result.version}` : "";
+  throw new Error(
+    `Remote ADE service${version} does not support ${MACHINE_PROJECT_CAPABILITY_LABEL[capability]}. ` +
+      "Update ADE on that machine, or connect with a runtime that advertises this project capability.",
   );
 }
 
@@ -178,10 +210,12 @@ export class RemoteConnectionPool {
   ): Promise<unknown> {
     return await this.withEntryForTarget(
       target,
-      (entry) =>
-        options.timeoutMs
+      (entry) => {
+        assertMachineProjectCapability(entry, method);
+        return options.timeoutMs
           ? entry.client.call(method, params, { timeoutMs: options.timeoutMs })
-          : entry.client.call(method, params),
+          : entry.client.call(method, params);
+      },
       { retryOnConnectionError: options.retryOnConnectionError ?? true },
     );
   }

@@ -35,6 +35,15 @@ Per-tab state (kept in renderer memory, not persisted):
 - mode (`edit` | `diff` | `conflict`)
 - diff or conflict payload (diff sources, merge state)
 
+Per-page session state (kept in `FilesPage`'s per-session snapshot map,
+keyed by the page session id):
+
+- selected node path, expanded directories, open tabs, active tab path
+- editor mode (`edit` / `diff` / `conflict`)
+- markdown preview enabled flag — when toggled on for a markdown tab,
+  the editor is replaced with the lazy `PlanMarkdown` renderer
+- search query, editor theme
+
 ### Lifecycle
 
 The page subscribes on mount to:
@@ -140,7 +149,26 @@ Protection rails:
 The page keeps one Monaco editor instance alive while the edit host is
 mounted. Opening another text file swaps the editor to a new Monaco
 model for that path/language and disposes the previous active model;
-it does not recreate the whole editor on every file switch.
+it does not recreate the whole editor on every file switch. Re-opening
+a path that is already in the tab bar (via the explorer or quick open)
+reselects the existing tab instead of issuing another `files.readFile`
+— the read-side guard short-circuits when the requested path matches a
+known open tab, preserving any in-flight editor state.
+
+### Markdown preview
+
+For tabs whose `languageId === "markdown"` or whose path ends in `.md`
+/ `.mdx`, the tab toolbar adds an Eye toggle. Toggling it on swaps the
+Monaco host for a `React.Suspense`-wrapped lazy import of
+`PlanMarkdown` (the same renderer the orchestration plan view uses).
+Toggling it off returns to the code editor with the model intact. The
+preference is per tab and lives in the per-session snapshot
+(`markdownPreviewEnabled`) so it survives tab/workspace switches
+within the page lifetime and is restored when the page re-mounts. The
+status hint under the tab strip ("Markdown view: rendered preview for
+the current file.") reflects the active mode so it is obvious that
+saves and shortcuts target the markdown source even while the preview
+is showing.
 
 ## Diff mode
 

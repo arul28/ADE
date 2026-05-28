@@ -75,6 +75,8 @@ export type RemoteRuntimeConnectResult = {
   target: RemoteRuntimeTarget;
   arch: string;
   version: string | null;
+  capabilities?: RemoteRuntimeCapabilities;
+  compatibilityWarnings?: string[];
   projects: RemoteRuntimeProjectRecord[];
 };
 
@@ -89,10 +91,26 @@ export type RemoteRuntimeConnectionStatus = {
   state: RemoteRuntimeConnectionState;
   arch: string | null;
   version: string | null;
+  capabilities?: RemoteRuntimeCapabilities;
+  compatibilityWarnings?: string[];
   projects: RemoteRuntimeProjectRecord[];
   lastError: string | null;
   lastAttemptedAt: number | null;
   connectedAt: number | null;
+};
+
+export type RemoteRuntimeMachineProjectCapability =
+  | "browseDirectories"
+  | "getDetail"
+  | "getWorkSummary"
+  | "getDefaultParentDir"
+  | "create"
+  | "clone"
+  | "listMyGitHubRepos";
+
+export type RemoteRuntimeCapabilities = {
+  projects: boolean;
+  machineProjects: Partial<Record<RemoteRuntimeMachineProjectCapability, boolean>>;
 };
 
 export type RemoteRuntimeConnectionSnapshot = {

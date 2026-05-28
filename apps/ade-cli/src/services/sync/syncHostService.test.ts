@@ -231,6 +231,7 @@ function createHostArgs(projectRoot: string, projects: SyncMobileProjectSummary[
       sync: {
         getSiteId: () => "site-host-1",
         getDbVersion: () => 7,
+        discardUnpublishedChangesForTables: () => {},
       },
     },
     logger: createDiscoveryLogger(),

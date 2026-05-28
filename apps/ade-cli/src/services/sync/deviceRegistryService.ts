@@ -629,6 +629,10 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
     });
     args.db.run("delete from sync_cluster_state");
     args.db.run("delete from devices");
+    args.db.sync.discardUnpublishedChangesForTables([
+      "devices",
+      "sync_cluster_state",
+    ]);
   };
 
   const forgetDevice = (deviceId: string): void => {

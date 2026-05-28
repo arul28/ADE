@@ -605,20 +605,21 @@ export class LocalRuntimeConnectionPool {
       );
     } catch (error) {
       callError = error instanceof Error ? error : new Error(String(error));
-    }
-    const tCall = Date.now();
-    const totalMs = tCall - tStart;
-    if (totalMs > 500 || callError) {
-      this.logger.warn("local_runtime.action_slow", {
-        domain: request.domain,
-        action: request.action,
-        totalMs,
-        ensureProjectMs: tProject - tStart,
-        connectMs: tConnect - tProject,
-        daemonCallMs: tCall - tConnect,
-        timeoutMs: actionCallOptions?.timeoutMs ?? null,
-        error: callError?.message ?? null,
-      });
+    } finally {
+      const tCall = Date.now();
+      const totalMs = tCall - tStart;
+      if (totalMs > 500 || callError) {
+        this.logger.warn("local_runtime.action_slow", {
+          domain: request.domain,
+          action: request.action,
+          totalMs,
+          ensureProjectMs: tProject - tStart,
+          connectMs: tConnect - tProject,
+          daemonCallMs: tCall - tConnect,
+          timeoutMs: actionCallOptions?.timeoutMs ?? null,
+          error: callError?.message ?? null,
+        });
+      }
     }
     if (callError) throw callError;
 

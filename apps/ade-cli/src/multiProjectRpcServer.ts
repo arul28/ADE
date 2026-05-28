@@ -385,9 +385,11 @@ export function createMultiProjectRpcRequestHandler(
 
   const resolveRuntimeEnvInfo = () => {
     const projectRoot = trimmedEnvOrNull("ADE_PROJECT_ROOT");
+    const packageChannel = trimmedEnvOrNull("ADE_PACKAGE_CHANNEL");
     return {
       buildHash: trimmedEnvOrNull("ADE_RUNTIME_BUILD_HASH"),
       defaultRole: normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
+      packageChannel,
       projectRoot: projectRoot ? path.resolve(projectRoot) : null,
     };
   };

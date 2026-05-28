@@ -6,6 +6,7 @@ export type RuntimeRpcTransport = JsonRpcTransport & {
 };
 
 type PendingRequest = {
+  method: string;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -17,6 +18,12 @@ const MAX_RPC_TIMEOUT_MS = 2_147_483_647;
 type RuntimeRpcCallOptions = {
   timeoutMs?: number;
 };
+
+function formatRpcErrorData(data: unknown): string {
+  if (data && typeof data === "object") return JSON.stringify(data);
+  if (typeof data === "string" && data.trim()) return data.trim();
+  return "";
+}
 
 function normalizeRuntimeRpcTimeoutMs(value: number): number {
   const timeoutMs = Number(value);
@@ -88,7 +95,7 @@ export class RuntimeRpcClient {
           new Error(`Remote ADE service timed out waiting for method ${method} (${timeoutMs}ms).`),
         );
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { method, resolve, reject, timer });
       try {
         this.transport.write(`${JSON.stringify(payload)}\n`);
       } catch (error) {
@@ -178,7 +185,13 @@ export class RuntimeRpcClient {
     clearTimeout(pending.timer);
     const error = response.error;
     if (error && typeof error === "object" && !Array.isArray(error)) {
-      pending.reject(new Error(String((error as { message?: unknown }).message ?? "Remote ADE service request failed.")));
+      const rpcError = error as { code?: unknown; message?: unknown; data?: unknown };
+      const message = String(rpcError.message ?? "Remote ADE service request failed.");
+      const code = typeof rpcError.code === "number" ? ` (code ${rpcError.code})` : "";
+      const data = formatRpcErrorData(rpcError.data);
+      pending.reject(new Error(
+        `Remote ADE service method ${pending.method} failed${code}: ${message}${data ? ` Details: ${data}` : ""}`,
+      ));
       return;
     }
     pending.resolve(response.result);
