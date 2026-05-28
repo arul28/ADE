@@ -22,6 +22,26 @@ function makeDbPath(prefix: string): string {
   return path.join(root, ".ade", "kv.sqlite");
 }
 
+function packedTextPrimaryKey(text: string): { type: "bytes"; base64: string } {
+  const textBytes = Buffer.from(text, "utf8");
+  return {
+    type: "bytes",
+    base64: Buffer.concat([Buffer.from([0x01, 0x0b, textBytes.length]), textBytes]).toString("base64"),
+  };
+}
+
+function syncPrimaryKeyMatchesText(value: unknown, text: string): boolean {
+  if (value === text) return true;
+  return Boolean(
+    value
+    && typeof value === "object"
+    && "type" in value
+    && (value as { type?: unknown }).type === "bytes"
+    && "base64" in value
+    && (value as { base64?: unknown }).base64 === packedTextPrimaryKey(text).base64,
+  );
+}
+
 describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
   it("persists a stable local site id and marks CRR tables", async () => {
     const dbPath = makeDbPath("ade-kvdb-sync-site-");
@@ -181,6 +201,7 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
   it("does not replicate queue_landing_state overhaul wipe deletes to synced peers", async () => {
     const dbPathA = makeDbPath("ade-kvdb-sync-queue-wipe-a-");
     const dbA = await openKvDb(dbPathA, createLogger() as any);
+    const wipeMarker = "queue_landing_state.wiped_for_stacked_overhaul.v1";
     const projectId = "project-queue-wipe";
     const groupId = "group-queue-wipe";
     const queueId = "queue-wipe-1";
@@ -211,7 +232,7 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
     ).toBe(queueId);
 
     const versionBeforeWipe = dbA.sync.getDbVersion();
-    dbA.run("delete from kv where key = ?", ["queue_landing_state.wiped_for_stacked_overhaul.v1"]);
+    dbA.run("delete from kv where key = ?", [wipeMarker]);
     dbA.close();
 
     const dbAReopened = await openKvDb(dbPathA, createLogger() as any);
@@ -221,11 +242,35 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
 
     const wipeChanges = dbAReopened.sync.exportChangesSince(versionBeforeWipe);
     expect(wipeChanges.some((change) => change.table === "queue_landing_state")).toBe(false);
+    expect(wipeChanges.some((change) => change.table === "kv" && syncPrimaryKeyMatchesText(change.pk, wipeMarker))).toBe(false);
 
     dbB.sync.applyChanges(wipeChanges);
     expect(
       dbB.get<{ id: string }>("select id from queue_landing_state where id = ?", [queueId])?.id,
     ).toBe(queueId);
+
+    const markerValueBeforeApply = dbB.get<{ value: string }>(
+      "select value from kv where key = ?",
+      [wipeMarker],
+    )?.value ?? null;
+    const versionBeforeMarkerApply = dbB.sync.getDbVersion();
+    const markerApplyResult = dbB.sync.applyChanges([{
+      table: "kv",
+      pk: packedTextPrimaryKey(wipeMarker),
+      cid: "value",
+      val: "remote-marker-should-not-apply",
+      col_version: 999,
+      db_version: versionBeforeMarkerApply + 1,
+      site_id: "f".repeat(32),
+      cl: 1,
+      seq: 1,
+    }]);
+    expect(markerApplyResult.appliedCount).toBe(0);
+    expect(markerApplyResult.touchedTables).toEqual([]);
+    expect(dbB.sync.getDbVersion()).toBe(versionBeforeMarkerApply);
+    expect(
+      dbB.get<{ value: string }>("select value from kv where key = ?", [wipeMarker])?.value ?? null,
+    ).toBe(markerValueBeforeApply);
 
     dbAReopened.close();
     dbB.close();

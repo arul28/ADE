@@ -553,10 +553,40 @@ function deleteAllRowsWithoutCrrReplication(
 
 const QUEUE_OVERHAUL_WIPE_MARKER = "queue_landing_state.wiped_for_stacked_overhaul.v1";
 
+function rawCrsqlPrimaryKeyMatchesText(value: unknown, text: string): boolean {
+  if (value === text) return true;
+  if (!(value instanceof Uint8Array)) return false;
+
+  const packed = packedCrsqlPrimaryKey(text);
+  return isSyncScalarBytes(packed)
+    && Buffer.from(value).equals(Buffer.from(packed.base64, "base64"));
+}
+
+function syncScalarPrimaryKeyMatchesText(value: SyncScalar, text: string): boolean {
+  if (value === text) return true;
+
+  const packed = packedCrsqlPrimaryKey(text);
+  return isSyncScalarBytes(value)
+    && isSyncScalarBytes(packed)
+    && value.base64 === packed.base64;
+}
+
+function isLocalOnlyQueueWipeMarkerRawChange(change: { table_name: string; pk: unknown }): boolean {
+  return change.table_name === "kv"
+    && rawCrsqlPrimaryKeyMatchesText(change.pk, QUEUE_OVERHAUL_WIPE_MARKER);
+}
+
+function isLocalOnlyQueueWipeMarkerChange(change: CrsqlChangeRow): boolean {
+  return change.table === "kv"
+    && syncScalarPrimaryKeyMatchesText(change.pk, QUEUE_OVERHAUL_WIPE_MARKER);
+}
+
 /**
  * One-shot local wipe of legacy queue_landing_state on upgrade to the stacked-PR
- * queue overhaul. Must run after migrations and before ensureCrrTables so deletes
- * do not replicate to peers that have not upgraded yet.
+ * queue overhaul. Must run after migrations and before ensureCrrTables so queue
+ * deletes do not replicate to peers that have not upgraded yet. The marker is
+ * stored in kv for compatibility with the original migration, but filtered from
+ * CRDT import/export because it records local upgrade work, not shared state.
  */
 function wipeQueueLandingStateForStackedOverhaulIfNeeded(db: DatabaseSyncType, logger?: Logger): void {
   try {
@@ -2986,17 +3016,19 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
         [version]
       );
 
-      return rows.map((row) => ({
-        table: row.table_name,
-        pk: encodeSyncScalar(row.pk),
-        cid: row.cid,
-        val: encodeSyncScalar(row.val),
-        col_version: Number(row.col_version),
-        db_version: Number(row.db_version),
-        site_id: Buffer.from(row.site_id).toString("hex"),
-        cl: Number(row.cl),
-        seq: Number(row.seq),
-      }));
+      return rows
+        .filter((row) => !isLocalOnlyQueueWipeMarkerRawChange(row))
+        .map((row) => ({
+          table: row.table_name,
+          pk: encodeSyncScalar(row.pk),
+          cid: row.cid,
+          val: encodeSyncScalar(row.val),
+          col_version: Number(row.col_version),
+          db_version: Number(row.db_version),
+          site_id: Buffer.from(row.site_id).toString("hex"),
+          cl: Number(row.cl),
+          seq: Number(row.seq),
+        }));
     },
     applyChanges: (changes: CrsqlChangeRow[]) => {
       if (!crsqliteLoaded) return { appliedCount: 0, dbVersion: 0, touchedTables: [], rebuiltFts: false };
@@ -3005,6 +3037,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       runStatement(db, "begin");
       try {
         for (const rawChange of changes) {
+          if (isLocalOnlyQueueWipeMarkerChange(rawChange)) continue;
           // Skip changes for tables that no longer exist in the schema
           // (e.g. unified_memories removed in #329).
           if (!rawHasTable(db, rawChange.table)) continue;
