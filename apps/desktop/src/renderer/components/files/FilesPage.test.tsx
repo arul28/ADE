@@ -836,6 +836,74 @@ describe("FilesPage", () => {
     }
   });
 
+  it("preserves oversized dirty tabs when switching lane scopes", async () => {
+    const laneA = "lane-large-a";
+    const laneB = "lane-large-b";
+    useAppStore.setState({
+      selectedLaneId: laneA,
+      lanes: [
+        { id: laneA, name: "Large A", branchRef: "refs/heads/large-a" },
+        { id: laneB, name: "Large B", branchRef: "refs/heads/large-b" },
+      ] as any,
+    });
+    vi.mocked(window.ade.files.listWorkspaces).mockResolvedValue([
+      {
+        id: "primary",
+        kind: "primary",
+        laneId: null,
+        name: "ADE",
+        branchRef: "refs/heads/main",
+        rootPath: projectRoot,
+        isReadOnlyByDefault: false,
+      },
+      {
+        id: "lane-large-a-ws",
+        kind: "worktree",
+        laneId: laneA,
+        name: "Large A",
+        branchRef: "refs/heads/large-a",
+        rootPath: `${projectRoot}/.ade/worktrees/large-a`,
+        isReadOnlyByDefault: false,
+      },
+      {
+        id: "lane-large-b-ws",
+        kind: "worktree",
+        laneId: laneB,
+        name: "Large B",
+        branchRef: "refs/heads/large-b",
+        rootPath: `${projectRoot}/.ade/worktrees/large-b`,
+        isReadOnlyByDefault: false,
+      },
+    ]);
+
+    renderFilesPage({
+      openFilePath: "src/index.ts",
+    });
+
+    await waitForEditorText("value = 1");
+
+    const oversizedDirtyContent = `dirty-start\n${"x".repeat(8 * 1024 * 1024 + 1)}\ndirty-end`;
+    act(() => {
+      latestMockEditor?.setValue(oversizedDirtyContent);
+    });
+    expect(latestMockEditor?.getValue().length).toBe(oversizedDirtyContent.length);
+
+    act(() => {
+      useAppStore.setState({ selectedLaneId: laneB });
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/OPEN A FILE TO START EDITING/i)).toBeTruthy();
+    });
+
+    act(() => {
+      useAppStore.setState({ selectedLaneId: laneA });
+    });
+    await waitFor(() => {
+      expect(latestMockEditor?.getValue().length).toBe(oversizedDirtyContent.length);
+      expect(latestMockEditor?.getValue().endsWith("dirty-end")).toBe(true);
+    });
+  });
+
   it("treats Windows workspace paths case-insensitively for open tabs and watcher events", async () => {
     projectRoot = "C:/Repo";
     resetStore();

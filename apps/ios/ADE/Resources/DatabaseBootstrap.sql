@@ -817,8 +817,6 @@ alter table queue_landing_state add column wait_reason text;
 
 alter table queue_landing_state add column updated_at text;
 
-delete from queue_landing_state;
-
 create table if not exists rebase_dismissed (
       lane_id text not null,
       project_id text not null,

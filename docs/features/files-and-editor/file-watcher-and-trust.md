@@ -213,6 +213,12 @@ Rename detection on the renderer side: because watcher events come as
 renderer inspects the modified timestamp and file size to correlate
 them when possible.
 
+The Files page also keeps a per-project/lane in-memory session cache
+for open tabs when the user switches scopes. Clean text tabs are capped
+at 256 KB in that cache, but dirty tabs are retained regardless of
+size so unsaved edits are never silently discarded while moving between
+lanes.
+
 ## IPC surface
 
 The primary route is the runtime daemon's `file` action domain.

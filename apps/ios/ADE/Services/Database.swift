@@ -4,6 +4,7 @@ import SQLite3
 private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 private let localDeleteColumnId = "-1"
 private let legacyDeleteColumnId = "__ade_deleted"
+private let queueOverhaulWipeMarkerKey = "queue_landing_state.wiped_for_stacked_overhaul.v1"
 
 extension Notification.Name {
   static let adeDatabaseDidChange = Notification.Name("ADE.DatabaseDidChange")
@@ -310,19 +311,20 @@ final class DatabaseService {
     while sqlite3_step(statement) == SQLITE_ROW {
       let table = stringValue(statement, index: 0) ?? ""
       let rawPk = scalarValue(statement, index: 1)
-      rows.append(
-        CrsqlChangeRow(
-          table: table,
-          pk: encodeOutgoingCrsqlPrimaryKey(table: table, pk: rawPk),
-          cid: stringValue(statement, index: 2) ?? "",
-          val: scalarValue(statement, index: 3),
-          colVersion: Int(sqlite3_column_int64(statement, 4)),
-          dbVersion: Int(sqlite3_column_int64(statement, 5)),
-          siteId: blobHexValue(statement, index: 6) ?? "",
-          cl: Int(sqlite3_column_int64(statement, 7)),
-          seq: Int(sqlite3_column_int64(statement, 8)),
-        )
+      let change = CrsqlChangeRow(
+        table: table,
+        pk: encodeOutgoingCrsqlPrimaryKey(table: table, pk: rawPk),
+        cid: stringValue(statement, index: 2) ?? "",
+        val: scalarValue(statement, index: 3),
+        colVersion: Int(sqlite3_column_int64(statement, 4)),
+        dbVersion: Int(sqlite3_column_int64(statement, 5)),
+        siteId: blobHexValue(statement, index: 6) ?? "",
+        cl: Int(sqlite3_column_int64(statement, 7)),
+        seq: Int(sqlite3_column_int64(statement, 8)),
       )
+      if !isLocalOnlyQueueWipeMarkerChange(change) {
+        rows.append(change)
+      }
     }
     return rows
   }
@@ -350,6 +352,9 @@ final class DatabaseService {
         values (?, ?, ?, ?, ?, ?, ?, ?, ?)
       """
       for rawChange in changes {
+        if isLocalOnlyQueueWipeMarkerChange(rawChange) {
+          continue
+        }
         if shouldIgnoreIncomingSyncTable(rawChange.table) {
           continue
         }
@@ -2181,6 +2186,7 @@ final class DatabaseService {
     let bootstrapSQL = try loadBootstrapSQL()
     try executeBootstrapSQL(bootstrapSQL)
     try ensureHydrationProjectionColumns()
+    try wipeQueueLandingStateForStackedOverhaulIfNeeded()
     try ensureSyncMetadataTables()
     try ensureCrrTables()
     try repairPullRequestProjectionIntegrity()
@@ -2690,6 +2696,77 @@ final class DatabaseService {
       }
       try enableCrr(for: tableName)
     }
+  }
+
+  private func wipeQueueLandingStateForStackedOverhaulIfNeeded() throws {
+    guard hasTable(named: "kv") else { return }
+    let markerExists = queryInt64("select 1 from kv where key = ? limit 1", bind: { [self] statement in
+      try self.bindText(queueOverhaulWipeMarkerKey, to: statement, index: 1)
+    }) != nil
+    if markerExists { return }
+
+    try deleteAllRowsWithoutCrrReplication(tableName: "queue_landing_state")
+
+    let previousCaptureState = shouldCaptureLocalChanges
+    shouldCaptureLocalChanges = false
+    defer { shouldCaptureLocalChanges = previousCaptureState }
+    _ = try execute(
+      "insert into kv (key, value) values (?, ?) on conflict(key) do update set value = excluded.value"
+    ) { statement in
+      try bindText(queueOverhaulWipeMarkerKey, to: statement, index: 1)
+      try bindText(ISO8601DateFormatter().string(from: Date()), to: statement, index: 2)
+    }
+  }
+
+  private func deleteAllRowsWithoutCrrReplication(tableName: String) throws {
+    guard hasTable(named: tableName) else { return }
+    let clockTableName = "\(tableName)__crsql_clock"
+    let pksTableName = "\(tableName)__crsql_pks"
+    let hasCrrTriggers = queryInt64(
+      "select 1 from sqlite_master where type = 'trigger' and name in (?, ?, ?) limit 1",
+      bind: { [self] statement in
+        try self.bindText(insertTriggerName(for: tableName), to: statement, index: 1)
+        try self.bindText(updateTriggerName(for: tableName), to: statement, index: 2)
+        try self.bindText(deleteTriggerName(for: tableName), to: statement, index: 3)
+      }
+    ) != nil
+    let hasMasterRows = hasTable(named: "crsql_master") && queryInt64(
+      "select 1 from crsql_master where tbl_name = ? limit 1",
+      bind: { [self] statement in
+        try self.bindText(tableName, to: statement, index: 1)
+      }
+    ) != nil
+    let hasChangesRows = hasTable(named: "crsql_changes") && queryInt64(
+      "select 1 from crsql_changes where [table] = ? limit 1",
+      bind: { [self] statement in
+        try self.bindText(tableName, to: statement, index: 1)
+      }
+    ) != nil
+    let hasCrrMetadata = (
+      hasTable(named: clockTableName)
+        || hasTable(named: pksTableName)
+        || hasCrrTriggers
+        || hasMasterRows
+        || hasChangesRows
+    )
+
+    if hasCrrMetadata {
+      try dropCrrTriggers(for: tableName)
+      try exec("drop table if exists \(quoteIdentifier(clockTableName))")
+      try exec("drop table if exists \(quoteIdentifier(pksTableName))")
+      if hasMasterRows {
+        _ = try execute("delete from crsql_master where tbl_name = ?") { statement in
+          try bindText(tableName, to: statement, index: 1)
+        }
+      }
+      if hasChangesRows {
+        _ = try execute("delete from crsql_changes where [table] = ?") { statement in
+          try bindText(tableName, to: statement, index: 1)
+        }
+      }
+    }
+
+    try exec("delete from \(quoteIdentifier(tableName))")
   }
 
   /// Tables that exist on the iOS client only as local read-through caches.
@@ -3795,6 +3872,22 @@ final class DatabaseService {
       return packedCrsqlPrimaryKey(pk) ?? pk
     }
     return pk
+  }
+
+  private func isLocalOnlyQueueWipeMarkerChange(_ change: CrsqlChangeRow) -> Bool {
+    change.table == "kv" && primaryKey(change.pk, matchesText: queueOverhaulWipeMarkerKey)
+  }
+
+  private func primaryKey(_ value: SyncScalarValue, matchesText text: String) -> Bool {
+    if case .string(let stringValue) = value {
+      return stringValue == text
+    }
+    guard case .bytes(let bytesValue) = value,
+          case .bytes(let expectedBytes) = packedCrsqlPrimaryKey(.string(text))
+    else {
+      return false
+    }
+    return bytesValue.base64 == expectedBytes.base64
   }
 
   private func packedCrsqlPrimaryKey(_ value: SyncScalarValue) -> SyncScalarValue? {

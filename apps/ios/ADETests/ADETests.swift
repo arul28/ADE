@@ -2942,6 +2942,47 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
+  func testDatabaseTreatsQueueWipeMarkerAsLocalOnlySyncState() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = DatabaseService(baseURL: baseURL, bootstrapSQL: """
+      create table if not exists kv (key text primary key, value text not null);
+    """)
+    XCTAssertNil(database.initializationError)
+
+    let marker = "queue_landing_state.wiped_for_stacked_overhaul.v1"
+    let initialVersion = database.currentDbVersion()
+    try database.executeSqlForTesting("""
+      update kv set value = 'locally-updated' where key = '\(marker)'
+    """)
+
+    let exported = database.exportChangesSince(version: initialVersion)
+    XCTAssertFalse(exported.contains {
+      $0.table == "kv" && ($0.pk == packedDesktopTextPrimaryKey(marker) || $0.pk == .string(marker))
+    })
+
+    let markerValueBeforeApply = try kvValue(in: baseURL, key: marker)
+    let versionBeforeApply = database.currentDbVersion()
+    let result = try database.applyChanges([
+      CrsqlChangeRow(
+        table: "kv",
+        pk: packedDesktopTextPrimaryKey(marker),
+        cid: "value",
+        val: .string("remote-marker-should-not-apply"),
+        colVersion: 999,
+        dbVersion: versionBeforeApply + 1,
+        siteId: "ffffffffffffffffffffffffffffffff",
+        cl: 1,
+        seq: 0
+      )
+    ])
+
+    XCTAssertEqual(result.appliedCount, 0)
+    XCTAssertTrue(result.touchedTables.isEmpty)
+    XCTAssertEqual(database.currentDbVersion(), versionBeforeApply)
+    XCTAssertEqual(try kvValue(in: baseURL, key: marker), markerValueBeforeApply)
+    database.close()
+  }
+
   func testDatabaseRejectsUnknownIncomingSyncTable() throws {
     let database = makeDatabase(baseURL: makeTemporaryDirectory())
     XCTAssertNil(database.initializationError)
@@ -8881,6 +8922,21 @@ final class ADETests: XCTestCase {
     defer { sqlite3_finalize(statement) }
     XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
     return Int(sqlite3_column_int64(statement, 0))
+  }
+
+  private func kvValue(in baseURL: URL, key: String) throws -> String? {
+    let dbURL = baseURL.appendingPathComponent("ADE", isDirectory: true).appendingPathComponent("ade.db")
+    var handle: OpaquePointer?
+    XCTAssertEqual(sqlite3_open(dbURL.path, &handle), SQLITE_OK)
+    defer { sqlite3_close(handle) }
+
+    var statement: OpaquePointer?
+    XCTAssertEqual(sqlite3_prepare_v2(handle, "select value from kv where key = ? limit 1", -1, &statement, nil), SQLITE_OK)
+    defer { sqlite3_finalize(statement) }
+    sqlite3_bind_text(statement, 1, (key as NSString).utf8String, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+    guard let raw = sqlite3_column_text(statement, 0) else { return nil }
+    return String(cString: raw)
   }
 
   private func tableExists(in baseURL: URL, table: String) throws -> Bool {

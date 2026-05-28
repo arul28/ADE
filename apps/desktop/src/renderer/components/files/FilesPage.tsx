@@ -159,7 +159,6 @@ const filesRootTreeCacheByWorkspace = new Map<string, FileTreeNode[]>();
 const MAX_FILES_PAGE_CACHED_SCOPES = 8;
 const MAX_FILES_TREE_CACHED_WORKSPACES = 32;
 const MAX_CACHED_CLEAN_TAB_CHARS = 256 * 1024;
-const MAX_CACHED_DIRTY_TAB_CHARS = 8 * 1024 * 1024;
 const MAX_QUEUED_TREE_PARENT_REFRESHES = 24;
 const FILES_WATCH_START_DELAY_MS = import.meta.env.MODE === "test" || (window as any).__adeBrowserMock ? 0 : 2_000;
 
@@ -249,8 +248,10 @@ function filesPageSessionHasUnsavedTabs(session: FilesPageSessionState | undefin
 function cacheableSessionTabs(openTabs: OpenTab[]): OpenTab[] {
   return openTabs
     .filter((tab) => {
+      // Always retain unsaved buffers across session scope changes; size limits
+      // apply only to clean tabs so large in-flight edits are not dropped silently.
       if (tab.content !== tab.savedContent) {
-        return tab.content.length <= MAX_CACHED_DIRTY_TAB_CHARS;
+        return true;
       }
       return isTextTab(tab) && tab.content.length <= MAX_CACHED_CLEAN_TAB_CHARS;
     })
