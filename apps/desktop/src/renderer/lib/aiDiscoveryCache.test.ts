@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getAgentChatModelsCached, getAiStatusCached, invalidateAiDiscoveryCache, peekAiStatusCached } from "./aiDiscoveryCache";
+import {
+  AI_STATUS_CACHE_INVALIDATED_EVENT,
+  getAgentChatModelsCached,
+  getAiStatusCached,
+  invalidateAiDiscoveryCache,
+  peekAiStatusCached,
+  type AiStatusCacheInvalidatedEventDetail,
+} from "./aiDiscoveryCache";
 
 const getStatusMock = vi.fn();
 const modelsMock = vi.fn();
@@ -17,9 +24,13 @@ describe("aiDiscoveryCache", () => {
     invalidateAiDiscoveryCache();
     getStatusMock.mockReset();
     modelsMock.mockReset();
+    const windowEvents = new EventTarget();
     Object.defineProperty(globalThis, "window", {
       configurable: true,
       value: {
+        addEventListener: windowEvents.addEventListener.bind(windowEvents),
+        removeEventListener: windowEvents.removeEventListener.bind(windowEvents),
+        dispatchEvent: windowEvents.dispatchEvent.bind(windowEvents),
         ade: {
           ai: {
             getStatus: getStatusMock,
@@ -174,5 +185,25 @@ describe("aiDiscoveryCache", () => {
       force: false,
       refreshOpenCodeInventory: true,
     });
+  });
+
+  it("emits project-scoped invalidation events", () => {
+    const events: AiStatusCacheInvalidatedEventDetail[] = [];
+    const listener = (event: Event) => {
+      events.push((event as CustomEvent<AiStatusCacheInvalidatedEventDetail>).detail);
+    };
+    window.addEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, listener);
+
+    try {
+      invalidateAiDiscoveryCache("/project/a");
+      invalidateAiDiscoveryCache();
+    } finally {
+      window.removeEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, listener);
+    }
+
+    expect(events).toEqual([
+      { projectRoot: "/project/a", allProjects: false },
+      { projectRoot: null, allProjects: true },
+    ]);
   });
 });

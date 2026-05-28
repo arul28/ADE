@@ -1226,6 +1226,7 @@ export function WorkViewArea({
   initialLinearIssueContextSource = "lane_link",
   initialModelId = null,
   onInitialLinearIssueContextConsumed,
+  suppressDraftLaunchNavigation = false,
   onReorderLaneSessions,
   onOpenSessionInTabsView,
   onGoToLane,
@@ -1273,6 +1274,7 @@ export function WorkViewArea({
   initialLinearIssueContextSource?: "manual" | "lane_link";
   initialModelId?: string | null;
   onInitialLinearIssueContextConsumed?: () => void;
+  suppressDraftLaunchNavigation?: boolean;
   onInfoClick?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
   onStopRunningSession?: (session: TerminalSessionSummary) => void;
 }) {
@@ -1727,6 +1729,7 @@ export function WorkViewArea({
                 initialLinearIssueContextSource={initialLinearIssueContextSource}
                 initialModelId={initialModelId}
                 onInitialLinearIssueContextConsumed={onInitialLinearIssueContextConsumed}
+                suppressDraftLaunchNavigation={suppressDraftLaunchNavigation}
               />
             </div>
           </div>
@@ -1793,6 +1796,7 @@ export function WorkViewArea({
               initialLinearIssueContextSource={initialLinearIssueContextSource}
               initialModelId={initialModelId}
               onInitialLinearIssueContextConsumed={onInitialLinearIssueContextConsumed}
+              suppressDraftLaunchNavigation={suppressDraftLaunchNavigation}
             />
           </div>
         </div>

@@ -289,6 +289,46 @@ describe("appStore", () => {
       expect(useAppStore.getState().projectHydrated).toBe(false);
     });
 
+    it("refreshProviderMode auto-elevates when runtime provider signals exist", async () => {
+      useAppStore.setState({
+        project: { rootPath: "/tmp/provider-mode", displayName: "Provider mode", baseRef: "main" } as any,
+        providerMode: "guest",
+      });
+      (window.ade.projectConfig.get as any).mockResolvedValueOnce({ effective: { providerMode: "guest" } });
+      (window.ade.ai.getStatus as any).mockResolvedValueOnce({
+        mode: "guest",
+        availableProviders: {
+          claude: {
+            binary: { present: false, source: "missing", path: null },
+            auth: { ready: false, mode: "none", detail: null },
+          },
+          codex: false,
+          cursor: false,
+          droid: false,
+        },
+        models: { claude: [], codex: [], cursor: [], droid: [] },
+        features: [],
+        runtimeConnections: {
+          openrouter: {
+            provider: "openrouter",
+            label: "OpenRouter",
+            kind: "openrouter",
+            configured: true,
+            authAvailable: true,
+            runtimeDetected: true,
+            runtimeAvailable: true,
+            health: "ready",
+            blocker: null,
+            lastCheckedAt: "2026-05-28T00:00:00.000Z",
+          },
+        },
+      });
+
+      await useAppStore.getState().refreshProviderMode();
+
+      expect(useAppStore.getState().providerMode).toBe("subscription");
+    });
+
     it("setShowWelcome toggles the welcome screen flag", () => {
       useAppStore.getState().setShowWelcome(false);
       expect(useAppStore.getState().showWelcome).toBe(false);

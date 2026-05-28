@@ -6,6 +6,7 @@ import type { KeybindingsSnapshot, LaneDeleteProgress, LaneListSnapshot, LaneSum
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 import { extractError } from "../lib/format";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../lib/aiDiscoveryCache";
+import { hasConfiguredAiProvider } from "../lib/aiProviderStatus";
 import { getProjectConfigCached, invalidateProjectConfigCache } from "../lib/projectConfigCache";
 
 export type ThemeId = "dark" | "light";
@@ -1333,15 +1334,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     ]);
     const configMode = snapshot.effective.providerMode ?? "guest";
     // Auto-elevate to subscription if any AI provider is configured
-    const hasProvider =
-      aiStatus != null &&
-      (aiStatus.providerConnections?.claude.authAvailable ||
-        aiStatus.providerConnections?.codex.authAvailable ||
-        aiStatus.providerConnections?.cursor.authAvailable ||
-        aiStatus.availableProviders?.claude?.auth.ready ||
-        aiStatus.availableProviders?.codex ||
-        aiStatus.availableProviders?.cursor ||
-        (aiStatus.detectedAuth != null && aiStatus.detectedAuth.length > 0));
+    const hasProvider = hasConfiguredAiProvider(aiStatus);
     set({ providerMode: configMode === "subscription" || hasProvider ? "subscription" : "guest" });
   },
 

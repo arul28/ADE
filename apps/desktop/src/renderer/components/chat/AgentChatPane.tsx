@@ -2205,6 +2205,7 @@ export function AgentChatPane({
   permissionModeLocked = false,
   presentation,
   embeddedWorkLayout = false,
+  suppressDraftLaunchNavigation = false,
   layoutVariant = "standard",
   isTileActive = true,
   isTileVisible = isTileActive,
@@ -2239,6 +2240,8 @@ export function AgentChatPane({
   presentation?: ChatSurfacePresentation;
   /** Work tab draft: flatter shell, no duplicate header chrome above the composer. */
   embeddedWorkLayout?: boolean;
+  /** Embedded Lanes work pane owns selection in place; don't route after draft launch. */
+  suppressDraftLaunchNavigation?: boolean;
   layoutVariant?: "standard" | "grid-tile";
   isTileActive?: boolean;
   /** Visible grid tiles hydrate transcripts even when they are not the focused tile. */
@@ -5691,12 +5694,15 @@ export function AgentChatPane({
         viewMode: "tabs",
       }));
     }
+    if (suppressDraftLaunchNavigation) {
+      return;
+    }
     if (embeddedWorkLayout) {
       navigate(`/work?laneId=${encodeURIComponent(launch.laneId)}&sessionId=${encodeURIComponent(launch.sessionId)}`);
       return;
     }
     navigate(`/lanes?laneId=${encodeURIComponent(launch.laneId)}&sessionId=${encodeURIComponent(launch.sessionId)}&focus=single`);
-  }, [embeddedWorkLayout, navigate, projectRoot, setLaneWorkViewState, setWorkViewState]);
+  }, [embeddedWorkLayout, navigate, projectRoot, setLaneWorkViewState, setWorkViewState, suppressDraftLaunchNavigation]);
 
   const resolveDraftLaunchLane = useCallback(async (snapshot: DraftLaunchSnapshot): Promise<DraftLaunchLaneTarget> => {
     if (draftLaunchTargetIsAutoCreate) {

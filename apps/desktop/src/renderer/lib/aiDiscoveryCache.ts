@@ -16,6 +16,12 @@ type ModelsCacheEntry = {
 
 const DEFAULT_AI_STATUS_TTL_MS = 10_000;
 const DEFAULT_MODELS_TTL_MS = 30_000;
+export const AI_STATUS_CACHE_INVALIDATED_EVENT = "ade:ai-status-cache-invalidated";
+
+export type AiStatusCacheInvalidatedEventDetail = {
+  projectRoot: string | null;
+  allProjects: boolean;
+};
 
 const aiStatusCache = new Map<string, StatusCacheEntry>();
 const providerModelsCache = new Map<string, ModelsCacheEntry>();
@@ -26,6 +32,15 @@ function normalizeProjectRoot(projectRoot: string | null | undefined): string {
 
 function statusCacheKey(projectRoot: string | null | undefined): string {
   return normalizeProjectRoot(projectRoot);
+}
+
+function emitAiStatusCacheInvalidated(detail: AiStatusCacheInvalidatedEventDetail): void {
+  if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") return;
+  if (typeof CustomEvent === "undefined") return;
+  window.dispatchEvent(new CustomEvent<AiStatusCacheInvalidatedEventDetail>(
+    AI_STATUS_CACHE_INVALIDATED_EVENT,
+    { detail },
+  ));
 }
 
 function modelsCacheKey(
@@ -181,6 +196,7 @@ export function invalidateAiDiscoveryCache(projectRoot?: string | null): void {
   if (projectRoot == null) {
     aiStatusCache.clear();
     providerModelsCache.clear();
+    emitAiStatusCacheInvalidated({ projectRoot: null, allProjects: true });
     return;
   }
 
@@ -191,4 +207,8 @@ export function invalidateAiDiscoveryCache(projectRoot?: string | null): void {
       providerModelsCache.delete(key);
     }
   }
+  emitAiStatusCacheInvalidated({
+    projectRoot: projectRoot.trim() || null,
+    allProjects: false,
+  });
 }
