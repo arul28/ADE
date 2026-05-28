@@ -2263,6 +2263,66 @@ describe("linearDispatcherService (file group)", () => {
       db.close();
     });
 
+    it.each(["approve", "reject"] as const)("rejects early %s before the supervisor review gate is active", async (action) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-early-review-action-"));
+      const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+      const policy = buildSupervisedWorkerPolicy();
+
+      const dispatcher = createLinearDispatcherService({
+        db,
+        projectId: "project-1",
+        issueTracker: {
+          fetchIssueById: vi.fn(async () => issueFixture),
+          fetchWorkflowStates: vi.fn(async () => []),
+          updateIssueState: vi.fn(async () => {}),
+          addLabel: vi.fn(async () => {}),
+          createComment: vi.fn(async () => ({ commentId: "comment-1" })),
+        } as any,
+        workerAgentService: {
+          listAgents: vi.fn(() => [{ id: "agent-1", slug: "backend-dev", adapterType: "claude-local", capabilities: [] }]),
+        } as any,
+        workerHeartbeatService: {
+          triggerWakeup: vi.fn(async () => ({ runId: "worker-run-1" })),
+          listRuns: vi.fn(() => [{ id: "worker-run-1", status: "completed" }]),
+        } as any,
+        agentChatService: { ensureIdentitySession: vi.fn(), sendMessage: vi.fn(async () => {}), listSessions: vi.fn(async () => []) } as any,
+        laneService: {
+          ensurePrimaryLane: vi.fn(async () => {}),
+          list: vi.fn(async () => [{ id: "lane-1", laneType: "primary" }]),
+          create: vi.fn(async () => ({ id: "lane-2", name: "Fresh lane" })),
+        } as any,
+        templateService: { renderTemplate: vi.fn(() => ({ prompt: "Implement the issue." })) } as any,
+        closeoutService: { applyOutcome: vi.fn(async () => {}) } as any,
+        outboundService: createOutboundServiceMocks(),
+        workerTaskSessionService: {
+          deriveTaskKey: vi.fn(() => "task-key-1"),
+          ensureTaskSession: vi.fn(() => ({ id: "task-session-1" })),
+        } as any,
+        prService: {
+          getForLane: vi.fn(() => null),
+          createFromLane: vi.fn(async () => ({ id: "pr-1", githubPrNumber: 101 })),
+        } as any,
+      });
+
+      const run = dispatcher.createRun({ ...issueFixture, labels: ["workflow:backend-supervised"] }, buildMatch(policy));
+      await dispatcher.advanceRun(run.id, policy);
+
+      expect(run.id).toBeTruthy();
+      const detailBeforeReview = await dispatcher.getRunDetail(run.id, policy);
+      expect(detailBeforeReview?.run.status).not.toBe("awaiting_human_review");
+
+      await expect(
+        dispatcher.resolveRunAction(run.id, action, "Pre-resolved.", policy),
+      ).rejects.toThrow("not awaiting supervisor review");
+      const detailAfterRejectedAction = await dispatcher.getRunDetail(run.id, policy);
+      expect(detailAfterRejectedAction?.run.status).toBe(detailBeforeReview?.run.status);
+      expect(detailAfterRejectedAction?.run.reviewState).not.toBe(action === "approve" ? "approved" : "rejected");
+
+      const awaitingReview = await dispatcher.advanceRun(run.id, policy);
+      expect(awaitingReview?.status).toBe("awaiting_human_review");
+      db.close();
+    });
+
     it("loops back to delegated work when supervisor requests changes", async () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-dispatcher-loopback-"));
       const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);

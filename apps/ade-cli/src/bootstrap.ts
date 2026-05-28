@@ -1202,6 +1202,7 @@ export async function createAdeRuntime(args: {
   };
   automationService.bindAdeActionRegistry(adeActionLookup);
 
+  usageTrackingService.start();
   runtimeCreated = true;
   return runtime;
   } finally {
