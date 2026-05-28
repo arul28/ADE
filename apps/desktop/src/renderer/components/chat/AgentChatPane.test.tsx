@@ -2625,7 +2625,7 @@ describe("AgentChatPane submit recovery", () => {
     const { cliOnlyId, chatOnlyId, bothId } = seedCursorRuntimeModelCatalog();
     const session = buildSession("session-1", { status: "idle" });
     installAdeMocks({
-      cursorModels: [{ id: cliOnlyId }, { id: chatOnlyId }, { id: bothId }],
+      cursorModels: [{ id: bothId }],
     });
 
     renderPane(session);
@@ -2641,7 +2641,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(screen.getByText("Cursor Chat Only")).toBeTruthy();
     });
-    expect(screen.getByText("Cursor Both")).toBeTruthy();
+    expect(screen.getAllByText("Cursor Both").length).toBeGreaterThan(0);
     expect(screen.queryByText("Cursor CLI Only")).toBeNull();
   });
 

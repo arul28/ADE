@@ -984,15 +984,20 @@ export class LocalRuntimeConnectionPool {
     const stderrLogger = createLocalRuntimeOutputLogger({ ...outputBase, stream: "stderr" });
     child.stdout?.on("data", stdoutLogger.push);
     child.stderr?.on("data", stderrLogger.push);
-    child.once("exit", (code, signal) => {
+    const flushOutput = (): void => {
       stdoutLogger.flush();
       stderrLogger.flush();
+    };
+    child.once("close", () => {
+      flushOutput();
+    });
+    child.once("exit", (code, signal) => {
+      flushOutput();
       this.logger.warn("local_runtime.exited", { code, signal, pid: outputBase.pid, socketPath });
       this.connection = null;
     });
     child.once("error", (error) => {
-      stdoutLogger.flush();
-      stderrLogger.flush();
+      flushOutput();
       this.logger.warn("local_runtime.spawn_failed", { error: error.message, pid: outputBase.pid, socketPath });
       this.connection = null;
     });

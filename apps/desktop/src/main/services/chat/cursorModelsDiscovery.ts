@@ -606,9 +606,9 @@ export function resolveCachedCursorModelAvailability(
 ): CursorModelAvailability | null {
   const ref = normalizeCursorModelLookupRef(modelRef);
   if (!ref) return null;
-  const sdkRows = getCachedCursorSdkModels(apiKey);
-  if (!sdkRows) return null;
   const cli = (getCachedCursorModels() ?? []).some((row) => cursorRowMatchesRef(row, ref));
+  const sdkRows = getCachedCursorSdkModels(apiKey);
+  if (!sdkRows) return cli ? { cli: true, sdk: false } : null;
   const sdk = sdkRows.some((row) => cursorRowMatchesRef(row, ref));
   return cli || sdk ? { cli, sdk } : null;
 }
@@ -689,16 +689,15 @@ export function mergeCursorModelDescriptorSources(args: {
     const aliases = [...new Set([...(previous.aliases ?? []), ...(descriptor.aliases ?? [])])];
     const reasoningTiers = [...new Set([...(previous.reasoningTiers ?? []), ...(descriptor.reasoningTiers ?? [])])];
     const serviceTiers = [...new Set([...(previous.serviceTiers ?? []), ...(descriptor.serviceTiers ?? [])])];
-    const prefer = source === "sdk" ? descriptor : previous;
-    const identity = source === "sdk" ? descriptor : previous;
+    const preferred = source === "sdk" ? descriptor : previous;
     merged.set(key, {
       ...previous,
-      ...prefer,
-      id: identity.id,
-      shortId: identity.shortId,
-      providerModelId: identity.providerModelId,
-      displayName: prefer.displayName || previous.displayName,
-      color: prefer.color || previous.color,
+      ...preferred,
+      id: preferred.id,
+      shortId: preferred.shortId,
+      providerModelId: preferred.providerModelId,
+      displayName: preferred.displayName || previous.displayName,
+      color: preferred.color || previous.color,
       ...(aliases.length ? { aliases } : {}),
       ...(reasoningTiers.length ? { reasoningTiers } : {}),
       ...(serviceTiers.length ? { serviceTiers } : {}),

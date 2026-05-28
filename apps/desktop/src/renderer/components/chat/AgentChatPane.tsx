@@ -3634,6 +3634,12 @@ export function AgentChatPane({
     ?? (selectedSession?.cursorCloudAgentId ? "cloud" : "local");
   const handoffAvailableModelIds = useMemo(() => {
     const merged = new Set<string>(availableModelIds);
+    const catalog = getSharedRuntimeCatalog();
+    if (catalog) {
+      for (const id of descriptorsFromAgentChatModelCatalog(catalog).availableModelIds) {
+        merged.add(id);
+      }
+    }
     if (selectedSessionModelId) {
       merged.add(selectedSessionModelId);
     }

@@ -4,6 +4,7 @@ import type { ModelDescriptor } from "../../../shared/modelRegistry";
 const cursorModelsListMock = vi.hoisted(() => vi.fn());
 const reportProviderRuntimeAuthFailureMock = vi.hoisted(() => vi.fn());
 const reportProviderRuntimeReadyMock = vi.hoisted(() => vi.fn());
+const spawnAsyncMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@cursor/sdk", () => ({
   Cursor: {
@@ -18,20 +19,31 @@ vi.mock("../ai/providerRuntimeHealth", () => ({
   reportProviderRuntimeReady: (...args: unknown[]) => reportProviderRuntimeReadyMock(...args),
 }));
 
+vi.mock("../shared/utils", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../shared/utils")>();
+  return {
+    ...actual,
+    spawnAsync: (...args: unknown[]) => spawnAsyncMock(...args),
+  };
+});
+
 import {
   clearCursorCliModelsCache,
   discoverCursorSdkModelDescriptors,
+  listCursorModelsFromCli,
   listCursorModelsFromSdk,
   mergeCursorModelDescriptorSources,
   parseCursorCliModelsStdout,
   probeCursorSdkModelDiscovery,
   resolveCursorSdkModelSelectionParams,
+  resolveCachedCursorModelAvailability,
 } from "./cursorModelsDiscovery";
 
 beforeEach(() => {
   cursorModelsListMock.mockReset();
   reportProviderRuntimeAuthFailureMock.mockReset();
   reportProviderRuntimeReadyMock.mockReset();
+  spawnAsyncMock.mockReset();
   clearCursorCliModelsCache();
   vi.useRealTimers();
 });
@@ -231,6 +243,22 @@ describe("parseCursorCliModelsStdout", () => {
     });
 
     expect(mergeCursorModelDescriptorSources({ cliDescriptors: [], sdkDescriptors: [] })).toEqual([]);
+  });
+
+  it("uses cached CLI rows to block SDK sends before SDK discovery warms", async () => {
+    spawnAsyncMock.mockResolvedValueOnce({
+      status: 0,
+      stdout: "auto - Auto\n",
+      stderr: "",
+    });
+
+    await listCursorModelsFromCli("/usr/local/bin/cursor-agent");
+
+    expect(resolveCachedCursorModelAvailability("cursor/auto", "crsr_test")).toEqual({
+      cli: true,
+      sdk: false,
+    });
+    expect(resolveCachedCursorModelAvailability("cursor/chat-only", "crsr_test")).toBeNull();
   });
 
   it("preserves Cursor SDK parameters and variants as runtime reasoning and service tiers", async () => {

@@ -9780,7 +9780,8 @@ function installRuntimeProcessErrorBoundary(label: string): () => void {
     }
   };
   const onUnhandledRejection = (reason: unknown): void => {
-    write("unhandled rejection", reason);
+    write("fatal unhandled rejection", reason);
+    process.exit(1);
   };
   const onUncaughtException = (error: Error): void => {
     write("fatal uncaught exception", error);
