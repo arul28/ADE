@@ -743,6 +743,7 @@ import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { mapPermissionToCodex } from "./permissionMapping";
 import { acquireCursorSdkConnection, releaseCursorSdkConnection } from "./cursorSdkPool";
 import { acquireDroidSdkConnection } from "./droidSdkPool";
+import { clearCursorCliModelsCache } from "./cursorModelsDiscovery";
 import type { AgentChatEventEnvelope, ComputerUseBackendStatus, LaneLinearIssue, PendingInputRequest } from "../../../shared/types";
 import { makeLinearIssueContextAttachment } from "../../../shared/chatContextAttachments";
 import {
@@ -1461,6 +1462,7 @@ beforeEach(() => {
   vi.mocked(detectAllAuth).mockResolvedValue([]);
   vi.mocked(parseAgentChatTranscript).mockReturnValue([]);
   vi.mocked(clearOpenCodeInventoryCache).mockClear();
+  clearCursorCliModelsCache();
   vi.mocked(peekOpenCodeInventoryCache).mockReset();
   vi.mocked(peekOpenCodeInventoryCache).mockReturnValue(null);
   vi.mocked(probeOpenCodeProviderInventory).mockReset();
