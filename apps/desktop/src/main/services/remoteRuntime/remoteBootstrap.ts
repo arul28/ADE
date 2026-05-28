@@ -191,7 +191,6 @@ export function resolveRemoteRuntimeLayout(env: NodeJS.ProcessEnv = process.env)
 export function resolveRemoteRuntimeLayoutCandidates(env: NodeJS.ProcessEnv = process.env): RemoteRuntimeLayout[] {
   const preferred = resolveRemoteRuntimeLayout(env);
   const candidateEnvs: NodeJS.ProcessEnv[] = [
-    env,
     {},
     { ADE_PACKAGE_CHANNEL: "beta" } as NodeJS.ProcessEnv,
     { ADE_PACKAGE_CHANNEL: "alpha" } as NodeJS.ProcessEnv,
@@ -209,6 +208,7 @@ export function buildRemoteRuntimeEnvironmentPrefix(args: {
   archLabel: string;
   nativeDepsReady: boolean;
   layout?: RemoteRuntimeLayout;
+  disableRuntimeServiceInstall?: boolean;
 }): string {
   const layout = args.layout ?? resolveRemoteRuntimeLayout();
   const parts = [
@@ -218,6 +218,8 @@ export function buildRemoteRuntimeEnvironmentPrefix(args: {
   ];
   if (layout.channel) {
     parts.push(`ADE_PACKAGE_CHANNEL="${layout.channel}"`);
+  }
+  if (layout.channel || args.disableRuntimeServiceInstall) {
     parts.push("ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1");
   }
   if (args.nativeDepsReady) {
@@ -501,6 +503,7 @@ export async function bootstrapRemoteRuntime(args: {
       archLabel: arch.label,
       nativeDepsReady,
       layout,
+      disableRuntimeServiceInstall: layout.homeDirName !== preferredLayout.homeDirName,
     });
 
     if (runtimeUploaded) {
@@ -563,6 +566,7 @@ export async function bootstrapRemoteRuntime(args: {
           archLabel: arch.label,
           nativeDepsReady: candidateNativeDepsCheck.stdout.trim() === "ok",
           layout: candidateLayout,
+          disableRuntimeServiceInstall: true,
         });
         const candidateCommand = `${candidateRuntimeEnvPrefix}ade rpc --stdio`;
         try {

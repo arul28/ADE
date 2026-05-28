@@ -585,7 +585,7 @@ export class LocalRuntimeConnectionPool {
     const actionCallOptions = request.domain === "file"
       ? { timeoutMs: LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS }
       : undefined;
-    let value: unknown;
+    let value: unknown = undefined;
     let callError: Error | null = null;
     try {
       value = await entry.client.call(

@@ -736,6 +736,11 @@ export function FilesPage({
   const liveWatchEnabled = active && Boolean(workspaceId);
 
   useEffect(() => {
+    if (activeTabIsMarkdown || !markdownPreviewEnabled) return;
+    setMarkdownPreviewEnabled(false);
+  }, [activeTabIsMarkdown, markdownPreviewEnabled]);
+
+  useEffect(() => {
     if (!activeWorkspace?.rootPath) return;
     replaceDirtyBuffersForWorkspace(activeWorkspace.rootPath, openTabs);
   }, [activeWorkspace?.rootPath, openTabs]);

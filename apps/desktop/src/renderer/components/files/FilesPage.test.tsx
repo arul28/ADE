@@ -439,6 +439,31 @@ describe("FilesPage", () => {
     expect(screen.queryByTestId("files-markdown-preview")).toBeNull();
   });
 
+  it("returns Markdown files to source mode after switching through a non-Markdown tab", async () => {
+    renderFilesPage({
+      openFilePath: "src/index.ts",
+      preferPrimaryWorkspace: true,
+    });
+
+    await waitForEditorText("value = 1");
+    fireEvent.click(screen.getByText(/QUICK OPEN/i));
+    fireEvent.change(screen.getByPlaceholderText(/Type to search files/i), {
+      target: { value: "project" },
+    });
+    fireEvent.click(await screen.findByText(".ade/notes/project.md"));
+
+    await waitForEditorText("# Project notes");
+    fireEvent.click(screen.getByRole("button", { name: "Render markdown preview" }));
+    expect(await screen.findByTestId("files-markdown-preview")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "index.ts" }));
+    await waitForEditorText("value = 1");
+
+    fireEvent.click(screen.getByRole("button", { name: "project.md" }));
+    await waitForEditorText("# Project notes");
+    expect(screen.queryByTestId("files-markdown-preview")).toBeNull();
+  });
+
   it("starts the workspace watcher before a file is opened without watching ADE runtime churn", async () => {
     renderFilesPage({ preferPrimaryWorkspace: true });
 
