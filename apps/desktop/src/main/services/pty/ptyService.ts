@@ -3055,7 +3055,7 @@ export function createPtyService({
         if (chatSessionId) {
           attachedEntry.chatSessionId = chatSessionId;
           terminalChatSessions.set(existingSession.id, chatSessionId);
-          promoteActiveChatTerminal(chatSessionId, existingSession.id, existingSession.toolType);
+          promoteActiveChatTerminal(chatSessionId, existingSession.id, attachedEntry.toolTypeHint);
           if (existingSession.chatSessionId !== chatSessionId) {
             try { sessionService.setChatSessionId(existingSession.id, chatSessionId); } catch {}
           }

@@ -3059,6 +3059,45 @@ describe("adeRpcServer", () => {
     expect(operationFinish).not.toHaveBeenCalled();
   });
 
+  it("does not mask successful action responses when audit finish fails", async () => {
+    const { runtime, operationFinish } = createRuntime();
+    operationFinish.mockImplementationOnce(() => {
+      throw new Error("finish failed");
+    });
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler);
+    const response = await callTool(handler, "list_lanes", {});
+
+    expect(response.isError).toBeUndefined();
+    expect(response.structuredContent.lanes).toHaveLength(2);
+    expect(operationFinish).toHaveBeenCalledTimes(1);
+    expect(runtime.logger.warn).toHaveBeenCalledWith(
+      "ade_rpc.action_audit_finish_failed",
+      expect.objectContaining({ actionName: "list_lanes", status: "succeeded" }),
+    );
+  });
+
+  it("records failed audit metadata for returned action failure payloads", async () => {
+    const { runtime, operationFinish } = createRuntime();
+    runtime.gitService.push.mockResolvedValueOnce({ success: false, error: "push failed" });
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+    const response = await callTool(handler, "run_ade_action", {
+      domain: "git",
+      action: "push",
+      args: { laneId: "lane-1" },
+    });
+
+    expect(response.isError).toBeUndefined();
+    expect(response.structuredContent.result.success).toBe(false);
+    expect(operationFinish).toHaveBeenCalledWith(expect.objectContaining({
+      status: "failed",
+      metadataPatch: expect.objectContaining({ resultStatus: "error", error: "push failed" }),
+    }));
+  });
+
   // ---------- Rate limit tests ----------
 
   afterEach(() => {

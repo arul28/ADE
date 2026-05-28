@@ -5245,6 +5245,41 @@ export function createAdeRpcRequestHandler(args: {
     throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported ADE action: ${actionName}`);
   };
 
+  const failedActionPayloadMessage = (value: unknown): string | null => {
+    if (!isRecord(value)) return null;
+    const failed = value.ok === false || value.success === false;
+    if (!failed) return null;
+    const error = value.error;
+    if (typeof error === "string" && error.trim()) return error.trim();
+    if (isRecord(error) && typeof error.message === "string" && error.message.trim()) {
+      return error.message.trim();
+    }
+    return "Action returned a failed result.";
+  };
+
+  const actionResultFailureMessage = (value: unknown): string | null => {
+    if (!isRecord(value)) return null;
+    return failedActionPayloadMessage(value) ?? failedActionPayloadMessage(value.result);
+  };
+
+  const finishActionAudit = (
+    actionName: string,
+    operationId: string,
+    status: "succeeded" | "failed",
+    metadataPatch: Record<string, unknown>,
+  ): void => {
+    try {
+      runtime.operationService.finish({ operationId, status, metadataPatch });
+    } catch (error) {
+      runtime.logger.warn("ade_rpc.action_audit_finish_failed", {
+        actionName,
+        operationId,
+        status,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   const callActionWithAudit = async (
     actionName: string,
     actionArgs: Record<string, unknown>,
@@ -5261,21 +5296,21 @@ export function createAdeRpcRequestHandler(args: {
     });
     try {
       const result = await callAction(actionName, actionArgs);
-      runtime.operationService.finish({
-        operationId: operation.operationId,
-        status: "succeeded",
-        metadataPatch: { resultStatus: "success" },
-      });
+      const failureMessage = actionResultFailureMessage(result);
+      if (failureMessage) {
+        finishActionAudit(actionName, operation.operationId, "failed", {
+          resultStatus: "error",
+          error: failureMessage,
+        });
+        return result;
+      }
+      finishActionAudit(actionName, operation.operationId, "succeeded", { resultStatus: "success" });
       return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      runtime.operationService.finish({
-        operationId: operation.operationId,
-        status: "failed",
-        metadataPatch: {
-          resultStatus: "error",
-          error: message,
-        },
+      finishActionAudit(actionName, operation.operationId, "failed", {
+        resultStatus: "error",
+        error: message,
       });
       throw error;
     }
