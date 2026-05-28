@@ -3042,7 +3042,7 @@ describe("adeRpcServer", () => {
     expect(payload.rebaseStatus).toBe("idle");
   });
 
-  it("records succeeded audit metadata for read-only tools", async () => {
+  it("does not record operation metadata for read-only action calls", async () => {
     const { runtime, operationStart, operationFinish } = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
 
@@ -3050,11 +3050,8 @@ describe("adeRpcServer", () => {
     const response = await callTool(handler, "list_lanes", {});
 
     expect(response.isError).toBeUndefined();
-    expect(operationStart).toHaveBeenCalledTimes(1);
-    expect(operationFinish).toHaveBeenCalledTimes(1);
-    const finishArgs = operationFinish.mock.calls[0]?.[0] ?? {};
-    expect(finishArgs.status).toBe("succeeded");
-    expect(finishArgs.metadataPatch?.resultStatus).toBe("success");
+    expect(operationStart).not.toHaveBeenCalled();
+    expect(operationFinish).not.toHaveBeenCalled();
   });
 
   // ---------- Rate limit tests ----------
