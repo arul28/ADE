@@ -42,18 +42,26 @@ describe("Cursor SDK hook installation", () => {
         nodePath: "/node path/bin/node",
       });
       expect(first.changed).toBe(true);
-      expect(first.command).toContain("/bin/sh");
-      expect(first.command).toContain("ade-tool-gate.sh");
+      if (process.platform === "win32") {
+        expect(first.command).toContain("ade-tool-gate.cjs");
+      } else {
+        expect(first.command).toContain("/bin/sh");
+        expect(first.command).toContain("ade-tool-gate.sh");
+      }
 
       const config = readJson(hooksPath);
       expect(config.version).toBe(2);
       expect(config.hooks.postToolUse).toEqual([{ command: "node post-hook.cjs" }]);
       expect(config.hooks.preToolUse).toHaveLength(2);
-      expect(config.hooks.preToolUse[0].command).toContain("ade-tool-gate.sh");
+      expect(config.hooks.preToolUse[0].command).toContain(
+        process.platform === "win32" ? "ade-tool-gate.cjs" : "ade-tool-gate.sh",
+      );
       expect(config.hooks.preToolUse[0].failClosed).toBe(true);
       expect(config.hooks.preToolUse[1]).toEqual({ command: "node existing-hook.cjs", failClosed: false });
       expect(fs.existsSync(cursorSdkHookScriptPath(home))).toBe(true);
-      expect(fs.existsSync(cursorSdkHookShellCommandPath(home))).toBe(true);
+      if (process.platform !== "win32") {
+        expect(fs.existsSync(cursorSdkHookShellCommandPath(home))).toBe(true);
+      }
 
       const second = ensureCursorSdkUserHook({
         userHomeDir: home,

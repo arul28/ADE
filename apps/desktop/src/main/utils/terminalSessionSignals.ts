@@ -14,6 +14,7 @@ import {
   modelToCliFlag,
   normalizeCliFlagValue,
   resolveClaudeCliModelForLaunch,
+  resolveCursorCliModelForLaunch,
   sanitizeTrackedCliResumeTargetId,
 } from "../../shared/cliLaunch";
 import { decodeOpenCodeRegistryId } from "../../shared/modelRegistry";
@@ -35,16 +36,6 @@ function commandArrayToLine(parts: string[]): string {
 }
 
 export const sanitizeResumeTargetId = sanitizeTrackedCliResumeTargetId;
-
-function resolveCursorCliModelForLaunch(model: string | null | undefined): string {
-  const normalized = normalizeCliFlagValue(model);
-  if (!normalized) return "auto";
-  const slash = normalized.indexOf("/");
-  if (slash > 0 && normalized.slice(0, slash).toLowerCase() === "cursor") {
-    return normalized.slice(slash + 1).trim() || "auto";
-  }
-  return normalized;
-}
 
 function normalizeDroidCliModel(model: string | null | undefined): string | null {
   const normalized = normalizeCliFlagValue(model);

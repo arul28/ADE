@@ -58,10 +58,12 @@ function buildHookCommand(
   windowsCommandPath?: string,
   shellCommandPath?: string,
 ): string {
-  const explicitNode = nodePath?.trim();
   if (process.platform !== "win32" && shellCommandPath) {
+    // The POSIX wrapper embeds node/electron paths and can allow normal Cursor
+    // sessions through before Node is needed.
     return `/bin/sh ${shellQuote(shellCommandPath)}`;
   }
+  const explicitNode = nodePath?.trim();
   if (explicitNode) return `${commandPathQuote(explicitNode)} ${commandPathQuote(scriptPath)}`;
   if (process.versions.electron) {
     if (process.platform === "win32") {
@@ -279,7 +281,7 @@ export function writeCursorSdkHookShellCommandScript(args: {
   electronPath?: string;
 }): void {
   ensureDir(path.dirname(args.commandPath));
-const source = `#!/bin/sh
+  const source = `#!/bin/sh
 has_socket_arg=0
 for arg in "$@"; do
   case "$arg" in

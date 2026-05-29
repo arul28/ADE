@@ -462,7 +462,7 @@ function normalizeDroidCliModel(model: string | null | undefined): string | null
   return normalized;
 }
 
-function resolveCursorCliModelForLaunch(model: string | null | undefined): string {
+export function resolveCursorCliModelForLaunch(model: string | null | undefined): string {
   const normalized = normalizeCliFlagValue(model);
   if (!normalized) return "auto";
   const slash = normalized.indexOf("/");
