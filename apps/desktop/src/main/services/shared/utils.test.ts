@@ -348,6 +348,23 @@ describe("readAgentAccessibleFileBytes", () => {
     }
   });
 
+  it("returns dirty editor text for paths that do not exist on disk yet", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-dirty-read-new-"));
+    try {
+      const filePath = path.join(root, "src", "new.ts");
+
+      const bytes = await readAgentAccessibleFileBytes({
+        rootPath: root,
+        resolvedPath: filePath,
+        getDirtyFileTextForPath: () => "unsaved new file",
+      });
+
+      expect(bytes.toString("utf8")).toBe("unsaved new file");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not let dirty-buffer lookup bypass the workspace boundary", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-dirty-read-root-"));
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ade-dirty-read-outside-"));

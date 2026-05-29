@@ -476,7 +476,8 @@ export async function readAgentAccessibleFileBytes(args: {
   const root = path.resolve(args.rootPath);
   let absPath: string;
   try {
-    absPath = resolvePathWithinRoot(root, args.resolvedPath, { allowMissing: false });
+    // allowMissing so unsaved new files (not yet on disk) can still resolve for dirty lookup.
+    absPath = resolvePathWithinRoot(root, args.resolvedPath, { allowMissing: true });
   } catch {
     return readFileWithinRootSecure(root, args.resolvedPath);
   }

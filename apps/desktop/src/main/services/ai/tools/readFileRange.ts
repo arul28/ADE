@@ -37,7 +37,9 @@ export function createReadFileRangeTool(cwd: string, options: ReadFileRangeToolO
         const root = fs.realpathSync(cwd);
         let resolvedPath: string;
         try {
-          resolvedPath = resolvePathWithinRoot(root, file_path, { allowMissing: false });
+          resolvedPath = resolvePathWithinRoot(root, file_path, {
+            allowMissing: Boolean(options.getDirtyFileTextForPath),
+          });
         } catch (error) {
           const message = getErrorMessage(error);
           if (message.startsWith("Path does not exist:")) {
@@ -49,13 +51,22 @@ export function createReadFileRangeTool(cwd: string, options: ReadFileRangeToolO
           return { content: "", totalLines: 0, error: `Error reading file: ${message}` };
         }
 
-        const raw = (
-          await readAgentAccessibleFileBytes({
-            rootPath: root,
-            resolvedPath: resolvedPath,
-            getDirtyFileTextForPath: options.getDirtyFileTextForPath,
-          })
-        ).toString("utf-8");
+        let raw: string;
+        try {
+          raw = (
+            await readAgentAccessibleFileBytes({
+              rootPath: root,
+              resolvedPath: resolvedPath,
+              getDirtyFileTextForPath: options.getDirtyFileTextForPath,
+            })
+          ).toString("utf-8");
+        } catch (error) {
+          const message = getErrorMessage(error);
+          if (message.startsWith("Path does not exist:") || (error as NodeJS.ErrnoException).code === "ENOENT") {
+            return { content: "", totalLines: 0, error: `File not found: ${file_path}` };
+          }
+          throw error;
+        }
         const allLines = raw.split("\n");
         const totalLines = allLines.length;
 

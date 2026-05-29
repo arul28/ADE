@@ -49,6 +49,20 @@ describe("createReadFileRangeTool", () => {
     expect(result.content).not.toContain("saved on disk");
   });
 
+  it("reads unsaved new files that are not on disk yet", async () => {
+    const cwd = makeTmpDir("read-dirty-new-");
+    const absPath = path.join(cwd, "src", "new.ts");
+
+    const tool = createReadFileRangeTool(cwd, {
+      getDirtyFileTextForPath: (candidate) =>
+        (candidate === absPath ? "draft only in editor" : undefined),
+    });
+    const result = await tool.execute({ file_path: "src/new.ts" });
+
+    expect(result.error).toBeUndefined();
+    expect(result.content).toContain("draft only in editor");
+  });
+
   it("reads an entire file when no offset or limit is given", async () => {
     const cwd = makeTmpDir("read-full-");
     writeFixtureFile(cwd, "sample.ts", FIVE_LINES);
