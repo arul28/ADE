@@ -273,7 +273,7 @@ function seedCursorRuntimeModelCatalog(): { cliOnlyId: string; chatOnlyId: strin
 
 function seedFastCursorRuntimeModelCatalog(): { modelId: string; fastAlias: string } {
   const model = createDynamicCursorCliModelDescriptor("composer-2.5", "Composer 2.5", {
-    aliases: ["composer-2.5-fast"],
+    aliases: ["other-fast", "composer-2.5-speed-fast"],
     serviceTiers: ["fast"],
     cursorAvailability: { cli: true, sdk: true },
   });
@@ -307,7 +307,7 @@ function seedFastCursorRuntimeModelCatalog(): { modelId: string; fastAlias: stri
       }],
     }],
   } as AgentChatModelCatalog, { mode: "cached" });
-  return { modelId: model.id, fastAlias: "composer-2.5-fast" };
+  return { modelId: model.id, fastAlias: "composer-2.5-speed-fast" };
 }
 
 function buildPendingInputTranscript(sessionId: string): string {

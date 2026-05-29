@@ -2075,8 +2075,81 @@ function sessionSupportsReasoning(session: AgentChatSession): boolean {
   return resolveSessionModelDescriptor(session)?.capabilities.reasoning ?? true;
 }
 
-function sessionSupportsFastMode(session: AgentChatSession): boolean {
-  return modelSupportsFastMode(resolveSessionModelDescriptor(session));
+function normalizeFastModeModelRef(value: unknown): string | null {
+  const raw = String(value ?? "").trim();
+  if (!raw.length) return null;
+  const lower = raw.toLowerCase();
+  return lower.startsWith("cursor/") ? lower.slice("cursor/".length) : lower;
+}
+
+function serviceTierListSupportsFastMode(serviceTiers: readonly string[] | undefined): boolean {
+  return Boolean(serviceTiers?.some((entry) => entry.trim().toLowerCase() === "fast"));
+}
+
+function cursorSessionModelRefs(session: AgentChatSession): Set<string> {
+  const refs = new Set<string>();
+  const add = (value: unknown): void => {
+    const normalized = normalizeFastModeModelRef(value);
+    if (normalized) refs.add(normalized);
+  };
+
+  add(session.model);
+  add(session.modelId);
+  const descriptor = resolveSessionModelDescriptor(session);
+  if (descriptor?.family === "cursor") {
+    add(descriptor.id);
+    add(descriptor.shortId);
+    add(descriptor.providerModelId);
+    for (const alias of descriptor.aliases ?? []) add(alias);
+  }
+  return refs;
+}
+
+function cursorCatalogSupportsFastMode(
+  session: AgentChatSession,
+  catalog: AgentChatModelCatalog | null | undefined,
+): boolean {
+  if (session.provider !== "cursor" || !catalog) return false;
+  const sessionRefs = cursorSessionModelRefs(session);
+  if (!sessionRefs.size) return false;
+
+  for (const group of catalog.groups) {
+    for (const provider of group.providers) {
+      for (const subsection of provider.subsections) {
+        for (const model of subsection.models) {
+          if (!serviceTierListSupportsFastMode(model.serviceTiers)) continue;
+          const modelRefs = [
+            model.id,
+            model.modelId,
+            model.runtimeModelId,
+            ...(model.aliases ?? []),
+          ]
+            .map(normalizeFastModeModelRef)
+            .filter((entry): entry is string => Boolean(entry));
+          if (modelRefs.some((ref) => sessionRefs.has(ref))) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function cachedCursorSdkParamsSupportFastMode(session: AgentChatSession): boolean {
+  if (session.provider !== "cursor") return false;
+  const modelSdkId = resolveCursorRuntimeModelSdkId(session);
+  return Boolean(resolveCursorSdkModelSelectionParams({
+    modelSdkId,
+    fastMode: true,
+  })?.length);
+}
+
+function sessionSupportsFastMode(
+  session: AgentChatSession,
+  catalog?: AgentChatModelCatalog | null,
+): boolean {
+  return modelSupportsFastMode(resolveSessionModelDescriptor(session))
+    || cursorCatalogSupportsFastMode(session, catalog)
+    || cachedCursorSdkParamsSupportFastMode(session);
 }
 
 function sessionSupportsCodexFastMode(session: AgentChatSession): boolean {
@@ -9797,7 +9870,7 @@ export function createAgentChatService(args: {
 
     if (/^\/fast(?:\s|$)/i.test(slashText)) {
       const fastArgs = slashText.replace(/^\/fast(?:\s+|$)/i, "").trim().toLowerCase();
-      const supported = sessionSupportsFastMode(managed.session);
+      const supported = managedSessionSupportsFastMode(managed);
       const current = managed.session.codexFastMode === true && supported;
       if (!supported) {
         delete managed.session.codexFastMode;
@@ -19988,13 +20061,69 @@ export function createAgentChatService(args: {
     });
   };
 
-    const sendMessage = async (
-      args: AgentChatSendArgs,
-      options?: { awaitDispatch?: boolean },
-    ): Promise<void> => {
-      const dispatchStartedAt = Date.now();
-      if (await maybeHandleClaudeOutputStyleSlashCommand(args)) return;
-      const prepared = prepareSendMessage(args);
+  const maybeHandleInlineFastSlash = (prepared: PreparedSendMessage): boolean => {
+    const slashText = prepared.submittedText.trim();
+    if (!/^\/fast(?:\s|$)/i.test(slashText)) return false;
+    const fastArgs = slashText.replace(/^\/fast(?:\s+|$)/i, "").trim().toLowerCase();
+    const managed = prepared.managed;
+    const supported = managedSessionSupportsFastMode(managed);
+    const current = managed.session.codexFastMode === true && supported;
+    let message: string;
+    if (!supported) {
+      delete managed.session.codexFastMode;
+      message = "Fast mode is not available for this model.";
+    } else if (!fastArgs || fastArgs === "toggle") {
+      const enabled = !current;
+      managed.session.codexFastMode = enabled;
+      message = `Fast mode is ${enabled ? "on" : "off"}.`;
+    } else if (fastArgs === "status") {
+      message = `Fast mode is ${current ? "on" : "off"}.`;
+    } else if (fastArgs === "on" || fastArgs === "off") {
+      const enabled = fastArgs === "on";
+      managed.session.codexFastMode = enabled;
+      message = `Fast mode is ${enabled ? "on" : "off"}.`;
+    } else {
+      message = "Usage: /fast [on|off|status].";
+    }
+
+    const turnId = randomUUID();
+    prepared.onDispatched?.();
+    persistDeliveredLaneDirectiveKey(managed, prepared.laneDirectiveKey);
+    emitChatEvent(managed, {
+      type: "user_message",
+      text: prepared.submittedText,
+      ...(prepared.visibleText !== prepared.submittedText ? { displayText: prepared.visibleText } : {}),
+      attachments: prepared.attachments,
+      ...(prepared.contextAttachments.length ? { contextAttachments: prepared.contextAttachments } : {}),
+      ...(prepared.metadata ? { metadata: prepared.metadata } : {}),
+      turnId,
+    });
+    markSessionIdleWithFreshCache(managed);
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "info",
+      message,
+      turnId,
+    });
+    emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
+    emitChatEvent(managed, {
+      type: "done",
+      turnId,
+      status: "completed",
+      model: managed.session.model,
+      ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+    });
+    persistChatState(managed);
+    return true;
+  };
+
+  const sendMessage = async (
+    args: AgentChatSendArgs,
+    options?: { awaitDispatch?: boolean },
+  ): Promise<void> => {
+    const dispatchStartedAt = Date.now();
+    if (await maybeHandleClaudeOutputStyleSlashCommand(args)) return;
+    const prepared = prepareSendMessage(args);
     if (!prepared) return;
     prepared.managed.lastActivityTimestamp = Date.now();
     let rejectDispatch: ((error: Error) => void) | null = null;
@@ -20013,6 +20142,11 @@ export function createAgentChatService(args: {
           };
         })
       : null;
+
+    if (prepared.managed.session.provider !== "codex" && maybeHandleInlineFastSlash(prepared)) {
+      if (dispatchPromise) await dispatchPromise;
+      return;
+    }
 
     if (prepared.managed.session.provider === "cursor" || prepared.managed.session.provider === "droid") {
       const turnId = randomUUID();
@@ -21723,6 +21857,9 @@ export function createAgentChatService(args: {
     "ollama",
   ];
   let modelCatalogCache: AgentChatModelCatalog | null = null;
+
+  const managedSessionSupportsFastMode = (managed: ManagedChatSession): boolean =>
+    sessionSupportsFastMode(managed.session, modelCatalogCache);
 
   const modelCatalogRefreshTtlMs = (provider?: AgentChatModelCatalogRefreshProvider): number =>
     provider === "lmstudio" || provider === "ollama"

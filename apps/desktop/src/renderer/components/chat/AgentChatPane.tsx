@@ -1587,8 +1587,16 @@ function cursorCliRuntimeModelForFastMode(desc: ModelDescriptor, runtimeModel: s
   const base = runtimeModel.trim();
   if (!base || base.toLowerCase().endsWith("-fast")) return runtimeModel;
   const fastRef = `${base}-fast`;
-  const matchingAlias = (desc.aliases ?? []).find((alias) => alias.trim().toLowerCase() === fastRef.toLowerCase())
-    ?? (desc.aliases ?? []).find((alias) => alias.trim().toLowerCase().endsWith("-fast"));
+  const normalizedBase = base.toLowerCase();
+  const normalizeAlias = (alias: string): string => {
+    const normalized = alias.trim().toLowerCase();
+    return normalized.startsWith("cursor/") ? normalized.slice("cursor/".length) : normalized;
+  };
+  const matchingAlias = (desc.aliases ?? []).find((alias) => normalizeAlias(alias) === fastRef.toLowerCase())
+    ?? (desc.aliases ?? []).find((alias) => {
+      const normalized = normalizeAlias(alias);
+      return normalized.endsWith("-fast") && normalized.startsWith(`${normalizedBase}-`);
+    });
   const selected = matchingAlias?.trim();
   if (!selected) return fastRef;
   return selected.toLowerCase().startsWith("cursor/") ? selected.slice("cursor/".length) : selected;
