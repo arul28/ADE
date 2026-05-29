@@ -168,7 +168,7 @@ queued
 Core Linear services on desktop
 (`apps/desktop/src/main/services/cto/`):
 
-- `linearCredentialService.ts` — token + OAuth client + auth mode storage and health check. Reads/writes through the per-machine `SyncCredentialStore` (`~/.ade/secrets/`) when one is passed in, with a one-time migration from the legacy project-local `linear-token.v1.bin` / `linear-oauth-client.v1.bin` files; falls back to the legacy project-scoped path when the machine store is unavailable. Environment overrides (`ADE_LINEAR_API`, `LINEAR_API_KEY`, `ADE_LINEAR_TOKEN`, `LINEAR_TOKEN`) still take precedence.
+- `linearCredentialService.ts` — token + OAuth client + auth mode storage and health check. Reads/writes through the active project's `.ade/secrets` credential store, with a one-time migration from the legacy project-local `linear-token.v1.bin` / `linear-oauth-client.v1.bin` files. Environment overrides (`ADE_LINEAR_API`, `LINEAR_API_KEY`, `ADE_LINEAR_TOKEN`, `LINEAR_TOKEN`) still take precedence when no project-local token is stored.
 - `linearOAuthService.ts` — OAuth authorization flow
 - `linearClient.ts` — GraphQL client wrapper. The shared issue fragment includes cycle metadata, label colors, and enriched child-issue fields. `fetchIssueComments(issueId)` returns the comment thread for the issue detail pane.
 - `linearIssueTracker.ts` — normalization into `NormalizedLinearIssue`, plus `fetchIssueComments` forwarding

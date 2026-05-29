@@ -320,7 +320,7 @@ ADE CLI auth is local project access, not a separate cloud login. `ade auth stat
 - Machine socket path, whether the socket exists, and whether this invocation is using `runtime-socket`, `desktop-socket`, or `headless` mode.
 - RPC tool count, ADE action count, and action counts by domain.
 - Git repository readiness and GitHub readiness signals from local remotes, `gh` availability, and token environment presence.
-- Linear readiness from local encrypted token presence or headless environment variables.
+- Linear readiness from the active project's `.ade/secrets` credential store (`linear.token.v1`), the legacy machine-level encrypted token, or headless environment variables.
 - Provider/model readiness from local ADE config, API-key provider references, and provider CLI availability.
 - Computer-use readiness from local platform capabilities.
 - Packaged/PATH status for the `ade` binary and concrete next actions.

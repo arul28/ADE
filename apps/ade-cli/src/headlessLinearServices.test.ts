@@ -106,25 +106,27 @@ vi.mock("../../desktop/src/main/services/automations/automationSecretService", (
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import { createHeadlessGitHubService, createHeadlessLinearServices } from "./headlessLinearServices";
 
-function createDeps() {
+function createDeps(overrides: Record<string, any> = {}) {
+  const projectRoot = overrides.projectRoot ?? "/tmp/ade-project";
+  const adeDir = overrides.adeDir ?? path.join(projectRoot, ".ade");
   return {
-    projectRoot: "/tmp/ade-project",
-    adeDir: "/tmp/ade-project/.ade",
+    projectRoot,
+    adeDir,
     paths: {
-      adeDir: "/tmp/ade-project/.ade",
-      logsDir: "/tmp/ade-project/.ade/logs",
-      processLogsDir: "/tmp/ade-project/.ade/logs/processes",
-      testLogsDir: "/tmp/ade-project/.ade/logs/tests",
-      transcriptsDir: "/tmp/ade-project/.ade/transcripts",
-      worktreesDir: "/tmp/ade-project/.ade/worktrees",
-      packsDir: "/tmp/ade-project/.ade/packs",
-      dbPath: "/tmp/ade-project/.ade/ade.db",
-      socketPath: "/tmp/ade-project/.ade/ade.sock",
-      cacheDir: "/tmp/ade-project/.ade/cache",
-      artifactsDir: "/tmp/ade-project/.ade/artifacts",
-      chatSessionsDir: "/tmp/ade-project/.ade/chats/sessions",
-      chatTranscriptsDir: "/tmp/ade-project/.ade/chats/transcripts",
-      orchestratorCacheDir: "/tmp/ade-project/.ade/cache/orchestrator",
+      adeDir,
+      logsDir: path.join(adeDir, "logs"),
+      processLogsDir: path.join(adeDir, "logs", "processes"),
+      testLogsDir: path.join(adeDir, "logs", "tests"),
+      transcriptsDir: path.join(adeDir, "transcripts"),
+      worktreesDir: path.join(adeDir, "worktrees"),
+      packsDir: path.join(adeDir, "packs"),
+      dbPath: path.join(adeDir, "ade.db"),
+      socketPath: path.join(adeDir, "ade.sock"),
+      cacheDir: path.join(adeDir, "cache"),
+      artifactsDir: path.join(adeDir, "artifacts"),
+      chatSessionsDir: path.join(adeDir, "chats", "sessions"),
+      chatTranscriptsDir: path.join(adeDir, "chats", "transcripts"),
+      orchestratorCacheDir: path.join(adeDir, "cache", "orchestrator"),
     },
     projectId: "project-1",
     db: {} as any,
@@ -137,6 +139,7 @@ function createDeps() {
     workerBudgetService: {} as any,
     computerUseArtifactBrokerService: {} as any,
     openExternal: async () => {},
+    ...overrides,
   };
 }
 
@@ -503,18 +506,31 @@ describe("headlessLinearServices", () => {
     }
   });
 
-  it("reads Linear and GitHub credentials from the shared machine store", () => {
+  it("reads Linear credentials from the project store and GitHub credentials from the shared machine store", () => {
     const previousAdeHome = process.env.ADE_HOME;
+    const previousAdeLinearApi = process.env.ADE_LINEAR_API;
+    const previousLinearApiKey = process.env.LINEAR_API_KEY;
+    const previousAdeLinearToken = process.env.ADE_LINEAR_TOKEN;
+    const previousLinearToken = process.env.LINEAR_TOKEN;
     process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-shared-credentials-"));
-    const credentialStore = new EncryptedFileCredentialStore();
-    credentialStore.setSync("linear.token.v1", "lin_shared_token");
-    credentialStore.setSync("github.token.v1", "ghp_shared_token");
+    delete process.env.ADE_LINEAR_API;
+    delete process.env.LINEAR_API_KEY;
+    delete process.env.ADE_LINEAR_TOKEN;
+    delete process.env.LINEAR_TOKEN;
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-linear-project-"));
+    const adeDir = path.join(projectRoot, ".ade");
+    const projectCredentialStore = new EncryptedFileCredentialStore({
+      secretsDir: path.join(adeDir, "secrets"),
+    });
+    projectCredentialStore.setSync("linear.token.v1", "lin_project_token");
+    const machineCredentialStore = new EncryptedFileCredentialStore();
+    machineCredentialStore.setSync("github.token.v1", "ghp_shared_token");
 
-    const services = createHeadlessLinearServices(createDeps());
+    const services = createHeadlessLinearServices(createDeps({ projectRoot, adeDir }));
     try {
-      expect(services.linearCredentialService.getTokenOrThrow()).toBe("lin_shared_token");
+      expect(services.linearCredentialService.getTokenOrThrow()).toBe("lin_project_token");
       const githubService = createHeadlessGitHubService(
-        "/tmp/ade-project",
+        projectRoot,
         { debug() {}, info() {}, warn() {}, error() {} } as any,
       );
       expect(githubService.getTokenOrThrow()).toBe("ghp_shared_token");
@@ -525,6 +541,65 @@ describe("headlessLinearServices", () => {
       } else {
         process.env.ADE_HOME = previousAdeHome;
       }
+      if (previousAdeLinearApi == null) delete process.env.ADE_LINEAR_API;
+      else process.env.ADE_LINEAR_API = previousAdeLinearApi;
+      if (previousLinearApiKey == null) delete process.env.LINEAR_API_KEY;
+      else process.env.LINEAR_API_KEY = previousLinearApiKey;
+      if (previousAdeLinearToken == null) delete process.env.ADE_LINEAR_TOKEN;
+      else process.env.ADE_LINEAR_TOKEN = previousAdeLinearToken;
+      if (previousLinearToken == null) delete process.env.LINEAR_TOKEN;
+      else process.env.LINEAR_TOKEN = previousLinearToken;
+    }
+  });
+
+  it("does not share Linear credentials between headless projects", () => {
+    const previousAdeHome = process.env.ADE_HOME;
+    const previousAdeLinearApi = process.env.ADE_LINEAR_API;
+    const previousLinearApiKey = process.env.LINEAR_API_KEY;
+    const previousAdeLinearToken = process.env.ADE_LINEAR_TOKEN;
+    const previousLinearToken = process.env.LINEAR_TOKEN;
+    process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-linear-isolation-"));
+    delete process.env.ADE_LINEAR_API;
+    delete process.env.LINEAR_API_KEY;
+    delete process.env.ADE_LINEAR_TOKEN;
+    delete process.env.LINEAR_TOKEN;
+    const projectOneRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-project-one-"));
+    const projectTwoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-project-two-"));
+    const projectOneAdeDir = path.join(projectOneRoot, ".ade");
+    const projectTwoAdeDir = path.join(projectTwoRoot, ".ade");
+
+    const projectOneCredentials = new EncryptedFileCredentialStore({
+      secretsDir: path.join(projectOneAdeDir, "secrets"),
+    });
+    projectOneCredentials.setSync("linear.token.v1", "lin_project_one");
+    const machineCredentials = new EncryptedFileCredentialStore();
+    machineCredentials.setSync("linear.token.v1", "lin_machine_should_not_bleed");
+
+    const projectOne = createHeadlessLinearServices(createDeps({
+      projectRoot: projectOneRoot,
+      adeDir: projectOneAdeDir,
+    }));
+    const projectTwo = createHeadlessLinearServices(createDeps({
+      projectRoot: projectTwoRoot,
+      adeDir: projectTwoAdeDir,
+    }));
+    try {
+      expect(projectOne.linearCredentialService.getTokenOrThrow()).toBe("lin_project_one");
+      expect(projectTwo.linearCredentialService.getStatus().tokenStored).toBe(false);
+      expect(() => projectTwo.linearCredentialService.getTokenOrThrow()).toThrow("Linear token missing");
+    } finally {
+      projectOne.dispose();
+      projectTwo.dispose();
+      if (previousAdeHome == null) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = previousAdeHome;
+      if (previousAdeLinearApi == null) delete process.env.ADE_LINEAR_API;
+      else process.env.ADE_LINEAR_API = previousAdeLinearApi;
+      if (previousLinearApiKey == null) delete process.env.LINEAR_API_KEY;
+      else process.env.LINEAR_API_KEY = previousLinearApiKey;
+      if (previousAdeLinearToken == null) delete process.env.ADE_LINEAR_TOKEN;
+      else process.env.ADE_LINEAR_TOKEN = previousAdeLinearToken;
+      if (previousLinearToken == null) delete process.env.LINEAR_TOKEN;
+      else process.env.LINEAR_TOKEN = previousLinearToken;
     }
   });
 

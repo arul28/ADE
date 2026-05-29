@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildAdeCodeArgs,
   buildCliPlan,
+  checkLinearReadiness,
   findProjectRoots,
   formatOutput,
   graphWaitState,
@@ -19,6 +20,7 @@ import {
   summarizeExecution,
   unwrapToolResult,
 } from "./cli";
+import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 
 type ResolveRootsOptions = Parameters<typeof resolveRoots>[0];
 
@@ -989,6 +991,40 @@ describe("ADE CLI", () => {
     expect(output).toContain("cli version");
     expect(output).toContain("service actions");
     expect(output).toContain("Git repository detected");
+  });
+
+  it("detects project-local Linear credentials in doctor readiness", () => {
+    const previousAdeLinearApi = process.env.ADE_LINEAR_API;
+    const previousLinearApiKey = process.env.LINEAR_API_KEY;
+    const previousAdeLinearToken = process.env.ADE_LINEAR_TOKEN;
+    const previousLinearToken = process.env.LINEAR_TOKEN;
+    delete process.env.ADE_LINEAR_API;
+    delete process.env.LINEAR_API_KEY;
+    delete process.env.ADE_LINEAR_TOKEN;
+    delete process.env.LINEAR_TOKEN;
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-linear-readiness-"));
+    const store = new EncryptedFileCredentialStore({
+      secretsDir: path.join(projectRoot, ".ade", "secrets"),
+    });
+    store.setSync("linear.token.v1", "lin_project_token");
+
+    try {
+      const readiness = checkLinearReadiness(projectRoot);
+      expect(readiness.ready).toBe(true);
+      expect(readiness.details).toMatchObject({
+        projectCredentialStoreTokenPresent: true,
+        tokenEnvPresent: false,
+      });
+    } finally {
+      if (previousAdeLinearApi === undefined) delete process.env.ADE_LINEAR_API;
+      else process.env.ADE_LINEAR_API = previousAdeLinearApi;
+      if (previousLinearApiKey === undefined) delete process.env.LINEAR_API_KEY;
+      else process.env.LINEAR_API_KEY = previousLinearApiKey;
+      if (previousAdeLinearToken === undefined) delete process.env.ADE_LINEAR_TOKEN;
+      else process.env.ADE_LINEAR_TOKEN = previousAdeLinearToken;
+      if (previousLinearToken === undefined) delete process.env.LINEAR_TOKEN;
+      else process.env.LINEAR_TOKEN = previousLinearToken;
+    }
   });
 
   it("attempts Windows named-pipe desktop sockets without filesystem existence checks", () => {
