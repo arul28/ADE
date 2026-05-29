@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import type { PendingApproval } from "../types";
 import { theme } from "../theme";
+import { useHoveredHitId } from "../hitTestRegistry";
 
 function ApproveChip({
   k,
@@ -28,18 +29,23 @@ export function ApprovalPrompt({
   approval: PendingApproval | null;
   modal?: boolean;
 }) {
+  const hoveredId = useHoveredHitId();
   if (!approval) return null;
   const question = approval.request?.questions[0] ?? null;
+  const options = question?.options?.length ? question.options : approval.request?.options ?? [];
   const highStakes = approval.highStakes;
   const borderColor = highStakes ? theme.color.error : theme.color.attention;
   const headerColor = highStakes ? theme.color.error : theme.color.attention;
 
   let title: string;
-  if (approval.mode === "question") title = "INPUT REQUESTED";
+  if (approval.request?.kind === "model_selection") title = "MODEL SELECTION";
+  else if (approval.request?.kind === "plan_approval") title = "PLAN APPROVAL";
+  else if (approval.mode === "question") title = "INPUT REQUESTED";
   else if (highStakes) title = "HIGH-STAKES APPROVAL REQUIRED";
   else title = "APPROVAL REQUIRED";
 
   const showChips = approval.mode !== "question" && !highStakes;
+  const prompt = question?.question ?? approval.request?.title ?? approval.request?.description ?? approval.description;
 
   const card = (
     <Box
@@ -53,11 +59,15 @@ export function ApprovalPrompt({
       <Box flexDirection="row">
         <Text color={headerColor} bold>⚠ {title}</Text>
       </Box>
-      <Text color={theme.color.t1}>{question?.question ?? approval.description}</Text>
-      {question?.options?.length ? (
+      <Text color={theme.color.t1}>{prompt}</Text>
+      {options.length ? (
         <Box flexDirection="column">
-          {question.options.slice(0, 6).map((option, index) => (
-            <Text key={option.value} color={theme.color.t3} dimColor>
+          {options.slice(0, 6).map((option, index) => (
+            <Text
+              key={option.value}
+              color={hoveredId === `approval:question-option:${option.value}:${index}` ? theme.color.violet : theme.color.t3}
+              dimColor={hoveredId !== `approval:question-option:${option.value}:${index}`}
+            >
               {index + 1}. {option.label}{option.description ? ` - ${option.description}` : ""}
             </Text>
           ))}
@@ -66,9 +76,9 @@ export function ApprovalPrompt({
 
       {showChips ? (
         <Box flexDirection="row" marginTop={1}>
-          <ApproveChip k="a" label="approve" color={theme.color.running} highlighted />
+          <ApproveChip k="a" label="approve" color={theme.color.running} highlighted={hoveredId === "approval:accept" || hoveredId == null} />
           <Text>  </Text>
-          <ApproveChip k="d" label="deny" color={theme.color.error} />
+          <ApproveChip k="d" label="deny" color={theme.color.error} highlighted={hoveredId === "approval:decline"} />
         </Box>
       ) : null}
 

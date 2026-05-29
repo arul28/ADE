@@ -511,19 +511,33 @@ describe("RightPane setup panes", () => {
     expect(frame).toContain("enter deletes this lane");
   });
 
-  it("renders model setup rows and selected row detail", () => {
+  it("renders the unified model picker with reasoning detail", () => {
     const result = render(
       <RightPane
         content={{
-          kind: "model-setup",
-          rows: [
-            { kind: "provider", label: "Provider", value: "Claude", detail: "Claude CLI", cyclable: true },
-            { kind: "model", label: "Model", value: "Sonnet", detail: "3 available", cyclable: true },
+          kind: "model-picker",
+          surface: "chat",
+          query: "",
+          searchMode: false,
+          showAll: false,
+          selection: { kind: "provider", provider: "claude" },
+          providerTabKey: null,
+          focusedIndex: 0,
+          footerFocus: null,
+          settingsRows: [
             { kind: "reasoning", label: "Reasoning", value: "high", detail: "low, medium, high", cyclable: true },
             { kind: "permission", label: "Permissions", value: "auto", detail: "default · auto", cyclable: true },
           ],
         }}
-        selectedIndex={2}
+        modelPickerInputs={{
+          models: [
+            { id: "anthropic/claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", isDefault: true },
+          ],
+          favorites: [],
+          recents: [],
+          activeModelId: "anthropic/claude-sonnet-4-6",
+          activeReasoningEffort: "high",
+        }}
         focused
         width={80}
       />,
@@ -531,12 +545,8 @@ describe("RightPane setup panes", () => {
     const frame = stripAnsi(result.lastFrame() ?? "");
 
     expect(frame).toContain("MODEL");
-    expect(frame).toContain("Provider: Claude");
-    expect(frame).toContain("Model: Sonnet");
-    expect(frame).toContain("Reasoning: high");
-    expect(frame).toContain("low, medium, high");
-    expect(frame).toContain("Permissions: auto");
-    expect(frame).toContain("↑↓ rows · ←→ change · ↵ apply · esc close");
+    expect(frame).toContain("Claude Sonnet 4.6");
+    expect(frame).toContain("think high");
   });
 });
 
@@ -557,6 +567,35 @@ describe("RightPane details", () => {
 
     expect(frame).toContain("SKILLS");
     expect(frame).toContain("line 1");
-    expect(frame).toContain("… 14 more lines");
+    expect(frame).toContain("↓ 14 more lines");
+  });
+
+  it("renders context usage as a visual pane", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "context-usage",
+          title: "Context",
+          usage: {
+            totalTokens: 12000,
+            maxTokens: 20000,
+            percentage: 60,
+            model: "gpt-5.5",
+            categories: [
+              { name: "messages", tokens: 8000, percentage: 40 },
+              { name: "tools", tokens: 4000, percentage: 20 },
+            ],
+          },
+        }}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("CONTEXT");
+    expect(frame).toContain("gpt-5.5");
+    expect(frame).toContain("12.0k / 20.0k (60%)");
+    expect(frame).toContain("messages");
   });
 });

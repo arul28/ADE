@@ -51,9 +51,7 @@ export function latestPendingApproval(events: AgentChatEventEnvelope[]): Pending
       itemId: event.itemId,
       description,
       highStakes: mode === "approval" && (
-        request?.kind === "permissions"
-        || request?.kind === "plan_approval"
-        || looksHighStakesApproval(description, event.detail)
+        looksHighStakesApproval(description, event.detail)
       ),
       mode,
       ...(request ? { request } : {}),

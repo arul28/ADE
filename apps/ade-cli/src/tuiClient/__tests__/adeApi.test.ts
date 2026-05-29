@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import { cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, getAvailableModels, latestGoal, latestTokenStats, listLaneDiffStats, listPrsByLane, listTerminalSessions, resumeTerminalSession, sendChatMessage, signalTerminal, startClaudeTerminalSession, steerChatMessage } from "../adeApi";
+import { archiveChatSession, cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, getAvailableModels, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listTerminalSessions, resumeTerminalSession, sendChatMessage, signalTerminal, startClaudeTerminalSession, steerChatMessage, unarchiveChatSession } from "../adeApi";
 import type { AdeCodeConnection } from "../types";
 
 const tmpPaths: string[] = [];
@@ -53,6 +53,45 @@ describe("listLaneDiffStats", () => {
       },
     ]);
     expect(result["lane-1"]).toEqual({ additions: 12, deletions: 4, files: 3 });
+  });
+});
+
+describe("chat session archive helpers", () => {
+  it("lists chats with archived sessions hidden by default", async () => {
+    const calls: Array<{ domain: string; action: string; argsList: unknown[] }> = [];
+    const connection = {
+      actionList: async (domain: string, action: string, argsList: unknown[]) => {
+        calls.push({ domain, action, argsList });
+        return [];
+      },
+    } as unknown as AdeCodeConnection;
+
+    await listChatSessions(connection);
+    await listChatSessions(connection, "lane-1", { includeArchived: true });
+
+    expect(calls).toEqual([
+      { domain: "chat", action: "listSessions", argsList: [null, { includeArchived: false }] },
+      { domain: "chat", action: "listSessions", argsList: ["lane-1", { includeArchived: true }] },
+    ]);
+  });
+
+  it("calls archive, unarchive, and delete chat actions with session ids", async () => {
+    const calls: Array<{ domain: string; action: string; args: Record<string, unknown> | undefined }> = [];
+    const connection = {
+      action: async (domain: string, action: string, args?: Record<string, unknown>) => {
+        calls.push({ domain, action, args });
+      },
+    } as unknown as AdeCodeConnection;
+
+    await archiveChatSession(connection, "chat-1");
+    await unarchiveChatSession(connection, "chat-2");
+    await deleteChatSession(connection, "chat-3");
+
+    expect(calls).toEqual([
+      { domain: "chat", action: "archiveSession", args: { sessionId: "chat-1" } },
+      { domain: "chat", action: "unarchiveSession", args: { sessionId: "chat-2" } },
+      { domain: "chat", action: "deleteSession", args: { sessionId: "chat-3" } },
+    ]);
   });
 });
 

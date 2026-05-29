@@ -8,6 +8,7 @@ import type {
   AgentChatDroidPermissionMode,
   AgentChatEventEnvelope,
   AgentChatEventHistorySnapshot,
+  AgentChatContextUsage,
   AgentChatInteractionMode,
   AgentChatModelInfo,
   AgentChatOpenCodePermissionMode,
@@ -82,6 +83,7 @@ export type AdeCodeModelState = {
   opencodePermissionMode: AgentChatOpenCodePermissionMode;
   droidPermissionMode: AgentChatDroidPermissionMode;
   cursorModeId: string | null;
+  cursorAvailableModeIds: string[];
   cursorConfigValues: Record<string, AgentChatCursorConfigValue>;
 };
 
@@ -140,9 +142,14 @@ export type ModelPickerRightPaneContent = {
   surface: "chat" | "new-chat";
   query: string;
   searchMode: boolean;
+  showAll: boolean;
   selection: ModelPickerRightPaneSelection;
   providerTabKey?: string | null;
   focusedIndex: number;
+  footerFocus?: SetupPaneRowKind | null;
+  settingsRows?: SetupPaneRow[];
+  laneId?: string | null;
+  laneLabel?: string | null;
 };
 
 export type RightPaneContent =
@@ -161,24 +168,20 @@ export type RightPaneContent =
       };
     }
   | { kind: "details"; title: string; body: string }
+  | { kind: "context-usage"; title: string; usage: AgentChatContextUsage | null; error?: string | null }
   | { kind: "diff"; title: string; files: Array<{ path: string; additions?: number; deletions?: number; body?: string }> }
   | { kind: "chat-info"; info: ChatInfoSnapshot }
   | {
-      kind: "new-chat-setup";
-      laneId: string;
-      laneLabel: string;
-      rows: SetupPaneRow[];
-    }
-  | {
-      kind: "model-setup";
-      rows: SetupPaneRow[];
-    }
-  | {
       kind: "form";
       title: string;
-      command: "new-lane" | "rename" | "lane-rename" | "pr-open" | "feedback" | "lane-delete" | "new-lane-from-unstaged";
+      command: "new-lane" | "rename" | "lane-rename" | "pr-open" | "feedback" | "lane-delete" | "new-lane-from-unstaged" | "chat-delete";
       description?: string;
       laneId?: string;
+      sessionId?: string;
+      chatDelete?: {
+        sessionId: string;
+        title: string;
+      };
       laneDelete?: {
         laneId: string;
         laneName: string;

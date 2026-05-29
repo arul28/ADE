@@ -1,8 +1,9 @@
 import React from "react";
 import { Box, Text } from "ink";
 import { theme } from "../../theme";
-import type { AdeCodeProvider } from "../../types";
-import type { ModelPickerEntry, ModelPickerRailEntry, ModelPickerState } from "./types";
+import type { SetupPaneRow, SetupPaneRowKind } from "../../types";
+import { useHoveredHitId } from "../../hitTestRegistry";
+import type { ModelPickerAuthStatus, ModelPickerEntry, ModelPickerRailEntry, ModelPickerState } from "./types";
 
 // Icon + brand color for a rail entry. Provider entries reuse the canonical
 // brand glyph/color from theme.provider() so the picker matches the rest of the
@@ -12,6 +13,12 @@ function railIcon(entry: ModelPickerRailEntry): { glyph: string; color: string }
   if (entry.kind === "recents") return { glyph: "◷", color: theme.color.t3 };
   const brand = theme.provider(entry.provider);
   return { glyph: brand.glyph, color: brand.color };
+}
+
+function authDot(status: ModelPickerAuthStatus): { glyph: string; color: string } {
+  if (status === "ready") return { glyph: "●", color: theme.color.t4 };
+  if (status === "unavailable") return { glyph: "●", color: theme.color.error };
+  return { glyph: "●", color: theme.color.attention };
 }
 
 function endTruncate(value: string, max: number): string {
@@ -45,27 +52,32 @@ function ModelPickerRail({
   entries,
   selectedIndex,
   width,
+  hoveredId,
 }: {
   entries: ModelPickerRailEntry[];
   selectedIndex: number;
   width: number;
+  hoveredId: string | null;
 }) {
-  const labelWidth = Math.max(4, Math.min(9, width - 4));
+  const labelWidth = Math.max(4, Math.min(9, width - 6));
   return (
     <Box flexDirection="column" marginRight={1}>
       {entries.map((entry, index) => {
         const selected = index === selectedIndex;
+        const hovered = hoveredId === `right:model-picker:rail:${index}`;
         const icon = railIcon(entry);
+        const dot = entry.kind === "provider" ? authDot(entry.authStatus) : null;
         return (
           <Box key={`${entry.kind}:${entry.kind === "provider" ? entry.provider : entry.label}`} flexDirection="row">
-            <Text color={selected ? theme.color.violet : theme.color.t5}>
+            <Text color={selected || hovered ? theme.color.violet : theme.color.t5}>
               {selected ? theme.rail : " "}
             </Text>
-            <Text color={selected ? theme.color.violet : icon.color}>
+            <Text color={selected || hovered ? theme.color.violet : icon.color}>
               {" "}
               {icon.glyph}{" "}
             </Text>
-            <Text color={selected ? theme.color.violet : theme.color.t2} bold={selected}>
+            {dot ? <Text color={dot.color}>{dot.glyph} </Text> : null}
+            <Text color={selected || hovered ? theme.color.violet : theme.color.t2} bold={selected}>
               {endTruncate(entry.label, labelWidth)}
             </Text>
           </Box>
@@ -80,22 +92,25 @@ function ModelListRow({
   selected,
   active,
   width,
+  hovered,
 }: {
   entry: ModelPickerEntry;
   selected: boolean;
   active: boolean;
   width: number;
+  hovered: boolean;
 }) {
   const labelMax = Math.max(8, width - 4);
   const starColor = entry.isFavorite ? theme.color.warning : theme.color.t5;
   const brand = theme.provider(entry.family);
   const activeChip = active ? " now" : "";
   const localChip = entry.family === "ollama" || entry.family === "lmstudio" ? " local" : "";
-  const chipWidth = activeChip.length + localChip.length;
+  const reasoningChip = (selected || active) && entry.reasoningLabel ? ` ${entry.reasoningLabel}` : "";
+  const chipWidth = activeChip.length + localChip.length + reasoningChip.length;
   return (
     <Box flexDirection="column">
       <Box flexDirection="row">
-        <Text color={selected ? theme.color.violet : theme.color.t5}>
+        <Text color={selected || hovered ? theme.color.violet : theme.color.t5}>
           {selected ? theme.rail : " "}
         </Text>
         <Text color={starColor}>
@@ -106,7 +121,7 @@ function ModelListRow({
           color={
             !entry.isAvailable
               ? theme.color.t5
-              : selected
+              : selected || hovered
                 ? theme.color.violet
                 : active
                   ? theme.color.t1
@@ -124,6 +139,9 @@ function ModelListRow({
         {localChip ? (
           <Text color={theme.color.running}> local</Text>
         ) : null}
+        {reasoningChip ? (
+          <Text color={theme.color.t4} dimColor>{reasoningChip}</Text>
+        ) : null}
       </Box>
       {entry.subProvider ? (
         <Box marginLeft={6}>
@@ -139,6 +157,47 @@ function ModelListRow({
           </Text>
         </Box>
       ) : null}
+    </Box>
+  );
+}
+
+function SettingsStrip({
+  rows,
+  footerFocus,
+  width,
+  hoveredId,
+}: {
+  rows: SetupPaneRow[];
+  footerFocus: SetupPaneRowKind | null;
+  width: number;
+  hoveredId: string | null;
+}) {
+  if (!rows.length) return null;
+  const visibleRows = rows.filter((row) => row.kind !== "provider" && row.kind !== "model");
+  if (!visibleRows.length) return null;
+  const maxValue = Math.max(6, Math.floor(width / Math.max(2, visibleRows.length)) - 5);
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text color={theme.color.t4} dimColor>Settings</Text>
+      <Box flexDirection="row" flexWrap="wrap">
+        {visibleRows.map((row) => {
+          const focused = footerFocus === row.kind;
+          const hovered = hoveredId === `right:model-picker:setting:${row.kind}`;
+          const color = row.disabled
+            ? theme.color.t5
+            : focused || hovered
+              ? theme.color.violet
+              : theme.color.t2;
+          return (
+            <Text key={row.kind} color={color} bold={focused}>
+              {focused ? "[" : " "}
+              {endTruncate(row.label.toLowerCase(), 12)} {endTruncate(row.value, maxValue)}
+              {focused ? "]" : " "}
+              {" "}
+            </Text>
+          );
+        })}
+      </Box>
     </Box>
   );
 }
@@ -164,6 +223,7 @@ export function ModelPickerPane({
   state: ModelPickerState;
   width: number;
 }) {
+  const hoveredId = useHoveredHitId();
   const innerWidth = Math.max(20, width - 4);
   const railEntry = state.railEntries[state.railIndex] ?? state.railEntries[0];
   const activeEntry = state.activeModelId
@@ -195,6 +255,16 @@ export function ModelPickerPane({
             Using {theme.provider(activeEntry.family).glyph} {endTruncate(activeEntry.displayName, Math.max(8, innerWidth - 10))}
           </Text>
         ) : null}
+        {state.laneLabel ? (
+          <Text color={theme.color.t4} dimColor wrap="truncate-end">
+            Lane {endTruncate(state.laneLabel, Math.max(8, innerWidth - 5))}
+          </Text>
+        ) : null}
+        {state.activeProviderAuthStatus === "unavailable" && state.activeProviderSignInHint ? (
+          <Text color={theme.color.attention} wrap="truncate-end">
+            Sign in: {state.activeProviderSignInHint}
+          </Text>
+        ) : null}
       </Box>
 
       <Box flexDirection="row">
@@ -202,6 +272,7 @@ export function ModelPickerPane({
           entries={state.railEntries}
           selectedIndex={state.railIndex}
           width={Math.max(8, Math.floor(innerWidth / 4))}
+          hoveredId={hoveredId}
         />
 
 	        <Box flexDirection="column" flexGrow={1}>
@@ -255,6 +326,7 @@ export function ModelPickerPane({
                     entry={entry}
                     selected={selected}
                     active={active}
+                    hovered={hoveredId === `right:model-picker:entry:${entry.modelId}`}
                     width={innerWidth - 12}
                   />
                 );
@@ -267,9 +339,16 @@ export function ModelPickerPane({
         </Box>
       </Box>
 
+      <SettingsStrip
+        rows={state.settingsRows}
+        footerFocus={state.footerFocus}
+        width={innerWidth}
+        hoveredId={hoveredId}
+      />
+
       <Box marginTop={1}>
         <Text color={theme.color.t4} dimColor>
-	          ↑↓ pick · ↵ select · tab rail · [ ] providers · f fav · / search · esc close
+	          ↑↓ pick · ↵ select · tab rail/settings · s show {state.showAll ? "available" : "all"} · f fav · / search · esc close
 	        </Text>
       </Box>
     </Box>

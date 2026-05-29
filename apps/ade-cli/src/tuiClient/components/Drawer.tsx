@@ -8,6 +8,7 @@ import { computeStackRowMeta, sortLanesForStackGraph } from "../laneTree";
 import { useSpinFrame } from "../spinTick";
 import { theme, type LaneStatusKind } from "../theme";
 import type { AdeCodeProvider } from "../types";
+import { useHoveredHitId } from "../hitTestRegistry";
 
 type DrawerDensity = "full" | "mini";
 type DrawerMode = "lanes" | "chats";
@@ -136,6 +137,7 @@ export function Drawer({
   loading = false,
   unavailableLaneIds = new Set<string>(),
   width: requestedWidth,
+  scrollOffsetRows = 0,
 }: {
   lanes: LaneSummary[];
   sessions: AgentChatSessionSummary[];
@@ -154,13 +156,16 @@ export function Drawer({
   loading?: boolean;
   unavailableLaneIds?: ReadonlySet<string>;
   width?: number;
+  scrollOffsetRows?: number;
 }) {
   const { stdout } = useStdout();
   const resolvedPanelHeight = panelHeight ?? stdout?.rows ?? 40;
   const ordered = React.useMemo(() => sortLanesForStackGraph(lanes), [lanes]);
   const rowMeta = React.useMemo(() => computeStackRowMeta(ordered), [ordered]);
-  const laneRows = ordered.slice(0, visibleDrawerLaneCount(resolvedPanelHeight, ordered.length));
-  const visibleRowMeta = rowMeta.slice(0, laneRows.length);
+  const visibleCount = visibleDrawerLaneCount(resolvedPanelHeight, ordered.length);
+  const laneStart = Math.max(0, Math.min(scrollOffsetRows, Math.max(0, ordered.length - visibleCount)));
+  const laneRows = ordered.slice(laneStart, laneStart + visibleCount);
+  const visibleRowMeta = rowMeta.slice(laneStart, laneStart + laneRows.length);
 
   const browsing = browsingLaneId ?? activeLaneId;
   const browsingLane = laneRows.find((l) => l.id === browsing) ?? null;
@@ -180,6 +185,7 @@ export function Drawer({
   if (addMode) borderColor = emphasisColor;
   else if (focused) borderColor = theme.color.violet;
   else borderColor = theme.color.border;
+  const hoveredId = useHoveredHitId();
 
   if (density === "mini") {
     return (
@@ -221,6 +227,7 @@ export function Drawer({
         ) : null}
         {laneRows.map((lane, index) => {
           const isSelected = index === selectedLaneIndex;
+          const isHovered = hoveredId?.startsWith(`drawer:lane:${lane.id}:`) ?? false;
           const meta = visibleRowMeta[index] ?? { depth: 0, isLast: false, prefix: "" };
           const worktreeAvailable = !unavailableLaneIds.has(lane.id);
           const status = deriveLaneStatus(lane, sessions, activeLaneId, unavailableLaneIds);
@@ -248,6 +255,7 @@ export function Drawer({
                 prefix={meta.prefix}
                 width={cardInnerWidth}
                 selected={isSelected}
+                hovered={isHovered}
                 active={lane.id === activeLaneId}
                 provider={sessionProviderFor(lane, sessions)}
                 pr={prByLaneId[lane.id] ?? null}
@@ -262,6 +270,7 @@ export function Drawer({
                   width={cardInnerWidth}
                   worktreeAvailable={worktreeAvailable}
                   interactive={mode === "chats"}
+                  hoveredId={hoveredId}
                 />
               ) : null}
             </Box>
@@ -354,6 +363,7 @@ function LaneCard({
   pr,
   diffStats,
   worktreeAvailable,
+  hovered,
 }: {
   lane: LaneSummary;
   status: LaneStatusKind;
@@ -365,8 +375,9 @@ function LaneCard({
   pr: DrawerPrSummary | null;
   diffStats: DiffLineStats | null;
   worktreeAvailable: boolean;
+  hovered?: boolean;
 }) {
-  const nameColor = selected || active || status === "primary" ? theme.color.violet : theme.color.t1;
+  const nameColor = selected || active || hovered || status === "primary" ? theme.color.violet : theme.color.t1;
   const detail = laneDetailSuffix(lane, diffStats, worktreeAvailable);
   const exec = theme.provider(provider);
   const age = formatLaneAge(lane);
@@ -530,6 +541,7 @@ function ChatBlock({
   width,
   worktreeAvailable,
   interactive = true,
+  hoveredId,
 }: {
   sessions: AgentChatSessionSummary[];
   activeSessionId: string | null;
@@ -537,6 +549,7 @@ function ChatBlock({
   width: number;
   worktreeAvailable: boolean;
   interactive?: boolean;
+  hoveredId?: string | null;
 }) {
   if (!worktreeAvailable) {
     return (
@@ -566,6 +579,7 @@ function ChatBlock({
       {sessions.map((session, index) => {
         const running = session.status === "active";
         const selected = interactive && index === selectedChatIndex;
+        const hovered = hoveredId?.startsWith(`drawer:chat:${session.sessionId}:`) ?? false;
         const provider = (session.provider as AdeCodeProvider) ?? null;
         const exec = theme.provider(provider);
         const when = formatSessionAge(session);
@@ -575,7 +589,7 @@ function ChatBlock({
         // — no need to also recolor the title, and bold is avoided because some
         // xterm builds render bold characters slightly wider, which makes the
         // selected row look outdented next to its neighbours.
-        const titleColor: string = selected ? theme.color.violet : theme.color.t1;
+        const titleColor: string = selected || hovered ? theme.color.violet : theme.color.t1;
         return (
           <Box key={session.sessionId} marginTop={index > 0 ? 1 : 0}>
             <Text color={exec.color}>{exec.glyph} </Text>
@@ -592,7 +606,7 @@ function ChatBlock({
         );
       })}
       <Box>
-        <Text color={interactive && selectedChatIndex === sessions.length ? theme.color.violet : theme.color.t4}>
+        <Text color={(interactive && selectedChatIndex === sessions.length) || (hoveredId?.startsWith("drawer:new-chat:") ?? false) ? theme.color.violet : theme.color.t4}>
           + new chat
         </Text>
       </Box>
@@ -645,6 +659,7 @@ function MiniDrawer({
 }) {
   void focused;
   void browsingLaneId;
+  const hoveredId = useHoveredHitId();
   const inner = width - 2;
   return (
     <Box width={width} flexDirection="column" borderStyle="single" borderColor={borderColor}>
@@ -662,6 +677,7 @@ function MiniDrawer({
         const status = deriveLaneStatus(lane, rawSessions, activeLaneId, unavailableLaneIds);
         const meta = rowMeta[index] ?? { depth: 0, prefix: "", isLast: false };
         const selected = index === selectedLaneIndex;
+        const hovered = hoveredId?.startsWith(`drawer:lane:${lane.id}:`) ?? false;
         const detail = formatLaneAge(lane);
         const isVmLane = lane.runtimePlacement === "macos-vm";
         const vmSuffixWidth = isVmLane ? 3 : 0;
@@ -673,7 +689,7 @@ function MiniDrawer({
             </Text>
             {meta.prefix ? <Text color={theme.color.t4}>{meta.prefix}</Text> : <Text> </Text>}
             <Text
-              color={selected || status === "primary" ? theme.color.violet : theme.color.t1}
+              color={selected || hovered || status === "primary" ? theme.color.violet : theme.color.t1}
               bold={selected || status === "primary"}
             >
               {pad(truncate(lane.name, nameMax), nameMax)}
@@ -697,6 +713,7 @@ function MiniDrawer({
           {sessions.map((session, index) => {
             const selected = index === selectedChatIndex;
             const running = session.status === "active";
+            const hovered = hoveredId?.startsWith(`drawer:chat:${session.sessionId}:`) ?? false;
             const provider = (session.provider as AdeCodeProvider) ?? null;
             const exec = theme.provider(provider);
             const when = formatSessionAge(session);
@@ -707,7 +724,7 @@ function MiniDrawer({
                 <Text> </Text>
                 <Text
                   color={
-                    selected || session.sessionId === activeSessionId || running
+                    selected || hovered || session.sessionId === activeSessionId || running
                       ? theme.color.violet
                       : theme.color.t2
                   }
@@ -723,7 +740,7 @@ function MiniDrawer({
             {lanes[selectedLaneIndex] && unavailableLaneIds.has(lanes[selectedLaneIndex].id) ? (
               <Text color={theme.color.error}>worktree missing</Text>
             ) : (
-              <Text color={selectedChatIndex === sessions.length ? theme.color.violet : theme.color.t4}>
+              <Text color={selectedChatIndex === sessions.length || (hoveredId?.startsWith("drawer:new-chat:") ?? false) ? theme.color.violet : theme.color.t4}>
                 + new chat
               </Text>
             )}

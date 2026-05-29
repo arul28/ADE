@@ -3,6 +3,7 @@ import { Box, Text } from "ink";
 import { theme } from "../theme";
 import type { AdeCodeProvider } from "../types";
 import { gridMiniMapText } from "./GridMiniMap";
+import { useHoveredHitId } from "../hitTestRegistry";
 
 const TOKEN_BAR_CELLS = 10;
 
@@ -25,7 +26,7 @@ function tokenBarColor(percent: number): string {
   return theme.color.accent;
 }
 
-function TokenBar({ percent }: { percent: number }) {
+export function TokenBar({ percent }: { percent: number }) {
   const safe = Math.max(0, Math.min(100, percent));
   const filled = Math.max(0, Math.min(TOKEN_BAR_CELLS, Math.round((safe / 100) * TOKEN_BAR_CELLS)));
   const empty = TOKEN_BAR_CELLS - filled;
@@ -51,6 +52,7 @@ function Cell({
   baseColor,
   accentColor,
   locked,
+  hovered,
 }: {
   value: string;
   focused: boolean;
@@ -58,6 +60,7 @@ function Cell({
   baseColor: string;
   accentColor: string;
   locked?: boolean;
+  hovered?: boolean;
 }) {
   if (locked) {
     return (
@@ -73,7 +76,7 @@ function Cell({
       </Text>
     );
   }
-  if (rowFocused) {
+  if (rowFocused || hovered) {
     return <Text color={theme.color.t2}>{value}</Text>;
   }
   return <Text color={baseColor}>{value}</Text>;
@@ -85,6 +88,7 @@ export function FooterControls({
   modelDisplay,
   reasoningEffort,
   permissionLabel,
+  permissionDetail,
   contextPercent,
   tokenSummary,
   approvalActive,
@@ -105,6 +109,7 @@ export function FooterControls({
   modelDisplay?: string | null;
   reasoningEffort?: string | null;
   permissionLabel?: string | null;
+  permissionDetail?: string | null;
   contextPercent?: number | null;
   tokenSummary?: string | null;
   approvalActive?: boolean;
@@ -126,6 +131,9 @@ export function FooterControls({
   const agents = liveAgentCount ?? 0;
   const showSubagents = subagentsButtonVisible === true;
   const providerIsLocked = providerLocked === true;
+  const hoveredId = useHoveredHitId();
+  const inlineHovered = (name: string) => hoveredId === `footer:inline:${name}`;
+  const footerHovered = (id: string) => hoveredId === id;
 
   return (
     <Box flexDirection="row" paddingX={1} justifyContent="space-between" flexShrink={0}>
@@ -141,6 +149,7 @@ export function FooterControls({
             baseColor={planMode ? theme.color.planMode : brand.color}
             accentColor={accentColor}
             locked={providerIsLocked}
+            hovered={inlineHovered("provider")}
           />
         ) : null}
         {modelDisplay ? (
@@ -152,6 +161,7 @@ export function FooterControls({
               rowFocused={rowFocused}
               baseColor={theme.color.t2}
               accentColor={accentColor}
+              hovered={inlineHovered("model")}
             />
           </>
         ) : null}
@@ -164,6 +174,7 @@ export function FooterControls({
               rowFocused={rowFocused}
               baseColor={fastMode ? theme.color.warning : theme.color.t4}
               accentColor={accentColor}
+              hovered={inlineHovered("fast")}
             />
           </>
         ) : fastMode ? (
@@ -181,6 +192,7 @@ export function FooterControls({
               rowFocused={rowFocused}
               baseColor={theme.color.t3}
               accentColor={accentColor}
+              hovered={inlineHovered("reasoning")}
             />
           </>
         ) : null}
@@ -193,7 +205,14 @@ export function FooterControls({
               rowFocused={rowFocused}
               baseColor={theme.color.t3}
               accentColor={accentColor}
+              hovered={inlineHovered("permission")}
             />
+            {permissionDetail ? (
+              <>
+                <Text color={theme.color.t4} dimColor>{" · "}</Text>
+                <Text color={theme.color.t4} dimColor>{permissionDetail}</Text>
+              </>
+            ) : null}
           </>
         ) : null}
         {showSubagents ? (
@@ -210,7 +229,7 @@ export function FooterControls({
                 );
               }
               return (
-                <Text color={isFocused ? theme.color.accent : theme.color.t3}>
+                <Text color={isFocused || inlineHovered("subagents") ? theme.color.accent : theme.color.t3}>
                   {subagentValue}
                 </Text>
               );
@@ -267,9 +286,9 @@ export function FooterControls({
           </>
         ) : approvalActive ? (
           <>
-            <Text color={theme.color.accent} bold>a</Text>
+            <Text color={footerHovered("footer:approval-accept") ? theme.color.running : theme.color.accent} bold>a</Text>
             <Text dimColor>{" approve  "}</Text>
-            <Text color={theme.color.danger} bold>d</Text>
+            <Text color={footerHovered("footer:approval-decline") ? theme.color.danger : theme.color.danger} bold>d</Text>
             <Text dimColor>{" deny  ·  "}</Text>
             <Text color={theme.color.accent}>← →</Text>
             <Text dimColor>{" choose"}</Text>

@@ -33,6 +33,8 @@ import {
   chatSelectionFromAnchor,
   chatSessionToOptimisticSummary,
   chatSelectionPointFromVisibleRows,
+  codexApprovalSandboxLabel,
+  cursorModeIdsForState,
   moveChatSelectionFocusByRows,
   mergeOptimisticChatSessions,
   insertPromptText,
@@ -43,7 +45,6 @@ import {
   promptDisplayRows,
   promptDisplayRowsWithCursor,
   promptHitLine,
-  modelPickerSurfaceForSetupPane,
   resolveContextDefault,
   resolveDrawerPaneWidth,
   resolveModelPickerEscape,
@@ -364,20 +365,12 @@ describe("right pane context defaults", () => {
     });
 
     expect(pane).toMatchObject({
-      kind: "new-chat-setup",
+      kind: "model-picker",
+      surface: "new-chat",
       laneId: "lane-1",
       laneLabel: "Lane one",
+      selection: { kind: "provider", provider: "claude" },
     });
-  });
-});
-
-describe("model setup picker routing", () => {
-  it("opens the rich picker against the current chat from /model or /effort setup panes", () => {
-    expect(modelPickerSurfaceForSetupPane("model-setup")).toBe("chat");
-  });
-
-  it("keeps the new-chat picker scoped to the draft setup pane", () => {
-    expect(modelPickerSurfaceForSetupPane("new-chat-setup")).toBe("new-chat");
   });
 });
 
@@ -559,6 +552,20 @@ describe("inlineRowCellOrder", () => {
   });
 });
 
+describe("provider permission helpers", () => {
+  it("summarizes Codex approval and sandbox as a footer detail", () => {
+    expect(codexApprovalSandboxLabel({
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "workspace-write",
+    })).toBe("on-request · workspace-write");
+  });
+
+  it("uses Cursor runtime snapshot modes before falling back to static modes", () => {
+    expect(cursorModeIdsForState({ cursorAvailableModeIds: ["ask", "plan"] })).toEqual(["ask", "plan"]);
+    expect(cursorModeIdsForState({ cursorAvailableModeIds: [] })).toContain("agent");
+  });
+});
+
 describe("formatGitConflictReport", () => {
   it("lists conflicted files and the continue/abort actions for a rebase", () => {
     const report = formatGitConflictReport({
@@ -660,6 +667,7 @@ describe("model picker escape handling", () => {
     surface: "chat" as const,
     query: "",
     searchMode: false,
+    showAll: false,
     selection: { kind: "favorites" as const },
     focusedIndex: 3,
   };

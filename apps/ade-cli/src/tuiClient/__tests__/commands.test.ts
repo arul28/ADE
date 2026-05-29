@@ -208,7 +208,7 @@ describe("commands", () => {
   });
 
   it("filters provider-specific ADE commands outside supported chats", () => {
-    expect(paletteCommands("/context", [], { provider: "codex" })).not.toContainEqual(
+    expect(paletteCommands("/context", [], { provider: "codex" })).toContainEqual(
       expect.objectContaining({ name: "/context" }),
     );
     expect(paletteCommands("/output-style", [], { provider: "codex" })).not.toContainEqual(

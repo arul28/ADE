@@ -1,11 +1,13 @@
 import type { AdeCodeProvider } from "../../types";
+import type { SetupPaneRow, SetupPaneRowKind } from "../../types";
 
 export type ModelPickerRailKind = "favorites" | "recents" | "provider";
+export type ModelPickerAuthStatus = "ready" | "unavailable" | "unknown";
 
 export type ModelPickerRailEntry =
   | { kind: "favorites"; label: string }
   | { kind: "recents"; label: string }
-  | { kind: "provider"; provider: AdeCodeProvider; label: string };
+  | { kind: "provider"; provider: AdeCodeProvider; label: string; authStatus: ModelPickerAuthStatus; signInHint: string | null };
 
 export type ModelPickerEntry = {
   /** Canonical ADE model id (matches modelRegistry.id). Empty string for placeholder. */
@@ -19,6 +21,8 @@ export type ModelPickerEntry = {
   subProviderKey?: string;
   isFavorite: boolean;
   isAvailable: boolean;
+  authStatus: ModelPickerAuthStatus;
+  reasoningLabel?: string | null;
 };
 
 export type ModelPickerProviderTab = {
@@ -29,6 +33,7 @@ export type ModelPickerProviderTab = {
 export type ModelPickerState = {
   query: string;
   searchMode: boolean;
+  showAll: boolean;
   railEntries: ModelPickerRailEntry[];
   railIndex: number;
   entries: ModelPickerEntry[];
@@ -36,4 +41,9 @@ export type ModelPickerState = {
   providerTabIndex: number;
   focusedIndex: number;
   activeModelId: string | null;
+  activeProviderAuthStatus: ModelPickerAuthStatus;
+  activeProviderSignInHint: string | null;
+  settingsRows: SetupPaneRow[];
+  footerFocus: SetupPaneRowKind | null;
+  laneLabel?: string | null;
 };

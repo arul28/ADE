@@ -22,7 +22,6 @@ import type {
   AgentChatCodexSandbox,
   AgentChatClaudePlugin,
   AgentChatReloadClaudePluginsResult,
-  AgentChatContextUsage,
 	  AgentChatEventEnvelope,
 	  AgentChatFileRef,
 	  AgentChatModelCatalog,
@@ -43,8 +42,10 @@ import type { ChatTerminalPreviewResult, ChatTerminalSession } from "../../../de
 import {
   DEFAULT_CODEX_REASONING_EFFORT,
   approveToolUse,
+  archiveChatSession,
   cancelSteerMessage,
   createChatSession,
+  deleteChatSession,
   discoverProjectSlashCommands,
   dispatchSteerMessage,
   editSteerMessage,
@@ -86,6 +87,7 @@ import {
   startClaudeTerminalSession,
   steerChatMessage,
   tagChat,
+  unarchiveChatSession,
   updateChatModel,
   writeTerminal,
   type TokenStats,
@@ -107,10 +109,11 @@ import {
 } from "./components/ChatView";
 import { TerminalPane, clampTerminalPaneCols } from "./components/TerminalPane";
 import { Header } from "./components/Header";
-import { computeLaneChatCounts, LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, laneDetailsInteractionLayout, RightPane } from "./components/RightPane";
+import { computeLaneChatCounts, LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, laneDetailsInteractionLayout, rightPaneScrollableRowCount, RightPane } from "./components/RightPane";
 import { buildModelPickerLayout, defaultSelectionFor, railEntrySelection } from "./components/ModelPicker/modelPickerLayout";
 import { SlashPalette, SLASH_PALETTE_ROWS } from "./components/SlashPalette";
 import { MentionPalette, MENTION_PALETTE_ROWS } from "./components/MentionPalette";
+import { CommandPalette, COMMAND_PALETTE_ROWS, type CommandPaletteItem } from "./components/CommandPalette";
 import { ApprovalPrompt } from "./components/ApprovalPrompt";
 import { ModelStatus } from "./components/ModelStatus";
 import { FooterControls } from "./components/FooterControls";
@@ -340,6 +343,70 @@ export function isTerminalSessionFastPollActive(session: TerminalSessionActivity
     && isProcessLikelyAlive(session.pid);
 }
 
+const URL_IN_TEXT_RE = /\bhttps?:\/\/[^\s<>"')\]]+/gi;
+const MARKDOWN_LINK_IN_TEXT_RE = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/i;
+
+function firstUrlInText(value: string): { url: string; index: number; width: number } | null {
+  const markdownMatch = MARKDOWN_LINK_IN_TEXT_RE.exec(value);
+  const markdownCandidate = markdownMatch?.[1] && markdownMatch[2]
+    ? {
+      url: markdownMatch[2].replace(/[.,;:!?]+$/u, ""),
+      index: markdownMatch.index,
+      width: markdownMatch[1].length,
+    }
+    : null;
+  URL_IN_TEXT_RE.lastIndex = 0;
+  const match = URL_IN_TEXT_RE.exec(value);
+  const rawCandidate = match?.[0]
+    ? {
+      url: match[0].replace(/[.,;:!?]+$/u, ""),
+      index: match.index,
+      width: match[0].replace(/[.,;:!?]+$/u, "").length,
+    }
+    : null;
+  if (markdownCandidate && rawCandidate) {
+    return markdownCandidate.index <= rawCandidate.index ? markdownCandidate : rawCandidate;
+  }
+  return markdownCandidate ?? rawCandidate;
+}
+
+function paletteMatchScore(item: CommandPaletteItem, query: string): number | null {
+  const trimmed = query.trim().toLowerCase();
+  if (!trimmed) return 0;
+  const haystack = `${item.label} ${item.detail}`.toLowerCase();
+  if (haystack.includes(trimmed)) return haystack.indexOf(trimmed);
+  let cursor = 0;
+  let score = 0;
+  for (const char of trimmed) {
+    const found = haystack.indexOf(char, cursor);
+    if (found < 0) return null;
+    score += found - cursor;
+    cursor = found + 1;
+  }
+  return score + haystack.length;
+}
+
+function openExternalUrl(url: string, notice: (message: string, tone?: LocalNotice["tone"]) => void): boolean {
+  const trimmed = url.trim();
+  if (!/^https?:\/\//i.test(trimmed)) return false;
+  const bridge = (globalThis as { window?: { ade?: { app?: { openExternal?: (url: string) => unknown } } } }).window;
+  const opener = bridge?.ade?.app?.openExternal;
+  if (typeof opener === "function") {
+    try {
+      opener(trimmed);
+      notice("Opening link in browser…", "info");
+      return true;
+    } catch {
+      // Fall through to the platform opener.
+    }
+  }
+  const command = process.platform === "darwin" ? "open" : process.platform === "linux" ? "xdg-open" : null;
+  if (!command) return false;
+  spawn(command, [trimmed], { stdio: "ignore", detached: true }).unref();
+  notice("Opening link in browser…", "info");
+  return true;
+}
+
 export function isTerminalSessionResumable(session: ChatTerminalSession | null | undefined): boolean {
   return Boolean(
     session
@@ -516,6 +583,7 @@ function initialModelState(): AdeCodeModelState {
     opencodePermissionMode: "edit",
     droidPermissionMode: "auto-low",
     cursorModeId: "agent",
+    cursorAvailableModeIds: [],
     cursorConfigValues: {},
   };
 }
@@ -614,6 +682,10 @@ function resolveCodexPreset(modelState: AdeCodeModelState): CodexPreset | "custo
   return "custom";
 }
 
+export function codexApprovalSandboxLabel(modelState: Pick<AdeCodeModelState, "codexApprovalPolicy" | "codexSandbox">): string {
+  return `${modelState.codexApprovalPolicy} · ${modelState.codexSandbox}`;
+}
+
 function codexPresetPatch(preset: CodexPreset): Pick<AdeCodeModelState, "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "permissionMode"> {
   if (preset === "full-auto") {
     return {
@@ -667,6 +739,13 @@ function cursorModeLabel(modeId: string | null | undefined): string {
   return CURSOR_MODE_LABELS[normalized] ?? normalized;
 }
 
+export function cursorModeIdsForState(modelState: Pick<AdeCodeModelState, "cursorAvailableModeIds">): string[] {
+  const snapshotIds = modelState.cursorAvailableModeIds
+    .map((modeId) => modeId.trim())
+    .filter(Boolean);
+  return snapshotIds.length ? snapshotIds : [...CURSOR_AVAILABLE_MODE_IDS];
+}
+
 function permissionSummary(modelState: AdeCodeModelState): string {
   if (modelState.provider === "codex") return resolveCodexPreset(modelState);
   if (modelState.provider === "claude") {
@@ -713,7 +792,7 @@ function permissionOptionsDetail(modelState: AdeCodeModelState): string {
   if (modelState.provider === "claude") return "default · plan · auto · bypass";
   if (modelState.provider === "opencode") return OPENCODE_PERMISSION_OPTIONS.join(" · ");
   if (modelState.provider === "droid") return DROID_PERMISSION_OPTIONS.join(" · ");
-  return CURSOR_AVAILABLE_MODE_IDS.map((modeId) => cursorModeLabel(modeId)).join(" · ");
+  return cursorModeIdsForState(modelState).map((modeId) => cursorModeLabel(modeId)).join(" · ");
 }
 
 function applyProviderPermissionMode(modelState: AdeCodeModelState): Partial<AdeCodeModelState> {
@@ -815,22 +894,6 @@ function formatGoalBannerLine(goal: CodexThreadGoal | null): string | null {
   const visibleStatus = goal.status === "budget_limited" ? "active" : goal.status;
   if (visibleStatus) right.push(visibleStatus.replace(/_/g, " "));
   return right.length ? `◎ ${objective}   ${right.join(" · ")}` : `◎ ${objective}`;
-}
-
-function formatContextUsage(usage: AgentChatContextUsage | null): string {
-  if (!usage) return "Context usage is not available for this session yet.";
-  const total = compactNumber(usage.totalTokens);
-  const max = compactNumber(usage.maxTokens);
-  const header = `Context usage: ${total} / ${max} tokens (${usage.percentage.toFixed(0)}%)`;
-  const rows = usage.categories.map((category) => {
-    const pct = category.percentage < 10 && category.percentage > 0
-      ? category.percentage.toFixed(1)
-      : category.percentage.toFixed(0);
-    return `${category.name.padEnd(22)} ${compactNumber(category.tokens).padStart(7)}  ${pct.padStart(5)}%`;
-  });
-  return [header, usage.model ? `Model: ${usage.model}` : null, "", ...rows]
-    .filter((line): line is string => line != null)
-    .join("\n");
 }
 
 import { subagentSnapshotsFromEvents } from "../../../desktop/src/shared/chatSubagents";
@@ -966,10 +1029,18 @@ export function resolveContextDefault(args: ContextDefaultArgs): RightPaneConten
         return seedLaneDetails(nav.lane, !args.unavailableLaneIds.has(nav.lane.id));
       case "new-chat":
         return {
-          kind: "new-chat-setup",
+          kind: "model-picker",
+          surface: "new-chat",
+          query: "",
+          searchMode: false,
+          showAll: false,
+          selection: { kind: "provider", provider: args.provider },
+          providerTabKey: null,
+          focusedIndex: 0,
+          footerFocus: "apply",
+          settingsRows: nav.rows,
           laneId: nav.laneId,
           laneLabel: nav.laneLabel,
-          rows: nav.rows,
         };
       case "chat":
         return { kind: "chat-info", info: nav.info };
@@ -981,10 +1052,18 @@ export function resolveContextDefault(args: ContextDefaultArgs): RightPaneConten
     && !args.unavailableLaneIds.has(args.newChatSetup.laneId)
   ) {
     return {
-      kind: "new-chat-setup",
+      kind: "model-picker",
+      surface: "new-chat",
+      query: "",
+      searchMode: false,
+      showAll: false,
+      selection: { kind: "provider", provider: args.provider },
+      providerTabKey: null,
+      focusedIndex: 0,
+      footerFocus: "apply",
+      settingsRows: args.newChatSetup.rows,
       laneId: args.newChatSetup.laneId,
       laneLabel: args.newChatSetup.laneLabel,
-      rows: args.newChatSetup.rows,
     };
   }
   if (args.drawerMode === "lanes" && args.highlightedDrawerLane) {
@@ -1998,12 +2077,6 @@ export function formFieldUsesPromptInput(command: string, fieldName: string): bo
   return true;
 }
 
-export function modelPickerSurfaceForSetupPane(
-  paneKind: "new-chat-setup" | "model-setup",
-): "new-chat" | "chat" {
-  return paneKind === "new-chat-setup" ? "new-chat" : "chat";
-}
-
 export function clampChatScrollOffsetRows(value: number, maxOffset: number): number {
   const safeMax = Number.isFinite(maxOffset) ? Math.max(0, Math.floor(maxOffset)) : 0;
   if (Number.isNaN(value)) return 0;
@@ -2408,12 +2481,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const [clearedAt, setClearedAt] = useState<string | null>(null);
   const [expandedLineIds, setExpandedLineIds] = useState<Set<string>>(() => new Set());
   const [chatScrollOffsetRows, setChatScrollOffsetRows] = useState(0);
+  const [drawerScrollOffsetRows, setDrawerScrollOffsetRows] = useState(0);
+  const [rightPaneScrollOffsetRows, setRightPaneScrollOffsetRows] = useState(0);
   const [inspectedSubagentId, setInspectedSubagentId] = useState<string | null>(null);
   const [mentionSuggestions, setMentionSuggestions] = useState<MentionSuggestion[]>([]);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [selectedMentions, setSelectedMentions] = useState<MentionSuggestion[]>([]);
   const [attachmentFocusIndex, setAttachmentFocusIndex] = useState<number | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [commandPaletteQuery, setCommandPaletteQuery] = useState("");
+  const [commandPaletteIndex, setCommandPaletteIndex] = useState(0);
   const [drawerSection, setDrawerSection] = useState<"lanes" | "chats">("lanes");
   const [drawerPreviewSessionId, setDrawerPreviewSessionId] = useState<string | null>(null);
   const [drawerPreviewEvents, setDrawerPreviewEvents] = useState<AgentChatEventEnvelope[]>([]);
@@ -2917,14 +2995,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     focusDetails();
   }, [focusChat, focusDetails, rightOpen, rightPane.kind, selectFooterControl]);
 
-  const cyclePaneFocus = useCallback(() => {
+  const cyclePaneFocus = useCallback((direction: 1 | -1 = 1) => {
     const order: PaneFocus[] = [
       ...(drawerOpen ? (["drawer"] as PaneFocus[]) : []),
       "chat",
       ...(rightOpen ? (["details"] as PaneFocus[]) : []),
     ];
     const currentIndex = order.indexOf(activePaneRef.current);
-    const nextPane = order[(currentIndex >= 0 ? currentIndex + 1 : 0) % order.length] ?? "chat";
+    const startIndex = currentIndex >= 0 ? currentIndex : direction > 0 ? -1 : 0;
+    const nextPane = order[(startIndex + direction + order.length) % order.length] ?? "chat";
     if (nextPane === "drawer") {
       focusDrawerOnly();
     } else if (nextPane === "details") {
@@ -2968,7 +3047,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   );
   const activeTerminalProvider = terminalSessionProvider(activeTerminalSession);
   const displaySessions = useMemo(
-    () => [...sessions, ...terminalSessions.map(terminalSessionToChatSummary)]
+    () => [...sessions.filter((session) => !session.archivedAt), ...terminalSessions.map(terminalSessionToChatSummary)]
       .sort((left, right) => {
         const rightMs = Date.parse(right.lastActivityAt ?? right.startedAt);
         const leftMs = Date.parse(left.lastActivityAt ?? left.startedAt);
@@ -2981,7 +3060,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     for (const session of displaySessions) out[session.sessionId] = session;
     return out;
   }, [displaySessions]);
-  const tileableSessionIds = useMemo(() => new Set(sessions.map((session) => session.sessionId)), [sessions]);
+  const tileableSessionIds = useMemo(() => new Set(sessions.filter((session) => !session.archivedAt).map((session) => session.sessionId)), [sessions]);
   const tileableDisplaySessions = useMemo(
     () => displaySessions.filter((session) => tileableSessionIds.has(session.sessionId)),
     [displaySessions, tileableSessionIds],
@@ -3091,14 +3170,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       selectFooterControl(null);
     }
   }, [footerControl, selectFooterControl, subagentPaneCommandAvailable]);
-  useEffect(() => {
-    if (rightPaneKindRef.current !== rightPane.kind) {
-      if (rightPane.kind === "chat-info") {
-        setRightSelectionIndex(0);
-      }
-      rightPaneKindRef.current = rightPane.kind;
-    }
-  }, [rightPane.kind]);
+	  useEffect(() => {
+	    if (rightPaneKindRef.current !== rightPane.kind) {
+	      if (rightPane.kind === "chat-info") {
+	        setRightSelectionIndex(0);
+	      }
+	      setRightPaneScrollOffsetRows(0);
+	      rightPaneKindRef.current = rightPane.kind;
+	    }
+	  }, [rightPane.kind]);
   useEffect(() => {
     const content = subagentPaneContentFromRightPane(rightPane);
     if (!content) return;
@@ -3201,10 +3281,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     () => sortLanesForStackGraph(lanes),
     [lanes],
   );
-  const drawerLaneRows = useMemo(
-    () => orderedDrawerLanes.slice(0, visibleDrawerLaneCount(chatRowBudget, orderedDrawerLanes.length)),
-    [chatRowBudget, orderedDrawerLanes],
-  );
+	  const drawerLaneRows = useMemo(
+	    () => {
+	      const count = visibleDrawerLaneCount(chatRowBudget, orderedDrawerLanes.length);
+	      const start = Math.max(0, Math.min(drawerScrollOffsetRows, Math.max(0, orderedDrawerLanes.length - count)));
+	      return orderedDrawerLanes.slice(start, start + count);
+	    },
+	    [chatRowBudget, drawerScrollOffsetRows, orderedDrawerLanes],
+	  );
   const diffLaneIdsKey = useMemo(
     () => lanes.filter((lane) => !lane.archivedAt).map((lane) => lane.id).sort().join("\n"),
     [lanes],
@@ -3375,11 +3459,42 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const activeMentionRange = useMemo(() => (
     activePane === "chat" ? activeMention(prompt) : null
   ), [activePane, prompt]);
-  const slashRows = useMemo(() => (
-    activePane === "chat" && prompt.startsWith("/")
-      ? paletteCommands(prompt, slashCommands, { provider: activeCommandProvider })
-      : []
-  ), [activeCommandProvider, activePane, prompt, slashCommands]);
+	  const slashRows = useMemo(() => (
+	    activePane === "chat" && prompt.startsWith("/")
+	      ? paletteCommands(prompt, slashCommands, { provider: activeCommandProvider })
+	      : []
+	  ), [activeCommandProvider, activePane, prompt, slashCommands]);
+  const commandPaletteItems = useMemo<CommandPaletteItem[]>(() => {
+    if (!commandPaletteOpen) return [];
+    const commandItems = paletteCommands("", slashCommands, { provider: activeCommandProvider }).map((command) => ({
+      key: `command:${command.name}`,
+      kind: "command" as const,
+      label: command.argumentHint ? `${command.name} ${command.argumentHint}` : command.name,
+      detail: command.description,
+    }));
+    const laneItems = lanes.map((lane) => ({
+      key: `lane:${lane.id}`,
+      kind: "lane" as const,
+      label: lane.name,
+      detail: lane.branchRef ?? lane.id,
+    }));
+    const chatItems = displaySessions.map((session) => ({
+      key: `chat:${session.sessionId}`,
+      kind: "chat" as const,
+      label: session.title ?? session.sessionId,
+      detail: `${lanes.find((lane) => lane.id === session.laneId)?.name ?? session.laneId} · ${session.provider}`,
+    }));
+    return [...commandItems, ...laneItems, ...chatItems]
+      .map((item) => ({ item, score: paletteMatchScore(item, commandPaletteQuery) }))
+      .filter((entry): entry is { item: CommandPaletteItem; score: number } => entry.score != null)
+      .sort((a, b) => a.score - b.score || a.item.label.localeCompare(b.item.label))
+      .map((entry) => entry.item)
+      .slice(0, 80);
+  }, [activeCommandProvider, commandPaletteOpen, commandPaletteQuery, displaySessions, lanes, slashCommands]);
+  useEffect(() => {
+    if (!commandPaletteOpen) return;
+    setCommandPaletteIndex((index) => Math.max(0, Math.min(index, Math.max(0, commandPaletteItems.length - 1))));
+  }, [commandPaletteItems.length, commandPaletteOpen]);
   const pendingApproval = useMemo(() => latestPendingApproval(events), [events]);
   const pendingSteers = useMemo(() => derivePendingSteers(events), [events]);
   const activeFormField = rightPane.kind === "form"
@@ -3805,7 +3920,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       if (prev.kind === "chat-info" && next.kind === "chat-info") {
         return next;
       }
-      if (prev.kind === "new-chat-setup" && next.kind === "new-chat-setup") {
+      if (prev.kind === "model-picker" && prev.surface === "new-chat" && next.kind === "model-picker" && next.surface === "new-chat") {
         return next;
       }
       // Avoid stomping on lane-details that has been hydrated with git data;
@@ -3842,22 +3957,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   ]);
 
   useEffect(() => {
-    if (rightPane.kind === "new-chat-setup") {
+    if (rightPane.kind === "model-picker" && rightPane.surface === "new-chat") {
       setRightPane((prev) => {
-        if (prev.kind !== "new-chat-setup") return prev;
+        if (prev.kind !== "model-picker" || prev.surface !== "new-chat") return prev;
         if (drawerNavTarget?.kind === "new-chat") {
           return {
             ...prev,
             laneId: drawerNavTarget.laneId,
             laneLabel: drawerNavTarget.laneLabel,
-            rows: drawerNavTarget.rows,
+            settingsRows: drawerNavTarget.rows,
           };
         }
         return {
           ...prev,
           laneId: activeLaneId ?? prev.laneId,
           laneLabel: activeLane?.name ?? prev.laneLabel,
-          rows: newChatSetupRows,
+          settingsRows: newChatSetupRows,
         };
       });
     } else if (rightPane.kind === "lane-details") {
@@ -3867,9 +3982,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             chats: computeLaneChatCounts(displaySessions, prev.lane.id),
           }
         : prev);
-    } else if (rightPane.kind === "model-setup") {
-      setRightPane((prev) => prev.kind === "model-setup"
-        ? { ...prev, rows: providerLocked ? modelPickerRows : modelSetupRows }
+    } else if (rightPane.kind === "model-picker" && rightPane.surface === "chat") {
+      setRightPane((prev) => prev.kind === "model-picker" && prev.surface === "chat"
+        ? { ...prev, settingsRows: providerLocked ? modelPickerRows : modelSetupRows }
         : prev);
     }
   }, [activeLane?.name, activeLaneId, displaySessions, drawerNavTarget, modelPickerRows, modelSetupRows, newChatSetupRows, providerLocked, rightPane.kind]);
@@ -4173,6 +4288,33 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       { id: noticeId(), timestamp: new Date().toISOString(), text, tone },
     ]);
   }, []);
+
+  const activateLaneWithLastChat = useCallback((lane: LaneSummary, options: { notify?: boolean } = {}) => {
+    const laneSessions = displaySessions.filter((entry) => entry.laneId === lane.id);
+    const lastSessionId = lastChatByLaneRef.current.get(lane.id);
+    const session =
+      laneSessions.find((entry) => entry.sessionId === lastSessionId)
+      ?? newestSession(laneSessions);
+    const action: DrawerChatAction | null = session ? null : "new-chat";
+    selectActiveLaneId(lane.id);
+    setDrawerLaneId(lane.id);
+    setSelectedDrawerLaneId(lane.id);
+    setSelectedDrawerLaneAction(null);
+    setSelectedDrawerChatId(session?.sessionId ?? null);
+    setSelectedDrawerChatAction(action);
+    applyDrawerChatSelection({ session: session ?? null, action });
+    if (options.notify) addNotice(`Switched to lane ${lane.name}.`, "success");
+  }, [addNotice, applyDrawerChatSelection, displaySessions, selectActiveLaneId]);
+
+  const cycleActiveLane = useCallback((direction: 1 | -1) => {
+    if (!orderedDrawerLanes.length) return;
+    const currentLaneId = activeLaneIdRef.current;
+    const currentIndex = currentLaneId ? orderedDrawerLanes.findIndex((lane) => lane.id === currentLaneId) : -1;
+    const startIndex = currentIndex >= 0 ? currentIndex : direction > 0 ? -1 : 0;
+    const lane = orderedDrawerLanes[(startIndex + direction + orderedDrawerLanes.length) % orderedDrawerLanes.length];
+    if (!lane) return;
+    activateLaneWithLastChat(lane, { notify: true });
+  }, [activateLaneWithLastChat, orderedDrawerLanes]);
 
   const flashMultiViewNotice = useCallback((text: string) => {
     setMultiViewNotice(text);
@@ -4681,6 +4823,47 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     });
   }, [activeLane, focusDetails, lanes, openForm]);
 
+  const openChatDeleteForm = useCallback((sessionIdArg?: string) => {
+    const targetId = sessionIdArg ?? activeSessionIdRef.current;
+    const session = sessions.find((entry) => entry.sessionId === targetId) ?? activeSession;
+    if (!targetId || !session || session.sessionId !== targetId) {
+      setRightPane({ kind: "details", title: "Delete chat", body: "No runtime-backed chat is selected." });
+      focusDetails();
+      return;
+    }
+    const title = session.title ?? session.goal ?? session.sessionId;
+    openForm({
+      kind: "form",
+      title: "Delete chat",
+      command: "chat-delete",
+      sessionId: targetId,
+      chatDelete: { sessionId: targetId, title },
+      description: "This removes the chat session and its transcript from ADE.",
+      fields: [
+        { name: "confirm", label: "Type chat title", required: true, placeholder: title },
+      ],
+    });
+  }, [activeSession, focusDetails, openForm, sessions]);
+
+  const openChatRenameForm = useCallback((sessionIdArg?: string) => {
+    const targetId = sessionIdArg ?? activeSessionIdRef.current;
+    const session = sessions.find((entry) => entry.sessionId === targetId) ?? activeSession;
+    if (!targetId || !session || session.sessionId !== targetId) {
+      setRightPane({ kind: "details", title: "Rename chat", body: "No runtime-backed chat is selected." });
+      focusDetails();
+      return;
+    }
+    openForm({
+      kind: "form",
+      title: "Rename chat",
+      command: "rename",
+      sessionId: targetId,
+      fields: [
+        { name: "title", label: "Title", required: true, initialValue: session.title ?? "" },
+      ],
+    });
+  }, [activeSession, focusDetails, openForm, sessions]);
+
   const openFeedbackForm = useCallback(() => {
     openForm({
       kind: "form",
@@ -4736,36 +4919,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     setRightSelectionIndex(defaultSetupSelectionIndex(newChatSetupRows));
     setFormDiscardArmed(false);
     setRightPane({
-      kind: "new-chat-setup",
+      kind: "model-picker",
+      surface: "new-chat",
+      query: "",
+      searchMode: false,
+      showAll: false,
+      selection: { kind: "provider", provider: modelState.provider },
+      providerTabKey: null,
+      focusedIndex: 0,
+      footerFocus: "apply",
+      settingsRows: newChatSetupRows,
       laneId,
       laneLabel: lane.name,
-      rows: newChatSetupRows,
     });
     setRightOpen(true);
     setPaneFocus("details");
     void refreshAiSetupStatus().catch(() => undefined);
     void loadProviderModels(modelState.provider, { applyDefault: false }).catch(() => undefined);
   }, [activeLane, addNotice, focusDetails, lanes, loadProviderModels, modelState.provider, newChatSetupRows, refreshAiSetupStatus, selectActiveSessionId, setDraftChatMode, setGridView, setPaneFocus, stashActiveInput]);
-
-  // /model opens the right-pane model picker. Provider stays editable on a fresh
-  // chat; once the thread has user messages the provider row is locked to the
-  // active chat family.
-  const openModelRow = useCallback((options: { forceRefresh?: boolean; focusKind?: SetupPaneRowKind } = {}) => {
-    const rows = providerLockedRef.current ? modelPickerRows : modelSetupRows;
-    userDismissedRightPaneRef.current = false;
-    lastUserOpenedPaneRef.current = "details";
-    setRightSelectionIndex(setupSelectionIndexForKind(rows, options.focusKind));
-    setRightPane({ kind: "model-setup", rows });
-    setRightOpen(true);
-    focusDetails();
-    void refreshAiSetupStatus({ force: options.forceRefresh === true }).catch((err) => {
-      addNotice(err instanceof Error ? err.message : String(err), "error");
-    });
-    void loadProviderModels(
-      (activeSessionRef.current?.provider ?? modelState.provider) as AdeCodeProvider,
-      { applyDefault: false },
-    ).catch(() => undefined);
-  }, [addNotice, focusDetails, loadProviderModels, modelPickerRows, modelSetupRows, modelState.provider, refreshAiSetupStatus]);
 
   // Hydrate favorites/recents from the ade-cli RPC once the connection is up.
   useEffect(() => {
@@ -4794,7 +4965,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   // via /model or new-chat. Reuses the same data the inline row uses (models)
   // plus favorites/recents sourced from ade-cli for cross-surface sync.
 	  const openModelPicker = useCallback(
-	    (options: { surface?: "chat" | "new-chat" } = {}) => {
+	    (options: { surface?: "chat" | "new-chat"; forceRefresh?: boolean; focusKind?: SetupPaneRowKind } = {}) => {
 	      void refreshModelCatalog();
 	      const surface = options.surface ?? "chat";
       // Build a starter selection from current activeModelId/recents so the
@@ -4804,13 +4975,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 	        models,
 	        catalog: modelCatalogRef.current ?? modelCatalog,
 	        favorites: modelPickerFavorites,
-        recents: modelPickerRecents,
+	        recents: modelPickerRecents,
         activeModelId: modelState.modelId,
+        activeReasoningEffort: modelState.reasoningEffort,
+        aiStatus,
+        showAll: false,
 	        query: "",
 	        selection: { kind: "provider", provider },
 	        providerTabKey: null,
 	        focusedIndex: 0,
-        searchMode: false,
+	        searchMode: false,
+        settingsRows: surface === "new-chat" ? newChatSetupRows : (providerLockedRef.current ? modelPickerRows : modelSetupRows),
+        footerFocus: options.focusKind ?? null,
+        laneLabel: surface === "new-chat"
+          ? (lanes.find((entry) => entry.id === activeLaneIdRef.current)?.name ?? activeLane?.name ?? null)
+          : null,
       });
       const selection = defaultSelectionFor(
         modelState.modelId,
@@ -4821,25 +5000,40 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         kind: "model-picker",
         surface,
         query: "",
+        showAll: false,
 	        searchMode: false,
 	        selection,
 	        providerTabKey: null,
 	        focusedIndex: 0,
+        footerFocus: options.focusKind ?? null,
+        settingsRows: surface === "new-chat" ? newChatSetupRows : (providerLockedRef.current ? modelPickerRows : modelSetupRows),
+        ...(surface === "new-chat"
+          ? {
+              laneId: activeLaneIdRef.current,
+              laneLabel: lanes.find((entry) => entry.id === activeLaneIdRef.current)?.name ?? activeLane?.name ?? null,
+            }
+          : {}),
       });
       setRightOpen(true);
       setPaneFocus("details");
       lastUserOpenedPaneRef.current = "model-picker";
-	      void refreshAiSetupStatus().catch(() => undefined);
+	      void refreshAiSetupStatus({ force: options.forceRefresh === true }).catch(() => undefined);
 	      void loadProviderModels(provider, { applyDefault: false }).catch(() => undefined);
 	    },
     [
+      activeLane?.name,
+      aiStatus,
+      lanes,
       loadProviderModels,
+      modelPickerRows,
       modelPickerFavorites,
       modelPickerRecents,
+      modelSetupRows,
       modelState.modelId,
-	      modelState.provider,
-	      models,
-	      modelCatalog,
+		      modelState.provider,
+		      models,
+      newChatSetupRows,
+		      modelCatalog,
 	      refreshAiSetupStatus,
 	      refreshModelCatalog,
 	      setPaneFocus,
@@ -5172,6 +5366,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           opencodePermissionMode: configSession.opencodePermissionMode ?? prev.opencodePermissionMode,
           droidPermissionMode: configSession.droidPermissionMode ?? prev.droidPermissionMode,
           cursorModeId: configSession.cursorModeId ?? configSession.cursorModeSnapshot?.currentModeId ?? prev.cursorModeId,
+          cursorAvailableModeIds: configSession.cursorModeSnapshot?.availableModeIds ?? prev.cursorAvailableModeIds,
           cursorConfigValues: configSession.cursorConfigValues ?? prev.cursorConfigValues,
         }));
       }
@@ -5252,6 +5447,69 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       addNotice(err instanceof Error ? err.message : String(err), "error");
     }
   }, [addNotice, refreshState, selectActiveLaneId]);
+
+  const selectFallbackChatAfterRemoval = useCallback((removedSession: AgentChatSessionSummary) => {
+    const fallback = displaySessions.find((entry) => (
+      entry.laneId === removedSession.laneId
+      && entry.sessionId !== removedSession.sessionId
+      && !entry.archivedAt
+    )) ?? null;
+    setSelectedDrawerChatId(fallback?.sessionId ?? null);
+    setSelectedDrawerChatAction(fallback ? null : "new-chat");
+    applyDrawerChatSelection({ session: fallback, action: fallback ? null : "new-chat" });
+  }, [applyDrawerChatSelection, displaySessions]);
+
+  const archiveChat = useCallback(async (sessionIdArg?: string) => {
+    const conn = connectionRef.current;
+    const targetId = sessionIdArg ?? activeSessionIdRef.current;
+    const session = sessions.find((entry) => entry.sessionId === targetId) ?? null;
+    if (!conn || !targetId || !session) {
+      addNotice("No runtime-backed chat is selected.", "error");
+      return;
+    }
+    try {
+      await archiveChatSession(conn, targetId);
+      if (activeSessionIdRef.current === targetId) {
+        selectFallbackChatAfterRemoval(session);
+      }
+      addNotice(`Archived chat ${session.title ?? session.sessionId}.`, "success");
+      await refreshState();
+    } catch (err) {
+      addNotice(err instanceof Error ? err.message : String(err), "error");
+    }
+  }, [addNotice, refreshState, selectFallbackChatAfterRemoval, sessions]);
+
+  const unarchiveChat = useCallback(async (query: string) => {
+    const conn = connectionRef.current;
+    if (!conn) return;
+    const term = query.trim();
+    if (!term) {
+      addNotice("Usage: /chat unarchive <chat-id|title>", "error");
+      return;
+    }
+    try {
+      const archived = (await listChatSessions(conn, null, { includeArchived: true })).filter((entry) => entry.archivedAt);
+      const lower = term.toLowerCase();
+      const match = archived.find((entry) => entry.sessionId === term)
+        ?? archived.find((entry) => (entry.title ?? "").toLowerCase() === lower)
+        ?? archived.find((entry) => (entry.title ?? "").toLowerCase().includes(lower) || entry.sessionId.toLowerCase().includes(lower));
+      if (!match) {
+        addNotice(`No archived chat matched "${term}".`, "error");
+        return;
+      }
+      await unarchiveChatSession(conn, match.sessionId);
+      addNotice(`Unarchived chat ${match.title ?? match.sessionId}.`, "success");
+      await refreshState();
+      selectActiveLaneId(match.laneId);
+      setDrawerLaneId(match.laneId);
+      setSelectedDrawerLaneId(match.laneId);
+      setSelectedDrawerChatId(match.sessionId);
+      setSelectedDrawerChatAction(null);
+      applyDrawerChatSelection({ session: match, action: null });
+    } catch (err) {
+      addNotice(err instanceof Error ? err.message : String(err), "error");
+    }
+  }, [addNotice, applyDrawerChatSelection, refreshState, selectActiveLaneId]);
 
   const commitModelStateToSession = useCallback(async (nextState: AdeCodeModelState) => {
     const conn = connectionRef.current;
@@ -6149,7 +6407,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
       if (name === "/effort") {
-        openModelRow({ focusKind: "reasoning" });
+        openModelPicker({ focusKind: "reasoning" });
         return;
       }
       if (name === "/info") {
@@ -6241,23 +6499,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
     if (name === "/context") {
       if (!sessionId) {
-        setRightPane({ kind: "details", title: "Context", body: "No active chat is selected." });
+        setRightPane({ kind: "context-usage", title: "Context", usage: null, error: "No active chat is selected." });
         return;
       }
-      if (activeSession?.provider !== "claude") {
-        setRightPane({ kind: "details", title: "Context", body: "/context is only available for Claude chats." });
-        return;
-      }
-      setRightPane({ kind: "details", title: "Context", body: "Loading Claude context usage..." });
+      setRightPane({ kind: "context-usage", title: "Context", usage: null });
       try {
         const usage = await getContextUsage(conn, sessionId);
-        setRightPane({ kind: "details", title: "Context", body: formatContextUsage(usage) });
+        setRightPane({ kind: "context-usage", title: "Context", usage });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         setRightPane({
-          kind: "details",
+          kind: "context-usage",
           title: "Context",
-          body: `Claude context usage is not available for this session.\n\n${message}`,
+          usage: null,
+          error: `Context usage is not available for this ${activeSession?.provider ?? "chat"} session.\n\n${message}`,
         });
       }
       return;
@@ -6368,25 +6623,50 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       setSelectedDrawerLaneAction(null);
       return;
     }
-    if (name === "/rename") {
+    if (name === "/rename" || name === "/chat rename") {
       if (!sessionId) {
         setRightPane({ kind: "details", title: "Rename chat", body: "No active chat is selected." });
         return;
       }
       if (!args) {
-        openForm({
-          kind: "form",
-          title: "Rename chat",
-          command: "rename",
-          fields: [
-            { name: "title", label: "Title", required: true, initialValue: activeSession?.title ?? "" },
-          ],
-        });
+        openChatRenameForm(sessionId);
         return;
       }
       await renameChat(conn, sessionId, args);
       addNotice(`Renamed chat to "${args}".`, "success");
       await refreshState();
+      return;
+    }
+    if (name === "/chat archive") {
+      await archiveChat();
+      return;
+    }
+    if (name === "/chat unarchive") {
+      await unarchiveChat(args);
+      return;
+    }
+    if (name === "/chat archived") {
+      const archived = (await listChatSessions(conn, null, { includeArchived: true }))
+        .filter((session) => session.archivedAt);
+      const query = args.trim().toLowerCase();
+      const rows = archived
+        .filter((session) => !query
+          || session.sessionId.toLowerCase().includes(query)
+          || (session.title ?? "").toLowerCase().includes(query)
+          || (lanes.find((lane) => lane.id === session.laneId)?.name ?? session.laneId).toLowerCase().includes(query))
+        .map((session) => {
+          const laneName = lanes.find((lane) => lane.id === session.laneId)?.name ?? session.laneId;
+          return `${session.title ?? session.sessionId} · ${laneName} · archived ${session.archivedAt ?? ""}`;
+        });
+      setRightPane({
+        kind: "details",
+        title: "Archived chats",
+        body: rows.length ? rows.join("\n") : "No archived chats matched.",
+      });
+      return;
+    }
+    if (name === "/chat delete") {
+      openChatDeleteForm();
       return;
     }
     if (name === "/tag") {
@@ -6695,20 +6975,27 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
     if (name === "/chats") {
-      const laneSessions = displaySessions.filter((session) => session.laneId === laneId);
+      const query = args.trim().toLowerCase();
+      const laneSessions = displaySessions
+        .filter((session) => session.laneId === laneId)
+        .filter((session) => !query
+          || session.sessionId.toLowerCase().includes(query)
+          || (session.title ?? "").toLowerCase().includes(query)
+          || (session.goal ?? "").toLowerCase().includes(query)
+          || session.provider.toLowerCase().includes(query));
       const selectedIndex = Math.max(0, laneSessions.findIndex((session) => session.sessionId === sessionId));
       setRightSelectionIndex(selectedIndex);
       setRightPane({
         kind: "list",
-        title: "Chats",
-        rows: laneSessions.map((session) => `${session.sessionId === sessionId ? "●" : "○"} ${session.title ?? session.sessionId}`),
-        emptyText: "No chats in this lane.",
+        title: query ? `Chats · ${args.trim()}` : "Chats",
+        rows: laneSessions.map((session) => `${session.sessionId === sessionId ? "●" : "○"} ${session.title ?? session.sessionId} · ${session.provider}`),
+        emptyText: query ? "No chats matched this filter." : "No chats in this lane.",
         action: { kind: "switch-chat", ids: laneSessions.map((session) => session.sessionId) },
       });
       return;
     }
     if (name === "/switch") {
-      const query = args.toLowerCase();
+      const query = args.trim().toLowerCase();
       if (!query) {
         const selectedIndex = Math.max(0, lanes.findIndex((lane) => lane.id === laneId));
         setRightSelectionIndex(selectedIndex);
@@ -6721,17 +7008,28 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         });
         return;
       }
-      const lane = lanes.find((entry) => entry.id.toLowerCase() === query || entry.name.toLowerCase().includes(query));
-      if (lane) {
-        selectActiveLaneId(lane.id);
-        setDrawerLaneId(lane.id);
-        setSelectedDrawerLaneId(lane.id);
-        const session = newestSession(displaySessions.filter((entry) => entry.laneId === lane.id));
-        selectActiveSessionId(session?.sessionId ?? null);
-        setSelectedDrawerChatId(session?.sessionId ?? null);
-        addNotice(`Switched to lane ${lane.name}.`, "success");
+      const exactLane = lanes.find((entry) => entry.id.toLowerCase() === query || entry.name.toLowerCase() === query) ?? null;
+      const exactChat = displaySessions.find((entry) => (
+        entry.sessionId.toLowerCase() === query
+        || (entry.title ?? "").toLowerCase() === query
+      )) ?? null;
+      const lane = exactLane ?? lanes.find((entry) => entry.id.toLowerCase().includes(query) || entry.name.toLowerCase().includes(query)) ?? null;
+      const chat = exactChat ?? displaySessions.find((entry) => (
+        entry.sessionId.toLowerCase().includes(query)
+        || (entry.title ?? "").toLowerCase().includes(query)
+      )) ?? null;
+      if (exactLane || (lane && !exactChat)) {
+        activateLaneWithLastChat(exactLane ?? lane!, { notify: true });
+      } else if (chat) {
+        selectActiveLaneId(chat.laneId);
+        setDrawerLaneId(chat.laneId);
+        setSelectedDrawerLaneId(chat.laneId);
+        setSelectedDrawerChatAction(null);
+        setSelectedDrawerChatId(chat.sessionId);
+        applyDrawerChatSelection({ session: chat, action: null });
+        addNotice(`Switched to chat ${chat.title ?? chat.sessionId}.`, "success");
       } else {
-        setRightPane({ kind: "details", title: "Switch", body: `No lane matched "${args}".` });
+        setRightPane({ kind: "details", title: "Switch", body: `No lane or chat matched "${args}".` });
       }
       return;
     }
@@ -6740,7 +7038,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
     if (name === "/effort") {
-      openModelRow({ focusKind: "reasoning" });
+      openModelPicker({ focusKind: "reasoning" });
       return;
     }
     if (name === "/info") {
@@ -6800,7 +7098,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         : result;
       setRightPane({ kind: "details", title: `ADE ${domain}.${action}`, body: renderObject(body, 24) });
     }
-  }, [activeCommandProvider, activeLane?.name, activeSession?.provider, activeSession?.sessionId, activeSession?.title, addNotice, archiveLane, ensureActiveSession, focusDetails, lanes, mode, modelState.modelId, modelState.reasoningEffort, models, openFeedbackForm, openForm, openLaneDeleteForm, openLaneRenameForm, openModelRow, openNewChatSetup, openNewLaneForm, openSubagentsPane, pendingSteers, project, refreshState, renameLane, selectActiveLaneId, selectActiveSessionId, sendOrSteerChatMessage, sessions, setChatScrollOffset, subagentPaneCommandAvailable, unarchiveLane]);
+  }, [activateLaneWithLastChat, activeCommandProvider, activeLane?.name, activeSession?.provider, activeSession?.sessionId, activeSession?.title, addNotice, applyDrawerChatSelection, archiveChat, archiveLane, ensureActiveSession, focusDetails, lanes, mode, modelState.modelId, modelState.reasoningEffort, models, openChatDeleteForm, openChatRenameForm, openFeedbackForm, openForm, openLaneDeleteForm, openLaneRenameForm, openModelPicker, openNewChatSetup, openNewLaneForm, openSubagentsPane, pendingSteers, project, refreshState, renameLane, selectActiveLaneId, selectActiveSessionId, sendOrSteerChatMessage, sessions, setChatScrollOffset, subagentPaneCommandAvailable, unarchiveChat, unarchiveLane]);
 
   const runInlineCommand = useCallback(async (name: string, args: string) => {
     if (name === "/quit") {
@@ -7136,10 +7434,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
 
     if (form.command === "rename") {
-      if (!sessionId) return;
+      const targetSessionId = form.sessionId ?? sessionId;
+      if (!targetSessionId) return;
       const title = requireField("title", "Title");
       if (!title) return;
-      await renameChat(conn, sessionId, title);
+      await renameChat(conn, targetSessionId, title);
       setRightOpen(false);
       setRightPane({ kind: "empty" });
       lastUserOpenedPaneRef.current = null;
@@ -7229,6 +7528,39 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
 
+    if (form.command === "chat-delete") {
+      const targetSessionId = form.chatDelete?.sessionId ?? form.sessionId ?? sessionId;
+      if (!targetSessionId) return;
+      const session = sessions.find((entry) => entry.sessionId === targetSessionId) ?? null;
+      if (!session) {
+        addNotice("Selected chat is no longer loaded.", "error");
+        return;
+      }
+      const expected = form.chatDelete?.title ?? session.title ?? session.goal ?? session.sessionId;
+      const confirm = requireField("confirm", "Chat title");
+      if (!confirm) return;
+      if (confirm !== expected) {
+        addNotice(`Type "${expected}" exactly to delete this chat.`, "error");
+        return;
+      }
+      setRightPane({ kind: "details", title: "Delete chat", body: `Deleting ${expected}...` });
+      await deleteChatSession(conn, targetSessionId);
+      setFormDiscardArmed(false);
+      setFormValues({});
+      setFormFieldIndex(0);
+      setPrompt("");
+      if (activeSessionIdRef.current === targetSessionId) {
+        selectFallbackChatAfterRemoval(session);
+      }
+      setRightOpen(false);
+      setRightPane({ kind: "empty" });
+      lastUserOpenedPaneRef.current = null;
+      focusAfterDetails();
+      addNotice(`Deleted chat ${expected}.`, "success");
+      await refreshState();
+      return;
+    }
+
     if (form.command === "feedback") {
       const summary = requireField("summary", "Summary");
       if (!summary) return;
@@ -7269,7 +7601,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         addNotice(`Feedback failed: ${message}`, "error");
       }
     }
-  }, [addNotice, focusAfterDetails, lanes, refreshState, renameLane, selectActiveLaneId, selectActiveSessionId]);
+  }, [addNotice, focusAfterDetails, lanes, refreshState, renameLane, selectActiveLaneId, selectActiveSessionId, selectFallbackChatAfterRemoval, sessions]);
 
   const openLatestImage = useCallback(() => {
     const target = latestOpenableImageTarget(events);
@@ -7324,6 +7656,68 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
     return false;
   }, [activeCommandProvider, addNotice, clearChatPromptDraft, runInlineCommand, runRightCommand, slashCommands]);
+
+  const openCommandPalette = useCallback(() => {
+    setCommandPaletteOpen(true);
+    setCommandPaletteQuery("");
+    setCommandPaletteIndex(0);
+    selectFooterControl(null);
+    setInlineRowFocus({ cell: null });
+  }, [selectFooterControl]);
+
+  const runCommandPaletteItem = useCallback(async (item: CommandPaletteItem | null | undefined) => {
+    if (!item) return;
+    setCommandPaletteOpen(false);
+    setCommandPaletteQuery("");
+    setCommandPaletteIndex(0);
+    if (item.kind === "command") {
+      const commandName = item.key.startsWith("command:") ? item.key.slice("command:".length) : item.label.split(/\s+/)[0] ?? "";
+      const parsed = parseCommand(commandName, slashCommands);
+      if (parsed?.spec?.placement === "right") {
+        await runRightCommand(parsed.name, "");
+      } else if (parsed?.spec?.placement === "inline") {
+        if (parsed.spec.argumentHint) {
+          const draft = `${parsed.name} `;
+          setPrompt(draft);
+          promptRef.current = draft;
+          chatDraftRef.current = draft;
+          focusChat();
+        } else {
+          await runInlineCommand(parsed.name, "");
+        }
+      } else if (parsed?.spec?.placement === "chat") {
+        const draft = `${parsed.name} `;
+        setPrompt(draft);
+        promptRef.current = draft;
+        chatDraftRef.current = draft;
+        focusChat();
+      } else if (parsed?.name) {
+        const draft = `${parsed.name} `;
+        setPrompt(draft);
+        promptRef.current = draft;
+        chatDraftRef.current = draft;
+        focusChat();
+      }
+      return;
+    }
+    if (item.kind === "lane") {
+      const laneId = item.key.slice("lane:".length);
+      const lane = lanes.find((entry) => entry.id === laneId) ?? null;
+      if (lane) activateLaneWithLastChat(lane, { notify: true });
+      return;
+    }
+    const sessionId = item.key.slice("chat:".length);
+    const session = displaySessions.find((entry) => entry.sessionId === sessionId) ?? null;
+    if (session) {
+      selectActiveLaneId(session.laneId);
+      setDrawerLaneId(session.laneId);
+      setSelectedDrawerLaneId(session.laneId);
+      setSelectedDrawerChatAction(null);
+      setSelectedDrawerChatId(session.sessionId);
+      applyDrawerChatSelection({ session, action: null });
+      addNotice(`Switched to chat ${session.title ?? session.sessionId}.`, "success");
+    }
+  }, [activateLaneWithLastChat, addNotice, applyDrawerChatSelection, displaySessions, focusChat, lanes, runInlineCommand, runRightCommand, selectActiveLaneId, slashCommands]);
 
   const submitPrompt = useCallback(async (value: string) => {
     const text = value.trim();
@@ -7674,26 +8068,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           .then((recents) => setModelPickerRecents(recents))
           .catch(() => undefined);
       }
-      // If we were picking for a new-chat draft, return to the setup pane so
-      // the user can finish configuring and dispatch. Otherwise close the pane.
-      let restoreSetup = false;
       setRightPane((prev) => {
         if (prev.kind === "model-picker" && prev.surface === "new-chat") {
-          const laneId = activeLaneIdRef.current;
-          const lane = laneId ? lanes.find((entry) => entry.id === laneId) : null;
-          if (lane) {
-            restoreSetup = true;
-            return {
-              kind: "new-chat-setup",
-              laneId: lane.id,
-              laneLabel: lane.name,
-              rows: newChatSetupRows,
-            };
-          }
+          return {
+            ...prev,
+            selection: { kind: "provider", provider },
+            focusedIndex: 0,
+            footerFocus: prev.footerFocus ?? "apply",
+          };
         }
         return { kind: "empty" };
       });
-      if (restoreSetup) {
+      if (rightPane.kind === "model-picker" && rightPane.surface === "new-chat") {
         setRightOpen(true);
         setPaneFocus("details");
       } else {
@@ -7706,7 +8092,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
       addNotice(`Model set to ${target.displayName}.`, "success");
     },
-	    [addNotice, lanes, models, modelCatalog, newChatSetupRows, rightPane, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setPaneFocus],
+	    [addNotice, models, modelCatalog, rightPane, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setPaneFocus],
 	  );
 
   const selectProvider = useCallback((provider: AdeCodeProvider) => {
@@ -7806,8 +8192,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       applyModelState((prev) => ({ ...prev, droidPermissionMode: next, permissionMode: droidPermissionToLegacy(next) }));
       return;
     }
-    const index = Math.max(0, CURSOR_AVAILABLE_MODE_IDS.findIndex((entry) => entry === modelState.cursorModeId));
-    const next = CURSOR_AVAILABLE_MODE_IDS[(index + delta + CURSOR_AVAILABLE_MODE_IDS.length) % CURSOR_AVAILABLE_MODE_IDS.length] ?? "agent";
+    const modeIds = cursorModeIdsForState(modelState);
+    const index = Math.max(0, modeIds.findIndex((entry) => entry === modelState.cursorModeId));
+    const next = modeIds[(index + delta + modeIds.length) % modeIds.length] ?? "agent";
     applyModelState((prev) => ({
       ...prev,
       cursorModeId: next,
@@ -8207,11 +8594,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return true;
     }
     if (action === "tabs:next" || action === "footer:next") {
-      cyclePaneFocus();
+      cyclePaneFocus(1);
       return true;
     }
     if (action === "tabs:previous" || action === "footer:previous") {
-      cyclePaneFocus();
+      cyclePaneFocus(-1);
       return true;
     }
     if (action === "footer:up" || action === "footer:down") {
@@ -8326,11 +8713,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
       return true;
     }
+    if (action === "app:openCommandPalette") {
+      openCommandPalette();
+      return true;
+    }
     if (action.startsWith("selection:")) {
       return reportUnavailable();
     }
     return reportUnavailable();
-  }, [addNotice, applyModelState, attachClipboardImage, chatRowBudget, copyChatSelection, cycleFooterControl, cyclePaneFocus, cyclePermission, cycleReasoning, drawerOpen, focusAfterDetails, focusChat, focusDetails, footerControls, launchPromptInBackground, modelState.provider, openHistorySearch, openModelRow, prompt, recallPromptHistory, refreshState, requestAppExit, resolveFocusedDeeplinkRow, rightOpen, selectFooterControl, setChatScrollOffset, submitPrompt, toggleDetailsPane, toggleSubagentsPane]);
+  }, [addNotice, applyModelState, attachClipboardImage, chatRowBudget, copyChatSelection, cycleFooterControl, cyclePaneFocus, cyclePermission, cycleReasoning, drawerOpen, focusAfterDetails, focusChat, focusDetails, footerControls, launchPromptInBackground, modelState.provider, openCommandPalette, openHistorySearch, openModelPicker, prompt, recallPromptHistory, refreshState, requestAppExit, resolveFocusedDeeplinkRow, rightOpen, selectFooterControl, setChatScrollOffset, submitPrompt, toggleDetailsPane, toggleSubagentsPane]);
 
   const chatPointFromMouse = useCallback((
     x: number | null,
@@ -8567,12 +8958,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
 
-      const centerStart = drawerWidth + 1;
-      const centerEnd = columns - rightWidth;
-      const inCenterPane = mouse.x == null || (mouse.x >= centerStart && mouse.x <= centerEnd);
-      const inTranscriptRows = mouse.y == null || mouse.y > 2;
-      if (mouse.kind === "wheel" && inCenterPane && inTranscriptRows) {
-        const delta = mouse.direction === "up" ? 3 : mouse.direction === "down" ? -3 : 0;
+	      const centerStart = drawerWidth + 1;
+	      const centerEnd = columns - rightWidth;
+	      const inCenterPane = mouse.x == null || (mouse.x >= centerStart && mouse.x <= centerEnd);
+	      const inRightPane = mouse.x != null && rightOpen && rightWidth > 0 && mouse.x >= rightStart;
+	      const inTranscriptRows = mouse.y == null || mouse.y > 2;
+	      if (mouse.kind === "wheel" && inDrawerPane) {
+	        const visibleCount = visibleDrawerLaneCount(chatRowBudget, orderedDrawerLanes.length);
+	        const maxOffset = Math.max(0, orderedDrawerLanes.length - visibleCount);
+	        const delta = mouse.direction === "down" ? 3 : mouse.direction === "up" ? -3 : 0;
+	        if (delta !== 0) {
+	          setDrawerScrollOffsetRows((offset) => Math.max(0, Math.min(maxOffset, offset + delta)));
+	        }
+	      } else if (mouse.kind === "wheel" && inRightPane) {
+	        const maxOffset = Math.max(0, rightPaneScrollableRowCount(rightPane) - 26);
+	        const delta = mouse.direction === "down" ? 3 : mouse.direction === "up" ? -3 : 0;
+	        if (delta !== 0) {
+	          setRightPaneScrollOffsetRows((offset) => Math.max(0, Math.min(maxOffset, offset + delta)));
+	        }
+	      } else if (mouse.kind === "wheel" && inCenterPane && inTranscriptRows) {
+	        const delta = mouse.direction === "up" ? 3 : mouse.direction === "down" ? -3 : 0;
         if (delta !== 0) {
           // In a grid, scroll the tile under the cursor rather than only the
           // focused one. ChatView clamps the upper bound per-tile, so a lower
@@ -8618,6 +9023,52 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     const detailsFormActive = pane === "details" && rightOpen && rightPane.kind === "form";
     const footerActive = footerControlRef.current != null;
     const textInputActive = (pane === "chat" && !footerActive) || detailsFormActive;
+
+    if (commandPaletteOpen) {
+      if (key.escape) {
+        setCommandPaletteOpen(false);
+        setCommandPaletteQuery("");
+        setCommandPaletteIndex(0);
+        return;
+      }
+      if (key.upArrow || (key.tab && key.shift)) {
+        setCommandPaletteIndex((index) => (commandPaletteItems.length ? (index - 1 + commandPaletteItems.length) % commandPaletteItems.length : 0));
+        return;
+      }
+      if (key.downArrow || key.tab) {
+        setCommandPaletteIndex((index) => (commandPaletteItems.length ? (index + 1) % commandPaletteItems.length : 0));
+        return;
+      }
+      if (key.return) {
+        void runCommandPaletteItem(commandPaletteItems[commandPaletteIndex] ?? commandPaletteItems[0])
+          .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+        return;
+      }
+      if (isPromptLineBackspace(input, key)) {
+        setCommandPaletteQuery("");
+        setCommandPaletteIndex(0);
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setCommandPaletteQuery((query) => query.slice(0, -1));
+        setCommandPaletteIndex(0);
+        return;
+      }
+      if (!key.ctrl && !key.meta) {
+        const suffix = printableInput(input);
+        if (suffix) {
+          setCommandPaletteQuery((query) => `${query}${suffix}`);
+          setCommandPaletteIndex(0);
+        }
+        return;
+      }
+      return;
+    }
+
+    if (isCtrlInput(input, key, "k")) {
+      openCommandPalette();
+      return;
+    }
 
     if (pane === "addMode" || addModeRef.current) {
       if (key.escape) {
@@ -8877,7 +9328,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       setDraftChatMode(false);
       setSelectedDrawerChatAction(null);
       clearChatPromptDraft();
-      setRightPane((prev) => prev.kind === "new-chat-setup" ? { kind: "empty" } : prev);
+      setRightPane((prev) => prev.kind === "model-picker" && prev.surface === "new-chat" ? { kind: "empty" } : prev);
       setRightOpen(false);
       lastUserOpenedPaneRef.current = null;
       userDismissedRightPaneRef.current = true;
@@ -8941,6 +9392,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       if (runKeybindingAction("app:copyAdeDeeplink")) return;
     }
 
+    if (!textInputActive && !footerActive && !key.ctrl && !key.meta && (input === "[" || input === "]")) {
+      cycleActiveLane(input === "]" ? 1 : -1);
+      return;
+    }
+
     if (footerActive) {
       if (key.leftArrow || key.rightArrow) {
         cycleFooterControl(key.rightArrow ? 1 : -1);
@@ -8985,7 +9441,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
 
     if (pane === "chat" && textInputActive && isCtrlInput(input, key, "r")) {
-      openHistorySearch();
+      recallPromptHistory("previous");
       return;
     }
 
@@ -9058,19 +9514,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
       if (escapeAction.kind === "return-new-chat") {
-        const laneId = activeLaneIdRef.current;
-        const lane = laneId ? lanes.find((entry) => entry.id === laneId) : null;
-        if (lane) {
-          setRightPane({
-            kind: "new-chat-setup",
-            laneId: lane.id,
-            laneLabel: lane.name,
-            rows: newChatSetupRows,
-          });
-          setRightOpen(true);
-          setPaneFocus("details");
-          return;
-        }
+        if (confirmOrDiscardChatDraft()) return;
       }
       setRightPane({ kind: "empty" });
       setRightOpen(false);
@@ -9093,7 +9537,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
       if (pane === "details" && rightOpen) {
-        if (rightPane.kind === "new-chat-setup" && confirmOrDiscardChatDraft()) {
+        if (rightPane.kind === "model-picker" && rightPane.surface === "new-chat" && confirmOrDiscardChatDraft()) {
           return;
         }
         if (rightPane.kind === "form") {
@@ -9166,10 +9610,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
 
-    if (pendingApproval?.mode === "approval" && !pendingApproval.highStakes && (input === "a" || input === "d")) {
-      void resolvePendingApproval(pendingApproval, input === "a" ? "accept" : "decline")
+    if (pendingApproval?.mode === "approval" && !pendingApproval.highStakes && ["a", "d", "y", "n"].includes(input)) {
+      void resolvePendingApproval(pendingApproval, input === "a" || input === "y" ? "accept" : "decline")
         .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
       return;
+    }
+    if (pendingApproval?.mode === "question" && /^[1-6]$/.test(input)) {
+      const question = pendingApproval.request?.questions[0] ?? null;
+      const options = question?.options?.length ? question.options : pendingApproval.request?.options ?? [];
+      const option = options[Number(input) - 1] ?? null;
+      if (option) {
+        void answerPendingInput(pendingApproval, option.value)
+          .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+        return;
+      }
     }
 
     if (pane === "details" && rightOpen && rightPane.kind === "form" && rightPane.command === "lane-delete") {
@@ -9262,40 +9716,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
 
-    if (
-      pane === "details"
-      && rightOpen
-      && (rightPane.kind === "new-chat-setup" || rightPane.kind === "model-setup")
-      && (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow || key.return)
-    ) {
-      const rows = rightPane.rows;
-      const totalRows = rows.length;
-      if (key.upArrow || key.downArrow) {
-        const delta = key.upArrow ? -1 : 1;
-        setRightSelectionIndex((index) => totalRows ? (index + delta + totalRows) % totalRows : 0);
-        return;
-      }
-      if (key.return) {
-        // Enter on the model row opens the rich picker (favorites/recents/providers).
-        // Other rows still fall through to "apply" for parity with the prior flow.
-        const focusedRow = rows[rightSelectionIndex];
-        if (focusedRow?.kind === "model" && !focusedRow.disabled) {
-          openModelPicker({ surface: modelPickerSurfaceForSetupPane(rightPane.kind) });
-          return;
-        }
-        const applyRow = rows.find((entry) => entry.kind === "apply");
-        if (applyRow) handleSetupRow(applyRow, 1);
-        return;
-      }
-      if (rightSelectionIndex >= rows.length) {
-        return;
-      }
-      const row = rows[rightSelectionIndex] ?? rows[0];
-      if (!row) return;
-      handleSetupRow(row, key.leftArrow ? -1 : 1);
-      return;
-    }
-
     if (pane === "details" && rightOpen && rightPane.kind === "model-picker") {
       const picker = rightPane;
       // Re-derive layout each keystroke so we never select stale indexes.
@@ -9303,14 +9723,39 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 	        models,
 	        catalog: modelCatalogRef.current ?? modelCatalog,
 	        favorites: modelPickerFavorites,
-	        recents: modelPickerRecents,
-	        activeModelId: modelState.modelId,
-	        query: picker.query,
+		        recents: modelPickerRecents,
+		        activeModelId: modelState.modelId,
+            activeReasoningEffort: modelState.reasoningEffort,
+            aiStatus,
+            showAll: picker.showAll,
+            settingsRows: picker.settingsRows ?? [],
+            footerFocus: picker.footerFocus ?? null,
+            laneLabel: picker.laneLabel ?? null,
+		        query: picker.query,
 	        selection: picker.selection,
 	        providerTabKey: picker.providerTabKey ?? null,
 	        focusedIndex: picker.focusedIndex,
 	        searchMode: picker.searchMode,
       });
+      const pickerSettingsRows = (picker.settingsRows ?? []).filter((row) => row.kind !== "provider" && row.kind !== "model");
+      if (picker.footerFocus && pickerSettingsRows.length) {
+        const currentIndex = Math.max(0, pickerSettingsRows.findIndex((row) => row.kind === picker.footerFocus));
+        if (key.tab && !key.shift) {
+          setRightPane({ ...picker, footerFocus: null });
+          return;
+        }
+        if (key.upArrow || key.downArrow || key.tab) {
+          const delta = key.upArrow || key.shift ? -1 : 1;
+          const nextRow = pickerSettingsRows[(currentIndex + delta + pickerSettingsRows.length) % pickerSettingsRows.length];
+          setRightPane({ ...picker, footerFocus: nextRow?.kind ?? picker.footerFocus });
+          return;
+        }
+        if (key.leftArrow || key.rightArrow || key.return) {
+          const row = pickerSettingsRows[currentIndex] ?? pickerSettingsRows[0];
+          if (row) handleSetupRow(row, key.leftArrow ? -1 : 1);
+          return;
+        }
+      }
 
       if (key.upArrow) {
         setRightPane((prev) => {
@@ -9321,6 +9766,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             favorites: modelPickerFavorites,
             recents: modelPickerRecents,
             activeModelId: modelState.modelId,
+            activeReasoningEffort: modelState.reasoningEffort,
+            aiStatus,
+            showAll: prev.showAll,
+            settingsRows: prev.settingsRows ?? [],
+            footerFocus: prev.footerFocus ?? null,
+            laneLabel: prev.laneLabel ?? null,
             query: prev.query,
             selection: prev.selection,
             providerTabKey: prev.providerTabKey ?? null,
@@ -9341,6 +9792,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             favorites: modelPickerFavorites,
             recents: modelPickerRecents,
             activeModelId: modelState.modelId,
+            activeReasoningEffort: modelState.reasoningEffort,
+            aiStatus,
+            showAll: prev.showAll,
+            settingsRows: prev.settingsRows ?? [],
+            footerFocus: prev.footerFocus ?? null,
+            laneLabel: prev.laneLabel ?? null,
             query: prev.query,
             selection: prev.selection,
             providerTabKey: prev.providerTabKey ?? null,
@@ -9354,6 +9811,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
       if (key.tab || (key.shift && key.tab)) {
+        if (key.shift && pickerSettingsRows.length) {
+          setRightPane({ ...picker, footerFocus: pickerSettingsRows[0]?.kind ?? null });
+          return;
+        }
         const total = layout.railEntries.length;
         if (total === 0) return;
         const delta = key.shift ? -1 : 1;
@@ -9389,6 +9850,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 	        if (target?.isAvailable) commitModelPickerSelection(target.modelId);
 	        return;
 	      }
+      if (input === "s" && !picker.searchMode && !key.ctrl && !key.meta) {
+        setRightPane({ ...picker, showAll: !picker.showAll, focusedIndex: 0 });
+        return;
+      }
 	      if ((input === "[" || input === "]") && layout.providerTabs.length > 1) {
 	        const delta = input === "[" ? -1 : 1;
 	        const nextIndex = (layout.providerTabIndex + delta + layout.providerTabs.length) % layout.providerTabs.length;
@@ -9483,25 +9948,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         }
         if (laneDetails.pr) {
           const url = laneDetails.pr.url;
-          const bridge = (globalThis as { window?: { ade?: { app?: { openExternal?: (url: string) => unknown } } } }).window;
-          const opener = bridge?.ade?.app?.openExternal;
-          if (typeof opener === "function") {
-            try {
-              opener(url);
-              addNotice("Opening PR in browser…", "info");
-              return;
-            } catch {
-              // fall through to platform open
-            }
-          }
-          if (process.platform === "darwin" && url) {
-            spawn("open", [url], { stdio: "ignore", detached: true }).unref();
-            addNotice("Opening PR in browser…", "info");
-            return;
-          }
-          if (process.platform === "linux" && url) {
-            spawn("xdg-open", [url], { stdio: "ignore", detached: true }).unref();
-            addNotice("Opening PR in browser…", "info");
+          if (url && openExternalUrl(url, addNotice)) {
             return;
           }
           setPrompt("/pr open");
@@ -9529,13 +9976,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       if (rightPane.action.kind === "switch-lane") {
         const lane = lanes.find((entry) => entry.id === selectedId);
         if (!lane) return;
-        selectActiveLaneId(lane.id);
-        setDrawerLaneId(lane.id);
-        setSelectedDrawerLaneId(lane.id);
-        const session = newestSession(displaySessions.filter((entry) => entry.laneId === lane.id));
-        selectActiveSessionId(session?.sessionId ?? null);
-        setSelectedDrawerChatId(session?.sessionId ?? null);
-        addNotice(`Switched to lane ${lane.name}.`, "success");
+        activateLaneWithLastChat(lane, { notify: true });
         return;
       }
       const session = displaySessions.find((entry) => entry.sessionId === selectedId);
@@ -9631,6 +10072,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         if (hotkey === "r") openLaneRenameForm(selectedLane.id);
         else if (hotkey === "a") void archiveLane(selectedLane.id);
         else openLaneDeleteForm(selectedLane.id);
+        return;
+      }
+    }
+    if (
+      pane === "drawer"
+      && drawerOpen
+      && drawerSection === "chats"
+      && selectedDrawerChatAction !== "new-chat"
+      && !key.ctrl
+      && !key.meta
+      && (input === "r" || input === "R" || input === "a" || input === "A" || input === "x" || input === "X")
+    ) {
+      const selectedChat = drawerVisibleLaneSessions[selectedChatIndex] ?? null;
+      if (selectedChat && sessions.some((session) => session.sessionId === selectedChat.sessionId)) {
+        const hotkey = input.toLowerCase();
+        if (hotkey === "r") openChatRenameForm(selectedChat.sessionId);
+        else if (hotkey === "a") void archiveChat(selectedChat.sessionId);
+        else openChatDeleteForm(selectedChat.sessionId);
         return;
       }
     }
@@ -9911,6 +10370,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const detailsFooterSelected = footerControl === "details";
   const agentsFooterSelected = footerControl === "agents";
   const rightPaneShowsAgents = rightPaneVisible && rightPane.kind === "chat-info";
+  const showCommandPalette = commandPaletteOpen;
   const showMentionPalette = activeMentionRange != null && mentionSuggestions.length > 0;
   const showSlashPalette = prompt.startsWith("/") && slashRows.length > 0;
   const paletteBottomRows = 5
@@ -9918,11 +10378,23 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     + modelStatusOverlayRows
     + (attachedImageChips.length ? 1 : 0)
     + (error ? 1 : 0);
-  const paletteOverlayRows = showMentionPalette ? MENTION_PALETTE_ROWS : SLASH_PALETTE_ROWS;
+  const paletteOverlayRows = showCommandPalette ? COMMAND_PALETTE_ROWS : showMentionPalette ? MENTION_PALETTE_ROWS : SLASH_PALETTE_ROWS;
   const paletteOverlayTop = Math.max(1, rows - paletteBottomRows - paletteOverlayRows);
   const drawerPaneWidth = resolveDrawerPaneWidth(columns, drawerOpen);
   const paletteOverlayLeft = drawerPaneWidth;
   const paletteOverlayWidth = Math.max(MIN_CENTER_PANE_WIDTH, centerWidth);
+  const commandPaletteVisibleRows = Math.max(1, COMMAND_PALETTE_ROWS - 3);
+  const commandPaletteWindowStart = (() => {
+    const total = commandPaletteItems.length;
+    if (total <= commandPaletteVisibleRows) return 0;
+    const safeIndex = Math.max(0, Math.min(commandPaletteIndex, total - 1));
+    const half = Math.floor(commandPaletteVisibleRows / 2);
+    let start = Math.max(0, safeIndex - half);
+    if (start + commandPaletteVisibleRows > total) {
+      start = Math.max(0, total - commandPaletteVisibleRows);
+    }
+    return start;
+  })();
   // Drawer selected-chat index: in add-mode the cursor tracks the candidate
   // chat to add; otherwise we only highlight when the drawer is on the chats
   // section, leaving lane rows un-marked.
@@ -10281,7 +10753,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
     }
 
-    if (showMentionPalette) {
+    if (showCommandPalette) {
+      commandPaletteItems
+        .slice(commandPaletteWindowStart, commandPaletteWindowStart + commandPaletteVisibleRows)
+        .forEach((item, visibleIndex) => {
+          const index = commandPaletteWindowStart + visibleIndex;
+          addTarget({
+            id: `command-palette:${index}`,
+            rect: { x: paletteOverlayLeft + 1, y: paletteOverlayTop + visibleIndex + 1, w: paletteOverlayWidth, h: 1 },
+            onClick: () => {
+              setCommandPaletteIndex(index);
+              void runCommandPaletteItem(item)
+                .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+            },
+            onHover: (hovered) => { if (hovered) setCommandPaletteIndex(index); },
+            zIndex: 22,
+          });
+        });
+    } else if (showMentionPalette) {
       mentionSuggestions.forEach((suggestion, index) => {
         addTarget({
           id: `mention:${index}`,
@@ -10329,9 +10818,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       });
     } else if (pendingApproval?.mode === "question") {
       const question = pendingApproval.request?.questions[0] ?? null;
+      const options = question?.options?.length ? question.options : pendingApproval.request?.options ?? [];
       const centerStart = drawerPaneWidth + 1;
       const optionStartY = Math.max(1, 4 + goalBannerRows + addModeRows + chatRowBudget - 2);
-      question?.options?.slice(0, 6).forEach((option, index) => {
+      options.slice(0, 6).forEach((option, index) => {
         addTarget({
           id: `approval:question-option:${option.value}:${index}`,
           rect: { x: centerStart + 1, y: optionStartY + index, w: Math.max(12, centerWidth - 2), h: 1 },
@@ -10344,6 +10834,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       });
     }
 
+    const chatTopRow = 3 + goalBannerRows + addModeRows;
+    const chatStartColumn = drawerPaneWidth + 3;
+    visibleChatSelectionRows.forEach((row, index) => {
+      if (row.sourceRow == null) return;
+      const match = firstUrlInText(row.text);
+      if (!match) return;
+      const y = chatTopRow + index;
+      if (y < chatTopRow || y > chatTopRow + chatRowBudget) return;
+      addTarget({
+        id: `chat:link:${index}:${match.url}`,
+        rect: { x: chatStartColumn + match.index, y, w: Math.max(1, match.width), h: 1 },
+        onClick: () => {
+          if (!openExternalUrl(match.url, addNotice)) {
+            addNotice(`Couldn't open ${match.url}.`, "error");
+          }
+        },
+        zIndex: 6,
+      });
+    });
+
     if (rightPaneVisible && rightPaneWidth > 0) {
       const rightStartColumn = columns - rightPaneWidth + 1;
       const rightBodyTop = 2 + goalBannerRows + addModeRows;
@@ -10355,6 +10865,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           favorites: modelPickerFavorites,
           recents: modelPickerRecents,
           activeModelId: modelState.modelId,
+          activeReasoningEffort: modelState.reasoningEffort,
+          aiStatus,
+          showAll: picker.showAll,
+          settingsRows: picker.settingsRows ?? [],
+          footerFocus: picker.footerFocus ?? null,
+          laneLabel: picker.laneLabel ?? null,
           query: picker.query,
           selection: picker.selection,
           providerTabKey: picker.providerTabKey ?? null,
@@ -10372,6 +10888,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           id: "right:model-picker:search",
           rect: { x: rightStartColumn, y: rightBodyTop + 1, w: rightPaneWidth, h: 1 },
           onClick: () => setRightPane({ ...picker, searchMode: true, query: picker.query, focusedIndex: 0 }),
+          zIndex: 4,
+        });
+        addTarget({
+          id: "right:model-picker:show-all",
+          rect: { x: rightStartColumn, y: Math.min(rows - 2, rightBodyTop + 3), w: rightPaneWidth, h: 1 },
+          onClick: () => setRightPane({ ...picker, showAll: !picker.showAll, focusedIndex: 0 }),
           zIndex: 4,
         });
         layout.railEntries.forEach((entry, index) => {
@@ -10429,6 +10951,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             zIndex: 5,
           });
           modelEntryY += rowHeight;
+        });
+        const settingRows = (picker.settingsRows ?? []).filter((row) => row.kind !== "provider" && row.kind !== "model");
+        const settingsY = Math.min(rows - 3, Math.max(modelEntryY + 1, rightBodyTop + 20));
+        settingRows.forEach((row, index) => {
+          addTarget({
+            id: `right:model-picker:setting:${row.kind}`,
+            rect: { x: rightStartColumn + 1 + index * Math.max(10, Math.floor(rightPaneWidth / Math.max(1, settingRows.length))), y: settingsY, w: Math.max(8, Math.floor(rightPaneWidth / Math.max(1, settingRows.length))), h: 1 },
+            onClick: () => {
+              setRightPane({ ...picker, footerFocus: row.kind });
+              handleSetupRow(row, 1);
+            },
+            zIndex: 5,
+          });
         });
       } else if (rightPane.kind === "chat-info") {
         const subagentContent = subagentPaneContentFromRightPane(rightPane);
@@ -10492,21 +11027,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             zIndex: 3,
           });
         }
-      } else if (rightPane.kind === "new-chat-setup" || rightPane.kind === "model-setup") {
-        const firstRow = rightPane.kind === "new-chat-setup" ? rightBodyTop + 5 : rightBodyTop + 4;
-        rightPane.rows.forEach((row, index) => {
-          const y = firstRow + index + (index === rightSelectionIndex ? 1 : 0);
-          addTarget({
-            id: `right:setup:${row.kind}:${index}`,
-            rect: { x: rightStartColumn, y, w: rightPaneWidth, h: index === rightSelectionIndex && row.detail ? 2 : 1 },
-            onClick: () => {
-              setRightSelectionIndex(index);
-              if (row.kind === "model" && !row.disabled) openModelPicker({ surface: modelPickerSurfaceForSetupPane(rightPane.kind) });
-              else if (row.kind === "apply") handleSetupRow(row, 1);
-            },
-            zIndex: 3,
-          });
-        });
       } else if (rightPane.kind === "form") {
         rightPane.fields.forEach((field, index) => {
           const y = rightPane.command === "lane-delete" ? rightBodyTop + ([7, 11, 14, 17][index] ?? (3 + index)) : rightBodyTop + 3 + index;
@@ -10538,10 +11058,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           });
         });
       } else if (rightPane.kind === "list" && rightPane.action) {
-        rightPane.rows.forEach((_, index) => {
+        rightPane.rows
+          .slice(rightPaneScrollOffsetRows, rightPaneScrollOffsetRows + 26)
+          .forEach((_, visibleIndex) => {
+          const index = rightPaneScrollOffsetRows + visibleIndex;
           addTarget({
             id: `right:list:${index}`,
-            rect: { x: rightStartColumn, y: rightBodyTop + 2 + index, w: rightPaneWidth, h: 1 },
+            rect: { x: rightStartColumn, y: rightBodyTop + 2 + visibleIndex, w: rightPaneWidth, h: 1 },
             onClick: () => {
               setRightSelectionIndex(index);
               const selectedId = rightPane.action?.ids[index] ?? null;
@@ -10549,13 +11072,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
               if (rightPane.action.kind === "switch-lane") {
                 const lane = lanes.find((entry) => entry.id === selectedId);
                 if (!lane) return;
-                selectActiveLaneId(lane.id);
-                setDrawerLaneId(lane.id);
-                setSelectedDrawerLaneId(lane.id);
-                const session = newestSession(displaySessions.filter((entry) => entry.laneId === lane.id));
-                selectActiveSessionId(session?.sessionId ?? null);
-                setSelectedDrawerChatId(session?.sessionId ?? null);
-                addNotice(`Switched to lane ${lane.name}.`, "success");
+                activateLaneWithLastChat(lane, { notify: true });
                 return;
               }
               const session = displaySessions.find((entry) => entry.sessionId === selectedId);
@@ -10585,11 +11102,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     addNotice,
     addTileToGrid,
     answerPendingInput,
+    activateLaneWithLastChat,
     applyDrawerChatSelection,
     centerWidth,
     chatRowBudget,
     columns,
     commitModelPickerSelection,
+    commandPaletteItems,
+    commandPaletteVisibleRows,
+    commandPaletteWindowStart,
     cycleModel,
     cyclePermission,
     cycleProvider,
@@ -10631,11 +11152,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     promptRows.length,
     removeMultiViewTile,
     rightPane,
+    rightPaneScrollOffsetRows,
     rightPaneVisible,
     rightPaneWidth,
     resolvePendingApproval,
     rows,
     runKeybindingAction,
+    runCommandPaletteItem,
     runRightCommand,
     selectActiveLaneId,
     selectActiveSessionId,
@@ -10647,6 +11170,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     setFormDiscardArmed,
     setPaneFocus,
     showMentionPalette,
+    showCommandPalette,
     showSlashPalette,
     slashRows,
     startAddMode,
@@ -10714,9 +11238,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
               loading={mode === "connecting" || lanes.length === 0}
               prByLaneId={prByLaneId}
               diffByLaneId={diffByLaneId}
-              unavailableLaneIds={unavailableLaneIds}
-              width={drawerPaneWidth}
-            />
+	              unavailableLaneIds={unavailableLaneIds}
+	              width={drawerPaneWidth}
+	              scrollOffsetRows={drawerScrollOffsetRows}
+	            />
           ) : null}
           <Box width={centerWidth} flexDirection="column">
             {pendingApproval?.highStakes ? (
@@ -10787,19 +11312,32 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
               activeFormField={formFieldIndex}
               selectedIndex={rightSelectionIndex}
               focused={activePane === "details"}
-              activeProvider={activeCommandProvider as AdeCodeProvider}
-              width={rightPaneWidth}
-	              modelPickerInputs={{
+	              activeProvider={activeCommandProvider as AdeCodeProvider}
+	              width={rightPaneWidth}
+              scrollOffsetRows={rightPaneScrollOffsetRows}
+		              modelPickerInputs={{
 	                models,
-	                catalog: modelCatalog,
-	                favorites: modelPickerFavorites,
-                recents: modelPickerRecents,
-                activeModelId: modelState.modelId,
-              }}
+		                catalog: modelCatalog,
+		                favorites: modelPickerFavorites,
+	                recents: modelPickerRecents,
+	                activeModelId: modelState.modelId,
+                activeReasoningEffort: modelState.reasoningEffort,
+                aiStatus,
+	              }}
             />
           ) : null}
         </Box>
-        {showMentionPalette ? (
+        {showCommandPalette ? (
+          <Box position="absolute" marginTop={paletteOverlayTop} marginLeft={paletteOverlayLeft}>
+            <CommandPalette
+              query={commandPaletteQuery}
+              items={commandPaletteItems}
+              selectedIndex={commandPaletteIndex}
+              width={paletteOverlayWidth}
+            />
+          </Box>
+        ) : null}
+        {!showCommandPalette && showMentionPalette ? (
           <Box position="absolute" marginTop={paletteOverlayTop} marginLeft={paletteOverlayLeft}>
             <MentionPalette
               suggestions={mentionSuggestions}
@@ -10809,7 +11347,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             />
           </Box>
         ) : null}
-        {!showMentionPalette && showSlashPalette ? (
+        {!showCommandPalette && !showMentionPalette && showSlashPalette ? (
           <Box position="absolute" marginTop={paletteOverlayTop} marginLeft={paletteOverlayLeft}>
             <SlashPalette
               query={prompt}
@@ -10887,6 +11425,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           modelDisplay={modelState.displayName}
           reasoningEffort={modelState.reasoningEffort}
           permissionLabel={permissionSummary(modelState)}
+          permissionDetail={modelState.provider === "codex" ? codexApprovalSandboxLabel(modelState) : null}
           contextPercent={contextPercent}
           tokenSummary={tokenSummary}
           approvalActive={pendingApproval?.mode === "approval" && !pendingApproval.highStakes}

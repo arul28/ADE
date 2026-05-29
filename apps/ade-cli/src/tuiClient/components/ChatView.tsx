@@ -163,6 +163,7 @@ function wrapInlineRuns(runs: InlineRun[], width: number, firstPrefix: string, r
     if (run.italic) style.italic = true;
     if (run.code) style.code = true;
     if (run.link) style.link = true;
+    if (run.href) style.href = run.href;
     for (const part of parts) {
       if (!part) continue;
       const isSpace = /^\s+$/.test(part);
@@ -1145,9 +1146,12 @@ const InlineSpans = React.memo(function InlineSpans({ runs }: { runs: InlineRun[
           );
         }
         if (run.link) {
+          const content = run.href
+            ? `\u001B]8;;${run.href}\u0007${run.text}\u001B]8;;\u0007`
+            : run.text;
           return (
             <Text key={key} color={run.color ?? LINK_COLOR} underline>
-              {run.text}
+              {content}
             </Text>
           );
         }

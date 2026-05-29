@@ -12,7 +12,10 @@ import { theme } from "../theme";
 import { buildSubagentPaneRows, type SubagentPaneRow } from "../subagentPane";
 import { ModelPickerPane } from "./ModelPicker/ModelPickerPane";
 import { buildModelPickerLayout } from "./ModelPicker/modelPickerLayout";
+import { TokenBar } from "./FooterControls";
 import type { AgentChatModelCatalog, AgentChatModelInfo } from "../../../../desktop/src/shared/types/chat";
+import type { AiSettingsStatus } from "../../../../desktop/src/shared/types/config";
+import { useHoveredHitId } from "../hitTestRegistry";
 
 // ---------------------------------------------------------------------------
 // Right-pane width / focus chrome
@@ -287,6 +290,13 @@ function endTruncate(value: string, max: number): string {
   return `${value.slice(0, Math.max(0, max - 1))}…`;
 }
 
+function compactNumber(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  return String(Math.round(value));
+}
+
 function compactPath(value: string, max: number): string {
   if (value.length <= max) return value;
   const parts = value.split("/").filter(Boolean);
@@ -356,6 +366,7 @@ function LaneDetailsPane({
   content: Extract<RightPaneContent, { kind: "lane-details" }>;
   width: number;
 }) {
+  const hoveredId = useHoveredHitId();
   const lane = content.lane;
   const worktreeMissing = content.worktreeAvailable === false;
   const git = content.git;
@@ -438,7 +449,7 @@ function LaneDetailsPane({
                 detail={action.detail}
                 glyph={action.glyph}
                 glyphColorKind={action.glyphColorKind}
-                selected={idx === content.selectedActionIndex}
+                selected={idx === content.selectedActionIndex || hoveredId === `right:lane-action:${idx}`}
                 width={contentWidth}
               />
             ))}
@@ -766,7 +777,7 @@ function ChatInfoPane({
 }
 
 // ---------------------------------------------------------------------------
-// Other content modes (status, list, details, diff, form, new-chat-setup,
+// Other content modes (status, list, details, diff, form,
 // help, empty) — kept compact, refreshed to use theme tokens.
 // ---------------------------------------------------------------------------
 
@@ -787,14 +798,14 @@ function HelpPane() {
   );
 }
 
-function detailsBodyLines(body: string): string[] {
+function detailsBodyLines(body: string, scrollOffsetRows = 0): string[] {
   const lines = body.split(/\r?\n/);
-  if (lines.length <= DETAILS_BODY_MAX_LINES) return lines;
-  const remaining = lines.length - DETAILS_BODY_MAX_LINES;
-  return [
-    ...lines.slice(0, DETAILS_BODY_MAX_LINES),
-    `… ${remaining} more line${remaining === 1 ? "" : "s"}`,
-  ];
+  const start = Math.max(0, Math.min(Math.floor(scrollOffsetRows), Math.max(0, lines.length - DETAILS_BODY_MAX_LINES)));
+  const window = lines.slice(start, start + DETAILS_BODY_MAX_LINES);
+  if (start > 0) window.unshift(`↑ ${start} earlier`);
+  const remaining = Math.max(0, lines.length - (start + DETAILS_BODY_MAX_LINES));
+  if (remaining > 0) window.push(`↓ ${remaining} more line${remaining === 1 ? "" : "s"}`);
+  return window;
 }
 
 function isDetailsSectionLine(line: string): boolean {
@@ -814,9 +825,9 @@ function detailsKeyValue(line: string): { key: string; value: string } | null {
   return { key, value };
 }
 
-function DetailsPane({ title, body, width }: { title: string; body: string; width: number }) {
+function DetailsPane({ title, body, width, scrollOffsetRows = 0 }: { title: string; body: string; width: number; scrollOffsetRows?: number }) {
   const bodyWidth = Math.max(12, width - 4);
-  const lines = detailsBodyLines(body);
+  const lines = detailsBodyLines(body, scrollOffsetRows);
   return (
     <Box flexDirection="column">
       {lines.map((line, index) => {
@@ -875,6 +886,16 @@ function DetailsPane({ title, body, width }: { title: string; body: string; widt
   );
 }
 
+export function rightPaneScrollableRowCount(content: RightPaneContent): number {
+  if (content.kind === "details") return content.body.split(/\r?\n/).length;
+  if (content.kind === "context-usage") return (content.usage?.categories.length ?? 0) + 4;
+  if (content.kind === "list") return content.rows.length;
+  if (content.kind === "diff") {
+    return content.files.reduce((total, file) => total + 1 + (file.body ? Math.min(8, file.body.split(/\r?\n/).length) : 0), 0);
+  }
+  return 0;
+}
+
 type FormPaneContent = Extract<RightPaneContent, { kind: "form" }>;
 type LaneDeleteFormContent = FormPaneContent & { command: "lane-delete" };
 
@@ -889,6 +910,7 @@ function LaneDeleteFormPane({
   activeFormField: number;
   width: number;
 }) {
+  const hoveredId = useHoveredHitId();
   const inner = Math.max(12, width - 4);
   const meta = content.laneDelete;
   const scope = formValues.scope === "local_branch" || formValues.scope === "remote_branch"
@@ -903,7 +925,7 @@ function LaneDeleteFormPane({
   if (scope === "local_branch") scopeHint = "also delete the local branch";
   else if (scope === "remote_branch") scopeHint = `also delete ${remoteName}/${meta?.branchRef ?? "branch"}`;
   const activeName = fields[activeFormField]?.name ?? fields[0]?.name ?? "scope";
-  const active = (name: string) => activeName === name;
+  const active = (name: string) => activeName === name || hoveredId === `right:form:${name}`;
   const scopeOption = (value: string, label: string) => (
     <Text color={scope === value ? theme.color.error : theme.color.t3} bold={scope === value}>
       {scope === value ? `[${label}]` : ` ${label} `}
@@ -982,6 +1004,49 @@ function LaneDeleteFormPane({
   );
 }
 
+function ContextUsagePane({
+  content,
+  width,
+}: {
+  content: Extract<RightPaneContent, { kind: "context-usage" }>;
+  width: number;
+}) {
+  const inner = Math.max(12, width - 4);
+  if (content.error) {
+    return (
+      <Box flexDirection="column">
+        <Text color={theme.color.error}>Context unavailable</Text>
+        <Text color={theme.color.t3} wrap="wrap">{endTruncate(content.error, inner * 3)}</Text>
+      </Box>
+    );
+  }
+  if (!content.usage) {
+    return (
+      <Box flexDirection="column">
+        <Text color={theme.color.t3}>Context usage is not available yet.</Text>
+      </Box>
+    );
+  }
+  const usage = content.usage;
+  const percent = Math.max(0, Math.min(100, usage.percentage));
+  return (
+    <Box flexDirection="column">
+      <Text color={theme.color.t2}>{usage.model ? endTruncate(usage.model, inner) : "Model context"}</Text>
+      <Box marginTop={1}>
+        <TokenBar percent={percent} />
+        <Text color={theme.color.t2}>{` ${compactNumber(usage.totalTokens)} / ${compactNumber(usage.maxTokens)} (${percent.toFixed(0)}%)`}</Text>
+      </Box>
+      <Box flexDirection="column" marginTop={1}>
+        {usage.categories.map((category, index) => (
+          <Text key={`${category.name}:${index}`} color={category.isDeferred ? theme.color.t4 : theme.color.t2}>
+            {endTruncate(category.name.padEnd(18), 18)} {compactNumber(category.tokens).padStart(7)} {category.percentage.toFixed(category.percentage > 0 && category.percentage < 10 ? 1 : 0).padStart(5)}%
+          </Text>
+        ))}
+      </Box>
+    </Box>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Pane title resolution
 // ---------------------------------------------------------------------------
@@ -993,10 +1058,6 @@ function paneTitle(content: RightPaneContent): { title: string; hint?: string; b
         title: content.lane.name,
         branch: content.lane.branchRef,
       };
-    case "new-chat-setup":
-      return { title: "NEW CHAT" };
-    case "model-setup":
-      return { title: "MODEL" };
     case "chat-info":
       return { title: `CHAT INFO · ${theme.provider(content.info.provider).label.toUpperCase()}` };
     case "model-picker":
@@ -1010,6 +1071,8 @@ function paneTitle(content: RightPaneContent): { title: string; hint?: string; b
     case "list":
       return { title: content.title.toUpperCase() };
     case "details":
+      return { title: content.title.toUpperCase() };
+    case "context-usage":
       return { title: content.title.toUpperCase() };
     case "form":
       return { title: content.title.toUpperCase() };
@@ -1030,6 +1093,7 @@ export function RightPane({
   focused = false,
   width = DEFAULT_PANE_WIDTH,
   modelPickerInputs,
+  scrollOffsetRows = 0,
 }: {
   content: RightPaneContent;
   formValues?: Record<string, string>;
@@ -1038,17 +1102,21 @@ export function RightPane({
   focused?: boolean;
   activeProvider?: AdeCodeProvider | null;
   width?: number;
+  scrollOffsetRows?: number;
   /** Data passed in by app.tsx for the model-picker content kind. */
-	  modelPickerInputs?: {
-	    models: AgentChatModelInfo[];
-	    catalog?: AgentChatModelCatalog | null;
-	    favorites: string[];
-    recents: string[];
-    activeModelId: string | null;
-  };
+		  modelPickerInputs?: {
+		    models: AgentChatModelInfo[];
+		    catalog?: AgentChatModelCatalog | null;
+		    favorites: string[];
+	    recents: string[];
+	    activeModelId: string | null;
+	    activeReasoningEffort?: string | null;
+	    aiStatus?: AiSettingsStatus | null;
+	  };
 }) {
   const { title, hint, branch } = paneTitle(content);
   const paneWidth = Math.max(30, width);
+  const hoveredId = useHoveredHitId();
 
   return (
     <Box
@@ -1094,14 +1162,26 @@ export function RightPane({
 
       {content.kind === "list" ? (
         <Box flexDirection="column">
-          {content.rows.length ? content.rows.map((row, index) => (
-            <Text
-              key={`${content.action?.ids[index] ?? row}:${index}`}
-              color={content.action && index === selectedIndex ? theme.color.violet : undefined}
-            >
-              {content.action ? `${index === selectedIndex ? theme.rail : " "} ${row}` : row}
+          {(() => {
+            const visibleRows = content.rows.slice(scrollOffsetRows, scrollOffsetRows + DETAILS_BODY_MAX_LINES);
+            return content.rows.length ? visibleRows.map((row, visibleIndex) => {
+              const index = scrollOffsetRows + visibleIndex;
+              return (
+	            <Text
+	              key={`${content.action?.ids[index] ?? row}:${index}`}
+	              color={content.action && (index === selectedIndex || hoveredId === `right:list:${index}`) ? theme.color.violet : undefined}
+	            >
+	              {content.action ? `${index === selectedIndex ? theme.rail : " "} ${row}` : row}
+	            </Text>
+              );
+            }) : <Text color={theme.color.t4} dimColor>{content.emptyText ?? "No data."}</Text>;
+          })()}
+          {content.rows.length > DETAILS_BODY_MAX_LINES ? (
+            <Text color={theme.color.t4} dimColor>
+              {scrollOffsetRows > 0 ? `↑ ${scrollOffsetRows} earlier · ` : ""}
+              {Math.max(0, content.rows.length - scrollOffsetRows - DETAILS_BODY_MAX_LINES)} more
             </Text>
-          )) : <Text color={theme.color.t4} dimColor>{content.emptyText ?? "No data."}</Text>}
+          ) : null}
           {content.action && content.rows.length ? (
             <Text color={theme.color.t4} dimColor>arrows move · enter opens</Text>
           ) : null}
@@ -1109,26 +1189,31 @@ export function RightPane({
       ) : null}
 
       {content.kind === "details" ? (
-        <DetailsPane title={content.title} body={content.body} width={paneWidth} />
+        <DetailsPane title={content.title} body={content.body} width={paneWidth} scrollOffsetRows={scrollOffsetRows} />
+      ) : null}
+
+      {content.kind === "context-usage" ? (
+        <ContextUsagePane content={content} width={paneWidth} />
       ) : null}
 
       {content.kind === "diff" ? (
         <Box flexDirection="column">
-          {content.files.length ? content.files.map((file) => (
-            <Box key={file.path} flexDirection="column" marginBottom={1}>
-              <Text color={theme.color.info}>
-                {file.path}{" "}
-                <Text color={theme.color.t4} dimColor>
-                  +{file.additions ?? 0} -{file.deletions ?? 0}
-                </Text>
+          {content.files.length ? (() => {
+            const diffLines = content.files.flatMap((file) => [
+              { key: `${file.path}:head`, text: `${file.path} +${file.additions ?? 0} -${file.deletions ?? 0}`, color: theme.color.info, dim: false },
+              ...(file.body ? file.body.split(/\r?\n/).slice(0, 8).map((line, index) => ({
+                key: `${file.path}:${index}`,
+                text: line,
+                color: theme.color.t3,
+                dim: true,
+              })) : []),
+            ]);
+            return diffLines.slice(scrollOffsetRows, scrollOffsetRows + DETAILS_BODY_MAX_LINES).map((line) => (
+              <Text key={line.key} color={line.color} dimColor={line.dim} wrap="truncate-end">
+                {endTruncate(line.text, Math.max(10, paneWidth - 4))}
               </Text>
-              {file.body ? (
-                <Text color={theme.color.t3} dimColor>
-                  {file.body.split(/\r?\n/).slice(0, 8).join("\n")}
-                </Text>
-              ) : null}
-            </Box>
-          )) : <Text color={theme.color.t4} dimColor>No changes.</Text>}
+            ));
+          })() : <Text color={theme.color.t4} dimColor>No changes.</Text>}
         </Box>
       ) : null}
 
@@ -1147,8 +1232,14 @@ export function RightPane({
 	            catalog: modelPickerInputs.catalog,
 	            favorites: modelPickerInputs.favorites,
 	            recents: modelPickerInputs.recents,
-	            activeModelId: modelPickerInputs.activeModelId,
-	            query: content.query,
+		            activeModelId: modelPickerInputs.activeModelId,
+		            activeReasoningEffort: modelPickerInputs.activeReasoningEffort,
+		            aiStatus: modelPickerInputs.aiStatus,
+		            showAll: content.showAll,
+		            settingsRows: content.settingsRows,
+		            footerFocus: content.footerFocus ?? null,
+		            laneLabel: content.laneLabel ?? null,
+		            query: content.query,
 	            selection: content.selection,
 	            providerTabKey: content.providerTabKey ?? null,
 	            focusedIndex: content.focusedIndex,
@@ -1156,37 +1247,6 @@ export function RightPane({
           })}
           width={paneWidth}
         />
-      ) : null}
-
-      {content.kind === "new-chat-setup" || content.kind === "model-setup" ? (
-        <Box flexDirection="column">
-          {content.kind === "new-chat-setup" ? (
-            <Text color={theme.color.t4} dimColor>Lane: {content.laneLabel}</Text>
-          ) : null}
-          <Box flexDirection="column" marginTop={1}>
-            {content.rows.map((row, index) => {
-              const selected = index === selectedIndex;
-              return (
-                <Box key={`${row.kind}:${row.label}`} flexDirection="column">
-                  <Text
-                    color={selected ? theme.color.violet : row.disabled ? theme.color.t4 : theme.color.t2}
-                    bold={selected}
-                  >
-                    {selected ? theme.rail : " "} {row.label}: {row.value}
-                  </Text>
-                  {selected && row.detail ? (
-                    <Text color={theme.color.t4} dimColor>    {row.detail}</Text>
-                  ) : null}
-                </Box>
-              );
-            })}
-          </Box>
-          <Text color={theme.color.t4} dimColor>
-            {content.kind === "new-chat-setup"
-              ? "↑↓ rows · ←→ change · ↵ prompt · cmd+↵ background"
-              : "↑↓ rows · ←→ change · ↵ apply · esc close"}
-          </Text>
-        </Box>
       ) : null}
 
       {content.kind === "form" && content.command === "lane-delete" ? (
@@ -1207,17 +1267,17 @@ export function RightPane({
               </Text>
             </Box>
           ) : null}
-          {content.fields.map((field, index) => {
+	          {content.fields.map((field, index) => {
             const value = formValues[field.name]?.trim();
             const displayValue = endTruncate(
               (value || field.placeholder || "").replace(/\s+/g, " "),
               Math.max(8, paneWidth - field.label.length - 8),
             );
-            return (
-              <Text
-                key={field.name}
-                color={index === activeFormField ? theme.color.violet : undefined}
-              >
+	            return (
+	              <Text
+	                key={field.name}
+	                color={index === activeFormField || hoveredId === `right:form:${field.name}` ? theme.color.violet : undefined}
+	              >
                 {index === activeFormField ? theme.rail : " "} {field.label}
                 {field.required ? " *" : ""}: {displayValue}
               </Text>
