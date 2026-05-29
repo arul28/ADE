@@ -1,5 +1,5 @@
 /* @vitest-environment node */
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { promises as fsp } from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -236,6 +236,175 @@ describe("orchestrationService", () => {
       title: "Kept run",
     });
     await restarted.dispose();
+  });
+
+  it("relocates a cached runtime and writes subsequent changes to the moved bundle", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const movedWorktree = path.join(lane, "vm-mirror-worktree");
+    const { runId, manifest } = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+      title: "Placement move",
+    });
+    const movedBundlePath = path.join(movedWorktree, ".ade", "orchestration", runId);
+    await fsp.mkdir(path.dirname(movedBundlePath), { recursive: true });
+    await fsp.cp(manifest.bundlePath, movedBundlePath, { recursive: true });
+
+    expect(svc.getBundlePathForRun(runId)).toBe(manifest.bundlePath);
+    await svc.subscribe(runId, manifest.bundlePath);
+    await svc.relocateRunBundle(runId, movedBundlePath);
+    expect(svc.getBundlePathForRun(runId)).toBe(movedBundlePath);
+
+    const loaded = await svc.bundleRead(runId, movedBundlePath);
+    const patched = await svc.manifestPatch(
+      {
+        runId,
+        ifMatchEtag: loaded.manifest.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [{ op: "replace", path: "/title", value: "Moved write" }],
+      },
+      movedBundlePath,
+    );
+    expect(patched.ok).toBe(true);
+    if (!patched.ok) return;
+    expect(patched.manifest.bundlePath).toBe(movedBundlePath);
+
+    const movedManifest = JSON.parse(
+      await fsp.readFile(path.join(movedBundlePath, "manifest.json"), "utf-8"),
+    ) as { title: string; bundlePath: string };
+    const originalManifest = JSON.parse(
+      await fsp.readFile(path.join(manifest.bundlePath, "manifest.json"), "utf-8"),
+    ) as { title: string };
+    expect(movedManifest.title).toBe("Moved write");
+    expect(movedManifest.bundlePath).toBe(movedBundlePath);
+    expect(originalManifest.title).toBe("Placement move");
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const externallyUpdated = {
+      ...movedManifest,
+      title: "External moved update",
+      serverGeneration: patched.manifest.serverGeneration + 1,
+      etag: `g${patched.manifest.serverGeneration + 1}-external`,
+    };
+    await fsp.writeFile(
+      path.join(movedBundlePath, "manifest.json"),
+      JSON.stringify(externallyUpdated, null, 2),
+    );
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (svc.getManifestForRun(runId)?.title === "External moved update") break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(svc.getManifestForRun(runId)?.title).toBe("External moved update");
+    await svc.release(runId);
+    await svc.dispose();
+  });
+
+  it("does not create a runtime when relocating an unsubscribed run", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    await svc.relocateRunBundle("R-not-loaded", path.join(lane, "moved", ".ade", "orchestration", "R-not-loaded"));
+    expect(svc.getBundlePathForRun("R-not-loaded")).toBeNull();
+    await svc.dispose();
+  });
+
+  it("relocates a cached runtime even when no subscriber is attached", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const { runId, manifest } = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+      title: "Cached placement move",
+    });
+    const movedBundlePath = path.join(lane, "vm-mirror-cached", ".ade", "orchestration", runId);
+    await fsp.mkdir(path.dirname(movedBundlePath), { recursive: true });
+    await fsp.cp(manifest.bundlePath, movedBundlePath, { recursive: true });
+
+    await svc.relocateRunBundle(runId, movedBundlePath);
+
+    expect(svc.getBundlePathForRun(runId)).toBe(movedBundlePath);
+    await svc.dispose();
+  });
+
+  it("does not move a relocated runtime back when a stale caller passes the old bundle path", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const { runId, manifest } = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+      title: "Stale path move",
+    });
+    const movedBundlePath = path.join(lane, "vm-mirror-stale-caller", ".ade", "orchestration", runId);
+    await fsp.mkdir(path.dirname(movedBundlePath), { recursive: true });
+    await fsp.cp(manifest.bundlePath, movedBundlePath, { recursive: true });
+    await svc.relocateRunBundle(runId, movedBundlePath);
+
+    const loaded = await svc.bundleRead(runId, movedBundlePath);
+    const patched = await svc.manifestPatch(
+      {
+        runId,
+        ifMatchEtag: loaded.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [{ op: "replace", path: "/title", value: "Moved write from stale caller" }],
+      },
+      manifest.bundlePath,
+    );
+
+    expect(patched.ok).toBe(true);
+    expect(svc.getBundlePathForRun(runId)).toBe(movedBundlePath);
+    const movedManifest = JSON.parse(
+      await fsp.readFile(path.join(movedBundlePath, "manifest.json"), "utf-8"),
+    ) as { title: string };
+    const originalManifest = JSON.parse(
+      await fsp.readFile(path.join(manifest.bundlePath, "manifest.json"), "utf-8"),
+    ) as { title: string };
+    expect(movedManifest.title).toBe("Moved write from stale caller");
+    expect(originalManifest.title).toBe("Stale path move");
+    await svc.dispose();
+  });
+
+  it("keeps manifest and generation writes on the same bundle during concurrent relocation", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const { runId, manifest } = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+      title: "Concurrent placement move",
+    });
+    await svc.subscribe(runId, manifest.bundlePath);
+    const manifestPath = path.join(manifest.bundlePath, "manifest.json");
+    const movedBundlePath = path.join(lane, "vm-mirror-worktree-late", ".ade", "orchestration", runId);
+    const originalRename = fsp.rename.bind(fsp);
+    let relocatePromise: Promise<void> | null = null;
+    const renameSpy = vi.spyOn(fsp, "rename").mockImplementation((async (from: any, to: any) => {
+      await originalRename(from, to);
+      if (!relocatePromise && path.resolve(String(to)) === path.resolve(manifestPath)) {
+        relocatePromise = svc.relocateRunBundle(runId, movedBundlePath);
+      }
+    }) as any);
+    try {
+      const patched = await svc.manifestPatch(
+        {
+          runId,
+          ifMatchEtag: manifest.etag,
+          actorRole: "lead",
+          actorSessionId: "S-lead",
+          patches: [{ op: "replace", path: "/title", value: "Concurrent write" }],
+        },
+        manifest.bundlePath,
+      );
+      expect(patched.ok).toBe(true);
+      if (!patched.ok) return;
+      const originalGen = await fsp.readFile(path.join(manifest.bundlePath, ".gen"), "utf-8");
+      expect(Number.parseInt(originalGen.trim(), 10)).toBe(patched.manifest.serverGeneration);
+    } finally {
+      renameSpy.mockRestore();
+    }
+    if (relocatePromise) {
+      await relocatePromise;
+    }
+    await svc.release(runId);
+    await svc.dispose();
   });
 
   it("rejects mismatched etag on manifestPatch", async () => {
@@ -1067,6 +1236,161 @@ describe("orchestration watcher resilience", () => {
     const latest = svc.getManifestForRun(manifest.runId);
     expect(latest?.history.length).toBeGreaterThanOrEqual(5);
     expect(latest?.history.at(-1)?.etag).toBe(etag);
+    await svc.dispose();
+  });
+
+  it("blocks manifest writes after an external manifest runId swap", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const { manifest, etag } = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+      title: "Original run",
+    });
+    const manifestPath = path.join(manifest.bundlePath, "manifest.json");
+    const foreign = {
+      ...JSON.parse(await fsp.readFile(manifestPath, "utf-8")),
+      runId: "R-foreign-checkout",
+      etag: "etag-foreign",
+      title: "Foreign branch manifest",
+    };
+    await fsp.writeFile(manifestPath, JSON.stringify(foreign, null, 2));
+
+    const patch = await svc.manifestPatch(
+      {
+        runId: manifest.runId,
+        ifMatchEtag: etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [{ op: "replace", path: "/title", value: "Stale write attempt" }],
+      },
+      manifest.bundlePath,
+    );
+    expect(patch.ok).toBe(false);
+    if (patch.ok) return;
+    expect(patch.error).toBe("validation_failed");
+    if (patch.error !== "validation_failed") return;
+    expect(patch.message).toContain("suspended");
+
+    const heartbeat = await svc.agentHeartbeat(
+      { runId: manifest.runId, sessionId: "S-lead" },
+      manifest.bundlePath,
+    );
+    expect(heartbeat.ok).toBe(false);
+    if (!heartbeat.ok) {
+      expect(heartbeat.reason).toContain("suspended");
+    }
+
+    const onDisk = JSON.parse(await fsp.readFile(manifestPath, "utf-8"));
+    expect(onDisk.runId).toBe("R-foreign-checkout");
+    expect(onDisk.title).toBe("Foreign branch manifest");
+    await svc.dispose();
+  });
+
+  it("cleans failed temp writes and emits suspension after an in-flight runId swap", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const { manifest, etag } = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+      title: "Original run",
+    });
+    const events: any[] = [];
+    const off = svc.on("event", (payload) => events.push(payload));
+    await svc.subscribe(manifest.runId, manifest.bundlePath);
+    const manifestPath = path.join(manifest.bundlePath, "manifest.json");
+    const originalReadFile = fsp.readFile.bind(fsp);
+    const foreign = {
+      ...JSON.parse(await originalReadFile(manifestPath, "utf-8")),
+      runId: "R-foreign-mid-commit",
+      etag: "etag-foreign-mid-commit",
+      title: "Foreign branch manifest",
+    };
+    let manifestReadCount = 0;
+    let injectedForeignManifest = false;
+    const readSpy = vi.spyOn(fsp, "readFile").mockImplementation((async (file: any, options?: any) => {
+      if (
+        !injectedForeignManifest
+        && path.resolve(String(file)) === path.resolve(manifestPath)
+        && options === "utf-8"
+      ) {
+        manifestReadCount++;
+        if (manifestReadCount === 2) {
+          injectedForeignManifest = true;
+          await fsp.writeFile(manifestPath, JSON.stringify(foreign, null, 2));
+        }
+      }
+      return originalReadFile(file, options);
+    }) as any);
+    try {
+      const patch = await svc.manifestPatch(
+        {
+          runId: manifest.runId,
+          ifMatchEtag: etag,
+          actorRole: "lead",
+          actorSessionId: "S-lead",
+          patches: [{ op: "replace", path: "/title", value: "Stale write attempt" }],
+        },
+        manifest.bundlePath,
+      );
+      expect(patch.ok).toBe(false);
+      if (patch.ok) return;
+      expect(patch.error).toBe("validation_failed");
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    await vi.waitFor(() => {
+      expect(events.some((event) =>
+        event.runId === manifest.runId
+        && event.kind === "lifecycle"
+        && event.status === "suspended",
+      )).toBe(true);
+    });
+    const files = await fsp.readdir(manifest.bundlePath);
+    expect(files.filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
+    off();
+    await svc.dispose();
+  });
+
+  it("returns etag_conflict instead of overwriting a newer on-disk manifest", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const { manifest } = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+      title: "Initial",
+    });
+    const manifestPath = path.join(manifest.bundlePath, "manifest.json");
+    const external = {
+      ...JSON.parse(await fsp.readFile(manifestPath, "utf-8")),
+      title: "external-title",
+      serverGeneration: manifest.serverGeneration + 1,
+      etag: `g${manifest.serverGeneration + 1}-external`,
+    };
+    await fsp.writeFile(manifestPath, JSON.stringify(external, null, 2));
+
+    const patchRes = await svc.manifestPatch(
+      {
+        runId: manifest.runId,
+        ifMatchEtag: manifest.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [{ op: "replace", path: "/title", value: "patched-title" }],
+      },
+      manifest.bundlePath,
+    );
+
+    expect(patchRes.ok).toBe(false);
+    if (patchRes.ok) return;
+    expect(patchRes.error).toBe("etag_conflict");
+
+    const onDisk = JSON.parse(await fsp.readFile(manifestPath, "utf-8")) as {
+      title: string;
+      serverGeneration: number;
+    };
+    expect(onDisk.title).toBe("external-title");
+    expect(onDisk.serverGeneration).toBe(manifest.serverGeneration + 1);
     await svc.dispose();
   });
 

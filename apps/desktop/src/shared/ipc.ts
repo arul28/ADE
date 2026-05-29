@@ -1,6 +1,7 @@
 export const IPC = {
   appPing: "ade.app.ping",
   appGetInfo: "ade.app.getInfo",
+  appGetLatestRelease: "ade.app.getLatestRelease",
   appGetProject: "ade.app.getProject",
   appGetWindowSession: "ade.app.getWindowSession",
   appSetWindowProjectTabs: "ade.app.setWindowProjectTabs",

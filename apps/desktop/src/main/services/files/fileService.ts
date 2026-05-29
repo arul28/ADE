@@ -40,6 +40,8 @@ const MAX_INLINE_IMAGE_PREVIEW_BYTES = 1024 * 1024;
 const MAX_INLINE_BINARY_BYTES = 256 * 1024;
 const MAX_TREE_CHILDREN_PER_DIRECTORY = 1_000;
 const GIT_STATUS_CACHE_TTL_MS = 5_000;
+const GIT_STATUS_BACKGROUND_TIMEOUT_MS = 2_000;
+const GIT_STATUS_FOREGROUND_TIMEOUT_MS = 10_000;
 const VOLATILE_ADE_PREFIXES = [
   ".ade/artifacts/",
   ".ade/cache/",
@@ -334,6 +336,12 @@ type GitStatusSnapshot = {
   changedDirectories: Set<string>;
 };
 
+type GitStatusCacheEntry = {
+  fetchedAt: number;
+  snapshot: GitStatusSnapshot;
+  inFlight: Promise<GitStatusSnapshot> | null;
+};
+
 function buildGitStatusSnapshot(fileStatus: Map<string, FileTreeChangeStatus>): GitStatusSnapshot {
   const changedDirectories = new Set<string>();
   for (const [filePath, status] of fileStatus) {
@@ -373,7 +381,8 @@ export function createFileService({
   const indexService = createFileSearchIndexService();
   const ignoreCache = new Map<string, boolean>();
   const ignoredPrefixCache = new Set<string>();
-  const gitStatusCache = new Map<string, { fetchedAt: number; snapshot: GitStatusSnapshot }>();
+  const emptyGitStatusSnapshot = buildGitStatusSnapshot(new Map());
+  const gitStatusCache = new Map<string, GitStatusCacheEntry>();
 
   const clearIgnoreCacheForRoot = (rootPath: string): void => {
     const prefix = `${rootPath}::`;
@@ -390,7 +399,13 @@ export function createFileService({
   };
 
   const invalidateGitStatusCache = (rootPath: string): void => {
-    gitStatusCache.delete(rootPath);
+    const previous = gitStatusCache.get(rootPath);
+    if (!previous) return;
+    gitStatusCache.set(rootPath, {
+      fetchedAt: 0,
+      snapshot: previous.snapshot,
+      inFlight: null,
+    });
   };
 
   const resolveWorkspace = (workspaceId: string) => laneService.resolveWorkspaceById(workspaceId);
@@ -479,14 +494,8 @@ export function createFileService({
     }));
   };
 
-  const getGitStatusSnapshot = async (rootPath: string): Promise<GitStatusSnapshot> => {
-    const cached = gitStatusCache.get(rootPath);
-    const now = Date.now();
-    if (cached && now - cached.fetchedAt <= GIT_STATUS_CACHE_TTL_MS) {
-      return cached.snapshot;
-    }
-
-    const res = await runGit(["status", "--porcelain=v1"], { cwd: rootPath, timeoutMs: 10_000 });
+  const readGitStatusSnapshot = async (rootPath: string, timeoutMs: number): Promise<GitStatusSnapshot> => {
+    const res = await runGit(["status", "--porcelain=v1"], { cwd: rootPath, timeoutMs });
     const out = new Map<string, FileTreeChangeStatus>();
     if (res.exitCode !== 0) return buildGitStatusSnapshot(out);
     const lines = res.stdout.split("\n").map((line) => line.trimEnd()).filter(Boolean);
@@ -501,9 +510,61 @@ export function createFileService({
       const normalized = normalizeRelative(rel);
       out.set(normalized, parseFileTreeStatus(code));
     }
-    const snapshot = buildGitStatusSnapshot(out);
-    gitStatusCache.set(rootPath, { fetchedAt: now, snapshot });
-    return snapshot;
+    return buildGitStatusSnapshot(out);
+  };
+
+  const refreshGitStatusSnapshot = (
+    rootPath: string,
+    timeoutMs: number,
+    opts: { forceFresh?: boolean } = {},
+  ): Promise<GitStatusSnapshot> => {
+    const cached = gitStatusCache.get(rootPath);
+    if (cached?.inFlight && !opts.forceFresh) return cached.inFlight;
+
+    const startedAt = Date.now();
+    const inFlight = readGitStatusSnapshot(rootPath, timeoutMs)
+      .catch(() => emptyGitStatusSnapshot)
+      .then((snapshot) => {
+        const current = gitStatusCache.get(rootPath);
+        if (!opts.forceFresh && current && current.inFlight !== inFlight) {
+          return current.snapshot;
+        }
+        if (!opts.forceFresh && current && current.fetchedAt > startedAt) {
+          return current.snapshot;
+        }
+        gitStatusCache.set(rootPath, {
+          fetchedAt: Date.now(),
+          snapshot,
+          inFlight: current?.inFlight === inFlight ? null : current?.inFlight ?? null,
+        });
+        return snapshot;
+      });
+
+    gitStatusCache.set(rootPath, {
+      fetchedAt: cached?.fetchedAt ?? 0,
+      snapshot: cached?.snapshot ?? emptyGitStatusSnapshot,
+      inFlight: opts.forceFresh ? cached?.inFlight ?? null : inFlight,
+    });
+
+    return inFlight;
+  };
+
+  const getGitStatusSnapshot = async (
+    rootPath: string,
+    opts: { forceFresh?: boolean } = {},
+  ): Promise<GitStatusSnapshot> => {
+    if (opts.forceFresh) {
+      return await refreshGitStatusSnapshot(rootPath, GIT_STATUS_FOREGROUND_TIMEOUT_MS, { forceFresh: true });
+    }
+
+    const cached = gitStatusCache.get(rootPath);
+    const now = Date.now();
+    if (cached && now - cached.fetchedAt <= GIT_STATUS_CACHE_TTL_MS) {
+      return cached.snapshot;
+    }
+
+    void refreshGitStatusSnapshot(rootPath, GIT_STATUS_BACKGROUND_TIMEOUT_MS);
+    return cached?.snapshot ?? emptyGitStatusSnapshot;
   };
 
   const isIgnoredPath = async (rootPath: string, relPath: string, includeIgnored: boolean): Promise<boolean> => {
@@ -620,7 +681,9 @@ export function createFileService({
       const workspace = resolveWorkspace(args.workspaceId);
       const depth = Number.isFinite(args.depth) ? Math.max(1, Math.min(8, Math.floor(args.depth ?? 1))) : 1;
       const parentPath = normalizeRelative(args.parentPath ?? "");
-      const statusSnapshot = await getGitStatusSnapshot(workspace.rootPath);
+      const statusSnapshot = await getGitStatusSnapshot(workspace.rootPath, {
+        forceFresh: args.forceFreshStatus === true,
+      });
       const result = await listTreeNode({
         rootPath: workspace.rootPath,
         parentPath,

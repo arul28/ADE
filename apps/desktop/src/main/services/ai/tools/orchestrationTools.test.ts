@@ -367,6 +367,40 @@ describe("spawnAgent tool", () => {
     expect(setup.chat.createSession).not.toHaveBeenCalled();
   });
 
+  it("does not treat planning phase done as plan approval", async () => {
+    setup = await setupWithRun("lead");
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    const patched = await setup.svc.manifestPatch(
+      {
+        runId: setup.runId,
+        ifMatchEtag: manifest.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [
+          {
+            op: "replace",
+            path: "/phases/{id:planning}/status",
+            value: "done",
+          },
+        ],
+      },
+      setup.bundlePath,
+    );
+    expect(patched.ok).toBe(false);
+
+    const tools = makeToolSet(setup, "lead", "S-lead");
+    const result: any = await tools.spawnAgent!.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "Implement T-1",
+      stepId: "T-1",
+      initialMessage: VALID_BRIEF,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("plan_not_approved");
+    expect(setup.chat.createSession).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["codex", { codexSandbox: "danger-full-access", codexApprovalPolicy: "never", codexConfigSource: "flags" }],
     ["cursor", { cursorModeId: "full-auto" }],
@@ -499,6 +533,26 @@ describe("requestPlanApproval and model routing tools", () => {
     }));
     const manifest = setup.svc.getManifestForRun(setup.runId)!;
     expect(manifest.modelRouting.byRoleTag?.["worker:web-ui"]).toEqual(selection);
+  });
+
+  it.each([
+    ["Not approved — don't start yet", "decline"],
+    ["No, don't proceed with this plan", "none"],
+    ["Please revise before we proceed", "decline"],
+  ] as const)("does not treat rejection text %j as approval when decision is %s", async (answer, decision) => {
+    setup = await setupWithRun("lead");
+    const onAskUser = vi.fn(async () => ({ answer, decision }));
+    const tools = makeToolSet(setup, "lead", "S-lead", {
+      universal: { permissionMode: "full-auto", onAskUser },
+    });
+    const result: any = await tools.requestPlanApproval!.execute({
+      planSummary: VALID_APPROVAL_PLAN,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("plan_rejected");
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    expect(manifest.currentPhase).toBe("planning");
+    expect(manifest.leadState.planApprovedAt).toBeUndefined();
   });
 });
 

@@ -454,6 +454,10 @@ function composerPermissionLabel(label: string): string {
 }
 
 const COMPOSER_TOOLBAR_PICKER_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-0";
+// The model name is the priority control: it keeps a readable floor and only
+// shrinks after the permission/fast labels collapse and the reasoning picker
+// has given up its width.
+const COMPOSER_MODEL_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-[4.5rem]";
 
 const COMPOSER_PERMISSION_TRIGGER_CLASS = cn(
   "ade-chat-composer-permission-trigger",
@@ -3554,7 +3558,7 @@ export function AgentChatComposer({
                   allowCliOnlyModels={allowCliOnlyModels}
                   disabled={parallelLaunchBusy}
                   compact
-                  triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
+                  triggerClassName={COMPOSER_MODEL_TRIGGER}
                   fastModeActive={fastModeActive}
                   fastModeSupported={fastModeSupported}
                   onFastModeToggle={(next) => onParallelSlotCodexFastModeChange?.(parallelConfiguringIndex, next)}
@@ -3583,7 +3587,7 @@ export function AgentChatComposer({
                   allowCliOnlyModels={allowCliOnlyModels}
                   disabled={modelSelectionLocked}
                   compact
-                  triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
+                  triggerClassName={COMPOSER_MODEL_TRIGGER}
                   fastModeActive={fastModeActive}
                   fastModeSupported={fastModeSupported}
                   onFastModeToggle={onCodexFastModeChange}

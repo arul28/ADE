@@ -1943,7 +1943,7 @@ app.whenReady().then(async () => {
         }
       },
       onDeleteEvent: (event) => emitProjectEvent(projectRoot, IPC.lanesDeleteEvent, event),
-      onPlacementChanged: (event) => {
+      onPlacementChanged: async (event) => {
         // Refresh the VM launch-context cache so subsequent
         // resolveLaneLaunchContext() calls see the new placement.
         // TODO(mac-vm-onboarding): emit a renderer-facing IPC event so the
@@ -1963,7 +1963,7 @@ app.whenReady().then(async () => {
           });
         }
         try {
-          agentChatServiceRef?.handleLanePlacementChanged?.({
+          await agentChatServiceRef?.handleLanePlacementChanged?.({
             laneId: event.laneId,
             from: event.from,
             to: event.to,
@@ -2704,7 +2704,7 @@ app.whenReady().then(async () => {
       adeDir: adePaths.adeDir,
       logger,
       credentialStore: new EncryptedFileCredentialStore({
-        secretsDir: machineAdeLayout.secretsDir,
+        secretsDir: path.join(adePaths.adeDir, "secrets"),
       }),
     });
     const linearClient = createLinearClient({

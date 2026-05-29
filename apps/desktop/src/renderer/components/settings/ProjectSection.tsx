@@ -98,7 +98,7 @@ export function ProjectSection() {
   return (
     <div style={{ maxWidth: 860, display: "flex", flexDirection: "column", gap: 16 }}>
       <div>
-        <div style={sectionLabelStyle}>PROJECT</div>
+        <div style={sectionLabelStyle}>PROJECT HEALTH</div>
         <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 11, lineHeight: 1.6 }}>
           Canonical `.ade` layout, portable config, and runtime health for this repo. Tracked paths stay shareable; ignored paths stay machine-local.
         </div>
@@ -163,7 +163,7 @@ export function ProjectSection() {
           <div style={{ marginTop: 10, color: COLORS.textDim, fontFamily: MONO_FONT, fontSize: 10, display: "grid", gap: 4 }}>
             {snapshot.cleanup.actions.slice(0, 8).map((action, index) => (
               <div key={`${action.relativePath}:${index}`}>
-                {action.kind} {action.relativePath}{action.detail ? ` — ${action.detail}` : ""}
+                {action.kind} {action.relativePath}{action.detail ? ` - ${action.detail}` : ""}
               </div>
             ))}
           </div>

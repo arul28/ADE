@@ -358,6 +358,122 @@ describe("local runtime connection pool", () => {
     expect(pool.getStatus().connectionState).toBe("idle");
   });
 
+  it("clears stale client and project state when an app-owned runtime exits", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-runtime-exit-"));
+    const cliPath = path.join(tempDir, "cli.cjs");
+    const socketPath = path.join(tempDir, "ade.sock");
+    const originalAdeCliJs = process.env.ADE_CLI_JS;
+    fs.writeFileSync(cliPath, "setTimeout(() => process.exit(0), 50);\n", "utf8");
+    process.env.ADE_CLI_JS = cliPath;
+
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never, { disableSync: true });
+    const rootPath = path.resolve("/repo");
+    const client = { close: vi.fn() };
+    let child: ChildProcess | null = null;
+
+    try {
+      child = (pool as unknown as {
+        spawnRuntime: (path: string) => ChildProcess;
+      }).spawnRuntime(socketPath);
+      (pool as unknown as { connection: Promise<unknown>; activeClient: unknown }).connection = Promise.resolve({
+        client,
+        child,
+        socketPath,
+      });
+      (pool as unknown as { activeClient: unknown }).activeClient = client;
+      (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.set(rootPath, {
+        projectId: "project-1",
+        rootPath,
+        displayName: "repo",
+        addedAt: 1,
+        lastOpenedAt: 1,
+        gitOriginUrl: null,
+      });
+
+      expect(pool.getStatus().connectionState).toBe("connected");
+
+      await new Promise<void>((resolve, reject) => {
+        child?.once("exit", () => resolve());
+        child?.once("error", reject);
+      });
+
+      expect(pool.getStatus().connectionState).toBe("idle");
+      expect((pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.size).toBe(0);
+      expect(client.close).toHaveBeenCalledTimes(1);
+    } finally {
+      if (child && !child.killed) child.kill();
+      if (originalAdeCliJs === undefined) delete process.env.ADE_CLI_JS;
+      else process.env.ADE_CLI_JS = originalAdeCliJs;
+      removeTempDir(tempDir);
+    }
+  });
+
+  it("does not clear a replacement connection when a superseded owned runtime exits", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-runtime-superseded-"));
+    const oldCliPath = path.join(tempDir, "old-cli.cjs");
+    const replacementCliPath = path.join(tempDir, "replacement-cli.cjs");
+    const socketPath = path.join(tempDir, "ade.sock");
+    const replacementSocketPath = path.join(tempDir, "ade-replacement.sock");
+    const originalAdeCliJs = process.env.ADE_CLI_JS;
+    fs.writeFileSync(oldCliPath, "setTimeout(() => process.exit(0), 100);\n", "utf8");
+    fs.writeFileSync(replacementCliPath, "setInterval(() => {}, 1000);\n", "utf8");
+
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never, { disableSync: true });
+    const rootPath = path.resolve("/repo");
+    const replacementClient = { close: vi.fn() };
+    let oldChild: ChildProcess | null = null;
+    let replacementChild: ChildProcess | null = null;
+
+    try {
+      const spawnRuntime = (pool as unknown as {
+        spawnRuntime: (path: string) => ChildProcess;
+      }).spawnRuntime.bind(pool);
+      process.env.ADE_CLI_JS = oldCliPath;
+      oldChild = spawnRuntime(socketPath);
+      process.env.ADE_CLI_JS = replacementCliPath;
+      replacementChild = spawnRuntime(replacementSocketPath);
+      (pool as unknown as { connection: Promise<unknown>; activeClient: unknown }).connection = Promise.resolve({
+        client: replacementClient,
+        child: replacementChild,
+        socketPath: replacementSocketPath,
+      });
+      (pool as unknown as { activeClient: unknown }).activeClient = replacementClient;
+      (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.set(rootPath, {
+        projectId: "project-1",
+        rootPath,
+        displayName: "repo",
+        addedAt: 1,
+        lastOpenedAt: 1,
+        gitOriginUrl: null,
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        oldChild?.once("exit", () => resolve());
+        oldChild?.once("error", reject);
+      });
+
+      expect(pool.getStatus().connectionState).toBe("connected");
+      expect((pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.size).toBe(1);
+      expect(replacementClient.close).not.toHaveBeenCalled();
+    } finally {
+      if (oldChild && !oldChild.killed) oldChild.kill();
+      if (replacementChild && !replacementChild.killed) replacementChild.kill();
+      if (originalAdeCliJs === undefined) delete process.env.ADE_CLI_JS;
+      else process.env.ADE_CLI_JS = originalAdeCliJs;
+      removeTempDir(tempDir);
+    }
+  });
+
   it("normalizes local action registry entries from runtime action names", async () => {
     const pool = new LocalRuntimeConnectionPool("1.2.3", {
       debug: vi.fn(),
@@ -404,6 +520,82 @@ describe("local runtime connection pool", () => {
       },
     ]);
     pool.dispose();
+  });
+
+  it("coalesces matching local runtime action calls while the first call is in flight", async () => {
+    let resolveCall!: (value: unknown) => void;
+    const call = vi.fn(() => new Promise<unknown>((resolve) => {
+      resolveCall = resolve;
+    }));
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never);
+    const rootPath = path.resolve("/repo");
+    (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.set(rootPath, {
+      projectId: "project-1",
+      rootPath,
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: null,
+    });
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
+      client: { call },
+      child: null,
+      socketPath: "/tmp/ade.sock",
+    });
+
+    const first = pool.callActionForRoot(rootPath, {
+      domain: "session",
+      action: "list",
+      args: { limit: 500, laneId: "lane-1" },
+    });
+    const second = pool.callActionForRoot(rootPath, {
+      domain: "session",
+      action: "list",
+      args: { laneId: "lane-1", limit: 500 },
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(call).toHaveBeenCalledTimes(1);
+
+    resolveCall({
+      domain: "session",
+      action: "list",
+      result: [{ id: "session-1" }],
+      statusHints: {},
+    });
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      {
+        domain: "session",
+        action: "list",
+        result: [{ id: "session-1" }],
+        statusHints: {},
+      },
+      {
+        domain: "session",
+        action: "list",
+        result: [{ id: "session-1" }],
+        statusHints: {},
+      },
+    ]);
+
+    call.mockResolvedValueOnce({
+      domain: "session",
+      action: "list",
+      result: [{ id: "session-1" }],
+      statusHints: {},
+    });
+    await pool.callActionForRoot(rootPath, {
+      domain: "session",
+      action: "list",
+      args: { limit: 500, laneId: "lane-1" },
+    });
+    expect(call).toHaveBeenCalledTimes(2);
   });
 
   it("terminates an app-owned fallback runtime when disposed", async () => {
@@ -1095,6 +1287,62 @@ describe("local runtime connection pool", () => {
       },
       { timeoutMs: 8_000 },
     );
+  });
+
+  it("bounds non-file action calls and drops a timed-out runtime connection", async () => {
+    const timeout = new Error("Remote ADE service timed out waiting for method ade/actions/call (30000ms).");
+    const call = vi.fn().mockRejectedValue(timeout);
+    const close = vi.fn();
+    const child = {
+      pid: 1234,
+      kill: vi.fn(),
+      once: vi.fn(),
+    };
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never);
+    const rootPath = path.resolve("/repo");
+    (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.set(rootPath, {
+      projectId: "project-1",
+      rootPath,
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: null,
+    });
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
+      client: { call, close },
+      child,
+      socketPath: "/tmp/ade.sock",
+    });
+    (pool as unknown as { ownedRuntimeChild: unknown }).ownedRuntimeChild = child;
+
+    await expect(pool.callActionForRoot(rootPath, {
+      domain: "chat",
+      action: "deleteSession",
+      args: { sessionId: "chat-1" },
+    })).rejects.toThrow(/timed out waiting for method ade\/actions\/call/i);
+
+    expect(call).toHaveBeenCalledWith(
+      "ade/actions/call",
+      {
+        projectId: "project-1",
+        name: "run_ade_action",
+        arguments: {
+          domain: "chat",
+          action: "deleteSession",
+          args: { sessionId: "chat-1" },
+        },
+      },
+      { timeoutMs: 30_000 },
+    );
+    expect(close).toHaveBeenCalled();
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    expect((pool as unknown as { connection: unknown }).connection).toBeNull();
+    expect((pool as unknown as { ownedRuntimeChild: unknown }).ownedRuntimeChild).toBeNull();
   });
 
   it("routes local sync calls through the project-scoped runtime RPC", async () => {

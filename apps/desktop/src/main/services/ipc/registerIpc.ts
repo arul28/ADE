@@ -1,6 +1,6 @@
 import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, nativeImage, shell } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
-import { createEmptyAutoUpdateSnapshot, type createAutoUpdateService } from "../updates/autoUpdateService";
+import { compareUpdateVersions, createEmptyAutoUpdateSnapshot, type createAutoUpdateService } from "../updates/autoUpdateService";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -32,6 +32,7 @@ import type {
   AdoptAttachedLaneArgs,
   UnregisteredLaneCandidate,
   AppInfo,
+  LatestReleaseInfo,
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
   ArchiveLaneArgs,
@@ -542,7 +543,7 @@ import type { createOperationService } from "../history/operationService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createJobEngine } from "../jobs/jobEngine";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
-import type { createGithubService } from "../github/githubService";
+import { fetchAdeLatestRelease, type createGithubService } from "../github/githubService";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
@@ -3246,6 +3247,25 @@ export function registerIpc({
         viteDevServerUrl: process.env.VITE_DEV_SERVER_URL
       },
       localRuntime: localRuntimeConnectionPool?.getStatus() ?? null
+    };
+  });
+
+  ipcMain.handle(IPC.appGetLatestRelease, async (): Promise<LatestReleaseInfo | null> => {
+    let token: string | null = null;
+    try {
+      token = getCtx().githubService.getTokenOrThrow();
+    } catch {
+      token = null;
+    }
+    const release = await fetchAdeLatestRelease({ token });
+    if (!release) return null;
+    const updateAvailable =
+      app.isPackaged && compareUpdateVersions(release.version, app.getVersion()) > 0;
+    return {
+      version: release.version,
+      htmlUrl: release.htmlUrl,
+      publishedAt: release.publishedAt,
+      updateAvailable,
     };
   });
 

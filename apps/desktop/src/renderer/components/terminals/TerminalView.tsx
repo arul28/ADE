@@ -12,7 +12,14 @@ import {
 } from "../../state/appStore";
 import { WORK_SURFACE_REVEALED_EVENT } from "./workSurfaceVisibility";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
-import type { TerminalSerializedSnapshot, TerminalSnapshotCell, TerminalSnapshotRow, TerminalSessionStatus } from "../../../shared/types";
+import type {
+  PtyDataEvent,
+  PtyExitEvent,
+  TerminalSerializedSnapshot,
+  TerminalSnapshotCell,
+  TerminalSnapshotRow,
+  TerminalSessionStatus,
+} from "../../../shared/types";
 
 type XtermTheme = NonNullable<ConstructorParameters<typeof Terminal>[0]>["theme"];
 type TerminalRendererMode = "webgl" | "dom";
@@ -54,7 +61,11 @@ type CachedRuntime = {
   rendererResetInFlight: boolean;
   lastRendererResetAt: number;
   health: TerminalHealthCounters;
-  lastDims: { cols: number; rows: number } | null;
+  lastDims: TerminalDims | null;
+  lastPtyResizeDims: TerminalDims | null;
+  ptyResizeInFlight: boolean;
+  inFlightPtyResizeDims: TerminalDims | null;
+  queuedPtyResizeDims: TerminalDims | null;
   pendingForceResize: boolean;
   fitRafId: number | null;
   settleTimer1: ReturnType<typeof setTimeout> | null;
@@ -121,6 +132,10 @@ const TERMINAL_CTRL_V = "\x16";
 const TERMINAL_LINK_PATTERN = /(?:https?:\/\/[^\s<>"'`]+|(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/[^\s<>"'`]*)?)/gi;
 const TERMINAL_MOUSE_TRACKING_EVENT_MODES = new Set([1000, 1002, 1003]);
 const runtimeCache = new Map<string, CachedRuntime>();
+const ptyDataRuntimesByPtyId = new Map<string, Set<CachedRuntime>>();
+const ptyExitRuntimesByPtyId = new Map<string, Set<CachedRuntime>>();
+let sharedPtyDataUnsub: (() => void) | null = null;
+let sharedPtyExitUnsub: (() => void) | null = null;
 
 function terminalRuntimeKey(args: {
   sessionId: string;
@@ -439,6 +454,52 @@ function hasValidDims(dims: TerminalDims | null | undefined): dims is TerminalDi
     && dims.cols >= MIN_VALID_COLS
     && dims.rows >= MIN_VALID_ROWS
   );
+}
+
+function sameDims(left: TerminalDims | null | undefined, right: TerminalDims | null | undefined): boolean {
+  return Boolean(left && right && left.cols === right.cols && left.rows === right.rows);
+}
+
+function flushQueuedPtyResize(runtime: CachedRuntime): void {
+  if (runtime.disposed || runtime.ptyResizeInFlight) return;
+  const next = runtime.queuedPtyResizeDims;
+  runtime.queuedPtyResizeDims = null;
+  if (!next || sameDims(runtime.lastPtyResizeDims, next)) return;
+  sendPtyResize(runtime, next);
+}
+
+function sendPtyResize(runtime: CachedRuntime, dims: TerminalDims): void {
+  if (runtime.disposed) return;
+  runtime.ptyResizeInFlight = true;
+  runtime.inFlightPtyResizeDims = dims;
+  window.ade.pty.resize({ ptyId: runtime.ptyId, cols: dims.cols, rows: dims.rows })
+    .then(
+      () => {
+        runtime.lastPtyResizeDims = dims;
+      },
+      () => {
+        if (sameDims(runtime.lastPtyResizeDims, dims)) {
+          runtime.lastPtyResizeDims = null;
+        }
+      },
+    )
+    .finally(() => {
+      runtime.ptyResizeInFlight = false;
+      runtime.inFlightPtyResizeDims = null;
+      flushQueuedPtyResize(runtime);
+    });
+}
+
+function requestPtyResize(runtime: CachedRuntime, dims: TerminalDims, force = false): void {
+  if (runtime.disposed) return;
+  if (!force && sameDims(runtime.lastPtyResizeDims, dims) && !runtime.ptyResizeInFlight) return;
+  if (runtime.ptyResizeInFlight) {
+    if (force || !sameDims(runtime.inFlightPtyResizeDims, dims)) {
+      runtime.queuedPtyResizeDims = dims;
+    }
+    return;
+  }
+  sendPtyResize(runtime, dims);
 }
 
 function clearTextureAtlas(runtime: CachedRuntime) {
@@ -833,7 +894,7 @@ function doFit(runtime: CachedRuntime, forcePtyResize = false) {
   const prev = previousDims;
   if (!prev || prev.cols !== next.cols || prev.rows !== next.rows || forcePtyResize) {
     runtime.lastDims = next;
-    window.ade.pty.resize({ ptyId: runtime.ptyId, cols: next.cols, rows: next.rows }).catch(() => {});
+    requestPtyResize(runtime, next, forcePtyResize);
   }
 
   // Safety pass for right-edge clipping and stale col counts.
@@ -976,6 +1037,105 @@ function scheduleFrameWriteFlush(runtime: CachedRuntime) {
     return;
   }
   runtime.flushRafId = requestAnimationFrame(flush);
+}
+
+function shouldDeliverPtyEvent(runtime: CachedRuntime, projectRoot: string | undefined): boolean {
+  if (runtime.disposed) return false;
+  return !(projectRoot && runtime.projectRoot && projectRoot !== runtime.projectRoot);
+}
+
+function handleRuntimePtyData(runtime: CachedRuntime, ev: PtyDataEvent) {
+  if (!shouldDeliverPtyEvent(runtime, ev.projectRoot)) return;
+  updateTerminalMouseTrackingModes(runtime, ev.data);
+
+  if (!runtime.hydrationCompleted) {
+    runtime.pendingHydrationChunks.push(ev.data);
+    runtime.pendingHydrationBytes += ev.data.length;
+    while (runtime.pendingHydrationBytes > MAX_PENDING_HYDRATION_BYTES && runtime.pendingHydrationChunks.length > 1) {
+      const dropped = runtime.pendingHydrationChunks.shift();
+      runtime.pendingHydrationBytes -= dropped?.length ?? 0;
+      incrementHealth(runtime, "droppedChunks");
+    }
+    if (hasRenderableTerminalText(ev.data)) {
+      runtime.displayedLiveDataBeforeHydration = true;
+      if (runtime.visible && runtime.active && !terminalDomHasRenderableText(runtime)) {
+        scheduleHydrationBackfill(runtime, {
+          delayMs: HYDRATION_VISIBLE_BLANK_BACKFILL_RETRY_MS,
+          replaceExistingTimer: true,
+          snapshotOnly: true,
+        });
+      }
+    }
+    enqueueFrameWrite(runtime, ev.data);
+    return;
+  }
+
+  enqueueFrameWrite(runtime, ev.data);
+}
+
+function handleRuntimePtyExit(runtime: CachedRuntime, ev: PtyExitEvent) {
+  if (!shouldDeliverPtyEvent(runtime, ev.projectRoot)) return;
+  runtime.exitCode = ev.exitCode ?? 0;
+  notifyRuntime(runtime);
+  if (runtime.refs === 0) {
+    scheduleRuntimeDispose(runtime, EXITED_RUNTIME_KEEPALIVE_MS);
+  }
+}
+
+function removeRuntimePtySubscription(
+  map: Map<string, Set<CachedRuntime>>,
+  runtime: CachedRuntime,
+) {
+  const runtimes = map.get(runtime.ptyId);
+  if (!runtimes) return;
+  runtimes.delete(runtime);
+  if (runtimes.size === 0) map.delete(runtime.ptyId);
+}
+
+function subscribeRuntimePtyData(runtime: CachedRuntime): () => void {
+  let runtimes = ptyDataRuntimesByPtyId.get(runtime.ptyId);
+  if (!runtimes) {
+    runtimes = new Set();
+    ptyDataRuntimesByPtyId.set(runtime.ptyId, runtimes);
+  }
+  runtimes.add(runtime);
+  if (!sharedPtyDataUnsub) {
+    sharedPtyDataUnsub = window.ade.pty.onData((ev) => {
+      const targets = ptyDataRuntimesByPtyId.get(ev.ptyId);
+      if (!targets) return;
+      for (const target of [...targets]) handleRuntimePtyData(target, ev);
+    });
+  }
+  return () => {
+    removeRuntimePtySubscription(ptyDataRuntimesByPtyId, runtime);
+    if (ptyDataRuntimesByPtyId.size === 0 && sharedPtyDataUnsub) {
+      sharedPtyDataUnsub();
+      sharedPtyDataUnsub = null;
+    }
+  };
+}
+
+function subscribeRuntimePtyExit(runtime: CachedRuntime): () => void {
+  let runtimes = ptyExitRuntimesByPtyId.get(runtime.ptyId);
+  if (!runtimes) {
+    runtimes = new Set();
+    ptyExitRuntimesByPtyId.set(runtime.ptyId, runtimes);
+  }
+  runtimes.add(runtime);
+  if (!sharedPtyExitUnsub) {
+    sharedPtyExitUnsub = window.ade.pty.onExit((ev) => {
+      const targets = ptyExitRuntimesByPtyId.get(ev.ptyId);
+      if (!targets) return;
+      for (const target of [...targets]) handleRuntimePtyExit(target, ev);
+    });
+  }
+  return () => {
+    removeRuntimePtySubscription(ptyExitRuntimesByPtyId, runtime);
+    if (ptyExitRuntimesByPtyId.size === 0 && sharedPtyExitUnsub) {
+      sharedPtyExitUnsub();
+      sharedPtyExitUnsub = null;
+    }
+  };
 }
 
 function flushHydrationData(
@@ -1421,6 +1581,10 @@ function createRuntime(args: {
     lastRendererResetAt: 0,
     health: { fitFailures: 0, zeroDimFits: 0, rendererFallbacks: 0, droppedChunks: 0, fitRecoveries: 0 },
     lastDims: null,
+    lastPtyResizeDims: null,
+    ptyResizeInFlight: false,
+    inFlightPtyResizeDims: null,
+    queuedPtyResizeDims: null,
     pendingForceResize: false,
     fitRafId: null,
     settleTimer1: null,
@@ -1575,47 +1739,8 @@ function createRuntime(args: {
     }
   });
 
-  runtime.ptyDataUnsub = window.ade.pty.onData((ev) => {
-    if (runtime.disposed) return;
-    if (ev.projectRoot && runtime.projectRoot && ev.projectRoot !== runtime.projectRoot) return;
-    if (ev.ptyId !== runtime.ptyId) return;
-    updateTerminalMouseTrackingModes(runtime, ev.data);
-
-    if (!runtime.hydrationCompleted) {
-      runtime.pendingHydrationChunks.push(ev.data);
-      runtime.pendingHydrationBytes += ev.data.length;
-      while (runtime.pendingHydrationBytes > MAX_PENDING_HYDRATION_BYTES && runtime.pendingHydrationChunks.length > 1) {
-        const dropped = runtime.pendingHydrationChunks.shift();
-        runtime.pendingHydrationBytes -= dropped?.length ?? 0;
-        incrementHealth(runtime, "droppedChunks");
-      }
-      if (hasRenderableTerminalText(ev.data)) {
-        runtime.displayedLiveDataBeforeHydration = true;
-        if (runtime.visible && runtime.active && !terminalDomHasRenderableText(runtime)) {
-          scheduleHydrationBackfill(runtime, {
-            delayMs: HYDRATION_VISIBLE_BLANK_BACKFILL_RETRY_MS,
-            replaceExistingTimer: true,
-            snapshotOnly: true,
-          });
-        }
-      }
-      enqueueFrameWrite(runtime, ev.data);
-      return;
-    }
-
-    enqueueFrameWrite(runtime, ev.data);
-  });
-
-  runtime.ptyExitUnsub = window.ade.pty.onExit((ev) => {
-    if (runtime.disposed) return;
-    if (ev.projectRoot && runtime.projectRoot && ev.projectRoot !== runtime.projectRoot) return;
-    if (ev.ptyId !== runtime.ptyId) return;
-    runtime.exitCode = ev.exitCode ?? 0;
-    notifyRuntime(runtime);
-    if (runtime.refs === 0) {
-      scheduleRuntimeDispose(runtime, EXITED_RUNTIME_KEEPALIVE_MS);
-    }
-  });
+  runtime.ptyDataUnsub = subscribeRuntimePtyData(runtime);
+  runtime.ptyExitUnsub = subscribeRuntimePtyExit(runtime);
 
   void initRendererChain(runtime);
 

@@ -418,6 +418,22 @@ describe("TerminalView", () => {
     }
   });
 
+  it("shares PTY event subscriptions across terminal runtimes", async () => {
+    render(
+      <>
+        <TerminalView ptyId="pty-shared-a" sessionId="session-shared-a" isActive />
+        <TerminalView ptyId="pty-shared-b" sessionId="session-shared-b" isActive />
+      </>,
+    );
+
+    await flushAnimationFrame();
+
+    expect((window as any).ade.pty.onData).toHaveBeenCalledTimes(1);
+    expect((window as any).ade.pty.onExit).toHaveBeenCalledTimes(1);
+    expect(mockState.ptyDataListeners.size).toBe(1);
+    expect(mockState.ptyExitListeners.size).toBe(1);
+  });
+
   it("uses the DOM renderer on Linux when localStorage is unavailable", async () => {
     vi.useRealTimers();
     const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
@@ -519,6 +535,97 @@ describe("TerminalView", () => {
       rows: 44,
     });
     expect(terminal?.focus).not.toHaveBeenCalled();
+  });
+
+  it("coalesces PTY resize calls while a previous resize is still in flight", async () => {
+    let resolveResize: (() => void) | null = null;
+    const pendingResize = new Promise<void>((resolve) => {
+      resolveResize = resolve;
+    });
+    const resizeSpy = vi.fn(() => pendingResize);
+    (window as any).ade.pty.resize = resizeSpy;
+
+    render(<TerminalView ptyId="pty-coalesce" sessionId="session-coalesce" isActive />);
+    await flushAnimationFrame();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(resizeSpy).toHaveBeenCalledTimes(1);
+    expect(resizeSpy).toHaveBeenLastCalledWith({
+      ptyId: "pty-coalesce",
+      cols: 120,
+      rows: 40,
+    });
+
+    mockState.nextFitDims = { cols: 130, rows: 41 };
+    triggerResizeObserver();
+    await flushAnimationFrame();
+    mockState.nextFitDims = { cols: 140, rows: 42 };
+    triggerResizeObserver();
+    await flushAnimationFrame();
+
+    expect(resizeSpy).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveResize?.();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(resizeSpy).toHaveBeenCalledTimes(2);
+    expect(resizeSpy).toHaveBeenLastCalledWith({
+      ptyId: "pty-coalesce",
+      cols: 140,
+      rows: 42,
+    });
+  });
+
+  it("retries a forced PTY resize when the in-flight resize rejects", async () => {
+    let rejectResize: ((reason?: unknown) => void) | null = null;
+    const pendingResize = new Promise<void>((_resolve, reject) => {
+      rejectResize = reject;
+    });
+    const resizeSpy = vi.fn()
+      .mockReturnValueOnce(pendingResize)
+      .mockResolvedValue(undefined);
+    (window as any).ade.pty.resize = resizeSpy;
+
+    render(<TerminalView ptyId="pty-retry-rejected" sessionId="session-retry-rejected" isActive />);
+    await flushAnimationFrame();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(resizeSpy).toHaveBeenCalledTimes(1);
+    expect(resizeSpy).toHaveBeenLastCalledWith({
+      ptyId: "pty-retry-rejected",
+      cols: 120,
+      rows: 40,
+    });
+
+    window.dispatchEvent(new Event(WORK_SURFACE_REVEALED_EVENT));
+    await flushAnimationFrame();
+    await flushAnimationFrame();
+
+    expect(resizeSpy).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      rejectResize?.(new Error("resize failed"));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(resizeSpy).toHaveBeenCalledTimes(2);
+    expect(resizeSpy).toHaveBeenLastCalledWith({
+      ptyId: "pty-retry-rejected",
+      cols: 120,
+      rows: 40,
+    });
   });
 
   it("falls back to the DOM renderer when webgl initialization fails", async () => {

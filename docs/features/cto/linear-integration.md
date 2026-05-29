@@ -6,7 +6,7 @@ CTO owns Linear intake, routing, dispatch, sync, and closeout. Automations never
 
 ### Services (apps/desktop/src/main/services/cto/)
 
-- `linearCredentialService.ts` — token store (personal API key). Exposes `getStatus`, `getTokenOrThrow`, `setToken`, `clearToken`.
+- `linearCredentialService.ts` — project-local token store (personal API key) under the active project's `.ade/secrets`. Exposes `getStatus`, `getTokenOrThrow`, `setToken`, `clearToken`.
 - `linearOAuthService.ts` — PKCE loopback OAuth on port 19836. `SESSION_TTL_MS = 10 min`. Authorize at `linear.app/oauth/authorize`, exchange at `api.linear.app/oauth/token`.
 - `linearClient.ts` — GraphQL client; used by both desktop and headless ADE CLI. Surfaces `getQuickView(connection)` (workspace + active project counters consumed by the top-bar quick view), `searchIssues(query)` (paginated issue search consumed by `LinearIssuePicker` and `LinearIssueBrowser`), and `fetchIssueComments(issueId)` (comment thread for the issue detail pane) alongside the existing `fetchIssueById` / `listProjects` / `listLabels` / `listUsers` calls. The shared GraphQL issue fragment also fetches cycle metadata (`id`, `name`, `startsAt`, `endsAt`), label colors, and richer child-issue data (`identifier`, `title`, full state).
 - `linearIssueTracker.ts` + `issueTracker.ts` — issue cache, snapshot hashes, change detection. The `IssueTracker` interface includes the matching `getQuickView(connection)`, `searchIssues(query)`, and `fetchIssueComments(issueId)` shims so renderer-side surfaces have the same entry point as the dispatcher.
@@ -54,7 +54,7 @@ Detailed wiring lives in [`../linear-integration/README.md`](../linear-integrati
 
 Two connection paths:
 
-1. **Personal API key** (recommended first path). Entered in the Connection panel; validated by a `viewer` query; stored via `linearCredentialService`.
+1. **Personal API key** (recommended first path). Entered in the Connection panel; validated by a `viewer` query; stored via `linearCredentialService` in the active project's `.ade/secrets`.
 2. **OAuth** (when `.ade/secrets/linear-oauth.v1.json` is configured). `startOAuth()` boots an ephemeral HTTP server on 19836 with a PKCE pair, returns the authorize URL for the renderer to open, and finalizes on callback. Sessions auto-expire after 10 minutes.
 
 The renderer's `LinearConnectionPanel` auto-surfaces whichever path is available. The CTO onboarding recommends the API key as faster; OAuth is available for customers that prefer SSO.

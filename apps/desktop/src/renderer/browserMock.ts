@@ -57,6 +57,7 @@ const DEFAULT_BROWSER_MOCK_CLAUDE_MODEL =
 const BUILTIN_MOCK_PROJECT = {
   id: "browser-mock",
   name: "Browser Preview",
+  displayName: "Browser Preview",
   rootPath: "/tmp/mock",
   gitRemoteUrl: "https://github.com/acme/ade",
   gitDefaultBranch: "main",
@@ -81,6 +82,7 @@ const MOCK_PROJECT =
         ...BUILTIN_MOCK_PROJECT,
         id: ADE_DB_SNAPSHOT.project.id,
         name: ADE_DB_SNAPSHOT.project.name,
+        displayName: ADE_DB_SNAPSHOT.project.name,
         rootPath: ADE_DB_SNAPSHOT.project.rootPath,
         gitDefaultBranch:
           ADE_DB_SNAPSHOT.project.gitDefaultBranch ??
@@ -98,12 +100,30 @@ const MOCK_LINEAR_CONNECTION = {
   connected: true,
   viewerId: "mock-linear-user",
   viewerName: "Mock Linear User",
+  organizationId: "mock-linear-org",
+  organizationName: "ADE",
+  organizationUrlKey: "ade",
+  organizationLogoUrl: null,
+  projectCount: 1,
+  projectPreview: ["Desktop polish"],
   checkedAt: now,
   authMode: "manual" as const,
   oauthAvailable: true,
   tokenExpiresAt: null,
   message: null,
 };
+
+const MOCK_LINEAR_PROJECTS = [
+  {
+    id: "mock-linear-project",
+    name: "Desktop polish",
+    slug: "desktop-polish",
+    teamName: "ADE",
+    teamKey: "ADE",
+    icon: null,
+    color: "#5E6AD2",
+  },
+];
 
 const MOCK_LINEAR_ISSUES = [
   {
@@ -179,15 +199,7 @@ const MOCK_LINEAR_ISSUES = [
 ];
 
 const MOCK_LINEAR_PICKER = {
-  projects: [
-    {
-      id: "mock-linear-project",
-      name: "Desktop polish",
-      slug: "desktop-polish",
-      teamName: "ADE",
-      teamKey: "ADE",
-    },
-  ],
+  projects: MOCK_LINEAR_PROJECTS,
   users: [
     {
       id: "mock-linear-user",
@@ -2834,9 +2846,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     availableProviders: {
       claude: {
         binary: {
-          present: false,
-          source: "missing",
-          path: null,
+          present: true,
+          source: "path",
+          path: "/opt/homebrew/bin/claude",
         },
         auth: {
           ready: false,
@@ -2849,7 +2861,16 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       droid: false,
     },
     models: { claude: [], codex: [], cursor: [], droid: [] },
-    features: [],
+    availableModelIds: [
+      "anthropic/claude-sonnet-4-6",
+      "anthropic/claude-haiku-4-5",
+      "openai/gpt-5-codex",
+    ],
+    features: [
+      { feature: "pr_descriptions", enabled: true },
+      { feature: "terminal_summaries", enabled: false },
+      { feature: "commit_messages", enabled: false },
+    ],
     providerConnections: {
       claude: BROWSER_MOCK_PROVIDER_CONNECTION("claude"),
       codex: BROWSER_MOCK_PROVIDER_CONNECTION("codex"),
@@ -2950,6 +2971,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       laneOverlayPolicies: [],
       git: { autoRebaseOnHeadChange: false },
       ai: {
+        featureModelOverrides: { pr_descriptions: "anthropic/claude-sonnet-4-6" },
         orchestrator: {
           defaultOrchestratorModel: { modelId: "anthropic/claude-sonnet-4-6" },
           teammatePlanMode: "auto",
@@ -3040,6 +3062,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             checkedAt: null,
           },
         },
+      }),
+      getLatestRelease: resolved({
+        version: "1.0.0",
+        htmlUrl: "https://github.com/arul28/ADE/releases/latest",
+        publishedAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
+        updateAvailable: false,
       }),
       getProject: resolved(MOCK_PROJECT),
       getWindowSession: resolved({
@@ -4147,6 +4175,11 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       attach: resolvedArg({ id: "mock", name: "mock" }),
       adoptAttached: resolvedArg({ id: "mock", name: "mock" }),
+      listUnregisteredWorktrees: resolved([
+        { path: "/Users/you/code/app-login", branch: "feat/login" },
+        { path: "/Users/you/code/app-api-fix", branch: "bugfix/api-timeout" },
+        { path: "/Users/you/experiments/spike", branch: "spike/new-renderer" },
+      ]),
       rename: resolvedArg(undefined),
       reparent: resolvedArg({}),
       updateAppearance: resolvedArg(undefined),
@@ -4761,7 +4794,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         reconciliation: { enabled: true, intervalSec: 30, lastRunAt: null },
       }),
       onLinearWorkflowEvent: noop,
-      getLinearProjects: resolvedArg([]),
+      getLinearProjects: resolvedArg(MOCK_LINEAR_PROJECTS),
       getLinearQuickView: resolvedArg({
         connection: MOCK_LINEAR_CONNECTION,
         organization: {
@@ -4844,6 +4877,28 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         pageInfo: { hasNextPage: false, endCursor: null },
       }),
       getLinearConnectionStatus: resolvedArg(MOCK_LINEAR_CONNECTION),
+      setLinearToken: resolvedArg({
+        ...MOCK_LINEAR_CONNECTION,
+        authMode: "manual" as const,
+        message: "Linear token accepted in browser preview.",
+      }),
+      clearLinearToken: resolvedArg({
+        tokenStored: false,
+        connected: false,
+        viewerId: null,
+        viewerName: null,
+        organizationId: null,
+        organizationName: null,
+        organizationUrlKey: null,
+        organizationLogoUrl: null,
+        projectCount: 0,
+        projectPreview: [],
+        checkedAt: now,
+        authMode: null,
+        oauthAvailable: true,
+        tokenExpiresAt: null,
+        message: "Linear disconnected in browser preview.",
+      }),
       setLinearOAuthClient: resolvedArg({
         tokenStored: false,
         connected: false,
@@ -5089,12 +5144,17 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     github: {
       getStatus: resolved({
         tokenStored: true,
+        patTokenStored: false,
         tokenDecryptionFailed: false,
         storageScope: "app",
-        tokenType: "classic",
+        authSource: "gh",
+        tokenType: "oauth",
         repo: { owner: "arul28", name: "ADE" },
+        hasOrigin: true,
         userLogin: "arul",
         scopes: ["repo", "workflow"],
+        ghCliPath: "/opt/homebrew/bin/gh",
+        ghAuthError: null,
         checkedAt: new Date().toISOString(),
         repoAccessOk: true,
         repoAccessError: null,
@@ -5106,12 +5166,17 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       setToken: resolvedArg({
         tokenStored: true,
+        patTokenStored: true,
         tokenDecryptionFailed: false,
         storageScope: "app",
+        authSource: "pat",
         tokenType: "classic",
         repo: { owner: "arul28", name: "ADE" },
+        hasOrigin: true,
         userLogin: "arul",
         scopes: ["repo", "workflow"],
+        ghCliPath: "/opt/homebrew/bin/gh",
+        ghAuthError: null,
         checkedAt: new Date().toISOString(),
         repoAccessOk: true,
         repoAccessError: null,
@@ -5119,12 +5184,17 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       clearToken: resolved({
         tokenStored: false,
+        patTokenStored: false,
         tokenDecryptionFailed: false,
         storageScope: "app",
+        authSource: "none",
         tokenType: "unknown",
         repo: { owner: "arul28", name: "ADE" },
+        hasOrigin: true,
         userLogin: null,
         scopes: [],
+        ghCliPath: "/opt/homebrew/bin/gh",
+        ghAuthError: null,
         checkedAt: null,
         repoAccessOk: null,
         repoAccessError: null,

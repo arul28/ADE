@@ -60,6 +60,13 @@ export type AppInfo = {
   localRuntime: LocalRuntimeStatus | null;
 };
 
+export type LatestReleaseInfo = {
+  version: string;
+  htmlUrl: string | null;
+  publishedAt: string | null;
+  updateAvailable: boolean;
+};
+
 export type RecentlyInstalledUpdate = {
   version: string;
   installedAt: string;

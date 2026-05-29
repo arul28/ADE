@@ -83,9 +83,6 @@ export function isOrchestrationPlanApproved(
   manifest: OrchestrationManifest,
 ): boolean {
   if (manifest.currentPhase !== "planning") return true;
-  if (manifest.phases.some((phase) => phase.id === "planning" && phase.status === "done")) {
-    return true;
-  }
   return typeof manifest.leadState.planApprovedAt === "string"
     && manifest.leadState.planApprovedAt.trim().length > 0;
 }

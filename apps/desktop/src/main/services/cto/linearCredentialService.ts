@@ -73,6 +73,18 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
   const importSentinelPath = path.join(secretsDir, IMPORT_SENTINEL);
   const credentialStore = args.credentialStore ?? null;
 
+  const unlinkIfExists = (filePath: string): void => {
+    try {
+      fs.unlinkSync(filePath);
+    } catch (error: unknown) {
+      if (isEnoentError(error)) return;
+      args.logger?.warn("linear_sync.legacy_credential_cleanup_failed", {
+        filePath,
+        error: getErrorMessage(error),
+      });
+    }
+  };
+
   const readEnvToken = (): string | null => {
     for (const key of ENV_LINEAR_TOKEN_KEYS) {
       const value = (process.env[key] ?? "").trim();
@@ -278,6 +290,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
       const legacyToken = readEncryptedToken();
       if (legacyToken) {
         persistMachineToken(legacyToken);
+        unlinkIfExists(tokenPath);
       } else {
         const legacyPath = path.join(args.adeDir, "local.secret.yaml");
         try {
@@ -299,7 +312,10 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
 
     if (!readMachineOAuthClientCredentials()) {
       const legacyOAuth = readStoredOAuthClientCredentials() ?? readOAuthConfigFileCredentials();
-      if (legacyOAuth) persistMachineOAuthClientCredentials(legacyOAuth);
+      if (legacyOAuth) {
+        persistMachineOAuthClientCredentials(legacyOAuth);
+        unlinkIfExists(oauthClientPath);
+      }
     }
 
     if (!hadEncryptedLegacyStore || safeStorage.isEncryptionAvailable()) {
@@ -310,6 +326,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
   const persistToken = (record: StoredLinearToken | null): void => {
     if (credentialStore) {
       persistMachineToken(record);
+      unlinkIfExists(tokenPath);
       return;
     }
 
@@ -345,6 +362,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
   const persistOAuthClientCredentials = (record: LinearOAuthClientCredentials | null): void => {
     if (credentialStore) {
       persistMachineOAuthClientCredentials(record);
+      unlinkIfExists(oauthClientPath);
       return;
     }
 

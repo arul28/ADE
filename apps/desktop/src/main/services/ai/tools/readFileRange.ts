@@ -2,13 +2,22 @@ import { executableTool as tool } from "./executableTool";
 import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
-import { getErrorMessage, readFileWithinRootSecure, resolvePathWithinRoot } from "../../shared/utils";
+import {
+  getErrorMessage,
+  readAgentAccessibleFileBytes,
+  resolvePathWithinRoot,
+  type DirtyFileTextLookup,
+} from "../../shared/utils";
 
 function toDisplayPath(root: string, filePath: string): string {
   return path.relative(root, filePath).replace(/\\/g, "/");
 }
 
-export function createReadFileRangeTool(cwd: string) {
+export type ReadFileRangeToolOptions = {
+  getDirtyFileTextForPath?: DirtyFileTextLookup;
+};
+
+export function createReadFileRangeTool(cwd: string, options: ReadFileRangeToolOptions = {}) {
   return tool({
     description:
       "Read a file's contents with line numbers. Accepts an absolute path or a path relative to the active repo root.",
@@ -40,7 +49,13 @@ export function createReadFileRangeTool(cwd: string) {
           return { content: "", totalLines: 0, error: `Error reading file: ${message}` };
         }
 
-        const raw = readFileWithinRootSecure(root, file_path).toString("utf-8");
+        const raw = (
+          await readAgentAccessibleFileBytes({
+            rootPath: root,
+            resolvedPath: resolvedPath,
+            getDirtyFileTextForPath: options.getDirtyFileTextForPath,
+          })
+        ).toString("utf-8");
         const allLines = raw.split("\n");
         const totalLines = allLines.length;
 

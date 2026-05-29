@@ -192,6 +192,63 @@ export function parseNextLink(linkHeader: string | null): string | null {
   return null;
 }
 
+export const ADE_RELEASE_REPO = { owner: "arul28", name: "ADE" } as const;
+
+export type AdeLatestRelease = {
+  version: string;
+  tagName: string;
+  htmlUrl: string | null;
+  publishedAt: string | null;
+};
+
+/**
+ * Fetches the latest *stable* GitHub release for the ADE repo. The
+ * `releases/latest` endpoint already excludes drafts and prereleases, so this
+ * always reflects the newest shipping build. Returns null on any failure
+ * (network, missing auth on a private repo, no published release) so callers
+ * can degrade gracefully instead of surfacing errors.
+ */
+export async function fetchAdeLatestRelease(options?: {
+  token?: string | null;
+  repo?: { owner: string; name: string };
+  fetchImpl?: typeof fetchGitHub;
+}): Promise<AdeLatestRelease | null> {
+  const repo = options?.repo ?? ADE_RELEASE_REPO;
+  const doFetch = options?.fetchImpl ?? fetchGitHub;
+  const headers: Record<string, string> = {
+    accept: "application/vnd.github+json",
+    "user-agent": "ade-desktop",
+  };
+  const token = options?.token?.trim();
+  if (token) headers.authorization = `Bearer ${token}`;
+
+  let response: Response;
+  try {
+    response = await doFetch(
+      `https://api.github.com/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/releases/latest`,
+      { method: "GET", headers },
+    );
+  } catch {
+    return null;
+  }
+  if (!response.ok) return null;
+
+  const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+  if (!payload) return null;
+
+  const tagName = asString(payload.tag_name).trim();
+  if (!tagName) return null;
+  const version = tagName.replace(/^v/i, "").trim() || tagName;
+  const htmlUrl = asString(payload.html_url).trim();
+  const publishedAt = asString(payload.published_at).trim();
+  return {
+    version,
+    tagName,
+    htmlUrl: htmlUrl || null,
+    publishedAt: publishedAt || null,
+  };
+}
+
 export function createGithubService({
   logger,
   projectRoot,

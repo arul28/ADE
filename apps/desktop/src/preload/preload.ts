@@ -17,6 +17,7 @@ import type {
   AdoptAttachedLaneArgs,
   UnregisteredLaneCandidate,
   AppInfo,
+  LatestReleaseInfo,
   AppNavigationRequest,
   AutoUpdateSnapshot,
   ClearLocalAdeDataArgs,
@@ -1315,18 +1316,16 @@ async function callProjectFileRuntimeActionOr<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
   local: () => Promise<T>,
 ): Promise<T> {
+  if (shouldBypassProjectRuntimeDuringTransition("file", action)) {
+    return local();
+  }
   const remote = await callRemoteProjectActionIfBound<T>(
     "file",
     action,
     request,
   );
   if (remote.handled) return remote.result;
-  const localRuntime = await callLocalProjectActionStrictIfBound<T>(
-    "file",
-    action,
-    request,
-  );
-  return localRuntime.handled ? localRuntime.result : local();
+  return local();
 }
 
 async function callRemoteProjectSyncIfBound<T>(
@@ -2890,6 +2889,8 @@ contextBridge.exposeInMainWorld("ade", {
   app: {
     ping: async (): Promise<"pong"> => ipcRenderer.invoke(IPC.appPing),
     getInfo: async (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appGetInfo),
+    getLatestRelease: async (): Promise<LatestReleaseInfo | null> =>
+      ipcRenderer.invoke(IPC.appGetLatestRelease),
     getProject: async (): Promise<ProjectInfo | null> =>
       ipcRenderer.invoke(IPC.appGetProject),
     getWindowSession: async (): Promise<{
@@ -3012,15 +3013,25 @@ contextBridge.exposeInMainWorld("ade", {
       // appProjectBindingChanged listener) and disabled runtime routing /
       // event pumping until another refresh restored it. Null once up front;
       // the listener handles the post-action update.
+      const previousBinding = currentProjectBinding;
       rememberProjectBinding(null);
-      return clearAround(
-        () => {
-          clearProjectScopedReadCaches();
-        },
-        () => runProjectRuntimeTransition(() =>
-          ipcRenderer.invoke(IPC.projectOpenRepo, args ?? {}),
-        ),
-      );
+      try {
+        const project = await clearAround(
+          () => {
+            clearProjectScopedReadCaches();
+          },
+          () => runProjectRuntimeTransition(() =>
+            ipcRenderer.invoke(IPC.projectOpenRepo, args ?? {}),
+          ),
+        );
+        if (!project) {
+          rememberProjectBinding(previousBinding);
+        }
+        return project;
+      } catch (error) {
+        rememberProjectBinding(previousBinding);
+        throw error;
+      }
     },
     chooseDirectory: async (
       args: { title?: string; defaultPath?: string } = {},
@@ -5828,7 +5839,7 @@ contextBridge.exposeInMainWorld("ade", {
   },
   diff: {
     getChanges: async (args: GetDiffChangesArgs): Promise<DiffChanges> => {
-      const runtime = await callProjectRuntimeActionIfBound<DiffChanges>(
+      const runtime = await callRemoteProjectActionIfBound<DiffChanges>(
         "diff",
         "getChanges",
         { arg: args.laneId },
@@ -5837,7 +5848,7 @@ contextBridge.exposeInMainWorld("ade", {
       return diffChangesCache.get(serializeIpcCacheArgs(args));
     },
     getFile: async (args: GetFileDiffArgs): Promise<FileDiff> => {
-      const runtime = await callProjectRuntimeActionIfBound<FileDiff>(
+      const runtime = await callRemoteProjectActionIfBound<FileDiff>(
         "diff",
         "getFileDiff",
         {
@@ -5855,7 +5866,7 @@ contextBridge.exposeInMainWorld("ade", {
         : ipcRenderer.invoke(IPC.diffGetFile, args);
     },
     getFilePatch: async (args: GetFilePatchArgs): Promise<FilePatch> => {
-      const runtime = await callProjectRuntimeActionIfBound<FilePatch>(
+      const runtime = await callRemoteProjectActionIfBound<FilePatch>(
         "diff",
         "getFilePatch",
         {

@@ -1,7 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentChatFileRef } from "../../../shared/types/chat";
-import { readFileWithinRootSecure } from "../shared/utils";
+import {
+  readAgentAccessibleFileBytes,
+  readFileWithinRootSecure,
+  type DirtyFileTextLookup,
+} from "../shared/utils";
 
 type ResolvedAgentChatFileRef = AgentChatFileRef & {
   _resolvedPath?: string;
@@ -74,6 +78,80 @@ export type SDKUserMessagePartial = {
   };
 };
 
+type BuildClaudeV2MessageOptions = {
+  baseDir?: string;
+  sessionId?: string | null;
+  forceUserMessage?: boolean;
+  getDirtyFileTextForPath?: DirtyFileTextLookup;
+};
+
+export async function buildClaudeV2MessageAsync(
+  promptText: string,
+  attachments: ResolvedAgentChatFileRef[],
+  options: BuildClaudeV2MessageOptions = {},
+): Promise<string | SDKUserMessagePartial> {
+  const wrapAsUserMessage = (text: string): SDKUserMessagePartial => ({
+    type: "user",
+    session_id: options.sessionId?.trim() ?? "",
+    parent_tool_use_id: null,
+    message: { role: "user", content: [{ type: "text", text }] },
+  });
+
+  const imageAttachments = attachments.filter((a) => a.type === "image");
+  if (!imageAttachments.length) {
+    const text = attachments.length
+      ? `${promptText}\n\n${attachments.map((a) => `[File attached: ${a.path}]`).join("\n")}`
+      : promptText;
+    return options.forceUserMessage ? wrapAsUserMessage(text) : text;
+  }
+
+  const content: Array<Record<string, unknown>> = [
+    { type: "text", text: promptText },
+  ];
+
+  for (const attachment of attachments) {
+    if (attachment.type !== "image") {
+      content.push({ type: "text", text: `\n[File attached: ${attachment.path}]` });
+      continue;
+    }
+
+    try {
+      const mediaType = inferAttachmentMediaType(attachment);
+      if (!ANTHROPIC_IMAGE_MEDIA_TYPES.has(mediaType)) {
+        content.push({ type: "text", text: `\n[Image attached (${mediaType}): ${attachment.path}]` });
+        continue;
+      }
+      const secureRoot = attachment._rootPath ?? options.baseDir;
+      const resolvedPath = attachment._resolvedPath ?? attachment.path;
+      if (!secureRoot) {
+        content.push({ type: "text", text: `\n[Image unavailable: ${attachment.path}]` });
+        continue;
+      }
+      const data = await readAgentAccessibleFileBytes({
+        rootPath: secureRoot,
+        resolvedPath,
+        getDirtyFileTextForPath: options.getDirtyFileTextForPath,
+      });
+      content.push({
+        type: "image",
+        source: { type: "base64", media_type: mediaType, data: data.toString("base64") },
+      });
+    } catch (error) {
+      content.push({
+        type: "text",
+        text: `\n[Image unavailable: ${attachment.path}${error instanceof Error ? ` (${error.message})` : ""}]`,
+      });
+    }
+  }
+
+  return {
+    type: "user",
+    session_id: options.sessionId?.trim() ?? "",
+    parent_tool_use_id: null,
+    message: { role: "user", content },
+  };
+}
+
 /**
  * Build the message payload for a Claude SDK session turn.
  * When image attachments are present, returns a streaming-input-format
@@ -88,12 +166,12 @@ export function buildClaudeV2Message(
 export function buildClaudeV2Message(
   promptText: string,
   attachments: ResolvedAgentChatFileRef[],
-  options?: { baseDir?: string; sessionId?: string | null; forceUserMessage?: boolean },
+  options?: BuildClaudeV2MessageOptions,
 ): string | SDKUserMessagePartial;
 export function buildClaudeV2Message(
   promptText: string,
   attachments: ResolvedAgentChatFileRef[],
-  options: { baseDir?: string; sessionId?: string | null; forceUserMessage?: boolean } = {},
+  options: BuildClaudeV2MessageOptions = {},
 ): string | SDKUserMessagePartial {
   const wrapAsUserMessage = (text: string): SDKUserMessagePartial => ({
     type: "user",

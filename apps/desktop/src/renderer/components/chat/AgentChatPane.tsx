@@ -2021,6 +2021,10 @@ function isNoActiveTurnToSteerError(error: unknown): boolean {
   return /no active turn to steer/i.test(errorMessage(error));
 }
 
+function isCodexGoalSlashInput(value: string): boolean {
+  return /^\/goal(?:\s|$)/i.test(value.trim());
+}
+
 export function formatParallelLaunchFailureMessage(args: {
   launchError: string;
   cleanupIssues: ParallelLaunchCleanupIssue[];
@@ -2920,6 +2924,7 @@ export function AgentChatPane({
   const sendCodexControlMessage = useCallback(async (sessionId: string, text: string) => {
     setError(null);
     try {
+      const isGoalControlMessage = isCodexGoalSlashInput(text);
       const steerControlMessage = async () => {
         await window.ade.agentChat.steer({ sessionId, text });
       };
@@ -2927,7 +2932,7 @@ export function AgentChatPane({
         try {
           await window.ade.agentChat.send({ sessionId, text });
         } catch (sendError) {
-          if (isTurnAlreadyActiveError(sendError)) {
+          if (!isGoalControlMessage && isTurnAlreadyActiveError(sendError)) {
             setError(null);
             try {
               await steerControlMessage();
@@ -2942,7 +2947,7 @@ export function AgentChatPane({
         }
       };
 
-      if (turnActiveBySession[sessionId]) {
+      if (turnActiveBySession[sessionId] && !isGoalControlMessage) {
         try {
           await steerControlMessage();
         } catch (steerError) {
@@ -4791,6 +4796,23 @@ export function AgentChatPane({
           ? detail.permissionModeTransition
           : null;
         if (transition === "entered_plan_mode" || transition === "exited_plan_mode") {
+          // Apply the transition to the composer's mode chip directly from this
+          // authoritative event. The session refresh below is async + debounced
+          // and only re-syncs the chip if the refetched session's mode actually
+          // changes — so if the refetch is stale/raced (e.g. during compaction)
+          // the chip would otherwise stay stuck on "plan" after the plan is
+          // accepted. Setting it here makes the change immediate and race-proof.
+          if (envelope.sessionId === selectedSessionIdRef.current) {
+            if (transition === "entered_plan_mode") {
+              setInteractionMode("plan");
+            } else {
+              setInteractionMode("default");
+              // The Claude mode picker also writes "plan" into claudePermissionMode
+              // (handleClaudeModeChange), so clear it too — otherwise the chip
+              // would still render "plan" via the access-mode fall-through.
+              setClaudePermissionMode((prev) => (prev === "plan" ? "default" : prev));
+            }
+          }
           scheduleSessionsRefresh();
         }
       }
@@ -6588,6 +6610,8 @@ export function AgentChatPane({
     const draftSnapshot = draft;
     const attachmentsSnapshot = attachments;
     const isLiteralSlashCommand = isProviderSlashCommandInput(text);
+    const isCodexGoalSlashCommand = sessionProvider === "codex" && isCodexGoalSlashInput(text);
+    const suppressOptimisticOutgoing = isCodexGoalSlashCommand;
     const deferComposerClear = selectedSessionId == null;
 
     submitInFlightRef.current = true;
@@ -6614,7 +6638,7 @@ export function AgentChatPane({
         : contextAttachmentsSnapshot.length
           ? "Attached issue context"
           : text;
-    if (selectedSessionId && !turnActiveBySession[selectedSessionId]) {
+    if (selectedSessionId && !turnActiveBySession[selectedSessionId] && !suppressOptimisticOutgoing) {
       setOptimisticOutgoingMessageSynced({
         sessionId: selectedSessionId,
         envelope: {
@@ -6672,6 +6696,10 @@ export function AgentChatPane({
           deliveryState: "queued",
         },
       });
+      const setOptimisticIfAllowed = (nextSessionId: string) => {
+        if (suppressOptimisticOutgoing) return;
+        setOptimisticOutgoingMessageSynced({ sessionId: nextSessionId, envelope: optimisticEnvelope(nextSessionId) });
+      };
 
       if (sessionId && !turnActive && (
         selectedModelChanged
@@ -6679,7 +6707,7 @@ export function AgentChatPane({
         || hasComputerUseSelectionChanged
         || shouldPromoteLightSession
       )) {
-        setOptimisticOutgoingMessageSynced({ sessionId, envelope: optimisticEnvelope(sessionId) });
+        setOptimisticIfAllowed(sessionId);
         const desc = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
         const provider = resolveChatRuntimeProvider(desc);
         await window.ade.agentChat.updateSession({
@@ -6697,7 +6725,7 @@ export function AgentChatPane({
           throw new Error("Unable to create chat session.");
         }
         justCreatedSession = true;
-        setOptimisticOutgoingMessageSynced({ sessionId, envelope: optimisticEnvelope(sessionId) });
+        setOptimisticIfAllowed(sessionId);
       }
       if (!sessionId) {
         throw new Error("Unable to create chat session.");
@@ -6729,7 +6757,7 @@ export function AgentChatPane({
 
       const sendMessageOrSteerIfBusy = async (retryOnStaleSteer = true) => {
         try {
-          setOptimisticOutgoingMessageSynced({ sessionId, envelope: optimisticEnvelope(sessionId) });
+          setOptimisticIfAllowed(sessionId);
           const sendInteractionMode: AgentChatInteractionMode | null =
             sessionProvider === "claude"
               ? (
@@ -6753,7 +6781,7 @@ export function AgentChatPane({
           // Race condition: the turn may have started between our state check
           // and the backend call. If so, automatically fall back to steer
           // instead of surfacing a confusing error to the user.
-          if (isTurnAlreadyActiveError(sendError)) {
+          if (!isCodexGoalSlashCommand && isTurnAlreadyActiveError(sendError)) {
             try {
               await steerMessage();
             } catch (steerError) {
@@ -6767,7 +6795,7 @@ export function AgentChatPane({
         }
       };
 
-      if (turnActiveBySession[sessionId]) {
+      if (turnActiveBySession[sessionId] && !isCodexGoalSlashCommand) {
         setOptimisticOutgoingMessageSynced(null);
         try {
           await steerMessage();
@@ -6842,6 +6870,7 @@ export function AgentChatPane({
     selectedSession,
     selectedSessionId,
     selectedSessionModelId,
+    setOptimisticOutgoingMessageSynced,
     sessionProvider,
     cursorRuntime,
     touchSession,

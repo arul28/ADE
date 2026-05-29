@@ -1,10 +1,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentChatFileRef } from "../../../shared/types/chat";
 import {
   buildClaudeV2Message,
+  buildClaudeV2MessageAsync,
   ANTHROPIC_IMAGE_MEDIA_TYPES,
   inferAttachmentMediaType,
   type SDKUserMessagePartial,
@@ -127,6 +128,23 @@ describe("buildClaudeV2Message", () => {
     const source = imgBlock.source as Record<string, unknown>;
 
     expect(Buffer.from(source.data as string, "base64").toString()).toBe("fake-image-bytes");
+  });
+
+  it("prefers dirty editor bytes when building async image attachments", async () => {
+    writeFakeImage("dirty-photo.png", "saved-image-bytes");
+    const attachments: AgentChatFileRef[] = [
+      { path: "dirty-photo.png", type: "image" },
+    ];
+
+    const result = await buildClaudeV2MessageAsync("Describe this image", attachments, {
+      baseDir: tmpDir,
+      getDirtyFileTextForPath: () => "unsaved-image-bytes",
+    });
+    const msg = result as SDKUserMessagePartial;
+    const imgBlock = msg.message.content[1] as Record<string, unknown>;
+    const source = imgBlock.source as Record<string, unknown>;
+
+    expect(Buffer.from(source.data as string, "base64").toString()).toBe("unsaved-image-bytes");
   });
 
   // ─────────────────────────────────────────────────────────────────────────

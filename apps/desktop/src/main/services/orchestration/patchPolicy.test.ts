@@ -112,6 +112,31 @@ describe("patchPolicy", () => {
     expect(denied.allowed).toBe(false);
   });
 
+  it("lead cannot self-approve via manifestPatch", () => {
+    const manifest = makeManifest();
+    const deniedPaths = [
+      { op: "add", path: "/leadState/planApprovedAt", value: "now" },
+      { op: "replace", path: "/leadState", value: { planApprovedAt: "now" } },
+      { op: "replace", path: "/leadState/planApprovalSummary", value: "approved" },
+      { op: "replace", path: "/phases/{id:planning}/status", value: "done" },
+      { op: "replace", path: "/phases/{id:planning}/completedAt", value: "now" },
+      { op: "replace", path: "/currentPhase", value: "developing" },
+    ] as const;
+    for (const op of deniedPaths) {
+      const result = checkPatchOp(op, { actorRole: "lead", manifest });
+      expect(result.allowed, op.path).toBe(false);
+    }
+  });
+
+  it("lead may still patch non-approval leadState fields", () => {
+    const manifest = makeManifest();
+    const allowed = checkPatchOp(
+      { op: "replace", path: "/leadState/lastSnapshotEtag", value: "etag-1" },
+      { actorRole: "lead", manifest },
+    );
+    expect(allowed.allowed).toBe(true);
+  });
+
   it("worker may patch its own rows but not another agent row or validationGate", () => {
     const manifest = makeManifest();
     const taskOk = checkPatchOp(

@@ -324,7 +324,7 @@ export type TerminalSessionChangedEvent = {
 export type ListSessionsArgs = {
   laneId?: string;
   status?: TerminalSessionStatus;
-  limit?: number;
+  limit?: number | null;
 };
 
 export type DeleteSessionArgs = {

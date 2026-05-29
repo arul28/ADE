@@ -285,7 +285,15 @@ export type CodexThreadTokenUsage = {
   modelContextWindow?: number | null;
 };
 
-export type CodexThreadGoalStatus = "active" | "paused" | "budget_limited" | "complete" | "cancelled" | "unknown";
+export type CodexThreadGoalStatus =
+  | "active"
+  | "paused"
+  | "blocked"
+  | "usage_limited"
+  | "budget_limited"
+  | "complete"
+  | "cancelled"
+  | "unknown";
 
 export type CodexThreadGoal = {
   objective?: string | null;

@@ -3,12 +3,11 @@
 Two related but distinct flows:
 
 - **Onboarding** — the fastest path to a usable installation and a usable
-  project. Covers installing the per-machine ADE runtime daemon as a login
-  service, putting `ade` on `PATH`, registering the project with the runtime
-  so every client (desktop, `ade code`, iOS) sees it, then detecting dev tools
-  and stack signals, suggesting a project config, optionally importing
-  existing git branches as lanes, and walking the user through AI providers,
-  GitHub, and optional integrations.
+  project. Covers registering the project with the runtime so every client
+  (desktop, `ade code`, iOS) sees it, detecting essentials, connecting AI
+  runtimes, GitHub, and Linear, and optionally attaching existing git
+  worktrees as lanes. The first-run project setup page is a single dashboard
+  of status cards rather than a blocking step-by-step wizard.
 - **Settings** — long-lived configuration organized by tab. Persists
   to `.ade/ade.yaml` (shared) and `.ade/local.yaml` (local) through
   `projectConfigService`.
@@ -69,7 +68,8 @@ Shared types and IPC:
     applySuggestedConfig, complete, setDismissed)
   - `ade.projectConfig.*` (get, validate, save, diffAgainstDisk,
     confirmTrust, export)
-  - `ade.project.*` (listRecent, openRepo, switchProjectToPath)
+  - `ade.project.*` (listRecent, openRepo, switchProjectToPath,
+    getSnapshot, initializeOrRepair, runIntegrityCheck)
   - `ade.ai.*` and settings-specific channels per integration
 - `apps/desktop/src/main/services/ipc/registerIpc.ts` — handler
   registrations.
@@ -83,10 +83,24 @@ Preload bridge:
 Renderer — onboarding:
 
 - `apps/desktop/src/renderer/components/onboarding/ProjectSetupPage.tsx`
-  — the project setup wizard used during first-run and on the manual
-  "re-run setup" flow. ~610 lines.
+  — first-run and manual "re-run setup" dashboard. It renders the project
+  header, Finish / Skip actions, the AI runtimes band, essentials row,
+  GitHub / Linear cards, and existing-worktree import card.
+- `apps/desktop/src/renderer/components/onboarding/AiRuntimesBand.tsx`
+  — compact setup surface for Claude, Codex, Cursor, Factory Droid, and
+  OpenCode. Shows runtime readiness, install / sign-in commands, Cursor API-key
+  entry, helper toggles, and per-helper model pickers.
+- `apps/desktop/src/renderer/components/onboarding/DevToolsRow.tsx`
+  — essential local tooling status for git and the terminal `ade` CLI.
+- `apps/desktop/src/renderer/components/onboarding/GitHubCard.tsx`,
+  `LinearCard.tsx`, `WorktreesCard.tsx` — setup cards for repository auth,
+  Linear OAuth / API-key auth, and importing existing worktrees as lanes.
+- `apps/desktop/src/renderer/components/onboarding/InputPopover.tsx`,
+  `RescanButton.tsx`, `onboardingTheme.ts` — shared setup-card controls and
+  brand/status styling tokens.
 - `apps/desktop/src/renderer/components/onboarding/DevToolsSection.tsx`
-  — dev tool detection (git, gh).
+  — legacy full-size dev tool detection surface retained for existing routes
+  that still mount it.
 - `apps/desktop/src/renderer/components/onboarding/OnboardingBootstrap.tsx`
   — top-level orchestrator: mounts the `TourHost`, auto-fires per-tab
   tours on route change, renders `DidYouKnow`, and pops the
@@ -162,19 +176,24 @@ Renderer — settings:
 
 - `apps/desktop/src/renderer/components/app/SettingsPage.tsx` — tab
   container. The current top-level sections are General, Appearance,
-  Workspace, AI, Mobile Push, Integrations, Lane Templates,
-  and Usage. Onboarding / Help / Tours route deep links land in
-  General (`TAB_ALIASES`); tutorial replay and tour entry points live
-  under the Help menu in the top bar, not as a Settings tab. The
-  legacy `OnboardingSection` was removed — its surface lives in the
-  top-bar Help menu and the onboarding store.
+  AI Connections, Background Jobs, Mobile Push, Integrations, Lane
+  Templates, and Lane Behavior. Legacy `workspace`, `project`, and
+  `context` deep links land in General; `providers` lands in AI
+  Connections; `automations` lands in Background Jobs. Tutorial replay
+  and tour entry points live under the Help menu in the top bar, not
+  as a Settings tab.
 - `apps/desktop/src/renderer/components/settings/GeneralSection.tsx`
-  — AI mode, task routing, terminal preferences, keybindings link,
-  and the embedded `AdeCliSection` (compact form) so the most common
-  terminal-CLI install/repair affordance lives next to the other
-  day-one settings without forcing a tab switch into Integrations.
-  Visual chat / theme controls now live in the dedicated Appearance
-  tab (`AppearanceSection.tsx`).
+  — project setup re-entry, the compact `AdeCliSection`, and the
+  project health / repair surface. Setup status comes from
+  `ade.onboarding.getStatus`; runtime daemon health lives in the
+  `AboutSection`, and AI provider controls live in AI Connections.
+- `apps/desktop/src/renderer/components/settings/ProjectSection.tsx`
+  — project `.ade` structure snapshot, shared/local/secret config paths,
+  health warnings, structure repair, and integrity-check controls.
+- `apps/desktop/src/renderer/components/settings/AboutSection.tsx`
+  — installed ADE version, packaged/dev badge, latest GitHub release
+  lookup, release notes link, manual update check button, and runtime
+  daemon install / health status when available.
 - `apps/desktop/src/renderer/components/settings/AdeCliSection.tsx`
   — surfaces `window.ade.adeCli.getStatus()` / `installForUser()`.
   Status carries `terminalInstalled`, `agentPathReady`,
@@ -186,16 +205,16 @@ Renderer — settings:
   target isn't on the user's `$PATH`. Agents launched by ADE always
   get the bundled CLI automatically; this surface is what makes
   `ade` available to the user's own terminals.
-- `apps/desktop/src/renderer/components/settings/WorkspaceSettingsSection.tsx`
-  + `ProjectSection.tsx` — project identity, base ref, paths.
-- `apps/desktop/src/renderer/components/settings/AiSettingsSection.tsx`
-  / `AiFeaturesSection.tsx` — AI provider preferences.
+- `apps/desktop/src/renderer/components/settings/AiFeaturesSection.tsx`
+  — Background Jobs settings for AI-powered helpers such as terminal
+  summaries, PR descriptions, commit messages, and chat titles.
 - `apps/desktop/src/renderer/components/settings/ProvidersSection.tsx`
-  — provider CLIs and models.
+  — AI Connections settings for provider CLIs, authentication, API keys,
+  and model availability.
 - `apps/desktop/src/renderer/components/settings/IntegrationsSettingsSection.tsx`
-  — GitHub, Linear, and computer-use backend readiness. The old
-  dedicated `ComputerUseSection.tsx` was removed; its content folded
-  in here.
+  — GitHub, Linear, and ADE CLI integration tabs with branded tab icons.
+  The old dedicated `ComputerUseSection.tsx` was removed; its content
+  folded into the relevant integration surfaces.
 - `apps/desktop/src/renderer/components/settings/LaneTemplatesSection.tsx`
   and `LaneBehaviorSection.tsx` — lane initialization recipes and
   lifecycle policies.
@@ -407,7 +426,8 @@ the consolidation that collapsed many top-level tabs into sub-sections.
 | Context doc prefs | `AdeDb` via `context:docs:preferences.v1` | provider, model, reasoning effort, event triggers |
 | Terminal preferences | `localStorage` under `ade.terminalPreferences.v1` | font size, line height, scrollback, font family |
 | Work view state | `localStorage` under `ade.workViewState.v1` | per-project and per-lane-project slices |
-| GitHub/Linear credentials | Keychain via `safeStorage` | tokens encrypted, banner on decryption failure |
+| GitHub credentials | Keychain via `safeStorage` | tokens encrypted, banner on decryption failure |
+| Linear credentials | Active project's `.ade/secrets` | project-local token/OAuth state, encrypted on disk |
 
 ## AI mode and provider behavior
 

@@ -460,6 +460,41 @@ function writeFileByDescriptor(
  * Re-resolve and validate a file at open time, then read it through the file
  * descriptor so callers do not rely on a previously checked path string.
  */
+export type DirtyFileTextLookup = (
+  absPath: string,
+) => string | undefined | Promise<string | undefined>;
+
+/**
+ * Read file bytes for agent/tool consumption, preferring unsaved editor buffers
+ * from the renderer when available.
+ */
+export async function readAgentAccessibleFileBytes(args: {
+  rootPath: string;
+  resolvedPath: string;
+  getDirtyFileTextForPath?: DirtyFileTextLookup;
+}): Promise<Buffer> {
+  const root = path.resolve(args.rootPath);
+  let absPath: string;
+  try {
+    absPath = resolvePathWithinRoot(root, args.resolvedPath, { allowMissing: false });
+  } catch {
+    return readFileWithinRootSecure(root, args.resolvedPath);
+  }
+
+  if (args.getDirtyFileTextForPath) {
+    try {
+      const dirty = await Promise.resolve(args.getDirtyFileTextForPath(absPath));
+      if (typeof dirty === "string") {
+        return Buffer.from(dirty, "utf8");
+      }
+    } catch {
+      // Fall back to on-disk content when renderer lookup fails.
+    }
+  }
+
+  return readFileWithinRootSecure(root, absPath);
+}
+
 export function readFileWithinRootSecure(root: string, candidate: string): Buffer {
   let expectedPath: string;
   try {

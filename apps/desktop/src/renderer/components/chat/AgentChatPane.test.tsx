@@ -2263,6 +2263,57 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("exits plan mode in the composer chip when an exit notice arrives even if the session refetch is stale", async () => {
+    // Reproduces the production bug: the backend accepted the plan and emitted
+    // the exit notice, but the debounced session refetch still reports plan
+    // (e.g. raced by the compaction that immediately follows). The chip must
+    // still leave plan, driven by the authoritative transition notice.
+    const session = buildSession("session-1", {
+      status: "idle",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+      permissionMode: "plan",
+      interactionMode: "plan",
+      // The Claude mode picker writes "plan" into claudePermissionMode too, so
+      // exercise that state — the chip must leave plan via BOTH fields.
+      claudePermissionMode: "plan",
+    });
+    const sessions = [session];
+    const { emitChatEvent } = installAdeMocks({
+      includeClaudeModel: true,
+      sessions,
+    });
+
+    renderPane(session);
+
+    const trigger = await screen.findByRole("button", { name: "Claude permission mode" });
+    await waitFor(() => {
+      expect(trigger.textContent ?? "").toContain("Plan");
+    });
+
+    // Intentionally leave sessions[0] in plan mode: the refetch triggered by the
+    // notice returns stale data, so the effect that syncs the chip from the
+    // session never sees a mode change. Only the direct notice handler can fix
+    // the chip here.
+    emitChatEvent({
+      sessionId: session.sessionId,
+      timestamp: "2026-03-24T07:20:00.000Z",
+      event: {
+        type: "system_notice",
+        noticeKind: "info",
+        message: "Session exited plan mode",
+        detail: {
+          permissionModeTransition: "exited_plan_mode",
+        },
+      },
+    });
+
+    await waitFor(() => {
+      expect(trigger.textContent ?? "").not.toContain("Plan");
+    });
+  });
+
   it("moves the most recently selected work chat tab to the top", async () => {
     const newerSession = buildSession("session-newer", {
       title: "Newer chat",

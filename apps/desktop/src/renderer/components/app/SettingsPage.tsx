@@ -1,12 +1,12 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { useSearchParams, useLocation } from "react-router-dom";
-import { Brain, GearSix, Stack, FolderSimple, Plugs, Palette, DeviceMobile } from "@phosphor-icons/react";
+import { Brain, GearSix, Stack, Plugs, Palette, DeviceMobile, Robot } from "@phosphor-icons/react";
 import { GeneralSection } from "../settings/GeneralSection";
 import { AppearanceSection } from "../settings/AppearanceSection";
 import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
 import { LaneBehaviorSection } from "../settings/LaneBehaviorSection";
-import { AiSettingsSection } from "../settings/AiSettingsSection";
-import { WorkspaceSettingsSection } from "../settings/WorkspaceSettingsSection";
+import { ProvidersSection } from "../settings/ProvidersSection";
+import { AiFeaturesSection } from "../settings/AiFeaturesSection";
 import { IntegrationsSettingsSection } from "../settings/IntegrationsSettingsSection";
 import { MobilePushPanel } from "../settings/MobilePushPanel";
 import { COLORS, SANS_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
@@ -14,8 +14,8 @@ import { COLORS, SANS_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 const SECTIONS = [
   { id: "general", label: "General", icon: GearSix },
   { id: "appearance", label: "Appearance", icon: Palette },
-  { id: "workspace", label: "Workspace", icon: FolderSimple },
-  { id: "ai", label: "AI", icon: Brain },
+  { id: "ai", label: "AI Connections", icon: Brain },
+  { id: "background-jobs", label: "Background Jobs", icon: Robot },
   { id: "mobile-push", label: "Mobile Push", icon: DeviceMobile },
   { id: "integrations", label: "Integrations", icon: Plugs },
   { id: "lane-templates", label: "Lane Templates", icon: Stack },
@@ -24,9 +24,11 @@ const SECTIONS = [
 type SectionId = (typeof SECTIONS)[number]["id"];
 
 const TAB_ALIASES: Record<string, SectionId> = {
-  project: "workspace",
-  context: "workspace",
+  workspace: "general",
+  project: "general",
+  context: "general",
   providers: "ai",
+  automations: "background-jobs",
   sync: "mobile-push",
   devices: "mobile-push",
   "multi-device": "mobile-push",
@@ -144,7 +146,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
             <button
               key={s.id}
               type="button"
-              data-tour={`settings.${s.id === "lane-templates" ? "laneTemplates" : s.id === "mobile-push" ? "mobilePush" : s.id}`}
+              data-tour={`settings.${s.id === "lane-templates" ? "laneTemplates" : s.id === "mobile-push" ? "mobilePush" : s.id === "background-jobs" ? "backgroundJobs" : s.id}`}
               onClick={() => navigateToSection(s.id)}
               onMouseEnter={() => setHoveredId(s.id)}
               onMouseLeave={() => setHoveredId(null)}
@@ -168,8 +170,8 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
       >
         {section === "general" && <GeneralSection />}
         {section === "appearance" && <AppearanceSection />}
-        {section === "workspace" && <WorkspaceSettingsSection />}
-        {section === "ai" && <AiSettingsSection />}
+        {section === "ai" && <ProvidersSection />}
+        {section === "background-jobs" && <AiFeaturesSection />}
         {section === "mobile-push" && <MobilePushPanel />}
         {section === "integrations" && <IntegrationsSettingsSection />}
         {section === "lane-templates" && (

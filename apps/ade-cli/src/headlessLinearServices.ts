@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import path from "node:path";
 import type { Logger } from "../../desktop/src/main/services/logging/logger";
 import type { AdeDb } from "../../desktop/src/main/services/state/kvDb";
 import type { createLaneService } from "../../desktop/src/main/services/lanes/laneService";
@@ -1135,8 +1136,12 @@ export function createHeadlessGitHubService(
   return service;
 }
 
-function createHeadlessLinearCredentialService(): HeadlessLinearCredentialService {
-  const credentialStore = new EncryptedFileCredentialStore();
+function createHeadlessLinearCredentialService(args: {
+  adeDir: string;
+}): HeadlessLinearCredentialService {
+  const credentialStore = new EncryptedFileCredentialStore({
+    secretsDir: path.join(args.adeDir, "secrets"),
+  });
   const tokenKey = "linear.token.v1";
   const authModeKey = "linear.authMode.v1";
   const tokenExpiresAtKey = "linear.tokenExpiresAt.v1";
@@ -1638,7 +1643,7 @@ export function createHeadlessLinearServices(
     logger: args.logger,
   });
   const linearCredentialService =
-    createHeadlessLinearCredentialService() as any;
+    createHeadlessLinearCredentialService({ adeDir: args.adeDir }) as any;
   const githubService = createHeadlessGitHubService(
     args.projectRoot,
     args.logger,

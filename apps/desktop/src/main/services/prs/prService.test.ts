@@ -2085,6 +2085,31 @@ describe("prService.createLaneFromPrBranch", () => {
     expect(laneService.importBranch).not.toHaveBeenCalled();
   });
 
+  it("blocks when the deeplink repo does not match the active project origin", async () => {
+    const githubService = makeBranchPrGithubService({
+      getRepoOrThrow: vi.fn(async () => REPO),
+      apiRequest: vi.fn(),
+    });
+    const laneService = {
+      ...makeLaneService([primaryLane]),
+      importBranch: vi.fn(),
+    } as any;
+    const db = makeMockDb();
+    installPullRequestRowStore(db);
+    const { service } = buildService({ db, githubService, laneService });
+
+    const result = await serviceWithPrBranchActions(service).preflightCreateLaneFromPrBranch({
+      repoOwner: "other-owner",
+      repoName: "other-repo",
+      githubPrNumber: 404,
+    });
+
+    expect(preflightDisposition(result.preflight)).toBe("blocked");
+    expect(result.preflight.blockingConflict?.code).toBe("project_repo_mismatch");
+    expect(githubService.apiRequest).not.toHaveBeenCalled();
+    expect(laneService.importBranch).not.toHaveBeenCalled();
+  });
+
   it("blocks when another ADE lane already owns the PR head branch", async () => {
     const branchOwner = makeFakeLane({
       id: "lane-branch-owner",
