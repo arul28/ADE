@@ -276,15 +276,19 @@ export function Drawer({
           // The top edge is a faint hairline separator for every card except the
           // first (whose top would otherwise double up the header rule). It tints
           // violet on the selected card to reinforce the selection rail.
-          const rowBorderColor = isSelected ? theme.color.violet : theme.color.borderSoft;
+          // Each lane is a rounded card. The box border IS the single selection
+          // indicator — violet when selected, neutral otherwise — so there's no
+          // second inner rail (that was the confusing "two lines"). Same two
+          // border rows as before, so the mouse hit-test cadence is unchanged.
+          const cardBorderColor = isSelected ? theme.color.violet : theme.color.border;
+          const laneContentWidth = Math.max(10, cardInnerWidth - 4);
           return (
             <Box
               key={lane.id}
-              borderStyle={index > 0 ? LANE_ROW_HAIRLINE : LANE_ROW_BLANK}
-              borderColor={rowBorderColor}
-              borderLeft={false}
-              borderRight={false}
+              borderStyle="round"
+              borderColor={cardBorderColor}
               width={cardInnerWidth}
+              paddingX={1}
               flexDirection="column"
               marginTop={index > 0 ? 1 : 0}
             >
@@ -292,7 +296,7 @@ export function Drawer({
                 lane={lane}
                 status={status}
                 prefix={meta.prefix}
-                width={cardInnerWidth}
+                width={laneContentWidth}
                 selected={isSelected}
                 hovered={isHovered}
                 active={lane.id === activeLaneId}
@@ -306,7 +310,7 @@ export function Drawer({
                   sessions={laneChatSessions}
                   activeSessionId={activeSessionId}
                   selectedChatIndex={selectedChatIndex}
-                  width={cardInnerWidth}
+                  width={laneContentWidth}
                   worktreeAvailable={worktreeAvailable}
                   interactive={mode === "chats"}
                   hoveredId={hoveredId}
@@ -336,36 +340,10 @@ export function Drawer({
   );
 }
 
-// Flat lane-row chrome. The drawer's mouse hit-test (drawerMouseHitForLine in
-// app.tsx) reserves exactly two border rows per lane card (a top row and a
-// bottom row) plus a 1-row margin between cards, so we MUST keep both border
-// rows physically present. Instead of a boxed card (whose left/right bars and
-// padding inset the content and stack a second vertical line next to the
-// selection rail), we drop the side borders and keep only the top/bottom edge
-// rows: the top edge becomes a faint hairline separator between cards, the
-// bottom edge is a blank spacer. Content then starts flush at the left and uses
-// the full drawer width. Border-character maps below; left/right are disabled
-// via borderLeft/borderRight={false} so these glyphs never render on the sides.
-const LANE_ROW_HAIRLINE = {
-  topLeft: "─",
-  top: "─",
-  topRight: "─",
-  bottomLeft: " ",
-  bottom: " ",
-  bottomRight: " ",
-  left: " ",
-  right: " ",
-} as const;
-const LANE_ROW_BLANK = {
-  topLeft: " ",
-  top: " ",
-  topRight: " ",
-  bottomLeft: " ",
-  bottom: " ",
-  bottomRight: " ",
-  left: " ",
-  right: " ",
-} as const;
+// Lane-card chrome note: the drawer's mouse hit-test (drawerMouseHitForLine in
+// app.tsx) reserves exactly two border rows per lane card (top + bottom) plus a
+// 1-row margin between cards. The rounded box used per lane keeps exactly those
+// two border rows, so the hit-test cadence stays correct.
 
 /**
  * A single-row titled hairline-rule section header (glyph + bold title + count
@@ -537,10 +515,9 @@ function LaneCard({
   // without parsing the chip text. Green is reserved for the live dot, amber for
   // awaiting, red for failed; idle stays a dim hollow ○, primary an info dot.
   const dot = statusGlyph(laneStatusDot(status));
-  // Leading chrome on line 1: a selection rail (1 cell) + space, then the status
-  // dot (1 cell) + space. Reserved on every row so names stay left-aligned
-  // whether or not the row is selected.
-  const LEAD_WIDTH = 4;
+  // Leading chrome on line 1: the status dot (1 cell) + space. (The selection
+  // rail is gone — the card's box border now indicates selection.)
+  const LEAD_WIDTH = 2;
 
   const indicatorWidth = prefix.length;
   const chipWidth = chipText ? chipText.length : 0;
@@ -585,8 +562,6 @@ function LaneCard({
       <Box>
         <Text>
           {prefix ? <Text color={theme.color.t4}>{prefix}</Text> : null}
-          <Rail on={selected} />
-          <Text> </Text>
           <Text color={dot.color} bold={status === "running" || status === "attention"}>{dot.glyph} </Text>
           <Text color={nameColor} bold={selected || status === "primary"}>
             {pad(name, nameMax)}
