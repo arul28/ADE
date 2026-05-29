@@ -36,6 +36,10 @@ function statusPillClass(status: CodexThreadGoal["status"]): string {
       return "bg-fg/8 text-fg/55 ring-1 ring-inset ring-fg/15";
     case "cancelled":
       return "bg-fg/8 text-fg/45 ring-1 ring-inset ring-fg/15";
+    case "blocked":
+      return "bg-rose-500/12 text-rose-100 ring-1 ring-inset ring-rose-400/25";
+    case "usage_limited":
+      return "bg-sky-500/12 text-sky-100 ring-1 ring-inset ring-sky-400/25";
     case "budget_limited":
     case "active":
     default:
@@ -46,6 +50,7 @@ function statusPillClass(status: CodexThreadGoal["status"]): string {
 function statusLabel(status: CodexThreadGoal["status"]): string {
   if (!status || status === "unknown") return "active";
   if (status === "budget_limited") return "active";
+  if (status === "usage_limited") return "usage hit";
   return status.replace("_", " ");
 }
 

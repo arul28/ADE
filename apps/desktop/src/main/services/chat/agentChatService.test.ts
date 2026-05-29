@@ -11267,6 +11267,129 @@ describe("createAgentChatService", () => {
       });
     });
 
+    it("sets typed Codex /goal text and starts a real app-server turn", async () => {
+      mockState.codexResponseOverrides.set("thread/goal/set", (payload) => {
+        const params = payload.params as Record<string, unknown>;
+        return {
+          goal: {
+            objective: params.objective,
+            status: params.status ?? "active",
+            tokenBudget: null,
+          },
+        };
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/goal Ship CLI parity",
+      }, { awaitDispatch: true });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      const goalRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/goal/set");
+      expect(goalRequest?.params).toMatchObject({
+        threadId: expect.any(String),
+        objective: "Ship CLI parity",
+        status: "active",
+      });
+      const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      const turnParams = turnStartRequest?.params as { input?: Array<{ text?: unknown }> } | undefined;
+      const turnInputText = turnParams?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
+      expect(turnInputText).toContain("Ship CLI parity");
+      expect(turnInputText).not.toContain("/goal");
+      expect(events.some((event) =>
+        event.event.type === "user_message"
+        && event.event.text.includes("/goal")
+      )).toBe(false);
+      expect(events.some((event) =>
+        event.event.type === "status"
+        && event.event.turnStatus === "completed"
+      )).toBe(false);
+      expect(events.some((event) =>
+        event.event.type === "done"
+        && event.event.status === "completed"
+      )).toBe(false);
+    });
+
+    it("asks before replacing an existing typed Codex goal", async () => {
+      mockState.codexResponseOverrides.set("thread/goal/set", (payload) => {
+        const params = payload.params as Record<string, unknown>;
+        return {
+          goal: {
+            objective: params.objective,
+            status: params.status ?? "active",
+            tokenBudget: null,
+          },
+        };
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/goal set Existing goal",
+      }, { awaitDispatch: true });
+      mockState.codexRequestPayloads = [];
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/goal Replacement goal",
+      }, { awaitDispatch: true });
+
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/goal/set")).toBe(false);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => {
+          const detail = event.event.type === "approval_request"
+            ? (event.event.detail as { request?: PendingInputRequest } | undefined)
+            : undefined;
+          return event.event.type === "approval_request"
+            && detail?.request?.providerMetadata?.kind === "codex_goal_replace";
+        },
+      );
+      const request = (approvalEvent.event.detail as { request?: PendingInputRequest } | undefined)?.request;
+      expect(request?.questions[0]?.options?.map((option) => option.value)).toEqual(["update_goal", "clear_goal"]);
+
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: approvalEvent.event.itemId,
+        decision: "accept",
+        answers: {
+          goal_action: "update_goal",
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) =>
+          payload.method === "thread/goal/set"
+          && (payload.params as { objective?: unknown } | undefined)?.objective === "Replacement goal"
+        )).toBe(true);
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+    });
+
     it("automatically removes incoming Codex goal token limits and resumes limited goals", async () => {
       mockState.codexResponseOverrides.set("thread/goal/set", (payload) => {
         const params = payload.params as Record<string, unknown>;
@@ -11478,7 +11601,7 @@ describe("createAgentChatService", () => {
       expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
     });
 
-    it("completes Codex /goal slash commands when the app-server RPC fails", async () => {
+    it("reports Codex /goal slash command failures without completing a fake slash turn", async () => {
       mockState.delayedCodexMethods.add("thread/goal/set");
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
@@ -11518,11 +11641,46 @@ describe("createAgentChatService", () => {
       expect(events.some((event) =>
         event.event.type === "status"
         && event.event.turnStatus === "completed"
-      )).toBe(true);
+      )).toBe(false);
       expect(events.some((event) =>
         event.event.type === "done"
         && event.event.status === "completed"
-      )).toBe(true);
+      )).toBe(false);
+    });
+
+    it("routes Codex goal edits through goal RPC while a turn is active instead of turn steer", async () => {
+      mockState.codexResponseOverrides.set("thread/goal/set", (payload) => {
+        const params = payload.params as Record<string, unknown>;
+        return {
+          goal: {
+            objective: params.objective,
+            status: params.status ?? "active",
+            tokenBudget: null,
+          },
+        };
+      });
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start a long-running turn.",
+      }, { awaitDispatch: true });
+
+      mockState.codexRequestPayloads = [];
+      await service.steer({
+        sessionId: session.id,
+        text: "/goal set Updated from UI",
+      });
+
+      expect(mockState.codexRequestPayloads.find((payload) => payload.method === "thread/goal/set")?.params).toMatchObject({
+        objective: "Updated from UI",
+      });
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/steer")).toBe(false);
     });
 
     it("routes Codex /inject to thread/inject_items and emits a notice", async () => {

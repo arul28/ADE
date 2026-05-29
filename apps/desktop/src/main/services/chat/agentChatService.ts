@@ -2201,8 +2201,10 @@ function normalizeCodexGoalPayload(value: unknown): CodexThreadGoal | null {
   const goalRecord = asRecord(record.goal) ?? record;
   const statusRaw = stringOrNull(goalRecord.status)?.toLowerCase() ?? null;
   const status: CodexThreadGoal["status"] =
-    statusRaw === "active" || statusRaw === "paused" || statusRaw === "complete" || statusRaw === "cancelled"
+    statusRaw === "active" || statusRaw === "paused" || statusRaw === "blocked" || statusRaw === "complete" || statusRaw === "cancelled"
       ? statusRaw
+      : statusRaw === "usagelimited" || statusRaw === "usage_limited" || statusRaw === "usage-limited"
+        ? "usage_limited"
       : statusRaw === "budgetlimited" || statusRaw === "budget_limited" || statusRaw === "budget-limited"
         ? "budget_limited"
       : statusRaw
@@ -2218,6 +2220,66 @@ function normalizeCodexGoalPayload(value: unknown): CodexThreadGoal | null {
     ...(status ? { status } : {}),
   };
   return Object.values(normalized).some((entry) => entry != null) ? normalized : null;
+}
+
+type CodexGoalSettableStatus = "active" | "paused" | "blocked" | "complete";
+
+type ParsedCodexGoalSlashCommand =
+  | { kind: "show" }
+  | { kind: "clear" }
+  | { kind: "status"; status: CodexGoalSettableStatus }
+  | { kind: "objective"; objective: string; explicitSet: boolean }
+  | { kind: "invalid"; message: string };
+
+function isCodexGoalSlashInput(value: string): boolean {
+  return /^\/goal(?:\s|$)/i.test(value.trim());
+}
+
+function normalizeCodexGoalObjectiveText(value: string | null | undefined): string {
+  return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function parseCodexGoalSlashCommand(value: string): ParsedCodexGoalSlashCommand {
+  const goalArgs = value.trim().replace(/^\/goal(?:\s+|$)/i, "").trim();
+  if (!goalArgs || /^show$/i.test(goalArgs) || /^status$/i.test(goalArgs)) {
+    return { kind: "show" };
+  }
+  if (/^(clear|reset|none)$/i.test(goalArgs)) {
+    return { kind: "clear" };
+  }
+
+  const statusMatch = /^status\s+(active|paused|blocked|complete)$/i.exec(goalArgs);
+  if (statusMatch) {
+    return { kind: "status", status: statusMatch[1]!.toLowerCase() as CodexGoalSettableStatus };
+  }
+  if (/^status(?:\s|$)/i.test(goalArgs)) {
+    return { kind: "invalid", message: "Usage: /goal status active|paused|blocked|complete." };
+  }
+
+  const directStatusMatch = /^(pause|resume|block|complete)$/i.exec(goalArgs);
+  if (directStatusMatch) {
+    const rawStatus = directStatusMatch[1]!.toLowerCase();
+    return {
+      kind: "status",
+      status: rawStatus === "pause"
+        ? "paused"
+        : rawStatus === "resume"
+          ? "active"
+          : rawStatus === "block"
+            ? "blocked"
+            : "complete",
+    };
+  }
+
+  const explicitSetMatch = /^set(?:\s+([\s\S]*))?$/i.exec(goalArgs);
+  if (explicitSetMatch) {
+    const objective = normalizeCodexGoalObjectiveText(explicitSetMatch[1] ?? "");
+    return objective
+      ? { kind: "objective", objective, explicitSet: true }
+      : { kind: "invalid", message: "Usage: /goal <objective>." };
+  }
+
+  return { kind: "objective", objective: normalizeCodexGoalObjectiveText(goalArgs), explicitSet: false };
 }
 
 function normalizeCodexWebSearchAction(value: unknown): CodexWebSearchAction | null {
@@ -9288,9 +9350,6 @@ export function createAgentChatService(args: {
     if (!managed.runtime || managed.runtime.kind !== "codex") {
       throw new Error(`Codex runtime is not available for session '${managed.session.id}'.`);
     }
-    if (managed.runtime.activeTurnId) {
-      throw new Error("A turn is already active. Use steer or interrupt.");
-    }
     const runtime = managed.runtime;
     const attachments = args.attachments ?? [];
     const contextAttachments = args.contextAttachments ?? [];
@@ -9308,6 +9367,262 @@ export function createAgentChatService(args: {
       onDispatched = undefined;
       callback();
     };
+    const slashText = args.promptText.trim();
+
+    const emitCodexGoalNotice = (
+      message: string,
+      noticeKind: "info" | "error" = "info",
+    ): void => {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind,
+        ...(noticeKind === "error" ? { severity: "error" as const } : {}),
+        message,
+        ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
+      });
+    };
+    const completeCodexGoalControl = (message?: string, noticeKind: "info" | "error" = "info") => {
+      markDispatched();
+      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+      if (message) {
+        emitCodexGoalNotice(message, noticeKind);
+      }
+      persistChatState(managed);
+    };
+    const requestCodexGoalControl = async <T>(
+      method: string,
+      params: Record<string, unknown>,
+      failurePrefix: string,
+    ): Promise<T | null> => {
+      try {
+        return await runtime.request<T>(method, params, {
+          timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS,
+        });
+      } catch (error) {
+        completeCodexGoalControl(
+          `${failurePrefix}: ${error instanceof Error ? error.message : String(error)}`,
+          "error",
+        );
+        if (isCodexRequestTimeoutError(error)) {
+          teardownRuntime(managed, "handle_close");
+        }
+        return null;
+      }
+    };
+    const applyCodexGoalUpdateWithFallback = (
+      value: unknown,
+      fallback: CodexThreadGoal | null,
+    ): CodexThreadGoal | null => {
+      const normalized = normalizeCodexGoalPayload(value);
+      if (normalized) {
+        return applyCodexGoalUpdate(managed, runtime, normalized);
+      }
+      managed.session.codexGoal = fallback;
+      emitChatEvent(managed, {
+        type: "codex_goal_updated",
+        goal: fallback,
+        ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
+      });
+      maybeClearCodexGoalBudget(managed, runtime, fallback, runtime.activeTurnId ?? undefined);
+      return fallback;
+    };
+    const setCodexGoalObjective = async (objective: string): Promise<CodexThreadGoal | null> => {
+      const response = await requestCodexGoalControl<{ goal?: unknown }>("thread/goal/set", {
+        threadId: managed.session.threadId,
+        objective,
+        status: "active",
+      }, "Codex goal command failed");
+      if (!response) return null;
+      return applyCodexGoalUpdateWithFallback(response, {
+        objective,
+        status: "active",
+        tokenBudget: null,
+      });
+    };
+    const setCodexGoalStatus = async (status: CodexGoalSettableStatus): Promise<CodexThreadGoal | null> => {
+      const previous = managed.session.codexGoal ?? null;
+      const response = await requestCodexGoalControl<{ goal?: unknown }>("thread/goal/set", {
+        threadId: managed.session.threadId,
+        status,
+      }, "Codex goal command failed");
+      if (!response) return null;
+      return applyCodexGoalUpdateWithFallback(response, previous
+        ? { ...previous, status }
+        : { status });
+    };
+    const clearCodexGoal = async (): Promise<boolean> => {
+      const response = await requestCodexGoalControl("thread/goal/clear", {
+        threadId: managed.session.threadId,
+      }, "Codex goal command failed");
+      if (!response) return false;
+      managed.session.codexGoal = null;
+      emitChatEvent(managed, {
+        type: "codex_goal_cleared",
+        ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
+      });
+      return true;
+    };
+    const startCodexGoalObjectiveTurn = async (objective: string, dispatched?: () => void): Promise<void> => {
+      await sendCodexMessage(managed, {
+        promptText: objective,
+        userText: objective,
+        displayText: objective,
+        attachments,
+        contextAttachments,
+        resolvedAttachments,
+        metadata: args.metadata,
+        laneDirectiveKey: null,
+        providerSlashCommand: false,
+        optimisticCodexTurnStart: false,
+        ...(dispatched ? { onDispatched: dispatched } : {}),
+      });
+    };
+    const handleCodexGoalReplaceResponse = async (
+      currentObjective: string,
+      nextObjective: string,
+      response: { decision: string; answers: Record<string, string[]>; responseText: string | null },
+    ): Promise<void> => {
+      const answer = normalizeCodexGoalObjectiveText(
+        response.answers.goal_action?.[0] ?? response.responseText ?? "",
+      ).toLowerCase();
+      if (response.decision !== "accept" && response.decision !== "accept_for_session") {
+        emitCodexGoalNotice("Keeping the current Codex goal.");
+        persistChatState(managed);
+        return;
+      }
+      if (answer === "clear_goal") {
+        if (await clearCodexGoal()) {
+          emitCodexGoalNotice("Codex goal cleared.");
+          persistChatState(managed);
+        }
+        return;
+      }
+      if (answer !== "update_goal") {
+        emitCodexGoalNotice("Keeping the current Codex goal.");
+        persistChatState(managed);
+        return;
+      }
+      const updatedGoal = await setCodexGoalObjective(nextObjective);
+      if (!updatedGoal) return;
+      emitCodexGoalNotice("Codex goal updated.");
+      persistChatState(managed);
+      if (!runtime.activeTurnId) {
+        const preparedGoalTurn = prepareSendMessage({
+          sessionId: managed.session.id,
+          text: nextObjective,
+          displayText: nextObjective,
+        });
+        if (!preparedGoalTurn) return;
+        void executePreparedSendMessage(preparedGoalTurn).catch((error) => {
+          logger.warn("agent_chat.codex_goal_followup_failed", {
+            sessionId: managed.session.id,
+            currentObjective,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          emitDispatchedSendFailure(preparedGoalTurn, error);
+        });
+      }
+    };
+
+    if (isCodexGoalSlashInput(slashText)) {
+      const parsedGoalCommand = parseCodexGoalSlashCommand(slashText);
+      if (parsedGoalCommand.kind === "invalid") {
+        completeCodexGoalControl(parsedGoalCommand.message);
+        return;
+      }
+      if (parsedGoalCommand.kind === "show") {
+        const response = await requestCodexGoalControl<{ goal?: unknown }>("thread/goal/get", {
+          threadId: managed.session.threadId,
+        }, "Codex goal command failed");
+        if (!response) return;
+        const goal = applyCodexGoalUpdate(managed, runtime, response);
+        completeCodexGoalControl(goal?.objective ? "Codex goal is current." : "No active Codex goal.");
+        return;
+      }
+      if (parsedGoalCommand.kind === "clear") {
+        if (await clearCodexGoal()) {
+          completeCodexGoalControl("Codex goal cleared.");
+        }
+        return;
+      }
+      if (parsedGoalCommand.kind === "status") {
+        const updatedGoal = await setCodexGoalStatus(parsedGoalCommand.status);
+        if (!updatedGoal) return;
+        completeCodexGoalControl(`Codex goal ${parsedGoalCommand.status === "active" ? "resumed" : parsedGoalCommand.status}.`);
+        return;
+      }
+
+      const existingObjective = normalizeCodexGoalObjectiveText(managed.session.codexGoal?.objective);
+      const shouldConfirmReplacement = Boolean(existingObjective)
+        && existingObjective !== parsedGoalCommand.objective
+        && !parsedGoalCommand.explicitSet;
+      if (shouldConfirmReplacement) {
+        const responsePromise = requestChatInput({
+          chatSessionId: managed.session.id,
+          title: "Replace Codex goal?",
+          body: `Current goal: ${existingObjective}\nNew goal: ${parsedGoalCommand.objective}`,
+          source: "codex",
+          kind: "structured_question",
+          allowsFreeform: false,
+          providerMetadata: {
+            kind: "codex_goal_replace",
+            currentObjective: existingObjective,
+            nextObjective: parsedGoalCommand.objective,
+          },
+          eventDescription: "Codex goal replacement needs confirmation.",
+          questions: [{
+            id: "goal_action",
+            header: "Goal",
+            question: "A Codex goal already exists. What should ADE do?",
+            allowsFreeform: false,
+            options: [
+              {
+                label: "Update goal",
+                value: "update_goal",
+                description: "Replace the current goal and continue with the new one.",
+                recommended: true,
+              },
+              {
+                label: "Clear goal",
+                value: "clear_goal",
+                description: "Remove the current goal without starting a new turn.",
+              },
+            ],
+          }],
+        });
+        completeCodexGoalControl();
+        responsePromise
+          .then((response) => handleCodexGoalReplaceResponse(
+            existingObjective,
+            parsedGoalCommand.objective,
+            response,
+          ))
+          .catch((error) => {
+            logger.warn("agent_chat.codex_goal_replace_prompt_failed", {
+              sessionId: managed.session.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            emitCodexGoalNotice(
+              `Codex goal command failed: ${error instanceof Error ? error.message : String(error)}`,
+              "error",
+            );
+          });
+        return;
+      }
+
+      const updatedGoal = await setCodexGoalObjective(parsedGoalCommand.objective);
+      if (!updatedGoal) return;
+      if (parsedGoalCommand.explicitSet || runtime.activeTurnId) {
+        completeCodexGoalControl("Codex goal updated.");
+        return;
+      }
+      await startCodexGoalObjectiveTurn(parsedGoalCommand.objective, markDispatched);
+      return;
+    }
+
+    if (runtime.activeTurnId) {
+      throw new Error("A turn is already active. Use steer or interrupt.");
+    }
     setSessionActive(managed);
     if (!args.optimisticCodexTurnStart) {
       emitPreparedUserMessage(managed, {
@@ -9450,7 +9765,6 @@ export function createAgentChatService(args: {
       return;
     }
 
-    const slashText = args.promptText.trim();
     let effectivePromptText = args.promptText;
     const planSlashCommand = /^\/plan(?:\s|$)/i.test(slashText);
 
@@ -9555,60 +9869,6 @@ export function createAgentChatService(args: {
           turnId,
         });
       });
-      return;
-    }
-
-    if (/^\/goal(?:\s|$)/i.test(slashText)) {
-      const goalArgs = slashText.replace(/^\/goal(?:\s+|$)/i, "").trim();
-      if (!goalArgs || /^show$/i.test(goalArgs) || /^status$/i.test(goalArgs)) {
-        const response = await requestInlineCodexSlash<{ goal?: unknown }>("thread/goal/get", {
-          threadId: managed.session.threadId,
-        }, "Codex goal command failed");
-        if (!response.ok) return;
-        const goal = applyCodexGoalUpdate(managed, runtime, response.result);
-        completeInlineCodexSlash(goal?.objective ? "Codex goal is current." : "No active Codex goal.");
-        return;
-      }
-      if (/^(clear|reset|none)$/i.test(goalArgs)) {
-        const response = await requestInlineCodexSlash("thread/goal/clear", {
-          threadId: managed.session.threadId,
-        }, "Codex goal command failed");
-        if (!response.ok) return;
-        managed.session.codexGoal = null;
-        emitChatEvent(managed, { type: "codex_goal_cleared" });
-        completeInlineCodexSlash("Codex goal cleared.");
-        return;
-      }
-      const statusMatch = /^status\s+(active|paused|complete)$/i.exec(goalArgs);
-      const pauseResumeMatch = /^(pause|resume)$/i.exec(goalArgs);
-      if (/^status(?:\s|$)/i.test(goalArgs) && !statusMatch) {
-        completeInlineCodexSlash("Usage: /goal status active|paused|complete.");
-        return;
-      }
-      if (statusMatch || pauseResumeMatch) {
-        const rawStatus = (statusMatch?.[1] ?? pauseResumeMatch?.[1] ?? "active").toLowerCase();
-        const status = rawStatus === "pause" ? "paused" : rawStatus === "resume" ? "active" : rawStatus;
-        const response = await requestInlineCodexSlash<{ goal?: unknown }>("thread/goal/set", {
-          threadId: managed.session.threadId,
-          status,
-        }, "Codex goal command failed");
-        if (!response.ok) return;
-        applyCodexGoalUpdate(managed, runtime, response.result);
-        completeInlineCodexSlash(`Codex goal ${status === "active" ? "resumed" : status}.`);
-        return;
-      }
-      const objective = goalArgs.replace(/^set\s+/i, "").trim();
-      if (!objective) {
-        completeInlineCodexSlash("No Codex goal text was provided.");
-        return;
-      }
-      const response = await requestInlineCodexSlash<{ goal?: unknown }>("thread/goal/set", {
-        threadId: managed.session.threadId,
-        objective,
-      }, "Codex goal command failed");
-      if (!response.ok) return;
-      applyCodexGoalUpdate(managed, runtime, response.result);
-      completeInlineCodexSlash("Codex goal updated.");
       return;
     }
 
@@ -16766,9 +17026,15 @@ export function createAgentChatService(args: {
           ),
           contextAttachmentPrompt || null,
         ]);
-    const autoTitleSeed = providerSlashCommand
+    const codexGoalTitleSeed = managed.session.provider === "codex" && isCodexGoalSlashInput(trimmed)
+      ? (() => {
+          const parsed = parseCodexGoalSlashCommand(trimmed);
+          return parsed.kind === "objective" ? parsed.objective : null;
+        })()
+      : null;
+    const autoTitleSeed = codexGoalTitleSeed ?? (providerSlashCommand
       ? expandedSlashCommandPrompt ?? null
-      : visibleText;
+      : visibleText);
     if (!managed.autoTitleSeed && autoTitleSeed) {
       managed.autoTitleSeed = autoTitleSeed;
       void maybeAutoTitleSession(managed, {
@@ -19734,7 +20000,10 @@ export function createAgentChatService(args: {
       // acknowledged the prompt.
     }
 
-    if (prepared.managed.session.provider === "codex") {
+    const isCodexGoalControlMessage =
+      prepared.managed.session.provider === "codex"
+      && isCodexGoalSlashInput(prepared.submittedText);
+    if (prepared.managed.session.provider === "codex" && !isCodexGoalControlMessage) {
       prepared.optimisticCodexTurnStart = true;
       emitPreparedUserMessage(prepared.managed, {
         text: prepared.submittedText,
@@ -19981,6 +20250,10 @@ export function createAgentChatService(args: {
         metadata,
       });
       if (!preparedSteer) {
+        return { steerId, queued: false };
+      }
+      if (isCodexGoalSlashInput(trimmed)) {
+        await executePreparedSendMessage(preparedSteer);
         return { steerId, queued: false };
       }
       if (!managed.session.threadId || !runtime.activeTurnId) {
