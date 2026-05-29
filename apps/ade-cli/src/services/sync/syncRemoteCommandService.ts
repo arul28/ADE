@@ -291,6 +291,19 @@ function emptyLinearQuickView(connection: Record<string, unknown>) {
   };
 }
 
+async function getConnectedLinearIssueTracker(
+  args: SyncRemoteCommandServiceArgs,
+): Promise<ReturnType<typeof createLinearIssueTracker> | null> {
+  const credentialStatus = args.linearCredentialService?.getStatus() ?? {
+    tokenStored: false,
+  };
+  if (!credentialStatus.tokenStored) return null;
+  const linearIssueTracker = args.getLinearIssueTracker?.() ?? null;
+  if (!linearIssueTracker) return null;
+  const status = await linearIssueTracker.getConnectionStatus().catch(() => null);
+  return status?.connected ? linearIssueTracker : null;
+}
+
 function asStringRecord(value: unknown): Record<string, string> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const entries = Object.entries(value)
@@ -2489,7 +2502,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     return linearIssueTracker.getQuickView(connection);
   });
   register("cto.getLinearIssuePickerData", { viewerAllowed: true }, async () => {
-    const linearIssueTracker = args.getLinearIssueTracker?.() ?? null;
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
     if (!linearIssueTracker) {
       return { projects: [], users: [], states: [] };
     }
@@ -2501,7 +2514,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     return { projects, users, states };
   });
   register("cto.searchLinearIssues", { viewerAllowed: true }, async (payload) => {
-    const linearIssueTracker = args.getLinearIssueTracker?.() ?? null;
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
     if (!linearIssueTracker) {
       return { issues: [], pageInfo: { hasNextPage: false, endCursor: null } };
     }
@@ -2532,7 +2545,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   register("cto.getLinearIssueComments", { viewerAllowed: true }, async (payload) => {
     const issueId = asTrimmedString(payload.issueId);
     if (!issueId) return [];
-    const linearIssueTracker = args.getLinearIssueTracker?.() ?? null;
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
     if (!linearIssueTracker) return [];
     return linearIssueTracker.fetchIssueComments(issueId);
   });
@@ -2563,10 +2576,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     if (!isRecord(payload.agent)) {
       throw new Error("cto.saveAgent requires agent object.");
     }
-    const saved = workerRevisionService.saveAgent(
-      payload.agent as AgentUpsertInput,
-      asTrimmedString(payload.actor) ?? "user",
-    );
+    const saved = workerRevisionService.saveAgent(payload.agent as AgentUpsertInput, "user");
     (args.workerHeartbeatService as { syncFromConfig?: () => void } | null | undefined)?.syncFromConfig?.();
     return saved;
   });

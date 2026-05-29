@@ -450,7 +450,10 @@ struct FilesMarkdownPreview: View {
   let text: String
 
   private var renderedText: AttributedString {
-    (try? AttributedString(markdown: text)) ?? AttributedString(text)
+    (try? AttributedString(
+      markdown: text,
+      options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+    )) ?? AttributedString(text)
   }
 
   var body: some View {

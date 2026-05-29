@@ -413,7 +413,7 @@ function buildLinearAutomationDispatch(event: LinearIngressEventRecord): {
   const payload = event.payload ?? null;
   const data = readNested(payload, "data");
   const prevData = readNested(payload, "updatedFrom");
-  const mapping = mapLinearActionToTriggerType(event.action, data, prevData);
+  const mapping = mapLinearActionToTriggerType(event.action ?? null, data, prevData);
 
   const teamName = readString(readNested(data, "team"), "name") ?? readString(data, "teamName");
   const projectName = readString(readNested(data, "project"), "name") ?? readString(data, "projectName");

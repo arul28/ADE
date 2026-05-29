@@ -2873,10 +2873,10 @@ describe("createSyncRemoteCommandService", () => {
 
       const result = await service.execute(makePayload("cto.saveAgent", {
         agent,
-        actor: "mobile",
+        actor: "system",
       }));
 
-      expect(workerRevisionService.saveAgent).toHaveBeenCalledWith(agent, "mobile");
+      expect(workerRevisionService.saveAgent).toHaveBeenCalledWith(agent, "user");
       expect(workerHeartbeatService.syncFromConfig).toHaveBeenCalledOnce();
       expect(result).toBe(savedWorker);
     });
@@ -2920,6 +2920,29 @@ describe("createSyncRemoteCommandService", () => {
       const dashboard = await service.execute(makePayload("cto.runLinearSyncNow", {}));
       expect(linearSyncService.runSyncNow).toHaveBeenCalledOnce();
       expect(dashboard).toMatchObject({ lastSuccessAt: "2026-05-28T00:00:00.000Z" });
+    });
+
+    it("cto Linear search surfaces return empty data when Linear is disconnected", async () => {
+      linearIssueTracker.getConnectionStatus.mockResolvedValue({
+        connected: false,
+        viewerId: null,
+        viewerName: null,
+        message: "Linear credentials need reconnecting.",
+      });
+
+      const picker = await service.execute(makePayload("cto.getLinearIssuePickerData", {}));
+      expect(picker).toEqual({ projects: [], users: [], states: [] });
+      expect(linearIssueTracker.listProjects).not.toHaveBeenCalled();
+
+      const search = await service.execute(makePayload("cto.searchLinearIssues", {
+        query: "parity",
+      }));
+      expect(search).toEqual({ issues: [], pageInfo: { hasNextPage: false, endCursor: null } });
+      expect(linearIssueTracker.searchIssues).not.toHaveBeenCalled();
+
+      const comments = await service.execute(makePayload("cto.getLinearIssueComments", { issueId: "issue-1" }));
+      expect(comments).toEqual([]);
+      expect(linearIssueTracker.fetchIssueComments).not.toHaveBeenCalled();
     });
   });
 
