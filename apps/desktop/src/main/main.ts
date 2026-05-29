@@ -5332,21 +5332,28 @@ app.whenReady().then(async () => {
         : `These projects are deleting lanes: ${runningDeletes.join(", ")}. Wait for deletion to finish before quitting ADE.`;
     const dialogOptions = {
       type: "warning" as const,
-      buttons: ["Keep ADE open"],
+      // Always offer an escape: a delete-progress flag can get stuck "running"
+      // (e.g. a delete whose completion event was lost to a daemon
+      // disconnect), and a single-button dialog would trap the app forever,
+      // forcing a force-quit. "Quit anyway" is safe — runtime-backed deletes
+      // run in the daemon, which keeps running after the desktop quits.
+      buttons: ["Keep ADE open", "Quit anyway"],
       defaultId: 0,
       cancelId: 0,
       noLink: true,
       title: "Lane delete in progress",
       message: "ADE cannot quit while a lane is being deleted.",
-      detail,
+      detail: `${detail} You can quit anyway — any in-progress deletion continues in the background.`,
     };
     const parentWindow =
       ownerWindow && !ownerWindow.isDestroyed()
         ? ownerWindow
         : BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
-    if (parentWindow) dialog.showMessageBoxSync(parentWindow, dialogOptions);
-    else dialog.showMessageBoxSync(dialogOptions);
-    return false;
+    const choice = parentWindow
+      ? dialog.showMessageBoxSync(parentWindow, dialogOptions)
+      : dialog.showMessageBoxSync(dialogOptions);
+    // Index 1 ("Quit anyway") allows the quit to proceed.
+    return choice === 1;
   };
 
   const confirmQuitWarning = (ownerWindow?: BrowserWindow | null): boolean =>

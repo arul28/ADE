@@ -457,6 +457,13 @@ function writeMigrationBackupIfNeeded(dbPath: string): void {
 const LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE = "local_crr_change_suppressions";
 
 const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
+  // Per-device ingress dedup log. It carries a non-PK UNIQUE index
+  // (project_id, source, event_key) for dedup, which cr-sqlite forbids on CRR
+  // tables ("has unique indices besides the primary key. This is not allowed
+  // for CRRs"). Ingress is processed per-machine, so this is local-only —
+  // excluding it keeps the unique index and lets removeExcludedCrrMetadata
+  // un-CRR any DB where it was already (incorrectly) converted.
+  "automation_ingress_events",
   "lane_detail_snapshots",
   "lane_list_snapshots",
   LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE,
