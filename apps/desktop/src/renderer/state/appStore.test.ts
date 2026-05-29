@@ -1166,6 +1166,37 @@ describe("appStore", () => {
       expect(useAppStore.getState().projectTransitionError).toBeNull();
     });
 
+    it("restores projectBinding when switchRemoteProject fails", async () => {
+      const previousBinding = {
+        kind: "remote" as const,
+        key: "remote:target-1:project-a",
+        targetId: "target-1",
+        runtimeName: "Remote",
+        projectId: "project-a",
+        rootPath: "/remote/a",
+        displayName: "Project A",
+      };
+      useAppStore.setState({
+        project: {
+          rootPath: "/remote/a",
+          displayName: "Project A",
+          baseRef: "main",
+        },
+        projectBinding: previousBinding,
+      } as any);
+      (window.ade.remoteRuntime.openProject as any).mockRejectedValueOnce(
+        new Error("remote open failed"),
+      );
+
+      await expect(
+        useAppStore.getState().switchRemoteProject("target-1", "project-b"),
+      ).rejects.toThrow("remote open failed");
+
+      expect(useAppStore.getState().projectBinding).toEqual(previousBinding);
+      expect(useAppStore.getState().projectTransition).toBeNull();
+      expect(useAppStore.getState().projectTransitionError).toContain("remote open failed");
+    });
+
     it("ignores stale switchRemoteProject completions when a newer switch starts", async () => {
       const bindingA = {
         kind: "remote" as const,
