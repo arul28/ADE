@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   LINEAR_OAUTH_TOKEN_URL,
+  linearInvalidGrantLikelyStaleRotation,
   linearTokenNeedsRefresh,
   refreshLinearOAuthAccessToken,
 } from "./linearTokenRefresh";
@@ -30,6 +31,44 @@ describe("linearTokenNeedsRefresh", () => {
     expect(linearTokenNeedsRefresh(new Date(NOW + 60 * 1000).toISOString(), NOW)).toBe(true);
     // already expired.
     expect(linearTokenNeedsRefresh(new Date(NOW - 1000).toISOString(), NOW)).toBe(true);
+  });
+});
+
+describe("linearInvalidGrantLikelyStaleRotation", () => {
+  it("detects a rotated refresh token in the shared store", () => {
+    expect(linearInvalidGrantLikelyStaleRotation({
+      attemptedRefreshToken: "rt_old",
+      rereadRefreshToken: "rt_new",
+      rereadExpiresAt: null,
+    })).toBe(true);
+  });
+
+  it("detects a freshly renewed access token in the shared store", () => {
+    expect(linearInvalidGrantLikelyStaleRotation({
+      attemptedRefreshToken: "rt_same",
+      rereadRefreshToken: "rt_same",
+      rereadExpiresAt: new Date(NOW + 60 * 60 * 1000).toISOString(),
+      nowMs: NOW,
+    })).toBe(true);
+  });
+
+  it("does not trust a fresh expiry when the caller forced refresh after auth failed", () => {
+    expect(linearInvalidGrantLikelyStaleRotation({
+      attemptedRefreshToken: "rt_same",
+      rereadRefreshToken: "rt_same",
+      rereadExpiresAt: new Date(NOW + 60 * 60 * 1000).toISOString(),
+      trustFreshExpiresAt: false,
+      nowMs: NOW,
+    })).toBe(false);
+  });
+
+  it("returns false when the store still reflects the dead refresh attempt", () => {
+    expect(linearInvalidGrantLikelyStaleRotation({
+      attemptedRefreshToken: "rt_dead",
+      rereadRefreshToken: "rt_dead",
+      rereadExpiresAt: new Date(NOW - 1000).toISOString(),
+      nowMs: NOW,
+    })).toBe(false);
   });
 });
 
