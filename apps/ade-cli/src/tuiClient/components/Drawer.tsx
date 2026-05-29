@@ -698,13 +698,11 @@ function ChatBlock({
       </Box>
     );
   }
-  if (sessions.length === 0 && selectedChatIndex !== 0) {
-    return (
-      <Box marginTop={1}>
-        <Text dimColor>No chats in lane.</Text>
-      </Box>
-    );
-  }
+  // An empty lane still falls through to the normal render below, which shows
+  // the "CHATS · 0" header and a working "+ new chat" row — matching the
+  // hit-test, which always expects a new-chat row at the block start. (Returning
+  // early here used to drop the button, leaving chatless lanes with no way to
+  // start a chat.)
   const max = Math.max(8, width - 4);
   return (
     <Box flexDirection="column" marginTop={1}>

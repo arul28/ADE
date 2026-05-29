@@ -111,7 +111,7 @@ import { TerminalPane, clampTerminalPaneCols } from "./components/TerminalPane";
 import { Header } from "./components/Header";
 import { computeLaneChatCounts, DETAILS_BODY_MAX_LINES, LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, laneDetailsInteractionLayout, rightPaneScrollableRowCount, RightPane } from "./components/RightPane";
 import { buildModelPickerLayout, defaultSelectionFor, railEntrySelection } from "./components/ModelPicker/modelPickerLayout";
-import { SlashPalette, SLASH_PALETTE_ROWS } from "./components/SlashPalette";
+import { SlashPalette, slashPaletteReservedRows } from "./components/SlashPalette";
 import { MentionPalette, MENTION_PALETTE_ROWS } from "./components/MentionPalette";
 import { CommandPalette, COMMAND_PALETTE_ROWS, type CommandPaletteItem } from "./components/CommandPalette";
 import { ApprovalPrompt } from "./components/ApprovalPrompt";
@@ -8142,11 +8142,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
       setRightPane((prev) => {
         if (prev.kind === "model-picker" && prev.surface === "new-chat") {
+          // Picking a model drops focus DOWN into the settings (reasoning first)
+          // per the "pick → settings → Confirm" flow — the picker stays open.
+          const firstSetting = (prev.settingsRows ?? []).find(
+            (row) => row.kind !== "provider" && row.kind !== "model",
+          )?.kind ?? "apply";
           return {
             ...prev,
             selection: { kind: "provider", provider },
             focusedIndex: 0,
-            footerFocus: prev.footerFocus ?? "apply",
+            footerFocus: firstSetting,
           };
         }
         return { kind: "empty" };
@@ -9285,7 +9290,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         movePromptCursor(1);
         return;
       }
-      if (key.upArrow) {
+      // When the slash-command suggester or @-mention list is open, ↑/↓ belong
+      // exclusively to that palette (handled just below) — don't let cursor /
+      // history movement swallow them.
+      const slashOrMentionOpen = slashRows.length > 0 || (activeMentionRange != null && mentionSuggestions.length > 0);
+      if (key.upArrow && !slashOrMentionOpen) {
         if (prompt.length === 0 && attachedImageChips.length === 0) {
           recallPromptHistory("previous");
           return;
@@ -9294,7 +9303,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           return;
         }
       }
-      if (key.downArrow) {
+      if (key.downArrow && !slashOrMentionOpen) {
         movePromptCursorVerticalAndMaybeAttach(1);
         return;
       }
@@ -9830,118 +9839,90 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 	        searchMode: picker.searchMode,
       });
       const pickerSettingsRows = (picker.settingsRows ?? []).filter((row) => row.kind !== "provider" && row.kind !== "model");
-      if (picker.footerFocus && pickerSettingsRows.length) {
-        const currentIndex = Math.max(0, pickerSettingsRows.findIndex((row) => row.kind === picker.footerFocus));
-        if (key.tab && !key.shift) {
-          setRightPane({ ...picker, footerFocus: null });
-          return;
-        }
-        if (key.upArrow || key.downArrow || key.tab) {
-          const delta = key.upArrow || key.shift ? -1 : 1;
-          const nextRow = pickerSettingsRows[(currentIndex + delta + pickerSettingsRows.length) % pickerSettingsRows.length];
-          setRightPane({ ...picker, footerFocus: nextRow?.kind ?? picker.footerFocus });
-          return;
-        }
-        if (key.leftArrow || key.rightArrow || key.return) {
-          const row = pickerSettingsRows[currentIndex] ?? pickerSettingsRows[0];
-          if (row) handleSetupRow(row, key.leftArrow ? -1 : 1);
-          return;
-        }
-      }
+      const lastModelIndex = Math.max(0, layout.entries.length - 1);
+      // Unified, single vertical flow: ↑/↓ runs the model list → the settings
+      // rows → the Confirm button. footerFocus !== null means focus is in the
+      // settings region; otherwise it's in the model list.
+      const inSettings = picker.footerFocus != null && pickerSettingsRows.length > 0;
+      const settingIndex = inSettings
+        ? Math.max(0, pickerSettingsRows.findIndex((row) => row.kind === picker.footerFocus))
+        : -1;
 
-      if (key.upArrow) {
-        setRightPane((prev) => {
-          if (prev.kind !== "model-picker") return prev;
-          const currentLayout = buildModelPickerLayout({
-            models,
-            catalog: modelCatalogRef.current ?? modelCatalog,
-            favorites: modelPickerFavorites,
-            recents: modelPickerRecents,
-            activeModelId: modelState.modelId,
-            activeReasoningEffort: modelState.reasoningEffort,
-            aiStatus,
-            showAll: prev.showAll,
-            settingsRows: prev.settingsRows ?? [],
-            footerFocus: prev.footerFocus ?? null,
-            laneLabel: prev.laneLabel ?? null,
-            query: prev.query,
-            selection: prev.selection,
-            providerTabKey: prev.providerTabKey ?? null,
-            focusedIndex: prev.focusedIndex,
-            searchMode: prev.searchMode,
-          });
-          const next = Math.max(0, currentLayout.focusedIndex - 1);
-          return next === prev.focusedIndex ? prev : { ...prev, focusedIndex: next };
-        });
-        return;
-      }
-      if (key.downArrow) {
-        setRightPane((prev) => {
-          if (prev.kind !== "model-picker") return prev;
-          const currentLayout = buildModelPickerLayout({
-            models,
-            catalog: modelCatalogRef.current ?? modelCatalog,
-            favorites: modelPickerFavorites,
-            recents: modelPickerRecents,
-            activeModelId: modelState.modelId,
-            activeReasoningEffort: modelState.reasoningEffort,
-            aiStatus,
-            showAll: prev.showAll,
-            settingsRows: prev.settingsRows ?? [],
-            footerFocus: prev.footerFocus ?? null,
-            laneLabel: prev.laneLabel ?? null,
-            query: prev.query,
-            selection: prev.selection,
-            providerTabKey: prev.providerTabKey ?? null,
-            focusedIndex: prev.focusedIndex,
-            searchMode: prev.searchMode,
-          });
-          const maxIndex = Math.max(0, currentLayout.entries.length - 1);
-          const next = Math.min(maxIndex, currentLayout.focusedIndex + 1);
-          return next === prev.focusedIndex ? prev : { ...prev, focusedIndex: next };
-        });
-        return;
-      }
-      if (key.tab || (key.shift && key.tab)) {
-        if (key.shift && pickerSettingsRows.length) {
-          setRightPane({ ...picker, footerFocus: pickerSettingsRows[0]?.kind ?? null });
-          return;
-        }
+      // Switch the provider/category rail. Tab does this from anywhere; ←/→ does
+      // it while focus is in the model list (where there's no value to cycle).
+      const switchRail = (delta: -1 | 1) => {
         const total = layout.railEntries.length;
         if (total === 0) return;
-        const delta = key.shift ? -1 : 1;
         const nextIndex = (layout.railIndex + delta + total) % total;
         const nextEntry = layout.railEntries[nextIndex];
         if (!nextEntry) return;
-	        const nextSelection =
-	          nextEntry.kind === "favorites"
-	            ? ({ kind: "favorites" } as const)
-	            : nextEntry.kind === "recents"
-	              ? ({ kind: "recents" } as const)
-	              : ({ kind: "provider", provider: nextEntry.provider } as const);
-	        if (nextSelection.kind === "provider") {
-	          const refreshProvider =
-	            nextSelection.provider === "opencode" || nextSelection.provider === "cursor" || nextSelection.provider === "droid"
-	            || nextSelection.provider === "lmstudio" || nextSelection.provider === "ollama"
-	              ? nextSelection.provider
-	              : null;
-	          if (refreshProvider) void refreshModelCatalog({ refreshProvider });
-	        }
-	        setRightPane({
-	          ...picker,
-	          selection: nextSelection,
-	          providerTabKey: null,
-	          focusedIndex: 0,
-	          query: "",
-          searchMode: false,
-        });
+        const nextSelection =
+          nextEntry.kind === "favorites"
+            ? ({ kind: "favorites" } as const)
+            : nextEntry.kind === "recents"
+              ? ({ kind: "recents" } as const)
+              : ({ kind: "provider", provider: nextEntry.provider } as const);
+        if (nextSelection.kind === "provider") {
+          const refreshProvider =
+            nextSelection.provider === "opencode" || nextSelection.provider === "cursor" || nextSelection.provider === "droid"
+            || nextSelection.provider === "lmstudio" || nextSelection.provider === "ollama"
+              ? nextSelection.provider
+              : null;
+          if (refreshProvider) void refreshModelCatalog({ refreshProvider });
+        }
+        setRightPane({ ...picker, selection: nextSelection, providerTabKey: null, focusedIndex: 0, footerFocus: null, query: "", searchMode: false });
+      };
+
+      if (key.tab) {
+        switchRail(key.shift ? -1 : 1);
         return;
       }
-	      if (key.return) {
-	        const target = layout.entries[layout.focusedIndex];
-	        if (target?.isAvailable) commitModelPickerSelection(target.modelId);
-	        return;
-	      }
+
+      if (key.upArrow) {
+        if (inSettings) {
+          if (settingIndex <= 0) setRightPane({ ...picker, footerFocus: null });
+          else setRightPane({ ...picker, footerFocus: pickerSettingsRows[settingIndex - 1]?.kind ?? null });
+          return;
+        }
+        const next = Math.max(0, layout.focusedIndex - 1);
+        if (next !== picker.focusedIndex) setRightPane({ ...picker, focusedIndex: next });
+        return;
+      }
+      if (key.downArrow) {
+        if (inSettings) {
+          if (settingIndex < pickerSettingsRows.length - 1) {
+            setRightPane({ ...picker, footerFocus: pickerSettingsRows[settingIndex + 1]?.kind ?? null });
+          }
+          return;
+        }
+        // Past the last model, drop focus down into the settings rows.
+        if (layout.focusedIndex >= lastModelIndex && pickerSettingsRows.length > 0) {
+          setRightPane({ ...picker, footerFocus: pickerSettingsRows[0]?.kind ?? null });
+          return;
+        }
+        const next = Math.min(lastModelIndex, layout.focusedIndex + 1);
+        if (next !== picker.focusedIndex) setRightPane({ ...picker, focusedIndex: next });
+        return;
+      }
+      if (key.leftArrow || key.rightArrow) {
+        if (inSettings) {
+          const row = pickerSettingsRows[settingIndex];
+          if (row) handleSetupRow(row, key.leftArrow ? -1 : 1);
+          return;
+        }
+        switchRail(key.leftArrow ? -1 : 1);
+        return;
+      }
+      if (key.return) {
+        if (inSettings) {
+          const row = pickerSettingsRows[settingIndex];
+          if (row) handleSetupRow(row, 1);
+          return;
+        }
+        const target = layout.entries[layout.focusedIndex];
+        if (target?.isAvailable) commitModelPickerSelection(target.modelId);
+        return;
+      }
       if (input === "s" && !picker.searchMode && !key.ctrl && !key.meta) {
         setRightPane({ ...picker, showAll: !picker.showAll, focusedIndex: 0 });
         return;
@@ -10448,14 +10429,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
     if (delta > 0 && isPromptCursorOnLastVisualRow(prompt, width, current)) {
       setAttachmentFocusIndex(null);
-      setInlineRowFocus({ cell: providerLockedRef.current ? "model" : "provider" });
+      // Down past the last prompt row opens the full model picker pane. The
+      // footer inline model row mirrors the same `modelState`, so both surfaces
+      // stay in sync live; surface follows whether we're drafting a new chat.
+      openModelPicker({ surface: activeSessionIdRef.current ? "chat" : "new-chat" });
       return;
     }
     const next = movePromptCursorVertical(prompt, width, current, delta);
     promptCursorRef.current = next;
     setPromptCursor(next);
     setAttachmentFocusIndex(null);
-  }, [attachedImageChips.length, prompt, promptPaneWidth]);
+  }, [attachedImageChips.length, openModelPicker, prompt, promptPaneWidth]);
 
   const rightPaneVisible = rightPaneWidth > 0;
   const laneName = activeLane?.name ?? "main";
@@ -10476,7 +10460,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     + modelStatusOverlayRows
     + (attachedImageChips.length ? 1 : 0)
     + (error ? 1 : 0);
-  const paletteOverlayRows = showCommandPalette ? COMMAND_PALETTE_ROWS : showMentionPalette ? MENTION_PALETTE_ROWS : SLASH_PALETTE_ROWS;
+  // Slash palette grows with available terminal height (clamped) so it's bigger
+  // on large screens. Reserve exactly what it will render so it lines up.
+  const slashPaletteHeightBudget = Math.max(8, Math.min(17, rows - paletteBottomRows - 4));
+  const paletteOverlayRows = showCommandPalette
+    ? COMMAND_PALETTE_ROWS
+    : showMentionPalette
+      ? MENTION_PALETTE_ROWS
+      : slashPaletteReservedRows(slashPaletteHeightBudget);
   const paletteOverlayTop = Math.max(1, rows - paletteBottomRows - paletteOverlayRows);
   const drawerPaneWidth = resolveDrawerPaneWidth(columns, drawerOpen);
   const paletteOverlayLeft = drawerPaneWidth;
@@ -11470,6 +11461,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
               selectedIndex={slashIndex}
               provider={activeCommandProvider}
               width={paletteOverlayWidth}
+              maxRows={slashPaletteHeightBudget}
             />
           </Box>
         ) : null}
