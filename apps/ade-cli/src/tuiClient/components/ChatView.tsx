@@ -21,7 +21,7 @@ import {
   type WorkToolStatus,
 } from "../aggregate";
 import { theme } from "../theme";
-import { useBrailleSpin, useDotPulse, useSpinFrame } from "../spinTick";
+import { useBrailleSpin, useDotPulse, useShimmerTick, useSpinFrame } from "../spinTick";
 import {
   ADE_WORDMARK_COMPACT_WIDTH,
   ADE_WORDMARK_FULL_WIDTH,
@@ -902,13 +902,29 @@ function planRows(block: Extract<AggregatedBlock, { kind: "plan" }>, spinFrame: 
   return out;
 }
 
-function activeTurnRows(dots: string, showWorkingIndicator = true): RenderedChatRow[] {
+const WORKING_LABEL = "✦ model working";
+
+// A bright cell sweeps left→right across the label, then a gap before repeating —
+// a terminal "shimmer" like Claude Code's working indicator. shimmerPos < 0 (the
+// default, used by the non-animated selection/plain-text paths) renders it flat.
+function workingShimmerRuns(shimmerPos: number): InlineRun[] {
+  const chars = [...WORKING_LABEL];
+  return chars.map((ch, index) => {
+    const dist = shimmerPos < 0 ? 99 : shimmerPos - index;
+    if (dist === 0) return { text: ch, color: theme.color.t1, bold: true };
+    if (dist === 1) return { text: ch, color: theme.color.fg, bold: true };
+    if (dist === 2 || dist === -1) return { text: ch, color: theme.color.violet };
+    return { text: ch, color: theme.color.t3 };
+  });
+}
+
+function activeTurnRows(dots: string, showWorkingIndicator = true, shimmerPos = -1): RenderedChatRow[] {
   if (!showWorkingIndicator) return [];
   return [{
     id: "model-working",
     tone: "work",
-    text: `✦ model working${dots}`,
-    color: theme.color.violet,
+    runs: [...workingShimmerRuns(shimmerPos), { text: dots, color: theme.color.violet }],
+    text: `${WORKING_LABEL}${dots}`,
     bold: true,
     rail: null,
   }];
@@ -1571,6 +1587,7 @@ export function ChatView({
   const brailleFrame = useBrailleSpin();
   const spinFrame = useSpinFrame();
   const dotPulse = useDotPulse();
+  const shimmerTick = useShimmerTick();
   const showWorkingIndicator = provider !== "claude" && activeSession?.provider !== "claude";
   const rowInnerWidth = Math.max(24, width - 4);
   // Split the transcript at the first live (animating) block. Everything before
@@ -1613,10 +1630,16 @@ export function ChatView({
       baseRows = tailBlocks.length ? [...historicalRows, ...tailRows] : historicalRows;
     }
     let withSuffix = baseRows;
-    if (streaming) withSuffix = [...baseRows, ...activeTurnRows(dotPulse, showWorkingIndicator)];
-    else if (interrupted) withSuffix = [...baseRows, ...modelInterruptedRows()];
+    if (streaming) {
+      // Sweep a bright cell across the label, with a short gap before repeating.
+      const sweepLength = WORKING_LABEL.length + 6;
+      const shimmerPos = shimmerTick % sweepLength;
+      withSuffix = [...baseRows, ...activeTurnRows(dotPulse, showWorkingIndicator, shimmerPos)];
+    } else if (interrupted) {
+      withSuffix = [...baseRows, ...modelInterruptedRows()];
+    }
     return sliceRows(withSuffix, bodyRows, scrollOffsetRows, unseenMessageCount);
-  }, [historicalRows, historicalBlocks, tailBlocks, rowInnerWidth, brailleFrame, spinFrame, dotPulse, streaming, interrupted, showWorkingIndicator, bodyRows, scrollOffsetRows, unseenMessageCount]);
+  }, [historicalRows, historicalBlocks, tailBlocks, rowInnerWidth, brailleFrame, spinFrame, dotPulse, shimmerTick, streaming, interrupted, showWorkingIndicator, bodyRows, scrollOffsetRows, unseenMessageCount]);
   const isEmpty = !blocks.length && !streaming && !interrupted;
   let content: React.ReactNode;
   if (isEmpty && tileMode) {
