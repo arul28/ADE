@@ -65,6 +65,43 @@ const LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS = 2_000;
 const PLACEHOLDER_RUNTIME_VERSION = "0.0.0";
 const LOCAL_RUNTIME_OUTPUT_LINE_MAX_CHARS = 4_000;
 const LOCAL_RUNTIME_OUTPUT_BUFFER_MAX_CHARS = 16_000;
+const COALESCED_LOCAL_RUNTIME_ACTIONS = new Set([
+  "chat.listSessions",
+  "layout.get",
+  "project_config.get",
+  "pty.resize",
+  "session.list",
+  "tiling_tree.get",
+]);
+
+function stableActionValue(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(stableActionValue);
+  const record = value as Record<string, unknown>;
+  return Object.keys(record)
+    .sort()
+    .reduce<Record<string, unknown>>((next, key) => {
+      const item = record[key];
+      if (item !== undefined) next[key] = stableActionValue(item);
+      return next;
+    }, {});
+}
+
+function coalescedLocalRuntimeActionKey(
+  rootPath: string,
+  request: RemoteRuntimeActionRequest,
+): string | null {
+  const actionKey = `${request.domain}.${request.action}`;
+  if (!COALESCED_LOCAL_RUNTIME_ACTIONS.has(actionKey)) return null;
+  return JSON.stringify({
+    rootPath: path.resolve(rootPath),
+    domain: request.domain,
+    action: request.action,
+    arg: stableActionValue(request.arg),
+    args: stableActionValue(request.args),
+    argsList: stableActionValue(request.argsList),
+  });
+}
 
 export function buildLocalRuntimeServeArgs(
   cliPath: string,
@@ -408,6 +445,7 @@ export class LocalRuntimeConnectionPool {
   private connection: Promise<LocalRuntimeConnection> | null = null;
   private activeClient: RuntimeRpcClient | null = null;
   private ownedRuntimeChild: ChildProcess | null = null;
+  private readonly coalescedActionCalls = new Map<string, Promise<RemoteRuntimeActionResult>>();
   private readonly projectsByRoot = new Map<string, RemoteRuntimeProjectRecord>();
   private serviceInstallStatus: LocalRuntimeStatus["serviceInstall"] = {
     state: "not_attempted",
@@ -628,6 +666,26 @@ export class LocalRuntimeConnectionPool {
   }
 
   async callActionForRoot(
+    rootPath: string,
+    request: RemoteRuntimeActionRequest,
+  ): Promise<RemoteRuntimeActionResult> {
+    const coalescedKey = coalescedLocalRuntimeActionKey(rootPath, request);
+    if (!coalescedKey) return await this.callActionForRootUncoalesced(rootPath, request);
+
+    const existing = this.coalescedActionCalls.get(coalescedKey);
+    if (existing) return await existing;
+
+    const actionCall = this.callActionForRootUncoalesced(rootPath, request)
+      .finally(() => {
+        if (this.coalescedActionCalls.get(coalescedKey) === actionCall) {
+          this.coalescedActionCalls.delete(coalescedKey);
+        }
+      });
+    this.coalescedActionCalls.set(coalescedKey, actionCall);
+    return await actionCall;
+  }
+
+  private async callActionForRootUncoalesced(
     rootPath: string,
     request: RemoteRuntimeActionRequest,
   ): Promise<RemoteRuntimeActionResult> {

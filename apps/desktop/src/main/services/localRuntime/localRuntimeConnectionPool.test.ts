@@ -522,6 +522,82 @@ describe("local runtime connection pool", () => {
     pool.dispose();
   });
 
+  it("coalesces matching local runtime action calls while the first call is in flight", async () => {
+    let resolveCall!: (value: unknown) => void;
+    const call = vi.fn(() => new Promise<unknown>((resolve) => {
+      resolveCall = resolve;
+    }));
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never);
+    const rootPath = path.resolve("/repo");
+    (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.set(rootPath, {
+      projectId: "project-1",
+      rootPath,
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: null,
+    });
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
+      client: { call },
+      child: null,
+      socketPath: "/tmp/ade.sock",
+    });
+
+    const first = pool.callActionForRoot(rootPath, {
+      domain: "session",
+      action: "list",
+      args: { limit: 500, laneId: "lane-1" },
+    });
+    const second = pool.callActionForRoot(rootPath, {
+      domain: "session",
+      action: "list",
+      args: { laneId: "lane-1", limit: 500 },
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(call).toHaveBeenCalledTimes(1);
+
+    resolveCall({
+      domain: "session",
+      action: "list",
+      result: [{ id: "session-1" }],
+      statusHints: {},
+    });
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      {
+        domain: "session",
+        action: "list",
+        result: [{ id: "session-1" }],
+        statusHints: {},
+      },
+      {
+        domain: "session",
+        action: "list",
+        result: [{ id: "session-1" }],
+        statusHints: {},
+      },
+    ]);
+
+    call.mockResolvedValueOnce({
+      domain: "session",
+      action: "list",
+      result: [{ id: "session-1" }],
+      statusHints: {},
+    });
+    await pool.callActionForRoot(rootPath, {
+      domain: "session",
+      action: "list",
+      args: { limit: 500, laneId: "lane-1" },
+    });
+    expect(call).toHaveBeenCalledTimes(2);
+  });
+
   it("terminates an app-owned fallback runtime when disposed", async () => {
     vi.useFakeTimers();
     const child = {
