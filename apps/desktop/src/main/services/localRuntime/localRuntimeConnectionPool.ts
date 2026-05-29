@@ -489,6 +489,7 @@ function serviceHealthState(
 
 export class LocalRuntimeConnectionPool {
   private connection: Promise<LocalRuntimeConnection> | null = null;
+  private activeConnection: LocalRuntimeConnection | null = null;
   private activeClient: RuntimeRpcClient | null = null;
   private ownedRuntimeChild: ChildProcess | null = null;
   private readonly coalescedActionCalls = new Map<string, Promise<RemoteRuntimeActionResult>>();
@@ -944,6 +945,7 @@ export class LocalRuntimeConnectionPool {
   dispose(): void {
     const pending = this.connection;
     this.connection = null;
+    this.activeConnection = null;
     this.activeClient = null;
     this.ownedRuntimeChild = null;
     this.projectsByRoot.clear();
@@ -955,19 +957,38 @@ export class LocalRuntimeConnectionPool {
 
   private async connect(): Promise<LocalRuntimeConnection> {
     if (this.connection) return this.connection;
-    this.connection = this.createConnection().catch((error) => {
-      this.connection = null;
+    const connection = this.createConnection().then((entry) => {
+      if (this.connection === connection) {
+        this.activeConnection = entry;
+      }
+      return entry;
+    }).catch((error) => {
+      if (this.connection === connection) {
+        this.connection = null;
+        this.activeConnection = null;
+        this.activeClient = null;
+      }
       throw error;
     });
-    return this.connection;
+    this.connection = connection;
+    return connection;
+  }
+
+  private isCurrentConnection(entry: LocalRuntimeConnection): boolean {
+    return this.activeClient === entry.client || this.activeConnection?.client === entry.client;
+  }
+
+  private clearConnectionIfCurrent(entry: LocalRuntimeConnection): boolean {
+    if (!this.isCurrentConnection(entry)) return false;
+    this.connection = null;
+    this.activeConnection = null;
+    this.activeClient = null;
+    this.projectsByRoot.clear();
+    return true;
   }
 
   private resetConnectionAfterActionTimeout(entry: LocalRuntimeConnection): void {
-    if (!this.activeClient || this.activeClient === entry.client) {
-      this.connection = null;
-      this.activeClient = null;
-      this.projectsByRoot.clear();
-    }
+    this.clearConnectionIfCurrent(entry);
     if (entry.child && this.ownedRuntimeChild === entry.child) {
       this.ownedRuntimeChild = null;
     }
@@ -981,11 +1002,7 @@ export class LocalRuntimeConnectionPool {
   // replaced (e.g. build-hash recycle), and a fresh daemon may have rebound the
   // same socket — tearing it down would kill the healthy replacement.
   private resetActiveConnection(entry: LocalRuntimeConnection): void {
-    if (!this.activeClient || this.activeClient === entry.client) {
-      this.connection = null;
-      this.activeClient = null;
-      this.projectsByRoot.clear();
-    }
+    this.clearConnectionIfCurrent(entry);
     closeRuntimeClient(entry.client);
   }
 
@@ -1133,12 +1150,13 @@ export class LocalRuntimeConnectionPool {
     }
     this.activeClient = client;
     client.onDisconnect((error) => {
-      if (this.activeClient !== client) return;
+      if (this.activeClient !== client && this.activeConnection?.client !== client) return;
       this.logger.warn("local_runtime.disconnected", {
         socketPath,
         error: error.message,
       });
       this.connection = null;
+      this.activeConnection = null;
       this.activeClient = null;
       this.projectsByRoot.clear();
     });
@@ -1180,6 +1198,7 @@ export class LocalRuntimeConnectionPool {
       const client = this.activeClient;
       this.ownedRuntimeChild = null;
       this.connection = null;
+      this.activeConnection = null;
       this.activeClient = null;
       this.projectsByRoot.clear();
       if (client) closeRuntimeClient(client);

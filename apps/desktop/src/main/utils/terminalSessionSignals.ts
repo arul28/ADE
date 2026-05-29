@@ -37,7 +37,13 @@ function commandArrayToLine(parts: string[]): string {
 export const sanitizeResumeTargetId = sanitizeTrackedCliResumeTargetId;
 
 function resolveCursorCliModelForLaunch(model: string | null | undefined): string {
-  return normalizeCliFlagValue(model) ?? "auto";
+  const normalized = normalizeCliFlagValue(model);
+  if (!normalized) return "auto";
+  const slash = normalized.indexOf("/");
+  if (slash > 0 && normalized.slice(0, slash).toLowerCase() === "cursor") {
+    return normalized.slice(slash + 1).trim() || "auto";
+  }
+  return normalized;
 }
 
 function normalizeDroidCliModel(model: string | null | undefined): string | null {
@@ -156,7 +162,7 @@ function permissionModeToCodexFlags(permissionMode: AgentChatPermissionMode | nu
 }
 
 function permissionModeToCursorFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
-  if (permissionMode === "full-auto") return ["--force"];
+  if (permissionMode === "full-auto") return ["--force", "--trust"];
   if (permissionMode === "plan") return ["--mode", "plan"];
   if (permissionMode === "edit") return ["--mode", "ask"];
   return [];

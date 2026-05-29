@@ -476,6 +476,66 @@ describe("local runtime connection pool", () => {
     }
   });
 
+  it("does not let a stale dropped connection clear an in-flight reconnect", () => {
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never, { disableSync: true });
+    const reconnect = new Promise<unknown>(() => {});
+    const staleClient = { close: vi.fn() };
+    const staleEntry = {
+      client: staleClient,
+      child: null,
+      socketPath: "/tmp/old-ade.sock",
+    };
+    (pool as unknown as {
+      connection: Promise<unknown>;
+      activeClient: unknown;
+      activeConnection: unknown;
+    }).connection = reconnect;
+    (pool as unknown as { activeClient: unknown }).activeClient = null;
+    (pool as unknown as { activeConnection: unknown }).activeConnection = null;
+
+    (pool as unknown as {
+      resetActiveConnection: (entry: typeof staleEntry) => void;
+    }).resetActiveConnection(staleEntry);
+
+    expect((pool as unknown as { connection: Promise<unknown> | null }).connection).toBe(reconnect);
+    expect(staleClient.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let a stale timed-out action clear an in-flight reconnect", () => {
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never, { disableSync: true });
+    const reconnect = new Promise<unknown>(() => {});
+    const staleClient = { close: vi.fn() };
+    const staleEntry = {
+      client: staleClient,
+      child: null,
+      socketPath: "/tmp/old-ade.sock",
+    };
+    (pool as unknown as {
+      connection: Promise<unknown>;
+      activeClient: unknown;
+      activeConnection: unknown;
+    }).connection = reconnect;
+    (pool as unknown as { activeClient: unknown }).activeClient = null;
+    (pool as unknown as { activeConnection: unknown }).activeConnection = null;
+
+    (pool as unknown as {
+      resetConnectionAfterActionTimeout: (entry: typeof staleEntry) => void;
+    }).resetConnectionAfterActionTimeout(staleEntry);
+
+    expect((pool as unknown as { connection: Promise<unknown> | null }).connection).toBe(reconnect);
+    expect(staleClient.close).toHaveBeenCalledTimes(1);
+  });
+
   it("normalizes local action registry entries from runtime action names", async () => {
     const pool = new LocalRuntimeConnectionPool("1.2.3", {
       debug: vi.fn(),
@@ -545,7 +605,7 @@ describe("local runtime connection pool", () => {
       gitOriginUrl: null,
     });
     (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
-      client: { call },
+      client: { call, isClosed: vi.fn(() => false) },
       child: null,
       socketPath: "/tmp/ade.sock",
     });
@@ -1201,7 +1261,7 @@ describe("local runtime connection pool", () => {
       gitOriginUrl: null,
     });
     (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
-      client: { call },
+      client: { call, isClosed: vi.fn(() => false) },
       child: null,
       socketPath: "/tmp/ade.sock",
     });
@@ -1262,7 +1322,7 @@ describe("local runtime connection pool", () => {
       gitOriginUrl: null,
     });
     (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
-      client: { call },
+      client: { call, isClosed: vi.fn(() => false) },
       child: null,
       socketPath: "/tmp/ade.sock",
     });
@@ -1315,11 +1375,15 @@ describe("local runtime connection pool", () => {
       lastOpenedAt: 1,
       gitOriginUrl: null,
     });
-    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
-      client: { call, close },
+    const client = { call, close, isClosed: vi.fn(() => false) };
+    const entry = {
+      client,
       child,
       socketPath: "/tmp/ade.sock",
-    });
+    };
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve(entry);
+    (pool as unknown as { activeConnection: unknown; activeClient: unknown }).activeConnection = entry;
+    (pool as unknown as { activeClient: unknown }).activeClient = client;
     (pool as unknown as { ownedRuntimeChild: unknown }).ownedRuntimeChild = child;
 
     await expect(pool.callActionForRoot(rootPath, {
