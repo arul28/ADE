@@ -18,7 +18,7 @@ The CTO owns ADE's bidirectional Linear integration. It monitors your workspace 
   </Step>
   <Step title="Authenticate">
     Click **Connect Linear**. Choose between:
-    - **OAuth** (recommended) — authorizes ADE to access Linear on your behalf with scoped permissions. ADE stores the token securely using Electron's safeStorage.
+    - **OAuth** (recommended) — authorizes ADE to access Linear on your behalf with scoped permissions. ADE stores the token under the active project's `.ade/secrets`, so separate ADE projects can connect to separate Linear workspaces.
     - **Personal Access Token** — paste a token from your Linear account settings (`Settings > API > Personal API keys`)
   </Step>
   <Step title="Select projects and teams">

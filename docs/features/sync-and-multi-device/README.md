@@ -573,8 +573,9 @@ project scope split.
   during which new pairing requests are rejected without touching the
   PIN store.
 - **Secrets never sync.** `.ade/local.secret.yaml` (provider API keys,
-  ADE CLI configs) is per-machine. Linear tokens, GitHub tokens,
-  and AI provider tokens stay on the host.
+  ADE CLI configs) is per-machine. Linear tokens stay in the active
+  project's host-local `.ade/secrets`; GitHub tokens and AI provider
+  tokens stay on the host.
 - **Transport**: WebSocket auth via PIN / paired secret / bootstrap
   token on every connection. Tailscale WireGuard encryption applies
   when over tailnet; LAN connections rely on pairing token validation.

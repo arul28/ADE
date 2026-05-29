@@ -48,6 +48,7 @@ import { MACOS_VM_PHASES } from "../../desktop/src/shared/types/macosVm";
 import type { AdeServiceCommand } from "./serviceManager/common";
 import { normalizeAdeRuntimeRole, resolveAdeDefaultRole } from "./runtimeRoles";
 import type { AdeRuntime } from "./bootstrap";
+import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 
 type JsonObject = Record<string, unknown>;
 
@@ -9057,8 +9058,12 @@ function checkGitHubReadiness(projectRoot: string): ReadinessCheck {
 function checkLinearReadiness(projectRoot: string): ReadinessCheck {
   const { resolveAdeLayout } = requireAdeLayout();
   const layout = resolveAdeLayout(projectRoot);
-  const encryptedTokenPresent = fs.existsSync(
+  const legacyEncryptedTokenPresent = fs.existsSync(
     path.join(layout.secretsDir, "linear-token.v1.bin"),
+  );
+  const projectCredentialStoreTokenPresent = hasProjectCredentialStoreValue(
+    layout.secretsDir,
+    "linear.token.v1",
   );
   const envTokenPresent = Boolean(
     process.env.ADE_LINEAR_API?.trim() ||
@@ -9066,7 +9071,10 @@ function checkLinearReadiness(projectRoot: string): ReadinessCheck {
     process.env.ADE_LINEAR_TOKEN?.trim() ||
     process.env.LINEAR_TOKEN?.trim(),
   );
-  const ready = encryptedTokenPresent || envTokenPresent;
+  const ready =
+    legacyEncryptedTokenPresent ||
+    projectCredentialStoreTokenPresent ||
+    envTokenPresent;
   return {
     ready,
     status: ready ? "ready" : "warning",
@@ -9077,10 +9085,33 @@ function checkLinearReadiness(projectRoot: string): ReadinessCheck {
       ? undefined
       : "Configure Linear in ADE desktop or set ADE_LINEAR_API/LINEAR_API_KEY for headless mode.",
     details: {
-      encryptedTokenPresent,
+      encryptedTokenPresent:
+        legacyEncryptedTokenPresent || projectCredentialStoreTokenPresent,
+      legacyEncryptedTokenPresent,
+      projectCredentialStoreTokenPresent,
       tokenEnvPresent: envTokenPresent,
     },
   };
+}
+
+function hasProjectCredentialStoreValue(
+  secretsDir: string,
+  key: string,
+): boolean {
+  const credentialsPath = path.join(secretsDir, "credentials.json.enc");
+  const machineKeyPath = path.join(secretsDir, ".machine-key");
+  if (!fs.existsSync(credentialsPath) || !fs.existsSync(machineKeyPath)) {
+    return false;
+  }
+  try {
+    const credentialStore = new EncryptedFileCredentialStore({
+      credentialsPath,
+      machineKeyPath,
+    });
+    return Boolean(credentialStore.getSync(key)?.trim());
+  } catch {
+    return false;
+  }
 }
 
 function checkProviderReadiness(value: unknown): ReadinessCheck {
@@ -13323,6 +13354,7 @@ if (/(^|[/\\])cli\.(?:ts|js|cjs)$/.test(process.argv[1] ?? "")) {
 export {
   buildCliPlan,
   buildAdeCodeArgs,
+  checkLinearReadiness,
   findProjectRoots,
   formatOutput,
   graphWaitState,

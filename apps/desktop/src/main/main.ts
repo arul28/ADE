@@ -2704,7 +2704,7 @@ app.whenReady().then(async () => {
       adeDir: adePaths.adeDir,
       logger,
       credentialStore: new EncryptedFileCredentialStore({
-        secretsDir: machineAdeLayout.secretsDir,
+        secretsDir: path.join(adePaths.adeDir, "secrets"),
       }),
     });
     const linearClient = createLinearClient({

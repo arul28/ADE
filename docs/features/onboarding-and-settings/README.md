@@ -426,7 +426,8 @@ the consolidation that collapsed many top-level tabs into sub-sections.
 | Context doc prefs | `AdeDb` via `context:docs:preferences.v1` | provider, model, reasoning effort, event triggers |
 | Terminal preferences | `localStorage` under `ade.terminalPreferences.v1` | font size, line height, scrollback, font family |
 | Work view state | `localStorage` under `ade.workViewState.v1` | per-project and per-lane-project slices |
-| GitHub/Linear credentials | Keychain via `safeStorage` | tokens encrypted, banner on decryption failure |
+| GitHub credentials | Keychain via `safeStorage` | tokens encrypted, banner on decryption failure |
+| Linear credentials | Active project's `.ade/secrets` | project-local token/OAuth state, encrypted on disk |
 
 ## AI mode and provider behavior
 

@@ -100,12 +100,30 @@ const MOCK_LINEAR_CONNECTION = {
   connected: true,
   viewerId: "mock-linear-user",
   viewerName: "Mock Linear User",
+  organizationId: "mock-linear-org",
+  organizationName: "ADE",
+  organizationUrlKey: "ade",
+  organizationLogoUrl: null,
+  projectCount: 1,
+  projectPreview: ["Desktop polish"],
   checkedAt: now,
   authMode: "manual" as const,
   oauthAvailable: true,
   tokenExpiresAt: null,
   message: null,
 };
+
+const MOCK_LINEAR_PROJECTS = [
+  {
+    id: "mock-linear-project",
+    name: "Desktop polish",
+    slug: "desktop-polish",
+    teamName: "ADE",
+    teamKey: "ADE",
+    icon: null,
+    color: "#5E6AD2",
+  },
+];
 
 const MOCK_LINEAR_ISSUES = [
   {
@@ -181,15 +199,7 @@ const MOCK_LINEAR_ISSUES = [
 ];
 
 const MOCK_LINEAR_PICKER = {
-  projects: [
-    {
-      id: "mock-linear-project",
-      name: "Desktop polish",
-      slug: "desktop-polish",
-      teamName: "ADE",
-      teamKey: "ADE",
-    },
-  ],
+  projects: MOCK_LINEAR_PROJECTS,
   users: [
     {
       id: "mock-linear-user",
@@ -4784,7 +4794,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         reconciliation: { enabled: true, intervalSec: 30, lastRunAt: null },
       }),
       onLinearWorkflowEvent: noop,
-      getLinearProjects: resolvedArg([]),
+      getLinearProjects: resolvedArg(MOCK_LINEAR_PROJECTS),
       getLinearQuickView: resolvedArg({
         connection: MOCK_LINEAR_CONNECTION,
         organization: {
@@ -4867,6 +4877,28 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         pageInfo: { hasNextPage: false, endCursor: null },
       }),
       getLinearConnectionStatus: resolvedArg(MOCK_LINEAR_CONNECTION),
+      setLinearToken: resolvedArg({
+        ...MOCK_LINEAR_CONNECTION,
+        authMode: "manual" as const,
+        message: "Linear token accepted in browser preview.",
+      }),
+      clearLinearToken: resolvedArg({
+        tokenStored: false,
+        connected: false,
+        viewerId: null,
+        viewerName: null,
+        organizationId: null,
+        organizationName: null,
+        organizationUrlKey: null,
+        organizationLogoUrl: null,
+        projectCount: 0,
+        projectPreview: [],
+        checkedAt: now,
+        authMode: null,
+        oauthAvailable: true,
+        tokenExpiresAt: null,
+        message: "Linear disconnected in browser preview.",
+      }),
       setLinearOAuthClient: resolvedArg({
         tokenStored: false,
         connected: false,

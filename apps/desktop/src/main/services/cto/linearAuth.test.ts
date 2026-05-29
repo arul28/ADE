@@ -146,7 +146,7 @@ describe("linearCredentialService", () => {
     expect(fs.readFileSync(sentinelPath, "utf8")).toContain("imported");
   });
 
-  it("migrates project-local Linear credentials into the machine credential store once", () => {
+  it("migrates legacy project-local Linear credentials into the injected credential store once", () => {
     const previousAdeLinearApi = process.env.ADE_LINEAR_API;
     const previousLinearApiKey = process.env.LINEAR_API_KEY;
     const previousAdeLinearToken = process.env.ADE_LINEAR_TOKEN;
@@ -200,6 +200,8 @@ describe("linearCredentialService", () => {
         clientId: "client-project",
         clientSecret: "secret-project",
       });
+      expect(fs.existsSync(path.join(secretsDir, "linear-token.v1.bin"))).toBe(false);
+      expect(fs.existsSync(path.join(secretsDir, "linear-oauth-client.v1.bin"))).toBe(false);
 
       service.clearToken();
       const reloaded = createLinearCredentialService({
