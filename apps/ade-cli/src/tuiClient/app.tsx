@@ -5314,13 +5314,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     if (launchToNewChatPreview) {
       initialNewChatPreviewRef.current = false;
       newChatPreviewLaneIdRef.current = nextLaneId;
-      setDraftChatMode(false);
+      // Start as a true draft new chat so the center always shows the splash and
+      // NO existing chat is resolved/hydrated. Draft mode cascades through the
+      // drawer-selection + preview effects (they keep "new-chat", skip the
+      // history preview), so opening the drawer below can't activate a chat.
+      setDraftChatMode(true);
       setDrawerSection("chats");
       setDrawerLaneId(nextLaneId);
       setSelectedDrawerLaneId(nextLaneId);
       setSelectedDrawerLaneAction(null);
       setSelectedDrawerChatId(null);
       setSelectedDrawerChatAction(nextLaneId ? "new-chat" : null);
+      // Open BOTH side panes so `ade code` launches with the full layout.
+      setDrawerOpen(true);
       setRightOpen(true);
     }
     if (nextTerminalSession && nextSessionId) {
