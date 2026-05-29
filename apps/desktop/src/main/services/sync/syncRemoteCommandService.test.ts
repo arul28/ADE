@@ -780,6 +780,52 @@ describe("createSyncRemoteCommandService", () => {
   });
 
   // ---------------------------------------------------------------
+  // execute: deeplink commands
+  // ---------------------------------------------------------------
+
+  describe("execute — deeplinks.open", () => {
+    function createServiceWithDispatch(dispatchDeeplinkUrl: (url: string) => Promise<{ ok: boolean; message?: string }>) {
+      return createSyncRemoteCommandService({
+        laneService,
+        prService,
+        issueInventoryService,
+        queueLandingService,
+        ptyService,
+        sessionService,
+        fileService,
+        gitService,
+        diffService,
+        agentChatService,
+        workerAgentService,
+        conflictService,
+        processService,
+        dispatchDeeplinkUrl,
+        logger: createLogger() as any,
+      });
+    }
+
+    it("routes canonical ADE HTTPS links to the desktop deeplink dispatcher", async () => {
+      const dispatch = vi.fn(async () => ({ ok: true }));
+      const svc = createServiceWithDispatch(dispatch);
+      const url = "https://ade-app.dev/open?type=pr&repo=arul/ADE&number=42";
+
+      await expect(svc.execute(makePayload("deeplinks.open", { url }))).resolves.toEqual({ ok: true });
+
+      expect(dispatch).toHaveBeenCalledWith(url);
+    });
+
+    it("keeps accepting legacy ADE HTTPS links from older mobile shares", async () => {
+      const dispatch = vi.fn(async () => ({ ok: true }));
+      const svc = createServiceWithDispatch(dispatch);
+      const url = "https://ade.app/open?type=pr&repo=arul/ADE&number=42";
+
+      await expect(svc.execute(makePayload("deeplinks.open", { url }))).resolves.toEqual({ ok: true });
+
+      expect(dispatch).toHaveBeenCalledWith(url);
+    });
+  });
+
+  // ---------------------------------------------------------------
   // execute: lane commands
   // ---------------------------------------------------------------
 

@@ -28,6 +28,16 @@ describe("parseDeeplink — ade:// scheme", () => {
     expect(result.ok).toBe(false);
   });
 
+  it("parses work session links", () => {
+    const target = expectOk(parseDeeplink(`ade://session/session-123?lane=${UUID}`));
+    expect(target).toEqual({ kind: "session", sessionId: "session-123", laneId: UUID });
+  });
+
+  it("rejects work session links with control characters", () => {
+    const result = parseDeeplink("ade://session/session%0A123");
+    expect(result.ok).toBe(false);
+  });
+
   it("parses repo/branch links with simple branches", () => {
     const target = expectOk(parseDeeplink("ade://repo/anthropics/claude-code/branch/feat-deeplinks"));
     expect(target).toEqual({
@@ -86,15 +96,22 @@ describe("parseDeeplink — ade:// scheme", () => {
   });
 });
 
-describe("parseDeeplink — https://ade.app/open", () => {
+describe("parseDeeplink — https://ade-app.dev/open", () => {
   it("parses lane links", () => {
-    const target = expectOk(parseDeeplink(`https://ade.app/open?type=lane&id=${UUID}`));
+    const target = expectOk(parseDeeplink(`https://ade-app.dev/open?type=lane&id=${UUID}`));
     expect(target).toEqual({ kind: "lane", laneId: UUID });
+  });
+
+  it("parses session links", () => {
+    const target = expectOk(
+      parseDeeplink(`https://ade-app.dev/open?type=session&id=session-123&lane=${UUID}`),
+    );
+    expect(target).toEqual({ kind: "session", sessionId: "session-123", laneId: UUID });
   });
 
   it("parses branch links", () => {
     const target = expectOk(
-      parseDeeplink("https://ade.app/open?type=branch&repo=anthropics/claude-code&branch=feat-x"),
+      parseDeeplink("https://ade-app.dev/open?type=branch&repo=anthropics/claude-code&branch=feat-x"),
     );
     expect(target).toEqual({
       kind: "branch",
@@ -106,7 +123,7 @@ describe("parseDeeplink — https://ade.app/open", () => {
 
   it("parses branch links with pr query", () => {
     const target = expectOk(
-      parseDeeplink("https://ade.app/open?type=branch&repo=a/b&branch=f&pr=42"),
+      parseDeeplink("https://ade-app.dev/open?type=branch&repo=a/b&branch=f&pr=42"),
     );
     expect(target).toEqual({
       kind: "branch",
@@ -118,6 +135,11 @@ describe("parseDeeplink — https://ade.app/open", () => {
   });
 
   it("parses pr links", () => {
+    const target = expectOk(parseDeeplink("https://ade-app.dev/open?type=pr&repo=a/b&number=99"));
+    expect(target).toEqual({ kind: "pr", repoOwner: "a", repoName: "b", prNumber: 99 });
+  });
+
+  it("parses legacy ade.app links for old PR bodies and Linear cards", () => {
     const target = expectOk(parseDeeplink("https://ade.app/open?type=pr&repo=a/b&number=99"));
     expect(target).toEqual({ kind: "pr", repoOwner: "a", repoName: "b", prNumber: 99 });
   });
@@ -153,8 +175,19 @@ describe("buildDeeplink", () => {
 
   it("round-trips lane (https)", () => {
     const url = buildDeeplink({ kind: "lane", laneId: UUID });
-    expect(url).toBe(`https://ade.app/open?type=lane&id=${UUID}`);
+    expect(url).toBe(`https://ade-app.dev/open?type=lane&id=${UUID}`);
     expect(expectOk(parseDeeplink(url))).toEqual({ kind: "lane", laneId: UUID });
+  });
+
+  it("round-trips session links", () => {
+    const target = { kind: "session", sessionId: "session-123", laneId: UUID } as const;
+    const ade = buildDeeplink(target, { form: "ade" });
+    expect(ade).toBe(`ade://session/session-123?lane=${UUID}`);
+    expect(expectOk(parseDeeplink(ade))).toEqual(target);
+
+    const https = buildDeeplink(target);
+    expect(https).toBe(`https://ade-app.dev/open?type=session&id=session-123&lane=${UUID}`);
+    expect(expectOk(parseDeeplink(https))).toEqual(target);
   });
 
   it("round-trips branch (ade) with slash branches", () => {
@@ -201,7 +234,7 @@ describe("parseDeeplink — linear-issue", () => {
 
   it("parses https mirror", () => {
     const target = expectOk(
-      parseDeeplink("https://ade.app/open?type=linear-issue&issue=ADE-123&branch=feat-x"),
+      parseDeeplink("https://ade-app.dev/open?type=linear-issue&issue=ADE-123&branch=feat-x"),
     );
     expect(target).toEqual({
       kind: "linear-issue",
@@ -232,8 +265,16 @@ describe("looksLikeAdeDeeplink", () => {
     expect(looksLikeAdeDeeplink("ade://lane/abc")).toBe(true);
   });
 
-  it("matches https://ade.app/open urls", () => {
+  it("matches https://ade-app.dev/open urls", () => {
+    expect(looksLikeAdeDeeplink("https://ade-app.dev/open?type=lane&id=" + UUID)).toBe(true);
+  });
+
+  it("matches legacy https://ade.app/open urls", () => {
     expect(looksLikeAdeDeeplink("https://ade.app/open?type=lane&id=" + UUID)).toBe(true);
+  });
+
+  it("rejects http mirror urls", () => {
+    expect(looksLikeAdeDeeplink("http://ade-app.dev/open?type=lane&id=" + UUID)).toBe(false);
   });
 
   it("rejects unrelated urls", () => {

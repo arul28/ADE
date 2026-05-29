@@ -1986,7 +1986,7 @@ describe("ADE CLI", () => {
 
     expect(summarized).toMatchObject({
       githubUrl: "https://github.com/acme/ade/pull/42",
-      adeUrl: "https://ade.app/open?type=pr&repo=acme%2Fade&number=42",
+      adeUrl: "https://ade-app.dev/open?type=pr&repo=acme%2Fade&number=42",
     });
 
     const text = formatOutput(
@@ -1998,7 +1998,7 @@ describe("ADE CLI", () => {
     expect(text).toContain("GitHub URL");
     expect(text).toContain("https://github.com/acme/ade/pull/42");
     expect(text).toContain("ADE URL");
-    expect(text).toContain("https://ade.app/open?type=pr&repo=acme%2Fade&number=42");
+    expect(text).toContain("https://ade-app.dev/open?type=pr&repo=acme%2Fade&number=42");
   });
 
   it("maps lane create Linear issue JSON to the typed RPC tool", () => {

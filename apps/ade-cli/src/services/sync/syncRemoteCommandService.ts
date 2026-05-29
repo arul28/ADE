@@ -213,8 +213,9 @@ type SyncRemoteCommandServiceArgs = {
   getModelPickerStore?: () => ModelPickerStore | null;
   /**
    * Optional handler for the `deeplinks.open` sync command. iOS uses this to
-   * bounce a cross-machine `ade://...` URL to the paired desktop ("Send to
-   * your Mac"). Desktop main.ts wires this up to parseDeeplink +
+   * bounce a cross-machine `ade://...` or `https://ade-app.dev/open?...` URL
+   * to the paired desktop ("Send to your Mac"). Desktop main.ts wires this up
+   * to parseDeeplink +
    * appNavigationService; in the ade-cli/runtime context (no desktop windows
    * present) the handler is intentionally unset and the command returns a
    * clear "not available" error.

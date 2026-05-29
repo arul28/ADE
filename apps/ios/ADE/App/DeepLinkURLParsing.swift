@@ -1,6 +1,15 @@
 import Foundation
 
 enum ADEDeepLinkURLParsing {
+  static let canonicalWebHost = "ade-app.dev"
+  static let legacyWebHosts: Set<String> = ["ade.app"]
+
+  static func isADEWebHost(_ value: String?) -> Bool {
+    guard let value else { return false }
+    let host = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    return host == canonicalWebHost || legacyWebHosts.contains(host)
+  }
+
   static func splitRepo(_ value: String?) -> (owner: String, repo: String)? {
     guard let value else { return nil }
     let pieces = value.split(separator: "/", omittingEmptySubsequences: false).map(String.init)

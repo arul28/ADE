@@ -140,7 +140,7 @@ final class ADETests: XCTestCase {
 
   @MainActor
   func testDeepLinkRouterSendsHttpsAdePrLinksToMac() throws {
-    let expected = "https://ade.app/open?type=pr&repo=arul/ADE&number=42"
+    let expected = "https://ade-app.dev/open?type=pr&repo=arul/ADE&number=42"
     let received = expectation(description: "send to Mac request posted")
     var postedURL: String?
     let token = NotificationCenter.default.addObserver(
@@ -161,7 +161,7 @@ final class ADETests: XCTestCase {
 
   func testSendToMacTargetParsesHttpsAdePrLinks() throws {
     let target = SendToMacTarget(
-      url: try XCTUnwrap(URL(string: "https://ade.app/open?type=pr&repo=arul/ADE&number=42"))
+      url: try XCTUnwrap(URL(string: "https://ade-app.dev/open?type=pr&repo=arul/ADE&number=42"))
     )
 
     guard case .pr(let owner, let repo, let number) = target.kind else {
@@ -172,6 +172,27 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(number, 42)
     XCTAssertEqual(target.headline, "Pull request shared with you")
     XCTAssertEqual(target.detail, "#42 in arul/ADE")
+  }
+
+  @MainActor
+  func testDeepLinkRouterStillAcceptsLegacyHttpsAdeLinks() throws {
+    let expected = "https://ade.app/open?type=pr&repo=arul/ADE&number=42"
+    let received = expectation(description: "legacy send to Mac request posted")
+    var postedURL: String?
+    let token = NotificationCenter.default.addObserver(
+      forName: .adeSendToMacRequested,
+      object: nil,
+      queue: nil
+    ) { note in
+      postedURL = note.userInfo?["url"] as? String
+      received.fulfill()
+    }
+    defer { NotificationCenter.default.removeObserver(token) }
+
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string: expected)))
+
+    wait(for: [received], timeout: 1)
+    XCTAssertEqual(postedURL, expected)
   }
 
   func testDeepLinkRepoParserRejectsMalformedRepoValues() throws {

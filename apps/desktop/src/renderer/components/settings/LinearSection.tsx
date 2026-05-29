@@ -11,6 +11,7 @@ import {
   XCircle,
 } from "@phosphor-icons/react";
 import type { CtoLinearProject, GitHubAutolink, LinearConnectionStatus } from "../../../shared/types";
+import { ADE_DEEPLINK_HTTPS_BASE_URL } from "../../../shared/deeplinks";
 import { COLORS, SANS_FONT, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 import { Button } from "../ui/Button";
 
@@ -95,7 +96,7 @@ export function LinearSection() {
   }, [projects]);
   const autolinkCandidates = useMemo<GitHubAutolinkCandidate[]>(() => {
     const repoSlug = githubRepoSlug ?? "OWNER/REPO";
-    const adePrTemplate = `https://ade.app/open?type=pr&repo=${encodeURIComponent(repoSlug)}&number=<num>`;
+    const adePrTemplate = `${ADE_DEEPLINK_HTTPS_BASE_URL}?type=pr&repo=${encodeURIComponent(repoSlug)}&number=<num>`;
     const baseCandidates: Array<Omit<GitHubAutolinkCandidate, "configured" | "command">> = [
       {
         id: "ade-pr",

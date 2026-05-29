@@ -24,7 +24,7 @@ export type AdeDeeplinkFooterOptions = {
  * lives at the bottom of a PR description.
  *
  * The PR body's renderer is GitHub-flavored markdown which supports a useful
- * but small subset of HTML; <picture>, <p>, <a> all render. Linear's renderer
+ * but small subset of HTML; <p>, <img>, and <a> all render. Linear's renderer
  * accepts the same subset.
  */
 export function renderAdeDeeplinkFooter(opts: AdeDeeplinkFooterOptions): string {
@@ -47,10 +47,7 @@ export function renderAdeDeeplinkFooter(opts: AdeDeeplinkFooterOptions): string 
   const lines = [
     meta,
     "<p>",
-    '  <picture>',
-    '    <source media="(prefers-color-scheme: dark)" srcset="https://ade.app/logo-dark.svg">',
-    '    <img src="https://ade.app/logo-light.svg" height="18" align="left" alt="ADE">',
-    "  </picture>",
+    '  <img src="https://ade-app.dev/images/ade-mark.svg" height="18" align="left" alt="ADE">',
     "  &nbsp;&nbsp;<strong>Open in ADE</strong>",
     `  &nbsp;·&nbsp; <a href="${escapeHtml(branchUrl)}">${escapeHtml(opts.branch)} branch</a>`,
     prUrl

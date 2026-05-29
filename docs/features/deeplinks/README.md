@@ -2,19 +2,21 @@
 
 Deeplinks are the shared URL contract that lets every ADE surface — desktop,
 ADE Code TUI, iOS, the marketing site, and external tools (Linear, GitHub
-PR descriptions, chat apps) — point at the same lane, branch, PR, or Linear
+PR descriptions, chat apps) — point at the same lane, work session, branch, PR, or Linear
 issue. Two forms carry identical semantics:
 
 ```
 ade://lane/<uuid>
+ade://session/<id>[?lane=<lane-uuid>]
 ade://repo/<owner>/<repo>/branch/<branch>[?pr=<n>]
 ade://pr/<owner>/<repo>/<number>
 ade://linear-issue/<ADE-123>[?branch=<branch>]
 
-https://ade.app/open?type=lane&id=<uuid>
-https://ade.app/open?type=branch&repo=<owner>/<repo>&branch=<branch>[&pr=<n>]
-https://ade.app/open?type=pr&repo=<owner>/<repo>&number=<n>
-https://ade.app/open?type=linear-issue&issue=<ADE-123>[&branch=<branch>]
+https://ade-app.dev/open?type=lane&id=<uuid>
+https://ade-app.dev/open?type=session&id=<id>[&lane=<lane-uuid>]
+https://ade-app.dev/open?type=branch&repo=<owner>/<repo>&branch=<branch>[&pr=<n>]
+https://ade-app.dev/open?type=pr&repo=<owner>/<repo>&number=<n>
+https://ade-app.dev/open?type=linear-issue&issue=<ADE-123>[&branch=<branch>]
 ```
 
 The HTTPS form lives on `apps/web` (Vercel) and acts as a marketing landing
@@ -32,7 +34,7 @@ Shared contract:
   GitHub owner/repo, Linear issue identifiers, and branch refs (rejects
   traversal, control chars, trailing `.lock`). Exports `buildDeeplink`,
   `parseDeeplink`, `looksLikeAdeDeeplink`, and `describeTarget` plus the
-  `DeeplinkTarget` union (`lane | branch | pr | linear-issue`).
+  `DeeplinkTarget` union (`lane | session | branch | pr | linear-issue`).
 - `apps/desktop/src/shared/adeDeeplinkFooter.ts` — renders the branded
   "Open in ADE" footer block (markdown + small HTML subset) appended to
   GitHub PR descriptions and reused as Linear attachment subtitle.
@@ -78,21 +80,22 @@ Desktop main process — PR footer integration:
   PR number. Re-render fires a follow-up PATCH once the PR number is
   known.
 - `apps/desktop/src/main/services/cto/linearLaneCardService.ts` builds the
-  same deeplink target when posting the Linear attachment so Linear's
-  card surfaces the cross-machine `https://ade.app/open?...` URL instead
-  of a Mac-only path.
+  same deeplink target when posting Linear attachments so Linear cards can
+  open ADE lanes, PRs, Work sessions, or the Linear pane via the cross-machine
+  `https://ade-app.dev/open?...` URL instead of a Mac-only path.
 
 ADE CLI — outbound + inbound:
 
 - `apps/ade-cli/src/commands/deeplinks.ts` — `ade open`, `ade link`,
   and `ade linear install` subcommands.
   - `ade open <url>` invokes the OS opener (`open` / `xdg-open` / `start`)
-    on a validated `ade://` or `https://ade.app/open?...` URL, which
+    on a validated `ade://` or `https://ade-app.dev/open?...` URL, which
     routes back through the registered protocol handler. The
     `--linear-issue <id> --branch <branch>` form is what Linear's
-    "Open issue in coding tool" entry passes; the receiving install
-    resolves the actual lane/repo from the active project.
-  - `ade link …` builds a deeplink for a lane / branch / PR / Linear
+    "Open issue in coding tool" entry passes; the receiving install opens
+    the Linear pane to that issue, or shows a setup state if the project has
+    not connected Linear yet.
+  - `ade link …` builds a deeplink for a lane / work session / branch / PR / Linear
     issue and copies it to the clipboard. `--ade` emits the custom
     scheme; the default is the HTTPS form. Round-trip form
     (`ade link <url>`) re-emits a parsed URL in the chosen form.
@@ -155,9 +158,10 @@ iOS — inbound deeplinks + Send-to-Mac:
 | Form | Target | Notes |
 |------|--------|-------|
 | `ade://lane/<uuid>` | `{ kind: "lane", laneId }` | UUID v4 required. |
-| `ade://repo/<owner>/<repo>/branch/<branch>[?pr=<n>]` | `{ kind: "branch", repoOwner, repoName, branch, prNumber? }` | Cross-machine. Renderer opens the "Create lane from PR branch" modal or routes to the lane that already owns the branch. |
+| `ade://session/<id>[?lane=<uuid>]` | `{ kind: "session", sessionId, laneId? }` | Local Work tab session link. Routes to `/work` with the selected session. |
+| `ade://repo/<owner>/<repo>/branch/<branch>[?pr=<n>]` | `{ kind: "branch", repoOwner, repoName, branch, prNumber? }` | Cross-machine. Renderer routes to the lane that already owns the branch; otherwise it opens a create/import modal. PR-backed links use PR preflight, branch-only links fetch the remote branch and import it as a local lane. If no ADE project is open, the modal asks the user to open the matching project first. |
 | `ade://pr/<owner>/<repo>/<number>` | `{ kind: "pr", repoOwner, repoName, prNumber }` | If the PR isn't yet local, the renderer jumps to the PRs tab pre-filtered or falls back to the create-lane-from-branch flow. |
-| `ade://linear-issue/<ADE-123>[?branch=<branch>]` | `{ kind: "linear-issue", issueIdentifier, branch? }` | Linear hand-off — repo is not in the URL (Linear doesn't surface it), the renderer resolves the lane via `lane.linearIssue.identifier`. |
+| `ade://linear-issue/<ADE-123>[?branch=<branch>]` | `{ kind: "linear-issue", issueIdentifier, branch? }` | Linear hand-off. Opens ADE's Linear pane focused to the issue. If no project is open or this project is not connected to Linear, ADE shows a setup modal with the next action. |
 
 Validation lives in one place (`shared/deeplinks.ts`) so the parser, the
 TUI builders, and the web `/open` handler agree on what counts as
@@ -175,7 +179,7 @@ malformed.
                       │   - iOS share / chat app                    │
                       └────────────────────────────────────────────┘
                                          │
-                          ade:// URL  or  https://ade.app/open?...
+                          ade:// URL  or  https://ade-app.dev/open?...
                                          │
         ┌────────────────────────────────┼─────────────────────────────────┐
         │                                │                                  │
@@ -203,10 +207,7 @@ resolve Linear issue to lane).
 ```html
 <!-- ade:link v=1 type=pr repo=<owner>/<repo> branch=<branch> num=<n> -->
 <p>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://ade.app/logo-dark.svg">
-    <img src="https://ade.app/logo-light.svg" height="18" align="left" alt="ADE">
-  </picture>
+  <img src="https://ade-app.dev/images/ade-mark.svg" height="18" align="left" alt="ADE">
   &nbsp;&nbsp;<strong>Open in ADE</strong>
   &nbsp;·&nbsp; <a href="…">branch link</a>
   &nbsp;·&nbsp; <a href="…">PR link</a>
@@ -237,18 +238,12 @@ still routes deeplinks to them), but they skip
 `app.setAsDefaultProtocolClient` so they don't fight Stable for the
 binding on machines where multiple channels are installed.
 
-Source builds default to the same skip behavior. To make a source dev
-build claim the binding for testing, set
-`ADE_REGISTER_DEEPLINK_HANDLER=1` in its environment before launch:
-
-```bash
-ADE_REGISTER_DEEPLINK_HANDLER=1 npm run dev
-```
-
-This is the supported workaround for testing deeplinks against a dev
-build when Stable / Beta / Alpha are also installed. The gate lives in
-`apps/desktop/src/main/main.ts` (channel detection + env override) and
-the registration mechanics live in `protocolHandler.ts` behind the
+Source builds default to the same skip behavior and do not expose an env
+override to claim the system binding. They can still dispatch URLs that are
+explicitly delivered to that process, but the OS-default `ade://` handler is
+reserved for the real packaged Stable desktop build. The gate lives in
+`apps/desktop/src/main/main.ts` (packaged Stable channel detection) and the
+registration mechanics live in `protocolHandler.ts` behind the
 `claimAsDefault` option.
 
 ## Gotchas
@@ -262,17 +257,23 @@ the registration mechanics live in `protocolHandler.ts` behind the
   unknown hosts). Don't bypass it for "trusted" callers — Linear's
   template substitution can produce empty strings.
 - **The HTTPS form is the social form.** When linking from chat apps,
-  emails, or anywhere a preview matters, prefer the `https://ade.app/open`
+  emails, or anywhere a preview matters, prefer the `https://ade-app.dev/open`
   shape so the unfurl works. Use `ade://` when the target is guaranteed
   to be a machine with ADE installed (TUI copy, terminal share).
 - **Linear hand-off doesn't carry the GitHub repo.** The `linear-issue`
   shape only has the identifier (`ADE-123`) and optionally Linear's
-  generated branch name. The desktop resolves the GitHub repo by
-  looking up the lane that owns that Linear issue; if none matches, the
-  renderer opens the lanes page filtered by branch so the user can pick.
+  generated branch name. The desktop opens the Linear pane to that issue
+  inside the active project. From there the user can create a lane, start a
+  chat, or connect Linear if this project has not been authorized yet. If no
+  project is open, ADE shows a setup modal because the Linear issue identifier
+  alone is not enough to choose a local repo.
+- **Branch links are the portable lane form.** Lane UUID links are local, but
+  branch links can be shared across machines. If the receiver does not already
+  have that lane, ADE fetches remotes and imports the branch as a local
+  worktree-backed lane. Without an active project, the import modal stays
+  read-only and asks the user to open the matching ADE project first.
 - **The PR footer is GitHub-flavored markdown, not full HTML.** Only the
-  `<p>`, `<picture>`, `<source>`, `<img>`, `<a>`, `<strong>` subset
-  renders. Linear accepts the same subset.
+  `<p>`, `<img>`, `<a>`, `<strong>` subset renders. Linear accepts the same subset.
 
 ## Cross-links
 

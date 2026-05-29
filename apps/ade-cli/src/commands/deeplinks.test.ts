@@ -17,7 +17,7 @@ describe("ade link", () => {
   it("emits an https lane link by default", () => {
     const r = runLinkCommand(["lane", UUID, "--no-clipboard"]);
     expect(r.exitCode).toBe(0);
-    expect(r.output).toContain(`https://ade.app/open?type=lane&id=${UUID}`);
+    expect(r.output).toContain(`https://ade-app.dev/open?type=lane&id=${UUID}`);
   });
 
   it("emits the ade:// form when --ade is set", () => {
@@ -25,9 +25,17 @@ describe("ade link", () => {
     expect(r.output).toContain(`ade://lane/${UUID}`);
   });
 
+  it("emits a session link with an optional lane hint", () => {
+    const r = runLinkCommand(["session", "session-123", "--lane", UUID, "--no-clipboard"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.output).toContain("https://ade-app.dev/open?type=session");
+    expect(r.output).toContain("id=session-123");
+    expect(r.output).toContain(`lane=${UUID}`);
+  });
+
   it("emits a branch link", () => {
     const r = runLinkCommand(["branch", "a/b", "feat", "--no-clipboard"]);
-    expect(r.output).toContain("https://ade.app/open?type=branch");
+    expect(r.output).toContain("https://ade-app.dev/open?type=branch");
     expect(r.output).toContain("repo=a%2Fb");
     expect(r.output).toContain("branch=feat");
   });
@@ -39,7 +47,7 @@ describe("ade link", () => {
 
   it("emits a pr link", () => {
     const r = runLinkCommand(["pr", "a/b", "1234", "--no-clipboard"]);
-    expect(r.output).toContain("https://ade.app/open?type=pr");
+    expect(r.output).toContain("https://ade-app.dev/open?type=pr");
     expect(r.output).toContain("number=1234");
   });
 
@@ -57,12 +65,12 @@ describe("ade link", () => {
 
   it("round-trips an existing URL", () => {
     const r = runLinkCommand([`ade://lane/${UUID}`, "--no-clipboard"]);
-    expect(r.output).toContain(`https://ade.app/open?type=lane&id=${UUID}`);
+    expect(r.output).toContain(`https://ade-app.dev/open?type=lane&id=${UUID}`);
   });
 
   it("emits a linear-issue link", () => {
     const r = runLinkCommand(["linear-issue", "ADE-123", "--no-clipboard"]);
-    expect(r.output).toContain("https://ade.app/open?type=linear-issue");
+    expect(r.output).toContain("https://ade-app.dev/open?type=linear-issue");
     expect(r.output).toContain("issue=ADE-123");
   });
 
@@ -129,8 +137,9 @@ describe("ade linear install", () => {
     const r = runLinearInstall([], { home: tmpHome, argv0: "/usr/local/bin/ade" });
     expect(r.exitCode).toBe(0);
     const entries = fs.readdirSync(path.join(tmpHome, ".linear"));
-    const backup = entries.find((entry) => entry.startsWith("coding-tools.json.bak-"));
-    expect(backup).toBeDefined();
+    expect(entries).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^coding-tools\.json\.bak-/),
+    ]));
     const cfg = JSON.parse(
       fs.readFileSync(path.join(tmpHome, ".linear", "coding-tools.json"), "utf8"),
     );

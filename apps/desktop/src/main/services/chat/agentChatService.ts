@@ -187,6 +187,7 @@ import type {
   TerminalSessionStatus,
   TerminalToolType,
   CtoCapabilityMode,
+  LaneLinearIssue,
 } from "../../../shared/types";
 import {
   buildChatContextAttachmentPrompt,
@@ -4853,6 +4854,13 @@ export function createAgentChatService(args: {
   claudeSubprocessReaper?: ClaudeSubprocessReaper;
   onEvent?: (event: AgentChatEventEnvelope) => void;
   onSessionEnded?: (args: { laneId: string; sessionId: string; exitCode: number | null }) => void;
+  onLinearIssueChatLinked?: (args: {
+    laneId: string;
+    sessionId: string;
+    sessionTitle?: string | null;
+    issue: LaneLinearIssue;
+    linkedAt: string;
+  }) => void | Promise<void>;
   getDirtyFileTextForPath: (absPath: string) => string | undefined | Promise<string | undefined>;
 }) {
   const {
@@ -4889,6 +4897,7 @@ export function createAgentChatService(args: {
     claudeSubprocessReaper: injectedClaudeSubprocessReaper,
     onEvent,
     onSessionEnded,
+    onLinearIssueChatLinked,
     getDirtyFileTextForPath,
   } = args;
 
@@ -5026,6 +5035,26 @@ export function createAgentChatService(args: {
         closeOnMerge: false,
         evidence: { chatSessionId: managed.session.id },
       });
+      if (onLinearIssueChatLinked) {
+        const linkedAt = nowIso();
+        for (const issue of issues) {
+          Promise.resolve(onLinearIssueChatLinked({
+            laneId: managed.session.laneId,
+            sessionId: managed.session.id,
+            sessionTitle: managed.preview,
+            issue,
+            linkedAt,
+          })).catch((error) => {
+            logger.warn("agent_chat.linear_issue_chat_card_failed", {
+              sessionId: managed.session.id,
+              laneId: managed.session.laneId,
+              issueId: issue.id,
+              issueIdentifier: issue.identifier,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+        }
+      }
     } catch (error) {
       logger.warn("agent_chat.linear_issue_context_link_failed", {
         sessionId: managed.session.id,
