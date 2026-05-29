@@ -102,13 +102,13 @@ export async function refreshLinearOAuthAccessToken(params: {
     typeof payload.access_token !== "string" ||
     !payload.access_token.trim()
   ) {
-    // 400/401 or an explicit invalid_grant means the refresh token is dead;
-    // 5xx / network failures are transient and should be retried later.
-    const invalidGrant =
-      payload.error === "invalid_grant" ||
-      payload.error === "invalid_request" ||
-      res.status === 400 ||
-      res.status === 401;
+    // Only an explicit `invalid_grant` reliably means the refresh token itself
+    // is dead (expired / revoked) and the user must reconnect — see RFC 6749
+    // §5.2. `invalid_client` (wrong or misconfigured client → 400/401),
+    // `invalid_request` (malformed), other 4xx, and 5xx/network failures are
+    // NOT the token's fault: keep the token so a client-config or transient
+    // error never silently deletes a still-valid refresh token; retry later.
+    const invalidGrant = payload.error === "invalid_grant";
     return {
       ok: false,
       status: res.status,

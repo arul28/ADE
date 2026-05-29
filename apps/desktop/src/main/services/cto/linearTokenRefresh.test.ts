@@ -80,4 +80,16 @@ describe("refreshLinearOAuthAccessToken", () => {
     expect(await refreshLinearOAuthAccessToken({ ...base, fetchImpl: net as unknown as typeof fetch }))
       .toMatchObject({ ok: false, invalidGrant: false, status: 0, message: "ECONNRESET" });
   });
+
+  it("does not flag client-config / non-invalid_grant 4xx as invalidGrant (keeps the token)", async () => {
+    // invalid_client (wrong/misconfigured client) must NOT delete the refresh token.
+    const badClient = vi.fn(async () => errResponse(401, { error: "invalid_client", error_description: "bad client" }));
+    expect(await refreshLinearOAuthAccessToken({ ...base, fetchImpl: badClient as unknown as typeof fetch }))
+      .toMatchObject({ ok: false, invalidGrant: false, status: 401 });
+
+    // invalid_request (malformed) is our bug, not a dead token.
+    const malformed = vi.fn(async () => errResponse(400, { error: "invalid_request" }));
+    expect(await refreshLinearOAuthAccessToken({ ...base, fetchImpl: malformed as unknown as typeof fetch }))
+      .toMatchObject({ ok: false, invalidGrant: false, status: 400 });
+  });
 });
