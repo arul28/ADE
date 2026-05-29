@@ -70,6 +70,56 @@ struct LaneOpenChip: View {
   }
 }
 
+// MARK: - Linear issue
+
+struct LaneLinearIssueBadge: View {
+  @Environment(\.openURL) private var openURL
+
+  let issue: LaneLinearIssue
+  var compact = false
+
+  var body: some View {
+    Button {
+      if let urlString = issue.url,
+         let url = URL(string: urlString),
+         url.scheme == "http" || url.scheme == "https" {
+        openURL(url)
+      }
+    } label: {
+      HStack(spacing: 6) {
+        Image(systemName: "link")
+          .font(.system(size: compact ? 9 : 11, weight: .bold))
+        Text(issue.identifier)
+          .font(.caption2.monospaced().weight(.bold))
+          .lineLimit(1)
+        if !compact {
+          Text(issue.title)
+            .font(.caption.weight(.semibold))
+            .lineLimit(1)
+            .truncationMode(.tail)
+        }
+        if let state = issue.stateName, !state.isEmpty, !compact {
+          Text(state)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+        }
+      }
+      .foregroundStyle(ADEColor.textPrimary)
+      .padding(.horizontal, compact ? 7 : 9)
+      .padding(.vertical, compact ? 4 : 7)
+      .background(ADEColor.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: compact ? 9 : 11, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: compact ? 9 : 11, style: .continuous)
+          .stroke(ADEColor.accent.opacity(0.28), lineWidth: 0.7)
+      )
+    }
+    .buttonStyle(.plain)
+    .disabled(issue.url?.isEmpty ?? true)
+    .accessibilityLabel("\(issue.identifier): \(issue.title)")
+  }
+}
+
 // MARK: - Launch tile
 
 struct LaneLaunchTile: View {
@@ -321,6 +371,11 @@ struct LaneListRow: View, Equatable {
           }
           if snapshot.lane.childCount > 0 {
             LaneMicroChip(icon: "square.stack.3d.up", text: "\(snapshot.lane.childCount)", tint: ADEColor.textMuted)
+          }
+          if let issue = primaryLaneLinearIssue(for: snapshot.lane) {
+            LaneMicroChip(icon: "link", text: issue.identifier, tint: ADEColor.accent)
+          } else if laneLinearIssueLinkCount(for: snapshot.lane) > 0 {
+            LaneMicroChip(icon: "link", text: "\(laneLinearIssueLinkCount(for: snapshot.lane))", tint: ADEColor.accent)
           }
           if isPinned {
             LaneMicroChip(icon: "pin.fill", text: nil, tint: ADEColor.accent)
@@ -590,6 +645,11 @@ struct LaneStackCard: View, Equatable {
           }
           if snapshot.lane.childCount > 0 {
             LaneMicroChip(icon: "square.stack.3d.up", text: "\(snapshot.lane.childCount)", tint: ADEColor.textMuted)
+          }
+          if let issue = primaryLaneLinearIssue(for: snapshot.lane) {
+            LaneMicroChip(icon: "link", text: issue.identifier, tint: ADEColor.accent)
+          } else if laneLinearIssueLinkCount(for: snapshot.lane) > 0 {
+            LaneMicroChip(icon: "link", text: "\(laneLinearIssueLinkCount(for: snapshot.lane))", tint: ADEColor.accent)
           }
           if isPinned {
             LaneMicroChip(icon: "pin.fill", text: nil, tint: ADEColor.accent)

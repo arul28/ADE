@@ -108,6 +108,30 @@ struct WorkPendingPlanApprovalModel: Identifiable, Equatable {
   let title: String
 }
 
+struct WorkModelSelectionChoice: Codable, Equatable {
+  let provider: String
+  let modelId: String
+  let reasoningEffort: String?
+  let codexFastMode: Bool?
+}
+
+struct WorkPendingModelSelectionModel: Identifiable, Equatable {
+  let id: String
+  let role: String
+  let tag: String
+  let workDescription: String?
+  let suggested: WorkModelSelectionChoice?
+  let availableModelIds: [String]?
+
+  var title: String {
+    guard !role.isEmpty else { return "Pick a model" }
+    if !tag.isEmpty {
+      return "Pick a model for the \"\(tag)\" \(role)"
+    }
+    return "Pick a model for the \(role)"
+  }
+}
+
 struct WorkUsageSummary: Equatable {
   var turnCount: Int
   var inputTokens: Int
@@ -169,6 +193,9 @@ enum WorkTimelinePayload: Equatable {
   /// Plan-approval gate: agent has finished planning and is waiting for the
   /// user to Approve & Implement or Reject & Revise before it acts.
   case pendingPlanApproval(WorkPendingPlanApprovalModel)
+  /// Orchestration model routing gate: desktop asks the user to choose a
+  /// provider/model/reasoning tuple before workers can be spawned.
+  case pendingModelSelection(WorkPendingModelSelectionModel)
 }
 
 /// One member of a `WorkToolGroupModel`. Carries enough context for the

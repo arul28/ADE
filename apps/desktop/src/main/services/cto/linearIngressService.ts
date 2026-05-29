@@ -5,6 +5,10 @@ import type {
   LinearIngressSource,
   LinearIngressStatus,
 } from "../../../shared/types";
+import {
+  linearIngressKindFromParts,
+  normalizeLinearIngressEventKind,
+} from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import { nowIso, safeJsonParse } from "../shared/utils";
@@ -158,10 +162,12 @@ export function createLinearIngressService(args: LinearIngressServiceArgs) {
 
   const persistEvent = (event: Omit<LinearIngressEventRecord, "id" | "createdAt"> & { createdAt?: string }): LinearIngressEventRecord => {
     const createdAt = event.createdAt ?? nowIso();
+    const kindParts = normalizeLinearIngressEventKind(event);
     const record: LinearIngressEventRecord = {
       id: randomUUID(),
       createdAt,
       ...event,
+      ...kindParts,
     };
     try {
       args.db.run(
@@ -177,7 +183,7 @@ export function createLinearIngressService(args: LinearIngressServiceArgs) {
           record.source,
           record.deliveryId,
           record.eventId,
-          record.entityType,
+          record.entityType ?? "issue",
           record.action ?? null,
           record.issueId ?? null,
           record.issueIdentifier ?? null,
@@ -213,6 +219,7 @@ export function createLinearIngressService(args: LinearIngressServiceArgs) {
         eventId: existing.event_id,
         entityType: existing.entity_type,
         action: existing.action,
+        kind: linearIngressKindFromParts(existing.entity_type, existing.action),
         issueId: existing.issue_id,
         issueIdentifier: existing.issue_identifier,
         summary: existing.summary,
@@ -253,6 +260,7 @@ export function createLinearIngressService(args: LinearIngressServiceArgs) {
       eventId: row.event_id,
       entityType: row.entity_type,
       action: row.action,
+      kind: linearIngressKindFromParts(row.entity_type, row.action),
       issueId: row.issue_id,
       issueIdentifier: row.issue_identifier,
       summary: row.summary,
@@ -398,7 +406,8 @@ export function createLinearIngressService(args: LinearIngressServiceArgs) {
         source: "relay",
         deliveryId: typeof entry.deliveryId === "string" ? entry.deliveryId : randomUUID(),
         eventId: typeof entry.eventId === "string" ? entry.eventId : `${Date.now()}-${randomUUID()}`,
-        entityType: typeof entry.entityType === "string" ? entry.entityType : "issue",
+        kind: typeof entry.kind === "string" ? entry.kind : null,
+        entityType: typeof entry.entityType === "string" ? entry.entityType : null,
         action: typeof entry.action === "string" ? entry.action : null,
         issueId: typeof entry.issueId === "string" ? entry.issueId : null,
         issueIdentifier: typeof entry.issueIdentifier === "string" ? entry.issueIdentifier : null,

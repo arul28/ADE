@@ -420,6 +420,10 @@ function fileContentToBlob(filePath: string, content: FileContent): SyncFileBlob
     isBinary: content.isBinary,
     content: content.content,
     languageId: content.languageId,
+    ...(content.previewKind ? { previewKind: content.previewKind } : {}),
+    ...(content.dataUrl ? { dataUrl: content.dataUrl } : {}),
+    ...(typeof content.contentOmitted === "boolean" ? { contentOmitted: content.contentOmitted } : {}),
+    ...(content.omittedReason ? { omittedReason: content.omittedReason } : {}),
   };
 }
 
@@ -433,6 +437,7 @@ function createBlobFromBuffer(filePath: string, buf: Buffer): SyncFileBlob {
     isBinary,
     content: isBinary ? buf.toString("base64") : buf.toString("utf8"),
     languageId: null,
+    previewKind: isBinary ? "binary" : "text",
   };
 }
 

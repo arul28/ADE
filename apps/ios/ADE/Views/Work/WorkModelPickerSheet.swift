@@ -17,6 +17,7 @@ struct WorkModelPickerSheet: View {
   let currentModelId: String
   let currentProvider: String
   let currentReasoningEffort: String
+  let availableModelIds: [String]?
   let isBusy: Bool
   let onSelect: (WorkModelOption, String?, String) -> Void
 
@@ -24,12 +25,14 @@ struct WorkModelPickerSheet: View {
     currentModelId: String,
     currentProvider: String,
     currentReasoningEffort: String = "",
+    availableModelIds: [String]? = nil,
     isBusy: Bool,
     onSelect: @escaping (WorkModelOption, String?, String) -> Void
   ) {
     self.currentModelId = currentModelId
     self.currentProvider = currentProvider
     self.currentReasoningEffort = currentReasoningEffort
+    self.availableModelIds = availableModelIds
     self.isBusy = isBusy
     self.onSelect = onSelect
   }
@@ -44,7 +47,7 @@ struct WorkModelPickerSheet: View {
 
 	  private var catalog: [WorkModelCatalogGroup] {
 	    if let liveCatalog {
-	      return liveCatalog
+	      return scopedCatalog(liveCatalog)
 	    }
 	    return []
 	  }
@@ -178,6 +181,25 @@ struct WorkModelPickerSheet: View {
   private func firstProviderSelection() -> ModelPickerRailSelection? {
     guard let first = catalog.first else { return nil }
     return .providerGroup(key: first.key, label: groupLabel(first))
+  }
+
+  private func scopedCatalog(_ groups: [WorkModelCatalogGroup]) -> [WorkModelCatalogGroup] {
+    guard let availableModelIds else { return groups }
+    let scopedIds = availableModelIds
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+    guard !scopedIds.isEmpty else { return [] }
+    return groups.compactMap { group -> WorkModelCatalogGroup? in
+      let providers = group.providers.compactMap { provider -> WorkModelProvider? in
+        let models = provider.models.filter { model in
+          scopedIds.contains { workModelIdsEquivalent($0, model.id) }
+        }
+        guard !models.isEmpty else { return nil }
+        return WorkModelProvider(key: provider.key, displayName: provider.displayName, models: models)
+      }
+      guard !providers.isEmpty else { return nil }
+      return WorkModelCatalogGroup(key: group.key, displayName: group.displayName, providers: providers)
+    }
   }
 
   private func pickInitialSelectionIfNeeded() {

@@ -4903,6 +4903,41 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(gate.target, .checks)
   }
 
+  func testPrMergeGatePrefersSyncedCheckRowsOverStaleSummaryStatus() {
+    let checks = [
+      PrCheck(
+        name: "unit",
+        status: "completed",
+        conclusion: "success",
+        detailsUrl: nil,
+        startedAt: nil,
+        completedAt: nil
+      ),
+    ]
+    let status = PrStatus(
+      prId: "pr-1",
+      state: "open",
+      checksStatus: "failing",
+      reviewStatus: "approved",
+      isMergeable: true,
+      mergeConflicts: false,
+      behindBaseBy: 0
+    )
+
+    let gate = prComputeMergeGate(
+      status: status,
+      checks: checks,
+      summaryChecksStatus: "failing",
+      reviewThreadsUnresolved: 0,
+      reviewsNeeded: 1,
+      reviewsHave: 1,
+      capabilities: nil
+    )
+
+    XCTAssertEqual(gate.tone, .green)
+    XCTAssertEqual(gate.target, .overview)
+  }
+
   func testPrLinkLanePreselectionRequiresExactBranchMatch() {
     func lane(id: String, name: String, branchRef: String) -> LaneSummary {
       LaneSummary(

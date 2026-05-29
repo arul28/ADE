@@ -7,6 +7,13 @@ struct CtoWorkflowsScreen: View {
   @State private var dashboard: LinearSyncDashboard?
   @State private var policy: LinearWorkflowConfig?
   @State private var events: [LinearIngressEventRecord] = []
+  @State private var pickerData: LinearIssuePickerData?
+  @State private var quickView: LinearQuickView?
+  @State private var issues: [NormalizedLinearIssue] = []
+  @State private var issueQuery = ""
+  @State private var issueSearchError: String?
+  @State private var isLoadingIssues = false
+  @State private var selectedIssue: NormalizedLinearIssue?
   @State private var isLoading = false
   @State private var isSyncing = false
   @State private var errorMessage: String?
@@ -74,6 +81,12 @@ struct CtoWorkflowsScreen: View {
       EditOnMachineSheet()
         .presentationDetents([.fraction(0.3), .medium])
     }
+    .sheet(item: $selectedIssue) { issue in
+      LinearIssueDetailSheet(issue: issue)
+        .environmentObject(syncService)
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
   }
 
   @ViewBuilder
@@ -124,6 +137,8 @@ struct CtoWorkflowsScreen: View {
           .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 12, trailing: 16))
       }
     }
+
+    issueBrowserSection
 
     Section {
       SectionHeader(
@@ -194,6 +209,58 @@ struct CtoWorkflowsScreen: View {
     }
   }
 
+  @ViewBuilder
+  private var issueBrowserSection: some View {
+    Section {
+      SectionHeader(
+        title: "Linear issues",
+        rightLabel: issueBrowserRightLabel
+      )
+      .listRowBackground(Color.clear)
+      .listRowSeparator(.hidden)
+      .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 6, trailing: 16))
+
+      LinearIssueSearchCard(
+        query: $issueQuery,
+        pickerSummary: pickerDataSummary,
+        errorMessage: issueSearchError,
+        isLoading: isLoadingIssues,
+        onSearch: { Task { await loadIssues() } }
+      )
+      .listRowBackground(Color.clear)
+      .listRowSeparator(.hidden)
+      .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 6, trailing: 16))
+
+      if isLoadingIssues && issues.isEmpty {
+        ADECardSkeleton(rows: 2)
+          .listRowBackground(Color.clear)
+          .listRowSeparator(.hidden)
+          .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+      } else if issues.isEmpty {
+        Text("No matching issues.")
+          .font(.subheadline)
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .adeListCard()
+          .listRowBackground(Color.clear)
+          .listRowSeparator(.hidden)
+          .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+      } else {
+        ForEach(issues) { issue in
+          Button {
+            selectedIssue = issue
+          } label: {
+            LinearIssueRow(issue: issue)
+          }
+          .buttonStyle(.plain)
+          .listRowBackground(Color.clear)
+          .listRowSeparator(.hidden)
+          .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+        }
+      }
+    }
+  }
+
   private var loadingSkeleton: some View {
     VStack(spacing: 12) {
       ADECardSkeleton(rows: 2)
@@ -236,6 +303,7 @@ struct CtoWorkflowsScreen: View {
       let updated = try await syncService.runLinearSyncNow()
       dashboard = updated
       syncNotice = "Sync completed · \(updated.queuedCount) queued, \(updated.runningCount) running."
+      await loadIssues()
       Task {
         try? await Task.sleep(nanoseconds: 4_000_000_000)
         await MainActor.run { syncNotice = nil }
@@ -273,12 +341,86 @@ struct CtoWorkflowsScreen: View {
       self.events = value
     }
 
+    let pickerResult = await CtoWorkflowsResult { try await syncService.fetchLinearIssuePickerData() }
+    if case .success(let value) = pickerResult {
+      self.pickerData = value
+    }
+
+    let queryIsEmpty = issueQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    var didLoadQuickView = false
+    let quickResult = await CtoWorkflowsResult { try await syncService.fetchLinearQuickView() }
+    if case .success(let value) = quickResult {
+      didLoadQuickView = true
+      self.quickView = value
+      if queryIsEmpty {
+        self.issues = quickViewIssueList(value)
+        self.issueSearchError = nil
+      }
+    }
+
+    if !didLoadQuickView || !queryIsEmpty {
+      await loadIssues()
+    }
+
     // Only surface a top-level error if the connection fetch itself failed —
     // once we know Linear isn't connected, dashboard/policy failures are
     // expected (the services aren't initialized) and shouldn't render as an
     // error card.
     if case .failure(let err) = connResult, self.connection == nil {
       self.errorMessage = (err as? LocalizedError)?.errorDescription ?? String(describing: err)
+    }
+  }
+
+  private var pickerDataSummary: String? {
+    guard let pickerData else { return nil }
+    let parts = [
+      pickerData.projects.isEmpty ? nil : "\(pickerData.projects.count) projects",
+      pickerData.states.isEmpty ? nil : "\(pickerData.states.count) states",
+      pickerData.users.isEmpty ? nil : "\(pickerData.users.count) users",
+    ].compactMap { $0 }
+    return parts.isEmpty ? nil : parts.joined(separator: " · ")
+  }
+
+  private var issueBrowserRightLabel: String? {
+    if !issues.isEmpty { return "\(issues.count) shown" }
+    if let quickView {
+      let assigned = quickView.assignedIssues.count
+      let recent = quickView.recentIssues.count
+      if assigned > 0 || recent > 0 {
+        return "\(assigned) assigned · \(recent) recent"
+      }
+    }
+    return pickerDataSummary
+  }
+
+  private func quickViewIssueList(_ quickView: LinearQuickView) -> [NormalizedLinearIssue] {
+    var seen: Set<String> = []
+    var result: [NormalizedLinearIssue] = []
+    for issue in quickView.assignedIssues + quickView.recentIssues {
+      guard !seen.contains(issue.id) else { continue }
+      seen.insert(issue.id)
+      result.append(issue)
+    }
+    return result
+  }
+
+  private func loadIssues() async {
+    guard !isLoadingIssues else { return }
+    isLoadingIssues = true
+    defer { isLoadingIssues = false }
+    do {
+      let query = issueQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+      let result = try await syncService.searchLinearIssues(
+        LinearIssueSearchArgs(
+          query: query.isEmpty ? nil : query,
+          first: 20,
+          includeArchived: false
+        )
+      )
+      issues = result.issues
+      issueSearchError = nil
+    } catch {
+      issueSearchError = error.localizedDescription
     }
   }
 }
@@ -419,6 +561,266 @@ private struct QueueCounter: View {
       RoundedRectangle(cornerRadius: 11, style: .continuous)
         .stroke(ADEColor.glassBorder, lineWidth: 0.5)
     )
+  }
+}
+
+// MARK: - Linear issues
+
+private struct LinearIssueSearchCard: View {
+  @Binding var query: String
+  let pickerSummary: String?
+  let errorMessage: String?
+  let isLoading: Bool
+  let onSearch: () -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 9) {
+      HStack(spacing: 8) {
+        Image(systemName: "magnifyingglass")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(ADEColor.purpleAccent)
+        TextField("Search title, ID, label, or assignee", text: $query)
+          .font(.system(size: 13))
+          .textInputAutocapitalization(.never)
+          .autocorrectionDisabled()
+          .submitLabel(.search)
+          .onSubmit(onSearch)
+        Button(action: onSearch) {
+          if isLoading {
+            ProgressView().controlSize(.mini)
+          } else {
+            Image(systemName: "arrow.right.circle.fill")
+              .font(.system(size: 17, weight: .semibold))
+          }
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(ADEColor.purpleAccent)
+        .accessibilityLabel("Search Linear issues")
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 10)
+      .background(ADEColor.glassBackground, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 11, style: .continuous)
+          .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+      )
+
+      if let errorMessage {
+        Text(errorMessage)
+          .font(.caption)
+          .foregroundStyle(ADEColor.warning)
+          .fixedSize(horizontal: false, vertical: true)
+      } else if let pickerSummary {
+        Text(pickerSummary)
+          .font(.system(size: 10.5, design: .monospaced))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+    }
+    .adeListCard()
+  }
+}
+
+private struct LinearIssueRow: View {
+  let issue: NormalizedLinearIssue
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(alignment: .firstTextBaseline, spacing: 8) {
+        Text(issue.identifier)
+          .font(.system(size: 11, design: .monospaced).weight(.bold))
+          .foregroundStyle(ADEColor.purpleAccent)
+        Text(issue.title)
+          .font(.system(size: 13.5, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(2)
+        Spacer(minLength: 0)
+        Image(systemName: "chevron.right")
+          .font(.system(size: 11, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+
+      HStack(spacing: 6) {
+        if let state = issue.stateName, !state.isEmpty {
+          ADEStatusPill(text: state, tint: linearIssueStateTint(issue.stateType))
+        }
+        if let project = issue.projectName ?? issue.projectSlug, !project.isEmpty {
+          MetaChip(text: project, symbol: "folder")
+        }
+        if let assignee = issue.assigneeName, !assignee.isEmpty {
+          MetaChip(text: assignee, symbol: "person.crop.circle")
+        }
+        if issue.hasOpenBlockers == true {
+          MetaChip(text: "blocked", symbol: "exclamationmark.triangle.fill", tint: ADEColor.warning)
+        }
+      }
+    }
+    .adeListCard()
+  }
+}
+
+private struct MetaChip: View {
+  let text: String
+  let symbol: String
+  var tint: Color = ADEColor.textSecondary
+
+  var body: some View {
+    Label(text, systemImage: symbol)
+      .font(.system(size: 10.5, weight: .medium))
+      .foregroundStyle(tint)
+      .lineLimit(1)
+      .padding(.horizontal, 7)
+      .padding(.vertical, 4)
+      .background(tint.opacity(0.10), in: Capsule())
+  }
+}
+
+private struct LinearIssueDetailSheet: View {
+  @Environment(\.dismiss) private var dismiss
+  @EnvironmentObject private var syncService: SyncService
+
+  let issue: NormalizedLinearIssue
+
+  @State private var comments: [LinearIssueComment] = []
+  @State private var isLoadingComments = false
+  @State private var commentsError: String?
+
+  var body: some View {
+    NavigationStack {
+      ScrollView {
+        VStack(alignment: .leading, spacing: 16) {
+          VStack(alignment: .leading, spacing: 8) {
+            Text(issue.identifier)
+              .font(.system(size: 12, design: .monospaced).weight(.bold))
+              .foregroundStyle(ADEColor.purpleAccent)
+            Text(issue.title)
+              .font(.title3.weight(.bold))
+              .foregroundStyle(ADEColor.textPrimary)
+              .fixedSize(horizontal: false, vertical: true)
+            if let description = issue.description, !description.isEmpty {
+              Text(description)
+                .font(.subheadline)
+                .foregroundStyle(ADEColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+          }
+          .adeListCard()
+
+          VStack(alignment: .leading, spacing: 8) {
+            MetaRow(key: "state", value: issue.stateName ?? issue.stateType ?? "Unknown")
+            if let project = issue.projectName ?? issue.projectSlug {
+              MetaRow(key: "project", value: project)
+            }
+            if let assignee = issue.assigneeName {
+              MetaRow(key: "assignee", value: assignee)
+            }
+            if let priority = issue.priorityLabel ?? issue.priority.map({ "P\($0)" }) {
+              MetaRow(key: "priority", value: priority)
+            }
+            if let updatedAt = issue.updatedAt, let relative = CtoWorkflowsRelativeTime.format(iso: updatedAt) {
+              MetaRow(key: "updated", value: relative)
+            }
+          }
+          .adeListCard()
+
+          VStack(alignment: .leading, spacing: 10) {
+            Text("Comments")
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(ADEColor.textMuted)
+              .textCase(.uppercase)
+              .tracking(0.4)
+
+            if isLoadingComments && comments.isEmpty {
+              ADECardSkeleton(rows: 2)
+            } else if let commentsError {
+              Text(commentsError)
+                .font(.subheadline)
+                .foregroundStyle(ADEColor.warning)
+            } else if comments.isEmpty {
+              Text("No comments.")
+                .font(.subheadline)
+                .foregroundStyle(ADEColor.textSecondary)
+            } else {
+              VStack(spacing: 0) {
+                ForEach(Array(comments.enumerated()), id: \.element.id) { idx, comment in
+                  LinearIssueCommentRow(comment: comment)
+                  if idx < comments.count - 1 {
+                    Divider().background(ADEColor.glassBorder)
+                  }
+                }
+              }
+            }
+          }
+          .adeListCard()
+        }
+        .padding(16)
+      }
+      .adeScreenBackground()
+      .navigationTitle(issue.identifier)
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .topBarLeading) {
+          Button("Done") { dismiss() }
+        }
+        if let urlString = issue.url, let url = URL(string: urlString) {
+          ToolbarItem(placement: .topBarTrailing) {
+            Link(destination: url) {
+              Image(systemName: "arrow.up.right.square")
+            }
+            .accessibilityLabel("Open in Linear")
+          }
+        }
+      }
+      .task(id: issue.id) {
+        await loadComments()
+      }
+    }
+  }
+
+  private func loadComments() async {
+    guard !isLoadingComments else { return }
+    isLoadingComments = true
+    defer { isLoadingComments = false }
+    do {
+      comments = try await syncService.fetchLinearIssueComments(issueId: issue.id)
+      commentsError = nil
+    } catch {
+      commentsError = error.localizedDescription
+    }
+  }
+}
+
+private struct LinearIssueCommentRow: View {
+  let comment: LinearIssueComment
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 5) {
+      HStack(alignment: .firstTextBaseline, spacing: 8) {
+        Text(comment.userDisplayName ?? comment.userName ?? "Linear")
+          .font(.system(size: 12, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Spacer(minLength: 0)
+        if let relative = CtoWorkflowsRelativeTime.format(iso: comment.createdAt) {
+          Text(relative)
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundStyle(ADEColor.textMuted)
+        }
+      }
+      Text(comment.body)
+        .font(.subheadline)
+        .foregroundStyle(ADEColor.textSecondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .padding(.vertical, 10)
+  }
+}
+
+private func linearIssueStateTint(_ stateType: String?) -> Color {
+  switch stateType?.lowercased() {
+  case "completed", "done": return ADEColor.success
+  case "started", "unstarted": return ADEColor.info
+  case "backlog", "triage": return ADEColor.textSecondary
+  case "canceled", "cancelled": return ADEColor.danger
+  default: return ADEColor.purpleAccent
   }
 }
 

@@ -28,6 +28,35 @@ func laneActivitySummary(_ snapshot: LaneListSnapshot) -> String? {
   return nil
 }
 
+func primaryLaneLinearIssue(for lane: LaneSummary) -> LaneLinearIssue? {
+  if let issue = lane.linearIssue {
+    return issue
+  }
+  return lane.linearIssueLinks?
+    .sorted { lhs, rhs in
+      let lhsRank = laneLinearIssueLinkRoleRank(lhs.role)
+      let rhsRank = laneLinearIssueLinkRoleRank(rhs.role)
+      if lhsRank != rhsRank { return lhsRank < rhsRank }
+      return lhs.updatedAt > rhs.updatedAt
+    }
+    .first?
+    .issue
+}
+
+func laneLinearIssueLinkCount(for lane: LaneSummary) -> Int {
+  lane.linearIssueLinks?.count ?? (lane.linearIssue == nil ? 0 : 1)
+}
+
+private func laneLinearIssueLinkRoleRank(_ role: String) -> Int {
+  switch role {
+  case "primary": return 0
+  case "worked": return 1
+  case "referenced": return 2
+  case "inferred": return 3
+  default: return 4
+  }
+}
+
 func laneListFilteredSnapshots(
   _ snapshots: [LaneListSnapshot],
   scope: LaneListScope,
@@ -150,6 +179,8 @@ func matchesLaneToken(snapshot: LaneListSnapshot, isPinned: Bool, token: String)
     snapshot.lane.laneType,
     snapshot.lane.description ?? "",
     snapshot.lane.worktreePath,
+    primaryLaneLinearIssue(for: snapshot.lane).map { "\($0.identifier) \($0.title) \($0.projectName ?? "") \($0.teamKey ?? "") \($0.stateName ?? "")" } ?? "",
+    snapshot.lane.linearIssueLinks?.map { "\($0.issue.identifier) \($0.issue.title) \($0.role) \($0.source)" }.joined(separator: " ") ?? "",
     snapshot.lane.archivedAt == nil ? "active" : "archived",
     snapshot.lane.status.dirty ? "dirty modified changed" : "clean",
     "ahead \(snapshot.lane.status.ahead)",
