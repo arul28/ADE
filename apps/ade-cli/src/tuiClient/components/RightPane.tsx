@@ -911,7 +911,16 @@ function DetailsPane({ title, body, width, scrollOffsetRows = 0 }: { title: stri
   );
 }
 
-type DiffRenderLine = { key: string; text: string; color: string; dim: boolean; bold: boolean };
+type DiffRenderLine = {
+  key: string;
+  text: string;
+  color: string;
+  dim: boolean;
+  bold: boolean;
+  // Set on per-file header rows so the renderer can colorize the +/− counts
+  // (green adds / red dels) to match the hunk body and ChatView's file rows.
+  header?: { path: string; additions: number; deletions: number };
+};
 
 // Flatten a diff into colorized, fully-scrollable lines: a bold per-file header
 // (path + add/del counts) followed by each hunk line tinted by kind. Shared by
@@ -921,12 +930,15 @@ function buildDiffRenderLines(
 ): DiffRenderLine[] {
   const out: DiffRenderLine[] = [];
   for (const file of files) {
+    const additions = file.additions ?? 0;
+    const deletions = file.deletions ?? 0;
     out.push({
       key: `${file.path}:head`,
-      text: `▸ ${file.path}  +${file.additions ?? 0} −${file.deletions ?? 0}`,
+      text: `▸ ${file.path}  +${additions} −${deletions}`,
       color: theme.color.t1,
       dim: false,
       bold: true,
+      header: { path: file.path, additions, deletions },
     });
     if (!file.body) continue;
     const lines = file.body.split(/\r?\n/);
@@ -1267,13 +1279,29 @@ export function RightPane({
           {content.files.length ? (() => {
             const diffLines = buildDiffRenderLines(content.files);
             const window = diffLines.slice(scrollOffsetRows, scrollOffsetRows + DETAILS_BODY_MAX_LINES);
+            const maxLineWidth = Math.max(10, paneWidth - 4);
             return (
               <>
-                {window.map((line) => (
-                  <Text key={line.key} color={line.color} dimColor={line.dim} bold={line.bold} wrap="truncate-end">
-                    {endTruncate(line.text, Math.max(10, paneWidth - 4))}
-                  </Text>
-                ))}
+                {window.map((line) => {
+                  if (line.header) {
+                    // Counts stay neutral (t4) to match ChatView's file rows and
+                    // keep green confined to actual diff-body add lines — a green
+                    // count on the header row would read as idle chrome.
+                    const counts = ` +${line.header.additions} −${line.header.deletions}`;
+                    const pathRoom = Math.max(6, maxLineWidth - counts.length - 2);
+                    return (
+                      <Text key={line.key} wrap="truncate-end">
+                        <Text color={theme.color.t1} bold>{`▸ ${endTruncate(line.header.path, pathRoom)}`}</Text>
+                        <Text color={theme.color.t4}>{counts}</Text>
+                      </Text>
+                    );
+                  }
+                  return (
+                    <Text key={line.key} color={line.color} dimColor={line.dim} bold={line.bold} wrap="truncate-end">
+                      {endTruncate(line.text, maxLineWidth)}
+                    </Text>
+                  );
+                })}
                 {diffLines.length > DETAILS_BODY_MAX_LINES ? (
                   <Text color={theme.color.t4} dimColor>
                     {scrollOffsetRows > 0 ? `↑ ${scrollOffsetRows} earlier · ` : ""}
