@@ -1103,9 +1103,19 @@ function createMockSessionService() {
       });
     }),
     get: vi.fn((sessionId: string) => sessions.get(sessionId) ?? null),
-    list: vi.fn((_opts?: any) =>
-      Array.from(sessions.values()),
-    ),
+    list: vi.fn((opts?: any) => {
+      let rows = Array.from(sessions.values());
+      if (typeof opts?.laneId === "string") {
+        rows = rows.filter((row) => row.laneId === opts.laneId);
+      }
+      if (typeof opts?.status === "string") {
+        rows = rows.filter((row) => row.status === opts.status);
+      }
+      rows = rows.sort((a, b) => String(b.startedAt ?? "").localeCompare(String(a.startedAt ?? "")));
+      if (opts?.limit === null) return rows;
+      const limit = typeof opts?.limit === "number" ? opts.limit : 200;
+      return rows.slice(0, limit);
+    }),
     reopen: vi.fn((sessionId: string) => {
       const row = sessions.get(sessionId);
       if (row) {
@@ -2825,6 +2835,199 @@ describe("createAgentChatService", () => {
         });
 
         expect(toolNames.length).toBeGreaterThan(5);
+      } finally {
+        await orchestrationService.dispose();
+      }
+    });
+
+    it("repoints orchestration bundle path when lane placement changes", async () => {
+      const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead-placement");
+      const movedWorktree = path.join(tmpRoot, "lane-vm-mirror");
+      fs.mkdirSync(movedWorktree, { recursive: true });
+      try {
+        const { service, laneService } = createService({
+          getOrchestrationService: () => orchestrationService,
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+          modelId: "anthropic/claude-sonnet-4-6",
+          interactionMode: "orchestrator-lead",
+          orchestrationRunId: created.runId,
+          orchestrationRole: "lead",
+          orchestrationBundlePath: created.manifest.bundlePath,
+        });
+
+        const lanes = await laneService.list();
+        const lane1 = lanes.find((entry: { id: string }) => entry.id === "lane-1");
+        expect(lane1).toBeTruthy();
+        lane1.worktreePath = movedWorktree;
+        vi.mocked(laneService.getLaneBaseAndBranch).mockImplementation((nextLaneId: string) => {
+          const lane = lanes.find((entry: { id: string }) => entry.id === nextLaneId);
+          if (!lane) {
+            return {
+              baseRef: "main",
+              branchRef: "feature/selected",
+              worktreePath: tmpRoot,
+              laneType: "feature",
+              runtimePlacement: "local",
+            };
+          }
+          return {
+            baseRef: "main",
+            branchRef: lane.branchRef,
+            worktreePath: lane.worktreePath,
+            laneType: lane.laneType,
+            runtimePlacement: "local",
+          };
+        });
+
+        await service.handleLanePlacementChanged({
+          laneId: "lane-1",
+          from: "macos-vm",
+          to: "local",
+        });
+
+        const expectedBundlePath = path.join(
+          fs.realpathSync(movedWorktree),
+          ".ade",
+          "orchestration",
+          created.runId,
+        );
+        expect(readPersistedChatState(session.id).orchestrationBundlePath).toBe(expectedBundlePath);
+        expect(orchestrationService.getBundlePathForRun(created.runId)).toBe(expectedBundlePath);
+      } finally {
+        await orchestrationService.dispose();
+      }
+    });
+
+    it("repoints persisted orchestration bundle paths for cold sessions when lane placement changes", async () => {
+      const { orchestrationService, created } = await createLoadedOrchestrationRun("S-cold-placement");
+      const movedWorktree = path.join(tmpRoot, "lane-vm-mirror-cold");
+      fs.mkdirSync(movedWorktree, { recursive: true });
+      try {
+        const { service, laneService } = createService({
+          getOrchestrationService: () => orchestrationService,
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+          modelId: "anthropic/claude-sonnet-4-6",
+          interactionMode: "orchestrator-lead",
+          orchestrationRunId: created.runId,
+          orchestrationRole: "lead",
+          orchestrationBundlePath: created.manifest.bundlePath,
+        });
+        await service.dispose({ sessionId: session.id });
+
+        const lanes = await laneService.list();
+        const lane1 = lanes.find((entry: { id: string }) => entry.id === "lane-1");
+        expect(lane1).toBeTruthy();
+        lane1.worktreePath = movedWorktree;
+        vi.mocked(laneService.getLaneBaseAndBranch).mockImplementation((nextLaneId: string) => {
+          const lane = lanes.find((entry: { id: string }) => entry.id === nextLaneId);
+          if (!lane) {
+            return {
+              baseRef: "main",
+              branchRef: "feature/selected",
+              worktreePath: tmpRoot,
+              laneType: "feature",
+              runtimePlacement: "local",
+            };
+          }
+          return {
+            baseRef: "main",
+            branchRef: lane.branchRef,
+            worktreePath: lane.worktreePath,
+            laneType: lane.laneType,
+            runtimePlacement: "local",
+          };
+        });
+
+        await service.handleLanePlacementChanged({
+          laneId: "lane-1",
+          from: "macos-vm",
+          to: "local",
+        });
+
+        const expectedBundlePath = path.join(
+          fs.realpathSync(movedWorktree),
+          ".ade",
+          "orchestration",
+          created.runId,
+        );
+        expect(readPersistedChatState(session.id).orchestrationBundlePath).toBe(expectedBundlePath);
+        expect(orchestrationService.getBundlePathForRun(created.runId)).toBe(expectedBundlePath);
+      } finally {
+        await orchestrationService.dispose();
+      }
+    });
+
+    it("repoints cold orchestration bundle paths beyond the newest 500 sessions", async () => {
+      const { orchestrationService, created } = await createLoadedOrchestrationRun("S-cold-placement-old");
+      const movedWorktree = path.join(tmpRoot, "lane-vm-mirror-cold-old");
+      fs.mkdirSync(movedWorktree, { recursive: true });
+      try {
+        const { service, laneService } = createService({
+          getOrchestrationService: () => orchestrationService,
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+          modelId: "anthropic/claude-sonnet-4-6",
+          interactionMode: "orchestrator-lead",
+          orchestrationRunId: created.runId,
+          orchestrationRole: "lead",
+          orchestrationBundlePath: created.manifest.bundlePath,
+        });
+        await service.dispose({ sessionId: session.id });
+        const coldRow = mockState.sessions.get(session.id);
+        if (!coldRow) throw new Error("expected cold session row");
+        coldRow.startedAt = "2020-01-01T00:00:00.000Z";
+        for (let i = 0; i < 501; i++) {
+          mockState.sessions.set(`S-newer-${i}`, {
+            ...coldRow,
+            id: `S-newer-${i}`,
+            title: `Newer session ${i}`,
+            toolType: "codex-chat",
+            status: "ended",
+            startedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(),
+            endedAt: new Date(Date.UTC(2026, 0, 1, 0, 1, i)).toISOString(),
+          });
+        }
+
+        const lanes = await laneService.list();
+        const lane1 = lanes.find((entry: { id: string }) => entry.id === "lane-1");
+        expect(lane1).toBeTruthy();
+        lane1.worktreePath = movedWorktree;
+        vi.mocked(laneService.getLaneBaseAndBranch).mockImplementation((nextLaneId: string) => {
+          const lane = lanes.find((entry: { id: string }) => entry.id === nextLaneId);
+          return {
+            baseRef: "main",
+            branchRef: lane?.branchRef ?? "feature/selected",
+            worktreePath: lane?.worktreePath ?? tmpRoot,
+            laneType: lane?.laneType ?? "feature",
+            runtimePlacement: "local",
+          };
+        });
+
+        await service.handleLanePlacementChanged({
+          laneId: "lane-1",
+          from: "macos-vm",
+          to: "local",
+        });
+
+        const expectedBundlePath = path.join(
+          fs.realpathSync(movedWorktree),
+          ".ade",
+          "orchestration",
+          created.runId,
+        );
+        expect(readPersistedChatState(session.id).orchestrationBundlePath).toBe(expectedBundlePath);
+        expect(orchestrationService.getBundlePathForRun(created.runId)).toBe(expectedBundlePath);
       } finally {
         await orchestrationService.dispose();
       }

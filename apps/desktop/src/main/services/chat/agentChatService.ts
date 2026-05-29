@@ -7187,6 +7187,26 @@ export function createAgentChatService(args: {
     return launchContext;
   };
 
+  const orchestrationBundlePathForRun = (worktreePath: string, runId: string): string =>
+    path.join(worktreePath, ".ade", "orchestration", runId);
+
+  const relocateOrchestrationRunBundle = async (
+    runId: string,
+    bundlePath: string,
+    sessionId: string,
+  ): Promise<void> => {
+    try {
+      await getOrchestrationService?.()?.relocateRunBundle(runId, bundlePath);
+    } catch (error) {
+      logger.warn("agent_chat.orchestration_bundle_relocate_failed", {
+        runId,
+        sessionId,
+        bundlePath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   const resolvePrimaryIdentityLane = async (): Promise<string> => {
     await laneService.ensurePrimaryLane?.().catch(() => {});
     const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
@@ -23787,13 +23807,26 @@ export function createAgentChatService(args: {
    * the lane and emits a system notice so the chat banner can flip between
    * "Running locally" and "Running inside Mac VM" without a reload.
    */
-  const handleLanePlacementChanged = (event: {
+  const handleLanePlacementChanged = async (event: {
     laneId: string;
     from: "macos-vm" | "local" | "none";
     to: "macos-vm" | "local";
-  }): void => {
+  }): Promise<void> => {
     const laneId = String(event?.laneId ?? "").trim();
     if (!laneId.length) return;
+    const relocations: Promise<void>[] = [];
+    const changedLane = (() => {
+      try {
+        return laneService.getLaneBaseAndBranch(laneId);
+      } catch {
+        return null;
+      }
+    })();
+    const changedLaneWorktreePathRaw = trimLine(changedLane?.worktreePath);
+    const changedLaneWorktreePath = changedLaneWorktreePathRaw
+      ? safeRealpath(changedLaneWorktreePathRaw) ?? changedLaneWorktreePathRaw
+      : null;
+    const touchedSessionIds = new Set<string>();
     for (const managed of managedSessions.values()) {
       const candidateLaneIds = [
         managed.session.laneId,
@@ -23801,6 +23834,7 @@ export function createAgentChatService(args: {
         managed.selectedExecutionLaneId,
       ];
       if (!candidateLaneIds.includes(laneId)) continue;
+      touchedSessionIds.add(managed.session.id);
       try {
         refreshManagedLaneLaunchContext(managed, { purpose: "follow lane placement change" });
       } catch (error) {
@@ -23811,6 +23845,17 @@ export function createAgentChatService(args: {
           to: event.to,
           error: error instanceof Error ? error.message : String(error),
         });
+      }
+      const runId = managed.session.orchestrationRunId?.trim();
+      const worktree = managed.laneWorktreePath?.trim();
+      if (runId && worktree) {
+        const nextBundlePath = orchestrationBundlePathForRun(worktree, runId);
+        const currentBundlePath = managed.session.orchestrationBundlePath?.trim();
+        if (currentBundlePath !== nextBundlePath) {
+          managed.session.orchestrationBundlePath = nextBundlePath;
+          persistChatState(managed);
+          relocations.push(relocateOrchestrationRunBundle(runId, nextBundlePath, managed.session.id));
+        }
       }
       const message = event.to === "local"
         ? "Lane detached from Mac VM; further turns run locally."
@@ -23829,6 +23874,38 @@ export function createAgentChatService(args: {
         });
       }
     }
+    if (changedLaneWorktreePath) {
+      const rows = sessionService.list({ laneId, limit: null });
+      for (const row of rows) {
+        if (!isChatToolType(row.toolType) || touchedSessionIds.has(row.id)) continue;
+        const persisted = readPersistedState(row.id);
+        if (!persisted) continue;
+        const runId = persisted.orchestrationRunId?.trim();
+        if (!runId) continue;
+        const executionLaneId =
+          trimLine(persisted.preferredExecutionLaneId)
+          ?? trimLine(persisted.selectedExecutionLaneId)
+          ?? row.laneId;
+        if (executionLaneId !== laneId) continue;
+        const nextBundlePath = orchestrationBundlePathForRun(changedLaneWorktreePath, runId);
+        if (persisted.orchestrationBundlePath === nextBundlePath) continue;
+        const metadataPath = metadataPathFor(row.id);
+        try {
+          const raw = JSON.parse(fs.readFileSync(metadataPath, "utf8")) as Record<string, unknown>;
+          raw.orchestrationBundlePath = nextBundlePath;
+          raw.updatedAt = nowIso();
+          fs.writeFileSync(metadataPath, JSON.stringify(raw, null, 2), "utf8");
+          relocations.push(relocateOrchestrationRunBundle(runId, nextBundlePath, row.id));
+        } catch (error) {
+          logger.warn("agent_chat.persisted_orchestration_bundle_repoint_failed", {
+            laneId,
+            sessionId: row.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+    await Promise.all(relocations);
   };
 
   const readTranscript = async (

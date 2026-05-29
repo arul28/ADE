@@ -116,8 +116,12 @@ const LEAD_DENY_PATTERNS = [
   "/bundlePath",
   "/laneId",
   "/agents/*/sessionId",
+  "/leadState",
   "/leadState/planApprovedAt",
   "/leadState/planApprovedBySessionId",
+  "/leadState/planApprovalSummary",
+  "/phases/{id:planning}/status",
+  "/phases/{id:planning}/completedAt",
   "/currentPhase",
 ];
 

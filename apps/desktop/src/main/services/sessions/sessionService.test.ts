@@ -400,6 +400,32 @@ describe("sessionService resume metadata", () => {
     activeDisposers.push(async () => db.close());
   });
 
+  it("allows internal callers to opt out of the default session list limit", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    for (let i = 0; i < 205; i++) {
+      service.create({
+        sessionId: `session-${i}`,
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: `Session ${i}`,
+        startedAt: new Date(Date.UTC(2026, 2, 17, 0, 0, i)).toISOString(),
+        transcriptPath: `/tmp/session-${i}.log`,
+        toolType: "codex-chat",
+      });
+    }
+
+    expect(service.list({ laneId: "lane-1" })).toHaveLength(200);
+    expect(service.list({ laneId: "lane-1", limit: null })).toHaveLength(205);
+
+    activeDisposers.push(async () => db.close());
+  });
+
   it("repairs legacy droid chat rows from their resume command", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");

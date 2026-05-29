@@ -878,7 +878,7 @@ export function createLaneService({
   onHeadChanged?: (args: { laneId: string; reason: string; preHeadSha: string | null; postHeadSha: string | null }) => void;
   onRebaseEvent?: (event: RebaseRunEventPayload) => void;
   onDeleteEvent?: (event: LaneDeleteEvent) => void;
-  onPlacementChanged?: (event: LanePlacementChangedEvent) => void;
+  onPlacementChanged?: (event: LanePlacementChangedEvent) => void | Promise<void>;
   onLinearIssueLinked?: (args: { lane: LaneSummary; issue: LaneLinearIssue; linkedAt: string }) => void | Promise<void>;
   teardownDeps?: LaneDeleteTeardownDeps;
   macosVmHooks?: LaneMacosVmHooks | null;
@@ -893,10 +893,10 @@ export function createLaneService({
 
   let activeMacosVmHooks: LaneMacosVmHooks | null = macosVmHooks ?? null;
 
-  const emitPlacementChanged = (event: LanePlacementChangedEvent): void => {
+  const emitPlacementChanged = async (event: LanePlacementChangedEvent): Promise<void> => {
     if (!onPlacementChanged) return;
     try {
-      onPlacementChanged(event);
+      await onPlacementChanged(event);
     } catch (error) {
       logger.warn("laneService.placement_changed_emit_failed", {
         laneId: event.laneId,
@@ -2168,7 +2168,7 @@ export function createLaneService({
     }
 
     if (args.previousPlacement !== "macos-vm") {
-      emitPlacementChanged({
+      await emitPlacementChanged({
         type: "lane-placement-changed",
         laneId,
         from: args.previousPlacement,
@@ -4579,7 +4579,7 @@ export function createLaneService({
         });
       }
 
-      emitPlacementChanged({
+      await emitPlacementChanged({
         type: "lane-placement-changed",
         laneId: row.id,
         from: "macos-vm",
