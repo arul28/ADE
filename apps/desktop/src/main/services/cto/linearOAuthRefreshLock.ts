@@ -6,8 +6,15 @@ const LOCK_TIMEOUT_MS = 15_000;
 const LOCK_STALE_MS = 60_000;
 const LOCK_RETRY_MS = 25;
 
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+export class LinearOAuthRefreshLockTimeoutError extends Error {
+  constructor() {
+    super("Timed out waiting for Linear OAuth refresh lock.");
+    this.name = "LinearOAuthRefreshLockTimeoutError";
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function removeStaleLock(lockPath: string): void {
@@ -48,9 +55,9 @@ export async function withLinearOAuthRefreshLock<T>(
       if (code !== "EEXIST") throw error;
       removeStaleLock(lockPath);
       if (Date.now() >= deadline) {
-        throw new Error("Timed out waiting for Linear OAuth refresh lock.");
+        throw new LinearOAuthRefreshLockTimeoutError();
       }
-      sleepSync(LOCK_RETRY_MS);
+      await sleep(LOCK_RETRY_MS);
     }
   }
 

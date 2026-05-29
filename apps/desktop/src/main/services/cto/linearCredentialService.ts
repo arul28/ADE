@@ -10,7 +10,10 @@ import {
   linearTokenNeedsRefresh,
   refreshLinearOAuthAccessToken,
 } from "./linearTokenRefresh";
-import { withLinearOAuthRefreshLock } from "./linearOAuthRefreshLock";
+import {
+  LinearOAuthRefreshLockTimeoutError,
+  withLinearOAuthRefreshLock,
+} from "./linearOAuthRefreshLock";
 
 // Bundled OAuth client ID — ships with ADE so users get "Sign in with Linear"
 // out of the box without configuring their own OAuth app.
@@ -584,19 +587,26 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
       };
 
       if (credentialStore) {
-        await withLinearOAuthRefreshLock(secretsDir, async () => {
-          invalidateCache();
-          const latest = getStoredToken();
-          if (
-            !latest
-            || latest.authMode !== "oauth"
-            || !latest.refreshToken
-            || (!opts?.force && !linearTokenNeedsRefresh(latest.expiresAt, Date.now()))
-          ) {
-            return;
-          }
-          await performRefresh(latest.refreshToken);
-        });
+        try {
+          await withLinearOAuthRefreshLock(secretsDir, async () => {
+            invalidateCache();
+            const latest = getStoredToken();
+            if (
+              !latest
+              || latest.authMode !== "oauth"
+              || !latest.refreshToken
+              || (!opts?.force && !linearTokenNeedsRefresh(latest.expiresAt, Date.now()))
+            ) {
+              return;
+            }
+            await performRefresh(latest.refreshToken);
+          });
+        } catch (error: unknown) {
+          if (!(error instanceof LinearOAuthRefreshLockTimeoutError)) throw error;
+          args.logger?.warn("linear_sync.oauth_refresh_lock_timeout", {
+            message: error.message,
+          });
+        }
         return;
       }
       await performRefresh(refreshToken);

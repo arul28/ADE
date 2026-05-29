@@ -62,7 +62,10 @@ import {
   linearTokenNeedsRefresh,
   refreshLinearOAuthAccessToken,
 } from "../../desktop/src/main/services/cto/linearTokenRefresh";
-import { withLinearOAuthRefreshLock } from "../../desktop/src/main/services/cto/linearOAuthRefreshLock";
+import {
+  LinearOAuthRefreshLockTimeoutError,
+  withLinearOAuthRefreshLock,
+} from "../../desktop/src/main/services/cto/linearOAuthRefreshLock";
 
 // Keep headless runtimes aligned with the desktop credential service so packaged
 // alpha builds can offer the same PKCE-based Linear sign-in flow.
@@ -1145,6 +1148,7 @@ export function createHeadlessGitHubService(
 
 function createHeadlessLinearCredentialService(args: {
   adeDir: string;
+  logger?: Logger;
 }): HeadlessLinearCredentialService {
   const secretsDir = path.join(args.adeDir, "secrets");
   const credentialStore = new EncryptedFileCredentialStore({
@@ -1290,17 +1294,24 @@ function createHeadlessLinearCredentialService(args: {
         }
       };
 
-      await withLinearOAuthRefreshLock(secretsDir, async () => {
-        const latestRefresh = readCredential(refreshTokenKey);
-        if (!latestRefresh) return;
-        if (
-          !opts?.force
-          && !linearTokenNeedsRefresh(readCredential(tokenExpiresAtKey), Date.now())
-        ) {
-          return;
-        }
-        await performRefresh(latestRefresh);
-      });
+      try {
+        await withLinearOAuthRefreshLock(secretsDir, async () => {
+          const latestRefresh = readCredential(refreshTokenKey);
+          if (!latestRefresh) return;
+          if (
+            !opts?.force
+            && !linearTokenNeedsRefresh(readCredential(tokenExpiresAtKey), Date.now())
+          ) {
+            return;
+          }
+          await performRefresh(latestRefresh);
+        });
+      } catch (error: unknown) {
+        if (!(error instanceof LinearOAuthRefreshLockTimeoutError)) throw error;
+        args.logger?.warn("linear_sync.oauth_refresh_lock_timeout", {
+          message: error.message,
+        });
+      }
     })().finally(() => {
       refreshInFlight = null;
     });
@@ -1722,7 +1733,10 @@ export function createHeadlessLinearServices(
     logger: args.logger,
   });
   const linearCredentialService =
-    createHeadlessLinearCredentialService({ adeDir: args.adeDir }) as any;
+    createHeadlessLinearCredentialService({
+      adeDir: args.adeDir,
+      logger: args.logger,
+    }) as any;
   const githubService = createHeadlessGitHubService(
     args.projectRoot,
     args.logger,

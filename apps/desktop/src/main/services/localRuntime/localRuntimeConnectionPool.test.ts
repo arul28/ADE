@@ -1432,7 +1432,7 @@ describe("local runtime connection pool", () => {
       gitOriginUrl: null,
     });
     (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
-      client: { call },
+      client: { call, isClosed: () => false },
       child: null,
       socketPath: "/tmp/ade.sock",
     });
