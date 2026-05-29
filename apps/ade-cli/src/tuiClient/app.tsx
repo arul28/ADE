@@ -9093,7 +9093,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     const textInputActive = (pane === "chat" && !footerActive) || detailsFormActive;
 
     if (commandPaletteOpen && !isCtrlInput(input, key, "c")) {
-      if (key.escape) {
+      // Ctrl/Cmd+K toggles the palette shut (mirrors Esc) so the same chord
+      // opens and closes it — no need to reach for Escape.
+      if (key.escape || isCtrlInput(input, key, "k")) {
         setCommandPaletteOpen(false);
         setCommandPaletteQuery("");
         setCommandPaletteIndex(0);
@@ -9500,9 +9502,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
       if (key.backspace || key.delete) {
         selectFooterControl(null);
-        const next = key.delete && !key.backspace
-          ? deletePromptForward(prompt, promptCursorRef.current)
-          : deletePromptBackward(prompt, promptCursorRef.current);
+        // See the prompt handler below: Ink can't distinguish ⌫ from forward-
+        // delete, so always delete backward.
+        const next = deletePromptBackward(prompt, promptCursorRef.current);
         handlePromptChange(next.value, next.cursor);
         return;
       }
@@ -10340,9 +10342,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
     if (textInputActive && (key.backspace || key.delete)) {
-      const next = key.delete && !key.backspace
-        ? deletePromptForward(prompt, promptCursorRef.current)
-        : deletePromptBackward(prompt, promptCursorRef.current);
+      // Ink 5.x reports the macOS Backspace key (\x7f) as key.delete — and it
+      // can't tell it apart from forward-delete (\x1b[3~): both arrive as
+      // key.delete with empty input. So always delete backward, which is what
+      // pressing ⌫ should do. (Forward-delete is unrecoverable here and rare in
+      // a chat prompt.) This is THE fix for "backspace does nothing".
+      const next = deletePromptBackward(prompt, promptCursorRef.current);
       handlePromptChange(next.value, next.cursor);
       return;
     }
