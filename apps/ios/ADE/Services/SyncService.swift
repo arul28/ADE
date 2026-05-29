@@ -5935,7 +5935,7 @@ final class SyncService: ObservableObject {
   #if DEBUG
   func seedRemoteProjectCatalogForTesting(_ catalog: [MobileProjectSummary]) {
     remoteProjectCatalog = catalog
-    refreshProjectCatalog()
+    refreshProjectCatalog(preferRemoteSelection: true)
   }
 
   func applyHelloPayloadForTesting(

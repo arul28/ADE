@@ -271,6 +271,45 @@ function seedCursorRuntimeModelCatalog(): { cliOnlyId: string; chatOnlyId: strin
   return { cliOnlyId: cliOnly.id, chatOnlyId: chatOnly.id, bothId: both.id };
 }
 
+function seedFastCursorRuntimeModelCatalog(): { modelId: string; fastAlias: string } {
+  const model = createDynamicCursorCliModelDescriptor("composer-2.5", "Composer 2.5", {
+    aliases: ["composer-2.5-fast"],
+    serviceTiers: ["fast"],
+    cursorAvailability: { cli: true, sdk: true },
+  });
+  rememberRuntimeCatalog({
+    fetchedAt: "2026-05-22T00:00:00.000Z",
+    groups: [{
+      key: "cursor",
+      displayName: "Cursor",
+      providers: [{
+        key: "cursor",
+        displayName: "Cursor",
+        badgeColor: "#8B5CF6",
+        modelCount: 1,
+        subsections: [{
+          key: "cursor",
+          label: "Cursor",
+          models: [{
+            id: model.id,
+            runtimeModelId: model.providerModelId,
+            provider: "cursor",
+            providerKey: "cursor",
+            groupKey: "cursor",
+            displayName: model.displayName,
+            isDefault: true,
+            isAvailable: true,
+            aliases: model.aliases,
+            serviceTiers: model.serviceTiers,
+            cursorAvailability: model.cursorAvailability,
+          }],
+        }],
+      }],
+    }],
+  } as AgentChatModelCatalog, { mode: "cached" });
+  return { modelId: model.id, fastAlias: "composer-2.5-fast" };
+}
+
 function buildPendingInputTranscript(sessionId: string): string {
   return `${JSON.stringify({
     sessionId,
@@ -3801,6 +3840,69 @@ describe("AgentChatPane submit recovery", () => {
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
     expect(launchArgs.args).toEqual(expect.arrayContaining(["--sandbox", "workspace-write", "--ask-for-approval", "untrusted"]));
     expect(launchArgs.startupCommand).toContain("--sandbox workspace-write --ask-for-approval untrusted");
+  });
+
+  it("uses the Cursor fast model alias when launching a fast Work draft CLI session", async () => {
+    const { modelId, fastAlias } = seedFastCursorRuntimeModelCatalog();
+    installAdeMocks({ sessions: [], cursorModels: [{ id: modelId }] });
+    useAppStore.setState({
+      project: { rootPath: "/tmp/project-under-test" } as any,
+    });
+    const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-1", ptyId: "pty-1" });
+    const launchConfigKey = [
+      "ade.chat.lastLaunchConfig.v1",
+      "/tmp/project-under-test",
+      "lane-1",
+      "standard",
+      "cli",
+    ].map(encodeURIComponent).join(":");
+    window.localStorage.setItem(launchConfigKey, JSON.stringify({
+      version: 1,
+      modelId,
+      reasoningEffort: null,
+      codexFastMode: true,
+      executionMode: "focused",
+      updatedAt: "2026-05-26T12:00:00.000Z",
+      controls: {
+        interactionMode: "default",
+        claudePermissionMode: "default",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+        opencodePermissionMode: "edit",
+        droidPermissionMode: "auto-low",
+        cursorModeId: "agent",
+        cursorConfigValues: {},
+      },
+    }));
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId="lane-1"
+          forceDraftMode
+          embeddedWorkLayout
+          workDraftKind="cli"
+          onLaunchCliSession={onLaunchCliSession}
+        />
+      </MemoryRouter>,
+    );
+
+    expect((await screen.findByRole("button", { name: /Fast mode/i })).getAttribute("aria-pressed")).toBe("true");
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Run Cursor in fast mode." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(onLaunchCliSession).toHaveBeenCalledWith(expect.objectContaining({
+        profile: "cursor",
+        tracked: true,
+      }));
+    });
+    const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
+    expect(launchArgs.startupCommand).toContain(`--model ${fastAlias}`);
+    expect(launchArgs.initialInput).toContain("Run Cursor in fast mode.");
   });
 
   it("auto-creates a lane for a foreground CLI session draft", async () => {

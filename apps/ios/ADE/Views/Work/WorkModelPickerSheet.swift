@@ -18,6 +18,7 @@ struct WorkModelPickerSheet: View {
   let currentProvider: String
   let currentReasoningEffort: String
   let availableModelIds: [String]?
+  let cursorAvailabilityMode: WorkCursorAvailabilityMode
   let isBusy: Bool
   let onSelect: (WorkModelOption, String?, String) -> Void
 
@@ -26,6 +27,7 @@ struct WorkModelPickerSheet: View {
     currentProvider: String,
     currentReasoningEffort: String = "",
     availableModelIds: [String]? = nil,
+    cursorAvailabilityMode: WorkCursorAvailabilityMode = .chat,
     isBusy: Bool,
     onSelect: @escaping (WorkModelOption, String?, String) -> Void
   ) {
@@ -33,6 +35,7 @@ struct WorkModelPickerSheet: View {
     self.currentProvider = currentProvider
     self.currentReasoningEffort = currentReasoningEffort
     self.availableModelIds = availableModelIds
+    self.cursorAvailabilityMode = cursorAvailabilityMode
     self.isBusy = isBusy
     self.onSelect = onSelect
   }
@@ -184,12 +187,13 @@ struct WorkModelPickerSheet: View {
   }
 
   private func scopedCatalog(_ groups: [WorkModelCatalogGroup]) -> [WorkModelCatalogGroup] {
-    guard let availableModelIds else { return groups }
+    let availabilityScoped = workFilterCatalogForCursorAvailability(groups, mode: cursorAvailabilityMode)
+    guard let availableModelIds else { return availabilityScoped }
     let scopedIds = availableModelIds
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
       .filter { !$0.isEmpty }
     guard !scopedIds.isEmpty else { return [] }
-    return groups.compactMap { group -> WorkModelCatalogGroup? in
+    return availabilityScoped.compactMap { group -> WorkModelCatalogGroup? in
       let providers = group.providers.compactMap { provider -> WorkModelProvider? in
         let models = provider.models.filter { model in
           scopedIds.contains { workModelIdsEquivalent($0, model.id) }

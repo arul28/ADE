@@ -255,7 +255,7 @@ struct WorkSessionSettingsSheet: View {
                     Text("Fast mode")
                       .font(.subheadline.weight(.semibold))
                       .foregroundStyle(ADEColor.textPrimary)
-                    Text("Routes Codex turns to the fast service tier (uses extra usage credits).")
+                    Text("Routes turns to the fast service tier (uses extra usage credits).")
                       .font(.caption)
                       .foregroundStyle(ADEColor.textSecondary)
                   }

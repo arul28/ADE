@@ -17,11 +17,12 @@ struct WorkModelOption: Identifiable, Hashable {
   /// (e.g. "claude" for the CLAUDE brand avatar). For OpenCode-routed
   /// models this is still the upstream family so the logo stays brand-true.
   let provider: String
-	  /// Reasoning efforts supplied by the paired desktop host. Empty means the
-	  /// host did not advertise a selectable reasoning control for this model.
-	  let reasoningEfforts: [AgentChatModelReasoningEffort]
+  /// Reasoning efforts supplied by the paired desktop host. Empty means the
+  /// host did not advertise a selectable reasoning control for this model.
+  let reasoningEfforts: [AgentChatModelReasoningEffort]
   let serviceTiers: [String]
-	  let isAvailable: Bool
+  let cursorAvailability: CursorModelAvailability?
+  let isAvailable: Bool
 
   init(
     id: String,
@@ -29,19 +30,21 @@ struct WorkModelOption: Identifiable, Hashable {
     tier: Tier,
     tagline: String,
     provider: String,
-	    reasoningEfforts: [AgentChatModelReasoningEffort] = [],
+    reasoningEfforts: [AgentChatModelReasoningEffort] = [],
     serviceTiers: [String] = [],
-	    isAvailable: Bool = true
-	  ) {
+    cursorAvailability: CursorModelAvailability? = nil,
+    isAvailable: Bool = true
+  ) {
     self.id = id
     self.displayName = displayName
     self.tier = tier
     self.tagline = tagline
-	    self.provider = provider
-	    self.reasoningEfforts = reasoningEfforts
+    self.provider = provider
+    self.reasoningEfforts = reasoningEfforts
     self.serviceTiers = serviceTiers
-	    self.isAvailable = isAvailable
-	  }
+    self.cursorAvailability = cursorAvailability
+    self.isAvailable = isAvailable
+  }
 }
 
 extension WorkModelOption {
@@ -54,6 +57,61 @@ extension WorkModelOption {
   }
 
   var supportsCodexFastMode: Bool { supportsServiceTier("fast") }
+}
+
+enum WorkCursorAvailabilityMode {
+  case chat
+  case cli
+}
+
+func workModelSupportsCursorAvailabilityMode(
+  _ model: WorkModelOption,
+  mode: WorkCursorAvailabilityMode
+) -> Bool {
+  guard let availability = model.cursorAvailability else { return true }
+  switch mode {
+  case .chat:
+    return availability.sdk
+  case .cli:
+    return availability.cli
+  }
+}
+
+func workAgentChatModelSupportsCursorAvailabilityMode(
+  _ model: AgentChatModelInfo,
+  mode: WorkCursorAvailabilityMode
+) -> Bool {
+  guard let availability = model.cursorAvailability else { return true }
+  switch mode {
+  case .chat:
+    return availability.sdk
+  case .cli:
+    return availability.cli
+  }
+}
+
+func workFilterChatModelsForCursorAvailability(
+  _ models: [AgentChatModelInfo],
+  mode: WorkCursorAvailabilityMode
+) -> [AgentChatModelInfo] {
+  models.filter { workAgentChatModelSupportsCursorAvailabilityMode($0, mode: mode) }
+}
+
+func workFilterCatalogForCursorAvailability(
+  _ groups: [WorkModelCatalogGroup],
+  mode: WorkCursorAvailabilityMode
+) -> [WorkModelCatalogGroup] {
+  groups.compactMap { group -> WorkModelCatalogGroup? in
+    let providers = group.providers.compactMap { provider -> WorkModelProvider? in
+      let models = provider.models.filter { model in
+        workModelSupportsCursorAvailabilityMode(model, mode: mode)
+      }
+      guard !models.isEmpty else { return nil }
+      return WorkModelProvider(key: provider.key, displayName: provider.displayName, models: models)
+    }
+    guard !providers.isEmpty else { return nil }
+    return WorkModelCatalogGroup(key: group.key, displayName: group.displayName, providers: providers)
+  }
 }
 
 /// One provider inside a group. Claude/Codex/Cursor groups almost always
@@ -437,12 +495,13 @@ private func workCatalogModelOption(
     id: model.id,
     displayName: displayName,
     tier: workDynamicModelTier(for: model.id),
-	    tagline: tagline,
+    tagline: tagline,
     provider: workModelBrandKey(topLevelProvider: topLevelProvider, providerKey: providerKey),
-	    reasoningEfforts: model.reasoningEfforts ?? [],
+    reasoningEfforts: model.reasoningEfforts ?? [],
     serviceTiers: model.serviceTiers ?? [],
-	    isAvailable: model.isAvailable
-	  )
+    cursorAvailability: model.cursorAvailability,
+    isAvailable: model.isAvailable
+  )
 }
 
 private func workCuratedModelLookup(from groups: [WorkModelCatalogGroup]) -> [String: WorkModelOption] {
@@ -788,7 +847,8 @@ private func workDynamicModelOption(
     tagline: tagline,
     provider: curated?.provider ?? workModelBrandKey(topLevelProvider: topLevelProvider, providerKey: providerKey),
     reasoningEfforts: model.reasoningEfforts ?? [],
-    serviceTiers: model.serviceTiers ?? []
+    serviceTiers: model.serviceTiers ?? [],
+    cursorAvailability: model.cursorAvailability
   )
 }
 
@@ -903,14 +963,14 @@ func workModelCatalogGroupKey(for currentModelId: String, currentProvider: Strin
   if provider == "cursor" || modelId.contains("cursor/") || modelId.contains("cursor-") || modelId.contains("composer") {
     return "cursor"
   }
+  if modelId.hasPrefix("opencode/") || provider == "opencode" {
+    return "opencode"
+  }
   if provider == "anthropic" || provider == "claude" || modelId.hasPrefix("anthropic/") || modelId.contains("claude") || modelId.contains("sonnet") || modelId.contains("opus") || modelId.contains("haiku") {
     return "claude"
   }
   if provider == "openai" || provider == "codex" || modelId.hasPrefix("openai/") || modelId.contains("gpt") || modelId.contains("codex") {
     return "codex"
-  }
-  if modelId.hasPrefix("opencode/") || provider == "opencode" {
-    return "opencode"
   }
   if ["google", "xai", "deepseek"].contains(provider) {
     return "opencode"

@@ -6649,6 +6649,8 @@ final class ADETests: XCTestCase {
       "displayName": "GPT-5.5",
       "isDefault": true,
       "serviceTiers": ["fast"],
+      "aliases": ["gpt-5.5-fast"],
+      "cursorAvailability": ["cli": true, "sdk": false],
       "reasoningEfforts": [
         ["effort": "medium", "description": "balanced"],
       ],
@@ -6658,6 +6660,8 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(info.supportsCodexFastMode)
     XCTAssertTrue(info.supportsServiceTier("FAST"))
     XCTAssertFalse(info.supportsServiceTier("priority"))
+    XCTAssertEqual(info.aliases, ["gpt-5.5-fast"])
+    XCTAssertEqual(info.cursorAvailability, CursorModelAvailability(cli: true, sdk: false))
 
     let plainData = try JSONSerialization.data(withJSONObject: [
       "id": "claude-sonnet-4-6",
@@ -7566,6 +7570,98 @@ final class ADETests: XCTestCase {
     let cursorGroup = groups.first(where: { $0.key == "cursor" })
     XCTAssertEqual(cursorGroup?.providers.map(\.key), ["anthropic", "cursor"])
     XCTAssertEqual(cursorGroup?.providers.first?.models.first?.provider, "claude")
+  }
+
+  func testWorkModelCatalogFiltersCursorModelsByChatAndCliAvailability() {
+    let groups = [
+      WorkModelCatalogGroup(
+        key: "cursor",
+        displayName: "Cursor",
+        providers: [
+          WorkModelProvider(
+            key: "cursor",
+            displayName: "Cursor",
+            models: [
+              WorkModelOption(
+                id: "composer-cli",
+                displayName: "Composer CLI",
+                tier: .balanced,
+                tagline: "CLI only",
+                provider: "cursor",
+                cursorAvailability: CursorModelAvailability(cli: true, sdk: false)
+              ),
+              WorkModelOption(
+                id: "composer-sdk",
+                displayName: "Composer SDK",
+                tier: .balanced,
+                tagline: "SDK only",
+                provider: "cursor",
+                cursorAvailability: CursorModelAvailability(cli: false, sdk: true)
+              ),
+              WorkModelOption(
+                id: "composer-both",
+                displayName: "Composer Both",
+                tier: .balanced,
+                tagline: "Both",
+                provider: "cursor",
+                cursorAvailability: CursorModelAvailability(cli: true, sdk: true)
+              ),
+              WorkModelOption(
+                id: "legacy-cursor",
+                displayName: "Legacy Cursor",
+                tier: .balanced,
+                tagline: "No availability metadata",
+                provider: "cursor"
+              ),
+            ]
+          ),
+        ]
+      ),
+      WorkModelCatalogGroup(
+        key: "claude",
+        displayName: "Claude",
+        providers: [
+          WorkModelProvider(
+            key: "anthropic",
+            displayName: "Anthropic",
+            models: [
+              WorkModelOption(
+                id: "claude-sonnet-4-6",
+                displayName: "Claude Sonnet 4.6",
+                tier: .balanced,
+                tagline: "Claude",
+                provider: "claude"
+              ),
+            ]
+          ),
+        ]
+      ),
+    ]
+
+    let chatCursorModels = workFilterCatalogForCursorAvailability(groups, mode: .chat)
+      .first(where: { $0.key == "cursor" })?
+      .providers
+      .first?
+      .models
+      .map(\.id)
+    let cliCursorModels = workFilterCatalogForCursorAvailability(groups, mode: .cli)
+      .first(where: { $0.key == "cursor" })?
+      .providers
+      .first?
+      .models
+      .map(\.id)
+
+    XCTAssertEqual(chatCursorModels, ["composer-sdk", "composer-both", "legacy-cursor"])
+    XCTAssertEqual(cliCursorModels, ["composer-cli", "composer-both", "legacy-cursor"])
+    XCTAssertEqual(
+      workFilterCatalogForCursorAvailability(groups, mode: .cli)
+        .first(where: { $0.key == "claude" })?
+        .providers
+        .first?
+        .models
+        .map(\.id),
+      ["claude-sonnet-4-6"]
+    )
   }
 
   func testWorkModelCatalogTreatsCodexRuntimeAndRegistryIdsAsSameModel() {

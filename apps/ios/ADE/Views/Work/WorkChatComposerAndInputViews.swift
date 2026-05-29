@@ -1262,7 +1262,7 @@ struct WorkModelSelectionPendingCard: View {
         Text("Fast mode")
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
-        Text("Use the Codex fast service tier for this worker.")
+        Text("Use the fast service tier for this worker.")
           .font(.caption)
           .foregroundStyle(ADEColor.textSecondary)
       }

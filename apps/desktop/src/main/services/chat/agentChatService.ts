@@ -2075,8 +2075,12 @@ function sessionSupportsReasoning(session: AgentChatSession): boolean {
   return resolveSessionModelDescriptor(session)?.capabilities.reasoning ?? true;
 }
 
+function sessionSupportsFastMode(session: AgentChatSession): boolean {
+  return modelSupportsFastMode(resolveSessionModelDescriptor(session));
+}
+
 function sessionSupportsCodexFastMode(session: AgentChatSession): boolean {
-  return session.provider === "codex" && modelSupportsFastMode(resolveSessionModelDescriptor(session));
+  return session.provider === "codex" && sessionSupportsFastMode(session);
 }
 
 function codexServiceTierArgs(session: AgentChatSession): { serviceTier: CodexServiceTier | null } {
@@ -9793,11 +9797,11 @@ export function createAgentChatService(args: {
 
     if (/^\/fast(?:\s|$)/i.test(slashText)) {
       const fastArgs = slashText.replace(/^\/fast(?:\s+|$)/i, "").trim().toLowerCase();
-      const supported = sessionSupportsCodexFastMode(managed.session);
+      const supported = sessionSupportsFastMode(managed.session);
       const current = managed.session.codexFastMode === true && supported;
       if (!supported) {
         delete managed.session.codexFastMode;
-        completeInlineCodexSlash("Codex Fast mode is not available for this model.");
+        completeInlineCodexSlash("Fast mode is not available for this model.");
         return;
       }
       if (!fastArgs || fastArgs === "toggle") {
@@ -9807,11 +9811,11 @@ export function createAgentChatService(args: {
           runtime.threadResumed = false;
           runtime.canAttachResumedTurnStart = false;
         }
-        completeInlineCodexSlash(`Codex Fast mode is ${enabled ? "on" : "off"}.`);
+        completeInlineCodexSlash(`Fast mode is ${enabled ? "on" : "off"}.`);
         return;
       }
       if (fastArgs === "status") {
-        completeInlineCodexSlash(`Codex Fast mode is ${current ? "on" : "off"}.`);
+        completeInlineCodexSlash(`Fast mode is ${current ? "on" : "off"}.`);
         return;
       }
       if (fastArgs === "on" || fastArgs === "off") {
@@ -9822,7 +9826,7 @@ export function createAgentChatService(args: {
           runtime.threadResumed = false;
           runtime.canAttachResumedTurnStart = false;
         }
-        completeInlineCodexSlash(`Codex Fast mode is ${enabled ? "on" : "off"}.`);
+        completeInlineCodexSlash(`Fast mode is ${enabled ? "on" : "off"}.`);
         return;
       }
       completeInlineCodexSlash("Usage: /fast [on|off|status].");

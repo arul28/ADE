@@ -11137,7 +11137,7 @@ describe("createAgentChatService", () => {
       expect(readPersistedChatState(session.id).codexFastMode).toBe(true);
     });
 
-    it("handles Codex /fast commands inline and applies fast tier to the next app-server turn", async () => {
+    it("handles /fast commands inline and applies fast tier to the next app-server turn", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
@@ -11158,7 +11158,7 @@ describe("createAgentChatService", () => {
       expect(readPersistedChatState(session.id).codexFastMode).toBe(true);
       expect(events.some((event) =>
         event.event.type === "system_notice"
-        && event.event.message === "Codex Fast mode is on."
+        && event.event.message === "Fast mode is on."
       )).toBe(true);
 
       mockState.codexRequestPayloads = [];

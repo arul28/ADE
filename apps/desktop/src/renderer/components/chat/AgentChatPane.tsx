@@ -1520,7 +1520,7 @@ function buildLastLaunchConfig(
 ): LastLaunchConfig | null {
   const modelId = source.modelId ?? resolveRegistryModelId(source.model);
   if (!modelId) return null;
-  const desc = getModelById(modelId);
+  const desc = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
   return {
     version: 1,
     modelId,
@@ -1539,7 +1539,7 @@ function normalizeStoredLaunchConfig(
   if (!isRecord(value)) return null;
   const modelId = typeof value.modelId === "string" ? value.modelId.trim() : "";
   if (!modelId) return null;
-  const desc = getModelById(modelId);
+  const desc = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
   const controls = nativeControlsFromLaunchSource(
     isRecord(value.controls) ? value.controls : {},
     defaults,
@@ -1580,6 +1580,18 @@ function writeLastLaunchConfig(storageKey: string, config: LastLaunchConfig): vo
   } catch {
     // ignore
   }
+}
+
+function cursorCliRuntimeModelForFastMode(desc: ModelDescriptor, runtimeModel: string, fastMode: boolean): string {
+  if (desc.family !== "cursor" || !fastMode || !modelSupportsFastMode(desc)) return runtimeModel;
+  const base = runtimeModel.trim();
+  if (!base || base.toLowerCase().endsWith("-fast")) return runtimeModel;
+  const fastRef = `${base}-fast`;
+  const matchingAlias = (desc.aliases ?? []).find((alias) => alias.trim().toLowerCase() === fastRef.toLowerCase())
+    ?? (desc.aliases ?? []).find((alias) => alias.trim().toLowerCase().endsWith("-fast"));
+  const selected = matchingAlias?.trim();
+  if (!selected) return fastRef;
+  return selected.toLowerCase().startsWith("cursor/") ? selected.slice("cursor/".length) : selected;
 }
 
 function nonEmptyString(value: unknown): string | null {
@@ -5877,6 +5889,7 @@ export function AgentChatPane({
     }
     const provider = desc.family === "cursor" ? "cursor" : resolveCliProviderForModel(desc) ?? "opencode";
     const runtimeModel = getRuntimeModelRefForDescriptor(desc, provider);
+    const launchModel = cursorCliRuntimeModelForFastMode(desc, runtimeModel, prepared.codexFastMode);
     const permissionMode = cliPermissionModeFromNativeControls(provider, prepared.nativeControls);
     const cliPrompt = buildWorkCliInitialPrompt({
       text: prepared.finalText,
@@ -5889,7 +5902,7 @@ export function AgentChatPane({
       provider,
       permissionMode,
       ...(cliSessionId ? { sessionId: cliSessionId } : {}),
-      model: runtimeModel,
+      model: launchModel,
       reasoningEffort: prepared.reasoningEffort,
       initialPrompt: cliPrompt,
       laneWorktreePath: targetLane.worktreePath ?? projectRoot,
