@@ -11650,7 +11650,6 @@ describe("createAgentChatService", () => {
 
     it("reports Codex /goal slash timeouts without tearing down the runtime", async () => {
       mockState.delayedCodexMethods.add("thread/goal/set");
-      const processKillSpy = vi.spyOn(process, "kill").mockImplementation(() => true as any);
       vi.useFakeTimers();
       try {
         const events: AgentChatEventEnvelope[] = [];
@@ -11680,7 +11679,6 @@ describe("createAgentChatService", () => {
           event.event.type === "system_notice"
           && event.event.message.includes("timed out")
         )).toBe(true);
-        expect(processKillSpy).not.toHaveBeenCalled();
 
         mockState.delayedCodexMethods.clear();
         mockState.codexRequestPayloads = [];
@@ -11689,9 +11687,10 @@ describe("createAgentChatService", () => {
           text: "Continue after the slash timeout.",
         }, { awaitDispatch: true });
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(false);
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/resume")).toBe(false);
       } finally {
         vi.useRealTimers();
-        processKillSpy.mockRestore();
       }
     });
 
