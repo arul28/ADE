@@ -33,6 +33,12 @@ class MemoryTransport implements JsonRpcTransport {
       callback(Buffer.from(`${line}\n`, "utf8"));
     }
   }
+
+  pushChunk(chunk: string): void {
+    for (const callback of this.callbacks) {
+      callback(Buffer.from(chunk, "utf8"));
+    }
+  }
 }
 
 async function waitForDrain(): Promise<void> {
@@ -48,6 +54,38 @@ function jsonlResponses(transport: MemoryTransport): unknown[] {
 }
 
 describe("startJsonRpcServer", () => {
+  it("waits for more data instead of re-entering drain on partial frames", async () => {
+    const transport = new MemoryTransport();
+    const onError = vi.fn();
+    const handler: JsonRpcHandler = vi.fn(async (request) => ({ ok: true, method: request.method }));
+
+    const stop = startJsonRpcServer(handler, transport, {
+      nonFatal: true,
+      onError,
+    });
+
+    transport.pushChunk('{"jsonrpc":"2.0","id":1,"method":"ping"');
+    await waitForDrain();
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+    expect(transport.closed).toBe(false);
+    expect(transport.writes).toEqual([]);
+
+    transport.pushChunk("}\n");
+    await waitForDrain();
+
+    expect(jsonlResponses(transport)).toEqual([
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        result: { ok: true, method: "ping" },
+      },
+    ]);
+
+    stop();
+  });
+
   it("contains notification handler failures without closing the connection", async () => {
     const transport = new MemoryTransport();
     const onError = vi.fn();

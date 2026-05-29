@@ -422,9 +422,6 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
       closeTransport();
     } finally {
       draining = false;
-      if (!stopped && buffer.length) {
-        void drain();
-      }
     }
   };
 
