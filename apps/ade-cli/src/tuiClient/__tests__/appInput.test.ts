@@ -10,6 +10,7 @@ import {
   drawerMouseHitForLine,
   encodeTerminalPromptSubmit,
   encodeTerminalPromptSubmitConfirm,
+  applyCoalescedPromptInput,
   footerControlsForAvailability,
   formatGitConflictReport,
   formatLaneDeleteRisk,
@@ -576,6 +577,28 @@ describe("formatGitConflictReport", () => {
     expect(report.body).toContain("git did not report specific files");
     expect(report.body).toContain("Resolve the conflicts in your editor");
     expect(report.body).not.toContain("/pull --continue");
+  });
+});
+
+describe("applyCoalescedPromptInput", () => {
+  const DEL = "\u007f";
+  it("inserts pure printable input unchanged", () => {
+    expect(applyCoalescedPromptInput("", 0, "abc")).toEqual({ value: "abc", cursor: 3 });
+    expect(applyCoalescedPromptInput("ac", 1, "b")).toEqual({ value: "abc", cursor: 2 });
+  });
+  it("applies a backspace that was coalesced with a typed char (the bug)", () => {
+    // "x" typed then immediately backspaced, delivered as one chunk.
+    expect(applyCoalescedPromptInput("", 0, `x${DEL}`)).toEqual({ value: "", cursor: 0 });
+  });
+  it("applies multiple coalesced backspaces", () => {
+    expect(applyCoalescedPromptInput("ab", 2, `${DEL}${DEL}`)).toEqual({ value: "", cursor: 0 });
+  });
+  it("interleaves deletes and inserts in order", () => {
+    expect(applyCoalescedPromptInput("", 0, `a${DEL}b`)).toEqual({ value: "b", cursor: 1 });
+    expect(applyCoalescedPromptInput("yz", 2, `${DEL}x`)).toEqual({ value: "yx", cursor: 2 });
+  });
+  it("strips other control bytes but keeps text", () => {
+    expect(applyCoalescedPromptInput("", 0, "a\u0000b")).toEqual({ value: "ab", cursor: 2 });
   });
 });
 

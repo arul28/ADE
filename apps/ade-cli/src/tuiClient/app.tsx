@@ -1554,6 +1554,33 @@ export function deletePromptForward(value: string, cursor: number): PromptEditRe
   };
 }
 
+// Apply a possibly-coalesced input chunk to the prompt, character by character.
+// Ink emits multiple fast keystrokes as ONE chunk and only recognizes a *lone*
+// DEL/BS byte as backspace — so a burst like "x" (type then delete) arrives
+// as plain text with no backspace flag, and naive insertion would drop the
+// delete. Here we walk the chunk: printable runs are inserted, embedded
+// DEL/BS bytes delete backward, all in order. Fixes intermittent "backspace
+// does nothing" when typing quickly.
+export function applyCoalescedPromptInput(value: string, cursor: number, input: string): PromptEditResult {
+  let result: PromptEditResult = { value, cursor: clampPromptCursor(value, cursor) };
+  let buffer = "";
+  const flush = () => {
+    const printable = printableInput(buffer);
+    buffer = "";
+    if (printable) result = insertPromptText(result.value, result.cursor, printable);
+  };
+  for (const ch of input) {
+    if (ch === "\u007f" || ch === "\b") {
+      flush();
+      result = deletePromptBackward(result.value, result.cursor, "char");
+    } else {
+      buffer += ch;
+    }
+  }
+  flush();
+  return result;
+}
+
 function inputBeforeLineBreak(input: string): string | null {
   const index = input.search(/[\r\n]/);
   return index === -1 ? null : input.slice(0, index);
@@ -2345,6 +2372,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const [interruptedBySessionId, setInterruptedBySessionId] = useState<Record<string, boolean>>({});
   const [eventsBySessionId, setEventsBySessionId] = useState<Record<string, AgentChatEventEnvelope[]>>({});
   const [multiView, setMultiView] = useState<MultiViewState | null>(null);
+  // "Grid exists" (multiView) is decoupled from "grid is showing" (gridViewActive).
+  // Creating/opening a non-grid chat hides the grid without destroying it, so it
+  // stays resumable; navigating back to one of its tiles re-shows it.
+  const [gridViewActive, setGridViewActive] = useState(false);
   const [scrollBySessionId, setScrollBySessionId] = useState<Record<string, number>>({});
   const [selectionBySessionId, setSelectionBySessionId] = useState<Record<string, ChatTextSelection | null>>({});
   const [promptHistoryBySessionId, setPromptHistoryBySessionId] = useState<Record<string, string[]>>({});
@@ -2384,6 +2415,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const activeLaneIdRef = useRef<string | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
   const multiViewRef = useRef<MultiViewState | null>(null);
+  const gridViewActiveRef = useRef(false);
+  // Show/hide the grid without destroying it. Sets the ref synchronously so the
+  // input/submit paths read the new value immediately (before the re-render).
+  // Declared early because navigation handlers above the grid helpers use it.
+  const setGridView = useCallback((active: boolean) => {
+    gridViewActiveRef.current = active;
+    setGridViewActive(active);
+  }, []);
   const addModeRef = useRef<AddModeState | null>(null);
   const streamingBySessionIdRef = useRef<Record<string, boolean>>({});
   const interruptedBySessionIdRef = useRef<Record<string, boolean>>({});
@@ -2535,7 +2574,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   }, [project.projectRoot]);
 
   const setChatScrollOffset = useCallback((value: number | ((previous: number) => number)) => {
-    const multiSessionId = focusedSessionIdForMultiView(multiViewRef.current);
+    const multiSessionId = (gridViewActiveRef.current ? focusedSessionIdForMultiView(multiViewRef.current) : null);
     if (multiSessionId) {
       setScrollBySessionId((prev) => {
         const previous = prev[multiSessionId] ?? 0;
@@ -2673,7 +2712,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 
   useEffect(() => {
     chatMouseSelectionRef.current = chatMouseSelection;
-    const focusedSessionId = focusedSessionIdForMultiView(multiViewRef.current);
+    const focusedSessionId = (gridViewActiveRef.current ? focusedSessionIdForMultiView(multiViewRef.current) : null);
     if (focusedSessionId) {
       setSelectionBySessionId((prev) => ({ ...prev, [focusedSessionId]: chatMouseSelection }));
     }
@@ -3184,6 +3223,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       newChatPreviewLaneIdRef.current = laneId;
       draftChatActiveRef.current = true;
       setDraftChatMode(true);
+      setGridView(false);
       selectActiveSessionId(null);
       clearLoadedTranscript();
       return;
@@ -3192,12 +3232,25 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     if (!selection.session) {
       draftChatActiveRef.current = false;
       setDraftChatMode(false);
+      setGridView(false);
       selectActiveSessionId(null);
       clearLoadedTranscript();
       return;
     }
 
     const session = selection.session;
+    // If the selected chat is one of the (possibly hidden) grid's tiles, re-enter
+    // the grid focused on it; otherwise show it as a normal single chat and leave
+    // the grid resumable in the background.
+    const gridTileIndex = multiViewRef.current?.tiles.findIndex((tile) => tile.sessionId === session.sessionId) ?? -1;
+    if (gridTileIndex >= 0) {
+      draftChatActiveRef.current = false;
+      setDraftChatMode(false);
+      setMultiView((prev) => (prev ? { ...prev, focusedIndex: gridTileIndex } : prev));
+      setGridView(true);
+      return;
+    }
+    setGridView(false);
     newChatPreviewLaneIdRef.current = null;
     draftChatActiveRef.current = false;
     setDraftChatMode(false);
@@ -3261,7 +3314,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         // Best-effort preview hydration; leave prior content on transient errors.
       }
     })();
-  }, [selectActiveLaneId, selectActiveSessionId, setDraftChatMode, setSessionInterrupted, setSessionStreaming, setStreaming]);
+  }, [selectActiveLaneId, selectActiveSessionId, setDraftChatMode, setGridView, setSessionInterrupted, setSessionStreaming, setStreaming]);
   const enterDrawerChatListForLane = useCallback((lane: LaneSummary) => {
     const laneSessions = displaySessions.filter((entry) => entry.laneId === lane.id);
     const visibleSessions = laneSessions.slice(0, visibleDrawerChatCount(laneSessions.length));
@@ -4124,8 +4177,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       const focusedIndex = Math.max(0, Math.min(index, prev.tiles.length - 1));
       return focusedIndex === prev.focusedIndex ? prev : { ...prev, focusedIndex };
     });
+    setGridView(true);
     setPaneFocus("chat");
-  }, [setPaneFocus]);
+  }, [setGridView, setPaneFocus]);
 
   const removeMultiViewTile = useCallback((index: number) => {
     const prev = multiViewRef.current;
@@ -4134,11 +4188,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     const survivor = tiles.length < 2 ? tiles[0] ?? null : null;
     setMultiView(tiles.length < 2 ? null : { tiles, focusedIndex: Math.min(prev.focusedIndex, tiles.length - 1) });
     if (survivor) {
+      // Grid collapsed to one chat → leave grid view into that single chat.
+      setGridView(false);
       selectActiveLaneId(survivor.laneId);
       selectActiveSessionId(survivor.sessionId);
     }
     setPaneFocus("chat");
-  }, [selectActiveLaneId, selectActiveSessionId, setPaneFocus]);
+  }, [selectActiveLaneId, selectActiveSessionId, setGridView, setPaneFocus]);
 
   const isTileableChatSessionId = useCallback((sessionId: string | null | undefined) => {
     if (!sessionId) return false;
@@ -4160,18 +4216,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       const existingIndex = tiles.findIndex((tile) => tile.sessionId === sessionId);
       if (existingIndex >= 0) {
         setMultiView({ tiles, focusedIndex: existingIndex });
+        setGridView(true);
         setAddMode(null);
         setPaneFocus("chat");
         return;
       }
       if (tiles.length >= 6) {
         flashMultiViewNotice("Multi-view full (max 6)");
+        setGridView(true);
         setAddMode(null);
         setPaneFocus("chat");
         return;
       }
       if (!tiles.length) {
         setMultiView(null);
+        setGridView(false);
         selectActiveLaneId(laneId);
         selectActiveSessionId(sessionId);
       } else {
@@ -4179,11 +4238,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           tiles: [...tiles, { sessionId, laneId }],
           focusedIndex: Math.max(focusedIndex, tiles.length),
         });
+        setGridView(true);
       }
     } else {
       const currentSessionId = activeSessionIdRef.current;
       const currentLaneId = activeLaneIdRef.current;
       if (!currentSessionId || !currentLaneId || !isTileableChatSessionId(currentSessionId)) {
+        setGridView(false);
         selectActiveLaneId(laneId);
         selectActiveSessionId(sessionId);
       } else if (currentSessionId !== sessionId) {
@@ -4194,6 +4255,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           ],
           focusedIndex: 1,
         });
+        setGridView(true);
       }
     }
     void hydrateTileHistory(sessionId).catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
@@ -4203,7 +4265,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
     setAddMode(null);
     setPaneFocus("chat");
-  }, [addNotice, flashMultiViewNotice, hydrateTileHistory, isTileableChatSessionId, selectActiveLaneId, selectActiveSessionId, setPaneFocus]);
+  }, [addNotice, flashMultiViewNotice, hydrateTileHistory, isTileableChatSessionId, selectActiveLaneId, selectActiveSessionId, setGridView, setPaneFocus]);
 
   const startAddMode = useCallback(() => {
     const firstLane = orderedDrawerLanes[0] ?? null;
@@ -4257,8 +4319,44 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     addTileToGrid(current.cursorChatId, current.cursorLaneId);
   }, [addNotice, addTileToGrid]);
 
+  // The grid toggle (Ctrl+G / footer button). Behavior depends on context:
+  //  - in the grid          -> open the "add chat" picker
+  //  - on a chat that's a tile of a resumable grid -> re-enter that grid
+  //  - on a non-grid chat with a resumable grid    -> add this chat to the grid
+  //    (errors if full)
+  //  - no grid yet          -> open the add-mode picker to build one
+  const toggleGridView = useCallback(() => {
+    if (gridViewActiveRef.current) {
+      startAddMode();
+      return;
+    }
+    const grid = multiViewRef.current;
+    if (grid) {
+      const sessionId = activeSessionIdRef.current;
+      const tileIndex = sessionId ? grid.tiles.findIndex((tile) => tile.sessionId === sessionId) : -1;
+      if (tileIndex >= 0) {
+        setMultiView({ ...grid, focusedIndex: tileIndex });
+        setGridView(true);
+        setPaneFocus("chat");
+        return;
+      }
+      const laneId = activeLaneIdRef.current;
+      if (sessionId && laneId && isTileableChatSessionId(sessionId)) {
+        addTileToGrid(sessionId, laneId);
+        return;
+      }
+      // Current view isn't a tileable chat (draft/terminal) — just resume the grid.
+      setGridView(true);
+      setPaneFocus("chat");
+      return;
+    }
+    startAddMode();
+  }, [addTileToGrid, isTileableChatSessionId, setGridView, setPaneFocus, startAddMode]);
+
   useEffect(() => {
-    if (!multiView) return;
+    // Only the *shown* grid drives the active lane/session. A dormant (hidden but
+    // resumable) grid must not hijack the single chat the user is viewing.
+    if (!multiView || !gridViewActive) return;
     const tile = multiView.tiles[multiView.focusedIndex] ?? multiView.tiles[0] ?? null;
     if (!tile) return;
     if (tile.laneId !== activeLaneIdRef.current) {
@@ -4274,7 +4372,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     if (!eventsBySessionIdRef.current[tile.sessionId]) {
       void hydrateTileHistory(tile.sessionId).catch(() => undefined);
     }
-  }, [hydrateTileHistory, multiView, selectActiveLaneId, selectActiveSessionId]);
+  }, [gridViewActive, hydrateTileHistory, multiView, selectActiveLaneId, selectActiveSessionId]);
 
   useEffect(() => {
     if (!connection || !attachedTerminalId) return;
@@ -4581,6 +4679,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       paneBeforeDetailsRef.current = previousPane;
     }
     setDraftChatMode(true);
+    // Creating a new chat leaves the grid (shown as a single draft chat) but
+    // keeps the grid resumable — navigating back to a tile re-enters it.
+    setGridView(false);
     selectActiveSessionId(null);
     setAttachedTerminalId(null);
     // New-chat-setup is part of the context default; let the resolver drive it.
@@ -4604,7 +4705,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     setPaneFocus("details");
     void refreshAiSetupStatus().catch(() => undefined);
     void loadProviderModels(modelState.provider, { applyDefault: false }).catch(() => undefined);
-  }, [activeLane, addNotice, focusDetails, lanes, loadProviderModels, modelState.provider, newChatSetupRows, refreshAiSetupStatus, selectActiveSessionId, setDraftChatMode, setPaneFocus, stashActiveInput]);
+  }, [activeLane, addNotice, focusDetails, lanes, loadProviderModels, modelState.provider, newChatSetupRows, refreshAiSetupStatus, selectActiveSessionId, setDraftChatMode, setGridView, setPaneFocus, stashActiveInput]);
 
   // /model opens the right-pane model picker. Provider stays editable on a fresh
   // chat; once the thread has user messages the provider row is locked to the
@@ -6489,7 +6590,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         setRightPane({ kind: "details", title: "Linear pull", body: `Linear issue ${args} was not found.` });
         return;
       }
-      const targetSessionId = focusedSessionIdForMultiView(multiViewRef.current) ?? await ensureActiveSession();
+      const targetSessionId = (gridViewActiveRef.current ? focusedSessionIdForMultiView(multiViewRef.current) : null) ?? await ensureActiveSession();
       const issueContext = `Linear issue context:\n${renderObject(issue, 28)}`;
       if (targetSessionId) {
         await sendOrSteerChatMessage(targetSessionId, issueContext);
@@ -7281,7 +7382,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             await submitClaudePromptToTerminal(activeTerminal, selected.name);
             return;
           }
-          const sessionId = focusedSessionIdForMultiView(multiViewRef.current) ?? await ensureActiveSession();
+          const sessionId = (gridViewActiveRef.current ? focusedSessionIdForMultiView(multiViewRef.current) : null) ?? await ensureActiveSession();
           if (sessionId) {
             await sendOrSteerChatMessage(sessionId, selected.name);
           }
@@ -7325,7 +7426,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         }
         return;
       }
-      const focusedSessionId = focusedSessionIdForMultiView(multiViewRef.current);
+      const focusedSessionId = (gridViewActiveRef.current ? focusedSessionIdForMultiView(multiViewRef.current) : null);
       const sessionId = focusedSessionId ?? await ensureActiveSession();
       if (!sessionId) {
         addNotice("No active lane is available for chat.", "error");
@@ -7743,7 +7844,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   }, [addNotice, applyModelState, cycleModel, cyclePermission, cycleProvider, cycleReasoning, focusChat, refreshAiSetupStatus, refreshState, sendClaudeModelCommandToTerminal]);
 
   const recallPromptHistory = useCallback((direction: "previous" | "next"): boolean => {
-    const focusedSessionId = focusedSessionIdForMultiView(multiViewRef.current);
+    const focusedSessionId = (gridViewActiveRef.current ? focusedSessionIdForMultiView(multiViewRef.current) : null);
     const history = focusedSessionId
       ? promptHistoryBySessionIdRef.current[focusedSessionId] ?? []
       : promptHistoryRef.current;
@@ -8494,14 +8595,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
 
-    if (pane === "chat" && multiViewRef.current && isCtrlInput(input, key, "w")) {
+    if (pane === "chat" && gridViewActiveRef.current && multiViewRef.current && isCtrlInput(input, key, "w")) {
       removeMultiViewTile(multiViewRef.current.focusedIndex);
       return;
     }
 
-    if (pane === "chat" && multiViewRef.current && key.tab) {
-      // Tab focuses the next tile; Shift+Tab the previous. Scoped to an active
-      // grid so Shift+Tab still cycles permission mode in single-chat view.
+    if (pane === "chat" && gridViewActiveRef.current && multiViewRef.current && key.tab) {
+      // Tab focuses the next tile; Shift+Tab the previous. Scoped to a SHOWN grid
+      // so Shift+Tab still cycles permission mode in single-chat view and Ctrl+W
+      // doesn't remove a tile from a dormant (hidden) grid.
       const direction = key.shift ? -1 : 1;
       setMultiView((prev) => {
         if (!prev) return prev;
@@ -8851,7 +8953,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
 
     if (pane === "chat" && isCtrlInput(input, key, "g")) {
-      startAddMode();
+      toggleGridView();
       return;
     }
 
@@ -9664,9 +9766,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
     if (textInputActive && !key.ctrl && input) {
-      const suffix = printableInput(input);
-      if (suffix) {
-        const next = insertPromptText(prompt, promptCursorRef.current, suffix);
+      // Segment the chunk so a coalesced "type + backspace" burst (which Ink
+      // hands us as one chunk with no backspace flag) applies its deletes
+      // instead of dropping them. Pure-printable input inserts as before.
+      const cursor = promptCursorRef.current;
+      const next = applyCoalescedPromptInput(prompt, cursor, input);
+      if (next.value !== prompt || next.cursor !== cursor) {
         handlePromptChange(next.value, next.cursor);
       }
     }
@@ -9948,8 +10053,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
       rightFooterItems.push({
         id: "footer:split",
-        label: multiView ? "^g add chat" : "^g split",
-        onClick: () => startAddMode(),
+        label: gridViewActive ? "^g add chat" : multiView ? "^g grid" : "^g split",
+        onClick: () => toggleGridView(),
       });
       if (multiView) {
         rightFooterItems.push(
@@ -10569,7 +10674,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           <Box width={centerWidth} flexDirection="column">
             {pendingApproval?.highStakes ? (
               <ApprovalPrompt approval={pendingApproval} modal />
-            ) : multiView ? (
+            ) : (gridViewActive && multiView) ? (
               <MultiChatGrid
                 tiles={multiView.tiles}
                 focusedIndex={multiView.focusedIndex}

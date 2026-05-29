@@ -1676,12 +1676,15 @@ export function ChatView({
   const lanePart = truncateEnd(laneName || "(lane removed)", Math.max(3, Math.floor(available * 0.4)));
   const titlePart = truncateEnd(title, Math.max(3, available - textWidth(lanePart) - 3));
   const header = truncateEnd(`${lanePart} / ${titlePart}`, Math.max(4, innerWidth - railSlot - removeSlot.length - 2));
+  // Borders stay neutral; only the focused tile is accented (violet). Lane
+  // identity lives INSIDE the tile (the colored rail + title), never the border,
+  // so the grid doesn't read as a jumble of differently-colored frames.
   let tileBorderColor: string;
-  if (focused) tileBorderColor = "cyan";
-  else if (hovered) tileBorderColor = theme.color.borderFocused;
-  else tileBorderColor = laneAccent ?? theme.color.border;
+  if (focused) tileBorderColor = theme.color.violet;
+  else if (hovered) tileBorderColor = theme.color.borderActive;
+  else tileBorderColor = theme.color.border;
   let headerColor: string;
-  if (focused) headerColor = "cyan";
+  if (focused) headerColor = theme.color.violet;
   else if (activeSession?.status === "ended") headerColor = theme.color.t4;
   else headerColor = theme.color.t2;
   return (

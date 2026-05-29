@@ -18,10 +18,11 @@ function Hint({ keyLabel, action }: { keyLabel: string; action: string }) {
 }
 
 function tokenBarColor(percent: number): string {
+  // Context-usage fill: on-brand violet while healthy, escalating to amber then
+  // red as context runs low. (No green — a green block here read as a glitch.)
   if (percent >= 95) return theme.color.danger;
   if (percent >= 80) return theme.color.warning;
-  if (percent >= 50) return theme.color.accent;
-  return theme.color.running;
+  return theme.color.accent;
 }
 
 function TokenBar({ percent }: { percent: number }) {
@@ -223,7 +224,19 @@ export function FooterControls({
         {multiViewMap ? (
           <>
             <Text color={theme.color.t4}>{"  "}</Text>
-            <Text color={theme.color.t3}>{gridMiniMapText(multiViewMap.count, multiViewMap.focusedIndex)}</Text>
+            {(() => {
+              // Accent the focused tile glyph (▣) violet to match the grid's
+              // selected-pane color; the rest of the minimap stays dim.
+              const map = gridMiniMapText(multiViewMap.count, multiViewMap.focusedIndex);
+              const [before, after = ""] = map.split("▣");
+              return (
+                <Text color={theme.color.t3}>
+                  {before}
+                  <Text color={theme.color.violet}>▣</Text>
+                  {after}
+                </Text>
+              );
+            })()}
             {multiViewMap.notice ? (
               <Text color={theme.color.warning}>{`  ${multiViewMap.notice}`}</Text>
             ) : null}
