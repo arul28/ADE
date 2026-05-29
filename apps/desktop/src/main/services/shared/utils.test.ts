@@ -26,6 +26,7 @@ import {
   sha256Hex,
   stableStringify,
   toBase64Url,
+  readAgentAccessibleFileBytes,
   createPkcePair,
   escapeRegExp,
   globToRegExp,
@@ -323,6 +324,45 @@ describe("resolvePathWithinRoot", () => {
     } finally {
       spy.mockRestore();
       fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("readAgentAccessibleFileBytes", () => {
+  it("prefers dirty editor text for files inside the workspace", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-dirty-read-"));
+    try {
+      const filePath = path.join(root, "src", "app.ts");
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, "saved", "utf8");
+
+      const bytes = await readAgentAccessibleFileBytes({
+        rootPath: root,
+        resolvedPath: filePath,
+        getDirtyFileTextForPath: () => "unsaved",
+      });
+
+      expect(bytes.toString("utf8")).toBe("unsaved");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not let dirty-buffer lookup bypass the workspace boundary", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-dirty-read-root-"));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ade-dirty-read-outside-"));
+    try {
+      const outsidePath = path.join(outside, "secret.txt");
+      fs.writeFileSync(outsidePath, "outside disk", "utf8");
+
+      await expect(readAgentAccessibleFileBytes({
+        rootPath: root,
+        resolvedPath: outsidePath,
+        getDirtyFileTextForPath: () => "outside dirty",
+      })).rejects.toThrow("Path escapes root");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
     }
   });
 });

@@ -340,6 +340,7 @@ describe("fileService", () => {
         workspaceId: "workspace-1",
         depth: 1,
         includeIgnored: true,
+        forceFreshStatus: true,
       });
 
       expect(rootNodes.find((node) => node.path === "package-renamed.json")?.changeStatus).toBe("renamed");

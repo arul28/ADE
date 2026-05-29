@@ -40,6 +40,7 @@ export type FilesExplorerContextMenuEvent = {
 export type FilesExplorerProps = {
   tree: FileTreeNode[];
   expanded: Set<string>;
+  loadingDirectories: Set<string>;
   selectedNodePath: string | null;
   activeTabPath: string | null;
   activeContextDir: string;
@@ -114,6 +115,7 @@ function flattenVisibleRows(args: {
 export function FilesExplorer({
   tree,
   expanded,
+  loadingDirectories,
   selectedNodePath,
   activeTabPath,
   activeContextDir,
@@ -373,6 +375,7 @@ export function FilesExplorer({
               if (!row) return null;
               const { node, level } = row;
               const isExpanded = expanded.has(node.path);
+              const isLoading = node.type === "directory" && loadingDirectories.has(node.path);
               const isActive = (activeTabPath != null && arePathsEqual(activeTabPath, node.path, workspaceComparisonRoot))
                 || (selectedNodePath != null && arePathsEqual(selectedNodePath, node.path, workspaceComparisonRoot));
               const statusColor = changeStatusColor(node.changeStatus ?? null);
@@ -396,7 +399,7 @@ export function FilesExplorer({
               const handleRowActivate = () => {
                 onSelectNode(node.path);
                 if (node.type === "directory") {
-                  onToggleDirectory(node.path, isExpanded, Boolean(node.children));
+                  onToggleDirectory(node.path, isExpanded, Array.isArray(node.children));
                   return;
                 }
                 onOpenFile(node.path);
@@ -484,6 +487,20 @@ export function FilesExplorer({
                   )}
                   {node.type === "directory" && node.changeStatus ? (
                     <span title={changeStatusTitle(node.changeStatus)} style={{ marginLeft: "auto", width: 6, height: 6, borderRadius: "50%", background: statusColor, flexShrink: 0 }} />
+                  ) : null}
+                  {isLoading ? (
+                    <span
+                      aria-label={`${node.name} is loading`}
+                      style={{
+                        marginLeft: node.type === "directory" && node.changeStatus ? 4 : "auto",
+                        flexShrink: 0,
+                        fontFamily: MONO_FONT,
+                        fontSize: 10,
+                        color: COLORS.textMuted,
+                      }}
+                    >
+                      ...
+                    </span>
                   ) : null}
                   {node.type === "file" && statusLabel ? (
                     <span style={{

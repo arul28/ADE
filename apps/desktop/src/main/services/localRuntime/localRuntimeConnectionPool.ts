@@ -60,6 +60,7 @@ type LocalRuntimeNodePathOptions = {
 };
 
 const LOCAL_RUNTIME_PROJECT_TIMEOUT_MS = 3_000;
+const LOCAL_RUNTIME_ACTION_TIMEOUT_MS = 30_000;
 const LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS = 8_000;
 const LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS = 2_000;
 const PLACEHOLDER_RUNTIME_VERSION = "0.0.0";
@@ -347,6 +348,10 @@ function closeRuntimeClient(client: RuntimeRpcClient): void {
   try {
     client.close();
   } catch {}
+}
+
+function isRuntimeActionCallTimeout(error: Error): boolean {
+  return /timed out waiting for method ade\/actions\/call/i.test(error.message);
 }
 
 function signalRuntimeChildProcess(child: ChildProcess | null, signal: NodeJS.Signals): void {
@@ -694,9 +699,11 @@ export class LocalRuntimeConnectionPool {
     const tProject = Date.now();
     const entry = await this.connect();
     const tConnect = Date.now();
-    const actionCallOptions = request.domain === "file"
-      ? { timeoutMs: LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS }
-      : undefined;
+    const actionCallOptions = {
+      timeoutMs: request.domain === "file"
+        ? LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS
+        : LOCAL_RUNTIME_ACTION_TIMEOUT_MS,
+    };
     let value: unknown = undefined;
     let callError: Error | null = null;
     try {
@@ -731,6 +738,15 @@ export class LocalRuntimeConnectionPool {
           timeoutMs: actionCallOptions?.timeoutMs ?? null,
           error: callError?.message ?? null,
         });
+      }
+      if (callError && isRuntimeActionCallTimeout(callError)) {
+        this.logger.warn("local_runtime.action_timeout_reset_connection", {
+          domain: request.domain,
+          action: request.action,
+          socketPath: entry.socketPath,
+          totalMs,
+        });
+        this.resetConnectionAfterActionTimeout(entry);
       }
     }
     if (callError) throw callError;
@@ -866,6 +882,19 @@ export class LocalRuntimeConnectionPool {
       throw error;
     });
     return this.connection;
+  }
+
+  private resetConnectionAfterActionTimeout(entry: LocalRuntimeConnection): void {
+    if (!this.activeClient || this.activeClient === entry.client) {
+      this.connection = null;
+      this.activeClient = null;
+      this.projectsByRoot.clear();
+    }
+    if (entry.child && this.ownedRuntimeChild === entry.child) {
+      this.ownedRuntimeChild = null;
+    }
+    closeRuntimeClient(entry.client);
+    disposeOwnedRuntimeChild(entry.child, entry.socketPath, { unlinkSocket: true });
   }
 
   private async createConnection(): Promise<LocalRuntimeConnection> {

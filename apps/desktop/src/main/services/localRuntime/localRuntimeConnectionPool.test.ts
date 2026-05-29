@@ -1289,6 +1289,62 @@ describe("local runtime connection pool", () => {
     );
   });
 
+  it("bounds non-file action calls and drops a timed-out runtime connection", async () => {
+    const timeout = new Error("Remote ADE service timed out waiting for method ade/actions/call (30000ms).");
+    const call = vi.fn().mockRejectedValue(timeout);
+    const close = vi.fn();
+    const child = {
+      pid: 1234,
+      kill: vi.fn(),
+      once: vi.fn(),
+    };
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never);
+    const rootPath = path.resolve("/repo");
+    (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.set(rootPath, {
+      projectId: "project-1",
+      rootPath,
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: null,
+    });
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
+      client: { call, close },
+      child,
+      socketPath: "/tmp/ade.sock",
+    });
+    (pool as unknown as { ownedRuntimeChild: unknown }).ownedRuntimeChild = child;
+
+    await expect(pool.callActionForRoot(rootPath, {
+      domain: "chat",
+      action: "deleteSession",
+      args: { sessionId: "chat-1" },
+    })).rejects.toThrow(/timed out waiting for method ade\/actions\/call/i);
+
+    expect(call).toHaveBeenCalledWith(
+      "ade/actions/call",
+      {
+        projectId: "project-1",
+        name: "run_ade_action",
+        arguments: {
+          domain: "chat",
+          action: "deleteSession",
+          args: { sessionId: "chat-1" },
+        },
+      },
+      { timeoutMs: 30_000 },
+    );
+    expect(close).toHaveBeenCalled();
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    expect((pool as unknown as { connection: unknown }).connection).toBeNull();
+    expect((pool as unknown as { ownedRuntimeChild: unknown }).ownedRuntimeChild).toBeNull();
+  });
+
   it("routes local sync calls through the project-scoped runtime RPC", async () => {
     const call = vi.fn().mockResolvedValue({
       mode: "standalone",

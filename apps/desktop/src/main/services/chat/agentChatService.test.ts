@@ -6591,6 +6591,48 @@ describe("createAgentChatService", () => {
       expect(sessionService.deleteSession).toHaveBeenCalledWith(session.id);
     });
 
+    it("purges a running Codex chat even when app-server interrupt and archive requests hang", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, sessionService } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start a Codex turn.",
+      }, { awaitDispatch: true });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      mockState.delayedCodexMethods.add("turn/interrupt");
+      mockState.delayedCodexMethods.add("thread/archive");
+      vi.useFakeTimers();
+      try {
+        const deleted = service.deleteSession({ sessionId: session.id });
+        await vi.advanceTimersByTimeAsync(10_000);
+        await expect(deleted).resolves.toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+
+      expect(sessionService.end).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: session.id, status: "disposed" }),
+      );
+      expect(sessionService.deleteSession).toHaveBeenCalledWith(session.id);
+      expect(sessionService.get(session.id)).toBeNull();
+    });
+
     it("does not follow transcript symlinks outside ADE during purge", async () => {
       const { service, sessionService } = createService();
       const session = await service.createSession({
@@ -11225,6 +11267,129 @@ describe("createAgentChatService", () => {
       });
     });
 
+    it("sets typed Codex /goal text and starts a real app-server turn", async () => {
+      mockState.codexResponseOverrides.set("thread/goal/set", (payload) => {
+        const params = payload.params as Record<string, unknown>;
+        return {
+          goal: {
+            objective: params.objective,
+            status: params.status ?? "active",
+            tokenBudget: null,
+          },
+        };
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/goal Ship CLI parity",
+      }, { awaitDispatch: true });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      const goalRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/goal/set");
+      expect(goalRequest?.params).toMatchObject({
+        threadId: expect.any(String),
+        objective: "Ship CLI parity",
+        status: "active",
+      });
+      const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      const turnParams = turnStartRequest?.params as { input?: Array<{ text?: unknown }> } | undefined;
+      const turnInputText = turnParams?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
+      expect(turnInputText).toContain("Ship CLI parity");
+      expect(turnInputText).not.toContain("/goal");
+      expect(events.some((event) =>
+        event.event.type === "user_message"
+        && event.event.text.includes("/goal")
+      )).toBe(false);
+      expect(events.some((event) =>
+        event.event.type === "status"
+        && event.event.turnStatus === "completed"
+      )).toBe(false);
+      expect(events.some((event) =>
+        event.event.type === "done"
+        && event.event.status === "completed"
+      )).toBe(false);
+    });
+
+    it("asks before replacing an existing typed Codex goal", async () => {
+      mockState.codexResponseOverrides.set("thread/goal/set", (payload) => {
+        const params = payload.params as Record<string, unknown>;
+        return {
+          goal: {
+            objective: params.objective,
+            status: params.status ?? "active",
+            tokenBudget: null,
+          },
+        };
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/goal set Existing goal",
+      }, { awaitDispatch: true });
+      mockState.codexRequestPayloads = [];
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/goal Replacement goal",
+      }, { awaitDispatch: true });
+
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/goal/set")).toBe(false);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => {
+          const detail = event.event.type === "approval_request"
+            ? (event.event.detail as { request?: PendingInputRequest } | undefined)
+            : undefined;
+          return event.event.type === "approval_request"
+            && detail?.request?.providerMetadata?.kind === "codex_goal_replace";
+        },
+      );
+      const request = (approvalEvent.event.detail as { request?: PendingInputRequest } | undefined)?.request;
+      expect(request?.questions[0]?.options?.map((option) => option.value)).toEqual(["update_goal", "clear_goal"]);
+
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: approvalEvent.event.itemId,
+        decision: "accept",
+        answers: {
+          goal_action: "update_goal",
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) =>
+          payload.method === "thread/goal/set"
+          && (payload.params as { objective?: unknown } | undefined)?.objective === "Replacement goal"
+        )).toBe(true);
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+    });
+
     it("automatically removes incoming Codex goal token limits and resumes limited goals", async () => {
       mockState.codexResponseOverrides.set("thread/goal/set", (payload) => {
         const params = payload.params as Record<string, unknown>;
@@ -11436,7 +11601,7 @@ describe("createAgentChatService", () => {
       expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
     });
 
-    it("completes Codex /goal slash commands when the app-server RPC fails", async () => {
+    it("reports Codex /goal slash command failures without completing a fake slash turn", async () => {
       mockState.delayedCodexMethods.add("thread/goal/set");
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
@@ -11476,11 +11641,92 @@ describe("createAgentChatService", () => {
       expect(events.some((event) =>
         event.event.type === "status"
         && event.event.turnStatus === "completed"
-      )).toBe(true);
+      )).toBe(false);
       expect(events.some((event) =>
         event.event.type === "done"
         && event.event.status === "completed"
-      )).toBe(true);
+      )).toBe(false);
+    });
+
+    it("reports Codex /goal slash timeouts without tearing down the runtime", async () => {
+      mockState.delayedCodexMethods.add("thread/goal/set");
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => {
+            events.push(event);
+          },
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.5",
+        });
+
+        const sendPromise = service.sendMessage({
+          sessionId: session.id,
+          text: "/goal status paused",
+        }, { awaitDispatch: true });
+
+        await vi.waitFor(() => {
+          expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/goal/set")).toBe(true);
+        });
+        await vi.advanceTimersByTimeAsync(10_050);
+        await sendPromise;
+
+        expect(events.some((event) =>
+          event.event.type === "system_notice"
+          && event.event.message.includes("timed out")
+        )).toBe(true);
+
+        mockState.delayedCodexMethods.clear();
+        mockState.codexRequestPayloads = [];
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "Continue after the slash timeout.",
+        }, { awaitDispatch: true });
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(false);
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/resume")).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("routes Codex goal edits through goal RPC while a turn is active instead of turn steer", async () => {
+      mockState.codexResponseOverrides.set("thread/goal/set", (payload) => {
+        const params = payload.params as Record<string, unknown>;
+        return {
+          goal: {
+            objective: params.objective,
+            status: params.status ?? "active",
+            tokenBudget: null,
+          },
+        };
+      });
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start a long-running turn.",
+      }, { awaitDispatch: true });
+
+      mockState.codexRequestPayloads = [];
+      await service.steer({
+        sessionId: session.id,
+        text: "/goal set Updated from UI",
+      });
+
+      expect(mockState.codexRequestPayloads.find((payload) => payload.method === "thread/goal/set")?.params).toMatchObject({
+        objective: "Updated from UI",
+      });
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/steer")).toBe(false);
     });
 
     it("routes Codex /inject to thread/inject_items and emits a notice", async () => {
@@ -14577,6 +14823,39 @@ describe("createAgentChatService", () => {
       expect(message.content[1]?.type).toBe("image");
       expect((message.content[1]?.source as Record<string, unknown>).type).toBe("base64");
     });
+
+    it("omits large Cursor SDK file attachments without reading the full file", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      const largePath = path.join(tmpRoot, "large-context.txt");
+      const largeContent = `${"x".repeat(512 * 1024 + 1)}large-tail-marker`;
+      fs.writeFileSync(largePath, largeContent);
+
+      const readFileSpy = vi.spyOn(fs, "readFileSync");
+      let readFileCalls: unknown[][] = [];
+      try {
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "Use this large file",
+          attachments: [{ path: largePath, type: "file" }],
+        });
+        readFileCalls = [...readFileSpy.mock.calls];
+      } finally {
+        readFileSpy.mockRestore();
+      }
+
+      expect(readFileCalls.some(([target]) => typeof target === "number")).toBe(false);
+      const payloadText = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
+      expect(payloadText).toContain(`[File: ${largePath} omitted: size ${largeContent.length} bytes]`);
+      expect(payloadText).not.toContain("large-tail-marker");
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -14660,11 +14939,11 @@ describe("createAgentChatService", () => {
       );
     });
 
-  it("preserves original attachments across local auto-continuation retries", () => {
+  it("preserves original attachments across local auto-continuation retries", async () => {
       const resolvedPath = path.join(tmpRoot, "note.txt");
       fs.writeFileSync(resolvedPath, "remember this", "utf8");
 
-      const streamMessages = buildOpenCodeStreamMessages({
+      const streamMessages = await buildOpenCodeStreamMessages({
         messages: [
           {
             role: "user",
@@ -14700,6 +14979,7 @@ describe("createAgentChatService", () => {
           isCliWrapped: false,
           harnessProfile: "verified",
         } as any,
+        getDirtyFileTextForPath: () => "remember unsaved edits",
         logger: createLogger() as any,
       });
 
@@ -14708,6 +14988,9 @@ describe("createAgentChatService", () => {
         expect.objectContaining({ type: "text" }),
         expect.objectContaining({ type: "file", filename: "note.txt" }),
       ]));
+      const persistedContent = streamMessages[0]?.content as Array<Record<string, unknown>>;
+      const filePart = persistedContent.find((part) => part.type === "file") as { data?: Buffer } | undefined;
+      expect(filePart?.data?.toString("utf8")).toBe("remember unsaved edits");
       expect(streamMessages[2]).toEqual({
         role: "user",
         content: "Continue from your last step.",

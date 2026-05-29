@@ -34,7 +34,7 @@ import type {
   WarmQuery,
 } from "@anthropic-ai/claude-agent-sdk";
 import { z, type ZodType } from "zod";
-import { buildClaudeV2Message, inferAttachmentMediaType } from "./buildClaudeV2Message";
+import { buildClaudeV2MessageAsync, inferAttachmentMediaType } from "./buildClaudeV2Message";
 import { ClaudeInputPump } from "./claudeInputPump";
 import {
   isCorruptThinkingTranscriptError,
@@ -87,6 +87,7 @@ import {
   hasNullByte,
   isEnoentError,
   nowIso,
+  readAgentAccessibleFileBytes,
   readFileWithinRootSecure,
   resolvePathWithinRoot,
   stableStringify,
@@ -470,9 +471,30 @@ type PersistedPendingSteer = {
 };
 
 type PendingRpc = {
+  method: string;
+  timer: NodeJS.Timeout | null;
   resolve: (value: any) => void;
   reject: (error: Error) => void;
 };
+
+type CodexRequestOptions = {
+  timeoutMs?: number | null;
+};
+
+function isCodexRequestTimeoutError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /^Codex request '.+' timed out after \d+ms\.$/.test(message);
+}
+
+function rejectPendingCodexRequests(
+  pending: Map<string, PendingRpc>,
+  message: string,
+): void {
+  for (const request of pending.values()) {
+    request.reject(new Error(`${message} Pending request: ${request.method}.`));
+  }
+  pending.clear();
+}
 
 type PendingCodexApproval = {
   requestId: string | number;
@@ -545,7 +567,7 @@ type CodexRuntime = {
     turnId: string | null;
     followupText: string;
   }>;
-  request: <T = unknown>(method: string, params?: unknown) => Promise<T>;
+  request: <T = unknown>(method: string, params?: unknown, options?: CodexRequestOptions) => Promise<T>;
   notify: (method: string, params?: unknown) => void;
   sendResponse: (id: string | number, result: unknown) => void;
   sendError: (id: string | number, message: string, code?: number) => void;
@@ -1808,6 +1830,10 @@ const REASONING_ACTIVITY_DETAIL = "Thinking through the answer";
 const WORKING_ACTIVITY_DETAIL = "Preparing response";
 const DEFAULT_RUN_SESSION_TURN_TIMEOUT_MS = 300_000;
 const DEFAULT_COLLABORATION_MODES_LIST_TIMEOUT_MS = 1_500;
+const CODEX_REQUEST_TIMEOUT_MS = 30_000;
+const CODEX_INLINE_COMMAND_TIMEOUT_MS = 10_000;
+const CODEX_INTERRUPT_REQUEST_TIMEOUT_MS = 2_500;
+const CODEX_ARCHIVE_REQUEST_TIMEOUT_MS = 3_000;
 // Idle stream watchdog removed — time-based idle detection produced false
 // positives during long-running tool calls (Agent, Bash, etc.) where no
 // stream events are emitted while the SDK waits for tool results. The user
@@ -2175,8 +2201,10 @@ function normalizeCodexGoalPayload(value: unknown): CodexThreadGoal | null {
   const goalRecord = asRecord(record.goal) ?? record;
   const statusRaw = stringOrNull(goalRecord.status)?.toLowerCase() ?? null;
   const status: CodexThreadGoal["status"] =
-    statusRaw === "active" || statusRaw === "paused" || statusRaw === "complete" || statusRaw === "cancelled"
+    statusRaw === "active" || statusRaw === "paused" || statusRaw === "blocked" || statusRaw === "complete" || statusRaw === "cancelled"
       ? statusRaw
+      : statusRaw === "usagelimited" || statusRaw === "usage_limited" || statusRaw === "usage-limited"
+        ? "usage_limited"
       : statusRaw === "budgetlimited" || statusRaw === "budget_limited" || statusRaw === "budget-limited"
         ? "budget_limited"
       : statusRaw
@@ -2192,6 +2220,66 @@ function normalizeCodexGoalPayload(value: unknown): CodexThreadGoal | null {
     ...(status ? { status } : {}),
   };
   return Object.values(normalized).some((entry) => entry != null) ? normalized : null;
+}
+
+type CodexGoalSettableStatus = "active" | "paused" | "blocked" | "complete";
+
+type ParsedCodexGoalSlashCommand =
+  | { kind: "show" }
+  | { kind: "clear" }
+  | { kind: "status"; status: CodexGoalSettableStatus }
+  | { kind: "objective"; objective: string; explicitSet: boolean }
+  | { kind: "invalid"; message: string };
+
+function isCodexGoalSlashInput(value: string): boolean {
+  return /^\/goal(?:\s|$)/i.test(value.trim());
+}
+
+function normalizeCodexGoalObjectiveText(value: string | null | undefined): string {
+  return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function parseCodexGoalSlashCommand(value: string): ParsedCodexGoalSlashCommand {
+  const goalArgs = value.trim().replace(/^\/goal(?:\s+|$)/i, "").trim();
+  if (!goalArgs || /^show$/i.test(goalArgs) || /^status$/i.test(goalArgs)) {
+    return { kind: "show" };
+  }
+  if (/^(clear|reset|none)$/i.test(goalArgs)) {
+    return { kind: "clear" };
+  }
+
+  const statusMatch = /^status\s+(active|paused|blocked|complete)$/i.exec(goalArgs);
+  if (statusMatch) {
+    return { kind: "status", status: statusMatch[1]!.toLowerCase() as CodexGoalSettableStatus };
+  }
+  if (/^status(?:\s|$)/i.test(goalArgs)) {
+    return { kind: "invalid", message: "Usage: /goal status active|paused|blocked|complete." };
+  }
+
+  const directStatusMatch = /^(pause|resume|block|complete)$/i.exec(goalArgs);
+  if (directStatusMatch) {
+    const rawStatus = directStatusMatch[1]!.toLowerCase();
+    return {
+      kind: "status",
+      status: rawStatus === "pause"
+        ? "paused"
+        : rawStatus === "resume"
+          ? "active"
+          : rawStatus === "block"
+            ? "blocked"
+            : "complete",
+    };
+  }
+
+  const explicitSetMatch = /^set(?:\s+([\s\S]*))?$/i.exec(goalArgs);
+  if (explicitSetMatch) {
+    const objective = normalizeCodexGoalObjectiveText(explicitSetMatch[1] ?? "");
+    return objective
+      ? { kind: "objective", objective, explicitSet: true }
+      : { kind: "invalid", message: "Usage: /goal <objective>." };
+  }
+
+  return { kind: "objective", objective: normalizeCodexGoalObjectiveText(goalArgs), explicitSet: false };
 }
 
 function normalizeCodexWebSearchAction(value: unknown): CodexWebSearchAction | null {
@@ -3105,15 +3193,16 @@ function normalizeClaudeTodoItems(
   return items.length ? items : null;
 }
 
-function buildStreamingUserContent(
+async function buildStreamingUserContent(
   args: {
     baseText: string;
     attachments: ResolvedAgentChatFileRef[];
     runtimeKind: "claude" | "opencode";
     modelDescriptor?: ModelDescriptor;
     logger?: Logger;
+    readAttachmentBytes: (attachment: ResolvedAgentChatFileRef) => Promise<Buffer>;
   },
-): UserContent {
+): Promise<UserContent> {
   if (!args.attachments.length) {
     return args.baseText;
   }
@@ -3131,7 +3220,7 @@ function buildStreamingUserContent(
         });
         continue;
       }
-      const data = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
+      const data = await args.readAttachmentBytes(attachment);
       const mediaType = inferAttachmentMediaType(attachment);
 
       if (attachment.type === "image") {
@@ -3185,14 +3274,24 @@ function buildStreamingUserContent(
   return parts;
 }
 
-export function buildOpenCodeStreamMessages(args: {
+export async function buildOpenCodeStreamMessages(args: {
   messages: Array<{ role: string; content: string }>;
   persistedTurnUserMessageIndex: number;
   resolvedAttachments: ResolvedAgentChatFileRef[];
   modelDescriptor: ModelDescriptor;
   logger?: Logger;
-}): ModelMessage[] {
-  return args.messages.map((message, index): ModelMessage => {
+  getDirtyFileTextForPath?: (absPath: string) => string | undefined | Promise<string | undefined>;
+}): Promise<ModelMessage[]> {
+  const readAttachmentBytes = args.getDirtyFileTextForPath
+    ? async (attachment: ResolvedAgentChatFileRef) => readAgentAccessibleFileBytes({
+      rootPath: attachment._rootPath,
+      resolvedPath: attachment._resolvedPath,
+      getDirtyFileTextForPath: args.getDirtyFileTextForPath,
+    })
+    : async (attachment: ResolvedAgentChatFileRef) =>
+      readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
+
+  const mapped = await Promise.all(args.messages.map(async (message, index): Promise<ModelMessage> => {
     const isPersistedTurnUserMessage = index === args.persistedTurnUserMessageIndex && message.role === "user";
     if (!isPersistedTurnUserMessage) {
       return {
@@ -3203,15 +3302,17 @@ export function buildOpenCodeStreamMessages(args: {
 
     return {
       role: "user",
-      content: buildStreamingUserContent({
+      content: await buildStreamingUserContent({
         baseText: message.content,
         attachments: args.resolvedAttachments,
         runtimeKind: "opencode",
         modelDescriptor: args.modelDescriptor,
         logger: args.logger,
+        readAttachmentBytes,
       }),
     };
-  });
+  }));
+  return mapped;
 }
 
 function buildExecutionModeDirective(
@@ -4717,6 +4818,43 @@ export function createAgentChatService(args: {
   if (!getDirtyFileTextForPath) {
     throw new Error("createAgentChatService: getDirtyFileTextForPath is required");
   }
+
+  const readResolvedAttachmentBytes = async (
+    attachment: ResolvedAgentChatFileRef,
+  ): Promise<Buffer> => readAgentAccessibleFileBytes({
+    rootPath: attachment._rootPath,
+    resolvedPath: attachment._resolvedPath,
+    getDirtyFileTextForPath,
+  });
+  const readDirtyResolvedAttachmentBytes = async (
+    attachment: ResolvedAgentChatFileRef,
+  ): Promise<Buffer | null> => {
+    let absPath: string;
+    try {
+      absPath = resolvePathWithinRoot(path.resolve(attachment._rootPath), attachment._resolvedPath, {
+        allowMissing: false,
+      });
+    } catch {
+      return null;
+    }
+    try {
+      const dirty = await Promise.resolve(getDirtyFileTextForPath(absPath));
+      return typeof dirty === "string" ? Buffer.from(dirty, "utf8") : null;
+    } catch {
+      return null;
+    }
+  };
+  const resolvedAttachmentDiskSize = (attachment: ResolvedAgentChatFileRef): number | null => {
+    try {
+      const absPath = resolvePathWithinRoot(path.resolve(attachment._rootPath), attachment._resolvedPath, {
+        allowMissing: false,
+      });
+      const stat = fs.statSync(absPath);
+      return stat.isFile() ? stat.size : null;
+    } catch {
+      return null;
+    }
+  };
   if (!issueInventoryService) {
     throw new Error("Issue inventory service is required to initialize agent chat.");
   }
@@ -4777,8 +4915,8 @@ export function createAgentChatService(args: {
     });
   };
 
-  const stageAttachmentForCodexInput = (attachment: ResolvedAgentChatFileRef): string => {
-    const content = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
+  const stageAttachmentForCodexInput = async (attachment: ResolvedAgentChatFileRef): Promise<string> => {
+    const content = await readResolvedAttachmentBytes(attachment);
     const stagedDir = path.join(layout.tmpDir, "agent-chat-attachments");
     fs.mkdirSync(stagedDir, { recursive: true });
     const baseName = path.basename(attachment.path) || path.basename(attachment._resolvedPath) || "attachment";
@@ -8421,6 +8559,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
   ): UniversalToolSetOptions => ({
     permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
+    getDirtyFileTextForPath,
     getTodoItems: () => managed.todoItems,
     onTodoUpdate: (items) => {
       emitChatEvent(managed, {
@@ -8713,7 +8852,10 @@ export function createAgentChatService(args: {
         runtime.process,
         runtime.killTimer,
       );
-      runtime.pending.clear();
+      rejectPendingCodexRequests(
+        runtime.pending,
+        `Codex app-server runtime was torn down (${openCodeReason}).`,
+      );
       for (const followup of runtime.pendingPlanFollowups.splice(0)) {
         emitPendingInputResolved(managed, {
           itemId: followup.itemId,
@@ -9237,9 +9379,6 @@ export function createAgentChatService(args: {
     if (!managed.runtime || managed.runtime.kind !== "codex") {
       throw new Error(`Codex runtime is not available for session '${managed.session.id}'.`);
     }
-    if (managed.runtime.activeTurnId) {
-      throw new Error("A turn is already active. Use steer or interrupt.");
-    }
     const runtime = managed.runtime;
     const attachments = args.attachments ?? [];
     const contextAttachments = args.contextAttachments ?? [];
@@ -9257,6 +9396,259 @@ export function createAgentChatService(args: {
       onDispatched = undefined;
       callback();
     };
+    const slashText = args.promptText.trim();
+
+    const emitCodexGoalNotice = (
+      message: string,
+      noticeKind: "info" | "error" = "info",
+    ): void => {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind,
+        ...(noticeKind === "error" ? { severity: "error" as const } : {}),
+        message,
+        ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
+      });
+    };
+    const completeCodexGoalControl = (message?: string, noticeKind: "info" | "error" = "info") => {
+      markDispatched();
+      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+      if (message) {
+        emitCodexGoalNotice(message, noticeKind);
+      }
+      persistChatState(managed);
+    };
+    const requestCodexGoalControl = async <T>(
+      method: string,
+      params: Record<string, unknown>,
+      failurePrefix: string,
+    ): Promise<T | null> => {
+      try {
+        return await runtime.request<T>(method, params, {
+          timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS,
+        });
+      } catch (error) {
+        completeCodexGoalControl(
+          `${failurePrefix}: ${error instanceof Error ? error.message : String(error)}`,
+          "error",
+        );
+        return null;
+      }
+    };
+    const applyCodexGoalUpdateWithFallback = (
+      value: unknown,
+      fallback: CodexThreadGoal | null,
+    ): CodexThreadGoal | null => {
+      const normalized = normalizeCodexGoalPayload(value);
+      if (normalized) {
+        return applyCodexGoalUpdate(managed, runtime, normalized);
+      }
+      managed.session.codexGoal = fallback;
+      emitChatEvent(managed, {
+        type: "codex_goal_updated",
+        goal: fallback,
+        ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
+      });
+      maybeClearCodexGoalBudget(managed, runtime, fallback, runtime.activeTurnId ?? undefined);
+      return fallback;
+    };
+    const setCodexGoalObjective = async (objective: string): Promise<CodexThreadGoal | null> => {
+      const response = await requestCodexGoalControl<{ goal?: unknown }>("thread/goal/set", {
+        threadId: managed.session.threadId,
+        objective,
+        status: "active",
+      }, "Codex goal command failed");
+      if (!response) return null;
+      return applyCodexGoalUpdateWithFallback(response, {
+        objective,
+        status: "active",
+        tokenBudget: null,
+      });
+    };
+    const setCodexGoalStatus = async (status: CodexGoalSettableStatus): Promise<CodexThreadGoal | null> => {
+      const previous = managed.session.codexGoal ?? null;
+      const response = await requestCodexGoalControl<{ goal?: unknown }>("thread/goal/set", {
+        threadId: managed.session.threadId,
+        status,
+      }, "Codex goal command failed");
+      if (!response) return null;
+      return applyCodexGoalUpdateWithFallback(response, previous
+        ? { ...previous, status }
+        : { status });
+    };
+    const clearCodexGoal = async (): Promise<boolean> => {
+      const response = await requestCodexGoalControl("thread/goal/clear", {
+        threadId: managed.session.threadId,
+      }, "Codex goal command failed");
+      if (!response) return false;
+      managed.session.codexGoal = null;
+      emitChatEvent(managed, {
+        type: "codex_goal_cleared",
+        ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
+      });
+      return true;
+    };
+    const startCodexGoalObjectiveTurn = async (objective: string, dispatched?: () => void): Promise<void> => {
+      await sendCodexMessage(managed, {
+        promptText: objective,
+        userText: objective,
+        displayText: objective,
+        attachments,
+        contextAttachments,
+        resolvedAttachments,
+        metadata: args.metadata,
+        laneDirectiveKey: null,
+        providerSlashCommand: false,
+        optimisticCodexTurnStart: false,
+        ...(dispatched ? { onDispatched: dispatched } : {}),
+      });
+    };
+    const handleCodexGoalReplaceResponse = async (
+      currentObjective: string,
+      nextObjective: string,
+      response: { decision: string; answers: Record<string, string[]>; responseText: string | null },
+    ): Promise<void> => {
+      const answer = normalizeCodexGoalObjectiveText(
+        response.answers.goal_action?.[0] ?? response.responseText ?? "",
+      ).toLowerCase();
+      if (response.decision !== "accept" && response.decision !== "accept_for_session") {
+        emitCodexGoalNotice("Keeping the current Codex goal.");
+        persistChatState(managed);
+        return;
+      }
+      if (answer === "clear_goal") {
+        if (await clearCodexGoal()) {
+          emitCodexGoalNotice("Codex goal cleared.");
+          persistChatState(managed);
+        }
+        return;
+      }
+      if (answer !== "update_goal") {
+        emitCodexGoalNotice("Keeping the current Codex goal.");
+        persistChatState(managed);
+        return;
+      }
+      const updatedGoal = await setCodexGoalObjective(nextObjective);
+      if (!updatedGoal) return;
+      emitCodexGoalNotice("Codex goal updated.");
+      persistChatState(managed);
+      if (!runtime.activeTurnId) {
+        const preparedGoalTurn = prepareSendMessage({
+          sessionId: managed.session.id,
+          text: nextObjective,
+          displayText: nextObjective,
+        });
+        if (!preparedGoalTurn) return;
+        void executePreparedSendMessage(preparedGoalTurn).catch((error) => {
+          logger.warn("agent_chat.codex_goal_followup_failed", {
+            sessionId: managed.session.id,
+            currentObjective,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          emitDispatchedSendFailure(preparedGoalTurn, error);
+        });
+      }
+    };
+
+    if (isCodexGoalSlashInput(slashText)) {
+      const parsedGoalCommand = parseCodexGoalSlashCommand(slashText);
+      if (parsedGoalCommand.kind === "invalid") {
+        completeCodexGoalControl(parsedGoalCommand.message);
+        return;
+      }
+      if (parsedGoalCommand.kind === "show") {
+        const response = await requestCodexGoalControl<{ goal?: unknown }>("thread/goal/get", {
+          threadId: managed.session.threadId,
+        }, "Codex goal command failed");
+        if (!response) return;
+        const goal = applyCodexGoalUpdate(managed, runtime, response);
+        completeCodexGoalControl(goal?.objective ? "Codex goal is current." : "No active Codex goal.");
+        return;
+      }
+      if (parsedGoalCommand.kind === "clear") {
+        if (await clearCodexGoal()) {
+          completeCodexGoalControl("Codex goal cleared.");
+        }
+        return;
+      }
+      if (parsedGoalCommand.kind === "status") {
+        const updatedGoal = await setCodexGoalStatus(parsedGoalCommand.status);
+        if (!updatedGoal) return;
+        completeCodexGoalControl(`Codex goal ${parsedGoalCommand.status === "active" ? "resumed" : parsedGoalCommand.status}.`);
+        return;
+      }
+
+      const existingObjective = normalizeCodexGoalObjectiveText(managed.session.codexGoal?.objective);
+      const shouldConfirmReplacement = Boolean(existingObjective)
+        && existingObjective !== parsedGoalCommand.objective
+        && !parsedGoalCommand.explicitSet;
+      if (shouldConfirmReplacement) {
+        const responsePromise = requestChatInput({
+          chatSessionId: managed.session.id,
+          title: "Replace Codex goal?",
+          body: `Current goal: ${existingObjective}\nNew goal: ${parsedGoalCommand.objective}`,
+          source: "codex",
+          kind: "structured_question",
+          allowsFreeform: false,
+          providerMetadata: {
+            kind: "codex_goal_replace",
+            currentObjective: existingObjective,
+            nextObjective: parsedGoalCommand.objective,
+          },
+          eventDescription: "Codex goal replacement needs confirmation.",
+          questions: [{
+            id: "goal_action",
+            header: "Goal",
+            question: "A Codex goal already exists. What should ADE do?",
+            allowsFreeform: false,
+            options: [
+              {
+                label: "Update goal",
+                value: "update_goal",
+                description: "Replace the current goal and continue with the new one.",
+                recommended: true,
+              },
+              {
+                label: "Clear goal",
+                value: "clear_goal",
+                description: "Remove the current goal without starting a new turn.",
+              },
+            ],
+          }],
+        });
+        completeCodexGoalControl();
+        responsePromise
+          .then((response) => handleCodexGoalReplaceResponse(
+            existingObjective,
+            parsedGoalCommand.objective,
+            response,
+          ))
+          .catch((error) => {
+            logger.warn("agent_chat.codex_goal_replace_prompt_failed", {
+              sessionId: managed.session.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            emitCodexGoalNotice(
+              `Codex goal command failed: ${error instanceof Error ? error.message : String(error)}`,
+              "error",
+            );
+          });
+        return;
+      }
+
+      const updatedGoal = await setCodexGoalObjective(parsedGoalCommand.objective);
+      if (!updatedGoal) return;
+      if (parsedGoalCommand.explicitSet || runtime.activeTurnId) {
+        completeCodexGoalControl("Codex goal updated.");
+        return;
+      }
+      await startCodexGoalObjectiveTurn(parsedGoalCommand.objective, markDispatched);
+      return;
+    }
+
+    if (runtime.activeTurnId) {
+      throw new Error("A turn is already active. Use steer or interrupt.");
+    }
     setSessionActive(managed);
     if (!args.optimisticCodexTurnStart) {
       emitPreparedUserMessage(managed, {
@@ -9312,7 +9704,12 @@ export function createAgentChatService(args: {
       failurePrefix: string,
     ): Promise<{ ok: true; result: T } | { ok: false }> => {
       try {
-        return { ok: true, result: await runtime.request<T>(method, params) };
+        return {
+          ok: true,
+          result: await runtime.request<T>(method, params, {
+            timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS,
+          }),
+        };
       } catch (error) {
         completeFailedInlineCodexSlash(failurePrefix, error);
         return { ok: false };
@@ -9391,7 +9788,6 @@ export function createAgentChatService(args: {
       return;
     }
 
-    const slashText = args.promptText.trim();
     let effectivePromptText = args.promptText;
     const planSlashCommand = /^\/plan(?:\s|$)/i.test(slashText);
 
@@ -9499,60 +9895,6 @@ export function createAgentChatService(args: {
       return;
     }
 
-    if (/^\/goal(?:\s|$)/i.test(slashText)) {
-      const goalArgs = slashText.replace(/^\/goal(?:\s+|$)/i, "").trim();
-      if (!goalArgs || /^show$/i.test(goalArgs) || /^status$/i.test(goalArgs)) {
-        const response = await requestInlineCodexSlash<{ goal?: unknown }>("thread/goal/get", {
-          threadId: managed.session.threadId,
-        }, "Codex goal command failed");
-        if (!response.ok) return;
-        const goal = applyCodexGoalUpdate(managed, runtime, response.result);
-        completeInlineCodexSlash(goal?.objective ? "Codex goal is current." : "No active Codex goal.");
-        return;
-      }
-      if (/^(clear|reset|none)$/i.test(goalArgs)) {
-        const response = await requestInlineCodexSlash("thread/goal/clear", {
-          threadId: managed.session.threadId,
-        }, "Codex goal command failed");
-        if (!response.ok) return;
-        managed.session.codexGoal = null;
-        emitChatEvent(managed, { type: "codex_goal_cleared" });
-        completeInlineCodexSlash("Codex goal cleared.");
-        return;
-      }
-      const statusMatch = /^status\s+(active|paused|complete)$/i.exec(goalArgs);
-      const pauseResumeMatch = /^(pause|resume)$/i.exec(goalArgs);
-      if (/^status(?:\s|$)/i.test(goalArgs) && !statusMatch) {
-        completeInlineCodexSlash("Usage: /goal status active|paused|complete.");
-        return;
-      }
-      if (statusMatch || pauseResumeMatch) {
-        const rawStatus = (statusMatch?.[1] ?? pauseResumeMatch?.[1] ?? "active").toLowerCase();
-        const status = rawStatus === "pause" ? "paused" : rawStatus === "resume" ? "active" : rawStatus;
-        const response = await requestInlineCodexSlash<{ goal?: unknown }>("thread/goal/set", {
-          threadId: managed.session.threadId,
-          status,
-        }, "Codex goal command failed");
-        if (!response.ok) return;
-        applyCodexGoalUpdate(managed, runtime, response.result);
-        completeInlineCodexSlash(`Codex goal ${status === "active" ? "resumed" : status}.`);
-        return;
-      }
-      const objective = goalArgs.replace(/^set\s+/i, "").trim();
-      if (!objective) {
-        completeInlineCodexSlash("No Codex goal text was provided.");
-        return;
-      }
-      const response = await requestInlineCodexSlash<{ goal?: unknown }>("thread/goal/set", {
-        threadId: managed.session.threadId,
-        objective,
-      }, "Codex goal command failed");
-      if (!response.ok) return;
-      applyCodexGoalUpdate(managed, runtime, response.result);
-      completeInlineCodexSlash("Codex goal updated.");
-      return;
-    }
-
     const suppressTurnContext = providerSlashCommand && !planSlashCommand;
     const input: Array<Record<string, unknown>> = [];
 
@@ -9601,7 +9943,7 @@ export function createAgentChatService(args: {
         input.push({ type: "image", url: attachment.url });
         continue;
       }
-      const stagedPath = stageAttachmentForCodexInput(attachment);
+      const stagedPath = await stageAttachmentForCodexInput(attachment);
       if (attachment.type === "image") {
         input.push({ type: "localImage", path: stagedPath });
         continue;
@@ -10045,10 +10387,11 @@ export function createAgentChatService(args: {
 
       // Build the message after permission-mode recovery, because rebuilding a
       // fresh Claude SDK session clears runtime.sdkSessionId.
-      const messageToSend = buildClaudeV2Message(basePromptText, resolvedAttachments, {
+      const messageToSend = await buildClaudeV2MessageAsync(basePromptText, resolvedAttachments, {
         baseDir: managed.laneWorktreePath,
         sessionId: runtime.sdkSessionId,
         forceUserMessage: true,
+        getDirtyFileTextForPath,
       }) as unknown as SDKUserMessage;
       messageToSend.uuid = userMessageId;
       messageToSend.timestamp = new Date().toISOString();
@@ -12980,6 +13323,57 @@ export function createAgentChatService(args: {
     }
   };
 
+  const finishCodexTurnInterruptedLocally = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    turnId: string | null | undefined,
+    summary: string,
+  ): void => {
+    const interruptedTurnId = turnId?.trim() || runtime.activeTurnId || runtime.startedTurnId || randomUUID();
+    rememberInterruptedCodexTurn(runtime, interruptedTurnId);
+    rememberTerminalCodexTurn(runtime, interruptedTurnId, managed);
+    runtime.awaitingTurnStart = false;
+    runtime.canAttachResumedTurnStart = false;
+    runtime.activeTurnId = null;
+    runtime.startedTurnId = null;
+    runtime.pendingTurnPlanningApprovalGuarded = null;
+    runtime.ignoredTurnIds.delete(interruptedTurnId);
+    resetAssistantMessageStream(managed);
+    runtime.itemTurnIdByItemId.clear();
+    runtime.commandOutputByItemId.clear();
+    runtime.fileDeltaByItemId.clear();
+    runtime.fileChangesByItemId.clear();
+    runtime.planTextByItemId.clear();
+    runtime.webSearchActionsByItemId.clear();
+    runtime.agentMessageScopeByTurn.clear();
+    runtime.agentMessageTextByTurn.clear();
+    runtime.recentNotificationKeys.clear();
+    for (const followup of runtime.pendingPlanFollowups.splice(0)) {
+      emitPendingInputResolved(managed, {
+        itemId: followup.itemId,
+        decision: "cancel",
+        turnId: followup.turnId,
+      });
+    }
+    runtime.approvals.clear();
+    markSessionIdleWithFreshCache(managed);
+    stopActiveCodexSubagents(managed, runtime, interruptedTurnId, summary);
+    emitChatEvent(managed, {
+      type: "status",
+      turnStatus: "interrupted",
+      turnId: interruptedTurnId,
+    });
+    void emitTurnDiffSummaryIfChanged(managed, interruptedTurnId);
+    emitChatEvent(managed, {
+      type: "done",
+      turnId: interruptedTurnId,
+      status: "interrupted",
+      model: managed.session.model,
+      ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+    });
+    persistChatState(managed);
+  };
+
   const stopActiveClaudeSubagents = async (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
@@ -14469,9 +14863,9 @@ export function createAgentChatService(args: {
       goalBudgetClearRetryAfterByThreadId: new Map<string, number>(),
       dynamicTools: new Map(),
       dynamicToolSpecs: [],
-      request: async <T = unknown>(method: string, params?: unknown): Promise<T> => {
-      const id = runtime.nextRequestId;
-      runtime.nextRequestId += 1;
+      request: async <T = unknown>(method: string, params?: unknown, options?: CodexRequestOptions): Promise<T> => {
+        const id = runtime.nextRequestId;
+        runtime.nextRequestId += 1;
 
         const payload: JsonRpcEnvelope = {
           id,
@@ -14484,8 +14878,47 @@ export function createAgentChatService(args: {
         }
 
         return new Promise<T>((resolve, reject) => {
-          pending.set(String(id), { resolve, reject });
-          proc.stdin.write(`${JSON.stringify(payload)}\n`);
+          const key = String(id);
+          const timeoutMs = options?.timeoutMs === null
+            ? null
+            : Math.max(1, Math.floor(options?.timeoutMs ?? CODEX_REQUEST_TIMEOUT_MS));
+          let timer: NodeJS.Timeout | null = null;
+          const clearPendingTimer = () => {
+            if (!timer) return;
+            clearTimeout(timer);
+            timer = null;
+          };
+          if (timeoutMs != null) {
+            timer = setTimeout(() => {
+              pending.delete(key);
+              logger.warn("agent_chat.codex_request_timeout", {
+                sessionId: managed.session.id,
+                method,
+                timeoutMs,
+              });
+              reject(new Error(`Codex request '${method}' timed out after ${timeoutMs}ms.`));
+            }, timeoutMs);
+            timer.unref?.();
+          }
+          pending.set(key, {
+            method,
+            timer,
+            resolve: (value) => {
+              clearPendingTimer();
+              resolve(value as T);
+            },
+            reject: (error) => {
+              clearPendingTimer();
+              reject(error);
+            },
+          });
+          try {
+            proc.stdin.write(`${JSON.stringify(payload)}\n`);
+          } catch (error) {
+            pending.delete(key);
+            clearPendingTimer();
+            reject(error instanceof Error ? error : new Error(String(error)));
+          }
         });
       },
       notify: (method: string, params?: unknown) => {
@@ -14563,10 +14996,7 @@ export function createAgentChatService(args: {
         error: error instanceof Error ? error.message : String(error),
       });
 
-      for (const request of pending.values()) {
-        request.reject(new Error(message));
-      }
-      pending.clear();
+      rejectPendingCodexRequests(pending, message);
       for (const followup of runtime.pendingPlanFollowups.splice(0)) {
         emitPendingInputResolved(managed, {
           itemId: followup.itemId,
@@ -14594,10 +15024,7 @@ export function createAgentChatService(args: {
         runtime.killTimer = null;
       }
 
-      for (const request of pending.values()) {
-        request.reject(new Error(message));
-      }
-      pending.clear();
+      rejectPendingCodexRequests(pending, message);
 
       for (const followup of runtime.pendingPlanFollowups.splice(0)) {
         emitPendingInputResolved(managed, {
@@ -16622,9 +17049,15 @@ export function createAgentChatService(args: {
           ),
           contextAttachmentPrompt || null,
         ]);
-    const autoTitleSeed = providerSlashCommand
+    const codexGoalTitleSeed = managed.session.provider === "codex" && isCodexGoalSlashInput(trimmed)
+      ? (() => {
+          const parsed = parseCodexGoalSlashCommand(trimmed);
+          return parsed.kind === "objective" ? parsed.objective : null;
+        })()
+      : null;
+    const autoTitleSeed = codexGoalTitleSeed ?? (providerSlashCommand
       ? expandedSlashCommandPrompt ?? null
-      : visibleText;
+      : visibleText);
     if (!managed.autoTitleSeed && autoTitleSeed) {
       managed.autoTitleSeed = autoTitleSeed;
       void maybeAutoTitleSession(managed, {
@@ -16682,7 +17115,21 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "codex" && !isBusyError) {
       managed.runtime.activeTurnId = null;
       managed.runtime.startedTurnId = null;
+      managed.runtime.awaitingTurnStart = false;
+      managed.runtime.canAttachResumedTurnStart = false;
+      managed.runtime.pendingTurnPlanningApprovalGuarded = null;
       managed.runtime.itemTurnIdByItemId.clear();
+      managed.runtime.commandOutputByItemId.clear();
+      managed.runtime.fileDeltaByItemId.clear();
+      managed.runtime.fileChangesByItemId.clear();
+      managed.runtime.planTextByItemId.clear();
+      managed.runtime.webSearchActionsByItemId.clear();
+      managed.runtime.agentMessageScopeByTurn.clear();
+      managed.runtime.agentMessageTextByTurn.clear();
+      managed.runtime.recentNotificationKeys.clear();
+      if (isCodexRequestTimeoutError(error)) {
+        teardownRuntime(managed, "handle_close");
+      }
     }
     if (managed.runtime?.kind === "opencode" && !isBusyError) {
       setOpenCodeRuntimeBusy(managed.runtime, false);
@@ -17404,34 +17851,44 @@ export function createAgentChatService(args: {
   /** Maximum bytes to inline for a non-image chat attachment. */
   const MAX_INLINE_BYTES = 512 * 1024; // 512 KB
 
-  const buildAgentPromptBlocks = (
+  const buildAgentPromptBlocks = async (
     promptText: string,
     resolvedAttachments: ResolvedAgentChatFileRef[],
-  ): Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> => {
+  ): Promise<Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>> => {
     const blocks: Array<
       { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
     > = [{ type: "text", text: promptText }];
     for (const attachment of resolvedAttachments) {
       try {
-        // Check file size before reading the full contents into memory.
-        let fileSize: number;
-        try {
-          fileSize = fs.statSync(attachment._resolvedPath).size;
-        } catch {
-          // stat failed -- skip unreadable attachment
-          continue;
+        let buf: Buffer;
+        if (attachment.type === "image") {
+          buf = await readResolvedAttachmentBytes(attachment);
+        } else {
+          const dirtyBuf = await readDirtyResolvedAttachmentBytes(attachment);
+          if (dirtyBuf) {
+            buf = dirtyBuf;
+          } else {
+            const fileSize = resolvedAttachmentDiskSize(attachment);
+            if (fileSize == null) continue;
+            if (fileSize > MAX_INLINE_BYTES) {
+              blocks.push({
+                type: "text",
+                text: `[File: ${attachment.path} omitted: size ${fileSize} bytes]`,
+              });
+              continue;
+            }
+            buf = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
+          }
         }
 
         if (attachment.type === "image") {
-          const buf = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
           blocks.push({
             type: "image",
             data: buf.toString("base64"),
             mimeType: guessImageMimeForPath(attachment._resolvedPath),
           });
-        } else if (fileSize <= MAX_INLINE_BYTES) {
+        } else if (buf.length <= MAX_INLINE_BYTES) {
           // Non-image file attachment -- include content as text if not binary
-          const buf = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
           if (hasNullByte(buf)) {
             blocks.push({
               type: "text",
@@ -17448,7 +17905,7 @@ export function createAgentChatService(args: {
           // File is too large to inline -- push a placeholder with a truncated preview.
           blocks.push({
             type: "text",
-            text: `[File: ${attachment.path} omitted: size ${fileSize} bytes]`,
+            text: `[File: ${attachment.path} omitted: size ${buf.length} bytes]`,
           });
         }
       } catch {
@@ -17958,7 +18415,7 @@ export function createAgentChatService(args: {
         }
       }
 
-      const promptBlocks = buildAgentPromptBlocks(composed, args.resolvedAttachments);
+      const promptBlocks = await buildAgentPromptBlocks(composed, args.resolvedAttachments);
       const promptText = promptBlocks
         .filter((block): block is { type: "text"; text: string } => block.type === "text")
         .map((block) => block.text)
@@ -18300,7 +18757,7 @@ export function createAgentChatService(args: {
         cloudComposed = `${injected}\n\n${cloudComposed}`;
       }
     }
-    const promptBlocks = buildAgentPromptBlocks(cloudComposed, args.resolvedAttachments);
+    const promptBlocks = await buildAgentPromptBlocks(cloudComposed, args.resolvedAttachments);
     const promptText = promptBlocks
       .filter((block): block is { type: "text"; text: string } => block.type === "text")
       .map((block) => block.text)
@@ -19115,7 +19572,7 @@ export function createAgentChatService(args: {
         "## User Request",
         composed,
       ].join("\n");
-      const promptBlocks = buildAgentPromptBlocks(sdkInput, args.resolvedAttachments);
+      const promptBlocks = await buildAgentPromptBlocks(sdkInput, args.resolvedAttachments);
       const sdkPromptText = promptBlocks
         .filter((block): block is { type: "text"; text: string } => block.type === "text")
         .map((block) => block.text)
@@ -19585,7 +20042,10 @@ export function createAgentChatService(args: {
       // acknowledged the prompt.
     }
 
-    if (prepared.managed.session.provider === "codex") {
+    const isCodexGoalControlMessage =
+      prepared.managed.session.provider === "codex"
+      && isCodexGoalSlashInput(prepared.submittedText);
+    if (prepared.managed.session.provider === "codex" && !isCodexGoalControlMessage) {
       prepared.optimisticCodexTurnStart = true;
       emitPreparedUserMessage(prepared.managed, {
         text: prepared.submittedText,
@@ -19834,6 +20294,10 @@ export function createAgentChatService(args: {
       if (!preparedSteer) {
         return { steerId, queued: false };
       }
+      if (isCodexGoalSlashInput(trimmed)) {
+        await executePreparedSendMessage(preparedSteer);
+        return { steerId, queued: false };
+      }
       if (!managed.session.threadId || !runtime.activeTurnId) {
         await executePreparedSendMessage(preparedSteer);
         return { steerId, queued: false };
@@ -19859,7 +20323,7 @@ export function createAgentChatService(args: {
           input.push({ type: "image", url: attachment.url });
           continue;
         }
-        const stagedPath = stageAttachmentForCodexInput(attachment);
+        const stagedPath = await stageAttachmentForCodexInput(attachment);
         if (attachment.type === "image") {
           input.push({ type: "localImage", path: stagedPath });
           continue;
@@ -20058,10 +20522,11 @@ export function createAgentChatService(args: {
       const dispatchUuid = randomUUID();
       const contextPrompt = buildChatContextAttachmentPrompt(steer.contextAttachments);
       const inlineSteerText = contextPrompt ? `${contextPrompt}\n\n${steer.text}` : steer.text;
-      const sdkMsg = buildClaudeV2Message(inlineSteerText, steer.resolvedAttachments, {
+      const sdkMsg = await buildClaudeV2MessageAsync(inlineSteerText, steer.resolvedAttachments, {
         baseDir: managed.laneWorktreePath,
         sessionId: runtime.sdkSessionId ?? null,
         forceUserMessage: true,
+        getDirtyFileTextForPath,
       }) as unknown as SDKUserMessage;
       sdkMsg.shouldQuery = false;
       sdkMsg.uuid = dispatchUuid;
@@ -20276,14 +20741,26 @@ export function createAgentChatService(args: {
         await runtime.request("turn/interrupt", {
           threadId: managed.session.threadId,
           turnId,
-        });
+        }, { timeoutMs: CODEX_INTERRUPT_REQUEST_TIMEOUT_MS });
       };
       try {
         await interruptActiveTurn(interruptedTurnId);
       } catch (error) {
         const mismatch = parseCodexActiveTurnMismatch(error);
         if (!mismatch || mismatch.expectedTurnId !== interruptedTurnId) {
-          throw error;
+          logger.warn("agent_chat.codex_interrupt_failed", {
+            sessionId: managed.session.id,
+            turnId: interruptedTurnId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          finishCodexTurnInterruptedLocally(
+            managed,
+            runtime,
+            interruptedTurnId,
+            "Interrupted by user before Codex app-server acknowledged the interrupt",
+          );
+          teardownRuntime(managed, "handle_close");
+          return;
         }
         adoptCodexActiveTurnId(
           managed,
@@ -20294,7 +20771,23 @@ export function createAgentChatService(args: {
         );
         persistChatState(managed);
         interruptedTurnId = mismatch.foundTurnId;
-        await interruptActiveTurn(interruptedTurnId);
+        try {
+          await interruptActiveTurn(interruptedTurnId);
+        } catch (retryError) {
+          logger.warn("agent_chat.codex_interrupt_retry_failed", {
+            sessionId: managed.session.id,
+            turnId: interruptedTurnId,
+            error: retryError instanceof Error ? retryError.message : String(retryError),
+          });
+          finishCodexTurnInterruptedLocally(
+            managed,
+            runtime,
+            interruptedTurnId,
+            "Interrupted by user before Codex app-server acknowledged the interrupt",
+          );
+          teardownRuntime(managed, "handle_close");
+          return;
+        }
       }
       stopActiveCodexSubagents(managed, runtime, interruptedTurnId, "Interrupted by user");
       return;
@@ -21798,7 +22291,7 @@ export function createAgentChatService(args: {
             await runtime.request("turn/interrupt", {
               threadId: managed.session.threadId,
               turnId,
-            });
+            }, { timeoutMs: CODEX_INTERRUPT_REQUEST_TIMEOUT_MS });
           };
           try {
             await interruptTurnForDispose(interruptedTurnId);
@@ -21816,7 +22309,15 @@ export function createAgentChatService(args: {
             );
             persistChatState(managed);
             interruptedTurnId = mismatch.foundTurnId;
-            await interruptTurnForDispose(interruptedTurnId);
+            try {
+              await interruptTurnForDispose(interruptedTurnId);
+            } catch (retryError) {
+              logger.warn("agent_chat.codex_dispose_interrupt_retry_failed", {
+                sessionId: managed.session.id,
+                turnId: interruptedTurnId,
+                error: retryError instanceof Error ? retryError.message : String(retryError),
+              });
+            }
           }
           stopActiveCodexSubagents(
             managed,
@@ -21834,7 +22335,7 @@ export function createAgentChatService(args: {
         try {
           await managed.runtime.request("thread/archive", {
             threadId: managed.session.threadId,
-          });
+          }, { timeoutMs: CODEX_ARCHIVE_REQUEST_TIMEOUT_MS });
         } catch {
           // thread/archive not supported or already archived — ignore
         }

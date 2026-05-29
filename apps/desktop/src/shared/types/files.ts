@@ -49,6 +49,8 @@ export type FilesListTreeArgs = {
   parentPath?: string;
   depth?: number;
   includeIgnored?: boolean;
+  /** Prefer cached/background Git decorations unless the caller explicitly needs fresh status. */
+  forceFreshStatus?: boolean;
 };
 
 export type FilePreviewKind = "text" | "image" | "binary";

@@ -35,6 +35,20 @@ describe("createReadFileRangeTool", () => {
   // Happy paths
   // --------------------------------------------------------------------------
 
+  it("prefers unsaved editor buffer text over on-disk content", async () => {
+    const cwd = makeTmpDir("read-dirty-");
+    writeFixtureFile(cwd, "dirty.ts", "saved on disk");
+
+    const tool = createReadFileRangeTool(cwd, {
+      getDirtyFileTextForPath: () => "unsaved in editor",
+    });
+    const result = await tool.execute({ file_path: "dirty.ts" });
+
+    expect(result.error).toBeUndefined();
+    expect(result.content).toContain("unsaved in editor");
+    expect(result.content).not.toContain("saved on disk");
+  });
+
   it("reads an entire file when no offset or limit is given", async () => {
     const cwd = makeTmpDir("read-full-");
     writeFixtureFile(cwd, "sample.ts", FIVE_LINES);

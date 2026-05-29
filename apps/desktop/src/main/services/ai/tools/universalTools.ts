@@ -12,7 +12,13 @@ import { webFetchTool } from "./webFetch";
 import { webSearchTool } from "./webSearch";
 import type { AgentChatApprovalDecision, AgentChatEvent, PendingInputKind, WorkerSandboxConfig } from "../../../../shared/types";
 import { DEFAULT_WORKER_SANDBOX_CONFIG } from "./workerSandboxDefaults";
-import { getErrorMessage, isEnoentError, isWithinDir, resolvePathWithinRoot } from "../../shared/utils";
+import {
+  getErrorMessage,
+  isEnoentError,
+  isWithinDir,
+  resolvePathWithinRoot,
+  type DirtyFileTextLookup,
+} from "../../shared/utils";
 import { terminateProcessTree } from "../../shared/processExecution";
 
 const execFileAsync = promisify(execFile);
@@ -75,6 +81,8 @@ export interface UniversalToolSetOptions {
    * controller and abort it when an external policy event cancels the session.
    */
   registerActiveBash?: (controller: AbortController) => (() => void) | void;
+  /** Prefer unsaved Files-tab editor buffers over on-disk content for readFile. */
+  getDirtyFileTextForPath?: DirtyFileTextLookup;
 }
 
 // ── Permission helpers ──────────────────────────────────────────────
@@ -2708,7 +2716,9 @@ export function createUniversalToolSet(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const tools: Record<string, Tool<any, any>> = {
     // Read-only tools (auto-allowed in all modes)
-    readFile: createReadFileRangeTool(cwd),
+    readFile: createReadFileRangeTool(cwd, {
+      getDirtyFileTextForPath: opts.getDirtyFileTextForPath,
+    }),
     grep: createGrepSearchTool(cwd),
     glob: createGlobSearchTool(cwd),
     listDir: createListDirTool(cwd),

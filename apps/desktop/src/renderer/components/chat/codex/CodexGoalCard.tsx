@@ -47,6 +47,20 @@ function statusTone(
         dot: "bg-fg/50",
         label: "paused",
       };
+    case "blocked":
+      return {
+        pill: "bg-rose-500/12 text-rose-100 ring-1 ring-inset ring-rose-400/30",
+        rail: "bg-rose-400/60",
+        dot: "bg-rose-300/90",
+        label: "blocked",
+      };
+    case "usage_limited":
+      return {
+        pill: "bg-sky-500/12 text-sky-100 ring-1 ring-inset ring-sky-400/30",
+        rail: "bg-sky-400/60",
+        dot: "bg-sky-300/90",
+        label: "usage hit",
+      };
     case "cancelled":
       return {
         pill: "bg-fg/8 text-fg/45 ring-1 ring-inset ring-fg/15",
