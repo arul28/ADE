@@ -532,10 +532,17 @@ export function CommandPalette({
       },
       {
         id: "go-settings-ai",
-        title: "Go to AI Settings",
-        hint: "Providers, models, AI defaults",
+        title: "Go to AI Connections",
+        hint: "Providers, models, sign-in",
         group: "Settings",
         run: () => navigate("/settings?tab=ai"),
+      },
+      {
+        id: "go-settings-background-jobs",
+        title: "Go to Background Jobs",
+        hint: "AI-powered automations: summaries, PR descriptions, commit messages",
+        group: "Settings",
+        run: () => navigate("/settings?tab=background-jobs"),
       },
       {
         id: "go-settings-integrations",
@@ -543,13 +550,6 @@ export function CommandPalette({
         hint: "GitHub, Linear, computer use",
         group: "Settings",
         run: () => navigate("/settings?tab=integrations"),
-      },
-      {
-        id: "go-settings-workspace",
-        title: "Go to Workspace Settings",
-        hint: "Project health and docs generation",
-        group: "Settings",
-        run: () => navigate("/settings?tab=workspace"),
       },
       {
         id: "go-settings-usage",

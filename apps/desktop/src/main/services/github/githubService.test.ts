@@ -49,7 +49,7 @@ vi.mock("../git/git", () => ({
 // Replace global fetch
 vi.stubGlobal("fetch", mockFetch);
 
-import { createGithubService } from "./githubService";
+import { createGithubService, fetchAdeLatestRelease } from "./githubService";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1093,5 +1093,70 @@ describe("githubService.publishCurrentProject", () => {
     }
     expect(caught).toBeInstanceOf(Error);
     expect(caught.code).toBe("repo_name_taken");
+  });
+});
+
+describe("fetchAdeLatestRelease", () => {
+  function releaseResponse(status: number, body: unknown): Response {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      headers: new Headers(),
+      json: async () => body,
+    } as unknown as Response;
+  }
+
+  it("parses the latest release and strips the leading v from the version", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      releaseResponse(200, {
+        tag_name: "v1.2.0",
+        html_url: "https://github.com/arul28/ADE/releases/tag/v1.2.0",
+        published_at: "2026-05-20T00:00:00Z",
+      }),
+    );
+    const release = await fetchAdeLatestRelease({ fetchImpl });
+    expect(release).toEqual({
+      version: "1.2.0",
+      tagName: "v1.2.0",
+      htmlUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.0",
+      publishedAt: "2026-05-20T00:00:00Z",
+    });
+    // version is normalized so compareUpdateVersions(release.version, installed) works
+    expect(release?.version.startsWith("v")).toBe(false);
+  });
+
+  it("sends a bearer header only when a token is provided", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(releaseResponse(200, { tag_name: "1.0.0" }));
+    await fetchAdeLatestRelease({ fetchImpl, token: "ghp_secret" });
+    const headers = fetchImpl.mock.calls[0][1].headers as Record<string, string>;
+    expect(headers.authorization).toBe("Bearer ghp_secret");
+
+    fetchImpl.mockClear();
+    await fetchAdeLatestRelease({ fetchImpl });
+    const noAuthHeaders = fetchImpl.mock.calls[0][1].headers as Record<string, string>;
+    expect(noAuthHeaders.authorization).toBeUndefined();
+  });
+
+  it("returns null on non-ok responses (e.g. private repo without auth)", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(releaseResponse(404, { message: "Not Found" }));
+    expect(await fetchAdeLatestRelease({ fetchImpl })).toBeNull();
+  });
+
+  it("returns null when the payload has no tag", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(releaseResponse(200, { html_url: "x" }));
+    expect(await fetchAdeLatestRelease({ fetchImpl })).toBeNull();
+  });
+
+  it("returns null when the fetch throws", async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new Error("network down"));
+    expect(await fetchAdeLatestRelease({ fetchImpl })).toBeNull();
+  });
+
+  it("nulls out empty html_url / published_at", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      releaseResponse(200, { tag_name: "2.0.0", html_url: "", published_at: "" }),
+    );
+    const release = await fetchAdeLatestRelease({ fetchImpl });
+    expect(release).toEqual({ version: "2.0.0", tagName: "2.0.0", htmlUrl: null, publishedAt: null });
   });
 });

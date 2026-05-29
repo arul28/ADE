@@ -1,296 +1,213 @@
 import React, { useState } from "react";
-import { CheckCircle, Circle } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "../ui/Button";
-import { AiFeaturesSection } from "../settings/AiFeaturesSection";
-import { GitHubSection } from "../settings/GitHubSection";
-import { LinearSection } from "../settings/LinearSection";
-import { ProvidersSection } from "../settings/ProvidersSection";
-import { DevToolsSection } from "./DevToolsSection";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { publishOnboardingStatusUpdated } from "../../lib/onboardingStatusEvents";
-
-type SetupStep = "tools" | "ai" | "helpers" | "github" | "linear";
-
-const STEP_ORDER: SetupStep[] = ["tools", "ai", "helpers", "github", "linear"];
-
-const STEP_META: Record<SetupStep, { title: string; subtitle: string }> = {
-  tools: {
-    title: "Dev tools",
-    subtitle: "Verify git and the ADE command are ready",
-  },
-  ai: {
-    title: "AI connections",
-    subtitle: "Connect Claude, Codex, Cursor, and OpenCode",
-  },
-  helpers: {
-    title: "Background helpers",
-    subtitle: "Optional helpers that run in the background",
-  },
-  github: {
-    title: "GitHub",
-    subtitle: "Use gh auth for PR and review workflows",
-  },
-  linear: {
-    title: "Linear",
-    subtitle: "Link issues to lanes, chats, PRs, and CTO workflows",
-  },
-};
-
-/* Step header — short title on top, subtitle below */
-const STEP_HEADERS: Record<SetupStep, { heading: string; sub: string }> = {
-  tools: { heading: "Developer tools", sub: "ADE needs git for version control. The bundled ade command is added to agent sessions; installing it here also makes it available in your Terminal." },
-  ai: {
-    heading: "Runtime providers",
-    sub: "Set up ADE runtime providers. Claude and Codex use their native CLIs. Cursor uses a Cursor API key for SDK chat and Cursor Cloud agents. OpenCode powers API-backed and local model chats.",
-  },
-  helpers: { heading: "Background helpers", sub: "These lightweight helpers run in the background while you work. They are optional and can be changed anytime in Settings." },
-  github: { heading: "GitHub integration", sub: "ADE uses GitHub CLI auth automatically when gh is signed in. A personal access token remains available as an optional fallback." },
-  linear: { heading: "Linear Integration", sub: "Connect your Linear workspace so ADE can carry issue context through lanes, chats, GitHub PRs, and CTO workflows." },
-};
+import { DevToolsRow } from "./DevToolsRow";
+import { AiRuntimesBand } from "./AiRuntimesBand";
+import { GitHubCard } from "./GitHubCard";
+import { LinearCard } from "./LinearCard";
+import { WorktreesCard } from "./WorktreesCard";
 
 export function ProjectSetupPage() {
   const navigate = useNavigate();
   const project = useAppStore((s) => s.project);
-  const [step, setStep] = useState<SetupStep>("tools");
-  const [busy, setBusy] = useState(false);
+  const [busyAction, setBusyAction] = useState<"finish" | "skip" | null>(null);
   const [gitInstalled, setGitInstalled] = useState<boolean | null>(null);
+  const [setupError, setSetupError] = useState<string | null>(null);
 
-  const stepIndex = STEP_ORDER.indexOf(step);
-  const isLastStep = stepIndex === STEP_ORDER.length - 1;
-
-  const handleNext = async () => {
-    if (isLastStep) {
-      setBusy(true);
-      try {
-        const next = await window.ade.onboarding.complete();
-        publishOnboardingStatusUpdated(next);
-        navigate("/work", { replace: true });
-      } finally {
-        setBusy(false);
-      }
-      return;
+  const finish = async () => {
+    setBusyAction("finish");
+    setSetupError(null);
+    try {
+      const next = await window.ade.onboarding.complete();
+      publishOnboardingStatusUpdated(next);
+      navigate("/work", { replace: true });
+    } catch (err) {
+      setSetupError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyAction(null);
     }
-    const nextStep = STEP_ORDER[stepIndex + 1];
-    if (nextStep) setStep(nextStep);
   };
 
-  const handleBack = () => {
-    const prev = STEP_ORDER[stepIndex - 1];
-    if (prev) setStep(prev);
-  };
-
-  const handleSkip = async () => {
-    setBusy(true);
+  const skip = async () => {
+    setBusyAction("skip");
+    setSetupError(null);
     try {
       const next = await window.ade.onboarding.setDismissed(true);
       publishOnboardingStatusUpdated(next);
       navigate("/work", { replace: true });
+    } catch (err) {
+      setSetupError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   };
 
-  const stepContent = (() => {
-    if (step === "tools") return <DevToolsSection onStatusChange={setGitInstalled} />;
-    if (step === "ai") return <ProvidersSection forceRefreshOnMount />;
-    if (step === "helpers") return <AiFeaturesSection />;
-    if (step === "github") return <GitHubSection />;
-    if (step === "linear") return <LinearSection />;
-    return null;
-  })();
-
-  const header = STEP_HEADERS[step];
+  const busy = busyAction != null;
 
   return (
-    <div
-      style={{
-        height: "100%",
-        overflow: "auto",
-        background: `linear-gradient(180deg, ${COLORS.pageBg} 0%, #14131a 100%)`,
-        padding: 28,
-      }}
-    >
-      <div
-        style={{
-          maxWidth: 1320,
-          margin: "0 auto",
-          minHeight: "100%",
-          display: "grid",
-          gridTemplateColumns: "260px minmax(0, 1fr)",
-          gap: 20,
-        }}
-      >
-        {/* ── Sidebar ── */}
-        <aside
-          style={{
-            alignSelf: "start",
-            position: "sticky",
-            top: 0,
-            background: "rgba(18, 17, 24, 0.88)",
-            border: `1px solid ${COLORS.border}`,
-            borderRadius: 16,
-            backdropFilter: "blur(20px)",
-            overflow: "hidden",
-          }}
-        >
-          {/* Gradient accent bar */}
-          <div
-            style={{
-              height: 3,
-              background: `linear-gradient(90deg, ${COLORS.accent}, color-mix(in srgb, var(--color-accent) 60%, transparent), transparent)`,
-            }}
-          />
+    <div style={pageStyle}>
+      <div style={glowViolet} aria-hidden />
+      <div style={glowBlue} aria-hidden />
 
-          <div style={{ padding: 20 }}>
-            <div style={{ fontSize: 11, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.accent, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-              Setup
-            </div>
-            <div style={{ marginTop: 10, fontSize: 20, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-              {project?.displayName ?? "Current project"}
-            </div>
-            <div style={{ marginTop: 8, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.6 }}>
-              Get ADE configured for your project. You can always change these in Settings later.
-            </div>
-
-            {/* Progress indicator */}
-            <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 10 }}>
-              <div style={{ flex: 1, height: 4, borderRadius: 2, background: COLORS.border, overflow: "hidden" }}>
-                <div
-                  style={{
-                    height: "100%",
-                    width: `${((stepIndex + 1) / STEP_ORDER.length) * 100}%`,
-                    borderRadius: 2,
-                    background: "linear-gradient(90deg, var(--color-accent), color-mix(in srgb, var(--color-accent) 80%, transparent))",
-                    transition: "width 0.3s ease",
-                  }}
-                />
-              </div>
-              <div style={{ fontSize: 11, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textMuted, whiteSpace: "nowrap" }}>
-                {stepIndex + 1} of {STEP_ORDER.length}
-              </div>
-            </div>
-
-            {/* Step list with vertical connecting line */}
-            <div style={{ marginTop: 20, position: "relative" }}>
-              {/* Vertical connecting line */}
-              <div
-                style={{
-                  position: "absolute",
-                  left: 19,
-                  top: 24,
-                  bottom: 24,
-                  width: 1,
-                  background: COLORS.border,
-                  zIndex: 0,
-                }}
-              />
-
-              <div style={{ display: "grid", gap: 4, position: "relative", zIndex: 1 }}>
-                {STEP_ORDER.map((stepId, index) => {
-                  const active = stepId === step;
-                  const complete = index < stepIndex;
-                  return (
-                    <button
-                      key={stepId}
-                      type="button"
-                      onClick={() => setStep(stepId)}
-                      style={{
-                        display: "flex",
-                        width: "100%",
-                        alignItems: "flex-start",
-                        gap: 10,
-                        padding: "8px 10px",
-                        borderRadius: 10,
-                        border: `1px solid ${active ? "color-mix(in srgb, var(--color-accent) 30%, transparent)" : "transparent"}`,
-                        background: active ? "color-mix(in srgb, var(--color-accent) 10%, transparent)" : "transparent",
-                        cursor: "pointer",
-                        textAlign: "left",
-                        transition: "all 0.15s ease",
-                        ...(active ? { boxShadow: `0 0 12px color-mix(in srgb, var(--color-accent) 15%, transparent)` } : {}),
-                      }}
-                    >
-                      <div style={{ flexShrink: 0, marginTop: 2, position: "relative" }}>
-                        {complete ? (
-                          <CheckCircle size={18} color={COLORS.success} weight="fill" />
-                        ) : (
-                          <Circle
-                            size={18}
-                            color={active ? COLORS.accent : COLORS.textDim}
-                            weight={active ? "fill" : "regular"}
-                            style={active ? { filter: `drop-shadow(0 0 4px color-mix(in srgb, var(--color-accent) 60%, transparent))` } : {}}
-                          />
-                        )}
-                      </div>
-                      <span>
-                        <div style={{ fontSize: 12, fontFamily: SANS_FONT, fontWeight: 600, color: active ? COLORS.textPrimary : COLORS.textMuted }}>
-                          {STEP_META[stepId].title}
-                        </div>
-                        <div style={{ marginTop: 2, fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, lineHeight: 1.5 }}>
-                          {STEP_META[stepId].subtitle}
-                        </div>
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
+      <div style={containerStyle}>
+        <header style={headerStyle}>
+          <div>
+            <div style={eyebrowStyle}>Set up</div>
+            <h1 style={titleStyle}>{project?.displayName ?? "Your project"}</h1>
+            <p style={subtitleStyle}>
+              Connect your tools and accounts. Everything's optional except git — change anything later in Settings.
+            </p>
           </div>
-        </aside>
-
-        {/* ── Main content ── */}
-        <section
-          style={{
-            minWidth: 0,
-            padding: 24,
-            background: "color-mix(in srgb, var(--color-surface) 92%, var(--color-bg) 8%)",
-            border: `1px solid ${COLORS.border}`,
-            borderRadius: 16,
-            backdropFilter: "blur(22px)",
-          }}
-        >
-          {/* Header */}
-          <div style={{ marginBottom: 24 }}>
-            <div
-              style={{
-                height: 2,
-                borderRadius: 1,
-                background: `linear-gradient(90deg, color-mix(in srgb, var(--color-accent) 80%, transparent), color-mix(in srgb, var(--color-accent) 20%, transparent), transparent)`,
-                marginBottom: 16,
-              }}
-            />
-            <div style={{ fontSize: 22, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-              {header.heading}
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+            <div style={{ display: "flex", gap: 8 }}>
+              <Button size="md" variant="ghost" disabled={busy} onClick={() => void skip()}>
+                {busyAction === "skip" ? "Skipping..." : "Skip"}
+              </Button>
+              <Button
+                size="md"
+                variant="primary"
+                disabled={busy || gitInstalled !== true}
+                onClick={() => void finish()}
+              >
+                {busyAction === "finish" ? "Saving..." : "Finish setup"}
+              </Button>
             </div>
-            <div style={{ marginTop: 4, fontSize: 13, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.6 }}>
-              {header.sub}
+            {gitInstalled === false ? (
+              <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.warning }}>
+                Install git to finish setup
+              </span>
+            ) : null}
+            {setupError ? (
+              <span style={{ maxWidth: 320, textAlign: "right", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.danger }}>
+                {setupError}
+              </span>
+            ) : null}
+          </div>
+        </header>
+
+        <div style={bodyStyle}>
+          <div style={{ flex: "1 1 560px", minWidth: 0, display: "flex" }}>
+            <AiRuntimesBand />
+          </div>
+          <div style={railStyle}>
+            <DevToolsRow onGitStatusChange={setGitInstalled} />
+            <div style={connectionsRowStyle}>
+              <div style={connectionColStyle}><GitHubCard /></div>
+              <div style={connectionColStyle}><LinearCard /></div>
             </div>
+            <WorktreesCard />
           </div>
-
-          {/* Step content */}
-          <div style={{ minWidth: 0 }}>{stepContent}</div>
-
-          {/* Footer */}
-          <div style={{ marginTop: 24, display: "flex", alignItems: "center", gap: 12 }}>
-            <Button size="md" variant="ghost" disabled={busy} onClick={() => void handleSkip()}>
-              Skip setup
-            </Button>
-            <Button size="md" variant="outline" disabled={busy || stepIndex === 0} onClick={handleBack}>
-              Back
-            </Button>
-            <div style={{ flex: 1 }} />
-            <Button
-              size="md"
-              variant="primary"
-              disabled={busy || (step === "tools" && gitInstalled !== true) || (isLastStep && gitInstalled !== true)}
-              onClick={() => void handleNext()}
-            >
-              {busy ? "Saving..." : isLastStep ? "Finish setup" : "Continue"}
-            </Button>
-          </div>
-        </section>
+        </div>
       </div>
     </div>
   );
 }
+
+const pageStyle: React.CSSProperties = {
+  position: "relative",
+  height: "100%",
+  overflow: "auto",
+  display: "flex",
+  background: `radial-gradient(1200px 600px at 0% -10%, color-mix(in srgb, ${COLORS.accent} 10%, transparent), transparent 60%), ${COLORS.pageBg}`,
+};
+
+const glowViolet: React.CSSProperties = {
+  position: "absolute",
+  top: -120,
+  left: "8%",
+  width: 480,
+  height: 480,
+  borderRadius: "50%",
+  background: "radial-gradient(circle, rgba(167,139,250,0.16), transparent 70%)",
+  filter: "blur(20px)",
+  pointerEvents: "none",
+};
+
+const glowBlue: React.CSSProperties = {
+  position: "absolute",
+  bottom: -160,
+  right: "6%",
+  width: 520,
+  height: 520,
+  borderRadius: "50%",
+  background: "radial-gradient(circle, rgba(96,165,250,0.12), transparent 70%)",
+  filter: "blur(20px)",
+  pointerEvents: "none",
+};
+
+const containerStyle: React.CSSProperties = {
+  position: "relative",
+  margin: "auto",
+  width: "100%",
+  maxWidth: 1440,
+  padding: "40px 32px",
+  display: "flex",
+  flexDirection: "column",
+  gap: 24,
+};
+
+const headerStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "flex-end",
+  justifyContent: "space-between",
+  gap: 24,
+  flexWrap: "wrap",
+};
+
+const eyebrowStyle: React.CSSProperties = {
+  fontSize: 11,
+  fontFamily: SANS_FONT,
+  fontWeight: 700,
+  letterSpacing: "0.14em",
+  textTransform: "uppercase",
+  color: COLORS.accent,
+};
+
+const titleStyle: React.CSSProperties = {
+  margin: "6px 0 0",
+  fontSize: 30,
+  lineHeight: 1.1,
+  fontWeight: 700,
+  fontFamily: SANS_FONT,
+  color: COLORS.textPrimary,
+};
+
+const subtitleStyle: React.CSSProperties = {
+  margin: "8px 0 0",
+  fontSize: 13,
+  fontFamily: SANS_FONT,
+  color: COLORS.textMuted,
+  maxWidth: 560,
+  lineHeight: 1.55,
+};
+
+const bodyStyle: React.CSSProperties = {
+  display: "flex",
+  gap: 20,
+  alignItems: "stretch",
+  flexWrap: "wrap",
+};
+
+const railStyle: React.CSSProperties = {
+  flex: "1 1 340px",
+  minWidth: 0,
+  display: "flex",
+  flexDirection: "column",
+  gap: 20,
+};
+
+const connectionsRowStyle: React.CSSProperties = {
+  display: "flex",
+  gap: 20,
+  alignItems: "stretch",
+};
+
+const connectionColStyle: React.CSSProperties = {
+  flex: "1 1 0",
+  minWidth: 0,
+  display: "flex",
+  flexDirection: "column",
+};

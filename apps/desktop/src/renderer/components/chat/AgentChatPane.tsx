@@ -4791,6 +4791,23 @@ export function AgentChatPane({
           ? detail.permissionModeTransition
           : null;
         if (transition === "entered_plan_mode" || transition === "exited_plan_mode") {
+          // Apply the transition to the composer's mode chip directly from this
+          // authoritative event. The session refresh below is async + debounced
+          // and only re-syncs the chip if the refetched session's mode actually
+          // changes — so if the refetch is stale/raced (e.g. during compaction)
+          // the chip would otherwise stay stuck on "plan" after the plan is
+          // accepted. Setting it here makes the change immediate and race-proof.
+          if (envelope.sessionId === selectedSessionIdRef.current) {
+            if (transition === "entered_plan_mode") {
+              setInteractionMode("plan");
+            } else {
+              setInteractionMode("default");
+              // The Claude mode picker also writes "plan" into claudePermissionMode
+              // (handleClaudeModeChange), so clear it too — otherwise the chip
+              // would still render "plan" via the access-mode fall-through.
+              setClaudePermissionMode((prev) => (prev === "plan" ? "default" : prev));
+            }
+          }
           scheduleSessionsRefresh();
         }
       }

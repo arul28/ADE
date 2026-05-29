@@ -1,15 +1,19 @@
 import React, { useCallback, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
+import { GithubLogo, TerminalWindow } from "@phosphor-icons/react";
 import { AdeCliSection } from "./AdeCliSection";
 import { GitHubSection } from "./GitHubSection";
 import { LinearSection } from "./LinearSection";
+import { LinearMark } from "../lanes/linearBrand";
 
 type IntegrationTab = "github" | "linear" | "cli";
 
-const TABS: { id: IntegrationTab; label: string }[] = [
-  { id: "github", label: "GitHub" },
-  { id: "linear", label: "Linear" },
-  { id: "cli", label: "ADE CLI" },
+const TAB_ICON_SIZE = 15;
+
+const TABS: { id: IntegrationTab; label: string; brand: string; icon: React.ReactNode }[] = [
+  { id: "github", label: "GitHub", brand: "#3FB950", icon: <GithubLogo size={TAB_ICON_SIZE} weight="fill" /> },
+  { id: "linear", label: "Linear", brand: "#5E6AD2", icon: <LinearMark size={TAB_ICON_SIZE} /> },
+  { id: "cli", label: "ADE CLI", brand: "#38BDF8", icon: <TerminalWindow size={TAB_ICON_SIZE} weight="fill" /> },
 ];
 
 function resolveIntegrationTab(param: string): IntegrationTab | null {
@@ -51,32 +55,49 @@ export function IntegrationsSettingsSection() {
           marginBottom: 24,
         }}
       >
-        {TABS.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => activateTab(tab.id)}
-            style={{
-              background: "none",
-              border: "none",
-              borderBottom: activeTab === tab.id
-                ? "2px solid rgba(56,189,248,0.7)"
-                : "2px solid transparent",
-              cursor: "pointer",
-              padding: "8px 16px",
-              fontSize: 12,
-              fontFamily: "var(--font-sans, system-ui, sans-serif)",
-              fontWeight: activeTab === tab.id ? 600 : 400,
-              color: activeTab === tab.id
-                ? "rgba(255,255,255,0.88)"
-                : "rgba(255,255,255,0.45)",
-              transition: "color 0.15s, border-color 0.15s",
-              letterSpacing: "0.01em",
-            }}
-          >
-            {tab.label}
-          </button>
-        ))}
+        {TABS.map((tab) => {
+          const active = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => activateTab(tab.id)}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 7,
+                background: "none",
+                border: "none",
+                borderBottom: active
+                  ? "2px solid rgba(56,189,248,0.7)"
+                  : "2px solid transparent",
+                cursor: "pointer",
+                padding: "8px 16px",
+                fontSize: 12,
+                fontFamily: "var(--font-sans, system-ui, sans-serif)",
+                fontWeight: active ? 600 : 400,
+                color: active
+                  ? "rgba(255,255,255,0.88)"
+                  : "rgba(255,255,255,0.45)",
+                transition: "color 0.15s, border-color 0.15s, opacity 0.15s",
+                letterSpacing: "0.01em",
+              }}
+            >
+              <span
+                aria-hidden="true"
+                style={{
+                  display: "inline-flex",
+                  color: tab.brand,
+                  opacity: active ? 1 : 0.6,
+                  transition: "opacity 0.15s",
+                }}
+              >
+                {tab.icon}
+              </span>
+              {tab.label}
+            </button>
+          );
+        })}
       </div>
 
       {/* ---- tab content ---- */}
