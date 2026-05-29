@@ -269,15 +269,22 @@ export function Drawer({
           const showChatBlock = mode === "chats"
             ? isBrowsing && browsingLane?.id === lane.id
             : isSelected;
-          const cardBorder = cardBorderColor(isSelected);
-          // width - 2 (outer drawer border) - 2 (lane container paddingX) - 2 (card border) - 2 (card paddingX)
-          const cardInnerWidth = width - 8;
+          // Flat rows: no side borders or per-card padding, so content uses the
+          // full drawer width. Only the outer drawer border (2) + the lane
+          // container paddingX (2) inset the content now.
+          const cardInnerWidth = width - 4;
+          // The top edge is a faint hairline separator for every card except the
+          // first (whose top would otherwise double up the header rule). It tints
+          // violet on the selected card to reinforce the selection rail.
+          const rowBorderColor = isSelected ? theme.color.violet : theme.color.borderSoft;
           return (
             <Box
               key={lane.id}
-              borderStyle="round"
-              borderColor={cardBorder}
-              paddingX={1}
+              borderStyle={index > 0 ? LANE_ROW_HAIRLINE : LANE_ROW_BLANK}
+              borderColor={rowBorderColor}
+              borderLeft={false}
+              borderRight={false}
+              width={cardInnerWidth}
               flexDirection="column"
               marginTop={index > 0 ? 1 : 0}
             >
@@ -329,9 +336,36 @@ export function Drawer({
   );
 }
 
-function cardBorderColor(selected: boolean): string {
-  return selected ? theme.color.violet : theme.color.border;
-}
+// Flat lane-row chrome. The drawer's mouse hit-test (drawerMouseHitForLine in
+// app.tsx) reserves exactly two border rows per lane card (a top row and a
+// bottom row) plus a 1-row margin between cards, so we MUST keep both border
+// rows physically present. Instead of a boxed card (whose left/right bars and
+// padding inset the content and stack a second vertical line next to the
+// selection rail), we drop the side borders and keep only the top/bottom edge
+// rows: the top edge becomes a faint hairline separator between cards, the
+// bottom edge is a blank spacer. Content then starts flush at the left and uses
+// the full drawer width. Border-character maps below; left/right are disabled
+// via borderLeft/borderRight={false} so these glyphs never render on the sides.
+const LANE_ROW_HAIRLINE = {
+  topLeft: "─",
+  top: "─",
+  topRight: "─",
+  bottomLeft: " ",
+  bottom: " ",
+  bottomRight: " ",
+  left: " ",
+  right: " ",
+} as const;
+const LANE_ROW_BLANK = {
+  topLeft: " ",
+  top: " ",
+  topRight: " ",
+  bottomLeft: " ",
+  bottom: " ",
+  bottomRight: " ",
+  left: " ",
+  right: " ",
+} as const;
 
 /**
  * A single-row titled hairline-rule section header (glyph + bold title + count
@@ -463,7 +497,14 @@ function LaneCard({
   worktreeAvailable: boolean;
   hovered?: boolean;
 }) {
-  const nameColor = selected || active || hovered || status === "primary" ? theme.color.violet : theme.color.t1;
+  // Lane identity is now conveyed by tinting the NAME with the user-assigned
+  // lane color (when set) instead of stacking a second vertical accent bar next
+  // to the selection rail. Selection/active/hover/primary still win with violet
+  // so the highlighted lane always reads as violet.
+  const highlighted = selected || active || hovered || status === "primary";
+  const nameColor = highlighted
+    ? theme.color.violet
+    : lane.color ?? theme.color.t1;
   const detail = laneDetailSuffix(lane, diffStats, worktreeAvailable);
   const exec = theme.provider(provider);
   const age = formatLaneAge(lane);
@@ -479,7 +520,7 @@ function LaneCard({
         return null;
       case "running": return "run";
       case "attention": return "wait";
-      case "failed": return worktreeAvailable ? "fail" : "miss";
+      case "failed": return worktreeAvailable ? "fail" : "no worktree";
       default: return null;
     }
   })();
@@ -518,12 +559,7 @@ function LaneCard({
   const canShowVmBadge = isVmLane
     && contentWidth - indicatorWidth - rightReservationWithoutVm - VM_BADGE_WIDTH - 1 >= 3;
   const reservedRight = rightReservationWithoutVm + (canShowVmBadge ? VM_BADGE_WIDTH + 1 : 0);
-  // Lane identity: render the user-assigned lane color as a left accent rail so
-  // it's visible in the drawer (the Header already honors it). Default lanes
-  // (no explicit color) stay rail-free to keep the list calm.
-  const laneAccent = lane.color ?? null;
-  const laneRailWidth = laneAccent ? 2 : 0;
-  const nameMax = Math.max(3, contentWidth - indicatorWidth - LEAD_WIDTH - reservedRight - laneRailWidth);
+  const nameMax = Math.max(3, contentWidth - indicatorWidth - LEAD_WIDTH - reservedRight);
   const name = truncate(lane.name, nameMax);
 
   // Line 2 indents under the name (past prefix + lead chrome), capped so deep
@@ -552,7 +588,6 @@ function LaneCard({
           <Rail on={selected} />
           <Text> </Text>
           <Text color={dot.color} bold={status === "running" || status === "attention"}>{dot.glyph} </Text>
-          {laneAccent ? <Text color={laneAccent}>{"▎ "}</Text> : null}
           <Text color={nameColor} bold={selected || status === "primary"}>
             {pad(name, nameMax)}
           </Text>

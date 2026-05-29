@@ -525,7 +525,7 @@ describe("RightPane setup panes", () => {
     expect(frame).toContain("enter deletes this lane");
   });
 
-  it("renders the unified model picker with reasoning detail", () => {
+  it("renders the unified model picker with model list and settings footer", () => {
     const result = render(
       <RightPane
         content={{
@@ -560,7 +560,10 @@ describe("RightPane setup panes", () => {
 
     expect(frame).toContain("MODEL");
     expect(frame).toContain("Claude Sonnet 4.6");
-    expect(frame).toContain("think high");
+    // Reasoning is shown in the settings footer, not as an inline per-model
+    // "think high" chip (that detail was removed from model rows).
+    expect(frame).toContain("reasoning");
+    expect(frame).not.toContain("think high");
   });
 });
 

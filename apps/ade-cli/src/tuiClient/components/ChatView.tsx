@@ -1493,6 +1493,15 @@ export function renderChatTranscriptPlainText({
     .trimEnd();
 }
 
+// The splash (BootHero) stays on screen until the chat has real conversation
+// content. Informational notices ("Model set to …", "No prompt history", nav
+// hints) aggregate into `notice` blocks but must NOT dismiss the splash — only
+// a sent prompt or a streaming response (any non-notice block) makes it "a
+// chat." Keeps the new-chat surface clean: nothing but the splash until send.
+export function hasConversationContent(blocks: ReadonlyArray<{ kind: string }>): boolean {
+  return blocks.some((block) => block.kind !== "notice");
+}
+
 export function computeChatScrollMaxOffset({
   events,
   blocks: providedBlocks,
@@ -1522,7 +1531,7 @@ export function computeChatScrollMaxOffset({
     activeSession,
     expandedLineIds,
   });
-  if (!blocks.length && !streaming && !interrupted) return 0;
+  if (!hasConversationContent(blocks) && !streaming && !interrupted) return 0;
   const innerWidth = Math.max(24, width - 4);
   let statusRows = 0;
   if (streaming) statusRows = activeTurnRows("", showWorkingIndicator).length;
@@ -1644,7 +1653,7 @@ export function ChatView({
     }
     return sliceRows(withSuffix, bodyRows, scrollOffsetRows, unseenMessageCount);
   }, [historicalRows, historicalBlocks, tailBlocks, rowInnerWidth, brailleFrame, spinFrame, dotPulse, shimmerTick, streaming, interrupted, showWorkingIndicator, bodyRows, scrollOffsetRows, unseenMessageCount]);
-  const isEmpty = !blocks.length && !streaming && !interrupted;
+  const isEmpty = !hasConversationContent(blocks) && !streaming && !interrupted;
   let content: React.ReactNode;
   if (isEmpty && tileMode) {
     content = (

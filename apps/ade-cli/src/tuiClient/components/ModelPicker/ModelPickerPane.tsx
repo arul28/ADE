@@ -30,6 +30,20 @@ function endTruncate(value: string, max: number): string {
   return `${value.slice(0, Math.max(0, max - 1))}…`;
 }
 
+// A small icon per settings row so the footer reads as labeled controls rather
+// than a wall of text. Geometric glyphs (1-cell, terminal-safe).
+function settingIcon(kind: SetupPaneRowKind): string {
+  switch (kind) {
+    case "reasoning": return "✦";
+    case "permission": return "◆";
+    case "codex-fast": return "↯";
+    case "output-style": return "✎";
+    case "refresh-status": return "↻";
+    case "open-settings": return "↗";
+    default: return "·";
+  }
+}
+
 function ModelPickerSearchBar({
   query,
   searchMode,
@@ -145,7 +159,6 @@ function ModelListRow({
   const accent = selected || hovered;
   const brand = theme.provider(entry.family);
   const isLocal = entry.family === "ollama" || entry.family === "lmstudio";
-  const reasoningChip = (selected || active) && entry.reasoningLabel ? entry.reasoningLabel : null;
   const nameColor = !entry.isAvailable
     ? theme.color.t5
     : accent
@@ -174,10 +187,6 @@ function ModelListRow({
         {/* Local-runtime chip */}
         {isLocal && entry.isAvailable ? (
           <Text color={theme.color.t4} dimColor>{"  local"}</Text>
-        ) : null}
-        {/* Reasoning chip on the focused/active row */}
-        {reasoningChip ? (
-          <Text color={theme.color.t4} dimColor>{`  ${reasoningChip}`}</Text>
         ) : null}
       </Box>
       {entry.subProvider ? (
@@ -242,6 +251,7 @@ function SettingsFooter({
             return (
               <Box key={row.kind} flexDirection="row" marginRight={2}>
                 <Text color={accent ? theme.color.violet : theme.color.t5}>{focused ? theme.rail : " "}</Text>
+                <Text color={row.disabled ? theme.color.t5 : accent ? theme.color.violet : theme.color.t3}>{`${settingIcon(row.kind)} `}</Text>
                 <Text color={labelColor} dimColor={!row.disabled}>
                   {endTruncate(row.label.toLowerCase(), 14)}{" "}
                 </Text>

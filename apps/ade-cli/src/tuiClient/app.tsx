@@ -1033,7 +1033,7 @@ export function resolveContextDefault(args: ContextDefaultArgs): RightPaneConten
           surface: "new-chat",
           query: "",
           searchMode: false,
-          showAll: false,
+          showAll: true,
           selection: { kind: "provider", provider: args.provider },
           providerTabKey: null,
           focusedIndex: 0,
@@ -1056,7 +1056,7 @@ export function resolveContextDefault(args: ContextDefaultArgs): RightPaneConten
       surface: "new-chat",
       query: "",
       searchMode: false,
-      showAll: false,
+      showAll: true,
       selection: { kind: "provider", provider: args.provider },
       providerTabKey: null,
       focusedIndex: 0,
@@ -1379,7 +1379,7 @@ function buildSetupRows(args: {
   if (args.includeApply) {
     rows.push({
       kind: "apply",
-      label: "Use these settings",
+      label: "Confirm",
       value: "ready",
       detail: "returns focus to the chat composer",
     });
@@ -4927,7 +4927,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       surface: "new-chat",
       query: "",
       searchMode: false,
-      showAll: false,
+      showAll: true,
       selection: { kind: "provider", provider: modelState.provider },
       providerTabKey: null,
       focusedIndex: 0,
@@ -4983,7 +4983,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         activeModelId: modelState.modelId,
         activeReasoningEffort: modelState.reasoningEffort,
         aiStatus,
-        showAll: false,
+        showAll: true,
 	        query: "",
 	        selection: { kind: "provider", provider },
 	        providerTabKey: null,
@@ -5004,7 +5004,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         kind: "model-picker",
         surface,
         query: "",
-        showAll: false,
+        showAll: true,
 	        searchMode: false,
 	        selection,
 	        providerTabKey: null,
@@ -9300,9 +9300,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
     }
 
-    if (pane === "chat" && textInputActive && (key.ctrl || key.meta) && (key.leftArrow || key.rightArrow)) {
-      movePromptCursor(key.leftArrow ? -1 : 1, "word");
-      return;
+    if (pane === "chat" && textInputActive && (key.ctrl || key.meta)) {
+      // Option/Alt+Left/Right move by word. macOS sends these either as
+      // meta+arrow, or — with Option-as-Meta — as the emacs escape sequences
+      // ESC-b / ESC-f, which Ink surfaces as meta + input "b"/"f". Without this
+      // second case they fell through to the text-insert path and literally
+      // typed "b"/"f" instead of moving the cursor.
+      const optWordLeft = key.meta && !key.ctrl && input.toLowerCase() === "b";
+      const optWordRight = key.meta && !key.ctrl && input.toLowerCase() === "f";
+      if (key.leftArrow || optWordLeft) {
+        movePromptCursor(-1, "word");
+        return;
+      }
+      if (key.rightArrow || optWordRight) {
+        movePromptCursor(1, "word");
+        return;
+      }
     }
 
     if (pane === "chat") {
