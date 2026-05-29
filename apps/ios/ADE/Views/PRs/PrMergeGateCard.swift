@@ -174,8 +174,8 @@ func prComputeMergeGate(
   isDraft: Bool = false
 ) -> PrMergeGateInfo {
   let normalizedSummaryChecksStatus = summaryChecksStatus?.lowercased()
-  let summarySaysFailing = ["failing", "failure", "failed"].contains(normalizedSummaryChecksStatus ?? "")
-  let summarySaysPending = ["pending", "running", "in_progress", "queued"].contains(normalizedSummaryChecksStatus ?? "")
+  let summarySaysFailing = checks.isEmpty && ["failing", "failure", "failed"].contains(normalizedSummaryChecksStatus ?? "")
+  let summarySaysPending = checks.isEmpty && ["pending", "running", "in_progress", "queued"].contains(normalizedSummaryChecksStatus ?? "")
   let summarySaysPassing = ["passing", "success", "passed"].contains(normalizedSummaryChecksStatus ?? "")
   let failingChecks = checks.filter { check in
     check.status == "completed" &&
