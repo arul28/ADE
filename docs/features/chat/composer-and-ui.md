@@ -139,7 +139,10 @@ and a footer that contains the composer.
   "force", refreshProvider? })` and only triggers a runtime probe when
   the user actually opens the corresponding rail and the per-provider
   freshness TTL has lapsed (`runtimeCatalogCache.ts`: 30 min for
-  Cursor / Droid / OpenCode, 30 s for `lmstudio` / `ollama`). When a
+  Cursor / Droid / OpenCode, 30 s for `lmstudio` / `ollama`). Cursor
+  runtime rows carry `cursorAvailability`, so chat surfaces hide
+  CLI-only models while Work CLI setup includes them and hides
+  SDK-only/chat-only rows. When a
   caller passes `availableModelIdsOverride`, `AgentChatPane` constrains
   selection to exactly those ids: `filterChatModelIdsForSession({
   includeActiveSessionModel: false })` skips the usual "preserve the
@@ -158,13 +161,16 @@ and a footer that contains the composer.
   active descriptor exposes `reasoningTiers`. The picker remembers the
   last-used effort per model family via the `useReasoningByFamily`
   hook.
-- **Fast mode (Codex).** A yellow Lightning chip next to the model
-  selector that toggles `codexFastMode` for the selected session.
-  Renders only when `modelSupportsFastMode(getModelById(modelId))`
-  returns true and the session provider is Codex (today: GPT 5.4 /
-  GPT 5.5 in the Codex CLI). The toggle is also exposed per-slot in
-  parallel mode through `onParallelSlotCodexFastModeChange`. State
-  flows into the next `turn/start` as `serviceTier: "fast"`.
+- **Fast mode.** A yellow Lightning chip next to the model selector
+  toggles the legacy-named `codexFastMode` bit for the selected
+  session. It renders whenever the selected descriptor advertises
+  `serviceTiers: ["fast"]`, including dynamic Cursor SDK/CLI rows and
+  the Codex GPT 5.4 / 5.5 entries. Codex state flows into the next
+  `thread/start` / `turn/start` as `serviceTier: "fast"`; Cursor SDK
+  state flows through the discovered model-parameter selection, and
+  Work CLI launches resolve fast Cursor rows to the matching `*-fast`
+  alias. The toggle is also exposed per-slot in parallel mode through
+  `onParallelSlotCodexFastModeChange`.
 - **Attachments.** Allows the user to attach files and artifacts to
   the next turn.
 - **Permission controls.** Inline with the composer:
@@ -280,11 +286,11 @@ power the TUI picker (`apps/ade-cli/src/tuiClient/components/ModelPicker/`).
 | Module | Role |
 |---|---|
 | `ModelPicker.tsx` | Trigger + popover entry point. Owns runtime-catalog loading via `runtimeCatalogCache`, fast-mode chip, and the favorites/recents fan-out. |
-| `ModelPickerContent.tsx` | The popover body: search bar, rail, virtualized list (`@tanstack/react-virtual`), empty state. New props: `hidePermissionRail` (forward-compat hook for orchestrated surfaces that suppress permission-related affordances), `allowCliOnlyModels` (include CLI-restricted models in the list), `allowRegistryExpansion` (when false, skip merging `MODEL_REGISTRY` entries into the runtime catalog — useful for constrained surfaces). Estimated row height `MODEL_ROW_ESTIMATED_HEIGHT = 44`. |
+| `ModelPickerContent.tsx` | The popover body: search bar, rail, virtualized list (`@tanstack/react-virtual`), empty state. New props: `hidePermissionRail` (forward-compat hook for orchestrated surfaces that suppress permission-related affordances), `allowCliOnlyModels` (switch Cursor filtering from SDK chat models to CLI launch models), `allowRegistryExpansion` (when false, skip merging `MODEL_REGISTRY` entries into the runtime catalog — useful for constrained surfaces). Estimated row height `MODEL_ROW_ESTIMATED_HEIGHT = 44`. |
 | `ModelPickerRail.tsx` | Left-rail tabs (Favorites / Recents / per-provider groups). Reads `AuthStatus` per family to render auth gates and the OpenCode "Install OpenCode" CTA from `providerEmptyState`. |
 | `ModelListRow.tsx` | A single model row (favorite star, brand logo, display name, sub-provider chip, availability tone). |
 | `ReasoningEffortPicker.tsx` | Standalone reasoning-effort dropdown, mounted next to the model trigger and inside per-slot parallel-launch controls. |
-| `modelCatalog.ts` | `descriptorsFromAgentChatModelCatalog`, `mergeSelectorModels`, `resolveModelDescriptorWithRuntimeCatalog`, `createUnknownModelPlaceholder` — pure helpers that flatten the IPC catalog into a `ModelDescriptor[]` and reconcile it with the static registry. |
+| `modelCatalog.ts` | `descriptorsFromAgentChatModelCatalog`, `mergeSelectorModels`, `resolveModelDescriptorWithRuntimeCatalog`, `createUnknownModelPlaceholder` — pure helpers that flatten the IPC catalog into a `ModelDescriptor[]` and reconcile it with the static registry while preserving runtime metadata such as `serviceTiers` and Cursor `cursorAvailability`. |
 | `modelOrdering.ts` | `sortModelItems` — provider/group ordering and intra-group ranking (favorites first, then recents, then default registry order). |
 | `modelPickerSearch.ts` | `scoreModelPickerSearch` — fuzzy search across display name, family, provider, and ids; ranks favorites/recents above strict matches. |
 | `providerEmptyState.tsx` | Per-provider empty/auth/install CTA copy. Surfaces "Install OpenCode" when the binary is missing, "Sign in to Cursor" when auth is missing, etc. |
@@ -298,7 +304,10 @@ power the TUI picker (`apps/ade-cli/src/tuiClient/components/ModelPicker/`).
 Renderer state and the TUI share descriptors and ordering: the TUI
 `ModelPicker/modelPickerLayout.ts` imports
 `modelPickerSearch`/`modelOrdering` from the desktop package directly,
-so behaviour stays in lockstep.
+so behaviour stays in lockstep. The TUI layout also preserves
+`serviceTiers` and Cursor `cursorAvailability` from the same catalog so
+Fast Mode and chat-vs-CLI model availability do not drift between
+desktop and `ade code`.
 
 ### Attachment handling
 

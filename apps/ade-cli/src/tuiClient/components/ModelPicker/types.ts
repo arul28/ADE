@@ -1,4 +1,5 @@
 import type { AdeCodeProvider } from "../../types";
+import type { CursorModelAvailability } from "../../../../../desktop/src/shared/modelRegistry";
 
 export type ModelPickerRailKind = "favorites" | "recents" | "provider";
 
@@ -19,6 +20,8 @@ export type ModelPickerEntry = {
   subProviderKey?: string;
   isFavorite: boolean;
   isAvailable: boolean;
+  serviceTiers?: string[];
+  cursorAvailability?: CursorModelAvailability;
 };
 
 export type ModelPickerProviderTab = {

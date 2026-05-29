@@ -409,12 +409,15 @@ struct WorkNewChatSheet: View {
     do {
       let loadedModels = try await syncService.listChatModels(provider: requestedProvider)
       guard provider == requestedProvider else { return }
-      models = loadedModels
-      let matchingSelection = loadedModels.first {
+      let scopedModels = requestedProvider == "cursor"
+        ? workFilterChatModelsForCursorAvailability(loadedModels, mode: .chat)
+        : loadedModels
+      models = scopedModels
+      let matchingSelection = scopedModels.first {
         workModelIdsEquivalent($0.id, selectedModelId) || workModelIdsEquivalent($0.modelId, selectedModelId)
       }
       if resetSelection || matchingSelection == nil {
-        if let preferred = loadedModels.first(where: \.isDefault) ?? loadedModels.first {
+        if let preferred = scopedModels.first(where: \.isDefault) ?? scopedModels.first {
           selectedModelId = preferred.id
           selectedReasoningEffort = ""
         } else {

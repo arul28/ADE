@@ -376,7 +376,7 @@ export async function createChatSession(args: {
     ...(modelId ? { modelId } : {}),
     ...(args.title?.trim() ? { title: args.title.trim() } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
-    ...(provider === "codex" && args.codexFastMode === true ? { codexFastMode: true } : {}),
+    ...(args.codexFastMode === true ? { codexFastMode: true } : {}),
     ...(args.permissionMode ? { permissionMode: args.permissionMode } : {}),
     ...(provider === "claude" && args.interactionMode ? { interactionMode: args.interactionMode } : {}),
     ...(provider === "claude" && args.claudePermissionMode ? { claudePermissionMode: args.claudePermissionMode } : {}),

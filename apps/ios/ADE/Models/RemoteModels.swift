@@ -2211,6 +2211,11 @@ struct AgentChatModelReasoningEffort: Codable, Equatable, Hashable, Identifiable
   var description: String
 }
 
+struct CursorModelAvailability: Codable, Equatable, Hashable {
+  var cli: Bool
+  var sdk: Bool
+}
+
 struct AgentChatModelInfo: Codable, Equatable, Identifiable {
   var id: String
   var displayName: String
@@ -2218,12 +2223,14 @@ struct AgentChatModelInfo: Codable, Equatable, Identifiable {
   var isDefault: Bool
   var reasoningEfforts: [AgentChatModelReasoningEffort]?
   var serviceTiers: [String]?
+  var aliases: [String]? = nil
   var maxThinkingTokens: Int?
   var modelId: String?
   var family: String?
   var supportsReasoning: Bool?
   var supportsTools: Bool?
   var color: String?
+  var cursorAvailability: CursorModelAvailability? = nil
 }
 
 extension AgentChatModelInfo {
@@ -2249,19 +2256,21 @@ struct AgentChatModelCatalogModel: Codable, Equatable, Identifiable {
   var isDefault: Bool
   var reasoningEfforts: [AgentChatModelReasoningEffort]?
   var serviceTiers: [String]?
+  var aliases: [String]? = nil
   var maxThinkingTokens: Int?
   var modelId: String?
   var family: String?
   var supportsReasoning: Bool?
   var supportsTools: Bool?
-	  var color: String?
-	  var isAvailable: Bool
-	  var connected: Bool?
-	  var requiresConfiguration: Bool?
-	  var sourceRuntime: String?
-	  var providerId: String?
-	  var providerName: String?
-	  var stale: Bool?
+  var cursorAvailability: CursorModelAvailability? = nil
+  var color: String?
+  var isAvailable: Bool
+  var connected: Bool?
+  var requiresConfiguration: Bool?
+  var sourceRuntime: String?
+  var providerId: String?
+  var providerName: String?
+  var stale: Bool?
 }
 
 struct AgentChatModelCatalogSubsection: Codable, Equatable, Identifiable {

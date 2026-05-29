@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createDynamicCursorCliModelDescriptor, type ModelDescriptor } from "../../../../shared/modelRegistry";
+import type { AgentChatModelCatalog } from "../../../../shared/types";
 
 vi.mock("@lobehub/icons", () => {
   const brand = () => {
@@ -516,6 +517,59 @@ describe("ModelPicker", () => {
     expect(onToggle).toHaveBeenCalledWith(true);
     // Clicking fast did NOT open the popover
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("renders the fast-mode toggle for Cursor runtime models that advertise fast service", async () => {
+    providerAuthStatusInternal = { cursor: "ok" };
+    const onToggle = vi.fn();
+    const cursorFast = createDynamicCursorCliModelDescriptor("composer-2.5", "Composer 2.5", {
+      serviceTiers: ["fast"],
+      cursorAvailability: { cli: true, sdk: true },
+    });
+    rememberRuntimeCatalog({
+      fetchedAt: "2026-05-29T00:00:00.000Z",
+      groups: [{
+        key: "cursor",
+        displayName: "Cursor",
+        providers: [{
+          key: "cursor",
+          displayName: "Cursor",
+          badgeColor: "#8B5CF6",
+          modelCount: 1,
+          subsections: [{
+            key: "cursor",
+            label: "Cursor",
+            models: [{
+              id: cursorFast.id,
+              runtimeModelId: cursorFast.providerModelId,
+              provider: "cursor",
+              providerKey: "cursor",
+              groupKey: "cursor",
+              displayName: cursorFast.displayName,
+              isDefault: true,
+              isAvailable: true,
+              serviceTiers: cursorFast.serviceTiers,
+              cursorAvailability: cursorFast.cursorAvailability,
+            }],
+          }],
+        }],
+      }],
+    } as AgentChatModelCatalog, { mode: "cached" });
+    render(
+      <ModelPicker
+        value={cursorFast.id}
+        onChange={vi.fn()}
+        surfaceKey="test"
+        models={[cursorFast]}
+        fastModeActive={true}
+        onFastModeToggle={onToggle}
+      />,
+    );
+
+    const fastButton = screen.getByRole("button", { name: /Fast mode/i });
+    expect(fastButton.getAttribute("aria-pressed")).toBe("true");
+    await userEvent.click(fastButton);
+    expect(onToggle).toHaveBeenCalledWith(false);
   });
 
   it("shows Select model on the trigger when value is empty even if recents exist", () => {

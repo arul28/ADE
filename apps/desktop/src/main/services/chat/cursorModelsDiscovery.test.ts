@@ -29,6 +29,7 @@ vi.mock("../shared/utils", async (importOriginal) => {
 
 import {
   clearCursorCliModelsCache,
+  discoverCursorCliModelDescriptors,
   discoverCursorSdkModelDescriptors,
   listCursorModelsFromCli,
   listCursorModelsFromSdk,
@@ -259,6 +260,79 @@ describe("parseCursorCliModelsStdout", () => {
       sdk: false,
     });
     expect(resolveCachedCursorModelAvailability("cursor/chat-only", "crsr_test")).toBeNull();
+  });
+
+  it("preserves Cursor CLI JSON parameters as runtime reasoning and service tiers", async () => {
+    spawnAsyncMock.mockResolvedValueOnce({
+      status: 0,
+      stdout: JSON.stringify([
+        {
+          id: "composer-2",
+          displayName: "Composer 2",
+          parameters: [
+            {
+              id: "reasoning_effort",
+              displayName: "Reasoning effort",
+              values: [
+                { value: "low", displayName: "Low" },
+                { value: "high", displayName: "High" },
+              ],
+            },
+            {
+              id: "speed",
+              displayName: "Speed",
+              values: [{ value: "fast", displayName: "Fast" }],
+            },
+          ],
+        },
+      ]),
+      stderr: "",
+    });
+
+    const rows = await listCursorModelsFromCli("/usr/local/bin/cursor-agent");
+    const descriptors = await discoverCursorCliModelDescriptors("/usr/local/bin/cursor-agent", { mode: "cached-only" });
+
+    expect(rows[0]).toMatchObject({
+      id: "composer-2",
+      reasoningTiers: ["low", "high"],
+      serviceTiers: ["fast"],
+    });
+    expect(descriptors[0]).toMatchObject({
+      id: "cursor/composer-2",
+      reasoningTiers: ["low", "high"],
+      serviceTiers: ["fast"],
+    });
+  });
+
+  it("folds Cursor CLI -fast rows into the base model descriptor", async () => {
+    spawnAsyncMock.mockResolvedValueOnce({
+      status: 0,
+      stdout: [
+        "composer-2.5 - Composer 2.5",
+        "composer-2.5-fast - Composer 2.5 Fast (default)",
+      ].join("\n"),
+      stderr: "",
+    });
+
+    const rows = await listCursorModelsFromCli("/usr/local/bin/cursor-agent");
+    const descriptors = await discoverCursorCliModelDescriptors("/usr/local/bin/cursor-agent", { mode: "cached-only" });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: "composer-2.5",
+      aliases: ["composer-2.5-fast"],
+      serviceTiers: ["fast"],
+    });
+    expect(descriptors).toHaveLength(1);
+    expect(descriptors[0]).toMatchObject({
+      id: "cursor/composer-2.5",
+      aliases: ["composer-2.5-fast"],
+      serviceTiers: ["fast"],
+    });
+    expect(resolveCachedCursorModelAvailability("cursor/composer-2.5-fast", "crsr_test")).toEqual({
+      cli: true,
+      sdk: false,
+    });
   });
 
   it("preserves Cursor SDK parameters and variants as runtime reasoning and service tiers", async () => {

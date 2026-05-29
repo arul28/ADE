@@ -76,6 +76,8 @@ function entriesFromCatalog(
             subProviderKey: model.providerId || provider.key || subsection.key || undefined,
             isFavorite: favoritesSet.has(model.id),
             isAvailable: model.isAvailable,
+            ...(model.serviceTiers?.length ? { serviceTiers: [...model.serviceTiers] } : {}),
+            ...(model.cursorAvailability ? { cursorAvailability: { ...model.cursorAvailability } } : {}),
           });
         }
       }
@@ -94,6 +96,7 @@ function entryFromModelInfo(
     ? normalizeProvider(resolveProviderGroupForModel(descriptor))
     : normalizeProvider(modelInfo.family);
   const runtimeModelId = descriptor?.providerModelId ?? descriptor?.shortId ?? modelInfo.id;
+  const cursorAvailability = modelInfo.cursorAvailability ?? descriptor?.cursorAvailability;
   return {
     modelId,
     runtimeModelId,
@@ -104,6 +107,8 @@ function entryFromModelInfo(
       : {}),
     isFavorite: favoritesSet.has(modelId),
     isAvailable: true,
+    ...(modelInfo.serviceTiers?.length ? { serviceTiers: [...modelInfo.serviceTiers] } : {}),
+    ...(cursorAvailability ? { cursorAvailability: { ...cursorAvailability } } : {}),
   };
 }
 

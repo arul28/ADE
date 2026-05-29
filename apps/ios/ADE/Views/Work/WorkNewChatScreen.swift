@@ -151,6 +151,7 @@ struct WorkNewChatScreen: View {
         currentModelId: modelId,
         currentProvider: provider,
         currentReasoningEffort: reasoningEffort,
+        cursorAvailabilityMode: sessionMode == .cli ? .cli : .chat,
         isBusy: false,
         onSelect: { option, pickedReasoning, runtimeProvider in
           modelId = option.id

@@ -7,15 +7,18 @@ extension WorkSessionSettingsSheet {
   func loadModels() async {
     do {
       let loadedModels = try await syncService.listChatModels(provider: summary.provider)
-      models = loadedModels
+      let scopedModels = summary.provider == "cursor"
+        ? workFilterChatModelsForCursorAvailability(loadedModels, mode: .chat)
+        : loadedModels
+      models = scopedModels
 
       let matchedModelId =
-        loadedModels.first(where: { workModelIdsEquivalent($0.id, selectedModelId) || workModelIdsEquivalent($0.modelId, selectedModelId) })?.id
-        ?? loadedModels.first(where: { workModelIdsEquivalent($0.id, summary.modelId) || workModelIdsEquivalent($0.modelId, summary.modelId) })?.id
-        ?? loadedModels.first(where: { workModelIdsEquivalent($0.id, summary.model) || workModelIdsEquivalent($0.modelId, summary.model) })?.id
-        ?? loadedModels.first(where: { $0.displayName == summary.model })?.id
-        ?? loadedModels.first(where: \.isDefault)?.id
-        ?? loadedModels.first?.id
+        scopedModels.first(where: { workModelIdsEquivalent($0.id, selectedModelId) || workModelIdsEquivalent($0.modelId, selectedModelId) })?.id
+        ?? scopedModels.first(where: { workModelIdsEquivalent($0.id, summary.modelId) || workModelIdsEquivalent($0.modelId, summary.modelId) })?.id
+        ?? scopedModels.first(where: { workModelIdsEquivalent($0.id, summary.model) || workModelIdsEquivalent($0.modelId, summary.model) })?.id
+        ?? scopedModels.first(where: { $0.displayName == summary.model })?.id
+        ?? scopedModels.first(where: \.isDefault)?.id
+        ?? scopedModels.first?.id
         ?? ""
 
       selectedModelId = matchedModelId

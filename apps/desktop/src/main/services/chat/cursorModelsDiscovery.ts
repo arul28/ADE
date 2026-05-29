@@ -98,6 +98,58 @@ export function parseCursorCliModelsStdout(stdout: string): CursorCliModelRow[] 
   return out;
 }
 
+function addCursorRowAlias(row: CursorCliModelRow, alias: string | null | undefined): void {
+  const normalizedAlias = normalizeCursorModelRef(alias);
+  if (!normalizedAlias || !/^[\w.-]+$/i.test(normalizedAlias)) return;
+  const canonical = normalizeCursorModelRef(row.id).toLowerCase();
+  const aliasKey = normalizedAlias.toLowerCase();
+  if (aliasKey === canonical) return;
+  const aliases = row.aliases ?? [];
+  if (!aliases.some((entry) => normalizeCursorModelRef(entry).toLowerCase() === aliasKey)) {
+    row.aliases = [...aliases, normalizedAlias];
+  }
+}
+
+function markCursorRowFast(row: CursorCliModelRow): void {
+  const tiers = row.serviceTiers ?? [];
+  if (!tiers.some((entry) => normalizeCursorMetadataText(entry) === "fast")) {
+    row.serviceTiers = [...tiers, "fast"];
+  }
+}
+
+function foldCursorFastVariantRows(rows: CursorCliModelRow[]): CursorCliModelRow[] {
+  if (!rows.length) return [];
+  const cloned = rows.map((row) => ({
+    ...row,
+    ...(row.aliases ? { aliases: [...row.aliases] } : {}),
+    ...(row.reasoningTiers ? { reasoningTiers: [...row.reasoningTiers] } : {}),
+    ...(row.serviceTiers ? { serviceTiers: [...row.serviceTiers] } : {}),
+  }));
+  const byId = new Map<string, CursorCliModelRow>();
+  for (const row of cloned) {
+    byId.set(normalizeCursorModelRef(row.id).toLowerCase(), row);
+  }
+
+  const foldedFastIds = new Set<string>();
+  for (const row of cloned) {
+    const id = normalizeCursorModelRef(row.id);
+    const key = id.toLowerCase();
+    if (!key.endsWith("-fast")) continue;
+    const baseKey = key.slice(0, -"-fast".length);
+    const base = byId.get(baseKey);
+    if (!base) {
+      markCursorRowFast(row);
+      continue;
+    }
+    markCursorRowFast(base);
+    addCursorRowAlias(base, id);
+    for (const alias of row.aliases ?? []) addCursorRowAlias(base, alias);
+    foldedFastIds.add(key);
+  }
+
+  return cloned.filter((row) => !foldedFastIds.has(normalizeCursorModelRef(row.id).toLowerCase()));
+}
+
 export function clearCursorCliModelsCache(): void {
   cached = null;
   sdkCached = null;
@@ -371,7 +423,7 @@ function normalizeSdkModelRows(models: SDKModel[]): CursorCliModelRow[] {
       ...(tiers.serviceTiers.length ? { serviceTiers: tiers.serviceTiers } : {}),
     });
   }
-  return rows;
+  return foldCursorFastVariantRows(rows);
 }
 
 function normalizeCursorModelRows(models: unknown[]): CursorCliModelRow[] {
@@ -400,6 +452,9 @@ function normalizeCursorModelRows(models: unknown[]): CursorCliModelRow[] {
       : typeof record.name === "string"
         ? record.name.trim()
         : "";
+    const description = typeof record.description === "string" && record.description.trim().length
+      ? record.description.trim()
+      : undefined;
     const parameters = normalizeCursorParameterDefinitions(record.parameters);
     const variants = normalizeCursorModelVariants(record.variants);
     const aliases = normalizeCursorAliasList(record.aliases, id);
@@ -407,6 +462,7 @@ function normalizeCursorModelRows(models: unknown[]): CursorCliModelRow[] {
     rows.push({
       id,
       ...(displayName ? { displayName } : {}),
+      ...(description ? { description } : {}),
       ...(aliases ? { aliases } : {}),
       ...(parameters ? { parameters } : {}),
       ...(variants ? { variants } : {}),
@@ -414,7 +470,7 @@ function normalizeCursorModelRows(models: unknown[]): CursorCliModelRow[] {
       ...(tiers.serviceTiers.length ? { serviceTiers: tiers.serviceTiers } : {}),
     });
   }
-  return rows;
+  return foldCursorFastVariantRows(rows);
 }
 
 function getCachedCursorSdkModels(apiKey?: string | null): CursorCliModelRow[] | null {
@@ -814,29 +870,7 @@ export async function listCursorModelsFromCli(agentPath: string): Promise<Cursor
       try {
         const parsed = JSON.parse(stdout) as unknown;
         if (Array.isArray(parsed)) {
-          const models: CursorCliModelRow[] = [];
-          for (const row of parsed) {
-            if (typeof row === "string" && row.trim()) {
-              models.push({ id: row.trim() });
-              continue;
-            }
-            if (row && typeof row === "object") {
-              const r = row as Record<string, unknown>;
-              const trimmedId = typeof r.id === "string" ? r.id.trim() : "";
-              const trimmedModel = typeof r.model === "string" ? r.model.trim() : "";
-              const id = trimmedId || trimmedModel;
-              const displayName = (typeof r.name === "string" ? r.name : undefined)
-                ?? (typeof r.displayName === "string" ? r.displayName : undefined);
-              const aliases = normalizeCursorAliasList(r.aliases, id);
-              if (id) {
-                models.push({
-                  id,
-                  displayName,
-                  ...(aliases ? { aliases } : {}),
-                });
-              }
-            }
-          }
+          const models = normalizeCursorModelRows(parsed);
           if (models.length) {
             cached = { at: now, models };
             return models;
@@ -848,8 +882,9 @@ export async function listCursorModelsFromCli(agentPath: string): Promise<Cursor
 
       const parsedLines = parseCursorCliModelsStdout(stdout);
       if (parsedLines.length) {
-        cached = { at: now, models: parsedLines };
-        return parsedLines;
+        const models = foldCursorFastVariantRows(parsedLines);
+        cached = { at: now, models };
+        return models;
       }
     } catch {
       // try next probe
