@@ -4811,9 +4811,27 @@ export function registerIpc({
     await ctx.autoRebaseService.dismissStatus({ laneId: arg.laneId });
   });
 
-  ipcMain.handle(IPC.lanesOpenFolder, async (_event, arg: { laneId: string }): Promise<void> => {
+  ipcMain.handle(IPC.lanesOpenFolder, async (event, arg: { laneId: string }): Promise<void> => {
     const ctx = getCtx();
-    const worktreePath = ctx.laneService.getLaneWorktreePath(arg.laneId);
+    let worktreePath: string | null = null;
+    if (ctx.laneService) {
+      worktreePath = ctx.laneService.getLaneWorktreePath(arg.laneId);
+    } else {
+      // Runtime-backed (daemon) mode: the in-process laneService is null, so
+      // resolve the worktree path from the project's runtime via the pool.
+      const response = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+        pool.callActionForRoot(rootPath, {
+          domain: "lane",
+          action: "list",
+          args: { includeArchived: true, includeStatus: false },
+        }),
+      );
+      const lanes = Array.isArray(response?.result) ? (response.result as LaneSummary[]) : [];
+      worktreePath = lanes.find((lane) => lane.id === arg.laneId)?.worktreePath ?? null;
+    }
+    if (!worktreePath) {
+      throw new Error("Lane worktree path is not available.");
+    }
     await shell.openPath(worktreePath);
   });
 
@@ -5754,7 +5772,7 @@ export function registerIpc({
   ) => {
     const ctx = getCtx();
     const service = ctx.agentChatService;
-    if (typeof (service as unknown as { readTranscript?: unknown }).readTranscript !== "function") {
+    if (!service || typeof (service as unknown as { readTranscript?: unknown }).readTranscript !== "function") {
       return [];
     }
     const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";

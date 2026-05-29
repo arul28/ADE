@@ -1325,7 +1325,12 @@ async function callProjectFileRuntimeActionOr<T>(
     request,
   );
   if (remote.handled) return remote.result;
-  return local();
+  const localRuntime = await callLocalProjectActionStrictIfBound<T>(
+    "file",
+    action,
+    request,
+  );
+  return localRuntime.handled ? localRuntime.result : local();
 }
 
 async function callRemoteProjectSyncIfBound<T>(
@@ -5839,7 +5844,7 @@ contextBridge.exposeInMainWorld("ade", {
   },
   diff: {
     getChanges: async (args: GetDiffChangesArgs): Promise<DiffChanges> => {
-      const runtime = await callRemoteProjectActionIfBound<DiffChanges>(
+      const runtime = await callProjectRuntimeActionIfBound<DiffChanges>(
         "diff",
         "getChanges",
         { arg: args.laneId },
@@ -5848,7 +5853,7 @@ contextBridge.exposeInMainWorld("ade", {
       return diffChangesCache.get(serializeIpcCacheArgs(args));
     },
     getFile: async (args: GetFileDiffArgs): Promise<FileDiff> => {
-      const runtime = await callRemoteProjectActionIfBound<FileDiff>(
+      const runtime = await callProjectRuntimeActionIfBound<FileDiff>(
         "diff",
         "getFileDiff",
         {
@@ -5866,7 +5871,7 @@ contextBridge.exposeInMainWorld("ade", {
         : ipcRenderer.invoke(IPC.diffGetFile, args);
     },
     getFilePatch: async (args: GetFilePatchArgs): Promise<FilePatch> => {
-      const runtime = await callRemoteProjectActionIfBound<FilePatch>(
+      const runtime = await callProjectRuntimeActionIfBound<FilePatch>(
         "diff",
         "getFilePatch",
         {
