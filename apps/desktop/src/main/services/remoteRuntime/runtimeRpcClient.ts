@@ -139,6 +139,10 @@ export class RuntimeRpcClient {
     }
   }
 
+  isClosed(): boolean {
+    return this.closedError != null;
+  }
+
   private onData(chunk: string): void {
     if (this.closedError) return;
     this.buffer += chunk;

@@ -17,6 +17,8 @@ import {
   buildLocalRuntimeServeArgs,
   computeLocalRuntimeBuildHash,
   createLocalRuntimeOutputLogger,
+  isLocalRuntimeConnectionDropped,
+  isRetryableReadAction,
   LocalRuntimeConnectionPool,
   parseRuntimeServiceManagerOutput,
 } from "./localRuntimeConnectionPool";
@@ -1465,5 +1467,37 @@ describe("local runtime connection pool", () => {
 
     cleanup();
     expect(call).toHaveBeenCalledWith("runtimeEvents.unsubscribe", { subscriptionId: "runtime-events-4" });
+  });
+});
+
+describe("local runtime action retry classification", () => {
+  it("recognizes dropped/closed daemon connection errors", () => {
+    expect(isLocalRuntimeConnectionDropped(new Error("Remote ADE service connection closed."))).toBe(true);
+    expect(isLocalRuntimeConnectionDropped(new Error("Remote ADE service connection failed: ECONNRESET"))).toBe(true);
+    // Must NOT treat unrelated failures as a connection drop (would wrongly retry).
+    expect(isLocalRuntimeConnectionDropped(new Error("Remote ADE service timed out waiting for method ade/actions/call (5000ms)."))).toBe(false);
+    expect(isLocalRuntimeConnectionDropped(new Error("Local ADE service action failed."))).toBe(false);
+  });
+
+  it("only retries idempotent read actions, never mutations", () => {
+    // Reads — safe to retry after a connection drop.
+    expect(isRetryableReadAction("lane", "list")).toBe(true);
+    expect(isRetryableReadAction("lane", "listSnapshots")).toBe(true);
+    expect(isRetryableReadAction("diff", "getChanges")).toBe(true);
+    expect(isRetryableReadAction("diff", "getFilePatch")).toBe(true);
+    expect(isRetryableReadAction("file", "readFile")).toBe(true);
+    expect(isRetryableReadAction("chat", "getChatEventHistory")).toBe(true);
+    expect(isRetryableReadAction("file", "quickOpen")).toBe(true);
+
+    // Mutations — must NOT be retried (a retry could re-run the side effect).
+    expect(isRetryableReadAction("lane", "delete")).toBe(false);
+    expect(isRetryableReadAction("lane", "create")).toBe(false);
+    expect(isRetryableReadAction("lane", "archive")).toBe(false);
+    expect(isRetryableReadAction("file", "writeTextAtomic")).toBe(false);
+    expect(isRetryableReadAction("chat", "sendMessage")).toBe(false);
+    expect(isRetryableReadAction("pr", "merge")).toBe(false);
+    // Prefix must respect a camelCase boundary, not arbitrary substrings.
+    expect(isRetryableReadAction("lane", "getaway")).toBe(false);
+    expect(isRetryableReadAction("lane", "listenStop")).toBe(false);
   });
 });

@@ -354,6 +354,47 @@ function isRuntimeActionCallTimeout(error: Error): boolean {
   return /timed out waiting for method ade\/actions\/call/i.test(error.message);
 }
 
+// The RPC client surfaces a dropped/closed daemon socket with these sentinel
+// messages (see RuntimeRpcClient.failConnection). A drop happens whenever the
+// daemon restarts or is recycled — e.g. when a desktop rebuild changes the
+// expected build hash and the running daemon is deemed incompatible.
+export function isLocalRuntimeConnectionDropped(error: Error): boolean {
+  return /Remote ADE service connection (closed|failed)/i.test(error.message);
+}
+
+// Conservative mirror of the preload's isReadOnlyRuntimeAction. Only these
+// actions are safe to transparently retry after a connection drop, because a
+// retry of a mutating action could re-run it against the reconnected daemon.
+const RETRYABLE_READ_ACTION_PREFIXES = [
+  "diagnosticsGet",
+  "get",
+  "list",
+  "oauthGet",
+  "oauthList",
+  "portList",
+  "proxyGet",
+  "read",
+  "search",
+] as const;
+
+const RETRYABLE_READ_ACTIONS = new Set<string>([
+  "chat.codexFuzzyFileSearch",
+  "chat.fileSearch",
+  "chat.modelCatalog",
+  "file.quickOpen",
+  "terminal.activeForChat",
+  "terminal.preview",
+]);
+
+export function isRetryableReadAction(domain: string, action: string): boolean {
+  if (RETRYABLE_READ_ACTIONS.has(`${domain}.${action}`)) return true;
+  return RETRYABLE_READ_ACTION_PREFIXES.some(
+    (prefix) =>
+      action === prefix ||
+      (action.startsWith(prefix) && /^[A-Z]/.test(action.slice(prefix.length))),
+  );
+}
+
 function signalRuntimeChildProcess(child: ChildProcess | null, signal: NodeJS.Signals): void {
   if (!child?.pid) return;
   try {
@@ -694,87 +735,124 @@ export class LocalRuntimeConnectionPool {
     rootPath: string,
     request: RemoteRuntimeActionRequest,
   ): Promise<RemoteRuntimeActionResult> {
-    const tStart = Date.now();
-    const project = await this.ensureProject(rootPath);
-    const tProject = Date.now();
-    const entry = await this.connect();
-    const tConnect = Date.now();
-    const actionCallOptions = {
-      timeoutMs: request.domain === "file"
-        ? LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS
-        : LOCAL_RUNTIME_ACTION_TIMEOUT_MS,
-    };
-    let value: unknown = undefined;
-    let callError: Error | null = null;
-    try {
-      value = await entry.client.call(
-        "ade/actions/call",
-        {
-          projectId: project.projectId,
-          name: "run_ade_action",
-          arguments: {
+    // A dropped daemon connection (restart / build-hash recycle) is transient:
+    // the next connect() reconnects to the live daemon. Retry idempotent reads
+    // once so the renderer never sees a raw "connection closed" for a refresh.
+    const maxAttempts = isRetryableReadAction(request.domain, request.action) ? 2 : 1;
+    let lastError: Error | null = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const tStart = Date.now();
+      const project = await this.ensureProject(rootPath);
+      const tProject = Date.now();
+      let entry = await this.connect();
+      // The cached connection may already be dead (daemon recycled since the
+      // last call). Reconnecting before sending is safe for any action because
+      // nothing has been written to the socket yet.
+      if (entry.client.isClosed()) {
+        this.resetActiveConnection(entry);
+        entry = await this.connect();
+      }
+      const tConnect = Date.now();
+      const actionCallOptions = {
+        timeoutMs: request.domain === "file"
+          ? LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS
+          : LOCAL_RUNTIME_ACTION_TIMEOUT_MS,
+      };
+      let value: unknown = undefined;
+      let callError: Error | null = null;
+      try {
+        value = await entry.client.call(
+          "ade/actions/call",
+          {
+            projectId: project.projectId,
+            name: "run_ade_action",
+            arguments: {
+              domain: request.domain,
+              action: request.action,
+              ...(request.args ? { args: request.args } : {}),
+              ...(Object.prototype.hasOwnProperty.call(request, "arg") ? { arg: request.arg } : {}),
+              ...(request.argsList ? { argsList: request.argsList } : {}),
+            },
+          },
+          actionCallOptions,
+        );
+      } catch (error) {
+        callError = error instanceof Error ? error : new Error(String(error));
+      } finally {
+        const tCall = Date.now();
+        const totalMs = tCall - tStart;
+        if (totalMs > 500 || callError) {
+          this.logger.warn("local_runtime.action_slow", {
             domain: request.domain,
             action: request.action,
-            ...(request.args ? { args: request.args } : {}),
-            ...(Object.prototype.hasOwnProperty.call(request, "arg") ? { arg: request.arg } : {}),
-            ...(request.argsList ? { argsList: request.argsList } : {}),
-          },
-        },
-        actionCallOptions,
-      );
-    } catch (error) {
-      callError = error instanceof Error ? error : new Error(String(error));
-    } finally {
-      const tCall = Date.now();
-      const totalMs = tCall - tStart;
-      if (totalMs > 500 || callError) {
-        this.logger.warn("local_runtime.action_slow", {
-          domain: request.domain,
-          action: request.action,
-          totalMs,
-          ensureProjectMs: tProject - tStart,
-          connectMs: tConnect - tProject,
-          daemonCallMs: tCall - tConnect,
-          timeoutMs: actionCallOptions?.timeoutMs ?? null,
-          error: callError?.message ?? null,
-        });
+            totalMs,
+            ensureProjectMs: tProject - tStart,
+            connectMs: tConnect - tProject,
+            daemonCallMs: tCall - tConnect,
+            timeoutMs: actionCallOptions?.timeoutMs ?? null,
+            error: callError?.message ?? null,
+            attempt,
+          });
+        }
+        if (callError && isRuntimeActionCallTimeout(callError)) {
+          this.logger.warn("local_runtime.action_timeout_reset_connection", {
+            domain: request.domain,
+            action: request.action,
+            socketPath: entry.socketPath,
+            totalMs,
+          });
+          this.resetConnectionAfterActionTimeout(entry);
+        } else if (callError && isLocalRuntimeConnectionDropped(callError)) {
+          this.logger.warn("local_runtime.action_connection_dropped", {
+            domain: request.domain,
+            action: request.action,
+            socketPath: entry.socketPath,
+            totalMs,
+            attempt,
+            willRetry: attempt < maxAttempts,
+          });
+          this.resetActiveConnection(entry);
+        }
       }
-      if (callError && isRuntimeActionCallTimeout(callError)) {
-        this.logger.warn("local_runtime.action_timeout_reset_connection", {
-          domain: request.domain,
-          action: request.action,
-          socketPath: entry.socketPath,
-          totalMs,
-        });
-        this.resetConnectionAfterActionTimeout(entry);
-      }
-    }
-    if (callError) throw callError;
 
-    if (value && typeof value === "object" && !Array.isArray(value)) {
-      const record = value as Record<string, unknown>;
-      if (record.ok === false) {
-        const error = record.error && typeof record.error === "object" && !Array.isArray(record.error)
-          ? record.error as Record<string, unknown>
-          : {};
-        throw new Error(typeof error.message === "string" ? error.message : "Local ADE service action failed.");
+      if (callError) {
+        if (isLocalRuntimeConnectionDropped(callError) && attempt < maxAttempts) {
+          lastError = callError;
+          continue;
+        }
+        throw callError;
       }
+
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        const record = value as Record<string, unknown>;
+        if (record.ok === false) {
+          const error = record.error && typeof record.error === "object" && !Array.isArray(record.error)
+            ? record.error as Record<string, unknown>
+            : {};
+          throw new Error(typeof error.message === "string" ? error.message : "Local ADE service action failed.");
+        }
+        return {
+          domain: typeof record.domain === "string" ? record.domain : request.domain,
+          action: typeof record.action === "string" ? record.action : request.action,
+          result: record.result,
+          statusHints: record.statusHints && typeof record.statusHints === "object" && !Array.isArray(record.statusHints)
+            ? record.statusHints as Record<string, unknown>
+            : {},
+        };
+      }
+
       return {
-        domain: typeof record.domain === "string" ? record.domain : request.domain,
-        action: typeof record.action === "string" ? record.action : request.action,
-        result: record.result,
-        statusHints: record.statusHints && typeof record.statusHints === "object" && !Array.isArray(record.statusHints)
-          ? record.statusHints as Record<string, unknown>
-          : {},
+        domain: request.domain,
+        action: request.action,
+        result: value,
+        statusHints: {},
       };
     }
 
-    return {
-      domain: request.domain,
-      action: request.action,
-      result: value,
-      statusHints: {},
-    };
+    // Loop only falls through here after exhausting retries on a dropped
+    // connection (it returns or throws on every other path).
+    throw lastError ?? new Error("Local ADE service action failed.");
   }
 
   async listActionRegistryForRoot(rootPath: string): Promise<AdeActionRegistryEntry[]> {
@@ -895,6 +973,20 @@ export class LocalRuntimeConnectionPool {
     }
     closeRuntimeClient(entry.client);
     disposeOwnedRuntimeChild(entry.child, entry.socketPath, { unlinkSocket: true });
+  }
+
+  // Drop a stale/closed cached connection so the next connect() reconnects.
+  // Unlike the timeout reset, this does NOT dispose the owned child or unlink
+  // the socket: a dropped connection is often a daemon that has already been
+  // replaced (e.g. build-hash recycle), and a fresh daemon may have rebound the
+  // same socket — tearing it down would kill the healthy replacement.
+  private resetActiveConnection(entry: LocalRuntimeConnection): void {
+    if (!this.activeClient || this.activeClient === entry.client) {
+      this.connection = null;
+      this.activeClient = null;
+      this.projectsByRoot.clear();
+    }
+    closeRuntimeClient(entry.client);
   }
 
   private async createConnection(): Promise<LocalRuntimeConnection> {
