@@ -231,6 +231,27 @@ export function footerControlsForAvailability(agentsAvailable: boolean): FooterC
   return agentsAvailable ? ["agents", "drawer", "details"] : ["drawer", "details"];
 }
 
+export type InlineRowCellName = "provider" | "model" | "fast" | "reasoning" | "permission" | "subagents";
+
+// Single source of truth for the footer's inline cells. A cell only appears (and
+// is focusable by keyboard/mouse) when it applies — so fast mode and reasoning
+// are reachable exactly when supported, and neither is a dead focus stop.
+export function inlineRowCellOrder(opts: {
+  providerLocked: boolean;
+  fastSupported: boolean;
+  reasoningSupported: boolean;
+  subagentsVisible: boolean;
+}): InlineRowCellName[] {
+  const cells: InlineRowCellName[] = [];
+  if (!opts.providerLocked) cells.push("provider");
+  cells.push("model");
+  if (opts.fastSupported) cells.push("fast");
+  if (opts.reasoningSupported) cells.push("reasoning");
+  cells.push("permission");
+  if (opts.subagentsVisible) cells.push("subagents");
+  return cells;
+}
+
 // Turn a git conflict into a right-pane detail body + a one-line notice. Used by
 // /pull and /reparent so a rebase/merge conflict is surfaced instead of being
 // silently reported as success.
@@ -2403,7 +2424,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const [selectedDrawerChatAction, setSelectedDrawerChatAction] = useState<DrawerChatAction | null>(null);
   const [, setFormDiscardArmedState] = useState(false);
   const [footerControl, setFooterControl] = useState<FooterControl | null>(null);
-  const [inlineRowFocus, setInlineRowFocus] = useState<{ cell: 'provider' | 'model' | 'reasoning' | 'permission' | 'subagents' | null }>({ cell: null });
+  const [inlineRowFocus, setInlineRowFocus] = useState<{ cell: InlineRowCellName | null }>({ cell: null });
   const inlineRowFocused = inlineRowFocus.cell !== null;
   // Cross-surface model picker favorites/recents — authoritative copy lives in ade-cli.
 	  const [modelPickerFavorites, setModelPickerFavorites] = useState<string[]>([]);
@@ -2993,6 +3014,25 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   useEffect(() => {
     providerLockedRef.current = providerLocked;
   }, [providerLocked]);
+  // Whether the active model supports fast mode / reasoning effort — drives which
+  // footer cells exist and are focusable (refs let the input handler read current
+  // values without stale closures).
+  const footerFastSupported = useMemo(() => {
+    const descriptor = modelState.modelId ? getModelById(modelState.modelId) : undefined;
+    const activeModel = models.find((entry) => entry.id === modelState.modelId || entry.modelId === modelState.modelId);
+    return Boolean(activeModel?.serviceTiers?.some((tier) => tier.trim().toLowerCase() === "fast"))
+      || modelSupportsFastMode(descriptor);
+  }, [models, modelState.modelId]);
+  const footerReasoningSupported = useMemo(
+    () => modelReasoningEfforts(modelState, models).length > 0,
+    [modelState, models],
+  );
+  const footerFastSupportedRef = useRef(false);
+  const footerReasoningSupportedRef = useRef(false);
+  useEffect(() => {
+    footerFastSupportedRef.current = footerFastSupported;
+    footerReasoningSupportedRef.current = footerReasoningSupported;
+  }, [footerFastSupported, footerReasoningSupported]);
   const latestFailedLineId = useMemo(() => latestExpandableFailureId(events), [events]);
   const subagentSnapshots = useMemo(() => subagentSnapshotsFromEvents(events), [events]);
   const liveAgentCount = useMemo(
@@ -8634,23 +8674,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       if (key.downArrow) {
         if (cell === "provider") cycleProvider(1);
         else if (cell === "model") cycleModel(1);
+        else if (cell === "fast") applyModelState((prev) => ({ ...prev, codexFastMode: !prev.codexFastMode }));
         else if (cell === "reasoning") cycleReasoning(1);
         else if (cell === "permission") cyclePermission(1);
         else if (cell === "subagents") openSubagentsPane();
         return;
       }
       if (key.leftArrow || key.rightArrow) {
-        const fullOrder: Array<'provider' | 'model' | 'reasoning' | 'permission' | 'subagents'> = [
-          "provider",
-          "model",
-          "reasoning",
-          "permission",
-          "subagents",
-        ];
-        const order = fullOrder.filter((entry) => {
-          if (entry === "provider" && providerLockedRef.current) return false;
-          if (entry === "subagents" && !subagentsButtonVisibleRef.current) return false;
-          return true;
+        const order = inlineRowCellOrder({
+          providerLocked: providerLockedRef.current,
+          fastSupported: footerFastSupportedRef.current,
+          reasoningSupported: footerReasoningSupportedRef.current,
+          subagentsVisible: subagentsButtonVisibleRef.current,
         });
         const idx = cell ? order.indexOf(cell) : 0;
         const delta = key.rightArrow ? 1 : -1;
@@ -9973,14 +10008,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       });
       footerX += width;
     }
-    if (modelState.codexFastMode) {
+    if (footerFastSupported) {
       footerX += 2;
-      addFooterInlineTarget("footer:inline:fast", footerX, "fast".length, () => {
-        void runKeybindingAction("chat:fastMode");
+      const width = footerCellWidth("fast", "fast");
+      addFooterInlineTarget("footer:inline:fast", footerX, width, () => {
+        selectFooterControl(null);
+        setPaneFocus("chat");
+        setInlineRowFocus({ cell: "fast" });
+        applyModelState((prev) => ({ ...prev, codexFastMode: !prev.codexFastMode }));
       });
-      footerX += "fast".length;
+      footerX += width;
     }
-    if (modelState.reasoningEffort) {
+    if (footerReasoningSupported && modelState.reasoningEffort) {
       footerX += 2;
       const width = footerCellWidth(modelState.reasoningEffort, "reasoning");
       addFooterInlineTarget("footer:inline:reasoning", footerX, width, () => {
@@ -10044,6 +10083,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             const cell = inlineRowFocus.cell;
             if (cell === "provider") cycleProvider(1);
             else if (cell === "model") cycleModel(1);
+            else if (cell === "fast") applyModelState((prev) => ({ ...prev, codexFastMode: !prev.codexFastMode }));
             else if (cell === "reasoning") cycleReasoning(1);
             else if (cell === "permission") cyclePermission(1);
             else if (cell === "subagents") openSubagentsPane();
@@ -10852,6 +10892,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           approvalActive={pendingApproval?.mode === "approval" && !pendingApproval.highStakes}
           liveAgentCount={liveAgentCount}
           fastMode={modelState.codexFastMode}
+          fastSupported={footerFastSupported}
           inlineRowFocused={inlineRowFocused}
           inlineRowCell={inlineRowFocus.cell}
           providerLocked={providerLocked}

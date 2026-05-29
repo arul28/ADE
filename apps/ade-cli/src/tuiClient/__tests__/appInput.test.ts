@@ -12,6 +12,7 @@ import {
   encodeTerminalPromptSubmitConfirm,
   applyCoalescedPromptInput,
   footerControlsForAvailability,
+  inlineRowCellOrder,
   formatGitConflictReport,
   formatLaneDeleteRisk,
   formFieldUsesPromptInput,
@@ -542,6 +543,19 @@ describe("footer control ordering", () => {
   it("puts chat info first when that pane is available", () => {
     expect(footerControlsForAvailability(true)).toEqual(["agents", "drawer", "details"]);
     expect(footerControlsForAvailability(false)).toEqual(["drawer", "details"]);
+  });
+});
+
+describe("inlineRowCellOrder", () => {
+  it("includes fast + reasoning only when supported, and provider/subagents per context", () => {
+    expect(inlineRowCellOrder({ providerLocked: false, fastSupported: true, reasoningSupported: true, subagentsVisible: true }))
+      .toEqual(["provider", "model", "fast", "reasoning", "permission", "subagents"]);
+    // No fast/reasoning support → those cells are absent (not dead focus stops).
+    expect(inlineRowCellOrder({ providerLocked: false, fastSupported: false, reasoningSupported: false, subagentsVisible: false }))
+      .toEqual(["provider", "model", "permission"]);
+    // Provider locked (chat underway) drops the provider cell.
+    expect(inlineRowCellOrder({ providerLocked: true, fastSupported: true, reasoningSupported: false, subagentsVisible: false }))
+      .toEqual(["model", "fast", "permission"]);
   });
 });
 

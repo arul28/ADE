@@ -6,7 +6,7 @@ import { gridMiniMapText } from "./GridMiniMap";
 
 const TOKEN_BAR_CELLS = 10;
 
-type InlineRowCell = 'provider' | 'model' | 'reasoning' | 'permission' | 'subagents' | null;
+type InlineRowCell = 'provider' | 'model' | 'fast' | 'reasoning' | 'permission' | 'subagents' | null;
 
 function Hint({ keyLabel, action }: { keyLabel: string; action: string }) {
   return (
@@ -91,6 +91,7 @@ export function FooterControls({
   liveAgentCount,
   subagentsButtonVisible,
   fastMode,
+  fastSupported,
   inlineRowFocused,
   inlineRowCell,
   planMode,
@@ -110,6 +111,7 @@ export function FooterControls({
   liveAgentCount?: number;
   subagentsButtonVisible?: boolean;
   fastMode?: boolean;
+  fastSupported?: boolean;
   inlineRowFocused?: boolean;
   inlineRowCell?: InlineRowCell;
   planMode?: boolean;
@@ -153,7 +155,18 @@ export function FooterControls({
             />
           </>
         ) : null}
-        {fastMode ? (
+        {fastSupported ? (
+          <>
+            <Text>{"  "}</Text>
+            <Cell
+              value="fast"
+              focused={inlineRowCell === 'fast'}
+              rowFocused={rowFocused}
+              baseColor={fastMode ? theme.color.warning : theme.color.t4}
+              accentColor={accentColor}
+            />
+          </>
+        ) : fastMode ? (
           <>
             <Text>{"  "}</Text>
             <Text color={theme.color.warning}>fast</Text>
