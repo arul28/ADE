@@ -55,9 +55,9 @@ Detailed wiring lives in [`../linear-integration/README.md`](../linear-integrati
 Two connection paths:
 
 1. **Personal API key** (recommended first path). Entered in the Connection panel; validated by a `viewer` query; stored via `linearCredentialService` in the active project's `.ade/secrets`.
-2. **OAuth** (when `.ade/secrets/linear-oauth.v1.json` is configured). `startOAuth()` boots an ephemeral HTTP server on 19836 with a PKCE pair, returns the authorize URL for the renderer to open, and finalizes on callback. Sessions auto-expire after 10 minutes.
+2. **OAuth** (the primary "Sign in with Linear" path; uses a bundled public client with PKCE). `startOAuth()` boots an ephemeral HTTP server on 19836 with a PKCE pair, returns the authorize URL for the renderer to open, and finalizes on callback. The *sign-in session* auto-expires after 10 minutes. The resulting **access token, which Linear expires ~24h after sign-in, is refreshed automatically**: `linearCredentialService.ensureFreshToken()` exchanges the stored `refresh_token` (via `linearTokenRefresh.ts`) when the token is at/near expiry — proactively before each GraphQL request and reactively on a 401 — rotating the refresh token on success. A rejected refresh token (`invalid_grant`) clears the connection so the user re-authorizes; transient failures leave the token in place. The headless `ade serve` credential service has the same refresh behavior.
 
-The renderer's `LinearConnectionPanel` auto-surfaces whichever path is available. The CTO onboarding recommends the API key as faster; OAuth is available for customers that prefer SSO.
+The renderer's `LinearConnectionPanel` auto-surfaces whichever path is available. Most users connect via OAuth; the personal API key (which does not expire) is the alternative for headless/automation use.
 
 ## Workflow definition
 

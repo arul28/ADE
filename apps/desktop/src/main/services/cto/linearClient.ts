@@ -195,21 +195,34 @@ export function createLinearClient(args: LinearClientArgs) {
     throw new Error("Linear credential auth mode is missing or unknown.");
   };
 
+  const ensureFreshAuth = async (opts?: { force?: boolean }): Promise<void> => {
+    try {
+      await args.credentials.ensureFreshToken?.(opts);
+    } catch {
+      // Best effort: a refresh failure must not block the request. If the token
+      // is truly dead, the request below surfaces its own auth error.
+    }
+  };
+
   const request = async <TData = Record<string, unknown>>(params: {
     query: string;
     variables?: Record<string, unknown>;
     maxRetries?: number;
   }): Promise<TData> => {
-    const token = toAuthorizationHeaderValue(
-      args.credentials.getTokenOrThrow(),
-      args.credentials.getStatus().authMode
-    );
+    // Proactively refresh an OAuth token that is at/near expiry before sending.
+    await ensureFreshAuth();
     const maxRetries = Math.max(0, Math.floor(params.maxRetries ?? 3));
     let attempt = 0;
     let backoffMs = 500;
+    let didAuthRefresh = false;
 
     while (true) {
       attempt += 1;
+      // Re-read per attempt so a refresh between attempts uses the new token.
+      const token = toAuthorizationHeaderValue(
+        args.credentials.getTokenOrThrow(),
+        args.credentials.getStatus().authMode
+      );
       try {
         const res = await fetchImpl(LINEAR_GRAPHQL_URL, {
           method: "POST",
@@ -227,6 +240,20 @@ export function createLinearClient(args: LinearClientArgs) {
 
         const message = payload.errors?.[0]?.message ?? null;
         const errorCode = payload.errors?.[0]?.extensions?.code ?? null;
+
+        // Reactive refresh: if the access token was rejected, refresh once and
+        // retry with the new token (covers a token already expired by the time
+        // the request fired, or one with no recorded expiry).
+        const isAuthError =
+          res.status === 401 ||
+          errorCode === "AUTHENTICATION_ERROR" ||
+          (message ? /authentication|unauthor|invalid.*token|token.*expired/i.test(message) : false);
+        if (isAuthError && !didAuthRefresh && args.credentials.getStatus().authMode === "oauth") {
+          didAuthRefresh = true;
+          await ensureFreshAuth({ force: true });
+          continue;
+        }
+
         const isRateLimited =
           res.status === 429 ||
           errorCode === "RATELIMITED" ||
@@ -663,6 +690,7 @@ export function createLinearClient(args: LinearClientArgs) {
   };
 
   const getQuickView = async (connection: CtoLinearQuickView["connection"]): Promise<CtoLinearQuickView> => {
+    await ensureFreshAuth();
     const sdk = createSdkClient();
     // Recent issues fetched via raw GraphQL (single request with ISSUE_FIELDS_FRAGMENT)
     // to avoid the lazy-relation fan-out that the SDK normalizer triggers.

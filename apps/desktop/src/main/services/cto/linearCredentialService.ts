@@ -5,6 +5,10 @@ import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
 import { isRecord, getErrorMessage, isEnoentError } from "../shared/utils";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
+import {
+  linearTokenNeedsRefresh,
+  refreshLinearOAuthAccessToken,
+} from "./linearTokenRefresh";
 
 // Bundled OAuth client ID — ships with ADE so users get "Sign in with Linear"
 // out of the box without configuring their own OAuth app.
@@ -34,6 +38,7 @@ type LinearCredentialServiceArgs = {
   adeDir: string;
   logger?: Logger | null;
   credentialStore?: SyncCredentialStore | null;
+  fetchImpl?: typeof fetch;
 };
 
 type StoredLinearToken = {
@@ -507,6 +512,63 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     return null;
   };
 
+  // Refresh the OAuth access token via grant_type=refresh_token when it is at or
+  // near expiry (Linear tokens expire ~24h after sign-in). Concurrent callers
+  // share one in-flight refresh. No-op for manual tokens / API keys (they don't
+  // expire) and when no refresh token is stored.
+  let refreshInFlight: Promise<void> | null = null;
+
+  const ensureFreshToken = async (opts?: { force?: boolean }): Promise<void> => {
+    const stored = getStoredToken();
+    if (!stored || stored.authMode !== "oauth" || !stored.refreshToken) return;
+    if (!opts?.force && !linearTokenNeedsRefresh(stored.expiresAt, Date.now())) return;
+    if (refreshInFlight) {
+      await refreshInFlight;
+      return;
+    }
+    const client = readOAuthClientCredentials();
+    if (!client) return;
+    const refreshToken = stored.refreshToken;
+    refreshInFlight = (async () => {
+      const result = await refreshLinearOAuthAccessToken({
+        refreshToken,
+        clientId: client.clientId,
+        clientSecret: client.clientSecret,
+        fetchImpl: args.fetchImpl,
+      });
+      if (result.ok) {
+        persistToken({
+          token: result.accessToken,
+          authMode: "oauth",
+          refreshToken: result.refreshToken ?? refreshToken,
+          expiresAt: result.expiresAt,
+        });
+        invalidateCache();
+        args.logger?.info("linear_sync.oauth_token_refreshed", {
+          expiresAt: result.expiresAt,
+        });
+      } else if (result.invalidGrant) {
+        // Refresh token revoked/expired — clear the connection so the UI prompts
+        // the user to reconnect rather than retrying a dead token forever.
+        persistToken(null);
+        invalidateCache();
+        args.logger?.warn("linear_sync.oauth_refresh_invalid_grant", {
+          status: result.status,
+          message: result.message,
+        });
+      } else {
+        // Transient (network / 5xx): keep the token and let the caller retry.
+        args.logger?.warn("linear_sync.oauth_refresh_failed", {
+          status: result.status,
+          message: result.message,
+        });
+      }
+    })().finally(() => {
+      refreshInFlight = null;
+    });
+    await refreshInFlight;
+  };
+
   return {
     getToken(): string | null {
       return getStoredToken()?.token ?? null;
@@ -582,6 +644,8 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     getOAuthClientCredentials(): LinearOAuthClientCredentials | null {
       return readOAuthClientCredentials();
     },
+
+    ensureFreshToken,
   };
 }
 
