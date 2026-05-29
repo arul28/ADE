@@ -589,7 +589,14 @@ function ChatBlock({
         // — no need to also recolor the title, and bold is avoided because some
         // xterm builds render bold characters slightly wider, which makes the
         // selected row look outdented next to its neighbours.
-        const titleColor: string = selected || hovered ? theme.color.violet : theme.color.t1;
+        // Awaiting-input chats tint amber (a calm "needs you" signal) when not
+        // selected; selection/hover still wins with violet. Running activity is
+        // conveyed by the spinner, not a recolor.
+        const titleColor: string = selected || hovered
+          ? theme.color.violet
+          : session.awaitingInput && !running
+            ? theme.color.attention
+            : theme.color.t1;
         return (
           <Box key={session.sessionId} marginTop={index > 0 ? 1 : 0}>
             <Text color={exec.color}>{exec.glyph} </Text>

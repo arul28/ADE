@@ -42,9 +42,9 @@ function bottomLine(value: string, width: number): string {
   return `└${fillLine(` ${value}`, Math.max(1, width - 2)).replace(/ +$/u, (spaces) => "─".repeat(spaces.length))}┘`;
 }
 
-function paletteLine(value: string, color: string, key?: React.Key) {
+function paletteLine(value: string, color: string, key?: React.Key, bold?: boolean) {
   return (
-    <Text key={key} backgroundColor={theme.color.surface1} color={color}>
+    <Text key={key} backgroundColor={theme.color.surface1} color={color} bold={bold}>
       {value}
     </Text>
   );
@@ -53,7 +53,7 @@ function paletteLine(value: string, color: string, key?: React.Key) {
 function glyph(kind: CommandPaletteItem["kind"]): string {
   if (kind === "lane") return "◇";
   if (kind === "chat") return "◉";
-  return "↗";
+  return "/";
 }
 
 export function CommandPalette({
@@ -96,7 +96,7 @@ export function CommandPalette({
   return (
     <Box width={paletteWidth} flexDirection="column">
       {paletteLine(header, theme.color.violet, "header")}
-      {rows.map((row, index) => paletteLine(row.value, row.selected ? theme.color.t1 : theme.color.t2, `row:${index}`))}
+      {rows.map((row, index) => paletteLine(row.value, row.selected ? theme.color.violet : theme.color.t2, `row:${index}`, row.selected))}
       {paletteLine(bodyLine(selected ? `${selected.label} · ${selected.detail}` : "No matches", paletteWidth), theme.color.t3, "detail")}
       {paletteLine(footer, theme.color.t4, "footer")}
     </Box>
