@@ -371,6 +371,10 @@ export type SyncFileBlob = {
   isBinary: boolean;
   content: string;
   languageId?: string | null;
+  previewKind?: "text" | "image" | "binary";
+  dataUrl?: string;
+  contentOmitted?: boolean;
+  omittedReason?: "too_large" | "unsupported_binary";
 };
 
 export type SyncFileRequest =
@@ -601,10 +605,16 @@ export type SyncRemoteCommandAction =
   | "cto.listAgentRevisions"
   | "cto.getFlowPolicy"
   | "cto.getLinearConnectionStatus"
+  | "cto.getLinearQuickView"
+  | "cto.getLinearIssuePickerData"
+  | "cto.searchLinearIssues"
+  | "cto.getLinearIssueComments"
   | "cto.getLinearSyncDashboard"
+  | "cto.runLinearSyncNow"
   | "cto.listLinearSyncQueue"
   | "cto.listLinearIngressEvents"
   | "cto.updateIdentity"
+  | "cto.saveAgent"
   | "cto.removeAgent"
   | "cto.setAgentStatus"
   | "cto.triggerAgentWakeup"

@@ -99,6 +99,25 @@ extension WorkChatSessionView {
           }
         }
       )
+    case .pendingModelSelection(let request):
+      WorkModelSelectionPendingCard(
+        request: request,
+        busy: actionInFlight || !isLive,
+        onConfirm: { selectionJSON in
+          await runSessionAction {
+            await onSubmitQuestionAnswers(
+              request.id,
+              ["selection": .string(selectionJSON)],
+              nil
+            )
+          }
+        },
+        onCancel: {
+          await runSessionAction {
+            await onDeclineQuestion(request.id)
+          }
+        }
+      )
     }
   }
 

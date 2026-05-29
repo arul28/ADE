@@ -446,6 +446,26 @@ struct SyntaxHighlightedCodeView: View {
   }
 }
 
+struct FilesMarkdownPreview: View {
+  let text: String
+
+  private var renderedText: AttributedString {
+    (try? AttributedString(markdown: text)) ?? AttributedString(text)
+  }
+
+  var body: some View {
+    ScrollView(.vertical) {
+      Text(renderedText)
+        .font(.body)
+        .foregroundStyle(ADEColor.textPrimary)
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+    }
+    .adeInsetField(cornerRadius: 16, padding: 0)
+  }
+}
+
 struct FilesInlineDiffView: View {
   let lines: [FilesInlineDiffLine]
   let language: FilesLanguage

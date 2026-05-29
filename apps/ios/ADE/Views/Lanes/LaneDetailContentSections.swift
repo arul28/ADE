@@ -25,6 +25,9 @@ struct LaneDetailHeaderCard<Footer: View>: View {
     VStack(alignment: .leading, spacing: 12) {
       headerTopRow
       detailMetadataRow
+      if let issue = primaryLaneLinearIssue(for: detail?.lane ?? snapshot.lane) {
+        LaneLinearIssueBadge(issue: issue)
+      }
       statusRow
       if let summary = headerSummaryText {
         Text(summary)

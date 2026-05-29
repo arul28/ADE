@@ -795,7 +795,9 @@ struct PrDetailView: View {
 
   private var stickyActionBar: some View {
     let gate = mergeGateInfo
-    let needsRebase = gate.tone == .amber || behindBaseBy > 0
+    let canRebaseFromGate = gate.tone == .amber
+      && gate.target == .overview
+      && (behindBaseBy > 0 || snapshot?.status?.isMergeable == false)
 
     // Single full-width action — matches the mocks. The pre-merge "needs
     // rebase" / "merge blocked" states surface as inline body cards (Merge
@@ -817,12 +819,23 @@ struct PrDetailView: View {
       enabled = canRunPrActions && (capabilities?.canMerge ?? actionAvailability.mergeEnabled)
       action = { presentMergeMethodPicker() }
     case .amber:
-      label = needsRebase ? (behindBaseBy > 0 ? "Rebase · \(behindBaseBy) behind" : "Rebase") : "Needs rebase"
-      symbol = "arrow.triangle.2.circlepath"
+      if canRebaseFromGate {
+        label = behindBaseBy > 0 ? "Rebase · \(behindBaseBy) behind" : "Rebase"
+        symbol = "arrow.triangle.2.circlepath"
+      } else if gate.target == .checks {
+        label = "Checks pending"
+        symbol = "clock.badge.checkmark"
+      } else if gate.target == .reviews {
+        label = "Review needed"
+        symbol = "person.crop.circle.badge.exclamationmark"
+      } else {
+        label = "Waiting for status"
+        symbol = "clock"
+      }
       isPrimary = false
       isAmber = true
-      enabled = canRunPrActions && !currentPr.laneId.isEmpty
-      action = { triggerRebase() }
+      enabled = canRebaseFromGate && canRunPrActions && !currentPr.laneId.isEmpty
+      action = { if canRebaseFromGate { triggerRebase() } }
     case .red where canAttemptBlockedMerge:
       label = "Attempt merge"
       symbol = "arrow.triangle.merge"
@@ -1227,6 +1240,7 @@ struct PrDetailView: View {
       maxRounds: 5,
       onRebaseNeeded: "pause",
       conflictStrategy: "pause",
+      autoAgentSettings: defaultAutoConflictAgentSettings(),
       forceFinalizeMode: "off",
       forceFinalizeRequireNoCiFailures: true,
       atCapPolicy: "ci_retry_once",
@@ -1286,7 +1300,41 @@ struct PrDetailView: View {
     updatePipelineSettings("Updating conflict strategy") { settings in
       settings.conflictStrategy = strategy
       settings.onRebaseNeeded = strategy == "rebase" ? "auto_rebase" : "pause"
+      if strategy == "auto" {
+        settings.autoAgentSettings = resolvedAutoConflictAgentSettings(from: settings.autoAgentSettings)
+      }
     }
+  }
+
+  private func defaultAutoConflictAgentSettings() -> AutoConflictAgentSettings {
+    AutoConflictAgentSettings(
+      provider: nil,
+      model: nil,
+      reasoningEffort: nil,
+      permissionMode: nil,
+      confidenceThreshold: nil
+    )
+  }
+
+  private func resolvedAutoConflictAgentSettings(from current: AutoConflictAgentSettings?) -> AutoConflictAgentSettings {
+    let model = trimmedNonEmpty(current?.model)
+    return AutoConflictAgentSettings(
+      provider: trimmedNonEmpty(current?.provider) ?? prAutoConflictAgentProvider(for: model) ?? "codex",
+      model: model,
+      reasoningEffort: trimmedNonEmpty(current?.reasoningEffort),
+      permissionMode: trimmedNonEmpty(current?.permissionMode),
+      confidenceThreshold: current?.confidenceThreshold
+    )
+  }
+
+  private func trimmedNonEmpty(_ value: String?) -> String? {
+    let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty ? nil : trimmed
+  }
+
+  private func prAutoConflictAgentProvider(for model: String?) -> String? {
+    let provider = workModelCatalogGroupKey(for: model ?? "", currentProvider: "")
+    return provider == "claude" || provider == "codex" ? provider : nil
   }
 
   private func setPipelineAtCapPolicy(_ policy: String) {

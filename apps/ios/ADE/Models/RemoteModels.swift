@@ -224,6 +224,54 @@ struct LaneStatus: Codable, Equatable {
   var rebaseInProgress: Bool
 }
 
+struct LaneLinearIssue: Codable, Identifiable, Equatable, Hashable {
+  var id: String
+  var identifier: String
+  var title: String
+  var description: String?
+  var url: String?
+  var projectId: String?
+  var projectSlug: String?
+  var projectName: String?
+  var teamId: String?
+  var teamKey: String?
+  var teamName: String?
+  var stateId: String?
+  var stateName: String?
+  var stateType: String?
+  var priority: Int?
+  var priorityLabel: String?
+  var labels: [String]?
+  var assigneeId: String?
+  var assigneeName: String?
+  var creatorId: String?
+  var creatorName: String?
+  var dueDate: String?
+  var estimate: Double?
+  var branchName: String?
+  var createdAt: String?
+  var updatedAt: String?
+}
+
+struct LaneLinearIssueLinkEvidence: Codable, Equatable, Hashable {
+  var chatSessionId: String?
+  var commitSha: String?
+  var prId: String?
+}
+
+struct LaneLinearIssueLink: Codable, Identifiable, Equatable, Hashable {
+  var id: String
+  var laneId: String
+  var issue: LaneLinearIssue
+  var role: String
+  var source: String
+  var includeInPr: Bool
+  var closeOnMerge: Bool
+  var evidence: LaneLinearIssueLinkEvidence?
+  var createdAt: String
+  var updatedAt: String
+}
+
 enum LaneIcon: String, Codable, Equatable {
   case star
   case flag
@@ -251,6 +299,9 @@ struct LaneSummary: Codable, Identifiable, Equatable {
   var icon: LaneIcon?
   var tags: [String]
   var folder: String?
+  var runtimePlacement: String?
+  var linearIssue: LaneLinearIssue?
+  var linearIssueLinks: [LaneLinearIssueLink]?
   var createdAt: String
   var archivedAt: String?
   var devicesOpen: [DeviceMarker]?
@@ -751,6 +802,50 @@ struct AgentAdapterConfig: Codable, Hashable {
   }
 }
 
+struct AgentActiveHoursConfig: Codable {
+  var start: String
+  var end: String
+  var timezone: String
+}
+
+struct AgentHeartbeatConfig: Codable {
+  var enabled: Bool
+  var intervalSec: Int
+  var wakeOnDemand: Bool
+  var activeHours: AgentActiveHoursConfig?
+}
+
+struct AgentRuntimeConfigPatch: Codable {
+  var heartbeat: AgentHeartbeatConfig?
+  var maxConcurrentRuns: Int?
+}
+
+struct AgentLinearIdentityPatch: Codable {
+  var userIds: [String]?
+  var displayNames: [String]?
+  var aliases: [String]?
+}
+
+struct AgentUpsertInput: Codable {
+  var id: String?
+  var name: String
+  var role: String
+  var title: String?
+  var reportsTo: String?
+  var capabilities: [String]?
+  var status: String?
+  var adapterType: String
+  var adapterConfig: [String: RemoteJSONValue]?
+  var runtimeConfig: AgentRuntimeConfigPatch?
+  var linearIdentity: AgentLinearIdentityPatch?
+  var budgetMonthlyCents: Int?
+}
+
+struct CtoSaveAgentPayload: Codable {
+  var agent: AgentUpsertInput
+  var actor: String?
+}
+
 /// Mirrors desktop `AgentIdentity`. `model` and `provider` are pulled from
 /// `adapterConfig` by the computed properties below for display.
 struct AgentIdentity: Codable, Hashable, Identifiable {
@@ -886,6 +981,195 @@ struct LinearConnectionStatus: Codable, Hashable {
   var lastSyncAt: String? { checkedAt }
 }
 
+struct LinearCatalogProject: Codable, Hashable, Identifiable {
+  var id: String
+  var name: String
+  var slug: String?
+  var key: String?
+  var description: String?
+  var url: String?
+  var icon: String?
+  var color: String?
+}
+
+struct LinearCatalogUser: Codable, Hashable, Identifiable {
+  var id: String
+  var name: String?
+  var displayName: String?
+  var email: String?
+  var avatarUrl: String?
+}
+
+struct LinearCatalogState: Codable, Hashable, Identifiable {
+  var id: String
+  var name: String
+  var type: String?
+  var teamId: String?
+  var teamKey: String?
+}
+
+struct LinearIssuePickerData: Codable, Hashable {
+  var projects: [LinearCatalogProject]
+  var users: [LinearCatalogUser]
+  var states: [LinearCatalogState]
+}
+
+struct LinearQuickViewOrganization: Codable, Hashable {
+  var id: String
+  var name: String
+  var urlKey: String?
+  var logoUrl: String?
+  var gitBranchFormat: String?
+  var createdIssueCount: Int?
+  var roadmapEnabled: Bool?
+  var customersEnabled: Bool?
+  var releasesEnabled: Bool?
+}
+
+struct LinearQuickViewViewer: Codable, Hashable {
+  var id: String
+  var name: String
+  var displayName: String
+  var email: String?
+  var avatarUrl: String?
+  var admin: Bool?
+  var guest: Bool?
+  var url: String?
+}
+
+struct LinearQuickViewProject: Codable, Hashable, Identifiable {
+  var id: String
+  var name: String
+  var slug: String
+  var teamName: String
+  var teamKey: String?
+  var url: String?
+  var color: String?
+  var icon: String?
+  var description: String?
+  var statusName: String?
+  var statusType: String?
+  var health: String?
+  var progress: Double?
+  var scope: Double?
+  var priority: Int?
+  var priorityLabel: String?
+  var issueCount: Int?
+  var completedIssueCount: Int?
+  var startDate: String?
+  var targetDate: String?
+  var leadName: String?
+  var teamKeys: [String]
+}
+
+struct LinearQuickViewTeam: Codable, Hashable, Identifiable {
+  var id: String
+  var key: String
+  var name: String
+  var displayName: String
+  var color: String?
+  var issueCount: Int?
+  var cyclesEnabled: Bool?
+  var `private`: Bool?
+}
+
+struct LinearQuickViewSdk: Codable, Hashable {
+  var packageName: String
+  var surfaces: [String]
+}
+
+struct LinearQuickView: Codable, Hashable {
+  var connection: LinearConnectionStatus
+  var organization: LinearQuickViewOrganization?
+  var viewer: LinearQuickViewViewer?
+  var projects: [LinearQuickViewProject]
+  var teams: [LinearQuickViewTeam]
+  var assignedIssues: [NormalizedLinearIssue]
+  var recentIssues: [NormalizedLinearIssue]
+  var fetchedAt: String
+  var sdk: LinearQuickViewSdk?
+}
+
+struct NormalizedLinearIssueChild: Codable, Hashable, Identifiable {
+  var id: String
+  var identifier: String
+  var title: String
+  var stateId: String?
+  var stateName: String?
+  var stateType: String?
+}
+
+struct NormalizedLinearIssue: Codable, Hashable, Identifiable {
+  var id: String
+  var identifier: String
+  var title: String
+  var description: String?
+  var url: String?
+  var projectId: String?
+  var projectSlug: String?
+  var projectName: String?
+  var teamId: String?
+  var teamKey: String?
+  var teamName: String?
+  var stateId: String?
+  var stateName: String?
+  var stateType: String?
+  var previousStateId: String?
+  var previousStateName: String?
+  var previousStateType: String?
+  var priority: Int?
+  var priorityLabel: String?
+  var labels: [String]?
+  var metadataTags: [String]?
+  var assigneeId: String?
+  var assigneeName: String?
+  var ownerId: String?
+  var creatorId: String?
+  var creatorName: String?
+  var blockerIssueIds: [String]?
+  var hasOpenBlockers: Bool?
+  var dueDate: String?
+  var estimate: Double?
+  var archivedAt: String?
+  var completedAt: String?
+  var canceledAt: String?
+  var startedAt: String?
+  var createdAt: String?
+  var updatedAt: String?
+  var childIssues: [NormalizedLinearIssueChild]?
+}
+
+struct LinearIssueSearchResultPageInfo: Codable, Hashable {
+  var hasNextPage: Bool
+  var endCursor: String?
+}
+
+struct LinearIssueSearchResult: Codable, Hashable {
+  var issues: [NormalizedLinearIssue]
+  var pageInfo: LinearIssueSearchResultPageInfo
+}
+
+struct LinearIssueSearchArgs: Codable, Hashable {
+  var projectId: String? = nil
+  var projectSlug: String? = nil
+  var teamKey: String? = nil
+  var stateTypes: [String]? = nil
+  var assigneeId: String? = nil
+  var priority: Int? = nil
+  var query: String? = nil
+  var first: Int? = nil
+  var after: String? = nil
+  var includeArchived: Bool? = nil
+}
+
+struct LinearIssueComment: Codable, Hashable, Identifiable {
+  var id: String
+  var body: String
+  var createdAt: String
+  var userName: String?
+  var userDisplayName: String?
+}
+
 /// Flattens the desktop `LinearWorkflowTrigger` / `LinearWorkflowTarget`
 /// objects into short display strings. Keeps the raw JSON around so a
 /// re-encode doesn't destroy unknown fields.
@@ -950,11 +1234,19 @@ struct LinearWorkflowDefinition: Codable, Hashable, Identifiable {
 
   private static func describeTarget(_ value: Any?) -> String {
     guard let dict = value as? [String: Any] else { return "—" }
-    // LinearWorkflowTarget typically has: { kind: "worker_run" | ...,
-    // workerId?, ... }
-    if let kind = dict["kind"] as? String {
-      if let workerId = dict["workerId"] as? String, kind == "worker_run" {
-        return "worker run · \(workerId)"
+    let kind = (dict["type"] as? String) ?? (dict["kind"] as? String)
+    if let kind {
+      if kind == "worker_run" {
+        if let workerId = dict["workerId"] as? String, !workerId.isEmpty {
+          return "worker run · \(workerId)"
+        }
+        if let selector = dict["workerSelector"] as? [String: Any],
+           let mode = selector["mode"] as? String,
+           mode != "none",
+           let value = selector["value"] as? String,
+           !value.isEmpty {
+          return "worker run · \(mode): \(value)"
+        }
       }
       return kind.replacingOccurrences(of: "_", with: " ")
     }
@@ -1008,16 +1300,59 @@ struct LinearSyncQueueItem: Codable, Hashable, Identifiable {
 struct LinearIngressEventRecord: Codable, Hashable, Identifiable {
   var id: String
   var issueId: String?
+  var issueIdentifier: String?
   /// Raw ingress event kind (e.g. "issue.created", "issue.updated").
   var kind: String
   var summary: String?
   var timestamp: String?
   var receivedAt: String?
+  var createdAt: String?
 
   /// UI-friendly timestamp preferring the most explicit field available.
-  var displayTimestamp: String? { timestamp ?? receivedAt }
+  var displayTimestamp: String? { timestamp ?? receivedAt ?? createdAt }
   /// Issue ID is optional on desktop — fall back to "—" for display.
-  var displayIssueId: String { issueId ?? "—" }
+  var displayIssueId: String { issueIdentifier ?? issueId ?? "—" }
+
+  private enum CodingKeys: String, CodingKey {
+    case id, issueId, issueIdentifier, kind, entityType, action, summary, timestamp, receivedAt, createdAt
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    id = try c.decode(String.self, forKey: .id)
+    issueId = try c.decodeIfPresent(String.self, forKey: .issueId)
+    issueIdentifier = try c.decodeIfPresent(String.self, forKey: .issueIdentifier)
+    let explicitKind = try c.decodeIfPresent(String.self, forKey: .kind)
+    let entityType = try c.decodeIfPresent(String.self, forKey: .entityType)
+    let action = try c.decodeIfPresent(String.self, forKey: .action)
+    if let explicitKind, !explicitKind.isEmpty {
+      kind = explicitKind
+    } else if let entityType, let action, !entityType.isEmpty, !action.isEmpty {
+      kind = "\(entityType).\(action)"
+    } else if let entityType, !entityType.isEmpty {
+      kind = entityType
+    } else if let action, !action.isEmpty {
+      kind = action
+    } else {
+      kind = "event"
+    }
+    summary = try c.decodeIfPresent(String.self, forKey: .summary)
+    timestamp = try c.decodeIfPresent(String.self, forKey: .timestamp)
+    receivedAt = try c.decodeIfPresent(String.self, forKey: .receivedAt)
+    createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var c = encoder.container(keyedBy: CodingKeys.self)
+    try c.encode(id, forKey: .id)
+    try c.encodeIfPresent(issueId, forKey: .issueId)
+    try c.encodeIfPresent(issueIdentifier, forKey: .issueIdentifier)
+    try c.encode(kind, forKey: .kind)
+    try c.encodeIfPresent(summary, forKey: .summary)
+    try c.encodeIfPresent(timestamp, forKey: .timestamp)
+    try c.encodeIfPresent(receivedAt, forKey: .receivedAt)
+    try c.encodeIfPresent(createdAt, forKey: .createdAt)
+  }
 }
 
 struct CtoTriggerAgentWakeupResult: Codable, Hashable {
@@ -2140,6 +2475,10 @@ struct SyncFileBlob: Codable, Equatable {
   var isBinary: Bool
   var content: String
   var languageId: String?
+  var previewKind: String? = nil
+  var dataUrl: String? = nil
+  var contentOmitted: Bool? = nil
+  var omittedReason: String? = nil
 }
 
 struct ComputerUseArtifactSummary: Codable, Identifiable, Equatable {

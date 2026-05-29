@@ -101,6 +101,12 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "cto.getRoster",
   "cto.ensureSession",
   "cto.ensureAgentSession",
+  "cto.getLinearQuickView",
+  "cto.getLinearIssuePickerData",
+  "cto.searchLinearIssues",
+  "cto.getLinearIssueComments",
+  "cto.runLinearSyncNow",
+  "cto.saveAgent",
   "prs.createFromLane",
   "prs.createQueue",
   "prs.land",
@@ -495,6 +501,67 @@ function createMockWorkerAgentService() {
   } as any;
 }
 
+function createMockWorkerRevisionService() {
+  return {
+    saveAgent: vi.fn(),
+    listAgentRevisions: vi.fn().mockReturnValue([]),
+    rollbackAgentRevision: vi.fn(),
+  } as any;
+}
+
+function createMockWorkerHeartbeatService() {
+  return {
+    syncFromConfig: vi.fn(),
+    triggerWakeup: vi.fn(),
+    listRuns: vi.fn().mockReturnValue([]),
+    listAgentSessionLogs: vi.fn().mockReturnValue([]),
+  } as any;
+}
+
+function createMockLinearIssueTracker() {
+  return {
+    listProjects: vi.fn().mockResolvedValue([{ id: "project-1", name: "Mobile", slug: "MOB" }]),
+    listUsers: vi.fn().mockResolvedValue([{ id: "user-1", name: "Ada" }]),
+    listWorkflowStates: vi.fn().mockResolvedValue([{ id: "state-1", name: "Todo", type: "todo" }]),
+    searchIssues: vi.fn().mockResolvedValue({
+      issues: [{ id: "issue-1", identifier: "ADE-42", title: "Mobile parity" }],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    }),
+    fetchIssueComments: vi.fn().mockResolvedValue([{ id: "comment-1", body: "Needs mobile", createdAt: "2026-05-28T00:00:00.000Z" }]),
+    getConnectionStatus: vi.fn().mockResolvedValue({ connected: true, viewerId: "user-1", viewerName: "Ada", message: null }),
+    getQuickView: vi.fn().mockResolvedValue({
+      connection: { connected: true, viewerId: "user-1", viewerName: "Ada" },
+      organization: null,
+      viewer: { id: "user-1", name: "Ada", displayName: "Ada", email: null, avatarUrl: null, admin: null, guest: null, url: null },
+      projects: [],
+      teams: [],
+      assignedIssues: [{ id: "issue-1", identifier: "ADE-42", title: "Mobile parity" }],
+      recentIssues: [{ id: "issue-2", identifier: "ADE-43", title: "Recent parity" }],
+      fetchedAt: "2026-05-28T00:00:00.000Z",
+      sdk: { packageName: "@linear/sdk", surfaces: ["assignedIssues", "recentIssues"] },
+    }),
+  } as any;
+}
+
+function createMockLinearSyncService() {
+  return {
+    getDashboard: vi.fn().mockReturnValue({ enabled: true, running: false }),
+    runSyncNow: vi.fn().mockResolvedValue({ enabled: true, running: false, lastSuccessAt: "2026-05-28T00:00:00.000Z" }),
+    listQueue: vi.fn().mockReturnValue([]),
+  } as any;
+}
+
+function createMockLinearCredentialService() {
+  return {
+    getStatus: vi.fn().mockReturnValue({
+      tokenStored: true,
+      authMode: "oauth",
+      tokenExpiresAt: null,
+      oauthConfigured: true,
+    }),
+  } as any;
+}
+
 function createMockProcessService() {
   return {
     listDefinitions: vi.fn().mockReturnValue([
@@ -533,6 +600,11 @@ describe("createSyncRemoteCommandService", () => {
   let diffService: ReturnType<typeof createMockDiffService>;
   let agentChatService: ReturnType<typeof createMockAgentChatService>;
   let workerAgentService: ReturnType<typeof createMockWorkerAgentService>;
+  let workerRevisionService: ReturnType<typeof createMockWorkerRevisionService>;
+  let workerHeartbeatService: ReturnType<typeof createMockWorkerHeartbeatService>;
+  let linearIssueTracker: ReturnType<typeof createMockLinearIssueTracker>;
+  let linearSyncService: ReturnType<typeof createMockLinearSyncService>;
+  let linearCredentialService: ReturnType<typeof createMockLinearCredentialService>;
   let conflictService: ReturnType<typeof createMockConflictService>;
   let processService: ReturnType<typeof createMockProcessService>;
   let issueInventoryService: ReturnType<typeof createMockIssueInventoryService>;
@@ -549,6 +621,11 @@ describe("createSyncRemoteCommandService", () => {
     diffService = createMockDiffService();
     agentChatService = createMockAgentChatService();
     workerAgentService = createMockWorkerAgentService();
+    workerRevisionService = createMockWorkerRevisionService();
+    workerHeartbeatService = createMockWorkerHeartbeatService();
+    linearIssueTracker = createMockLinearIssueTracker();
+    linearSyncService = createMockLinearSyncService();
+    linearCredentialService = createMockLinearCredentialService();
     conflictService = createMockConflictService();
     processService = createMockProcessService();
     issueInventoryService = createMockIssueInventoryService();
@@ -565,6 +642,11 @@ describe("createSyncRemoteCommandService", () => {
       diffService,
       agentChatService,
       workerAgentService,
+      workerRevisionService,
+      workerHeartbeatService,
+      linearCredentialService,
+      getLinearIssueTracker: () => linearIssueTracker,
+      getLinearSyncService: () => linearSyncService,
       conflictService,
       processService,
       logger: createLogger() as any,
@@ -2763,6 +2845,81 @@ describe("createSyncRemoteCommandService", () => {
 
       expect(result).toEqual({});
       expect(workerAgentService.removeAgent).toHaveBeenCalledWith("worker-42");
+    });
+
+    it("cto.saveAgent saves the worker through the revision service and returns the saved worker", async () => {
+      const agent = {
+        id: "worker-42",
+        name: "Mobile Worker",
+        role: "engineer",
+        title: "Build engineer",
+        reportsTo: "cto",
+        capabilities: ["mobile"],
+        status: "idle",
+        adapterType: "codex-local",
+        adapterConfig: { model: "gpt-5" },
+        runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300, wakeOnDemand: true } },
+        budgetMonthlyCents: 10000,
+      };
+      const savedWorker = {
+        ...agent,
+        slug: "mobile-worker",
+        spentMonthlyCents: 0,
+        createdAt: "2026-04-01T00:00:00.000Z",
+        updatedAt: "2026-04-01T00:00:00.000Z",
+        deletedAt: null,
+      };
+      workerRevisionService.saveAgent.mockReturnValue(savedWorker);
+
+      const result = await service.execute(makePayload("cto.saveAgent", {
+        agent,
+        actor: "mobile",
+      }));
+
+      expect(workerRevisionService.saveAgent).toHaveBeenCalledWith(agent, "mobile");
+      expect(workerHeartbeatService.syncFromConfig).toHaveBeenCalledOnce();
+      expect(result).toBe(savedWorker);
+    });
+
+    it("cto exposes Linear quick view, issue picker, search, comments, and sync-now through mobile sync", async () => {
+      const quickView = await service.execute(makePayload("cto.getLinearQuickView", {}));
+      expect(linearIssueTracker.getQuickView).toHaveBeenCalledWith(expect.objectContaining({
+        connected: true,
+        viewerId: "user-1",
+      }));
+      expect(quickView).toMatchObject({
+        assignedIssues: [{ identifier: "ADE-42" }],
+        recentIssues: [{ identifier: "ADE-43" }],
+      });
+
+      const picker = await service.execute(makePayload("cto.getLinearIssuePickerData", {}));
+      expect(picker).toMatchObject({
+        projects: [{ id: "project-1" }],
+        users: [{ id: "user-1" }],
+        states: [{ id: "state-1" }],
+      });
+
+      const search = await service.execute(makePayload("cto.searchLinearIssues", {
+        projectSlug: "MOB",
+        query: "parity",
+        stateTypes: ["todo"],
+        first: 10,
+      }));
+      expect(linearIssueTracker.searchIssues).toHaveBeenCalledWith({
+        projectSlug: "MOB",
+        stateTypes: ["todo"],
+        query: "parity",
+        first: 10,
+      });
+      expect(search).toMatchObject({ issues: [{ identifier: "ADE-42" }] });
+
+      const comments = await service.execute(makePayload("cto.getLinearIssueComments", { issueId: "issue-1" }));
+      expect(linearIssueTracker.fetchIssueComments).toHaveBeenCalledWith("issue-1");
+      expect(comments).toMatchObject([{ id: "comment-1" }]);
+
+      const dashboard = await service.execute(makePayload("cto.runLinearSyncNow", {}));
+      expect(linearSyncService.runSyncNow).toHaveBeenCalledOnce();
+      expect(dashboard).toMatchObject({ lastSuccessAt: "2026-05-28T00:00:00.000Z" });
     });
   });
 

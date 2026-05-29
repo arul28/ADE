@@ -161,8 +161,8 @@ struct PrMergeGateInfo: Equatable {
 
 /// Derives the merge-gate summary from the hydrated PR status + capabilities.
 ///
-/// Precedence (worst wins): conflicts/failing/blockedReason → red;
-/// clean but behind base or needs rebase → amber; otherwise green.
+/// Precedence (worst wins): conflicts/failing/blockedReason/unresolved review
+/// threads → red; pending checks/reviews or rebase-needed → amber; otherwise green.
 func prComputeMergeGate(
   status: PrStatus?,
   checks: [PrCheck],
@@ -174,9 +174,9 @@ func prComputeMergeGate(
   isDraft: Bool = false
 ) -> PrMergeGateInfo {
   let normalizedSummaryChecksStatus = summaryChecksStatus?.lowercased()
-  let summarySaysFailing = checks.isEmpty && ["failing", "failure", "failed"].contains(normalizedSummaryChecksStatus ?? "")
-  let summarySaysPending = checks.isEmpty && ["pending", "running", "in_progress"].contains(normalizedSummaryChecksStatus ?? "")
-  let summarySaysPassing = checks.isEmpty && ["passing", "success", "passed"].contains(normalizedSummaryChecksStatus ?? "")
+  let summarySaysFailing = ["failing", "failure", "failed"].contains(normalizedSummaryChecksStatus ?? "")
+  let summarySaysPending = ["pending", "running", "in_progress", "queued"].contains(normalizedSummaryChecksStatus ?? "")
+  let summarySaysPassing = ["passing", "success", "passed"].contains(normalizedSummaryChecksStatus ?? "")
   let failingChecks = checks.filter { check in
     check.status == "completed" &&
       check.conclusion != nil &&
@@ -184,12 +184,19 @@ func prComputeMergeGate(
       check.conclusion != "neutral" &&
       check.conclusion != "skipped"
   }.count
+  let pendingChecks = checks.filter { check in
+    let status = check.status.lowercased()
+    if status != "completed" { return true }
+    return check.conclusion == nil
+  }.count
   let failing = failingChecks + (summarySaysFailing ? 1 : 0)
+  let pending = pendingChecks + (summarySaysPending && pendingChecks == 0 ? 1 : 0)
   let conflicts = status?.mergeConflicts ?? false
   let blockedReason = capabilities?.mergeBlockedReason?.trimmingCharacters(in: .whitespacesAndNewlines)
   let hasBlockedReason = !(blockedReason?.isEmpty ?? true)
   let behind = status?.behindBaseBy ?? 0
   let mergeable = status?.isMergeable ?? true
+  let missingApprovals = max(reviewsNeeded - reviewsHave, 0)
 
   let approvalsText: String = {
     let have = max(reviewsHave, 0)
@@ -205,7 +212,7 @@ func prComputeMergeGate(
     )
   }
 
-  if conflicts || failing > 0 || hasBlockedReason {
+  if conflicts || failing > 0 || reviewThreadsUnresolved > 0 || hasBlockedReason {
     var parts: [String] = []
     if summarySaysFailing {
       parts.append("checks failing")
@@ -215,7 +222,9 @@ func prComputeMergeGate(
     if conflicts {
       parts.append("merge conflicts")
     }
-    if reviewsNeeded > 0 || reviewsHave > 0 {
+    if missingApprovals > 0 {
+      parts.append("\(missingApprovals) approval\(missingApprovals == 1 ? "" : "s") needed")
+    } else if reviewsNeeded > 0 || reviewsHave > 0 {
       parts.append(approvalsText)
     }
     if reviewThreadsUnresolved > 0 {
@@ -227,6 +236,16 @@ func prComputeMergeGate(
     let subline = parts.isEmpty ? (blockedReason ?? "Merge blocked by machine") : parts.joined(separator: " · ")
     let target: PrMergeGateTarget = (failing > 0 || conflicts) ? .checks : .reviews
     return PrMergeGateInfo(tone: .red, subline: subline, target: target)
+  }
+
+  if pending > 0 {
+    let subline = pending == 1 ? "1 check pending" : "\(pending) checks pending"
+    return PrMergeGateInfo(tone: .amber, subline: subline, target: .checks)
+  }
+
+  if missingApprovals > 0 {
+    let subline = "\(approvalsText) · \(missingApprovals) approval\(missingApprovals == 1 ? "" : "s") needed"
+    return PrMergeGateInfo(tone: .amber, subline: subline, target: .reviews)
   }
 
   if status == nil && checks.isEmpty && !summarySaysPassing {

@@ -99,11 +99,13 @@ struct CtoTeamScreen: View {
       await load(force: true)
     }
     .sheet(isPresented: $showHireSheet) {
-      CtoMachineOnlyNotice(
-        title: "Hire worker",
-        message: "Hire workers from ADE on your machine. Mobile support is coming soon."
-      )
-      .presentationDetents([.fraction(0.3), .medium])
+      CtoWorkerHireSheet(existingAgents: displayAgents) { saved in
+        showHireSheet = false
+        wakeupNotice = "Hired \(saved.name)."
+        await load(force: true)
+      }
+      .environmentObject(syncService)
+      .presentationDetents([.large])
     }
   }
 
@@ -135,7 +137,7 @@ struct CtoTeamScreen: View {
       }
       .buttonStyle(.plain)
       .accessibilityLabel("Hire worker")
-      .accessibilityHint("Opens a sheet explaining hire is available from ADE on your machine for now.")
+      .accessibilityHint("Opens the worker creation form.")
     }
   }
 
@@ -594,6 +596,309 @@ private struct MiniActionButton: View {
 private func CtoTeamAsyncResult<T>(_ body: @escaping () async throws -> T) async -> Result<T, Error> {
   do { return .success(try await body()) }
   catch { return .failure(error) }
+}
+
+private struct CtoWorkerTemplate: Identifiable, Hashable {
+  let id: String
+  let name: String
+  let role: String
+  let title: String
+  let capabilities: [String]
+  let model: String
+  let description: String
+  let systemImage: String
+}
+
+private let ctoWorkerTemplates: [CtoWorkerTemplate] = [
+  CtoWorkerTemplate(
+    id: "backend-engineer",
+    name: "Backend Engineer",
+    role: "engineer",
+    title: "Backend Engineer",
+    capabilities: ["backend", "api", "database", "testing"],
+    model: "claude-sonnet-4-6",
+    description: "Services, persistence, integrations, and tests.",
+    systemImage: "server.rack"
+  ),
+  CtoWorkerTemplate(
+    id: "frontend-engineer",
+    name: "Frontend Engineer",
+    role: "engineer",
+    title: "Frontend Engineer",
+    capabilities: ["frontend", "ui", "accessibility", "testing"],
+    model: "claude-sonnet-4-6",
+    description: "Interfaces, state, polish, and browser validation.",
+    systemImage: "rectangle.on.rectangle.angled"
+  ),
+  CtoWorkerTemplate(
+    id: "qa-tester",
+    name: "QA Tester",
+    role: "qa",
+    title: "QA Tester",
+    capabilities: ["qa", "regression", "edge-cases", "automation"],
+    model: "claude-sonnet-4-6",
+    description: "Regression passes, edge cases, and proof capture.",
+    systemImage: "checkmark.shield"
+  ),
+  CtoWorkerTemplate(
+    id: "devops",
+    name: "DevOps Engineer",
+    role: "devops",
+    title: "DevOps Engineer",
+    capabilities: ["ci", "release", "infra", "observability"],
+    model: "claude-sonnet-4-6",
+    description: "Builds, CI, releases, and operational fixes.",
+    systemImage: "gearshape.2"
+  ),
+  CtoWorkerTemplate(
+    id: "researcher",
+    name: "Researcher",
+    role: "researcher",
+    title: "Researcher",
+    capabilities: ["research", "analysis", "planning", "docs"],
+    model: "claude-sonnet-4-6",
+    description: "Investigations, comparisons, and written findings.",
+    systemImage: "book"
+  ),
+  CtoWorkerTemplate(
+    id: "custom",
+    name: "Custom Worker",
+    role: "general",
+    title: "",
+    capabilities: [],
+    model: "claude-sonnet-4-6",
+    description: "Start blank and define the role yourself.",
+    systemImage: "wand.and.stars"
+  ),
+]
+
+private struct CtoWorkerHireSheet: View {
+  @Environment(\.dismiss) private var dismiss
+  @EnvironmentObject private var syncService: SyncService
+
+  let existingAgents: [AgentIdentity]
+  let onSaved: (AgentIdentity) async -> Void
+
+  @State private var selectedTemplateId = ctoWorkerTemplates.first?.id ?? "custom"
+  @State private var name = ""
+  @State private var title = ""
+  @State private var role = "engineer"
+  @State private var capabilitiesText = ""
+  @State private var adapterType = "claude-local"
+  @State private var model = "claude-sonnet-4-6"
+  @State private var budgetText = ""
+  @State private var maxConcurrentRuns = 1
+  @State private var wakeOnDemand = true
+  @State private var saving = false
+  @State private var errorMessage: String?
+
+  private let roleOptions = [
+    ("engineer", "Engineer"),
+    ("qa", "QA"),
+    ("designer", "Designer"),
+    ("devops", "DevOps"),
+    ("researcher", "Researcher"),
+    ("general", "General"),
+  ]
+
+  private let adapterOptions = [
+    ("claude-local", "Claude local"),
+    ("codex-local", "Codex local"),
+  ]
+
+  private var canSave: Bool {
+    !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !saving
+  }
+
+  var body: some View {
+    NavigationStack {
+      Form {
+        if let errorMessage {
+          Section {
+            Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+              .foregroundStyle(ADEColor.danger)
+          }
+        }
+
+        Section("Template") {
+          ForEach(ctoWorkerTemplates) { template in
+            Button {
+              apply(template)
+            } label: {
+              HStack(alignment: .top, spacing: 10) {
+                Image(systemName: template.systemImage)
+                  .foregroundStyle(ADEColor.ctoAccent)
+                  .frame(width: 22)
+                VStack(alignment: .leading, spacing: 2) {
+                  Text(template.name)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(ADEColor.textPrimary)
+                  Text(template.description)
+                    .font(.caption)
+                    .foregroundStyle(ADEColor.textSecondary)
+                }
+                Spacer(minLength: 8)
+                if selectedTemplateId == template.id {
+                  Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(ADEColor.ctoAccent)
+                }
+              }
+            }
+            .buttonStyle(.plain)
+          }
+        }
+
+        Section("Identity") {
+          TextField("Name", text: $name)
+            .textInputAutocapitalization(.words)
+          TextField("Title", text: $title)
+            .textInputAutocapitalization(.words)
+          Picker("Role", selection: $role) {
+            ForEach(roleOptions, id: \.0) { value, label in
+              Text(label).tag(value)
+            }
+          }
+          TextField("Capabilities", text: $capabilitiesText, axis: .vertical)
+            .lineLimit(2...4)
+            .textInputAutocapitalization(.never)
+        }
+
+        Section("Runtime") {
+          Picker("Adapter", selection: $adapterType) {
+            ForEach(adapterOptions, id: \.0) { value, label in
+              Text(label).tag(value)
+            }
+          }
+          TextField("Model", text: $model)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+          Stepper("Max concurrent runs: \(maxConcurrentRuns)", value: $maxConcurrentRuns, in: 1...10)
+          Toggle("Wake on demand", isOn: $wakeOnDemand)
+        }
+
+        Section("Budget") {
+          TextField("Monthly cap in dollars", text: $budgetText)
+            .keyboardType(.decimalPad)
+          Text("Leave empty or use 0 for no monthly cap.")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+        }
+
+        if !existingAgents.isEmpty {
+          Section {
+            Text("The worker will appear in the CTO roster after the paired machine saves it.")
+              .font(.caption)
+              .foregroundStyle(ADEColor.textSecondary)
+          }
+        }
+      }
+      .scrollContentBackground(.hidden)
+      .adeScreenBackground()
+      .navigationTitle("Hire worker")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .topBarLeading) {
+          Button("Cancel") { dismiss() }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+          Button {
+            Task { await save() }
+          } label: {
+            if saving {
+              ProgressView()
+            } else {
+              Text("Save")
+                .fontWeight(.semibold)
+            }
+          }
+          .disabled(!canSave)
+        }
+      }
+    }
+    .tint(ADEColor.ctoAccent)
+    .onAppear {
+      guard name.isEmpty, let first = ctoWorkerTemplates.first else { return }
+      apply(first)
+    }
+  }
+
+  @MainActor
+  private func apply(_ template: CtoWorkerTemplate) {
+    selectedTemplateId = template.id
+    name = template.id == "custom" ? "" : template.name
+    title = template.title
+    role = template.role
+    capabilitiesText = template.capabilities.joined(separator: ", ")
+    model = template.model
+    if adapterType != "claude-local" && adapterType != "codex-local" {
+      adapterType = "claude-local"
+    }
+  }
+
+  @MainActor
+  private func save() async {
+    let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedName.isEmpty else { return }
+    saving = true
+    errorMessage = nil
+    defer { saving = false }
+
+    do {
+      let saved = try await syncService.saveAgent(makeAgentInput(name: trimmedName))
+      await onSaved(saved)
+      dismiss()
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  private func makeAgentInput(name: String) -> AgentUpsertInput {
+    let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+    var adapterConfig: [String: RemoteJSONValue] = [:]
+    if !trimmedModel.isEmpty {
+      adapterConfig["model"] = .string(trimmedModel)
+    }
+
+    return AgentUpsertInput(
+      id: nil,
+      name: name,
+      role: role,
+      title: trimmedTitle.isEmpty ? nil : trimmedTitle,
+      reportsTo: nil,
+      capabilities: parsedCapabilities,
+      status: "active",
+      adapterType: adapterType,
+      adapterConfig: adapterConfig.isEmpty ? nil : adapterConfig,
+      runtimeConfig: AgentRuntimeConfigPatch(
+        heartbeat: AgentHeartbeatConfig(
+          enabled: false,
+          intervalSec: 0,
+          wakeOnDemand: wakeOnDemand,
+          activeHours: nil
+        ),
+        maxConcurrentRuns: maxConcurrentRuns
+      ),
+      linearIdentity: nil,
+      budgetMonthlyCents: parsedBudgetCents
+    )
+  }
+
+  private var parsedCapabilities: [String] {
+    capabilitiesText
+      .split(separator: ",")
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+  }
+
+  private var parsedBudgetCents: Int? {
+    let normalized = budgetText
+      .replacingOccurrences(of: "$", with: "")
+      .replacingOccurrences(of: ",", with: "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalized.isEmpty, let dollars = Double(normalized), dollars > 0 else { return 0 }
+    return max(0, Int((dollars * 100).rounded()))
+  }
 }
 
 struct CtoMachineOnlyNotice: View {

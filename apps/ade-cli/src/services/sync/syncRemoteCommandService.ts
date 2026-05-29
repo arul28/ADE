@@ -22,6 +22,7 @@ import type {
   AgentChatInterruptArgs,
   AgentChatUpdateSessionArgs,
   AgentStatus,
+  AgentUpsertInput,
   AddPrCommentArgs,
   AiReviewSummaryArgs,
   ApplyLaneTemplateArgs,
@@ -265,9 +266,29 @@ function asConfidenceThreshold(value: unknown): number | undefined {
   return numeric;
 }
 
+function asNullableTrimmedString(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  if (value === undefined) return undefined;
+  return asTrimmedString(value) ?? undefined;
+}
+
 function asStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((entry) => asTrimmedString(entry)).filter((entry): entry is string => Boolean(entry));
+}
+
+function emptyLinearQuickView(connection: Record<string, unknown>) {
+  return {
+    connection,
+    organization: null,
+    viewer: null,
+    projects: [],
+    teams: [],
+    assignedIssues: [],
+    recentIssues: [],
+    fetchedAt: new Date().toISOString(),
+    sdk: { packageName: "@linear/sdk", surfaces: [] },
+  };
 }
 
 function asStringRecord(value: unknown): Record<string, string> | undefined {
@@ -402,6 +423,10 @@ function parseCreateLaneArgs(value: Record<string, unknown>): CreateLaneArgs {
     ...(asTrimmedString(value.description) ? { description: asTrimmedString(value.description)! } : {}),
     ...(asTrimmedString(value.parentLaneId) ? { parentLaneId: asTrimmedString(value.parentLaneId)! } : {}),
     ...(asTrimmedString(value.baseBranch) ? { baseBranch: asTrimmedString(value.baseBranch)! } : {}),
+    ...(asTrimmedString(value.branchName) ? { branchName: asTrimmedString(value.branchName)! } : {}),
+    ...(asTrimmedString(value.startPoint) ? { startPoint: asTrimmedString(value.startPoint)! } : {}),
+    ...(isRecord(value.linearIssue) ? { linearIssue: value.linearIssue as CreateLaneArgs["linearIssue"] } : {}),
+    ...(asTrimmedString(value.runtimePlacement) ? { runtimePlacement: asTrimmedString(value.runtimePlacement)! as CreateLaneArgs["runtimePlacement"] } : {}),
   };
 }
 
@@ -411,6 +436,10 @@ function parseCreateChildLaneArgs(value: Record<string, unknown>): CreateChildLa
     parentLaneId: requireString(value.parentLaneId, "lanes.createChild requires parentLaneId."),
     ...(asTrimmedString(value.description) ? { description: asTrimmedString(value.description)! } : {}),
     ...(asTrimmedString(value.folder) ? { folder: asTrimmedString(value.folder)! } : {}),
+    ...(asTrimmedString(value.baseBranchRef) ? { baseBranchRef: asTrimmedString(value.baseBranchRef)! } : {}),
+    ...(asTrimmedString(value.branchName) ? { branchName: asTrimmedString(value.branchName)! } : {}),
+    ...(isRecord(value.linearIssue) ? { linearIssue: value.linearIssue as CreateChildLaneArgs["linearIssue"] } : {}),
+    ...(asTrimmedString(value.runtimePlacement) ? { runtimePlacement: asTrimmedString(value.runtimePlacement)! as CreateChildLaneArgs["runtimePlacement"] } : {}),
   };
 }
 
@@ -2418,9 +2447,102 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       message: status.message,
     };
   });
+  register("cto.getLinearQuickView", { viewerAllowed: true }, async () => {
+    const credentialStatus = args.linearCredentialService?.getStatus() ?? {
+      tokenStored: false,
+      authMode: null,
+      tokenExpiresAt: null,
+      oauthConfigured: false,
+    };
+    const tokenStored = Boolean(credentialStatus.tokenStored);
+    const checkedAt = new Date().toISOString();
+    const linearIssueTracker = args.getLinearIssueTracker?.() ?? null;
+    const unavailableConnection = {
+      tokenStored,
+      connected: false,
+      viewerId: null,
+      viewerName: null,
+      checkedAt,
+      authMode: credentialStatus.authMode,
+      oauthAvailable: credentialStatus.oauthConfigured,
+      tokenExpiresAt: credentialStatus.tokenExpiresAt,
+      message: tokenStored ? "Linear tracker service unavailable." : "Linear token not configured.",
+    };
+    if (!linearIssueTracker || !tokenStored) return emptyLinearQuickView(unavailableConnection);
+    const status = await linearIssueTracker.getConnectionStatus();
+    const connection = {
+      tokenStored,
+      connected: status.connected,
+      viewerId: status.viewerId,
+      viewerName: status.viewerName,
+      organizationId: status.organizationId,
+      organizationName: status.organizationName,
+      organizationUrlKey: status.organizationUrlKey,
+      organizationLogoUrl: status.organizationLogoUrl,
+      checkedAt,
+      authMode: credentialStatus.authMode,
+      oauthAvailable: credentialStatus.oauthConfigured,
+      tokenExpiresAt: credentialStatus.tokenExpiresAt,
+      message: status.message,
+    };
+    if (!status.connected) return emptyLinearQuickView(connection);
+    return linearIssueTracker.getQuickView(connection);
+  });
+  register("cto.getLinearIssuePickerData", { viewerAllowed: true }, async () => {
+    const linearIssueTracker = args.getLinearIssueTracker?.() ?? null;
+    if (!linearIssueTracker) {
+      return { projects: [], users: [], states: [] };
+    }
+    const [projects, users, states] = await Promise.all([
+      linearIssueTracker.listProjects().catch(() => []),
+      linearIssueTracker.listUsers().catch(() => []),
+      linearIssueTracker.listWorkflowStates().catch(() => []),
+    ]);
+    return { projects, users, states };
+  });
+  register("cto.searchLinearIssues", { viewerAllowed: true }, async (payload) => {
+    const linearIssueTracker = args.getLinearIssueTracker?.() ?? null;
+    if (!linearIssueTracker) {
+      return { issues: [], pageInfo: { hasNextPage: false, endCursor: null } };
+    }
+    const projectId = asNullableTrimmedString(payload.projectId);
+    const projectSlug = asNullableTrimmedString(payload.projectSlug);
+    const teamKey = asNullableTrimmedString(payload.teamKey);
+    const stateTypes = asStringArray(payload.stateTypes);
+    const assigneeId = asNullableTrimmedString(payload.assigneeId);
+    const priority = asOptionalNumber(payload.priority);
+    const searchQuery = asNullableTrimmedString(payload.query);
+    const first = asOptionalNumber(payload.first);
+    const after = asNullableTrimmedString(payload.after);
+    const includeArchived = asOptionalBoolean(payload.includeArchived);
+    const query = {
+      ...(projectId !== undefined ? { projectId } : {}),
+      ...(projectSlug !== undefined ? { projectSlug } : {}),
+      ...(teamKey !== undefined ? { teamKey } : {}),
+      ...(stateTypes.length ? { stateTypes } : {}),
+      ...(assigneeId !== undefined ? { assigneeId } : {}),
+      ...(priority !== undefined ? { priority } : {}),
+      ...(searchQuery !== undefined ? { query: searchQuery } : {}),
+      ...(first !== undefined ? { first } : {}),
+      ...(after !== undefined ? { after } : {}),
+      ...(includeArchived !== undefined ? { includeArchived } : {}),
+    };
+    return linearIssueTracker.searchIssues(query);
+  });
+  register("cto.getLinearIssueComments", { viewerAllowed: true }, async (payload) => {
+    const issueId = asTrimmedString(payload.issueId);
+    if (!issueId) return [];
+    const linearIssueTracker = args.getLinearIssueTracker?.() ?? null;
+    if (!linearIssueTracker) return [];
+    return linearIssueTracker.fetchIssueComments(issueId);
+  });
   register("cto.getLinearSyncDashboard", { viewerAllowed: true }, async () => {
     const linearSyncService = requireService(args.getLinearSyncService?.() ?? null, "Linear sync service not available.");
     return linearSyncService.getDashboard();
+  });
+  register("cto.runLinearSyncNow", { viewerAllowed: true, queueable: true }, async () => {
+    const linearSyncService = requireService(args.getLinearSyncService?.() ?? null, "Linear sync service not available.");
+    return linearSyncService.runSyncNow();
   });
   register("cto.listLinearSyncQueue", { viewerAllowed: true }, async () => {
     const linearSyncService = requireService(args.getLinearSyncService?.() ?? null, "Linear sync service not available.");
@@ -2435,6 +2557,18 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     const ctoStateService = requireService(args.ctoStateService, "CTO state service not available.");
     const patch = isRecord(payload.patch) ? (payload.patch as Partial<CtoIdentity>) : {};
     return ctoStateService.updateIdentity(patch);
+  });
+  register("cto.saveAgent", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const workerRevisionService = requireService(args.workerRevisionService, "Worker revision service not available.");
+    if (!isRecord(payload.agent)) {
+      throw new Error("cto.saveAgent requires agent object.");
+    }
+    const saved = workerRevisionService.saveAgent(
+      payload.agent as AgentUpsertInput,
+      asTrimmedString(payload.actor) ?? "user",
+    );
+    (args.workerHeartbeatService as { syncFromConfig?: () => void } | null | undefined)?.syncFromConfig?.();
+    return saved;
   });
   register("cto.removeAgent", { viewerAllowed: true, queueable: true }, async (payload) => {
     const workerAgentService = requireService(args.workerAgentService, "Worker agent service not available.");

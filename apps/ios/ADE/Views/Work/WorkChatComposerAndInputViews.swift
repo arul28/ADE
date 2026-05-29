@@ -1126,6 +1126,217 @@ private struct WorkStructuredQuestionMetaRow: View {
   }
 }
 
+struct WorkModelSelectionPendingCard: View {
+  @EnvironmentObject private var syncService: SyncService
+
+  let request: WorkPendingModelSelectionModel
+  let busy: Bool
+  let onConfirm: @MainActor (String) async -> Void
+  let onCancel: @MainActor () async -> Void
+
+  @State private var selectedModelId: String
+  @State private var selectedProvider: String
+  @State private var selectedReasoningEffort: String
+  @State private var selectedCodexFastMode: Bool
+  @State private var selectedModel: WorkModelOption?
+  @State private var pickerPresented = false
+
+  init(
+    request: WorkPendingModelSelectionModel,
+    busy: Bool,
+    onConfirm: @escaping @MainActor (String) async -> Void,
+    onCancel: @escaping @MainActor () async -> Void
+  ) {
+    self.request = request
+    self.busy = busy
+    self.onConfirm = onConfirm
+    self.onCancel = onCancel
+    let suggested = request.suggested
+    _selectedModelId = State(initialValue: suggested?.modelId ?? "")
+    _selectedProvider = State(initialValue: suggested?.provider ?? "claude")
+    _selectedReasoningEffort = State(initialValue: suggested?.reasoningEffort ?? "")
+    _selectedCodexFastMode = State(initialValue: suggested?.codexFastMode ?? false)
+    _selectedModel = State(initialValue: nil)
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      header
+      selectedModelSummary
+      if shouldShowFastModeToggle {
+        fastModeToggle
+      }
+      footer
+    }
+    .adeGlassCard(cornerRadius: 18, padding: 14)
+    .sheet(isPresented: $pickerPresented) {
+      WorkModelPickerSheet(
+        currentModelId: selectedModelId,
+        currentProvider: selectedProvider,
+        currentReasoningEffort: selectedReasoningEffort,
+        availableModelIds: request.availableModelIds,
+        isBusy: busy,
+        onSelect: { option, pickedReasoning, provider in
+          selectedModel = option
+          selectedModelId = option.id
+          selectedProvider = provider
+          selectedReasoningEffort = pickedReasoning ?? ""
+          if !option.supportsCodexFastMode {
+            selectedCodexFastMode = false
+          }
+          pickerPresented = false
+        }
+      )
+      .environmentObject(syncService)
+    }
+  }
+
+  @ViewBuilder
+  private var header: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 8) {
+        Image(systemName: "cpu")
+          .font(.system(size: 15, weight: .semibold))
+          .foregroundStyle(ADEColor.accent)
+        Text(request.title)
+          .font(.headline)
+          .foregroundStyle(ADEColor.textPrimary)
+      }
+      if let workDescription = request.workDescription, !workDescription.isEmpty {
+        Text(workDescription)
+          .font(.subheadline)
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var selectedModelSummary: some View {
+    HStack(alignment: .center, spacing: 10) {
+      WorkProviderLogo(provider: selectedProvider, size: 30)
+      VStack(alignment: .leading, spacing: 4) {
+        Text(selectedModelDisplayName)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(selectedModelId.isEmpty ? ADEColor.textMuted : ADEColor.textPrimary)
+          .lineLimit(1)
+        HStack(spacing: 6) {
+          Text(selectedProvider.isEmpty ? "provider" : selectedProvider)
+          if !selectedModelId.isEmpty {
+            Text("·")
+            Text(selectedModelId)
+          }
+          if !selectedReasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            Text("·")
+            Text(selectedReasoningEffort.capitalized)
+          }
+        }
+        .font(.caption.monospaced())
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(1)
+      }
+      Spacer(minLength: 8)
+      Button {
+        pickerPresented = true
+      } label: {
+        Image(systemName: selectedModelId.isEmpty ? "plus.circle" : "arrow.triangle.2.circlepath")
+          .font(.subheadline.weight(.semibold))
+      }
+      .buttonStyle(.glass)
+      .tint(ADEColor.accent)
+      .disabled(busy)
+      .accessibilityLabel(selectedModelId.isEmpty ? "Choose model" : "Change model")
+    }
+    .padding(12)
+    .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+    )
+  }
+
+  @ViewBuilder
+  private var fastModeToggle: some View {
+    Toggle(isOn: $selectedCodexFastMode) {
+      VStack(alignment: .leading, spacing: 2) {
+        Text("Fast mode")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text("Use the Codex fast service tier for this worker.")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+      }
+    }
+    .tint(ADEColor.accent)
+    .disabled(busy)
+  }
+
+  @ViewBuilder
+  private var footer: some View {
+    HStack(spacing: 10) {
+      Button("Cancel") {
+        Task { await onCancel() }
+      }
+      .buttonStyle(.glass)
+      .tint(ADEColor.danger)
+      .disabled(busy)
+
+      Spacer(minLength: 8)
+
+      Button(selectedModelId.isEmpty ? "Choose model" : "Confirm") {
+        if selectedModelId.isEmpty {
+          pickerPresented = true
+        } else {
+          Task { await confirmSelection() }
+        }
+      }
+      .buttonStyle(.glassProminent)
+      .tint(ADEColor.accent)
+      .disabled(busy)
+    }
+  }
+
+  private var selectedModelDisplayName: String {
+    if let selectedModel {
+      return selectedModel.displayName
+    }
+    if let known = workKnownModelDisplayName(selectedModelId) {
+      return known
+    }
+    return selectedModelId.isEmpty ? "No model selected" : selectedModelId
+  }
+
+  private var shouldShowFastModeToggle: Bool {
+    selectedCodexFastMode || selectedModel?.supportsCodexFastMode == true
+  }
+
+  @MainActor
+  private func confirmSelection() async {
+    let trimmedModelId = selectedModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedModelId.isEmpty else {
+      pickerPresented = true
+      return
+    }
+    let trimmedProvider = selectedProvider.trimmingCharacters(in: .whitespacesAndNewlines)
+    let trimmedEffort = selectedReasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
+    let answer = WorkModelSelectionChoice(
+      provider: trimmedProvider.isEmpty ? "claude" : trimmedProvider,
+      modelId: trimmedModelId,
+      reasoningEffort: trimmedEffort.isEmpty ? nil : trimmedEffort,
+      codexFastMode: selectedCodexFastMode ? true : nil
+    )
+    guard let json = workModelSelectionJSONString(answer) else { return }
+    await onConfirm(json)
+  }
+
+  private func workModelSelectionJSONString(_ answer: WorkModelSelectionChoice) -> String? {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    guard let data = try? encoder.encode(answer) else { return nil }
+    return String(data: data, encoding: .utf8)
+  }
+}
+
 struct WorkPermissionCard: View {
   let permission: WorkPendingPermissionModel
   let busy: Bool
