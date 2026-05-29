@@ -575,10 +575,16 @@ function rosterRowDetail(snapshot: SubagentSnapshot): string | null {
   return unique.length ? unique.join(" · ") : null;
 }
 
-function ChatInfoSectionHead({ title, hint, color }: { title: string; hint?: string; color: string }) {
+function ChatInfoSectionHead({ title, hint, color, width }: { title: string; hint?: string; color: string; width?: number }) {
+  // Section header with a hairline rule that fills the gap to the hint, so each
+  // block reads as a titled card divider rather than a bare label.
+  const inner = Math.max(12, (width ?? 40) - 4);
+  const used = title.length + 2 + (hint ? hint.length + 1 : 0);
+  const ruleLen = Math.max(1, inner - used);
   return (
-    <Box flexDirection="row" justifyContent="space-between" marginTop={1}>
+    <Box flexDirection="row" marginTop={1}>
       <Text bold color={color}>{title}</Text>
+      <Text color={theme.color.borderSoft}>{` ${"─".repeat(ruleLen)}${hint ? " " : ""}`}</Text>
       {hint ? <Text color={theme.color.t4} dimColor>{hint}</Text> : null}
     </Box>
   );
@@ -600,13 +606,21 @@ function ChatInfoHeader({ info, width }: { info: ChatInfoSnapshot; width: number
           <Text color={theme.color.t2}>{endTruncate(info.laneLabel, Math.max(6, inner - 7))}</Text>
         </Box>
       ) : null}
-      <Box flexDirection="row">
+      <Box flexDirection="row" marginTop={1}>
         <Text color={info.streaming ? theme.color.running : theme.color.t4} bold={info.streaming}>
-          {info.streaming ? "●" : "○"} {info.streaming ? "active" : "idle"}
+          {info.streaming ? "● live" : "○ idle"}
         </Text>
-        {info.contextPercent != null ? <Text color={theme.color.t4} dimColor>{` · ${info.contextPercent}% ctx`}</Text> : null}
-        {info.tokenSummary ? <Text color={theme.color.t4} dimColor>{` · ${info.tokenSummary}`}</Text> : null}
+        {info.contextPercent != null ? (
+          <>
+            <Text>{"   "}</Text>
+            <TokenBar percent={info.contextPercent} />
+            <Text color={theme.color.t4} dimColor>{` ${info.contextPercent}%`}</Text>
+          </>
+        ) : null}
       </Box>
+      {info.tokenSummary ? (
+        <Text color={theme.color.t4} dimColor wrap="truncate-end">{endTruncate(info.tokenSummary, inner)}</Text>
+      ) : null}
     </Box>
   );
 }
@@ -617,14 +631,14 @@ function ChatInfoPlanBlock({ info, brandColor, width }: { info: ChatInfoSnapshot
   if (!plan || !plan.steps.length) {
     return (
       <Box flexDirection="column">
-        <ChatInfoSectionHead title="PLAN" color={brandColor} />
+        <ChatInfoSectionHead title="PLAN" color={brandColor} width={width} />
         <Text color={theme.color.t4} dimColor>No plan yet.</Text>
       </Box>
     );
   }
   return (
     <Box flexDirection="column">
-      <ChatInfoSectionHead title="PLAN" hint={`${plan.current}/${plan.total}`} color={brandColor} />
+      <ChatInfoSectionHead title="PLAN" hint={`${plan.current}/${plan.total}`} color={brandColor} width={width} />
       {plan.steps.slice(0, 6).map((step, index) => (
         <Text key={`${index}:${step.text}`} color={planStepColor(step.status)} wrap="truncate-end">
           {planStepGlyph(step.status)} {endTruncate(step.text, inner - 2)}
@@ -640,7 +654,7 @@ function ChatInfoGoalBlock({ info, brandColor, width }: { info: ChatInfoSnapshot
   const inner = Math.max(10, width - 4);
   return (
     <Box flexDirection="column">
-      <ChatInfoSectionHead title="GOAL" hint={secondsElapsed(goal.timeUsedSeconds)} color={brandColor} />
+      <ChatInfoSectionHead title="GOAL" hint={secondsElapsed(goal.timeUsedSeconds)} color={brandColor} width={width} />
       {goal.objective ? (
         <Text color={theme.color.t2} wrap="truncate-end">{endTruncate(goal.objective, inner)}</Text>
       ) : null}
@@ -701,7 +715,7 @@ function ChatInfoRoster({
 
   return (
     <Box flexDirection="column">
-      <ChatInfoSectionHead title="CHATS" hint={hint} color={brandColor} />
+      <ChatInfoSectionHead title="CHATS" hint={hint} color={brandColor} width={width} />
       {/* Main row — always present, tagged with the current middle-pane state */}
       <Box flexDirection="row" justifyContent="space-between">
         <Box flexDirection="row">
