@@ -14,6 +14,7 @@ import type { CtoLinearProject, GitHubAutolink, LinearConnectionStatus } from ".
 import { ADE_DEEPLINK_HTTPS_BASE_URL } from "../../../shared/deeplinks";
 import { COLORS, SANS_FONT, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 import { Button } from "../ui/Button";
+import { useAppStore } from "../../state/appStore";
 
 const LINEAR_BRAND = "#5E6AD2";
 const LINEAR_API_SETTINGS_URL = "https://linear.app/settings/api";
@@ -36,6 +37,11 @@ const FEATURES = [
 ];
 
 export function LinearSection() {
+  // Linear connection, GitHub repo, and team keys are all scoped to the active
+  // project (credentials are project-scoped). Re-run the loaders whenever the
+  // active project changes so the autolink commands target the right repo and
+  // Linear workspace instead of a stale previously-loaded project.
+  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
   const [connection, setConnection] = useState<LinearConnectionStatus | null>(null);
   const [projects, setProjects] = useState<CtoLinearProject[]>([]);
   const [githubRepo, setGithubRepo] = useState<{ owner: string; name: string } | null>(null);
@@ -52,6 +58,7 @@ export function LinearSection() {
   const oauthStartingRef = useRef(false);
   const oauthSessionIdRef = useRef<string | null>(null);
   const requestEpochRef = useRef(0);
+  const autolinksRequestIdRef = useRef(0);
 
   const invalidateLoadRequests = useCallback(() => {
     requestEpochRef.current += 1;
@@ -150,10 +157,16 @@ export function LinearSection() {
   const loadGithubAutolinks = useCallback(async () => {
     const github = window.ade?.github;
     if (!github) return;
+    // Guard against stale responses: if the active project changes while a
+    // detectRepo()/listRepoAutolinks() call is in flight, an older response
+    // must not repopulate the repo/autolinks (which would make the displayed
+    // repo and generated `gh repo autolink` commands wrong for the new project).
+    const requestId = ++autolinksRequestIdRef.current;
     setAutolinksLoading(true);
     setAutolinkError(null);
     try {
       const repo = await github.detectRepo();
+      if (autolinksRequestIdRef.current !== requestId) return;
       setGithubRepo(repo);
       if (!repo) {
         setGithubAutolinks([]);
@@ -161,12 +174,16 @@ export function LinearSection() {
         return;
       }
       const autolinks = await github.listRepoAutolinks(repo);
+      if (autolinksRequestIdRef.current !== requestId) return;
       setGithubAutolinks(autolinks);
     } catch (err) {
+      if (autolinksRequestIdRef.current !== requestId) return;
       setGithubAutolinks([]);
       setAutolinkError(err instanceof Error ? err.message : "Unable to load GitHub autolinks.");
     } finally {
-      setAutolinksLoading(false);
+      if (autolinksRequestIdRef.current === requestId) {
+        setAutolinksLoading(false);
+      }
     }
   }, []);
 
@@ -191,14 +208,14 @@ export function LinearSection() {
     }
   }, [invalidateLoadRequests, isCurrentLoadRequest, loadProjects]);
 
-  /* ── Initial load ── */
+  /* ── Initial load + reload on active-project change ── */
   useEffect(() => {
     void loadStatus();
-  }, [loadStatus]);
+  }, [loadStatus, projectRoot]);
 
   useEffect(() => {
     void loadGithubAutolinks();
-  }, [loadGithubAutolinks]);
+  }, [loadGithubAutolinks, projectRoot]);
 
   /* ── OAuth polling ── */
   useEffect(() => {
@@ -653,7 +670,7 @@ export function LinearSection() {
               GITHUB REFERENCE LINKS
             </div>
             <div style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "17px" }}>
-              Configure this GitHub repo so Linear issue keys and ADE PR references stay clickable in comments, PR descriptions, and commits.
+              GitHub autolinks make Linear issue keys (like ENG-123) and ADE PR refs clickable wherever they appear in PRs, commits, and comments — no full URLs needed. Applies to the repo below for this project.
             </div>
           </div>
           <Button
@@ -684,6 +701,9 @@ export function LinearSection() {
           <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, minWidth: 0, overflowWrap: "anywhere" }}>
             {githubRepoSlug ?? "No GitHub origin detected"}
           </div>
+        </div>
+        <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, lineHeight: "15px", marginBottom: 8 }}>
+          Click <strong style={{ color: COLORS.textSecondary, fontWeight: 600 }}>Create</strong> to add a link to this repo automatically, or copy the <code style={{ fontFamily: MONO_FONT }}>gh</code> command below it to run it yourself.
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {autolinkCandidates.map((candidate) => {

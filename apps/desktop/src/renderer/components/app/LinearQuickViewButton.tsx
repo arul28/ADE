@@ -546,7 +546,7 @@ export function LinearQuickViewButton({
             type="button"
             aria-label="Close Linear quick view backdrop"
             data-linear-quick-view-backdrop="true"
-            className="fixed inset-0 z-[9998] cursor-default bg-black/30 backdrop-blur-sm"
+            className="fixed inset-0 z-[9998] cursor-default bg-black/55 backdrop-blur-md"
             onClick={close}
             tabIndex={-1}
           />
@@ -555,7 +555,7 @@ export function LinearQuickViewButton({
             role="dialog"
             aria-modal="true"
             aria-label="Linear quick view"
-            className="fixed left-1/2 top-1/2 z-[9999] flex max-h-[min(760px,calc(100vh-64px))] w-[min(1040px,calc(100vw-24px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border bg-[color:var(--ade-shell-surface,#121019)] text-fg shadow-2xl shadow-black/50"
+            className="fixed left-1/2 top-1/2 z-[9999] flex h-[min(900px,calc(100dvh-28px))] w-[min(1380px,calc(100vw-28px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border bg-[color:var(--ade-shell-surface,#121019)] text-fg shadow-2xl shadow-black/50"
             style={{
               borderColor: "rgba(123, 138, 240, 0.55)",
               boxShadow: "0 24px 70px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(123, 138, 240, 0.18)",
