@@ -1016,6 +1016,7 @@ describe("ADE CLI", () => {
         tokenEnvPresent: false,
       });
     } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
       if (previousAdeLinearApi === undefined) delete process.env.ADE_LINEAR_API;
       else process.env.ADE_LINEAR_API = previousAdeLinearApi;
       if (previousLinearApiKey === undefined) delete process.env.LINEAR_API_KEY;
