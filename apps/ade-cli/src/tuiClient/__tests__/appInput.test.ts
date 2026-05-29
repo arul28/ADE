@@ -11,6 +11,8 @@ import {
   encodeTerminalPromptSubmit,
   encodeTerminalPromptSubmitConfirm,
   footerControlsForAvailability,
+  formatGitConflictReport,
+  formatLaneDeleteRisk,
   formFieldUsesPromptInput,
   isChatSessionAnimating,
   isPromptLineBackspace,
@@ -539,6 +541,79 @@ describe("footer control ordering", () => {
   it("puts chat info first when that pane is available", () => {
     expect(footerControlsForAvailability(true)).toEqual(["agents", "drawer", "details"]);
     expect(footerControlsForAvailability(false)).toEqual(["drawer", "details"]);
+  });
+});
+
+describe("formatGitConflictReport", () => {
+  it("lists conflicted files and the continue/abort actions for a rebase", () => {
+    const report = formatGitConflictReport({
+      laneId: "lane-1",
+      kind: "rebase",
+      inProgress: true,
+      conflictedFiles: ["src/a.ts", "src/b.ts"],
+      canContinue: true,
+      canAbort: true,
+    });
+    expect(report.title).toBe("Rebase conflict");
+    expect(report.body).toContain("2 files need resolution");
+    expect(report.body).toContain("src/a.ts");
+    expect(report.body).toContain("/pull --continue");
+    expect(report.body).toContain("/pull --abort");
+    expect(report.summary).toContain("Rebase conflict — 2 files");
+  });
+
+  it("uses merge wording and falls back when no continue/abort is available", () => {
+    const report = formatGitConflictReport({
+      laneId: "lane-1",
+      kind: "merge",
+      inProgress: true,
+      conflictedFiles: [],
+      canContinue: false,
+      canAbort: false,
+    });
+    expect(report.title).toBe("Merge conflict");
+    expect(report.body).toContain("0 files need resolution");
+    expect(report.body).toContain("git did not report specific files");
+    expect(report.body).toContain("Resolve the conflicts in your editor");
+    expect(report.body).not.toContain("/pull --continue");
+  });
+});
+
+describe("formatLaneDeleteRisk", () => {
+  const base = {
+    laneId: "lane-1",
+    branchRef: "feat/x",
+    dirty: false,
+    hasUnpushedCommits: false,
+    unpushedCommitCount: 0,
+    remoteBranchExists: false,
+    runningProcessCount: 0,
+    activePtyCount: 0,
+    activeWatcherCount: 0,
+    envInitialized: false,
+  };
+
+  it("summarizes everything that would be lost, pluralizing correctly", () => {
+    const summary = formatLaneDeleteRisk({
+      ...base,
+      dirty: true,
+      hasUnpushedCommits: true,
+      unpushedCommitCount: 1,
+      runningProcessCount: 2,
+      activePtyCount: 1,
+      remoteBranchExists: true,
+    });
+    expect(summary).toContain("uncommitted changes");
+    expect(summary).toContain("1 unpushed commit");
+    expect(summary).not.toContain("1 unpushed commits");
+    expect(summary).toContain("2 running processes");
+    expect(summary).toContain("1 terminal");
+    expect(summary).toContain("remote branch exists");
+    expect(summary.startsWith("⚠")).toBe(true);
+  });
+
+  it("reports a clean lane when there is nothing at risk", () => {
+    expect(formatLaneDeleteRisk(base)).toBe("Clean — no unpushed work or running processes.");
   });
 });
 

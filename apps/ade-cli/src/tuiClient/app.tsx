@@ -36,8 +36,8 @@ import type {
   CodexThreadGoal,
 } from "../../../desktop/src/shared/types/chat";
 import type { AiSettingsStatus, OpenCodeRuntimeSnapshot } from "../../../desktop/src/shared/types/config";
-import type { DiffLineStats } from "../../../desktop/src/shared/types/git";
-import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
+import type { DiffLineStats, GitConflictState } from "../../../desktop/src/shared/types/git";
+import type { LaneDeleteRisk, LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import type { FeedbackPreparedDraft, FeedbackSubmission } from "../../../desktop/src/shared/types/feedback";
 import type { ChatTerminalPreviewResult, ChatTerminalSession } from "../../../desktop/src/shared/types";
 import {
@@ -90,7 +90,7 @@ import {
   writeTerminal,
   type TokenStats,
 } from "./adeApi";
-import { derivePendingSteers } from "./aggregate";
+import { aggregateChatBlocks, derivePendingSteers, type AggregatedBlock } from "./aggregate";
 import { deriveChatInfoSnapshot } from "./chatInfo";
 import { paletteCommands, parseCommand } from "./commands";
 import { hasFirstUserMessage, isPlanMode } from "./planMode";
@@ -123,7 +123,7 @@ import { sortLanesForStackGraph } from "./laneTree";
 import { latestExpandableFailureId, renderObject, summarizeDiffChanges } from "./format";
 import { startTuiHeartbeat, type TuiHeartbeat } from "./heartbeat";
 import { isImageFilePath, latestOpenableImageTarget, readClipboardImageAttachment, readImageDimensions } from "./imageTargets";
-import { appendDedupedTuiEvent, appendReservedTuiEvent, dedupeTuiEvents, reserveTuiEventDedupKey, syncTuiEventDedupKeys } from "./eventDedup";
+import { appendReservedTuiEvent, dedupeTuiEvents, reserveTuiEventDedupKey, syncTuiEventDedupKeys } from "./eventDedup";
 import { loadAdeCodeState, saveAdeCodeProjectState, scopedAdeCodeState } from "./state";
 import { SpinTickProvider } from "./spinTick";
 import { buildLinearToolRequest } from "./linearCommands";
@@ -206,8 +206,69 @@ export type FooterControl = "drawer" | "details" | "agents";
 type DrawerLaneAction = "new-lane";
 type DrawerChatAction = "new-chat";
 
+// Streaming chat events are coalesced into a single React render per frame
+// (~40fps) instead of one render per token. Lifecycle edges (turn start/stop,
+// done, user messages, subagent/error) force an immediate flush so the spinner,
+// interrupt flags, and right pane stay responsive.
+const CHAT_EVENT_FLUSH_MS = 24;
+
+function isChatFlushEdge(eventType: string): boolean {
+  // Only the event types that drive an immediate side-effect below (spinner /
+  // interrupt / right-pane) force a synchronous flush. Notably NOT the broad
+  // "subagent" prefix — subagent_progress is high-frequency and would defeat
+  // coalescing; only subagent_started opens the right pane.
+  return (
+    eventType === "status"
+    || eventType === "done"
+    || eventType === "user_message"
+    || eventType === "error"
+    || eventType === "subagent_started"
+    || eventType === "subagent.started"
+  );
+}
+
 export function footerControlsForAvailability(agentsAvailable: boolean): FooterControl[] {
   return agentsAvailable ? ["agents", "drawer", "details"] : ["drawer", "details"];
+}
+
+// Turn a git conflict into a right-pane detail body + a one-line notice. Used by
+// /pull and /reparent so a rebase/merge conflict is surfaced instead of being
+// silently reported as success.
+export function formatGitConflictReport(state: GitConflictState): { title: string; body: string; summary: string } {
+  const label = state.kind === "rebase" ? "Rebase" : "Merge";
+  const count = state.conflictedFiles.length;
+  const plural = count === 1 ? "" : "s";
+  const fileList = count
+    ? state.conflictedFiles.map((file) => `  • ${file}`).join("\n")
+    : "  (git did not report specific files)";
+  const resolveActions = [
+    state.canContinue ? "/pull --continue to finish" : null,
+    state.canAbort ? "/pull --abort to back out" : null,
+  ].filter((value): value is string => Boolean(value));
+  const actionsLine = resolveActions.length
+    ? `Resolve the conflicts, then run ${resolveActions.join(", or ")}.`
+    : "Resolve the conflicts in your editor to continue.";
+  return {
+    title: `${label} conflict`,
+    body: [`${count} file${plural} need resolution:`, fileList, "", actionsLine].join("\n"),
+    summary: `${label} conflict — ${count} file${plural} need resolution. ${actionsLine}`,
+  };
+}
+
+// One-line summary of what deleting a lane would lose, shown in the delete form
+// so the confirmation isn't blind (mirrors the desktop's delete-risk surface).
+export function formatLaneDeleteRisk(risk: LaneDeleteRisk): string {
+  const parts: string[] = [];
+  if (risk.dirty) parts.push("uncommitted changes");
+  if (risk.hasUnpushedCommits) {
+    parts.push(`${risk.unpushedCommitCount} unpushed commit${risk.unpushedCommitCount === 1 ? "" : "s"}`);
+  }
+  if (risk.runningProcessCount > 0) {
+    parts.push(`${risk.runningProcessCount} running process${risk.runningProcessCount === 1 ? "" : "es"}`);
+  }
+  if (risk.activePtyCount > 0) parts.push(`${risk.activePtyCount} terminal${risk.activePtyCount === 1 ? "" : "s"}`);
+  if (risk.remoteBranchExists) parts.push("remote branch exists");
+  return parts.length ? `⚠ ${parts.join(" · ")}` : "Clean — no unpushed work or running processes.";
 }
 
 export type ModelPickerEscapeAction =
@@ -2232,6 +2293,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   useTerminalMouseTracking();
   const [connection, setConnection] = useState<AdeCodeConnection | null>(null);
   const [mode, setMode] = useState<RuntimeMode | "connecting">("connecting");
+  // True after an attached socket drops unexpectedly, until we re-attach. Drives
+  // the reconnect probe below and a one-shot "reconnecting…" notice.
+  const [connectionLost, setConnectionLost] = useState(false);
   const [lanes, setLanes] = useState<LaneSummary[]>([]);
   const [prByLaneId, setPrByLaneId] = useState<Record<string, DrawerPrSummary>>({});
   const [diffByLaneId, setDiffByLaneId] = useState<Record<string, DiffLineStats>>({});
@@ -2316,6 +2380,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 	  const [modelCatalog, setModelCatalog] = useState<AgentChatModelCatalog | null>(null);
 
   const connectionRef = useRef<AdeCodeConnection | null>(null);
+  const connectionLostRef = useRef(false);
   const activeLaneIdRef = useRef<string | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
   const multiViewRef = useRef<MultiViewState | null>(null);
@@ -2353,6 +2418,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const eventCountRef = useRef<number>(0);
   const eventDedupKeysRef = useRef<Set<string>>(new Set());
   const eventDedupKeyOrderRef = useRef<string[]>([]);
+  // Streaming-event coalescing: buffer incoming envelopes and flush them in one
+  // batched render on a short timer (see flushPendingChatEvents / scheduleChatFlush).
+  const pendingChatEnvelopesRef = useRef<AgentChatEventEnvelope[]>([]);
+  const chatFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshGenerationRef = useRef(0);
   const chatScrollOffsetRowsRef = useRef(0);
   const chatScrollMaxOffsetRef = useRef(0);
@@ -3233,6 +3302,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       : events
   ), [activeSession, events, selectedAgentSnapshot]);
   const displayNotices = useMemo(() => (selectedAgentSnapshot ? [] : notices), [notices, selectedAgentSnapshot]);
+  // Aggregate the transcript exactly once per render and thread the result into
+  // every consumer (scroll math, selection rows, selectable text, and ChatView
+  // itself). Previously each of those re-walked the full event list, so a single
+  // token caused ~4 full-transcript passes.
+  const displayBlocks = useMemo(
+    () => aggregateChatBlocks({
+      events: displayEvents,
+      notices: displayNotices,
+      activeSession,
+      expandedLineIds,
+    }),
+    [activeSession, displayEvents, displayNotices, expandedLineIds],
+  );
   const displayStreaming = selectedAgentSnapshot ? selectedAgentSnapshot.status === "running" : streaming;
   const displayInterrupted = selectedAgentSnapshot ? false : interrupted && !displayStreaming;
   useEffect(() => {
@@ -3247,6 +3329,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     || liveAgentCount > 0;
   const showChatWorkingIndicator = modelState.provider !== "claude" && activeSession?.provider !== "claude";
   const chatScrollMaxOffset = useMemo(() => computeChatScrollMaxOffset({
+    blocks: displayBlocks,
     events: displayEvents,
     notices: displayNotices,
     activeSession,
@@ -3256,7 +3339,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     interrupted: displayInterrupted,
     showWorkingIndicator: showChatWorkingIndicator,
     width: chatWrapWidth,
-  }), [activeSession, chatRowBudget, chatWrapWidth, displayEvents, displayInterrupted, displayNotices, displayStreaming, expandedLineIds, showChatWorkingIndicator]);
+  }), [activeSession, chatRowBudget, chatWrapWidth, displayBlocks, displayEvents, displayInterrupted, displayNotices, displayStreaming, expandedLineIds, showChatWorkingIndicator]);
   chatScrollMaxOffsetRef.current = chatScrollMaxOffset;
   const effectiveChatScrollOffsetRows = clampChatScrollOffsetRows(chatScrollOffsetRows, chatScrollMaxOffset);
   chatScrollOffsetRowsRef.current = effectiveChatScrollOffsetRows;
@@ -3270,6 +3353,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     ? Math.max(0, displayEvents.length - lastSeenAtBottomEventCountRef.current)
     : 0;
   const visibleChatSelectionRows = useMemo(() => renderChatVisibleSelectionRows({
+    blocks: displayBlocks,
     events: displayEvents,
     notices: displayNotices,
     activeSession,
@@ -3285,6 +3369,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     activeSession,
     chatRowBudget,
     chatWrapWidth,
+    displayBlocks,
     displayEvents,
     displayInterrupted,
     displayNotices,
@@ -3295,6 +3380,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     unseenMessageCount,
   ]);
   const selectableChatRowTexts = useMemo(() => renderChatSelectableRowTexts({
+    blocks: displayBlocks,
     events: displayEvents,
     notices: displayNotices,
     activeSession,
@@ -3306,6 +3392,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   }), [
     activeSession,
     chatWrapWidth,
+    displayBlocks,
     displayEvents,
     displayInterrupted,
     displayNotices,
@@ -4386,8 +4473,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     });
   }, [activeLane, focusDetails, lanes, openForm]);
 
-  const openLaneDeleteForm = useCallback(() => {
-    const laneId = activeLaneIdRef.current;
+  const openLaneDeleteForm = useCallback((laneIdArg?: string) => {
+    const laneId = laneIdArg ?? activeLaneIdRef.current;
     const lane = lanes.find((entry) => entry.id === laneId) ?? activeLane;
     if (!laneId || !lane) {
       setRightPane({ kind: "details", title: "Delete lane", body: "No active lane is selected." });
@@ -4399,41 +4486,60 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       focusDetails();
       return;
     }
+    // Fetch the delete-risk first so the confirmation shows what would be lost
+    // (unpushed commits, dirty tree, running processes) rather than a blind prompt.
+    void (async () => {
+      let description: string | undefined;
+      const conn = connectionRef.current;
+      if (conn) {
+        try {
+          const risk = await conn.action<LaneDeleteRisk>("lane", "getDeleteRisk", { laneId });
+          description = formatLaneDeleteRisk(risk);
+        } catch {
+          // Risk is advisory; fall back to the plain form if it can't be fetched.
+        }
+      }
+      openForm({
+        kind: "form",
+        title: "Delete lane",
+        command: "lane-delete",
+        laneId,
+        description,
+        laneDelete: {
+          laneId,
+          laneName: lane.name,
+          branchRef: lane.branchRef,
+          dirty: lane.status?.dirty === true,
+        },
+        fields: [
+          { name: "scope", label: "Scope", initialValue: "worktree" },
+          { name: "remoteName", label: "Remote name", placeholder: "origin", initialValue: "origin" },
+          { name: "force", label: "Force delete", initialValue: "no" },
+          { name: "confirm", label: "Type lane name", required: true, placeholder: lane.name },
+        ],
+      });
+    })();
+  }, [activeLane, focusDetails, lanes, openForm]);
+
+  const openLaneRenameForm = useCallback((laneIdArg?: string) => {
+    const laneId = laneIdArg ?? activeLaneIdRef.current;
+    const lane = lanes.find((entry) => entry.id === laneId) ?? activeLane;
+    if (!laneId || !lane) {
+      setRightPane({ kind: "details", title: "Rename lane", body: "No lane is selected." });
+      focusDetails();
+      return;
+    }
+    if (lane.laneType === "primary") {
+      setRightPane({ kind: "details", title: "Rename lane", body: "The primary lane can't be renamed." });
+      focusDetails();
+      return;
+    }
     openForm({
       kind: "form",
-      title: "Delete lane",
-      command: "lane-delete",
+      title: "Rename lane",
+      command: "lane-rename",
       laneId,
-      laneDelete: {
-        laneId,
-        laneName: lane.name,
-        branchRef: lane.branchRef,
-        dirty: lane.status?.dirty === true,
-      },
-      fields: [
-        {
-          name: "scope",
-          label: "Scope",
-          initialValue: "worktree",
-        },
-        {
-          name: "remoteName",
-          label: "Remote name",
-          placeholder: "origin",
-          initialValue: "origin",
-        },
-        {
-          name: "force",
-          label: "Force delete",
-          initialValue: "no",
-        },
-        {
-          name: "confirm",
-          label: "Type lane name",
-          required: true,
-          placeholder: lane.name,
-        },
-      ],
+      fields: [{ name: "name", label: "Lane name", required: true, initialValue: lane.name }],
     });
   }, [activeLane, focusDetails, lanes, openForm]);
 
@@ -4932,6 +5038,80 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
   }, [clearedAt, drawerLaneId, loadProviderModels, modelState.provider, project, selectActiveLaneId, selectActiveSessionId, selectedDrawerChatAction, setDraftChatMode, setSessionInterrupted, setSessionStreaming, setStreaming]);
 
+  const renameLane = useCallback(async (laneIdArg: string | null, name: string) => {
+    const conn = connectionRef.current;
+    const targetId = laneIdArg ?? activeLaneIdRef.current;
+    if (!conn || !targetId) {
+      addNotice("No lane is selected.", "error");
+      return;
+    }
+    const trimmed = name.trim();
+    if (!trimmed) {
+      addNotice("Lane name can't be empty.", "error");
+      return;
+    }
+    try {
+      await conn.action("lane", "rename", { laneId: targetId, name: trimmed });
+      addNotice(`Renamed lane to "${trimmed}".`, "success");
+      await refreshState();
+    } catch (err) {
+      addNotice(err instanceof Error ? err.message : String(err), "error");
+    }
+  }, [addNotice, refreshState]);
+
+  const archiveLane = useCallback(async (laneIdArg?: string) => {
+    const conn = connectionRef.current;
+    const targetId = laneIdArg ?? activeLaneIdRef.current;
+    const lane = lanes.find((entry) => entry.id === targetId) ?? null;
+    if (!conn || !targetId || !lane) {
+      addNotice("No lane is selected.", "error");
+      return;
+    }
+    if (lane.laneType === "primary") {
+      addNotice("The primary lane can't be archived.", "error");
+      return;
+    }
+    try {
+      await conn.action("lane", "archive", { laneId: targetId });
+      addNotice(`Archived lane ${lane.name}.`, "success");
+      // If we archived the lane we were on, fall back to another live lane.
+      if (activeLaneIdRef.current === targetId) {
+        const fallback = lanes.find((entry) => entry.id !== targetId && !entry.archivedAt) ?? null;
+        selectActiveLaneId(fallback?.id ?? null);
+      }
+      await refreshState();
+    } catch (err) {
+      addNotice(err instanceof Error ? err.message : String(err), "error");
+    }
+  }, [addNotice, lanes, refreshState, selectActiveLaneId]);
+
+  const unarchiveLane = useCallback(async (query: string) => {
+    const conn = connectionRef.current;
+    if (!conn) return;
+    const term = query.trim();
+    if (!term) {
+      addNotice("Usage: /lane unarchive <lane-id|name>", "error");
+      return;
+    }
+    try {
+      const archived = (await listLanes(conn, { includeArchived: true })).filter((entry) => entry.archivedAt);
+      const lower = term.toLowerCase();
+      const match = archived.find((entry) => entry.id === term)
+        ?? archived.find((entry) => entry.name.toLowerCase() === lower)
+        ?? archived.find((entry) => entry.name.toLowerCase().includes(lower));
+      if (!match) {
+        addNotice(`No archived lane matched "${term}".`, "error");
+        return;
+      }
+      await conn.action("lane", "unarchive", { laneId: match.id });
+      addNotice(`Unarchived lane ${match.name}.`, "success");
+      await refreshState();
+      selectActiveLaneId(match.id);
+    } catch (err) {
+      addNotice(err instanceof Error ? err.message : String(err), "error");
+    }
+  }, [addNotice, refreshState, selectActiveLaneId]);
+
   const commitModelStateToSession = useCallback(async (nextState: AdeCodeModelState) => {
     const conn = connectionRef.current;
     const sessionId = activeSessionIdRef.current;
@@ -5079,9 +5259,89 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     };
   }, [forceEmbedded, project, requireSocket, signalActiveTerminalForExit, signalActiveTerminalForExitSync, socketPath]);
 
+  // Stable handle to the latest refreshState so the chat-event subscription can
+  // call it without listing refreshState as a dependency (its identity churns on
+  // drawer/lane/model changes, which would needlessly re-bind the subscription).
+  const refreshStateRef = useRef(refreshState);
+  useEffect(() => {
+    refreshStateRef.current = refreshState;
+  }, [refreshState]);
+
+  const flushPendingChatEvents = useCallback(() => {
+    if (chatFlushTimerRef.current) {
+      clearTimeout(chatFlushTimerRef.current);
+      chatFlushTimerRef.current = null;
+    }
+    const buffered = pendingChatEnvelopesRef.current;
+    if (buffered.length === 0) return;
+    pendingChatEnvelopesRef.current = [];
+    // Re-apply the clearedAt guard at flush time: if the transcript was cleared
+    // after these envelopes were buffered (e.g. /clear armed the timer), drop the
+    // stale ones so they don't re-materialize in the cleared transcript.
+    const clearedAtValue = clearedAtRef.current;
+    const pending = clearedAtValue
+      ? buffered.filter((envelope) => envelope.timestamp > clearedAtValue)
+      : buffered;
+    if (pending.length === 0) return;
+
+    // (1) Per-session transcript map — append all buffered envelopes for each
+    // affected session in a single deduped update. Previously this ran one O(n)
+    // dedupe per token; now it runs once per flush per session.
+    setEventsBySessionId((prev) => {
+      const grouped = new Map<string, AgentChatEventEnvelope[]>();
+      for (const envelope of pending) {
+        const arr = grouped.get(envelope.sessionId);
+        if (arr) arr.push(envelope);
+        else grouped.set(envelope.sessionId, [envelope]);
+      }
+      const next = { ...prev };
+      for (const [sessionId, envelopes] of grouped) {
+        next[sessionId] = dedupeTuiEvents([...(prev[sessionId] ?? []), ...envelopes]);
+      }
+      return next;
+    });
+
+    // (2) Active-session transcript — incremental reserve/append, batched into a
+    // single setState so a burst of tokens triggers one React render, not N.
+    const activeId = activeSessionIdRef.current;
+    if (activeId) {
+      const reserved: Array<{ envelope: AgentChatEventEnvelope; key: string }> = [];
+      for (const envelope of pending) {
+        if (envelope.sessionId !== activeId) continue;
+        const key = reserveTuiEventDedupKey(envelope, eventDedupKeysRef.current);
+        if (key !== null) reserved.push({ envelope, key });
+      }
+      if (reserved.length > 0) {
+        setEvents((prev) => {
+          let events = prev;
+          let order = eventDedupKeyOrderRef.current;
+          for (const { envelope, key } of reserved) {
+            const appended = appendReservedTuiEvent(events, envelope, eventDedupKeysRef.current, order, key);
+            events = appended.events;
+            order = appended.eventKeys;
+          }
+          eventDedupKeyOrderRef.current = order;
+          eventCountRef.current = events.length;
+          return events;
+        });
+      }
+    }
+    // Note: stable deps ([]) — uses only refs + stable setters. This keeps the
+    // onChatEvent subscription from re-binding (and discarding the buffer) every
+    // time refreshState's identity churns.
+  }, []);
+
+  const scheduleChatFlush = useCallback(() => {
+    if (chatFlushTimerRef.current) return;
+    chatFlushTimerRef.current = setTimeout(() => {
+      chatFlushTimerRef.current = null;
+      flushPendingChatEvents();
+    }, CHAT_EVENT_FLUSH_MS);
+  }, [flushPendingChatEvents]);
+
   useEffect(() => {
     if (!connection) return;
-    return connection.onChatEvent((envelope) => {
+    const unsubscribe = connection.onChatEvent((envelope) => {
       const currentMultiView = multiViewRef.current;
       const openSessionIds = new Set(
         currentMultiView
@@ -5089,33 +5349,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           : [activeSessionIdRef.current].filter((value): value is string => Boolean(value)),
       );
       if (!openSessionIds.has(envelope.sessionId)) {
-        void refreshState({ hydrateHistory: false }).catch(() => undefined);
+        // Event for a session we're not displaying — refresh summaries (cheap,
+        // dedup-guarded). Only the open-session token stream below is coalesced.
+        void refreshStateRef.current({ hydrateHistory: false }).catch(() => undefined);
         return;
       }
-      if (clearedAt && envelope.timestamp <= clearedAt) return;
+      const clearedAtNow = clearedAtRef.current;
+      if (clearedAtNow && envelope.timestamp <= clearedAtNow) return;
       const event = envelope.event as Record<string, unknown>;
       const isActiveSessionEvent = envelope.sessionId === activeSessionIdRef.current;
-      setEventsBySessionId((prev) => ({
-        ...prev,
-        [envelope.sessionId]: appendDedupedTuiEvent(prev[envelope.sessionId] ?? [], envelope),
-      }));
-      if (isActiveSessionEvent) {
-        const reservedKey = reserveTuiEventDedupKey(envelope, eventDedupKeysRef.current);
-        if (reservedKey !== null) {
-          setEvents((prev) => {
-            const next = appendReservedTuiEvent(
-              prev,
-              envelope,
-              eventDedupKeysRef.current,
-              eventDedupKeyOrderRef.current,
-              reservedKey,
-            );
-            eventDedupKeyOrderRef.current = next.eventKeys;
-            eventCountRef.current = next.events.length;
-            return next.events;
-          });
-        }
-      }
+
+      // Buffer the envelope; the transcript state is applied on the next flush.
+      // High-frequency token deltas coalesce on the timer; lifecycle edges flush
+      // immediately so the transcript is consistent with the side-effects below.
+      pendingChatEnvelopesRef.current.push(envelope);
+      const eventType = typeof event.type === "string" ? event.type : "";
+      if (isChatFlushEdge(eventType)) flushPendingChatEvents();
+      else scheduleChatFlush();
+
+      // Lifecycle side-effects stay immediate (low-frequency): they drive the
+      // streaming spinner, interrupt flags, and the right pane.
       if (event.type === "status" && event.turnStatus === "started") {
         setSessionStreaming(envelope.sessionId, true);
         setSessionInterrupted(envelope.sessionId, false);
@@ -5159,7 +5412,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         });
       }
     });
-  }, [clearedAt, connection, refreshState, setSessionInterrupted, setSessionStreaming]);
+    return () => {
+      unsubscribe();
+      if (chatFlushTimerRef.current) {
+        clearTimeout(chatFlushTimerRef.current);
+        chatFlushTimerRef.current = null;
+      }
+      pendingChatEnvelopesRef.current = [];
+    };
+    // Re-bind only when the connection itself changes (reconnect). clearedAt and
+    // refreshState are read via refs so their churn doesn't drop the buffer.
+  }, [connection, flushPendingChatEvents, scheduleChatFlush, setSessionInterrupted, setSessionStreaming]);
 
   useEffect(() => {
     if (!connection) return;
@@ -5284,10 +5547,29 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     };
   }, [connection]);
 
+  // Detect an attached socket dropping mid-session. Without this the UI freezes
+  // on a stale snapshot (and a spinner that never resolves) with no retry.
   useEffect(() => {
-    if (!connection || mode === "attached" || forceEmbedded) return;
+    if (!connection?.onConnectionClose) return;
+    return connection.onConnectionClose(() => {
+      if (connectionLostRef.current) return;
+      connectionLostRef.current = true;
+      setConnectionLost(true);
+      // Clear streaming across all sessions so the spinner doesn't hang and the
+      // reconnect probe below isn't gated on a turn that can never complete.
+      setStreamingBySessionId({});
+      addNotice("Connection to the ADE runtime dropped — reconnecting…", "error");
+    });
+  }, [addNotice, connection]);
+
+  useEffect(() => {
+    if (!connection || forceEmbedded) return;
+    // Reconnect when running embedded (try to upgrade to the shared daemon) OR
+    // when an attached socket dropped (connectionLost). A healthy attached
+    // connection needs no probe.
+    if (mode === "attached" && !connectionLost) return;
     const timer = setInterval(() => {
-      if (streaming || attachProbeInFlightRef.current) return;
+      if ((streaming && !connectionLostRef.current) || attachProbeInFlightRef.current) return;
       attachProbeInFlightRef.current = true;
       void (async () => {
         let attached: AdeCodeConnection | null = null;
@@ -5306,6 +5588,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           connectionRef.current = attached;
           setConnection(attached);
           setMode(attached.mode);
+          if (connectionLostRef.current) {
+            connectionLostRef.current = false;
+            setConnectionLost(false);
+            addNotice("Reconnected to the ADE runtime.", "success");
+          }
           await previous?.close().catch(() => {});
           await refreshState();
         } catch {
@@ -5316,7 +5603,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       })();
     }, 3_000);
     return () => clearInterval(timer);
-  }, [connection, forceEmbedded, mode, project, refreshState, socketPath, streaming]);
+  }, [addNotice, connection, connectionLost, forceEmbedded, mode, project, refreshState, socketPath, streaming]);
 
   const ensureActiveSession = useCallback(async (): Promise<string | null> => {
     const conn = connectionRef.current;
@@ -6044,12 +6331,62 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         newParentLaneId: parent.id,
         ...(stackBaseBranchRef ? { stackBaseBranchRef } : {}),
       });
+      // Reparent rebases the lane onto its new parent, which can stop on
+      // conflicts. Surface them instead of reporting an unconditional success.
+      const reparentConflict = await conn
+        .action<GitConflictState>("git", "getConflictState", { laneId })
+        .catch(() => null);
+      if (reparentConflict?.inProgress && reparentConflict.kind) {
+        const report = formatGitConflictReport(reparentConflict);
+        setRightPane({ kind: "details", title: report.title, body: report.body });
+        setRightOpen(true);
+        addNotice(report.summary, "error");
+        await refreshState();
+        return;
+      }
       showReparentDetails(renderObject(result, 20));
       addNotice(
         `Reparented ${lane.name} under ${parent.name}${stackBaseBranchRef ? ` using ${stackBaseBranchRef}` : ""}.`,
         "success",
       );
       await refreshState();
+      return;
+    }
+    if (name === "/lane rename") {
+      if (args.trim()) {
+        await renameLane(laneId, args);
+        return;
+      }
+      openLaneRenameForm();
+      return;
+    }
+    if (name === "/lane archive") {
+      await archiveLane();
+      return;
+    }
+    if (name === "/lane unarchive") {
+      await unarchiveLane(args);
+      return;
+    }
+    if (name === "/lane archived") {
+      if (!conn) return;
+      try {
+        const archived = (await listLanes(conn, { includeArchived: true })).filter((entry) => entry.archivedAt);
+        if (!archived.length) {
+          setRightPane({ kind: "details", title: "Archived lanes", body: "No archived lanes." });
+        } else {
+          setRightPane({
+            kind: "list",
+            title: `Archived lanes (${archived.length}) · /lane unarchive <name>`,
+            rows: archived.map((entry) => `${entry.name}${entry.branchRef ? `  ·  ${entry.branchRef}` : ""}`),
+            emptyText: "No archived lanes.",
+          });
+        }
+        setRightOpen(true);
+        focusDetails();
+      } catch (err) {
+        addNotice(err instanceof Error ? err.message : String(err), "error");
+      }
       return;
     }
     if (name === "/lane delete") {
@@ -6322,7 +6659,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         : result;
       setRightPane({ kind: "details", title: `ADE ${domain}.${action}`, body: renderObject(body, 24) });
     }
-  }, [activeCommandProvider, activeLane?.name, activeSession?.provider, activeSession?.sessionId, activeSession?.title, addNotice, ensureActiveSession, focusDetails, lanes, mode, modelState.modelId, modelState.reasoningEffort, models, openFeedbackForm, openForm, openLaneDeleteForm, openModelRow, openNewChatSetup, openNewLaneForm, openSubagentsPane, pendingSteers, project, refreshState, selectActiveLaneId, selectActiveSessionId, sendOrSteerChatMessage, sessions, setChatScrollOffset, subagentPaneCommandAvailable]);
+  }, [activeCommandProvider, activeLane?.name, activeSession?.provider, activeSession?.sessionId, activeSession?.title, addNotice, archiveLane, ensureActiveSession, focusDetails, lanes, mode, modelState.modelId, modelState.reasoningEffort, models, openFeedbackForm, openForm, openLaneDeleteForm, openLaneRenameForm, openModelRow, openNewChatSetup, openNewLaneForm, openSubagentsPane, pendingSteers, project, refreshState, renameLane, selectActiveLaneId, selectActiveSessionId, sendOrSteerChatMessage, sessions, setChatScrollOffset, subagentPaneCommandAvailable, unarchiveLane]);
 
   const runInlineCommand = useCallback(async (name: string, args: string) => {
     if (name === "/quit") {
@@ -6408,6 +6745,33 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
       const tokens = args.split(/\s+/).filter(Boolean);
+
+      // Resolve an in-progress conflict from a previous pull/reparent.
+      if (tokens.includes("--continue") || tokens.includes("--abort")) {
+        const wantContinue = tokens.includes("--continue");
+        const state = await conn.action<GitConflictState>("git", "getConflictState", { laneId });
+        if (!state?.inProgress || !state.kind) {
+          addNotice("No merge or rebase conflict is in progress for this lane.", "info");
+          return;
+        }
+        if (wantContinue) {
+          if (state.conflictedFiles.length > 0) {
+            const report = formatGitConflictReport(state);
+            setRightPane({ kind: "details", title: report.title, body: report.body });
+            setRightOpen(true);
+            addNotice(`Still ${state.conflictedFiles.length} unresolved file(s). Resolve them, then /pull --continue.`, "error");
+            return;
+          }
+          await conn.action("git", state.kind === "rebase" ? "rebaseContinue" : "mergeContinue", { laneId });
+          addNotice(`${state.kind === "rebase" ? "Rebase" : "Merge"} continued.`, "success");
+        } else {
+          await conn.action("git", state.kind === "rebase" ? "rebaseAbort" : "mergeAbort", { laneId });
+          addNotice(`${state.kind === "rebase" ? "Rebase" : "Merge"} aborted.`, "success");
+        }
+        await refreshState();
+        return;
+      }
+
       const modeFlags = tokens.filter((token) => token === "--ff-only" || token === "--rebase" || token === "--merge");
       if (modeFlags.length > 1) {
         addNotice("Choose only one pull mode: --ff-only, --rebase, or --merge.", "error");
@@ -6427,6 +6791,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
       const result = await conn.action("git", "pull", { laneId, ...(mode ? { mode } : {}) });
+      // Pull/rebase reports success even when it stops on conflicts (the working
+      // tree is left mid-merge). Check before claiming success.
+      const conflict = await conn
+        .action<GitConflictState>("git", "getConflictState", { laneId })
+        .catch(() => null);
+      if (conflict?.inProgress && conflict.kind) {
+        const report = formatGitConflictReport(conflict);
+        setRightPane({ kind: "details", title: report.title, body: report.body });
+        setRightOpen(true);
+        addNotice(report.summary, "error");
+        return;
+      }
       addNotice(`Pull complete: ${renderObject(result, 4).replace(/\n/g, " ")}`, "success");
       return;
     }
@@ -6632,6 +7008,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
 
+    if (form.command === "lane-rename") {
+      const name = requireField("name", "Lane name");
+      if (!name) return;
+      await renameLane(form.laneId ?? activeLaneIdRef.current, name);
+      setRightOpen(false);
+      setRightPane({ kind: "empty" });
+      lastUserOpenedPaneRef.current = null;
+      focusAfterDetails();
+      return;
+    }
+
     if (form.command === "pr-open") {
       if (!laneId) return;
       const title = requireField("title", "Title");
@@ -6741,7 +7128,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         addNotice(`Feedback failed: ${message}`, "error");
       }
     }
-  }, [addNotice, focusAfterDetails, lanes, refreshState, selectActiveLaneId, selectActiveSessionId]);
+  }, [addNotice, focusAfterDetails, lanes, refreshState, renameLane, selectActiveLaneId, selectActiveSessionId]);
 
   const openLatestImage = useCallback(() => {
     const target = latestOpenableImageTarget(events);
@@ -8037,10 +8424,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       const inCenterPane = mouse.x == null || (mouse.x >= centerStart && mouse.x <= centerEnd);
       const inTranscriptRows = mouse.y == null || mouse.y > 2;
       if (mouse.kind === "wheel" && inCenterPane && inTranscriptRows) {
-        if (mouse.direction === "up") {
-          setChatScrollOffset((offset) => offset + 3);
-        } else if (mouse.direction === "down") {
-          setChatScrollOffset((offset) => offset - 3);
+        const delta = mouse.direction === "up" ? 3 : mouse.direction === "down" ? -3 : 0;
+        if (delta !== 0) {
+          // In a grid, scroll the tile under the cursor rather than only the
+          // focused one. ChatView clamps the upper bound per-tile, so a lower
+          // bound is enough here.
+          const grid = multiViewRef.current;
+          const TILE_PREFIX = "multi-chat:tile:";
+          let scrolledTile = false;
+          if (grid && mouse.x != null && mouse.y != null) {
+            const hit = hitTestRegistryRef.current.hitTest(mouse.x, mouse.y);
+            const sessionId = hit?.id.startsWith(TILE_PREFIX) ? hit.id.slice(TILE_PREFIX.length) : null;
+            if (sessionId && sessionId !== focusedSessionIdForMultiView(grid)) {
+              setScrollBySessionId((prev) => ({
+                ...prev,
+                [sessionId]: Math.max(0, (prev[sessionId] ?? 0) + delta),
+              }));
+              scrolledTile = true;
+            }
+          }
+          if (!scrolledTile) setChatScrollOffset((offset) => offset + delta);
         }
       } else if (
         mouse.kind === "click"
@@ -8096,10 +8499,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
 
-    if (pane === "chat" && multiViewRef.current && key.tab && !key.shift) {
-      setMultiView((prev) => prev
-        ? { ...prev, focusedIndex: (prev.focusedIndex + 1) % Math.max(1, prev.tiles.length) }
-        : prev);
+    if (pane === "chat" && multiViewRef.current && key.tab) {
+      // Tab focuses the next tile; Shift+Tab the previous. Scoped to an active
+      // grid so Shift+Tab still cycles permission mode in single-chat view.
+      const direction = key.shift ? -1 : 1;
+      setMultiView((prev) => {
+        if (!prev) return prev;
+        const count = Math.max(1, prev.tiles.length);
+        return { ...prev, focusedIndex: (prev.focusedIndex + direction + count) % count };
+      });
       return;
     }
 
@@ -9061,6 +9469,27 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
 
+    // Per-lane hotkeys on the selected lane card: r=rename, a=archive, x=delete.
+    // Skips the primary lane and the "+ new lane" action row, and ignores
+    // modified keystrokes (e.g. Ctrl+R history search).
+    if (
+      pane === "drawer"
+      && drawerOpen
+      && drawerSection === "lanes"
+      && selectedDrawerLaneAction !== "new-lane"
+      && !key.ctrl
+      && !key.meta
+      && (input === "r" || input === "R" || input === "a" || input === "A" || input === "x" || input === "X")
+    ) {
+      const selectedLane = drawerLaneRows[selectedLaneIndex] ?? null;
+      if (selectedLane && selectedLane.laneType !== "primary") {
+        const hotkey = input.toLowerCase();
+        if (hotkey === "r") openLaneRenameForm(selectedLane.id);
+        else if (hotkey === "a") void archiveLane(selectedLane.id);
+        else openLaneDeleteForm(selectedLane.id);
+        return;
+      }
+    }
     if (pane === "drawer" && drawerOpen && key.tab) {
       setDrawerSection((section) => section === "lanes" ? "chats" : "lanes");
       return;
@@ -10178,6 +10607,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
                 <ChatView
                   events={displayEvents}
                   notices={displayNotices}
+                  blocks={displayBlocks}
                   activeSession={activeSession}
                   projectName={projectName}
                   laneName={laneName}

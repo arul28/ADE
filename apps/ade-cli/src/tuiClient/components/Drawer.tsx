@@ -412,7 +412,12 @@ function LaneCard({
   const canShowVmBadge = isVmLane
     && contentWidth - indicatorWidth - rightReservationWithoutVm - VM_BADGE_WIDTH - 1 >= 3;
   const reservedRight = rightReservationWithoutVm + (canShowVmBadge ? VM_BADGE_WIDTH + 1 : 0);
-  const nameMax = Math.max(3, contentWidth - indicatorWidth - reservedRight);
+  // Lane identity: render the user-assigned lane color as a left accent rail so
+  // it's visible in the drawer (the Header already honors it). Default lanes
+  // (no explicit color) stay rail-free to keep the list calm.
+  const laneAccent = lane.color ?? null;
+  const laneRailWidth = laneAccent ? 2 : 0;
+  const nameMax = Math.max(3, contentWidth - indicatorWidth - reservedRight - laneRailWidth);
   const name = truncate(lane.name, nameMax);
 
   const line2Indent = " ".repeat(Math.min(indicatorWidth, 4));
@@ -436,6 +441,7 @@ function LaneCard({
       <Box>
         <Text>
           {prefix ? <Text color={theme.color.t4}>{prefix}</Text> : null}
+          {laneAccent ? <Text color={laneAccent}>{"▎ "}</Text> : null}
           <Text color={nameColor} bold={selected || status === "primary"}>
             {pad(name, nameMax)}
           </Text>

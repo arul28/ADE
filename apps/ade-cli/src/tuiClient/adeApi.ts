@@ -50,9 +50,12 @@ import type { AdeCodeConnection, ChatHistorySnapshot, CreatedChat, NavigateReque
 
 export const DEFAULT_CODEX_REASONING_EFFORT = "low";
 
-export async function listLanes(connection: AdeCodeConnection): Promise<LaneSummary[]> {
+export async function listLanes(
+  connection: AdeCodeConnection,
+  options: { includeArchived?: boolean } = {},
+): Promise<LaneSummary[]> {
   return await connection.action<LaneSummary[]>("lane", "list", {
-    includeArchived: false,
+    includeArchived: options.includeArchived ?? false,
     includeStatus: true,
   });
 }

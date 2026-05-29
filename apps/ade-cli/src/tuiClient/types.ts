@@ -51,6 +51,12 @@ export type AdeCodeConnection = {
   action<T = unknown>(domain: string, action: string, args?: Record<string, unknown>): Promise<T>;
   actionList<T = unknown>(domain: string, action: string, argsList: unknown[]): Promise<T>;
   onChatEvent(callback: (event: AgentChatEventEnvelope) => void): () => void;
+  /**
+   * Fired when the underlying transport drops unexpectedly (attached socket
+   * only; embedded runtimes never drop). Optional so partial test doubles and
+   * legacy callers stay compatible. Returns an unsubscribe fn.
+   */
+  onConnectionClose?(handler: () => void): () => void;
   subscribeRuntimeEvents(
     args: { category?: BufferedEvent["category"] | null; cursor?: number; limit?: number; replay?: boolean },
     callback: (event: BufferedEvent) => void,
@@ -170,7 +176,7 @@ export type RightPaneContent =
   | {
       kind: "form";
       title: string;
-      command: "new-lane" | "rename" | "pr-open" | "feedback" | "lane-delete" | "new-lane-from-unstaged";
+      command: "new-lane" | "rename" | "lane-rename" | "pr-open" | "feedback" | "lane-delete" | "new-lane-from-unstaged";
       description?: string;
       laneId?: string;
       laneDelete?: {
