@@ -5,7 +5,6 @@ import path from "node:path";
 import {
   getErrorMessage,
   readAgentAccessibleFileBytes,
-  readFileWithinRootSecure,
   resolvePathWithinRoot,
   type DirtyFileTextLookup,
 } from "../../shared/utils";

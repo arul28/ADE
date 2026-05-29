@@ -8,6 +8,7 @@ import { editor as monacoEditor } from "monaco-editor";
 import type { FileChangeEvent, FileContent, FileTreeNode } from "../../../shared/types";
 import { FilesPage } from "./FilesPage";
 import { useAppStore } from "../../state/appStore";
+import { clearDirtyBuffersForWorkspace, getDirtyFileTextForWindow } from "../../lib/dirtyWorkspaceBuffers";
 
 type MockEditorInstance = {
   setModel: (next: any) => void;
@@ -385,6 +386,7 @@ describe("FilesPage", () => {
 
   afterEach(() => {
     cleanup();
+    clearDirtyBuffersForWorkspace(projectRoot);
     latestMockEditor = null;
     createdMockEditors = [];
     changeListener = null;
@@ -804,6 +806,47 @@ describe("FilesPage", () => {
     expect((window.ade.files.readFile as any).mock.calls.some(([arg]: [{ path: string }]) => arg.path === "src/main.ts")).toBe(true);
   });
 
+  it("loads folder children while a root refresh is still pending", async () => {
+    const rootTree: FileTreeNode[] = [{ name: "src", path: "src", type: "directory" }];
+    const childTree: FileTreeNode[] = [{ name: "index.ts", path: "src/index.ts", type: "file" }];
+    let rootCalls = 0;
+    let resolveRootRefresh!: (nodes: FileTreeNode[]) => void;
+    const pendingRootRefresh = new Promise<FileTreeNode[]>((resolve) => {
+      resolveRootRefresh = resolve;
+    });
+    vi.mocked(window.ade.files.listTree).mockImplementation(async ({ parentPath }: { parentPath?: string }) => {
+      if (parentPath === "src") return cloneTree(childTree);
+      rootCalls += 1;
+      if (rootCalls === 1) return cloneTree(rootTree);
+      return pendingRootRefresh;
+    });
+
+    renderFilesPage();
+
+    expect(await screen.findByTitle("src")).toBeTruthy();
+    await waitForFilesWatcherStartup();
+    emitFileChange({
+      workspaceId: "primary",
+      type: "modified",
+      path: "README.md",
+      ts: new Date().toISOString(),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    fireEvent.click(screen.getByTitle("src"));
+
+    expect(await screen.findByTitle("src/index.ts")).toBeTruthy();
+    expect(window.ade.files.listTree).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: "primary",
+      parentPath: "src",
+    }));
+
+    act(() => resolveRootRefresh(cloneTree(rootTree)));
+    await waitFor(() => {
+      expect(screen.getByTitle("src/index.ts")).toBeTruthy();
+    });
+  });
+
   it("renames the selected tree row inline with F2", async () => {
     renderFilesPage({ preferPrimaryWorkspace: true });
 
@@ -976,6 +1019,7 @@ describe("FilesPage", () => {
     await waitFor(() => {
       expect(screen.getByText(/OPEN A FILE TO START EDITING/i)).toBeTruthy();
     });
+    expect(getDirtyFileTextForWindow(`${projectRoot}/.ade/worktrees/large-a/src/index.ts`)).toBeUndefined();
 
     act(() => {
       useAppStore.setState({ selectedLaneId: laneA });

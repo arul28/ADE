@@ -6591,6 +6591,48 @@ describe("createAgentChatService", () => {
       expect(sessionService.deleteSession).toHaveBeenCalledWith(session.id);
     });
 
+    it("purges a running Codex chat even when app-server interrupt and archive requests hang", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, sessionService } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start a Codex turn.",
+      }, { awaitDispatch: true });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      mockState.delayedCodexMethods.add("turn/interrupt");
+      mockState.delayedCodexMethods.add("thread/archive");
+      vi.useFakeTimers();
+      try {
+        const deleted = service.deleteSession({ sessionId: session.id });
+        await vi.advanceTimersByTimeAsync(10_000);
+        await expect(deleted).resolves.toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+
+      expect(sessionService.end).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: session.id, status: "disposed" }),
+      );
+      expect(sessionService.deleteSession).toHaveBeenCalledWith(session.id);
+      expect(sessionService.get(session.id)).toBeNull();
+    });
+
     it("does not follow transcript symlinks outside ADE during purge", async () => {
       const { service, sessionService } = createService();
       const session = await service.createSession({
@@ -14700,6 +14742,7 @@ describe("createAgentChatService", () => {
           isCliWrapped: false,
           harnessProfile: "verified",
         } as any,
+        getDirtyFileTextForPath: () => "remember unsaved edits",
         logger: createLogger() as any,
       });
 
@@ -14708,6 +14751,9 @@ describe("createAgentChatService", () => {
         expect.objectContaining({ type: "text" }),
         expect.objectContaining({ type: "file", filename: "note.txt" }),
       ]));
+      const persistedContent = streamMessages[0]?.content as Array<Record<string, unknown>>;
+      const filePart = persistedContent.find((part) => part.type === "file") as { data?: Buffer } | undefined;
+      expect(filePart?.data?.toString("utf8")).toBe("remember unsaved edits");
       expect(streamMessages[2]).toEqual({
         role: "user",
         content: "Continue from your last step.",

@@ -1488,7 +1488,7 @@ describe("preload OAuth bridge", () => {
     );
   });
 
-  it("routes local project file operations through the local runtime when bound", async () => {
+  it("uses in-process file IPC for local project file operations when bound", async () => {
     const binding = {
       kind: "local",
       key: "local:/repo",
@@ -1501,15 +1501,10 @@ describe("preload OAuth bridge", () => {
         return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
       }
       if (channel === IPC.localRuntimeCallAction) {
-        return {
-          domain: "file",
-          action: "listWorkspaces",
-          result: workspaces,
-          statusHints: {},
-        };
+        throw new Error("local file operations should not call the local runtime daemon");
       }
       if (channel === IPC.filesListWorkspaces) {
-        throw new Error("runtime-bound files should not use in-process IPC");
+        return workspaces;
       }
       throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
     });
@@ -1535,20 +1530,18 @@ describe("preload OAuth bridge", () => {
     const bridge = (globalThis as any).__adeBridge;
     await expect(bridge.files.listWorkspaces()).resolves.toEqual(workspaces);
 
-    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
-      rootPath: "/repo",
-      request: { domain: "file", action: "listWorkspaces", args: {} },
-    });
-    expect(invoke).not.toHaveBeenCalledWith(IPC.filesListWorkspaces, expect.anything());
+    expect(invoke).toHaveBeenCalledWith(IPC.filesListWorkspaces, {});
+    expect(invoke).not.toHaveBeenCalledWith(IPC.localRuntimeCallAction, expect.anything());
   });
 
-  it("does not fall through to in-process file IPC when a bound local runtime file call fails", async () => {
+  it("uses in-process tree IPC for local folders even when the local runtime is bound", async () => {
     const binding = {
       kind: "local",
       key: "local:/repo",
       rootPath: "/repo",
       displayName: "Project",
     };
+    const tree = [{ name: "src", path: "src", type: "directory" }];
     const runtimeError = new Error(
       "Error invoking remote method 'ade.localRuntime.callAction': Error: IPC handler for 'ade.localRuntime.callAction' timed out after 30000ms",
     );
@@ -1559,8 +1552,8 @@ describe("preload OAuth bridge", () => {
       if (channel === IPC.localRuntimeCallAction) {
         throw runtimeError;
       }
-      if (channel === IPC.filesListWorkspaces) {
-        throw new Error("runtime-bound files should not fall through to missing in-process IPC");
+      if (channel === IPC.filesListTree) {
+        return tree;
       }
       throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
     });
@@ -1584,13 +1577,69 @@ describe("preload OAuth bridge", () => {
     await import("./preload");
 
     const bridge = (globalThis as any).__adeBridge;
-    await expect(bridge.files.listWorkspaces()).rejects.toThrow("ade.localRuntime.callAction");
+    await expect(bridge.files.listTree({ workspaceId: "primary", parentPath: "src" })).resolves.toEqual(tree);
 
-    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
-      rootPath: "/repo",
-      request: { domain: "file", action: "listWorkspaces", args: {} },
+    expect(invoke).toHaveBeenCalledWith(IPC.filesListTree, {
+      workspaceId: "primary",
+      parentPath: "src",
     });
-    expect(invoke).not.toHaveBeenCalledWith(IPC.filesListWorkspaces, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.localRuntimeCallAction, expect.anything());
+  });
+
+  it("uses in-process diff IPC for local project diff reads when bound", async () => {
+    const binding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "Project",
+    };
+    const patch = {
+      path: "src/app.ts",
+      mode: "working",
+      patch: "diff --git a/src/app.ts b/src/app.ts\n",
+    };
+    const invoke = vi.fn(async (channel: string, arg?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+      }
+      if (channel === IPC.localRuntimeCallAction) {
+        throw new Error("local diff reads should not call the local runtime daemon");
+      }
+      if (channel === IPC.diffGetFilePatch) {
+        return patch;
+      }
+      throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(
+      bridge.diff.getFilePatch({ laneId: "lane-1", path: "src/app.ts", mode: "working" }),
+    ).resolves.toEqual(patch);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.diffGetFilePatch, {
+      laneId: "lane-1",
+      path: "src/app.ts",
+      mode: "working",
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.localRuntimeCallAction, expect.anything());
   });
 
   it("keeps remote runtime routing for remote project file operations", async () => {
@@ -4474,6 +4523,51 @@ describe("preload OAuth bridge", () => {
     expect(invoke).toHaveBeenCalledWith(IPC.projectSwitchToPath, { rootPath: "/next" });
     expect(invoke).not.toHaveBeenCalledWith(IPC.appGetWindowSession);
     expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatSend, expect.anything());
+
+    resolveSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
+    await pendingSwitch;
+  });
+
+  it("blocks mutating local file actions while a project switch is in flight", async () => {
+    let resolveSwitch!: (project: unknown) => void;
+    const switchPromise = new Promise((resolve) => {
+      resolveSwitch = resolve;
+    });
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.projectSwitchToPath) {
+        return switchPromise;
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    const pendingSwitch = bridge.project.switchToPath("/next");
+
+    await expect(
+      bridge.files.writeText({ workspaceId: "primary", path: "src/app.ts", text: "next" }),
+    ).rejects.toThrow(/Project is switching/i);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.projectSwitchToPath, { rootPath: "/next" });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.filesWriteText, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.localRuntimeCallAction, expect.anything());
 
     resolveSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
     await pendingSwitch;

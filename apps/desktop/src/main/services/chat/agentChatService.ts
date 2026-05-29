@@ -471,9 +471,30 @@ type PersistedPendingSteer = {
 };
 
 type PendingRpc = {
+  method: string;
+  timer: NodeJS.Timeout | null;
   resolve: (value: any) => void;
   reject: (error: Error) => void;
 };
+
+type CodexRequestOptions = {
+  timeoutMs?: number | null;
+};
+
+function isCodexRequestTimeoutError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /^Codex request '.+' timed out after \d+ms\.$/.test(message);
+}
+
+function rejectPendingCodexRequests(
+  pending: Map<string, PendingRpc>,
+  message: string,
+): void {
+  for (const request of pending.values()) {
+    request.reject(new Error(`${message} Pending request: ${request.method}.`));
+  }
+  pending.clear();
+}
 
 type PendingCodexApproval = {
   requestId: string | number;
@@ -546,7 +567,7 @@ type CodexRuntime = {
     turnId: string | null;
     followupText: string;
   }>;
-  request: <T = unknown>(method: string, params?: unknown) => Promise<T>;
+  request: <T = unknown>(method: string, params?: unknown, options?: CodexRequestOptions) => Promise<T>;
   notify: (method: string, params?: unknown) => void;
   sendResponse: (id: string | number, result: unknown) => void;
   sendError: (id: string | number, message: string, code?: number) => void;
@@ -1809,6 +1830,10 @@ const REASONING_ACTIVITY_DETAIL = "Thinking through the answer";
 const WORKING_ACTIVITY_DETAIL = "Preparing response";
 const DEFAULT_RUN_SESSION_TURN_TIMEOUT_MS = 300_000;
 const DEFAULT_COLLABORATION_MODES_LIST_TIMEOUT_MS = 1_500;
+const CODEX_REQUEST_TIMEOUT_MS = 30_000;
+const CODEX_INLINE_COMMAND_TIMEOUT_MS = 10_000;
+const CODEX_INTERRUPT_REQUEST_TIMEOUT_MS = 2_500;
+const CODEX_ARCHIVE_REQUEST_TIMEOUT_MS = 3_000;
 // Idle stream watchdog removed — time-based idle detection produced false
 // positives during long-running tool calls (Agent, Bash, etc.) where no
 // stream events are emitted while the SDK waits for tool results. The user
@@ -8736,7 +8761,10 @@ export function createAgentChatService(args: {
         runtime.process,
         runtime.killTimer,
       );
-      runtime.pending.clear();
+      rejectPendingCodexRequests(
+        runtime.pending,
+        `Codex app-server runtime was torn down (${openCodeReason}).`,
+      );
       for (const followup of runtime.pendingPlanFollowups.splice(0)) {
         emitPendingInputResolved(managed, {
           itemId: followup.itemId,
@@ -9335,9 +9363,17 @@ export function createAgentChatService(args: {
       failurePrefix: string,
     ): Promise<{ ok: true; result: T } | { ok: false }> => {
       try {
-        return { ok: true, result: await runtime.request<T>(method, params) };
+        return {
+          ok: true,
+          result: await runtime.request<T>(method, params, {
+            timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS,
+          }),
+        };
       } catch (error) {
         completeFailedInlineCodexSlash(failurePrefix, error);
+        if (isCodexRequestTimeoutError(error)) {
+          teardownRuntime(managed, "handle_close");
+        }
         return { ok: false };
       }
     };
@@ -13004,6 +13040,57 @@ export function createAgentChatService(args: {
     }
   };
 
+  const finishCodexTurnInterruptedLocally = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    turnId: string | null | undefined,
+    summary: string,
+  ): void => {
+    const interruptedTurnId = turnId?.trim() || runtime.activeTurnId || runtime.startedTurnId || randomUUID();
+    rememberInterruptedCodexTurn(runtime, interruptedTurnId);
+    rememberTerminalCodexTurn(runtime, interruptedTurnId, managed);
+    runtime.awaitingTurnStart = false;
+    runtime.canAttachResumedTurnStart = false;
+    runtime.activeTurnId = null;
+    runtime.startedTurnId = null;
+    runtime.pendingTurnPlanningApprovalGuarded = null;
+    runtime.ignoredTurnIds.delete(interruptedTurnId);
+    resetAssistantMessageStream(managed);
+    runtime.itemTurnIdByItemId.clear();
+    runtime.commandOutputByItemId.clear();
+    runtime.fileDeltaByItemId.clear();
+    runtime.fileChangesByItemId.clear();
+    runtime.planTextByItemId.clear();
+    runtime.webSearchActionsByItemId.clear();
+    runtime.agentMessageScopeByTurn.clear();
+    runtime.agentMessageTextByTurn.clear();
+    runtime.recentNotificationKeys.clear();
+    for (const followup of runtime.pendingPlanFollowups.splice(0)) {
+      emitPendingInputResolved(managed, {
+        itemId: followup.itemId,
+        decision: "cancel",
+        turnId: followup.turnId,
+      });
+    }
+    runtime.approvals.clear();
+    markSessionIdleWithFreshCache(managed);
+    stopActiveCodexSubagents(managed, runtime, interruptedTurnId, summary);
+    emitChatEvent(managed, {
+      type: "status",
+      turnStatus: "interrupted",
+      turnId: interruptedTurnId,
+    });
+    void emitTurnDiffSummaryIfChanged(managed, interruptedTurnId);
+    emitChatEvent(managed, {
+      type: "done",
+      turnId: interruptedTurnId,
+      status: "interrupted",
+      model: managed.session.model,
+      ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+    });
+    persistChatState(managed);
+  };
+
   const stopActiveClaudeSubagents = async (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
@@ -14493,9 +14580,9 @@ export function createAgentChatService(args: {
       goalBudgetClearRetryAfterByThreadId: new Map<string, number>(),
       dynamicTools: new Map(),
       dynamicToolSpecs: [],
-      request: async <T = unknown>(method: string, params?: unknown): Promise<T> => {
-      const id = runtime.nextRequestId;
-      runtime.nextRequestId += 1;
+      request: async <T = unknown>(method: string, params?: unknown, options?: CodexRequestOptions): Promise<T> => {
+        const id = runtime.nextRequestId;
+        runtime.nextRequestId += 1;
 
         const payload: JsonRpcEnvelope = {
           id,
@@ -14508,8 +14595,47 @@ export function createAgentChatService(args: {
         }
 
         return new Promise<T>((resolve, reject) => {
-          pending.set(String(id), { resolve, reject });
-          proc.stdin.write(`${JSON.stringify(payload)}\n`);
+          const key = String(id);
+          const timeoutMs = options?.timeoutMs === null
+            ? null
+            : Math.max(1, Math.floor(options?.timeoutMs ?? CODEX_REQUEST_TIMEOUT_MS));
+          let timer: NodeJS.Timeout | null = null;
+          const clearPendingTimer = () => {
+            if (!timer) return;
+            clearTimeout(timer);
+            timer = null;
+          };
+          if (timeoutMs != null) {
+            timer = setTimeout(() => {
+              pending.delete(key);
+              logger.warn("agent_chat.codex_request_timeout", {
+                sessionId: managed.session.id,
+                method,
+                timeoutMs,
+              });
+              reject(new Error(`Codex request '${method}' timed out after ${timeoutMs}ms.`));
+            }, timeoutMs);
+            timer.unref?.();
+          }
+          pending.set(key, {
+            method,
+            timer,
+            resolve: (value) => {
+              clearPendingTimer();
+              resolve(value as T);
+            },
+            reject: (error) => {
+              clearPendingTimer();
+              reject(error);
+            },
+          });
+          try {
+            proc.stdin.write(`${JSON.stringify(payload)}\n`);
+          } catch (error) {
+            pending.delete(key);
+            clearPendingTimer();
+            reject(error instanceof Error ? error : new Error(String(error)));
+          }
         });
       },
       notify: (method: string, params?: unknown) => {
@@ -14587,10 +14713,7 @@ export function createAgentChatService(args: {
         error: error instanceof Error ? error.message : String(error),
       });
 
-      for (const request of pending.values()) {
-        request.reject(new Error(message));
-      }
-      pending.clear();
+      rejectPendingCodexRequests(pending, message);
       for (const followup of runtime.pendingPlanFollowups.splice(0)) {
         emitPendingInputResolved(managed, {
           itemId: followup.itemId,
@@ -14618,10 +14741,7 @@ export function createAgentChatService(args: {
         runtime.killTimer = null;
       }
 
-      for (const request of pending.values()) {
-        request.reject(new Error(message));
-      }
-      pending.clear();
+      rejectPendingCodexRequests(pending, message);
 
       for (const followup of runtime.pendingPlanFollowups.splice(0)) {
         emitPendingInputResolved(managed, {
@@ -16706,7 +16826,21 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "codex" && !isBusyError) {
       managed.runtime.activeTurnId = null;
       managed.runtime.startedTurnId = null;
+      managed.runtime.awaitingTurnStart = false;
+      managed.runtime.canAttachResumedTurnStart = false;
+      managed.runtime.pendingTurnPlanningApprovalGuarded = null;
       managed.runtime.itemTurnIdByItemId.clear();
+      managed.runtime.commandOutputByItemId.clear();
+      managed.runtime.fileDeltaByItemId.clear();
+      managed.runtime.fileChangesByItemId.clear();
+      managed.runtime.planTextByItemId.clear();
+      managed.runtime.webSearchActionsByItemId.clear();
+      managed.runtime.agentMessageScopeByTurn.clear();
+      managed.runtime.agentMessageTextByTurn.clear();
+      managed.runtime.recentNotificationKeys.clear();
+      if (isCodexRequestTimeoutError(error)) {
+        teardownRuntime(managed, "handle_close");
+      }
     }
     if (managed.runtime?.kind === "opencode" && !isBusyError) {
       setOpenCodeRuntimeBusy(managed.runtime, false);
@@ -20292,14 +20426,26 @@ export function createAgentChatService(args: {
         await runtime.request("turn/interrupt", {
           threadId: managed.session.threadId,
           turnId,
-        });
+        }, { timeoutMs: CODEX_INTERRUPT_REQUEST_TIMEOUT_MS });
       };
       try {
         await interruptActiveTurn(interruptedTurnId);
       } catch (error) {
         const mismatch = parseCodexActiveTurnMismatch(error);
         if (!mismatch || mismatch.expectedTurnId !== interruptedTurnId) {
-          throw error;
+          logger.warn("agent_chat.codex_interrupt_failed", {
+            sessionId: managed.session.id,
+            turnId: interruptedTurnId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          finishCodexTurnInterruptedLocally(
+            managed,
+            runtime,
+            interruptedTurnId,
+            "Interrupted by user before Codex app-server acknowledged the interrupt",
+          );
+          teardownRuntime(managed, "handle_close");
+          return;
         }
         adoptCodexActiveTurnId(
           managed,
@@ -20310,7 +20456,23 @@ export function createAgentChatService(args: {
         );
         persistChatState(managed);
         interruptedTurnId = mismatch.foundTurnId;
-        await interruptActiveTurn(interruptedTurnId);
+        try {
+          await interruptActiveTurn(interruptedTurnId);
+        } catch (retryError) {
+          logger.warn("agent_chat.codex_interrupt_retry_failed", {
+            sessionId: managed.session.id,
+            turnId: interruptedTurnId,
+            error: retryError instanceof Error ? retryError.message : String(retryError),
+          });
+          finishCodexTurnInterruptedLocally(
+            managed,
+            runtime,
+            interruptedTurnId,
+            "Interrupted by user before Codex app-server acknowledged the interrupt",
+          );
+          teardownRuntime(managed, "handle_close");
+          return;
+        }
       }
       stopActiveCodexSubagents(managed, runtime, interruptedTurnId, "Interrupted by user");
       return;
@@ -21814,7 +21976,7 @@ export function createAgentChatService(args: {
             await runtime.request("turn/interrupt", {
               threadId: managed.session.threadId,
               turnId,
-            });
+            }, { timeoutMs: CODEX_INTERRUPT_REQUEST_TIMEOUT_MS });
           };
           try {
             await interruptTurnForDispose(interruptedTurnId);
@@ -21832,7 +21994,15 @@ export function createAgentChatService(args: {
             );
             persistChatState(managed);
             interruptedTurnId = mismatch.foundTurnId;
-            await interruptTurnForDispose(interruptedTurnId);
+            try {
+              await interruptTurnForDispose(interruptedTurnId);
+            } catch (retryError) {
+              logger.warn("agent_chat.codex_dispose_interrupt_retry_failed", {
+                sessionId: managed.session.id,
+                turnId: interruptedTurnId,
+                error: retryError instanceof Error ? retryError.message : String(retryError),
+              });
+            }
           }
           stopActiveCodexSubagents(
             managed,
@@ -21850,7 +22020,7 @@ export function createAgentChatService(args: {
         try {
           await managed.runtime.request("thread/archive", {
             threadId: managed.session.threadId,
-          });
+          }, { timeoutMs: CODEX_ARCHIVE_REQUEST_TIMEOUT_MS });
         } catch {
           // thread/archive not supported or already archived — ignore
         }

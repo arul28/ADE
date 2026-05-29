@@ -476,9 +476,7 @@ export async function readAgentAccessibleFileBytes(args: {
   const root = path.resolve(args.rootPath);
   let absPath: string;
   try {
-    absPath = path.isAbsolute(args.resolvedPath)
-      ? path.resolve(args.resolvedPath)
-      : resolvePathWithinRoot(root, args.resolvedPath, { allowMissing: false });
+    absPath = resolvePathWithinRoot(root, args.resolvedPath, { allowMissing: false });
   } catch {
     return readFileWithinRootSecure(root, args.resolvedPath);
   }
@@ -494,7 +492,7 @@ export async function readAgentAccessibleFileBytes(args: {
     }
   }
 
-  return readFileWithinRootSecure(root, args.resolvedPath);
+  return readFileWithinRootSecure(root, absPath);
 }
 
 export function readFileWithinRootSecure(root: string, candidate: string): Buffer {
