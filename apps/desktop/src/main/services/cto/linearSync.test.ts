@@ -176,6 +176,58 @@ describe("linearSyncService (file group)", () => {
       db.close();
     });
 
+    it("shares one Linear-pane deeplink attachment across concurrent ensure calls", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-sync-issue-link-race-"));
+      const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+      const createIssueAttachment = vi.fn(async (attachment: any) => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return { id: "attachment-1", url: attachment.url };
+      });
+      const fetchIssueById = vi.fn(async () => issueFixture);
+
+      const service = createLinearSyncService({
+        db,
+        projectId: "project-1",
+        flowPolicyService: { getPolicy: () => policy } as any,
+        routingService: { routeIssue: vi.fn() } as any,
+        intakeService: {
+          fetchCandidates: vi.fn(async () => []),
+          persistSnapshot: vi.fn(() => {}),
+          issueHash: vi.fn(() => "hash-current"),
+        } as any,
+        issueTracker: {
+          fetchIssueById,
+          createIssueAttachment,
+        } as any,
+        dispatcherService: {
+          hasActiveRuns: vi.fn(() => false),
+          findActiveRunForIssue: vi.fn(() => null),
+          createRun: vi.fn(),
+          advanceRun: vi.fn(),
+          listActiveRuns: vi.fn(() => []),
+          listQueue: vi.fn(() => []),
+          resolveRunAction: vi.fn(),
+        } as any,
+        autoStart: false,
+      });
+
+      const first = service.ensureAdeIssueLinkForIssue("issue-1", "linear_issue_created");
+      const second = service.ensureAdeIssueLinkForIssue("issue-1", "linear_issue_created");
+      await expect(Promise.all([first, second])).resolves.toEqual([
+        {
+          id: "attachment-1",
+          url: "https://ade-app.dev/open?type=linear-issue&issue=ABC-42",
+        },
+        {
+          id: "attachment-1",
+          url: "https://ade-app.dev/open?type=linear-issue&issue=ABC-42",
+        },
+      ]);
+      expect(createIssueAttachment).toHaveBeenCalledTimes(1);
+      expect(service.getDashboard().recentEvents.filter((entry) => entry.eventType === "ade_issue_link_attached")).toHaveLength(1);
+      db.close();
+    });
+
     it("retries the ADE Linear-pane deeplink during later issue processing", async () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-sync-issue-link-retry-"));
       const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);

@@ -22,6 +22,8 @@ import { buildLinearIssueQuickViewAttachment } from "./linearLaneCardService";
 const DEFAULT_TERMINAL_STATE_TYPES = ["completed", "canceled"] as const;
 const ADE_ISSUE_LINK_EVENT_TYPE = "ade_issue_link_attached";
 
+const inFlightAdeIssueLinkAttachments = new Map<string, Promise<{ url: string; id?: string } | null>>();
+
 type ProcessIssueUpdateOptions = {
   adeIssueLinkCause?: string | null;
 };
@@ -149,45 +151,56 @@ export function createLinearSyncService(args: {
   ): Promise<{ url: string; id?: string } | null> => {
     const trimmedIssueId = issue.id.trim();
     if (!trimmedIssueId) return null;
-    if (hasAdeIssueLinkAttachment(trimmedIssueId)) return null;
-    const createIssueAttachment = (args.issueTracker as Partial<IssueTracker>).createIssueAttachment;
-    if (typeof createIssueAttachment !== "function") return null;
+    const inFlightKey = `${args.projectId}:${trimmedIssueId}`;
+    const existingInFlight = inFlightAdeIssueLinkAttachments.get(inFlightKey);
+    if (existingInFlight) return existingInFlight;
 
-    const linkedAt = nowIso();
-    const attachment = buildLinearIssueQuickViewAttachment({
-      issue,
-      linkedAt,
+    const promise = (async (): Promise<{ url: string; id?: string } | null> => {
+      if (hasAdeIssueLinkAttachment(trimmedIssueId)) return null;
+      const createIssueAttachment = (args.issueTracker as Partial<IssueTracker>).createIssueAttachment;
+      if (typeof createIssueAttachment !== "function") return null;
+
+      const linkedAt = nowIso();
+      const attachment = buildLinearIssueQuickViewAttachment({
+        issue,
+        linkedAt,
+      });
+      try {
+        const result = await createIssueAttachment.call(args.issueTracker, attachment);
+        appendSyncEvent({
+          issueId: trimmedIssueId,
+          eventType: ADE_ISSUE_LINK_EVENT_TYPE,
+          status: "linked",
+          message: `ADE issue deeplink attached to ${issue.identifier}`,
+          payload: {
+            issueIdentifier: issue.identifier,
+            cause,
+            adeUrl: attachment.url,
+            attachmentId: result.id ?? null,
+            resultUrl: result.url,
+          },
+        });
+        return result;
+      } catch (error) {
+        appendSyncEvent({
+          issueId: trimmedIssueId,
+          eventType: "ade_issue_link_attach_failed",
+          status: "failed",
+          message: getErrorMessage(error),
+          payload: {
+            issueIdentifier: issue.identifier,
+            cause,
+            adeUrl: attachment.url,
+          },
+        });
+        throw error;
+      }
+    })().finally(() => {
+      inFlightAdeIssueLinkAttachments.delete(inFlightKey);
     });
-    try {
-      const result = await createIssueAttachment.call(args.issueTracker, attachment);
-      appendSyncEvent({
-        issueId: trimmedIssueId,
-        eventType: ADE_ISSUE_LINK_EVENT_TYPE,
-        status: "linked",
-        message: `ADE issue deeplink attached to ${issue.identifier}`,
-        payload: {
-          issueIdentifier: issue.identifier,
-          cause,
-          adeUrl: attachment.url,
-          attachmentId: result.id ?? null,
-          resultUrl: result.url,
-        },
-      });
-      return result;
-    } catch (error) {
-      appendSyncEvent({
-        issueId: trimmedIssueId,
-        eventType: "ade_issue_link_attach_failed",
-        status: "failed",
-        message: getErrorMessage(error),
-        payload: {
-          issueIdentifier: issue.identifier,
-          cause,
-          adeUrl: attachment.url,
-        },
-      });
-      throw error;
-    }
+
+    inFlightAdeIssueLinkAttachments.set(inFlightKey, promise);
+    return promise;
   };
 
   const ensureAdeIssueLinkForIssue = async (
