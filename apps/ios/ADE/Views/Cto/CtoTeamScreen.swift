@@ -896,8 +896,8 @@ private struct CtoWorkerHireSheet: View {
       .replacingOccurrences(of: "$", with: "")
       .replacingOccurrences(of: ",", with: "")
       .trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !normalized.isEmpty, let dollars = Double(normalized), dollars > 0 else { return 0 }
-    return max(0, Int((dollars * 100).rounded()))
+    guard !normalized.isEmpty, let dollars = Double(normalized), dollars > 0 else { return nil }
+    return max(1, Int((dollars * 100).rounded()))
   }
 }
 

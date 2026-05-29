@@ -3425,7 +3425,7 @@ final class SyncService: ObservableObject {
     }
     if let linearIssue {
       args["linearIssue"] = try jsonObject(from: linearIssue)
-      if let branchName = linearIssue.branchName, !branchName.isEmpty {
+      if args["branchName"] == nil, let branchName = linearIssue.branchName, !branchName.isEmpty {
         args["branchName"] = branchName
       }
     }
@@ -3495,7 +3495,7 @@ final class SyncService: ObservableObject {
     }
     if let linearIssue {
       args["linearIssue"] = try jsonObject(from: linearIssue)
-      if let branchName = linearIssue.branchName, !branchName.isEmpty {
+      if args["branchName"] == nil, let branchName = linearIssue.branchName, !branchName.isEmpty {
         args["branchName"] = branchName
       }
     }
