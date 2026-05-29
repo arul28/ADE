@@ -848,3 +848,32 @@ export function summarizeDiffChanges(value: unknown): Array<{ path: string; addi
     })
     .slice(0, 20);
 }
+
+/**
+ * Classify a single unified-diff line so the renderer can colorize it.
+ * Pure + theme-free so it stays testable; the caller maps the kind to a
+ * theme token. File-meta lines (`diff --git`, `index`, the `+++`/`---`
+ * header pair) are distinguished from real `+`/`-` content so they don't
+ * paint the whole file header green/red.
+ */
+export type DiffLineKind = "add" | "del" | "hunk" | "meta" | "context";
+
+export function diffLineKind(line: string): DiffLineKind {
+  if (line.startsWith("@@")) return "hunk";
+  if (
+    line.startsWith("+++") ||
+    line.startsWith("---") ||
+    line.startsWith("diff --git") ||
+    line.startsWith("index ") ||
+    line.startsWith("new file") ||
+    line.startsWith("deleted file") ||
+    line.startsWith("rename ") ||
+    line.startsWith("similarity ") ||
+    line.startsWith("\\ No newline")
+  ) {
+    return "meta";
+  }
+  if (line.startsWith("+")) return "add";
+  if (line.startsWith("-")) return "del";
+  return "context";
+}

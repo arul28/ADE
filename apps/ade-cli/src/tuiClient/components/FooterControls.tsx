@@ -4,6 +4,7 @@ import { theme } from "../theme";
 import type { AdeCodeProvider } from "../types";
 import { gridMiniMapText } from "./GridMiniMap";
 import { useHoveredHitId } from "../hitTestRegistry";
+import { useShimmerTick } from "../spinTick";
 
 const TOKEN_BAR_CELLS = 10;
 
@@ -28,12 +29,47 @@ function tokenBarColor(percent: number): string {
 
 export function TokenBar({ percent }: { percent: number }) {
   const safe = Math.max(0, Math.min(100, percent));
-  const filled = Math.max(0, Math.min(TOKEN_BAR_CELLS, Math.round((safe / 100) * TOKEN_BAR_CELLS)));
+  const target = Math.max(0, Math.min(TOKEN_BAR_CELLS, Math.round((safe / 100) * TOKEN_BAR_CELLS)));
+
+  // The shimmer tick only advances during real activity (streaming/connecting).
+  // We lean on it for *both* the growth easing and the danger pulse so the bar
+  // costs nothing when idle: with the tick frozen, this component never re-renders
+  // and the math below collapses to a static render at the true value.
+  const tick = useShimmerTick();
+  const animRef = React.useRef({ filled: target, tick });
+
+  let filled: number;
+  if (tick === animRef.current.tick) {
+    // Idle (or first render): the tick is not advancing, so we can't animate.
+    // Snap to the true value and keep it there — no re-render loop, no drift.
+    filled = target;
+    animRef.current.filled = target;
+  } else {
+    // Active: ease one cell per tick toward the target. The bar converges in a
+    // few frames and then holds steady (current === target → no further motion).
+    const current = animRef.current.filled;
+    if (current < target) filled = current + 1;
+    else if (current > target) filled = current - 1;
+    else filled = target;
+    animRef.current.filled = filled;
+    animRef.current.tick = tick;
+  }
+
   const empty = TOKEN_BAR_CELLS - filled;
   const color = tokenBarColor(safe);
+
+  // Context exhaustion: pulse the last filled cell bright/dim so it's *felt*.
+  // Gated on the same activity tick — dim phase on alternating frames.
+  const pulseDanger = safe >= 95 && filled > 0;
+  const pulseDim = pulseDanger && tick % 2 === 1;
+  const leading = pulseDanger ? filled - 1 : filled;
+
   return (
     <Text>
-      <Text color={color}>{"▓".repeat(filled)}</Text>
+      <Text color={color}>{"▓".repeat(Math.max(0, leading))}</Text>
+      {pulseDanger ? (
+        <Text color={color} dimColor={pulseDim} bold={!pulseDim}>{"▓"}</Text>
+      ) : null}
       <Text color={theme.color.border} dimColor>{"░".repeat(empty)}</Text>
     </Text>
   );

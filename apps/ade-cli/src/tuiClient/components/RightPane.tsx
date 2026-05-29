@@ -16,6 +16,31 @@ import { TokenBar } from "./FooterControls";
 import type { AgentChatModelCatalog, AgentChatModelInfo } from "../../../../desktop/src/shared/types/chat";
 import type { AiSettingsStatus } from "../../../../desktop/src/shared/types/config";
 import { useHoveredHitId } from "../hitTestRegistry";
+import { diffLineKind, type DiffLineKind } from "../format";
+
+// Cap per-file diff body so a pathological 50k-line file can't make the right
+// pane build a giant row array on every scroll. The window only shows
+// DETAILS_BODY_MAX_LINES at a time, but the flattened array is built in full —
+// this keeps that bounded while still covering any realistic review diff.
+const DIFF_FILE_BODY_MAX = 600;
+
+// Map a diff line kind to a theme token. Green/red here is diff *content*
+// semantics (the universal add/remove convention Claude Code uses), not idle
+// chrome — so it's exempt from the "no green chrome" rule.
+function diffLineTone(kind: DiffLineKind): { color: string; dim: boolean; bold: boolean } {
+  switch (kind) {
+    case "add":
+      return { color: theme.color.done, dim: false, bold: false };
+    case "del":
+      return { color: theme.color.error, dim: false, bold: false };
+    case "hunk":
+      return { color: theme.color.violet, dim: false, bold: true };
+    case "meta":
+      return { color: theme.color.t4, dim: true, bold: false };
+    default:
+      return { color: theme.color.t3, dim: true, bold: false };
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Right-pane width / focus chrome
@@ -886,12 +911,50 @@ function DetailsPane({ title, body, width, scrollOffsetRows = 0 }: { title: stri
   );
 }
 
+type DiffRenderLine = { key: string; text: string; color: string; dim: boolean; bold: boolean };
+
+// Flatten a diff into colorized, fully-scrollable lines: a bold per-file header
+// (path + add/del counts) followed by each hunk line tinted by kind. Shared by
+// the renderer and the scroll-row counter so they never drift.
+function buildDiffRenderLines(
+  files: Array<{ path: string; additions?: number; deletions?: number; body?: string }>,
+): DiffRenderLine[] {
+  const out: DiffRenderLine[] = [];
+  for (const file of files) {
+    out.push({
+      key: `${file.path}:head`,
+      text: `▸ ${file.path}  +${file.additions ?? 0} −${file.deletions ?? 0}`,
+      color: theme.color.t1,
+      dim: false,
+      bold: true,
+    });
+    if (!file.body) continue;
+    const lines = file.body.split(/\r?\n/);
+    const shown = lines.slice(0, DIFF_FILE_BODY_MAX);
+    shown.forEach((line, index) => {
+      const tone = diffLineTone(diffLineKind(line));
+      out.push({ key: `${file.path}:${index}`, text: line, color: tone.color, dim: tone.dim, bold: tone.bold });
+    });
+    const hidden = lines.length - shown.length;
+    if (hidden > 0) {
+      out.push({
+        key: `${file.path}:truncated`,
+        text: `  … ${hidden} more line${hidden === 1 ? "" : "s"} in this file`,
+        color: theme.color.t4,
+        dim: true,
+        bold: false,
+      });
+    }
+  }
+  return out;
+}
+
 export function rightPaneScrollableRowCount(content: RightPaneContent): number {
   if (content.kind === "details") return content.body.split(/\r?\n/).length;
   if (content.kind === "context-usage") return (content.usage?.categories.length ?? 0) + 4;
   if (content.kind === "list") return content.rows.length;
   if (content.kind === "diff") {
-    return content.files.reduce((total, file) => total + 1 + (file.body ? Math.min(8, file.body.split(/\r?\n/).length) : 0), 0);
+    return buildDiffRenderLines(content.files).length;
   }
   return 0;
 }
@@ -1202,20 +1265,23 @@ export function RightPane({
       {content.kind === "diff" ? (
         <Box flexDirection="column">
           {content.files.length ? (() => {
-            const diffLines = content.files.flatMap((file) => [
-              { key: `${file.path}:head`, text: `${file.path} +${file.additions ?? 0} -${file.deletions ?? 0}`, color: theme.color.info, dim: false },
-              ...(file.body ? file.body.split(/\r?\n/).slice(0, 8).map((line, index) => ({
-                key: `${file.path}:${index}`,
-                text: line,
-                color: theme.color.t3,
-                dim: true,
-              })) : []),
-            ]);
-            return diffLines.slice(scrollOffsetRows, scrollOffsetRows + DETAILS_BODY_MAX_LINES).map((line) => (
-              <Text key={line.key} color={line.color} dimColor={line.dim} wrap="truncate-end">
-                {endTruncate(line.text, Math.max(10, paneWidth - 4))}
-              </Text>
-            ));
+            const diffLines = buildDiffRenderLines(content.files);
+            const window = diffLines.slice(scrollOffsetRows, scrollOffsetRows + DETAILS_BODY_MAX_LINES);
+            return (
+              <>
+                {window.map((line) => (
+                  <Text key={line.key} color={line.color} dimColor={line.dim} bold={line.bold} wrap="truncate-end">
+                    {endTruncate(line.text, Math.max(10, paneWidth - 4))}
+                  </Text>
+                ))}
+                {diffLines.length > DETAILS_BODY_MAX_LINES ? (
+                  <Text color={theme.color.t4} dimColor>
+                    {scrollOffsetRows > 0 ? `↑ ${scrollOffsetRows} earlier · ` : ""}
+                    {Math.max(0, diffLines.length - scrollOffsetRows - DETAILS_BODY_MAX_LINES)} more · ↑↓ scroll
+                  </Text>
+                ) : null}
+              </>
+            );
           })() : <Text color={theme.color.t4} dimColor>No changes.</Text>}
         </Box>
       ) : null}

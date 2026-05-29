@@ -5,13 +5,16 @@ import { LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, laneDetailsInteractio
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 
 describe("rightPaneScrollableRowCount", () => {
-  it("counts details body lines and list rows; caps diff file bodies at 8", () => {
+  it("counts details body lines and list rows; flows full diff bodies for scrolling", () => {
     expect(rightPaneScrollableRowCount({ kind: "details", title: "t", body: "a\nb\nc" })).toBe(3);
     expect(rightPaneScrollableRowCount({ kind: "list", title: "t", rows: ["a", "b"] })).toBe(2);
     expect(rightPaneScrollableRowCount({ kind: "empty" })).toBe(0);
     const bigBody = Array.from({ length: 50 }, (_, i) => `line ${i}`).join("\n");
-    // 1 header row + min(8, 50) body rows = 9 per file.
-    expect(rightPaneScrollableRowCount({ kind: "diff", title: "d", files: [{ path: "a.ts", body: bigBody }] })).toBe(9);
+    // 1 header row + all 50 body rows (diffs scroll in full, capped per file at 600).
+    expect(rightPaneScrollableRowCount({ kind: "diff", title: "d", files: [{ path: "a.ts", body: bigBody }] })).toBe(51);
+    // Per-file cap: 600 body rows shown + 1 header + 1 "more lines" row.
+    const huge = Array.from({ length: 650 }, (_, i) => `+line ${i}`).join("\n");
+    expect(rightPaneScrollableRowCount({ kind: "diff", title: "d", files: [{ path: "a.ts", body: huge }] })).toBe(602);
   });
 });
 

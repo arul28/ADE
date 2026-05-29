@@ -69,3 +69,5 @@ package-lock.json
 /apps/desktop/release-alpha
 /apps/desktop/release-beta
 apps/desktop/resources/runtime/ade-*
+
+.claude/scheduled_tasks.lock

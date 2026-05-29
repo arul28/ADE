@@ -6892,6 +6892,68 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         setRightPane({ kind: "details", title: "PR comments", body: formatPrComments(comments) });
         return;
       }
+      const prRef = typeof activePr?.number === "number" ? `PR #${activePr.number}` : "the PR";
+      if (name === "/pr land") {
+        const parts = args.trim().split(/\s+/).filter(Boolean);
+        const confirmed = parts[0]?.toLowerCase() === "confirm";
+        const methodArg = (confirmed ? parts[1] : parts[0])?.toLowerCase();
+        const method = (["merge", "squash", "rebase"].includes(methodArg ?? "") ? methodArg : "squash") as "merge" | "squash" | "rebase";
+        if (!confirmed) {
+          // Merging is irreversible and runs post-merge cleanup, so require an
+          // explicit confirm step rather than landing on the first keystroke.
+          setRightPane({
+            kind: "details",
+            title: "Land PR",
+            body: [
+              `About to merge ${prRef} using the "${method}" method.`,
+              "",
+              "This merges on GitHub and runs post-merge cleanup (branch delete, child rebase). It cannot be undone.",
+              "",
+              `Run  /pr land confirm ${method}  to proceed.`,
+              "Choose a method:  /pr land confirm merge | squash | rebase",
+            ].join("\n"),
+          });
+          return;
+        }
+        try {
+          const landed = await conn.action("pr", "land", { prId, method });
+          addNotice(`Merged ${prRef} (${method}).`, "success");
+          setRightPane({ kind: "details", title: "PR landed", body: renderObject(landed, 24) });
+          await refreshState();
+        } catch (err) {
+          addNotice(err instanceof Error ? err.message : String(err), "error");
+        }
+        return;
+      }
+      if (name === "/pr comment") {
+        if (!args.trim()) {
+          setRightPane({ kind: "details", title: "PR comment", body: "Usage: /pr comment <text>" });
+          return;
+        }
+        try {
+          await conn.action("pr", "addComment", { prId, body: args.trim() });
+          addNotice(`Commented on ${prRef}.`, "success");
+        } catch (err) {
+          addNotice(err instanceof Error ? err.message : String(err), "error");
+        }
+        return;
+      }
+      if (name === "/pr approve" || name === "/pr request-changes") {
+        const event = name === "/pr approve" ? "APPROVE" : "REQUEST_CHANGES";
+        const body = args.trim();
+        if (event === "REQUEST_CHANGES" && !body) {
+          setRightPane({ kind: "details", title: "PR review", body: "Usage: /pr request-changes <text>" });
+          return;
+        }
+        try {
+          await conn.action("pr", "submitReview", { prId, event, ...(body ? { body } : {}) });
+          addNotice(event === "APPROVE" ? `Approved ${prRef}.` : `Requested changes on ${prRef}.`, "success");
+          await refreshState();
+        } catch (err) {
+          addNotice(err instanceof Error ? err.message : String(err), "error");
+        }
+        return;
+      }
       const review = await Promise.all([
         conn.actionList("pr", "getReviews", [prId]).catch((err) => ({ error: err instanceof Error ? err.message : String(err) })),
         conn.actionList("pr", "getReviewThreads", [prId]).catch((err) => ({ error: err instanceof Error ? err.message : String(err) })),
