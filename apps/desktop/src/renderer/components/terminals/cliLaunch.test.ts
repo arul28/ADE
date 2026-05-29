@@ -293,6 +293,18 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
     });
 
+    it("normalizes Cursor registry model ids and trusts full-auto workspaces", () => {
+      const launch = buildTrackedCliLaunchCommand({
+        provider: "cursor",
+        permissionMode: "full-auto",
+        model: "cursor/composer-2.5",
+        initialPrompt: "Review this lane.",
+      });
+
+      expect(launch.startupCommand).toContain("cursor-agent --force --trust --model composer-2.5 --resume \"$ADE_CURSOR_CHAT_ID\"");
+      expect(launch.startupCommand).not.toContain("--model cursor/composer-2.5");
+    });
+
     it("launches Cursor through a Windows-safe pre-created resumable chat", () => {
       withProcessPlatform("win32", () => {
         const launch = buildTrackedCliLaunchCommand({ provider: "cursor", permissionMode: "plan", model: "cursor-fast", initialPrompt: "Review this lane." });
@@ -456,7 +468,14 @@ describe("tracked CLI resume helpers", () => {
       targetKind: "session",
       targetId: "chat-99",
       launch: { permissionMode: "full-auto" },
-    })).toBe("cursor-agent --force --model auto --resume chat-99");
+    })).toBe("cursor-agent --force --trust --model auto --resume chat-99");
+
+    expect(buildTrackedCliResumeCommand({
+      provider: "cursor",
+      targetKind: "session",
+      targetId: "chat-99",
+      launch: { permissionMode: "default", model: "cursor/composer-2.5" },
+    })).toBe("cursor-agent --model composer-2.5 --resume chat-99");
 
     expect(buildTrackedCliResumeCommand({
       provider: "opencode",
