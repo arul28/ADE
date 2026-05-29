@@ -2,6 +2,8 @@ import { app, BrowserWindow } from "electron";
 
 import {
   ADE_DEEPLINK_SCHEME,
+  ADE_DEEPLINK_HTTPS_PATH,
+  isAdeDeeplinkHttpsHost,
   parseDeeplink,
   type DeeplinkTarget,
 } from "../../../shared/deeplinks";
@@ -17,12 +19,19 @@ export type DeeplinkDispatcher = (
   request: AppNavigationRequest,
 ) => Promise<void> | void;
 
-const ADE_OPEN_HTTPS_RE = /^https?:\/\/ade\.app\/open\b/i;
 const ADE_SCHEME_RE = new RegExp(`^${ADE_DEEPLINK_SCHEME}://`, "i");
 
 function isAdeDeeplinkArg(arg: unknown): arg is string {
   if (typeof arg !== "string") return false;
-  return ADE_SCHEME_RE.test(arg) || ADE_OPEN_HTTPS_RE.test(arg);
+  if (ADE_SCHEME_RE.test(arg)) return true;
+  try {
+    const url = new URL(arg);
+    return url.protocol === "https:"
+      && isAdeDeeplinkHttpsHost(url.hostname)
+      && url.pathname === ADE_DEEPLINK_HTTPS_PATH;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -201,6 +210,12 @@ export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigatio
   switch (target.kind) {
     case "lane":
       return { kind: "lane", laneId: target.laneId };
+    case "session":
+      return {
+        kind: "work",
+        sessionId: target.sessionId,
+        laneId: target.laneId ?? null,
+      };
     case "pr":
       return {
         kind: "pr",

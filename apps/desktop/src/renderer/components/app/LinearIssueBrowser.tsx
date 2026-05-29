@@ -34,7 +34,7 @@ import {
   linearPriorityLabel,
   toLaneLinearIssue,
 } from "../lanes/LinearIssuePicker";
-import { LinearPriorityIcon, LinearStateIcon, LINEAR_BRAND } from "../lanes/linearBrand";
+import { LinearPriorityIcon, LinearStateIcon } from "../lanes/linearBrand";
 import { LinearProjectIcon } from "../lanes/linearProjectIcon";
 import { LinearIssueOpenLink, type LinearIssueResolveModalKind } from "./LinearIssueResolveModals";
 
@@ -242,6 +242,8 @@ export function LinearIssueBrowser({
   actionDisabled = false,
   showBranchPreview = true,
   refreshKey = 0,
+  requestedIssueIdentifier,
+  requestedIssueRequestKey,
   onIssueAction,
   onOpenLinearSettings,
   onConnectionVisibilityChange,
@@ -260,6 +262,8 @@ export function LinearIssueBrowser({
   actionDisabled?: boolean;
   showBranchPreview?: boolean;
   refreshKey?: number;
+  requestedIssueIdentifier?: string | null;
+  requestedIssueRequestKey?: string | number | null;
   onIssueAction: (issue: BrowserIssue) => void | Promise<void>;
   onOpenLinearSettings?: () => void;
   onConnectionVisibilityChange?: (visible: boolean) => void;
@@ -296,6 +300,7 @@ export function LinearIssueBrowser({
   const [error, setError] = useState<string | null>(null);
   const quickViewRequestIdRef = useRef(0);
   const searchRequestIdRef = useRef(0);
+  const lastRequestedIssueKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     quickViewRef.current = quickView;
@@ -431,9 +436,39 @@ export function LinearIssueBrowser({
   }, [featuredIssue, sorted]);
 
   useEffect(() => {
+    const normalized = requestedIssueIdentifier?.trim().toUpperCase() ?? "";
+    const requestKey = `${normalized}:${requestedIssueRequestKey ?? ""}`;
+    if (!normalized || lastRequestedIssueKeyRef.current === requestKey) return;
+    lastRequestedIssueKeyRef.current = requestKey;
+    const nextFilters: LinearIssueBrowserFilters = {
+      ...DEFAULT_FILTERS,
+      query: normalized,
+      statePreset: "all",
+    };
+    setFilters(nextFilters);
+    safeSaveFilters(projectRoot, nextFilters);
+    setIssues([]);
+    setPageInfo({ hasNextPage: false, endCursor: null });
+    setSelectedIssueId(null);
+    setSelectedIssueIds(new Set());
+    setCollapsedGroups({});
+  }, [projectRoot, requestedIssueIdentifier, requestedIssueRequestKey]);
+
+  useEffect(() => {
     if (selectedIssueId && displayIssues.some((issue) => issue.id === selectedIssueId)) return;
     setSelectedIssueId(displayIssues[0]?.id ?? null);
   }, [displayIssues, selectedIssueId]);
+
+  useEffect(() => {
+    const normalized = requestedIssueIdentifier?.trim().toUpperCase() ?? "";
+    if (!normalized) return;
+    const match = displayIssues.find((issue) =>
+      issue.identifier.trim().toUpperCase() === normalized
+      || issue.id.trim() === requestedIssueIdentifier?.trim()
+    );
+    if (!match || selectedIssueId === match.id) return;
+    setSelectedIssueId(match.id);
+  }, [displayIssues, requestedIssueIdentifier, selectedIssueId]);
 
   const selectedIssue = displayIssues.find((issue) => issue.id === selectedIssueId) ?? displayIssues[0] ?? null;
 

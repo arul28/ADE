@@ -2684,7 +2684,7 @@ describe("preload OAuth bridge", () => {
     const labels = [{ name: "bug", color: "d73a4a" }];
     const collaborators = [{ login: "octocat", avatarUrl: "https://example.test/octocat.png" }];
     const autolinks = [{ id: 1, keyPrefix: "ADE-", urlTemplate: "https://example.test/<num>", isAlphanumeric: false }];
-    const createdAutolink = { id: 2, keyPrefix: "ADEPR-", urlTemplate: "https://ade.app/open?number=<num>", isAlphanumeric: false };
+    const createdAutolink = { id: 2, keyPrefix: "ADEPR-", urlTemplate: "https://ade-app.dev/open?number=<num>", isAlphanumeric: false };
     const remoteStatus = { repo: { owner: "acme", name: "repo" }, hasOrigin: true };
     const myRepos = {
       repos: [{
@@ -2777,7 +2777,7 @@ describe("preload OAuth bridge", () => {
       owner: "acme",
       name: "repo",
       keyPrefix: "ADEPR-",
-      urlTemplate: "https://ade.app/open?number=<num>",
+      urlTemplate: "https://ade-app.dev/open?number=<num>",
       isAlphanumeric: false,
     })).resolves.toEqual(createdAutolink);
     await expect(bridge.github.getRemoteStatus({ forceRefresh: true })).resolves.toEqual(remoteStatus);
@@ -2820,7 +2820,7 @@ describe("preload OAuth bridge", () => {
           owner: "acme",
           name: "repo",
           keyPrefix: "ADEPR-",
-          urlTemplate: "https://ade.app/open?number=<num>",
+          urlTemplate: "https://ade-app.dev/open?number=<num>",
           isAlphanumeric: false,
         },
       },

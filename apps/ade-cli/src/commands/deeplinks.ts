@@ -11,7 +11,10 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 import {
+  ADE_DEEPLINK_HTTPS_BASE_URL,
+  ADE_DEEPLINK_HTTPS_PATH,
   buildDeeplink,
+  isAdeDeeplinkHttpsHost,
   parseDeeplink,
   type DeeplinkTarget,
 } from "../../../desktop/src/shared/deeplinks";
@@ -29,7 +32,7 @@ const HELP_OPEN = [
   "  ade open <url>",
   "  ade open --linear-issue <id> --branch <branch>",
   "",
-  "  Opens an `ade://` or `https://ade.app/open?...` URL via the OS, which",
+  "  Opens an `ade://` or `https://ade-app.dev/open?...` URL via the OS, which",
   "  routes it back to the running ADE desktop app (or launches it cold).",
   "",
   "  The --linear-issue / --branch form is what Linear's 'Open in coding",
@@ -40,6 +43,7 @@ const HELP_OPEN = [
 const HELP_LINK = [
   "Usage:",
   "  ade link lane <lane-uuid>",
+  "  ade link session <session-id> [--lane <lane-uuid>]",
   "  ade link branch <owner/repo> <branch> [--pr <number>]",
   "  ade link pr <owner/repo> <number>",
   "  ade link linear-issue <ADE-123> [--branch <branch>]",
@@ -96,14 +100,14 @@ export function runOpenCommand(args: string[]): DeeplinkCliResult {
     if (!linearIssue) {
       throw new CliDeeplinkUsageError("--linear-issue is required when using --branch");
     }
-    // Build an https://ade.app/open URL with the hints Linear gave us. The
+    // Build an https://ade-app.dev/open URL with the hints Linear gave us. The
     // landing page (and the renderer-side handler) interpret the linear-issue
     // hint by looking up the lane/project that owns it.
     const params = new URLSearchParams();
     params.set("type", "linear-issue");
     if (linearIssue) params.set("issue", linearIssue);
     if (branch) params.set("branch", branch);
-    return openAndReport(`https://ade.app/open?${params.toString()}`);
+    return openAndReport(`${ADE_DEEPLINK_HTTPS_BASE_URL}?${params.toString()}`);
   }
 
   // URL form.
@@ -116,7 +120,7 @@ export function runOpenCommand(args: string[]): DeeplinkCliResult {
   // Allow unknown_type URLs (like the linear-issue form above) to still pass
   // through to the OS opener — the landing page / desktop can decide what
   // to do.
-  if (parsed.error.kind === "unknown_type" && /^https?:\/\/ade\.app\/open\b/i.test(url)) {
+  if (parsed.error.kind === "unknown_type" && looksLikeAdeOpenUrl(url)) {
     return openAndReport(url);
   }
   throw new CliDeeplinkUsageError(
@@ -165,6 +169,17 @@ function openUrlViaOs(url: string): { failed: boolean; message: string } {
   }
 }
 
+function looksLikeAdeOpenUrl(rawUrl: string): boolean {
+  try {
+    const url = new URL(rawUrl);
+    return url.protocol === "https:"
+      && isAdeDeeplinkHttpsHost(url.hostname)
+      && url.pathname === ADE_DEEPLINK_HTTPS_PATH;
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // ade link <type> ...
 // ---------------------------------------------------------------------------
@@ -175,7 +190,7 @@ export function runLinkCommand(args: string[]): DeeplinkCliResult {
   }
   const flags = extractFlags(args, {
     booleans: ["ade", "no-clipboard"],
-    valued: ["pr", "branch"],
+    valued: ["pr", "branch", "lane"],
   });
   const positional = flags.positional;
   const form = flags.booleans.has("ade") ? "ade" : "https";
@@ -196,6 +211,16 @@ export function runLinkCommand(args: string[]): DeeplinkCliResult {
       throw new CliDeeplinkUsageError("ade link lane <lane-uuid>");
     }
     return emit({ kind: "lane", laneId });
+  }
+  if (verb === "session") {
+    const sessionId = positional[1];
+    if (!sessionId) {
+      throw new CliDeeplinkUsageError("ade link session <session-id> [--lane <lane-uuid>]");
+    }
+    const laneId = flags.valued.get("lane");
+    return emit(laneId
+      ? { kind: "session", sessionId, laneId }
+      : { kind: "session", sessionId });
   }
   if (verb === "branch") {
     const repo = positional[1];

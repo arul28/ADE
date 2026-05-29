@@ -162,7 +162,7 @@ import { createLinearIntakeService } from "./services/cto/linearIntakeService";
 import { createLinearOutboundService } from "./services/cto/linearOutboundService";
 import { createLinearCloseoutService } from "./services/cto/linearCloseoutService";
 import { createLinearDispatcherService } from "./services/cto/linearDispatcherService";
-import { publishLinearLaneCard } from "./services/cto/linearLaneCardService";
+import { publishLinearChatSessionCard, publishLinearLaneCard } from "./services/cto/linearLaneCardService";
 import { createLinearIngressService } from "./services/cto/linearIngressService";
 import { createLinearSyncService } from "./services/cto/linearSyncService";
 import { createOrchestrationService } from "./services/orchestration/orchestrationService";
@@ -800,12 +800,10 @@ protocol.registerSchemesAsPrivileged([
 // Only Stable claims `ade://` as the default handler. Beta and Alpha still
 // install the single-instance lock + `open-url` listeners (so a manual
 // `duti` binding still works), but they don't ask the OS to make them the
-// default on boot. Source builds opt in via `ADE_REGISTER_DEEPLINK_HANDLER=1`,
-// which is the dev-test workaround on a machine with Stable also installed.
+// default on boot. Source builds and dev Electron launches never claim the OS
+// binding; they only listen for URLs explicitly delivered to that process.
 const deeplinkChannel = normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL);
-const deeplinkClaimAsDefault =
-  process.env.ADE_REGISTER_DEEPLINK_HANDLER === "1" ||
-  (app.isPackaged && deeplinkChannel === null);
+const deeplinkClaimAsDefault = app.isPackaged && deeplinkChannel === null;
 
 const pendingAppNavigationRequests: AppNavigationRequest[] = [];
 let dispatchAppNavigationRequest: ((request: AppNavigationRequest) => void) | null = null;
@@ -1979,7 +1977,7 @@ app.whenReady().then(async () => {
         const tracker = linearIssueTrackerRef;
         if (!tracker) return;
         // Resolve repo lazily so cards posted to Linear carry the cross-machine
-        // ADE deeplink (https://ade.app/open?type=branch&...). If the project
+        // ADE deeplink (https://ade-app.dev/open?type=branch&...). If the project
         // has no GitHub remote, fall back to the legacy hash-anchor URL.
         void githubService.getRepoOrThrow()
           .catch(() => null)
@@ -2449,6 +2447,7 @@ app.whenReady().then(async () => {
       null;
     let orchestrationServiceRef: ReturnType<typeof createOrchestrationService> | null =
       null;
+    const linearChatCardPublishKeys = new Set<string>();
     const queueLandingService = createQueueLandingService({
       db,
       logger,
@@ -2774,6 +2773,30 @@ app.whenReady().then(async () => {
       logger,
       appVersion: app.getVersion(),
       getAdeCliAgentEnv: adeCliService.agentEnv,
+      onLinearIssueChatLinked: ({ laneId, sessionId, sessionTitle, issue, linkedAt }) => {
+        const tracker = linearIssueTrackerRef;
+        if (!tracker) return;
+        const key = `${issue.id}:${sessionId}`;
+        if (linearChatCardPublishKeys.has(key)) return;
+        linearChatCardPublishKeys.add(key);
+        void publishLinearChatSessionCard({
+          issueTracker: tracker,
+          issue,
+          laneId,
+          sessionId,
+          sessionTitle,
+          linkedAt,
+        }).catch((error) => {
+          linearChatCardPublishKeys.delete(key);
+          logger.warn("linear.chat_session_card_publish_failed", {
+            laneId,
+            sessionId,
+            issueId: issue.id,
+            issueIdentifier: issue.identifier,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      },
       onEvent: (event) => {
         emitProjectEvent(projectRoot, IPC.agentChatEvent, event);
       },
@@ -3456,7 +3479,12 @@ app.whenReady().then(async () => {
           createdAt: event.createdAt,
         });
         if (event.issueId) {
-          await linearSyncService.processIssueUpdate(event.issueId);
+          const isCreatedIssueEvent =
+            event.entityType?.trim().toLowerCase() === "issue"
+            && /^(create|created)$/i.test(event.action?.trim() ?? "");
+          await linearSyncService.processIssueUpdate(event.issueId, {
+            adeIssueLinkCause: isCreatedIssueEvent ? "linear_issue_created" : "linear_issue_ingress",
+          });
           try {
             const dispatched = buildLinearAutomationDispatch(event);
             if (dispatched) {

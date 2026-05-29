@@ -368,8 +368,9 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade auth status                               Check local ADE CLI readiness
     $ ade code                                      Open ADE Work chat in the terminal
     $ ade desktop                                   Launch the installed desktop app
-    $ ade open <url>                                Open an ade:// or ade.app deeplink via the OS
-    $ ade link lane | branch | pr | linear-issue    Build a shareable deeplink (copies to clipboard)
+    $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
+    $ ade link lane | session | branch | pr | linear-issue
+                                                     Build a shareable deeplink (copies to clipboard)
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
     $ ade runtime start | stop | status             Manage the machine runtime daemon
     $ ade serve                                     Run the ADE runtime daemon in foreground
@@ -791,15 +792,16 @@ const HELP_BY_COMMAND: Record<string, string> = {
   open: `${ADE_BANNER}
   ADE Open
 
-  Hand an "ade://" or "https://ade.app/open?..." deeplink to the OS so the
+  Hand an "ade://" or "https://ade-app.dev/open?..." deeplink to the OS so the
   installed ADE desktop receives it (single-instance lock focuses the existing
   window). Also accepts the Linear coding-tool hand-off form.
 
     $ ade open ade://lane/<lane-uuid>
+    $ ade open ade://session/<session-id>
     $ ade open ade://repo/<owner>/<repo>/branch/<branch>?pr=42
     $ ade open ade://pr/<owner>/<repo>/<number>
     $ ade open ade://linear-issue/ADE-123?branch=arul/ade-123-fix
-    $ ade open https://ade.app/open?type=lane&id=<lane-uuid>
+    $ ade open https://ade-app.dev/open?type=lane&id=<lane-uuid>
     $ ade open --linear-issue ADE-123 --branch arul/ade-123-fix
 
   Flags:
@@ -809,10 +811,11 @@ const HELP_BY_COMMAND: Record<string, string> = {
   link: `${ADE_BANNER}
   ADE Link
 
-  Build a shareable deeplink URL for a lane, branch, PR, or Linear issue.
+  Build a shareable deeplink URL for a lane, Work session, branch, PR, or Linear issue.
   The URL is printed and (unless --no-clipboard) copied to the clipboard.
 
     $ ade link lane <lane-uuid>
+    $ ade link session <session-id> [--lane <lane-uuid>]
     $ ade link branch <owner/repo> <branch> [--pr <number>]
     $ ade link pr <owner/repo> <number>
     $ ade link linear-issue <ADE-123> [--branch <branch>]

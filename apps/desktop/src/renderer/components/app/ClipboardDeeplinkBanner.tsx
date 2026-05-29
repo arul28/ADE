@@ -11,7 +11,7 @@ import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 
 /**
  * Watches the system clipboard when the ADE window gains focus. If the
- * clipboard holds an `ade://` or `https://ade.app/open` URL that we haven't
+ * clipboard holds an `ade://` or `https://ade-app.dev/open` URL that we haven't
  * already prompted on, shows a quiet banner offering to open it.
  */
 export function ClipboardDeeplinkBanner(): React.ReactElement | null {

@@ -32,10 +32,13 @@ type VercelRes = {
 
 type OpenTarget =
   | { kind: "lane"; laneId: string }
+  | { kind: "session"; sessionId: string; laneId?: string }
   | { kind: "branch"; repo: string; branch: string; pr?: number }
   | { kind: "pr"; repo: string; number: number }
   | { kind: "linear-issue"; issue: string; branch?: string }
   | { kind: "unknown" };
+
+const CANONICAL_OPEN_ORIGIN = "https://ade-app.dev";
 
 // Fallback HTML used when the self-fetch of /index.html fails for any
 // reason (network error, hostname missing). It's a complete page with the
@@ -76,6 +79,13 @@ function parseTarget(query: VercelQuery): OpenTarget {
     const laneId = pickQuery(query.id);
     if (laneId) return { kind: "lane", laneId };
   }
+  if (type === "session") {
+    const sessionId = pickQuery(query.id);
+    if (sessionId) {
+      const laneId = pickQuery(query.lane);
+      return laneId ? { kind: "session", sessionId, laneId } : { kind: "session", sessionId };
+    }
+  }
   if (type === "branch") {
     const repo = pickQuery(query.repo);
     const branch = pickQuery(query.branch);
@@ -110,6 +120,13 @@ function describe(target: OpenTarget): { title: string; description: string } {
       return {
         title: "Open lane in ADE",
         description: `Open this ADE lane (${target.laneId.slice(0, 8)}…) on your desktop.`,
+      };
+    case "session":
+      return {
+        title: "Open work session in ADE",
+        description: target.laneId
+          ? `Open this ADE work session in lane ${target.laneId.slice(0, 8)}…`
+          : "Open this ADE work session on your desktop.",
       };
     case "branch":
       return {
@@ -216,7 +233,7 @@ export default async function handler(req: VercelReq, res: VercelRes): Promise<v
   const target = parseTarget(req.query);
   const queryIdx = (req.url ?? "").indexOf("?");
   const search = queryIdx >= 0 ? (req.url ?? "").slice(queryIdx) : "";
-  const canonical = `https://ade.app/open${search}`;
+  const canonical = `${CANONICAL_OPEN_ORIGIN}/open${search}`;
   const { title, description } = describe(target);
 
   res.setHeader("Content-Type", "text/html; charset=utf-8");

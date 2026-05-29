@@ -5202,7 +5202,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       detectRepo: resolved({ owner: "arul28", name: "ADE" }),
       listRepoAutolinks: resolved([]),
-      createRepoAutolink: resolvedArg({ id: 1, keyPrefix: "ADEPR-", urlTemplate: "https://ade.app/open?type=pr&repo=arul28%2FADE&number=<num>", isAlphanumeric: false }),
+      createRepoAutolink: resolvedArg({ id: 1, keyPrefix: "ADEPR-", urlTemplate: "https://ade-app.dev/open?type=pr&repo=arul28%2FADE&number=<num>", isAlphanumeric: false }),
       listRepoLabels: resolved([]),
       listRepoCollaborators: resolved([]),
       onStatusChanged: noop,

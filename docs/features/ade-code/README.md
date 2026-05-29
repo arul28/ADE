@@ -275,8 +275,8 @@ After local changes, run `npm run build` inside `apps/ade-cli` so both `dist/cli
 `ade code` exposes the ADE deeplink contract at three points:
 
 - **`Ctrl+Y`** over a highlighted lane or PR row in the drawer / right pane copies the canonical `ade://` URL to the system clipboard via `buildDeeplinkForRow` (`deeplinkRow.ts`). A toast confirms the copy or explains why the focused row can't be linked (e.g. no PR is attached to a chat preview).
-- **`ade open <url>`** invokes the OS opener on a validated `ade://` or `https://ade.app/open?...` URL, which routes back to the running desktop process (or starts it cold). The `--linear-issue <id> --branch <branch>` variant is what Linear's "Open issue in coding tool" entry passes; the desktop resolves the actual lane/repo from the active project.
-- **`ade link …`** builds and clipboard-copies a deeplink for a lane / branch / PR / Linear issue. `--ade` emits the custom scheme, the default is the HTTPS form. `ade link <url>` round-trips a parsed URL into the chosen form.
+- **`ade open <url>`** invokes the OS opener on a validated `ade://` or `https://ade-app.dev/open?...` URL, which routes back to the running desktop process (or starts it cold). The `--linear-issue <id> --branch <branch>` variant is what Linear's "Open issue in coding tool" entry passes; the desktop opens the Linear pane to that issue or shows the Linear setup state for the active project.
+- **`ade link …`** builds and clipboard-copies a deeplink for a lane / work session / branch / PR / Linear issue. `--ade` emits the custom scheme, the default is the HTTPS form. `ade link <url>` round-trips a parsed URL into the chosen form.
 - **`ade linear install`** writes `~/.linear/coding-tools.json` so Linear's "Open issue in coding tool" dropdown can launch `ade open --linear-issue ... --branch ...` directly.
 
 See [features/deeplinks/README.md](../deeplinks/README.md) for the full URL grammar, parser semantics, and the desktop / iOS / web sides of the protocol.
@@ -286,5 +286,5 @@ See [features/deeplinks/README.md](../deeplinks/README.md) for the full URL gram
 - [ADE CLI](../../../apps/ade-cli/README.md) — runtime daemon, install paths, service manager, full CLI surface.
 - [Chat feature](../chat/README.md) — in-app Work chat architecture (service + renderer); same agent chat backend.
 - [Remote runtime](../remote-runtime/README.md) — how the same runtime daemon is reached over SSH.
-- [Deeplinks](../deeplinks/README.md) — `ade://` and `https://ade.app/open` URL grammar shared across desktop, ADE Code, iOS, and the marketing site.
+- [Deeplinks](../deeplinks/README.md) — `ade://` and `https://ade-app.dev/open` URL grammar shared across desktop, ADE Code, iOS, and the marketing site.
 - [System overview](../../ARCHITECTURE.md) — CLI / terminal client placement in the system diagram.

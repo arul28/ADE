@@ -24,7 +24,7 @@ When you create or adopt a GitHub PR, include two links in your final handoff:
 - GitHub PR: use the PR's `githubUrl` / `html_url`.
 - ADE PR: use the `adeUrl` printed by `ade prs create`; if you created or
   adopted the PR through another path, run `ade link pr <owner/repo> <number>
-  --no-clipboard` and include the printed `https://ade.app/open?...` URL.
+  --no-clipboard` and include the printed `https://ade-app.dev/open?...` URL.
 
 Prefer the HTTPS ADE link in chat, PR comments, and terminal output because it
 unfurls and upgrades into `ade://pr/<owner>/<repo>/<number>` on machines with

@@ -7,6 +7,7 @@ import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
 import { SessionContextMenu, type SessionContextMenuState } from "./SessionContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
 import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/types";
+import { buildDeeplink } from "../../../shared/deeplinks";
 import type { AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import { formatToolTypeLabel, isChatToolType } from "../../lib/sessions";
 import { sortLanesForTabs } from "../lanes/laneUtils";
@@ -907,7 +908,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         onGoToLane={handleGoToLane}
         onCopySessionId={(id) => navigator.clipboard.writeText(id).catch(() => {})}
         onCopySessionDeepLink={(session) => {
-          const href = `/work?laneId=${encodeURIComponent(session.laneId)}&sessionId=${encodeURIComponent(session.id)}`;
+          const href = buildDeeplink(
+            { kind: "session", sessionId: session.id, laneId: session.laneId },
+            { form: "ade" },
+          );
           navigator.clipboard.writeText(href).catch(() => {});
         }}
         onTogglePinned={(session) => work.togglePinnedSession(session.id)}

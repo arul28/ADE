@@ -2686,7 +2686,7 @@ describe("adeRpcServer", () => {
     expect(created?.isError).toBeUndefined();
     expect(created?.structuredContent).toMatchObject({
       githubUrl: "https://github.com/acme/ade/pull/42",
-      adeUrl: "https://ade.app/open?type=pr&repo=acme%2Fade&number=42",
+      adeUrl: "https://ade-app.dev/open?type=pr&repo=acme%2Fade&number=42",
     });
     expect(fixture.runtime.prService.createFromLane).toHaveBeenCalledWith({
       laneId: "lane-1",
@@ -2746,7 +2746,7 @@ describe("adeRpcServer", () => {
     expect(created?.isError).toBeUndefined();
     expect(created?.structuredContent).toMatchObject({
       githubUrl: "https://github.com/acme/ade/pull/42",
-      adeUrl: "https://ade.app/open?type=pr&repo=acme%2Fade&number=42",
+      adeUrl: "https://ade-app.dev/open?type=pr&repo=acme%2Fade&number=42",
     });
   });
 

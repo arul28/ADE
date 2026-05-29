@@ -26,6 +26,7 @@ export type InboundDeeplinkModalProps = {
   onClose: () => void;
   onLaneOpened: (laneId: string) => void;
   lanes: LaneSummary[];
+  projectOpen?: boolean;
 };
 
 function formatActionError(err: unknown): string {
@@ -33,15 +34,31 @@ function formatActionError(err: unknown): string {
   return String(err);
 }
 
+function normalizeBranchForCompare(branch: string): string {
+  const normalized = branch
+    .replace(/^refs\/heads\//, "")
+    .replace(/^refs\/remotes\//, "")
+    .trim();
+  const parts = normalized.split("/");
+  if (parts.length > 1 && ["origin", "upstream"].includes(parts[0] ?? "")) {
+    return parts.slice(1).join("/");
+  }
+  return normalized;
+}
+
 function laneOwnedByBranch(lanes: LaneSummary[], branch: string): LaneSummary | null {
-  const normalized = branch.replace(/^refs\/heads\//, "");
+  const normalized = normalizeBranchForCompare(branch);
   return (
     lanes.find((lane) => {
       const ref = lane.branchRef ?? "";
-      const laneBranch = ref.replace(/^refs\/heads\//, "");
+      const laneBranch = normalizeBranchForCompare(ref);
       return laneBranch === normalized;
     }) ?? null
   );
+}
+
+function displayBranchName(branch: string): string {
+  return normalizeBranchForCompare(branch) || branch;
 }
 
 export function InboundDeeplinkModal({
@@ -49,11 +66,14 @@ export function InboundDeeplinkModal({
   onClose,
   onLaneOpened,
   lanes,
+  projectOpen = true,
 }: InboundDeeplinkModalProps): React.ReactElement | null {
   const [preflight, setPreflight] = React.useState<CreateLaneFromPrBranchPreflightResult | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const isBranchOnly = !target.prNumber;
+  const laneImportAvailable = typeof window.ade?.lanes?.importBranch === "function";
 
   const existingLane = React.useMemo(
     () => laneOwnedByBranch(lanes, target.branch),
@@ -70,13 +90,17 @@ export function InboundDeeplinkModal({
 
   React.useEffect(() => {
     if (existingLane) return;
-    if (!target.prNumber) {
-      // Branch-only deeplinks without a PR number aren't supported by the
-      // existing preflight (which is PR-centric). Surface a clear message
-      // so the receiver knows what to do.
-      setError(
-        "This deeplink references a branch without an associated PR. Open the PR in GitHub first, or share the PR deeplink instead.",
-      );
+    if (!projectOpen) {
+      setPreflight(null);
+      setError(`Open the ADE project for ${target.repoOwner}/${target.repoName} before creating a lane from this deeplink.`);
+      setLoading(false);
+      return;
+    }
+    if (isBranchOnly) {
+      setPreflight(null);
+      setError(laneImportAvailable
+        ? null
+        : "This ADE surface cannot create lanes from branch deeplinks.");
       setLoading(false);
       return;
     }
@@ -93,7 +117,7 @@ export function InboundDeeplinkModal({
       .preflightCreateLaneFromPrBranch({
         repoOwner: target.repoOwner,
         repoName: target.repoName,
-        githubPrNumber: target.prNumber,
+        githubPrNumber: target.prNumber ?? undefined,
       })
       .then((result) => {
         if (cancelled) return;
@@ -110,13 +134,15 @@ export function InboundDeeplinkModal({
     return () => {
       cancelled = true;
     };
-  }, [existingLane, target.repoOwner, target.repoName, target.prNumber]);
+  }, [existingLane, isBranchOnly, laneImportAvailable, projectOpen, target.repoOwner, target.repoName, target.prNumber]);
 
   if (existingLane) return null;
 
   const blocking = preflight?.preflight.blockingConflict?.message ?? null;
   const canConfirm =
-    Boolean(preflight?.preflight.canCreate) && !loading && !busy && !error;
+    isBranchOnly
+      ? projectOpen && !loading && !busy && laneImportAvailable
+      : projectOpen && Boolean(preflight?.preflight.canCreate) && !loading && !busy && !error;
 
   const rows: Array<readonly [string, string]> = [];
   if (preflight?.preflight) {
@@ -130,13 +156,39 @@ export function InboundDeeplinkModal({
   } else {
     rows.push(["Repo", `${target.repoOwner}/${target.repoName}`]);
     rows.push(["Branch", target.branch]);
-    if (target.prNumber) rows.push(["PR", `#${target.prNumber}`]);
+    if (target.prNumber) {
+      rows.push(["PR", `#${target.prNumber}`]);
+    } else {
+      rows.push(["Action", "Fetch remote branch and create a local lane"]);
+    }
   }
 
   const onConfirm = async () => {
-    if (!target.prNumber) return;
     setBusy(true);
     setError(null);
+    if (isBranchOnly) {
+      const lanesApi = window.ade?.lanes;
+      if (!lanesApi?.importBranch) {
+        setError("This ADE surface cannot create lanes from branch deeplinks.");
+        setBusy(false);
+        return;
+      }
+      try {
+        const branch = target.branch.trim();
+        const lane = await lanesApi.importBranch({
+          branchRef: branch,
+          name: displayBranchName(branch),
+        });
+        if (lane.id) onLaneOpened(lane.id);
+        onClose();
+      } catch (err) {
+        setError(formatActionError(err));
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    if (!target.prNumber) return;
     const prsApi = window.ade?.prs;
     if (!prsApi?.createLaneFromPrBranch) {
       setError("Inbound deeplinks are not available in this build.");
@@ -197,13 +249,17 @@ export function InboundDeeplinkModal({
             Open in ADE
           </div>
           <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary, marginTop: 2 }}>
-            A branch was shared with you. Create a lane to start working on it locally.
+            {isBranchOnly
+              ? "A branch was shared with you. ADE can fetch it and create the lane locally."
+              : "A branch was shared with you. Create a lane to start working on it locally."}
           </div>
         </div>
         <div style={{ padding: 20, display: "grid", gap: 14 }}>
           {loading ? (
             <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textSecondary }}>
-              Checking branch ownership and remote availability...
+              {isBranchOnly
+                ? "Preparing branch import..."
+                : "Checking branch ownership and remote availability..."}
             </div>
           ) : (
             <div style={{ display: "grid", gap: 10 }}>
@@ -288,7 +344,7 @@ export function InboundDeeplinkModal({
             disabled={!canConfirm}
             style={primaryButton({ height: 34, opacity: canConfirm ? 1 : 0.5 })}
           >
-            <GitBranch size={14} /> {busy ? "Creating..." : "Create lane"}
+            <GitBranch size={14} /> {busy ? "Creating..." : isBranchOnly ? "Create lane from branch" : "Create lane"}
           </button>
         </div>
       </div>

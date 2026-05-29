@@ -3,7 +3,11 @@ import type { LaneLinearIssue, LaneSummary } from "../../../shared/types";
 import {
   buildLinearLaneCardAttachment,
   buildLinearLaneInitialComment,
+  buildLinearChatSessionAttachment,
+  buildLinearIssueQuickViewAttachment,
   buildLinearPrCardAttachment,
+  publishLinearChatSessionCard,
+  publishLinearIssueQuickViewAttachment,
   publishLinearLaneCard,
   publishLinearPrCard,
 } from "./linearLaneCardService";
@@ -135,7 +139,7 @@ describe("linearLaneCardService", () => {
       repoOwner: "anthropics",
       repoName: "claude-code",
     });
-    expect(attachment.url).toContain("https://ade.app/open?type=branch");
+    expect(attachment.url).toContain("https://ade-app.dev/open?type=branch");
     expect(attachment.url).toContain("repo=anthropics%2Fclaude-code");
     expect(attachment.url).toContain("branch=abc-42-fix-flaky-sync-run");
     expect(attachment.title).toBe("Open in ADE: ABC-42 Fix flaky sync run");
@@ -149,7 +153,67 @@ describe("linearLaneCardService", () => {
       repoName: "claude-code",
     });
     expect(body).toContain("Open in ADE");
-    expect(body).toContain("https://ade.app/open?type=branch");
+    expect(body).toContain("https://ade-app.dev/open?type=branch");
+  });
+
+  it("builds and publishes an ADE Linear-pane attachment", async () => {
+    const attachment = buildLinearIssueQuickViewAttachment({
+      issue: makeIssue(),
+      branch: "abc-42-fix-flaky-sync-run",
+      linkedAt: "2026-05-12T20:10:00.000Z",
+    });
+
+    expect(attachment).toMatchObject({
+      issueId: "issue-1",
+      title: "Open in ADE: ABC-42",
+      url: "https://ade-app.dev/open?type=linear-issue&issue=ABC-42&branch=abc-42-fix-flaky-sync-run",
+    });
+    expect(attachment.metadata?.attributes).toContainEqual({ name: "ADE view", value: "Linear pane" });
+
+    const createIssueAttachment = vi.fn(async () => ({ id: "attachment-issue", url: attachment.url }));
+    await publishLinearIssueQuickViewAttachment({
+      issueTracker: { createIssueAttachment } as any,
+      issue: makeIssue(),
+      branch: "abc-42-fix-flaky-sync-run",
+      linkedAt: "2026-05-12T20:10:00.000Z",
+    });
+    expect(createIssueAttachment).toHaveBeenCalledWith(expect.objectContaining({
+      issueId: "issue-1",
+      title: "Open in ADE: ABC-42",
+      url: "https://ade-app.dev/open?type=linear-issue&issue=ABC-42&branch=abc-42-fix-flaky-sync-run",
+    }));
+  });
+
+  it("builds and publishes an ADE chat session attachment", async () => {
+    const attachment = buildLinearChatSessionAttachment({
+      issue: makeIssue(),
+      laneId: "lane-1",
+      sessionId: "session-1",
+      sessionTitle: "Investigate sync flakes",
+      linkedAt: "2026-05-12T20:15:00.000Z",
+    });
+
+    expect(attachment).toMatchObject({
+      issueId: "issue-1",
+      title: "Open ADE chat: ABC-42",
+      url: "ade://session/session-1?lane=lane-1",
+    });
+    expect(attachment.metadata?.attributes).toContainEqual({ name: "ADE view", value: "Work chat" });
+
+    const createIssueAttachment = vi.fn(async () => ({ id: "attachment-chat", url: attachment.url }));
+    await publishLinearChatSessionCard({
+      issueTracker: { createIssueAttachment } as any,
+      issue: makeIssue(),
+      laneId: "lane-1",
+      sessionId: "session-1",
+      sessionTitle: "Investigate sync flakes",
+      linkedAt: "2026-05-12T20:15:00.000Z",
+    });
+    expect(createIssueAttachment).toHaveBeenCalledWith(expect.objectContaining({
+      issueId: "issue-1",
+      title: "Open ADE chat: ABC-42",
+      url: "ade://session/session-1?lane=lane-1",
+    }));
   });
 
   it("returns null comment when repo is unknown", () => {
@@ -161,7 +225,7 @@ describe("linearLaneCardService", () => {
   });
 
   it("posts the initial comment when requested and repo is known", async () => {
-    const createIssueAttachment = vi.fn(async () => ({ id: "attachment-1", url: "https://ade.app/open?type=branch" }));
+    const createIssueAttachment = vi.fn(async () => ({ id: "attachment-1", url: "https://ade-app.dev/open?type=branch" }));
     const createComment = vi.fn(async () => ({}));
     await publishLinearLaneCard({
       issueTracker: { createIssueAttachment, createComment } as any,
@@ -189,7 +253,7 @@ describe("linearLaneCardService", () => {
     expect(attachment).toMatchObject({
       issueId: "issue-1",
       title: "Open in ADE PR #42: ABC-42",
-      url: "https://ade.app/open?type=pr&repo=acme%2Fade&number=42",
+      url: "https://ade-app.dev/open?type=pr&repo=acme%2Fade&number=42",
     });
     expect(attachment.metadata?.attributes).toContainEqual({ name: "GitHub PR", value: "acme/ade#42" });
     expect(attachment.metadata?.attributes).toContainEqual(expect.objectContaining({ name: "ADE lane" }));

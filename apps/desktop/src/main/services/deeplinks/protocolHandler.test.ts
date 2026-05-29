@@ -12,6 +12,14 @@ describe("deeplinkToNavigationTarget", () => {
     });
   });
 
+  it("maps session targets to the Work route", () => {
+    expect(deeplinkToNavigationTarget({ kind: "session", sessionId: "session-1", laneId: UUID })).toEqual({
+      kind: "work",
+      sessionId: "session-1",
+      laneId: UUID,
+    });
+  });
+
   it("maps pr targets with repo identity", () => {
     expect(
       deeplinkToNavigationTarget({
@@ -90,6 +98,20 @@ describe("handleDeeplinkUrl", () => {
   });
 
   it("dispatches https mirror URLs", () => {
+    const dispatch = vi.fn();
+    handleDeeplinkUrl(
+      "https://ade-app.dev/open?type=branch&repo=a/b&branch=feat",
+      "test",
+      dispatch,
+    );
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: { kind: "branch", repoOwner: "a", repoName: "b", branch: "feat", prNumber: null },
+      }),
+    );
+  });
+
+  it("still dispatches legacy https mirror URLs", () => {
     const dispatch = vi.fn();
     handleDeeplinkUrl(
       "https://ade.app/open?type=branch&repo=a/b&branch=feat",

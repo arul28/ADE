@@ -7610,8 +7610,8 @@ extension SyncService {
         scheme == "ade" ||
           (
             scheme == "https" &&
-            components.host?.lowercased() == "ade.app" &&
-            components.path.hasPrefix("/open")
+            ADEDeepLinkURLParsing.isADEWebHost(components.host) &&
+            components.path == "/open"
           ) else {
         return
       }

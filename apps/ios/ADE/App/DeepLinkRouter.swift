@@ -24,7 +24,7 @@ final class DeepLinkRouter {
   ///   * `ade://linear-issue/<ADE-123>[?branch=<branch>]`
   ///
   /// Also accepts the web mirror used by CLI / agent handoff output:
-  /// `https://ade.app/open?type=<lane|branch|pr|linear-issue>&...`.
+  /// `https://ade-app.dev/open?type=<lane|session|branch|pr|linear-issue>&...`.
   ///
   /// Unknown hosts are ignored rather than crashing on malformed input.
   func handle(_ url: URL) {
@@ -85,7 +85,7 @@ final class DeepLinkRouter {
   private func routeHttpsOpenURL(_ url: URL) -> Bool {
     guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
           components.scheme?.lowercased() == "https",
-          components.host?.lowercased() == "ade.app",
+          ADEDeepLinkURLParsing.isADEWebHost(components.host),
           components.path == "/open" else {
       return false
     }
@@ -94,6 +94,9 @@ final class DeepLinkRouter {
     switch query["type"]?.lowercased() {
     case "lane":
       guard query["id"]?.isEmpty == false else { return true }
+      postSendToMac(url: url)
+    case "session":
+      guard let sessionId = query["id"], !sessionId.isEmpty else { return true }
       postSendToMac(url: url)
     case "branch":
       guard ADEDeepLinkURLParsing.splitRepo(query["repo"]) != nil,

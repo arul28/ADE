@@ -19,6 +19,7 @@ import { ProjectSetupPage } from "../onboarding/ProjectSetupPage";
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
 import { GlossaryPage } from "../onboarding/GlossaryPage";
 import { logRendererDebugEvent } from "../../lib/debugLog";
+import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 
 function createPreloadableRoute<TProps extends object>(
   loadModule: () => Promise<{ default: React.ComponentType<TProps> }>,
@@ -767,21 +768,15 @@ function ShellLayout() {
 
 function AppNavigationBridge() {
   const navigate = useNavigate();
+  const project = useAppStore((s) => s.project);
   const lanes = useAppStore((s) => s.lanes);
+  const refreshLanes = useAppStore((s) => s.refreshLanes);
   const [inboundBranch, setInboundBranch] = React.useState<{
     repoOwner: string;
     repoName: string;
     branch: string;
     prNumber?: number | null;
   } | null>(null);
-
-  // Capture lanes in a ref so the navigation callback always sees the latest
-  // list without re-subscribing every time the lanes array updates (which
-  // happens often — status polls, etc.).
-  const lanesRef = React.useRef(lanes);
-  React.useEffect(() => {
-    lanesRef.current = lanes;
-  }, [lanes]);
 
   React.useEffect(() => {
     const onNavigate = window.ade?.app?.onNavigate;
@@ -825,21 +820,11 @@ function AppNavigationBridge() {
         return;
       }
       if (target.kind === "linear-issue") {
-        // Look up a lane whose linkedIssue matches this identifier. If found,
-        // navigate. If not, fall back: route to /lanes with the issue + branch
-        // hints so the lanes page can pre-filter and offer "create lane" CTA.
-        const matchingLane = lanesRef.current.find(
-          (lane) => lane.linearIssue?.identifier === target.issueIdentifier,
-        );
-        if (matchingLane) {
-          const params = new URLSearchParams({ laneId: matchingLane.id });
-          navigate(`/lanes?${params.toString()}`);
-          return;
-        }
-        const params = new URLSearchParams();
-        params.set("linearIssue", target.issueIdentifier);
-        if (target.branch) params.set("branch", target.branch);
-        navigate(`/lanes?${params.toString()}`);
+        requestLinearIssueQuickView({
+          issueIdentifier: target.issueIdentifier,
+          branch: target.branch ?? null,
+          source: "deeplink",
+        });
         return;
       }
       if (target.kind === "route") {
@@ -854,9 +839,12 @@ function AppNavigationBridge() {
       target={inboundBranch}
       lanes={lanes}
       onClose={() => setInboundBranch(null)}
+      projectOpen={Boolean(project?.rootPath)}
       onLaneOpened={(laneId) => {
         const params = new URLSearchParams({ laneId });
-        navigate(`/lanes?${params.toString()}`);
+        void refreshLanes({ includeStatus: false })
+          .catch(() => undefined)
+          .finally(() => navigate(`/lanes?${params.toString()}`));
       }}
     />
   );
