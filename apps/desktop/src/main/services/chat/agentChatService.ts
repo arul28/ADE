@@ -34,7 +34,7 @@ import type {
   WarmQuery,
 } from "@anthropic-ai/claude-agent-sdk";
 import { z, type ZodType } from "zod";
-import { buildClaudeV2Message, inferAttachmentMediaType } from "./buildClaudeV2Message";
+import { buildClaudeV2MessageAsync, inferAttachmentMediaType } from "./buildClaudeV2Message";
 import { ClaudeInputPump } from "./claudeInputPump";
 import {
   isCorruptThinkingTranscriptError,
@@ -87,6 +87,7 @@ import {
   hasNullByte,
   isEnoentError,
   nowIso,
+  readAgentAccessibleFileBytes,
   readFileWithinRootSecure,
   resolvePathWithinRoot,
   stableStringify,
@@ -3105,15 +3106,16 @@ function normalizeClaudeTodoItems(
   return items.length ? items : null;
 }
 
-function buildStreamingUserContent(
+async function buildStreamingUserContent(
   args: {
     baseText: string;
     attachments: ResolvedAgentChatFileRef[];
     runtimeKind: "claude" | "opencode";
     modelDescriptor?: ModelDescriptor;
     logger?: Logger;
+    readAttachmentBytes: (attachment: ResolvedAgentChatFileRef) => Promise<Buffer>;
   },
-): UserContent {
+): Promise<UserContent> {
   if (!args.attachments.length) {
     return args.baseText;
   }
@@ -3131,7 +3133,7 @@ function buildStreamingUserContent(
         });
         continue;
       }
-      const data = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
+      const data = await args.readAttachmentBytes(attachment);
       const mediaType = inferAttachmentMediaType(attachment);
 
       if (attachment.type === "image") {
@@ -3185,14 +3187,24 @@ function buildStreamingUserContent(
   return parts;
 }
 
-export function buildOpenCodeStreamMessages(args: {
+export async function buildOpenCodeStreamMessages(args: {
   messages: Array<{ role: string; content: string }>;
   persistedTurnUserMessageIndex: number;
   resolvedAttachments: ResolvedAgentChatFileRef[];
   modelDescriptor: ModelDescriptor;
   logger?: Logger;
-}): ModelMessage[] {
-  return args.messages.map((message, index): ModelMessage => {
+  getDirtyFileTextForPath?: (absPath: string) => string | undefined | Promise<string | undefined>;
+}): Promise<ModelMessage[]> {
+  const readAttachmentBytes = args.getDirtyFileTextForPath
+    ? async (attachment: ResolvedAgentChatFileRef) => readAgentAccessibleFileBytes({
+      rootPath: attachment._rootPath,
+      resolvedPath: attachment._resolvedPath,
+      getDirtyFileTextForPath: args.getDirtyFileTextForPath,
+    })
+    : async (attachment: ResolvedAgentChatFileRef) =>
+      readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
+
+  const mapped = await Promise.all(args.messages.map(async (message, index): Promise<ModelMessage> => {
     const isPersistedTurnUserMessage = index === args.persistedTurnUserMessageIndex && message.role === "user";
     if (!isPersistedTurnUserMessage) {
       return {
@@ -3203,15 +3215,17 @@ export function buildOpenCodeStreamMessages(args: {
 
     return {
       role: "user",
-      content: buildStreamingUserContent({
+      content: await buildStreamingUserContent({
         baseText: message.content,
         attachments: args.resolvedAttachments,
         runtimeKind: "opencode",
         modelDescriptor: args.modelDescriptor,
         logger: args.logger,
+        readAttachmentBytes,
       }),
     };
-  });
+  }));
+  return mapped;
 }
 
 function buildExecutionModeDirective(
@@ -4717,6 +4731,14 @@ export function createAgentChatService(args: {
   if (!getDirtyFileTextForPath) {
     throw new Error("createAgentChatService: getDirtyFileTextForPath is required");
   }
+
+  const readResolvedAttachmentBytes = async (
+    attachment: ResolvedAgentChatFileRef,
+  ): Promise<Buffer> => readAgentAccessibleFileBytes({
+    rootPath: attachment._rootPath,
+    resolvedPath: attachment._resolvedPath,
+    getDirtyFileTextForPath,
+  });
   if (!issueInventoryService) {
     throw new Error("Issue inventory service is required to initialize agent chat.");
   }
@@ -4777,8 +4799,8 @@ export function createAgentChatService(args: {
     });
   };
 
-  const stageAttachmentForCodexInput = (attachment: ResolvedAgentChatFileRef): string => {
-    const content = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
+  const stageAttachmentForCodexInput = async (attachment: ResolvedAgentChatFileRef): Promise<string> => {
+    const content = await readResolvedAttachmentBytes(attachment);
     const stagedDir = path.join(layout.tmpDir, "agent-chat-attachments");
     fs.mkdirSync(stagedDir, { recursive: true });
     const baseName = path.basename(attachment.path) || path.basename(attachment._resolvedPath) || "attachment";
@@ -8421,6 +8443,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
   ): UniversalToolSetOptions => ({
     permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
+    getDirtyFileTextForPath,
     getTodoItems: () => managed.todoItems,
     onTodoUpdate: (items) => {
       emitChatEvent(managed, {
@@ -9601,7 +9624,7 @@ export function createAgentChatService(args: {
         input.push({ type: "image", url: attachment.url });
         continue;
       }
-      const stagedPath = stageAttachmentForCodexInput(attachment);
+      const stagedPath = await stageAttachmentForCodexInput(attachment);
       if (attachment.type === "image") {
         input.push({ type: "localImage", path: stagedPath });
         continue;
@@ -10045,10 +10068,11 @@ export function createAgentChatService(args: {
 
       // Build the message after permission-mode recovery, because rebuilding a
       // fresh Claude SDK session clears runtime.sdkSessionId.
-      const messageToSend = buildClaudeV2Message(basePromptText, resolvedAttachments, {
+      const messageToSend = await buildClaudeV2MessageAsync(basePromptText, resolvedAttachments, {
         baseDir: managed.laneWorktreePath,
         sessionId: runtime.sdkSessionId,
         forceUserMessage: true,
+        getDirtyFileTextForPath,
       }) as unknown as SDKUserMessage;
       messageToSend.uuid = userMessageId;
       messageToSend.timestamp = new Date().toISOString();
@@ -17404,34 +17428,25 @@ export function createAgentChatService(args: {
   /** Maximum bytes to inline for a non-image chat attachment. */
   const MAX_INLINE_BYTES = 512 * 1024; // 512 KB
 
-  const buildAgentPromptBlocks = (
+  const buildAgentPromptBlocks = async (
     promptText: string,
     resolvedAttachments: ResolvedAgentChatFileRef[],
-  ): Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> => {
+  ): Promise<Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>> => {
     const blocks: Array<
       { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
     > = [{ type: "text", text: promptText }];
     for (const attachment of resolvedAttachments) {
       try {
-        // Check file size before reading the full contents into memory.
-        let fileSize: number;
-        try {
-          fileSize = fs.statSync(attachment._resolvedPath).size;
-        } catch {
-          // stat failed -- skip unreadable attachment
-          continue;
-        }
+        const buf = await readResolvedAttachmentBytes(attachment);
 
         if (attachment.type === "image") {
-          const buf = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
           blocks.push({
             type: "image",
             data: buf.toString("base64"),
             mimeType: guessImageMimeForPath(attachment._resolvedPath),
           });
-        } else if (fileSize <= MAX_INLINE_BYTES) {
+        } else if (buf.length <= MAX_INLINE_BYTES) {
           // Non-image file attachment -- include content as text if not binary
-          const buf = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
           if (hasNullByte(buf)) {
             blocks.push({
               type: "text",
@@ -17448,7 +17463,7 @@ export function createAgentChatService(args: {
           // File is too large to inline -- push a placeholder with a truncated preview.
           blocks.push({
             type: "text",
-            text: `[File: ${attachment.path} omitted: size ${fileSize} bytes]`,
+            text: `[File: ${attachment.path} omitted: size ${buf.length} bytes]`,
           });
         }
       } catch {
@@ -17958,7 +17973,7 @@ export function createAgentChatService(args: {
         }
       }
 
-      const promptBlocks = buildAgentPromptBlocks(composed, args.resolvedAttachments);
+      const promptBlocks = await buildAgentPromptBlocks(composed, args.resolvedAttachments);
       const promptText = promptBlocks
         .filter((block): block is { type: "text"; text: string } => block.type === "text")
         .map((block) => block.text)
@@ -18300,7 +18315,7 @@ export function createAgentChatService(args: {
         cloudComposed = `${injected}\n\n${cloudComposed}`;
       }
     }
-    const promptBlocks = buildAgentPromptBlocks(cloudComposed, args.resolvedAttachments);
+    const promptBlocks = await buildAgentPromptBlocks(cloudComposed, args.resolvedAttachments);
     const promptText = promptBlocks
       .filter((block): block is { type: "text"; text: string } => block.type === "text")
       .map((block) => block.text)
@@ -19115,7 +19130,7 @@ export function createAgentChatService(args: {
         "## User Request",
         composed,
       ].join("\n");
-      const promptBlocks = buildAgentPromptBlocks(sdkInput, args.resolvedAttachments);
+      const promptBlocks = await buildAgentPromptBlocks(sdkInput, args.resolvedAttachments);
       const sdkPromptText = promptBlocks
         .filter((block): block is { type: "text"; text: string } => block.type === "text")
         .map((block) => block.text)
@@ -19859,7 +19874,7 @@ export function createAgentChatService(args: {
           input.push({ type: "image", url: attachment.url });
           continue;
         }
-        const stagedPath = stageAttachmentForCodexInput(attachment);
+        const stagedPath = await stageAttachmentForCodexInput(attachment);
         if (attachment.type === "image") {
           input.push({ type: "localImage", path: stagedPath });
           continue;
@@ -20058,10 +20073,11 @@ export function createAgentChatService(args: {
       const dispatchUuid = randomUUID();
       const contextPrompt = buildChatContextAttachmentPrompt(steer.contextAttachments);
       const inlineSteerText = contextPrompt ? `${contextPrompt}\n\n${steer.text}` : steer.text;
-      const sdkMsg = buildClaudeV2Message(inlineSteerText, steer.resolvedAttachments, {
+      const sdkMsg = await buildClaudeV2MessageAsync(inlineSteerText, steer.resolvedAttachments, {
         baseDir: managed.laneWorktreePath,
         sessionId: runtime.sdkSessionId ?? null,
         forceUserMessage: true,
+        getDirtyFileTextForPath,
       }) as unknown as SDKUserMessage;
       sdkMsg.shouldQuery = false;
       sdkMsg.uuid = dispatchUuid;

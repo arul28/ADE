@@ -14660,11 +14660,11 @@ describe("createAgentChatService", () => {
       );
     });
 
-  it("preserves original attachments across local auto-continuation retries", () => {
+  it("preserves original attachments across local auto-continuation retries", async () => {
       const resolvedPath = path.join(tmpRoot, "note.txt");
       fs.writeFileSync(resolvedPath, "remember this", "utf8");
 
-      const streamMessages = buildOpenCodeStreamMessages({
+      const streamMessages = await buildOpenCodeStreamMessages({
         messages: [
           {
             role: "user",
