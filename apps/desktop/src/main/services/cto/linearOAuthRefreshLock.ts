@@ -3,7 +3,7 @@ import path from "node:path";
 
 const LOCK_FILE = "linear-oauth-refresh.lock";
 const LOCK_TIMEOUT_MS = 15_000;
-const LOCK_STALE_MS = 60_000;
+const LOCK_STALE_MS = 10_000;
 const LOCK_RETRY_MS = 25;
 
 export class LinearOAuthRefreshLockTimeoutError extends Error {
