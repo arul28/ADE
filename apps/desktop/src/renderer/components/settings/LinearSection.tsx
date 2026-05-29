@@ -57,6 +57,7 @@ export function LinearSection() {
   const oauthStartingRef = useRef(false);
   const oauthSessionIdRef = useRef<string | null>(null);
   const requestEpochRef = useRef(0);
+  const autolinksRequestIdRef = useRef(0);
 
   const invalidateLoadRequests = useCallback(() => {
     requestEpochRef.current += 1;
@@ -155,10 +156,16 @@ export function LinearSection() {
   const loadGithubAutolinks = useCallback(async () => {
     const github = window.ade?.github;
     if (!github) return;
+    // Guard against stale responses: if the active project changes while a
+    // detectRepo()/listRepoAutolinks() call is in flight, an older response
+    // must not repopulate the repo/autolinks (which would make the displayed
+    // repo and generated `gh repo autolink` commands wrong for the new project).
+    const requestId = ++autolinksRequestIdRef.current;
     setAutolinksLoading(true);
     setAutolinkError(null);
     try {
       const repo = await github.detectRepo();
+      if (autolinksRequestIdRef.current !== requestId) return;
       setGithubRepo(repo);
       if (!repo) {
         setGithubAutolinks([]);
@@ -166,12 +173,16 @@ export function LinearSection() {
         return;
       }
       const autolinks = await github.listRepoAutolinks(repo);
+      if (autolinksRequestIdRef.current !== requestId) return;
       setGithubAutolinks(autolinks);
     } catch (err) {
+      if (autolinksRequestIdRef.current !== requestId) return;
       setGithubAutolinks([]);
       setAutolinkError(err instanceof Error ? err.message : "Unable to load GitHub autolinks.");
     } finally {
-      setAutolinksLoading(false);
+      if (autolinksRequestIdRef.current === requestId) {
+        setAutolinksLoading(false);
+      }
     }
   }, []);
 
