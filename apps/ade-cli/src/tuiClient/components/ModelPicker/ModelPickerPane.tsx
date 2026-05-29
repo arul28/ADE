@@ -6,23 +6,11 @@ import { useHoveredHitId } from "../../hitTestRegistry";
 import { KeyHints } from "../designKit";
 import type { ModelPickerAuthStatus, ModelPickerEntry, ModelPickerRailEntry, ModelPickerState } from "./types";
 
-// Brand glyph + color for a category/provider tab. Provider tabs reuse the
-// canonical brand glyph/color from theme.provider() so the picker matches the
-// rest of the TUI (footer, headers, chat) instead of a divergent local set.
-function tabIcon(entry: ModelPickerRailEntry): { glyph: string; color: string } {
-  if (entry.kind === "favorites") return { glyph: "★", color: theme.color.warning };
-  if (entry.kind === "recents") return { glyph: "◷", color: theme.color.t3 };
-  const brand = theme.provider(entry.provider);
-  return { glyph: brand.glyph, color: brand.color };
-}
-
-// A small auth pip shown next to provider tabs. Never green for "ready" — green
-// reads as a glitch in idle chrome — so a ready provider gets no pip at all and
-// only problem states surface a colored dot.
-function authPip(status: ModelPickerAuthStatus): { glyph: string; color: string } | null {
-  if (status === "unavailable") return { glyph: "○", color: theme.color.attention };
-  return null;
-}
+// The model list is a FIXED-height window so a long catalog (e.g. OpenCode's
+// dozens of providers) scrolls inside its own region instead of shoving the
+// settings footer around. Settings stay stickied below.
+const RAIL_WIDTH = 4;
+const MODEL_LIST_ROWS = 9;
 
 function endTruncate(value: string, max: number): string {
   if (max <= 1) return value.length ? "…" : "";
@@ -30,8 +18,22 @@ function endTruncate(value: string, max: number): string {
   return `${value.slice(0, Math.max(0, max - 1))}…`;
 }
 
-// A small icon per settings row so the footer reads as labeled controls rather
-// than a wall of text. Geometric glyphs (1-cell, terminal-safe).
+// Brand glyph + color for a category/provider rail entry, reusing the canonical
+// provider identity so the picker matches the rest of the TUI.
+function railIcon(entry: ModelPickerRailEntry): { glyph: string; color: string } {
+  if (entry.kind === "favorites") return { glyph: "★", color: theme.color.warning };
+  if (entry.kind === "recents") return { glyph: "◷", color: theme.color.t3 };
+  const brand = theme.provider(entry.provider);
+  return { glyph: brand.glyph, color: brand.color };
+}
+
+// Amber pip for a provider that needs sign-in; nothing for a ready provider
+// (green would read as idle chrome).
+function authPip(status: ModelPickerAuthStatus): { glyph: string; color: string } | null {
+  if (status === "unavailable") return { glyph: "○", color: theme.color.attention };
+  return null;
+}
+
 function settingIcon(kind: SetupPaneRowKind): string {
   switch (kind) {
     case "reasoning": return "✦";
@@ -44,34 +46,7 @@ function settingIcon(kind: SetupPaneRowKind): string {
   }
 }
 
-function ModelPickerSearchBar({
-  query,
-  searchMode,
-  width,
-}: {
-  query: string;
-  searchMode: boolean;
-  width: number;
-}) {
-  const placeholder = "search models…";
-  const displayed = endTruncate(query || placeholder, Math.max(8, width - 4));
-  return (
-    <Box flexDirection="row">
-      <Text color={searchMode ? theme.color.violet : theme.color.t4}>{"⌕ "}</Text>
-      <Text color={query ? theme.color.t1 : theme.color.t4} dimColor={!query}>
-        {displayed}
-      </Text>
-      {searchMode ? <Text color={theme.color.violet}>▏</Text> : null}
-    </Box>
-  );
-}
-
-// Vertical icon rail — a faithful port of the desktop picker's left rail.
-// Icons only (no text, so nothing truncates): ★ Favorites, ◷ Recents, and the
-// canonical provider glyphs. The active entry gets a violet ▶ indicator + glyph;
-// provider auth problems surface an amber pip. The active category's full label
-// is shown as a header in the content column to its right.
-const RAIL_WIDTH = 4;
+// ── Vertical icon rail (categories / provider families) ──────────────────────
 
 function VerticalRail({
   entries,
@@ -88,7 +63,7 @@ function VerticalRail({
         const selected = index === selectedIndex;
         const hovered = hoveredId === `right:model-picker:rail:${index}`;
         const accent = selected || hovered;
-        const icon = tabIcon(entry);
+        const icon = railIcon(entry);
         const pip = entry.kind === "provider" ? authPip(entry.authStatus) : null;
         return (
           <Box key={`${entry.kind}:${entry.kind === "provider" ? entry.provider : entry.label}`} flexDirection="row">
@@ -102,63 +77,50 @@ function VerticalRail({
   );
 }
 
-// Full label for the active rail entry, shown as the content-column header.
-function railEntryLabel(entry: ModelPickerRailEntry | undefined): { glyph: string; color: string; label: string } | null {
-  if (!entry) return null;
-  const icon = tabIcon(entry);
-  return { glyph: icon.glyph, color: icon.color, label: entry.label };
-}
-
-// Secondary chip row for sub-providers within a provider (e.g. several routes
-// that serve the same family). Only shown when the layout produced >1 tab.
-function SubProviderChips({
+// ── Compact sub-provider selector ────────────────────────────────────────────
+// Replaces the old wrap-everything chip block: shows the ACTIVE group only,
+// with a count and the [ ] switch hint. Bounded to a single row.
+function SubProviderSelector({
   tabs,
   selectedIndex,
-  hoveredId,
+  width,
 }: {
   tabs: { key: string; label: string }[];
   selectedIndex: number;
-  hoveredId: string | null;
+  width: number;
 }) {
   if (tabs.length <= 1) return null;
+  const safe = Math.max(0, Math.min(selectedIndex, tabs.length - 1));
+  const active = tabs[safe];
+  if (!active) return null;
   return (
-    <Box flexDirection="row" flexWrap="wrap" marginTop={1}>
-      {tabs.map((tab, index) => {
-        const selected = index === selectedIndex;
-        const hovered = hoveredId === `right:model-picker:provider-tab:${tab.key}`;
-        const accent = selected || hovered;
-        return (
-          <Box key={tab.key} flexDirection="row" marginRight={1}>
-            <Text color={accent ? theme.color.violet : theme.color.t5}>{selected ? "‹" : " "}</Text>
-            <Text color={accent ? theme.color.violet : theme.color.t3} bold={selected}>
-              {endTruncate(tab.label, 18)}
-            </Text>
-            <Text color={accent ? theme.color.violet : theme.color.t5}>{selected ? "›" : " "}</Text>
-          </Box>
-        );
-      })}
+    <Box flexDirection="row" marginBottom={1}>
+      <Text color={theme.color.t5}>{"‹ "}</Text>
+      <Text color={theme.color.violet} bold>{endTruncate(active.label, Math.max(8, width - 18))}</Text>
+      <Text color={theme.color.t4} dimColor>{`  ${safe + 1}/${tabs.length}`}</Text>
+      <Text color={theme.color.t5}>{" › "}</Text>
+      <Text color={theme.color.accent}>{"[ ]"}</Text>
     </Box>
   );
 }
+
+// ── Model list row (single line — no overlapping second line) ────────────────
 
 function ModelListRow({
   entry,
   selected,
   active,
-  width,
   hovered,
   nameWidth,
 }: {
   entry: ModelPickerEntry;
   selected: boolean;
   active: boolean;
-  width: number;
   hovered: boolean;
   nameWidth: number;
 }) {
   const accent = selected || hovered;
   const brand = theme.provider(entry.family);
-  const isLocal = entry.family === "ollama" || entry.family === "lmstudio";
   const nameColor = !entry.isAvailable
     ? theme.color.t5
     : accent
@@ -166,50 +128,23 @@ function ModelListRow({
       : active
         ? theme.color.t1
         : theme.color.t2;
-  const name = endTruncate(entry.displayName, Math.max(6, nameWidth));
   return (
-    <Box flexDirection="column">
-      <Box flexDirection="row">
-        {/* Selection rail */}
-        <Text color={accent ? theme.color.violet : theme.color.t5}>{selected ? theme.rail : " "}</Text>
-        {/* Favorite star (amber when pinned) */}
-        <Text color={entry.isFavorite ? theme.color.warning : theme.color.t5}>
-          {entry.isFavorite ? "★" : "☆"}
-        </Text>
-        {/* Brand glyph (provider color, dimmed when unavailable) */}
-        <Text color={entry.isAvailable ? brand.color : theme.color.t5}>{` ${brand.glyph} `}</Text>
-        {/* Model name */}
-        <Text color={nameColor} dimColor={!entry.isAvailable} bold={selected || active}>
-          {name}
-        </Text>
-        {/* Active marker */}
-        {active ? <Text color={theme.color.violet}>{"  ● now"}</Text> : null}
-        {/* Local-runtime chip */}
-        {isLocal && entry.isAvailable ? (
-          <Text color={theme.color.t4} dimColor>{"  local"}</Text>
-        ) : null}
-      </Box>
-      {entry.subProvider ? (
-        <Box marginLeft={4}>
-          <Text color={theme.color.t4} dimColor>
-            {endTruncate(entry.subProvider, Math.max(8, width - 4))}
-          </Text>
-        </Box>
-      ) : null}
-      {!entry.isAvailable ? (
-        <Box marginLeft={4}>
-          <Text color={theme.color.t4} dimColor>
-            Configure provider in ADE/OpenCode
-          </Text>
-        </Box>
-      ) : null}
+    <Box flexDirection="row">
+      {/* Selection rail (violet) — selection is shown by COLOR, not indentation. */}
+      <Text color={selected ? theme.color.violet : theme.color.t5}>{selected ? theme.rail : " "}</Text>
+      <Text color={entry.isFavorite ? theme.color.warning : theme.color.t5}>{entry.isFavorite ? "★" : "☆"}</Text>
+      <Text color={entry.isAvailable ? brand.color : theme.color.t5}>{` ${brand.glyph} `}</Text>
+      <Text color={nameColor} dimColor={!entry.isAvailable} bold={selected}>
+        {endTruncate(entry.displayName, Math.max(6, nameWidth))}
+      </Text>
+      {active ? <Text color={theme.color.violet}>{"  ● now"}</Text> : null}
+      {!entry.isAvailable ? <Text color={theme.color.t5} dimColor>{"  · sign in"}</Text> : null}
     </Box>
   );
 }
 
-// Settings footer laid out as a labeled grid, visually separated from the list
-// by a divider. The primary "apply" action is rendered as a distinct violet,
-// bracketed button; the remaining settings are dim labeled value chips.
+// ── Sticky settings footer ───────────────────────────────────────────────────
+
 function SettingsFooter({
   rows,
   footerFocus,
@@ -229,13 +164,8 @@ function SettingsFooter({
   const divider = "─".repeat(Math.max(4, width));
 
   return (
-    <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column" marginTop={1} flexShrink={0}>
       <Text color={theme.color.border}>{divider}</Text>
-      {settingRows.length ? (
-        <Box flexDirection="row" marginTop={1}>
-          <Text color={theme.color.t4} dimColor>SETTINGS</Text>
-        </Box>
-      ) : null}
       {settingRows.length ? (
         <Box flexDirection="row" flexWrap="wrap" marginTop={1}>
           {settingRows.map((row) => {
@@ -243,21 +173,13 @@ function SettingsFooter({
             const hovered = hoveredId === `right:model-picker:setting:${row.kind}`;
             const accent = focused || hovered;
             const labelColor = row.disabled ? theme.color.t5 : theme.color.t4;
-            const valueColor = row.disabled
-              ? theme.color.t5
-              : accent
-                ? theme.color.violet
-                : theme.color.t2;
+            const valueColor = row.disabled ? theme.color.t5 : accent ? theme.color.violet : theme.color.t2;
             return (
               <Box key={row.kind} flexDirection="row" marginRight={2}>
                 <Text color={accent ? theme.color.violet : theme.color.t5}>{focused ? theme.rail : " "}</Text>
                 <Text color={row.disabled ? theme.color.t5 : accent ? theme.color.violet : theme.color.t3}>{`${settingIcon(row.kind)} `}</Text>
-                <Text color={labelColor} dimColor={!row.disabled}>
-                  {endTruncate(row.label.toLowerCase(), 14)}{" "}
-                </Text>
-                <Text color={valueColor} bold={focused}>
-                  {endTruncate(row.value, 16)}
-                </Text>
+                <Text color={labelColor} dimColor={!row.disabled}>{endTruncate(row.label.toLowerCase(), 12)}{" "}</Text>
+                <Text color={valueColor} bold={focused}>{endTruncate(row.value, 14)}</Text>
               </Box>
             );
           })}
@@ -269,16 +191,8 @@ function SettingsFooter({
             const focused = footerFocus === "apply";
             const hovered = hoveredId === "right:model-picker:setting:apply";
             const accent = focused || hovered;
-            const color = applyRow.disabled
-              ? theme.color.t5
-              : accent
-                ? theme.color.violet
-                : theme.color.violetDeep;
-            return (
-              <Text color={color} bold={accent}>
-                {`[ ${endTruncate(applyRow.label, 24)} ]`}
-              </Text>
-            );
+            const color = applyRow.disabled ? theme.color.t5 : accent ? theme.color.violet : theme.color.violetDeep;
+            return <Text color={color} bold={accent}>{`[ ${endTruncate(applyRow.label, 20)} ]`}</Text>;
           })()}
         </Box>
       ) : null}
@@ -286,27 +200,22 @@ function SettingsFooter({
   );
 }
 
-const VISIBLE_ROW_BUDGET = 12;
+// ── Windowing ────────────────────────────────────────────────────────────────
 
 function rowWindow(rowCount: number, selected: number, capacity: number): { start: number; end: number } {
   if (rowCount <= capacity) return { start: 0, end: rowCount };
   const half = Math.floor(capacity / 2);
   let start = Math.max(0, selected - half);
-  let end = start + capacity;
-  if (end > rowCount) {
-    end = rowCount;
-    start = end - capacity;
-  }
+  const end = Math.min(rowCount, start + capacity);
+  start = Math.max(0, end - capacity);
   return { start, end };
 }
 
 function emptyStateLabel(state: ModelPickerState, railEntry: ModelPickerRailEntry | undefined): string {
   if (state.query.trim()) return "No models match your search.";
   if (railEntry?.kind === "favorites") return "Press f on a model to pin it here.";
-  if (railEntry?.kind === "recents") return "Models you switch to will appear here.";
-  if (railEntry?.kind === "provider" && railEntry.provider === "opencode") return "Install OpenCode to use these models.";
-  if (railEntry?.kind === "provider" && railEntry.provider === "ollama") return "Install OpenCode to use Ollama models.";
-  if (railEntry?.kind === "provider" && railEntry.provider === "lmstudio") return "Install OpenCode to use LM Studio models.";
+  if (railEntry?.kind === "recents") return "Models you switch to appear here.";
+  if (railEntry?.kind === "provider" && railEntry.authStatus === "unavailable") return "Sign in to use this provider.";
   return "No models available.";
 }
 
@@ -319,90 +228,83 @@ export function ModelPickerPane({
 }) {
   const hoveredId = useHoveredHitId();
   const innerWidth = Math.max(20, width - 4);
+  const searching = state.query.trim().length > 0;
   const railEntry = state.railEntries[state.railIndex] ?? state.railEntries[0];
   const activeEntry = state.activeModelId
     ? state.entries.find((entry) => entry.modelId === state.activeModelId) ?? null
     : null;
 
-  const searching = state.query.trim().length > 0;
-  const window = rowWindow(state.entries.length, state.focusedIndex, VISIBLE_ROW_BUDGET);
+  const window = rowWindow(state.entries.length, state.focusedIndex, MODEL_LIST_ROWS);
   const visibleEntries = state.entries.slice(window.start, window.end);
-  const hiddenBefore = window.start;
   const hiddenAfter = state.entries.length - window.end;
-  // Content column sits right of the icon rail (or full width while searching).
+  const hiddenBefore = window.start;
+  // Content sits right of the icon rail (full width while searching). Reserve
+  // columns for rail (star+glyph) + "● now" so names align.
   const contentWidth = searching ? innerWidth : Math.max(14, innerWidth - RAIL_WIDTH - 2);
-  // Reserve space for star + glyph (6 cols) and the "● now" marker so columns align.
-  const nameWidth = Math.max(6, contentWidth - 14);
-  const activeRail = railEntryLabel(railEntry);
+  const nameWidth = Math.max(6, contentWidth - 12);
 
-  const modelList = (
-    <Box flexDirection="column">
-      {state.entries.length === 0 ? (
-        <Text color={theme.color.t4} dimColor wrap="truncate-end">
-          {endTruncate(emptyStateLabel(state, railEntry), contentWidth)}
-        </Text>
-      ) : (
-        <>
-          {hiddenBefore > 0 ? (
-            <Text color={theme.color.t4} dimColor>{`  ↑ ${hiddenBefore} earlier`}</Text>
-          ) : null}
-          {visibleEntries.map((entry, sliceIndex) => {
-            const flatIndex = window.start + sliceIndex;
-            const selected = flatIndex === state.focusedIndex;
-            const active = state.activeModelId != null && entry.modelId === state.activeModelId;
-            return (
-              <ModelListRow
-                key={entry.modelId || `entry-${flatIndex}`}
-                entry={entry}
-                selected={selected}
-                active={active}
-                hovered={hoveredId === `right:model-picker:entry:${entry.modelId}`}
-                width={contentWidth}
-                nameWidth={nameWidth}
-              />
-            );
-          })}
-          {hiddenAfter > 0 ? (
-            <Text color={theme.color.t4} dimColor>{`  ↓ ${hiddenAfter} more`}</Text>
-          ) : null}
-        </>
-      )}
-    </Box>
-  );
+  // The list always occupies exactly MODEL_LIST_ROWS rows (padded with blanks)
+  // so the settings footer never shifts as the catalog length changes.
+  const listRows: React.ReactNode[] = [];
+  if (state.entries.length === 0) {
+    listRows.push(
+      <Text key="empty" color={theme.color.t4} dimColor wrap="truncate-end">
+        {endTruncate(emptyStateLabel(state, railEntry), contentWidth)}
+      </Text>,
+    );
+  } else {
+    visibleEntries.forEach((entry, sliceIndex) => {
+      const flatIndex = window.start + sliceIndex;
+      listRows.push(
+        <ModelListRow
+          key={entry.modelId || `entry-${flatIndex}`}
+          entry={entry}
+          selected={flatIndex === state.focusedIndex}
+          active={state.activeModelId != null && entry.modelId === state.activeModelId}
+          hovered={hoveredId === `right:model-picker:entry:${entry.modelId}`}
+          nameWidth={nameWidth}
+        />,
+      );
+    });
+  }
+  while (listRows.length < MODEL_LIST_ROWS) {
+    listRows.push(<Text key={`pad-${listRows.length}`}> </Text>);
+  }
 
   return (
     <Box flexDirection="column">
-      {/* Context line under the parent "MODEL" title. */}
-      <Box flexDirection="column" marginBottom={1}>
-        <Text color={theme.color.t4} dimColor>
+      {/* Header (fixed). */}
+      <Box flexDirection="column" marginBottom={1} flexShrink={0}>
+        <Text color={theme.color.t4} dimColor wrap="truncate-end">
           {state.entries.length} model{state.entries.length === 1 ? "" : "s"}
           {state.laneLabel ? ` · ${endTruncate(state.laneLabel, Math.max(6, innerWidth - 18))}` : ""}
         </Text>
         {activeEntry ? (
           <Text color={theme.color.violet} wrap="truncate-end">
-            {`● now `}
+            {"● now "}
             <Text color={theme.provider(activeEntry.family).color}>{theme.provider(activeEntry.family).glyph}</Text>
             {` ${endTruncate(activeEntry.displayName, Math.max(8, innerWidth - 12))}`}
           </Text>
         ) : null}
         {state.activeProviderAuthStatus === "unavailable" && state.activeProviderSignInHint ? (
-          <Text color={theme.color.attention} wrap="truncate-end">
-            {`Sign in: ${state.activeProviderSignInHint}`}
-          </Text>
+          <Text color={theme.color.attention} wrap="truncate-end">{`Sign in: ${state.activeProviderSignInHint}`}</Text>
         ) : null}
       </Box>
 
-      {/* Search affordance. */}
-      <Box marginBottom={1}>
-        <ModelPickerSearchBar query={state.query} searchMode={state.searchMode} width={innerWidth} />
+      {/* Search (fixed). */}
+      <Box marginBottom={1} flexShrink={0}>
+        <Text color={state.searchMode ? theme.color.violet : theme.color.t4}>{"⌕ "}</Text>
+        <Text color={state.query ? theme.color.t1 : theme.color.t4} dimColor={!state.query} wrap="truncate-end">
+          {endTruncate(state.query || "search models…", Math.max(8, innerWidth - 2))}
+        </Text>
+        {state.searchMode ? <Text color={theme.color.violet}>▏</Text> : null}
       </Box>
 
+      {/* Bounded model region: icon rail + fixed-height windowed list. */}
       {searching ? (
-        // While searching, the list spans full width (rail is irrelevant).
-        modelList
+        <Box flexDirection="column" flexShrink={0}>{listRows}</Box>
       ) : (
-        // Desktop layout: vertical icon rail on the left, content on the right.
-        <Box flexDirection="row">
+        <Box flexDirection="row" flexShrink={0}>
           <VerticalRail entries={state.railEntries} selectedIndex={state.railIndex} hoveredId={hoveredId} />
           <Box
             flexDirection="column"
@@ -414,33 +316,27 @@ export function ModelPickerPane({
             borderBottom={false}
             paddingLeft={1}
           >
-            {activeRail ? (
-              <Box flexDirection="row" marginBottom={1}>
-                <Text color={activeRail.color} bold>{activeRail.glyph}</Text>
-                <Text color={theme.color.t2} bold>{` ${endTruncate(activeRail.label, Math.max(6, contentWidth - 3))}`}</Text>
-              </Box>
-            ) : null}
-            <SubProviderChips tabs={state.providerTabs} selectedIndex={state.providerTabIndex} hoveredId={hoveredId} />
-            {modelList}
+            <SubProviderSelector tabs={state.providerTabs} selectedIndex={state.providerTabIndex} width={contentWidth} />
+            {listRows}
           </Box>
         </Box>
       )}
+      {(hiddenBefore > 0 || hiddenAfter > 0) ? (
+        <Text color={theme.color.t4} dimColor>
+          {hiddenBefore > 0 ? `↑ ${hiddenBefore} ` : ""}{hiddenAfter > 0 ? `↓ ${hiddenAfter} more` : ""}
+        </Text>
+      ) : null}
 
-      {/* Settings footer. */}
-      <SettingsFooter
-        rows={state.settingsRows}
-        footerFocus={state.footerFocus}
-        width={innerWidth}
-        hoveredId={hoveredId}
-      />
+      {/* Sticky settings footer. */}
+      <SettingsFooter rows={state.settingsRows} footerFocus={state.footerFocus} width={innerWidth} hoveredId={hoveredId} />
 
       {/* Key hints. */}
       <KeyHints
         items={[
-          ["↑↓", "pick"],
-          ["↵", "select"],
+          ["↑↓", "models"],
           ["tab", "category"],
-          ["s", state.showAll ? "available" : "all"],
+          ["[ ]", "group"],
+          ["↵", "pick"],
           ["f", "fav"],
           ["/", "search"],
           ["esc", "close"],
