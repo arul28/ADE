@@ -7722,9 +7722,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     userInitiatedModeChangeRef.current = true;
     if (modelState.provider === "codex") {
       const current = resolveCodexPreset(modelState);
-      const index = Math.max(0, CODEX_PRESETS.findIndex((entry) => entry === current));
-      const next = CODEX_PRESETS[(index + delta + CODEX_PRESETS.length) % CODEX_PRESETS.length] ?? "default";
-      applyModelState((prev) => ({ ...prev, ...codexPresetPatch(next) }));
+      // A "custom" approval×sandbox combo isn't in CODEX_PRESETS (findIndex → -1).
+      // The old `Math.max(0, -1)` collapsed it to index 0, so cycling out of a
+      // custom combo always jumped to "default" and silently discarded it.
+      // Step deterministically into the preset list instead: forward → first,
+      // backward → last.
+      const found = CODEX_PRESETS.findIndex((entry) => entry === current);
+      const next = found === -1
+        ? (delta >= 0 ? CODEX_PRESETS[0] : CODEX_PRESETS[CODEX_PRESETS.length - 1])
+        : CODEX_PRESETS[(found + delta + CODEX_PRESETS.length) % CODEX_PRESETS.length];
+      applyModelState((prev) => ({ ...prev, ...codexPresetPatch(next ?? "default") }));
       return;
     }
     if (modelState.provider === "claude") {

@@ -209,6 +209,9 @@ export function buildModelPickerLayout(input: BuildLayoutInput): ModelPickerStat
   if (searchActive) {
     const scored: Array<{ entry: ModelPickerEntry; score: number }> = [];
     for (const candidate of pool) {
+      // Include the model's short id + aliases so users can type "opus"/"sonnet"
+      // (matching the desktop picker), not just the full display name.
+      const descriptor = getModelById(candidate.modelId);
       const score = scoreModelPickerSearch(
         {
           name: candidate.displayName,
@@ -219,6 +222,8 @@ export function buildModelPickerLayout(input: BuildLayoutInput): ModelPickerStat
               : candidate.family) as ProviderFamily,
           providerDisplayName: providerLabel(candidate.family),
           isFavorite: candidate.isFavorite,
+          ...(descriptor?.shortId ? { shortName: descriptor.shortId } : {}),
+          ...(descriptor?.aliases?.length ? { aliases: descriptor.aliases } : {}),
           ...(candidate.subProvider ? { subProvider: candidate.subProvider } : {}),
         },
         trimmedQuery,

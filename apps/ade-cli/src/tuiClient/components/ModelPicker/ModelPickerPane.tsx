@@ -4,20 +4,14 @@ import { theme } from "../../theme";
 import type { AdeCodeProvider } from "../../types";
 import type { ModelPickerEntry, ModelPickerRailEntry, ModelPickerState } from "./types";
 
-const PROVIDER_GLYPHS: Record<AdeCodeProvider, string> = {
-  codex: "◇",
-  claude: "✦",
-  opencode: "○",
-  cursor: "◈",
-  droid: "▲",
-  ollama: "●",
-  lmstudio: "■",
-};
-
-function railGlyph(entry: ModelPickerRailEntry): string {
-  if (entry.kind === "favorites") return "★";
-  if (entry.kind === "recents") return "◷";
-  return PROVIDER_GLYPHS[entry.provider] ?? "·";
+// Icon + brand color for a rail entry. Provider entries reuse the canonical
+// brand glyph/color from theme.provider() so the picker matches the rest of the
+// TUI (the footer, headers, chat) instead of a divergent local glyph set.
+function railIcon(entry: ModelPickerRailEntry): { glyph: string; color: string } {
+  if (entry.kind === "favorites") return { glyph: "★", color: theme.color.warning };
+  if (entry.kind === "recents") return { glyph: "◷", color: theme.color.t3 };
+  const brand = theme.provider(entry.provider);
+  return { glyph: brand.glyph, color: brand.color };
 }
 
 function endTruncate(value: string, max: number): string {
@@ -35,16 +29,14 @@ function ModelPickerSearchBar({
   searchMode: boolean;
   width: number;
 }) {
-  const displayed = endTruncate(query || "search models…", Math.max(8, width - 8));
+  const displayed = endTruncate(query || "search models…", Math.max(8, width - 4));
   return (
     <Box flexDirection="row" marginBottom={1}>
-      <Text color={searchMode ? theme.color.violet : theme.color.borderSoft}>[</Text>
-      <Text color={searchMode ? theme.color.violet : theme.color.t4}>{searchMode ? "▸" : "/"}</Text>
-      <Text color={theme.color.borderSoft}> </Text>
+      <Text color={searchMode ? theme.color.violet : theme.color.t4}>{"⌕ "}</Text>
       <Text color={query ? theme.color.t1 : theme.color.t4} dimColor={!query}>
         {displayed}
       </Text>
-      <Text color={searchMode ? theme.color.violet : theme.color.borderSoft}>]</Text>
+      {searchMode ? <Text color={theme.color.violet}>▏</Text> : null}
     </Box>
   );
 }
@@ -63,14 +55,15 @@ function ModelPickerRail({
     <Box flexDirection="column" marginRight={1}>
       {entries.map((entry, index) => {
         const selected = index === selectedIndex;
+        const icon = railIcon(entry);
         return (
           <Box key={`${entry.kind}:${entry.kind === "provider" ? entry.provider : entry.label}`} flexDirection="row">
             <Text color={selected ? theme.color.violet : theme.color.t5}>
               {selected ? theme.rail : " "}
             </Text>
-            <Text color={selected ? theme.color.violet : theme.color.t3}>
+            <Text color={selected ? theme.color.violet : icon.color}>
               {" "}
-              {railGlyph(entry)}{" "}
+              {icon.glyph}{" "}
             </Text>
             <Text color={selected ? theme.color.violet : theme.color.t2} bold={selected}>
               {endTruncate(entry.label, labelWidth)}
@@ -212,9 +205,6 @@ export function ModelPickerPane({
         />
 
 	        <Box flexDirection="column" flexGrow={1}>
-	          <Text color={theme.color.t3} bold>
-	            {headingLabel}
-	          </Text>
 	          {state.providerTabs.length > 1 ? (
 	            <Box flexDirection="row" flexWrap="wrap">
 	              {state.providerTabs.map((tab, index) => {
