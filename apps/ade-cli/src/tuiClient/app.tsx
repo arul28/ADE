@@ -109,7 +109,7 @@ import {
 } from "./components/ChatView";
 import { TerminalPane, clampTerminalPaneCols } from "./components/TerminalPane";
 import { Header } from "./components/Header";
-import { computeLaneChatCounts, LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, laneDetailsInteractionLayout, rightPaneScrollableRowCount, RightPane } from "./components/RightPane";
+import { computeLaneChatCounts, DETAILS_BODY_MAX_LINES, LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, laneDetailsInteractionLayout, rightPaneScrollableRowCount, RightPane } from "./components/RightPane";
 import { buildModelPickerLayout, defaultSelectionFor, railEntrySelection } from "./components/ModelPicker/modelPickerLayout";
 import { SlashPalette, SLASH_PALETTE_ROWS } from "./components/SlashPalette";
 import { MentionPalette, MENTION_PALETTE_ROWS } from "./components/MentionPalette";
@@ -346,7 +346,7 @@ export function isTerminalSessionFastPollActive(session: TerminalSessionActivity
 const URL_IN_TEXT_RE = /\bhttps?:\/\/[^\s<>"')\]]+/gi;
 const MARKDOWN_LINK_IN_TEXT_RE = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/i;
 
-function firstUrlInText(value: string): { url: string; index: number; width: number } | null {
+export function firstUrlInText(value: string): { url: string; index: number; width: number } | null {
   const markdownMatch = MARKDOWN_LINK_IN_TEXT_RE.exec(value);
   const markdownCandidate = markdownMatch?.[1] && markdownMatch[2]
     ? {
@@ -2531,6 +2531,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const hitTestRegistryRef = useRef(createHitTestRegistry());
   const hoveredTargetRef = useRef<HitTarget | null>(null);
   const appHitTargetIdsRef = useRef<string[]>([]);
+  // Chat link click-targets are registered in their own effect (keyed on the
+  // visible rows) so they track scrolling/streaming without rebuilding the
+  // whole app hit-target set on every coalesced flush.
+  const chatLinkTargetIdsRef = useRef<string[]>([]);
   const previousDimensionsRef = useRef<[number, number]>([columns, rows]);
   const draftChatActiveRef = useRef(false);
   const formDiscardArmedRef = useRef(false);
@@ -6502,6 +6506,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         setRightPane({ kind: "context-usage", title: "Context", usage: null, error: "No active chat is selected." });
         return;
       }
+      // The runtime only computes context usage for Claude sessions today; give a
+      // clean message for other providers rather than surfacing a raw exception.
+      if (activeCommandProvider !== "claude") {
+        setRightPane({ kind: "context-usage", title: "Context", usage: null, error: "Context usage is currently only available for Claude sessions." });
+        return;
+      }
       setRightPane({ kind: "context-usage", title: "Context", usage: null });
       try {
         const usage = await getContextUsage(conn, sessionId);
@@ -8536,10 +8546,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       focusChat();
       return true;
     }
-    if (action === "historySearch:cycleScope") {
-      addNotice("History search scope cycling is not available yet.", "info");
-      return true;
-    }
     if (action === "pane:toggle") {
       toggleDetailsPane();
       return true;
@@ -8971,7 +8977,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 	          setDrawerScrollOffsetRows((offset) => Math.max(0, Math.min(maxOffset, offset + delta)));
 	        }
 	      } else if (mouse.kind === "wheel" && inRightPane) {
-	        const maxOffset = Math.max(0, rightPaneScrollableRowCount(rightPane) - 26);
+	        const maxOffset = Math.max(0, rightPaneScrollableRowCount(rightPane) - DETAILS_BODY_MAX_LINES);
 	        const delta = mouse.direction === "down" ? 3 : mouse.direction === "up" ? -3 : 0;
 	        if (delta !== 0) {
 	          setRightPaneScrollOffsetRows((offset) => Math.max(0, Math.min(maxOffset, offset + delta)));
@@ -9024,7 +9030,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     const footerActive = footerControlRef.current != null;
     const textInputActive = (pane === "chat" && !footerActive) || detailsFormActive;
 
-    if (commandPaletteOpen) {
+    if (commandPaletteOpen && !isCtrlInput(input, key, "c")) {
       if (key.escape) {
         setCommandPaletteOpen(false);
         setCommandPaletteQuery("");
@@ -9392,7 +9398,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       if (runKeybindingAction("app:copyAdeDeeplink")) return;
     }
 
-    if (!textInputActive && !footerActive && !key.ctrl && !key.meta && (input === "[" || input === "]")) {
+    if (
+      !textInputActive
+      && !footerActive
+      && !key.ctrl
+      && !key.meta
+      && (input === "[" || input === "]")
+      // The model picker consumes [ ] for provider tabs (and as search text), so
+      // don't hijack them for lane cycling while it's focused.
+      && rightPane.kind !== "model-picker"
+    ) {
       cycleActiveLane(input === "]" ? 1 : -1);
       return;
     }
@@ -9854,7 +9869,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         setRightPane({ ...picker, showAll: !picker.showAll, focusedIndex: 0 });
         return;
       }
-	      if ((input === "[" || input === "]") && layout.providerTabs.length > 1) {
+	      if ((input === "[" || input === "]") && !picker.searchMode && layout.providerTabs.length > 1) {
 	        const delta = input === "[" ? -1 : 1;
 	        const nextIndex = (layout.providerTabIndex + delta + layout.providerTabs.length) % layout.providerTabs.length;
 	        const nextTab = layout.providerTabs[nextIndex];
@@ -9886,9 +9901,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         });
         return;
       }
-      // Plain printable input either starts or extends the query.
+      // Printable input extends the query only once search is active (entered
+      // via '/'), so single-letter shortcuts (s/f) and bracket tab-cycling stay
+      // usable while browsing and aren't swallowed as the first search char.
       if (
-        typeof input === "string"
+        picker.searchMode
+        && typeof input === "string"
         && input.length === 1
         && !key.ctrl
         && !key.meta
@@ -10834,26 +10852,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       });
     }
 
-    const chatTopRow = 3 + goalBannerRows + addModeRows;
-    const chatStartColumn = drawerPaneWidth + 3;
-    visibleChatSelectionRows.forEach((row, index) => {
-      if (row.sourceRow == null) return;
-      const match = firstUrlInText(row.text);
-      if (!match) return;
-      const y = chatTopRow + index;
-      if (y < chatTopRow || y > chatTopRow + chatRowBudget) return;
-      addTarget({
-        id: `chat:link:${index}:${match.url}`,
-        rect: { x: chatStartColumn + match.index, y, w: Math.max(1, match.width), h: 1 },
-        onClick: () => {
-          if (!openExternalUrl(match.url, addNotice)) {
-            addNotice(`Couldn't open ${match.url}.`, "error");
-          }
-        },
-        zIndex: 6,
-      });
-    });
-
     if (rightPaneVisible && rightPaneWidth > 0) {
       const rightStartColumn = columns - rightPaneWidth + 1;
       const rightBodyTop = 2 + goalBannerRows + addModeRows;
@@ -11058,10 +11056,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           });
         });
       } else if (rightPane.kind === "list" && rightPane.action) {
+        // Clamp to match RightPane's list rendering so click targets align with
+        // the visible rows even after a stale offset.
+        const listStart = Math.max(0, Math.min(rightPaneScrollOffsetRows, Math.max(0, rightPane.rows.length - DETAILS_BODY_MAX_LINES)));
         rightPane.rows
-          .slice(rightPaneScrollOffsetRows, rightPaneScrollOffsetRows + 26)
+          .slice(listStart, listStart + DETAILS_BODY_MAX_LINES)
           .forEach((_, visibleIndex) => {
-          const index = rightPaneScrollOffsetRows + visibleIndex;
+          const index = listStart + visibleIndex;
           addTarget({
             id: `right:list:${index}`,
             rect: { x: rightStartColumn, y: rightBodyTop + 2 + visibleIndex, w: rightPaneWidth, h: 1 },
@@ -11183,6 +11184,40 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     toggleModelPickerFavoriteId,
     toggleSubagentsPane,
   ]);
+
+  // Chat link click-targets, isolated so they re-register as the transcript
+  // scrolls/streams (keyed on the visible rows) without rebuilding the entire
+  // app hit-target set on every coalesced flush.
+  useEffect(() => {
+    const registry = hitTestRegistryRef.current;
+    for (const id of chatLinkTargetIdsRef.current) registry.unregister(id);
+    const ids: string[] = [];
+    const chatTopRow = 3 + goalBannerRows + addModeRows;
+    const chatStartColumn = drawerPaneWidth + 3;
+    visibleChatSelectionRows.forEach((row, index) => {
+      if (row.sourceRow == null) return;
+      const match = firstUrlInText(row.text);
+      if (!match) return;
+      const y = chatTopRow + index;
+      if (y < chatTopRow || y > chatTopRow + chatRowBudget) return;
+      const id = `chat:link:${index}:${match.url}`;
+      ids.push(id);
+      registry.register({
+        id,
+        rect: { x: chatStartColumn + match.index, y, w: Math.max(1, match.width), h: 1 },
+        onClick: () => {
+          if (!openExternalUrl(match.url, addNotice)) {
+            addNotice(`Couldn't open ${match.url}.`, "error");
+          }
+        },
+        zIndex: 6,
+      });
+    });
+    chatLinkTargetIdsRef.current = ids;
+    return () => {
+      for (const id of ids) registry.unregister(id);
+    };
+  }, [addModeRows, addNotice, chatRowBudget, drawerPaneWidth, goalBannerRows, visibleChatSelectionRows]);
 
   if (error && !connection) {
     return (

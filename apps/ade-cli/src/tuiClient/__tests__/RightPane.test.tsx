@@ -1,8 +1,19 @@
 import React from "react";
 import { describe, expect, it } from "vitest";
 import { render } from "ink-testing-library";
-import { LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, laneDetailsInteractionLayout, RightPane } from "../components/RightPane";
+import { LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, laneDetailsInteractionLayout, rightPaneScrollableRowCount, RightPane } from "../components/RightPane";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
+
+describe("rightPaneScrollableRowCount", () => {
+  it("counts details body lines and list rows; caps diff file bodies at 8", () => {
+    expect(rightPaneScrollableRowCount({ kind: "details", title: "t", body: "a\nb\nc" })).toBe(3);
+    expect(rightPaneScrollableRowCount({ kind: "list", title: "t", rows: ["a", "b"] })).toBe(2);
+    expect(rightPaneScrollableRowCount({ kind: "empty" })).toBe(0);
+    const bigBody = Array.from({ length: 50 }, (_, i) => `line ${i}`).join("\n");
+    // 1 header row + min(8, 50) body rows = 9 per file.
+    expect(rightPaneScrollableRowCount({ kind: "diff", title: "d", files: [{ path: "a.ts", body: bigBody }] })).toBe(9);
+  });
+});
 
 function stripAnsi(text: string): string {
   return text.replace(/\u001b(?:\[[0-9;]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001b\\))/g, "");

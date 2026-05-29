@@ -23,7 +23,7 @@ import { useHoveredHitId } from "../hitTestRegistry";
 
 const DEFAULT_PANE_WIDTH = 38;
 const LANE_FILE_PREVIEW_ROWS = 5;
-const DETAILS_BODY_MAX_LINES = 26;
+export const DETAILS_BODY_MAX_LINES = 26;
 
 // ---------------------------------------------------------------------------
 // Actions for the lane-details pane (5 rows · wireframe)
@@ -1163,9 +1163,12 @@ export function RightPane({
       {content.kind === "list" ? (
         <Box flexDirection="column">
           {(() => {
-            const visibleRows = content.rows.slice(scrollOffsetRows, scrollOffsetRows + DETAILS_BODY_MAX_LINES);
+            // Clamp so a stale offset (after switching to a shorter same-kind
+            // list) can't scroll past the content into a blank pane.
+            const listStart = Math.max(0, Math.min(scrollOffsetRows, Math.max(0, content.rows.length - DETAILS_BODY_MAX_LINES)));
+            const visibleRows = content.rows.slice(listStart, listStart + DETAILS_BODY_MAX_LINES);
             return content.rows.length ? visibleRows.map((row, visibleIndex) => {
-              const index = scrollOffsetRows + visibleIndex;
+              const index = listStart + visibleIndex;
               return (
 	            <Text
 	              key={`${content.action?.ids[index] ?? row}:${index}`}

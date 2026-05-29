@@ -76,7 +76,7 @@ export function ApprovalPrompt({
 
       {showChips ? (
         <Box flexDirection="row" marginTop={1}>
-          <ApproveChip k="a" label="approve" color={theme.color.running} highlighted={hoveredId === "approval:accept" || hoveredId == null} />
+          <ApproveChip k="a" label="approve" color={theme.color.running} highlighted={hoveredId === "approval:accept" || !(typeof hoveredId === "string" && hoveredId.startsWith("approval:"))} />
           <Text>  </Text>
           <ApproveChip k="d" label="deny" color={theme.color.error} highlighted={hoveredId === "approval:decline"} />
         </Box>

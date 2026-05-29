@@ -288,7 +288,7 @@ export function FooterControls({
           <>
             <Text color={footerHovered("footer:approval-accept") ? theme.color.running : theme.color.accent} bold>a</Text>
             <Text dimColor>{" approve  "}</Text>
-            <Text color={footerHovered("footer:approval-decline") ? theme.color.danger : theme.color.danger} bold>d</Text>
+            <Text color={footerHovered("footer:approval-decline") ? theme.color.error : theme.color.t2} bold>d</Text>
             <Text dimColor>{" deny  ·  "}</Text>
             <Text color={theme.color.accent}>← →</Text>
             <Text dimColor>{" choose"}</Text>

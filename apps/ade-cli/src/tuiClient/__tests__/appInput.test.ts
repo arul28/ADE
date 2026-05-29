@@ -11,6 +11,7 @@ import {
   encodeTerminalPromptSubmit,
   encodeTerminalPromptSubmitConfirm,
   applyCoalescedPromptInput,
+  firstUrlInText,
   footerControlsForAvailability,
   inlineRowCellOrder,
   formatGitConflictReport,
@@ -536,6 +537,24 @@ describe("footer control ordering", () => {
   it("puts chat info first when that pane is available", () => {
     expect(footerControlsForAvailability(true)).toEqual(["agents", "drawer", "details"]);
     expect(footerControlsForAvailability(false)).toEqual(["drawer", "details"]);
+  });
+});
+
+describe("firstUrlInText", () => {
+  it("finds a bare URL with its index + width and strips trailing punctuation", () => {
+    const hit = firstUrlInText("see https://example.com/docs. thanks");
+    expect(hit?.url).toBe("https://example.com/docs");
+    expect(hit?.index).toBe(4);
+    expect(hit?.width).toBe("https://example.com/docs".length);
+  });
+  it("resolves a markdown link to its href but spans the visible label", () => {
+    const hit = firstUrlInText("[the docs](https://example.com/x)");
+    expect(hit?.url).toBe("https://example.com/x");
+    expect(hit?.index).toBe(0);
+    expect(hit?.width).toBe("the docs".length);
+  });
+  it("returns null when there is no link", () => {
+    expect(firstUrlInText("just some plain text")).toBeNull();
   });
 });
 
