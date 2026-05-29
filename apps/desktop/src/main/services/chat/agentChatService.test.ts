@@ -11648,6 +11648,53 @@ describe("createAgentChatService", () => {
       )).toBe(false);
     });
 
+    it("reports Codex /goal slash timeouts without tearing down the runtime", async () => {
+      mockState.delayedCodexMethods.add("thread/goal/set");
+      const processKillSpy = vi.spyOn(process, "kill").mockImplementation(() => true as any);
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => {
+            events.push(event);
+          },
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.5",
+        });
+
+        const sendPromise = service.sendMessage({
+          sessionId: session.id,
+          text: "/goal status paused",
+        }, { awaitDispatch: true });
+
+        await vi.waitFor(() => {
+          expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/goal/set")).toBe(true);
+        });
+        await vi.advanceTimersByTimeAsync(10_050);
+        await sendPromise;
+
+        expect(events.some((event) =>
+          event.event.type === "system_notice"
+          && event.event.message.includes("timed out")
+        )).toBe(true);
+        expect(processKillSpy).not.toHaveBeenCalled();
+
+        mockState.delayedCodexMethods.clear();
+        mockState.codexRequestPayloads = [];
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "Continue after the slash timeout.",
+        }, { awaitDispatch: true });
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      } finally {
+        vi.useRealTimers();
+        processKillSpy.mockRestore();
+      }
+    });
+
     it("routes Codex goal edits through goal RPC while a turn is active instead of turn steer", async () => {
       mockState.codexResponseOverrides.set("thread/goal/set", (payload) => {
         const params = payload.params as Record<string, unknown>;
@@ -14776,6 +14823,39 @@ describe("createAgentChatService", () => {
       expect(String(message.content[0]?.text ?? "")).toContain("Now use this screenshot");
       expect(message.content[1]?.type).toBe("image");
       expect((message.content[1]?.source as Record<string, unknown>).type).toBe("base64");
+    });
+
+    it("omits large Cursor SDK file attachments without reading the full file", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      const largePath = path.join(tmpRoot, "large-context.txt");
+      const largeContent = `${"x".repeat(512 * 1024 + 1)}large-tail-marker`;
+      fs.writeFileSync(largePath, largeContent);
+
+      const readFileSpy = vi.spyOn(fs, "readFileSync");
+      let readFileCalls: unknown[][] = [];
+      try {
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "Use this large file",
+          attachments: [{ path: largePath, type: "file" }],
+        });
+        readFileCalls = [...readFileSpy.mock.calls];
+      } finally {
+        readFileSpy.mockRestore();
+      }
+
+      expect(readFileCalls.some(([target]) => typeof target === "number")).toBe(false);
+      const payloadText = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
+      expect(payloadText).toContain(`[File: ${largePath} omitted: size ${largeContent.length} bytes]`);
+      expect(payloadText).not.toContain("large-tail-marker");
     });
   });
 

@@ -176,6 +176,7 @@ const MAX_FILES_TREE_CACHED_WORKSPACES = 32;
 const MAX_CACHED_CLEAN_TAB_CHARS = 256 * 1024;
 const MAX_QUEUED_TREE_PARENT_REFRESHES = 24;
 const FILES_WATCH_START_DELAY_MS = import.meta.env.MODE === "test" || (window as any).__adeBrowserMock ? 0 : 2_000;
+const FILES_GIT_DECORATION_REFRESH_DELAY_MS = 2_500;
 
 function filesSessionKey(projectRoot: string, laneId: string | null): string {
   return `${projectRoot}::${laneId ?? "__primary__"}`;
@@ -1504,6 +1505,10 @@ export function FilesPage({
     treeRefreshStateRef.current.queuedParents.clear();
     setLoadingDirectories(new Set());
     void refreshTree();
+    const decorationRefreshTimer = window.setTimeout(() => {
+      void refreshTree();
+    }, FILES_GIT_DECORATION_REFRESH_DELAY_MS);
+    return () => window.clearTimeout(decorationRefreshTimer);
   }, [active, projectRootPath, workspaceId, refreshTree]);
 
   useEffect(() => {

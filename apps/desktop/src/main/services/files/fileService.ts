@@ -404,7 +404,7 @@ export function createFileService({
     gitStatusCache.set(rootPath, {
       fetchedAt: 0,
       snapshot: previous.snapshot,
-      inFlight: previous.inFlight,
+      inFlight: null,
     });
   };
 
@@ -526,6 +526,9 @@ export function createFileService({
       .catch(() => emptyGitStatusSnapshot)
       .then((snapshot) => {
         const current = gitStatusCache.get(rootPath);
+        if (!opts.forceFresh && current && current.inFlight !== inFlight) {
+          return current.snapshot;
+        }
         if (!opts.forceFresh && current && current.fetchedAt > startedAt) {
           return current.snapshot;
         }

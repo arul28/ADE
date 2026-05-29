@@ -4826,6 +4826,35 @@ export function createAgentChatService(args: {
     resolvedPath: attachment._resolvedPath,
     getDirtyFileTextForPath,
   });
+  const readDirtyResolvedAttachmentBytes = async (
+    attachment: ResolvedAgentChatFileRef,
+  ): Promise<Buffer | null> => {
+    let absPath: string;
+    try {
+      absPath = resolvePathWithinRoot(path.resolve(attachment._rootPath), attachment._resolvedPath, {
+        allowMissing: false,
+      });
+    } catch {
+      return null;
+    }
+    try {
+      const dirty = await Promise.resolve(getDirtyFileTextForPath(absPath));
+      return typeof dirty === "string" ? Buffer.from(dirty, "utf8") : null;
+    } catch {
+      return null;
+    }
+  };
+  const resolvedAttachmentDiskSize = (attachment: ResolvedAgentChatFileRef): number | null => {
+    try {
+      const absPath = resolvePathWithinRoot(path.resolve(attachment._rootPath), attachment._resolvedPath, {
+        allowMissing: false,
+      });
+      const stat = fs.statSync(absPath);
+      return stat.isFile() ? stat.size : null;
+    } catch {
+      return null;
+    }
+  };
   if (!issueInventoryService) {
     throw new Error("Issue inventory service is required to initialize agent chat.");
   }
@@ -9403,9 +9432,6 @@ export function createAgentChatService(args: {
           `${failurePrefix}: ${error instanceof Error ? error.message : String(error)}`,
           "error",
         );
-        if (isCodexRequestTimeoutError(error)) {
-          teardownRuntime(managed, "handle_close");
-        }
         return null;
       }
     };
@@ -9686,9 +9712,6 @@ export function createAgentChatService(args: {
         };
       } catch (error) {
         completeFailedInlineCodexSlash(failurePrefix, error);
-        if (isCodexRequestTimeoutError(error)) {
-          teardownRuntime(managed, "handle_close");
-        }
         return { ok: false };
       }
     };
@@ -17837,7 +17860,26 @@ export function createAgentChatService(args: {
     > = [{ type: "text", text: promptText }];
     for (const attachment of resolvedAttachments) {
       try {
-        const buf = await readResolvedAttachmentBytes(attachment);
+        let buf: Buffer;
+        if (attachment.type === "image") {
+          buf = await readResolvedAttachmentBytes(attachment);
+        } else {
+          const dirtyBuf = await readDirtyResolvedAttachmentBytes(attachment);
+          if (dirtyBuf) {
+            buf = dirtyBuf;
+          } else {
+            const fileSize = resolvedAttachmentDiskSize(attachment);
+            if (fileSize == null) continue;
+            if (fileSize > MAX_INLINE_BYTES) {
+              blocks.push({
+                type: "text",
+                text: `[File: ${attachment.path} omitted: size ${fileSize} bytes]`,
+              });
+              continue;
+            }
+            buf = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
+          }
+        }
 
         if (attachment.type === "image") {
           blocks.push({
