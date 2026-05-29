@@ -3498,7 +3498,7 @@ export function createPrService({
     const defaultTitle = lane.linearIssue
       ? buildLinearPrTitle(lane.linearIssue)
       : lane.name.replace(/[-_/]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).trim() || lane.name;
-    const closeLinearIssueOnMerge = args.closeLinearIssueOnMerge === true;
+    const closeLinearIssueOnMerge = args.closeLinearIssueOnMerge !== false;
     const finalizeDraft = (draft: { title: string; body: string }): { title: string; body: string } => {
       const linearRefs = collectLinearPrIssueReferences(lane, closeLinearIssueOnMerge);
       if (!linearRefs.length) return draft;
@@ -3610,7 +3610,7 @@ export function createPrService({
     }
 
     const repo = await githubService.getRepoOrThrow();
-    const closeLinearIssueOnMerge = args.closeLinearIssueOnMerge === true;
+    const closeLinearIssueOnMerge = args.closeLinearIssueOnMerge !== false;
     const linearAdjustedBody = applyLinearPrLinkage(args.body, lane, closeLinearIssueOnMerge);
     // Append the branded "Open in ADE" footer (branch link only at this point;
     // we'll PATCH the PR body with the PR-number-aware variant once we know it).

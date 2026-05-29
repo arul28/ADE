@@ -2446,7 +2446,7 @@ describe("prService.createFromLane", () => {
     );
   });
 
-  it("adds a non-closing Linear reference when creating a PR from a linked lane", async () => {
+  it("adds a closing Linear reference (Fixes) by default when creating a PR from a linked lane", async () => {
     const ghService = makeGithubService({
       apiRequest: vi.fn().mockRejectedValue(new Error("stop after payload capture")),
     });
@@ -2495,7 +2495,7 @@ describe("prService.createFromLane", () => {
           title: "My PR",
           // Body starts with the Linear ref + description, then the auto-appended
           // "Open in ADE" deeplink footer block (idempotent marker).
-          body: expect.stringMatching(/^Refs ADE-123\n\ndescription/),
+          body: expect.stringMatching(/^Fixes ADE-123\n\ndescription/),
         }),
       }),
     );
