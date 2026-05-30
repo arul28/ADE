@@ -312,6 +312,49 @@ describe("createSupervisedPtyLoader", () => {
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
   });
 
+  it("queues terminal writes when the host IPC channel is backpressured", async () => {
+    const child = createFakeChild();
+    let rejectWrites = false;
+    const originalSend = child.send;
+    child.send = vi.fn((message: unknown, callback?: (error: Error | null) => void) => {
+      const request = message as { type?: string };
+      if (rejectWrites && request.type === "write") {
+        callback?.(null);
+        return false;
+      }
+      return originalSend(message, callback);
+    });
+    mocks.fork.mockReturnValueOnce(child);
+    const loader = createSupervisedPtyLoader({ logger: createLogger() as any });
+    const pty = loader().spawn("/bin/zsh", [], spawnOptions()) as HostedPty;
+    const spawnRequest = child.sent[0] as { requestId: string; ptyId: string };
+    child.emitMessage({
+      type: "spawned",
+      requestId: spawnRequest.requestId,
+      ptyId: spawnRequest.ptyId,
+      pid: 123,
+      process: "/bin/zsh",
+      cols: 80,
+      rows: 24,
+    });
+    await pty.__adePtyHostReady;
+
+    rejectWrites = true;
+    pty.write("first");
+    expect(child.sent).not.toContainEqual(expect.objectContaining({
+      type: "write",
+      data: "first",
+    }));
+
+    rejectWrites = false;
+    child.emit("drain");
+
+    expect(child.sent).toContainEqual(expect.objectContaining({
+      type: "write",
+      data: "first",
+    }));
+  });
+
   it("times out an in-flight spawn when the worker never answers", async () => {
     vi.useFakeTimers();
     const child = createFakeChild({ emitExitOnKill: false });

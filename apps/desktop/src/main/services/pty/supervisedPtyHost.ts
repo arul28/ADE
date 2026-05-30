@@ -59,6 +59,8 @@ type HostChildState = {
   ptyIds: Set<string>;
   stdoutTail: string;
   stderrTail: string;
+  ipcSendQueue: ChildRequest[];
+  ipcDrainListenerAttached: boolean;
 };
 
 const HOST_KILL_GRACE_MS = 3_000;
@@ -318,7 +320,25 @@ class SupervisedPtyHost {
     }
   }
 
-  private sendToChild(childState: HostChildState, request: ChildRequest): void {
+  private ensureChildDrainListener(childState: HostChildState): void {
+    if (childState.ipcDrainListenerAttached) return;
+    childState.ipcDrainListenerAttached = true;
+    childState.child.on("drain", () => {
+      this.flushChildSendQueue(childState);
+    });
+  }
+
+  private flushChildSendQueue(childState: HostChildState): void {
+    while (childState.ipcSendQueue.length > 0) {
+      const request = childState.ipcSendQueue[0]!;
+      if (!this.trySendToChild(childState, request)) {
+        return;
+      }
+      childState.ipcSendQueue.shift();
+    }
+  }
+
+  private trySendToChild(childState: HostChildState, request: ChildRequest): boolean {
     try {
       const accepted = childState.child.send(request, (error) => {
         if (!error) return;
@@ -333,8 +353,10 @@ class SupervisedPtyHost {
         this.logger.debug("pty.host_ipc_backpressure", {
           type: request.type,
           ptyId: "ptyId" in request ? request.ptyId : null,
+          queuedDepth: childState.ipcSendQueue.length,
         });
       }
+      return accepted;
     } catch (error) {
       this.logger.warn("pty.host_ipc_send_failed", {
         type: request.type,
@@ -344,6 +366,14 @@ class SupervisedPtyHost {
       this.handleSendFailure(request, error instanceof Error ? error : new Error(String(error)));
       throw error;
     }
+  }
+
+  private sendToChild(childState: HostChildState, request: ChildRequest): void {
+    if (this.trySendToChild(childState, request)) {
+      return;
+    }
+    childState.ipcSendQueue.push(request);
+    this.ensureChildDrainListener(childState);
   }
 
   private handleSendFailure(request: ChildRequest, error: Error): void {
@@ -401,6 +431,8 @@ class SupervisedPtyHost {
       ptyIds: new Set([ptyId]),
       stdoutTail: "",
       stderrTail: "",
+      ipcSendQueue: [],
+      ipcDrainListenerAttached: false,
     };
     this.childrenByPty.set(ptyId, childState);
     this.restartCount += 1;
@@ -525,6 +557,7 @@ class SupervisedPtyHost {
       remote?.markHostExited(exitCode);
     }
     childState.ptyIds.clear();
+    childState.ipcSendQueue.length = 0;
     for (const [requestId, pending] of [...this.pendingSpawns.entries()]) {
       if (this.childrenByPty.has(pending.ptyId)) continue;
       this.takePendingSpawn(requestId)?.reject(new Error("PTY host exited before spawn completed."));

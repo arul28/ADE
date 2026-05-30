@@ -2146,8 +2146,13 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   register("work.stopRuntime", { viewerAllowed: true, queueable: true }, async (payload) => {
     const { sessionId } = parseStopRuntimeArgs(payload);
     const session = args.sessionService.get(sessionId);
-    if (session?.ptyId) {
-      await args.ptyService.dispose({ ptyId: session.ptyId, sessionId });
+    if (!session) {
+      return { ok: true };
+    }
+    const enriched = args.ptyService.enrichSessions([session])[0] ?? session;
+    const ptyId = typeof enriched.ptyId === "string" ? enriched.ptyId.trim() : "";
+    if (ptyId) {
+      await args.ptyService.dispose({ ptyId, sessionId });
     }
     return { ok: true };
   });

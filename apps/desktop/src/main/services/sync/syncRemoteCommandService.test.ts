@@ -2411,6 +2411,24 @@ describe("createSyncRemoteCommandService", () => {
       expect(ptyService.dispose).not.toHaveBeenCalled();
       expect(result).toEqual({ ok: true });
     });
+
+    it("work.stopRuntime disposes a live pty when enrichSessions supplies ptyId", async () => {
+      sessionService.get.mockReturnValue({
+        id: "sess-1",
+        status: "running",
+        ptyId: null,
+      });
+      ptyService.enrichSessions.mockImplementation((sessions: Array<{ ptyId?: string | null }>) => [{
+        ...sessions[0],
+        ptyId: "pty-live",
+      }]);
+      const result = await service.execute(makePayload("work.stopRuntime", {
+        sessionId: "sess-1",
+      }));
+      expect(ptyService.enrichSessions).toHaveBeenCalled();
+      expect(ptyService.dispose).toHaveBeenCalledWith({ ptyId: "pty-live", sessionId: "sess-1" });
+      expect(result).toEqual({ ok: true });
+    });
   });
 
   // ---------------------------------------------------------------
