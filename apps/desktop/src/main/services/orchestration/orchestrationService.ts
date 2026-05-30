@@ -1092,6 +1092,14 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           etag: manifest.etag,
         };
       }
+      if (task.status === "done" || task.status === "failed") {
+        return {
+          ok: false,
+          reason: `task ${req.taskId} is terminal (${task.status}) and cannot be claimed`,
+          manifest,
+          etag: manifest.etag,
+        };
+      }
       const stillClaimed =
         task.claimLeaseUntil && new Date(task.claimLeaseUntil).getTime() > Date.now();
       if (
