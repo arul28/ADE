@@ -1524,7 +1524,7 @@ app.whenReady().then(async () => {
     }
 
     try {
-      if (ctx.sessionService?.list({ status: "running", limit: 1 }).length > 0) {
+      if ((ctx.sessionService?.list({ status: "running", limit: 1 }).length ?? 0) > 0) {
         return true;
       }
     } catch (error) {
@@ -4232,7 +4232,7 @@ app.whenReady().then(async () => {
       builtInBrowserService,
       macosVmService,
       usageTrackingService,
-    } as AppContext;
+    };
   };
 
   const createDormantProjectContext = (projectRoot = ""): AppContext => {
@@ -4291,6 +4291,10 @@ app.whenReady().then(async () => {
       laneWorktreeLockService: null,
       laneEnvironmentService: null,
       laneTemplateService: null,
+      portAllocationService: null,
+      laneProxyService: null,
+      oauthRedirectService: null,
+      runtimeDiagnosticsService: null,
       rebaseSuggestionService: null,
       autoRebaseService: null,
       sessionService: null,
@@ -4348,7 +4352,7 @@ app.whenReady().then(async () => {
       linearIngressService: null,
       linearSyncService: null,
       configReloadService: null,
-    } as unknown as AppContext;
+    };
   };
 
   const disposeContextResources = async (ctx: AppContext): Promise<void> => {
@@ -4381,7 +4385,7 @@ app.whenReady().then(async () => {
     // Flush DB before disposing services so that any pending writes are persisted.
     // Services may write during disposal, so we flush again at the end as a safety net.
     try {
-      ctx.db.flushNow();
+      ctx.db?.flushNow();
     } catch {
       // ignore
     }
@@ -4391,7 +4395,7 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
-      ctx.prPollingService.dispose();
+      ctx.prPollingService?.dispose();
     } catch {
       // ignore
     }
@@ -4416,7 +4420,7 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
-      ctx.automationService.dispose();
+      ctx.automationService?.dispose();
     } catch {
       // ignore
     }
@@ -4461,12 +4465,12 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
-      ctx.jobEngine.dispose();
+      ctx.jobEngine?.dispose();
     } catch {
       // ignore
     }
     try {
-      ctx.fileService.dispose();
+      ctx.fileService?.dispose();
     } catch {
       // ignore
     }
@@ -4486,22 +4490,22 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
-      ctx.testService.disposeAll();
+      ctx.testService?.disposeAll();
     } catch {
       // ignore
     }
     try {
-      ctx.processService.disposeAll();
+      ctx.processService?.disposeAll();
     } catch {
       // ignore
     }
     try {
-      ctx.ptyService.disposeAll();
+      ctx.ptyService?.disposeAll();
     } catch {
       // ignore
     }
     try {
-      await ctx.agentChatService.disposeAll();
+      await ctx.agentChatService?.disposeAll();
     } catch {
       // ignore
     }
@@ -4526,8 +4530,8 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
-      ctx.db.flushNow();
-      ctx.db.close();
+      ctx.db?.flushNow();
+      ctx.db?.close();
     } catch {
       // ignore
     }
@@ -4581,7 +4585,7 @@ app.whenReady().then(async () => {
     recent?: RecentProjectInspection | null,
   ): Promise<SyncMobileProjectSummary> {
     let laneCount = recent?.summary.laneCount ?? 0;
-    if (!recent?.summary.laneCount) {
+    if (!recent?.summary.laneCount && ctx.laneService) {
       try {
         laneCount = (await ctx.laneService.list({ includeArchived: false })).length;
       } catch {
