@@ -36,7 +36,7 @@ describe("feedbackTypeToCategory", () => {
   it("maps UI types onto existing daemon categories", () => {
     expect(feedbackTypeToCategory("bug")).toBe("bug");
     expect(feedbackTypeToCategory("idea")).toBe("feature");
-    expect(feedbackTypeToCategory("praise")).toBe("improvement");
+    expect(feedbackTypeToCategory("praise")).toBe("enhancement");
   });
 });
 

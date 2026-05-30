@@ -18,9 +18,8 @@ import type { FeedbackFormValues } from "./feedback";
  * by buildFeedbackDraftInput so no server change is needed:
  *   bug    -> "bug"
  *   idea   -> "feature"
- *   praise -> "improvement"  (a positive product signal — "enhancement" in
- *             review parlance; "improvement" is this schema's equivalent, since
- *             a compliment is feedback to keep/extend, not a question to answer)
+ *   praise -> "enhancement"  (a positive product signal to keep/extend — not a
+ *             "question", which would wrongly route a compliment to triage)
  */
 export const FEEDBACK_TYPES = ["bug", "idea", "praise"] as const;
 export type FeedbackType = (typeof FEEDBACK_TYPES)[number];
@@ -28,7 +27,7 @@ export type FeedbackType = (typeof FEEDBACK_TYPES)[number];
 const TYPE_TO_CATEGORY: Record<FeedbackType, FeedbackCategory> = {
   bug: "bug",
   idea: "feature",
-  praise: "improvement",
+  praise: "enhancement",
 };
 
 /** Map a UI feedback type to the existing daemon FeedbackCategory. */
