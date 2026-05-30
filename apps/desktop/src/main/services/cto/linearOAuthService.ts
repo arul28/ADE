@@ -12,6 +12,7 @@ import { createPkcePair } from "../shared/utils";
 const LINEAR_AUTHORIZE_URL = "https://linear.app/oauth/authorize";
 const LINEAR_TOKEN_URL = "https://api.linear.app/oauth/token";
 const CALLBACK_PATH = "/oauth/callback";
+const OAUTH_HOST = "127.0.0.1";
 const OAUTH_PORT = 19836;
 const SESSION_TTL_MS = 10 * 60 * 1000;
 
@@ -26,6 +27,23 @@ type LinearOAuthSessionState = {
   error: string | null;
   server: http.Server;
 };
+
+function isAddressInUseError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  if ("code" in error && error.code === "EADDRINUSE") return true;
+  return error instanceof Error && (
+    error.message.includes("EADDRINUSE") || error.message.includes("address already in use")
+  );
+}
+
+function createOAuthPortInUseError(): Error {
+  const error = new Error(
+    `Linear OAuth cannot start because callback port ${OAUTH_PORT} is already in use on ${OAUTH_HOST}. ` +
+    `Stop the other ADE process or local app using that port, then try Sign in with Linear again.`,
+  ) as Error & { code?: string };
+  error.code = "EADDRINUSE";
+  return error;
+}
 
 
 export function createLinearOAuthService(args: {
@@ -194,13 +212,31 @@ export function createLinearOAuthService(args: {
       }
     });
 
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(OAUTH_PORT, "127.0.0.1", () => {
-        server.off("error", reject);
-        resolve();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(OAUTH_PORT, OAUTH_HOST, () => {
+          server.off("error", reject);
+          resolve();
+        });
       });
-    });
+    } catch (error) {
+      try {
+        server.close();
+      } catch {
+        // best effort
+      }
+
+      if (isAddressInUseError(error)) {
+        args.logger?.warn("linear_sync.oauth_callback_port_in_use", {
+          host: OAUTH_HOST,
+          port: OAUTH_PORT,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw createOAuthPortInUseError();
+      }
+      throw error;
+    }
 
     const address = server.address();
     if (!address || typeof address === "string") {
