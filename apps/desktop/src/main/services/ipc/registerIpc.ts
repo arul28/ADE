@@ -635,7 +635,7 @@ import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import { deleteMacosVmFromProjectState } from "../macosVm/macosVmRecovery";
 
 export type AppContext = {
-  db: AdeDb;
+  db: AdeDb | null;
   logger: Logger;
   project: ProjectInfo;
   hasUserSelectedProject: boolean;
@@ -644,12 +644,12 @@ export type AppContext = {
   getActiveRpcConnectionCount?: (() => number) | null;
   disposeTimers?: Array<ReturnType<typeof setTimeout>>;
   disposeHeadWatcher: () => void;
-  keybindingsService: ReturnType<typeof createKeybindingsService>;
-  agentToolsService: ReturnType<typeof createAgentToolsService>;
+  keybindingsService: ReturnType<typeof createKeybindingsService> | null;
+  agentToolsService: ReturnType<typeof createAgentToolsService> | null;
   adeCliService: ReturnType<typeof createAdeCliService>;
   devToolsService: ReturnType<typeof createDevToolsService> | null;
-  onboardingService: ReturnType<typeof createOnboardingService>;
-  laneService: ReturnType<typeof createLaneService>;
+  onboardingService: ReturnType<typeof createOnboardingService> | null;
+  laneService: ReturnType<typeof createLaneService> | null;
   laneWorktreeLockService?: LaneWorktreeLockService | null;
   laneEnvironmentService: ReturnType<typeof createLaneEnvironmentService> | null;
   laneTemplateService: ReturnType<typeof createLaneTemplateService> | null;
@@ -659,39 +659,39 @@ export type AppContext = {
   runtimeDiagnosticsService: ReturnType<typeof createRuntimeDiagnosticsService> | null;
   rebaseSuggestionService: ReturnType<typeof createRebaseSuggestionService> | null;
   autoRebaseService: ReturnType<typeof createAutoRebaseService> | null;
-  sessionService: ReturnType<typeof createSessionService>;
+  sessionService: ReturnType<typeof createSessionService> | null;
   processRegistry?: ProcessRegistryService | null;
-  ptyService: ReturnType<typeof createPtyService>;
-  diffService: ReturnType<typeof createDiffService>;
-  fileService: ReturnType<typeof createFileService>;
-  operationService: ReturnType<typeof createOperationService>;
-  gitService: ReturnType<typeof createGitOperationsService>;
-  conflictService: ReturnType<typeof createConflictService>;
-  aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
-  agentChatService: ReturnType<typeof createAgentChatService>;
-  computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService>;
+  ptyService: ReturnType<typeof createPtyService> | null;
+  diffService: ReturnType<typeof createDiffService> | null;
+  fileService: ReturnType<typeof createFileService> | null;
+  operationService: ReturnType<typeof createOperationService> | null;
+  gitService: ReturnType<typeof createGitOperationsService> | null;
+  conflictService: ReturnType<typeof createConflictService> | null;
+  aiIntegrationService: ReturnType<typeof createAiIntegrationService> | null;
+  agentChatService: ReturnType<typeof createAgentChatService> | null;
+  computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService> | null;
   iosSimulatorService?: ReturnType<typeof createIosSimulatorService> | null;
   appControlService?: ReturnType<typeof createAppControlService> | null;
   builtInBrowserService?: ReturnType<typeof createBuiltInBrowserService> | null;
   macosVmService?: ReturnType<typeof createMacosVmService> | null;
   githubService: ReturnType<typeof createGithubService>;
   projectScaffoldService: ReturnType<typeof createProjectScaffoldService>;
-  prService: ReturnType<typeof createPrService>;
-  prPollingService: ReturnType<typeof createPrPollingService>;
-  queueLandingService: ReturnType<typeof createQueueLandingService>;
-  issueInventoryService: ReturnType<typeof createIssueInventoryService>;
+  prService: ReturnType<typeof createPrService> | null;
+  prPollingService: ReturnType<typeof createPrPollingService> | null;
+  queueLandingService: ReturnType<typeof createQueueLandingService> | null;
+  issueInventoryService: ReturnType<typeof createIssueInventoryService> | null;
   pathToMergeOrchestrator?: PathToMergeOrchestrator | null;
-  prSummaryService: ReturnType<typeof createPrSummaryService>;
-  reviewService: ReturnType<typeof createReviewService>;
-  jobEngine: ReturnType<typeof createJobEngine>;
-  automationService: ReturnType<typeof createAutomationService>;
-  automationPlannerService: ReturnType<typeof createAutomationPlannerService>;
+  prSummaryService: ReturnType<typeof createPrSummaryService> | null;
+  reviewService: ReturnType<typeof createReviewService> | null;
+  jobEngine: ReturnType<typeof createJobEngine> | null;
+  automationService: ReturnType<typeof createAutomationService> | null;
+  automationPlannerService: ReturnType<typeof createAutomationPlannerService> | null;
   automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
   githubPollingService?: ReturnType<typeof createGithubPollingService> | null;
   orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
-  projectConfigService: ReturnType<typeof createProjectConfigService>;
-  processService: ReturnType<typeof createProcessService>;
-  testService: ReturnType<typeof createTestService>;
+  projectConfigService: ReturnType<typeof createProjectConfigService> | null;
+  processService: ReturnType<typeof createProcessService> | null;
+  testService: ReturnType<typeof createTestService> | null;
   sessionDeltaService?: SessionDeltaService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
@@ -719,6 +719,32 @@ export type AppContext = {
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
 };
+
+type AppContextWith<K extends keyof AppContext> = AppContext & {
+  [P in K]-?: NonNullable<AppContext[P]>;
+};
+
+function requireAppContextValue<K extends keyof AppContext>(
+  ctx: AppContext,
+  key: K,
+): NonNullable<AppContext[K]> {
+  const value = ctx[key];
+  if (value == null) {
+    throw new Error(
+      "This project action is unavailable until ADE is connected to the project runtime. Reopen the project or wait for the runtime to connect.",
+    );
+  }
+  return value as NonNullable<AppContext[K]>;
+}
+
+function requireAppContextServices<K extends keyof AppContext>(
+  ctx: AppContext,
+  keys: readonly K[],
+): asserts ctx is AppContextWith<K> {
+  for (const key of keys) {
+    requireAppContextValue(ctx, key);
+  }
+}
 
 function notifyLaneCreated(ctx: AppContext, lane: LaneSummary): void {
   ctx.automationService?.onLaneCreated?.({
@@ -891,12 +917,14 @@ function getUnavailableAiStatus(): AiSettingsStatus {
  * the error rather than silently landing the identity on a non-primary lane.
  */
 async function resolvePrimaryLaneIdOnly(ctx: AppContext): Promise<string> {
+  requireAppContextServices(ctx, ["laneService"] as const);
   await ctx.laneService.ensurePrimaryLane().catch(() => {});
   const lanes = await ctx.laneService.list({ includeArchived: false, includeStatus: false });
   return lanes.find((lane) => lane.laneType === "primary")?.id ?? "";
 }
 
 async function resolveLaneOverlayContext(ctx: AppContext, laneId: string) {
+  requireAppContextServices(ctx, ["laneService", "projectConfigService"] as const);
   const lanes = await ctx.laneService.list({ includeStatus: false });
   const lane = lanes.find((entry) => entry.id === laneId);
   if (!lane) throw new Error(`Lane not found: ${laneId}`);
@@ -988,6 +1016,7 @@ function applyLeaseToOverrides(overrides: LaneOverlayOverrides, lease: PortLease
 
 async function ensureLanePortLease(ctx: AppContext, laneId: string): Promise<PortLease | null> {
   if (!ctx.portAllocationService) return null;
+  requireAppContextServices(ctx, ["laneService"] as const);
   const activeLane = (await ctx.laneService.list({ includeArchived: false, includeStatus: false })).find((entry) => entry.id === laneId);
   if (!activeLane) throw new Error(`Lane not found: ${laneId}`);
   const existing = ctx.portAllocationService.getLease(laneId);
@@ -1662,11 +1691,9 @@ export function registerIpc({
     tracedIpcMain.__adeTraceWrapped = true;
   }
 
-  const ensureComputerUseBroker = (): AppContext => {
+  const ensureComputerUseBroker = (): AppContextWith<"computerUseArtifactBrokerService"> => {
     const ctx = getCtx();
-    if (!ctx.computerUseArtifactBrokerService) {
-      throw new Error("Computer-use artifact broker is not available.");
-    }
+    requireAppContextServices(ctx, ["computerUseArtifactBrokerService"] as const);
     return ctx;
   };
 
@@ -2672,6 +2699,7 @@ export function registerIpc({
     if (!runtime || runtime.finalizing) return;
     runtime.finalizing = true;
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["sessionService", "conflictService"] as const);
     try {
       const detail = ctx.sessionService.get(sessionId);
       const derivedExitCode = opts.forceStatus === "cancelled"
@@ -3663,26 +3691,29 @@ export function registerIpc({
 
   ipcMain.handle(IPC.keybindingsGet, async (): Promise<KeybindingsSnapshot> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["keybindingsService"] as const);
     return ctx.keybindingsService.get();
   });
 
   ipcMain.handle(IPC.keybindingsSet, async (_event, arg: { overrides: KeybindingOverride[] }): Promise<KeybindingsSnapshot> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["keybindingsService"] as const);
     return ctx.keybindingsService.set({ overrides: arg?.overrides ?? [] });
   });
 
   ipcMain.handle(IPC.aiGetStatus, async (_event, arg?: { force?: boolean; refreshOpenCodeInventory?: boolean }): Promise<AiSettingsStatus> => {
     const ctx = getCtx();
-    if (!ctx.aiIntegrationService) {
+    const aiIntegrationService = ctx.aiIntegrationService;
+    if (!aiIntegrationService) {
       return getUnavailableAiStatus();
     }
     try {
-      const status = await ctx.aiIntegrationService.getStatus({
+      const status = await aiIntegrationService.getStatus({
         force: arg?.force === true,
         refreshOpenCodeInventory: arg?.refreshOpenCodeInventory === true,
       });
       // Single query for all feature daily usage instead of N individual queries
-      const usageBatch = ctx.aiIntegrationService.getDailyUsageBatch(AI_USAGE_FEATURE_KEYS);
+      const usageBatch = aiIntegrationService.getDailyUsageBatch(AI_USAGE_FEATURE_KEYS);
       return {
         mode: status.mode,
         availableProviders: status.availableProviders,
@@ -3698,9 +3729,9 @@ export function registerIpc({
         apiKeyStore: status.apiKeyStore,
         features: AI_USAGE_FEATURE_KEYS.map((feature) => ({
           feature,
-          enabled: ctx.aiIntegrationService.getFeatureFlag(feature),
+          enabled: aiIntegrationService.getFeatureFlag(feature),
           dailyUsage: usageBatch.get(feature) ?? 0,
-          dailyLimit: ctx.aiIntegrationService.getDailyBudgetLimit(feature)
+          dailyLimit: aiIntegrationService.getDailyBudgetLimit(feature)
         }))
       };
     } catch (error) {
@@ -3735,7 +3766,7 @@ export function registerIpc({
     try {
       // The key store mutation already succeeded; invalidation is a freshness
       // step so settings save/delete should not fail if a runtime cache is gone.
-      ctx.aiIntegrationService.invalidateProviderReadinessCaches();
+      ctx.aiIntegrationService?.invalidateProviderReadinessCaches();
     } catch (error) {
       ctx.logger.warn("ai.api_key_cache_invalidation_failed", {
         provider: arg.provider,
@@ -3751,7 +3782,7 @@ export function registerIpc({
     try {
       // The key store mutation already succeeded; invalidation is a freshness
       // step so settings save/delete should not fail if a runtime cache is gone.
-      ctx.aiIntegrationService.invalidateProviderReadinessCaches();
+      ctx.aiIntegrationService?.invalidateProviderReadinessCaches();
     } catch (error) {
       ctx.logger.warn("ai.api_key_cache_invalidation_failed", {
         provider: arg.provider,
@@ -3769,12 +3800,14 @@ export function registerIpc({
     IPC.aiVerifyApiKey,
     async (_event, arg: { provider: string }): Promise<AiApiKeyVerificationResult> => {
       const ctx = getCtx();
+      requireAppContextServices(ctx, ["aiIntegrationService"] as const);
       return await ctx.aiIntegrationService.verifyApiKeyConnection(arg.provider);
     },
   );
 
   ipcMain.handle(IPC.aiUpdateConfig, async (_event, partial: Partial<AiConfig>): Promise<void> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["projectConfigService"] as const);
     const snapshot = ctx.projectConfigService.get();
     const currentAi = snapshot.shared?.ai ?? {};
     const merged = mergeAiConfig(currentAi, partial) ?? {};
@@ -3786,6 +3819,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.aiCursorCloudListRepositories, async (): Promise<CursorCloudRepository[]> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["aiIntegrationService"] as const);
     return ctx.aiIntegrationService.listCursorCloudRepositories();
   });
 
@@ -3793,6 +3827,7 @@ export function registerIpc({
     IPC.aiCursorCloudListAgents,
     async (_event, arg: { includeArchived?: boolean; limit?: number; cursor?: string | null }): Promise<CursorCloudListAgentsResult> => {
       const ctx = getCtx();
+      requireAppContextServices(ctx, ["aiIntegrationService"] as const);
       return ctx.aiIntegrationService.listCursorCloudAgents(arg);
     },
   );
@@ -3801,6 +3836,7 @@ export function registerIpc({
     IPC.aiCursorCloudListRuns,
     async (_event, arg: { agentId: string; limit?: number; cursor?: string | null }): Promise<CursorCloudListRunsResult> => {
       const ctx = getCtx();
+      requireAppContextServices(ctx, ["aiIntegrationService"] as const);
       return ctx.aiIntegrationService.listCursorCloudRuns(arg);
     },
   );
@@ -3809,22 +3845,26 @@ export function registerIpc({
     IPC.aiCursorCloudCreateRun,
     async (_event, arg: CursorCloudCreateRunRequest): Promise<CursorCloudCreateRunResult> => {
       const ctx = getCtx();
+      requireAppContextServices(ctx, ["aiIntegrationService"] as const);
       return ctx.aiIntegrationService.createCursorCloudRun(arg);
     },
   );
 
   ipcMain.handle(IPC.aiCursorCloudArchiveAgent, async (_event, arg: { agentId: string }): Promise<void> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["aiIntegrationService"] as const);
     await ctx.aiIntegrationService.archiveCursorCloudAgent(arg.agentId);
   });
 
   ipcMain.handle(IPC.aiCursorCloudUnarchiveAgent, async (_event, arg: { agentId: string }): Promise<void> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["aiIntegrationService"] as const);
     await ctx.aiIntegrationService.unarchiveCursorCloudAgent(arg.agentId);
   });
 
   ipcMain.handle(IPC.aiCursorCloudDeleteAgent, async (_event, arg: { agentId: string }): Promise<void> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["aiIntegrationService"] as const);
     await ctx.aiIntegrationService.deleteCursorCloudAgent(arg.agentId);
   });
 
@@ -3832,6 +3872,7 @@ export function registerIpc({
     IPC.aiCursorCloudGetAgent,
     async (_event, arg: { agentId: string }): Promise<CursorCloudAgentSummary | null> => {
       const ctx = getCtx();
+      requireAppContextServices(ctx, ["aiIntegrationService"] as const);
       return await ctx.aiIntegrationService.getCursorCloudAgent(arg.agentId);
     },
   );
@@ -3840,6 +3881,7 @@ export function registerIpc({
     IPC.aiCursorCloudListArtifacts,
     async (_event, arg: { agentId: string }): Promise<CursorCloudArtifactSummary[]> => {
       const ctx = getCtx();
+      requireAppContextServices(ctx, ["aiIntegrationService"] as const);
       const items = await ctx.aiIntegrationService.listCursorCloudArtifacts(arg.agentId);
       return items.map((entry) => ({
         path: entry.path,
@@ -3854,6 +3896,7 @@ export function registerIpc({
     IPC.aiCursorCloudDownloadArtifact,
     async (_event, arg: { agentId: string; path: string }): Promise<CursorCloudArtifactDownload> => {
       const ctx = getCtx();
+      requireAppContextServices(ctx, ["aiIntegrationService"] as const);
       return await ctx.aiIntegrationService.downloadCursorCloudArtifact(arg);
     },
   );
@@ -3862,6 +3905,7 @@ export function registerIpc({
     IPC.aiCursorCloudCancelRun,
     async (_event, arg: { agentId: string; runId: string }): Promise<void> => {
       const ctx = getCtx();
+      requireAppContextServices(ctx, ["agentChatService"] as const);
       await ctx.agentChatService.cancelCursorCloudRun(arg);
     },
   );
@@ -3870,6 +3914,7 @@ export function registerIpc({
     IPC.aiCursorCloudFollowUp,
     async (_event, arg: CursorCloudFollowUpRequest): Promise<CursorCloudFollowUpResult> => {
       const ctx = getCtx();
+      requireAppContextServices(ctx, ["agentChatService"] as const);
       return await ctx.agentChatService.cursorCloudFollowUp(arg);
     },
   );
@@ -3878,6 +3923,7 @@ export function registerIpc({
     IPC.aiCursorCloudOpenChat,
     async (_event, arg: CursorCloudOpenChatRequest): Promise<CursorCloudOpenChatResult> => {
       const ctx = getCtx();
+      requireAppContextServices(ctx, ["agentChatService"] as const);
       return await ctx.agentChatService.openCursorCloudChat({
         cloudAgentId: arg.cloudAgentId,
         laneId: arg.laneId,
@@ -4054,6 +4100,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.agentToolsDetect, async (): Promise<AgentTool[]> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["agentToolsService"] as const);
     return ctx.agentToolsService.detect();
   });
 
@@ -4335,23 +4382,41 @@ export function registerIpc({
     return ctx.onboardingService.shouldPromptTutorial();
   });
 
-  ipcMain.handle(IPC.automationsList, async (): Promise<AutomationRuleSummary[]> => {
+  const ensureAutomationContext = (): AppContextWith<"automationService"> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["automationService"] as const);
+    return ctx;
+  };
+
+  const ensureAutomationPlannerContext = (): AppContextWith<"automationPlannerService"> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["automationPlannerService"] as const);
+    return ctx;
+  };
+
+  const ensureReviewContext = (): AppContextWith<"reviewService"> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["reviewService"] as const);
+    return ctx;
+  };
+
+  ipcMain.handle(IPC.automationsList, async (): Promise<AutomationRuleSummary[]> => {
+    const ctx = ensureAutomationContext();
     return ctx.automationService.list();
   });
 
   ipcMain.handle(IPC.automationsToggle, async (_event, arg: { id: string; enabled: boolean }): Promise<AutomationRuleSummary[]> => {
-    const ctx = getCtx();
+    const ctx = ensureAutomationContext();
     return ctx.automationService.toggle({ id: arg?.id ?? "", enabled: Boolean(arg?.enabled) });
   });
 
   ipcMain.handle(IPC.automationsDeleteRule, async (_event, arg: { id: string }): Promise<AutomationRuleSummary[]> => {
-    const ctx = getCtx();
+    const ctx = ensureAutomationContext();
     return ctx.automationService.deleteRule({ id: arg?.id ?? "" });
   });
 
   ipcMain.handle(IPC.automationsTriggerManually, async (_event, arg: AutomationManualTriggerRequest): Promise<AutomationRun> => {
-    const ctx = getCtx();
+    const ctx = ensureAutomationContext();
     return await ctx.automationService.triggerManually({
       id: arg?.id ?? "",
       laneId: arg?.laneId ?? null,
@@ -4362,97 +4427,97 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.automationsGetHistory, async (_event, arg: { id: string; limit?: number }): Promise<AutomationRun[]> => {
-    const ctx = getCtx();
+    const ctx = ensureAutomationContext();
     return ctx.automationService.getHistory({ id: arg?.id ?? "", limit: arg?.limit });
   });
 
   ipcMain.handle(IPC.automationsListRuns, async (_event, arg: AutomationRunListArgs = {}): Promise<AutomationRun[]> => {
-    const ctx = getCtx();
+    const ctx = ensureAutomationContext();
     return ctx.automationService.listRuns(arg);
   });
 
   ipcMain.handle(IPC.automationsGetRunDetail, async (_event, arg: { runId: string }): Promise<AutomationRunDetail | null> => {
-    const ctx = getCtx();
+    const ctx = ensureAutomationContext();
     return ctx.automationService.getRunDetail({ runId: arg?.runId ?? "" });
   });
 
   ipcMain.handle(IPC.automationsGetIngressStatus, async (): Promise<AutomationIngressStatus> => {
-    const ctx = getCtx();
+    const ctx = ensureAutomationContext();
     return ctx.automationService.getIngressStatus();
   });
 
   ipcMain.handle(IPC.automationsListIngressEvents, async (_event, arg: { limit?: number } | undefined): Promise<AutomationIngressEventRecord[]> => {
-    const ctx = getCtx();
+    const ctx = ensureAutomationContext();
     return ctx.automationService.listIngressEvents(arg?.limit);
   });
 
   ipcMain.handle(IPC.automationsParseNaturalLanguage, async (_event, arg: AutomationParseNaturalLanguageRequest): Promise<AutomationParseNaturalLanguageResult> => {
-    const ctx = getCtx();
+    const ctx = ensureAutomationPlannerContext();
     return await ctx.automationPlannerService.parseNaturalLanguage(arg);
   });
 
   ipcMain.handle(IPC.automationsValidateDraft, async (_event, arg: AutomationValidateDraftRequest): Promise<AutomationValidateDraftResult> => {
-    const ctx = getCtx();
+    const ctx = ensureAutomationPlannerContext();
     return ctx.automationPlannerService.validateDraft(arg);
   });
 
   ipcMain.handle(IPC.automationsSaveDraft, async (_event, arg: AutomationSaveDraftRequest): Promise<AutomationSaveDraftResult> => {
-    const ctx = getCtx();
+    const ctx = ensureAutomationPlannerContext();
     return ctx.automationPlannerService.saveDraft(arg);
   });
 
   ipcMain.handle(IPC.automationsSimulate, async (_event, arg: AutomationSimulateRequest): Promise<AutomationSimulateResult> => {
-    const ctx = getCtx();
+    const ctx = ensureAutomationPlannerContext();
     return ctx.automationPlannerService.simulate(arg);
   });
 
   ipcMain.handle(IPC.reviewListLaunchContext, async (): Promise<ReviewLaunchContext> => {
-    const ctx = getCtx();
+    const ctx = ensureReviewContext();
     return ctx.reviewService.listLaunchContext();
   });
 
   ipcMain.handle(IPC.reviewListRuns, async (_event, arg: ReviewListRunsArgs = {}): Promise<ReviewRun[]> => {
-    const ctx = getCtx();
+    const ctx = ensureReviewContext();
     return ctx.reviewService.listRuns(arg);
   });
 
   ipcMain.handle(IPC.reviewGetRunDetail, async (_event, arg: { runId: string }): Promise<ReviewRunDetail | null> => {
-    const ctx = getCtx();
+    const ctx = ensureReviewContext();
     return ctx.reviewService.getRunDetail({ runId: arg?.runId ?? "" });
   });
 
   ipcMain.handle(IPC.reviewStartRun, async (_event, arg: ReviewStartRunArgs): Promise<ReviewRun> => {
-    const ctx = getCtx();
+    const ctx = ensureReviewContext();
     return ctx.reviewService.startRun(arg);
   });
 
   ipcMain.handle(IPC.reviewRerun, async (_event, arg: { runId: string }): Promise<ReviewRun> => {
-    const ctx = getCtx();
+    const ctx = ensureReviewContext();
     return ctx.reviewService.rerun(arg?.runId ?? "");
   });
 
   ipcMain.handle(IPC.reviewCancelRun, async (_event, arg: { runId: string }) => {
-    const ctx = getCtx();
+    const ctx = ensureReviewContext();
     return ctx.reviewService.cancelRun({ runId: arg?.runId ?? "" });
   });
 
   ipcMain.handle(IPC.reviewRecordFeedback, async (_event, arg: import("../../../shared/types").ReviewRecordFeedbackArgs) => {
-    const ctx = getCtx();
+    const ctx = ensureReviewContext();
     return ctx.reviewService.recordFeedback(arg);
   });
 
   ipcMain.handle(IPC.reviewListSuppressions, async (_event, arg: import("../../../shared/types").ReviewListSuppressionsArgs | undefined) => {
-    const ctx = getCtx();
+    const ctx = ensureReviewContext();
     return ctx.reviewService.listSuppressions(arg ?? {});
   });
 
   ipcMain.handle(IPC.reviewDeleteSuppression, async (_event, arg: { suppressionId: string }) => {
-    const ctx = getCtx();
+    const ctx = ensureReviewContext();
     return ctx.reviewService.deleteSuppression({ suppressionId: arg?.suppressionId ?? "" });
   });
 
   ipcMain.handle(IPC.reviewQualityReport, async () => {
-    const ctx = getCtx();
+    const ctx = ensureReviewContext();
     return ctx.reviewService.qualityReport();
   });
 
@@ -4528,15 +4593,21 @@ export function registerIpc({
     return ctx.budgetCapService?.updateConfig(arg ?? {}) ?? {};
   });
 
-  ipcMain.handle(IPC.layoutGet, async (_event, arg: { layoutId: string }): Promise<DockLayout | null> => {
+  const ensureDbContext = (): AppContextWith<"db"> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["db"] as const);
+    return ctx;
+  };
+
+  ipcMain.handle(IPC.layoutGet, async (_event, arg: { layoutId: string }): Promise<DockLayout | null> => {
+    const ctx = ensureDbContext();
     const key = `dock_layout:${arg.layoutId}`;
     const value = ctx.db.getJson<DockLayout>(key);
     return value;
   });
 
   ipcMain.handle(IPC.layoutSet, async (_event, arg: { layoutId: string; layout: DockLayout }): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureDbContext();
     const key = `dock_layout:${arg.layoutId}`;
     const safe = clampLayout(arg.layout);
     ctx.db.setJson(key, safe);
@@ -4544,33 +4615,39 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.tilingTreeGet, async (_event, arg: { layoutId: string }): Promise<unknown> => {
-    const ctx = getCtx();
+    const ctx = ensureDbContext();
     const key = `tiling_tree:${arg.layoutId}`;
     const value = ctx.db.getJson<unknown>(key);
     return value;
   });
 
   ipcMain.handle(IPC.tilingTreeSet, async (_event, arg: { layoutId: string; tree: unknown }): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureDbContext();
     const key = `tiling_tree:${arg.layoutId}`;
     ctx.db.setJson(key, arg.tree);
     ctx.logger.debug("tilingTree.set", { key });
   });
 
   ipcMain.handle(IPC.graphStateGet, async (_event, arg: { projectId: string }): Promise<GraphPersistedState | null> => {
-    const ctx = getCtx();
+    const ctx = ensureDbContext();
     const key = `graph_state:${arg.projectId}`;
     return ctx.db.getJson<GraphPersistedState>(key);
   });
 
   ipcMain.handle(IPC.graphStateSet, async (_event, arg: { projectId: string; state: GraphPersistedState }): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureDbContext();
     const key = `graph_state:${arg.projectId}`;
     ctx.db.setJson(key, arg.state);
   });
 
-  ipcMain.handle(IPC.lanesList, async (_event, arg: ListLanesArgs): Promise<LaneSummary[]> => {
+  const ensureLaneContext = (): AppContextWith<"laneService"> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["laneService"] as const);
+    return ctx;
+  };
+
+  ipcMain.handle(IPC.lanesList, async (_event, arg: ListLanesArgs): Promise<LaneSummary[]> => {
+    const ctx = ensureLaneContext();
     const devicesOpenByLaneId = buildLanePresenceByLaneId(getOptionalSyncService());
     return await withIpcTiming(
       ctx,
@@ -4587,7 +4664,8 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.lanesListSnapshots, async (_event, arg: ListLanesArgs): Promise<LaneListSnapshot[]> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
+    requireAppContextServices(ctx, ["sessionService", "ptyService"] as const);
     return await withIpcTiming(
       ctx,
       "lanes.listSnapshots",
@@ -4613,7 +4691,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.lanesCreate, async (_event, arg: CreateLaneArgs): Promise<LaneSummary> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     const lane = await ctx.laneService.create({
       name: arg.name,
       description: arg.description,
@@ -4629,7 +4707,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.lanesCreateChild, async (_event, arg: CreateChildLaneArgs): Promise<LaneSummary> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     const lane = await ctx.laneService.createChild(arg);
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
@@ -4637,7 +4715,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.lanesCreateFromUnstaged, async (_event, arg: CreateLaneFromUnstagedArgs): Promise<LaneSummary> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     const lane = await ctx.laneService.createFromUnstaged(arg);
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
@@ -4645,7 +4723,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.lanesImportBranch, async (_event, arg: ImportBranchLaneArgs): Promise<LaneSummary> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     const lane = await ctx.laneService.importBranch(arg);
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
@@ -4653,17 +4731,17 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.lanesPreviewBranchSwitch, async (_event, arg: LaneBranchSwitchArgs): Promise<LaneBranchSwitchPreview> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     return await ctx.laneService.previewBranchSwitch(arg);
   });
 
   ipcMain.handle(IPC.lanesSwitchBranch, async (_event, arg: LaneBranchSwitchArgs): Promise<LaneBranchSwitchResult> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     return await ctx.laneService.switchBranch(arg);
   });
 
   ipcMain.handle(IPC.lanesAttach, async (_event, arg: AttachLaneArgs): Promise<LaneSummary> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     const lane = await ctx.laneService.attach(arg);
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
@@ -4671,12 +4749,12 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.lanesListUnregisteredWorktrees, async (): Promise<UnregisteredLaneCandidate[]> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     return ctx.laneService.listUnregisteredWorktrees();
   });
 
   ipcMain.handle(IPC.lanesAdoptAttached, async (_event, arg: AdoptAttachedLaneArgs): Promise<LaneSummary> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     const lane = await ctx.laneService.adoptAttached(arg);
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
@@ -4684,22 +4762,22 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.lanesRename, async (_event, arg: RenameLaneArgs): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     ctx.laneService.rename(arg);
   });
 
   ipcMain.handle(IPC.lanesReparent, async (_event, arg: ReparentLaneArgs): Promise<ReparentLaneResult> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     return await ctx.laneService.reparent(arg);
   });
 
   ipcMain.handle(IPC.lanesUpdateAppearance, async (_event, arg: UpdateLaneAppearanceArgs): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     ctx.laneService.updateAppearance(arg);
   });
 
   ipcMain.handle(IPC.lanesArchive, async (_event, arg: ArchiveLaneArgs): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     const lane = await ctx.laneService
       .list({ includeArchived: true, includeStatus: false })
       .then((lanes) => lanes.find((entry) => entry.id === arg.laneId) ?? null)
@@ -4717,7 +4795,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.lanesDelete, async (_event, arg: DeleteLaneArgs): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     const envContext = ctx.laneEnvironmentService
       ? await resolveLaneOverlayContext(ctx, arg.laneId).catch((error: unknown) => {
           ctx.logger.warn("lane_env_cleanup.pre_delete_context_failed", {
@@ -4737,47 +4815,47 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.lanesDeleteCancel, async (_event, arg: { laneId: string }) => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     return ctx.laneService.cancelDelete(arg.laneId);
   });
 
   ipcMain.handle(IPC.lanesListDeleteProgress, async () => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     return ctx.laneService.listDeleteProgress();
   });
 
   ipcMain.handle(IPC.lanesGetDeleteRisk, async (_event, arg: { laneId: string }) => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     return await ctx.laneService.getDeleteRisk(arg.laneId);
   });
 
   ipcMain.handle(IPC.lanesGetStackChain, async (_event, arg: { laneId: string }): Promise<StackChainItem[]> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     return await ctx.laneService.getStackChain(arg.laneId);
   });
 
   ipcMain.handle(IPC.lanesGetChildren, async (_event, arg: { laneId: string }): Promise<LaneSummary[]> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     return await ctx.laneService.getChildren(arg.laneId);
   });
 
   ipcMain.handle(IPC.lanesRebaseStart, async (_event, arg: RebaseStartArgs): Promise<RebaseStartResult> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     return await ctx.laneService.rebaseStart(arg);
   });
 
   ipcMain.handle(IPC.lanesRebasePush, async (_event, arg: RebasePushArgs): Promise<RebaseRun> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     return await ctx.laneService.rebasePush(arg);
   });
 
   ipcMain.handle(IPC.lanesRebaseRollback, async (_event, arg: RebaseRollbackArgs): Promise<RebaseRun> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     return await ctx.laneService.rebaseRollback(arg);
   });
 
   ipcMain.handle(IPC.lanesRebaseAbort, async (_event, arg: RebaseAbortArgs): Promise<RebaseRun> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     return await ctx.laneService.rebaseAbort(arg);
   });
 
@@ -4926,7 +5004,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.lanesPortRelease, async (_event, args: { laneId: string }) => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     await ctx.laneService.list({ includeArchived: true, includeStatus: false }).then((lanes) => {
       if (!lanes.some((lane) => lane.id === args.laneId)) {
         throw new Error(`Lane not found: ${args.laneId}`);
@@ -4941,7 +5019,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.lanesPortRecoverOrphans, async () => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     if (!ctx.portAllocationService) return [];
     const lanes = await ctx.laneService.list({ includeArchived: false, includeStatus: false });
     const validIds = new Set(lanes.map((l) => l.id));
@@ -4951,7 +5029,7 @@ export function registerIpc({
   // --- Per-Lane Hostname Isolation & Preview (Phase 5 W4) --------------------
 
   const ensureLanePreviewInfo = async (laneId: string) => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     if (!ctx.laneProxyService || !ctx.portAllocationService) return null;
 
     const lane = (await ctx.laneService.list({ includeArchived: false, includeStatus: false })).find(
@@ -5023,7 +5101,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.lanesProxyAddRoute, async (_event, args: { laneId: string; targetPort: number }) => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     if (!ctx.laneProxyService) throw new Error("Proxy service not available");
     const lane = (await ctx.laneService.list({ includeArchived: false, includeStatus: false })).find((l) => l.id === args.laneId);
     return ctx.laneProxyService.addRoute(args.laneId, args.targetPort, lane?.name);
@@ -5346,6 +5424,7 @@ export function registerIpc({
         fallbackLanes: [],
       };
     }
+    requireAppContextServices(ctx, ["laneService"] as const);
     const lanes = await ctx.laneService.list({ includeArchived: false, includeStatus: false });
     return ctx.runtimeDiagnosticsService.getStatus(lanes.map((l) => l.id));
   });
@@ -5366,6 +5445,7 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesDiagnosticsRunFullCheck, async () => {
     const ctx = getCtx();
     if (!ctx.runtimeDiagnosticsService) return [];
+    requireAppContextServices(ctx, ["laneService"] as const);
     const lanes = await ctx.laneService.list({ includeArchived: false, includeStatus: false });
     return ctx.runtimeDiagnosticsService.checkAllLanes(lanes.map((l) => l.id));
   });
@@ -5384,8 +5464,26 @@ export function registerIpc({
     ctx.runtimeDiagnosticsService.deactivateFallback(request.laneId);
   });
 
-  ipcMain.handle(IPC.sessionsList, async (_event, arg: ListSessionsArgs): Promise<TerminalSessionSummary[]> => {
+  const ensureSessionContext = (): AppContextWith<"sessionService"> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["sessionService"] as const);
+    return ctx;
+  };
+
+  const ensureAgentChatContext = (): AppContextWith<"agentChatService"> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["agentChatService"] as const);
+    return ctx;
+  };
+
+  const ensureAgentChatFileContext = (): AppContextWith<"agentChatService" | "fileService"> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["agentChatService", "fileService"] as const);
+    return ctx;
+  };
+
+  ipcMain.handle(IPC.sessionsList, async (_event, arg: ListSessionsArgs): Promise<TerminalSessionSummary[]> => {
+    const ctx = ensureSessionContext();
     const ptyService = requirePtyService();
     return await withIpcTiming(
       ctx,
@@ -5411,7 +5509,7 @@ export function registerIpc({
         const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
         let allChats: AgentChatSessionSummary[] = [];
         try {
-          allChats = await ctx.agentChatService.listSessions(laneId || undefined, { includeIdentity: true });
+          allChats = await ctx.agentChatService?.listSessions(laneId || undefined, { includeIdentity: true }) ?? [];
         } catch {
           allChats = [];
         }
@@ -5441,7 +5539,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.sessionsGet, async (_event, arg: { sessionId: string }): Promise<TerminalSessionDetail | null> => {
-    const ctx = getCtx();
+    const ctx = ensureSessionContext();
     const ptyService = requirePtyService();
     let session = ctx.sessionService.get(arg.sessionId);
     if (!session) return null;
@@ -5465,7 +5563,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.sessionsDelete, async (_event, arg: DeleteSessionArgs): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureSessionContext();
     const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
     if (!sessionId) {
       throw new Error("Session id is required.");
@@ -5478,12 +5576,12 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.sessionsUpdateMeta, async (_event, arg: UpdateSessionMetaArgs): Promise<TerminalSessionSummary | null> => {
-    const ctx = getCtx();
+    const ctx = ensureSessionContext();
     return ctx.sessionService.updateMeta(arg);
   });
 
   ipcMain.handle(IPC.sessionsReadTranscriptTail, async (_event, arg: { sessionId: string; maxBytes?: number; raw?: boolean }): Promise<string> => {
-    const ctx = getCtx();
+    const ctx = ensureSessionContext();
     const session = ctx.sessionService.get(arg.sessionId);
     if (!session) return "";
     const maxBytes = typeof arg.maxBytes === "number" ? Math.max(1024, Math.min(16_000_000, arg.maxBytes)) : 160_000;
@@ -5502,28 +5600,28 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.agentChatList, async (_event, arg: AgentChatListArgs = {}): Promise<AgentChatSessionSummary[]> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
     return ctx.agentChatService.listSessions(laneId || undefined, { includeAutomation: Boolean(arg?.includeAutomation) });
   });
 
   ipcMain.handle(IPC.agentChatGetSummary, async (_event, arg: AgentChatGetSummaryArgs): Promise<AgentChatSessionSummary | null> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.getSessionSummary(arg?.sessionId ?? "");
   });
 
   ipcMain.handle(IPC.agentChatCreate, async (_event, arg: AgentChatCreateArgs): Promise<AgentChatSession> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.createSession(arg);
   });
 
   ipcMain.handle(IPC.agentChatSuggestLaneName, async (_event, arg: unknown): Promise<string> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.suggestLaneNameFromPrompt(parseAgentChatSuggestLaneNameArgs(arg));
   });
 
   ipcMain.handle(IPC.agentChatParallelLaunchStateGet, async (_event, arg: unknown): Promise<AgentChatParallelLaunchState | null> => {
-    const ctx = getCtx();
+    const ctx = ensureDbContext();
     const { projectRoot, parentLaneId } = parseAgentChatParallelLaunchStateArgs(arg);
     const key = agentChatParallelLaunchStateKey(projectRoot, parentLaneId);
     return normalizeAgentChatParallelLaunchState(
@@ -5533,7 +5631,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.agentChatParallelLaunchStateSet, async (_event, arg: AgentChatSetParallelLaunchStateArgs): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureDbContext();
     const { projectRoot, parentLaneId } = parseAgentChatParallelLaunchStateArgs(arg);
     const key = agentChatParallelLaunchStateKey(projectRoot, parentLaneId);
     const nextState = normalizeAgentChatParallelLaunchState(arg?.state ?? null, parentLaneId);
@@ -5541,147 +5639,147 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.agentChatHandoff, async (_event, arg: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.handoffSession(arg);
   });
 
   ipcMain.handle(IPC.agentChatSend, async (_event, arg: AgentChatSendArgs): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     await ctx.agentChatService.sendMessage(arg, { awaitDispatch: true });
   });
 
   ipcMain.handle(IPC.agentChatSteer, async (_event, arg: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.steer(arg);
   });
 
   ipcMain.handle(IPC.agentChatCancelSteer, async (_event, arg: unknown): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     await ctx.agentChatService.cancelSteer(parseAgentChatCancelSteerArgs(arg));
   });
 
   ipcMain.handle(IPC.agentChatEditSteer, async (_event, arg: unknown): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     await ctx.agentChatService.editSteer(parseAgentChatEditSteerArgs(arg));
   });
 
   ipcMain.handle(IPC.agentChatDispatchSteer, async (_event, arg: unknown): Promise<AgentChatDispatchSteerResult> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.dispatchSteer(parseAgentChatDispatchSteerArgs(arg));
   });
 
   ipcMain.handle(IPC.agentChatCancelDispatchedSteer, async (_event, arg: unknown): Promise<AgentChatCancelDispatchedSteerResult> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.cancelDispatchedSteer(parseAgentChatCancelDispatchedSteerArgs(arg));
   });
 
   ipcMain.handle(IPC.agentChatInterrupt, async (_event, arg: AgentChatInterruptArgs): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     await ctx.agentChatService.interrupt(arg);
   });
 
   ipcMain.handle(IPC.agentChatApprove, async (_event, arg: AgentChatApproveArgs): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     await ctx.agentChatService.approveToolUse(arg);
   });
 
   ipcMain.handle(IPC.agentChatRespondToInput, async (_event, arg: AgentChatRespondToInputArgs): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     await ctx.agentChatService.respondToInput(arg);
   });
 
   ipcMain.handle(IPC.agentChatModels, async (_event, arg: AgentChatModelsArgs): Promise<AgentChatModelInfo[]> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.getAvailableModels(arg);
   });
 
   ipcMain.handle(IPC.agentChatModelCatalog, async (_event, arg: unknown) => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.getModelCatalog(arg && typeof arg === "object" ? arg as never : undefined);
   });
 
   ipcMain.handle(IPC.agentChatArchive, async (_event, arg: AgentChatArchiveArgs): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     await ctx.agentChatService.archiveSession(arg);
   });
 
   ipcMain.handle(IPC.agentChatUnarchive, async (_event, arg: AgentChatArchiveArgs): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     await ctx.agentChatService.unarchiveSession(arg);
   });
 
   ipcMain.handle(IPC.agentChatDelete, async (_event, arg: AgentChatDeleteArgs): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     await ctx.agentChatService.deleteSession(arg);
   });
 
   ipcMain.handle(IPC.agentChatUpdateSession, async (_event, arg: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.updateSession(arg);
   });
 
   ipcMain.handle(IPC.agentChatWarmupModel, async (_event, arg: { sessionId: string; modelId: string }): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return ctx.agentChatService.warmupModel(arg);
   });
 
   ipcMain.handle(IPC.agentChatSlashCommands, async (_event, arg: AgentChatSlashCommandsArgs): Promise<AgentChatSlashCommand[]> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return ctx.agentChatService.getSlashCommands(arg);
   });
 
   ipcMain.handle(IPC.agentChatListClaudePlugins, async (_event, arg: AgentChatClaudePluginsArgs = {}): Promise<AgentChatClaudePlugin[]> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return ctx.agentChatService.listClaudePlugins(arg);
   });
 
   ipcMain.handle(IPC.agentChatReloadClaudePlugins, async (_event, arg: AgentChatReloadClaudePluginsArgs): Promise<AgentChatReloadClaudePluginsResult> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return ctx.agentChatService.reloadClaudePlugins(arg);
   });
 
   ipcMain.handle(IPC.agentChatListClaudeOutputStyles, async (_event, arg: AgentChatClaudeOutputStylesArgs = {}): Promise<AgentChatClaudeOutputStyle[]> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return ctx.agentChatService.listClaudeOutputStyles(arg);
   });
 
   ipcMain.handle(IPC.agentChatSetClaudeOutputStyle, async (_event, arg: AgentChatSetClaudeOutputStyleArgs): Promise<AgentChatSession> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.setClaudeOutputStyle(arg);
   });
 
   ipcMain.handle(IPC.agentChatListClaudeSessions, async (_event, arg: AgentChatClaudeSessionListArgs = {}): Promise<AgentChatClaudeSessionInfo[]> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return ctx.agentChatService.listClaudeSessions(arg);
   });
 
   ipcMain.handle(IPC.agentChatGetClaudeSessionInfo, async (_event, arg: AgentChatClaudeSessionInfoArgs): Promise<AgentChatClaudeSessionInfo | null> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return ctx.agentChatService.getClaudeSessionInfo(arg);
   });
 
   ipcMain.handle(IPC.agentChatGetClaudeSessionMessages, async (_event, arg: AgentChatClaudeSessionMessagesArgs): Promise<AgentChatClaudeSessionMessage[]> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return ctx.agentChatService.getClaudeSessionMessages(arg);
   });
 
   ipcMain.handle(IPC.agentChatGetSubagentTranscript, async (_event, arg: AgentChatSubagentTranscriptArgs): Promise<AgentChatSubagentTranscriptMessage[] | null> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return ctx.agentChatService.getSubagentTranscript(arg);
   });
 
   ipcMain.handle(IPC.agentChatGetContextUsage, async (_event, arg: AgentChatContextUsageArgs): Promise<AgentChatContextUsage | null> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return ctx.agentChatService.getContextUsage(arg);
   });
 
   ipcMain.handle(IPC.agentChatRewindFiles, async (_event, arg: AgentChatRewindFilesArgs): Promise<AgentChatRewindFilesResult> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return ctx.agentChatService.rewindFiles(arg);
   });
 
   ipcMain.handle(IPC.agentChatFileSearch, async (_event, arg: AgentChatFileSearchArgs): Promise<AgentChatFileSearchResult[]> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatFileContext();
     const session = (await ctx.agentChatService.listSessions()).find((entry) => entry.sessionId === arg.sessionId);
     if (!session?.laneId) return [];
     const matches = await ctx.fileService.quickOpen({
@@ -5696,12 +5794,12 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.agentChatListSubagents, async (_event, arg: AgentChatSubagentListArgs): Promise<AgentChatSubagentSnapshot[]> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return ctx.agentChatService.listSubagents(arg);
   });
 
   ipcMain.handle(IPC.agentChatGetSessionCapabilities, async (_event, arg: AgentChatSessionCapabilitiesArgs): Promise<AgentChatSessionCapabilities> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return ctx.agentChatService.getSessionCapabilities(arg);
   });
 
@@ -5752,7 +5850,7 @@ export function registerIpc({
     _event,
     arg: { sessionId?: string; maxEvents?: number },
   ): Promise<AgentChatEventHistorySnapshot> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
     if (!sessionId) return { sessionId: "", events: [], truncated: false, sessionFound: false };
     // Only forward maxEvents when it is a finite positive number; the service
@@ -5794,6 +5892,7 @@ export function registerIpc({
     if (!ctx.orchestrationService) {
       throw new Error("orchestration service is not initialised");
     }
+    requireAppContextServices(ctx, ["laneService", "agentChatService"] as const);
     return { ctx, service: ctx.orchestrationService };
   };
 
@@ -6896,7 +6995,8 @@ export function registerIpc({
     requireMacosVmEnabledInProduction(IPC.macosVmDetachLane);
     guardMacosVmIpc(event, IPC.macosVmDetachLane, { windowMs: 60_000, max: 12 });
     const args = parseMacosVmDetachLaneArgs(arg, IPC.macosVmDetachLane);
-    const laneService = getCtx().laneService as AppContext["laneService"] & {
+    const ctx = getCtx();
+    const laneService = requireAppContextValue(ctx, "laneService") as NonNullable<AppContext["laneService"]> & {
       detachVmLane?: (a: MacosVmDetachLaneArgs) => Promise<MacosVmDetachLaneResult>;
     };
     if (typeof laneService.detachVmLane !== "function") {
@@ -6965,15 +7065,51 @@ export function registerIpc({
     await requirePtyService().reattachChatCli(parseTerminalReattachArgs(arg)),
   );
 
-  ipcMain.handle(IPC.diffGetChanges, async (_event, arg: GetDiffChangesArgs) => {
+  const ensureDiffContext = (): AppContextWith<"diffService"> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["diffService"] as const);
+    return ctx;
+  };
+
+  const ensureFileContext = (): AppContextWith<"fileService"> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["fileService"] as const);
+    return ctx;
+  };
+
+  const ensureGitContext = (): AppContextWith<"gitService"> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["gitService"] as const);
+    return ctx;
+  };
+
+  const ensureGitLaneContext = (): AppContextWith<"gitService" | "laneService"> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["gitService", "laneService"] as const);
+    return ctx;
+  };
+
+  const ensureConflictContext = (): AppContextWith<"conflictService"> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["conflictService"] as const);
+    return ctx;
+  };
+
+  const ensureConflictJobContext = (): AppContextWith<"conflictService" | "jobEngine"> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["conflictService", "jobEngine"] as const);
+    return ctx;
+  };
+
+  ipcMain.handle(IPC.diffGetChanges, async (_event, arg: GetDiffChangesArgs) => {
+    const ctx = ensureDiffContext();
     return await withIpcTiming(ctx, "diff.getChanges", async () => await ctx.diffService.getChanges(arg.laneId), {
       laneId: arg.laneId,
     });
   });
 
   ipcMain.handle(IPC.diffGetFile, async (_event, arg: GetFileDiffArgs) => {
-    const ctx = getCtx();
+    const ctx = ensureDiffContext();
     return await withIpcTiming(
       ctx,
       "diff.getFile",
@@ -6993,7 +7129,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.diffGetFilePatch, async (_event, arg: GetFilePatchArgs) => {
-    const ctx = getCtx();
+    const ctx = ensureDiffContext();
     return await withIpcTiming(
       ctx,
       "diff.getFilePatch",
@@ -7013,17 +7149,17 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.filesWriteTextAtomic, async (_event, arg: WriteTextAtomicArgs): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureFileContext();
     ctx.fileService.writeTextAtomic({ laneId: arg.laneId, relPath: arg.path, text: arg.text });
   });
 
   ipcMain.handle(IPC.filesListWorkspaces, async (_event, arg: FilesListWorkspacesArgs = {}): Promise<FilesWorkspace[]> => {
-    const ctx = getCtx();
+    const ctx = ensureFileContext();
     return ctx.fileService.listWorkspaces(arg);
   });
 
   ipcMain.handle(IPC.filesListTree, async (_event, arg: FilesListTreeArgs): Promise<FileTreeNode[]> => {
-    const ctx = getCtx();
+    const ctx = ensureFileContext();
     return await withIpcTiming(
       ctx,
       "files.listTree",
@@ -7037,7 +7173,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.filesReadFile, async (_event, arg: FilesReadFileArgs): Promise<FileContent> => {
-    const ctx = getCtx();
+    const ctx = ensureFileContext();
     return await withIpcTiming(
       ctx,
       "files.readFile",
@@ -7050,39 +7186,39 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.filesWriteText, async (_event, arg: FilesWriteTextArgs): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureFileContext();
     ctx.fileService.writeWorkspaceText(arg);
   });
 
   ipcMain.handle(IPC.filesCreateFile, async (_event, arg: FilesCreateFileArgs): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureFileContext();
     ctx.fileService.createFile(arg);
   });
 
   ipcMain.handle(IPC.filesCreateDirectory, async (_event, arg: FilesCreateDirectoryArgs): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureFileContext();
     ctx.fileService.createDirectory(arg);
   });
 
   ipcMain.handle(IPC.filesRename, async (_event, arg: FilesRenameArgs): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureFileContext();
     ctx.fileService.rename(arg);
   });
 
   ipcMain.handle(IPC.filesDelete, async (_event, arg: FilesDeleteArgs): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureFileContext();
     ctx.fileService.deletePath(arg);
   });
 
   ipcMain.handle(IPC.filesWatchChanges, async (event, arg: FilesWatchArgs): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureFileContext();
     const senderId = event.sender.id;
     if (!watcherCleanupBoundSenders.has(senderId)) {
       watcherCleanupBoundSenders.add(senderId);
       event.sender.once("destroyed", () => {
         watcherCleanupBoundSenders.delete(senderId);
         try {
-          getCtx().fileService.stopWatchingBySender(senderId);
+          getCtx().fileService?.stopWatchingBySender(senderId);
         } catch {
           // context may already be disposed/switched
         }
@@ -7098,52 +7234,52 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.filesStopWatching, async (event, arg: FilesWatchArgs): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensureFileContext();
     ctx.fileService.stopWatching(arg, event.sender.id);
   });
 
   ipcMain.handle(IPC.filesQuickOpen, async (_event, arg: FilesQuickOpenArgs): Promise<FilesQuickOpenItem[]> => {
-    const ctx = getCtx();
+    const ctx = ensureFileContext();
     return await ctx.fileService.quickOpen(arg);
   });
 
   ipcMain.handle(IPC.filesSearchText, async (_event, arg: FilesSearchTextArgs): Promise<FilesSearchTextMatch[]> => {
-    const ctx = getCtx();
+    const ctx = ensureFileContext();
     return await ctx.fileService.searchText(arg);
   });
 
   ipcMain.handle(IPC.gitStageFile, async (_event, arg: GitFileActionArgs): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return ctx.gitService.stageFile(arg);
   });
 
   ipcMain.handle(IPC.gitStageAll, async (_event, arg: GitBatchFileActionArgs): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return ctx.gitService.stageAll(arg);
   });
 
   ipcMain.handle(IPC.gitUnstageFile, async (_event, arg: GitFileActionArgs): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return ctx.gitService.unstageFile(arg);
   });
 
   ipcMain.handle(IPC.gitUnstageAll, async (_event, arg: GitBatchFileActionArgs): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return ctx.gitService.unstageAll(arg);
   });
 
   ipcMain.handle(IPC.gitDiscardFile, async (_event, arg: GitFileActionArgs): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return ctx.gitService.discardFile(arg);
   });
 
   ipcMain.handle(IPC.gitRestoreStagedFile, async (_event, arg: GitFileActionArgs): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return ctx.gitService.restoreStagedFile(arg);
   });
 
   ipcMain.handle(IPC.gitCommit, async (_event, arg: GitCommitArgs): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return ctx.gitService.commit(arg);
   });
 
@@ -7151,22 +7287,23 @@ export function registerIpc({
     IPC.gitGenerateCommitMessage,
     async (_event, arg: GitGenerateCommitMessageArgs): Promise<GitGenerateCommitMessageResult> => {
       const ctx = getCtx();
+      requireAppContextServices(ctx, ["gitService"] as const);
       return ctx.gitService.generateCommitMessage(arg);
     }
   );
 
   ipcMain.handle(IPC.gitListRecentCommits, async (_event, arg: { laneId: string; limit?: number }): Promise<GitCommitSummary[]> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return ctx.gitService.listRecentCommits(arg);
   });
 
   ipcMain.handle(IPC.gitListCommitFiles, async (_event, arg: GitListCommitFilesArgs): Promise<string[]> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return await ctx.gitService.listCommitFiles(arg);
   });
 
   ipcMain.handle(IPC.gitGetCommitMessage, async (_event, arg: GitGetCommitMessageArgs): Promise<string> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return await ctx.gitService.getCommitMessage(arg);
   });
 
@@ -7174,6 +7311,7 @@ export function registerIpc({
     IPC.gitGetCommit,
     async (_event, arg: { laneId: string; commitSha: string }): Promise<GitCommitSummary | null> => {
       const ctx = getCtx();
+      requireAppContextServices(ctx, ["gitService"] as const);
       return await ctx.gitService.getCommit(arg);
     },
   );
@@ -7182,87 +7320,88 @@ export function registerIpc({
     IPC.gitIsCommitInLaneHistory,
     async (_event, arg: { laneId: string; commitSha: string }): Promise<boolean> => {
       const ctx = getCtx();
+      requireAppContextServices(ctx, ["gitService"] as const);
       return await ctx.gitService.isCommitInLaneHistory(arg);
     },
   );
 
   ipcMain.handle(IPC.gitRevertCommit, async (_event, arg: GitRevertArgs): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return ctx.gitService.revertCommit(arg);
   });
 
   ipcMain.handle(IPC.gitCherryPickCommit, async (_event, arg: GitCherryPickArgs): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return ctx.gitService.cherryPickCommit(arg);
   });
 
   ipcMain.handle(IPC.gitCreateTag, async (_event, arg: GitCreateTagArgs): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return ctx.gitService.createTag(arg);
   });
 
   ipcMain.handle(IPC.gitResetToCommit, async (_event, arg: GitResetCommitArgs): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return ctx.gitService.resetToCommit(arg);
   });
 
   ipcMain.handle(IPC.gitStashPush, async (_event, arg: GitStashPushArgs): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return ctx.gitService.stashPush(arg);
   });
 
   ipcMain.handle(IPC.gitStashList, async (_event, arg: { laneId: string }): Promise<GitStashSummary[]> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return ctx.gitService.listStashes(arg);
   });
 
   ipcMain.handle(IPC.gitStashApply, async (_event, arg: GitStashRefArgs): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return ctx.gitService.stashApply(arg);
   });
 
   ipcMain.handle(IPC.gitStashPop, async (_event, arg: GitStashRefArgs): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return ctx.gitService.stashPop(arg);
   });
 
   ipcMain.handle(IPC.gitStashDrop, async (_event, arg: GitStashRefArgs): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return ctx.gitService.stashDrop(arg);
   });
 
   ipcMain.handle(IPC.gitStashClear, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return ctx.gitService.stashClear(arg);
   });
 
   ipcMain.handle(IPC.gitFetch, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return ctx.gitService.fetch(arg);
   });
 
   ipcMain.handle(IPC.gitPull, async (_event, arg: GitPullArgs): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return ctx.gitService.pull(arg);
   });
 
   ipcMain.handle(IPC.gitUndoLastHeadChange, async (_event, arg: GitHeadChangeActionArgs): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return ctx.gitService.undoLastHeadChange(arg);
   });
 
   ipcMain.handle(IPC.gitRedoLastHeadChange, async (_event, arg: GitHeadChangeActionArgs): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return ctx.gitService.redoLastHeadChange(arg);
   });
 
   ipcMain.handle(IPC.gitGetSyncStatus, async (_event, arg: { laneId: string }): Promise<GitUpstreamSyncStatus> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return await ctx.gitService.getSyncStatus(arg);
   });
 
   ipcMain.handle(IPC.gitGetOriginRemote, async (_event, arg: { laneId: string }): Promise<{ remoteUrl: string | null; branch: string | null }> => {
-    const ctx = getCtx();
+    const ctx = ensureGitLaneContext();
     const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
     const fallback = { remoteUrl: null, branch: null } as const;
     if (!laneId) return fallback;
@@ -7311,7 +7450,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.gitGetOpenPrForBranch, async (_event, arg: { laneId: string; branch?: string }): Promise<{ prUrl: string | null; prNumber: number | null; title: string | null; headRefName: string | null }> => {
-    const ctx = getCtx();
+    const ctx = ensureGitLaneContext();
     const fallback = { prUrl: null, prNumber: null, title: null, headRefName: null } as const;
     const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
     if (!laneId) return fallback;
@@ -7368,12 +7507,12 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.gitSync, async (_event, arg: GitSyncArgs): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return ctx.gitService.sync(arg);
   });
 
   ipcMain.handle(IPC.gitPush, async (_event, arg: GitPushArgs): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitLaneContext();
     const result = await ctx.gitService.push(arg);
     const lane = await ctx.laneService
       .list({ includeArchived: true, includeStatus: false })
@@ -7388,111 +7527,111 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.gitGetConflictState, async (_event, arg: { laneId: string }): Promise<GitConflictState> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return await ctx.gitService.getConflictState({ laneId: arg?.laneId ?? "" });
   });
 
   ipcMain.handle(IPC.gitRebaseContinue, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return await ctx.gitService.rebaseContinue({ laneId: arg?.laneId ?? "" });
   });
 
   ipcMain.handle(IPC.gitRebaseAbort, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return await ctx.gitService.rebaseAbort({ laneId: arg?.laneId ?? "" });
   });
 
   ipcMain.handle(IPC.gitMergeContinue, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return await ctx.gitService.mergeContinue({ laneId: arg?.laneId ?? "" });
   });
 
   ipcMain.handle(IPC.gitMergeAbort, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return await ctx.gitService.mergeAbort({ laneId: arg?.laneId ?? "" });
   });
 
   ipcMain.handle(IPC.gitListBranches, async (_event, arg: GitListBranchesArgs): Promise<GitBranchSummary[]> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return await ctx.gitService.listBranches(arg);
   });
 
   ipcMain.handle(IPC.gitGetUserIdentity, async (_event, arg: GitGetUserIdentityArgs): Promise<GitUserIdentity> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return await ctx.gitService.getUserIdentity(arg);
   });
 
   ipcMain.handle(IPC.gitCheckoutBranch, async (_event, arg: GitCheckoutBranchArgs): Promise<GitActionResult> => {
-    const ctx = getCtx();
+    const ctx = ensureGitContext();
     return await ctx.gitService.checkoutBranch(arg);
   });
 
   ipcMain.handle(IPC.conflictsGetLaneStatus, async (_event, arg: GetLaneConflictStatusArgs): Promise<ConflictStatus> => {
-    const ctx = getCtx();
+    const ctx = ensureConflictContext();
     return await ctx.conflictService.getLaneStatus(arg);
   });
 
   ipcMain.handle(IPC.conflictsListOverlaps, async (_event, arg: ListOverlapsArgs): Promise<ConflictOverlap[]> => {
-    const ctx = getCtx();
+    const ctx = ensureConflictContext();
     return await ctx.conflictService.listOverlaps(arg);
   });
 
   ipcMain.handle(IPC.conflictsGetRiskMatrix, async (): Promise<RiskMatrixEntry[]> => {
-    const ctx = getCtx();
+    const ctx = ensureConflictContext();
     return await ctx.conflictService.getRiskMatrix();
   });
 
   ipcMain.handle(IPC.conflictsSimulateMerge, async (_event, arg: MergeSimulationArgs): Promise<MergeSimulationResult> => {
-    const ctx = getCtx();
+    const ctx = ensureConflictContext();
     return await ctx.conflictService.simulateMerge(arg);
   });
 
   ipcMain.handle(IPC.conflictsRunPrediction, async (_event, arg: RunConflictPredictionArgs = {}): Promise<BatchAssessmentResult> => {
-    const ctx = getCtx();
+    const ctx = ensureConflictContext();
     return await ctx.conflictService.runPrediction(arg);
   });
 
   ipcMain.handle(IPC.conflictsGetBatchAssessment, async (): Promise<BatchAssessmentResult> => {
-    const ctx = getCtx();
+    const ctx = ensureConflictContext();
     return await ctx.conflictService.getBatchAssessment();
   });
 
   ipcMain.handle(IPC.conflictsListProposals, async (_event, arg: { laneId: string }): Promise<ConflictProposal[]> => {
-    const ctx = getCtx();
+    const ctx = ensureConflictContext();
     return await ctx.conflictService.listProposals(arg);
   });
 
   ipcMain.handle(IPC.conflictsPrepareProposal, async (_event, arg: PrepareConflictProposalArgs): Promise<ConflictProposalPreview> => {
-    const ctx = getCtx();
+    const ctx = ensureConflictContext();
     return await ctx.conflictService.prepareProposal(arg);
   });
 
   ipcMain.handle(IPC.conflictsRequestProposal, async (_event, arg: RequestConflictProposalArgs): Promise<ConflictProposal> => {
-    const ctx = getCtx();
+    const ctx = ensureConflictContext();
     return await ctx.conflictService.requestProposal(arg);
   });
 
   ipcMain.handle(IPC.conflictsApplyProposal, async (_event, arg: ApplyConflictProposalArgs): Promise<ConflictProposal> => {
-    const ctx = getCtx();
+    const ctx = ensureConflictJobContext();
     const updated = await ctx.conflictService.applyProposal(arg);
     ctx.jobEngine.runConflictPredictionNow({ laneId: arg.laneId });
     return updated;
   });
 
   ipcMain.handle(IPC.conflictsUndoProposal, async (_event, arg: UndoConflictProposalArgs): Promise<ConflictProposal> => {
-    const ctx = getCtx();
+    const ctx = ensureConflictJobContext();
     const updated = await ctx.conflictService.undoProposal(arg);
     ctx.jobEngine.runConflictPredictionNow({ laneId: arg.laneId });
     return updated;
   });
 
   ipcMain.handle(IPC.conflictsRunExternalResolver, async (_event, arg: RunExternalConflictResolverArgs): Promise<ConflictExternalResolverRunSummary> => {
-    const ctx = getCtx();
+    const ctx = ensureConflictContext();
     return await ctx.conflictService.runExternalResolver(arg);
   });
 
   ipcMain.handle(IPC.conflictsListExternalResolverRuns, async (_event, arg: ListExternalConflictResolverRunsArgs = {}): Promise<ConflictExternalResolverRunSummary[]> => {
-    const ctx = getCtx();
+    const ctx = ensureConflictContext();
     return ctx.conflictService.listExternalResolverRuns(arg);
   });
 
@@ -7500,25 +7639,26 @@ export function registerIpc({
     IPC.conflictsCommitExternalResolverRun,
     async (_event, arg: CommitExternalConflictResolverRunArgs): Promise<CommitExternalConflictResolverRunResult> => {
       const ctx = getCtx();
+      requireAppContextServices(ctx, ["conflictService", "jobEngine"] as const);
       const committed = await ctx.conflictService.commitExternalResolverRun(arg);
       ctx.jobEngine.runConflictPredictionNow({ laneId: committed.laneId });
       return committed;
     }
   );
 
-  ipcMain.handle(IPC.conflictsPrepareResolverSession, async (_event, arg) => getCtx().conflictService.prepareResolverSession(arg));
+  ipcMain.handle(IPC.conflictsPrepareResolverSession, async (_event, arg) => ensureConflictContext().conflictService.prepareResolverSession(arg));
 
   ipcMain.handle(IPC.conflictsAttachResolverSession, async (_event, arg: AttachResolverSessionArgs) =>
-    getCtx().conflictService.attachResolverSession(arg)
+    ensureConflictContext().conflictService.attachResolverSession(arg)
   );
 
-  ipcMain.handle(IPC.conflictsFinalizeResolverSession, async (_event, arg) => getCtx().conflictService.finalizeResolverSession(arg));
+  ipcMain.handle(IPC.conflictsFinalizeResolverSession, async (_event, arg) => ensureConflictContext().conflictService.finalizeResolverSession(arg));
 
   ipcMain.handle(IPC.conflictsCancelResolverSession, async (_event, arg: CancelResolverSessionArgs) =>
-    getCtx().conflictService.cancelResolverSession(arg)
+    ensureConflictContext().conflictService.cancelResolverSession(arg)
   );
 
-  ipcMain.handle(IPC.conflictsSuggestResolverTarget, async (_event, arg) => getCtx().conflictService.suggestResolverTarget(arg));
+  ipcMain.handle(IPC.conflictsSuggestResolverTarget, async (_event, arg) => ensureConflictContext().conflictService.suggestResolverTarget(arg));
 
   const broadcastGithubStatus = (status: GitHubStatus): void => {
     for (const win of BrowserWindow.getAllWindows()) {
@@ -7681,27 +7821,25 @@ export function registerIpc({
     return ctx.feedbackReporterService.list();
   });
 
-  ipcMain.handle(IPC.prsCreateFromLane, async (_event, arg: CreatePrFromLaneArgs): Promise<PrSummary> => {
+  const ensurePrMutationContext = (): AppContextWith<"prService" | "prPollingService"> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["prService", "prPollingService"] as const);
+    return ctx;
+  };
+
+  ipcMain.handle(IPC.prsCreateFromLane, async (_event, arg: CreatePrFromLaneArgs): Promise<PrSummary> => {
+    const ctx = ensurePrMutationContext();
     const result = await ctx.prService.createFromLane(arg);
     ctx.prPollingService.poke();
     return result;
   });
 
   ipcMain.handle(IPC.prsLinkToLane, async (_event, arg: LinkPrToLaneArgs): Promise<PrSummary> => {
-    const ctx = getCtx();
+    const ctx = ensurePrMutationContext();
     const result = await ctx.prService.linkToLane(arg);
     ctx.prPollingService.poke();
     return result;
   });
-
-  const ensurePrMutationContext = (): AppContext => {
-    const ctx = getCtx();
-    if (!ctx.prService || !ctx.prPollingService) {
-      throw new Error("PR service is not available for this project window.");
-    }
-    return ctx;
-  };
 
   ipcMain.handle(IPC.prsPreflightCreateLaneFromPrBranch, async (_event, arg: CreateLaneFromPrBranchArgs): Promise<CreateLaneFromPrBranchPreflightResult> => {
     const ctx = ensurePrMutationContext();
@@ -7715,15 +7853,56 @@ export function registerIpc({
     return result;
   });
 
-  const ensurePrPolling = () => {
+  const ensurePrPolling = (): AppContextWith<"prService" | "prPollingService"> | null => {
     const ctx = getCtx();
     if (!ctx.prPollingService || !ctx.prService) return null;
+    requireAppContextServices(ctx, ["prService", "prPollingService"] as const);
     ctx.prPollingService.start();
     return ctx;
   };
-  const ensurePrReadContext = (): AppContext => {
+  const ensurePrReadContext = (): AppContextWith<"prService" | "prPollingService"> => {
     const ctx = ensurePrPolling();
     if (!ctx) throw new Error("PR service is not available for this project window.");
+    return ctx;
+  };
+
+  const ensurePrResolutionContext = (): AppContextWith<
+    "prService" | "laneService" | "agentChatService" | "sessionService" | "issueInventoryService"
+  > => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, [
+      "prService",
+      "laneService",
+      "agentChatService",
+      "sessionService",
+      "issueInventoryService",
+    ] as const);
+    return ctx;
+  };
+
+  const ensureRebaseResolutionContext = (): AppContextWith<
+    "laneService" | "agentChatService" | "sessionService" | "conflictService"
+  > => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["laneService", "agentChatService", "sessionService", "conflictService"] as const);
+    return ctx;
+  };
+
+  const ensurePrAiResolutionContext = (): AppContextWith<"agentChatService" | "conflictService" | "sessionService"> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["agentChatService", "conflictService", "sessionService"] as const);
+    return ctx;
+  };
+
+  const ensureIssueInventoryContext = (): AppContextWith<"issueInventoryService"> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["issueInventoryService"] as const);
+    return ctx;
+  };
+
+  const ensurePrInventoryContext = (): AppContextWith<"prService" | "issueInventoryService"> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["prService", "issueInventoryService"] as const);
     return ctx;
   };
 
@@ -7800,57 +7979,57 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.prsUpdateDescription, async (_event, arg: UpdatePrDescriptionArgs): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensurePrMutationContext();
     await ctx.prService.updateDescription(arg);
     ctx.prPollingService.poke();
   });
 
   ipcMain.handle(IPC.prsDelete, async (_event, arg: DeletePrArgs): Promise<DeletePrResult> => {
-    const ctx = getCtx();
+    const ctx = ensurePrMutationContext();
     const result = await ctx.prService.delete(arg);
     ctx.prPollingService.poke();
     return result;
   });
 
   ipcMain.handle(IPC.prsDraftDescription, async (_event, arg: DraftPrDescriptionArgs): Promise<{ title: string; body: string }> => {
-    const ctx = getCtx();
+    const ctx = ensurePrReadContext();
     return await ctx.prService.draftDescription(arg);
   });
 
   ipcMain.handle(IPC.prsLand, async (_event, arg: LandPrArgs): Promise<LandResult> => {
-    const ctx = getCtx();
+    const ctx = ensurePrMutationContext();
     const result = await ctx.prService.land(arg);
     ctx.prPollingService.poke();
     return result;
   });
 
   ipcMain.handle(IPC.prsLandStack, async (_event, arg: LandStackArgs): Promise<LandResult[]> => {
-    const ctx = getCtx();
+    const ctx = ensurePrMutationContext();
     const result = await ctx.prService.landStack(arg);
     ctx.prPollingService.poke();
     return result;
   });
 
   ipcMain.handle(IPC.prsRetargetBase, async (_event, arg: { prId: string; baseBranch: string }): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensurePrMutationContext();
     await ctx.prService.retargetBase(arg.prId, arg.baseBranch);
     ctx.prPollingService.poke();
   });
 
   ipcMain.handle(IPC.prsOpenInGitHub, async (_event, arg: { prId: string }): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensurePrReadContext();
     return await ctx.prService.openInGitHub(arg.prId);
   });
 
   ipcMain.handle(IPC.prsCreateIntegration, async (_event, arg: CreateIntegrationPrArgs): Promise<CreateIntegrationPrResult> => {
-    const ctx = getCtx();
+    const ctx = ensurePrMutationContext();
     const result = await ctx.prService.createIntegrationPr(arg);
     ctx.prPollingService.poke();
     return result;
   });
 
   ipcMain.handle(IPC.prsLandStackEnhanced, async (_event, arg: LandStackEnhancedArgs): Promise<LandResult[]> => {
-    const ctx = getCtx();
+    const ctx = ensurePrMutationContext();
     const result = await ctx.prService.landStackEnhanced(arg);
     ctx.prPollingService.poke();
     return result;
@@ -7892,47 +8071,48 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.prsCreateQueue, async (_event, arg: CreateQueuePrsArgs): Promise<CreateQueuePrsResult> => {
-    const ctx = getCtx();
+    const ctx = ensurePrMutationContext();
     const result = await ctx.prService.createQueuePrs(arg);
     ctx.prPollingService.poke();
     return result;
   });
 
-  ipcMain.handle(IPC.prsSimulateIntegration, async (_event, arg: SimulateIntegrationArgs): Promise<IntegrationProposal> => getCtx().prService.simulateIntegration(arg));
+  ipcMain.handle(IPC.prsSimulateIntegration, async (_event, arg: SimulateIntegrationArgs): Promise<IntegrationProposal> =>
+    ensurePrReadContext().prService.simulateIntegration(arg));
 
   ipcMain.handle(IPC.prsCommitIntegration, async (_event, arg: CommitIntegrationArgs): Promise<CreateIntegrationPrResult> => {
-    const ctx = getCtx();
+    const ctx = ensurePrMutationContext();
     const result = await ctx.prService.commitIntegration(arg);
     ctx.prPollingService.poke();
     return result;
   });
 
   ipcMain.handle(IPC.prsListProposals, async (): Promise<IntegrationProposal[]> =>
-    await getCtx().prService.listIntegrationProposals(),
+    await ensurePrReadContext().prService.listIntegrationProposals(),
   );
 
   ipcMain.handle(IPC.prsListIntegrationWorkflows, async (_event, arg: ListIntegrationWorkflowsArgs = {}): Promise<IntegrationProposal[]> =>
-    await getCtx().prService.listIntegrationWorkflows(arg),
+    await ensurePrReadContext().prService.listIntegrationWorkflows(arg),
   );
 
   ipcMain.handle(IPC.prsUpdateProposal, async (_event, arg: UpdateIntegrationProposalArgs): Promise<void> =>
-    getCtx().prService.updateIntegrationProposal(arg),
+    ensurePrReadContext().prService.updateIntegrationProposal(arg),
   );
 
   ipcMain.handle(IPC.prsDeleteProposal, async (_event, arg: DeleteIntegrationProposalArgs): Promise<DeleteIntegrationProposalResult> =>
-    await getCtx().prService.deleteIntegrationProposal(arg),
+    await ensurePrReadContext().prService.deleteIntegrationProposal(arg),
   );
 
   ipcMain.handle(IPC.prsDismissIntegrationCleanup, async (_event, arg: DismissIntegrationCleanupArgs): Promise<IntegrationProposal> =>
-    await getCtx().prService.dismissIntegrationCleanup(arg),
+    await ensurePrReadContext().prService.dismissIntegrationCleanup(arg),
   );
 
   ipcMain.handle(IPC.prsCleanupIntegrationWorkflow, async (_event, arg: CleanupIntegrationWorkflowArgs): Promise<CleanupIntegrationWorkflowResult> =>
-    await getCtx().prService.cleanupIntegrationWorkflow(arg),
+    await ensurePrReadContext().prService.cleanupIntegrationWorkflow(arg),
   );
 
   ipcMain.handle(IPC.prsLandQueueNext, async (_event, arg: LandQueueNextArgs): Promise<LandResult> => {
-    const ctx = getCtx();
+    const ctx = ensurePrMutationContext();
     const result = await ctx.prService.landQueueNext(arg);
     ctx.prPollingService.poke();
     return result;
@@ -7954,7 +8134,7 @@ export function registerIpc({
   ipcMain.handle(IPC.prsCancelQueueAutomation, async (_event, arg) => getCtx().queueLandingService?.cancelQueue(arg.queueId) ?? null);
 
   ipcMain.handle(IPC.prsReorderQueue, async (_event, arg: ReorderQueuePrsArgs): Promise<void> => {
-    const ctx = getCtx();
+    const ctx = ensurePrMutationContext();
     await ctx.prService.reorderQueuePrs(arg);
     ctx.prPollingService.poke();
   });
@@ -7971,19 +8151,19 @@ export function registerIpc({
   ipcMain.handle(IPC.prsListQueueStates, async (_event, arg = {}) => getCtx().queueLandingService?.listQueueStates(arg) ?? []);
 
   ipcMain.handle(IPC.prsCreateIntegrationLaneForProposal, async (_event, arg: CreateIntegrationLaneForProposalArgs): Promise<CreateIntegrationLaneForProposalResult> =>
-    getCtx().prService.createIntegrationLaneForProposal(arg));
+    ensurePrReadContext().prService.createIntegrationLaneForProposal(arg));
 
   ipcMain.handle(IPC.prsStartIntegrationResolution, async (_event, arg: StartIntegrationResolutionArgs): Promise<StartIntegrationResolutionResult> =>
-    getCtx().prService.startIntegrationResolution(arg));
+    ensurePrReadContext().prService.startIntegrationResolution(arg));
 
   ipcMain.handle(IPC.prsGetIntegrationResolutionState, async (_event, arg: { proposalId: string }): Promise<IntegrationResolutionState | null> =>
-    getCtx().prService.getIntegrationResolutionState(arg.proposalId));
+    ensurePrReadContext().prService.getIntegrationResolutionState(arg.proposalId));
 
   ipcMain.handle(IPC.prsRecheckIntegrationStep, async (_event, arg: RecheckIntegrationStepArgs): Promise<RecheckIntegrationStepResult> =>
-    getCtx().prService.recheckIntegrationStep(arg));
+    ensurePrReadContext().prService.recheckIntegrationStep(arg));
 
   ipcMain.handle(IPC.prsAiResolutionGetSession, async (_event, arg: PrAiResolutionGetSessionArgs): Promise<PrAiResolutionGetSessionResult> => {
-    const ctx = getCtx();
+    const ctx = ensurePrAiResolutionContext();
     const context = (arg?.context ?? {}) as PrAiResolutionContext;
     const contextKey = buildPrAiResolutionContextKey(context);
     const liveSessionId = prAiSessionsByContextKey.get(contextKey);
@@ -8030,7 +8210,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.prsAiResolutionStart, async (_event, arg: PrAiResolutionStartArgs): Promise<PrAiResolutionStartResult> => {
-    const ctx = getCtx();
+    const ctx = ensurePrAiResolutionContext();
     const context = (arg?.context ?? {}) as PrAiResolutionContext;
     const model = typeof arg?.model === "string" ? arg.model.trim() : "";
     const targetLaneId = typeof context.targetLaneId === "string" ? context.targetLaneId.trim() : "";
@@ -8160,7 +8340,7 @@ export function registerIpc({
       runtime.pollTimer = setInterval(() => {
         const current = prAiSessions.get(runtime.sessionId);
         if (!current || current.finalizing) return;
-        const detail = getCtx().sessionService.get(runtime.sessionId);
+        const detail = getCtx().sessionService?.get(runtime.sessionId);
         if (!detail || detail.status === "running") return;
         void finalizePrAiSession(runtime.sessionId);
       }, 1_000);
@@ -8229,7 +8409,7 @@ export function registerIpc({
     if (!sessionId || !text.length) return;
     const runtime = prAiSessions.get(sessionId);
     if (!runtime) throw new Error(`AI resolution session not found: ${sessionId}`);
-    const ctx = getCtx();
+    const ctx = ensurePrAiResolutionContext();
     const sessionDetail = ctx.sessionService.get(sessionId);
     if (sessionDetail?.status === "running") {
       await ctx.agentChatService.steer({ sessionId, text });
@@ -8243,7 +8423,7 @@ export function registerIpc({
     if (!sessionId) return;
     const runtime = prAiSessions.get(sessionId);
     if (!runtime) return;
-    const ctx = getCtx();
+    const ctx = ensurePrAiResolutionContext();
     await ctx.agentChatService.interrupt({ sessionId });
     await finalizePrAiSession(sessionId, {
       forceStatus: "cancelled",
@@ -8252,7 +8432,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.prsIssueResolutionStart, async (_event, arg: PrIssueResolutionStartArgs): Promise<PrIssueResolutionStartResult> => {
-    const ctx = getCtx();
+    const ctx = ensurePrResolutionContext();
     const result = await launchPrIssueResolutionChat(
       {
         prService: ctx.prService,
@@ -8293,7 +8473,7 @@ export function registerIpc({
     _event,
     arg: PrIssueResolutionPromptPreviewArgs,
   ): Promise<PrIssueResolutionPromptPreviewResult> => {
-    const ctx = getCtx();
+    const ctx = ensurePrResolutionContext();
     return await previewPrIssueResolutionPrompt(
       {
         prService: ctx.prService,
@@ -8308,7 +8488,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.prsRebaseResolutionStart, async (_event, arg: RebaseResolutionStartArgs): Promise<RebaseResolutionStartResult> => {
-    const ctx = getCtx();
+    const ctx = ensureRebaseResolutionContext();
     return await launchRebaseResolutionChat(
       {
         laneService: ctx.laneService,
@@ -8340,18 +8520,18 @@ export function registerIpc({
     const ctx = ensurePrReadContext();
     return ctx.prService.getActivity(args.prId);
   });
-  ipcMain.handle(IPC.prsAddComment, (_e, args) => getCtx().prService.addComment(args));
-  ipcMain.handle(IPC.prsReplyToReviewThread, (_e, args: ReplyToPrReviewThreadArgs) => getCtx().prService.replyToReviewThread(args));
-  ipcMain.handle(IPC.prsResolveReviewThread, (_e, args: ResolvePrReviewThreadArgs) => getCtx().prService.resolveReviewThread(args));
-  ipcMain.handle(IPC.prsUpdateTitle, (_e, args) => getCtx().prService.updateTitle(args));
-  ipcMain.handle(IPC.prsUpdateBody, (_e, args) => getCtx().prService.updateBody(args));
-  ipcMain.handle(IPC.prsSetLabels, (_e, args) => getCtx().prService.setLabels(args));
-  ipcMain.handle(IPC.prsRequestReviewers, (_e, args) => getCtx().prService.requestReviewers(args));
-  ipcMain.handle(IPC.prsSubmitReview, (_e, args) => getCtx().prService.submitReview(args));
-  ipcMain.handle(IPC.prsClose, (_e, args) => getCtx().prService.closePr(args));
-  ipcMain.handle(IPC.prsReopen, (_e, args) => getCtx().prService.reopenPr(args));
-  ipcMain.handle(IPC.prsRerunChecks, (_e, args) => getCtx().prService.rerunChecks(args));
-  ipcMain.handle(IPC.prsAiReviewSummary, (_e, args) => getCtx().prService.aiReviewSummary(args));
+  ipcMain.handle(IPC.prsAddComment, (_e, args) => ensurePrReadContext().prService.addComment(args));
+  ipcMain.handle(IPC.prsReplyToReviewThread, (_e, args: ReplyToPrReviewThreadArgs) => ensurePrReadContext().prService.replyToReviewThread(args));
+  ipcMain.handle(IPC.prsResolveReviewThread, (_e, args: ResolvePrReviewThreadArgs) => ensurePrReadContext().prService.resolveReviewThread(args));
+  ipcMain.handle(IPC.prsUpdateTitle, (_e, args) => ensurePrReadContext().prService.updateTitle(args));
+  ipcMain.handle(IPC.prsUpdateBody, (_e, args) => ensurePrReadContext().prService.updateBody(args));
+  ipcMain.handle(IPC.prsSetLabels, (_e, args) => ensurePrReadContext().prService.setLabels(args));
+  ipcMain.handle(IPC.prsRequestReviewers, (_e, args) => ensurePrReadContext().prService.requestReviewers(args));
+  ipcMain.handle(IPC.prsSubmitReview, (_e, args) => ensurePrReadContext().prService.submitReview(args));
+  ipcMain.handle(IPC.prsClose, (_e, args) => ensurePrReadContext().prService.closePr(args));
+  ipcMain.handle(IPC.prsReopen, (_e, args) => ensurePrReadContext().prService.reopenPr(args));
+  ipcMain.handle(IPC.prsRerunChecks, (_e, args) => ensurePrReadContext().prService.rerunChecks(args));
+  ipcMain.handle(IPC.prsAiReviewSummary, (_e, args) => ensurePrReadContext().prService.aiReviewSummary(args));
 
   // PRs Tab redesign (Timeline + Rails)
   ipcMain.handle(IPC.prsGetDeployments, (_e, args: { prId: string }) => {
@@ -8364,16 +8544,16 @@ export function registerIpc({
     if (!service) throw new Error("PR summary service is unavailable for this project window.");
     return service.regenerateSummary(args.prId);
   });
-  ipcMain.handle(IPC.prsPostReviewComment, (_e, args: PostPrReviewCommentArgs) => getCtx().prService.postReviewComment(args));
+  ipcMain.handle(IPC.prsPostReviewComment, (_e, args: PostPrReviewCommentArgs) => ensurePrReadContext().prService.postReviewComment(args));
   ipcMain.handle(
     IPC.prsSetReviewThreadResolved,
-    (_e, args: SetPrReviewThreadResolvedArgs) => getCtx().prService.setReviewThreadResolved(args),
+    (_e, args: SetPrReviewThreadResolvedArgs) => ensurePrReadContext().prService.setReviewThreadResolved(args),
   );
-  ipcMain.handle(IPC.prsReactToComment, (_e, args: ReactToPrCommentArgs) => getCtx().prService.reactToComment(args));
+  ipcMain.handle(IPC.prsReactToComment, (_e, args: ReactToPrCommentArgs) => ensurePrReadContext().prService.reactToComment(args));
   ipcMain.handle(
     IPC.prsLaunchIssueResolutionFromThread,
     async (_e, arg: LaunchPrIssueResolutionFromThreadArgs): Promise<LaunchPrIssueResolutionFromThreadResult> => {
-      const ctx = getCtx();
+      const ctx = ensurePrResolutionContext();
       const additionalInstructions = buildIssueResolutionInstructionsFromThread(arg);
       if (!arg.modelId) {
         throw new Error("modelId is required for prsLaunchIssueResolutionFromThread.");
@@ -8399,11 +8579,11 @@ export function registerIpc({
     },
   );
   ipcMain.handle(IPC.prsCleanupBranch, (_e, args: CleanupPrBranchArgs): Promise<CleanupPrBranchResult> =>
-    getCtx().prService.cleanupBranch(args));
+    ensurePrReadContext().prService.cleanupBranch(args));
 
   // Issue Inventory (PR convergence loop)
   ipcMain.handle(IPC.prsIssueInventorySync, async (_e, args: { prId: string }): Promise<IssueInventorySnapshot> => {
-    const ctx = getCtx();
+    const ctx = ensurePrInventoryContext();
     const [checks, reviewThreads, comments] = await Promise.all([
       ctx.prService.getChecks(args.prId),
       ctx.prService.getReviewThreads(args.prId),
@@ -8412,22 +8592,22 @@ export function registerIpc({
     return ctx.issueInventoryService.syncFromPrData(args.prId, checks, reviewThreads, comments);
   });
   ipcMain.handle(IPC.prsIssueInventoryGet, (_e, args: { prId: string }): IssueInventorySnapshot =>
-    getCtx().issueInventoryService.getInventory(args.prId));
+    ensureIssueInventoryContext().issueInventoryService.getInventory(args.prId));
   ipcMain.handle(IPC.prsIssueInventoryGetNew, (_e, args: { prId: string }): IssueInventoryItem[] =>
-    getCtx().issueInventoryService.getNewItems(args.prId));
+    ensureIssueInventoryContext().issueInventoryService.getNewItems(args.prId));
   ipcMain.handle(IPC.prsIssueInventoryMarkFixed, (_e, args: { prId: string; itemIds: string[] }): void =>
-    getCtx().issueInventoryService.markFixed(args.prId, args.itemIds));
+    ensureIssueInventoryContext().issueInventoryService.markFixed(args.prId, args.itemIds));
   ipcMain.handle(IPC.prsIssueInventoryMarkDismissed, (_e, args: { prId: string; itemIds: string[]; reason: string }): void =>
-    getCtx().issueInventoryService.markDismissed(args.prId, args.itemIds, args.reason));
+    ensureIssueInventoryContext().issueInventoryService.markDismissed(args.prId, args.itemIds, args.reason));
   ipcMain.handle(IPC.prsIssueInventoryMarkEscalated, (_e, args: { prId: string; itemIds: string[] }): void =>
-    getCtx().issueInventoryService.markEscalated(args.prId, args.itemIds));
+    ensureIssueInventoryContext().issueInventoryService.markEscalated(args.prId, args.itemIds));
   ipcMain.handle(IPC.prsIssueInventoryGetConvergence, (_e, args: { prId: string }): ConvergenceStatus =>
-    getCtx().issueInventoryService.getConvergenceStatus(args.prId));
+    ensureIssueInventoryContext().issueInventoryService.getConvergenceStatus(args.prId));
   ipcMain.handle(IPC.prsIssueInventoryReset, (_e, args: { prId: string }): void =>
-    getCtx().issueInventoryService.resetInventory(args.prId));
+    ensureIssueInventoryContext().issueInventoryService.resetInventory(args.prId));
 
   ipcMain.handle(IPC.prsConvergenceStateGet, (_e, args: { prId: string }): ConvergenceRuntimeState =>
-    getCtx().issueInventoryService.getConvergenceRuntime(args.prId));
+    ensureIssueInventoryContext().issueInventoryService.getConvergenceRuntime(args.prId));
   ipcMain.handle(IPC.prsConvergenceStateSave, (_e, args: { prId: string; state: PrConvergenceStatePatch }): ConvergenceRuntimeState => {
     // Whitelist: only allow renderer to update operational fields.
     // Identity fields and immutable timestamps are stripped.
@@ -8448,7 +8628,7 @@ export function registerIpc({
     ]);
     // Validate that args.state is a plain non-null object before iterating.
     if (args.state == null || typeof args.state !== "object" || Array.isArray(args.state)) {
-      return getCtx().issueInventoryService.getConvergenceRuntime(args.prId);
+      return ensureIssueInventoryContext().issueInventoryService.getConvergenceRuntime(args.prId);
     }
 
     const VALID_STATUS: ReadonlySet<string> = new Set([
@@ -8493,10 +8673,10 @@ export function registerIpc({
           break;
       }
     }
-    return getCtx().issueInventoryService.saveConvergenceRuntime(args.prId, sanitized);
+    return ensureIssueInventoryContext().issueInventoryService.saveConvergenceRuntime(args.prId, sanitized);
   });
   ipcMain.handle(IPC.prsConvergenceStateDelete, (_e, args: { prId: string }): void =>
-    getCtx().issueInventoryService.resetConvergenceRuntime(args.prId));
+    ensureIssueInventoryContext().issueInventoryService.resetConvergenceRuntime(args.prId));
 
   ipcMain.handle(
     IPC.prsPathToMergeStart,
@@ -8546,24 +8726,30 @@ export function registerIpc({
   );
 
   ipcMain.handle(IPC.prsPipelineSettingsGet, (_e, args: { prId: string }): PipelineSettings =>
-    getCtx().issueInventoryService.getPipelineSettings(args.prId));
+    ensureIssueInventoryContext().issueInventoryService.getPipelineSettings(args.prId));
   ipcMain.handle(IPC.prsPipelineSettingsSave, (_e, args: { prId: string; settings: Partial<PipelineSettings> }): void =>
-    getCtx().issueInventoryService.savePipelineSettings(args.prId, args.settings));
+    ensureIssueInventoryContext().issueInventoryService.savePipelineSettings(args.prId, args.settings));
   ipcMain.handle(IPC.prsPipelineSettingsDelete, (_e, args: { prId: string }): void =>
-    getCtx().issueInventoryService.deletePipelineSettings(args.prId));
+    ensureIssueInventoryContext().issueInventoryService.deletePipelineSettings(args.prId));
 
-  ipcMain.handle(IPC.rebaseScanNeeds, async () => getCtx().conflictService.scanRebaseNeeds());
+  ipcMain.handle(IPC.rebaseScanNeeds, async () => ensureConflictContext().conflictService.scanRebaseNeeds());
 
-  ipcMain.handle(IPC.rebaseGetNeed, async (_event, arg) => getCtx().conflictService.getRebaseNeed(arg.laneId));
+  ipcMain.handle(IPC.rebaseGetNeed, async (_event, arg) => ensureConflictContext().conflictService.getRebaseNeed(arg.laneId));
 
-  ipcMain.handle(IPC.rebaseDismiss, async (_event, arg) => getCtx().conflictService.dismissRebase(arg.laneId));
+  ipcMain.handle(IPC.rebaseDismiss, async (_event, arg) => ensureConflictContext().conflictService.dismissRebase(arg.laneId));
 
-  ipcMain.handle(IPC.rebaseDefer, async (_event, arg) => getCtx().conflictService.deferRebase(arg.laneId, arg.until));
+  ipcMain.handle(IPC.rebaseDefer, async (_event, arg) => ensureConflictContext().conflictService.deferRebase(arg.laneId, arg.until));
 
-  ipcMain.handle(IPC.rebaseExecute, async (_event, arg) => getCtx().conflictService.rebaseLane(arg));
+  ipcMain.handle(IPC.rebaseExecute, async (_event, arg) => ensureConflictContext().conflictService.rebaseLane(arg));
+
+  const ensureOperationContext = (): AppContextWith<"operationService"> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["operationService"] as const);
+    return ctx;
+  };
 
   ipcMain.handle(IPC.historyListOperations, async (_event, arg: ListOperationsArgs = {}): Promise<OperationRecord[]> => {
-    const ctx = getCtx();
+    const ctx = ensureOperationContext();
     return ctx.operationService.list(arg);
   });
 
@@ -8576,7 +8762,7 @@ export function registerIpc({
   };
 
   ipcMain.handle(IPC.historyExportOperations, async (event, arg: HistoryExportIpcArgs): Promise<ExportHistoryResult> => {
-    const ctx = getCtx();
+    const ctx = ensureOperationContext();
     const format: "csv" | "json" = arg?.format === "csv" ? "csv" : "json";
     const laneId = typeof arg?.laneId === "string" && arg.laneId.trim().length > 0 ? arg.laneId.trim() : undefined;
     const kind = typeof arg?.kind === "string" && arg.kind.trim().length > 0 ? arg.kind.trim() : undefined;
@@ -8703,122 +8889,145 @@ export function registerIpc({
 
   ipcMain.handle(IPC.processesListDefinitions, async (): Promise<ProcessDefinition[]> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["processService"] as const);
     return ctx.processService.listDefinitions();
   });
 
   ipcMain.handle(IPC.processesListRuntime, async (_event, arg: { laneId: string }): Promise<ProcessRuntime[]> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["processService"] as const);
     if (!arg?.laneId) return [];
     return ctx.processService.listRuntime(arg.laneId);
   });
 
   ipcMain.handle(IPC.processesStart, async (_event, arg: ProcessActionArgs): Promise<ProcessRuntime> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["processService"] as const);
     return await ctx.processService.start(arg);
   });
 
   ipcMain.handle(IPC.processesStop, async (_event, arg: ProcessActionArgs): Promise<ProcessRuntime | null> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["processService"] as const);
     return await ctx.processService.stop(arg);
   });
 
   ipcMain.handle(IPC.processesRestart, async (_event, arg: ProcessActionArgs): Promise<ProcessRuntime> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["processService"] as const);
     return await ctx.processService.restart(arg);
   });
 
   ipcMain.handle(IPC.processesKill, async (_event, arg: ProcessActionArgs): Promise<ProcessRuntime | null> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["processService"] as const);
     return await ctx.processService.kill(arg);
   });
 
   ipcMain.handle(IPC.processesStartStack, async (_event, arg: ProcessStackArgs): Promise<void> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["processService"] as const);
     await ctx.processService.startStack(arg);
   });
 
   ipcMain.handle(IPC.processesStopStack, async (_event, arg: ProcessStackArgs): Promise<void> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["processService"] as const);
     await ctx.processService.stopStack(arg);
   });
 
   ipcMain.handle(IPC.processesRestartStack, async (_event, arg: ProcessStackArgs): Promise<void> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["processService"] as const);
     await ctx.processService.restartStack(arg);
   });
 
   ipcMain.handle(IPC.processesStartGroup, async (_event, arg: ProcessGroupArgs): Promise<void> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["processService"] as const);
     await ctx.processService.startGroup(arg);
   });
 
   ipcMain.handle(IPC.processesStopGroup, async (_event, arg: ProcessGroupArgs): Promise<void> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["processService"] as const);
     await ctx.processService.stopGroup(arg);
   });
 
   ipcMain.handle(IPC.processesRestartGroup, async (_event, arg: ProcessGroupArgs): Promise<void> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["processService"] as const);
     await ctx.processService.restartGroup(arg);
   });
 
   ipcMain.handle(IPC.processesStartAll, async (_event, arg: { laneId: string }): Promise<void> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["processService"] as const);
     if (!arg?.laneId) return;
     await ctx.processService.startAll(arg);
   });
 
   ipcMain.handle(IPC.processesStopAll, async (_event, arg: { laneId: string }): Promise<void> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["processService"] as const);
     if (!arg?.laneId) return;
     await ctx.processService.stopAll(arg);
   });
 
   ipcMain.handle(IPC.processesGetLogTail, async (_event, arg: GetProcessLogTailArgs): Promise<string> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["processService"] as const);
     return ctx.processService.getLogTail(arg);
   });
 
   ipcMain.handle(IPC.testsListSuites, async (): Promise<TestSuiteDefinition[]> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["testService"] as const);
     return ctx.testService.listSuites();
   });
 
   ipcMain.handle(IPC.testsRun, async (_event, arg: RunTestSuiteArgs): Promise<TestRunSummary> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["testService"] as const);
     return ctx.testService.run(arg);
   });
 
   ipcMain.handle(IPC.testsStop, async (_event, arg: StopTestRunArgs): Promise<void> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["testService"] as const);
     ctx.testService.stop(arg);
   });
 
   ipcMain.handle(IPC.testsListRuns, async (_event, arg: ListTestRunsArgs = {}): Promise<TestRunSummary[]> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["testService"] as const);
     return ctx.testService.listRuns(arg);
   });
 
   ipcMain.handle(IPC.testsGetLogTail, async (_event, arg: GetTestLogTailArgs): Promise<string> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["testService"] as const);
     return ctx.testService.getLogTail(arg);
   });
 
   ipcMain.handle(IPC.projectConfigGet, async (): Promise<ProjectConfigSnapshot> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["projectConfigService"] as const);
     return ctx.projectConfigService.get();
   });
 
   ipcMain.handle(IPC.projectConfigValidate, async (_event, arg: { candidate: ProjectConfigCandidate }): Promise<ProjectConfigValidationResult> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["projectConfigService"] as const);
     return ctx.projectConfigService.validate(arg.candidate);
   });
 
   ipcMain.handle(IPC.projectConfigSave, async (_event, arg: { candidate: ProjectConfigCandidate }): Promise<ProjectConfigSnapshot> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["projectConfigService"] as const);
     const next = ctx.projectConfigService.save(arg.candidate);
     try {
-      ctx.automationService.syncFromConfig();
+      ctx.automationService?.syncFromConfig();
     } catch {
       // ignore schedule refresh failures
     }
@@ -8827,11 +9036,13 @@ export function registerIpc({
 
   ipcMain.handle(IPC.projectConfigDiffAgainstDisk, async (): Promise<ProjectConfigDiff> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["projectConfigService"] as const);
     return ctx.projectConfigService.diffAgainstDisk();
   });
 
   ipcMain.handle(IPC.projectConfigConfirmTrust, async (_event, arg: { sharedHash?: string } = {}): Promise<ProjectConfigTrust> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["projectConfigService"] as const);
     return ctx.projectConfigService.confirmTrust(arg);
   });
 
@@ -8847,6 +9058,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.ctoEnsureSession, async (_event, arg: CtoEnsureSessionArgs = {}): Promise<AgentChatSession> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["agentChatService"] as const);
     const laneId = await resolvePrimaryLaneIdOnly(ctx);
     if (!laneId) {
       throw new Error("No primary lane is available to host the CTO chat session.");
@@ -9279,6 +9491,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.ctoRunProjectScan, async (): Promise<CtoRunProjectScanResult> => {
     const ctx = getCtx();
+    requireAppContextServices(ctx, ["onboardingService"] as const);
     const detection = await ctx.onboardingService.detectDefaults().catch(() => null);
     return { detection };
   });
