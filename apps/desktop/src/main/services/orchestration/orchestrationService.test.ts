@@ -20,6 +20,7 @@ import type {
 import type {
   ModelRouting,
   ModelSelection,
+  OrchestrationTask,
 } from "../../../shared/types/orchestration";
 
 async function makeTempLane(): Promise<string> {
@@ -29,6 +30,17 @@ async function makeTempLane(): Promise<string> {
 
 async function rmTree(p: string): Promise<void> {
   await fsp.rm(p, { recursive: true, force: true });
+}
+
+function makeTask(id: string): OrchestrationTask {
+  return {
+    id,
+    phaseId: "developing",
+    title: `Task ${id}`,
+    description: "",
+    status: "pending",
+    validationGate: { required: false, stepIds: [] },
+  };
 }
 
 describe("orchestrationService", () => {
@@ -718,6 +730,91 @@ describe("orchestrationService", () => {
     expect(() =>
       applyPatches(initial, [{ op: "replace", path: "/tasks/0/status", value: "x" }]),
     ).toThrow(/numeric/i);
+  });
+
+  it("rejects duplicate task ids appended in one manifest patch", async () => {
+    const svc = createOrchestrationService({
+      resolveLaneWorktree: () => lane,
+    });
+    const { manifest } = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+    });
+
+    const result = await svc.manifestPatch(
+      {
+        runId: manifest.runId,
+        ifMatchEtag: manifest.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [
+          { op: "add", path: "/tasks/-", value: makeTask("T-1") },
+          { op: "add", path: "/tasks/-", value: makeTask("T-1") },
+        ],
+      },
+      manifest.bundlePath,
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("validation_failed");
+    if (!("message" in result)) throw new Error("expected validation failure message");
+    expect(result.message).toMatch(/duplicate id T-1/);
+
+    const onDisk = JSON.parse(
+      await fsp.readFile(path.join(manifest.bundlePath, "manifest.json"), "utf-8"),
+    ) as { tasks: unknown[] };
+    expect(onDisk.tasks).toHaveLength(0);
+    await svc.dispose();
+  });
+
+  it("rejects re-adding an existing task id through manifestPatch", async () => {
+    const svc = createOrchestrationService({
+      resolveLaneWorktree: () => lane,
+    });
+    const { manifest } = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+    });
+
+    const first = await svc.manifestPatch(
+      {
+        runId: manifest.runId,
+        ifMatchEtag: manifest.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [{ op: "add", path: "/tasks/-", value: makeTask("T-1") }],
+      },
+      manifest.bundlePath,
+    );
+
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const duplicate = await svc.manifestPatch(
+      {
+        runId: manifest.runId,
+        ifMatchEtag: first.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [{ op: "add", path: "/tasks/-", value: makeTask("T-1") }],
+      },
+      manifest.bundlePath,
+    );
+
+    expect(duplicate.ok).toBe(false);
+    if (duplicate.ok) return;
+    expect(duplicate.error).toBe("validation_failed");
+    if (!("message" in duplicate)) throw new Error("expected validation failure message");
+    expect(duplicate.message).toMatch(/duplicate id T-1/);
+
+    const onDisk = JSON.parse(
+      await fsp.readFile(path.join(manifest.bundlePath, "manifest.json"), "utf-8"),
+    ) as { tasks: unknown[] };
+    expect(onDisk.tasks).toHaveLength(1);
+    await svc.dispose();
   });
 
   it("validates spawn-brief required sections", () => {
