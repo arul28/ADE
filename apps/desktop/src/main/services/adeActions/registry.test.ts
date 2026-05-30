@@ -17,6 +17,30 @@ describe("isAllowedAdeAction", () => {
     expect(isAllowedAdeAction("issue", "addComment")).toBe(true);
   });
 
+  it("exposes the session-scoped Linear link lane actions for CLI/automation reach", () => {
+    expect(isAllowedAdeAction("lane", "attachLinearIssueToSession")).toBe(true);
+    expect(isAllowedAdeAction("lane", "detachLinearIssueFromSession")).toBe(true);
+    expect(isAllowedAdeAction("lane", "listLinearIssuesForSession")).toBe(true);
+    expect(isAllowedAdeAction("lane", "listLinearIssuesForLaneSessions")).toBe(true);
+    expect(isAllowedAdeAction("lane", "unlinkLinearIssues")).toBe(true);
+  });
+
+  it("exposes the Linear issue tracker write actions for the CLI daemon bridge", () => {
+    // CLI agents have no Linear creds; they write back through the daemon
+    // bridge, so these must be agent-reachable (not CTO-gated).
+    expect(isAllowedAdeAction("linear_issue_tracker", "updateIssueState")).toBe(true);
+    expect(isAllowedAdeAction("linear_issue_tracker", "createComment")).toBe(true);
+    expect(isAllowedAdeAction("linear_issue_tracker", "updateIssueAssignee")).toBe(true);
+    expect(isAllowedAdeAction("linear_issue_tracker", "addLabel")).toBe(true);
+    expect(isCtoOnlyAdeAction("linear_issue_tracker", "updateIssueState")).toBe(false);
+    expect(isCtoOnlyAdeAction("linear_issue_tracker", "addLabel")).toBe(false);
+  });
+
+  it("exposes CLI agent launch through the chat runtime action surface", () => {
+    expect(isAllowedAdeAction("chat", "launchCli")).toBe(true);
+    expect(isCtoOnlyAdeAction("chat", "launchCli")).toBe(false);
+  });
+
   it("rejects an unknown action on a known domain", () => {
     expect(isAllowedAdeAction("git", "rmRf")).toBe(false);
     expect(isAllowedAdeAction("issue", "deleteAllIssues")).toBe(false);
@@ -416,6 +440,67 @@ describe("runtime Linear OAuth actions", () => {
 });
 
 describe("runtime session actions", () => {
+  it("launches tracked CLI agents through runtime chat actions", async () => {
+    const ptyCreate = vi.fn(async (args: { sessionId: string }) => ({
+      sessionId: args.sessionId,
+      ptyId: "pty-1",
+      pid: 123,
+    }));
+    const runtime = {
+      projectRoot: "/repo",
+      agentChatService: {},
+      laneService: {
+        getLaneWorktreePath: vi.fn(() => "/repo/.ade/worktrees/lane-1"),
+        getLaneBaseAndBranch: vi.fn(),
+      },
+      ptyService: {
+        create: ptyCreate,
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const chatService = getAdeActionDomainServices(runtime).chat as {
+      launchCli: (args: {
+        laneId: string;
+        provider: "codex";
+        model: string;
+        kickoffPrompt: string;
+        linearIssues: Array<{ id: string }>;
+      }) => Promise<{ sessionId: string; ptyId: string; pid: number | null; attachedLinearIssueIds: string[] }>;
+    } & Record<string, unknown>;
+
+    expect(listAllowedAdeActionNames("chat", chatService)).toContain("launchCli");
+    const result = await chatService.launchCli({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      kickoffPrompt: "Work the issue",
+      linearIssues: [{ id: "issue-1" }],
+    });
+
+    const createArg = ptyCreate.mock.calls[0]?.[0] as {
+      sessionId: string;
+      chatSessionId: string;
+      laneId: string;
+      tracked: boolean;
+      toolType: string;
+      linearIssues: Array<{ id: string }>;
+      startupCommand: string;
+    };
+    expect(createArg).toMatchObject({
+      chatSessionId: createArg.sessionId,
+      laneId: "lane-1",
+      tracked: true,
+      toolType: "codex",
+      linearIssues: [{ id: "issue-1" }],
+    });
+    expect(createArg.startupCommand).toContain("codex");
+    expect(result).toMatchObject({
+      sessionId: createArg.sessionId,
+      ptyId: "pty-1",
+      pid: 123,
+      attachedLinearIssueIds: ["issue-1"],
+    });
+  });
+
   it("adds getDelta from the runtime session delta service", () => {
     const delta = { sessionId: "session-1", filesChanged: 2 };
     const runtime = {

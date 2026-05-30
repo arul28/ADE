@@ -7,6 +7,7 @@ The complete surface of triggers the automation runtime listens for, and the act
 - `apps/desktop/src/main/services/automations/automationService.ts` — trigger normalization, dispatch, cron parsing, file-change watchers, queue matching, action-chain runner.
 - `apps/desktop/src/main/services/automations/automationIngressService.ts` — HTTP ingress for webhooks and relay polling.
 - `apps/desktop/src/main/services/automations/githubPollingService.ts` — GitHub REST polling that emits `github.issue_*` and `github.pr_*` events by diffing per-repo snapshots.
+- `apps/desktop/src/main/services/automations/linearAutomationDispatch.ts` — pure translation of a `LinearIngressEventRecord` (relay event) into the `LinearAutomationDispatch[]` it implies, including the added-label diff that produces a one-shot `linear.issue_labeled` and the dedupe that suppresses the generic `issue_updated` fallthrough. `main.ts` calls `buildLinearAutomationDispatches` on each relay event and feeds the results into `automationService.dispatchIngressTrigger`.
 - `apps/desktop/src/main/services/automations/automationPlannerService.ts` — natural-language rule authoring (creates triggers + actions from a free-text brief).
 - `apps/desktop/src/main/services/adeActions/registry.ts` — curated allowlist for the `ade-action` action type.
 - `apps/desktop/src/renderer/components/automations/adeActionSchemas.ts` — UI-side parameter schema for each allowlisted action; drives the structured form in `AdeActionEditor` (per-param input type, required flag, placeholder hints like `{{trigger.lane.id}}`, enum options).
@@ -68,8 +69,16 @@ Automation rules can react to Linear events as context for their own work. These
 - `linear.issue_updated`
 - `linear.issue_assigned`
 - `linear.issue_status_changed`
+- `linear.issue_labeled` — one or more labels were *added* to an issue.
 
 Filters: `project`, `team`, `assignee`, `labels`, `stateTransition` (e.g. `"Backlog->In Progress"`), `changedFields`.
+
+For `linear.issue_labeled` the `labels` filter matches against the labels that were *just added* (not the issue's full label set), mirroring `github.issue_labeled`. A labeled rule with no configured `labels` still requires at least one added label to fire — `triggerMatches` (`automationService.ts`) special-cases the canonical type to read `trigger.labels` (the added names) and rejects an empty added-label set.
+
+A single Linear relay event can fan out into more than one dispatch. `buildLinearAutomationDispatches` (`apps/desktop/src/main/services/automations/linearAutomationDispatch.ts`) translates a `LinearIngressEventRecord` into the trigger dispatches it implies:
+
+- It diffs the current `data.labelIds` against `updatedFrom.labelIds` (only when `updatedFrom` actually carried `labelIds`, so an unrelated edit never looks like it added every label) and resolves the added ids to human-readable names via the payload's `labels` node. When any names were added it emits a one-shot `linear.issue_labeled` whose matchable `labels` are the added names only.
+- A pure label add suppresses the generic `linear.issue_updated` fallthrough so a single change is not double-counted; a concurrent assignment or status change in the same payload still emits its own `linear.issue_assigned` / `linear.issue_status_changed` event alongside the labeled one.
 
 ## Trigger summary (`summarizeTrigger`)
 

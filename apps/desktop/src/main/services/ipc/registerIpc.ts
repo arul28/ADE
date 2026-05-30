@@ -22,6 +22,7 @@ import {
   resolveProjectIconPath,
   setProjectIconOverrideFromSelection,
 } from "../projects/projectIconResolver";
+import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { runGit } from "../git/git";
 import type { AdeCleanupResult, AdeProjectSnapshot, IosSimulatorWindowState } from "../../../shared/types";
 import { toRecentProjectSummary } from "../projects/recentProjectSummary";
@@ -270,6 +271,9 @@ import type {
   AgentChatReloadClaudePluginsResult,
   AgentChatClaudePermissionMode,
   AgentChatCreateArgs,
+  AgentChatLaunchArgs,
+  AgentChatLaunchCliArgs,
+  AgentChatLaunchCliResult,
   AgentChatDeleteArgs,
   AgentChatGetSummaryArgs,
   AgentChatEventHistorySnapshot,
@@ -321,6 +325,7 @@ import type {
   OnboardingStatus,
   OnboardingTourProgress,
   OnboardingTourVariant,
+  LaneLinearIssue,
   LaneListSnapshot,
   LaneSummary,
   ListOperationsArgs,
@@ -394,6 +399,7 @@ import type {
   CancelResolverSessionArgs,
   RunTestSuiteArgs,
   SessionDeltaSummary,
+  SessionLinearIssueLink,
   StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
@@ -4839,6 +4845,46 @@ export function registerIpc({
     return await ctx.laneService.getChildren(arg.laneId);
   });
 
+  ipcMain.handle(IPC.lanesAttachLinearIssueToSession, async (
+    _event,
+    arg: { chatSessionId: string; issues: LaneLinearIssue[] },
+  ): Promise<SessionLinearIssueLink[]> => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.attachLinearIssueToSession(arg);
+  });
+
+  ipcMain.handle(IPC.lanesDetachLinearIssueFromSession, async (
+    _event,
+    arg: { chatSessionId: string; issueId?: string },
+  ): Promise<boolean> => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.detachLinearIssueFromSession(arg);
+  });
+
+  ipcMain.handle(IPC.lanesListLinearIssuesForSession, async (
+    _event,
+    arg: { chatSessionId: string },
+  ): Promise<SessionLinearIssueLink[]> => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.listLinearIssuesForSession(arg);
+  });
+
+  ipcMain.handle(IPC.lanesListLinearIssuesForLaneSessions, async (
+    _event,
+    arg: { laneId: string },
+  ): Promise<SessionLinearIssueLink[]> => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.listLinearIssuesForLaneSessions(arg);
+  });
+
+  ipcMain.handle(IPC.lanesUnlinkLinearIssues, async (
+    _event,
+    arg: { laneId: string; issueId?: string },
+  ): Promise<boolean> => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.unlinkLinearIssues(arg);
+  });
+
   ipcMain.handle(IPC.lanesRebaseStart, async (_event, arg: RebaseStartArgs): Promise<RebaseStartResult> => {
     const ctx = ensureLaneContext();
     return await ctx.laneService.rebaseStart(arg);
@@ -5622,6 +5668,32 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatCreate, async (_event, arg: AgentChatCreateArgs): Promise<AgentChatSession> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.createSession(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatLaunch, async (_event, arg: AgentChatLaunchArgs): Promise<AgentChatSession> => {
+    const ctx = ensureAgentChatContext();
+    return await ctx.agentChatService.launchHeadless(arg);
+  });
+
+  // Launch a tracked CLI/terminal agent with Linear issues attached *before* the
+  // process spawns. The new terminal's own session id doubles as the Linear
+  // link key, so `getSessionLinearEnv` injects ADE_LINEAR_ISSUE_IDS +
+  // ADE_LINEAR_CONTEXT_FILE into the PTY env (the agent reads/updates its issue
+  // via `ade linear`, no token needed). The kickoff prompt is built into the
+  // provider's startup command / initialInput.
+  ipcMain.handle(IPC.agentChatLaunchCli, async (_event, arg: AgentChatLaunchCliArgs): Promise<AgentChatLaunchCliResult> => {
+    const ctx = getCtx();
+    if (!ctx.laneService) {
+      throw new Error("agentChat.launchCli requires an active project runtime lane service.");
+    }
+    if (!ctx.ptyService) {
+      throw new Error("agentChat.launchCli requires an active terminal (pty) service.");
+    }
+    return launchAgentChatCli(arg, {
+      laneService: ctx.laneService,
+      ptyService: ctx.ptyService,
+      logger: ctx.logger,
+    });
   });
 
   ipcMain.handle(IPC.agentChatSuggestLaneName, async (_event, arg: unknown): Promise<string> => {

@@ -39,6 +39,7 @@ vi.mock("@cursor/sdk", () => ({
 // ---------------------------------------------------------------------------
 const mockState = vi.hoisted(() => ({
   sessions: new Map<string, any>(),
+  sessionLinearLinks: new Map<string, any[]>(),
   uuidCounter: 0,
   mcpServerCounter: 0,
   codexThreadCounter: 0,
@@ -741,6 +742,8 @@ vi.mock("./droidSdkPool", () => ({
 import {
   buildOpenCodeStreamMessages,
   buildComputerUseDirective,
+  buildLinearSessionDirective,
+  writeSessionLinearIssueContextFile,
   createAgentChatService,
 } from "./agentChatService";
 import { spawn } from "node:child_process";
@@ -1084,6 +1087,25 @@ function createMockLaneService() {
       return lane;
     }),
     getLane: vi.fn((laneId: string) => lanes.find((lane) => lane.id === laneId) ?? null),
+    // Session-scoped Linear link store so tests can assert that a launched chat
+    // actually persists its attached issue (FIX 1) and that the directive
+    // injection (FIX 4) sees the attached issues.
+    attachLinearIssueToSession: vi.fn((args: { chatSessionId: string; issues: LaneLinearIssue[]; role?: string }) => {
+      const existing = mockState.sessionLinearLinks.get(args.chatSessionId) ?? [];
+      const links = args.issues.map((issue) => ({
+        issue,
+        role: args.role ?? "worked",
+        source: "chat_attach" as const,
+        includeInPr: true,
+        closeOnMerge: false,
+        evidence: { chatSessionId: args.chatSessionId },
+      }));
+      mockState.sessionLinearLinks.set(args.chatSessionId, [...existing, ...links]);
+      return links;
+    }),
+    linkLinearIssues: vi.fn(() => {}),
+    listLinearIssuesForSession: vi.fn((args: { chatSessionId: string }) =>
+      mockState.sessionLinearLinks.get(args.chatSessionId) ?? []),
   } as any;
 }
 
@@ -1437,6 +1459,7 @@ beforeEach(() => {
   // home dir into tests, while project-local .claude roots remain distinct.
   vi.spyOn(os, "homedir").mockReturnValue(tmpHomeRoot);
   mockState.sessions.clear();
+  mockState.sessionLinearLinks.clear();
   mockState.uuidCounter = 0;
   mockState.mcpServerCounter = 0;
   mockState.codexThreadCounter = 0;
@@ -1590,6 +1613,110 @@ describe("buildComputerUseDirective", () => {
     expect(result).toContain("ingest_computer_use_artifacts");
     expect(result).toContain("capture visual proof first");
     expect(result).toContain("Console logs and text files are supporting diagnostics only");
+  });
+});
+
+describe("writeSessionLinearIssueContextFile", () => {
+  function makeSessionLink(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "link-1",
+      sessionId: "sess-1",
+      laneId: null,
+      role: "worked",
+      source: "chat_attach",
+      includeInPr: true,
+      closeOnMerge: false,
+      evidence: null,
+      createdAt: "2026-05-20T10:00:00.000Z",
+      updatedAt: "2026-05-20T10:00:00.000Z",
+      issue: {
+        id: "issue-1",
+        identifier: "ENG-431",
+        title: "Fix OAuth refresh",
+        url: "https://linear.app/acme/issue/ENG-431",
+        stateName: "In Progress",
+        teamKey: "ENG",
+      },
+      ...overrides,
+    } as any;
+  }
+
+  let contextRoot: string;
+  beforeEach(() => {
+    contextRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-chat-linear-context-"));
+  });
+
+  it("writes a context file and returns env-ready ids when links exist", () => {
+    const result = writeSessionLinearIssueContextFile({
+      contextDir: contextRoot,
+      sessionId: "sess-1",
+      links: [
+        makeSessionLink(),
+        makeSessionLink({ id: "link-2", issue: { ...makeSessionLink().issue, id: "issue-2", identifier: "ENG-440" } }),
+      ],
+      now: "2026-05-20T11:00:00.000Z",
+    });
+
+    expect(result).not.toBeNull();
+    expect(result!.identifiers).toBe("ENG-431,ENG-440");
+    expect(result!.issueIds).toBe("issue-1,issue-2");
+    expect(result!.filePath).toBe(path.join(contextRoot, "sess-1", "linear-issues.json"));
+
+    const written = JSON.parse(fs.readFileSync(result!.filePath, "utf8"));
+    expect(written.sessionId).toBe("sess-1");
+    expect(written.updatedAt).toBe("2026-05-20T11:00:00.000Z");
+    expect(written.issues).toHaveLength(2);
+    expect(written.issues[0]).toEqual(expect.objectContaining({
+      id: "issue-1",
+      identifier: "ENG-431",
+      role: "worked",
+      teamKey: "ENG",
+    }));
+  });
+
+  it("returns null and removes a stale file when there are no links", () => {
+    const filePath = path.join(contextRoot, "sess-1", "linear-issues.json");
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, "{\"stale\":true}");
+
+    const result = writeSessionLinearIssueContextFile({
+      contextDir: contextRoot,
+      sessionId: "sess-1",
+      links: [],
+      now: "2026-05-20T11:00:00.000Z",
+    });
+
+    expect(result).toBeNull();
+    expect(fs.existsSync(filePath)).toBe(false);
+  });
+});
+
+describe("buildLinearSessionDirective", () => {
+  function makeLink(identifier: string) {
+    return { issue: { identifier } } as any;
+  }
+
+  it("returns null when there are no attached issues", () => {
+    expect(buildLinearSessionDirective([])).toBeNull();
+  });
+
+  it("returns null when no link carries a usable identifier", () => {
+    expect(buildLinearSessionDirective([{ issue: { identifier: "" } } as any])).toBeNull();
+  });
+
+  it("steers the agent to `ade linear` over MCP and lists the deduped identifiers", () => {
+    const directive = buildLinearSessionDirective([
+      makeLink("ENG-12"),
+      makeLink("ENG-34"),
+      makeLink("ENG-12"),
+    ]);
+    expect(directive).toContain("Linear-tracked work");
+    expect(directive).toContain("ENG-12, ENG-34");
+    // Deduped — the repeated identifier appears once.
+    expect(directive?.match(/ENG-12/g)).toHaveLength(1);
+    expect(directive).toContain("ade linear");
+    expect(directive).toContain("Prefer `ade linear`");
+    expect(directive).toContain("ade-linear");
   });
 });
 
@@ -1828,6 +1955,121 @@ describe("createAgentChatService", () => {
       expect(opts?.systemPrompt?.append).toContain("ade lanes list");
       expect(opts?.systemPrompt?.append).toContain("ADE proof drawer");
       expect(opts?.systemPrompt?.append).toContain("clean up old, stale, or finished processes");
+    });
+
+    it("rebuilds the Claude query with the per-turn reasoning effort, not the stale warm-query effort (FIX 3)", async () => {
+      // Regression: the session pre-warmed a query baked with the create-time
+      // effort (medium). A later turn requesting xhigh updated the session field
+      // but ensureClaudeQuery reused the stale warm query, so Claude ran medium.
+      const send = vi.fn().mockResolvedValue(undefined);
+      const makeSession = (sdkSessionId: string) => ({
+        send,
+        stream: vi.fn(() => (async function* () {
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            session_id: sdkSessionId,
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        })()),
+        close: vi.fn(),
+        sessionId: sdkSessionId,
+        query: {
+          setPermissionMode: vi.fn(async () => undefined),
+          supportedCommands: vi.fn(async () => []),
+        },
+      });
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(makeSession("sdk-effort") as any);
+
+      const { service } = createService();
+      // opus supports the xhigh tier; sonnet does not, which would clamp the
+      // requested effort and mask the regression.
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "opus",
+        reasoningEffort: "medium",
+      });
+
+      // The pre-warm built a query with the create-time (medium) effort.
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+      const warmOpts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { effort?: string } | undefined;
+      expect(warmOpts?.effort).toBe("medium");
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Do the deep work.",
+        reasoningEffort: "xhigh",
+        timeoutMs: 15_000,
+      });
+
+      // The stale warm query was discarded and a fresh query built with xhigh.
+      const efforts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls
+        .map((call) => (call[0] as { effort?: string } | undefined)?.effort)
+        .filter((value): value is string => typeof value === "string");
+      expect(efforts).toContain("xhigh");
+      expect(session.id).toBeDefined();
+    });
+
+    it("injects the ade-linear directive into the Claude system prompt when the session has attached issues (FIX 4)", async () => {
+      const send = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream: vi.fn(() => (async function* () {
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            session_id: "sdk-linear-directive",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-linear-directive",
+        query: {
+          setPermissionMode: vi.fn(async () => undefined),
+          supportedCommands: vi.fn(async () => []),
+        },
+      } as any);
+
+      const { service, laneService } = createService();
+      const issue = makeLaneLinearIssue();
+      // opus supports xhigh, so the per-turn effort bump below invalidates the
+      // create-time warm query (built before the attach) and forces a fresh
+      // query build that now resolves the attached issue into the directive.
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "opus",
+        reasoningEffort: "medium",
+      });
+      // Let the create-time warm query settle (built before the attach, so with
+      // no directive) — the turn must then invalidate and rebuild it.
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1);
+      });
+      laneService.attachLinearIssueToSession({
+        chatSessionId: session.id,
+        issues: [issue],
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Continue the tracked work.",
+        reasoningEffort: "xhigh",
+        timeoutMs: 15_000,
+      });
+
+      const appended = vi.mocked(claudeSdkCreateSessionCompat).mock.calls
+        .map((call) => (call[0] as { systemPrompt?: { append?: string } } | undefined)?.systemPrompt?.append ?? "")
+        .join("\n");
+      expect(appended).toContain("Linear-tracked work");
+      expect(appended).toContain("ADE-123");
+      expect(appended).toContain("ade linear");
+      expect(appended).toContain("Prefer `ade linear`");
     });
 
     it("keeps ADE tooling guidance out of Claude SDK user turns", async () => {
@@ -2425,6 +2667,197 @@ describe("createAgentChatService", () => {
         model: "",
         modelId: "opencode/anthropic/claude-sonnet-4-6",
       })).rejects.toThrow(/worktree is unavailable/i);
+    });
+  });
+
+  describe("launchHeadless", () => {
+    it("creates a session and fires the kickoff turn fire-and-forget without a mounted pane", async () => {
+      const send = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream: vi.fn(() => (async function* () {
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            session_id: "sdk-headless",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-headless",
+        query: {
+          setPermissionMode: vi.fn(async () => undefined),
+          supportedCommands: vi.fn(async () => []),
+        },
+      } as any);
+
+      const { service, sessionService } = createService();
+      const session = await service.launchHeadless({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        kickoffText: "Investigate the failing build and fix it.",
+      });
+
+      // createSession ran: a real session is returned and persisted, and
+      // launchHeadless returned it immediately.
+      expect(session).toBeDefined();
+      expect(session.laneId).toBe("lane-1");
+      expect(session.provider).toBe("claude");
+      expect(sessionService.create).toHaveBeenCalledTimes(1);
+
+      // The bug this fixes: with no mounted pane the kickoff never ran. Here the
+      // kickoff text reaches the SDK *after* launchHeadless already resolved,
+      // proving runSessionTurn fired fire-and-forget in the background.
+      await vi.waitFor(() => {
+        const payload = send.mock.calls
+          .map((call) => String(call[0] ?? ""))
+          .find((text) => text.includes("Investigate the failing build and fix it."));
+        expect(payload).toBeTruthy();
+      });
+    });
+
+    it("returns the session even when the kickoff turn never settles", async () => {
+      // A turn that hangs forever would block the launch if it were awaited.
+      const send = vi.fn(() => new Promise<void>(() => {}));
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream: vi.fn(() => (async function* () {
+          await new Promise<void>(() => {});
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-headless-pending",
+        query: {
+          setPermissionMode: vi.fn(async () => undefined),
+          supportedCommands: vi.fn(async () => []),
+        },
+      } as any);
+
+      const { service } = createService();
+      // Resolves promptly despite the hanging turn -> fire-and-forget.
+      const session = await service.launchHeadless({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        kickoffText: "Start the work.",
+      });
+
+      expect(session).toBeDefined();
+    });
+
+    it("defaults the session to autonomous full-auto when no permission controls are supplied", async () => {
+      // Map modes with the real semantics (full-auto => never / danger-full-access)
+      // so the derived native codex fields prove launchHeadless defaulted the
+      // session to full-auto — the only mode whose background turn never stalls
+      // on a permission prompt no pane could answer.
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "full-auto") return { approvalPolicy: "never", sandbox: "danger-full-access" };
+        if (mode === "edit") return { approvalPolicy: "untrusted", sandbox: "workspace-write" };
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
+      });
+
+      const { service } = createService();
+      const session = await service.launchHeadless({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5-codex",
+        modelId: "gpt-5-codex",
+        kickoffText: "Triage the incident.",
+      });
+
+      expect(session.codexApprovalPolicy).toBe("never");
+      expect(session.codexSandbox).toBe("danger-full-access");
+      expect(session.permissionMode).toBe("full-auto");
+    });
+
+    it("honors an explicit permissionMode supplied by the caller", async () => {
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "full-auto") return { approvalPolicy: "never", sandbox: "danger-full-access" };
+        if (mode === "edit") return { approvalPolicy: "untrusted", sandbox: "workspace-write" };
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
+      });
+
+      const { service } = createService();
+      const session = await service.launchHeadless({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5-codex",
+        modelId: "gpt-5-codex",
+        permissionMode: "edit",
+        kickoffText: "Make a focused edit.",
+      });
+
+      // The caller's explicit mode wins over the full-auto default.
+      expect(session.codexApprovalPolicy).toBe("untrusted");
+      expect(session.codexSandbox).toBe("workspace-write");
+      expect(session.permissionMode).toBe("edit");
+    });
+
+    it("persists the attached Linear issue link for a launched chat (FIX 1)", async () => {
+      // Regression: launchHeadless passed contextAttachments to runSessionTurn,
+      // but runSessionTurn dropped them before prepareSendMessage, so the
+      // session→issue link was never recorded and agents reached for Linear MCP.
+      const send = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream: vi.fn(() => (async function* () {
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            session_id: "sdk-link",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-link",
+        query: {
+          setPermissionMode: vi.fn(async () => undefined),
+          supportedCommands: vi.fn(async () => []),
+        },
+      } as any);
+
+      const { service, laneService } = createService();
+      const issue = makeLaneLinearIssue();
+      const session = await service.launchHeadless({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        kickoffText: "Fix the bug tracked by this issue.",
+        contextAttachments: [makeLinearIssueContextAttachment(issue, "manual")],
+      });
+
+      // The session-scoped link is written so getSessionLinearEnv / the directive
+      // resolve the issue and the agent uses `ade linear` instead of MCP.
+      await vi.waitFor(() => {
+        expect(laneService.attachLinearIssueToSession).toHaveBeenCalledWith(
+          expect.objectContaining({
+            chatSessionId: session.id,
+            issues: expect.arrayContaining([expect.objectContaining({ id: issue.id })]),
+          }),
+        );
+      });
+      expect(mockState.sessionLinearLinks.get(session.id)?.[0]?.issue?.id).toBe(issue.id);
+    });
+
+    it("tags the backing terminal row with its owning chat session id (FIX 2)", async () => {
+      // Regression: the chat's backing terminal was registered without a
+      // chatSessionId, so laneAgents.ts could not exclude it and a phantom "CLI"
+      // agent row appeared next to the chat row.
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      expect(sessionService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: session.id,
+          chatSessionId: session.id,
+        }),
+      );
     });
   });
 

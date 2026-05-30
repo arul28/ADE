@@ -64,6 +64,14 @@ export function createLinearIssueTracker(args: { client: LinearClient }): IssueT
       return args.client.addLabel(issueId, labelName);
     },
 
+    addIssueLabel(issueId, labelId) {
+      return args.client.addIssueLabel(issueId, labelId);
+    },
+
+    removeIssueLabel(issueId, labelId) {
+      return args.client.removeIssueLabel(issueId, labelId);
+    },
+
     uploadAttachment(params) {
       return args.client.uploadAttachment(params);
     },

@@ -59,7 +59,7 @@ import { runGit } from "./services/git/git";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "./services/ai/cliExecutableResolver";
-import { createAgentChatService } from "./services/chat/agentChatService";
+import { createAgentChatService, writeSessionLinearIssueContextFile } from "./services/chat/agentChatService";
 import { createGithubService } from "./services/github/githubService";
 import { createProjectScaffoldService } from "./services/projects/projectScaffoldService";
 import { createFeedbackReporterService } from "./services/feedback/feedbackReporterService";
@@ -95,9 +95,7 @@ import type {
   SyncProjectSwitchRequestPayload,
   SyncProjectSwitchResultPayload,
 } from "../shared/types";
-import type { AutomationTriggerType } from "../shared/types/config";
-import type { AutomationTriggerLinearIssueContext } from "../shared/types/automations";
-import type { LinearIngressEventRecord } from "../shared/types/linearSync";
+import { buildLinearAutomationDispatches } from "./services/automations/linearAutomationDispatch";
 import type { IosSimulatorDrawerMode } from "../shared/types/iosSimulator";
 import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
@@ -154,6 +152,7 @@ import { createLinearCredentialService } from "./services/cto/linearCredentialSe
 import { buildRendererCspPolicy } from "./rendererCsp";
 import { createLinearClient } from "./services/cto/linearClient";
 import { createLinearIssueTracker, type LinearIssueTracker } from "./services/cto/linearIssueTracker";
+import { createLinearLiveStatusService, type LinearLiveStatusService } from "./services/cto/linearLiveStatusService";
 import { createLinearTemplateService } from "./services/cto/linearTemplateService";
 import { createFlowPolicyService } from "./services/cto/flowPolicyService";
 import { createLinearWorkflowFileService } from "./services/cto/linearWorkflowFileService";
@@ -346,110 +345,6 @@ const defaultEnabledBackgroundTaskFlags = new Set<string>([
 function readString(source: Record<string, unknown> | null | undefined, key: string): string | undefined {
   const value = source?.[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
-function readStringArray(source: Record<string, unknown> | null | undefined, key: string): string[] | undefined {
-  const value = source?.[key];
-  if (!Array.isArray(value)) return undefined;
-  const out = value.map((entry) => {
-    if (typeof entry === "string") return entry.trim();
-    if (entry && typeof entry === "object") {
-      const rec = entry as Record<string, unknown>;
-      const name = typeof rec.name === "string" ? rec.name.trim() : null;
-      if (name) return name;
-    }
-    return "";
-  }).filter((entry) => entry.length > 0);
-  return out.length > 0 ? out : undefined;
-}
-
-function readNested(source: Record<string, unknown> | null | undefined, key: string): Record<string, unknown> | null {
-  const value = source?.[key];
-  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
-}
-
-function mapLinearActionToTriggerType(
-  action: string | null,
-  data: Record<string, unknown> | null,
-  prevData: Record<string, unknown> | null,
-): { triggerType: AutomationTriggerType; stateTransition: string | null; previousState: string | undefined } {
-  const currentState = readString(readNested(data, "state"), "name") ?? readString(data, "stateName");
-  const previousState = readString(readNested(prevData, "state"), "name") ?? readString(prevData, "stateName");
-  if (action === "create") {
-    return { triggerType: "linear.issue_created", stateTransition: null, previousState: undefined };
-  }
-  const prevAssignee = readString(prevData, "assigneeId") ?? readString(readNested(prevData, "assignee"), "id");
-  const curAssignee = readString(data, "assigneeId") ?? readString(readNested(data, "assignee"), "id");
-  if (curAssignee && curAssignee !== prevAssignee) {
-    return { triggerType: "linear.issue_assigned", stateTransition: null, previousState };
-  }
-  if (currentState && previousState && currentState !== previousState) {
-    return {
-      triggerType: "linear.issue_status_changed",
-      stateTransition: `${previousState}->${currentState}`,
-      previousState,
-    };
-  }
-  return { triggerType: "linear.issue_updated", stateTransition: null, previousState };
-}
-
-function buildLinearAutomationDispatch(event: LinearIngressEventRecord): {
-  source: "linear-relay";
-  eventKey: string;
-  triggerType: AutomationTriggerType;
-  eventName?: string | null;
-  summary?: string | null;
-  author?: string | null;
-  labels?: string[];
-  rawPayload?: Record<string, unknown> | null;
-  linear?: { issue: AutomationTriggerLinearIssueContext } | null;
-  project?: string | null;
-  team?: string | null;
-  assignee?: string | null;
-  stateTransition?: string | null;
-  changedFields?: string[];
-} | null {
-  if (!event.issueId) return null;
-  const payload = event.payload ?? null;
-  const data = readNested(payload, "data");
-  const prevData = readNested(payload, "updatedFrom");
-  const mapping = mapLinearActionToTriggerType(event.action ?? null, data, prevData);
-
-  const teamName = readString(readNested(data, "team"), "name") ?? readString(data, "teamName");
-  const projectName = readString(readNested(data, "project"), "name") ?? readString(data, "projectName");
-  const assigneeName = readString(readNested(data, "assignee"), "name") ?? readString(data, "assigneeName");
-  const stateName = readString(readNested(data, "state"), "name") ?? readString(data, "stateName");
-  const labels = readStringArray(data, "labels") ?? readStringArray(readNested(data, "labels"), "nodes");
-  const title = readString(data, "title") ?? undefined;
-
-  const changedFields = prevData ? Object.keys(prevData) : undefined;
-
-  const linearContext: AutomationTriggerLinearIssueContext = {
-    id: event.issueId,
-    title,
-    team: teamName,
-    project: projectName,
-    assignee: assigneeName,
-    state: stateName,
-    previousState: mapping.previousState,
-    labels,
-  };
-
-  return {
-    source: "linear-relay",
-    eventKey: event.eventId,
-    triggerType: mapping.triggerType,
-    eventName: event.action,
-    summary: event.summary,
-    labels,
-    rawPayload: payload,
-    linear: { issue: linearContext },
-    project: projectName ?? null,
-    team: teamName ?? null,
-    assignee: assigneeName ?? null,
-    stateTransition: mapping.stateTransition,
-    changedFields,
-  };
 }
 
 // The Claude CLI refuses to start if it detects it is inside another Claude Code
@@ -1865,6 +1760,7 @@ app.whenReady().then(async () => {
     let gitServiceRef: ReturnType<typeof createGitOperationsService> | null =
       null;
     let linearIssueTrackerRef: LinearIssueTracker | null = null;
+    let linearLiveStatusServiceRef: LinearLiveStatusService | null = null;
 
     const lastHeadByLaneId = new Map<string, string>();
 
@@ -2285,6 +2181,7 @@ app.whenReady().then(async () => {
       autoRebaseService,
       rebaseSuggestionService,
       getLinearIssueTracker: () => linearIssueTrackerRef,
+      getLinearLiveStatusService: () => linearLiveStatusServiceRef,
       onHotRefreshChanged: () => {
         prPollingServiceRef?.poke();
       },
@@ -2430,6 +2327,42 @@ app.whenReady().then(async () => {
             },
           ),
         );
+        // Live status round-trip (no-op unless flag is set): a PR that just
+        // transitioned into the merged state moves its linked Linear issues to
+        // Done.
+        const liveStatus = linearLiveStatusServiceRef;
+        if (liveStatus?.enabled) {
+          const mergedLaneIds = new Set(
+            changes
+              .filter((change) => change.previousState !== "merged" && change.pr.state === "merged" && change.pr.laneId)
+              .map((change) => change.pr.laneId as string),
+          );
+          for (const laneId of mergedLaneIds) {
+            try {
+              const lanes = await laneService.list({ includeArchived: true, includeStatus: false });
+              const lane = lanes.find((entry) => entry.id === laneId) ?? null;
+              if (!lane) continue;
+              const issues = new Map<string, { id: string; teamKey?: string | null; stateId?: string | null }>();
+              const addIssue = (issue: { id: string; teamKey?: string | null; stateId?: string | null } | null | undefined): void => {
+                if (issue?.id) issues.set(issue.id, issue);
+              };
+              addIssue(lane.linearIssue ?? null);
+              for (const link of lane.linearIssueLinks ?? []) {
+                if (link.closeOnMerge) addIssue(link.issue);
+              }
+              for (const link of laneService.listLinearIssuesForLaneSessions?.({ laneId }) ?? []) {
+                if (link.closeOnMerge) addIssue(link.issue);
+              }
+              if (issues.size === 0) continue;
+              await liveStatus.onIssueMerged({ issues: Array.from(issues.values()) });
+            } catch (error) {
+              logger.warn("linear.live_status_merge_failed", {
+                laneId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+        }
       },
     });
     prPollingServiceRef = prPollingService;
@@ -2505,6 +2438,42 @@ app.whenReady().then(async () => {
       };
     };
 
+    // Materialize the per-session Linear issue context for a CLI terminal agent
+    // (mirrors agentChatService.buildAgentRuntimeEnv for SDK chats) so the agent
+    // can read its attached issues without Linear creds. Keyed by the terminal's
+    // chat/session id; returns the env vars pointing at the context file.
+    const getSessionLinearEnv = ({
+      sessionId,
+      chatSessionId,
+    }: {
+      sessionId: string;
+      chatSessionId: string | null;
+    }): Record<string, string> | null => {
+      const linkKey = (chatSessionId ?? sessionId).trim();
+      if (!linkKey) return null;
+      try {
+        const links = laneService.listLinearIssuesForSession?.({ chatSessionId: linkKey }) ?? [];
+        const context = writeSessionLinearIssueContextFile({
+          contextDir: resolveAdeLayout(projectRoot).contextDir,
+          sessionId: linkKey,
+          links,
+          now: new Date().toISOString(),
+        });
+        if (!context) return null;
+        return {
+          ADE_LINEAR_ISSUE_IDS: context.identifiers,
+          ADE_LINEAR_CONTEXT_FILE: context.filePath,
+        };
+      } catch (error) {
+        logger.warn("pty.session_linear_env_failed", {
+          sessionId,
+          chatSessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      }
+    };
+
     const onTrackedSessionEnded = ({
       laneId,
       sessionId,
@@ -2560,6 +2529,7 @@ app.whenReady().then(async () => {
       aiIntegrationService,
       projectConfigService,
       getLaneRuntimeEnv,
+      getSessionLinearEnv,
       getAdeCliAgentEnv: adeCliService.agentEnv,
       logger,
       broadcastData: (ev) => {
@@ -2714,6 +2684,12 @@ app.whenReady().then(async () => {
       client: linearClient,
     });
     linearIssueTrackerRef = linearIssueTracker;
+    // Live status round-trip (gated OFF unless ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1).
+    const linearLiveStatusService = createLinearLiveStatusService({
+      getIssueTracker: () => linearIssueTrackerRef,
+      logger,
+    });
+    linearLiveStatusServiceRef = linearLiveStatusService;
     const linearTemplateService = createLinearTemplateService({
       adeDir: adePaths.adeDir,
     });
@@ -2793,6 +2769,20 @@ app.whenReady().then(async () => {
             sessionId,
             issueId: issue.id,
             issueIdentifier: issue.identifier,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+        // Agent launched against a Linear issue → reflect status into Linear
+        // (no-op unless the live round-trip flag is set).
+        void linearLiveStatusServiceRef?.onAgentLaunched({
+          issue,
+          branchName: issue.branchName,
+          laneName: sessionTitle,
+        }).catch((error) => {
+          logger.warn("linear.live_status_launch_failed", {
+            laneId,
+            sessionId,
+            issueId: issue.id,
             error: error instanceof Error ? error.message : String(error),
           });
         });
@@ -3486,8 +3476,7 @@ app.whenReady().then(async () => {
             adeIssueLinkCause: isCreatedIssueEvent ? "linear_issue_created" : "linear_issue_ingress",
           });
           try {
-            const dispatched = buildLinearAutomationDispatch(event);
-            if (dispatched) {
+            for (const dispatched of buildLinearAutomationDispatches(event)) {
               await automationService.dispatchIngressTrigger(dispatched);
             }
           } catch (error) {

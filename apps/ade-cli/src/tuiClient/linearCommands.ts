@@ -6,10 +6,37 @@ export type LinearToolRequest =
       args: Record<string, unknown>;
     }
   | {
+      // run_ade_action with object args (domain.action). Used by attach/detach
+      // and the issue write-bridge, which live on the lane/linear_issue_tracker
+      // domains rather than the flat Linear tool names.
+      kind: "action";
+      title: string;
+      domain: string;
+      action: string;
+      args: Record<string, unknown>;
+    }
+  | {
+      // run_ade_action with positional args (argsList). The Linear issue tracker
+      // write methods (createComment, updateIssueState, ...) take positionals.
+      kind: "actionList";
+      title: string;
+      domain: string;
+      action: string;
+      argsList: unknown[];
+    }
+  | {
       kind: "usage";
       title: string;
       body: string;
     };
+
+/**
+ * Sentinel the dispatcher replaces with the active chat session id. Session-scoped
+ * Linear commands default to the active session when one is not named explicitly;
+ * linearCommands.ts has no access to UI state, so it emits this placeholder and
+ * the /linear dispatcher in app.tsx substitutes the live id.
+ */
+export const ACTIVE_SESSION_PLACEHOLDER = "__ACTIVE_SESSION__";
 
 type ParsedArgs = {
   positionals: string[];
@@ -84,17 +111,191 @@ function tool(title: string, toolName: string, args: Record<string, unknown> = {
   return { kind: "tool", title, toolName, args: compactArgs(args) };
 }
 
+function action(title: string, domain: string, name: string, args: Record<string, unknown> = {}): LinearToolRequest {
+  return { kind: "action", title, domain, action: name, args: compactArgs(args) };
+}
+
+function actionList(title: string, domain: string, name: string, argsList: unknown[]): LinearToolRequest {
+  return { kind: "actionList", title, domain, action: name, argsList };
+}
+
+/**
+ * Resolve issue objects for attach from `--issue-id <id>` or `--linear-issue-json`
+ * (object or array). Returns null when neither is present.
+ */
+function parseIssuesOption(options: Record<string, unknown>): Record<string, unknown>[] | null {
+  const json = options.linearIssueJson ?? options.issueJson ?? options.linearIssuesJson;
+  if (typeof json === "string") {
+    try {
+      const parsed = JSON.parse(json) as unknown;
+      const candidates = Array.isArray(parsed) ? parsed : [parsed];
+      const issues = candidates.filter(
+        (entry): entry is Record<string, unknown> =>
+          Boolean(entry) && typeof entry === "object" && !Array.isArray(entry),
+      );
+      if (issues.length) return issues;
+    } catch {
+      return null;
+    }
+  }
+  const id = optionString(options, "issueId", "issue", "linearIssueId");
+  if (id) return [{ id, identifier: id }];
+  return null;
+}
+
+/** Issue id for the write-bridge commands: `--issue-id`/`--issue` flag, else the leading positional. */
+function writeCommandIssueId(options: Record<string, unknown>, modeArg: string | undefined): string | null {
+  return optionString(options, "issueId", "issue") ?? modeArg ?? null;
+}
+
+/** Shared attachment flags (source, includeInPr, closeOnMerge, role). */
+function attachmentFlags(options: Record<string, unknown>): Record<string, unknown> {
+  return compactArgs({
+    role: optionString(options, "role") ?? undefined,
+    source: optionString(options, "source") ?? undefined,
+    includeInPr:
+      optionBoolean(options, "noIncludeInPr") === true
+        ? false
+        : optionBoolean(options, "includeInPr"),
+    closeOnMerge: optionBoolean(options, "closeOnMerge"),
+  });
+}
+
 export function buildLinearToolRequest(input: string): LinearToolRequest {
   const parsed = parseLinearArgs(input);
   const [group, modeArg, ...rest] = parsed.positionals;
   const options = parsed.options;
 
   if (!group) {
-    return usage("Linear", "Usage: /linear <workflows|run|route|sync|ingress> ...");
+    return usage(
+      "Linear",
+      "Usage: /linear <attach|detach|issues|comment|set-state|assign|label|issue|create-from|workflows|run|route|sync|ingress> ...",
+    );
   }
 
   if (group === "workflows") {
     return tool("Linear workflows", "listLinearWorkflows");
+  }
+
+  if (group === "attach" || group === "attach-issue" || group === "attach-linear-issue") {
+    // Attach an issue to a session (default: the active chat) or a lane.
+    const issues = parseIssuesOption(options);
+    if (!issues) {
+      return usage(
+        "Linear attach",
+        "Usage: /linear attach --issue-id <id> [--session <id>] [--lane <id>]  (defaults to the active chat session)",
+      );
+    }
+    const laneId = optionString(options, "laneId", "lane");
+    const sessionId = optionString(options, "session", "sessionId", "chatSession", "chatSessionId");
+    if (laneId && !sessionId) {
+      return action("Linear attach (lane)", "lane", "linkLinearIssues", {
+        laneId,
+        issues,
+        ...attachmentFlags(options),
+      });
+    }
+    // attachLinearIssueToSession takes an issues array keyed by chatSessionId. A
+    // missing chatSessionId is filled with the active session by the dispatcher.
+    return action("Linear attach", "lane", "attachLinearIssueToSession", {
+      chatSessionId: sessionId ?? ACTIVE_SESSION_PLACEHOLDER,
+      issues,
+      ...attachmentFlags(options),
+    });
+  }
+
+  if (group === "detach" || group === "detach-issue" || group === "detach-linear-issue") {
+    const laneId = optionString(options, "laneId", "lane");
+    const sessionId = optionString(options, "session", "sessionId", "chatSession", "chatSessionId");
+    // Omitting an issue id detaches all (non-primary for a lane; every issue for a session).
+    const issueId = optionString(options, "issueId", "issue", "linearIssueId") ?? modeArg ?? rest[0] ?? null;
+    if (laneId && !sessionId) {
+      return action("Linear detach (lane)", "lane", "unlinkLinearIssues", {
+        laneId,
+        issueId: issueId ?? undefined,
+      });
+    }
+    return action("Linear detach", "lane", "detachLinearIssueFromSession", {
+      chatSessionId: sessionId ?? ACTIVE_SESSION_PLACEHOLDER,
+      issueId: issueId ?? undefined,
+    });
+  }
+
+  if (group === "issues" || group === "attached") {
+    const sessionId = optionString(options, "session", "sessionId", "chatSession", "chatSessionId");
+    return action("Linear attached issues", "lane", "listLinearIssuesForSession", {
+      chatSessionId: sessionId ?? ACTIVE_SESSION_PLACEHOLDER,
+    });
+  }
+
+  if (group === "comment") {
+    const issueId = writeCommandIssueId(options, modeArg);
+    const body = optionString(options, "body", "text", "message") ?? rest.join(" ").trim();
+    if (!issueId || !body) {
+      return usage("Linear comment", "Usage: /linear comment <issue-id> <text...>");
+    }
+    return actionList("Linear comment", "linear_issue_tracker", "createComment", [issueId, body]);
+  }
+
+  if (group === "set-state" || group === "status" || group === "state" || group === "move") {
+    const issueId = writeCommandIssueId(options, modeArg);
+    const stateId = optionString(options, "stateId", "state", "status") ?? rest[0] ?? null;
+    if (!issueId || !stateId) {
+      return usage("Linear set-state", "Usage: /linear set-state <issue-id> <state-id>");
+    }
+    return actionList("Linear set-state", "linear_issue_tracker", "updateIssueState", [issueId, stateId]);
+  }
+
+  if (group === "assign") {
+    const issueId = writeCommandIssueId(options, modeArg);
+    if (!issueId) return usage("Linear assign", "Usage: /linear assign <issue-id> <assignee-id|none>");
+    const rawAssignee = optionString(options, "assignee", "assigneeId", "user") ?? rest[0] ?? null;
+    const normalized = (rawAssignee ?? "").toLowerCase();
+    const assigneeId =
+      !rawAssignee || normalized === "none" || normalized === "null" || normalized === "unassigned"
+        ? null
+        : rawAssignee;
+    return actionList("Linear assign", "linear_issue_tracker", "updateIssueAssignee", [issueId, assigneeId]);
+  }
+
+  if (group === "label" || group === "add-label") {
+    const issueId = writeCommandIssueId(options, modeArg);
+    const labelName = optionString(options, "label", "labelName", "name") ?? rest[0] ?? null;
+    if (!issueId || !labelName) {
+      return usage("Linear label", "Usage: /linear label <issue-id> <label-name>");
+    }
+    return actionList("Linear add-label", "linear_issue_tracker", "addLabel", [issueId, labelName]);
+  }
+
+  if (group === "issue" || group === "show-issue" || group === "get-issue") {
+    const issueId = writeCommandIssueId(options, modeArg);
+    if (!issueId) return usage("Linear issue", "Usage: /linear issue <issue-id>");
+    return actionList("Linear issue", "linear_issue_tracker", "fetchIssueById", [issueId]);
+  }
+
+  if (group === "create-from" || group === "create-from-linear" || group === "create-lane-from") {
+    // Create a lane from an issue. Auto-launching an agent from the TUI is out of
+    // scope here (the desktop launch modal owns that); the CLI offers --start-chat.
+    const issues = parseIssuesOption(options);
+    if (!issues || issues.length !== 1) {
+      return usage(
+        "Linear create-from",
+        "Usage: /linear create-from --issue-id <id> [--name <name>] [--base <branch>]",
+      );
+    }
+    const issue = issues[0]!;
+    const name =
+      optionString(options, "name") ??
+      (typeof issue.title === "string" ? issue.title : null) ??
+      (typeof issue.identifier === "string" ? issue.identifier : null) ??
+      (typeof issue.id === "string" ? issue.id : null) ??
+      "Linear lane";
+    return tool("Linear create lane", "create_lane", compactArgs({
+      name,
+      linearIssue: issue,
+      baseBranch: optionString(options, "base", "baseBranch") ?? undefined,
+      branchName: optionString(options, "branchName") ?? undefined,
+    }));
   }
 
   if (group === "run") {
@@ -193,5 +394,8 @@ export function buildLinearToolRequest(input: string): LinearToolRequest {
     return usage("Linear ingress", "Usage: /linear ingress <status|events|webhook>");
   }
 
-  return usage("Linear", "Usage: /linear <workflows|run|route|sync|ingress> ...");
+  return usage(
+    "Linear",
+    "Usage: /linear <attach|detach|issues|comment|set-state|assign|label|issue|create-from|workflows|run|route|sync|ingress> ...",
+  );
 }

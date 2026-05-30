@@ -6,6 +6,8 @@ import { createRequire } from "node:module";
 import initSqlJs from "sql.js";
 import type { Database, SqlJsStatic } from "sql.js";
 import { createAutomationService, normalizeRuntimeRule, presetToTemplate, triggerMatches } from "./automationService";
+import { buildLinearAutomationDispatches } from "./linearAutomationDispatch";
+import type { LinearIngressEventRecord } from "../../../shared/types/linearSync";
 
 type SqlValue = string | number | null | Uint8Array;
 
@@ -72,6 +74,58 @@ describe("triggerMatches", () => {
     expect(triggerMatches(
       { type: "github.pr_commented", branch: "release/*" },
       trigger,
+      undefined,
+      undefined,
+    )).toBe(false);
+  });
+
+  it("matches linear.issue_labeled against the added labels only", () => {
+    // The dispatch carries only the added label names in `labels`; the issue's
+    // full label set lives in `linear.issue.labels`.
+    const trigger = {
+      triggerType: "linear.issue_labeled" as const,
+      labels: ["ready-for-ade"],
+      linear: {
+        issue: {
+          id: "issue-1",
+          title: "Fix OAuth",
+          team: "ENG",
+          labels: ["bug", "ready-for-ade", "p1"],
+        },
+      },
+    };
+
+    // Configured label is among the added labels → matches.
+    expect(triggerMatches(
+      { type: "linear.issue_labeled", labels: ["ready-for-ade"] },
+      trigger,
+      undefined,
+      undefined,
+    )).toBe(true);
+
+    // A label that's on the issue but was NOT just added must not match.
+    expect(triggerMatches(
+      { type: "linear.issue_labeled", labels: ["p1"] },
+      trigger,
+      undefined,
+      undefined,
+    )).toBe(false);
+  });
+
+  it("requires at least one added label for a label rule with no configured label", () => {
+    const base = {
+      triggerType: "linear.issue_labeled" as const,
+      linear: { issue: { id: "issue-2", title: "X", team: "ENG", labels: ["x"] } },
+    };
+    expect(triggerMatches(
+      { type: "linear.issue_labeled" },
+      { ...base, labels: ["x"] },
+      undefined,
+      undefined,
+    )).toBe(true);
+    expect(triggerMatches(
+      { type: "linear.issue_labeled" },
+      { ...base, labels: [] },
       undefined,
       undefined,
     )).toBe(false);
@@ -1498,4 +1552,145 @@ describe("automationService integration", () => {
 
   });
 
+});
+
+// Folded from the former linearAutomationDispatch.test.ts: the Linear webhook →
+// automation-trigger mapping (label-add one-shot diffing) is part of the same
+// automation-trigger contract, so it lives here rather than in its own file.
+function makeLinearEvent(overrides: Partial<LinearIngressEventRecord> = {}): LinearIngressEventRecord {
+  return {
+    id: "row-1",
+    source: "relay",
+    deliveryId: "delivery-1",
+    kind: "issue.update",
+    eventId: "evt-1",
+    entityType: "Issue",
+    action: "update",
+    issueId: "issue-1",
+    issueIdentifier: "ENG-1",
+    summary: "ENG-1: Fix OAuth",
+    payload: null,
+    createdAt: "2026-05-29T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("buildLinearAutomationDispatches", () => {
+  it("returns nothing for events without an issue id", () => {
+    expect(buildLinearAutomationDispatches(makeLinearEvent({ issueId: null }))).toEqual([]);
+  });
+
+  it("emits issue_updated for a plain edit with no label change", () => {
+    const event = makeLinearEvent({
+      payload: {
+        data: { title: "Fix OAuth", labelIds: ["l1"], labels: [{ id: "l1", name: "bug" }] },
+        updatedFrom: { title: "Old" },
+      },
+    });
+    const dispatches = buildLinearAutomationDispatches(event);
+    expect(dispatches.map((d) => d.triggerType)).toEqual(["linear.issue_updated"]);
+  });
+
+  it("emits a one-shot issue_labeled and suppresses issue_updated for a pure label add", () => {
+    const event = makeLinearEvent({
+      payload: {
+        data: {
+          labelIds: ["l1", "l2"],
+          labels: [
+            { id: "l1", name: "bug" },
+            { id: "l2", name: "ready-for-ade" },
+          ],
+        },
+        updatedFrom: { labelIds: ["l1"] },
+      },
+    });
+    const dispatches = buildLinearAutomationDispatches(event);
+    // Only the labeled event fires — no duplicate issue_updated.
+    expect(dispatches.map((d) => d.triggerType)).toEqual(["linear.issue_labeled"]);
+    const labeled = dispatches[0]!;
+    // The matchable labels are the *added* names only.
+    expect(labeled.labels).toEqual(["ready-for-ade"]);
+    expect(labeled.eventKey).toContain("labeled");
+    expect((labeled.rawPayload as { addedLabels?: string[] })?.addedLabels).toEqual(["ready-for-ade"]);
+  });
+
+  it("keeps a concurrent status change alongside the labeled event", () => {
+    const event = makeLinearEvent({
+      payload: {
+        data: {
+          state: { name: "In Progress" },
+          labelIds: ["l1", "l2"],
+          labels: [
+            { id: "l1", name: "bug" },
+            { id: "l2", name: "ready-for-ade" },
+          ],
+        },
+        updatedFrom: { labelIds: ["l1"], state: { name: "Todo" } },
+      },
+    });
+    const dispatches = buildLinearAutomationDispatches(event);
+    // Both fire: the labeled one-shot and the real status transition.
+    expect(dispatches.map((d) => d.triggerType).sort()).toEqual([
+      "linear.issue_labeled",
+      "linear.issue_status_changed",
+    ]);
+    const status = dispatches.find((d) => d.triggerType === "linear.issue_status_changed")!;
+    expect(status.stateTransition).toBe("Todo->In Progress");
+  });
+
+  it("keeps a concurrent assignment alongside the labeled event", () => {
+    const event = makeLinearEvent({
+      payload: {
+        data: {
+          assigneeId: "user-2",
+          labelIds: ["l1", "l2"],
+          labels: [
+            { id: "l1", name: "bug" },
+            { id: "l2", name: "ready-for-ade" },
+          ],
+        },
+        updatedFrom: { labelIds: ["l1"], assigneeId: "user-1" },
+      },
+    });
+    const dispatches = buildLinearAutomationDispatches(event);
+    expect(dispatches.map((d) => d.triggerType).sort()).toEqual([
+      "linear.issue_assigned",
+      "linear.issue_labeled",
+    ]);
+  });
+
+  it("does not treat a removed label as an add", () => {
+    const event = makeLinearEvent({
+      payload: {
+        data: { labelIds: ["l1"], labels: [{ id: "l1", name: "bug" }] },
+        updatedFrom: { labelIds: ["l1", "l2"] },
+      },
+    });
+    const dispatches = buildLinearAutomationDispatches(event);
+    expect(dispatches.map((d) => d.triggerType)).toEqual(["linear.issue_updated"]);
+  });
+
+  it("does not emit issue_labeled on create even when labels are present", () => {
+    const event = makeLinearEvent({
+      action: "create",
+      payload: {
+        data: { labelIds: ["l1"], labels: [{ id: "l1", name: "bug" }] },
+      },
+    });
+    const dispatches = buildLinearAutomationDispatches(event);
+    expect(dispatches.map((d) => d.triggerType)).toEqual(["linear.issue_created"]);
+  });
+
+  it("ignores an added label id with no resolvable name", () => {
+    const event = makeLinearEvent({
+      payload: {
+        // l2 was added but has no entry in `labels`, so we can't name it → skip.
+        data: { labelIds: ["l1", "l2"], labels: [{ id: "l1", name: "bug" }] },
+        updatedFrom: { labelIds: ["l1"] },
+      },
+    });
+    const dispatches = buildLinearAutomationDispatches(event);
+    // No nameable added label → fall through to the plain update event.
+    expect(dispatches.map((d) => d.triggerType)).toEqual(["linear.issue_updated"]);
+  });
 });

@@ -1,5 +1,6 @@
 import type { LaunchProfile } from "../../../shared/cliLaunch";
 import type { AgentChatPermissionMode } from "../../../shared/types";
+import type { LaneLinearIssue } from "../../../shared/types";
 import type { PtyCreateResult } from "../../../shared/types";
 
 export * from "../../../shared/cliLaunch";
@@ -20,6 +21,12 @@ export type WorkPtyLaunchArgs = {
   env?: Record<string, string>;
   tracked?: boolean;
   disposition?: WorkPtyLaunchDisposition;
+  /**
+   * Linear issues to attach to the launched terminal session before spawn, so
+   * the CLI agent inherits `ADE_LINEAR_*` env and can drive its issue via
+   * `ade linear`. Forwarded to `pty.create`.
+   */
+  linearIssues?: LaneLinearIssue[];
 };
 
 export type WorkPtyLaunchResult = PtyCreateResult;

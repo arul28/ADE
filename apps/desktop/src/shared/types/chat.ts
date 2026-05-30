@@ -5,7 +5,7 @@
 import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
-import type { LaneLinearIssue } from "./lanes";
+import type { LaneLinearIssue, SessionLinearIssueLink } from "./lanes";
 
 export type AgentChatProvider = "codex" | "claude" | "cursor" | "droid" | "opencode" | (string & {});
 
@@ -954,6 +954,12 @@ export type AgentChatSessionSummary = {
   pendingInputItemId?: string | null;
   threadId?: string;
   requestedCwd?: string | null;
+  /**
+   * Linear issues attached to this session (chat or CLI), independent of any
+   * lane link. Populated from `session_linear_issues`; empty/omitted when the
+   * session has no attached issues.
+   */
+  linearIssueLinks?: SessionLinearIssueLink[];
 } & OrchestrationSessionFields;
 
 export type AgentChatTranscriptEntry = {
@@ -1212,6 +1218,59 @@ export type AgentChatCreateArgs = {
   orchestrationTag?: string;
   orchestrationStepId?: string;
   orchestrationBundlePath?: string;
+};
+
+/**
+ * Args for headlessly launching an agent in a lane with no mounted chat pane.
+ * Creates the session and fires the first turn off without awaiting it, so a
+ * caller (e.g. the multi-lane Linear launch flow) can spin up N lanes that each
+ * start working immediately. The kickoff text drives the first turn; optional
+ * context attachments (Linear issue / orchestration annotations) are forwarded
+ * to that turn the same way an interactive send would.
+ */
+export type AgentChatLaunchArgs = AgentChatCreateArgs & {
+  kickoffText: string;
+  kickoffDisplayText?: string;
+  contextAttachments?: AgentChatContextAttachment[];
+};
+
+/** CLI provider profiles a headless CLI launch can target. */
+export type AgentChatCliLaunchProvider =
+  | "claude"
+  | "codex"
+  | "cursor"
+  | "droid"
+  | "opencode";
+
+/**
+ * Launch a tracked CLI/terminal agent (not the in-process chat SDK) with one or
+ * more Linear issues attached before the process spawns, so the agent inherits
+ * `ADE_LINEAR_ISSUE_IDS` + `ADE_LINEAR_CONTEXT_FILE` and can read/update its
+ * issue through `ade linear`. The kickoff prompt is submitted to the agent on
+ * launch. Provider/model/permission build the startup command server-side.
+ */
+export type AgentChatLaunchCliArgs = {
+  laneId: string;
+  provider: AgentChatCliLaunchProvider;
+  /** Runtime model ref for the provider's fresh-launch CLI flags. */
+  model?: string | null;
+  reasoningEffort?: string | null;
+  permissionMode?: AgentChatPermissionMode;
+  /** Prompt submitted to the CLI agent once it starts. */
+  kickoffPrompt: string;
+  /** Linear issues to attach to the new session before spawn. */
+  linearIssues?: LaneLinearIssue[];
+  title?: string;
+  /** Foreground opens/focuses the session; background leaves focus alone. */
+  disposition?: "foreground" | "background";
+};
+
+export type AgentChatLaunchCliResult = {
+  sessionId: string;
+  ptyId: string;
+  pid: number | null;
+  /** Identifiers of the issues attached to the launched session. */
+  attachedLinearIssueIds: string[];
 };
 
 export type AgentChatRuntimeMode = "interactive" | "print";

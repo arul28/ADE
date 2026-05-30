@@ -3030,6 +3030,72 @@ describe("preload OAuth bridge", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatCodexOpenInCli, input);
   });
 
+  it("routes CLI agent launches through a remote project runtime when bound", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const input = {
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      kickoffPrompt: "Work this issue",
+      linearIssues: [{ id: "issue-1" }],
+    };
+    const result = {
+      sessionId: "term-1",
+      ptyId: "pty-1",
+      pid: 123,
+      attachedLinearIssueIds: ["issue-1"],
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeCallAction) {
+        return { ok: true, domain: "chat", action: "launchCli", result, statusHints: {} };
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.agentChat.launchCli(input)).resolves.toEqual(result);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: {
+        domain: "chat",
+        action: "launchCli",
+        args: input,
+      },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatLaunchCli, input);
+  });
+
   it("does not fall back to a local PR lookup when remote open-in-GitHub misses", async () => {
     const binding = {
       kind: "remote",

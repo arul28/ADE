@@ -85,6 +85,8 @@ export type IssueTracker = {
   createComment(issueId: string, body: string): Promise<IssueTrackerWorkpadResult>;
   updateComment(commentId: string, body: string): Promise<void>;
   addLabel(issueId: string, labelName: string): Promise<void>;
+  addIssueLabel(issueId: string, labelId: string): Promise<void>;
+  removeIssueLabel(issueId: string, labelId: string): Promise<void>;
   uploadAttachment(args: { issueId: string; filePath: string; title?: string }): Promise<{ url: string; id?: string }>;
   createIssueAttachment(args: IssueTrackerIssueAttachmentInput): Promise<{ url: string; id?: string }>;
   fetchIssueComments(issueId: string): Promise<Array<{

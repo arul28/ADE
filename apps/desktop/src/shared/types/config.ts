@@ -587,6 +587,7 @@ export const AUTOMATION_TRIGGER_TYPES = [
   "linear.issue_updated",
   "linear.issue_assigned",
   "linear.issue_status_changed",
+  "linear.issue_labeled",
   "github-webhook",
   "webhook",
 ] as const;

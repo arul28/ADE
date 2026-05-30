@@ -8,11 +8,19 @@ import { logRendererDebugEvent } from "../../lib/debugLog";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { LaneAccentDot } from "./LaneAccentDot";
 import { LinearIssueBadge } from "./LinearIssueBadge";
+import { LaneAgentList } from "./LaneAgentList";
+import type { LaneAgent } from "./laneAgents";
 
 const TREE_ROW_H = 34;
 const TREE_INDENT = 22;
 const TREE_LEFT_PAD = 16;
 const TREE_DOT_R = 5;
+// Inline per-lane agent dashboard rows render directly beneath each lane label,
+// so a lane row's height grows with its agent count.
+const AGENT_ROW_H = 22;
+const AGENTS_TOP_GAP = 2;
+const AGENTS_BOTTOM_PAD = 4;
+const TREE_TOP_PAD = 4;
 
 type TreeNodeLayout = {
   lane: LaneSummary;
@@ -20,6 +28,9 @@ type TreeNodeLayout = {
   depth: number;
   dotX: number;
   dotY: number;
+  rowTop: number;
+  agents: LaneAgent[];
+  agentsHeight: number;
 };
 
 type LaneRuntimeBucket = "running" | "awaiting-input" | "ended" | "none";
@@ -75,6 +86,9 @@ function StackGraph({
   runtimeByLaneId,
   integrationSourcesByLaneId,
   onStartChatWithLinearIssue,
+  agentsByLaneId,
+  highlightedSessionIds,
+  onOpenAgent,
 }: {
   lanes: LaneSummary[];
   selectedLaneId: string | null;
@@ -82,6 +96,9 @@ function StackGraph({
   runtimeByLaneId: LaneRuntimeMap;
   integrationSourcesByLaneId: Map<string, IntegrationLaneSource[]>;
   onStartChatWithLinearIssue?: (laneId: string, issue: LaneLinearIssue) => void;
+  agentsByLaneId?: Map<string, LaneAgent[]>;
+  highlightedSessionIds?: Set<string>;
+  onOpenAgent?: (agent: LaneAgent) => void;
 }) {
   const layout = React.useMemo(() => {
     const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
@@ -125,20 +142,37 @@ function StackGraph({
       return depth;
     };
 
+    let y = TREE_TOP_PAD;
     return lanes.map((lane, idx) => {
       const depth = depthFor(lane.id);
-      return {
+      const agents = agentsByLaneId?.get(lane.id) ?? [];
+      const agentsHeight = agents.length
+        ? AGENTS_TOP_GAP + agents.length * AGENT_ROW_H + AGENTS_BOTTOM_PAD
+        : 0;
+      const rowTop = y;
+      const node = {
         lane,
         row: idx,
         depth,
         dotX: TREE_LEFT_PAD + depth * TREE_INDENT,
-        dotY: idx * TREE_ROW_H + TREE_ROW_H / 2
+        // Dot + connectors anchor on the lane label, not the whole (taller) row.
+        dotY: rowTop + TREE_ROW_H / 2,
+        rowTop,
+        agents,
+        agentsHeight,
       } satisfies TreeNodeLayout;
+      y += TREE_ROW_H + agentsHeight;
+      return node;
     });
-  }, [lanes]);
+  }, [lanes, agentsByLaneId]);
   const layoutById = React.useMemo(() => new Map(layout.map((n) => [n.lane.id, n])), [layout]);
 
-  const totalHeight = layout.length * TREE_ROW_H + 4;
+  const totalHeight =
+    (layout.length
+      ? layout[layout.length - 1]!.rowTop +
+        TREE_ROW_H +
+        layout[layout.length - 1]!.agentsHeight
+      : 0) + TREE_TOP_PAD;
 
   const childrenByParent = React.useMemo(() => {
     const map = new Map<string, TreeNodeLayout[]>();
@@ -227,7 +261,7 @@ function StackGraph({
               className="absolute flex items-center gap-1.5 transition-all duration-150 whitespace-nowrap"
               style={{
                 left: node.dotX + TREE_DOT_R + 5,
-                top: node.dotY - (TREE_ROW_H - 6) / 2,
+                top: node.rowTop + 3,
                 height: TREE_ROW_H - 6,
                 padding: "0 8px",
                 borderRadius: 8,
@@ -301,11 +335,34 @@ function StackGraph({
                 </span>
               ) : null}
               <span style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.textDim }} className="shrink-0">
-                {lane.status.ahead}\u2191 {lane.status.behind}\u2193
+                {lane.status.ahead}↑ {lane.status.behind}↓
               </span>
             </button>
           );
         })}
+
+        {onOpenAgent
+          ? layout.map((node) =>
+              node.agents.length ? (
+                <div
+                  key={`agents:${node.lane.id}`}
+                  className="absolute"
+                  style={{
+                    left: node.dotX + TREE_DOT_R + 14,
+                    right: 8,
+                    top: node.rowTop + TREE_ROW_H + AGENTS_TOP_GAP,
+                  }}
+                >
+                  <LaneAgentList
+                    agents={node.agents}
+                    highlightedSessionIds={highlightedSessionIds}
+                    onOpenAgent={onOpenAgent}
+                    compact
+                  />
+                </div>
+              ) : null,
+            )
+          : null}
       </div>
     </div>
   );
@@ -318,6 +375,9 @@ export function LaneStackPane({
   runtimeByLaneId,
   integrationSourcesByLaneId,
   onStartChatWithLinearIssue,
+  agentsByLaneId,
+  highlightedSessionIds,
+  onOpenAgent,
 }: {
   lanes: LaneSummary[];
   selectedLaneId: string | null;
@@ -325,6 +385,9 @@ export function LaneStackPane({
   runtimeByLaneId: LaneRuntimeMap;
   integrationSourcesByLaneId?: Map<string, IntegrationLaneSource[]>;
   onStartChatWithLinearIssue?: (laneId: string, issue: LaneLinearIssue) => void;
+  agentsByLaneId?: Map<string, LaneAgent[]>;
+  highlightedSessionIds?: Set<string>;
+  onOpenAgent?: (agent: LaneAgent) => void;
 }) {
   const navigate = useNavigate();
   React.useEffect(() => {
@@ -399,14 +462,19 @@ export function LaneStackPane({
           </div>
         </div>
       ) : null}
-      <StackGraph
-        lanes={lanes}
-        selectedLaneId={selectedLaneId}
-        onSelect={onSelect}
-        runtimeByLaneId={runtimeByLaneId}
-        integrationSourcesByLaneId={effectiveIntegrationSourcesByLaneId}
-        onStartChatWithLinearIssue={onStartChatWithLinearIssue}
-      />
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <StackGraph
+          lanes={lanes}
+          selectedLaneId={selectedLaneId}
+          onSelect={onSelect}
+          runtimeByLaneId={runtimeByLaneId}
+          integrationSourcesByLaneId={effectiveIntegrationSourcesByLaneId}
+          onStartChatWithLinearIssue={onStartChatWithLinearIssue}
+          agentsByLaneId={agentsByLaneId}
+          highlightedSessionIds={highlightedSessionIds}
+          onOpenAgent={onOpenAgent}
+        />
+      </div>
     </div>
   );
 }

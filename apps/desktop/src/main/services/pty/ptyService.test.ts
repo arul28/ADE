@@ -338,6 +338,8 @@ function createHarness(overrides: {
       baseRef: "origin/main",
       branchRef: "feature/test",
     })),
+    attachLinearIssueToSession: vi.fn((args: { chatSessionId: string; issues: unknown[] }) =>
+      args.issues.map((issue) => ({ issue }))),
   };
 
   const logger = {
@@ -466,6 +468,40 @@ describe("ptyService", () => {
       expect(result.ptyId).toBe("uuid-1");
       expect(result.sessionId).toBe("uuid-2");
       expect(result.pid).toBe(12345);
+    });
+
+    it("attaches requested Linear issues to the new session before spawn (FIX 5)", async () => {
+      const { service, laneService } = createHarness();
+      const issue = { id: "issue-1", identifier: "ADE-77" };
+      const result = await service.create({
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        tracked: true,
+        linearIssues: [issue as any],
+      });
+
+      // The attach runs against the freshly-created session id so the lane mirror
+      // lands and getSessionLinearEnv can resolve ADE_LINEAR_* for the spawn.
+      expect(laneService.attachLinearIssueToSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chatSessionId: result.sessionId,
+          issues: [issue],
+        }),
+      );
+    });
+
+    it("does not attach Linear issues when none are requested", async () => {
+      const { service, laneService } = createHarness();
+      await service.create({
+        laneId: "lane-1",
+        title: "Plain shell",
+        cols: 80,
+        rows: 24,
+        tracked: true,
+      });
+      expect(laneService.attachLinearIssueToSession).not.toHaveBeenCalled();
     });
 
     it("waits for a supervised PTY host spawn before returning", async () => {

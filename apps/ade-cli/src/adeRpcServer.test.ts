@@ -145,6 +145,21 @@ function createRuntime() {
         name: name ?? "Imported lane",
         branchRef,
       })),
+      linkLinearIssues: vi.fn((args: { laneId: string; issues: unknown[] }) =>
+        args.issues.map((issue, index) => ({ id: `link-${index}`, laneId: args.laneId, issue })),
+      ),
+      unlinkLinearIssues: vi.fn(() => true),
+      attachLinearIssueToSession: vi.fn((args: { chatSessionId: string; issues: unknown[] }) =>
+        args.issues.map((issue, index) => ({
+          id: `session-link-${index}`,
+          chatSessionId: args.chatSessionId,
+          issue,
+        })),
+      ),
+      detachLinearIssueFromSession: vi.fn(() => true),
+      listLinearIssuesForSession: vi.fn((args: { chatSessionId: string }) => [
+        { id: "session-link-0", chatSessionId: args.chatSessionId, issue: { id: "issue-1", identifier: "ENG-1" } },
+      ]),
       delete: vi.fn(async () => {})
     },
     sessionService: {
@@ -2866,6 +2881,74 @@ describe("adeRpcServer", () => {
     });
     expect(preview.structuredContent.result).toBe("data:image/png;base64,AAAA");
 
+  });
+
+  it("routes Linear attach/detach/list and the issue write-bridge through run_ade_action", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+
+    // Session-scoped attach: issues array keyed by chatSessionId.
+    const attach = await callTool(handler, "run_ade_action", {
+      domain: "lane",
+      action: "attachLinearIssueToSession",
+      args: { chatSessionId: "session-9", issues: [{ id: "issue-1", identifier: "ENG-431" }] },
+    });
+    expect(attach?.isError).toBeUndefined();
+    expect(fixture.runtime.laneService.attachLinearIssueToSession).toHaveBeenCalledWith({
+      chatSessionId: "session-9",
+      issues: [{ id: "issue-1", identifier: "ENG-431" }],
+    });
+
+    // Detach: chatSessionId + optional issueId.
+    const detach = await callTool(handler, "run_ade_action", {
+      domain: "lane",
+      action: "detachLinearIssueFromSession",
+      args: { chatSessionId: "session-9", issueId: "ENG-431" },
+    });
+    expect(detach?.isError).toBeUndefined();
+    expect(fixture.runtime.laneService.detachLinearIssueFromSession).toHaveBeenCalledWith({
+      chatSessionId: "session-9",
+      issueId: "ENG-431",
+    });
+
+    // List: object arg.
+    const list = await callTool(handler, "run_ade_action", {
+      domain: "lane",
+      action: "listLinearIssuesForSession",
+      args: { chatSessionId: "session-9" },
+    });
+    expect(list?.isError).toBeUndefined();
+    expect(fixture.runtime.laneService.listLinearIssuesForSession).toHaveBeenCalledWith({
+      chatSessionId: "session-9",
+    });
+    expect(list.structuredContent.result).toHaveLength(1);
+
+    // Lane-scoped unlink (issueId omitted = remove all non-primary links).
+    const unlink = await callTool(handler, "run_ade_action", {
+      domain: "lane",
+      action: "unlinkLinearIssues",
+      args: { laneId: "lane-1" },
+    });
+    expect(unlink?.isError).toBeUndefined();
+    expect(fixture.runtime.laneService.unlinkLinearIssues).toHaveBeenCalledWith({ laneId: "lane-1" });
+
+    // Write-bridge: createComment + updateIssueState (positional).
+    const comment = await callTool(handler, "run_ade_action", {
+      domain: "linear_issue_tracker",
+      action: "createComment",
+      argsList: ["ENG-431", "All green"],
+    });
+    expect(comment?.isError).toBeUndefined();
+    expect(fixture.runtime.linearIssueTracker.createComment).toHaveBeenCalledWith("ENG-431", "All green");
+
+    const setState = await callTool(handler, "run_ade_action", {
+      domain: "linear_issue_tracker",
+      action: "updateIssueState",
+      argsList: ["ENG-431", "state-done"],
+    });
+    expect(setState?.isError).toBeUndefined();
+    expect(fixture.runtime.linearIssueTracker.updateIssueState).toHaveBeenCalledWith("ENG-431", "state-done");
   });
 
   it("invokes review.startRun through ADE actions without dropping unlimited budgets", async () => {

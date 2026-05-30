@@ -12,6 +12,8 @@ import {
 import type { ConflictStatus } from "../../../../shared/types";
 import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
+import { LinearIssueBadge } from "../../lanes/LinearIssueBadge";
+import { LaneAgentList } from "../../lanes/LaneAgentList";
 import { iconGlyph, nodeDimensions } from "../graphHelpers";
 import type { GraphNodeData } from "../graphTypes";
 
@@ -242,6 +244,7 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
             {data.environment.env.slice(0, 10)}
           </span>
         ) : null}
+        {lane.linearIssue ? <LinearIssueBadge issue={lane.linearIssue} compact /> : null}
         {data.mergeInProgress ? <Chip className="px-1.5 py-0 text-[10px] text-accent">Merging</Chip> : null}
         {pr?.activityState === "stale" ? (
           <Chip className="px-1.5 py-0 text-[10px] text-muted-fg">
@@ -249,8 +252,24 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
             Stale
           </Chip>
         ) : null}
-        {data.activeSessions > 0 ? <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" title="Active sessions" /> : null}
+        {!data.agents?.length && data.activeSessions > 0 ? (
+          <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" title="Active sessions" />
+        ) : null}
       </div>
+
+      {data.agents && data.agents.length > 0 && data.onOpenAgent ? (
+        <div className="mt-2 border-t border-white/[0.06] pt-2">
+          <div className="mb-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-fg/55">Agents</div>
+          <div className="nodrag">
+            <LaneAgentList
+              agents={data.agents}
+              highlightedSessionIds={data.highlightedSessionIds}
+              onOpenAgent={data.onOpenAgent}
+              compact
+            />
+          </div>
+        </div>
+      ) : null}
 
       {data.collapsedChildCount > 0 ? (
         <div className="mt-2 inline-flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.02] px-1.5 py-0.5 text-[11px] text-muted-fg">

@@ -20,6 +20,8 @@ import type {
   AgentChatCodexOpenInCliArgs,
   AgentChatCodexOpenInCliResult,
   AgentChatGetTurnFileDiffArgs,
+  AgentChatLaunchCliArgs,
+  AgentChatLaunchCliResult,
   AgentChatParallelLaunchState,
   AgentChatSetParallelLaunchStateArgs,
   AgentChatTurnFileDiff,
@@ -81,6 +83,7 @@ import {
   detectCodexResumeStrategy,
   spawnInNewTerminalWindow,
 } from "../chat/codexCliLauncher";
+import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { createApnsBridgeService } from "../notifications/apnsBridgeService";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 
@@ -188,6 +191,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "adoptAttached",
     "archive",
     "attach",
+    "attachLinearIssueToSession",
     "cancelDelete",
     "create",
     "createChild",
@@ -195,6 +199,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "deferRebaseSuggestion",
     "delete",
     "deleteTemplate",
+    "detachLinearIssueFromSession",
     "diagnosticsActivateFallback",
     "diagnosticsDeactivateFallback",
     "diagnosticsGetLaneHealth",
@@ -219,6 +224,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listRebaseSuggestions",
     "listTemplates",
     "listUnregisteredWorktrees",
+    "listLinearIssuesForLaneSessions",
+    "listLinearIssuesForSession",
     "linkLinearIssues",
     "oauthDecodeState",
     "oauthEncodeState",
@@ -251,6 +258,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "setDefaultTemplate",
     "switchBranch",
     "unarchive",
+    "unlinkLinearIssues",
     "updateAppearance",
   ],
   git: [
@@ -437,6 +445,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getTurnFileDiff",
     "getParallelLaunchState",
     "interrupt",
+    "launchCli",
+    "launchHeadless",
     "listClaudePlugins",
     "listClaudeSessions",
     "listSessions",
@@ -581,6 +591,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   ],
   linear_dispatcher: ["dispatchIssue", "getDashboard", "listEmployees", "listQueue"],
   linear_issue_tracker: [
+    "addIssueLabel",
+    "addLabel",
     "createComment",
     "fetchIssueById",
     "fetchIssuesByIds",
@@ -595,8 +607,11 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listProjects",
     "listWorkflowStates",
     "listUsers",
+    "removeIssueLabel",
     "searchIssues",
+    "updateComment",
     "updateIssueAssignee",
+    "updateIssueState",
   ],
   linear_sync: ["getDashboard", "getRunDetail", "listQueue", "resolveQueueItem", "runSyncNow"],
   linear_ingress: ["ensureRelayWebhook", "getStatus", "listRecentEvents"],
@@ -969,6 +984,19 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         parentLaneId,
       );
     },
+    launchCli: async (
+      args: AgentChatLaunchCliArgs,
+    ): Promise<AgentChatLaunchCliResult> =>
+      launchAgentChatCli(args, {
+        laneService: requireService(
+          runtime.laneService,
+          "Lane service not available.",
+        ),
+        ptyService: requireService(
+          runtime.ptyService,
+          "Terminal service not available.",
+        ),
+      }),
     modelCatalog: (args?: unknown) =>
       agentChatService.getModelCatalog(args && typeof args === "object" ? args as never : undefined),
     codexOpenInCli: async (

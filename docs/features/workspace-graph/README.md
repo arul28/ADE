@@ -43,7 +43,7 @@ Core renderer files (`apps/desktop/src/renderer/components/graph/`):
 | `graphHelpers.ts` | View-mode metadata, icon/color palettes, proposal helpers, risk-edge coloring, `laneSummaryConflictsWith` |
 | `graphLayout.ts` | Auto-layout per view mode, filter defaults, session/preferences persistence, legacy migration |
 | `graphPrData.ts` | `buildGraphPrOverlay` — derives `GraphPrOverlay` from a `PrSummary` + optional live detail bundle |
-| `graphNodes/LaneNode.tsx` | Lane node rendering (badges, status, PR overlay) |
+| `graphNodes/LaneNode.tsx` | Lane node rendering (badges, status, PR overlay) plus the inline per-lane agent dashboard (`LaneAgentList`) when `GraphNodeData.agents` is populated |
 | `graphNodes/ProposalNode.tsx` | Integration proposal node rendering |
 | `graphEdges/RiskEdge.tsx` | Edge renderer with risk-level coloring and animations |
 | `graphDialogs/ConflictPanel.tsx` | Inline conflict resolution panel for edge clicks |
@@ -165,6 +165,12 @@ type GraphNodeData = {
   isVirtualProposal: boolean;
   integrationSources: Array<{ laneId: string; laneName: string }>;
   pr: GraphPrOverlay | null;
+  /** Agents (ADE chat + CLI; shells excluded) running in this lane, for the inline dashboard. */
+  agents?: LaneAgent[];
+  /** Session ids freshly launched, to highlight on the card. */
+  highlightedSessionIds?: Set<string>;
+  /** Opens a specific agent in the Work tab. */
+  onOpenAgent?: (agent: LaneAgent) => void;
   proposalOutcome?: "clean" | "conflict" | "blocked";
   proposalId?: string;
 };
@@ -194,6 +200,11 @@ The `LaneNode` renderer:
   the workspace primary" hint.
 - Renders a parent-lane breadcrumb ("On <parentName>") underneath
   the header when `parentLaneName` is non-null.
+- Hosts the inline per-lane agent dashboard (`LaneAgentList` from
+  `components/lanes/LaneAgentList.tsx`) when `GraphNodeData.agents`
+  is populated, with `onOpenAgent` to open an agent in the Work tab and
+  `highlightedSessionIds` to pulse agents a batch launch just created.
+  See [Lanes](../lanes/README.md#source-file-map).
 
 ## Edge data (`GraphEdgeData`)
 

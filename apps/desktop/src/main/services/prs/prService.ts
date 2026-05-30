@@ -66,6 +66,7 @@ import type {
   PrStatus,
   PrSummary,
   PrSnapshotHydration,
+  SessionLinearIssueLink,
   PrWithConflicts,
   PrActionCapabilities,
   PrCreateCapabilities,
@@ -139,6 +140,7 @@ import type { createConflictService } from "../conflicts/conflictService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { LaneWorktreeLockService } from "../lanes/laneWorktreeLockService";
 import type { IssueTracker } from "../cto/issueTracker";
+import type { LinearLiveStatusService } from "../cto/linearLiveStatusService";
 import { publishLinearPrCard } from "../cto/linearLaneCardService";
 import { spawn } from "node:child_process";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
@@ -907,6 +909,7 @@ export function createPrService({
   autoRebaseService,
   rebaseSuggestionService,
   getLinearIssueTracker,
+  getLinearLiveStatusService,
   openExternal,
   onHotRefreshChanged,
 }: {
@@ -924,6 +927,7 @@ export function createPrService({
   autoRebaseService?: ReturnType<typeof createAutoRebaseService> | null;
   rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService> | null;
   getLinearIssueTracker?: () => IssueTracker | null;
+  getLinearLiveStatusService?: () => LinearLiveStatusService | null;
   openExternal: (url: string) => Promise<void>;
   onHotRefreshChanged?: () => void;
 }) {
@@ -955,6 +959,27 @@ export function createPrService({
     laneWorktreeLockService.release({ token });
   };
 
+  // Session-scoped Linear links (chat + CLI sessions in the lane) so an issue
+  // attached only to a session — not the lane itself — still gets a PR
+  // attachment on open. Mirrors source-of-truth in `lane_linear_issue_links`
+  // where available, but `session_linear_issues` is authoritative for sessions
+  // whose lane mirror never landed (e.g. standalone CLI attach after snapshot).
+  const collectLinearPrIssueReferencesForLaneSessions = (laneId: string): LinearPrIssueReference[] => {
+    let links: SessionLinearIssueLink[] = [];
+    try {
+      links = laneService.listLinearIssuesForLaneSessions?.({ laneId }) ?? [];
+    } catch (error) {
+      logger.warn("prs.linear_session_links_read_failed", {
+        laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    }
+    return links
+      .filter((link) => link.includeInPr)
+      .map((link) => ({ issue: link.issue, closeOnMerge: link.closeOnMerge, role: link.role }));
+  };
+
   const publishLinearPrCardsForLane = async (args: {
     lane: LaneSummary;
     repo: GitHubRepoRef;
@@ -965,7 +990,10 @@ export function createPrService({
   }): Promise<void> => {
     const issueTracker = getLinearIssueTracker?.() ?? null;
     if (!issueTracker) return;
-    const refs = collectLinearPrIssueReferences(args.lane, args.closePrimaryOnMerge);
+    const refs = dedupeLinearPrIssueReferences([
+      ...collectLinearPrIssueReferences(args.lane, args.closePrimaryOnMerge),
+      ...collectLinearPrIssueReferencesForLaneSessions(args.lane.id),
+    ]);
     if (!refs.length) return;
     const results = await Promise.allSettled(refs.map((reference) =>
       publishLinearPrCard({
@@ -987,6 +1015,23 @@ export function createPrService({
         prNumber: args.prNumber,
         issueIdentifier: refs[index]?.issue.identifier ?? null,
         error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+      });
+    }
+
+    // Live status round-trip (no-op unless the flag is set): comment the PR link
+    // back onto each linked issue.
+    const liveStatus = getLinearLiveStatusService?.() ?? null;
+    if (liveStatus?.enabled) {
+      await liveStatus.onPrOpened({
+        issueIds: refs.map((reference) => reference.issue.id),
+        prNumber: args.prNumber,
+        githubUrl: args.githubUrl,
+      }).catch((error) => {
+        logger.warn("prs.linear_live_status_pr_failed", {
+          laneId: args.lane.id,
+          prNumber: args.prNumber,
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
     }
   };

@@ -119,6 +119,33 @@ export type LaneLinearIssueLink = {
   updatedAt: string;
 };
 
+/**
+ * Session-scoped Linear issue link. Lets a chat (`claude_sessions`) or CLI
+ * session (`terminal_sessions`) attach a Linear issue even when it has no lane
+ * (standalone chats, `ade chat` sessions). When the session belongs to a lane,
+ * `laneId` mirrors it and the link is also written into `lane_linear_issue_links`
+ * (source `chat_attach`) so PR-open closeout can fan out from session → lane.
+ * Reuses `LaneLinearIssueLinkRole` / `LaneLinearIssueLinkSource` so chat, CLI,
+ * and lane links share the same role/source vocabulary.
+ */
+export type SessionLinearIssueLink = {
+  id: string;
+  sessionId: string;
+  laneId: string | null;
+  issue: LaneLinearIssue;
+  role: LaneLinearIssueLinkRole;
+  source: LaneLinearIssueLinkSource;
+  includeInPr: boolean;
+  closeOnMerge: boolean;
+  evidence?: {
+    chatSessionId?: string | null;
+    commitSha?: string | null;
+    prId?: string | null;
+  } | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type LaneBranchProfile = {
   id: string;
   laneId: string;
@@ -313,6 +340,7 @@ export type DeleteLaneArgs = {
   laneId: string;
   deleteBranch?: boolean;
   deleteRemoteBranch?: boolean;
+  requireRemoteBranchDelete?: boolean;
   remoteName?: string;
   force?: boolean;
 };

@@ -930,6 +930,7 @@ export function createPtyService({
   aiIntegrationService,
   projectConfigService,
   getLaneRuntimeEnv,
+  getSessionLinearEnv,
   getAdeCliAgentEnv,
   logger,
   broadcastData,
@@ -947,6 +948,13 @@ export function createPtyService({
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
   getLaneRuntimeEnv?: (laneId: string) => Promise<Record<string, string>> | Record<string, string>;
+  /**
+   * Per-session Linear context env (`ADE_LINEAR_ISSUE_IDS`,
+   * `ADE_LINEAR_CONTEXT_FILE`) for a CLI terminal agent, keyed by the session's
+   * chat/session id. Lets a CLI agent read its attached Linear issues without
+   * Linear creds, mirroring the SDK chat path's `buildAgentRuntimeEnv`.
+   */
+  getSessionLinearEnv?: (args: { sessionId: string; chatSessionId: string | null }) => Record<string, string> | null;
   getAdeCliAgentEnv?: (baseEnv?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
   logger: Logger;
   broadcastData: (ev: PtyDataEvent) => void;
@@ -3379,6 +3387,30 @@ export function createPtyService({
         });
         setRuntimeState(sessionId, "running");
 
+        // Attach any requested Linear issues to the freshly-created session row
+        // BEFORE env is built below, so getSessionLinearEnv resolves them and the
+        // spawned CLI agent inherits ADE_LINEAR_* (and the lane-mirror link lands
+        // now that the terminal row exists). Best-effort: never block the spawn.
+        if (Array.isArray(args.linearIssues) && args.linearIssues.length) {
+          try {
+            laneService.attachLinearIssueToSession?.({
+              chatSessionId: sessionId,
+              issues: args.linearIssues,
+              role: "worked",
+              source: "chat_attach",
+              includeInPr: true,
+              closeOnMerge: false,
+              evidence: { chatSessionId: sessionId },
+            });
+          } catch (error) {
+            logger.warn("pty.session_linear_attach_failed", {
+              sessionId,
+              issueCount: args.linearIssues.length,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+
         // Best-effort head SHA at start; do not block terminal creation.
         Promise.resolve()
           .then(async () => {
@@ -3393,11 +3425,13 @@ export function createPtyService({
       const directArgs = Array.isArray(args.args) ? args.args.filter((value): value is string => typeof value === "string") : [];
 
       const laneRuntimeEnv = (await getLaneRuntimeEnv?.(laneId)) ?? {};
+      const sessionLinearEnv = getSessionLinearEnv?.({ sessionId, chatSessionId }) ?? {};
       const explicitNoColor = hasEnvKey(args.env ?? {}, "NO_COLOR") || hasEnvKey(laneRuntimeEnv, "NO_COLOR");
       const explicitForceColor = hasEnvKey(args.env ?? {}, "FORCE_COLOR") || hasEnvKey(laneRuntimeEnv, "FORCE_COLOR");
       const baseLaunchEnv = {
         ...process.env,
         ...laneRuntimeEnv,
+        ...sessionLinearEnv,
         ...(args.env ?? {})
       };
       if (explicitNoColor && !explicitForceColor) {

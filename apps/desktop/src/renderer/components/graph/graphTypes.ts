@@ -44,6 +44,12 @@ export type GraphNodeData = {
   isVirtualProposal: boolean;
   integrationSources: Array<{ laneId: string; laneName: string }>;
   pr: GraphPrOverlay | null;
+  /** Agents (ADE chat + CLI; shells excluded) running in this lane, for the inline dashboard. */
+  agents?: import("../lanes/laneAgents").LaneAgent[];
+  /** Session ids freshly launched, to highlight on the card. */
+  highlightedSessionIds?: Set<string>;
+  /** Opens a specific agent in the Work tab. */
+  onOpenAgent?: (agent: import("../lanes/laneAgents").LaneAgent) => void;
   proposalOutcome?: "clean" | "conflict" | "blocked";
   proposalId?: string;
 };

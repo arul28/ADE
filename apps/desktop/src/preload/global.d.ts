@@ -71,6 +71,9 @@ import type {
   AgentChatCodexOpenInCliArgs,
   AgentChatCodexOpenInCliResult,
   AgentChatCreateArgs,
+  AgentChatLaunchArgs,
+  AgentChatLaunchCliArgs,
+  AgentChatLaunchCliResult,
   AgentChatDeleteArgs,
   AgentChatSuggestLaneNameArgs,
   AgentChatEventEnvelope,
@@ -396,6 +399,7 @@ import type {
   UpdateIntegrationProposalArgs,
   UpdatePrDescriptionArgs,
   ListOverlapsArgs,
+  LaneLinearIssue,
   LaneSummary,
   ImportBranchLaneArgs,
   MergeSimulationArgs,
@@ -461,6 +465,7 @@ import type {
   SuggestResolverTargetArgs,
   SuggestResolverTargetResult,
   SessionDeltaSummary,
+  SessionLinearIssueLink,
   TerminalSessionChangedEvent,
   StackChainItem,
   StopTestRunArgs,
@@ -1155,6 +1160,18 @@ declare global {
         onDeleteEvent: (cb: (ev: LaneDeleteEvent) => void) => () => void;
         getStackChain: (laneId: string) => Promise<StackChainItem[]>;
         getChildren: (laneId: string) => Promise<LaneSummary[]>;
+        attachLinearIssueToSession: (args: {
+          chatSessionId: string;
+          issues: LaneLinearIssue[];
+          role?: string;
+          source?: string;
+          includeInPr?: boolean;
+          closeOnMerge?: boolean;
+        }) => Promise<SessionLinearIssueLink[]>;
+        detachLinearIssueFromSession: (args: { chatSessionId: string; issueId?: string }) => Promise<boolean>;
+        listLinearIssuesForSession: (args: { chatSessionId: string }) => Promise<SessionLinearIssueLink[]>;
+        listLinearIssuesForLaneSessions: (args: { laneId: string }) => Promise<SessionLinearIssueLink[]>;
+        unlinkLinearIssues: (args: { laneId: string; issueId?: string }) => Promise<boolean>;
         rebaseStart: (args: RebaseStartArgs) => Promise<RebaseStartResult>;
         rebasePush: (args: RebasePushArgs) => Promise<RebaseRun>;
         rebaseRollback: (args: RebaseRollbackArgs) => Promise<RebaseRun>;
@@ -1261,6 +1278,10 @@ declare global {
           args: AgentChatGetSummaryArgs,
         ) => Promise<AgentChatSessionSummary | null>;
         create: (args: AgentChatCreateArgs) => Promise<AgentChatSession>;
+        launch: (args: AgentChatLaunchArgs) => Promise<AgentChatSession>;
+        launchCli: (
+          args: AgentChatLaunchCliArgs,
+        ) => Promise<AgentChatLaunchCliResult>;
         suggestLaneName: (
           args: AgentChatSuggestLaneNameArgs,
         ) => Promise<string>;

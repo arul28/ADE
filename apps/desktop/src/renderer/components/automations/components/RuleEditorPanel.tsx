@@ -102,6 +102,7 @@ const TRIGGER_OPTIONS: Record<TriggerFamily, Array<{ value: AutomationTrigger["t
     { value: "linear.issue_updated", label: "Issue updated" },
     { value: "linear.issue_assigned", label: "Issue assigned" },
     { value: "linear.issue_status_changed", label: "Status changed" },
+    { value: "linear.issue_labeled", label: "Issue labeled" },
   ],
   schedule: [{ value: "schedule", label: "Cron schedule" }],
   "local-git": [

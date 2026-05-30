@@ -634,13 +634,22 @@ describe("TopBar", () => {
     expect(document.body.querySelector("[data-linear-quick-view-backdrop]")).toBeTruthy();
     expect(quickViewDialog.getAttribute("style")).toContain("rgba(123, 138, 240, 0.55)");
 
-    fireEvent.click(screen.getByRole("button", { name: /create lane attached to issue/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /^create lane$/i }));
+    // Single-issue flow now routes through the unified launch dock: select the
+    // issue row (a `div role="button"`), choose "Create lane only", then submit
+    // the launch-config modal. Lane-only submit creates the lane without an
+    // agent, so it still calls lanes.create directly.
+    const issueRow = (await screen.findAllByText("ADE-123"))[0]!.closest('[role="button"]');
+    expect(issueRow).toBeTruthy();
+    fireEvent.click(issueRow!);
+    fireEvent.click(await screen.findByRole("button", { name: /create lane only/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^create 1 lane$/i }));
 
     await waitFor(() => {
+      // Lane-only launch leaves the branch override blank, so createLane is
+      // called without an explicit branchName — the branch is derived from the
+      // attached issue (carried on linearIssue.branchName).
       expect(createLane).toHaveBeenCalledWith(expect.objectContaining({
         name: "ADE-123 Add Linear quick view",
-        branchName: "ade-123-add-linear-quick-view",
         linearIssue: expect.objectContaining({
           identifier: "ADE-123",
           branchName: "ade-123-add-linear-quick-view",

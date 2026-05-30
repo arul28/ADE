@@ -65,6 +65,7 @@ import type {
   RebaseStartResult,
   RebasePushArgs,
   PushMode,
+  SessionLinearIssueLink,
   StackChainItem,
   UnregisteredLaneCandidate,
   UpdateLaneAppearanceArgs
@@ -127,6 +128,22 @@ type LaneLinearIssueLinkRow = {
   id: string;
   project_id: string;
   lane_id: string;
+  issue_id: string;
+  issue_json: string;
+  role: string;
+  source: string;
+  include_in_pr: number;
+  close_on_merge: number;
+  evidence_json: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type SessionLinearIssueLinkRow = {
+  id: string;
+  project_id: string;
+  session_id: string;
+  lane_id: string | null;
   issue_id: string;
   issue_json: string;
   role: string;
@@ -375,6 +392,25 @@ function parseLaneLinearIssueLink(row: LaneLinearIssueLinkRow | null | undefined
   return {
     id: row.id,
     laneId: row.lane_id,
+    issue,
+    role: normalizeLaneLinearIssueLinkRole(row.role),
+    source: normalizeLaneLinearIssueLinkSource(row.source),
+    includeInPr: row.include_in_pr === 1,
+    closeOnMerge: row.close_on_merge === 1,
+    evidence: parseIssueLinkEvidence(row.evidence_json),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function parseSessionLinearIssueLink(row: SessionLinearIssueLinkRow | null | undefined): SessionLinearIssueLink | null {
+  if (!row) return null;
+  const issue = parseLaneLinearIssueJson(row.issue_json);
+  if (!issue) return null;
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    laneId: row.lane_id ?? null,
     issue,
     role: normalizeLaneLinearIssueLinkRole(row.role),
     source: normalizeLaneLinearIssueLinkSource(row.source),
@@ -796,6 +832,18 @@ function isActiveProcess(p: ProcessRuntime): boolean {
 
 const LANE_DELETE_PROGRESS_HISTORY_TTL_MS = 60_000;
 
+function branchNameForDelete(branchRef: string, remoteName = "origin"): string {
+  const trimmed = branchRef.trim().replace(/^refs\/heads\//, "");
+  if (!trimmed) return "";
+  if (trimmed.startsWith("refs/remotes/")) {
+    const rest = trimmed.slice("refs/remotes/".length);
+    const remotePrefix = `${remoteName.trim() || "origin"}/`;
+    return rest.startsWith(remotePrefix) ? rest.slice(remotePrefix.length) : rest;
+  }
+  const remotePrefix = `${remoteName.trim() || "origin"}/`;
+  return trimmed.startsWith(remotePrefix) ? trimmed.slice(remotePrefix.length) : trimmed;
+}
+
 function cloneLaneDeleteProgress(progress: LaneDeleteProgress): LaneDeleteProgress {
   return {
     ...progress,
@@ -1100,6 +1148,127 @@ export function createLaneService({
     }
   };
 
+  // Resolve the lane a chat/CLI session belongs to, if any. Chat sessions live
+  // in `claude_sessions` (keyed by session_id); CLI/terminal sessions in
+  // `terminal_sessions` (keyed by id). Standalone chats / `ade chat` sessions
+  // may have no lane, in which case this returns null.
+  const resolveSessionLaneId = (sessionId: string): string | null => {
+    const id = sessionId.trim();
+    if (!id) return null;
+    try {
+      const chat = db.get<{ lane_id: string | null }>(
+        "select lane_id from claude_sessions where session_id = ? limit 1",
+        [id],
+      );
+      if (chat?.lane_id && getLaneRow(chat.lane_id)) return chat.lane_id;
+    } catch {
+      // claude_sessions may be unavailable in some runtime modes; fall through.
+    }
+    try {
+      const terminal = db.get<{ lane_id: string | null }>(
+        "select lane_id from terminal_sessions where id = ? limit 1",
+        [id],
+      );
+      if (terminal?.lane_id && getLaneRow(terminal.lane_id)) return terminal.lane_id;
+    } catch {
+      // terminal_sessions may be unavailable in some runtime modes.
+    }
+    return null;
+  };
+
+  const getSessionLinearIssueLinks = (sessionId: string): SessionLinearIssueLink[] => {
+    const id = sessionId.trim();
+    if (!id) return [];
+    try {
+      return db.all<SessionLinearIssueLinkRow>(
+        `
+          select *
+          from session_linear_issues
+          where project_id = ?
+            and session_id = ?
+          order by
+            case role when 'primary' then 0 when 'worked' then 1 when 'referenced' then 2 else 3 end,
+            updated_at desc
+        `,
+        [projectId, id],
+      ).map(parseSessionLinearIssueLink).filter((link): link is SessionLinearIssueLink => Boolean(link));
+    } catch {
+      return [];
+    }
+  };
+
+  const upsertSessionLinearIssueLink = (args: {
+    sessionId: string;
+    laneId?: string | null;
+    issue: LaneLinearIssue;
+    role: LaneLinearIssueLinkRole;
+    source: LaneLinearIssueLinkSource;
+    includeInPr?: boolean;
+    closeOnMerge?: boolean;
+    evidence?: SessionLinearIssueLink["evidence"];
+  }): SessionLinearIssueLink => {
+    const sessionId = args.sessionId.trim();
+    const laneId = args.laneId?.trim() || null;
+    const now = new Date().toISOString();
+    const includeInPr = args.includeInPr !== false;
+    const closeOnMerge = args.closeOnMerge === true;
+    db.run("begin");
+    try {
+      db.run(
+        `
+          delete from session_linear_issues
+          where project_id = ?
+            and session_id = ?
+            and issue_id = ?
+            and role = ?
+        `,
+        [projectId, sessionId, args.issue.id, args.role],
+      );
+      const id = randomUUID();
+      db.run(
+        `
+          insert into session_linear_issues(
+            id, project_id, session_id, lane_id, issue_id, issue_json, role, source,
+            include_in_pr, close_on_merge, evidence_json, created_at, updated_at
+          )
+          values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          id,
+          projectId,
+          sessionId,
+          laneId,
+          args.issue.id,
+          JSON.stringify(args.issue),
+          args.role,
+          args.source,
+          includeInPr ? 1 : 0,
+          closeOnMerge ? 1 : 0,
+          args.evidence ? JSON.stringify(args.evidence) : null,
+          now,
+          now,
+        ],
+      );
+      db.run("commit");
+      return {
+        id,
+        sessionId,
+        laneId,
+        issue: cloneLaneLinearIssue(args.issue),
+        role: args.role,
+        source: args.source,
+        includeInPr,
+        closeOnMerge,
+        evidence: args.evidence ?? null,
+        createdAt: now,
+        updatedAt: now,
+      };
+    } catch (err) {
+      try { db.run("rollback"); } catch { /* keep original issue-link error */ }
+      throw err;
+    }
+  };
+
   const getAllLaneRows = (includeArchived = false) =>
     db.all<LaneRow>(
       includeArchived
@@ -1324,34 +1493,48 @@ export function createLaneService({
       throw new Error(`Generated branch name "${branchRef}" is not valid.`);
     }
 
-    const localExists = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${branchRef}`], {
-      cwd: projectRoot,
-      timeoutMs: 8_000,
-    }).then((res) => res.exitCode === 0);
-    if (localExists) {
-      throw new Error(`Branch "${branchRef}" already exists locally.`);
-    }
-
-    const remoteCollisionMessage = isLinearBranch
-      ? `Branch "origin/${branchRef}" already exists on the remote. Detach the Linear issue or choose one whose branch name is unused.`
-      : `Branch "origin/${branchRef}" already exists on the remote. Choose a different branch name.`;
-
-    if (isCustomBranch) {
-      const remoteTrackingExists = await runGit(["show-ref", "--verify", "--quiet", `refs/remotes/origin/${branchRef}`], {
+    // Does this ref already exist locally, as a remote-tracking ref, or on the
+    // actual remote? Used to detect collisions before `git worktree add -b`.
+    const branchIsTaken = async (ref: string): Promise<boolean> => {
+      const localExists = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${ref}`], {
         cwd: projectRoot,
         timeoutMs: 8_000,
       }).then((res) => res.exitCode === 0);
-      if (remoteTrackingExists) {
-        throw new Error(remoteCollisionMessage);
-      }
-
-      const remoteExists = await runGit(["ls-remote", "--heads", "origin", branchRef], {
+      if (localExists) return true;
+      // Only auto-named (slug / Linear) branches probe the remote — explicit
+      // user branches are checked separately so the error can be specific.
+      if (!isCustomBranch) return false;
+      const remoteTrackingExists = await runGit(["show-ref", "--verify", "--quiet", `refs/remotes/origin/${ref}`], {
+        cwd: projectRoot,
+        timeoutMs: 8_000,
+      }).then((res) => res.exitCode === 0);
+      if (remoteTrackingExists) return true;
+      return runGit(["ls-remote", "--heads", "origin", ref], {
         cwd: projectRoot,
         timeoutMs: 15_000,
       }).then((res) => res.exitCode === 0 && res.stdout.trim().length > 0);
-      if (remoteExists) {
-        throw new Error(remoteCollisionMessage);
+    };
+
+    // Linear-derived branch names are deterministic (e.g. `ver-136-title`) and so
+    // collide when the same issue is launched again or a prior lane leaked the
+    // branch. Mirror the `ade/<slug>-<laneId>` fallback: keep the clean name when
+    // it is free (so Linear's branch-name matching still works), otherwise append
+    // the lane's unique suffix until the name is unused. Never hard-fail here.
+    if (isLinearBranch) {
+      if (!(await branchIsTaken(branchRef))) return branchRef;
+      const compactId = args.laneId.replace(/-/g, "");
+      for (let len = 6; len <= 12; len += 2) {
+        const candidate = sanitizeLinearIssueBranchName(`${branchRef}-${compactId.slice(0, len)}`);
+        if (!(await branchIsTaken(candidate))) return candidate;
       }
+      // Astronomically unlikely; fall back to the guaranteed-unique slug form.
+      return fallback;
+    }
+
+    if (await branchIsTaken(branchRef)) {
+      throw new Error(
+        `Branch "${branchRef}" already exists locally or on the remote. Choose a different branch name.`,
+      );
     }
 
     return branchRef;
@@ -2041,52 +2224,57 @@ export function createLaneService({
         timeoutMs: 60_000
       })
     );
-    linkExistingDependencyInstalls(worktreePath);
 
-    const laneColor = allocateLaneColorForProject();
-    db.run(
-      `
-        insert into lanes(
-          id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder, runtime_placement, status, created_at, archived_at
-        )
-        values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, ?, null, null, ?, ?, 'active', ?, null)
-      `,
-      [
-        laneId,
-        projectId,
-        args.name,
-        args.description ?? null,
-        args.baseRef,
-        branchRef,
-        worktreePath,
-        args.parentLaneId,
-        laneColor,
-        args.folder ?? null,
-        runtimePlacement,
-        now
-      ]
-    );
-    const linearIssue = args.linearIssue
-      ? upsertLaneLinearIssue(laneId, args.linearIssue, branchRef)
-      : null;
-    invalidateLaneListCache();
+    // From this point the worktree exists on disk. Any failure persisting the lane
+    // row (or its dependent inserts / VM wiring) must remove the worktree, otherwise
+    // we orphan a checkout that no lane row references.
+    let linearIssue: LaneLinearIssue | null = null;
+    try {
+      linkExistingDependencyInstalls(worktreePath);
 
-    if (runtimePlacement === "macos-vm") {
-      try {
+      const laneColor = allocateLaneColorForProject();
+      db.run(
+        `
+          insert into lanes(
+            id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+            attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder, runtime_placement, status, created_at, archived_at
+          )
+          values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, ?, null, null, ?, ?, 'active', ?, null)
+        `,
+        [
+          laneId,
+          projectId,
+          args.name,
+          args.description ?? null,
+          args.baseRef,
+          branchRef,
+          worktreePath,
+          args.parentLaneId,
+          laneColor,
+          args.folder ?? null,
+          runtimePlacement,
+          now
+        ]
+      );
+      linearIssue = args.linearIssue
+        ? upsertLaneLinearIssue(laneId, args.linearIssue, branchRef)
+        : null;
+      invalidateLaneListCache();
+
+      if (runtimePlacement === "macos-vm") {
         await wireMacosVmLanePlacement({
           laneId,
           previousPlacement: "none",
           rollbackPlacementOnLinkFailure: true,
         });
-      } catch (error) {
-        await cleanupCreatedWorktreeLaneAfterVmWireFailure({
-          laneId,
-          branchRef,
-          worktreePath,
-          cause: error,
-        });
       }
+    } catch (error) {
+      await cleanupCreatedWorktreeLaneAfterCreateFailure({
+        laneId,
+        branchRef,
+        worktreePath,
+        cause: error,
+      });
     }
 
     // Best-effort initial push to establish upstream tracking
@@ -2341,7 +2529,7 @@ export function createLaneService({
     db.run("delete from lanes where id = ? and project_id = ?", [laneId, projectId]);
   };
 
-  async function cleanupCreatedWorktreeLaneAfterVmWireFailure(args: {
+  async function cleanupCreatedWorktreeLaneAfterCreateFailure(args: {
     laneId: string;
     branchRef: string;
     worktreePath: string;
@@ -2387,14 +2575,14 @@ export function createLaneService({
     }
 
     if (cleanupErrors.length > 0) {
-      logger.error("laneService.vm_lane_create_cleanup_failed", {
+      logger.error("laneService.lane_create_cleanup_failed", {
         laneId: args.laneId,
         branchRef: args.branchRef,
         worktreePath: args.worktreePath,
         error: originalMessage,
         cleanupErrors,
       });
-      throw new Error(`${originalMessage} Cleanup after failed VM lane creation also failed: ${cleanupErrors.join("; ")}`);
+      throw new Error(`${originalMessage} Cleanup after failed lane creation also failed: ${cleanupErrors.join("; ")}`);
     }
 
     throw args.cause instanceof Error ? args.cause : new Error(originalMessage);
@@ -2503,6 +2691,200 @@ export function createLaneService({
       }
       if (links.length) invalidateLaneListCache();
       return links;
+    },
+
+    /**
+     * Attach one or more Linear issues to a chat or CLI session. Works for
+     * standalone sessions with no lane. When the session resolves to a lane,
+     * each issue is also mirrored into `lane_linear_issue_links` (source
+     * `chat_attach`, evidence.chatSessionId) so lane-level closeout/PR-open
+     * linking can fan out from the session. Mirrors `linkLinearIssues`: returns
+     * the session-scoped links it created, deduped by issue id, skipping issues
+     * that are missing required fields.
+     */
+    attachLinearIssueToSession(args: {
+      chatSessionId: string;
+      issues: LaneLinearIssue[];
+      role?: LaneLinearIssueLinkRole;
+      source?: LaneLinearIssueLinkSource;
+      includeInPr?: boolean;
+      closeOnMerge?: boolean;
+      evidence?: SessionLinearIssueLink["evidence"];
+    }): SessionLinearIssueLink[] {
+      const chatSessionId = args.chatSessionId.trim();
+      if (!chatSessionId) throw new Error("chatSessionId is required.");
+      const laneId = resolveSessionLaneId(chatSessionId);
+      const laneRow = laneId ? getLaneRow(laneId) : null;
+      const branchHint = laneRow?.branch_ref ?? null;
+      const role = args.role ?? "worked";
+      const source = args.source ?? "chat_attach";
+      const includeInPr = args.includeInPr ?? true;
+      const closeOnMerge = args.closeOnMerge ?? false;
+      const evidence = args.evidence ?? { chatSessionId };
+      const links: SessionLinearIssueLink[] = [];
+      const seen = new Set<string>();
+      let mirrored = false;
+      for (const issue of args.issues) {
+        const normalized = finalizeLaneLinearIssue(
+          issue,
+          issue.branchName ?? branchHint ?? linearIssueBranchName(issue),
+        );
+        if (!isLinkableLaneLinearIssue(normalized) || seen.has(normalized.id)) continue;
+        seen.add(normalized.id);
+        links.push(upsertSessionLinearIssueLink({
+          sessionId: chatSessionId,
+          laneId,
+          issue: normalized,
+          role,
+          source,
+          includeInPr,
+          closeOnMerge,
+          evidence,
+        }));
+        // Mirror into the lane-scoped link table when the session has a lane so
+        // the lane's PR/closeout flows treat the issue as worked. Never promote
+        // to the lane's `primary` issue here — that is reserved for lane-create.
+        if (laneId && laneRow?.status !== "archived") {
+          try {
+            const primary = getLaneLinearIssue(laneId);
+            if (!primary || (primary.id !== normalized.id && primary.identifier !== normalized.identifier)) {
+              upsertLaneLinearIssueLink({
+                laneId,
+                issue: normalized,
+                role: role === "primary" ? "worked" : role,
+                source: "chat_attach",
+                includeInPr,
+                closeOnMerge,
+                evidence: { chatSessionId },
+              });
+              mirrored = true;
+            }
+          } catch (error) {
+            logger.warn("laneService.session_link_lane_mirror_failed", {
+              chatSessionId,
+              laneId,
+              issueId: normalized.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+      }
+      if (mirrored) invalidateLaneListCache();
+      return links;
+    },
+
+    /**
+     * Detach Linear issues from a session. Omit `issueId` to detach every issue
+     * attached to the session. When the session resolves to a lane, the
+     * mirrored `chat_attach` lane links for the same issues are removed too.
+     * Returns true when at least one row was deleted.
+     */
+    detachLinearIssueFromSession(args: { chatSessionId: string; issueId?: string }): boolean {
+      const chatSessionId = args.chatSessionId.trim();
+      if (!chatSessionId) throw new Error("chatSessionId is required.");
+      const issueId = args.issueId?.trim() || null;
+      const before = getSessionLinearIssueLinks(chatSessionId);
+      const target = issueId
+        ? before.filter((link) => link.issue.id === issueId || link.issue.identifier === issueId)
+        : before;
+      if (!target.length) return false;
+      const laneId = target.find((link) => link.laneId)?.laneId ?? resolveSessionLaneId(chatSessionId);
+      db.run("begin");
+      try {
+        for (const link of target) {
+          db.run(
+            "delete from session_linear_issues where project_id = ? and id = ?",
+            [projectId, link.id],
+          );
+          if (laneId) {
+            db.run(
+              `
+                delete from lane_linear_issue_links
+                where project_id = ?
+                  and lane_id = ?
+                  and issue_id = ?
+                  and source = 'chat_attach'
+              `,
+              [projectId, laneId, link.issue.id],
+            );
+          }
+        }
+        db.run("commit");
+      } catch (err) {
+        try { db.run("rollback"); } catch { /* keep original detach error */ }
+        throw err;
+      }
+      if (laneId) invalidateLaneListCache();
+      return true;
+    },
+
+    /** List Linear issues attached to a single chat/CLI session. */
+    listLinearIssuesForSession(args: { chatSessionId: string }): SessionLinearIssueLink[] {
+      return getSessionLinearIssueLinks(args.chatSessionId);
+    },
+
+    /**
+     * List every session-scoped Linear issue link across all chat and CLI
+     * sessions that belong to a lane. Used on PR-open to fan out session →
+     * lane → Linear attachment for issues that were only attached to a session.
+     */
+    listLinearIssuesForLaneSessions(args: { laneId: string }): SessionLinearIssueLink[] {
+      const id = args.laneId.trim();
+      if (!id) return [];
+      try {
+        return db.all<SessionLinearIssueLinkRow>(
+          `
+            select *
+            from session_linear_issues
+            where project_id = ?
+              and lane_id = ?
+            order by
+              case role when 'primary' then 0 when 'worked' then 1 when 'referenced' then 2 else 3 end,
+              updated_at desc
+          `,
+          [projectId, id],
+        ).map(parseSessionLinearIssueLink).filter((link): link is SessionLinearIssueLink => Boolean(link));
+      } catch {
+        return [];
+      }
+    },
+
+    /**
+     * Remove lane-scoped Linear issue links from a lane. Omit `issueId` to
+     * remove every non-primary link. NEVER touches the lane's primary issue
+     * (stored separately in `lane_linear_issues`); a link row that matches the
+     * primary is skipped defensively. Returns true when at least one row was
+     * deleted. Counterpart to `linkLinearIssues` for lane-level detach.
+     */
+    unlinkLinearIssues(args: { laneId: string; issueId?: string }): boolean {
+      const laneId = args.laneId.trim();
+      if (!laneId) throw new Error("laneId is required.");
+      const issueId = args.issueId?.trim() || null;
+      const existing = getLaneLinearIssueLinks(laneId);
+      const primary = getLaneLinearIssue(laneId);
+      const isPrimaryIssue = (link: LaneLinearIssueLink): boolean =>
+        Boolean(primary) && (link.issue.id === primary!.id || link.issue.identifier === primary!.identifier);
+      const target = existing.filter((link) => {
+        if (isPrimaryIssue(link)) return false;
+        if (!issueId) return true;
+        return link.issue.id === issueId || link.issue.identifier === issueId;
+      });
+      if (!target.length) return false;
+      db.run("begin");
+      try {
+        for (const link of target) {
+          db.run(
+            "delete from lane_linear_issue_links where project_id = ? and id = ?",
+            [projectId, link.id],
+          );
+        }
+        db.run("commit");
+      } catch (err) {
+        try { db.run("rollback"); } catch { /* keep original unlink error */ }
+        throw err;
+      }
+      invalidateLaneListCache();
+      return true;
     },
 
     async create({ name, description, parentLaneId, baseBranch, branchName, startPoint, linearIssue, runtimePlacement }: CreateLaneArgs): Promise<LaneSummary> {
@@ -4055,6 +4437,7 @@ export function createLaneService({
         laneId,
         deleteBranch = true,
         deleteRemoteBranch = false,
+        requireRemoteBranchDelete = false,
         remoteName = "origin",
         force = false
       } = args;
@@ -4263,33 +4646,39 @@ export function createLaneService({
 
         if (deleteBranch && row.branch_ref) {
           await runStep("git_branch_delete", async () => {
-            const refCheck = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${row.branch_ref}`], {
+            const branchName = branchNameForDelete(row.branch_ref, remoteName);
+            const refCheck = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`], {
               cwd: projectRoot,
               timeoutMs: 8_000,
             });
             if (refCheck.exitCode !== 0) return { detail: "ref not found" };
-            await runGitOrThrow(["branch", "-D", row.branch_ref], { cwd: projectRoot, timeoutMs: 30_000 });
-            return { detail: row.branch_ref };
-          }, { fatal: false });
+            await runGitOrThrow(["branch", "-D", branchName], { cwd: projectRoot, timeoutMs: 30_000 });
+            return { detail: branchName };
+          }, { fatal: requireRemoteBranchDelete });
         }
 
         if (deleteRemoteBranch && row.branch_ref) {
           await runStep("git_remote_branch_delete", async () => {
             const remote = remoteName.trim() || "origin";
+            const branchName = branchNameForDelete(row.branch_ref, remote);
             const remoteCheck = await runGit(["remote", "get-url", remote], { cwd: projectRoot, timeoutMs: 8_000 });
             if (remoteCheck.exitCode !== 0) {
               throw new Error(`Remote '${remote}' is not configured for this repository`);
             }
-            const remoteRefCheck = await runGit(["ls-remote", "--heads", remote, row.branch_ref], {
+            const remoteRefCheck = await runGit(["ls-remote", "--heads", remote, branchName], {
               cwd: projectRoot,
               timeoutMs: 30_000,
             });
-            if (remoteRefCheck.exitCode !== 0 || remoteRefCheck.stdout.trim().length === 0) {
-              return { detail: "remote branch not found" };
+            if (remoteRefCheck.exitCode !== 0) {
+              const detail = (remoteRefCheck.stderr || remoteRefCheck.stdout).trim();
+              throw new Error(detail || `Unable to check ${remote}/${branchName}`);
             }
-            await runGitOrThrow(["push", remote, "--delete", row.branch_ref], { cwd: projectRoot, timeoutMs: 45_000 });
-            return { detail: `${remote}/${row.branch_ref}` };
-          }, { fatal: false });
+            if (remoteRefCheck.stdout.trim().length === 0) {
+              return { detail: `${remote}/${branchName} not found` };
+            }
+            await runGitOrThrow(["push", remote, "--delete", branchName], { cwd: projectRoot, timeoutMs: 45_000 });
+            return { detail: `${remote}/${branchName}` };
+          }, { fatal: requireRemoteBranchDelete });
         }
 
         await runStep("pack_dir_remove", async () => {
@@ -4359,10 +4748,14 @@ export function createLaneService({
       let hasUnpushedCommits = false;
       let unpushedCommitCount = 0;
       let remoteBranchExists = false;
-      if (row.branch_ref) {
+      // Normalize the same way delete() does, so the risk the user confirms
+      // against matches the branch the delete actually touches (a remote-shaped
+      // ref like "origin/feature" must probe "feature").
+      const riskBranchName = row.branch_ref ? branchNameForDelete(row.branch_ref, "origin") : "";
+      if (riskBranchName) {
         const cwd = worktreeExists ? row.worktree_path : projectRoot;
         const unpushed = await runGit(
-          ["rev-list", "--count", row.branch_ref, "--not", "--remotes"],
+          ["rev-list", "--count", riskBranchName, "--not", "--remotes"],
           { cwd, timeoutMs: 8_000 }
         );
         if (unpushed.exitCode === 0) {
@@ -4370,7 +4763,7 @@ export function createLaneService({
           hasUnpushedCommits = unpushedCommitCount > 0;
         }
         const remoteCheck = await runGit(
-          ["ls-remote", "--heads", "origin", row.branch_ref],
+          ["ls-remote", "--heads", "origin", riskBranchName],
           { cwd: projectRoot, timeoutMs: 8_000 }
         );
         remoteBranchExists = remoteCheck.exitCode === 0 && remoteCheck.stdout.trim().length > 0;

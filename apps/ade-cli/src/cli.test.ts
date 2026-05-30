@@ -2065,6 +2065,397 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("accepts attach-linear-issue as a lane-scoped link alias with --issue-id shorthand", () => {
+    const plan = buildCliPlan([
+      "lanes",
+      "attach-linear-issue",
+      "lane-7",
+      "--issue-id",
+      "ENG-431",
+      "--close-on-merge",
+    ]);
+
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "lane",
+        action: "linkLinearIssues",
+        args: {
+          laneId: "lane-7",
+          issues: [{ id: "ENG-431", identifier: "ENG-431" }],
+          closeOnMerge: true,
+        },
+      },
+    });
+  });
+
+  it("maps lane detach-linear-issue to lane.unlinkLinearIssues (all non-primary by default)", () => {
+    const detachAll = buildCliPlan(["lanes", "detach-linear-issue", "lane-7"]);
+    expect(detachAll.kind).toBe("execute");
+    if (detachAll.kind !== "execute") return;
+    expect(detachAll.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "lane",
+        action: "unlinkLinearIssues",
+        args: { laneId: "lane-7" },
+      },
+    });
+
+    const detachOne = buildCliPlan([
+      "lanes",
+      "detach-linear-issue",
+      "lane-7",
+      "--issue-id",
+      "ENG-431",
+    ]);
+    expect(detachOne.kind).toBe("execute");
+    if (detachOne.kind !== "execute") return;
+    expect(detachOne.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "lane",
+        action: "unlinkLinearIssues",
+        args: { laneId: "lane-7", issueId: "ENG-431" },
+      },
+    });
+  });
+
+  it("maps chat attach/detach/list to session-scoped lane actions", () => {
+    // attachLinearIssueToSession takes an issues array keyed by chatSessionId.
+    const attach = buildCliPlan([
+      "chat",
+      "attach-linear-issue",
+      "session-9",
+      "--issue-id",
+      "ENG-431",
+    ]);
+    expect(attach.kind).toBe("execute");
+    if (attach.kind !== "execute") return;
+    expect(attach.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "lane",
+        action: "attachLinearIssueToSession",
+        args: {
+          chatSessionId: "session-9",
+          issues: [{ id: "ENG-431", identifier: "ENG-431" }],
+        },
+      },
+    });
+
+    // detach with a specific issueId.
+    const detach = buildCliPlan([
+      "chat",
+      "detach-linear-issue",
+      "session-9",
+      "--issue-id",
+      "ENG-431",
+    ]);
+    expect(detach.kind).toBe("execute");
+    if (detach.kind !== "execute") return;
+    expect(detach.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "lane",
+        action: "detachLinearIssueFromSession",
+        args: { chatSessionId: "session-9", issueId: "ENG-431" },
+      },
+    });
+
+    // detach with no issueId detaches every issue from the session.
+    const detachAll = buildCliPlan(["chat", "detach-linear-issue", "session-9"]);
+    expect(detachAll.kind).toBe("execute");
+    if (detachAll.kind !== "execute") return;
+    expect(detachAll.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "lane",
+        action: "detachLinearIssueFromSession",
+        args: { chatSessionId: "session-9" },
+      },
+    });
+
+    // listLinearIssuesForSession takes an object arg.
+    const list = buildCliPlan(["chat", "linear-issues", "session-9"]);
+    expect(list.kind).toBe("execute");
+    if (list.kind !== "execute") return;
+    expect(list.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "lane",
+        action: "listLinearIssuesForSession",
+        args: { chatSessionId: "session-9" },
+      },
+    });
+  });
+
+  it("attaches multiple issues to a session in one call", () => {
+    const plan = buildCliPlan([
+      "chat",
+      "attach-linear-issue",
+      "session-9",
+      "--linear-issue-json",
+      '[{"id":"a","identifier":"ENG-1"},{"id":"b","identifier":"ENG-2"}]',
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        args: {
+          chatSessionId: "session-9",
+          issues: [
+            { id: "a", identifier: "ENG-1" },
+            { id: "b", identifier: "ENG-2" },
+          ],
+        },
+      },
+    });
+  });
+
+  it("resolves the session id from ADE_CHAT_SESSION_ID for chat attach", () => {
+    const prev = process.env.ADE_CHAT_SESSION_ID;
+    process.env.ADE_CHAT_SESSION_ID = "env-session";
+    try {
+      const plan = buildCliPlan(["chat", "attach-linear-issue", "--issue-id", "ENG-1"]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") return;
+      expect(plan.steps[0]?.params).toMatchObject({
+        arguments: { args: { chatSessionId: "env-session" } },
+      });
+    } finally {
+      if (prev === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+      else process.env.ADE_CHAT_SESSION_ID = prev;
+    }
+  });
+
+  it("builds lanes create-from-linear as a single create_lane step without --start-chat", () => {
+    const plan = buildCliPlan([
+      "lanes",
+      "create-from-linear",
+      "--linear-issue-json",
+      '{"id":"issue-1","identifier":"ENG-431","title":"Fix OAuth"}',
+      "--base",
+      "main",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps).toHaveLength(1);
+    expect(plan.steps[0]?.params).toEqual({
+      name: "create_lane",
+      arguments: {
+        name: "Fix OAuth",
+        linearIssue: { id: "issue-1", identifier: "ENG-431", title: "Fix OAuth" },
+        baseBranch: "main",
+      },
+    });
+  });
+
+  it("chains create_lane -> chat createSession -> kickoff for create-from-linear --start-chat", () => {
+    const plan = buildCliPlan([
+      "lanes",
+      "create-from-linear",
+      "--linear-issue-json",
+      '{"id":"issue-1","identifier":"ENG-431","title":"Fix OAuth","url":"https://linear.app/x/ENG-431"}',
+      "--start-chat",
+      "--provider",
+      "codex",
+      "--model",
+      "gpt-5",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps).toHaveLength(3);
+    expect(plan.steps[0]?.key).toBe("lane");
+
+    // Step 2 derives laneId from the create_lane result.
+    const chatStep = plan.steps[1]!;
+    expect(typeof chatStep.params).toBe("function");
+    const chatParams = (chatStep.params as (v: Record<string, unknown>) => Record<string, unknown>)({
+      lane: { domain: "lane", action: "create", result: { lane: { id: "lane-new" } } },
+    });
+    expect(chatParams).toMatchObject({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "createSession",
+        args: { laneId: "lane-new", surface: "work", provider: "codex", model: "gpt-5", modelId: "gpt-5" },
+      },
+    });
+
+    // Step 3 derives sessionId from the createSession result and sends a kickoff.
+    const sendStep = plan.steps[2]!;
+    const sendParams = (sendStep.params as (v: Record<string, unknown>) => Record<string, unknown>)({
+      chat: { domain: "chat", action: "createSession", result: { id: "session-new" } },
+    });
+    expect(sendParams).toMatchObject({
+      arguments: { domain: "chat", action: "sendMessage", args: { sessionId: "session-new" } },
+    });
+    const sendArgs = (sendParams.arguments as { args: { text: string } }).args;
+    expect(sendArgs.text).toContain("ENG-431");
+    expect(sendArgs.text).toContain("https://linear.app/x/ENG-431");
+  });
+
+  it("builds a per-issue create_lane step for batch-create-from-linear", () => {
+    const plan = buildCliPlan([
+      "lanes",
+      "batch-create-from-linear",
+      "--linear-issues-json",
+      '[{"id":"i1","identifier":"ENG-1","title":"A"},{"id":"i2","identifier":"ENG-2","title":"B"}]',
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps).toHaveLength(2);
+    // Each step is keyed by the issue identifier and tolerant of sibling failure.
+    expect(plan.steps[0]?.key).toBe("ENG-1");
+    expect(plan.steps[0]?.optional).toBe(true);
+    expect(plan.steps[1]?.key).toBe("ENG-2");
+    expect(plan.steps[0]?.params).toMatchObject({
+      name: "create_lane",
+      arguments: { name: "A", linearIssue: { identifier: "ENG-1" } },
+    });
+  });
+
+  it("rejects --start-chat for the batch create path", () => {
+    expect(() =>
+      buildCliPlan([
+        "lanes",
+        "batch-create-from-linear",
+        "--issue-id",
+        "ENG-1",
+        "--start-chat",
+      ]),
+    ).toThrow(/creates lanes only/);
+  });
+
+  it("maps chat create --from-linear-issue to create + attach + kickoff", () => {
+    const plan = buildCliPlan([
+      "chat",
+      "create",
+      "--lane",
+      "lane-1",
+      "--from-linear-issue",
+      "ENG-431",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps).toHaveLength(3);
+    expect(plan.steps[0]?.key).toBe("session");
+
+    const attachStep = plan.steps[1]!;
+    const attachParams = (attachStep.params as (v: Record<string, unknown>) => Record<string, unknown>)({
+      session: { domain: "chat", action: "createSession", result: { id: "session-x" } },
+    });
+    expect(attachParams).toMatchObject({
+      arguments: {
+        domain: "lane",
+        action: "attachLinearIssueToSession",
+        args: { chatSessionId: "session-x", issues: [{ identifier: "ENG-431" }] },
+      },
+    });
+  });
+
+  it("routes the linear write-bridge commands to linear_issue_tracker positional actions", () => {
+    const comment = buildCliPlan(["linear", "comment", "ENG-431", "All green"]);
+    expect(comment.kind).toBe("execute");
+    if (comment.kind !== "execute") return;
+    expect(comment.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "linear_issue_tracker",
+        action: "createComment",
+        argsList: ["ENG-431", "All green"],
+      },
+    });
+
+    const setState = buildCliPlan(["linear", "set-state", "ENG-431", "state-done"]);
+    expect(setState.kind).toBe("execute");
+    if (setState.kind !== "execute") return;
+    expect(setState.steps[0]?.params).toMatchObject({
+      arguments: { action: "updateIssueState", argsList: ["ENG-431", "state-done"] },
+    });
+
+    const assignNone = buildCliPlan(["linear", "assign", "ENG-431", "none"]);
+    expect(assignNone.kind).toBe("execute");
+    if (assignNone.kind !== "execute") return;
+    expect(assignNone.steps[0]?.params).toMatchObject({
+      arguments: { action: "updateIssueAssignee", argsList: ["ENG-431", null] },
+    });
+
+    const label = buildCliPlan(["linear", "label", "ENG-431", "needs-review"]);
+    expect(label.kind).toBe("execute");
+    if (label.kind !== "execute") return;
+    expect(label.steps[0]?.params).toMatchObject({
+      arguments: { action: "addLabel", argsList: ["ENG-431", "needs-review"] },
+    });
+  });
+
+  it("defaults the linear comment issue id from ADE_LINEAR_ISSUE_IDS", () => {
+    const prev = process.env.ADE_LINEAR_ISSUE_IDS;
+    process.env.ADE_LINEAR_ISSUE_IDS = "ENG-900, ENG-901";
+    try {
+      const plan = buildCliPlan(["linear", "comment", "done"]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") return;
+      expect(plan.steps[0]?.params).toMatchObject({
+        arguments: { action: "createComment", argsList: ["ENG-900", "done"] },
+      });
+    } finally {
+      if (prev === undefined) delete process.env.ADE_LINEAR_ISSUE_IDS;
+      else process.env.ADE_LINEAR_ISSUE_IDS = prev;
+    }
+  });
+
+  it("attaches an issue to the current session via linear attach --this-session", () => {
+    const prev = process.env.ADE_CHAT_SESSION_ID;
+    process.env.ADE_CHAT_SESSION_ID = "current-session";
+    try {
+      const plan = buildCliPlan(["linear", "attach", "--this-session", "--issue-id", "ENG-431"]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") return;
+      expect(plan.steps[0]?.params).toEqual({
+        name: "run_ade_action",
+        arguments: {
+          domain: "lane",
+          action: "attachLinearIssueToSession",
+          args: {
+            chatSessionId: "current-session",
+            issues: [{ id: "ENG-431", identifier: "ENG-431" }],
+          },
+        },
+      });
+    } finally {
+      if (prev === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+      else process.env.ADE_CHAT_SESSION_ID = prev;
+    }
+  });
+
+  it("errors when linear attach --this-session has no session env", () => {
+    const prev = process.env.ADE_CHAT_SESSION_ID;
+    delete process.env.ADE_CHAT_SESSION_ID;
+    try {
+      expect(() =>
+        buildCliPlan(["linear", "attach", "--this-session", "--issue-id", "ENG-1"]),
+      ).toThrow(/ADE_CHAT_SESSION_ID/);
+    } finally {
+      if (prev !== undefined) process.env.ADE_CHAT_SESSION_ID = prev;
+    }
+  });
+
+  it("rejects a Linear issue object missing both id and identifier", () => {
+    expect(() =>
+      buildCliPlan([
+        "lanes",
+        "attach-linear-issue",
+        "lane-1",
+        "--linear-issue-json",
+        '{"title":"no ids here"}',
+      ]),
+    ).toThrow(/missing both "id" and "identifier"/);
+  });
+
   it("maps Linear quick view to the typed RPC tool", () => {
     const plan = buildCliPlan(["linear", "quick-view", "--text"]);
 

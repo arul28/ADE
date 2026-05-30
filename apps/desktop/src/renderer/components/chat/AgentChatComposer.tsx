@@ -21,6 +21,7 @@ import {
   type AgentChatSlashCommand,
   type CodexThreadTokenUsage,
   type ComputerUseOwnerSnapshot,
+  type CtoLinearQuickView,
   type ChatSurfaceMode,
   type AppControlContextItem,
   type BuiltInBrowserContextItem,
@@ -53,8 +54,8 @@ import {
   type ChatAttachmentPendingImage,
 } from "./ChatAttachmentTray";
 import { ChatComposerShell } from "./ChatComposerShell";
-import { LaneDialogShell } from "../lanes/LaneDialogShell";
 import { LinearIssueBrowser, linearBrowserIssueToLaneIssue } from "../app/LinearIssueBrowser";
+import { LinearPaneModal } from "../app/LinearPaneModal";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { getPendingInputQuestionCount, hasPendingInputOptions } from "./pendingInput";
 import { CURSOR_MODE_LABELS } from "../../../shared/cursorModes";
@@ -746,20 +747,24 @@ function LinearIssueContextDialog({
   onOpenLinearSettings?: () => void;
 }) {
   const featuredIssue = pinnedIssue ?? selectedIssue;
+  const [quickView, setQuickView] = useState<CtoLinearQuickView | null>(null);
+  const [browserLoading, setBrowserLoading] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  const close = useCallback(() => onOpenChange(false), [onOpenChange]);
   const openLinearSettings = useCallback(() => {
     onOpenChange(false);
     onOpenLinearSettings?.();
   }, [onOpenChange, onOpenLinearSettings]);
 
   return (
-    <LaneDialogShell
+    <LinearPaneModal
       open={open}
-      onOpenChange={onOpenChange}
-      title="Attach Linear issue"
-      description="Browse Linear issues and attach one as chat context."
-      icon={Bug}
-      widthClassName="w-[min(1040px,calc(100vw-24px))]"
-      busy={busy}
+      ariaLabel="Attach Linear issue"
+      quickView={quickView}
+      loading={browserLoading}
+      onRefresh={() => setRefreshKey((key) => key + 1)}
+      onClose={close}
     >
       <LinearIssueBrowser
         featuredIssue={featuredIssue}
@@ -769,7 +774,10 @@ function LinearIssueContextDialog({
         actionIcon={<Check size={14} />}
         actionDisabled={busy}
         showBranchPreview={false}
+        refreshKey={refreshKey}
         onOpenLinearSettings={openLinearSettings}
+        onQuickViewChange={setQuickView}
+        onLoadingChange={setBrowserLoading}
         onIssueAction={(issue) => {
           const laneIssue = linearBrowserIssueToLaneIssue(issue);
           onAttach(makeLinearIssueContextAttachment(
@@ -779,7 +787,7 @@ function LinearIssueContextDialog({
           onOpenChange(false);
         }}
       />
-    </LaneDialogShell>
+    </LinearPaneModal>
   );
 }
 
