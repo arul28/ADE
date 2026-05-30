@@ -110,6 +110,8 @@ function makePrRow(overrides?: Partial<Record<string, unknown>>) {
     review_status: "none",
     additions: 1,
     deletions: 1,
+    merge_conflicts: null,
+    behind_base_by: null,
     last_synced_at: null,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-02T00:00:00Z",
@@ -366,6 +368,8 @@ function installPullRequestRowStore(db: ReturnType<typeof makeMockDb>, initialRo
       created_at: params[17],
       updated_at: params[18],
       creation_strategy: params[19] ?? null,
+      merge_conflicts: params[20] ?? null,
+      behind_base_by: params[21] ?? null,
     });
     return undefined;
   });
@@ -1310,6 +1314,94 @@ describe("prService.listWithConflicts", () => {
 
     expect(rows[0]?.conflictAnalysis).toBeNull();
     expect(conflictService.getBatchAssessment).not.toHaveBeenCalled();
+  });
+
+  it("includes cached GitHub mergeability fields in list rows", async () => {
+    const db = makeMockDb();
+    db.all.mockImplementation((sql: string) => {
+      if (String(sql).includes("from pull_requests")) {
+        return [makePrRow({ id: "pr-1", lane_id: "lane-pr", merge_conflicts: 1, behind_base_by: 3 })];
+      }
+      return [];
+    });
+    const { service } = buildService({ db });
+
+    const rows = await service.listWithConflicts();
+
+    expect(rows[0]).toEqual(expect.objectContaining({
+      mergeConflicts: true,
+      behindBaseBy: 3,
+      conflictAnalysis: null,
+    }));
+  });
+});
+
+describe("prService.getStatus", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("polls unknown GitHub mergeability before reporting and caching conflicts", async () => {
+    vi.useFakeTimers();
+    try {
+      const row = makePrRow({ id: "pr-status", github_pr_number: 90 });
+      const db = makeMockDb();
+      installPullRequestRowStore(db, [row]);
+      let pullFetches = 0;
+      const githubService = makeGithubService({
+        apiRequest: vi.fn(async (args: { path: string }) => {
+          if (args.path === "/repos/test-owner/test-repo/pulls/90") {
+            pullFetches += 1;
+            return {
+              data: makeGitHubPull({
+                number: 90,
+                html_url: row.github_url,
+                title: row.title,
+                mergeable: pullFetches === 1 ? null : false,
+                mergeable_state: pullFetches === 1 ? "unknown" : "dirty",
+                head: { ref: "my-feature", sha: "head-sha" },
+                base: { ref: "main", sha: "base-sha" },
+              }),
+            };
+          }
+          if (args.path === "/repos/test-owner/test-repo/commits/head-sha/status") {
+            return { data: { state: "success", statuses: [] } };
+          }
+          if (args.path === "/repos/test-owner/test-repo/commits/head-sha/check-runs") {
+            return { data: { check_runs: [] } };
+          }
+          if (args.path === "/repos/test-owner/test-repo/pulls/90/reviews") {
+            return { data: [] };
+          }
+          if (args.path === "/repos/test-owner/test-repo/compare/base-sha...head-sha") {
+            return { data: { behind_by: 2 } };
+          }
+          throw new Error(`Unexpected GitHub API path: ${args.path}`);
+        }),
+      });
+      const { service } = buildService({ db, githubService });
+
+      const statusPromise = service.getStatus("pr-status");
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(500);
+      const status = await statusPromise;
+
+      expect(pullFetches).toBe(2);
+      expect(status).toEqual(expect.objectContaining({
+        mergeConflicts: true,
+        behindBaseBy: 2,
+        isMergeable: false,
+      }));
+      const updateCall = db.run.mock.calls.find(([sql]: [unknown]) =>
+        String(sql).includes("update pull_requests")
+        && String(sql).includes("merge_conflicts")
+        && String(sql).includes("behind_base_by")
+      );
+      const updateParams = updateCall?.[1] as unknown[] | undefined;
+      expect(updateParams?.slice(-6)).toEqual([1, 1, 1, 2, "pr-status", "proj-1"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

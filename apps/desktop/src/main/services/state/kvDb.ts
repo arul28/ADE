@@ -1701,6 +1701,8 @@ function migrate(db: MigrationDb) {
   try { db.run("alter table pull_requests add column last_polled_at text"); } catch {}
   try { db.run("alter table pull_requests add column head_sha text"); } catch {}
   try { db.run("alter table pull_requests add column creation_strategy text"); } catch {}
+  try { db.run("alter table pull_requests add column merge_conflicts integer"); } catch {}
+  try { db.run("alter table pull_requests add column behind_base_by integer"); } catch {}
 
   db.run("drop table if exists github_pr_cache");
 
