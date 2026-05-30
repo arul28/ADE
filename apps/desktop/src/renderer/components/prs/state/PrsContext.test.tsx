@@ -4,7 +4,19 @@ import React from "react";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AutoRebaseLaneStatus, PrAiSummary, PrConvergenceState, PrConvergenceStatePatch, PrDeployment, PrSnapshotHydration, PrSummary, PrWithConflicts, RebaseNeed } from "../../../../shared/types";
+import type {
+  AutoRebaseLaneStatus,
+  PrAiSummary,
+  PrConflictAnalysis,
+  PrConvergenceState,
+  PrConvergenceStatePatch,
+  PrDeployment,
+  PrEventPayload,
+  PrSnapshotHydration,
+  PrSummary,
+  PrWithConflicts,
+  RebaseNeed,
+} from "../../../../shared/types";
 import { PrsProvider, usePrs } from "./PrsContext";
 
 const originalAde = globalThis.window.ade;
@@ -71,6 +83,22 @@ function TabSwitchHarness() {
       </button>
       <div data-testid="loading">{loading ? "loading" : "idle"}</div>
       <div data-testid="active-tab">{activeTab}</div>
+    </div>
+  );
+}
+
+function ConflictRefreshHarness() {
+  const { activeTab, prs, setActiveTab, loading } = usePrs();
+  return (
+    <div>
+      <button type="button" onClick={() => setActiveTab("integration")}>
+        integration
+      </button>
+      <div data-testid="loading">{loading ? "loading" : "idle"}</div>
+      <div data-testid="active-tab">{activeTab}</div>
+      <div data-testid="conflict-risk">
+        {prs.map((pr) => `${pr.id}:${pr.conflictAnalysis?.riskLevel ?? "none"}`).join(",")}
+      </div>
     </div>
   );
 }
@@ -1196,6 +1224,72 @@ describe("PrsContext refresh", () => {
     expect(window.ade.prs.getMergeContext).toHaveBeenCalledWith("pr-2");
   });
 
+  it("refreshes workflow conflict analysis after prs-updated events", async () => {
+    const user = userEvent.setup();
+    let emitPrEvent: ((event: PrEventPayload) => void) | null = null;
+    const stalePr = makeFakePr("pr-1", {
+      conflictAnalysis: makeFakeConflictAnalysis("pr-1", {
+        riskLevel: "high",
+        overlapCount: 2,
+        conflictPredicted: true,
+      }),
+    });
+    const clearedPr = makeFakePr("pr-1", {
+      conflictAnalysis: makeFakeConflictAnalysis("pr-1", {
+        riskLevel: "none",
+        overlapCount: 0,
+        conflictPredicted: false,
+      }),
+    });
+    const eventPr = toPrSummary(makeFakePr("pr-1", { title: "Updated PR pr-1" }));
+    const conflictRefreshes = [[stalePr], [clearedPr]];
+    const listWithConflicts = vi.fn(async (args?: { includeConflictAnalysis?: boolean }) => {
+      if (args?.includeConflictAnalysis === true) {
+        return conflictRefreshes.shift() ?? [clearedPr];
+      }
+      return [makeFakePr("pr-1")];
+    });
+    Object.assign(window.ade.prs, {
+      listWithConflicts,
+      onEvent: vi.fn((cb: (event: PrEventPayload) => void) => {
+        emitPrEvent = cb;
+        return () => {};
+      }),
+    });
+
+    render(
+      <PrsProvider>
+        <ConflictRefreshHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+    expect(screen.getByTestId("conflict-risk").textContent).toBe("pr-1:none");
+
+    await user.click(screen.getByRole("button", { name: "integration" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("active-tab").textContent).toBe("integration");
+      expect(screen.getByTestId("conflict-risk").textContent).toBe("pr-1:high");
+    });
+
+    await act(async () => {
+      emitPrEvent?.({
+        type: "prs-updated",
+        polledAt: "2026-05-30T12:00:00.000Z",
+        prs: [eventPr],
+      });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("conflict-risk").textContent).toBe("pr-1:none");
+    });
+    expect(listWithConflicts.mock.calls.filter(([args]) => args?.includeConflictAnalysis === true)).toHaveLength(2);
+  });
+
   it("hydrates the Rebase/Merge workflow selection from the initial hash route", async () => {
     window.location.hash = "#/prs?tab=workflows&workflow=rebase&laneId=lane-1";
 
@@ -1295,7 +1389,28 @@ function makeFakeConvergenceState(prId: string, overrides?: Partial<PrConvergenc
   };
 }
 
-function makeFakePr(id: string): PrWithConflicts {
+function makeFakeConflictAnalysis(
+  prId: string,
+  overrides: Partial<PrConflictAnalysis> = {},
+): PrConflictAnalysis {
+  return {
+    prId,
+    laneId: `lane-${prId}`,
+    riskLevel: "none",
+    overlapCount: 0,
+    conflictPredicted: false,
+    peerConflicts: [],
+    analyzedAt: "2026-05-30T12:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function toPrSummary(pr: PrWithConflicts): PrSummary {
+  const { conflictAnalysis: _conflictAnalysis, ...summary } = pr;
+  return summary;
+}
+
+function makeFakePr(id: string, overrides: Partial<PrWithConflicts> = {}): PrWithConflicts {
   return {
     id,
     laneId: `lane-${id}`,
@@ -1317,6 +1432,7 @@ function makeFakePr(id: string): PrWithConflicts {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     conflictAnalysis: null,
+    ...overrides,
   };
 }
 
