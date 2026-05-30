@@ -4,11 +4,13 @@ import type { CodexThreadGoal } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
 
 const AMBER = "#F59E0B";
+const CODEX_GOAL_OBJECTIVE_MAX_CHARS = 4000;
 
 type CodexGoalCardProps = {
   goal: CodexThreadGoal;
   onEdit?: (nextObjective: string) => void;
   onClear?: () => void;
+  pending?: boolean;
 };
 
 function formatTokens(value: number | null | undefined): string {
@@ -59,7 +61,7 @@ function statusTone(
         pill: "bg-sky-500/12 text-sky-100 ring-1 ring-inset ring-sky-400/30",
         rail: "bg-sky-400/60",
         dot: "bg-sky-300/90",
-        label: "usage hit",
+        label: "usage paused",
       };
     case "cancelled":
       return {
@@ -69,12 +71,6 @@ function statusTone(
         label: "cancelled",
       };
     case "budget_limited":
-      return {
-        pill: "bg-amber-500/15 text-amber-100 ring-1 ring-inset ring-amber-400/40",
-        rail: "bg-amber-400/70",
-        dot: "bg-amber-300/95",
-        label: "budget hit",
-      };
     case "active":
     default:
       return {
@@ -86,7 +82,7 @@ function statusTone(
   }
 }
 
-export function CodexGoalCard({ goal, onEdit, onClear }: CodexGoalCardProps) {
+export function CodexGoalCard({ goal, onEdit, onClear, pending = false }: CodexGoalCardProps) {
   const objective = (goal.objective ?? "").trim();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(objective);
@@ -106,17 +102,13 @@ export function CodexGoalCard({ goal, onEdit, onClear }: CodexGoalCardProps) {
   if (!objective) return null;
 
   const tokensUsed = Math.max(0, goal.tokensUsed ?? 0);
-  const tokenBudget = typeof goal.tokenBudget === "number" && goal.tokenBudget > 0
-    ? goal.tokenBudget
-    : null;
-  const tokenPercent = tokenBudget ? Math.min(100, Math.round((tokensUsed / tokenBudget) * 100)) : null;
   const elapsed = formatElapsed(goal.timeUsedSeconds);
   const tone = statusTone(goal.status ?? "active");
 
   const submitEdit = () => {
     const next = draft.replace(/\s*[\r\n]+\s*/g, " ").trim();
     setEditing(false);
-    if (!next || next === objective) return;
+    if (pending || !next || next === objective) return;
     onEdit?.(next);
   };
 
@@ -131,6 +123,7 @@ export function CodexGoalCard({ goal, onEdit, onClear }: CodexGoalCardProps) {
         className={cn(
           "relative overflow-hidden rounded-lg border border-amber-400/15 bg-amber-500/[0.04]",
           "pl-3 pr-2 py-2.5",
+          pending && "opacity-75",
         )}
       >
         <span
@@ -156,7 +149,7 @@ export function CodexGoalCard({ goal, onEdit, onClear }: CodexGoalCardProps) {
             )}
           >
             <span aria-hidden className={cn("h-1 w-1 rounded-full", tone.dot)} />
-            {tone.label}
+            {pending ? "updating" : tone.label}
           </span>
         </header>
 
@@ -166,6 +159,8 @@ export function CodexGoalCard({ goal, onEdit, onClear }: CodexGoalCardProps) {
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onBlur={submitEdit}
+            disabled={pending}
+            maxLength={CODEX_GOAL_OBJECTIVE_MAX_CHARS}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
@@ -187,12 +182,12 @@ export function CodexGoalCard({ goal, onEdit, onClear }: CodexGoalCardProps) {
           <button
             type="button"
             onClick={() => onEdit && setEditing(true)}
-            title={onEdit ? "Click to edit" : objective}
-            disabled={!onEdit}
+            title={onEdit ? "Edit goal" : objective}
+            disabled={!onEdit || pending}
             className={cn(
               "mt-1.5 block w-full text-left font-sans text-[13px] leading-snug text-amber-50",
-              onEdit && "cursor-text rounded hover:text-amber-100",
-              !onEdit && "cursor-default",
+              onEdit && !pending && "cursor-text rounded hover:text-amber-100",
+              (!onEdit || pending) && "cursor-default",
             )}
           >
             {objective}
@@ -200,28 +195,9 @@ export function CodexGoalCard({ goal, onEdit, onClear }: CodexGoalCardProps) {
         )}
 
         <div className="mt-2 flex items-center gap-2">
-          {tokenBudget ? (
-            <div
-              className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-amber-950/45"
-              role="progressbar"
-              aria-valuemin={0}
-              aria-valuemax={tokenBudget}
-              aria-valuenow={tokensUsed}
-            >
-              <div
-                className={cn("h-full rounded-full transition-[width] duration-500 ease-out", tone.rail)}
-                style={{ width: `${tokenPercent ?? 0}%` }}
-              />
-            </div>
-          ) : (
-            // No budget → the budget bar would be a meaningless empty rule, so
-            // we just push the counters to the right with a flex spacer.
-            <div aria-hidden className="min-w-0 flex-1" />
-          )}
+          <div aria-hidden className="min-w-0 flex-1" />
           <span className="shrink-0 font-sans text-[10.5px] tabular-nums text-amber-100/70">
-            {tokenBudget
-              ? `${formatTokens(tokensUsed)} / ${formatTokens(tokenBudget)}`
-              : formatTokens(tokensUsed)}
+            {formatTokens(tokensUsed)}
           </span>
           {elapsed ? (
             <>
@@ -236,7 +212,11 @@ export function CodexGoalCard({ goal, onEdit, onClear }: CodexGoalCardProps) {
               <button
                 type="button"
                 onClick={() => setEditing(true)}
-                className="rounded p-1 text-amber-200/55 transition-colors hover:bg-amber-500/10 hover:text-amber-100"
+                disabled={pending}
+                className={cn(
+                  "rounded p-1 text-amber-200/55 transition-colors hover:bg-amber-500/10 hover:text-amber-100",
+                  pending && "cursor-default opacity-45 hover:bg-transparent hover:text-amber-200/55",
+                )}
                 aria-label="Edit goal"
                 title="Edit goal"
               >
@@ -250,11 +230,16 @@ export function CodexGoalCard({ goal, onEdit, onClear }: CodexGoalCardProps) {
                   if (editing) e.preventDefault();
                 }}
                 onClick={() => {
+                  if (pending) return;
                   setEditing(false);
                   setDraft(objective);
                   onClear();
                 }}
-                className="rounded p-1 text-amber-200/55 transition-colors hover:bg-amber-500/10 hover:text-amber-100"
+                disabled={pending}
+                className={cn(
+                  "rounded p-1 text-amber-200/55 transition-colors hover:bg-amber-500/10 hover:text-amber-100",
+                  pending && "cursor-default opacity-45 hover:bg-transparent hover:text-amber-200/55",
+                )}
                 aria-label="Clear goal"
                 title="Clear goal"
               >

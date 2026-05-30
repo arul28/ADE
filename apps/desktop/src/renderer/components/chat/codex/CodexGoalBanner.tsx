@@ -50,7 +50,7 @@ function statusPillClass(status: CodexThreadGoal["status"]): string {
 function statusLabel(status: CodexThreadGoal["status"]): string {
   if (!status || status === "unknown") return "active";
   if (status === "budget_limited") return "active";
-  if (status === "usage_limited") return "usage hit";
+  if (status === "usage_limited") return "usage paused";
   return status.replace("_", " ");
 }
 

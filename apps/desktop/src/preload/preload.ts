@@ -282,12 +282,16 @@ import type {
   AgentTool,
   AgentChatApproveArgs,
   AgentChatArchiveArgs,
+  AgentChatCodexClearGoalArgs,
+  AgentChatCodexGetGoalArgs,
   AgentChatCreateArgs,
   AgentChatLaunchArgs,
   AgentChatLaunchCliArgs,
   AgentChatLaunchCliResult,
   AgentChatCodexOpenInCliArgs,
   AgentChatCodexOpenInCliResult,
+  AgentChatCodexSetGoalArgs,
+  AgentChatCodexSetGoalStatusArgs,
   AgentChatDeleteArgs,
   AgentChatSuggestLaneNameArgs,
   AgentChatEventEnvelope,
@@ -333,6 +337,7 @@ import type {
   AgentChatSessionCapabilities,
   AgentChatSessionCapabilitiesArgs,
   AgentChatSessionSummary,
+  CodexThreadGoal,
   AgentChatSteerArgs,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
@@ -1164,6 +1169,9 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "warmupModel",
   "rewindFiles",
   "saveTempAttachment",
+  "setCodexGoal",
+  "setCodexGoalStatus",
+  "clearCodexGoal",
   "codexOpenInCli",
 ]);
 
@@ -5120,6 +5128,42 @@ contextBridge.exposeInMainWorld("ade", {
         : ipcRenderer.invoke(IPC.agentChatGetEventHistory, args);
     },
     codex: {
+      getGoal: (
+        args: AgentChatCodexGetGoalArgs,
+      ): Promise<CodexThreadGoal | null> =>
+        callProjectRuntimeActionOr("chat", "getCodexGoal", { args }, () =>
+          ipcRenderer.invoke(IPC.agentChatCodexGetGoal, args),
+        ),
+      setGoal: async (
+        args: AgentChatCodexSetGoalArgs,
+      ): Promise<CodexThreadGoal | null> => {
+        agentChatSummaryCache.clear();
+        const goal = await callProjectRuntimeActionOr("chat", "setCodexGoal", { args }, () =>
+          ipcRenderer.invoke(IPC.agentChatCodexSetGoal, args),
+        );
+        agentChatSummaryCache.clear();
+        return goal as CodexThreadGoal | null;
+      },
+      setGoalStatus: async (
+        args: AgentChatCodexSetGoalStatusArgs,
+      ): Promise<CodexThreadGoal | null> => {
+        agentChatSummaryCache.clear();
+        const goal = await callProjectRuntimeActionOr("chat", "setCodexGoalStatus", { args }, () =>
+          ipcRenderer.invoke(IPC.agentChatCodexSetGoalStatus, args),
+        );
+        agentChatSummaryCache.clear();
+        return goal as CodexThreadGoal | null;
+      },
+      clearGoal: async (
+        args: AgentChatCodexClearGoalArgs,
+      ): Promise<CodexThreadGoal | null> => {
+        agentChatSummaryCache.clear();
+        const goal = await callProjectRuntimeActionOr("chat", "clearCodexGoal", { args }, () =>
+          ipcRenderer.invoke(IPC.agentChatCodexClearGoal, args),
+        );
+        agentChatSummaryCache.clear();
+        return goal as CodexThreadGoal | null;
+      },
       openInCli: (
         args: AgentChatCodexOpenInCliArgs,
       ): Promise<AgentChatCodexOpenInCliResult> =>

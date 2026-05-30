@@ -11805,6 +11805,199 @@ describe("createAgentChatService", () => {
       )).toBe(false);
     });
 
+    it("exposes typed Codex goal controls with unlimited budgets and persisted summaries", async () => {
+      mockState.codexResponseOverrides.set("thread/goal/set", (payload) => {
+        const params = payload.params as Record<string, unknown>;
+        return {
+          goal: {
+            objective: params.objective ?? "Ship CLI parity",
+            status: params.status ?? "active",
+            tokenBudget: params.tokenBudget,
+            tokensUsed: 42,
+            timeUsedSeconds: 12,
+          },
+        };
+      });
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      const goal = await service.setCodexGoal({
+        sessionId: session.id,
+        objective: "Ship CLI parity",
+      });
+
+      expect(mockState.codexRequestPayloads.find((payload) => payload.method === "thread/goal/set")?.params).toMatchObject({
+        threadId: "thread-1",
+        objective: "Ship CLI parity",
+        status: "active",
+        tokenBudget: null,
+      });
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
+      expect(goal).toMatchObject({
+        objective: "Ship CLI parity",
+        status: "active",
+        tokenBudget: null,
+        tokensUsed: 42,
+      });
+      expect((await service.getSessionSummary(session.id))?.codexGoal).toMatchObject({
+        objective: "Ship CLI parity",
+        status: "active",
+        tokenBudget: null,
+      });
+      expect(readPersistedChatState(session.id).codexGoal).toMatchObject({
+        objective: "Ship CLI parity",
+        status: "active",
+        tokenBudget: null,
+      });
+
+      mockState.codexRequestPayloads = [];
+      await service.setCodexGoalStatus({
+        sessionId: session.id,
+        status: "paused",
+      });
+      expect(mockState.codexRequestPayloads.find((payload) => payload.method === "thread/goal/set")?.params).toMatchObject({
+        status: "paused",
+        tokenBudget: null,
+      });
+
+      mockState.codexRequestPayloads = [];
+      await service.clearCodexGoal({ sessionId: session.id });
+      expect(mockState.codexRequestPayloads.find((payload) => payload.method === "thread/goal/clear")?.params).toMatchObject({
+        threadId: "thread-1",
+      });
+      expect((await service.getSessionSummary(session.id))?.codexGoal).toBeNull();
+    });
+
+    it("clears persisted Codex goals after restart by resuming the thread first", async () => {
+      mockState.codexResponseOverrides.set("thread/goal/set", (payload) => {
+        const params = payload.params as Record<string, unknown>;
+        return {
+          goal: {
+            objective: params.objective,
+            status: params.status ?? "active",
+            tokenBudget: params.tokenBudget,
+          },
+        };
+      });
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.setCodexGoal({
+        sessionId: session.id,
+        objective: "Ship CLI parity",
+      });
+      expect(readPersistedChatState(session.id)).toMatchObject({
+        threadId: "thread-1",
+        codexGoal: {
+          objective: "Ship CLI parity",
+          status: "active",
+          tokenBudget: null,
+        },
+      });
+
+      mockState.codexRequestPayloads = [];
+      const resumed = createService().service;
+      await resumed.clearCodexGoal({ sessionId: session.id });
+
+      const resumeRequestIndex = mockState.codexRequestPayloads.findIndex((payload) => payload.method === "thread/resume");
+      const clearRequestIndex = mockState.codexRequestPayloads.findIndex((payload) => payload.method === "thread/goal/clear");
+      expect(resumeRequestIndex).toBeGreaterThanOrEqual(0);
+      expect(clearRequestIndex).toBeGreaterThan(resumeRequestIndex);
+      expect(mockState.codexRequestPayloads[resumeRequestIndex]?.params).toMatchObject({
+        threadId: "thread-1",
+        excludeTurns: true,
+      });
+      expect(mockState.codexRequestPayloads[clearRequestIndex]?.params).toMatchObject({
+        threadId: "thread-1",
+      });
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(false);
+      expect((await resumed.getSessionSummary(session.id))?.codexGoal).toBeNull();
+    });
+
+    it("does not rotate to a fresh Codex thread when a goal-only resume fails", async () => {
+      mockState.codexResponseOverrides.set("thread/goal/set", (payload) => {
+        const params = payload.params as Record<string, unknown>;
+        return {
+          goal: {
+            objective: params.objective,
+            status: params.status ?? "active",
+            tokenBudget: params.tokenBudget,
+          },
+        };
+      });
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.setCodexGoal({
+        sessionId: session.id,
+        objective: "Ship CLI parity",
+      });
+      expect(readPersistedChatState(session.id).threadId).toBe("thread-1");
+
+      mockState.codexRequestPayloads = [];
+      mockState.codexResponseOverrides.set("thread/resume", {
+        error: { code: -32000, message: "resume unavailable" },
+      });
+      const resumed = createService().service;
+
+      await expect(resumed.setCodexGoal({
+        sessionId: session.id,
+        objective: "Keep shipping",
+      })).rejects.toThrow("Could not resume this Codex thread for goal controls");
+
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/resume")).toBe(true);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(false);
+      expect(readPersistedChatState(session.id).threadId).toBe("thread-1");
+      expect((await resumed.getSessionSummary(session.id))?.codexGoal).toMatchObject({
+        objective: "Ship CLI parity",
+        status: "active",
+        tokenBudget: null,
+      });
+    });
+
+    it("rejects Codex goals over the app-server objective limit", async () => {
+      const tooLongGoal = "x".repeat(4_001);
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await expect(service.setCodexGoal({
+        sessionId: session.id,
+        objective: tooLongGoal,
+      })).rejects.toThrow("Goal is too long. Keep it under 4,000 characters.");
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/goal/set")).toBe(false);
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: `/goal ${tooLongGoal}`,
+      }, { awaitDispatch: true });
+
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/goal/set")).toBe(false);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.message === "Goal is too long. Keep it under 4,000 characters."
+      )).toBe(true);
+    });
+
     it("asks before replacing an existing typed Codex goal", async () => {
       mockState.codexResponseOverrides.set("thread/goal/set", (payload) => {
         const params = payload.params as Record<string, unknown>;
@@ -11945,20 +12138,14 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => {
         expect(events.some((event) =>
           event.event.type === "system_notice"
-          && event.event.message === "Codex goal resumed."
+          && event.event.message === "Goal limit removed. ADE keeps goals unlimited."
         )).toBe(true);
       });
+      expect(events.some((event) =>
+        event.event.type === "codex_goal_updated"
+        && event.event.goal?.status === "budget_limited"
+      )).toBe(false);
       expect(events).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          event: expect.objectContaining({
-            type: "codex_goal_updated",
-            goal: expect.objectContaining({
-              status: "budget_limited",
-              tokenBudget: 5000,
-              timeUsedSeconds: 90,
-            }),
-          }),
-        }),
         expect.objectContaining({
           event: expect.objectContaining({
             type: "codex_goal_updated",
@@ -12035,7 +12222,7 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => {
         expect(events.some((event) =>
           event.event.type === "system_notice"
-          && event.event.message === "Codex goal update failed: goal RPC failed"
+          && event.event.message === "Goal update failed: goal RPC failed"
         )).toBe(true);
       });
 
@@ -12120,7 +12307,7 @@ describe("createAgentChatService", () => {
       expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
       expect(events.some((event) =>
         event.event.type === "system_notice"
-        && event.event.message === "Codex goal command failed: goal RPC failed"
+        && event.event.message === "Goal update failed: goal RPC failed"
       )).toBe(true);
       expect(events.some((event) =>
         event.event.type === "status"

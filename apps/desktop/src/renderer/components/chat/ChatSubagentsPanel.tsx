@@ -283,6 +283,7 @@ export function ChatSubagentsPanel({
   goal,
   onEditGoal,
   onClearGoal,
+  goalPending = false,
 }: {
   snapshots: ChatSubagentSnapshot[];
   events: AgentChatEventEnvelope[];
@@ -295,6 +296,7 @@ export function ChatSubagentsPanel({
   goal?: CodexThreadGoal | null;
   onEditGoal?: (nextObjective: string) => void;
   onClearGoal?: () => void;
+  goalPending?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -358,12 +360,13 @@ export function ChatSubagentsPanel({
 
   const body = (
     <div className="flex min-h-0 flex-1 flex-col font-sans">
-      {/* ── Goal (Codex thread goal) ─────────────────────────────── */}
+      {/* ── Goal (Codex chat goal) ───────────────────────────────── */}
       {hasGoal && goal ? (
         <CodexGoalCard
           goal={goal}
           onEdit={onEditGoal}
           onClear={onClearGoal}
+          pending={goalPending}
         />
       ) : null}
 

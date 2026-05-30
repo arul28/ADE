@@ -305,6 +305,8 @@ export type CodexThreadGoal = {
   updatedAt?: string | null;
 };
 
+export type CodexThreadGoalUpdateKind = "set" | "status" | "sync" | "budget";
+
 export type AgentChatCompletionArtifact = {
   type: string;
   description: string;
@@ -710,6 +712,7 @@ export type AgentChatEvent =
   | {
       type: "codex_goal_updated";
       goal: CodexThreadGoal | null;
+      updateKind?: CodexThreadGoalUpdateKind;
       turnId?: string;
     }
   | {
@@ -1418,6 +1421,24 @@ export type AgentChatCancelDispatchedSteerResult = {
 };
 
 export type AgentChatInterruptArgs = {
+  sessionId: string;
+};
+
+export type AgentChatCodexGetGoalArgs = {
+  sessionId: string;
+};
+
+export type AgentChatCodexSetGoalArgs = {
+  sessionId: string;
+  objective: string;
+};
+
+export type AgentChatCodexSetGoalStatusArgs = {
+  sessionId: string;
+  status: Extract<CodexThreadGoalStatus, "active" | "paused" | "blocked" | "complete">;
+};
+
+export type AgentChatCodexClearGoalArgs = {
   sessionId: string;
 };
 

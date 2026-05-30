@@ -32,6 +32,7 @@ import {
   Sparkle,
   Code,
   Paperclip,
+  Target,
 } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
@@ -2476,6 +2477,39 @@ function renderEvent(
             );
           })}
         </div>
+      </div>
+    );
+  }
+
+  /* ── Codex Goal ── */
+  if (event.type === "codex_goal_updated" || event.type === "codex_goal_cleared") {
+    const goal = event.type === "codex_goal_updated" ? event.goal : null;
+    const updateKind = event.type === "codex_goal_updated" ? event.updateKind : undefined;
+    const objective = goal?.objective?.trim() ?? "";
+    const status = goal?.status === "budget_limited"
+      ? "active"
+      : goal?.status && goal.status !== "unknown"
+        ? goal.status
+        : "active";
+    const action = status === "active"
+      ? (updateKind === "status" ? "Goal resumed" : "Goal set")
+      : status === "complete"
+        ? "Goal complete"
+        : status === "usage_limited"
+          ? "Goal paused by usage limits"
+          : status === "cancelled"
+            ? "Goal cancelled"
+            : `Goal ${status.replace("_", " ")}`;
+    const message = event.type === "codex_goal_cleared"
+      ? "Goal cleared"
+      : objective
+        ? `${action}: ${objective}`
+        : action;
+    return (
+      <div className="inline-flex max-w-[min(100%,70ch)] items-center gap-2 rounded-lg border border-amber-400/16 bg-amber-500/[0.055] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-amber-100/78">
+        <Target size={11} weight="duotone" className="shrink-0 text-amber-300/80" />
+        <span className="shrink-0 text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-amber-200/55">goal</span>
+        <span className="min-w-0 truncate">{message}</span>
       </div>
     );
   }

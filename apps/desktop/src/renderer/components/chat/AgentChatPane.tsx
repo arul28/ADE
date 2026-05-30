@@ -2374,6 +2374,7 @@ export function AgentChatPane({
   const [eventsBySession, setEventsBySession] = useState<Record<string, AgentChatEventEnvelope[]>>({});
   const [turnActiveBySession, setTurnActiveBySession] = useState<Record<string, boolean>>({});
   const [pendingInputsBySession, setPendingInputsBySession] = useState<Record<string, DerivedPendingInput[]>>({});
+  const [codexGoalPendingBySession, setCodexGoalPendingBySession] = useState<Record<string, boolean>>({});
   const [respondingApprovalIds, setRespondingApprovalIds] = useState<Set<string>>(new Set());
   const [pendingSteersBySession, setPendingSteersBySession] = useState<Record<string, PendingSteerEntry[]>>({});
   const [modelId, setModelId] = useState<string>("");
@@ -2837,7 +2838,7 @@ export function AgentChatPane({
   // The pane is runtime-agnostic — Codex emits subagent_started/progress/result
   // events for delegation and collabToolCall items (spawn_agent, etc.) just
   // like Claude. Gate on whether we have anything to display: snapshots OR an
-  // active Codex thread goal (so the pane hosts the goal card even before any
+  // active Codex chat goal (so the pane hosts the goal card even before any
   // subagents are spawned).
   const selectedSubagentPaneAvailable =
     selectedSubagentSnapshots.length > 0
@@ -2941,48 +2942,41 @@ export function AgentChatPane({
   })();
   const selectedSessionAwaitingInput = Boolean(pendingInput) || selectedSession?.awaitingInput === true;
   const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
-  const sendCodexControlMessage = useCallback(async (sessionId: string, text: string) => {
+  const selectedCodexGoalPending = selectedSessionId ? (codexGoalPendingBySession[selectedSessionId] === true) : false;
+  const setCodexGoalFromPanel = useCallback(async (sessionId: string, nextObjective: string) => {
+    const objective = nextObjective.replace(/\s*[\r\n]+\s*/g, " ").trim();
+    if (!objective) return;
     setError(null);
+    setCodexGoalPendingBySession((prev) => ({ ...prev, [sessionId]: true }));
     try {
-      const isGoalControlMessage = isCodexGoalSlashInput(text);
-      const steerControlMessage = async () => {
-        await window.ade.agentChat.steer({ sessionId, text });
-      };
-      const sendOrSteerIfBusy = async (retryOnStaleSteer = true) => {
-        try {
-          await window.ade.agentChat.send({ sessionId, text });
-        } catch (sendError) {
-          if (!isGoalControlMessage && isTurnAlreadyActiveError(sendError)) {
-            setError(null);
-            try {
-              await steerControlMessage();
-            } catch (steerError) {
-              if (!isNoActiveTurnToSteerError(steerError) || !retryOnStaleSteer) throw steerError;
-              setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: false }));
-              await sendOrSteerIfBusy(false);
-            }
-            return;
-          }
-          throw sendError;
-        }
-      };
-
-      if (turnActiveBySession[sessionId] && !isGoalControlMessage) {
-        try {
-          await steerControlMessage();
-        } catch (steerError) {
-          if (!isNoActiveTurnToSteerError(steerError)) throw steerError;
-          setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: false }));
-          await sendOrSteerIfBusy();
-        }
-        return;
-      }
-
-      await sendOrSteerIfBusy();
-    } catch (controlError) {
-      setError(errorMessage(controlError));
+      await window.ade.agentChat.codex.setGoal({ sessionId, objective });
+    } catch (goalError) {
+      setError(errorMessage(goalError));
+    } finally {
+      setCodexGoalPendingBySession((prev) => {
+        if (!prev[sessionId]) return prev;
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      });
     }
-  }, [turnActiveBySession]);
+  }, []);
+  const clearCodexGoalFromPanel = useCallback(async (sessionId: string) => {
+    setError(null);
+    setCodexGoalPendingBySession((prev) => ({ ...prev, [sessionId]: true }));
+    try {
+      await window.ade.agentChat.codex.clearGoal({ sessionId });
+    } catch (goalError) {
+      setError(errorMessage(goalError));
+    } finally {
+      setCodexGoalPendingBySession((prev) => {
+        if (!prev[sessionId]) return prev;
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      });
+    }
+  }, []);
   // Per-session memo of which sessions have already triggered the auto-open
   // affordance, so the panel doesn't keep re-opening every time a new subagent
   // appears or the user navigates back to the chat. We only slide it in on the
@@ -7307,19 +7301,18 @@ export function AgentChatPane({
       }}
       selectedTaskId={subagentView?.taskId ?? null}
       goal={selectedSession?.provider === "codex" ? selectedCodexGoal : null}
+      goalPending={selectedCodexGoalPending}
       onEditGoal={
         selectedSession?.provider === "codex" && selectedSessionId
           ? (next) => {
-              const objective = next.replace(/\s*[\r\n]+\s*/g, " ").trim();
-              if (!objective) return;
-              void sendCodexControlMessage(selectedSessionId, `/goal set ${objective}`);
+              void setCodexGoalFromPanel(selectedSessionId, next);
             }
           : undefined
       }
       onClearGoal={
         selectedSession?.provider === "codex" && selectedSessionId
           ? () => {
-              void sendCodexControlMessage(selectedSessionId, "/goal clear");
+              void clearCodexGoalFromPanel(selectedSessionId);
             }
           : undefined
       }
@@ -8716,7 +8709,7 @@ export function AgentChatPane({
                         Live view of Cursor Cloud agent. Replies run in cloud.
                       </div>
                     ) : null}
-                    {/* Codex thread goal is rendered in the Agents tab via
+                    {/* Codex chat goal is rendered in the Agents tab via
                         ChatSubagentsPanel; the in-chat banner was removed so
                         the chat header stays clean and goal context lives next
                         to subagents + progress where it belongs. */}

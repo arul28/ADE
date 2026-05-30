@@ -103,4 +103,15 @@ describe("CodexGoalBanner", () => {
     expect(screen.getByText(/^active$/i)).toBeTruthy();
     expect(screen.queryByText(/budget/i)).toBeNull();
   });
+
+  it("labels provider usage limits without debug wording", () => {
+    render(
+      <CodexGoalBanner
+        goal={{ objective: "Wait for reset", status: "usage_limited" }}
+        onEdit={() => undefined}
+        onClear={() => undefined}
+      />,
+    );
+    expect(screen.getByText(/^usage paused$/i)).toBeTruthy();
+  });
 });
