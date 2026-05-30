@@ -11922,6 +11922,51 @@ describe("createAgentChatService", () => {
       expect((await resumed.getSessionSummary(session.id))?.codexGoal).toBeNull();
     });
 
+    it("does not rotate to a fresh Codex thread when a goal-only resume fails", async () => {
+      mockState.codexResponseOverrides.set("thread/goal/set", (payload) => {
+        const params = payload.params as Record<string, unknown>;
+        return {
+          goal: {
+            objective: params.objective,
+            status: params.status ?? "active",
+            tokenBudget: params.tokenBudget,
+          },
+        };
+      });
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.setCodexGoal({
+        sessionId: session.id,
+        objective: "Ship CLI parity",
+      });
+      expect(readPersistedChatState(session.id).threadId).toBe("thread-1");
+
+      mockState.codexRequestPayloads = [];
+      mockState.codexResponseOverrides.set("thread/resume", {
+        error: { code: -32000, message: "resume unavailable" },
+      });
+      const resumed = createService().service;
+
+      await expect(resumed.setCodexGoal({
+        sessionId: session.id,
+        objective: "Keep shipping",
+      })).rejects.toThrow("Could not resume this Codex thread for goal controls");
+
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/resume")).toBe(true);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(false);
+      expect(readPersistedChatState(session.id).threadId).toBe("thread-1");
+      expect((await resumed.getSessionSummary(session.id))?.codexGoal).toMatchObject({
+        objective: "Ship CLI parity",
+        status: "active",
+        tokenBudget: null,
+      });
+    });
+
     it("rejects Codex goals over the app-server objective limit", async () => {
       const tooLongGoal = "x".repeat(4_001);
       const events: AgentChatEventEnvelope[] = [];

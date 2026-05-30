@@ -63,6 +63,39 @@ describe("CodexGoalCard", () => {
     expect(onEdit).toHaveBeenCalledWith("Refactor auth for compliance");
   });
 
+  it("limits edits to the Codex goal objective maximum", () => {
+    render(
+      <CodexGoalCard
+        goal={{ objective: "Refactor auth middleware", status: "active" }}
+        onEdit={() => undefined}
+        onClear={() => undefined}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Refactor auth middleware"));
+    const textarea = screen.getByLabelText("Edit goal objective") as HTMLTextAreaElement;
+    expect(textarea.maxLength).toBe(4000);
+  });
+
+  it("disables goal controls while a mutation is pending", () => {
+    const onEdit = vi.fn();
+    const onClear = vi.fn();
+    render(
+      <CodexGoalCard
+        goal={{ objective: "Refactor auth", status: "active" }}
+        onEdit={onEdit}
+        onClear={onClear}
+        pending
+      />,
+    );
+
+    expect(screen.getByText(/^updating$/i)).toBeTruthy();
+    expect(screen.getByText("Refactor auth").closest("button")?.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByLabelText("Edit goal").hasAttribute("disabled")).toBe(true);
+    fireEvent.click(screen.getByLabelText("Clear goal"));
+    expect(onClear).not.toHaveBeenCalled();
+  });
+
   it("does not invoke onEdit when Escape cancels the edit", () => {
     const onEdit = vi.fn();
     render(

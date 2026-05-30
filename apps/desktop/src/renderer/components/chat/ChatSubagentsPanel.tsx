@@ -283,6 +283,7 @@ export function ChatSubagentsPanel({
   goal,
   onEditGoal,
   onClearGoal,
+  goalPending = false,
 }: {
   snapshots: ChatSubagentSnapshot[];
   events: AgentChatEventEnvelope[];
@@ -295,6 +296,7 @@ export function ChatSubagentsPanel({
   goal?: CodexThreadGoal | null;
   onEditGoal?: (nextObjective: string) => void;
   onClearGoal?: () => void;
+  goalPending?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -364,6 +366,7 @@ export function ChatSubagentsPanel({
           goal={goal}
           onEdit={onEditGoal}
           onClear={onClearGoal}
+          pending={goalPending}
         />
       ) : null}
 

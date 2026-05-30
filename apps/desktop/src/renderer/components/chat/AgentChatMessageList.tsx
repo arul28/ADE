@@ -2484,6 +2484,7 @@ function renderEvent(
   /* ── Codex Goal ── */
   if (event.type === "codex_goal_updated" || event.type === "codex_goal_cleared") {
     const goal = event.type === "codex_goal_updated" ? event.goal : null;
+    const updateKind = event.type === "codex_goal_updated" ? event.updateKind : undefined;
     const objective = goal?.objective?.trim() ?? "";
     const status = goal?.status === "budget_limited"
       ? "active"
@@ -2491,7 +2492,7 @@ function renderEvent(
         ? goal.status
         : "active";
     const action = status === "active"
-      ? "Goal set"
+      ? (updateKind === "status" ? "Goal resumed" : "Goal set")
       : status === "complete"
         ? "Goal complete"
         : status === "usage_limited"

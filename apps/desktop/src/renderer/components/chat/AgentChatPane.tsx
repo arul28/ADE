@@ -2374,6 +2374,7 @@ export function AgentChatPane({
   const [eventsBySession, setEventsBySession] = useState<Record<string, AgentChatEventEnvelope[]>>({});
   const [turnActiveBySession, setTurnActiveBySession] = useState<Record<string, boolean>>({});
   const [pendingInputsBySession, setPendingInputsBySession] = useState<Record<string, DerivedPendingInput[]>>({});
+  const [codexGoalPendingBySession, setCodexGoalPendingBySession] = useState<Record<string, boolean>>({});
   const [respondingApprovalIds, setRespondingApprovalIds] = useState<Set<string>>(new Set());
   const [pendingSteersBySession, setPendingSteersBySession] = useState<Record<string, PendingSteerEntry[]>>({});
   const [modelId, setModelId] = useState<string>("");
@@ -2941,22 +2942,39 @@ export function AgentChatPane({
   })();
   const selectedSessionAwaitingInput = Boolean(pendingInput) || selectedSession?.awaitingInput === true;
   const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
+  const selectedCodexGoalPending = selectedSessionId ? (codexGoalPendingBySession[selectedSessionId] === true) : false;
   const setCodexGoalFromPanel = useCallback(async (sessionId: string, nextObjective: string) => {
     const objective = nextObjective.replace(/\s*[\r\n]+\s*/g, " ").trim();
     if (!objective) return;
     setError(null);
+    setCodexGoalPendingBySession((prev) => ({ ...prev, [sessionId]: true }));
     try {
       await window.ade.agentChat.codex.setGoal({ sessionId, objective });
     } catch (goalError) {
       setError(errorMessage(goalError));
+    } finally {
+      setCodexGoalPendingBySession((prev) => {
+        if (!prev[sessionId]) return prev;
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      });
     }
   }, []);
   const clearCodexGoalFromPanel = useCallback(async (sessionId: string) => {
     setError(null);
+    setCodexGoalPendingBySession((prev) => ({ ...prev, [sessionId]: true }));
     try {
       await window.ade.agentChat.codex.clearGoal({ sessionId });
     } catch (goalError) {
       setError(errorMessage(goalError));
+    } finally {
+      setCodexGoalPendingBySession((prev) => {
+        if (!prev[sessionId]) return prev;
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      });
     }
   }, []);
   // Per-session memo of which sessions have already triggered the auto-open
@@ -7283,6 +7301,7 @@ export function AgentChatPane({
       }}
       selectedTaskId={subagentView?.taskId ?? null}
       goal={selectedSession?.provider === "codex" ? selectedCodexGoal : null}
+      goalPending={selectedCodexGoalPending}
       onEditGoal={
         selectedSession?.provider === "codex" && selectedSessionId
           ? (next) => {

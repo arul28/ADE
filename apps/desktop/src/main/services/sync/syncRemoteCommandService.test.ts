@@ -1816,6 +1816,15 @@ describe("createSyncRemoteCommandService", () => {
       expect(result).toEqual({ objective: "Ship it", status: "paused", tokenBudget: null });
     });
 
+    it("chat.setCodexGoalStatus rejects unsupported statuses before calling the chat service", async () => {
+      await expect(service.execute(makePayload("chat.setCodexGoalStatus", {
+        sessionId: "sess-1",
+        status: "unknown",
+      }))).rejects.toThrow("chat.setCodexGoalStatus requires status to be active, paused, blocked, or complete.");
+
+      expect(agentChatService.setCodexGoalStatus).not.toHaveBeenCalled();
+    });
+
     it("chat.clearCodexGoal routes to agentChatService.clearCodexGoal", async () => {
       const result = await service.execute(makePayload("chat.clearCodexGoal", {
         sessionId: "sess-1",

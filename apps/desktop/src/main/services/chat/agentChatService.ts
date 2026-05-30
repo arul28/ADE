@@ -180,6 +180,7 @@ import type {
   AgentChatOpenCodePermissionMode,
   CodexPlanState,
   CodexThreadGoal,
+  CodexThreadGoalUpdateKind,
   CodexThreadTokenUsage,
   CodexTokenUsageBreakdown,
   CodexWebSearchAction,
@@ -8677,6 +8678,7 @@ export function createAgentChatService(args: {
         emitChatEvent(managed, {
           type: "codex_goal_updated",
           goal: updatedGoal,
+          updateKind: "budget",
           ...(turnId ? { turnId } : {}),
         });
         emitChatEvent(managed, {
@@ -8712,6 +8714,7 @@ export function createAgentChatService(args: {
     runtime: CodexRuntime,
     value: unknown,
     turnId?: string,
+    updateKind: CodexThreadGoalUpdateKind = "sync",
   ): CodexThreadGoal | null => {
     const reportedBudgetLimit = codexGoalPayloadRequiresBudgetClear(value);
     const goal = normalizeCodexGoalPayload(value);
@@ -8719,6 +8722,7 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, {
       type: "codex_goal_updated",
       goal,
+      updateKind,
       ...(turnId ? { turnId } : {}),
     });
     maybeClearCodexGoalBudget(managed, runtime, goal, turnId, reportedBudgetLimit);
@@ -9770,15 +9774,17 @@ export function createAgentChatService(args: {
     const applyCodexGoalUpdateWithFallback = (
       value: unknown,
       fallback: CodexThreadGoal | null,
+      updateKind: CodexThreadGoalUpdateKind = "sync",
     ): CodexThreadGoal | null => {
       if (normalizeCodexGoalPayload(value)) {
-        return applyCodexGoalUpdate(managed, runtime, value);
+        return applyCodexGoalUpdate(managed, runtime, value, undefined, updateKind);
       }
       const sanitizedFallback = normalizeAdeCodexGoal(fallback);
       managed.session.codexGoal = sanitizedFallback;
       emitChatEvent(managed, {
         type: "codex_goal_updated",
         goal: sanitizedFallback,
+        updateKind,
         ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
       });
       return sanitizedFallback;
@@ -9795,7 +9801,7 @@ export function createAgentChatService(args: {
         objective: normalizedObjective,
         status: "active",
         tokenBudget: null,
-      });
+      }, "set");
     };
     const setCodexGoalStatus = async (status: CodexGoalSettableStatus): Promise<CodexThreadGoal | null> => {
       const previous = managed.session.codexGoal ?? null;
@@ -9806,7 +9812,7 @@ export function createAgentChatService(args: {
       if (!response) return null;
       return applyCodexGoalUpdateWithFallback(response, previous
         ? { ...previous, status, tokenBudget: null }
-        : { status, tokenBudget: null });
+        : { status, tokenBudget: null }, "status");
     };
     const clearCodexGoal = async (): Promise<boolean> => {
       const response = await requestCodexGoalControl("thread/goal/clear", {
@@ -25042,6 +25048,7 @@ export function createAgentChatService(args: {
           threadId,
           error: error instanceof Error ? error.message : String(error),
         });
+        throw new Error(`Could not resume this Codex thread for goal controls: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 
@@ -25058,15 +25065,17 @@ export function createAgentChatService(args: {
     runtime: CodexRuntime,
     value: unknown,
     fallback: CodexThreadGoal | null,
+    updateKind: CodexThreadGoalUpdateKind,
   ): CodexThreadGoal | null => {
     if (normalizeCodexGoalPayload(value)) {
-      return applyCodexGoalUpdate(managed, runtime, value, runtime.activeTurnId ?? undefined);
+      return applyCodexGoalUpdate(managed, runtime, value, runtime.activeTurnId ?? undefined, updateKind);
     }
     const sanitizedFallback = normalizeAdeCodexGoal(fallback);
     managed.session.codexGoal = sanitizedFallback;
     emitChatEvent(managed, {
       type: "codex_goal_updated",
       goal: sanitizedFallback,
+      updateKind,
       ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
     });
     return sanitizedFallback;
@@ -25106,7 +25115,7 @@ export function createAgentChatService(args: {
       objective: normalizedObjective,
       status: "active",
       tokenBudget: null,
-    });
+    }, "set");
     persistChatState(managed);
     return goal;
   };
@@ -25130,7 +25139,7 @@ export function createAgentChatService(args: {
     }), { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
     const goal = applyCodexGoalRpcResponse(managed, runtime, response, previous
       ? { ...previous, status, tokenBudget: null }
-      : { status, tokenBudget: null });
+      : { status, tokenBudget: null }, "status");
     persistChatState(managed);
     return goal;
   };

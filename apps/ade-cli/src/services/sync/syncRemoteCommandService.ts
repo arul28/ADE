@@ -886,9 +886,13 @@ function parseAgentChatCodexSetGoalArgs(value: Record<string, unknown>): AgentCh
 }
 
 function parseAgentChatCodexSetGoalStatusArgs(value: Record<string, unknown>): AgentChatCodexSetGoalStatusArgs {
+  const status = requireString(value.status, "chat.setCodexGoalStatus requires status.");
+  if (status !== "active" && status !== "paused" && status !== "blocked" && status !== "complete") {
+    throw new Error("chat.setCodexGoalStatus requires status to be active, paused, blocked, or complete.");
+  }
   return {
     sessionId: requireString(value.sessionId, "chat.setCodexGoalStatus requires sessionId."),
-    status: requireString(value.status, "chat.setCodexGoalStatus requires status.") as AgentChatCodexSetGoalStatusArgs["status"],
+    status,
   };
 }
 

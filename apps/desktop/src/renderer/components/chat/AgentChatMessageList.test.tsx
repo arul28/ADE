@@ -222,17 +222,28 @@ describe("AgentChatMessageList transcript rendering", () => {
         event: {
           type: "codex_goal_updated",
           goal: { objective: "Wait for review", status: "paused", tokenBudget: null },
+          updateKind: "status",
         },
       },
       {
         sessionId: "session-1",
         timestamp: "2026-03-17T10:00:02.000Z",
+        event: {
+          type: "codex_goal_updated",
+          goal: { objective: "Ship CLI parity", status: "active", tokenBudget: null },
+          updateKind: "status",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:03.000Z",
         event: { type: "codex_goal_cleared" },
       },
     ]);
 
     expect(screen.getByText("Goal set: Ship CLI parity")).toBeTruthy();
     expect(screen.getByText("Goal paused: Wait for review")).toBeTruthy();
+    expect(screen.getByText("Goal resumed: Ship CLI parity")).toBeTruthy();
     expect(screen.getByText("Goal cleared")).toBeTruthy();
   });
 
