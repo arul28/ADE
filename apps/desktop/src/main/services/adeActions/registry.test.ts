@@ -245,6 +245,75 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
   });
 });
 
+describe("runtime APNs action service", () => {
+  it("does not read APNs dependencies when resolving an unrelated domain", () => {
+    const runtime = {
+      laneService: {
+        list: vi.fn(),
+      },
+      projectConfigService: {
+        get: vi.fn(),
+      },
+      get apnsService() {
+        throw new Error("apnsService should not be read for lane actions");
+      },
+      get apnsKeyStore() {
+        throw new Error("apnsKeyStore should not be read for lane actions");
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+
+    const services = getAdeActionDomainServices(runtime);
+    const laneService = services.lane as Record<string, unknown>;
+
+    expect(Object.keys(services)).toContain("notifications_apns");
+    expect(laneService.list).toEqual(expect.any(Function));
+  });
+
+  it("reuses the APNs bridge for repeated lookups on a stable runtime", () => {
+    const runtime = {
+      projectConfigService: {
+        get: vi.fn(() => ({ effective: {}, shared: {}, local: {} })),
+      },
+      apnsService: {
+        isConfigured: vi.fn(() => false),
+      },
+      apnsKeyStore: {
+        has: vi.fn(() => false),
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+
+    const first = getAdeActionDomainServices(runtime).notifications_apns;
+    const second = getAdeActionDomainServices(runtime).notifications_apns;
+
+    expect(second).toBe(first);
+  });
+
+  it("refreshes the cached APNs bridge when late-bound dependencies change", async () => {
+    const runtime = {
+      projectConfigService: {
+        get: vi.fn(() => ({ effective: {}, shared: {}, local: {} })),
+      },
+      apnsService: {
+        isConfigured: vi.fn(() => false),
+      },
+      apnsKeyStore: {
+        has: vi.fn(() => false),
+      },
+    } as any as Parameters<typeof getAdeActionDomainServices>[0];
+
+    const first = getAdeActionDomainServices(runtime).notifications_apns;
+    (runtime as any).apnsService = {
+      isConfigured: vi.fn(() => true),
+    };
+    const second = getAdeActionDomainServices(runtime).notifications_apns as {
+      getStatus: () => Promise<{ configured: boolean }>;
+    };
+
+    expect(second).not.toBe(first);
+    await expect(second.getStatus()).resolves.toMatchObject({ configured: true });
+  });
+});
+
 describe("runtime Linear issue tracker actions", () => {
   it("builds catalog and picker payloads from tracker reads", async () => {
     const projects = [{ id: "project-1", name: "ADE" }];
