@@ -58,9 +58,14 @@ import { createPrService as createPrServiceImpl } from "../../desktop/src/main/s
 import { createAutomationSecretService as createAutomationSecretServiceImpl } from "../../desktop/src/main/services/automations/automationSecretService";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import {
+  linearInvalidGrantLikelyStaleRotation,
   linearTokenNeedsRefresh,
   refreshLinearOAuthAccessToken,
 } from "../../desktop/src/main/services/cto/linearTokenRefresh";
+import {
+  LinearOAuthRefreshLockTimeoutError,
+  withLinearOAuthRefreshLock,
+} from "../../desktop/src/main/services/cto/linearOAuthRefreshLock";
 
 // Keep headless runtimes aligned with the desktop credential service so packaged
 // alpha builds can offer the same PKCE-based Linear sign-in flow.
@@ -1143,9 +1148,11 @@ export function createHeadlessGitHubService(
 
 function createHeadlessLinearCredentialService(args: {
   adeDir: string;
+  logger?: Logger;
 }): HeadlessLinearCredentialService {
+  const secretsDir = path.join(args.adeDir, "secrets");
   const credentialStore = new EncryptedFileCredentialStore({
-    secretsDir: path.join(args.adeDir, "secrets"),
+    secretsDir,
   });
   const tokenKey = "linear.token.v1";
   const authModeKey = "linear.authMode.v1";
@@ -1250,23 +1257,60 @@ function createHeadlessLinearCredentialService(args: {
     const client = readOAuthClientCredentials();
     if (!client) return;
     refreshInFlight = (async () => {
-      const result = await refreshLinearOAuthAccessToken({
-        refreshToken,
-        clientId: client.clientId,
-        clientSecret: client.clientSecret,
-      });
-      if (result.ok) {
-        tokenOverride = result.accessToken;
-        writeCredential(tokenKey, result.accessToken);
-        writeCredential(authModeKey, "oauth");
-        writeCredential(refreshTokenKey, result.refreshToken ?? refreshToken);
-        writeCredential(tokenExpiresAtKey, result.expiresAt);
-      } else if (result.invalidGrant) {
-        tokenOverride = "";
-        writeCredential(tokenKey, null);
-        writeCredential(authModeKey, null);
-        writeCredential(refreshTokenKey, null);
-        writeCredential(tokenExpiresAtKey, null);
+      const performRefresh = async (tokenToRefresh: string): Promise<void> => {
+        const result = await refreshLinearOAuthAccessToken({
+          refreshToken: tokenToRefresh,
+          clientId: client.clientId,
+          clientSecret: client.clientSecret,
+        });
+        if (result.ok) {
+          tokenOverride = result.accessToken;
+          writeCredential(tokenKey, result.accessToken);
+          writeCredential(authModeKey, "oauth");
+          writeCredential(refreshTokenKey, result.refreshToken ?? tokenToRefresh);
+          writeCredential(tokenExpiresAtKey, result.expiresAt);
+          return;
+        }
+        if (result.invalidGrant) {
+          const rereadRefresh = readCredential(refreshTokenKey);
+          const rereadExpires = readCredential(tokenExpiresAtKey);
+          if (
+            linearInvalidGrantLikelyStaleRotation({
+              attemptedRefreshToken: tokenToRefresh,
+              rereadRefreshToken: rereadRefresh,
+              rereadExpiresAt: rereadExpires,
+              trustFreshExpiresAt: !opts?.force,
+            })
+          ) {
+            tokenOverride = readCredential(tokenKey);
+            return;
+          }
+          tokenOverride = "";
+          writeCredential(tokenKey, null);
+          writeCredential(authModeKey, null);
+          writeCredential(refreshTokenKey, null);
+          writeCredential(tokenExpiresAtKey, null);
+          return;
+        }
+      };
+
+      try {
+        await withLinearOAuthRefreshLock(secretsDir, async () => {
+          const latestRefresh = readCredential(refreshTokenKey);
+          if (!latestRefresh) return;
+          if (
+            !opts?.force
+            && !linearTokenNeedsRefresh(readCredential(tokenExpiresAtKey), Date.now())
+          ) {
+            return;
+          }
+          await performRefresh(latestRefresh);
+        });
+      } catch (error: unknown) {
+        if (!(error instanceof LinearOAuthRefreshLockTimeoutError)) throw error;
+        args.logger?.warn("linear_sync.oauth_refresh_lock_timeout", {
+          message: error.message,
+        });
       }
     })().finally(() => {
       refreshInFlight = null;
@@ -1689,7 +1733,10 @@ export function createHeadlessLinearServices(
     logger: args.logger,
   });
   const linearCredentialService =
-    createHeadlessLinearCredentialService({ adeDir: args.adeDir }) as any;
+    createHeadlessLinearCredentialService({
+      adeDir: args.adeDir,
+      logger: args.logger,
+    }) as any;
   const githubService = createHeadlessGitHubService(
     args.projectRoot,
     args.logger,
