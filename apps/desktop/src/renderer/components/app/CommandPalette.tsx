@@ -553,10 +553,10 @@ export function CommandPalette({
       },
       {
         id: "go-settings-usage",
-        title: "Go to Usage",
-        hint: "Token usage, cost breakdown",
+        title: "Go to Stats",
+        hint: "AI usage, cost breakdown, GitHub activity",
         group: "Settings",
-        run: () => navigate("/settings?tab=usage"),
+        run: () => navigate("/settings?tab=stats"),
       },
       {
         id: "action-create-lane",

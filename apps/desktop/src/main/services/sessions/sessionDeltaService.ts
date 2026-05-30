@@ -21,6 +21,8 @@ export function createSessionDeltaService(args: {
 }) {
   const { db, projectId, laneService, sessionService } = args;
 
+  type BackfillSessionRow = LaneSessionRow & { status: string | null };
+
   const getSessionRow = (sessionId: string): LaneSessionRow | null =>
     db.get<LaneSessionRow>(
       `
@@ -98,12 +100,22 @@ export function createSessionDeltaService(args: {
     const session = getSessionRow(sessionId);
     if (!session || session.tracked !== 1) return null;
 
-    const lane = laneService.getLaneBaseAndBranch(session.lane_id);
-    const diffRef = session.head_sha_start?.trim() || "HEAD";
+    const startSha = session.head_sha_start?.trim() ?? "";
+    const endSha = session.head_sha_end?.trim() ?? "";
+    if (session.ended_at && !endSha) return null;
 
-    const numStatRes = await runGit(["diff", "--numstat", diffRef], { cwd: lane.worktreePath, timeoutMs: 20_000 });
-    const nameRes = await runGit(["diff", "--name-only", diffRef], { cwd: lane.worktreePath, timeoutMs: 20_000 });
-    const statusRes = await runGit(["status", "--porcelain=v1"], { cwd: lane.worktreePath, timeoutMs: 8_000 });
+    const lane = laneService.getLaneBaseAndBranch(session.lane_id);
+    const hasCompletedRange = Boolean(startSha && endSha);
+    const completedWithoutCommitDelta = Boolean(session.ended_at && hasCompletedRange && startSha === endSha);
+    const useCommitRange = hasCompletedRange && startSha !== endSha;
+    const diffArgs = completedWithoutCommitDelta ? null : useCommitRange ? [startSha, endSha] : [startSha || "HEAD"];
+
+    const numStatRes = diffArgs
+      ? await runGit(["diff", "--numstat", ...diffArgs], { cwd: lane.worktreePath, timeoutMs: 20_000 })
+      : { stdout: "", exitCode: 0 };
+    const nameRes = diffArgs
+      ? await runGit(["diff", "--name-only", ...diffArgs], { cwd: lane.worktreePath, timeoutMs: 20_000 })
+      : { stdout: "", exitCode: 0 };
 
     const parsedStat = parseNumStat(numStatRes.stdout);
     const touched = new Set<string>([...parsedStat.files]);
@@ -114,9 +126,12 @@ export function createSessionDeltaService(args: {
       }
     }
 
-    if (statusRes.exitCode === 0) {
-      for (const rel of parsePorcelainPaths(statusRes.stdout)) {
-        touched.add(rel);
+    if (!useCommitRange && !completedWithoutCommitDelta) {
+      const statusRes = await runGit(["status", "--porcelain=v1"], { cwd: lane.worktreePath, timeoutMs: 8_000 });
+      if (statusRes.exitCode === 0) {
+        for (const rel of parsePorcelainPaths(statusRes.stdout)) {
+          touched.add(rel);
+        }
       }
     }
 
@@ -223,9 +238,76 @@ export function createSessionDeltaService(args: {
     };
   };
 
+  const backfillMissingSessionDeltas = async (options: {
+    limit?: number;
+    since?: string | null;
+  } = {}): Promise<{
+    scanned: number;
+    computed: number;
+    skipped: number;
+    failed: number;
+  }> => {
+    const limit = Math.max(1, Math.min(1_000, Math.floor(options.limit ?? 500)));
+    const where = [
+      "s.tracked = 1",
+      "s.ended_at is not null",
+      "s.head_sha_end is not null",
+      "s.head_sha_end != ''",
+      "d.session_id is null",
+    ];
+    const params: Array<string | number> = [];
+    if (options.since?.trim()) {
+      where.push("s.started_at >= ?");
+      params.push(options.since.trim());
+    }
+    params.push(limit);
+    const rows = db.all<BackfillSessionRow>(
+      `
+        select
+          s.id,
+          s.lane_id,
+          s.tracked,
+          s.started_at,
+          s.ended_at,
+          s.head_sha_start,
+          s.head_sha_end,
+          s.transcript_path,
+          s.status
+        from terminal_sessions s
+        left join session_deltas d on d.session_id = s.id
+        join lanes l on l.id = s.lane_id
+        where ${where.join(" and ")}
+          and l.project_id = ?
+        order by s.started_at desc
+        limit ?
+      `,
+      [...params.slice(0, -1), projectId, params[params.length - 1]],
+    );
+
+    let computed = 0;
+    let skipped = 0;
+    let failed = 0;
+    for (const row of rows) {
+      try {
+        const delta = await computeSessionDelta(row.id);
+        if (delta) computed += 1;
+        else skipped += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    return {
+      scanned: rows.length,
+      computed,
+      skipped,
+      failed,
+    };
+  };
+
   return {
     getSessionDelta,
     computeSessionDelta,
+    backfillMissingSessionDeltas,
     listRecentLaneSessionDeltas,
   };
 }

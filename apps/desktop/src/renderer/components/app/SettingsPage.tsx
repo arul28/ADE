@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { useSearchParams, useLocation } from "react-router-dom";
-import { Brain, GearSix, Stack, Plugs, Palette, DeviceMobile, Robot } from "@phosphor-icons/react";
+import { Brain, ChartLineUp, GearSix, Stack, Plugs, Palette, DeviceMobile, Robot } from "@phosphor-icons/react";
 import { GeneralSection } from "../settings/GeneralSection";
 import { AppearanceSection } from "../settings/AppearanceSection";
 import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
@@ -9,6 +9,7 @@ import { ProvidersSection } from "../settings/ProvidersSection";
 import { AiFeaturesSection } from "../settings/AiFeaturesSection";
 import { IntegrationsSettingsSection } from "../settings/IntegrationsSettingsSection";
 import { MobilePushPanel } from "../settings/MobilePushPanel";
+import { AdeUsageSection } from "../settings/AdeUsageSection";
 import { COLORS, SANS_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 
 const SECTIONS = [
@@ -19,6 +20,7 @@ const SECTIONS = [
   { id: "mobile-push", label: "Mobile Push", icon: DeviceMobile },
   { id: "integrations", label: "Integrations", icon: Plugs },
   { id: "lane-templates", label: "Lane Templates", icon: Stack },
+  { id: "ade-usage", label: "Stats", icon: ChartLineUp },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
@@ -39,7 +41,9 @@ const TAB_ALIASES: Record<string, SectionId> = {
   onboarding: "general",
   help: "general",
   tours: "general",
-  usage: "general",
+  usage: "ade-usage",
+  stats: "ade-usage",
+  "ade-usage": "ade-usage",
 };
 
 function padIndex(i: number): string {
@@ -172,6 +176,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
         {section === "appearance" && <AppearanceSection />}
         {section === "ai" && <ProvidersSection />}
         {section === "background-jobs" && <AiFeaturesSection />}
+        {section === "ade-usage" && <AdeUsageSection />}
         {section === "mobile-push" && <MobilePushPanel />}
         {section === "integrations" && <IntegrationsSettingsSection />}
         {section === "lane-templates" && (

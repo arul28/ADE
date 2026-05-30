@@ -151,6 +151,8 @@ import type {
   ReviewRunDetail,
   ReviewStartRunArgs,
   AdeActionRegistryEntry,
+  AdeUsageStats,
+  GetAdeUsageStatsArgs,
   UsageSnapshot,
   BudgetCheckResult,
   BudgetCapScope,
@@ -1015,6 +1017,7 @@ declare global {
         listRegistry: () => Promise<AdeActionRegistryEntry[]>;
       };
       usage: {
+        getAdeStats: (args?: GetAdeUsageStatsArgs) => Promise<AdeUsageStats | null>;
         getSnapshot: () => Promise<UsageSnapshot | null>;
         refresh: () => Promise<UsageSnapshot | null>;
         checkBudget: (args: {

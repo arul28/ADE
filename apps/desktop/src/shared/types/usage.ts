@@ -52,8 +52,163 @@ export type GetAggregatedUsageArgs = {
   limit?: number;
 };
 
+export type AdeUsageRangePreset = "today" | "7d" | "30d" | "all";
+
+export type GetAdeUsageStatsArgs = {
+  preset?: AdeUsageRangePreset;
+  since?: string | null;
+  until?: string | null;
+};
+
+export type AdeUsageProviderSummary = {
+  provider: string;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  totalTokens: number;
+  rangeCostUsd: number;
+  todayCostUsd: number;
+  last30dCostUsd: number;
+};
+
+export type AdeUsageModelSummary = {
+  provider: string;
+  model: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  totalTokens: number;
+  costUsd: number;
+};
+
+export type AdeUsageAgentProviderSummary = {
+  provider: string;
+  sessions: number;
+  models: number;
+  latestAt: string | null;
+};
+
+export type AdeUsageAgentModelSummary = {
+  provider: string;
+  model: string;
+  sessions: number;
+  latestAt: string | null;
+};
+
+export type AdeUsageFeatureSummary = {
+  feature: string;
+  provider: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  successRate: number;
+};
+
+export type AdeUsageLaneSummary = {
+  laneId: string;
+  laneName: string;
+  sessions: number;
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
+};
+
+export type AdeUsageActivitySummary = {
+  kind: string;
+  count: number;
+};
+
+export type AdeUsageDailyPoint = {
+  date: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  commits: number;
+  prs: number;
+  insertions: number;
+  deletions: number;
+  filesChanged: number;
+  sessions: number;
+};
+
+export type AdeUsageStats = {
+  generatedAt: string;
+  range: {
+    preset: AdeUsageRangePreset;
+    since: string | null;
+    until: string;
+  };
+  summary: {
+    totalTokens: number;
+    tokenTotalSource: "provider_logs" | "ade_db" | "combined";
+    observedProviderTokens: number;
+    observedProviderInputTokens: number;
+    observedProviderOutputTokens: number;
+    observedProviderCachedTokens: number;
+    observedProviderCostRangeUsd: number;
+    observedProviderCost30dUsd: number;
+    observedProviderCostTodayUsd: number;
+    adeRuntimeTokens?: number;
+    adeRuntimeInputTokens?: number;
+    adeRuntimeOutputTokens?: number;
+    adeRuntimeCachedTokens?: number;
+    adeRuntimeCostRangeUsd?: number;
+    adeRuntimeCost30dUsd?: number;
+    adeRuntimeCostTodayUsd?: number;
+    adeTotalTokens?: number;
+    adeTotalCostRangeUsd?: number;
+    trackedAdeTokens?: number;
+    trackedAdeInputTokens?: number;
+    trackedAdeOutputTokens?: number;
+    trackedAdeCalls?: number;
+    trackedAdeDurationMs?: number;
+    workerTokens?: number;
+    workerCostUsd?: number;
+    chatSessions?: number;
+    terminalSessions?: number;
+    activeLanes?: number;
+    lanesCreated?: number;
+    lanesArchived?: number;
+    lanesDeleted?: number;
+    commitsCreated: number;
+    pushOperations: number;
+    prLandings: number;
+    prsTracked: number;
+    prsOpen: number;
+    prsMerged: number;
+    prsClosed: number;
+    prAdditions: number;
+    prDeletions: number;
+    filesChanged: number;
+    insertions: number;
+    deletions: number;
+    artifactsCaptured?: number;
+    automationRuns?: number;
+    workerRuns?: number;
+  };
+  providers: AdeUsageProviderSummary[];
+  models: AdeUsageModelSummary[];
+  adeProviders?: AdeUsageProviderSummary[];
+  adeModels?: AdeUsageModelSummary[];
+  agentProviders?: AdeUsageAgentProviderSummary[];
+  agentModels?: AdeUsageAgentModelSummary[];
+  features?: AdeUsageFeatureSummary[];
+  lanes?: AdeUsageLaneSummary[];
+  activities?: AdeUsageActivitySummary[];
+  daily: AdeUsageDailyPoint[];
+  github: {
+    repo: string | null;
+    available: boolean;
+    lastFetchedAt: string | null;
+    error: string | null;
+  };
+  sourceNotes?: string[];
+};
+
 // ---------------------------------------------------------------------------
-// Live usage tracking types (Claude, Codex, and Cursor provider polling)
+// Live quota tracking types (Claude/Codex API windows plus local runtime cost scans)
 // ---------------------------------------------------------------------------
 
 export type UsageProvider = "claude" | "codex" | "cursor";
@@ -99,11 +254,23 @@ export type UsagePacing = {
 
 export type UsagePacingByProvider = Partial<Record<UsageProvider, UsagePacing>>;
 
+export type CostTokenBreakdown = {
+  input: number;
+  output: number;
+  cached: number;
+  cacheWrite?: number;
+  costUsd?: number;
+};
+
 export type CostSnapshot = {
-  provider: UsageProvider;
+  provider: string;
   last30dCostUsd: number;
   todayCostUsd: number;
-  tokenBreakdown: Record<string, { input: number; output: number; cached: number }>;
+  costUsdByPreset?: Partial<Record<AdeUsageRangePreset, number>>;
+  tokenBreakdown: Record<string, CostTokenBreakdown>;
+  tokenBreakdownByPreset?: Partial<Record<AdeUsageRangePreset, Record<string, CostTokenBreakdown>>>;
+  dailyTokenBreakdownByPreset?: Partial<Record<AdeUsageRangePreset, Record<string, Record<string, CostTokenBreakdown>>>>;
+  dailyTokensByPreset?: Partial<Record<AdeUsageRangePreset, Record<string, number>>>;
 };
 
 export type ExtraUsage = {
@@ -120,6 +287,8 @@ export type UsageSnapshot = {
   pacing: UsagePacing;
   pacingByProvider?: UsagePacingByProvider;
   costs: CostSnapshot[];
+  /** Local runtime usage that can be attributed specifically to ADE-originated sessions. */
+  adeCosts?: CostSnapshot[];
   extraUsage: ExtraUsage[];
   /** Per-provider daily token usage for the last 7 calendar days, oldest first. */
   dailyUsage7d?: Partial<Record<UsageProvider, number[]>>;

@@ -543,7 +543,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "setAgentStatus",
     "triggerWakeup",
   ],
-  session: ["deleteSession", "get", "getDelta", "list", "readTranscriptTail", "updateMeta"],
+  session: ["backfillDeltas", "deleteSession", "get", "getDelta", "list", "readTranscriptTail", "updateMeta"],
   operation: ["finish", "get", "list", "start"],
   ade_project: ["clearLocalData", "getSnapshot", "initializeOrRepair", "runIntegrityCheck"],
   project_config: ["confirmTrust", "diffAgainstDisk", "get", "save", "validate"],
@@ -630,7 +630,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "setToken",
   ],
   feedback: ["list", "prepareDraft", "submitPreparedDraft"],
-  usage: ["forceRefresh", "getUsageSnapshot", "poll", "start", "stop"],
+  usage: ["forceRefresh", "getAdeUsageStats", "getUsageSnapshot", "poll", "start", "stop"],
   budget: ["checkBudget", "getConfig", "getCumulativeUsage", "recordUsage", "updateConfig"],
   update: ["checkForUpdates", "dismissInstalledNotice", "getSnapshot", "quitAndInstall"],
   file: [
@@ -1134,6 +1134,20 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
         ? requireNonEmptyString(args, "sessionId")
         : requireNonEmptyString(args?.sessionId, "sessionId");
       return runtime.sessionDeltaService?.getSessionDelta(sessionId) ?? null;
+    },
+    backfillDeltas: (args?: { limit?: number; since?: string | null }) => {
+      const limit = typeof args?.limit === "number" && Number.isFinite(args.limit)
+        ? Math.max(1, Math.min(1_000, Math.floor(args.limit)))
+        : 500;
+      const since = typeof args?.since === "string" && args.since.trim()
+        ? args.since.trim()
+        : null;
+      return runtime.sessionDeltaService?.backfillMissingSessionDeltas({ limit, since }) ?? {
+        scanned: 0,
+        computed: 0,
+        skipped: 0,
+        failed: 0,
+      };
     },
   };
 }

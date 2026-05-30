@@ -240,8 +240,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     providerModelId: "haiku",
     cliCommand: "claude",
     isCliWrapped: true,
-    inputPricePer1M: 0.8,
-    outputPricePer1M: 4,
+    inputPricePer1M: 1,
+    outputPricePer1M: 5,
     costTier: "low",
   },
 
@@ -266,6 +266,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     providerModelId: "gpt-5.5",
     cliCommand: "codex",
     isCliWrapped: true,
+    inputPricePer1M: 5,
+    outputPricePer1M: 30,
     costTier: "high",
   },
   {
@@ -285,6 +287,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     providerModelId: "gpt-5.4",
     cliCommand: "codex",
     isCliWrapped: true,
+    inputPricePer1M: 2.5,
+    outputPricePer1M: 15,
     costTier: "high",
   },
   {
@@ -303,8 +307,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     providerModelId: "gpt-5.4-mini",
     cliCommand: "codex",
     isCliWrapped: true,
-    inputPricePer1M: 0.25,
-    outputPricePer1M: 2,
+    inputPricePer1M: 0.75,
+    outputPricePer1M: 4.5,
     costTier: "low",
   },
   {
@@ -323,8 +327,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     providerModelId: "gpt-5.3-codex",
     cliCommand: "codex",
     isCliWrapped: true,
-    inputPricePer1M: 1.5,
-    outputPricePer1M: 6,
+    inputPricePer1M: 1.75,
+    outputPricePer1M: 14,
     costTier: "high",
   },
   {
@@ -343,6 +347,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     providerModelId: "gpt-5.3-codex-spark",
     cliCommand: "codex",
     isCliWrapped: true,
+    inputPricePer1M: 1.75,
+    outputPricePer1M: 14,
     costTier: "low",
   },
   {
@@ -361,6 +367,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     providerModelId: "gpt-5.2",
     cliCommand: "codex",
     isCliWrapped: true,
+    inputPricePer1M: 1.75,
+    outputPricePer1M: 14,
     costTier: "medium",
   },
 

@@ -10,7 +10,9 @@
  *   node ./scripts/export-browser-mock-ade-snapshot.mjs --optional
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
@@ -23,6 +25,8 @@ const OUT_FILE = path.join(
   "browser-mock-ade-snapshot.generated.json",
 );
 const REPO_ROOT_FROM_SCRIPT = path.resolve(__dirname, "../../..");
+const USAGE_SNAPSHOT_CACHE_VERSION = 2;
+const USAGE_SNAPSHOT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 const args = process.argv.slice(2);
 const optional = args.includes("--optional");
@@ -986,26 +990,7 @@ function buildProcessRuntime(projectId) {
   }));
 }
 
-function buildUsageSnapshot() {
-  const rows = maybeAll(
-    "ai_usage_log",
-    "select * from ai_usage_log order by timestamp desc limit 200",
-  );
-  const byModel = new Map();
-  for (const row of rows) {
-    const key = `${row.provider ?? "unknown"}:${row.model ?? "unknown"}`;
-    const item = byModel.get(key) ?? {
-      provider: row.provider ?? "unknown",
-      model: row.model ?? "unknown",
-      inputTokens: 0,
-      outputTokens: 0,
-      calls: 0,
-    };
-    item.inputTokens += Number(row.input_tokens ?? 0);
-    item.outputTokens += Number(row.output_tokens ?? 0);
-    item.calls += 1;
-    byModel.set(key, item);
-  }
+function emptyUsageSnapshot() {
   return {
     windows: [],
     pacing: {
@@ -1018,11 +1003,88 @@ function buildUsageSnapshot() {
       willLastToReset: true,
       resetsInHours: 168,
     },
-    costs: [...byModel.values()],
+    costs: [],
+    adeCosts: [],
     extraUsage: [],
     lastPolledAt: new Date().toISOString(),
     errors: [],
   };
+}
+
+function buildUsageSnapshot() {
+  const cachePath = path.join(os.homedir(), ".ade", "cache", "usage-snapshot.json");
+  try {
+    const parsed = JSON.parse(readFileSync(cachePath, "utf8"));
+    if (parsed?.version === USAGE_SNAPSHOT_CACHE_VERSION && parsed?.snapshot && Array.isArray(parsed.snapshot.costs)) {
+      const lastPolledAt = Date.parse(parsed.snapshot.lastPolledAt ?? "");
+      if (!Number.isFinite(lastPolledAt) || Date.now() - lastPolledAt > USAGE_SNAPSHOT_CACHE_TTL_MS) {
+        return emptyUsageSnapshot();
+      }
+      return parsed.snapshot;
+    }
+  } catch {
+    // The native app will fill this cache after the first local scan.
+  }
+  return emptyUsageSnapshot();
+}
+
+function usageRangeForPreset(preset) {
+  const now = new Date();
+  const until = now.toISOString();
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+  if (preset === "today") return { preset, since: startOfToday.toISOString(), until };
+  if (preset === "7d") {
+    const since = new Date(startOfToday);
+    since.setDate(since.getDate() - 6);
+    return { preset, since: since.toISOString(), until };
+  }
+  if (preset === "30d") {
+    const since = new Date(startOfToday);
+    since.setDate(since.getDate() - 29);
+    return { preset, since: since.toISOString(), until };
+  }
+  return { preset: "all", since: null, until };
+}
+
+function nonNegativeInt(value) {
+  const numberValue = Number(value ?? 0);
+  return Number.isFinite(numberValue) ? Math.max(0, Math.floor(numberValue)) : 0;
+}
+
+function roundUsd(value) {
+  const numberValue = Number(value ?? 0);
+  return Number.isFinite(numberValue) ? Math.round(Math.max(0, numberValue) * 100) / 100 : 0;
+}
+
+function makeBrowserDailySkeleton(range) {
+  const until = new Date(range.until);
+  const untilMs = Number.isFinite(until.getTime()) ? until.getTime() : Date.now();
+  const maxDays = range.preset === "today" ? 1 : range.preset === "7d" ? 7 : range.preset === "all" ? 90 : 30;
+  const startMs = range.since
+    ? Math.max(Date.parse(range.since), untilMs - (maxDays - 1) * 86_400_000)
+    : untilMs - (maxDays - 1) * 86_400_000;
+  const start = new Date(startMs);
+  start.setHours(0, 0, 0, 0);
+
+  const points = [];
+  for (let index = 0; index < maxDays; index += 1) {
+    const date = new Date(start.getTime() + index * 86_400_000);
+    if (date.getTime() > untilMs + 86_400_000) break;
+    points.push({
+      date: date.toISOString().slice(0, 10),
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      commits: 0,
+      prs: 0,
+      insertions: 0,
+      deletions: 0,
+      filesChanged: 0,
+      sessions: 0,
+    });
+  }
+  return points;
 }
 
 function getCtoState(projectId) {
@@ -1032,6 +1094,323 @@ function getCtoState(projectId) {
   return {
     identity: safeJson(identityRow?.payload_json, null),
     recentSessions: [],
+  };
+}
+
+function runGhJson(args) {
+  return execFileSync("gh", args, {
+    cwd: projectRoot,
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: 60_000,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+function inUsageRange(iso, range) {
+  const timestamp = Date.parse(iso ?? "");
+  if (!Number.isFinite(timestamp)) return false;
+  if (range.since && timestamp < Date.parse(range.since)) return false;
+  return timestamp <= Date.parse(range.until);
+}
+
+function commitRangeArgs(range) {
+  const args = [];
+  if (range.since) args.push("-F", `since=${range.since}`);
+  args.push("-F", `until=${range.until}`);
+  return args;
+}
+
+function pullRequestGraphqlQuery() {
+  return [
+    "query($owner: String!, $name: String!, $endCursor: String) {",
+    "  repository(owner: $owner, name: $name) {",
+    "    pullRequests(first: 100, after: $endCursor, orderBy: { field: CREATED_AT, direction: DESC }) {",
+    "      pageInfo { hasNextPage endCursor }",
+    "      nodes {",
+    "        number state createdAt closedAt mergedAt additions deletions changedFiles",
+    "        author { login }",
+    "      }",
+    "    }",
+    "  }",
+    "}",
+  ].join("\n");
+}
+
+function parsePullRequestRows(raw, viewer) {
+  return raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => safeJson(line, null))
+    .filter((row) => row && typeof row === "object")
+    .filter((row) => row.author?.login === viewer);
+}
+
+function addStatsDaily(points, dateIso, patch) {
+  const date = Number.isFinite(Date.parse(dateIso ?? "")) ? new Date(Date.parse(dateIso)).toISOString().slice(0, 10) : null;
+  if (!date) return;
+  const point = points.find((candidate) => candidate.date === date);
+  if (!point) return;
+  point.commits += nonNegativeInt(patch.commits);
+  point.prs += nonNegativeInt(patch.prs);
+  point.insertions += nonNegativeInt(patch.insertions);
+  point.deletions += nonNegativeInt(patch.deletions);
+  point.filesChanged += nonNegativeInt(patch.filesChanged);
+}
+
+function buildGithubStatsForBrowser(range) {
+  try {
+    const repoInfo = JSON.parse(runGhJson(["repo", "view", "--json", "owner,name"]));
+    const owner = typeof repoInfo.owner === "string" ? repoInfo.owner : repoInfo.owner?.login;
+    const repo = owner && repoInfo.name ? `${owner}/${repoInfo.name}` : null;
+    if (!repo) throw new Error("Unable to resolve GitHub repo.");
+    const viewer = JSON.parse(runGhJson(["api", "user", "--cache", "10m"])).login;
+    if (typeof viewer !== "string" || !viewer) throw new Error("Unable to resolve GitHub user.");
+
+    const prRows = parsePullRequestRows(runGhJson([
+      "api",
+      "graphql",
+      "--paginate",
+      "-F",
+      `owner=${owner}`,
+      "-F",
+      `name=${repoInfo.name}`,
+      "-f",
+      `query=${pullRequestGraphqlQuery()}`,
+      "--jq",
+      ".data.repository.pullRequests.nodes[] | @json",
+    ]), viewer);
+    const mergedPrs = prRows.filter((pr) => inUsageRange(pr.mergedAt, range));
+    const closedPrs = prRows.filter((pr) => inUsageRange(pr.closedAt, range));
+    const commitRows = runGhJson([
+      "api",
+      `repos/${repo}/commits`,
+      "--method",
+      "GET",
+      "--cache",
+      "10m",
+      "-F",
+      `author=${viewer}`,
+      ...commitRangeArgs(range),
+      "--paginate",
+      "--jq",
+      ".[] | [.sha, .commit.author.date] | @tsv",
+    ])
+      .split(/\r?\n/)
+      .map((line) => line.trim().split("\t")[1])
+      .filter(Boolean);
+    const createdPrs = prRows.filter((pr) => inUsageRange(pr.createdAt, range));
+    const commits = commitRows.filter((date) => inUsageRange(date, range));
+    const daily = makeBrowserDailySkeleton(range);
+    for (const date of commits) addStatsDaily(daily, date, { commits: 1 });
+    for (const pr of createdPrs) {
+      addStatsDaily(daily, pr.createdAt, {
+        prs: 1,
+      });
+    }
+    for (const pr of mergedPrs) {
+      addStatsDaily(daily, pr.mergedAt, {
+        insertions: pr.additions,
+        deletions: pr.deletions,
+        filesChanged: pr.changedFiles,
+      });
+    }
+    return {
+      repo,
+      available: true,
+      lastFetchedAt: new Date().toISOString(),
+      error: null,
+      commitsCreated: commits.length,
+      prsTracked: createdPrs.length,
+      prsOpen: createdPrs.filter((pr) => String(pr.state ?? "").toUpperCase() === "OPEN").length,
+      prsMerged: mergedPrs.length,
+      prsClosed: closedPrs.filter((pr) => String(pr.state ?? "").toUpperCase() === "CLOSED").length,
+      prAdditions: mergedPrs.reduce((sum, pr) => sum + nonNegativeInt(pr.additions), 0),
+      prDeletions: mergedPrs.reduce((sum, pr) => sum + nonNegativeInt(pr.deletions), 0),
+      filesChanged: mergedPrs.reduce((sum, pr) => sum + nonNegativeInt(pr.changedFiles), 0),
+      daily,
+    };
+  } catch (error) {
+    return {
+      repo: null,
+      available: false,
+      lastFetchedAt: null,
+      error: error instanceof Error ? error.message : String(error),
+      commitsCreated: 0,
+      prsTracked: 0,
+      prsOpen: 0,
+      prsMerged: 0,
+      prsClosed: 0,
+      prAdditions: 0,
+      prDeletions: 0,
+      filesChanged: 0,
+      daily: makeBrowserDailySkeleton(range),
+    };
+  }
+}
+
+function buildUsageStatsFromSnapshot(usageSnapshot, preset) {
+  const providerMap = new Map();
+  const modelMap = new Map();
+  const dailyTokens = new Map();
+  const costs = Array.isArray(usageSnapshot?.costs) ? usageSnapshot.costs : [];
+  for (const cost of costs) {
+    if (!cost || typeof cost.provider !== "string") continue;
+    const breakdown = cost.tokenBreakdownByPreset?.[preset] ?? cost.tokenBreakdown;
+    if (!breakdown || typeof breakdown !== "object") continue;
+    const rangeCost = Number(cost.costUsdByPreset?.[preset] ?? (preset === "today" ? cost.todayCostUsd : cost.last30dCostUsd) ?? 0);
+    const providerTotal = Object.values(breakdown).reduce((sum, entry) => (
+      sum + nonNegativeInt(entry?.input) + nonNegativeInt(entry?.output) + nonNegativeInt(entry?.cached) + nonNegativeInt(entry?.cacheWrite)
+    ), 0);
+    const provider = providerMap.get(cost.provider) ?? {
+      provider: cost.provider,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedTokens: 0,
+      totalTokens: 0,
+      rangeCostUsd: 0,
+      todayCostUsd: Number(cost.todayCostUsd ?? 0),
+      last30dCostUsd: Number(cost.last30dCostUsd ?? 0),
+    };
+    provider.rangeCostUsd += Number.isFinite(rangeCost) ? rangeCost : 0;
+    for (const [model, entry] of Object.entries(breakdown)) {
+      const input = nonNegativeInt(entry?.input);
+      const output = nonNegativeInt(entry?.output);
+      const cached = nonNegativeInt(entry?.cached) + nonNegativeInt(entry?.cacheWrite);
+      const total = input + output + cached;
+      const share = providerTotal > 0 ? total / providerTotal : 0;
+      const modelCost = Number(entry?.costUsd ?? rangeCost * share) || 0;
+      provider.inputTokens += input;
+      provider.outputTokens += output;
+      provider.cachedTokens += cached;
+      provider.totalTokens += total;
+      const modelKey = `${cost.provider}\u0000${model}`;
+      const modelSummary = modelMap.get(modelKey) ?? {
+        provider: cost.provider,
+        model,
+        calls: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedTokens: 0,
+        totalTokens: 0,
+        costUsd: 0,
+      };
+      modelSummary.inputTokens += input;
+      modelSummary.outputTokens += output;
+      modelSummary.cachedTokens += cached;
+      modelSummary.totalTokens += total;
+      modelSummary.costUsd += modelCost;
+      modelMap.set(modelKey, modelSummary);
+    }
+    providerMap.set(cost.provider, provider);
+
+    const daily = cost.dailyTokensByPreset?.[preset] ?? {};
+    for (const [date, value] of Object.entries(daily)) {
+      dailyTokens.set(date, (dailyTokens.get(date) ?? 0) + nonNegativeInt(value));
+    }
+  }
+  const providers = Array.from(providerMap.values())
+    .map((provider) => ({ ...provider, rangeCostUsd: roundUsd(provider.rangeCostUsd) }))
+    .sort((a, b) => b.totalTokens - a.totalTokens || b.rangeCostUsd - a.rangeCostUsd);
+  const models = Array.from(modelMap.values())
+    .map((model) => ({ ...model, costUsd: roundUsd(model.costUsd) }))
+    .sort((a, b) => b.totalTokens - a.totalTokens || b.costUsd - a.costUsd);
+  return {
+    providers,
+    models,
+    inputTokens: providers.reduce((sum, provider) => sum + provider.inputTokens, 0),
+    outputTokens: providers.reduce((sum, provider) => sum + provider.outputTokens, 0),
+    cachedTokens: providers.reduce((sum, provider) => sum + provider.cachedTokens, 0),
+    costRangeUsd: roundUsd(providers.reduce((sum, provider) => sum + provider.rangeCostUsd, 0)),
+    cost30dUsd: roundUsd(providers.reduce((sum, provider) => sum + provider.last30dCostUsd, 0)),
+    costTodayUsd: roundUsd(providers.reduce((sum, provider) => sum + provider.todayCostUsd, 0)),
+    dailyTokens,
+  };
+}
+
+function mergeUsageTokensIntoDaily(points, dailyTokens) {
+  for (const point of points) {
+    const tokens = nonNegativeInt(dailyTokens.get(point.date));
+    point.inputTokens += tokens;
+    point.totalTokens += tokens;
+  }
+}
+
+function buildStatsDashboardStats(preset, usageSnapshot) {
+  const range = usageRangeForPreset(preset);
+  const github = buildGithubStatsForBrowser(range);
+  const usage = buildUsageStatsFromSnapshot(usageSnapshot, preset);
+  mergeUsageTokensIntoDaily(github.daily, usage.dailyTokens);
+  const totalTokens = usage.inputTokens + usage.outputTokens + usage.cachedTokens;
+  return {
+    generatedAt: new Date().toISOString(),
+    range,
+    summary: {
+      totalTokens,
+      tokenTotalSource: "provider_logs",
+      observedProviderTokens: totalTokens,
+      observedProviderInputTokens: usage.inputTokens,
+      observedProviderOutputTokens: usage.outputTokens,
+      observedProviderCachedTokens: usage.cachedTokens,
+      observedProviderCostRangeUsd: usage.costRangeUsd,
+      observedProviderCost30dUsd: usage.cost30dUsd,
+      observedProviderCostTodayUsd: usage.costTodayUsd,
+      adeRuntimeTokens: 0,
+      adeRuntimeInputTokens: 0,
+      adeRuntimeOutputTokens: 0,
+      adeRuntimeCachedTokens: 0,
+      adeRuntimeCostRangeUsd: 0,
+      adeRuntimeCost30dUsd: 0,
+      adeRuntimeCostTodayUsd: 0,
+      adeTotalTokens: 0,
+      adeTotalCostRangeUsd: 0,
+      trackedAdeTokens: 0,
+      trackedAdeInputTokens: 0,
+      trackedAdeOutputTokens: 0,
+      trackedAdeCalls: 0,
+      trackedAdeDurationMs: 0,
+      workerTokens: 0,
+      workerCostUsd: 0,
+      chatSessions: 0,
+      terminalSessions: 0,
+      activeLanes: 0,
+      lanesCreated: 0,
+      lanesArchived: 0,
+      lanesDeleted: 0,
+      commitsCreated: github.commitsCreated,
+      pushOperations: 0,
+      prLandings: github.prsMerged,
+      prsTracked: github.prsTracked,
+      prsOpen: github.prsOpen,
+      prsMerged: github.prsMerged,
+      prsClosed: github.prsClosed,
+      prAdditions: github.prAdditions,
+      prDeletions: github.prDeletions,
+      filesChanged: github.filesChanged,
+      insertions: github.prAdditions,
+      deletions: github.prDeletions,
+      artifactsCaptured: 0,
+      automationRuns: 0,
+      workerRuns: 0,
+    },
+    providers: usage.providers,
+    models: usage.models,
+    adeProviders: [],
+    adeModels: [],
+    agentProviders: [],
+    agentModels: [],
+    features: [],
+    lanes: [],
+    activities: [],
+    daily: github.daily,
+    github: {
+      repo: github.repo,
+      available: github.available,
+      lastFetchedAt: github.lastFetchedAt,
+      error: github.error,
+    },
+    sourceNotes: [],
   };
 }
 
@@ -1245,6 +1624,9 @@ processRuntime = ensureDemoProcessRuntime(processRuntime, lanes, processDefiniti
 
 const automations = buildAutomations(projectId);
 const usageSnapshot = buildUsageSnapshot();
+const adeUsageStatsByPreset = Object.fromEntries(
+  ["today", "7d", "30d", "all"].map((preset) => [preset, buildStatsDashboardStats(preset, usageSnapshot)]),
+);
 const ctoState = getCtoState(projectId);
 
 db.close();
@@ -1264,6 +1646,7 @@ const filesContentEntryCount = Object.values(filesContentsByWorkspace).reduce(
 
 const snapshot = {
   version: 2,
+  statsDashboardVersion: 1,
   exportedAt: new Date().toISOString(),
   project: {
     id: String(projectRow.id),
@@ -1290,6 +1673,7 @@ const snapshot = {
   stackButtons,
   processGroups,
   usageSnapshot,
+  adeUsageStatsByPreset,
   ctoState,
   automations,
   filesTreeByWorkspace,

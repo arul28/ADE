@@ -2474,6 +2474,7 @@ app.whenReady().then(async () => {
       }
     };
 
+    let sessionDeltaServiceRef: ReturnType<typeof createSessionDeltaService> | null = null;
     const onTrackedSessionEnded = ({
       laneId,
       sessionId,
@@ -2507,6 +2508,13 @@ app.whenReady().then(async () => {
           error: error instanceof Error ? error.message : String(error),
         });
       }
+      void sessionDeltaServiceRef?.computeSessionDelta(sessionId).catch((error) => {
+        logger.warn("main.session_delta_compute_failed", {
+          laneId,
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
       void linearSyncServiceRef?.processActiveRunsNow().catch(() => {});
     };
 
@@ -2592,6 +2600,7 @@ app.whenReady().then(async () => {
       laneService,
       sessionService,
     });
+    sessionDeltaServiceRef = sessionDeltaService;
 
     const ctoStateService = createCtoStateService({
       db,
@@ -3527,6 +3536,7 @@ app.whenReady().then(async () => {
       onUpdate: (snapshot) => {
         emitProjectEvent(projectRoot, IPC.usageEvent, snapshot);
       },
+      projectRoot,
     });
     scheduleBackgroundProjectTask(
       "usage.start",
@@ -4202,6 +4212,7 @@ app.whenReady().then(async () => {
       onUpdate: (snapshot) => {
         emitProjectEvent(projectRoot, IPC.usageEvent, snapshot);
       },
+      projectRoot,
     });
     usageTrackingService.start();
 

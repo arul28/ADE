@@ -2135,6 +2135,7 @@ describe("createSyncRemoteCommandService", () => {
           laneId: "lane-1",
           title: "test run",
           startupCommand: "npm test",
+          tracked: true,
           toolType: "run-shell",
         }),
       );
@@ -2200,6 +2201,7 @@ describe("createSyncRemoteCommandService", () => {
         expect.objectContaining({
           laneId: "lane-1",
           title: "Fix the tests",
+          tracked: true,
           toolType: "codex",
           cols: 70,
           rows: 24,

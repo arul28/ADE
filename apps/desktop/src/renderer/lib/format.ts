@@ -69,11 +69,13 @@ export function formatElapsedSince(startIso: string): string {
   return `${secs}s`;
 }
 
-/** Format a token count with K/M suffixes. */
+/** Format a token count with K/M/B suffixes. */
 export function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
+  const value = Number.isFinite(n) ? Math.max(0, n) : 0;
+  if (value >= 999_950_000) return `${(value / 1_000_000_000).toFixed(1)}B`;
+  if (value >= 999_950) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
+  return String(Math.floor(value));
 }
 
 /** Format a USD cost value. */

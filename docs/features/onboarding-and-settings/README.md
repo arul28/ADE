@@ -228,9 +228,9 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/usage/HeaderUsageControl.tsx`
   and `UsageQuotaPanel.tsx` — header usage popup. Live provider quotas
   for Claude and Codex (tracked providers) and the automation budget
-  guardrails are now consolidated here; Settings no longer has a
-  Usage tab. The header renders one compact chip per detected tracked
-  provider with the 5-hour window and the plan window (`wk` when a
+  guardrails are consolidated here. The header renders one compact
+  chip per detected tracked provider with the 5-hour window and the
+  plan window (`wk` when a
   weekly window is present, otherwise `mo`). Percent values are clamped
   to 0-100, color through the green/amber/red thresholds at 75% /
   100%, and show an ellipsis while missing. On mount, the button reads
@@ -250,6 +250,13 @@ Renderer — settings:
   caps round-trip through `ade.usage.getBudgetConfig` /
   `saveBudgetConfig`. Threshold crossings (25 / 50 / 75 / 100 %) emit
   `UsageThresholdEvent`s the notification bus turns into APNs alerts.
+- `apps/desktop/src/renderer/components/settings/AdeUsageSection.tsx`
+  — Settings > Stats. Reads `window.ade.usage.getAdeStats({ preset })`
+  for today / 7d / 30d / all-time stats and calls
+  `window.ade.usage.refresh()` for explicit refresh. This is a read-only
+  stats dashboard: local AI runtime token and estimated-cost scans plus
+  GitHub-backed PR, commit, and code movement totals. It does not write
+  new usage records.
 - `apps/desktop/src/renderer/components/settings/ProxyAndPreviewSection.tsx`
   — proxy/preview configuration UI.
 - `apps/desktop/src/renderer/components/settings/DiagnosticsDashboardSection.tsx`
@@ -407,8 +414,9 @@ changing rather than which service backs it:
 | Mobile Push | `MobilePushPanel.tsx` | APNs registration, paired-device push tokens, per-category preferences |
 | Integrations | `IntegrationsSettingsSection.tsx`, `GitHubSection.tsx`, `LinearSection.tsx` | GitHub, Linear, and computer-use backend readiness. The GitHub section reads `status.connected` (the backend's single "GitHub is usable" gate) to decide between CONNECTED / LIMITED ACCESS / NOT CONNECTED, surfaces a dedicated repo-probe error when a fine-grained token authenticates as a user but cannot access the active repo, and the REFRESH button calls `getStatus({ forceRefresh: true })` so users who fix permissions on github.com see the change immediately. See [`pull-requests/README.md`](../pull-requests/README.md#github-connectivity-model) for the full status-shape and `connected` derivation. |
 | Lane Templates | `LaneTemplatesSection.tsx`, `LaneBehaviorSection.tsx` | Lane init recipes and lane lifecycle policy |
+| Stats | `AdeUsageSection.tsx` | Local runtime token / cost summaries and GitHub-backed PR, commit, and code movement totals. Deep links from `?tab=usage` and `?tab=stats` land here. |
 
-> Live provider usage and automation guardrails moved out of Settings. They are now in the top-bar Usage popup (`HeaderUsageControl.tsx` → `UsageQuotaPanel.tsx` + collapsible `BudgetCapEditor`).
+> Live provider quota windows and automation guardrails live in the top-bar Usage popup (`HeaderUsageControl.tsx` → `UsageQuotaPanel.tsx` + collapsible `BudgetCapEditor`). Settings > Stats is the retrospective local AI + GitHub activity dashboard.
 
 
 The Settings page itself (`SettingsPage.tsx`) has a legacy alias

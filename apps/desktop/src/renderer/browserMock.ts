@@ -75,6 +75,7 @@ const adeDbSnapshotByPath = import.meta.glob<any>(
 const ADE_DB_SNAPSHOT =
   adeDbSnapshotByPath["./browser-mock-ade-snapshot.generated.json"] ?? null;
 const USE_ADE_DB_SNAPSHOT = Boolean(ADE_DB_SNAPSHOT?.project);
+const USE_STATS_DASHBOARD_SNAPSHOT = USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.statsDashboardVersion === 1;
 
 const MOCK_PROJECT =
   USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.project
@@ -2908,6 +2909,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       resetsInHours: 168,
     },
     costs: [],
+    adeCosts: [],
     extraUsage: [],
     lastPolledAt: now,
     errors: [],
@@ -2916,6 +2918,125 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.usageSnapshot
       ? ADE_DB_SNAPSHOT.usageSnapshot
       : BROWSER_MOCK_USAGE_SNAPSHOT;
+
+  const browserStatsRangeForPreset = (preset: "today" | "7d" | "30d" | "all") => {
+    const until = new Date();
+    const start = new Date(until);
+    start.setHours(0, 0, 0, 0);
+    if (preset === "7d") start.setDate(start.getDate() - 6);
+    if (preset === "30d") start.setDate(start.getDate() - 29);
+    return {
+      preset,
+      since: preset === "all" ? null : start.toISOString(),
+      until: until.toISOString(),
+    };
+  };
+  const makeBrowserStatsDailySkeleton = (range: { preset: "today" | "7d" | "30d" | "all"; since: string | null; until: string }) => {
+    const maxDays = range.preset === "today" ? 1 : range.preset === "7d" ? 7 : range.preset === "all" ? 90 : 30;
+    const untilMs = Date.parse(range.until);
+    const start = new Date(range.since ?? untilMs - (maxDays - 1) * 86_400_000);
+    start.setHours(0, 0, 0, 0);
+    return Array.from({ length: maxDays }, (_, index) => {
+      const date = new Date(start.getTime() + index * 86_400_000);
+      return {
+        date: date.toISOString().slice(0, 10),
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        commits: 0,
+        prs: 0,
+        insertions: 0,
+        deletions: 0,
+        filesChanged: 0,
+        sessions: 0,
+      };
+    });
+  };
+  const makeBrowserEmptyAdeUsageStats = (preset: "today" | "7d" | "30d" | "all"): any => {
+    const range = browserStatsRangeForPreset(preset);
+    return {
+    generatedAt: now,
+    range,
+    summary: {
+      totalTokens: 0,
+      tokenTotalSource: "provider_logs",
+      observedProviderTokens: 0,
+      observedProviderInputTokens: 0,
+      observedProviderOutputTokens: 0,
+      observedProviderCachedTokens: 0,
+      observedProviderCostRangeUsd: 0,
+      observedProviderCost30dUsd: 0,
+      observedProviderCostTodayUsd: 0,
+      adeRuntimeTokens: 0,
+      adeRuntimeInputTokens: 0,
+      adeRuntimeOutputTokens: 0,
+      adeRuntimeCachedTokens: 0,
+      adeRuntimeCostRangeUsd: 0,
+      adeRuntimeCost30dUsd: 0,
+      adeRuntimeCostTodayUsd: 0,
+      adeTotalTokens: 0,
+      adeTotalCostRangeUsd: 0,
+      trackedAdeTokens: 0,
+      trackedAdeInputTokens: 0,
+      trackedAdeOutputTokens: 0,
+      trackedAdeCalls: 0,
+      trackedAdeDurationMs: 0,
+      workerTokens: 0,
+      workerCostUsd: 0,
+      chatSessions: 0,
+      terminalSessions: 0,
+      activeLanes: 0,
+      lanesCreated: 0,
+      lanesArchived: 0,
+      lanesDeleted: 0,
+      commitsCreated: 0,
+      pushOperations: 0,
+      prLandings: 0,
+      prsTracked: 0,
+      prsOpen: 0,
+      prsMerged: 0,
+      prsClosed: 0,
+      prAdditions: 0,
+      prDeletions: 0,
+      filesChanged: 0,
+      insertions: 0,
+      deletions: 0,
+      artifactsCaptured: 0,
+      automationRuns: 0,
+      workerRuns: 0,
+    },
+    providers: [],
+    models: [],
+    adeProviders: [],
+    adeModels: [],
+    agentProviders: [],
+    agentModels: [],
+    features: [],
+    lanes: [],
+    activities: [],
+    daily: makeBrowserStatsDailySkeleton(range),
+    github: {
+      repo: "Browser preview",
+      available: true,
+      lastFetchedAt: null,
+      error: null,
+    },
+    sourceNotes: [],
+  };
+  };
+  const BROWSER_ADE_USAGE_STATS_BY_PRESET: Record<string, any> =
+    USE_STATS_DASHBOARD_SNAPSHOT &&
+    ADE_DB_SNAPSHOT?.adeUsageStatsByPreset &&
+    typeof ADE_DB_SNAPSHOT.adeUsageStatsByPreset === "object"
+      ? ADE_DB_SNAPSHOT.adeUsageStatsByPreset
+      : {};
+  const getBrowserAdeUsageStats = async (args?: { preset?: string }) => {
+    const preset =
+      args?.preset === "today" || args?.preset === "7d" || args?.preset === "30d" || args?.preset === "all"
+        ? args.preset
+        : "7d";
+    return BROWSER_ADE_USAGE_STATS_BY_PRESET[preset] ?? makeBrowserEmptyAdeUsageStats(preset);
+  };
 
   const BROWSER_MOCK_BUDGET_CONFIG: any = {
     refreshIntervalMin: 15,
@@ -3390,6 +3511,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       detect: resolved(BROWSER_MOCK_DEVTOOLS_CHECK),
     },
     usage: {
+      getAdeStats: getBrowserAdeUsageStats,
       getSnapshot: resolved(BROWSER_USAGE_SNAPSHOT),
       refresh: resolved(BROWSER_USAGE_SNAPSHOT),
       checkBudget: resolvedArg({

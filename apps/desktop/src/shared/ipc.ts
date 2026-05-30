@@ -692,6 +692,7 @@ export const IPC = {
   orchestratorDeliverMessage: "ade.orchestrator.deliverMessage",
   orchestratorGetActiveAgents: "ade.orchestrator.getActiveAgents",
   getAggregatedUsage: "ade.usage.getAggregated",
+  usageGetAdeStats: "ade.usage.getAdeStats",
   usageGetSnapshot: "ade.usage.getSnapshot",
   usageRefresh: "ade.usage.refresh",
   usageCheckBudget: "ade.usage.checkBudget",

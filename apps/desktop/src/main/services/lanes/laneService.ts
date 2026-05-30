@@ -4449,8 +4449,44 @@ export function createLaneService({
       if (row.lane_type === "primary") {
         throw new Error("Primary lane cannot be deleted");
       }
+      const deleteOperation = (() => {
+        try {
+          return operationService?.start({
+            laneId: null,
+            kind: "lane_delete",
+            metadata: {
+              laneId,
+              laneName: row.name,
+              laneType: row.lane_type,
+              branchRef: row.branch_ref,
+              deleteBranch,
+              deleteRemoteBranch,
+              force,
+            },
+          }) ?? null;
+        } catch (error) {
+          logger.warn("lane.delete.operation_start_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+          return null;
+        }
+      })();
+      const finishDeleteOperation = (
+        status: "succeeded" | "failed",
+        metadataPatch: Record<string, unknown>,
+      ): void => {
+        if (!deleteOperation?.operationId) return;
+        try {
+          operationService?.finish({
+            operationId: deleteOperation.operationId,
+            status,
+            metadataPatch,
+          });
+        } catch (error) {
+          logger.warn("lane.delete.operation_finish_failed", { laneId, status, error: error instanceof Error ? error.message : String(error) });
+        }
+      };
       const childRows = getChildrenRows(laneId, false);
       if (childRows.length > 0) {
+        finishDeleteOperation("failed", { error: "Lane has active child lanes." });
         throw new Error("Cannot delete a lane with active child lanes. Delete or rebase/archive children first.");
       }
 
@@ -4714,6 +4750,11 @@ export function createLaneService({
 
         invalidateLaneListCache();
         finalize(nonFatalFailures.length > 0 ? "completed_with_warnings" : "completed");
+        finishDeleteOperation("succeeded", {
+          overallStatus: progress.overallStatus,
+          warnings: nonFatalFailures,
+          completedAt: progress.completedAt ?? new Date().toISOString(),
+        });
         const totalMs = Date.now() - new Date(progress.startedAt).getTime();
         if (totalMs >= 1_000) {
           logger.info("lane.delete.completed", {
@@ -4728,6 +4769,7 @@ export function createLaneService({
         }
       } catch (error) {
         finalize("failed");
+        finishDeleteOperation("failed", { error: error instanceof Error ? error.message : String(error) });
         throw error;
       }
     },
