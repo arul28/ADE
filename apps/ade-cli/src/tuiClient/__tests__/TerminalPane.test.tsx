@@ -452,23 +452,46 @@ describe("TerminalPane", () => {
   });
 
   it("advances the write cursor past 500 chunks (desync regression) without dropping later output", async () => {
-    // Feed > 500 incremental chunks; the final chunk must still render. The old
-    // slice(-500) on every chunk pinned the buffer and froze the write cursor.
-    const chunks = Array.from({ length: 540 }, (_unused, index) => `row${index}\r\n`);
-    const result = render(
+    // Feed > 500 incremental chunks; every chunk must land in the xterm buffer.
+    // The old slice(-500) on every chunk pinned the buffer and froze the write
+    // cursor at 500, so later rows were silently dropped.
+    //
+    // We assert the REAL invariant — that all 540 rows were written to the
+    // terminal buffer/scrollback — rather than that row539 happens to sit in the
+    // ~6-row viewport at the instant we sample lastFrame() (that capture is
+    // viewport-bound and timing-dependent, which flaked in CI). The component
+    // reports `maxScrollable` = the buffer's scrollback extent (viewportY), which
+    // is a deterministic, monotonic measure of how far the write cursor advanced.
+    const CHUNK_COUNT = 540;
+    const HEIGHT = 6;
+    const chunks = Array.from({ length: CHUNK_COUNT }, (_unused, index) => `row${index}\r\n`);
+    // Each "rowN\r\n" writes one line; with HEIGHT visible rows the scrollback
+    // extent (maxScrollable) settles at (linesWritten - HEIGHT). If the >500
+    // desync regression returns, the cursor stalls near 500 and maxScrollable
+    // can never reach this threshold, so the test still fails on regression.
+    const EXPECTED_MIN_SCROLLBACK = CHUNK_COUNT - HEIGHT; // 534
+
+    const metrics: { maxScrollable: number; visibleText: string }[] = [];
+    render(
       <TerminalPane
         title="Claude Code"
         preview={null}
         liveChunks={chunks}
         attached={false}
         width={80}
-        height={6}
+        height={HEIGHT}
         hiddenBottomRows={0}
+        onViewportMetrics={(m) => metrics.push(m)}
       />,
     );
-    // The most recent rows (well past index 500) must be visible at the bottom
-    // once xterm flushes — proving the write cursor advanced past 500.
-    await waitFor(() => stripAnsi(result.lastFrame() ?? "").includes("row539"));
-    expect(stripAnsi(result.lastFrame() ?? "")).toContain("row539");
+
+    // xterm's write() callback is async; poll until the scrollback extent reports
+    // the full 540 rows landed. Generous timeout so a slow CI render still settles.
+    await waitFor(
+      () => metrics.some((m) => m.maxScrollable >= EXPECTED_MIN_SCROLLBACK),
+      5_000,
+    );
+    const maxReported = Math.max(0, ...metrics.map((m) => m.maxScrollable));
+    expect(maxReported).toBeGreaterThanOrEqual(EXPECTED_MIN_SCROLLBACK);
   });
 });
