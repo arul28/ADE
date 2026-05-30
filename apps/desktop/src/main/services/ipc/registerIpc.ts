@@ -5859,9 +5859,16 @@ export function registerIpc({
     _event,
     arg: { sessionId?: string; maxEvents?: number },
   ): Promise<AgentChatEventHistorySnapshot> => {
-    const ctx = ensureAgentChatContext();
+    const ctx = getCtx();
     const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
     if (!sessionId) return { sessionId: "", events: [], truncated: false, sessionFound: false };
+    const service = ctx.agentChatService;
+    if (
+      !service ||
+      typeof (service as unknown as { getChatEventHistory?: unknown }).getChatEventHistory !== "function"
+    ) {
+      return { sessionId, events: [], truncated: false, sessionFound: false };
+    }
     // Only forward maxEvents when it is a finite positive number; the service
     // layer applies its own clamp but guarding here avoids ambiguous NaN/0
     // inputs from untrusted renderer IPC.
@@ -5870,7 +5877,7 @@ export function registerIpc({
       rawMaxEvents != null && Number.isFinite(rawMaxEvents) && rawMaxEvents > 0
         ? rawMaxEvents
         : undefined;
-    return ctx.agentChatService.getChatEventHistory(sessionId, maxEvents != null ? { maxEvents } : undefined);
+    return service.getChatEventHistory(sessionId, maxEvents != null ? { maxEvents } : undefined);
   });
 
   ipcMain.handle(IPC.agentChatReadTranscript, async (
