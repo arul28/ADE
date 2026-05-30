@@ -1048,17 +1048,20 @@ function normalizeIncomingCrsqlChange(db: DatabaseSyncType, change: CrsqlChangeR
     `pragma table_info('${change.table.replace(/'/g, "''")}')`
   );
   const primaryKeyColumns = tableInfo.filter((column) => Number(column.pk) > 0);
+  if (isSyncScalarBytes(change.pk)) {
+    if (primaryKeyColumns.length === 0) {
+      throw new Error(`Unsupported incoming CRSQL primary key for ${change.table}.${change.cid}: no primary key.`);
+    }
+    const packedPk = packedCrsqlPrimaryKey(change.pk);
+    if (packedPk) return change;
+    throw new Error(`Unsupported incoming CRSQL primary key for ${change.table}.${change.cid}: invalid packed key.`);
+  }
+
   if (primaryKeyColumns.length !== 1) {
     const shape = primaryKeyColumns.length === 0
       ? "no primary key"
       : `${primaryKeyColumns.length} primary key columns`;
     throw new Error(`Unsupported incoming CRSQL primary key for ${change.table}.${change.cid}: ${shape}.`);
-  }
-
-  if (isSyncScalarBytes(change.pk)) {
-    const packedPk = packedCrsqlPrimaryKey(change.pk);
-    if (packedPk) return change;
-    throw new Error(`Unsupported incoming CRSQL primary key for ${change.table}.${change.cid}: invalid packed key.`);
   }
 
   const packedPk = packedCrsqlPrimaryKey(change.pk);
