@@ -30,7 +30,8 @@ extension FilesDetailScreen {
         encoding: "base64",
         isBinary: true,
         content: cachedData.base64EncodedString(),
-        languageId: nil
+        languageId: nil,
+        previewKind: "image"
       )
       cachedImageBlob = cachedBlob
       blob = cachedBlob

@@ -418,14 +418,68 @@ export type LinearIngressEventRecord = {
   source: LinearIngressSource;
   deliveryId: string;
   eventId: string;
-  entityType: string;
-  action: string | null;
+  kind?: string | null;
+  entityType?: string | null;
+  action?: string | null;
   issueId: string | null;
   issueIdentifier: string | null;
   summary: string;
   payload?: Record<string, unknown> | null;
   createdAt: string;
 };
+
+function normalizeLinearIngressString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function normalizeLinearIngressAction(value: unknown): string | null {
+  const action = normalizeLinearIngressString(value);
+  if (!action) return null;
+  switch (action) {
+    case "created":
+      return "create";
+    case "updated":
+      return "update";
+    case "deleted":
+    case "removed":
+      return "remove";
+    default:
+      return action;
+  }
+}
+
+export function linearIngressKindFromParts(entityType: unknown, action: unknown): string {
+  const entity = normalizeLinearIngressString(entityType) ?? "issue";
+  const normalizedAction = normalizeLinearIngressAction(action);
+  return normalizedAction ? `${entity}.${normalizedAction}` : entity;
+}
+
+export function normalizeLinearIngressEventKind(
+  event: Pick<LinearIngressEventRecord, "kind" | "entityType" | "action">
+): { kind: string; entityType: string; action: string | null } {
+  const explicitEntityType = normalizeLinearIngressString(event.entityType);
+  const explicitAction = normalizeLinearIngressAction(event.action);
+  if (explicitEntityType) {
+    return {
+      entityType: explicitEntityType,
+      action: explicitAction,
+      kind: normalizeLinearIngressString(event.kind) ?? linearIngressKindFromParts(explicitEntityType, explicitAction),
+    };
+  }
+
+  const kind = normalizeLinearIngressString(event.kind);
+  if (!kind) {
+    return { kind: "issue", entityType: "issue", action: null };
+  }
+  const [entityType, ...actionParts] = kind.split(".");
+  const derivedEntityType = normalizeLinearIngressString(entityType) ?? "issue";
+  const derivedAction = normalizeLinearIngressAction(actionParts.join("."));
+  return {
+    kind,
+    entityType: derivedEntityType,
+    action: explicitAction ?? derivedAction,
+  };
+}
 
 export type LinearIngressEndpointStatus = {
   configured: boolean;

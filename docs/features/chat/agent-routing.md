@@ -107,9 +107,11 @@ directly to the CLI / SDK — no synthesized token budgets).
 
 - CLI-wrapped providers (`claude`, `codex`) check for the binary on PATH
   and then for the app's auth token cache.
-- Cursor authenticates through the SDK (API key / managed credential).
-  The optional Cursor CLI is only inspected as a *diagnostic* (paid-plan
-  inference) — runtime auth comes from the SDK, not the CLI.
+- Cursor chat authenticates through the SDK (API key / managed
+  credential). The Cursor CLI is still not the chat credential source,
+  but ADE now probes `cursor-agent` for CLI-launch model inventory and
+  merges those rows with the SDK registry so the picker can distinguish
+  SDK chat models from Cursor CLI-only models.
 - API-key providers check the keychain via `apiKeyStore.ts` and then
   the `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / etc. env vars.
 - OAuth providers trigger the OAuth redirect flow in
@@ -172,24 +174,29 @@ over a stale persisted pair. Turns use the Codex-native `effort` key
 (`turn/start({ threadId, input, effort?, serviceTier? })`) instead of
 the lifecycle `reasoningEffort` name.
 
-#### Codex service tiers (Fast Mode)
+#### Provider service tiers (Fast Mode)
 
 `ModelDescriptor.serviceTiers?: string[]` advertises the optional
 service tiers a model accepts (today only `"fast"`). The composer's
 **Fast** toggle (a yellow Lightning chip next to the model picker)
 shows whenever `modelSupportsFastMode(descriptor)` is true for the
-selected model and the session provider is Codex. `AgentChatSession`
-carries `codexFastMode?: boolean` and the chat adapter forwards it as
+selected model, independent of provider. `AgentChatSession` carries the
+legacy-named `codexFastMode?: boolean`; Codex forwards it as
 `serviceTier: "fast" | null` on every `turn/start` and `thread/start`
-JSON-RPC call (an explicit `null` clears any app-server default). The
-flag persists with the session, survives reload through
-`PersistedChatState`, and is forwarded to remote devices through the
-sync command service. Parallel-model rows track Fast mode per slot
-(`ParallelModelRowState.codexFastMode`) so launching multiple Codex
-runs side-by-side can mix Fast and Standard turns. The discovery layer
-populates `serviceTiers` from app-server-reported `additionalSpeedTiers`
-/ `serviceTiers` rows; the static registry pre-marks the GPT 5.4 / 5.5
-Codex CLI entries.
+JSON-RPC call (an explicit `null` clears any app-server default), while
+Cursor SDK sessions resolve it through `cursorModelsDiscovery` into the
+matching model parameter. Work CLI launches use the Cursor descriptor's
+fast alias (`*-fast`) when the same flag is enabled. The flag persists
+with the session, survives reload through `PersistedChatState`, and is
+forwarded to remote devices through the sync command service.
+Parallel-model rows track Fast mode per slot
+(`ParallelModelRowState.codexFastMode`) so launching multiple
+fast-capable runs side-by-side can mix Fast and Standard turns. Codex
+discovery populates `serviceTiers` from app-server-reported
+`additionalSpeedTiers` / `serviceTiers` rows; the static registry
+pre-marks the GPT 5.4 / 5.5 Codex CLI entries. Cursor discovery
+populates `serviceTiers` from SDK/CLI parameters and folds CLI
+`*-fast` rows into their base descriptors as aliases.
 
 Codex plan mode uses the native app-server planning flow. ADE passes its
 runtime guidance as an ordinary system-context input item and keeps
@@ -219,7 +226,10 @@ picker state matches the documented default; the explicit Codex
 Cursor modes (`apps/desktop/src/shared/cursorModes.ts`) are a list of
 configurable mode IDs; ADE stores a `cursorModeSnapshot` on the session
 carrying the current mode, available mode IDs, and selected config
-options.
+options. Cursor model descriptors also carry `cursorAvailability`:
+SDK-capable rows are eligible for chat sessions, CLI-capable rows are
+eligible for Work CLI launches, and rows with both flags appear in both
+surfaces.
 
 ### Abstract-to-native mapping
 

@@ -1488,7 +1488,7 @@ describe("preload OAuth bridge", () => {
     );
   });
 
-  it("uses in-process file IPC for local project file operations when bound", async () => {
+  it("routes local project file operations through the local runtime when bound", async () => {
     const binding = {
       kind: "local",
       key: "local:/repo",
@@ -1501,10 +1501,15 @@ describe("preload OAuth bridge", () => {
         return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
       }
       if (channel === IPC.localRuntimeCallAction) {
-        throw new Error("local file operations should not call the local runtime daemon");
+        return {
+          domain: "file",
+          action: "listWorkspaces",
+          result: workspaces,
+          statusHints: {},
+        };
       }
       if (channel === IPC.filesListWorkspaces) {
-        return workspaces;
+        throw new Error("runtime-bound files should not use in-process IPC");
       }
       throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
     });
@@ -1530,18 +1535,20 @@ describe("preload OAuth bridge", () => {
     const bridge = (globalThis as any).__adeBridge;
     await expect(bridge.files.listWorkspaces()).resolves.toEqual(workspaces);
 
-    expect(invoke).toHaveBeenCalledWith(IPC.filesListWorkspaces, {});
-    expect(invoke).not.toHaveBeenCalledWith(IPC.localRuntimeCallAction, expect.anything());
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
+      request: { domain: "file", action: "listWorkspaces", args: {} },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.filesListWorkspaces, expect.anything());
   });
 
-  it("uses in-process tree IPC for local folders even when the local runtime is bound", async () => {
+  it("does not fall through to in-process file IPC when a bound local runtime file call fails", async () => {
     const binding = {
       kind: "local",
       key: "local:/repo",
       rootPath: "/repo",
       displayName: "Project",
     };
-    const tree = [{ name: "src", path: "src", type: "directory" }];
     const runtimeError = new Error(
       "Error invoking remote method 'ade.localRuntime.callAction': Error: IPC handler for 'ade.localRuntime.callAction' timed out after 30000ms",
     );
@@ -1552,8 +1559,8 @@ describe("preload OAuth bridge", () => {
       if (channel === IPC.localRuntimeCallAction) {
         throw runtimeError;
       }
-      if (channel === IPC.filesListTree) {
-        return tree;
+      if (channel === IPC.filesListWorkspaces) {
+        throw new Error("runtime-bound files should not fall through to missing in-process IPC");
       }
       throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
     });
@@ -1577,16 +1584,16 @@ describe("preload OAuth bridge", () => {
     await import("./preload");
 
     const bridge = (globalThis as any).__adeBridge;
-    await expect(bridge.files.listTree({ workspaceId: "primary", parentPath: "src" })).resolves.toEqual(tree);
+    await expect(bridge.files.listWorkspaces()).rejects.toThrow("ade.localRuntime.callAction");
 
-    expect(invoke).toHaveBeenCalledWith(IPC.filesListTree, {
-      workspaceId: "primary",
-      parentPath: "src",
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
+      request: { domain: "file", action: "listWorkspaces", args: {} },
     });
-    expect(invoke).not.toHaveBeenCalledWith(IPC.localRuntimeCallAction, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.filesListWorkspaces, expect.anything());
   });
 
-  it("uses in-process diff IPC for local project diff reads when bound", async () => {
+  it("routes local project diff reads through the local runtime when bound", async () => {
     const binding = {
       kind: "local",
       key: "local:/repo",
@@ -1603,10 +1610,15 @@ describe("preload OAuth bridge", () => {
         return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
       }
       if (channel === IPC.localRuntimeCallAction) {
-        throw new Error("local diff reads should not call the local runtime daemon");
+        return {
+          domain: "diff",
+          action: "getFilePatch",
+          result: patch,
+          statusHints: {},
+        };
       }
       if (channel === IPC.diffGetFilePatch) {
-        return patch;
+        throw new Error("runtime-bound diff reads should not use in-process IPC");
       }
       throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
     });
@@ -1634,12 +1646,14 @@ describe("preload OAuth bridge", () => {
       bridge.diff.getFilePatch({ laneId: "lane-1", path: "src/app.ts", mode: "working" }),
     ).resolves.toEqual(patch);
 
-    expect(invoke).toHaveBeenCalledWith(IPC.diffGetFilePatch, {
-      laneId: "lane-1",
-      path: "src/app.ts",
-      mode: "working",
-    });
-    expect(invoke).not.toHaveBeenCalledWith(IPC.localRuntimeCallAction, expect.anything());
+    expect(invoke).toHaveBeenCalledWith(
+      IPC.localRuntimeCallAction,
+      expect.objectContaining({
+        rootPath: "/repo",
+        request: expect.objectContaining({ domain: "diff", action: "getFilePatch" }),
+      }),
+    );
+    expect(invoke).not.toHaveBeenCalledWith(IPC.diffGetFilePatch, expect.anything());
   });
 
   it("keeps remote runtime routing for remote project file operations", async () => {
@@ -2684,7 +2698,7 @@ describe("preload OAuth bridge", () => {
     const labels = [{ name: "bug", color: "d73a4a" }];
     const collaborators = [{ login: "octocat", avatarUrl: "https://example.test/octocat.png" }];
     const autolinks = [{ id: 1, keyPrefix: "ADE-", urlTemplate: "https://example.test/<num>", isAlphanumeric: false }];
-    const createdAutolink = { id: 2, keyPrefix: "ADEPR-", urlTemplate: "https://ade.app/open?number=<num>", isAlphanumeric: false };
+    const createdAutolink = { id: 2, keyPrefix: "ADEPR-", urlTemplate: "https://ade-app.dev/open?number=<num>", isAlphanumeric: false };
     const remoteStatus = { repo: { owner: "acme", name: "repo" }, hasOrigin: true };
     const myRepos = {
       repos: [{
@@ -2777,7 +2791,7 @@ describe("preload OAuth bridge", () => {
       owner: "acme",
       name: "repo",
       keyPrefix: "ADEPR-",
-      urlTemplate: "https://ade.app/open?number=<num>",
+      urlTemplate: "https://ade-app.dev/open?number=<num>",
       isAlphanumeric: false,
     })).resolves.toEqual(createdAutolink);
     await expect(bridge.github.getRemoteStatus({ forceRefresh: true })).resolves.toEqual(remoteStatus);
@@ -2820,7 +2834,7 @@ describe("preload OAuth bridge", () => {
           owner: "acme",
           name: "repo",
           keyPrefix: "ADEPR-",
-          urlTemplate: "https://ade.app/open?number=<num>",
+          urlTemplate: "https://ade-app.dev/open?number=<num>",
           isAlphanumeric: false,
         },
       },

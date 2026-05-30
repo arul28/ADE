@@ -397,6 +397,43 @@ describe("linearOAuthService", () => {
     expect(session.error).toBeNull();
   });
 
+  it("throws an actionable error when another service instance holds the callback port", async () => {
+    const firstService = createLinearOAuthService({
+      credentials: createCredentialsMock() as any,
+      logger: createLogger(),
+    });
+    activeServices.push(firstService);
+    await firstService.startSession();
+
+    const logger = createLogger();
+    const secondService = createLinearOAuthService({
+      credentials: createCredentialsMock() as any,
+      logger,
+    });
+    activeServices.push(secondService);
+
+    let caught: unknown;
+    try {
+      await secondService.startSession();
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    const error = caught as Error & { code?: string };
+    expect(error.code).toBe("EADDRINUSE");
+    expect(error.message).toContain("callback port 19836 is already in use");
+    expect(error.message).toContain("Stop the other ADE process or local app");
+    expect(error.message).not.toContain("listen EADDRINUSE");
+    expect(logger.warn).toHaveBeenCalledWith(
+      "linear_sync.oauth_callback_port_in_use",
+      expect.objectContaining({
+        host: "127.0.0.1",
+        port: 19836,
+      }),
+    );
+  });
+
   it("getSession returns expired for unknown session id", () => {
     const credentials = createCredentialsMock();
     const service = createLinearOAuthService({
@@ -1179,5 +1216,177 @@ describe("linearClient", () => {
     });
 
     await expect(client.getViewer()).resolves.toEqual({ id: "viewer-1", name: "Alex" });
+  });
+});
+
+describe("linearCredentialService OAuth token refresh", () => {
+  const ENV_KEYS = ["ADE_LINEAR_API", "LINEAR_API_KEY", "ADE_LINEAR_TOKEN", "LINEAR_TOKEN"] as const;
+  let savedEnv: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    savedEnv = {};
+    for (const key of ENV_KEYS) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+  });
+
+  function makeService(fetchImpl: unknown) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-refresh-"));
+    return createLinearCredentialService({
+      adeDir: path.join(root, ".ade"),
+      logger: createLogger(),
+      credentialStore: new MemoryCredentialStore(),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+  }
+
+  function okResponse(payload: unknown) {
+    return { ok: true, status: 200, json: async () => payload };
+  }
+
+  it("refreshes an OAuth access token near expiry and rotates the refresh token", async () => {
+    const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) =>
+      okResponse({ access_token: "at_refreshed", refresh_token: "rt_rotated", expires_in: 86399 }),
+    );
+    const service = makeService(fetchImpl);
+    // 30s from expiry -> inside the refresh buffer.
+    service.setOAuthToken({
+      accessToken: "at_old",
+      refreshToken: "rt_old",
+      expiresAt: new Date(Date.now() + 30_000).toISOString(),
+    });
+
+    await service.ensureFreshToken();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(fetchImpl.mock.calls[0][1]?.body ?? "")).toContain("grant_type=refresh_token");
+    expect(service.getToken()).toBe("at_refreshed");
+    expect(service.getStatus()).toMatchObject({ authMode: "oauth", refreshTokenStored: true });
+  });
+
+  it("does not refresh a manual token or a still-fresh OAuth token", async () => {
+    const fetchImpl = vi.fn(async () => okResponse({}));
+    const service = makeService(fetchImpl);
+
+    service.setToken("lin_api_manual");
+    await service.ensureFreshToken();
+
+    service.setOAuthToken({
+      accessToken: "at_fresh",
+      refreshToken: "rt",
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    });
+    await service.ensureFreshToken();
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(service.getToken()).toBe("at_fresh");
+  });
+
+  it("clears the connection when the refresh token is rejected (invalid_grant)", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: "invalid_grant" }),
+    }));
+    const service = makeService(fetchImpl);
+    service.setOAuthToken({
+      accessToken: "at_old",
+      refreshToken: "rt_dead",
+      expiresAt: new Date(Date.now() - 1000).toISOString(),
+    });
+
+    await service.ensureFreshToken();
+
+    expect(service.getToken()).toBeNull();
+    expect(service.getStatus().tokenStored).toBe(false);
+  });
+
+  it("keeps the connection when invalid_grant follows a concurrent refresh rotation", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-refresh-race-"));
+    const store = new MemoryCredentialStore();
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = String(init?.body ?? "");
+      if (body.includes("refresh_token=rt_old")) {
+        store.setSync("linear.token.v1", "at_from_peer");
+        store.setSync("linear.authMode.v1", "oauth");
+        store.setSync("linear.refreshToken.v1", "rt_new");
+        store.setSync(
+          "linear.tokenExpiresAt.v1",
+          new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        );
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({ error: "invalid_grant" }),
+        };
+      }
+      return okResponse({ access_token: "at", refresh_token: "rt", expires_in: 86399 });
+    });
+    const service = createLinearCredentialService({
+      adeDir: path.join(root, ".ade"),
+      logger: createLogger(),
+      credentialStore: store,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    service.setOAuthToken({
+      accessToken: "at_old",
+      refreshToken: "rt_old",
+      expiresAt: new Date(Date.now() - 1000).toISOString(),
+    });
+
+    await service.ensureFreshToken();
+
+    expect(service.getToken()).toBe("at_from_peer");
+    expect(service.getStatus()).toMatchObject({
+      tokenStored: true,
+      authMode: "oauth",
+      refreshTokenStored: true,
+    });
+  });
+
+  it("does not keep a forced-refresh invalid_grant just because the recorded expiry is fresh", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: "invalid_grant" }),
+    }));
+    const service = makeService(fetchImpl);
+    service.setOAuthToken({
+      accessToken: "at_rejected",
+      refreshToken: "rt_dead",
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    });
+
+    await service.ensureFreshToken({ force: true });
+
+    expect(service.getToken()).toBeNull();
+    expect(service.getStatus().tokenStored).toBe(false);
+  });
+
+  it("keeps the existing token on a transient refresh failure", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({}),
+    }));
+    const service = makeService(fetchImpl);
+    service.setOAuthToken({
+      accessToken: "at_keep",
+      refreshToken: "rt",
+      expiresAt: new Date(Date.now() - 1000).toISOString(),
+    });
+
+    await service.ensureFreshToken();
+
+    expect(service.getToken()).toBe("at_keep");
+    expect(service.getStatus().tokenStored).toBe(true);
   });
 });

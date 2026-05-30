@@ -532,7 +532,7 @@ describe("githubService issue-domain helpers", () => {
       .mockResolvedValueOnce(jsonResponse(201, {
         id: 2,
         key_prefix: "ADEPR-",
-        url_template: "https://ade.app/open?number=<num>",
+        url_template: "https://ade-app.dev/open?number=<num>",
         is_alphanumeric: false,
       }));
     const service = makeService();
@@ -545,12 +545,12 @@ describe("githubService issue-domain helpers", () => {
     }]);
     await expect(service.createRepoAutolink("acme", "ade", {
       keyPrefix: "ADEPR-",
-      urlTemplate: "https://ade.app/open?number=<num>",
+      urlTemplate: "https://ade-app.dev/open?number=<num>",
       isAlphanumeric: false,
     })).resolves.toEqual({
       id: 2,
       keyPrefix: "ADEPR-",
-      urlTemplate: "https://ade.app/open?number=<num>",
+      urlTemplate: "https://ade-app.dev/open?number=<num>",
       isAlphanumeric: false,
     });
     expect(mockFetch.mock.calls[0]?.[0]).toMatch(/\/repos\/acme\/ade\/autolinks/);
@@ -558,7 +558,7 @@ describe("githubService issue-domain helpers", () => {
     expect(init.method).toBe("POST");
     expect(JSON.parse(init.body as string)).toEqual({
       key_prefix: "ADEPR-",
-      url_template: "https://ade.app/open?number=<num>",
+      url_template: "https://ade-app.dev/open?number=<num>",
       is_alphanumeric: false,
     });
   });

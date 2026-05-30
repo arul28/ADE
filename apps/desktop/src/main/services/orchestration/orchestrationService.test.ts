@@ -20,6 +20,7 @@ import type {
 import type {
   ModelRouting,
   ModelSelection,
+  OrchestrationTask,
 } from "../../../shared/types/orchestration";
 
 async function makeTempLane(): Promise<string> {
@@ -29,6 +30,17 @@ async function makeTempLane(): Promise<string> {
 
 async function rmTree(p: string): Promise<void> {
   await fsp.rm(p, { recursive: true, force: true });
+}
+
+function makeTask(id: string): OrchestrationTask {
+  return {
+    id,
+    phaseId: "developing",
+    title: `Task ${id}`,
+    description: "",
+    status: "pending",
+    validationGate: { required: false, stepIds: [] },
+  };
 }
 
 describe("orchestrationService", () => {
@@ -720,6 +732,91 @@ describe("orchestrationService", () => {
     ).toThrow(/numeric/i);
   });
 
+  it("rejects duplicate task ids appended in one manifest patch", async () => {
+    const svc = createOrchestrationService({
+      resolveLaneWorktree: () => lane,
+    });
+    const { manifest } = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+    });
+
+    const result = await svc.manifestPatch(
+      {
+        runId: manifest.runId,
+        ifMatchEtag: manifest.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [
+          { op: "add", path: "/tasks/-", value: makeTask("T-1") },
+          { op: "add", path: "/tasks/-", value: makeTask("T-1") },
+        ],
+      },
+      manifest.bundlePath,
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("validation_failed");
+    if (!("message" in result)) throw new Error("expected validation failure message");
+    expect(result.message).toMatch(/duplicate id T-1/);
+
+    const onDisk = JSON.parse(
+      await fsp.readFile(path.join(manifest.bundlePath, "manifest.json"), "utf-8"),
+    ) as { tasks: unknown[] };
+    expect(onDisk.tasks).toHaveLength(0);
+    await svc.dispose();
+  });
+
+  it("rejects re-adding an existing task id through manifestPatch", async () => {
+    const svc = createOrchestrationService({
+      resolveLaneWorktree: () => lane,
+    });
+    const { manifest } = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+    });
+
+    const first = await svc.manifestPatch(
+      {
+        runId: manifest.runId,
+        ifMatchEtag: manifest.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [{ op: "add", path: "/tasks/-", value: makeTask("T-1") }],
+      },
+      manifest.bundlePath,
+    );
+
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const duplicate = await svc.manifestPatch(
+      {
+        runId: manifest.runId,
+        ifMatchEtag: first.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [{ op: "add", path: "/tasks/-", value: makeTask("T-1") }],
+      },
+      manifest.bundlePath,
+    );
+
+    expect(duplicate.ok).toBe(false);
+    if (duplicate.ok) return;
+    expect(duplicate.error).toBe("validation_failed");
+    if (!("message" in duplicate)) throw new Error("expected validation failure message");
+    expect(duplicate.message).toMatch(/duplicate id T-1/);
+
+    const onDisk = JSON.parse(
+      await fsp.readFile(path.join(manifest.bundlePath, "manifest.json"), "utf-8"),
+    ) as { tasks: unknown[] };
+    expect(onDisk.tasks).toHaveLength(1);
+    await svc.dispose();
+  });
+
   it("validates spawn-brief required sections", () => {
     expect(validateSpawnBrief("nothing here").ok).toBe(false);
     const good = `## TASK\nBuild login\n## FILES\nsrc/x.ts\n## DEPENDENCIES\nnone\n## GATES\nreverify_changes\n## PEERS\nnone\n## SUCCESS\ntests pass`;
@@ -1114,6 +1211,127 @@ describe("validation concerns gating", () => {
     await svc.dispose();
   });
 
+  it.each(["done", "failed"] as const)(
+    "rejects claims against %s tasks",
+    async (terminalStatus) => {
+      const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+      const { manifest } = await svc.runCreate({
+        laneId: "L-1",
+        leadSessionId: "S-lead",
+        bundleRoot: lane,
+      });
+      const seeded = await svc.manifestPatch(
+        {
+          runId: manifest.runId,
+          ifMatchEtag: manifest.etag,
+          actorRole: "lead",
+          actorSessionId: "S-lead",
+          patches: [
+            {
+              op: "add",
+              path: "/agents/-",
+              value: {
+                sessionId: "S-worker",
+                role: "worker",
+                tag: "impl",
+                goalSummary: "implement",
+                status: "running",
+                spawnedAt: "now",
+              },
+            },
+            {
+              op: "add",
+              path: "/agents/-",
+              value: {
+                sessionId: "S-other-worker",
+                role: "worker",
+                tag: "other",
+                goalSummary: "try to claim terminal work",
+                status: "running",
+                spawnedAt: "now",
+              },
+            },
+            {
+              op: "add",
+              path: "/tasks/-",
+              value: {
+                id: "T-terminal",
+                phaseId: "developing",
+                title: "terminal task",
+                description: "",
+                status: "claimed",
+                validationGate: { required: false, stepIds: [] },
+                assigneeSessionId: "S-worker",
+                claimLeaseUntil: new Date(Date.now() + 60_000).toISOString(),
+              },
+            },
+          ],
+        },
+        manifest.bundlePath,
+      );
+      expect(seeded.ok).toBe(true);
+      if (!seeded.ok) {
+        throw new Error("failed to seed terminal task claim test");
+      }
+
+      const released = await svc.releaseTask(
+        {
+          runId: manifest.runId,
+          taskId: "T-terminal",
+          sessionId: "S-worker",
+          status: terminalStatus,
+        },
+        manifest.bundlePath,
+      );
+      const releasedTask = released.manifest.tasks.find(
+        (task) => task.id === "T-terminal",
+      );
+      expect(releasedTask?.status).toBe(terminalStatus);
+      expect(releasedTask?.claimLeaseUntil).toBeNull();
+
+      const claimed = await svc.claimTask(
+        {
+          runId: manifest.runId,
+          taskId: "T-terminal",
+          sessionId: "S-worker",
+          leaseMs: 30 * 60 * 1000,
+        },
+        manifest.bundlePath,
+      );
+      expect(claimed.ok).toBe(false);
+      if (claimed.ok) {
+        throw new Error("terminal task claim unexpectedly succeeded");
+      }
+      expect(claimed.reason).toContain(`terminal (${terminalStatus})`);
+      const taskAfterClaim = claimed.manifest.tasks.find(
+        (task) => task.id === "T-terminal",
+      );
+      expect(taskAfterClaim?.status).toBe(terminalStatus);
+      expect(taskAfterClaim?.claimLeaseUntil).toBeNull();
+
+      const otherClaim = await svc.claimTask(
+        {
+          runId: manifest.runId,
+          taskId: "T-terminal",
+          sessionId: "S-other-worker",
+          leaseMs: 30 * 60 * 1000,
+        },
+        manifest.bundlePath,
+      );
+      expect(otherClaim.ok).toBe(false);
+      if (otherClaim.ok) {
+        throw new Error("terminal task claim by other worker unexpectedly succeeded");
+      }
+      expect(otherClaim.reason).toContain(`terminal (${terminalStatus})`);
+      const taskAfterOtherClaim = otherClaim.manifest.tasks.find(
+        (task) => task.id === "T-terminal",
+      );
+      expect(taskAfterOtherClaim?.status).toBe(terminalStatus);
+      expect(taskAfterOtherClaim?.claimLeaseUntil).toBeNull();
+      await svc.dispose();
+    },
+  );
+
   it("lead cannot lower validationGate.required without override pair", async () => {
     const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
     const { manifest } = await svc.runCreate({
@@ -1414,5 +1632,63 @@ describe("orchestration watcher resilience", () => {
     expect(events.some((e) => (e as { kind?: string }).kind === "plan")).toBe(true);
     off();
     await svc.dispose();
+  });
+
+  it("reloads manifest and plan when both external files change inside the debounce window", async () => {
+    const creator = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const { manifest } = await creator.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+      title: "Initial",
+    });
+    await creator.dispose();
+
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const events: Array<{
+      kind?: string;
+      manifest?: { title?: string };
+      planMd?: string;
+    }> = [];
+    const off = svc.on("event", (payload) => events.push(payload));
+    try {
+      await svc.subscribe(manifest.runId, manifest.bundlePath);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      const manifestPath = path.join(manifest.bundlePath, "manifest.json");
+      const planPath = path.join(manifest.bundlePath, "plan.md");
+      const currentManifest = JSON.parse(
+        await fsp.readFile(manifestPath, "utf-8"),
+      ) as typeof manifest;
+      const externalManifest = {
+        ...currentManifest,
+        title: "Externally updated manifest",
+        serverGeneration: currentManifest.serverGeneration + 1,
+        etag: `g${currentManifest.serverGeneration + 1}-external`,
+      };
+      const externalPlan = "# Externally updated plan\n\nBoth files changed in one batch.\n";
+
+      await Promise.all([
+        fsp.writeFile(manifestPath, JSON.stringify(externalManifest, null, 2)),
+        fsp.writeFile(planPath, externalPlan),
+      ]);
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.kind === "manifest"
+          && event.manifest?.title === externalManifest.title,
+        )).toBe(true);
+        expect(events.some((event) =>
+          event.kind === "plan" && event.planMd === externalPlan,
+        )).toBe(true);
+      }, { timeout: 2_000 });
+
+      const bundle = await svc.bundleRead(manifest.runId, manifest.bundlePath);
+      expect(bundle.manifest.title).toBe(externalManifest.title);
+      expect(bundle.planMd).toBe(externalPlan);
+    } finally {
+      off();
+      await svc.dispose();
+    }
   });
 });

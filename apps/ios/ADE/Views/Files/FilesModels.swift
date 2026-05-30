@@ -136,6 +136,25 @@ func filesTextPreviewLimit(blob: SyncFileBlob) -> FilesPreviewLimit? {
   )
 }
 
+func filesOmittedPreviewLimit(blob: SyncFileBlob) -> FilesPreviewLimit? {
+  guard blob.contentOmitted == true else { return nil }
+  let title = blob.omittedReason == "too_large" ? "Preview paused" : "Preview unavailable"
+  let message: String
+  if blob.omittedReason == "too_large" {
+    message = "This content is \(formattedFileSize(blob.size)). Open it from ADE on your machine to inspect the full file."
+  } else {
+    message = "The machine marked this file as unsupported for inline mobile preview. Open it from ADE on your machine."
+  }
+  return FilesPreviewLimit(title: title, message: message)
+}
+
+func filesIsMarkdown(blob: SyncFileBlob, path: String) -> Bool {
+  let ext = (path.lowercased() as NSString).pathExtension
+  if ["md", "markdown", "mdx"].contains(ext) { return true }
+  if blob.mimeType?.lowercased() == "text/markdown" { return true }
+  return blob.languageId?.lowercased() == "markdown"
+}
+
 func filesDiffPreviewLimit(diff: FileDiff) -> FilesPreviewLimit? {
   if diff.original.isTruncated == true || diff.modified.isTruncated == true {
     return FilesPreviewLimit(

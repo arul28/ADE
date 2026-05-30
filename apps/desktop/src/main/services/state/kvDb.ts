@@ -457,6 +457,13 @@ function writeMigrationBackupIfNeeded(dbPath: string): void {
 const LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE = "local_crr_change_suppressions";
 
 const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
+  // Per-device ingress dedup log. It carries a non-PK UNIQUE index
+  // (project_id, source, event_key) for dedup, which cr-sqlite forbids on CRR
+  // tables ("has unique indices besides the primary key. This is not allowed
+  // for CRRs"). Ingress is processed per-machine, so this is local-only —
+  // excluding it keeps the unique index and lets removeExcludedCrrMetadata
+  // un-CRR any DB where it was already (incorrectly) converted.
+  "automation_ingress_events",
   "lane_detail_snapshots",
   "lane_list_snapshots",
   LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE,
@@ -1041,17 +1048,20 @@ function normalizeIncomingCrsqlChange(db: DatabaseSyncType, change: CrsqlChangeR
     `pragma table_info('${change.table.replace(/'/g, "''")}')`
   );
   const primaryKeyColumns = tableInfo.filter((column) => Number(column.pk) > 0);
+  if (isSyncScalarBytes(change.pk)) {
+    if (primaryKeyColumns.length === 0) {
+      throw new Error(`Unsupported incoming CRSQL primary key for ${change.table}.${change.cid}: no primary key.`);
+    }
+    const packedPk = packedCrsqlPrimaryKey(change.pk);
+    if (packedPk) return change;
+    throw new Error(`Unsupported incoming CRSQL primary key for ${change.table}.${change.cid}: invalid packed key.`);
+  }
+
   if (primaryKeyColumns.length !== 1) {
     const shape = primaryKeyColumns.length === 0
       ? "no primary key"
       : `${primaryKeyColumns.length} primary key columns`;
     throw new Error(`Unsupported incoming CRSQL primary key for ${change.table}.${change.cid}: ${shape}.`);
-  }
-
-  if (isSyncScalarBytes(change.pk)) {
-    const packedPk = packedCrsqlPrimaryKey(change.pk);
-    if (packedPk) return change;
-    throw new Error(`Unsupported incoming CRSQL primary key for ${change.table}.${change.cid}: invalid packed key.`);
   }
 
   const packedPk = packedCrsqlPrimaryKey(change.pk);
@@ -1691,6 +1701,8 @@ function migrate(db: MigrationDb) {
   try { db.run("alter table pull_requests add column last_polled_at text"); } catch {}
   try { db.run("alter table pull_requests add column head_sha text"); } catch {}
   try { db.run("alter table pull_requests add column creation_strategy text"); } catch {}
+  try { db.run("alter table pull_requests add column merge_conflicts integer"); } catch {}
+  try { db.run("alter table pull_requests add column behind_base_by integer"); } catch {}
 
   db.run("drop table if exists github_pr_cache");
 
@@ -3055,6 +3067,9 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       try {
         runStatement(db, sql, params);
       } catch (error) {
+        // Commit the alter even on failure so the CRR state stays consistent,
+        // then re-throw so callers (e.g. safeAlter) can handle duplicate columns.
+        getRow(db, "select crsql_commit_alter(?) as ok", [alterTable]);
         throw error;
       }
       getRow(db, "select crsql_commit_alter(?) as ok", [alterTable]);

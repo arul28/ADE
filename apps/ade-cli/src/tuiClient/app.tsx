@@ -671,6 +671,12 @@ function modelStatePatchForModel(provider: AdeCodeProvider, model: AgentChatMode
   };
 }
 
+function modelInfoSupportsFastMode(model: AgentChatModelInfo | null | undefined): boolean {
+  const descriptor = model?.modelId || model?.id ? getModelById(model.modelId ?? model.id) : undefined;
+  return Boolean(model?.serviceTiers?.some((tier) => tier.trim().toLowerCase() === "fast"))
+    || modelSupportsFastMode(descriptor);
+}
+
 function fallbackModelStatePatch(provider: AdeCodeProvider): Pick<AdeCodeModelState, "provider" | "model" | "modelId" | "displayName" | "reasoningEffort"> {
   const registryProvider = provider === "ollama" || provider === "lmstudio" ? "opencode" : provider;
   const descriptor = getDefaultModelDescriptor(registryProvider)
@@ -4738,10 +4744,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     setModels(nextModels);
     if (options.applyDefault !== false) {
       const model = nextModels.find((entry) => entry.isDefault) ?? nextModels[0] ?? null;
-      setModelState((prev) => ({
-        ...prev,
-        ...(model ? modelStatePatchForModel(provider, model) : fallbackModelStatePatch(provider)),
-      }));
+      setModelState((prev) => {
+        const patch = model ? modelStatePatchForModel(provider, model) : fallbackModelStatePatch(provider);
+        const fallbackDescriptor = !model && patch.modelId ? getModelById(patch.modelId) : undefined;
+        const fastSupported = model ? modelInfoSupportsFastMode(model) : modelSupportsFastMode(fallbackDescriptor);
+        return {
+          ...prev,
+          ...patch,
+          codexFastMode: fastSupported ? prev.codexFastMode : false,
+        };
+      });
     }
 	    return nextModels;
 	  }, []);
@@ -5635,7 +5647,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       sessionId,
       modelId: normalized.modelId,
       reasoningEffort: normalized.reasoningEffort,
-      codexFastMode: normalized.provider === "codex" ? normalized.codexFastMode : undefined,
+      codexFastMode: normalized.codexFastMode,
       permissionMode: normalized.permissionMode,
       interactionMode: normalized.provider === "claude" ? normalized.interactionMode : undefined,
       claudePermissionMode: normalized.provider === "claude" ? normalized.claudePermissionMode : undefined,
@@ -8467,10 +8479,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     const immediateModels = providerModelsCacheRef.current.get(provider) ?? registryModelsForProvider(provider);
     setModels(immediateModels);
     const model = immediateModels.find((entry) => entry.isDefault) ?? immediateModels[0] ?? null;
-    applyModelState((prev) => ({
-      ...prev,
-      ...(model ? modelStatePatchForModel(provider, model) : fallbackModelStatePatch(provider)),
-    }));
+    applyModelState((prev) => {
+      const patch = model ? modelStatePatchForModel(provider, model) : fallbackModelStatePatch(provider);
+      const fallbackDescriptor = !model && patch.modelId ? getModelById(patch.modelId) : undefined;
+      const fastSupported = model ? modelInfoSupportsFastMode(model) : modelSupportsFastMode(fallbackDescriptor);
+      return {
+        ...prev,
+        ...patch,
+        codexFastMode: fastSupported ? prev.codexFastMode : false,
+      };
+    });
     void loadProviderModels(provider, { applyDefault: false }).catch(() => undefined);
   }, [addNotice, applyModelState, loadProviderModels]);
 

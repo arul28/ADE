@@ -264,31 +264,6 @@ describe("CreatePrModal queue workflow", () => {
     await user.click(screen.getByRole("button", { name: /next step/i }));
 
     expect(screen.getByDisplayValue("ADE-123: Connect Linear issue dropdown")).toBeTruthy();
-    expect(screen.getByDisplayValue(/Refs ADE-123/)).toBeTruthy();
-    expect(screen.getByText(/PR body will include Refs ADE-123/i)).toBeTruthy();
-
-    await user.click(screen.getByRole("button", { name: /create pr/i }));
-
-    await waitFor(() => expect(createFromLane).toHaveBeenCalledTimes(1));
-    expect(createFromLane).toHaveBeenCalledWith(
-      expect.objectContaining({
-        laneId: "lane-linear",
-        title: "ADE-123: Connect Linear issue dropdown",
-        body: expect.stringContaining("Refs ADE-123"),
-        closeLinearIssueOnMerge: false,
-      }),
-    );
-  });
-
-  it("uses a closing Linear magic word when close-on-merge is enabled", async () => {
-    const user = userEvent.setup();
-    renderWithRouter(<CreatePrModal open onOpenChange={vi.fn()} />);
-
-    const comboboxes = screen.getAllByRole("combobox");
-    await user.selectOptions(comboboxes[0]!, "lane-linear");
-    await user.click(screen.getByRole("button", { name: /next step/i }));
-    await user.click(screen.getByRole("checkbox", { name: /close linear issue/i }));
-
     expect(screen.getByDisplayValue(/Fixes ADE-123/)).toBeTruthy();
     expect(screen.getByText(/PR body will include Fixes ADE-123/i)).toBeTruthy();
 
@@ -298,8 +273,34 @@ describe("CreatePrModal queue workflow", () => {
     expect(createFromLane).toHaveBeenCalledWith(
       expect.objectContaining({
         laneId: "lane-linear",
+        title: "ADE-123: Connect Linear issue dropdown",
         body: expect.stringContaining("Fixes ADE-123"),
         closeLinearIssueOnMerge: true,
+      }),
+    );
+  });
+
+  it("uses a non-closing Linear magic word when close-on-merge is disabled", async () => {
+    const user = userEvent.setup();
+    renderWithRouter(<CreatePrModal open onOpenChange={vi.fn()} />);
+
+    const comboboxes = screen.getAllByRole("combobox");
+    await user.selectOptions(comboboxes[0]!, "lane-linear");
+    await user.click(screen.getByRole("button", { name: /next step/i }));
+    // Close-on-merge defaults to ON; click to turn it off.
+    await user.click(screen.getByRole("checkbox", { name: /close linear issue/i }));
+
+    expect(screen.getByDisplayValue(/Refs ADE-123/)).toBeTruthy();
+    expect(screen.getByText(/PR body will include Refs ADE-123/i)).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: /create pr/i }));
+
+    await waitFor(() => expect(createFromLane).toHaveBeenCalledTimes(1));
+    expect(createFromLane).toHaveBeenCalledWith(
+      expect.objectContaining({
+        laneId: "lane-linear",
+        body: expect.stringContaining("Refs ADE-123"),
+        closeLinearIssueOnMerge: false,
       }),
     );
   });

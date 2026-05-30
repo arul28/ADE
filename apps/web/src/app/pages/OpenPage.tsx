@@ -9,10 +9,13 @@ import { useDocumentTitle } from "../../lib/useDocumentTitle";
 
 type OpenTarget =
   | { kind: "lane"; laneId: string }
+  | { kind: "session"; sessionId: string; laneId?: string }
   | { kind: "branch"; repo: string; branch: string; pr?: number }
   | { kind: "pr"; repo: string; number: number }
   | { kind: "linear-issue"; issueIdentifier: string; branch?: string }
   | { kind: "unknown" };
+
+const CANONICAL_OPEN_ORIGIN = "https://ade-app.dev";
 
 function parseQuery(search: string): OpenTarget {
   const params = new URLSearchParams(search);
@@ -20,6 +23,13 @@ function parseQuery(search: string): OpenTarget {
   if (type === "lane") {
     const laneId = params.get("id") ?? "";
     if (laneId) return { kind: "lane", laneId };
+  }
+  if (type === "session") {
+    const sessionId = params.get("id") ?? "";
+    if (sessionId) {
+      const laneId = params.get("lane") ?? "";
+      return laneId ? { kind: "session", sessionId, laneId } : { kind: "session", sessionId };
+    }
   }
   if (type === "branch") {
     const repo = params.get("repo") ?? "";
@@ -54,6 +64,10 @@ function buildAdeUrl(target: OpenTarget): string | null {
   switch (target.kind) {
     case "lane":
       return `ade://lane/${encodeURIComponent(target.laneId)}`;
+    case "session": {
+      const base = `ade://session/${encodeURIComponent(target.sessionId)}`;
+      return target.laneId ? `${base}?lane=${encodeURIComponent(target.laneId)}` : base;
+    }
     case "branch": {
       const [owner, name] = target.repo.split("/");
       if (!owner || !name) return null;
@@ -84,6 +98,11 @@ function describeTarget(target: OpenTarget): { title: string; summary: string } 
       return {
         title: "Open lane in ADE",
         summary: `Lane ${target.laneId.slice(0, 8)}…`,
+      };
+    case "session":
+      return {
+        title: "Open work session in ADE",
+        summary: target.laneId ? `Session ${target.sessionId} · lane ${target.laneId.slice(0, 8)}…` : `Session ${target.sessionId}`,
       };
     case "branch":
       return {
@@ -138,7 +157,7 @@ export function OpenPage() {
     setOgTag("og:title", title);
     setOgTag("og:description", summary);
     setOgTag("og:type", "website");
-    setOgTag("og:url", `https://ade.app/open${location.search}`);
+    setOgTag("og:url", `${CANONICAL_OPEN_ORIGIN}/open${location.search}`);
   }, [title, summary, location.search]);
 
   // Try the ade:// upgrade automatically. If the OS routes the URL away from

@@ -1,6 +1,6 @@
 ---
 name: ade-deeplinks
-description: Use this skill when an agent needs to mint, share, or open ADE deeplinks (lane, branch, PR, Linear issue) so users — or the agent itself — can jump straight to a specific ADE surface from anywhere (GitHub PR description, Linear issue, Slack, email, terminal, mobile).
+description: Use this skill when an agent needs to mint, share, or open ADE deeplinks (lane, work session, branch, PR, Linear issue) so users — or the agent itself — can jump straight to a specific ADE surface from anywhere (GitHub PR description, Linear issue, Slack, email, terminal, mobile).
 ---
 
 # ADE deeplinks
@@ -12,14 +12,16 @@ identical semantics:
 
 ```
 ade://lane/<uuid>                                # local-only — focuses an existing lane
+ade://session/<id>[?lane=<lane-uuid>]            # local-only — opens a Work session
 ade://repo/<owner>/<repo>/branch/<branch>        # cross-machine — find or offer-to-create lane
 ade://pr/<owner>/<repo>/<number>                 # PR detail view
-ade://linear-issue/<ADE-123>[?branch=<branch>]   # Linear handoff — resolves via lane.linearIssue
+ade://linear-issue/<ADE-123>[?branch=<branch>]   # Linear handoff — opens the Linear pane
 
-https://ade.app/open?type=lane&id=<uuid>
-https://ade.app/open?type=branch&repo=<owner/repo>&branch=<branch>[&pr=<n>]
-https://ade.app/open?type=pr&repo=<owner/repo>&number=<n>
-https://ade.app/open?type=linear-issue&issue=<ADE-123>[&branch=<branch>]
+https://ade-app.dev/open?type=lane&id=<uuid>
+https://ade-app.dev/open?type=session&id=<id>[&lane=<lane-uuid>]
+https://ade-app.dev/open?type=branch&repo=<owner/repo>&branch=<branch>[&pr=<n>]
+https://ade-app.dev/open?type=pr&repo=<owner/repo>&number=<n>
+https://ade-app.dev/open?type=linear-issue&issue=<ADE-123>[&branch=<branch>]
 ```
 
 The HTTPS form is the share-friendly variant (it gets a Vercel-rendered
@@ -28,23 +30,26 @@ tries the `ade://` upgrade and falls back to an install card. Both forms parse
 to the same target shape.
 
 **Lane links are local** — the UUID is meaningful only on the machine that
-created the lane. **Branch and Linear-issue links are portable** — they re-
-resolve to whichever lane (if any) owns that branch / Linear identifier on the
-receiving machine.
+created the lane. **Branch links are portable** — they fetch/import the remote
+branch as a lane if the receiver does not have it yet. **Linear-issue links are
+portable** — they open ADE's Linear pane for the issue and show setup if the
+active project has not connected Linear.
 
 ## When to use which form
 
 | Need                                                          | Use                                  |
 | ------------------------------------------------------------- | ------------------------------------ |
 | Jump back to MY lane from another terminal on the same Mac    | `ade://lane/<uuid>`                  |
-| Share a branch with a teammate or your other devices          | `https://ade.app/open?type=branch&…` |
-| Drop into a PR's detail tab                                   | `https://ade.app/open?type=pr&…`     |
-| Linear "Open in coding tool" hand-off (resolves to your lane) | `https://ade.app/open?type=linear-issue&…` |
+| Jump back to a Work session on this Mac                       | `ade://session/<id>`                 |
+| Share a branch with a teammate or your other devices          | `https://ade-app.dev/open?type=branch&…` |
+| Drop into a PR's detail tab                                   | `https://ade-app.dev/open?type=pr&…`     |
+| Linear "Open in coding tool" hand-off (opens Linear pane)     | `https://ade-app.dev/open?type=linear-issue&…` |
 
 ## Minting a deeplink — `ade link`
 
 ```bash
 ade link lane <lane-uuid>                                  # local lane link
+ade link session <session-id> [--lane <lane-uuid>]          # local Work session link
 ade link branch <owner/repo> <branch> [--pr <number>]      # cross-machine branch
 ade link pr <owner/repo> <number>                          # PR detail
 ade link linear-issue <ADE-123> [--branch <branch>]        # Linear hand-off
@@ -61,7 +66,7 @@ Use `--no-clipboard` in scripts.
 ## Opening a deeplink — `ade open`
 
 ```bash
-ade open <url>                                             # any ade:// or https://ade.app/open URL
+ade open <url>                                             # any ade:// or https://ade-app.dev/open URL
 ade open --linear-issue <ADE-123> --branch <branch>        # Linear coding-tool entry point
 ```
 
@@ -80,8 +85,9 @@ ade linear install --dry-run     # show what would be written
 Adds an entry so Linear's "Open issue in coding tool" picker can launch ADE.
 The template uses Linear's documented placeholders (`{{issue.identifier}}`,
 `{{issue.branchName}}`) — Linear does NOT expose the GitHub repo, so the
-desktop renderer resolves the lane locally by `lane.linearIssue.identifier`
-match (falling back to a lanes-page filter on the branch hint).
+desktop renderer opens the active project's Linear pane to the issue. If the
+project is not connected to Linear yet, ADE shows a setup modal that routes to
+Settings > Integrations > Linear.
 
 ## RPC for programmatic dispatch
 
@@ -92,6 +98,9 @@ existing `app/navigate` method:
 // JSON-RPC over the ADE socket (`ade serve` / desktop RPC port)
 { "method": "app/navigate", "params": {
     "target": { "kind": "lane", "laneId": "<uuid>" }
+}}
+{ "method": "app/navigate", "params": {
+    "target": { "kind": "work", "sessionId": "<session-id>", "laneId": "<uuid>" }
 }}
 { "method": "app/navigate", "params": {
     "target": { "kind": "branch", "repoOwner": "anthropics", "repoName": "claude-code", "branch": "feat-x" }
@@ -128,9 +137,10 @@ ade link pr <owner/repo> <number> --no-clipboard
 Use that output for the ADE link. Prefer the default HTTPS form in chat and terminal output
 because it is clickable, shareable, and upgrades into the ADE PRs tab.
 
-When you copy a deeplink from a lane context menu in the desktop UI, the
-right-click menu offers: Copy lane link, Copy branch link (cross-machine),
-Copy PR link, Copy Linear-issue link.
+When you copy a deeplink from the desktop UI, the lane right-click menu offers
+Copy lane link, Copy branch link (cross-machine), Copy PR link, and Copy
+Linear-issue link. The Work session context menu also offers Copy session deep
+link for returning to the selected terminal/chat session on the same desktop.
 
 ## What deeplinks NEVER do silently
 
@@ -150,11 +160,13 @@ Copy PR link, Copy Linear-issue link.
 ade link branch anthropics/claude-code feat-deeplinks               # share with teammates
 ade link pr anthropics/claude-code 1234                             # PR detail
 ade link linear-issue ADE-512 --branch arul/ade-512-feat            # Linear hand-off
+ade link session <session-id> --lane <lane-uuid>                    # Work session
 ade link lane "$(ade lanes list --text | head -2 | tail -1 | awk '{print $1}')"  # current lane
 
 # Open a link locally (any of these reach a running ADE)
 ade open ade://lane/<uuid>
-ade open "https://ade.app/open?type=branch&repo=a/b&branch=feat"
+ade open ade://session/<session-id>
+ade open "https://ade-app.dev/open?type=branch&repo=a/b&branch=feat"
 ade open --linear-issue ADE-123 --branch feat-x
 
 # One-time setup so Linear's "Open in coding tool" calls into ADE

@@ -17,8 +17,16 @@ import type { LinearIntakeService } from "./linearIntakeService";
 import type { LinearDispatcherService } from "./linearDispatcherService";
 import type { IssueTracker } from "./issueTracker";
 import { getErrorMessage, nowIso, safeJsonParse } from "../shared/utils";
+import { buildLinearIssueQuickViewAttachment } from "./linearLaneCardService";
 
 const DEFAULT_TERMINAL_STATE_TYPES = ["completed", "canceled"] as const;
+const ADE_ISSUE_LINK_EVENT_TYPE = "ade_issue_link_attached";
+
+const inFlightAdeIssueLinkAttachments = new Map<string, Promise<{ url: string; id?: string } | null>>();
+
+type ProcessIssueUpdateOptions = {
+  adeIssueLinkCause?: string | null;
+};
 
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
   return Array.from(new Set(values.map((value) => value?.trim().toLowerCase() ?? "").filter(Boolean)));
@@ -121,6 +129,107 @@ export function createLinearSyncService(args: {
       payload: safeJsonParse<Record<string, unknown> | null>(row.payload_json, null),
       createdAt: row.created_at,
     }));
+
+  const hasAdeIssueLinkAttachment = (issueId: string): boolean => {
+    const total = Number(args.db.get<{ total: number }>(
+      `
+        select count(*) as total
+        from linear_sync_events
+        where project_id = ?
+          and issue_id = ?
+          and event_type = ?
+          and status = 'linked'
+      `,
+      [args.projectId, issueId, ADE_ISSUE_LINK_EVENT_TYPE],
+    )?.total ?? 0);
+    return total > 0;
+  };
+
+  const attachAdeIssueLinkForIssue = async (
+    issue: NormalizedLinearIssue,
+    cause = "manual",
+  ): Promise<{ url: string; id?: string } | null> => {
+    const trimmedIssueId = issue.id.trim();
+    if (!trimmedIssueId) return null;
+    const inFlightKey = `${args.projectId}:${trimmedIssueId}`;
+    const existingInFlight = inFlightAdeIssueLinkAttachments.get(inFlightKey);
+    if (existingInFlight) return existingInFlight;
+
+    const promise = (async (): Promise<{ url: string; id?: string } | null> => {
+      if (hasAdeIssueLinkAttachment(trimmedIssueId)) return null;
+      const createIssueAttachment = (args.issueTracker as Partial<IssueTracker>).createIssueAttachment;
+      if (typeof createIssueAttachment !== "function") return null;
+
+      const linkedAt = nowIso();
+      const attachment = buildLinearIssueQuickViewAttachment({
+        issue,
+        linkedAt,
+      });
+      try {
+        const result = await createIssueAttachment.call(args.issueTracker, attachment);
+        appendSyncEvent({
+          issueId: trimmedIssueId,
+          eventType: ADE_ISSUE_LINK_EVENT_TYPE,
+          status: "linked",
+          message: `ADE issue deeplink attached to ${issue.identifier}`,
+          payload: {
+            issueIdentifier: issue.identifier,
+            cause,
+            adeUrl: attachment.url,
+            attachmentId: result.id ?? null,
+            resultUrl: result.url,
+          },
+        });
+        return result;
+      } catch (error) {
+        appendSyncEvent({
+          issueId: trimmedIssueId,
+          eventType: "ade_issue_link_attach_failed",
+          status: "failed",
+          message: getErrorMessage(error),
+          payload: {
+            issueIdentifier: issue.identifier,
+            cause,
+            adeUrl: attachment.url,
+          },
+        });
+        throw error;
+      }
+    })().finally(() => {
+      inFlightAdeIssueLinkAttachments.delete(inFlightKey);
+    });
+
+    inFlightAdeIssueLinkAttachments.set(inFlightKey, promise);
+    return promise;
+  };
+
+  const ensureAdeIssueLinkForIssue = async (
+    issueId: string,
+    cause = "manual",
+  ): Promise<{ url: string; id?: string } | null> => {
+    const trimmedIssueId = issueId.trim();
+    if (!trimmedIssueId) return null;
+    if (hasAdeIssueLinkAttachment(trimmedIssueId)) return null;
+
+    const issue = await args.issueTracker.fetchIssueById(trimmedIssueId);
+    if (!issue) return null;
+    return attachAdeIssueLinkForIssue(issue, cause);
+  };
+
+  const attemptAdeIssueLinkForIssue = async (
+    issue: NormalizedLinearIssue,
+    cause: string,
+  ): Promise<void> => {
+    try {
+      await attachAdeIssueLinkForIssue(issue, cause);
+    } catch (error) {
+      args.logger?.warn("linear.issue_deeplink_attach_failed", {
+        issueId: issue.id,
+        issueIdentifier: issue.identifier,
+        error: getErrorMessage(error),
+      });
+    }
+  };
 
   const logSkip = (reason: "no_enabled_workflows" | "no_credentials", meta: Record<string, unknown>) => {
     if (lastSkipReason === reason) return;
@@ -240,7 +349,14 @@ export function createLinearSyncService(args: {
     }
   };
 
-  const processIssueSnapshot = async (issue: NormalizedLinearIssue, policy: LinearWorkflowConfig): Promise<void> => {
+  const processIssueSnapshot = async (
+    issue: NormalizedLinearIssue,
+    policy: LinearWorkflowConfig,
+    options: { attemptAdeIssueLink?: boolean; adeIssueLinkCause?: string | null } = {},
+  ): Promise<void> => {
+    if (options.attemptAdeIssueLink !== false) {
+      await attemptAdeIssueLinkForIssue(issue, options.adeIssueLinkCause ?? "linear_issue_sync");
+    }
     args.intakeService.persistSnapshot(issue);
     if (!isIssueOpen(issue, policy)) {
       const activeRuns = args.dispatcherService.listActiveRuns().filter((run) => run.issueId === issue.id);
@@ -411,7 +527,10 @@ export function createLinearSyncService(args: {
     }
   };
 
-  const processIssueUpdateNow = async (issueId: string): Promise<void> => {
+  const processIssueUpdateNow = async (
+    issueId: string,
+    options: ProcessIssueUpdateOptions = {},
+  ): Promise<void> => {
     if (disposed) return;
     if (!(args.hasCredentials?.() ?? true) && !args.dispatcherService.hasActiveRuns()) {
       args.logger?.info("linear_workflow.issue_update_skipped", {
@@ -455,9 +574,10 @@ export function createLinearSyncService(args: {
       lastError: null,
     });
     try {
+      await attemptAdeIssueLinkForIssue(issueWithHistory, options.adeIssueLinkCause ?? "linear_issue_sync");
       releaseDueRetries();
       if (workflowsEnabled) {
-        await processIssueSnapshot(issueWithHistory, policy);
+        await processIssueSnapshot(issueWithHistory, policy, { attemptAdeIssueLink: false });
       }
       await advanceRuns(policy);
       await args.onIssueUpdated?.({ issue: issueWithHistory, previousIssue });
@@ -475,7 +595,10 @@ export function createLinearSyncService(args: {
     }
   };
 
-  const processIssueUpdate = async (issueId: string): Promise<void> => {
+  const processIssueUpdate = async (
+    issueId: string,
+    options: ProcessIssueUpdateOptions = {},
+  ): Promise<void> => {
     if (disposed) return;
     if (inFlight) {
       addPendingIssue(issueId);
@@ -483,7 +606,7 @@ export function createLinearSyncService(args: {
     }
     inFlight = true;
     try {
-      await processIssueUpdateNow(issueId);
+      await processIssueUpdateNow(issueId, options);
     } finally {
       inFlight = false;
       await replayPendingIssues();
@@ -608,6 +731,7 @@ export function createLinearSyncService(args: {
     start,
     runSyncNow,
     processIssueUpdate,
+    ensureAdeIssueLinkForIssue,
     processActiveRunsNow,
     getDashboard,
     listQueue,

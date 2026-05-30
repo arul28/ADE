@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AgentChatModelInfo } from "../../../../../desktop/src/shared/types/chat";
+import type { AgentChatModelCatalog, AgentChatModelInfo } from "../../../../../desktop/src/shared/types/chat";
 import { buildModelPickerLayout, defaultSelectionFor } from "./modelPickerLayout";
 
 function modelInfo(overrides: Partial<AgentChatModelInfo> & { id: string }): AgentChatModelInfo {
@@ -92,6 +92,85 @@ describe("buildModelPickerLayout", () => {
     });
     const opus = layout.entries.find((entry) => entry.modelId === "anthropic/claude-opus-4-8");
     expect(opus?.isFavorite).toBe(true);
+  });
+
+  it("preserves Cursor fast and availability metadata from the runtime catalog", () => {
+    const catalog: AgentChatModelCatalog = {
+      fetchedAt: "2026-05-29T00:00:00.000Z",
+      groups: [{
+        key: "cursor",
+        displayName: "Cursor",
+        providers: [{
+          key: "cursor",
+          displayName: "Cursor",
+          badgeColor: "#8B5CF6",
+          modelCount: 1,
+          subsections: [{
+            key: "cursor",
+            label: "Cursor",
+            models: [{
+              id: "cursor/composer-2.5",
+              runtimeModelId: "composer-2.5",
+              provider: "cursor",
+              providerKey: "cursor",
+              groupKey: "cursor",
+              family: "cursor",
+              displayName: "Composer 2.5",
+              isDefault: true,
+              isAvailable: true,
+              serviceTiers: ["fast"],
+              cursorAvailability: { cli: true, sdk: true },
+            }],
+          }],
+        }],
+      }],
+    };
+
+    const layout = buildModelPickerLayout({
+      models: [],
+      catalog,
+      favorites: [],
+      recents: [],
+      activeModelId: null,
+      query: "",
+      selection: { kind: "provider", provider: "cursor" },
+      focusedIndex: 0,
+      searchMode: false,
+    });
+
+    expect(layout.entries[0]).toMatchObject({
+      modelId: "cursor/composer-2.5",
+      serviceTiers: ["fast"],
+      cursorAvailability: { cli: true, sdk: true },
+    });
+  });
+
+  it("preserves Cursor fast and availability metadata from direct model results", () => {
+    const layout = buildModelPickerLayout({
+      models: [
+        modelInfo({
+          id: "cursor/composer-2.5",
+          modelId: "cursor/composer-2.5",
+          family: "cursor",
+          displayName: "Composer 2.5",
+          serviceTiers: ["fast"],
+          cursorAvailability: { cli: true, sdk: false },
+        }),
+      ],
+      favorites: [],
+      recents: [],
+      activeModelId: null,
+      query: "",
+      selection: { kind: "provider", provider: "cursor" },
+      focusedIndex: 0,
+      searchMode: false,
+    });
+
+    expect(layout.entries[0]).toMatchObject({
+      modelId: "cursor/composer-2.5",
+      serviceTiers: ["fast"],
+      cursorAvailability: { cli: true, sdk: false },
+    });
   });
 
   it("clamps focusedIndex into the visible range", () => {

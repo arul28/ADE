@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const streamText = vi.fn();
 const claudeSdkCreateSessionCompat = vi.hoisted(() => vi.fn());
 const claudeSdkResumeSessionCompat = vi.hoisted(() => vi.fn());
+const cursorModelsListMock = vi.hoisted(() => vi.fn());
 const ORIGINAL_CURSOR_API_KEY = process.env.CURSOR_API_KEY;
 
 vi.mock("@opencode-ai/sdk", () => ({
@@ -23,6 +24,14 @@ vi.mock("@opencode-ai/sdk", () => ({
     close: vi.fn(),
   })),
   createOpencodeClient: vi.fn(() => ({})),
+}));
+
+vi.mock("@cursor/sdk", () => ({
+  Cursor: {
+    models: {
+      list: (...args: unknown[]) => cursorModelsListMock(...args),
+    },
+  },
 }));
 
 // ---------------------------------------------------------------------------
@@ -1457,6 +1466,7 @@ beforeEach(() => {
   mockState.droidPooled = null;
   mockState.droidPromptGate = null;
   mockState.droidPromptError = null;
+  cursorModelsListMock.mockReset();
   vi.mocked(startOpenCodeSession).mockClear();
   vi.mocked(buildOpenCodePromptParts).mockClear();
   vi.mocked(acquireCursorSdkConnection).mockClear();
@@ -11137,7 +11147,7 @@ describe("createAgentChatService", () => {
       expect(readPersistedChatState(session.id).codexFastMode).toBe(true);
     });
 
-    it("handles Codex /fast commands inline and applies fast tier to the next app-server turn", async () => {
+    it("handles /fast commands inline and applies fast tier to the next app-server turn", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
@@ -11158,7 +11168,7 @@ describe("createAgentChatService", () => {
       expect(readPersistedChatState(session.id).codexFastMode).toBe(true);
       expect(events.some((event) =>
         event.event.type === "system_notice"
-        && event.event.message === "Codex Fast mode is on."
+        && event.event.message === "Fast mode is on."
       )).toBe(true);
 
       mockState.codexRequestPayloads = [];
@@ -11172,6 +11182,47 @@ describe("createAgentChatService", () => {
       });
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
       expect((turnStartRequest?.params as { serviceTier?: unknown } | undefined)?.serviceTier).toBe("fast");
+    });
+
+    it("handles /fast commands for Cursor models advertised as fast in the model catalog", async () => {
+      process.env.CURSOR_API_KEY = "crsr_test";
+      cursorModelsListMock.mockResolvedValue([
+        {
+          id: "composer-2.5",
+          displayName: "Composer 2.5",
+          parameters: [
+            {
+              id: "speed",
+              displayName: "Speed",
+              values: [{ value: "fast", displayName: "Fast" }],
+            },
+          ],
+        },
+      ]);
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      await service.getModelCatalog({ mode: "force", refreshProvider: "cursor" });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2.5",
+        modelId: "cursor/composer-2.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/fast on",
+      }, { awaitDispatch: true });
+
+      expect(mockState.cursorSdkSendCalls).toHaveLength(0);
+      expect((await service.getSessionSummary(session.id))?.codexFastMode).toBe(true);
+      expect(readPersistedChatState(session.id).codexFastMode).toBe(true);
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.message === "Fast mode is on."
+      )).toBe(true);
     });
 
     it("explicitly clears Codex service tier when fast mode is off", async () => {

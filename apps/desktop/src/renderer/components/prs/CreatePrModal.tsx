@@ -533,7 +533,7 @@ export function CreatePrModal({
   const [normalTitle, setNormalTitle] = React.useState("");
   const [normalDraft, setNormalDraft] = React.useState(false);
   const [normalBaseBranch, setNormalBaseBranch] = React.useState("");
-  const [normalCloseLinearIssueOnMerge, setNormalCloseLinearIssueOnMerge] = React.useState(false);
+  const [normalCloseLinearIssueOnMerge, setNormalCloseLinearIssueOnMerge] = React.useState(true);
   const normalBaseBranchDefaultRef = React.useRef("");
   const normalLinearTitleDefaultRef = React.useRef("");
   const normalLinearBodyDefaultRef = React.useRef("");
@@ -665,7 +665,7 @@ export function CreatePrModal({
       normalBaseBranchDefaultRef.current = "";
       setNormalTitle("");
       setNormalDraft(false);
-      setNormalCloseLinearIssueOnMerge(false);
+      setNormalCloseLinearIssueOnMerge(true);
       normalLinearTitleDefaultRef.current = "";
       normalLinearBodyDefaultRef.current = "";
       setQueueLaneIds([]);
@@ -768,7 +768,7 @@ export function CreatePrModal({
       setNormalBody((current) =>
         previousAutoBody && current.trim() === previousAutoBody.trim() ? "" : current,
       );
-      setNormalCloseLinearIssueOnMerge(false);
+      setNormalCloseLinearIssueOnMerge(true);
       normalLinearTitleDefaultRef.current = "";
       normalLinearBodyDefaultRef.current = "";
       return;

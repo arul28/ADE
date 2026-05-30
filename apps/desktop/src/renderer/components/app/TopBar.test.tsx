@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { TopBar } from "./TopBar";
 import { useAppStore } from "../../state/appStore";
+import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 
 vi.mock("../settings/SyncDevicesSection", () => ({
   SyncDevicesSection: () => <section data-testid="sync-devices-section">Sync devices panel</section>,
@@ -646,6 +647,149 @@ describe("TopBar", () => {
         }),
       }));
     });
+  });
+
+  it("opens the Linear quick view directly from a Linear issue deeplink request", async () => {
+    const issue = {
+      id: "issue-2",
+      identifier: "ADE-124",
+      title: "Route issue deeplinks to Linear pane",
+      description: "Open the Linear issue browser from ADE links.",
+      url: "https://linear.app/ade/issue/ADE-124/route-issue-deeplinks",
+      projectId: "project-1",
+      projectSlug: "desktop",
+      projectName: "Desktop",
+      teamId: "team-1",
+      teamKey: "ADE",
+      teamName: "ADE",
+      stateId: "state-1",
+      stateName: "In Progress",
+      stateType: "started",
+      priority: 2,
+      priorityLabel: "high",
+      labels: [],
+      metadataTags: [],
+      assigneeId: "user-1",
+      assigneeName: "Arul",
+      creatorId: "user-1",
+      creatorName: "Arul",
+      blockerIssueIds: [],
+      hasOpenBlockers: false,
+      dueDate: null,
+      estimate: 3,
+      archivedAt: null,
+      completedAt: null,
+      canceledAt: null,
+      startedAt: null,
+      createdAt: "2026-04-22T00:00:00.000Z",
+      updatedAt: "2026-04-22T01:00:00.000Z",
+      raw: {},
+    };
+    const searchLinearIssues = vi.fn(async () => ({
+      issues: [issue],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    }));
+    globalThis.window.ade.cto = {
+      getLinearConnectionStatus: vi.fn(async () => ({
+        tokenStored: true,
+        connected: true,
+        viewerId: "user-1",
+        viewerName: "Arul",
+        checkedAt: "2026-04-22T01:00:00.000Z",
+        authMode: "manual",
+        oauthAvailable: true,
+        tokenExpiresAt: null,
+        message: null,
+      })),
+      getLinearQuickView: vi.fn(async () => ({
+        connection: {
+          tokenStored: true,
+          connected: true,
+          viewerId: "user-1",
+          viewerName: "Arul",
+          checkedAt: "2026-04-22T01:00:00.000Z",
+          authMode: "manual",
+          oauthAvailable: true,
+          tokenExpiresAt: null,
+          message: null,
+        },
+        organization: null,
+        viewer: null,
+        projects: [],
+        teams: [],
+        assignedIssues: [],
+        recentIssues: [],
+        fetchedAt: "2026-04-22T01:00:00.000Z",
+        sdk: { packageName: "@linear/sdk", surfaces: ["viewer", "issues"] },
+      })),
+      getLinearIssuePickerData: vi.fn(async () => ({
+        projects: [],
+        users: [],
+        states: [],
+      })),
+      searchLinearIssues,
+    } as any;
+
+    render(<TopBar />);
+
+    await act(async () => {
+      requestLinearIssueQuickView({ issueIdentifier: "ADE-124", source: "deeplink" });
+      await flushMicrotasks(2);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("dialog", { name: /linear quick view/i })).toBeTruthy();
+    });
+    await waitFor(() => {
+      expect(searchLinearIssues).toHaveBeenCalledWith(expect.objectContaining({ query: "ADE-124" }));
+    });
+    await waitFor(() => {
+      expect(screen.getAllByText("Route issue deeplinks to Linear pane").length).toBeGreaterThan(0);
+    });
+  });
+
+  it("shows a setup state when a Linear issue deeplink is opened without a Linear connection", async () => {
+    window.location.hash = "";
+    globalThis.window.ade.cto = {
+      getLinearConnectionStatus: vi.fn(async () => ({
+        tokenStored: false,
+        connected: false,
+        viewerId: null,
+        viewerName: null,
+        checkedAt: "2026-04-22T01:00:00.000Z",
+        authMode: "manual",
+        oauthAvailable: true,
+        tokenExpiresAt: null,
+        message: "Connect Linear first.",
+      })),
+    } as any;
+
+    render(<TopBar />);
+
+    await act(async () => {
+      requestLinearIssueQuickView({ issueIdentifier: "ADE-125", source: "deeplink" });
+      await flushMicrotasks(2);
+    });
+
+    expect(await screen.findByText("Connect Linear to open ADE-125")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /open linear settings/i }));
+    expect(window.location.hash).toBe("#/settings?tab=integrations&integration=linear");
+  });
+
+  it("offers the project picker when a Linear issue deeplink opens without an ADE project", async () => {
+    window.location.hash = "";
+    useAppStore.setState({ project: null, projectBinding: null } as any);
+
+    render(<TopBar />);
+
+    await act(async () => {
+      requestLinearIssueQuickView({ issueIdentifier: "ADE-126", source: "deeplink" });
+      await flushMicrotasks(2);
+    });
+
+    expect(await screen.findByText("Open the ADE project for ADE-126")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /open project picker/i }));
+    expect(window.location.hash).toBe("#/project");
   });
 
   it("reveals Linear quick view after a later connection refresh", async () => {

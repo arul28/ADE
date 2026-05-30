@@ -2724,6 +2724,30 @@ final class SyncService: ObservableObject {
     try await sendDecodableCommand(action: "cto.getLinearConnectionStatus", as: LinearConnectionStatus.self)
   }
 
+  func fetchLinearQuickView() async throws -> LinearQuickView {
+    try await sendDecodableCommand(action: "cto.getLinearQuickView", as: LinearQuickView.self)
+  }
+
+  func fetchLinearIssuePickerData() async throws -> LinearIssuePickerData {
+    try await sendDecodableCommand(action: "cto.getLinearIssuePickerData", as: LinearIssuePickerData.self)
+  }
+
+  func searchLinearIssues(_ args: LinearIssueSearchArgs = LinearIssueSearchArgs()) async throws -> LinearIssueSearchResult {
+    try await sendDecodableCommand(
+      action: "cto.searchLinearIssues",
+      args: try encodedCommandArgs(from: args),
+      as: LinearIssueSearchResult.self
+    )
+  }
+
+  func fetchLinearIssueComments(issueId: String) async throws -> [LinearIssueComment] {
+    try await sendDecodableCommand(
+      action: "cto.getLinearIssueComments",
+      args: ["issueId": issueId],
+      as: [LinearIssueComment].self
+    )
+  }
+
   func fetchLinearSyncDashboard() async throws -> LinearSyncDashboard {
     try await sendDecodableCommand(action: "cto.getLinearSyncDashboard", as: LinearSyncDashboard.self)
   }
@@ -2734,6 +2758,15 @@ final class SyncService: ObservableObject {
 
   func removeAgent(agentId: String) async throws {
     _ = try await sendCommand(action: "cto.removeAgent", args: ["agentId": agentId])
+  }
+
+  func saveAgent(_ agent: AgentUpsertInput, actor: String = "mobile") async throws -> AgentIdentity {
+    let payload = CtoSaveAgentPayload(agent: agent, actor: actor)
+    return try await sendDecodableCommand(
+      action: "cto.saveAgent",
+      args: try encodedCommandArgs(from: payload),
+      as: AgentIdentity.self
+    )
   }
 
   func listLinearSyncQueue() async throws -> [LinearSyncQueueItem] {
@@ -3158,9 +3191,14 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func searchText(workspaceId: String, query: String) async throws -> [FilesSearchTextMatch] {
+  func searchText(workspaceId: String, query: String, includeIgnored: Bool = true) async throws -> [FilesSearchTextMatch] {
     try decode(
-      try await sendFileRequest(action: "searchText", args: ["workspaceId": workspaceId, "query": query]),
+      try await sendFileRequest(action: "searchText", args: [
+        "workspaceId": workspaceId,
+        "query": query,
+        "limit": 200,
+        "includeIgnored": includeIgnored,
+      ]),
       as: [FilesSearchTextMatch].self
     )
   }
@@ -3363,7 +3401,11 @@ final class SyncService: ObservableObject {
     name: String,
     description: String,
     parentLaneId: String? = nil,
-    baseBranch: String? = nil
+    baseBranch: String? = nil,
+    branchName: String? = nil,
+    startPoint: String? = nil,
+    linearIssue: LaneLinearIssue? = nil,
+    runtimePlacement: String? = nil
   ) async throws -> LaneSummary {
     var args: [String: Any] = [
       "name": name,
@@ -3374,6 +3416,21 @@ final class SyncService: ObservableObject {
     }
     if let baseBranch, !baseBranch.isEmpty {
       args["baseBranch"] = baseBranch
+    }
+    if let branchName, !branchName.isEmpty {
+      args["branchName"] = branchName
+    }
+    if let startPoint, !startPoint.isEmpty {
+      args["startPoint"] = startPoint
+    }
+    if let linearIssue {
+      args["linearIssue"] = try jsonObject(from: linearIssue)
+      if args["branchName"] == nil, let branchName = linearIssue.branchName, !branchName.isEmpty {
+        args["branchName"] = branchName
+      }
+    }
+    if let runtimePlacement, !runtimePlacement.isEmpty {
+      args["runtimePlacement"] = runtimePlacement
     }
     return try await sendDecodableCommand(action: "lanes.create", args: args, as: LaneSummary.self)
   }
@@ -3412,7 +3469,16 @@ final class SyncService: ObservableObject {
     return try await sendDecodableCommand(action: "lanes.importBranch", args: args, as: LaneSummary.self)
   }
 
-  func createChildLane(name: String, parentLaneId: String, description: String = "", folder: String? = nil) async throws -> LaneSummary {
+  func createChildLane(
+    name: String,
+    parentLaneId: String,
+    description: String = "",
+    folder: String? = nil,
+    baseBranchRef: String? = nil,
+    branchName: String? = nil,
+    linearIssue: LaneLinearIssue? = nil,
+    runtimePlacement: String? = nil
+  ) async throws -> LaneSummary {
     var args: [String: Any] = [
       "name": name,
       "parentLaneId": parentLaneId,
@@ -3420,6 +3486,21 @@ final class SyncService: ObservableObject {
     ]
     if let folder, !folder.isEmpty {
       args["folder"] = folder
+    }
+    if let baseBranchRef, !baseBranchRef.isEmpty {
+      args["baseBranchRef"] = baseBranchRef
+    }
+    if let branchName, !branchName.isEmpty {
+      args["branchName"] = branchName
+    }
+    if let linearIssue {
+      args["linearIssue"] = try jsonObject(from: linearIssue)
+      if args["branchName"] == nil, let branchName = linearIssue.branchName, !branchName.isEmpty {
+        args["branchName"] = branchName
+      }
+    }
+    if let runtimePlacement, !runtimePlacement.isEmpty {
+      args["runtimePlacement"] = runtimePlacement
     }
     return try await sendDecodableCommand(action: "lanes.createChild", args: args, as: LaneSummary.self)
   }
@@ -5854,7 +5935,7 @@ final class SyncService: ObservableObject {
   #if DEBUG
   func seedRemoteProjectCatalogForTesting(_ catalog: [MobileProjectSummary]) {
     remoteProjectCatalog = catalog
-    refreshProjectCatalog()
+    refreshProjectCatalog(preferRemoteSelection: true)
   }
 
   func applyHelloPayloadForTesting(
@@ -7529,8 +7610,8 @@ extension SyncService {
         scheme == "ade" ||
           (
             scheme == "https" &&
-            components.host?.lowercased() == "ade.app" &&
-            components.path.hasPrefix("/open")
+            ADEDeepLinkURLParsing.isADEWebHost(components.host) &&
+            components.path == "/open"
           ) else {
         return
       }

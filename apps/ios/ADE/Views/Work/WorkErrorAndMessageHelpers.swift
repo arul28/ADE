@@ -337,6 +337,7 @@ enum WorkPendingInputItem: Identifiable, Equatable {
   /// Plan-approval gate — agent finished planning and is waiting for
   /// Approve & Implement or Reject & Revise before acting.
   case planApproval(WorkPendingPlanApprovalModel)
+  case modelSelection(WorkPendingModelSelectionModel)
 
   var id: String {
     switch self {
@@ -344,6 +345,7 @@ enum WorkPendingInputItem: Identifiable, Equatable {
     case .question(let model): return "question:\(model.id)"
     case .permission(let model): return "permission:\(model.id)"
     case .planApproval(let model): return "plan-approval:\(model.id)"
+    case .modelSelection(let model): return "model-selection:\(model.id)"
     }
   }
 
@@ -353,6 +355,7 @@ enum WorkPendingInputItem: Identifiable, Equatable {
     case .question(let model): return model.id
     case .permission(let model): return model.id
     case .planApproval(let model): return model.id
+    case .modelSelection(let model): return model.id
     }
   }
 }
@@ -405,6 +408,12 @@ func workPendingQuestionOption(from value: Any?) -> WorkPendingQuestionOption? {
     preview: optionalString(object["preview"]),
     previewFormat: optionalString(object["previewFormat"])
   )
+}
+
+func workStringArrayValue(_ value: Any?) -> [String]? {
+  guard let array = value as? [Any] else { return nil }
+  let strings = array.compactMap { optionalString($0) }
+  return strings.isEmpty ? nil : strings
 }
 
 /// Map a single question dictionary (one entry in the request's `questions` array,
@@ -629,6 +638,45 @@ func pendingWorkPlanApprovalFromApproval(
   )
 }
 
+func workModelSelectionChoice(from value: Any?) -> WorkModelSelectionChoice? {
+  guard let object = value as? [String: Any] else { return nil }
+  guard let provider = optionalString(object["provider"]),
+        let modelId = optionalString(object["modelId"])
+  else { return nil }
+  return WorkModelSelectionChoice(
+    provider: provider,
+    modelId: modelId,
+    reasoningEffort: optionalString(object["reasoningEffort"]),
+    codexFastMode: workBoolValue(object["codexFastMode"])
+  )
+}
+
+func pendingWorkModelSelectionFromApproval(
+  description: String,
+  detail: String?,
+  itemId: String
+) -> WorkPendingModelSelectionModel? {
+  guard let detailObject = workJSONObject(from: detail) else { return nil }
+  let request = detailObject["request"] as? [String: Any] ?? [:]
+  let kind = (optionalString(request["kind"]) ?? "").lowercased()
+  guard kind == "model_selection" else { return nil }
+  let metadata = request["providerMetadata"] as? [String: Any] ?? [:]
+  let role = optionalString(metadata["role"]) ?? "worker"
+  let tag = optionalString(metadata["tag"]) ?? ""
+  let workDescription = (optionalString(metadata["workDescription"])
+    ?? optionalString(request["description"])
+    ?? description)
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+  return WorkPendingModelSelectionModel(
+    id: itemId,
+    role: role,
+    tag: tag,
+    workDescription: workDescription.isEmpty ? nil : workDescription,
+    suggested: workModelSelectionChoice(from: metadata["suggested"]),
+    availableModelIds: workStringArrayValue(metadata["availableModels"])
+  )
+}
+
 /// Ordered list of still-open pending inputs (approvals + structured questions + permission
 /// gates) in the order they were requested. Mirrors the desktop `derivePendingInputRequests`
 /// helper — resolved items are filtered out using the same predicate as `pendingWorkInputItemIds`.
@@ -641,7 +689,9 @@ func derivePendingWorkInputs(from transcript: [WorkChatEnvelope]) -> [WorkPendin
     case .approvalRequest(let description, let detail, let itemId, _):
       guard openIds.contains(itemId), !seen.contains(itemId) else { continue }
       seen.insert(itemId)
-      if let planApproval = pendingWorkPlanApprovalFromApproval(description: description, detail: detail, itemId: itemId) {
+      if let modelSelection = pendingWorkModelSelectionFromApproval(description: description, detail: detail, itemId: itemId) {
+        results.append(.modelSelection(modelSelection))
+      } else if let planApproval = pendingWorkPlanApprovalFromApproval(description: description, detail: detail, itemId: itemId) {
         results.append(.planApproval(planApproval))
       } else if let question = pendingWorkQuestionFromApproval(description: description, detail: detail, itemId: itemId) {
         results.append(.question(question))

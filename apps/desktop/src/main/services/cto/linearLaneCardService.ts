@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { LaneLinearIssue, LaneSummary } from "../../../shared/types";
+import type { LaneLinearIssue, LaneSummary, NormalizedLinearIssue } from "../../../shared/types";
 import type { IssueTracker, IssueTrackerIssueAttachmentInput } from "./issueTracker";
 import { buildDeeplink } from "../../../shared/deeplinks";
 
@@ -25,6 +25,33 @@ function buildFallbackLinearUrl(issue: LaneLinearIssue, laneId: string): string 
   }
   url.hash = `ade-lane-${laneId}`;
   return url.toString();
+}
+
+export type LinearIssueCardIssue = Pick<
+  LaneLinearIssue | NormalizedLinearIssue,
+  | "id"
+  | "identifier"
+  | "title"
+  | "projectName"
+  | "projectSlug"
+  | "teamKey"
+  | "teamName"
+  | "stateName"
+  | "assigneeName"
+> & {
+  branchName?: string | null;
+};
+
+function linearIssueCardAttributes(issue: LinearIssueCardIssue, linkedAt: string): Array<{ name: string; value: string }> {
+  return [
+    { name: "Linear issue", value: issue.identifier },
+    { name: "Issue title", value: issue.title },
+    { name: "Linear team", value: issue.teamName?.trim() || issue.teamKey },
+    { name: "Linear project", value: issue.projectName?.trim() || issue.projectSlug },
+    { name: "Issue state at link", value: issue.stateName },
+    { name: "Assignee at link", value: issue.assigneeName?.trim() || "Unassigned" },
+    { name: "Linked at", value: dateLabel(linkedAt) },
+  ];
 }
 
 function buildCardUrl(args: {
@@ -130,6 +157,97 @@ export function buildLinearLaneInitialComment(args: {
     { form: "https" },
   );
   return `ADE lane available for this issue — [Open in ADE](${url}) (branch \`${branch}\`).`;
+}
+
+export function buildLinearIssueQuickViewAttachment(args: {
+  issue: LinearIssueCardIssue;
+  branch?: string | null;
+  linkedAt?: string | null;
+}): IssueTrackerIssueAttachmentInput {
+  const linkedAt = args.linkedAt?.trim() || new Date().toISOString();
+  const branch = args.branch?.trim() || args.issue.branchName?.trim() || null;
+  const url = buildDeeplink(
+    {
+      kind: "linear-issue",
+      issueIdentifier: args.issue.identifier,
+      ...(branch ? { branch } : {}),
+    },
+    { form: "https" },
+  );
+
+  return {
+    issueId: args.issue.id,
+    title: `Open in ADE: ${truncate(args.issue.identifier, 54)}`,
+    subtitle: `${truncate(args.issue.title, 56)} - linked {linkedAt__since}`,
+    url,
+    metadata: {
+      title: `ADE Linear pane link for ${args.issue.identifier}`,
+      issueIdentifier: args.issue.identifier,
+      branch,
+      adeUrl: url,
+      linkedAt,
+      attributes: [
+        ...linearIssueCardAttributes(args.issue, linkedAt),
+        ...(branch ? [{ name: "Suggested branch", value: branch }] : []),
+        { name: "ADE view", value: "Linear pane" },
+      ],
+      messages: [
+        {
+          subject: "ADE issue link added",
+          body: `Open ${args.issue.identifier} in ADE's Linear pane to create lanes, start chats, or run issue actions.`,
+          timestamp: linkedAt,
+        },
+      ],
+    },
+  };
+}
+
+export function buildLinearChatSessionAttachment(args: {
+  issue: LinearIssueCardIssue;
+  laneId: string;
+  sessionId: string;
+  sessionTitle?: string | null;
+  linkedAt?: string | null;
+}): IssueTrackerIssueAttachmentInput {
+  const linkedAt = args.linkedAt?.trim() || new Date().toISOString();
+  const url = buildDeeplink(
+    {
+      kind: "session",
+      sessionId: args.sessionId,
+      laneId: args.laneId,
+    },
+    { form: "ade" },
+  );
+  const sessionLabel = args.sessionTitle?.trim() || args.sessionId;
+
+  return {
+    issueId: args.issue.id,
+    title: `Open ADE chat: ${truncate(args.issue.identifier, 48)}`,
+    subtitle: `${truncate(sessionLabel, 56)} - linked {linkedAt__since}`,
+    url,
+    metadata: {
+      title: `ADE chat linked to ${args.issue.identifier}`,
+      issueIdentifier: args.issue.identifier,
+      laneId: args.laneId,
+      sessionId: args.sessionId,
+      sessionTitle: args.sessionTitle?.trim() || null,
+      adeUrl: url,
+      linkedAt,
+      attributes: [
+        ...linearIssueCardAttributes(args.issue, linkedAt),
+        { name: "Lane ID", value: args.laneId },
+        { name: "Chat session", value: args.sessionId },
+        { name: "ADE view", value: "Work chat" },
+      ],
+      messages: [
+        {
+          subject: "ADE chat linked",
+          body: `ADE linked a Work chat to ${args.issue.identifier}. Open it to continue the conversation with this Linear issue in context.`,
+          timestamp: linkedAt,
+        },
+      ],
+    },
+  };
 }
 
 export function buildLinearPrCardAttachment(args: {
@@ -266,6 +384,40 @@ export async function publishLinearPrCard(args: {
       repoName: args.repoName,
       prNumber: args.prNumber,
       githubUrl: args.githubUrl,
+      linkedAt: args.linkedAt,
+    }),
+  );
+}
+
+export async function publishLinearIssueQuickViewAttachment(args: {
+  issueTracker: IssueTracker;
+  issue: LinearIssueCardIssue;
+  branch?: string | null;
+  linkedAt?: string | null;
+}): Promise<{ url: string; id?: string }> {
+  return await args.issueTracker.createIssueAttachment(
+    buildLinearIssueQuickViewAttachment({
+      issue: args.issue,
+      branch: args.branch ?? null,
+      linkedAt: args.linkedAt,
+    }),
+  );
+}
+
+export async function publishLinearChatSessionCard(args: {
+  issueTracker: IssueTracker;
+  issue: LinearIssueCardIssue;
+  laneId: string;
+  sessionId: string;
+  sessionTitle?: string | null;
+  linkedAt?: string | null;
+}): Promise<{ url: string; id?: string }> {
+  return await args.issueTracker.createIssueAttachment(
+    buildLinearChatSessionAttachment({
+      issue: args.issue,
+      laneId: args.laneId,
+      sessionId: args.sessionId,
+      sessionTitle: args.sessionTitle,
       linkedAt: args.linkedAt,
     }),
   );

@@ -204,7 +204,7 @@ struct FilesDetailScreen: View {
   private func showsCodeLayoutControl(blob: SyncFileBlob) -> Bool {
     switch mode {
     case .preview:
-      return !blob.isBinary
+      return !blob.isBinary && !filesIsMarkdown(blob: blob, path: relativePath)
     case .diff:
       return workspace.laneId != nil
     }
@@ -232,7 +232,13 @@ struct FilesDetailScreen: View {
 
   @ViewBuilder
   private func filesPreviewContent(blob: SyncFileBlob) -> some View {
-    if blob.isBinary {
+    if let limit = filesOmittedPreviewLimit(blob: blob) {
+      FilesContentFallback(
+        symbol: "doc.text.magnifyingglass",
+        title: limit.title,
+        message: limit.message
+      )
+    } else if blob.isBinary {
       if isImagePreviewable, let data = imageData, let image = UIImage(data: data) {
         ZoomableImageView(image: image)
           .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -256,6 +262,8 @@ struct FilesDetailScreen: View {
           title: limit.title,
           message: limit.message
         )
+      } else if filesIsMarkdown(blob: blob, path: relativePath) {
+        FilesMarkdownPreview(text: blob.content)
       } else {
         SyntaxHighlightedCodeView(
           text: blob.content,

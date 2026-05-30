@@ -395,6 +395,39 @@ describe("createChatSession", () => {
       codexConfigSource: "flags",
     }));
   });
+
+  it("passes fast mode when creating Cursor chats", async () => {
+    const calls: Array<{ domain: string; action: string; args?: Record<string, unknown> }> = [];
+    const connection = {
+      action: async (domain: string, action: string, args?: Record<string, unknown>) => {
+        calls.push({ domain, action, args });
+        return {
+          id: "chat-1",
+          laneId: "lane-1",
+          provider: args?.provider,
+          model: args?.model,
+          status: "idle",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          lastActivityAt: "2026-01-01T00:00:00.000Z",
+        };
+      },
+    } as unknown as AdeCodeConnection;
+
+    await createChatSession({
+      connection,
+      laneId: "lane-1",
+      provider: "cursor",
+      modelId: "cursor/composer-2.5",
+      codexFastMode: true,
+    });
+
+    expect(calls[0]?.args).toEqual(expect.objectContaining({
+      provider: "cursor",
+      model: "composer-2.5",
+      modelId: "cursor/composer-2.5",
+      codexFastMode: true,
+    }));
+  });
 });
 
 describe("startClaudeTerminalSession", () => {

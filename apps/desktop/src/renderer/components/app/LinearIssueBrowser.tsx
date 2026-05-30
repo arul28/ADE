@@ -22,6 +22,8 @@ import type {
   CtoLinearProject,
   CtoLinearQuickView,
   CtoLinearQuickViewProject,
+  CtoSearchLinearIssuesArgs,
+  CtoSearchLinearIssuesResult,
   LaneLinearIssue,
   NormalizedLinearIssue,
 } from "../../../shared/types";
@@ -34,7 +36,7 @@ import {
   linearPriorityLabel,
   toLaneLinearIssue,
 } from "../lanes/LinearIssuePicker";
-import { LinearPriorityIcon, LinearStateIcon, LINEAR_BRAND } from "../lanes/linearBrand";
+import { LinearPriorityIcon, LinearStateIcon } from "../lanes/linearBrand";
 import { LinearProjectIcon } from "../lanes/linearProjectIcon";
 import { LinearIssueOpenLink, type LinearIssueResolveModalKind } from "./LinearIssueResolveModals";
 
@@ -59,6 +61,8 @@ const STATE_TABS = [
 const ACTIVE_LINEAR_STATE_TYPES = ["backlog", "unstarted", "started"];
 const STATE_GROUP_ORDER = ["started", "unstarted", "backlog", "triage", "completed", "canceled", "duplicate"] as const;
 const FILTER_STORAGE_PREFIX = "ade.linear.quickView.filters.v1:";
+const LINEAR_BROWSER_CACHE_STALE_MS = 90_000;
+const LINEAR_BROWSER_CACHE_MAX_SEARCHES = 16;
 
 const DEFAULT_FILTERS: LinearIssueBrowserFilters = {
   projectId: "",
@@ -85,6 +89,119 @@ const SORT_OPTIONS: ReadonlyArray<{ value: IssueSort; label: string }> = [
   { value: "due_soon", label: "Due soon" },
   { value: "identifier_asc", label: "Issue key" },
 ];
+
+type LinearIssueSearchCacheEntry = {
+  result: CtoSearchLinearIssuesResult | null;
+  fetchedAt: number;
+  promise: Promise<CtoSearchLinearIssuesResult> | null;
+};
+
+type LinearIssueBrowserCacheEntry = {
+  quickView: CtoLinearQuickView | null;
+  quickViewFetchedAt: number;
+  quickViewPromise: Promise<CtoLinearQuickView> | null;
+  catalog: CtoGetLinearIssuePickerDataResult | null;
+  catalogFetchedAt: number;
+  catalogPromise: Promise<CtoGetLinearIssuePickerDataResult> | null;
+  searches: Map<string, LinearIssueSearchCacheEntry>;
+};
+
+const linearIssueBrowserCache = new Map<string, LinearIssueBrowserCacheEntry>();
+const ctoCacheScopes = new WeakMap<object, number>();
+let nextCtoCacheScope = 1;
+
+function getCtoCacheScope(cto: unknown): string {
+  if (!cto || (typeof cto !== "object" && typeof cto !== "function")) return "none";
+  const target = cto as object;
+  const current = ctoCacheScopes.get(target);
+  if (current) return String(current);
+  const next = nextCtoCacheScope++;
+  ctoCacheScopes.set(target, next);
+  return String(next);
+}
+
+function browserCacheKey(projectRoot: string | null | undefined): string {
+  const root = projectRoot?.trim() || "__project__";
+  const cto = typeof window === "undefined" ? null : window.ade?.cto;
+  return `${root}::cto:${getCtoCacheScope(cto)}`;
+}
+
+function emptyCatalog(): CtoGetLinearIssuePickerDataResult {
+  return { projects: [], users: [], states: [] };
+}
+
+function emptyPageInfo(): CtoSearchLinearIssuesResult["pageInfo"] {
+  return { hasNextPage: false, endCursor: null };
+}
+
+function getBrowserCacheEntry(key: string): LinearIssueBrowserCacheEntry {
+  const existing = linearIssueBrowserCache.get(key);
+  if (existing) return existing;
+  const next: LinearIssueBrowserCacheEntry = {
+    quickView: null,
+    quickViewFetchedAt: 0,
+    quickViewPromise: null,
+    catalog: null,
+    catalogFetchedAt: 0,
+    catalogPromise: null,
+    searches: new Map(),
+  };
+  linearIssueBrowserCache.set(key, next);
+  return next;
+}
+
+function cacheIsFresh(fetchedAt: number): boolean {
+  return fetchedAt > 0 && Date.now() - fetchedAt < LINEAR_BROWSER_CACHE_STALE_MS;
+}
+
+function buildIssueSearchArgs(
+  filters: LinearIssueBrowserFilters,
+  after: string | null,
+): CtoSearchLinearIssuesArgs {
+  return {
+    projectId: filters.projectId || null,
+    stateTypes: stateTypesForPreset(filters.statePreset),
+    assigneeId: filters.assigneeId || null,
+    priority: filters.priority ? Number(filters.priority) : null,
+    query: filters.query.trim() || null,
+    first: 50,
+    after,
+    includeArchived: false,
+  };
+}
+
+function searchCacheKey(args: CtoSearchLinearIssuesArgs): string {
+  return JSON.stringify({
+    projectId: args.projectId ?? null,
+    stateTypes: [...(args.stateTypes ?? [])].sort(),
+    assigneeId: args.assigneeId ?? null,
+    priority: args.priority ?? null,
+    query: args.query ?? null,
+    first: args.first ?? 50,
+    after: args.after ?? null,
+    includeArchived: args.includeArchived ?? false,
+  });
+}
+
+function readCachedSearch(
+  key: string,
+  filters: LinearIssueBrowserFilters,
+): CtoSearchLinearIssuesResult | null {
+  return getBrowserCacheEntry(key).searches.get(searchCacheKey(buildIssueSearchArgs(filters, null)))?.result ?? null;
+}
+
+function rememberSearchResult(
+  entry: LinearIssueBrowserCacheEntry,
+  key: string,
+  result: CtoSearchLinearIssuesResult,
+): void {
+  entry.searches.set(key, { result, fetchedAt: Date.now(), promise: null });
+  while (entry.searches.size > LINEAR_BROWSER_CACHE_MAX_SEARCHES) {
+    const oldestKey = entry.searches.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    entry.searches.delete(oldestKey);
+  }
+}
 
 function storageKey(projectRoot: string | null | undefined): string | null {
   const root = projectRoot?.trim();
@@ -242,6 +359,8 @@ export function LinearIssueBrowser({
   actionDisabled = false,
   showBranchPreview = true,
   refreshKey = 0,
+  requestedIssueIdentifier,
+  requestedIssueRequestKey,
   onIssueAction,
   onOpenLinearSettings,
   onConnectionVisibilityChange,
@@ -260,6 +379,8 @@ export function LinearIssueBrowser({
   actionDisabled?: boolean;
   showBranchPreview?: boolean;
   refreshKey?: number;
+  requestedIssueIdentifier?: string | null;
+  requestedIssueRequestKey?: string | number | null;
   onIssueAction: (issue: BrowserIssue) => void | Promise<void>;
   onOpenLinearSettings?: () => void;
   onConnectionVisibilityChange?: (visible: boolean) => void;
@@ -277,12 +398,12 @@ export function LinearIssueBrowser({
     batchProgress: { completed: number; total: number; action: string } | null;
   };
 }) {
-  const [quickView, setQuickView] = useState<CtoLinearQuickView | null>(null);
-  const quickViewRef = useRef<CtoLinearQuickView | null>(null);
-  const [catalog, setCatalog] = useState<CtoGetLinearIssuePickerDataResult>({ projects: [], users: [], states: [] });
+  const cacheKey = browserCacheKey(projectRoot);
+  const [quickView, setQuickView] = useState<CtoLinearQuickView | null>(() => getBrowserCacheEntry(cacheKey).quickView);
+  const [catalog, setCatalog] = useState<CtoGetLinearIssuePickerDataResult>(() => getBrowserCacheEntry(cacheKey).catalog ?? emptyCatalog());
   const [filters, setFilters] = useState<LinearIssueBrowserFilters>(() => safeLoadFilters(projectRoot));
-  const [issues, setIssues] = useState<NormalizedLinearIssue[]>([]);
-  const [pageInfo, setPageInfo] = useState<{ hasNextPage: boolean; endCursor: string | null }>({ hasNextPage: false, endCursor: null });
+  const [issues, setIssues] = useState<NormalizedLinearIssue[]>(() => readCachedSearch(cacheKey, safeLoadFilters(projectRoot))?.issues ?? []);
+  const [pageInfo, setPageInfo] = useState<{ hasNextPage: boolean; endCursor: string | null }>(() => readCachedSearch(cacheKey, safeLoadFilters(projectRoot))?.pageInfo ?? emptyPageInfo());
   const pageInfoRef = useRef(pageInfo);
   const [loadingQuickView, setLoadingQuickView] = useState(false);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
@@ -295,10 +416,11 @@ export function LinearIssueBrowser({
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
   const quickViewRequestIdRef = useRef(0);
+  const catalogRequestIdRef = useRef(0);
   const searchRequestIdRef = useRef(0);
+  const lastRequestedIssueKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
-    quickViewRef.current = quickView;
     onQuickViewChange?.(quickView);
   }, [onQuickViewChange, quickView]);
 
@@ -307,10 +429,15 @@ export function LinearIssueBrowser({
   }, [pageInfo]);
 
   useEffect(() => {
-    setFilters(safeLoadFilters(projectRoot));
-    setIssues([]);
-    setPageInfo({ hasNextPage: false, endCursor: null });
-  }, [projectRoot]);
+    const nextFilters = safeLoadFilters(projectRoot);
+    const entry = getBrowserCacheEntry(cacheKey);
+    const cachedSearch = readCachedSearch(cacheKey, nextFilters);
+    setFilters(nextFilters);
+    setQuickView(entry.quickView);
+    setCatalog(entry.catalog ?? emptyCatalog());
+    setIssues(cachedSearch?.issues ?? []);
+    setPageInfo(cachedSearch?.pageInfo ?? emptyPageInfo());
+  }, [cacheKey, projectRoot]);
 
   useEffect(() => {
     if (featuredIssue && !selectedIssueId) {
@@ -324,42 +451,83 @@ export function LinearIssueBrowser({
   }, [loading, onLoadingChange]);
 
   const loadQuickView = useCallback((force = false) => {
+    const entry = getBrowserCacheEntry(cacheKey);
     if (!window.ade.cto?.getLinearQuickView) return;
-    if (!force && quickViewRef.current) return;
+    if (!force && entry.quickView && cacheIsFresh(entry.quickViewFetchedAt)) {
+      setQuickView(entry.quickView);
+      onConnectionVisibilityChange?.(entry.quickView.connection.connected === true);
+      return;
+    }
+    if (entry.quickView) {
+      setQuickView(entry.quickView);
+      onConnectionVisibilityChange?.(entry.quickView.connection.connected === true);
+    }
     const requestId = quickViewRequestIdRef.current + 1;
     quickViewRequestIdRef.current = requestId;
-    setLoadingQuickView(true);
+    setLoadingQuickView(force || !entry.quickView);
     setError(null);
-    void window.ade.cto.getLinearQuickView()
+    const promise = entry.quickViewPromise ?? window.ade.cto.getLinearQuickView();
+    entry.quickViewPromise = promise;
+    void promise
       .then((data) => {
+        entry.quickView = data;
+        entry.quickViewFetchedAt = Date.now();
+        entry.quickViewPromise = null;
         if (quickViewRequestIdRef.current !== requestId) return;
         setQuickView(data);
         onConnectionVisibilityChange?.(data.connection.connected === true);
       })
       .catch((err) => {
+        entry.quickViewPromise = null;
         if (quickViewRequestIdRef.current !== requestId) return;
-        setError(err instanceof Error ? err.message : "Unable to load Linear.");
+        if (!entry.quickView || force) {
+          setError(err instanceof Error ? err.message : "Unable to load Linear.");
+        }
       })
       .finally(() => {
         if (quickViewRequestIdRef.current === requestId) setLoadingQuickView(false);
       });
-  }, [onConnectionVisibilityChange]);
+  }, [cacheKey, onConnectionVisibilityChange]);
 
-  const loadCatalog = useCallback(() => {
+  const loadCatalog = useCallback((force = false) => {
+    const entry = getBrowserCacheEntry(cacheKey);
     const cto = window.ade.cto;
     if (!cto?.getLinearIssuePickerData) {
       setError("Linear controls are not available in this ADE surface.");
       return;
     }
-    setLoadingCatalog(true);
+    if (!force && entry.catalog && cacheIsFresh(entry.catalogFetchedAt)) {
+      setCatalog(entry.catalog);
+      return;
+    }
+    if (entry.catalog) setCatalog(entry.catalog);
+    const requestId = catalogRequestIdRef.current + 1;
+    catalogRequestIdRef.current = requestId;
+    setLoadingCatalog(force || !entry.catalog);
     setError(null);
-    void cto.getLinearIssuePickerData()
-      .then((data) => setCatalog(data))
-      .catch((err) => setError(err instanceof Error ? err.message : "Unable to load Linear filters."))
-      .finally(() => setLoadingCatalog(false));
-  }, []);
+    const promise = entry.catalogPromise ?? cto.getLinearIssuePickerData();
+    entry.catalogPromise = promise;
+    void promise
+      .then((data) => {
+        entry.catalog = data;
+        entry.catalogFetchedAt = Date.now();
+        entry.catalogPromise = null;
+        if (catalogRequestIdRef.current !== requestId) return;
+        setCatalog(data);
+      })
+      .catch((err) => {
+        entry.catalogPromise = null;
+        if (catalogRequestIdRef.current !== requestId) return;
+        if (!entry.catalog || force) {
+          setError(err instanceof Error ? err.message : "Unable to load Linear filters.");
+        }
+      })
+      .finally(() => {
+        if (catalogRequestIdRef.current === requestId) setLoadingCatalog(false);
+      });
+  }, [cacheKey]);
 
-  const searchIssues = useCallback((append: boolean) => {
+  const searchIssues = useCallback((append: boolean, force = false) => {
     const cto = window.ade.cto;
     if (!cto?.searchLinearIssues) {
       setError("Linear issue search is not available in this ADE surface.");
@@ -367,45 +535,61 @@ export function LinearIssueBrowser({
     }
     const requestId = searchRequestIdRef.current + 1;
     searchRequestIdRef.current = requestId;
-    setLoadingIssues(true);
+    const entry = getBrowserCacheEntry(cacheKey);
+    const args = buildIssueSearchArgs(filters, append ? pageInfoRef.current.endCursor : null);
+    const key = searchCacheKey(args);
+    const cached = entry.searches.get(key);
+    const cachedResult = cached?.result ?? null;
+    if (cachedResult && !force && cacheIsFresh(cached?.fetchedAt ?? 0)) {
+      setIssues((current) => append ? mergeIssuePages(current, cachedResult.issues) : cachedResult.issues);
+      setPageInfo(cachedResult.pageInfo);
+      return;
+    }
+    if (cachedResult && !append) {
+      setIssues(cachedResult.issues);
+      setPageInfo(cachedResult.pageInfo);
+    }
+    setLoadingIssues(force || append || !cachedResult);
     setError(null);
-    void cto.searchLinearIssues({
-      projectId: filters.projectId || null,
-      stateTypes: stateTypesForPreset(filters.statePreset),
-      assigneeId: filters.assigneeId || null,
-      priority: filters.priority ? Number(filters.priority) : null,
-      query: filters.query.trim() || null,
-      first: 50,
-      after: append ? pageInfoRef.current.endCursor : null,
-      includeArchived: false,
-    })
+    const promise = cached?.promise ?? cto.searchLinearIssues(args);
+    entry.searches.set(key, {
+      result: cachedResult,
+      fetchedAt: cached?.fetchedAt ?? 0,
+      promise,
+    });
+    void promise
       .then((result) => {
+        rememberSearchResult(entry, key, result);
         if (searchRequestIdRef.current !== requestId) return;
         setIssues((current) => append ? mergeIssuePages(current, result.issues) : result.issues);
         setPageInfo(result.pageInfo);
       })
       .catch((err) => {
+        entry.searches.set(key, { result: cachedResult, fetchedAt: cached?.fetchedAt ?? 0, promise: null });
         if (searchRequestIdRef.current !== requestId) return;
-        setError(err instanceof Error ? err.message : "Unable to search Linear issues.");
+        if (!cachedResult || force) {
+          setError(err instanceof Error ? err.message : "Unable to search Linear issues.");
+        }
       })
       .finally(() => {
         if (searchRequestIdRef.current === requestId) setLoadingIssues(false);
       });
-  }, [filters]);
+  }, [cacheKey, filters]);
 
   useEffect(() => {
-    loadQuickView(true);
-    loadCatalog();
+    const force = refreshKey > 0;
+    loadQuickView(force);
+    loadCatalog(force);
   }, [loadCatalog, loadQuickView, refreshKey]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => searchIssues(false), 220);
+    const timer = window.setTimeout(() => searchIssues(false, false), 220);
     return () => window.clearTimeout(timer);
   }, [filters, searchIssues]);
 
   useEffect(() => {
     if (refreshKey === 0) return;
-    searchIssues(false);
+    searchIssues(false, true);
   }, [refreshKey, searchIssues]);
 
   const updateFilters = useCallback((patch: Partial<LinearIssueBrowserFilters>) => {
@@ -431,9 +615,39 @@ export function LinearIssueBrowser({
   }, [featuredIssue, sorted]);
 
   useEffect(() => {
+    const normalized = requestedIssueIdentifier?.trim().toUpperCase() ?? "";
+    const requestKey = `${normalized}:${requestedIssueRequestKey ?? ""}`;
+    if (!normalized || lastRequestedIssueKeyRef.current === requestKey) return;
+    lastRequestedIssueKeyRef.current = requestKey;
+    const nextFilters: LinearIssueBrowserFilters = {
+      ...DEFAULT_FILTERS,
+      query: normalized,
+      statePreset: "all",
+    };
+    setFilters(nextFilters);
+    safeSaveFilters(projectRoot, nextFilters);
+    setIssues([]);
+    setPageInfo({ hasNextPage: false, endCursor: null });
+    setSelectedIssueId(null);
+    setSelectedIssueIds(new Set());
+    setCollapsedGroups({});
+  }, [projectRoot, requestedIssueIdentifier, requestedIssueRequestKey]);
+
+  useEffect(() => {
     if (selectedIssueId && displayIssues.some((issue) => issue.id === selectedIssueId)) return;
     setSelectedIssueId(displayIssues[0]?.id ?? null);
   }, [displayIssues, selectedIssueId]);
+
+  useEffect(() => {
+    const normalized = requestedIssueIdentifier?.trim().toUpperCase() ?? "";
+    if (!normalized) return;
+    const match = displayIssues.find((issue) =>
+      issue.identifier.trim().toUpperCase() === normalized
+      || issue.id.trim() === requestedIssueIdentifier?.trim()
+    );
+    if (!match || selectedIssueId === match.id) return;
+    setSelectedIssueId(match.id);
+  }, [displayIssues, requestedIssueIdentifier, selectedIssueId]);
 
   const selectedIssue = displayIssues.find((issue) => issue.id === selectedIssueId) ?? displayIssues[0] ?? null;
 
@@ -534,7 +748,7 @@ export function LinearIssueBrowser({
         </div>
       ) : null}
 
-      <div className="grid min-h-0 flex-1 overflow-hidden md:grid-cols-[232px_minmax(0,1fr)_334px]">
+      <div className="grid min-h-0 flex-1 overflow-hidden md:grid-cols-[220px_minmax(0,1fr)_360px] lg:grid-cols-[260px_minmax(360px,1fr)_420px]">
         <aside className="flex min-h-0 flex-col overflow-hidden border-r border-white/10 bg-black/10">
           <div className="shrink-0 border-b border-white/[0.06] px-3 py-2">
             <ScopeNavButton
@@ -560,7 +774,7 @@ export function LinearIssueBrowser({
               ) : null}
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" data-linear-pane="projects">
               {loadingCatalog && projectFilters.length === 0 ? (
                 <div className="rounded-lg border border-white/[0.06] px-3 py-6 text-center text-[12px] text-muted-fg/50">
                   Loading projects...
@@ -676,7 +890,7 @@ export function LinearIssueBrowser({
             </div>
           )}
 
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" data-linear-pane="issues">
             {loadingQuickView && !quickView && displayIssues.length === 0 ? (
               <div className="grid h-44 place-items-center text-[12px] text-muted-fg/55">
                 <CircleNotch size={16} className="animate-spin" />
@@ -990,36 +1204,57 @@ function IssueDetails({
   const normalizedIssue = "raw" in issue ? issue : null;
   const description = issue.description?.trim() ?? "";
   return (
-    <aside className="flex min-h-0 flex-col overflow-hidden">
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-        <div className="flex items-center gap-2">
-          <LinearPriorityIcon priority={issue.priority} size={12} />
-          <LinearStateIcon stateType={issue.stateType} size={12} />
-          {issue.url ? (
-            <a
-              href={issue.url}
-              onClick={(e) => { e.preventDefault(); window.ade?.app?.openExternal?.(issue.url!); }}
-              className="cursor-pointer rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-fg/80 hover:bg-white/[0.1] transition-colors"
-              title="Open in Linear"
-            >
-              {issue.identifier}
-            </a>
-          ) : (
-            <span className="rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-fg/80">
-              {issue.identifier}
+    <aside className="flex min-h-0 flex-col overflow-hidden bg-black/[0.08]">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4" data-linear-pane="issue-details">
+        <div className="rounded-xl border border-white/[0.07] bg-white/[0.03] p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <LinearPriorityIcon priority={issue.priority} size={12} />
+                <LinearStateIcon stateType={issue.stateType} size={12} />
+                {issue.url ? (
+                  <a
+                    href={issue.url}
+                    onClick={(e) => { e.preventDefault(); window.ade?.app?.openExternal?.(issue.url!); }}
+                    className="cursor-pointer rounded bg-white/[0.07] px-1.5 py-0.5 font-mono text-[10px] text-fg/82 transition-colors hover:bg-white/[0.12]"
+                    title="Open in Linear"
+                  >
+                    {issue.identifier}
+                  </a>
+                ) : (
+                  <span className="rounded bg-white/[0.07] px-1.5 py-0.5 font-mono text-[10px] text-fg/82">
+                    {issue.identifier}
+                  </span>
+                )}
+              </div>
+              <div className="mt-2 text-[15px] font-semibold leading-snug text-fg/95">{issue.title}</div>
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            <span className="rounded-full border border-white/[0.07] bg-white/[0.035] px-2 py-0.5 text-[10.5px] text-muted-fg/75">
+              {issue.stateName}
             </span>
-          )}
+            <span className="rounded-full border border-white/[0.07] bg-white/[0.035] px-2 py-0.5 text-[10.5px] text-muted-fg/75">
+              {linearPriorityLabel(issue)}
+            </span>
+            <span className="rounded-full border border-white/[0.07] bg-white/[0.035] px-2 py-0.5 text-[10.5px] text-muted-fg/75">
+              {issue.assigneeName ?? "Unassigned"}
+            </span>
+          </div>
         </div>
-        <div className="mt-2 text-[14px] font-semibold leading-snug">{issue.title}</div>
+
         {showBranchPreview ? (
-          <div className="mt-2 rounded-md bg-black/25 px-2 py-1.5 font-mono text-[10.5px] text-fg/80">
-            <BranchIcon size={11} className="mr-1 inline" />
-            {branchName}
+          <div className="mt-3 rounded-lg border border-white/[0.06] bg-black/25 px-3 py-2">
+            <div className="text-[10px] font-medium uppercase tracking-[0.10em] text-muted-fg/45">Branch</div>
+            <div className="mt-1 flex min-w-0 items-center gap-1.5 font-mono text-[10.5px] text-fg/82">
+              <BranchIcon size={11} className="shrink-0" />
+              <span className="truncate" title={branchName}>{branchName}</span>
+            </div>
           </div>
         ) : null}
 
         {description ? (
-          <div className="mt-3 overflow-y-auto rounded-lg border border-white/[0.06] bg-white/[0.025] px-3 py-2 text-[12px] leading-relaxed text-muted-fg/80">
+          <div className="mt-3 rounded-xl border border-white/[0.06] bg-white/[0.025] px-3 py-2.5 text-[12px] leading-relaxed text-muted-fg/80">
             <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>
               {description}
             </ReactMarkdown>
@@ -1028,7 +1263,7 @@ function IssueDetails({
 
         <IssueLabels issue={issue} normalizedIssue={normalizedIssue} />
 
-        <div className="mt-3 grid gap-1.5 text-[11px] text-muted-fg/65">
+        <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-muted-fg/65">
           <InfoRow label="Project" value={issueProjectLabel(issue)} />
           <InfoRow label="Team" value={issue.teamName ?? issue.teamKey} />
           {normalizedIssue?.cycleName && (
@@ -1059,10 +1294,21 @@ function IssueDetails({
         <ActivitySection issueId={issue.id} />
       </div>
 
-      <div className="shrink-0 max-h-[280px] overflow-y-auto border-t border-white/10 px-4 py-3">
+      <div
+        className="shrink-0 max-h-[42%] overflow-y-auto overscroll-contain border-t border-white/10 bg-[color:color-mix(in_srgb,var(--ade-shell-surface,#121019)_92%,black_8%)] px-4 py-3 shadow-[0_-18px_36px_rgba(0,0,0,0.22)] backdrop-blur-md"
+        data-linear-action-dock="true"
+      >
+        <div className="mb-2 flex min-w-0 items-center gap-2">
+          <span className="shrink-0 rounded bg-white/[0.07] px-1.5 py-0.5 font-mono text-[10px] text-fg/80">
+            {issue.identifier}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-fg/82" title={issue.title}>
+            {issue.title}
+          </span>
+        </div>
         {resolveActions ? (
           <div className="space-y-2">
-            <div className="space-y-1.5">
+            <div className="grid gap-1.5">
               {RESOLVE_ACTIONS.map((action) => {
                 const busy = resolveActions.busyModal === action.kind;
                 const disabled = resolveActions.disabled || Boolean(resolveActions.busyModal && !busy);
@@ -1071,11 +1317,11 @@ function IssueDetails({
                     key={action.kind}
                     type="button"
                     disabled={disabled}
-                    className="flex w-full items-start gap-2.5 rounded-lg border border-white/[0.07] bg-white/[0.02] px-2.5 py-2 text-left transition-colors hover:border-white/[0.12] hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-45"
+                    className="grid w-full grid-cols-[28px_minmax(0,1fr)] items-start gap-2.5 rounded-lg border border-white/[0.075] bg-white/[0.025] px-2.5 py-2 text-left transition-colors hover:border-white/[0.16] hover:bg-white/[0.055] disabled:cursor-not-allowed disabled:opacity-45"
                     onClick={() => resolveActions.onOpenModal(action.kind, issue)}
                   >
                     <span
-                      className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-md text-[color:var(--color-accent,#A78BFA)]"
+                      className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-[color:var(--color-accent,#A78BFA)]"
                       style={{ background: "rgba(167, 139, 250, 0.12)" }}
                     >
                       {busy ? <CircleNotch size={13} className="animate-spin" /> : action.icon}
@@ -1091,7 +1337,7 @@ function IssueDetails({
             <LinearIssueOpenLink url={issue.url} />
           </div>
         ) : (
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <Button
               variant="primary"
               disabled={actionBusy || actionDisabled}
@@ -1132,9 +1378,9 @@ function IssueLabels({ issue, normalizedIssue }: { issue: BrowserIssue; normaliz
 
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-baseline justify-between gap-2">
-      <span className="text-muted-fg/45">{label}</span>
-      <span className="truncate text-right text-fg/80" title={value}>{value}</span>
+    <div className="min-w-0 rounded-lg border border-white/[0.05] bg-white/[0.025] px-2.5 py-2">
+      <div className="text-[9.5px] font-medium uppercase tracking-[0.10em] text-muted-fg/40">{label}</div>
+      <div className="mt-1 truncate text-[11.5px] text-fg/82" title={value}>{value}</div>
     </div>
   );
 }
@@ -1258,7 +1504,7 @@ function BatchActionView({
 
   return (
     <aside className="flex min-h-0 flex-col overflow-hidden">
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3" data-linear-pane="issue-details">
         <div className="flex items-center justify-between">
           <span className="text-[13px] font-semibold text-fg/90">{selectedIssues.length} issues selected</span>
           <button type="button" className="text-[10px] text-muted-fg/50 hover:text-fg/80 transition-colors" onClick={onClearSelection}>
@@ -1274,7 +1520,7 @@ function BatchActionView({
           ))}
         </div>
       </div>
-      <div className="shrink-0 border-t border-white/10 px-4 py-3">
+      <div className="shrink-0 border-t border-white/10 px-4 py-3" data-linear-action-dock="true">
         <div className="space-y-1.5">
           {BATCH_ACTIONS_CONFIG.map((action) => (
             <button

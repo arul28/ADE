@@ -162,7 +162,7 @@ import { createLinearIntakeService } from "./services/cto/linearIntakeService";
 import { createLinearOutboundService } from "./services/cto/linearOutboundService";
 import { createLinearCloseoutService } from "./services/cto/linearCloseoutService";
 import { createLinearDispatcherService } from "./services/cto/linearDispatcherService";
-import { publishLinearLaneCard } from "./services/cto/linearLaneCardService";
+import { publishLinearChatSessionCard, publishLinearLaneCard } from "./services/cto/linearLaneCardService";
 import { createLinearIngressService } from "./services/cto/linearIngressService";
 import { createLinearSyncService } from "./services/cto/linearSyncService";
 import { createOrchestrationService } from "./services/orchestration/orchestrationService";
@@ -413,7 +413,7 @@ function buildLinearAutomationDispatch(event: LinearIngressEventRecord): {
   const payload = event.payload ?? null;
   const data = readNested(payload, "data");
   const prevData = readNested(payload, "updatedFrom");
-  const mapping = mapLinearActionToTriggerType(event.action, data, prevData);
+  const mapping = mapLinearActionToTriggerType(event.action ?? null, data, prevData);
 
   const teamName = readString(readNested(data, "team"), "name") ?? readString(data, "teamName");
   const projectName = readString(readNested(data, "project"), "name") ?? readString(data, "projectName");
@@ -800,12 +800,10 @@ protocol.registerSchemesAsPrivileged([
 // Only Stable claims `ade://` as the default handler. Beta and Alpha still
 // install the single-instance lock + `open-url` listeners (so a manual
 // `duti` binding still works), but they don't ask the OS to make them the
-// default on boot. Source builds opt in via `ADE_REGISTER_DEEPLINK_HANDLER=1`,
-// which is the dev-test workaround on a machine with Stable also installed.
+// default on boot. Source builds and dev Electron launches never claim the OS
+// binding; they only listen for URLs explicitly delivered to that process.
 const deeplinkChannel = normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL);
-const deeplinkClaimAsDefault =
-  process.env.ADE_REGISTER_DEEPLINK_HANDLER === "1" ||
-  (app.isPackaged && deeplinkChannel === null);
+const deeplinkClaimAsDefault = app.isPackaged && deeplinkChannel === null;
 
 const pendingAppNavigationRequests: AppNavigationRequest[] = [];
 let dispatchAppNavigationRequest: ((request: AppNavigationRequest) => void) | null = null;
@@ -1526,7 +1524,7 @@ app.whenReady().then(async () => {
     }
 
     try {
-      if (ctx.sessionService?.list({ status: "running", limit: 1 }).length > 0) {
+      if ((ctx.sessionService?.list({ status: "running", limit: 1 }).length ?? 0) > 0) {
         return true;
       }
     } catch (error) {
@@ -1979,7 +1977,7 @@ app.whenReady().then(async () => {
         const tracker = linearIssueTrackerRef;
         if (!tracker) return;
         // Resolve repo lazily so cards posted to Linear carry the cross-machine
-        // ADE deeplink (https://ade.app/open?type=branch&...). If the project
+        // ADE deeplink (https://ade-app.dev/open?type=branch&...). If the project
         // has no GitHub remote, fall back to the legacy hash-anchor URL.
         void githubService.getRepoOrThrow()
           .catch(() => null)
@@ -2449,6 +2447,7 @@ app.whenReady().then(async () => {
       null;
     let orchestrationServiceRef: ReturnType<typeof createOrchestrationService> | null =
       null;
+    const linearChatCardPublishKeys = new Set<string>();
     const queueLandingService = createQueueLandingService({
       db,
       logger,
@@ -2774,6 +2773,30 @@ app.whenReady().then(async () => {
       logger,
       appVersion: app.getVersion(),
       getAdeCliAgentEnv: adeCliService.agentEnv,
+      onLinearIssueChatLinked: ({ laneId, sessionId, sessionTitle, issue, linkedAt }) => {
+        const tracker = linearIssueTrackerRef;
+        if (!tracker) return;
+        const key = `${issue.id}:${sessionId}`;
+        if (linearChatCardPublishKeys.has(key)) return;
+        linearChatCardPublishKeys.add(key);
+        void publishLinearChatSessionCard({
+          issueTracker: tracker,
+          issue,
+          laneId,
+          sessionId,
+          sessionTitle,
+          linkedAt,
+        }).catch((error) => {
+          linearChatCardPublishKeys.delete(key);
+          logger.warn("linear.chat_session_card_publish_failed", {
+            laneId,
+            sessionId,
+            issueId: issue.id,
+            issueIdentifier: issue.identifier,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      },
       onEvent: (event) => {
         emitProjectEvent(projectRoot, IPC.agentChatEvent, event);
       },
@@ -3456,7 +3479,12 @@ app.whenReady().then(async () => {
           createdAt: event.createdAt,
         });
         if (event.issueId) {
-          await linearSyncService.processIssueUpdate(event.issueId);
+          const isCreatedIssueEvent =
+            event.entityType?.trim().toLowerCase() === "issue"
+            && /^(create|created)$/i.test(event.action?.trim() ?? "");
+          await linearSyncService.processIssueUpdate(event.issueId, {
+            adeIssueLinkCause: isCreatedIssueEvent ? "linear_issue_created" : "linear_issue_ingress",
+          });
           try {
             const dispatched = buildLinearAutomationDispatch(event);
             if (dispatched) {
@@ -4204,7 +4232,7 @@ app.whenReady().then(async () => {
       builtInBrowserService,
       macosVmService,
       usageTrackingService,
-    } as AppContext;
+    };
   };
 
   const createDormantProjectContext = (projectRoot = ""): AppContext => {
@@ -4263,6 +4291,10 @@ app.whenReady().then(async () => {
       laneWorktreeLockService: null,
       laneEnvironmentService: null,
       laneTemplateService: null,
+      portAllocationService: null,
+      laneProxyService: null,
+      oauthRedirectService: null,
+      runtimeDiagnosticsService: null,
       rebaseSuggestionService: null,
       autoRebaseService: null,
       sessionService: null,
@@ -4320,7 +4352,7 @@ app.whenReady().then(async () => {
       linearIngressService: null,
       linearSyncService: null,
       configReloadService: null,
-    } as unknown as AppContext;
+    };
   };
 
   const disposeContextResources = async (ctx: AppContext): Promise<void> => {
@@ -4353,7 +4385,7 @@ app.whenReady().then(async () => {
     // Flush DB before disposing services so that any pending writes are persisted.
     // Services may write during disposal, so we flush again at the end as a safety net.
     try {
-      ctx.db.flushNow();
+      ctx.db?.flushNow();
     } catch {
       // ignore
     }
@@ -4363,7 +4395,7 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
-      ctx.prPollingService.dispose();
+      ctx.prPollingService?.dispose();
     } catch {
       // ignore
     }
@@ -4388,7 +4420,7 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
-      ctx.automationService.dispose();
+      ctx.automationService?.dispose();
     } catch {
       // ignore
     }
@@ -4433,12 +4465,12 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
-      ctx.jobEngine.dispose();
+      ctx.jobEngine?.dispose();
     } catch {
       // ignore
     }
     try {
-      ctx.fileService.dispose();
+      ctx.fileService?.dispose();
     } catch {
       // ignore
     }
@@ -4458,22 +4490,22 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
-      ctx.testService.disposeAll();
+      ctx.testService?.disposeAll();
     } catch {
       // ignore
     }
     try {
-      ctx.processService.disposeAll();
+      ctx.processService?.disposeAll();
     } catch {
       // ignore
     }
     try {
-      ctx.ptyService.disposeAll();
+      ctx.ptyService?.disposeAll();
     } catch {
       // ignore
     }
     try {
-      await ctx.agentChatService.disposeAll();
+      await ctx.agentChatService?.disposeAll();
     } catch {
       // ignore
     }
@@ -4498,8 +4530,8 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
-      ctx.db.flushNow();
-      ctx.db.close();
+      ctx.db?.flushNow();
+      ctx.db?.close();
     } catch {
       // ignore
     }
@@ -4553,7 +4585,7 @@ app.whenReady().then(async () => {
     recent?: RecentProjectInspection | null,
   ): Promise<SyncMobileProjectSummary> {
     let laneCount = recent?.summary.laneCount ?? 0;
-    if (!recent?.summary.laneCount) {
+    if (!recent?.summary.laneCount && ctx.laneService) {
       try {
         laneCount = (await ctx.laneService.list({ includeArchived: false })).length;
       } catch {
@@ -5304,21 +5336,28 @@ app.whenReady().then(async () => {
         : `These projects are deleting lanes: ${runningDeletes.join(", ")}. Wait for deletion to finish before quitting ADE.`;
     const dialogOptions = {
       type: "warning" as const,
-      buttons: ["Keep ADE open"],
+      // Always offer an escape: a delete-progress flag can get stuck "running"
+      // (e.g. a delete whose completion event was lost to a daemon
+      // disconnect), and a single-button dialog would trap the app forever,
+      // forcing a force-quit. "Quit anyway" is safe — runtime-backed deletes
+      // run in the daemon, which keeps running after the desktop quits.
+      buttons: ["Keep ADE open", "Quit anyway"],
       defaultId: 0,
       cancelId: 0,
       noLink: true,
       title: "Lane delete in progress",
       message: "ADE cannot quit while a lane is being deleted.",
-      detail,
+      detail: `${detail} You can quit anyway — any in-progress deletion continues in the background.`,
     };
     const parentWindow =
       ownerWindow && !ownerWindow.isDestroyed()
         ? ownerWindow
         : BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
-    if (parentWindow) dialog.showMessageBoxSync(parentWindow, dialogOptions);
-    else dialog.showMessageBoxSync(dialogOptions);
-    return false;
+    const choice = parentWindow
+      ? dialog.showMessageBoxSync(parentWindow, dialogOptions)
+      : dialog.showMessageBoxSync(dialogOptions);
+    // Index 1 ("Quit anyway") allows the quit to proceed.
+    return choice === 1;
   };
 
   const confirmQuitWarning = (ownerWindow?: BrowserWindow | null): boolean =>

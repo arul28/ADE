@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { CircleNotch, X } from "@phosphor-icons/react";
+import { CircleNotch, Warning, X } from "@phosphor-icons/react";
 
 import type {
   CtoLinearQuickView,
@@ -10,6 +10,11 @@ import type {
 import { linearIssueBranchName, linearIssueLaneName } from "../../../shared/linearIssueBranch";
 import { useAppStore } from "../../state/appStore";
 import { requestLinearIssueWorkContext } from "../../lib/linearIssueWorkNavigation";
+import {
+  consumePendingLinearIssueQuickViewRequest,
+  subscribeLinearIssueQuickViewRequests,
+  type LinearIssueQuickViewRequest,
+} from "../../lib/linearIssueQuickViewNavigation";
 import { cn } from "../ui/cn";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { LinearIssueBrowser, linearBrowserIssueToLaneIssue } from "./LinearIssueBrowser";
@@ -58,6 +63,10 @@ function openWorkDraftForLinearIssue(args: {
   window.location.hash = `#/work?laneId=${encodeURIComponent(args.laneId)}`;
 }
 
+function openProjectPickerRoute(): void {
+  window.location.hash = "#/project";
+}
+
 export function LinearQuickViewButton({
   variant = "icon",
   onMenuActivate,
@@ -74,6 +83,8 @@ export function LinearQuickViewButton({
   const [visible, setVisible] = useState(false);
   const [open, setOpen] = useState(false);
   const [quickView, setQuickView] = useState<CtoLinearQuickView | null>(null);
+  const [quickViewRequest, setQuickViewRequest] = useState<LinearIssueQuickViewRequest | null>(null);
+  const [connectionPrompt, setConnectionPrompt] = useState<LinearIssueQuickViewRequest | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [browserLoading, setBrowserLoading] = useState(false);
   const [busyModal, setBusyModal] = useState<LinearIssueResolveModalKind | null>(null);
@@ -96,6 +107,39 @@ export function LinearQuickViewButton({
     const status = await window.ade.cto.getLinearConnectionStatus();
     return status.connected === true;
   }, [project?.rootPath]);
+
+  const openLinearSettings = useCallback(() => {
+    setConnectionPrompt(null);
+    window.location.hash = "#/settings?tab=integrations&integration=linear";
+  }, []);
+
+  const handleQuickViewRequest = useCallback((request: LinearIssueQuickViewRequest) => {
+    setQuickViewRequest(request);
+    setConnectionPrompt(null);
+    void loadVisibility()
+      .then((nextVisible) => {
+        setVisible(nextVisible);
+        if (nextVisible) {
+          setConnectionPrompt(null);
+          setOpen(true);
+        } else {
+          setOpen(false);
+          setConnectionPrompt(request);
+        }
+      })
+      .catch(() => {
+        setVisible(false);
+        setOpen(false);
+        setConnectionPrompt(request);
+      });
+  }, [loadVisibility]);
+
+  useEffect(() => {
+    if (variant !== "icon") return;
+    const pending = consumePendingLinearIssueQuickViewRequest();
+    if (pending) handleQuickViewRequest(pending);
+    return subscribeLinearIssueQuickViewRequests(handleQuickViewRequest);
+  }, [handleQuickViewRequest, variant]);
 
   useEffect(() => {
     let cancelled = false;
@@ -359,13 +403,94 @@ export function LinearQuickViewButton({
     }
   }, [batchIssues, openWorkDraft]);
 
-  if (!visible) return null;
+  const connectionPromptModal = connectionPrompt ? createPortal(
+    <div
+      role="presentation"
+      className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) setConnectionPrompt(null);
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Linear deeplink unavailable"
+        className="w-[min(440px,100%)] overflow-hidden rounded-xl border border-white/12 bg-[color:var(--ade-shell-surface,#121019)] text-fg shadow-2xl shadow-black/50"
+      >
+        <div className="flex items-start gap-3 border-b border-white/10 px-4 py-3">
+          <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-yellow-500/12 text-yellow-200">
+            <Warning size={15} weight="fill" />
+          </span>
+          <div className="min-w-0">
+            <div className="text-[13px] font-semibold">
+              {project?.rootPath
+                ? `Connect Linear to open ${connectionPrompt.issueIdentifier}`
+                : `Open the ADE project for ${connectionPrompt.issueIdentifier}`}
+            </div>
+            <div className="mt-1 text-[12px] leading-5 text-muted-fg/75">
+              {project?.rootPath
+                ? "This link opens the Linear pane in ADE, but this project is not connected to Linear yet."
+                : "This link needs the ADE project that owns the issue open before ADE can check Linear."}
+            </div>
+          </div>
+        </div>
+        <div className="grid gap-2 px-4 py-3 text-[12px]">
+          <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-3">
+            <span className="text-muted-fg/50">Issue</span>
+            <span className="min-w-0 truncate font-mono text-muted-fg/80">{connectionPrompt.issueIdentifier}</span>
+          </div>
+          {connectionPrompt.branch ? (
+            <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-3">
+              <span className="text-muted-fg/50">Branch</span>
+              <span className="min-w-0 break-all font-mono text-muted-fg/80">{connectionPrompt.branch}</span>
+            </div>
+          ) : null}
+        </div>
+        <div className="flex justify-end gap-2 border-t border-white/10 px-4 py-3">
+          <button
+            type="button"
+            className="ade-shell-control inline-flex h-8 items-center rounded-md px-3 text-[12px]"
+            data-variant="ghost"
+            onClick={() => setConnectionPrompt(null)}
+          >
+            Dismiss
+          </button>
+          {project?.rootPath ? (
+            <button
+              type="button"
+              className="ade-shell-control inline-flex h-8 items-center rounded-md px-3 text-[12px]"
+              data-variant="primary"
+              onClick={openLinearSettings}
+            >
+              Open Linear settings
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="ade-shell-control inline-flex h-8 items-center rounded-md px-3 text-[12px]"
+              data-variant="primary"
+              onClick={() => {
+                setConnectionPrompt(null);
+                openProjectPickerRoute();
+              }}
+            >
+              Open project picker
+            </button>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  ) : null;
+
+  if (!visible) return <>{connectionPromptModal}</>;
 
   const handleToggle = () => {
     if (open) {
       close();
       return;
     }
+    setQuickViewRequest(null);
     openQuickView();
     onMenuActivate?.();
   };
@@ -413,6 +538,7 @@ export function LinearQuickViewButton({
   return (
     <>
       {trigger}
+      {connectionPromptModal}
 
       {open ? createPortal(
         <>
@@ -420,7 +546,7 @@ export function LinearQuickViewButton({
             type="button"
             aria-label="Close Linear quick view backdrop"
             data-linear-quick-view-backdrop="true"
-            className="fixed inset-0 z-[9998] cursor-default bg-black/30 backdrop-blur-sm"
+            className="fixed inset-0 z-[9998] cursor-default bg-black/55 backdrop-blur-md"
             onClick={close}
             tabIndex={-1}
           />
@@ -429,7 +555,7 @@ export function LinearQuickViewButton({
             role="dialog"
             aria-modal="true"
             aria-label="Linear quick view"
-            className="fixed left-1/2 top-1/2 z-[9999] flex max-h-[min(760px,calc(100vh-64px))] w-[min(1040px,calc(100vw-24px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border bg-[color:var(--ade-shell-surface,#121019)] text-fg shadow-2xl shadow-black/50"
+            className="fixed left-1/2 top-1/2 z-[9999] flex h-[min(900px,calc(100dvh-28px))] w-[min(1380px,calc(100vw-28px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border bg-[color:var(--ade-shell-surface,#121019)] text-fg shadow-2xl shadow-black/50"
             style={{
               borderColor: "rgba(123, 138, 240, 0.55)",
               boxShadow: "0 24px 70px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(123, 138, 240, 0.18)",
@@ -492,6 +618,9 @@ export function LinearQuickViewButton({
                   disabled: Boolean(busyModal),
                 }}
                 onConnectionVisibilityChange={setVisible}
+                onOpenLinearSettings={openLinearSettings}
+                requestedIssueIdentifier={quickViewRequest?.issueIdentifier ?? null}
+                requestedIssueRequestKey={quickViewRequest?.requestedAt ?? null}
                 onQuickViewChange={(data) => {
                   cachedQuickViewRef.current = data;
                   setQuickView(data);

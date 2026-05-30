@@ -2686,7 +2686,7 @@ describe("adeRpcServer", () => {
     expect(created?.isError).toBeUndefined();
     expect(created?.structuredContent).toMatchObject({
       githubUrl: "https://github.com/acme/ade/pull/42",
-      adeUrl: "https://ade.app/open?type=pr&repo=acme%2Fade&number=42",
+      adeUrl: "https://ade-app.dev/open?type=pr&repo=acme%2Fade&number=42",
     });
     expect(fixture.runtime.prService.createFromLane).toHaveBeenCalledWith({
       laneId: "lane-1",
@@ -2702,13 +2702,18 @@ describe("adeRpcServer", () => {
       baseBranch: "main",
     });
     expect(drafted?.isError).toBeUndefined();
-    expect(fixture.runtime.prService.draftDescription).toHaveBeenCalledWith({ laneId: "lane-1", baseBranch: "main" });
+    expect(fixture.runtime.prService.draftDescription).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      baseBranch: "main",
+      closeLinearIssueOnMerge: true,
+    });
     expect(fixture.runtime.prService.createFromLane).toHaveBeenLastCalledWith({
       laneId: "lane-1",
       baseBranch: "main",
       title: "Drafted PR",
       body: "Drafted body",
       draft: false,
+      closeLinearIssueOnMerge: true,
     });
 
     const updateTitle = await callTool(handler, "pr_update_title", { prId: "pr-1", title: "Renamed" });
@@ -2746,7 +2751,7 @@ describe("adeRpcServer", () => {
     expect(created?.isError).toBeUndefined();
     expect(created?.structuredContent).toMatchObject({
       githubUrl: "https://github.com/acme/ade/pull/42",
-      adeUrl: "https://ade.app/open?type=pr&repo=acme%2Fade&number=42",
+      adeUrl: "https://ade-app.dev/open?type=pr&repo=acme%2Fade&number=42",
     });
   });
 

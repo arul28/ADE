@@ -53,12 +53,12 @@ describe("rightPaneFormatters", () => {
         title: "Add PR deeplinks",
         state: "open",
       },
-      adeUrl: "https://ade.app/open?type=pr&repo=acme%2Fade&number=42",
+      adeUrl: "https://ade-app.dev/open?type=pr&repo=acme%2Fade&number=42",
     });
 
     expect(body).toContain("#42 · open");
     expect(body).toContain("github   https://github.com/acme/ade/pull/42");
-    expect(body).toContain("ade      https://ade.app/open?type=pr&repo=acme%2Fade&number=42");
+    expect(body).toContain("ade      https://ade-app.dev/open?type=pr&repo=acme%2Fade&number=42");
   });
 
   it("derives an ADE PR URL when repo metadata is present", () => {
@@ -71,7 +71,7 @@ describe("rightPaneFormatters", () => {
     });
 
     expect(body).toContain("github   https://github.com/acme/ade/pull/7");
-    expect(body).toContain("ade      https://ade.app/open?type=pr&repo=acme%2Fade&number=7");
+    expect(body).toContain("ade      https://ade-app.dev/open?type=pr&repo=acme%2Fade&number=7");
   });
 
   it("summarizes PR checks", () => {

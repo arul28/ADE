@@ -231,6 +231,14 @@ func buildWorkTimeline(
         rank: 1_600 + index,
         payload: .pendingPlanApproval(model)
       )
+    case .modelSelection(let model):
+      let ts = pendingTimestamps[model.id] ?? fallbackPendingTimestamp
+      return WorkTimelineEntry(
+        id: "pending-model-selection-\(model.id)",
+        timestamp: ts,
+        rank: 1_600 + index,
+        payload: .pendingModelSelection(model)
+      )
     case .approval:
       return nil
     }
@@ -1072,7 +1080,7 @@ func visibleWorkTimelineEntries(from entries: [WorkTimelineEntry], visibleCount:
 private extension WorkTimelineEntry {
   var isPendingInput: Bool {
     switch payload {
-    case .pendingQuestion, .pendingPermission, .pendingPlanApproval:
+    case .pendingQuestion, .pendingPermission, .pendingPlanApproval, .pendingModelSelection:
       return true
     default:
       return false

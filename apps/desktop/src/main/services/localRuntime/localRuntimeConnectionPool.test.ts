@@ -17,6 +17,8 @@ import {
   buildLocalRuntimeServeArgs,
   computeLocalRuntimeBuildHash,
   createLocalRuntimeOutputLogger,
+  isLocalRuntimeConnectionDropped,
+  isRetryableReadAction,
   LocalRuntimeConnectionPool,
   parseRuntimeServiceManagerOutput,
 } from "./localRuntimeConnectionPool";
@@ -474,6 +476,66 @@ describe("local runtime connection pool", () => {
     }
   });
 
+  it("does not let a stale dropped connection clear an in-flight reconnect", () => {
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never, { disableSync: true });
+    const reconnect = new Promise<unknown>(() => {});
+    const staleClient = { close: vi.fn() };
+    const staleEntry = {
+      client: staleClient,
+      child: null,
+      socketPath: "/tmp/old-ade.sock",
+    };
+    (pool as unknown as {
+      connection: Promise<unknown>;
+      activeClient: unknown;
+      activeConnection: unknown;
+    }).connection = reconnect;
+    (pool as unknown as { activeClient: unknown }).activeClient = null;
+    (pool as unknown as { activeConnection: unknown }).activeConnection = null;
+
+    (pool as unknown as {
+      resetActiveConnection: (entry: typeof staleEntry) => void;
+    }).resetActiveConnection(staleEntry);
+
+    expect((pool as unknown as { connection: Promise<unknown> | null }).connection).toBe(reconnect);
+    expect(staleClient.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let a stale timed-out action clear an in-flight reconnect", () => {
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never, { disableSync: true });
+    const reconnect = new Promise<unknown>(() => {});
+    const staleClient = { close: vi.fn() };
+    const staleEntry = {
+      client: staleClient,
+      child: null,
+      socketPath: "/tmp/old-ade.sock",
+    };
+    (pool as unknown as {
+      connection: Promise<unknown>;
+      activeClient: unknown;
+      activeConnection: unknown;
+    }).connection = reconnect;
+    (pool as unknown as { activeClient: unknown }).activeClient = null;
+    (pool as unknown as { activeConnection: unknown }).activeConnection = null;
+
+    (pool as unknown as {
+      resetConnectionAfterActionTimeout: (entry: typeof staleEntry) => void;
+    }).resetConnectionAfterActionTimeout(staleEntry);
+
+    expect((pool as unknown as { connection: Promise<unknown> | null }).connection).toBe(reconnect);
+    expect(staleClient.close).toHaveBeenCalledTimes(1);
+  });
+
   it("normalizes local action registry entries from runtime action names", async () => {
     const pool = new LocalRuntimeConnectionPool("1.2.3", {
       debug: vi.fn(),
@@ -543,7 +605,7 @@ describe("local runtime connection pool", () => {
       gitOriginUrl: null,
     });
     (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
-      client: { call },
+      client: { call, isClosed: vi.fn(() => false) },
       child: null,
       socketPath: "/tmp/ade.sock",
     });
@@ -596,6 +658,166 @@ describe("local runtime connection pool", () => {
       args: { limit: 500, laneId: "lane-1" },
     });
     expect(call).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries project registration when the cached runtime connection drops before a read action", async () => {
+    const dropped = new Error("Remote ADE service connection closed.");
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const rootPath = path.resolve("/repo");
+    const project = {
+      projectId: "project-1",
+      rootPath,
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: null,
+    };
+    const firstClient = {
+      call: vi.fn().mockRejectedValue(dropped),
+      close: vi.fn(),
+      isClosed: vi.fn(() => false),
+    };
+    const secondClient = {
+      call: vi.fn(async (method: string) => {
+        if (method === "projects.add") return project;
+        if (method === "ade/actions/call") {
+          return {
+            domain: "lane",
+            action: "list",
+            result: [{ id: "lane-1" }],
+            statusHints: {},
+          };
+        }
+        throw new Error(`Unexpected method ${method}`);
+      }),
+      close: vi.fn(),
+      isClosed: vi.fn(() => false),
+    };
+    const firstEntry = {
+      client: firstClient,
+      child: null,
+      socketPath: "/tmp/ade-stale.sock",
+    };
+    const secondEntry = {
+      client: secondClient,
+      child: null,
+      socketPath: "/tmp/ade-fresh.sock",
+    };
+    const createConnection = vi.fn<[], Promise<unknown>>()
+      .mockResolvedValueOnce(firstEntry)
+      .mockResolvedValueOnce(secondEntry);
+    const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never);
+    (pool as unknown as { createConnection: () => Promise<unknown> }).createConnection = createConnection;
+
+    await expect(pool.callActionForRoot(rootPath, {
+      domain: "lane",
+      action: "list",
+      args: {},
+    })).resolves.toEqual({
+      domain: "lane",
+      action: "list",
+      result: [{ id: "lane-1" }],
+      statusHints: {},
+    });
+
+    expect(createConnection).toHaveBeenCalledTimes(2);
+    expect(firstClient.call).toHaveBeenCalledWith(
+      "projects.add",
+      { rootPath },
+      { timeoutMs: expect.any(Number) },
+    );
+    expect(firstClient.close).toHaveBeenCalledTimes(1);
+    expect(secondClient.call).toHaveBeenNthCalledWith(
+      1,
+      "projects.add",
+      { rootPath },
+      { timeoutMs: expect.any(Number) },
+    );
+    expect(secondClient.call).toHaveBeenNthCalledWith(
+      2,
+      "ade/actions/call",
+      {
+        projectId: "project-1",
+        name: "run_ade_action",
+        arguments: {
+          domain: "lane",
+          action: "list",
+          args: {},
+        },
+      },
+      { timeoutMs: 30_000 },
+    );
+    expect(logger.warn).toHaveBeenCalledWith("local_runtime.ensure_project_connection_dropped", {
+      rootPath,
+      socketPath: "/tmp/ade-stale.sock",
+      attempt: 1,
+      willRetry: true,
+      error: dropped.message,
+    });
+  });
+
+  it("reconnects before project registration when the runtime client is already closed", async () => {
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const rootPath = path.resolve("/repo");
+    const project = {
+      projectId: "project-1",
+      rootPath,
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: null,
+    };
+    const firstClient = {
+      call: vi.fn(),
+      close: vi.fn(),
+      isClosed: vi.fn(() => true),
+    };
+    const secondClient = {
+      call: vi.fn().mockResolvedValue(project),
+      close: vi.fn(),
+      isClosed: vi.fn(() => false),
+    };
+    const createConnection = vi.fn<[], Promise<unknown>>()
+      .mockResolvedValueOnce({
+        client: firstClient,
+        child: null,
+        socketPath: "/tmp/ade-closed.sock",
+      })
+      .mockResolvedValueOnce({
+        client: secondClient,
+        child: null,
+        socketPath: "/tmp/ade-open.sock",
+      });
+    const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never);
+    (pool as unknown as { createConnection: () => Promise<unknown> }).createConnection = createConnection;
+
+    await expect(pool.ensureProject(rootPath)).resolves.toEqual(project);
+
+    expect(createConnection).toHaveBeenCalledTimes(2);
+    expect(firstClient.call).not.toHaveBeenCalled();
+    expect(firstClient.close).toHaveBeenCalledTimes(1);
+    expect(secondClient.call).toHaveBeenCalledWith(
+      "projects.add",
+      { rootPath },
+      { timeoutMs: expect.any(Number) },
+    );
+    expect(logger.warn).toHaveBeenCalledWith("local_runtime.ensure_project_connection_dropped", {
+      rootPath,
+      socketPath: "/tmp/ade-closed.sock",
+      attempt: 1,
+      willRetry: true,
+      error: "Remote ADE service connection closed.",
+    });
   });
 
   it("terminates an app-owned fallback runtime when disposed", async () => {
@@ -1199,7 +1421,7 @@ describe("local runtime connection pool", () => {
       gitOriginUrl: null,
     });
     (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
-      client: { call },
+      client: { call, isClosed: vi.fn(() => false) },
       child: null,
       socketPath: "/tmp/ade.sock",
     });
@@ -1260,7 +1482,7 @@ describe("local runtime connection pool", () => {
       gitOriginUrl: null,
     });
     (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
-      client: { call },
+      client: { call, isClosed: vi.fn(() => false) },
       child: null,
       socketPath: "/tmp/ade.sock",
     });
@@ -1313,11 +1535,15 @@ describe("local runtime connection pool", () => {
       lastOpenedAt: 1,
       gitOriginUrl: null,
     });
-    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
-      client: { call, close },
+    const client = { call, close, isClosed: vi.fn(() => false) };
+    const entry = {
+      client,
       child,
       socketPath: "/tmp/ade.sock",
-    });
+    };
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve(entry);
+    (pool as unknown as { activeConnection: unknown; activeClient: unknown }).activeConnection = entry;
+    (pool as unknown as { activeClient: unknown }).activeClient = client;
     (pool as unknown as { ownedRuntimeChild: unknown }).ownedRuntimeChild = child;
 
     await expect(pool.callActionForRoot(rootPath, {
@@ -1366,7 +1592,7 @@ describe("local runtime connection pool", () => {
       gitOriginUrl: null,
     });
     (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
-      client: { call },
+      client: { call, isClosed: () => false },
       child: null,
       socketPath: "/tmp/ade.sock",
     });
@@ -1465,5 +1691,37 @@ describe("local runtime connection pool", () => {
 
     cleanup();
     expect(call).toHaveBeenCalledWith("runtimeEvents.unsubscribe", { subscriptionId: "runtime-events-4" });
+  });
+});
+
+describe("local runtime action retry classification", () => {
+  it("recognizes dropped/closed daemon connection errors", () => {
+    expect(isLocalRuntimeConnectionDropped(new Error("Remote ADE service connection closed."))).toBe(true);
+    expect(isLocalRuntimeConnectionDropped(new Error("Remote ADE service connection failed: ECONNRESET"))).toBe(true);
+    // Must NOT treat unrelated failures as a connection drop (would wrongly retry).
+    expect(isLocalRuntimeConnectionDropped(new Error("Remote ADE service timed out waiting for method ade/actions/call (5000ms)."))).toBe(false);
+    expect(isLocalRuntimeConnectionDropped(new Error("Local ADE service action failed."))).toBe(false);
+  });
+
+  it("only retries idempotent read actions, never mutations", () => {
+    // Reads — safe to retry after a connection drop.
+    expect(isRetryableReadAction("lane", "list")).toBe(true);
+    expect(isRetryableReadAction("lane", "listSnapshots")).toBe(true);
+    expect(isRetryableReadAction("diff", "getChanges")).toBe(true);
+    expect(isRetryableReadAction("diff", "getFilePatch")).toBe(true);
+    expect(isRetryableReadAction("file", "readFile")).toBe(true);
+    expect(isRetryableReadAction("chat", "getChatEventHistory")).toBe(true);
+    expect(isRetryableReadAction("file", "quickOpen")).toBe(true);
+
+    // Mutations — must NOT be retried (a retry could re-run the side effect).
+    expect(isRetryableReadAction("lane", "delete")).toBe(false);
+    expect(isRetryableReadAction("lane", "create")).toBe(false);
+    expect(isRetryableReadAction("lane", "archive")).toBe(false);
+    expect(isRetryableReadAction("file", "writeTextAtomic")).toBe(false);
+    expect(isRetryableReadAction("chat", "sendMessage")).toBe(false);
+    expect(isRetryableReadAction("pr", "merge")).toBe(false);
+    // Prefix must respect a camelCase boundary, not arbitrary substrings.
+    expect(isRetryableReadAction("lane", "getaway")).toBe(false);
+    expect(isRetryableReadAction("lane", "listenStop")).toBe(false);
   });
 });

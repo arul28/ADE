@@ -48,12 +48,17 @@ The integration is used by four distinct consumers:
    issue, ADE auto-derives the branch name, prefixes commit messages
    with `Refs IDENT: …`, seeds the PR title (`IDENT: title`), and adds
    a `Fixes IDENT` / `Refs IDENT` magic word to the PR body so Linear
-   links the PR back to the issue. There is also a top-bar
-   `LinearQuickViewButton` that opens the same `LinearIssueBrowser`
-   the chat composer uses, lets the operator filter / search across
-   their Linear backlog, and turns any selected issue into a new
-   lane in one click.
-3. **The headless ADE CLI.** `apps/ade-cli/src/headlessLinearServices.ts`
+   links the PR back to the issue. Chat sessions that attach Linear issues
+   also publish a local ADE session attachment back to Linear so the same
+   desktop can reopen the exact Work chat later.
+3. **Linear issue timelines and ADE deeplinks.** When Linear sends a newly
+   created issue event, ADE publishes an `Open in ADE` attachment whose URL
+   opens the desktop Linear pane directly to that issue. Lane, PR, and chat
+   attachments use the same deeplink builder so a teammate clicking from
+   Linear lands in ADE, sees a setup modal when the project or Linear
+   connection is missing, and can create/import the lane or continue the chat
+   from there.
+4. **The headless ADE CLI.** `apps/ade-cli/src/headlessLinearServices.ts`
    instantiates the full Linear service stack (sync, dispatcher, closeout,
    intake, ingress, routing, outbound, templates) so external callers can
    trigger and resolve Linear runs without the desktop UI running. The
@@ -184,10 +189,18 @@ Core Linear services on desktop
 - `linearIntakeService.ts` — issue discovery loop, snapshots, hashes
 - `linearOutboundService.ts` — comments, artifact uploads, state transitions
 - `linearCloseoutService.ts` — terminal outcome application to Linear
+- `linearLaneCardService.ts` — builds the Linear attachments for ADE lanes,
+  PRs, issue quick-view links, and Work chat sessions. The issue quick-view
+  card points at `https://ade-app.dev/open?type=linear-issue&issue=IDENT`;
+  the chat card uses the local `ade://session/<id>?lane=<lane-id>` form for
+  the exact chat and lane because chat session IDs are machine-local.
 - `linearDispatcherService.ts` — run lifecycle, step walker, retries,
   concurrency, delegation, stage chaining
 - `linearSyncService.ts` — reconciliation loop, `processIssueUpdate` entry
-  point, dashboard, queue, sync events
+  point, dashboard, queue, sync events, and `ensureAdeIssueLinkForIssue`,
+  which adds the one-time ADE issue-pane attachment for newly created Linear
+  issues and records `ade_issue_link_attached` / `ade_issue_link_attach_failed`
+  events for observability.
 - `linearIngressService.ts` — webhook HTTP listener + relay poller, hands
   off to `syncService.processIssueUpdate`
 
@@ -267,15 +280,17 @@ Renderer wiring:
   shared Linear brand tokens (`LINEAR_BRAND` palette) and icon
   family (`LinearMark`, `LinearStateIcon`, `LinearPriorityIcon`).
 - `apps/desktop/src/renderer/components/app/LinearQuickViewButton.tsx`
-  — top-bar button (rendered in `TopBar.tsx` when
-  `LinearConnectionStatus.connected === true`). Opens a popover
-  hosting the shared `LinearIssueBrowser`; selecting an issue
-  creates a new lane via `lanes.create` with `linearIssue` set,
-  refreshes the lane store, and selects the new lane. Supports
-  batch flows: multi-select in the browser dispatches to batch
-  create lanes, batch resolve in new lanes, or batch resolve into
-  an existing lane. Caches the last-fetched workspace summary for
-  instant popover open and polls for Linear connection visibility
+  — top-bar button and deeplink receiver. When Linear is connected it opens a
+  popover hosting the shared `LinearIssueBrowser`; selecting an issue creates
+  a new lane via `lanes.create` with `linearIssue` set, refreshes the lane
+  store, and selects the new lane. It also subscribes to
+  `requestLinearIssueQuickView` events from ADE deeplinks, opens the pane to
+  the requested issue identifier, and shows a modal with the exact missing
+  setup step when a user clicks a Linear issue link without an open project or
+  without a Linear connection. Supports batch flows: multi-select in the
+  browser dispatches to batch create lanes, batch resolve in new lanes, or
+  batch resolve into an existing lane. Caches the last-fetched workspace
+  summary for instant popover open and polls for Linear connection visibility
   on a 3-second interval until connected.
 - `apps/desktop/src/renderer/components/app/LinearIssueBrowser.tsx`
   — full filter/search surface with multi-select. Reads
@@ -285,8 +300,10 @@ Renderer wiring:
   thread (rendered with markdown). Supports checkbox selection
   with shift-click range, select-all, and batch action dispatch.
   Persists per-project filter state in `localStorage` under
-  `ade.linear.quickView.filters.v1:<projectRoot>`. The issue
-  detail pane displays cycle metadata and child-issue status.
+  `ade.linear.quickView.filters.v1:<projectRoot>`. Deeplink requests set an
+  exact issue filter, include all state types, and auto-select the matching
+  issue row when the search results return. The issue detail pane displays
+  cycle metadata and child-issue status.
 - `apps/desktop/src/renderer/components/app/LinearIssueResolveModals.tsx`
   — modal dialogs for resolving Linear issues directly from the
   quick-view or issue browser: create a new lane from the issue,
@@ -306,7 +323,9 @@ Renderer wiring:
   issue when a chat opens on a Linear-connected lane (via
   `initialLinearIssueContext`, source `"lane_link"`), and the
   composer pins it to the dialog so the user can see what's
-  already linked.
+  already linked. The main-process `agentChatService` forwards newly linked
+  chat context to `publishLinearChatSessionCard`, which adds an ADE chat
+  attachment back to each affected Linear issue.
 - `apps/desktop/src/renderer/components/prs/CreatePrModal.tsx` —
   reads `lane.linearIssue`, defaults the PR title to
   `buildLinearPrTitle`, and uses `ensureLinearPrReference` against
@@ -451,18 +470,30 @@ exposes that path in three places that all share the same primitives:
   `laneService.linkLinearIssues({ issues, role: "worked", source:
   "chat_attach", includeInPr: true, evidence: { chatSessionId } })`
   so the attached issues survive across PR creation and show up in
-  the rendered "Linked Linear issues" block.
+  the rendered "Linked Linear issues" block. ADE also publishes a Linear issue
+  attachment for the chat session (`Open ADE chat: IDENT`) with a local
+  `ade://session/<id>` deeplink so the same desktop can reopen the exact
+  chat without presenting the link as portable across machines.
 - **Top-bar quick view.** `TopBar` mounts
-  `LinearQuickViewButton` whenever `LinearConnectionStatus.connected`
-  is true. The popover shows `CtoLinearQuickView` (workspace +
-  active project counters) plus the shared
-  `LinearIssueBrowser`; clicking an issue creates a fresh lane via
-  `lanes.create`, refreshes the lane store, and selects the new
-  lane. Multi-select in the browser enables batch flows: create one
-  lane per selected issue, create lanes and launch agents, or resolve
-  multiple issues into an existing lane. The issue detail pane renders
-  the comment thread (via `getLinearIssueComments`) with markdown and
-  shows cycle and child-issue metadata.
+  `LinearQuickViewButton`. The button only appears once the active project is
+  connected to Linear, but the component still listens for inbound issue
+  deeplinks. Connected users get the `CtoLinearQuickView` workspace summary
+  plus the shared `LinearIssueBrowser`; disconnected users get a modal that
+  explains whether they need to open the project first or connect Linear from
+  Settings. Clicking an issue creates a fresh lane via `lanes.create`,
+  refreshes the lane store, and selects the new lane. Multi-select in the
+  browser enables batch flows: create one lane per selected issue, create
+  lanes and launch agents, or resolve multiple issues into an existing lane.
+  The issue detail pane renders the comment thread (via
+  `getLinearIssueComments`) with markdown and shows cycle and child-issue
+  metadata.
+- **Linear issue quick-view attachments.** `linearSyncService` calls
+  `ensureAdeIssueLinkForIssue(issueId, "linear_issue_created")` after Linear
+  create events. The service fetches the issue, builds an ADE Linear-pane
+  attachment with `buildLinearIssueQuickViewAttachment`, and deduplicates it
+  through `linear_sync_events` so each Linear issue gets one ADE entry point.
+  The URL is portable across machines because it uses the canonical
+  `https://ade-app.dev/open` web handoff instead of a local-only scheme.
 
 ## Database tables (selected)
 
@@ -475,7 +506,8 @@ other ADE table. Key tables the Linear stack writes:
 - `linear_issue_snapshots` — last-seen payload hash per issue for
   change detection in `processIssueUpdate`
 - `linear_sync_events` — `issue_closed`, `watch_only_match`,
-  `workflow_capacity_wait`, `issue_deduped` observability records
+  `workflow_capacity_wait`, `issue_deduped`, `ade_issue_link_attached`, and
+  `ade_issue_link_attach_failed` observability records
 - `lane_linear_issues` — issue payload attached to a lane at
   create time, keyed by `(project_id, lane_id)`. Used by lane
   hydration, `LinearIssueBadge`, commit-message prefixing, and PR

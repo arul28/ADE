@@ -86,7 +86,7 @@ struct SendToMacTarget: Equatable, Identifiable {
   private static func parseHttpsOpenURL(_ url: URL) -> Kind? {
     guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
           components.scheme?.lowercased() == "https",
-          components.host?.lowercased() == "ade.app",
+          ADEDeepLinkURLParsing.isADEWebHost(components.host),
           components.path == "/open" else {
       return nil
     }
