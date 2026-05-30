@@ -397,6 +397,43 @@ describe("linearOAuthService", () => {
     expect(session.error).toBeNull();
   });
 
+  it("throws an actionable error when another service instance holds the callback port", async () => {
+    const firstService = createLinearOAuthService({
+      credentials: createCredentialsMock() as any,
+      logger: createLogger(),
+    });
+    activeServices.push(firstService);
+    await firstService.startSession();
+
+    const logger = createLogger();
+    const secondService = createLinearOAuthService({
+      credentials: createCredentialsMock() as any,
+      logger,
+    });
+    activeServices.push(secondService);
+
+    let caught: unknown;
+    try {
+      await secondService.startSession();
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    const error = caught as Error & { code?: string };
+    expect(error.code).toBe("EADDRINUSE");
+    expect(error.message).toContain("callback port 19836 is already in use");
+    expect(error.message).toContain("Stop the other ADE process or local app");
+    expect(error.message).not.toContain("listen EADDRINUSE");
+    expect(logger.warn).toHaveBeenCalledWith(
+      "linear_sync.oauth_callback_port_in_use",
+      expect.objectContaining({
+        host: "127.0.0.1",
+        port: 19836,
+      }),
+    );
+  });
+
   it("getSession returns expired for unknown session id", () => {
     const credentials = createCredentialsMock();
     const service = createLinearOAuthService({
