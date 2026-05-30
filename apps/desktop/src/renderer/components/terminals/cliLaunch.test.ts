@@ -277,23 +277,23 @@ describe("buildTrackedCliStartupCommand", () => {
   });
 
   describe("additional CLI providers", () => {
-    it("launches Cursor through a pre-created resumable chat", () => {
+    it("launches Cursor with the documented initial prompt argument", () => {
       const launch = buildTrackedCliLaunchCommand({ provider: "cursor", permissionMode: "plan", model: "cursor-fast", initialPrompt: "Review this lane." });
-      expect(launch.command).toBe("/bin/bash");
-      expect(launch.args).toEqual(["-lc", launch.startupCommand]);
-      expect(launch.startupCommand).toContain("cursor-agent create-chat");
-      expect(launch.startupCommand).toContain("cursor-agent --mode plan --model cursor-fast --resume \"$ADE_CURSOR_CHAT_ID\"");
-      expect(launch.startupCommand).toContain("printf '%s\\n' \"[ADE] Continue with cursor-agent --resume ${ADE_CURSOR_CHAT_ID}\"");
-      expect(launch.startupCommand).toContain("Continue with cursor-agent --resume");
-      expect(launch.startupCommand).not.toContain("Review this lane.");
-      expect(launch.startupCommand).not.toContain("ADE session guidance");
-      expect(launch.initialInput).toContain("Review this lane.");
-      expect(launch.initialInput).toContain("ADE session guidance");
-      expect(launch.initialInputDelayMs).toBe(750);
+      expect(launch.command).toBe("cursor-agent");
+      expect(launch.args).toEqual(expect.arrayContaining(["--mode", "plan", "--model", "cursor-fast"]));
+      expect(launch.args.at(-1)).toContain("ADE session guidance");
+      expect(launch.args.at(-1)).toContain("Review this lane.");
+      expect(launch.startupCommand).toContain("cursor-agent --mode plan --model cursor-fast");
+      expect(launch.startupCommand).toContain("Review this lane.");
+      expect(launch.startupCommand).toContain("ADE session guidance");
+      expect(launch.startupCommand).not.toContain("cursor-agent create-chat");
+      expect(launch.startupCommand).not.toContain("--resume");
+      expect(launch.initialInput).toBeUndefined();
+      expect(launch.initialInputDelayMs).toBeUndefined();
       expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
     });
 
-    it("normalizes Cursor registry model ids and trusts full-auto workspaces", () => {
+    it("normalizes Cursor registry model ids and forces full-auto interactive workspaces", () => {
       const launch = buildTrackedCliLaunchCommand({
         provider: "cursor",
         permissionMode: "full-auto",
@@ -301,21 +301,22 @@ describe("buildTrackedCliStartupCommand", () => {
         initialPrompt: "Review this lane.",
       });
 
-      expect(launch.startupCommand).toContain("cursor-agent --force --trust --model composer-2.5 --resume \"$ADE_CURSOR_CHAT_ID\"");
+      expect(launch.startupCommand).toContain("cursor-agent --force --model composer-2.5");
+      expect(launch.startupCommand).not.toContain("--trust");
       expect(launch.startupCommand).not.toContain("--model cursor/composer-2.5");
+      expect(launch.args).toEqual(expect.arrayContaining(["--force", "--model", "composer-2.5"]));
+      expect(launch.args).not.toContain("--trust");
+      expect(launch.args.at(-1)).toContain("Review this lane.");
     });
 
-    it("launches Cursor through a Windows-safe pre-created resumable chat", () => {
+    it("keeps Cursor launch direct on Windows", () => {
       withProcessPlatform("win32", () => {
         const launch = buildTrackedCliLaunchCommand({ provider: "cursor", permissionMode: "plan", model: "cursor-fast", initialPrompt: "Review this lane." });
-        expect(launch.command).toBe("powershell.exe");
-        expect(launch.args).toEqual(["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", launch.startupCommand]);
-        expect(launch.startupCommand).toContain("cursor-agent create-chat");
-        expect(launch.startupCommand).toContain("cursor-agent --resume $env:ADE_CURSOR_CHAT_ID");
-        expect(launch.startupCommand).toContain("'--mode' 'plan'");
-        expect(launch.startupCommand).toContain("'--model' 'cursor-fast'");
-        expect(launch.initialInput).toContain("Review this lane.");
-        expect(launch.initialInputDelayMs).toBe(750);
+        expect(launch.command).toBe("cursor-agent");
+        expect(launch.args).toEqual(expect.arrayContaining(["--mode", "plan", "--model", "cursor-fast"]));
+        expect(launch.args.at(-1)).toContain("Review this lane.");
+        expect(launch.initialInput).toBeUndefined();
+        expect(launch.initialInputDelayMs).toBeUndefined();
       });
     });
 
@@ -468,7 +469,7 @@ describe("tracked CLI resume helpers", () => {
       targetKind: "session",
       targetId: "chat-99",
       launch: { permissionMode: "full-auto" },
-    })).toBe("cursor-agent --force --trust --model auto --resume chat-99");
+    })).toBe("cursor-agent --force --model auto --resume chat-99");
 
     expect(buildTrackedCliResumeCommand({
       provider: "cursor",

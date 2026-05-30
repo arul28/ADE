@@ -310,6 +310,54 @@ function seedFastCursorRuntimeModelCatalog(): { modelId: string; fastAlias: stri
   return { modelId: model.id, fastAlias: "composer-2.5-speed-fast" };
 }
 
+function seedReasoningCursorRuntimeModelCatalog(): { modelId: string; concreteModel: string } {
+  const concreteModel = "claude-opus-4-7-thinking-medium-fast";
+  const model = createDynamicCursorCliModelDescriptor("claude-opus-4-7-thinking", "Opus 4.7 1M Thinking", {
+    reasoningTiers: ["low", "medium"],
+    serviceTiers: ["fast"],
+    cursorAvailability: { cli: true, sdk: false },
+    cursorCliVariants: [
+      { modelId: "claude-opus-4-7-thinking-low", reasoningEffort: "low", fastMode: false },
+      { modelId: "claude-opus-4-7-thinking-low-fast", reasoningEffort: "low", fastMode: true },
+      { modelId: "claude-opus-4-7-thinking-medium", reasoningEffort: "medium", fastMode: false },
+      { modelId: concreteModel, reasoningEffort: "medium", fastMode: true },
+    ],
+  });
+  rememberRuntimeCatalog({
+    fetchedAt: "2026-05-22T00:00:00.000Z",
+    groups: [{
+      key: "cursor",
+      displayName: "Cursor",
+      providers: [{
+        key: "cursor",
+        displayName: "Cursor",
+        badgeColor: "#8B5CF6",
+        modelCount: 1,
+        subsections: [{
+          key: "cursor",
+          label: "Cursor",
+          models: [{
+            id: model.id,
+            runtimeModelId: model.providerModelId,
+            provider: "cursor",
+            providerKey: "cursor",
+            groupKey: "cursor",
+            displayName: model.displayName,
+            isDefault: true,
+            isAvailable: true,
+            aliases: model.aliases,
+            reasoningEfforts: model.reasoningTiers?.map((effort) => ({ effort, description: `${effort} reasoning` })),
+            serviceTiers: model.serviceTiers,
+            cursorAvailability: model.cursorAvailability,
+            cursorCliVariants: model.cursorCliVariants,
+          }],
+        }],
+      }],
+    }],
+  } as AgentChatModelCatalog, { mode: "cached" });
+  return { modelId: model.id, concreteModel };
+}
+
 function buildPendingInputTranscript(sessionId: string): string {
   return `${JSON.stringify({
     sessionId,
@@ -2712,7 +2760,7 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   it("filters Cursor CLI-only models from chat handoff picking", async () => {
-    const { cliOnlyId, chatOnlyId, bothId } = seedCursorRuntimeModelCatalog();
+    const { bothId } = seedCursorRuntimeModelCatalog();
     const session = buildSession("session-1", { status: "idle" });
     installAdeMocks({
       cursorModels: [{ id: bothId }],
@@ -3902,7 +3950,68 @@ describe("AgentChatPane submit recovery", () => {
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
     expect(launchArgs.startupCommand).toContain(`--model ${fastAlias}`);
-    expect(launchArgs.initialInput).toContain("Run Cursor in fast mode.");
+    expect(launchArgs.args).toEqual(expect.arrayContaining([expect.stringContaining("Run Cursor in fast mode.")]));
+  });
+
+  it("uses the concrete Cursor CLI variant for Work draft reasoning and fast controls", async () => {
+    const { modelId, concreteModel } = seedReasoningCursorRuntimeModelCatalog();
+    installAdeMocks({ sessions: [], cursorModels: [{ id: modelId }] });
+    useAppStore.setState({
+      project: { rootPath: "/tmp/project-under-test" } as any,
+    });
+    const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-1", ptyId: "pty-1" });
+    const launchConfigKey = [
+      "ade.chat.lastLaunchConfig.v1",
+      "/tmp/project-under-test",
+      "lane-1",
+      "standard",
+      "cli",
+    ].map(encodeURIComponent).join(":");
+    window.localStorage.setItem(launchConfigKey, JSON.stringify({
+      version: 1,
+      modelId,
+      reasoningEffort: "medium",
+      codexFastMode: true,
+      executionMode: "focused",
+      updatedAt: "2026-05-26T12:00:00.000Z",
+      controls: {
+        interactionMode: "default",
+        claudePermissionMode: "default",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+        opencodePermissionMode: "edit",
+        droidPermissionMode: "auto-low",
+        cursorModeId: "agent",
+        cursorConfigValues: {},
+      },
+    }));
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId="lane-1"
+          forceDraftMode
+          embeddedWorkLayout
+          workDraftKind="cli"
+          onLaunchCliSession={onLaunchCliSession}
+        />
+      </MemoryRouter>,
+    );
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Run Cursor with medium fast thinking." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(onLaunchCliSession).toHaveBeenCalledWith(expect.objectContaining({
+        profile: "cursor",
+        tracked: true,
+      }));
+    });
+    const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
+    expect(launchArgs.startupCommand).toContain(`--model ${concreteModel}`);
+    expect(launchArgs.args).toEqual(expect.arrayContaining([expect.stringContaining("Run Cursor with medium fast thinking.")]));
   });
 
   it("auto-creates a lane for a foreground CLI session draft", async () => {

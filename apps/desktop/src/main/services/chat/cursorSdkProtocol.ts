@@ -215,6 +215,7 @@ export type CursorSdkWorkerResponse =
       agentId: string;
       runId: string;
       modelSdkId?: string | null;
+      modelParams?: CursorSdkModelParameterValue[];
       runtime?: CursorSdkRuntime;
       requestId?: string;
     }

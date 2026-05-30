@@ -15,11 +15,12 @@ import {
   listModelDescriptorsForProvider,
   MODEL_REGISTRY,
   resolveModelAlias,
+  resolveCursorCliModelVariant,
   resolveModelDescriptor,
   resolveModelDescriptorForProvider,
   resolveModelSlug,
 } from "./modelRegistry";
-import type { ProviderFamily } from "./modelRegistry";
+import type { ModelDescriptor, ProviderFamily } from "./modelRegistry";
 import { describeModelSource } from "../renderer/lib/modelOptions";
 
 describe("modelRegistry", () => {
@@ -195,6 +196,43 @@ describe("modelRegistry", () => {
     const descriptor = getModelById("openai/gpt-5.5");
     expect(descriptor).toBeTruthy();
     expect(getRuntimeModelRefForDescriptor(descriptor!, "codex")).toBe("gpt-5.5");
+  });
+
+  it("resolves Cursor CLI abstract picker controls to concrete model ids", () => {
+    const descriptor = {
+      id: "cursor/claude-opus-4-7-thinking",
+      shortId: "claude-opus-4-7-thinking",
+      displayName: "Opus 4.7 1M Thinking",
+      family: "cursor" as const,
+      authTypes: ["api-key"],
+      contextWindow: 200_000,
+      maxOutputTokens: 32_000,
+      capabilities: { tools: true, vision: true, reasoning: true, streaming: true },
+      color: "#D97706",
+      providerRoute: "cursor-sdk",
+      providerModelId: "claude-opus-4-7-thinking",
+      cliCommand: "cursor",
+      isCliWrapped: false,
+      cursorCliVariants: [
+        { modelId: "claude-opus-4-7-thinking-low", reasoningEffort: "low", fastMode: false },
+        { modelId: "claude-opus-4-7-thinking-low-fast", reasoningEffort: "low", fastMode: true },
+        { modelId: "claude-opus-4-7-thinking-medium", reasoningEffort: "medium", fastMode: false },
+        { modelId: "claude-opus-4-7-thinking-medium-fast", reasoningEffort: "medium", fastMode: true },
+      ],
+    } satisfies ModelDescriptor;
+
+    expect(resolveCursorCliModelVariant(descriptor, {
+      reasoningEffort: "medium",
+      fastMode: true,
+    })).toBe("claude-opus-4-7-thinking-medium-fast");
+    expect(resolveCursorCliModelVariant(descriptor, {
+      reasoningEffort: "low",
+      fastMode: false,
+    })).toBe("claude-opus-4-7-thinking-low");
+    expect(resolveCursorCliModelVariant(descriptor, {
+      reasoningEffort: "high",
+      fastMode: true,
+    })).toBe("claude-opus-4-7-thinking-low-fast");
   });
 
   describe("Claude Opus descriptors", () => {

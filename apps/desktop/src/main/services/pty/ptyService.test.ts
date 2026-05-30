@@ -2080,13 +2080,6 @@ describe("ptyService", () => {
         expectedName: "Codex",
       },
       {
-        provider: "cursor",
-        toolType: "cursor-cli",
-        title: "Cursor CLI",
-        resumeCommand: "cursor-agent --model auto --continue",
-        expectedName: "Cursor",
-      },
-      {
         provider: "droid",
         toolType: "droid",
         title: "Droid CLI",
@@ -2462,7 +2455,7 @@ describe("ptyService", () => {
       }
     });
 
-    it("sendToSession launches resumed Cursor with the prompt argument", async () => {
+    it("sendToSession resumes Cursor and sends the prompt after the composer is ready", async () => {
       vi.useFakeTimers();
       try {
         const { service, sessionService, mockPty, loadPty } = createHarness();
@@ -2497,14 +2490,24 @@ describe("ptyService", () => {
           rows: 40,
         });
         await Promise.resolve();
-        mockPty._emitter.emit("data", "Cursor Agent\nv2026.05.24\n→ Add a follow-up\n");
-
+        await vi.waitFor(() => {
+          expect(loadPty).toHaveBeenCalled();
+        });
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", "cursor-agent --model auto --resume cursor-chat-1 'Print EXACT_CURSOR_RESUME_526 and stop'"],
+          ["--noprofile", "--norc", "-lc", "cursor-agent --model auto --resume cursor-chat-1"],
           expect.any(Object),
         );
+        mockPty._emitter.emit("data", "Cursor Agent\nv2026.05.24\n→ Add a follow-up\n");
+
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(mockPty.write).toHaveBeenNthCalledWith(1, "\x05");
+        await vi.advanceTimersByTimeAsync(25);
+        expect(mockPty.write).toHaveBeenNthCalledWith(2, "\x15");
+        await vi.advanceTimersByTimeAsync(25);
+        expect(mockPty.write).toHaveBeenNthCalledWith(3, "Print EXACT_CURSOR_RESUME_526 and stop");
+        await vi.advanceTimersByTimeAsync(500);
 
         const result = await pending;
 
@@ -2513,13 +2516,13 @@ describe("ptyService", () => {
           resumed: true,
           reusedExistingRuntime: false,
         }));
-        expect(mockPty.write).not.toHaveBeenCalled();
+        expect(mockPty.write).toHaveBeenLastCalledWith("\r");
       } finally {
         vi.useRealTimers();
       }
     });
 
-    it("sendToSession launches resumed Cursor with a prompt even when provider-ready text is absent", async () => {
+    it("sendToSession does not inject a resumed Cursor prompt before the composer is ready", async () => {
       vi.useFakeTimers();
       try {
         const { service, sessionService, mockPty, loadPty, logger } = createHarness();
@@ -2552,7 +2555,10 @@ describe("ptyService", () => {
           text: "Print EXACT_CURSOR_TRUST_TIMEOUT and stop",
           cols: 120,
           rows: 40,
-        });
+        }).then(
+          (result) => ({ result, error: null as Error | null }),
+          (error: Error) => ({ result: null, error }),
+        );
         await Promise.resolve();
         mockPty._emitter.emit("data", [
           "Cursor Agent\n",
@@ -2561,25 +2567,140 @@ describe("ptyService", () => {
           "[a] Trust this workspace\n",
         ].join(""));
 
+        await vi.advanceTimersByTimeAsync(20_500);
         await expect(pending).resolves.toEqual(expect.objectContaining({
-          sessionId: "session-cursor-trust",
-          resumed: true,
-          reusedExistingRuntime: false,
+          result: null,
+          error: expect.objectContaining({
+            message: expect.stringContaining("could not receive the message"),
+          }),
         }));
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", "cursor-agent --model auto --resume cursor-chat-trust 'Print EXACT_CURSOR_TRUST_TIMEOUT and stop'"],
+          ["--noprofile", "--norc", "-lc", "cursor-agent --model auto --resume cursor-chat-trust"],
           expect.any(Object),
         );
         expect(mockPty.write).not.toHaveBeenCalled();
-        expect(logger.warn).not.toHaveBeenCalledWith(
+        expect(logger.warn).toHaveBeenCalledWith(
           "pty.agent_cli_ready_wait_timeout",
-          expect.anything(),
+          expect.objectContaining({ provider: "cursor" }),
+        );
+        expect(logger.warn).toHaveBeenCalledWith(
+          "pty.resume_send_input_failed_preserved",
+          expect.objectContaining({ provider: "cursor" }),
         );
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it("sendToSession can continue Cursor without a captured chat id and never adds --trust", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, sessionService, mockPty, loadPty } = createHarness();
+        sessionService.create({
+          sessionId: "session-cursor-continue",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Cursor CLI",
+          startedAt: "2026-04-09T12:00:00.000Z",
+          transcriptPath: "/tmp/transcripts/session-cursor-continue.log",
+          toolType: "cursor-cli",
+          resumeCommand: "cursor-agent --force --trust --model composer-2.5-fast --continue",
+          resumeMetadata: {
+            provider: "cursor",
+            targetKind: "session",
+            targetId: null,
+            launch: { permissionMode: "full-auto", model: "composer-2.5-fast" },
+          },
+        });
+        sessionService.end({
+          sessionId: "session-cursor-continue",
+          endedAt: "2026-04-09T12:30:00.000Z",
+          exitCode: 1,
+          status: "failed",
+        });
+
+        const pending = service.sendToSession({
+          sessionId: "session-cursor-continue",
+          text: "Print EXACT_CURSOR_CONTINUE and stop",
+          cols: 120,
+          rows: 40,
+        });
+        await Promise.resolve();
+        await vi.waitFor(() => {
+          expect(loadPty).toHaveBeenCalled();
+        });
+        const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+        expect(spawn).toHaveBeenCalledWith(
+          "/bin/bash",
+          ["--noprofile", "--norc", "-lc", "cursor-agent --force --model composer-2.5-fast --continue"],
+          expect.any(Object),
+        );
+        await Promise.resolve();
+        mockPty._emitter.emit("data", "Cursor Agent\nv2026.05.24\nUse /skills to give Cursor specialized knowledge for tasks.\n");
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(mockPty.write).toHaveBeenNthCalledWith(1, "\x05");
+        await vi.advanceTimersByTimeAsync(25);
+        expect(mockPty.write).toHaveBeenNthCalledWith(2, "\x15");
+        await vi.advanceTimersByTimeAsync(25);
+        expect(mockPty.write).toHaveBeenNthCalledWith(3, "Print EXACT_CURSOR_CONTINUE and stop");
+        await vi.advanceTimersByTimeAsync(500);
+        await expect(pending).resolves.toEqual(expect.objectContaining({
+          sessionId: "session-cursor-continue",
+          resumed: true,
+          reusedExistingRuntime: false,
+        }));
+        expect(mockPty.write).toHaveBeenLastCalledWith("\r");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("resumeSession can continue Cursor without a captured chat id and never adds --trust", async () => {
+      const { service, sessionService, loadPty } = createHarness();
+      sessionService.create({
+        sessionId: "session-cursor-resume-continue",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Cursor CLI",
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: "/tmp/transcripts/session-cursor-resume-continue.log",
+        toolType: "cursor-cli",
+        resumeCommand: "cursor-agent --force --trust --model composer-2.5-fast --continue",
+        resumeMetadata: {
+          provider: "cursor",
+          targetKind: "session",
+          targetId: null,
+          launch: { permissionMode: "full-auto", model: "composer-2.5-fast" },
+        },
+      });
+      sessionService.end({
+        sessionId: "session-cursor-resume-continue",
+        endedAt: "2026-04-09T12:30:00.000Z",
+        exitCode: 1,
+        status: "failed",
+      });
+
+      await expect(service.resumeSession({
+        sessionId: "session-cursor-resume-continue",
+        cols: 120,
+        rows: 40,
+      })).resolves.toEqual(expect.objectContaining({
+        sessionId: "session-cursor-resume-continue",
+        resumed: true,
+        reusedExistingRuntime: false,
+      }));
+
+      const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+      expect(spawn).toHaveBeenCalledWith(
+        "/bin/bash",
+        ["--noprofile", "--norc", "-lc", "cursor-agent --force --model composer-2.5-fast --continue"],
+        expect.any(Object),
+      );
     });
 
     it("sendToSession uses OpenCode replay resume when the installed CLI supports it", async () => {

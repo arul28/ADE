@@ -3133,7 +3133,7 @@ export function createPtyService({
           return throwMissingResumeTarget();
         });
     }
-    if (!storedResumeTargetId) {
+    if (!storedResumeTargetId && provider !== "cursor") {
       throwMissingResumeTarget();
     }
 
@@ -3172,8 +3172,11 @@ export function createPtyService({
             launch: parseTrackedCliLaunchConfig(session.resumeCommand ?? "", session.toolType) ?? {},
           } satisfies TerminalResumeMetadata
         : null);
+    const metadataOverrides = provider === "cursor"
+      ? { ...overrides, prompt: null }
+      : overrides;
     const metadataResumeCommand = metadata
-      ? buildTrackedCliResumeCommand(metadata, overrides)
+      ? buildTrackedCliResumeCommand(metadata, metadataOverrides)
       : null;
     const rawResumeCommand = metadataResumeCommand != null
       ? metadataResumeCommand
@@ -3181,7 +3184,7 @@ export function createPtyService({
     const command = provider === "codex" && rawResumeCommand
       ? withCodexNoAltScreen(rawResumeCommand)
       : rawResumeCommand;
-    return { command, promptAtLaunch: Boolean(command && prompt && metadataResumeCommand) };
+    return { command, promptAtLaunch: Boolean(command && prompt && metadataResumeCommand && provider !== "cursor") };
   };
 
   const getOrCreateResumeFlight = (
@@ -3942,7 +3945,11 @@ export function createPtyService({
               provider,
             );
             if (!textWritten) return false;
-            await delay(provider === "codex" ? CODEX_CLI_PASTE_SUBMIT_DELAY_MS : AGENT_CLI_SUBMIT_DELAY_MS);
+            await delay(provider === "codex"
+              ? CODEX_CLI_PASTE_SUBMIT_DELAY_MS
+              : provider === "cursor"
+                ? CURSOR_CLI_PASTE_SUBMIT_DELAY_MS
+                : AGENT_CLI_SUBMIT_DELAY_MS);
             return service.writeBySessionId(targetSessionId, submitKey);
           });
         submitInputFlights.set(targetSessionId, flight);
@@ -3960,7 +3967,9 @@ export function createPtyService({
         const [ptyId, entry] = live;
         const provider = session?.resumeMetadata?.provider ?? providerFromTool(session?.toolType ?? entry.toolTypeHint);
         if (!provider) throw new Error(`Terminal session '${sessionId}' does not have a resumable CLI provider.`);
-        const written = await writeSubmittedText(sessionId, text, provider);
+        const written = await writeSubmittedText(sessionId, text, provider, {
+          waitForReady: provider === "cursor",
+        });
         if (!written) throw new Error(`Terminal session '${sessionId}' is not accepting input.`);
         return buildSessionActionResult(
           { ptyId, sessionId, pid: entry.pty.pid ?? null },
@@ -4001,7 +4010,7 @@ export function createPtyService({
       }
 
       const written = await writeSubmittedText(created.sessionId, text, provider, {
-        waitForReady: resumeFlightAlreadyInProgress || !resumeFlightCreated,
+        waitForReady: provider === "cursor" || resumeFlightAlreadyInProgress || !resumeFlightCreated,
       });
       if (!written) {
         logger.warn("pty.resume_send_input_failed_preserved", {

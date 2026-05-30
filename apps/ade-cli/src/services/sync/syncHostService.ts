@@ -2340,7 +2340,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           result = await args.fileService.listTree(payload.args);
           break;
         case "readFile":
-          result = fileContentToBlob(payload.args.path, args.fileService.readFile(payload.args));
+          result = fileContentToBlob(payload.args.path, await args.fileService.readFile(payload.args));
           break;
         case "writeText":
           args.fileService.writeWorkspaceText(payload.args);

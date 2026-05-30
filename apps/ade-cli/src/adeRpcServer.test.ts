@@ -2132,7 +2132,7 @@ describe("adeRpcServer", () => {
     expect(fixture.runtime.ptyService.writeBySessionId).not.toHaveBeenCalled();
   });
 
-  it("sends Cursor initial input after the launch command", async () => {
+  it("passes Cursor initial input as the documented prompt argument", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
@@ -2145,12 +2145,14 @@ describe("adeRpcServer", () => {
 
     expect(response?.isError).toBeUndefined();
     const createCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0];
-    expect(createCall?.command).toBe("/bin/bash");
-    expect(createCall?.args).toEqual(["-lc", createCall?.startupCommand]);
-    expect(createCall?.startupCommand).toContain("cursor-agent create-chat");
-    expect(createCall?.startupCommand).toContain("cursor-agent --resume");
-    expect(createCall?.initialInput).toContain("fix failing tests");
-    expect(createCall?.initialInputDelayMs).toBe(750);
+    expect(createCall?.command).toBe("cursor-agent");
+    expect(createCall?.args?.at(-1)).toContain("fix failing tests");
+    expect(createCall?.startupCommand).toContain("cursor-agent");
+    expect(createCall?.startupCommand).toContain("fix failing tests");
+    expect(createCall?.startupCommand).not.toContain("create-chat");
+    expect(createCall?.startupCommand).not.toContain("--resume");
+    expect(createCall?.initialInput).toBeUndefined();
+    expect(createCall?.initialInputDelayMs).toBeUndefined();
     expect(fixture.runtime.ptyService.writeBySessionId).not.toHaveBeenCalled();
     expect(fixture.runtime.ptyService.dispose).not.toHaveBeenCalled();
   });

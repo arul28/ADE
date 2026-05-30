@@ -34,7 +34,12 @@ export type CursorSdkBridge = {
   onEvent: ((event: unknown, meta?: CursorSdkRuntimeMeta) => void) | null;
   onRunStarted:
     | ((
-        event: { agentId: string; runId: string; modelSdkId?: string | null },
+        event: {
+          agentId: string;
+          runId: string;
+          modelSdkId?: string | null;
+          modelParams?: CursorSdkModelParameterValue[];
+        },
         meta?: CursorSdkRuntimeMeta,
       ) => void)
     | null;
@@ -329,6 +334,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
           agentId: message.agentId,
           runId: message.runId,
           modelSdkId: message.modelSdkId,
+          ...(message.modelParams?.length ? { modelParams: message.modelParams } : {}),
         },
         {
           runtime,

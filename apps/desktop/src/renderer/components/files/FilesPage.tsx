@@ -18,7 +18,9 @@ import type {
   FileChangeEvent,
   FileContent,
   FilePreviewKind,
+  FileTreeChangeStatus,
   FileTreeNode,
+  FilesGitStatusEvent,
   FilesQuickOpenItem,
   FilesSearchTextMatch,
   FilesWorkspace,
@@ -39,6 +41,7 @@ import { HelpChip } from "../onboarding/HelpChip";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { FilesExplorer } from "./FilesExplorer";
 import { getFileIcon } from "./filePresentation";
+import { createMonacoModelRegistry } from "./monacoModelRegistry";
 
 const LazyPlanMarkdown = React.lazy(() =>
   import("../orchestration/PlanMarkdown").then((module) => ({
@@ -175,8 +178,9 @@ const MAX_FILES_PAGE_CACHED_SCOPES = 8;
 const MAX_FILES_TREE_CACHED_WORKSPACES = 32;
 const MAX_CACHED_CLEAN_TAB_CHARS = 256 * 1024;
 const MAX_QUEUED_TREE_PARENT_REFRESHES = 24;
+const FILES_TREE_PAGE_SIZE = 2_000;
+const FILES_MAX_AUTO_LOADED_CHILDREN = 10_000;
 const FILES_WATCH_START_DELAY_MS = import.meta.env.MODE === "test" || (window as any).__adeBrowserMock ? 0 : 2_000;
-const FILES_GIT_DECORATION_REFRESH_DELAY_MS = 2_500;
 
 function filesSessionKey(projectRoot: string, laneId: string | null): string {
   return `${projectRoot}::${laneId ?? "__primary__"}`;
@@ -243,13 +247,51 @@ function mergeTreePreservingLoadedChildren(nextNodes: FileTreeNode[], previousNo
   });
 }
 
-function replaceTreeNodeChildren(nodes: FileTreeNode[], parentPath: string, children: FileTreeNode[]): FileTreeNode[] {
+/**
+ * Apply a resolved Git decoration snapshot onto the currently-loaded tree
+ * without refetching structure. `directories` already contains every ancestor
+ * of a changed file, so a flat lookup is sufficient — directories that aren't
+ * loaded yet simply pick up their status when they are expanded (the snapshot
+ * is warm in the service cache by then). Node identity is preserved when a
+ * node's status is unchanged so React can skip re-rendering it.
+ */
+function applyGitStatusToTree(nodes: FileTreeNode[], event: FilesGitStatusEvent): FileTreeNode[] {
+  const fileStatus = new Map<string, FileTreeChangeStatus>();
+  for (const entry of event.files) fileStatus.set(entry.path, entry.changeStatus);
+  const dirStatus = new Map<string, FileTreeChangeStatus>();
+  for (const entry of event.directories) dirStatus.set(entry.path, entry.changeStatus);
+
+  const walk = (items: FileTreeNode[]): FileTreeNode[] => {
+    let changed = false;
+    const next = items.map((node) => {
+      const nextStatus: FileTreeChangeStatus = node.type === "directory"
+        ? (fileStatus.get(node.path) ?? dirStatus.get(node.path) ?? null)
+        : (fileStatus.get(node.path) ?? null);
+      const nextChildren = node.children?.length ? walk(node.children) : node.children;
+      if (node.changeStatus === nextStatus && nextChildren === node.children) {
+        return node;
+      }
+      changed = true;
+      return { ...node, changeStatus: nextStatus, children: nextChildren };
+    });
+    return changed ? next : items;
+  };
+
+  return walk(nodes);
+}
+
+function replaceTreeNodeChildren(
+  nodes: FileTreeNode[],
+  parentPath: string,
+  children: FileTreeNode[],
+  loadMoreOffset: number | null = null,
+): FileTreeNode[] {
   return nodes.map((node) => {
     if (node.path === parentPath) {
-      return { ...node, children };
+      return { ...node, children, loadMoreOffset, childrenTruncated: loadMoreOffset != null };
     }
     if (node.children?.length) {
-      return { ...node, children: replaceTreeNodeChildren(node.children, parentPath, children) };
+      return { ...node, children: replaceTreeNodeChildren(node.children, parentPath, children, loadMoreOffset) };
     }
     return node;
   });
@@ -704,8 +746,9 @@ export function FilesPage({
 
   const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
   const editorRef = useRef<import("monaco-editor").editor.IStandaloneCodeEditor | null>(null);
-  const modelRef = useRef<import("monaco-editor").editor.ITextModel | null>(null);
-  const modelKeyRef = useRef<string | null>(null);
+  // One cached Monaco model per open file (created once, reused on revisit).
+  // Tab switches become setModel(existing) instead of dispose+recreate.
+  const modelRegistryRef = useRef(createMonacoModelRegistry());
   const editorApplyingRef = useRef(false);
   const activeTabPathRef = useRef<string | null>(null);
   const openTabsRef = useRef<OpenTab[]>([]);
@@ -1057,21 +1100,18 @@ export function FilesPage({
       });
     }
     try {
-      const nodes = await window.ade.files.listTree({
-        workspaceId: requestWorkspaceId,
-        parentPath,
-        depth: 1,
-        includeIgnored: true
-      });
-      if (workspaceIdRef.current !== requestWorkspaceId) return;
-      if (isRootRefresh) {
+      if (!parentPath) {
+        const nodes = await window.ade.files.listTree({
+          workspaceId: requestWorkspaceId,
+          depth: 1,
+          includeIgnored: true
+        });
+        if (workspaceIdRef.current !== requestWorkspaceId) return;
         logRendererDebugEvent("renderer.files.refresh_tree.done", {
           workspaceId: requestWorkspaceId,
           durationMs: Math.round(performance.now() - startedAt),
           rootNodeCount: nodes.length,
         });
-      }
-      if (!parentPath) {
         setTree((prev) => {
           const nextTree = mergeTreePreservingLoadedChildren(nodes, prev);
           writeCachedFilesRootTree(projectRootPath, requestWorkspaceId, nextTree);
@@ -1087,8 +1127,40 @@ export function FilesPage({
         return;
       }
 
+      // Expand a directory by paging through its children until exhausted, so
+      // arbitrarily large folders open fully instead of silently stopping at
+      // the old 1,000-child cap. A safety ceiling bounds pathological dirs and
+      // surfaces the remainder via `loadMoreOffset` (logged — never dropped).
+      const children: FileTreeNode[] = [];
+      let offset = 0;
+      let loadMoreOffset: number | null = null;
+      for (;;) {
+        const page = await window.ade.files.listTreeChildren({
+          workspaceId: requestWorkspaceId,
+          parentPath,
+          offset,
+          limit: FILES_TREE_PAGE_SIZE,
+          includeIgnored: true,
+        });
+        if (workspaceIdRef.current !== requestWorkspaceId) return;
+        children.push(...page.children);
+        if (page.nextOffset == null) break;
+        if (children.length >= FILES_MAX_AUTO_LOADED_CHILDREN) {
+          loadMoreOffset = page.nextOffset;
+          logRendererDebugEvent("renderer.files.expand_dir.capped", {
+            workspaceId: requestWorkspaceId,
+            parentPath,
+            loadedChildren: children.length,
+            total: page.total,
+            nextOffset: page.nextOffset,
+          });
+          break;
+        }
+        offset = page.nextOffset;
+      }
+
       setTree((prev) => {
-        const nextTree = replaceTreeNodeChildren(prev, parentPath, nodes);
+        const nextTree = replaceTreeNodeChildren(prev, parentPath, children, loadMoreOffset);
         writeCachedFilesRootTree(projectRootPath, requestWorkspaceId, nextTree);
         return nextTree;
       });
@@ -1303,20 +1375,20 @@ export function FilesPage({
   }, [active, workspaces, workspaceId, switchWorkspace, openFile, navigate, location.pathname, revealPendingLocation]);
 
   const closeTab = useCallback((filePath: string) => {
-    setOpenTabs((prev) => {
-      const tab = findItemByWorkspacePath(prev, filePath, workspaceComparisonRoot);
-      if (!tab) return prev;
-      if (tab.content !== tab.savedContent) {
-        const ok = window.confirm(`"${tab.path}" has unsaved changes. Close anyway?`);
-        if (!ok) return prev;
-      }
-      const next = prev.filter((t) => !areWorkspacePathsEqual(t.path, filePath, workspaceComparisonRoot));
-      if (areWorkspacePathsEqual(activeTabPath, filePath, workspaceComparisonRoot)) {
-        setActiveTabPath(next[next.length - 1]?.path ?? null);
-      }
-      return next;
-    });
-  }, [activeTabPath, workspaceComparisonRoot]);
+    const tab = findItemByWorkspacePath(openTabsRef.current, filePath, workspaceComparisonRoot);
+    if (!tab) return;
+    if (tab.content !== tab.savedContent) {
+      const ok = window.confirm(`"${tab.path}" has unsaved changes. Close anyway?`);
+      if (!ok) return;
+    }
+    // Free the cached Monaco model now that the file is no longer open.
+    modelRegistryRef.current.dispose(tab.path);
+    const remaining = openTabsRef.current.filter((t) => !areWorkspacePathsEqual(t.path, filePath, workspaceComparisonRoot));
+    setOpenTabs(remaining);
+    if (areWorkspacePathsEqual(activeTabPathRef.current, filePath, workspaceComparisonRoot)) {
+      setActiveTabPath(remaining[remaining.length - 1]?.path ?? null);
+    }
+  }, [workspaceComparisonRoot]);
 
   const saveActive = useCallback(async () => {
     if (!activeTab || !workspaceId || !canEdit || !isTextTab(activeTab)) return;
@@ -1504,11 +1576,26 @@ export function FilesPage({
     treeRefreshStateRef.current.queuedFull = false;
     treeRefreshStateRef.current.queuedParents.clear();
     setLoadingDirectories(new Set());
+    // Paint structure immediately (cached/empty Git status), then stream real
+    // decorations in as soon as `git status` resolves — replacing the old
+    // fixed 2.5s blind second tree fetch.
     void refreshTree();
-    const decorationRefreshTimer = window.setTimeout(() => {
-      void refreshTree();
-    }, FILES_GIT_DECORATION_REFRESH_DELAY_MS);
-    return () => window.clearTimeout(decorationRefreshTimer);
+    let cancelled = false;
+    void window.ade.files
+      .refreshGitDecorations({ workspaceId, forceFresh: true })
+      .then((event) => {
+        if (cancelled || workspaceIdRef.current !== workspaceId) return;
+        setTree((prev) => {
+          const next = applyGitStatusToTree(prev, event);
+          if (next === prev) return prev;
+          writeCachedFilesRootTree(projectRootPath, workspaceId, next);
+          return next;
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, [active, projectRootPath, workspaceId, refreshTree]);
 
   useEffect(() => {
@@ -1875,13 +1962,12 @@ export function FilesPage({
 
     return () => {
       disposed = true;
+      // Detach but DON'T dispose cached models here — the editor is also torn
+      // down on edit↔diff mode switches, and we want models (and their undo
+      // history) to survive that. Models are disposed on tab close / workspace
+      // switch / unmount instead.
       try {
         editorRef.current?.setModel(null);
-      } catch {
-        // ignore
-      }
-      try {
-        modelRef.current?.dispose();
       } catch {
         // ignore
       }
@@ -1890,8 +1976,6 @@ export function FilesPage({
       } catch {
         // ignore
       }
-      modelRef.current = null;
-      modelKeyRef.current = null;
       editorRef.current = null;
     };
   // canEdit intentionally excluded — the updateOptions effect below handles
@@ -1908,6 +1992,16 @@ export function FilesPage({
     monaco.editor.setTheme(editorTheme === "light" ? "vs" : "vs-dark");
   }, [editorTheme]);
 
+  // Free every cached model when the workspace changes (the previous lane's
+  // tabs are cleared) and on unmount. Also prevents a same relative path in a
+  // different workspace from reusing a stale model with the wrong content.
+  useEffect(() => {
+    const registry = modelRegistryRef.current;
+    return () => {
+      registry.disposeAll();
+    };
+  }, [workspaceId]);
+
   useEffect(() => {
     if (!editorRef.current || mode !== "edit") return;
     editorRef.current.updateOptions({ readOnly: !canEdit || !activeTabUsesCodeEditor });
@@ -1917,42 +2011,20 @@ export function FilesPage({
     if (!editorRef.current || !monacoRef.current || mode !== "edit") return;
     const editor = editorRef.current;
     if (!activeTab || !activeTabUsesCodeEditor) {
+      // Detach without disposing — the model stays cached for fast reactivation.
       try {
         editor.setModel(null);
       } catch {
         // ignore
       }
-      try {
-        modelRef.current?.dispose();
-      } catch {
-        // ignore
-      }
-      modelRef.current = null;
-      modelKeyRef.current = null;
       return;
     }
     const monaco = monacoRef.current;
     const language = activeTab.languageId || "plaintext";
-    const modelKey = `${activeTab.path}::${language}`;
-    if (modelRef.current && modelKeyRef.current === modelKey) {
-      editor.updateOptions({ readOnly: !canEdit || !activeTabUsesCodeEditor });
-      void revealPendingLocation();
-      return;
+    const model = modelRegistryRef.current.getOrCreate(monaco, activeTab.path, activeTab.content, language);
+    if (editor.getModel() !== model) {
+      editor.setModel(model);
     }
-
-    try {
-      editor.setModel(null);
-    } catch {
-      // ignore
-    }
-    try {
-      modelRef.current?.dispose();
-    } catch {
-      // ignore
-    }
-    modelRef.current = monaco.editor.createModel(activeTab.content, language);
-    modelKeyRef.current = modelKey;
-    editor.setModel(modelRef.current);
     editor.updateOptions({ readOnly: !canEdit || !activeTabUsesCodeEditor });
     void revealPendingLocation();
   }, [activeTab, activeTabUsesCodeEditor, mode, canEdit, editorStatus, revealPendingLocation]);

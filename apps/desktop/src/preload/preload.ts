@@ -169,11 +169,19 @@ import type {
   FilesCreateDirectoryArgs,
   FilesCreateFileArgs,
   FilesDeleteArgs,
+  FilesGitBlameArgs,
+  FilesGitBlameResult,
+  FilesGitStatusEvent,
   FilesListTreeArgs,
+  FilesListTreeChildrenArgs,
+  FilesListTreeChildrenResult,
   FilesListWorkspacesArgs,
   FilesQuickOpenArgs,
   FilesQuickOpenItem,
   FilesReadFileArgs,
+  FilesReadFileRangeArgs,
+  FilesReadFileRangeResult,
+  FilesRefreshGitDecorationsArgs,
   FilesRenameArgs,
   FilesSearchTextArgs,
   FilesSearchTextMatch,
@@ -6026,11 +6034,43 @@ contextBridge.exposeInMainWorld("ade", {
         () => ipcRenderer.invoke(IPC.filesListTree, args),
       );
     },
+    listTreeChildren: async (
+      args: FilesListTreeChildrenArgs,
+    ): Promise<FilesListTreeChildrenResult> => {
+      return callProjectFileRuntimeActionOr<FilesListTreeChildrenResult>(
+        "listTreeChildren",
+        { args },
+        () => ipcRenderer.invoke(IPC.filesListTreeChildren, args),
+      );
+    },
+    refreshGitDecorations: async (
+      args: FilesRefreshGitDecorationsArgs,
+    ): Promise<FilesGitStatusEvent> => {
+      return callProjectFileRuntimeActionOr<FilesGitStatusEvent>(
+        "refreshGitDecorations",
+        { args },
+        () => ipcRenderer.invoke(IPC.filesRefreshGitDecorations, args),
+      );
+    },
     readFile: async (args: FilesReadFileArgs): Promise<FileContent> => {
       return callProjectFileRuntimeActionOr<FileContent>(
         "readFile",
         { args },
         () => ipcRenderer.invoke(IPC.filesReadFile, args),
+      );
+    },
+    readFileRange: async (args: FilesReadFileRangeArgs): Promise<FilesReadFileRangeResult> => {
+      return callProjectFileRuntimeActionOr<FilesReadFileRangeResult>(
+        "readFileRange",
+        { args },
+        () => ipcRenderer.invoke(IPC.filesReadFileRange, args),
+      );
+    },
+    gitBlame: async (args: FilesGitBlameArgs): Promise<FilesGitBlameResult> => {
+      return callProjectFileRuntimeActionOr<FilesGitBlameResult>(
+        "blame",
+        { args },
+        () => ipcRenderer.invoke(IPC.filesGitBlame, args),
       );
     },
     writeText: async (args: FilesWriteTextArgs): Promise<void> => {

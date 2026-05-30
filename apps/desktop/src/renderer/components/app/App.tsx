@@ -52,7 +52,7 @@ const lanesRoute = createPreloadableRoute<{ active?: boolean }>(() =>
 const LanesPage = lanesRoute.Component;
 const preloadLanesPage = lanesRoute.preload;
 const filesRoute = createPreloadableRoute<{ active?: boolean }>(() =>
-  import("../files/FilesPage").then((m) => ({ default: m.FilesPage }))
+  import("../files/FilesTab").then((m) => ({ default: m.FilesTab }))
 );
 const FilesPage = filesRoute.Component;
 const preloadFilesPage = filesRoute.preload;

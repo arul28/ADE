@@ -193,9 +193,9 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     (m: ModelDescriptor): boolean => {
       if (m.family !== "cursor" || cursorAvailabilityMode === "all") return true;
       const availability = m.cursorAvailability;
-      if (!availability) return true;
-      if (cursorAvailabilityMode === "cli") return availability.cli !== false;
-      return availability.sdk !== false;
+      if (!availability) return false;
+      if (cursorAvailabilityMode === "cli") return availability.cli === true;
+      return availability.sdk === true;
     },
     [cursorAvailabilityMode],
   );

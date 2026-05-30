@@ -48,12 +48,20 @@ export type FilesExplorerProps = {
   searchQuery: string;
   inlineRenameRequest: InlineRenameRequest;
   onSearchQueryChange: (value: string) => void;
-  onOpenQuickOpen: () => void;
-  onOpenContentSearch: () => void;
+  /** Optional — when omitted, the Quick Open button is hidden (v2 uses unified search). */
+  onOpenQuickOpen?: () => void;
+  /** Optional — when omitted, the Content Search button is hidden (v2 uses unified search). */
+  onOpenContentSearch?: () => void;
+  /** Enter in the search field; v2 routes this to the in-depth search. */
+  onSearchSubmit?: (query: string) => void;
+  /** Single-row header (search + new file/folder, no Quick Open / Content buttons). */
+  singleRowHeader?: boolean;
   onCreateFile: (basePath: string) => void;
   onCreateDirectory: (basePath: string) => void;
   onToggleDirectory: (path: string, isExpanded: boolean, hasLoadedChildren: boolean) => void;
   onOpenFile: (path: string) => void;
+  /** Double-click on a file row: pin it (promote out of the preview slot), VSCode-style. */
+  onActivateFile?: (path: string) => void;
   onSelectNode: (path: string) => void;
   onContextMenu: (event: FilesExplorerContextMenuEvent) => void;
   onRenamePath: (sourcePath: string, destinationPath: string) => Promise<void>;
@@ -125,10 +133,13 @@ export function FilesExplorer({
   onSearchQueryChange,
   onOpenQuickOpen,
   onOpenContentSearch,
+  onSearchSubmit,
+  singleRowHeader = false,
   onCreateFile,
   onCreateDirectory,
   onToggleDirectory,
   onOpenFile,
+  onActivateFile,
   onSelectNode,
   onContextMenu,
   onRenamePath,
@@ -217,18 +228,20 @@ export function FilesExplorer({
           style={{ padding: "6px 8px", borderBottom: `1px solid ${COLORS.border}` }}
           data-tour="files.searchBar"
         >
-          <SmartTooltip content={{ label: "Quick open", description: "Search and open any file in the project.", shortcut: `${modifierKeyLabel}+P` }}>
-            <button
-              type="button"
-              aria-label="Quick open"
-              style={{ ...outlineButton({ height: 24, padding: "0 6px", fontSize: 10 }) }}
-              onClick={onOpenQuickOpen}
-              onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
-              onMouseLeave={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; event.currentTarget.style.color = COLORS.textSecondary; }}
-            >
-              <Search size={12} weight="regular" />
-            </button>
-          </SmartTooltip>
+          {onOpenQuickOpen ? (
+            <SmartTooltip content={{ label: "Quick open", description: "Search and open any file in the project.", shortcut: `${modifierKeyLabel}+P` }}>
+              <button
+                type="button"
+                aria-label="Quick open"
+                style={{ ...outlineButton({ height: 24, padding: "0 6px", fontSize: 10 }) }}
+                onClick={onOpenQuickOpen}
+                onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
+                onMouseLeave={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; event.currentTarget.style.color = COLORS.textSecondary; }}
+              >
+                <Search size={12} weight="regular" />
+              </button>
+            </SmartTooltip>
+          ) : null}
           <SmartTooltip content={{ label: "New file", description: "Create a new file in the current directory." }}>
             <button
               type="button"
@@ -253,6 +266,81 @@ export function FilesExplorer({
               onMouseLeave={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; event.currentTarget.style.color = COLORS.textSecondary; }}
             >
               <FolderPlus size={12} weight="regular" />
+            </button>
+          </SmartTooltip>
+        </div>
+      ) : singleRowHeader ? (
+        <div
+          className="flex shrink-0 items-center gap-1.5"
+          style={{ padding: "8px 10px", borderBottom: `1px solid ${COLORS.border}` }}
+          data-tour="files.searchBar"
+        >
+          <div className="relative flex flex-1 items-center">
+            <Search size={13} weight="regular" className="pointer-events-none absolute" style={{ left: 8, color: COLORS.textDim }} />
+            <input
+              value={searchQuery}
+              onChange={(event) => onSearchQueryChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && onSearchSubmit) {
+                  event.preventDefault();
+                  onSearchSubmit(searchQuery);
+                }
+              }}
+              aria-label="Search files"
+              placeholder="Search files…  ↵"
+              style={{
+                height: 28,
+                width: "100%",
+                padding: "0 26px 0 26px",
+                fontSize: 11,
+                fontFamily: MONO_FONT,
+                fontWeight: 500,
+                background: COLORS.recessedBg,
+                borderRadius: 8,
+                border: `1px solid ${COLORS.outlineBorder}`,
+                color: COLORS.textSecondary,
+                outline: "none",
+              }}
+              onFocus={(event) => { event.currentTarget.style.borderColor = COLORS.accent; }}
+              onBlur={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; }}
+            />
+            {searchQuery.trim() ? (
+              <button
+                type="button"
+                className="absolute"
+                style={{ right: 4, top: "50%", transform: "translateY(-50%)", display: "inline-flex", width: 18, height: 18, alignItems: "center", justifyContent: "center", background: "transparent", border: "none", color: COLORS.textMuted, cursor: "pointer" }}
+                onClick={() => onSearchQueryChange("")}
+                title="Clear filter"
+                aria-label="Clear path filter"
+              >
+                <X size={10} />
+              </button>
+            ) : null}
+          </div>
+          <SmartTooltip content={{ label: "New file", description: "Create a new file in the current directory." }}>
+            <button
+              type="button"
+              title="New file"
+              aria-label="New file"
+              style={{ ...outlineButton({ height: 28, padding: "0 7px", fontSize: 10 }) }}
+              onClick={() => onCreateFile(activeContextDir)}
+              onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
+              onMouseLeave={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; event.currentTarget.style.color = COLORS.textSecondary; }}
+            >
+              <FilePlus2 size={13} weight="regular" />
+            </button>
+          </SmartTooltip>
+          <SmartTooltip content={{ label: "New folder", description: "Create a new folder in the current directory." }}>
+            <button
+              type="button"
+              title="New folder"
+              aria-label="New folder"
+              style={{ ...outlineButton({ height: 28, padding: "0 7px", fontSize: 10 }) }}
+              onClick={() => onCreateDirectory(activeContextDir)}
+              onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
+              onMouseLeave={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; event.currentTarget.style.color = COLORS.textSecondary; }}
+            >
+              <FolderPlus size={13} weight="regular" />
             </button>
           </SmartTooltip>
         </div>
@@ -295,32 +383,38 @@ export function FilesExplorer({
             </button>
           ) : null}
         </div>
-        <div className="mt-1.5 flex items-center justify-end gap-1.5">
-          <SmartTooltip content={{ label: "Content search", description: "Search file contents in this workspace.", shortcut: `${modifierKeyLabel}+Shift+F` }}>
-            <button
-              type="button"
-              aria-label="Content search"
-              style={{ ...outlineButton({ height: 22, padding: "0 8px", fontSize: 9 }) }}
-              onClick={onOpenContentSearch}
-              onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
-              onMouseLeave={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; event.currentTarget.style.color = COLORS.textSecondary; }}
-            >
-              <TextAlignLeft size={10} /> CONTENT
-            </button>
-          </SmartTooltip>
-          <SmartTooltip content={{ label: "Quick open", description: "Search and open any file in the project.", shortcut: `${modifierKeyLabel}+P` }}>
-            <button
-              type="button"
-              aria-label="Quick open"
-              style={{ ...outlineButton({ height: 22, padding: "0 8px", fontSize: 9 }) }}
-              onClick={onOpenQuickOpen}
-              onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
-              onMouseLeave={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; event.currentTarget.style.color = COLORS.textSecondary; }}
-            >
-              <Search size={10} /> QUICK OPEN
-            </button>
-          </SmartTooltip>
-        </div>
+        {onOpenContentSearch || onOpenQuickOpen ? (
+          <div className="mt-1.5 flex items-center justify-end gap-1.5">
+            {onOpenContentSearch ? (
+              <SmartTooltip content={{ label: "Content search", description: "Search file contents in this workspace.", shortcut: `${modifierKeyLabel}+Shift+F` }}>
+                <button
+                  type="button"
+                  aria-label="Content search"
+                  style={{ ...outlineButton({ height: 22, padding: "0 8px", fontSize: 9 }) }}
+                  onClick={onOpenContentSearch}
+                  onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
+                  onMouseLeave={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; event.currentTarget.style.color = COLORS.textSecondary; }}
+                >
+                  <TextAlignLeft size={10} /> CONTENT
+                </button>
+              </SmartTooltip>
+            ) : null}
+            {onOpenQuickOpen ? (
+              <SmartTooltip content={{ label: "Quick open", description: "Search and open any file in the project.", shortcut: `${modifierKeyLabel}+P` }}>
+                <button
+                  type="button"
+                  aria-label="Quick open"
+                  style={{ ...outlineButton({ height: 22, padding: "0 8px", fontSize: 9 }) }}
+                  onClick={onOpenQuickOpen}
+                  onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
+                  onMouseLeave={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; event.currentTarget.style.color = COLORS.textSecondary; }}
+                >
+                  <Search size={10} /> QUICK OPEN
+                </button>
+              </SmartTooltip>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <div className="flex shrink-0 items-center gap-1" style={{ padding: "6px 8px", borderBottom: `1px solid ${COLORS.border}` }}>
@@ -403,6 +497,10 @@ export function FilesExplorer({
                   return;
                 }
                 onOpenFile(node.path);
+              };
+              const handleRowDoubleClick = () => {
+                // Double-clicking a file pins it (VSCode-style), matching the tab double-click.
+                if (node.type === "file") onActivateFile?.(node.path);
               };
               const handleRowContextMenu = (event: React.MouseEvent) => {
                 event.preventDefault();
@@ -543,6 +641,7 @@ export function FilesExplorer({
                       className="group relative flex w-full items-center gap-1.5 text-left transition-colors"
                       style={rowStyle}
                       onClick={handleRowActivate}
+                      onDoubleClick={handleRowDoubleClick}
                       onContextMenu={handleRowContextMenu}
                       onMouseEnter={handleRowMouseEnter}
                       onMouseLeave={handleRowMouseLeave}

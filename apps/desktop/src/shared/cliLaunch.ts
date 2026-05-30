@@ -371,23 +371,15 @@ export function buildTrackedCliLaunchCommand(args: {
   if (args.provider === "cursor") {
     const prompt = workTabCliPrompt(initialPrompt, skillRoots);
     const cursorModel = resolveCursorCliModelForLaunch(args.model);
-    const startupCommand = buildCursorPrecreatedChatCommand({
-      permissionMode: args.permissionMode,
-      model: cursorModel,
-    });
-    const platform = typeof process !== "undefined" && typeof process.platform === "string" ? process.platform : "";
-    const useDirectShellLaunch = platform !== "win32";
-    const windowsStartupCommand = buildCursorPrecreatedChatPowerShellCommand({
-      permissionMode: args.permissionMode,
-      model: cursorModel,
-    });
+    const commandArgs = [
+      ...permissionModeToCursorFlags(args.permissionMode),
+      ...modelToCliFlag(cursorModel),
+      prompt,
+    ];
     return {
-      ...(useDirectShellLaunch
-        ? { command: "/bin/bash", args: ["-lc", startupCommand] }
-        : { command: "powershell.exe", args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", windowsStartupCommand] }),
-      startupCommand: useDirectShellLaunch ? startupCommand : windowsStartupCommand,
-      initialInput: prompt,
-      initialInputDelayMs: 750,
+      command: "cursor-agent",
+      args: commandArgs,
+      startupCommand: commandArrayToLine(["cursor-agent", ...commandArgs]),
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
   }
@@ -519,7 +511,7 @@ function permissionModeToCodexFlags(permissionMode: AgentChatPermissionMode | nu
 }
 
 function permissionModeToCursorFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
-  if (permissionMode === "full-auto") return ["--force", "--trust"];
+  if (permissionMode === "full-auto") return ["--force"];
   if (permissionMode === "plan") return ["--mode", "plan"];
   if (permissionMode === "edit") return ["--mode", "ask"];
   return [];
@@ -602,51 +594,6 @@ function buildDroidCommandLine(args: {
     `printf %s ${quoteShellArg(settingsJson)} > "$ADE_DROID_SETTINGS"`,
     `${droidCommand}; ADE_DROID_STATUS=$?; rm -f "$ADE_DROID_SETTINGS"; exit $ADE_DROID_STATUS`,
   ].join(" && ");
-}
-
-function buildCursorPrecreatedChatCommand(args: {
-  permissionMode: AgentChatPermissionMode | null | undefined;
-  model?: string | null;
-}): string {
-  const commandArgs = [
-    "cursor-agent",
-    ...permissionModeToCursorFlags(args.permissionMode),
-    ...modelToCliFlag(resolveCursorCliModelForLaunch(args.model)),
-    "--resume",
-    "$ADE_CURSOR_CHAT_ID",
-  ];
-  const command = commandArrayToLine(commandArgs)
-    .replace(quoteShellArg("$ADE_CURSOR_CHAT_ID"), "\"$ADE_CURSOR_CHAT_ID\"");
-  return [
-    "ADE_CURSOR_CHAT_ID=\"$(cursor-agent create-chat)\"",
-    "[ -n \"$ADE_CURSOR_CHAT_ID\" ] || { echo \"[ADE] cursor-agent create-chat returned no chat id\" >&2; exit 1; }",
-    "printf '%s\\n' \"[ADE] Continue with cursor-agent --resume ${ADE_CURSOR_CHAT_ID}\"",
-    command,
-  ].join(" && ");
-}
-
-function buildCursorPrecreatedChatPowerShellCommand(args: {
-  permissionMode: AgentChatPermissionMode | null | undefined;
-  model?: string | null;
-}): string {
-  const commandArgs = [
-    ...permissionModeToCursorFlags(args.permissionMode),
-    ...modelToCliFlag(resolveCursorCliModelForLaunch(args.model)),
-    "--resume",
-    "$env:ADE_CURSOR_CHAT_ID",
-  ];
-  const argv = [
-    quotePowerShellArg("cursor-agent"),
-    ...commandArgs.map((arg) => arg === "$env:ADE_CURSOR_CHAT_ID" ? arg : quotePowerShellArg(arg)),
-  ].join(" ");
-  return [
-    "$ADE_CURSOR_CHAT_OUTPUT = & cursor-agent create-chat | Select-Object -First 1",
-    "$env:ADE_CURSOR_CHAT_ID = if ($null -eq $ADE_CURSOR_CHAT_OUTPUT) { '' } else { $ADE_CURSOR_CHAT_OUTPUT.Trim() }",
-    "if (-not $env:ADE_CURSOR_CHAT_ID) { Write-Error '[ADE] cursor-agent create-chat returned no chat id'; exit 1 }",
-    "Write-Output \"[ADE] Continue with cursor-agent --resume $env:ADE_CURSOR_CHAT_ID\"",
-    `& ${argv}`,
-    "exit $LASTEXITCODE",
-  ].join("; ");
 }
 
 const OPENCODE_INLINE_CONFIG_ENV = "OPENCODE_CONFIG_CONTENT";

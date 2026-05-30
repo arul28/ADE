@@ -1127,6 +1127,11 @@ export type AgentChatModelInfo = {
     cli: boolean;
     sdk: boolean;
   };
+  cursorCliVariants?: Array<{
+    modelId: string;
+    reasoningEffort?: string;
+    fastMode?: boolean;
+  }>;
 };
 
 export type AgentChatModelCatalogModel = AgentChatModelInfo & {

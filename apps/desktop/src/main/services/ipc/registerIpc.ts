@@ -125,11 +125,19 @@ import type {
   FilesCreateDirectoryArgs,
   FilesCreateFileArgs,
   FilesDeleteArgs,
+  FilesGitBlameArgs,
+  FilesGitBlameResult,
+  FilesGitStatusEvent,
   FilesListTreeArgs,
+  FilesListTreeChildrenArgs,
+  FilesListTreeChildrenResult,
   FilesListWorkspacesArgs,
   FilesQuickOpenArgs,
   FilesQuickOpenItem,
   FilesReadFileArgs,
+  FilesReadFileRangeArgs,
+  FilesReadFileRangeResult,
+  FilesRefreshGitDecorationsArgs,
   FilesRenameArgs,
   FilesSearchTextArgs,
   FilesSearchTextMatch,
@@ -7292,15 +7300,69 @@ export function registerIpc({
     );
   });
 
+  ipcMain.handle(IPC.filesListTreeChildren, async (_event, arg: FilesListTreeChildrenArgs): Promise<FilesListTreeChildrenResult> => {
+    const ctx = ensureFileContext();
+    return await withIpcTiming(
+      ctx,
+      "files.listTreeChildren",
+      async () => await ctx.fileService.listTreeChildren(arg),
+      {
+        workspaceId: arg.workspaceId,
+        offset: arg.offset,
+        limit: arg.limit,
+      }
+    );
+  });
+
+  ipcMain.handle(IPC.filesRefreshGitDecorations, async (_event, arg: FilesRefreshGitDecorationsArgs): Promise<FilesGitStatusEvent> => {
+    const ctx = ensureFileContext();
+    return await withIpcTiming(
+      ctx,
+      "files.refreshGitDecorations",
+      async () => await ctx.fileService.refreshGitDecorations(arg),
+      {
+        workspaceId: arg.workspaceId,
+        forceFresh: Boolean(arg.forceFresh),
+      }
+    );
+  });
+
   ipcMain.handle(IPC.filesReadFile, async (_event, arg: FilesReadFileArgs): Promise<FileContent> => {
     const ctx = ensureFileContext();
     return await withIpcTiming(
       ctx,
       "files.readFile",
-      async () => ctx.fileService.readFile(arg),
+      async () => await ctx.fileService.readFile(arg),
       {
         workspaceId: arg.workspaceId,
         pathLength: arg.path.length,
+      }
+    );
+  });
+
+  ipcMain.handle(IPC.filesReadFileRange, async (_event, arg: FilesReadFileRangeArgs): Promise<FilesReadFileRangeResult> => {
+    const ctx = ensureFileContext();
+    return await withIpcTiming(
+      ctx,
+      "files.readFileRange",
+      async () => await ctx.fileService.readFileRange(arg),
+      {
+        workspaceId: arg.workspaceId,
+        offset: arg.offset,
+        length: arg.length,
+      }
+    );
+  });
+
+  ipcMain.handle(IPC.filesGitBlame, async (_event, arg: FilesGitBlameArgs): Promise<FilesGitBlameResult> => {
+    const ctx = ensureFileContext();
+    return await withIpcTiming(
+      ctx,
+      "files.gitBlame",
+      async () => await ctx.fileService.blame(arg),
+      {
+        workspaceId: arg.workspaceId,
+        hasRange: Boolean(arg.startLine && arg.endLine),
       }
     );
   });

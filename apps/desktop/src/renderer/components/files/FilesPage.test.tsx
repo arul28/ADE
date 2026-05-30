@@ -12,6 +12,7 @@ import { clearDirtyBuffersForWorkspace, getDirtyFileTextForWindow } from "../../
 
 type MockEditorInstance = {
   setModel: (next: any) => void;
+  getModel: () => any;
   getValue: () => string;
   setValue: (next: string) => void;
   revealLineInCenter: ReturnType<typeof vi.fn>;
@@ -76,11 +77,23 @@ vi.mock("monaco-editor/esm/vs/language/typescript/ts.worker?worker", () => ({
 }));
 
 vi.mock("monaco-editor", () => {
-  const createModel = (value: string, language: string) => ({
-    value,
-    language,
-    dispose: vi.fn(),
-  });
+  const createModel = (value: string, language: string) => {
+    let disposed = false;
+    let version = 1;
+    return {
+      value,
+      language,
+      isDisposed: () => disposed,
+      getValue: () => value,
+      getAlternativeVersionId: () => version,
+      pushEditOperations: () => {
+        version += 1;
+      },
+      dispose: vi.fn(() => {
+        disposed = true;
+      }),
+    };
+  };
 
   return {
     editor: {
@@ -92,6 +105,9 @@ vi.mock("monaco-editor", () => {
           setModel(next: ReturnType<typeof createModel> | null) {
             model = next;
             if (next) element.textContent = next.value;
+          },
+          getModel() {
+            return model;
           },
           getValue() {
             return model?.value ?? "";
@@ -115,6 +131,9 @@ vi.mock("monaco-editor", () => {
         return latestMockEditor;
       }),
       createModel: vi.fn(createModel),
+      setModelLanguage: vi.fn((target: ReturnType<typeof createModel>, language: string) => {
+        if (target) target.language = language;
+      }),
       setTheme: vi.fn(),
     },
   };
@@ -315,6 +334,34 @@ describe("FilesPage", () => {
         listTree: vi.fn(async ({ parentPath, includeIgnored }: { parentPath?: string; includeIgnored?: boolean }) =>
           listTreeForRequest(parentPath, includeIgnored)
         ),
+        listTreeChildren: vi.fn(async ({ parentPath, offset = 0, limit = 2000, includeIgnored }: { parentPath: string; offset?: number; limit?: number; includeIgnored?: boolean }) => {
+          const all = listTreeForRequest(parentPath, includeIgnored);
+          const pageEnd = Math.min(offset + limit, all.length);
+          return {
+            parentPath: parentPath ?? "",
+            children: all.slice(offset, pageEnd),
+            offset,
+            limit,
+            total: all.length,
+            nextOffset: pageEnd < all.length ? pageEnd : null,
+          };
+        }),
+        refreshGitDecorations: vi.fn(async ({ workspaceId }: { workspaceId: string }) => ({
+          workspaceId,
+          files: [],
+          directories: [],
+        })),
+        readFileRange: vi.fn(async ({ path, offset = 0 }: { path: string; offset?: number }) => ({
+          path,
+          encoding: "utf-8" as const,
+          content: "",
+          rangeStart: offset,
+          rangeEnd: offset,
+          totalSize: offset,
+          nextOffset: null,
+          eof: true,
+        })),
+        gitBlame: vi.fn(async ({ path }: { path: string }) => ({ path, lines: [] })),
         watchChanges: vi.fn(async () => undefined),
         stopWatching: vi.fn(async () => undefined),
         onChange: vi.fn((cb: (event: FileChangeEvent) => void) => {
@@ -814,11 +861,15 @@ describe("FilesPage", () => {
     const pendingRootRefresh = new Promise<FileTreeNode[]>((resolve) => {
       resolveRootRefresh = resolve;
     });
-    vi.mocked(window.ade.files.listTree).mockImplementation(async ({ parentPath }: { parentPath?: string }) => {
-      if (parentPath === "src") return cloneTree(childTree);
+    vi.mocked(window.ade.files.listTree).mockImplementation(async () => {
       rootCalls += 1;
       if (rootCalls === 1) return cloneTree(rootTree);
       return pendingRootRefresh;
+    });
+    // Directory expansion goes through listTreeChildren (paginated lazy load).
+    vi.mocked(window.ade.files.listTreeChildren).mockImplementation(async ({ parentPath }: { parentPath: string }) => {
+      const children = parentPath === "src" ? cloneTree(childTree) : [];
+      return { parentPath, children, offset: 0, limit: 2000, total: children.length, nextOffset: null };
     });
 
     renderFilesPage();
@@ -836,7 +887,7 @@ describe("FilesPage", () => {
     fireEvent.click(screen.getByTitle("src"));
 
     expect(await screen.findByTitle("src/index.ts")).toBeTruthy();
-    expect(window.ade.files.listTree).toHaveBeenCalledWith(expect.objectContaining({
+    expect(window.ade.files.listTreeChildren).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: "primary",
       parentPath: "src",
     }));

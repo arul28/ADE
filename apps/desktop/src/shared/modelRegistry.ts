@@ -34,6 +34,12 @@ export type CursorModelAvailability = {
   sdk: boolean;
 };
 
+export type CursorCliModelVariant = {
+  modelId: string;
+  reasoningEffort?: string;
+  fastMode?: boolean;
+};
+
 export type LocalModelHarnessProfile = "verified" | "guarded" | "read_only";
 
 export type ModelDescriptor = {
@@ -72,6 +78,8 @@ export type ModelDescriptor = {
   customProxy?: boolean;
   /** Cursor models can be available through local CLI, Cursor SDK/API chat, or both. */
   cursorAvailability?: CursorModelAvailability;
+  /** Concrete Cursor CLI ids reachable from an abstract picker row. */
+  cursorCliVariants?: CursorCliModelVariant[];
 };
 
 export type DynamicLocalModelDescriptorOptions = {
@@ -103,6 +111,94 @@ export function modelSupportsServiceTier(
 
 export function modelSupportsFastMode(descriptor: ModelDescriptor | null | undefined): boolean {
   return modelSupportsServiceTier(descriptor, "fast");
+}
+
+function normalizeCursorControlValue(value: string | null | undefined): string | null {
+  const normalized = String(value ?? "").trim().toLowerCase().replace(/[_\s]+/g, "-");
+  if (!normalized) return null;
+  if (normalized === "extra-high" || normalized === "extra_high") return "xhigh";
+  return normalized;
+}
+
+function normalizeCursorCliVariantReasoning(value: string | null | undefined): string | null {
+  const normalized = normalizeCursorControlValue(value);
+  if (!normalized) return null;
+  return normalized === "extra-high" ? "xhigh" : normalized;
+}
+
+function cursorCliVariantMatchesReasoning(
+  variant: CursorCliModelVariant,
+  reasoningEffort: string | null,
+): boolean {
+  if (!reasoningEffort) return !variant.reasoningEffort;
+  return normalizeCursorCliVariantReasoning(variant.reasoningEffort) === reasoningEffort;
+}
+
+function cursorCliVariantMatchesFast(
+  variant: CursorCliModelVariant,
+  fastMode: boolean,
+): boolean {
+  return (variant.fastMode === true) === fastMode;
+}
+
+export function resolveCursorCliModelVariant(
+  descriptor: ModelDescriptor,
+  options?: {
+    reasoningEffort?: string | null;
+    fastMode?: boolean | null;
+  },
+): string {
+  const variants = descriptor.cursorCliVariants ?? [];
+  if (!variants.length) {
+    const base = descriptor.providerModelId.trim();
+    if (options?.fastMode === true && modelSupportsFastMode(descriptor) && base && !base.toLowerCase().endsWith("-fast")) {
+      const fastRef = `${base}-fast`;
+      const normalizedBase = base.toLowerCase();
+      const normalizeAlias = (alias: string): string => {
+        const normalized = alias.trim().toLowerCase();
+        return normalized.startsWith("cursor/") ? normalized.slice("cursor/".length) : normalized;
+      };
+      const matchingAlias = (descriptor.aliases ?? []).find((alias) => normalizeAlias(alias) === fastRef.toLowerCase())
+        ?? (descriptor.aliases ?? []).find((alias) => {
+          const normalized = normalizeAlias(alias);
+          return normalized.endsWith("-fast") && normalized.startsWith(`${normalizedBase}-`);
+        });
+      const selected = matchingAlias?.trim();
+      if (selected) return selected.toLowerCase().startsWith("cursor/") ? selected.slice("cursor/".length) : selected;
+      return fastRef;
+    }
+    return descriptor.providerModelId;
+  }
+
+  const reasoning = normalizeCursorCliVariantReasoning(options?.reasoningEffort);
+  const fastMode = options?.fastMode === true;
+  const exact = variants.find((variant) =>
+    cursorCliVariantMatchesReasoning(variant, reasoning)
+    && cursorCliVariantMatchesFast(variant, fastMode)
+  );
+  if (exact) return exact.modelId;
+
+  if (reasoning) {
+    const reasoningOnly = variants.find((variant) =>
+      cursorCliVariantMatchesReasoning(variant, reasoning)
+      && cursorCliVariantMatchesFast(variant, false)
+    );
+    if (reasoningOnly) return reasoningOnly.modelId;
+  }
+
+  if (fastMode) {
+    const fastDefault = variants.find((variant) =>
+      cursorCliVariantMatchesReasoning(variant, null)
+      && cursorCliVariantMatchesFast(variant, true)
+    ) ?? variants.find((variant) => cursorCliVariantMatchesFast(variant, true));
+    if (fastDefault) return fastDefault.modelId;
+  }
+
+  const defaultVariant = variants.find((variant) =>
+    cursorCliVariantMatchesReasoning(variant, null)
+    && cursorCliVariantMatchesFast(variant, false)
+  );
+  return defaultVariant?.modelId ?? variants[0]?.modelId ?? descriptor.providerModelId;
 }
 
 // ---------------------------------------------------------------------------
@@ -792,6 +888,7 @@ export function createDynamicCursorCliModelDescriptor(
     aliases?: string[];
     capabilities?: Partial<ModelCapabilities>;
     cursorAvailability?: CursorModelAvailability;
+    cursorCliVariants?: CursorCliModelVariant[];
   },
 ): ModelDescriptor {
   const id = `cursor/${providerModelId}`;
@@ -819,6 +916,7 @@ export function createDynamicCursorCliModelDescriptor(
     ...(options?.serviceTiers?.length ? { serviceTiers: [...options.serviceTiers] } : {}),
     ...(options?.aliases?.length ? { aliases: [...options.aliases] } : {}),
     ...(options?.cursorAvailability ? { cursorAvailability: { ...options.cursorAvailability } } : {}),
+    ...(options?.cursorCliVariants?.length ? { cursorCliVariants: options.cursorCliVariants.map((variant) => ({ ...variant })) } : {}),
     isCliWrapped: false,
   };
 }

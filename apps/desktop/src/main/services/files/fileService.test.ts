@@ -20,7 +20,7 @@ describe("fileService", () => {
     vi.restoreAllMocks();
   });
 
-  it("preserves non-escape filesystem errors while resolving workspace paths", () => {
+  it("preserves non-escape filesystem errors while resolving workspace paths", async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-"));
     const rootReal = fs.realpathSync(rootPath);
     const blockedPath = path.join(rootReal, "blocked");
@@ -38,19 +38,19 @@ describe("fileService", () => {
     }) as typeof fs.lstatSync);
 
     try {
-      expect(() =>
+      await expect(
         service.readFile({
           workspaceId: "workspace-1",
           path: "blocked/child.txt",
         })
-      ).toThrow(permissionError);
+      ).rejects.toThrow(permissionError);
     } finally {
       spy.mockRestore();
       fs.rmSync(rootPath, { recursive: true, force: true });
     }
   });
 
-  it("returns an inline image preview for image files", () => {
+  it("returns an inline image preview for image files", async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-image-"));
     const laneService = createLaneServiceStub(rootPath);
     const service = createFileService({ laneService });
@@ -59,7 +59,7 @@ describe("fileService", () => {
       const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
       fs.writeFileSync(path.join(rootPath, "logo.png"), pngBytes);
 
-      const result = service.readFile({
+      const result = await service.readFile({
         workspaceId: "workspace-1",
         path: "logo.png",
       });
@@ -79,32 +79,40 @@ describe("fileService", () => {
     }
   });
 
-  it("omits oversized text and image payloads instead of sending them to the renderer", () => {
+  it("streams oversized text as a partial first chunk and omits oversized images", async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-large-"));
     const laneService = createLaneServiceStub(rootPath);
     const service = createFileService({ laneService });
 
     try {
-      fs.writeFileSync(path.join(rootPath, "huge.ts"), "x".repeat(1024 * 1024 + 1), "utf8");
-      fs.writeFileSync(path.join(rootPath, "huge.png"), Buffer.alloc(1024 * 1024 + 1, 1));
+      const hugeSize = 1024 * 1024 + 1;
+      fs.writeFileSync(path.join(rootPath, "huge.ts"), "x".repeat(hugeSize), "utf8");
+      fs.writeFileSync(path.join(rootPath, "huge.png"), Buffer.alloc(hugeSize, 1));
 
-      const text = service.readFile({ workspaceId: "workspace-1", path: "huge.ts" });
-      const image = service.readFile({ workspaceId: "workspace-1", path: "huge.png" });
+      const text = await service.readFile({ workspaceId: "workspace-1", path: "huge.ts" });
+      const image = await service.readFile({ workspaceId: "workspace-1", path: "huge.png" });
 
+      // Oversized text now returns a streamable first chunk (not omitted).
       expect(text).toMatchObject({
-        content: "",
         encoding: "utf-8",
-        size: 1024 * 1024 + 1,
+        size: hugeSize,
+        totalSize: hugeSize,
         languageId: "typescript",
-        isBinary: true,
-        previewKind: "binary",
-        contentOmitted: true,
-        omittedReason: "too_large",
+        isBinary: false,
+        previewKind: "text",
+        isPartial: true,
+        rangeStart: 0,
       });
+      expect(text.contentOmitted).toBeUndefined();
+      expect(text.content.length).toBeGreaterThan(0);
+      expect(text.content.length).toBeLessThan(hugeSize);
+      expect(text.nextOffset).toBe(text.rangeEnd);
+
+      // Oversized images are still omitted.
       expect(image).toMatchObject({
         content: "",
         encoding: "base64",
-        size: 1024 * 1024 + 1,
+        size: hugeSize,
         languageId: "image",
         isBinary: true,
         previewKind: "binary",
@@ -118,7 +126,73 @@ describe("fileService", () => {
     }
   });
 
-  it("treats invalid non-null bytes as unsupported binary content", () => {
+  it("streams a file in UTF-8-safe byte ranges via readFileRange", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-range-"));
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      // Multi-byte chars (é = 2 bytes) so a naive byte split would corrupt text.
+      const unit = "café\n"; // 6 bytes
+      const body = unit.repeat(1000);
+      fs.writeFileSync(path.join(rootPath, "data.txt"), body, "utf8");
+      const totalBytes = Buffer.byteLength(body, "utf8");
+
+      let offset = 0;
+      let assembled = "";
+      let guard = 0;
+      for (;;) {
+        const page = await service.readFileRange({
+          workspaceId: "workspace-1",
+          path: "data.txt",
+          offset,
+          length: 101, // deliberately lands mid-character
+        });
+        expect(page.encoding).toBe("utf-8");
+        assembled += page.content;
+        if (page.nextOffset == null) {
+          expect(page.eof).toBe(true);
+          break;
+        }
+        expect(page.nextOffset).toBe(page.rangeEnd);
+        offset = page.nextOffset;
+        if (++guard > 10_000) throw new Error("readFileRange did not terminate");
+      }
+
+      expect(Buffer.byteLength(assembled, "utf8")).toBe(totalBytes);
+      expect(assembled).toBe(body);
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("returns per-line blame records", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-blame-"));
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: rootPath, stdio: "ignore" });
+    execSync("git config user.email test@example.com && git config user.name Tester", { cwd: rootPath, stdio: "ignore" });
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      fs.writeFileSync(path.join(rootPath, "a.txt"), "line one\nline two\n", "utf8");
+      execSync("git add -A && git commit -m seed", { cwd: rootPath, stdio: "ignore" });
+
+      const blame = await service.blame({ workspaceId: "workspace-1", path: "a.txt" });
+
+      expect(blame.path).toBe("a.txt");
+      expect(blame.lines).toHaveLength(2);
+      expect(blame.lines[0]).toMatchObject({ line: 1, author: "Tester" });
+      expect(blame.lines[1]).toMatchObject({ line: 2, author: "Tester" });
+      expect(blame.lines[0].summary).toBe("seed");
+      expect(blame.lines[0].sha).toMatch(/^[0-9a-f]{40}$/);
+      expect(blame.lines[0].authorTime).toBeGreaterThan(0);
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("treats invalid non-null bytes as unsupported binary content", async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-binary-"));
     const laneService = createLaneServiceStub(rootPath);
     const service = createFileService({ laneService });
@@ -127,7 +201,7 @@ describe("fileService", () => {
       const bytes = Buffer.from([0xff, 0xfe, 0xfd, 0xfc]);
       fs.writeFileSync(path.join(rootPath, "payload.bin"), bytes);
 
-      const result = service.readFile({
+      const result = await service.readFile({
         workspaceId: "workspace-1",
         path: "payload.bin",
       });
@@ -345,6 +419,137 @@ describe("fileService", () => {
 
       expect(rootNodes.find((node) => node.path === "package-renamed.json")?.changeStatus).toBe("renamed");
       expect(rootNodes.find((node) => node.path === "scratch.ts")?.changeStatus).toBe("untracked");
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("paginates directory children without dropping entries", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-paginate-"));
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      fs.mkdirSync(path.join(rootPath, "data"), { recursive: true });
+      const names = Array.from({ length: 5 }, (_, i) => `f${i}.txt`);
+      for (const name of names) {
+        fs.writeFileSync(path.join(rootPath, "data", name), "x", "utf8");
+      }
+
+      const page1 = await service.listTreeChildren({
+        workspaceId: "workspace-1",
+        parentPath: "data",
+        offset: 0,
+        limit: 2,
+        includeIgnored: true,
+      });
+      const page2 = await service.listTreeChildren({
+        workspaceId: "workspace-1",
+        parentPath: "data",
+        offset: page1.nextOffset ?? 0,
+        limit: 2,
+        includeIgnored: true,
+      });
+      const page3 = await service.listTreeChildren({
+        workspaceId: "workspace-1",
+        parentPath: "data",
+        offset: page2.nextOffset ?? 0,
+        limit: 2,
+        includeIgnored: true,
+      });
+
+      expect(page1).toMatchObject({ total: 5, offset: 0, nextOffset: 2 });
+      expect(page2).toMatchObject({ total: 5, offset: 2, nextOffset: 4 });
+      expect(page3).toMatchObject({ total: 5, offset: 4, nextOffset: null });
+      expect(page1.children).toHaveLength(2);
+      expect(page2.children).toHaveLength(2);
+      expect(page3.children).toHaveLength(1);
+
+      // The union of pages covers every entry exactly once, in stable order.
+      const collected = [...page1.children, ...page2.children, ...page3.children].map((node) => node.path);
+      expect(collected).toEqual(names.map((name) => `data/${name}`));
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("orders directories before files within a page", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-paginate-order-"));
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      fs.mkdirSync(path.join(rootPath, "root", "zeta-dir"), { recursive: true });
+      fs.writeFileSync(path.join(rootPath, "root", "alpha.txt"), "x", "utf8");
+
+      const page = await service.listTreeChildren({
+        workspaceId: "workspace-1",
+        parentPath: "root",
+        includeIgnored: true,
+      });
+
+      expect(page.children.map((node) => ({ path: node.path, type: node.type }))).toEqual([
+        { path: "root/zeta-dir", type: "directory" },
+        { path: "root/alpha.txt", type: "file" },
+      ]);
+      expect(page.nextOffset).toBeNull();
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves git decorations with file statuses and ancestor directories", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-decorations-"));
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: rootPath, stdio: "ignore" });
+    execSync("git config user.email test@example.com && git config user.name Test", { cwd: rootPath, stdio: "ignore" });
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      fs.mkdirSync(path.join(rootPath, "src", "nested"), { recursive: true });
+      fs.writeFileSync(path.join(rootPath, "src", "nested", "deep.ts"), "export const a = 1;\n", "utf8");
+      execSync("git add -A && git commit -m init", { cwd: rootPath, stdio: "ignore" });
+      // Modify a deeply nested file so its ancestor directories roll up.
+      fs.writeFileSync(path.join(rootPath, "src", "nested", "deep.ts"), "export const a = 2;\n", "utf8");
+
+      const event = await service.refreshGitDecorations({
+        workspaceId: "workspace-1",
+        forceFresh: true,
+      });
+
+      const fileEntry = event.files.find((entry) => entry.path === "src/nested/deep.ts");
+      expect(fileEntry?.changeStatus).toBe("modified");
+      // Every ancestor directory of the changed file is decorated for free.
+      const dirPaths = event.directories.map((entry) => entry.path);
+      expect(dirPaths).toContain("src");
+      expect(dirPaths).toContain("src/nested");
+      expect(event.directories.every((entry) => entry.changeStatus === "modified")).toBe(true);
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("returns no decorations for a clean workspace", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-clean-decorations-"));
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: rootPath, stdio: "ignore" });
+    execSync("git config user.email test@example.com && git config user.name Test", { cwd: rootPath, stdio: "ignore" });
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      fs.writeFileSync(path.join(rootPath, "committed.ts"), "export const ok = true;\n", "utf8");
+      execSync("git add -A && git commit -m init", { cwd: rootPath, stdio: "ignore" });
+
+      const event = await service.refreshGitDecorations({
+        workspaceId: "workspace-1",
+        forceFresh: true,
+      });
+
+      expect(event.workspaceId).toBe("workspace-1");
+      expect(event.files).toEqual([]);
+      expect(event.directories).toEqual([]);
     } finally {
       fs.rmSync(rootPath, { recursive: true, force: true });
     }

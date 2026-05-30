@@ -818,6 +818,8 @@ type CursorRuntime = {
   modelConfigId: string | null;
   currentModelId: string | null;
   availableModelIds: string[];
+  /** Set when the user switches Cursor models during a live run; flushed when idle. */
+  pendingModelSwitchReset?: boolean;
   pendingSteers: QueuedSteer[];
   permissionWaiters: Map<string, CursorPermissionWaiter>;
   modeConfigId: string | null;
@@ -8238,7 +8240,14 @@ export function createAgentChatService(args: {
     if (!next) return;
     if (next === managed.preview) return;
     managed.preview = next;
-    sessionService.setLastOutputPreview(managed.session.id, next);
+    try {
+      sessionService.setLastOutputPreview(managed.session.id, next);
+    } catch (error) {
+      logger.warn("agent_chat.preview_update_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   };
 
   const setSessionActive = (managed: ManagedChatSession): void => {
@@ -17556,6 +17565,13 @@ export function createAgentChatService(args: {
       fastMode: session.codexFastMode === true,
     });
 
+  const cursorModelParamsForLog = (
+    modelParams?: Array<{ id: string; value: string }>,
+  ): Array<{ id: string; value: string }> | undefined =>
+    modelParams?.length
+      ? modelParams.map((entry) => ({ id: entry.id, value: entry.value }))
+      : undefined;
+
   const cursorCloudIdempotencyKey = (
     managed: ManagedChatSession,
     turnId: string,
@@ -17945,6 +17961,34 @@ export function createAgentChatService(args: {
     });
   };
 
+  const syncLiveCursorSdkPolicy = async (
+    managed: ManagedChatSession,
+    runtime: CursorRuntime,
+    reason: string,
+  ): Promise<void> => {
+    const policy = resolveCursorSdkPolicy(managed.session);
+    runtime.sdkPolicy = policy;
+    runtime.currentModeId = resolveCursorDisplayModeId(managed.session, policy);
+    syncCursorModeSnapshot(managed, runtime);
+    persistChatState(managed);
+    try {
+      await runtime.sdk.updatePolicy(policy);
+      logger.info("agent_chat.cursor_sdk_policy_updated", {
+        sessionId: managed.session.id,
+        reason,
+        mode: runtime.currentModeId,
+        approvalPolicy: approvalPolicyLabel(policy.approvalPolicy),
+        force: policy.force,
+      });
+    } catch (error) {
+      logger.warn("agent_chat.cursor_sdk_policy_update_failed", {
+        sessionId: managed.session.id,
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   const emitCursorSdkPlanApprovalRequest = (
     managed: ManagedChatSession,
     runtime: CursorRuntime,
@@ -17997,18 +18041,7 @@ export function createAgentChatService(args: {
           : null;
         if (approved) {
           managed.session.cursorModeId = "agent";
-          runtime.currentModeId = "agent";
-          runtime.sdkPolicy = resolveCursorSdkPolicy(managed.session);
-          syncCursorModeSnapshot(managed, runtime);
-          persistChatState(managed);
-          if (runtime.sdk) {
-            void runtime.sdk.updatePolicy(runtime.sdkPolicy).catch((error) => {
-              logger.warn("agent_chat.cursor_sdk_policy_update_failed", {
-                sessionId: managed.session.id,
-                error: error instanceof Error ? error.message : String(error),
-              });
-            });
-          }
+          void syncLiveCursorSdkPolicy(managed, runtime, "plan_approval");
           queueCursorControlFollowup(
             managed,
             runtime,
@@ -18681,6 +18714,7 @@ export function createAgentChatService(args: {
       transport: "sdk",
       approvalPolicy: approvalPolicyLabel(policy.approvalPolicy),
       model: launchModelSdkId,
+      ...(launchModelParams?.length ? { modelParams: cursorModelParamsForLog(launchModelParams) } : {}),
     });
     return rt;
   };
@@ -18710,6 +18744,8 @@ export function createAgentChatService(args: {
     }
 
     const turnId = args.turnId ?? randomUUID();
+    const turnModel = managed.session.model;
+    const turnModelId = managed.session.modelId;
     runtime.interrupted = false;
     runtime.busy = true;
     runtime.activeTurnId = turnId;
@@ -18776,11 +18812,17 @@ export function createAgentChatService(args: {
         .filter((block): block is { type: "image"; data: string; mimeType: string } => block.type === "image")
         .map((block) => ({ data: block.data, mimeType: block.mimeType }));
 
+      const modelParams = resolveCursorSdkModelParamsForSession(managed.session, runtime.modelSdkId);
       persistChatState(managed);
       logger.info("agent_chat.cursor_prompt_start", {
         sessionId: managed.session.id,
         turnId,
         model: managed.session.model,
+        modelSdkId: runtime.modelSdkId,
+        ...(modelParams?.length ? { modelParams: cursorModelParamsForLog(modelParams) } : {}),
+        mode: resolveCursorDisplayModeId(managed.session, policy),
+        approvalPolicy: approvalPolicyLabel(policy.approvalPolicy),
+        force: policy.force,
         transport: "sdk",
       });
 
@@ -18793,7 +18835,7 @@ export function createAgentChatService(args: {
         promptText,
         images,
         modelSdkId: runtime.modelSdkId,
-        modelParams: resolveCursorSdkModelParamsForSession(managed.session, runtime.modelSdkId),
+        ...(modelParams?.length ? { modelParams } : {}),
         force: policy.force,
       });
 
@@ -18805,8 +18847,8 @@ export function createAgentChatService(args: {
       adoptRuntimeSessionTitle(managed, resultRecord, "cursor_sdk_run_result");
       const doneEvent = mapCursorSdkRunResultToDoneEvent(result, {
         turnId,
-        model: managed.session.model,
-        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        model: turnModel,
+        ...(turnModelId ? { modelId: turnModelId } : {}),
       });
       if (runtime.interrupted || resultStatus === "cancelled") {
         markSessionIdleWithFreshCache(managed);
@@ -18845,8 +18887,8 @@ export function createAgentChatService(args: {
           type: "done",
           turnId,
           status: "interrupted",
-          model: managed.session.model,
-          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+          model: turnModel,
+          ...(turnModelId ? { modelId: turnModelId } : {}),
         });
       } else {
         const classified = classifyCursorSdkChatError(error, {
@@ -18865,8 +18907,8 @@ export function createAgentChatService(args: {
           type: "done",
           turnId,
           status: "failed",
-          model: managed.session.model,
-          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+          model: turnModel,
+          ...(turnModelId ? { modelId: turnModelId } : {}),
         });
         appendWorkerActivityToCto(managed, {
           activityType: "chat_turn",
@@ -18875,10 +18917,16 @@ export function createAgentChatService(args: {
       }
       persistChatState(managed);
     } finally {
+      const pendingModelSwitchReset = runtime.pendingModelSwitchReset === true;
+      runtime.pendingModelSwitchReset = false;
       runtime.busy = false;
       runtime.activeTurnId = null;
       if (managed.session.status === "active") {
         setSessionIdle(managed);
+      }
+      if (pendingModelSwitchReset && managed.runtime === runtime && !managed.closed) {
+        refreshReconstructionContext(managed);
+        teardownRuntime(managed, "model_switch");
       }
     }
 
@@ -19115,12 +19163,17 @@ export function createAgentChatService(args: {
       .map((block) => block.text)
       .join("\n\n");
 
+    const cloudLogModelParams = runtime.modelSdkId
+      ? resolveCursorSdkModelParamsForSession(managed.session, runtime.modelSdkId)
+      : undefined;
     persistChatState(managed);
     logger.info("agent_chat.cursor_cloud_prompt_start", {
       sessionId: managed.session.id,
       turnId,
       isFollowUp,
       hasAgentId: Boolean(managed.session.cursorCloudAgentId),
+      ...(runtime.modelSdkId ? { modelSdkId: runtime.modelSdkId } : {}),
+      ...(cloudLogModelParams?.length ? { modelParams: cursorModelParamsForLog(cloudLogModelParams) } : {}),
     });
 
     if (args.onDispatched) {
@@ -20113,6 +20166,12 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "cursor") {
       const chatConfig = resolveChatConfig();
+      if (reasoningEffort !== undefined) {
+        managed.session.reasoningEffort = validateRuntimeReasoningEffortForDescriptor(
+          normalizeReasoningEffort(reasoningEffort),
+          resolveSessionModelDescriptor(managed.session),
+        );
+      }
       managed.session.opencodePermissionMode = resolveSessionOpenCodePermissionMode(
         managed.session,
         chatConfig.opencodePermissionMode,
@@ -22302,6 +22361,7 @@ export function createAgentChatService(args: {
           color: d.color,
           ...(d.aliases?.length ? { aliases: d.aliases } : {}),
           ...(d.cursorAvailability ? { cursorAvailability: d.cursorAvailability } : {}),
+          ...(d.cursorCliVariants?.length ? { cursorCliVariants: d.cursorCliVariants } : {}),
         }));
       } catch {
         return [];
@@ -22560,6 +22620,7 @@ export function createAgentChatService(args: {
               ? { serviceTiers: descriptor.serviceTiers }
               : {}),
           ...(info.cursorAvailability ? { cursorAvailability: info.cursorAvailability } : descriptor.cursorAvailability ? { cursorAvailability: descriptor.cursorAvailability } : {}),
+          ...(info.cursorCliVariants?.length ? { cursorCliVariants: info.cursorCliVariants } : descriptor.cursorCliVariants?.length ? { cursorCliVariants: descriptor.cursorCliVariants } : {}),
         };
         descriptors.push(patched);
         descriptorInfo.set(catalogDescriptorInfoKey(provider, patched.family, patched.id), { provider, info });
@@ -22659,6 +22720,11 @@ export function createAgentChatService(args: {
                   ? { cursorAvailability: entry.info.cursorAvailability }
                   : descriptor.cursorAvailability
                     ? { cursorAvailability: descriptor.cursorAvailability }
+                    : {}),
+                ...(entry?.info.cursorCliVariants?.length
+                  ? { cursorCliVariants: entry.info.cursorCliVariants }
+                  : descriptor.cursorCliVariants?.length
+                    ? { cursorCliVariants: descriptor.cursorCliVariants }
                     : {}),
                 isAvailable: Boolean(entry),
                 connected: providerMeta?.connected ?? Boolean(entry),
@@ -23059,8 +23125,12 @@ export function createAgentChatService(args: {
         || managed.session.model !== nextModel;
 
       if (managed.runtime && modelChanged) {
-        teardownRuntime(managed, "model_switch");
-        refreshReconstructionContext(managed);
+        if (managed.runtime.kind === "cursor" && managed.runtime.busy) {
+          managed.runtime.pendingModelSwitchReset = true;
+        } else {
+          teardownRuntime(managed, "model_switch");
+          refreshReconstructionContext(managed);
+        }
       }
       if (modelChanged) {
         managed.runtimeTitleAdopted = false;
@@ -23284,6 +23354,16 @@ export function createAgentChatService(args: {
       }
       if (managed.runtime?.kind === "droid" && !managed.runtime.busy) {
         await ensureDroidSessionState(managed, managed.runtime);
+      }
+      if (
+        managed.runtime?.kind === "cursor"
+        && (
+          permissionMode !== undefined
+          || opencodePermissionMode !== undefined
+          || cursorModeId !== undefined
+        )
+      ) {
+        await syncLiveCursorSdkPolicy(managed, managed.runtime, "session_update");
       }
     }
     if (

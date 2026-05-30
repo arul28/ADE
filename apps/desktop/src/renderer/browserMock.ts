@@ -5100,11 +5100,46 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         const parentPath = normalizeBrowserMockRelPath(args?.parentPath);
         return getBrowserMockListTreeNodes(workspaceId, parentPath);
       },
+      listTreeChildren: async (args: any) => {
+        const workspaceId = String(args?.workspaceId ?? "");
+        const parentPath = normalizeBrowserMockRelPath(args?.parentPath);
+        const all = getBrowserMockListTreeNodes(workspaceId, parentPath);
+        const offset = Number.isFinite(args?.offset) ? Math.max(0, Math.floor(args.offset)) : 0;
+        const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.floor(args.limit)) : 500;
+        const pageEnd = Math.min(offset + limit, all.length);
+        return {
+          parentPath,
+          children: all.slice(offset, pageEnd),
+          offset,
+          limit,
+          total: all.length,
+          nextOffset: pageEnd < all.length ? pageEnd : null,
+        };
+      },
+      refreshGitDecorations: async (args: any) => ({
+        workspaceId: String(args?.workspaceId ?? ""),
+        files: [],
+        directories: [],
+      }),
       readFile: async (args: any) => {
         const workspaceId = String(args?.workspaceId ?? "");
         const relPath = String(args?.path ?? "");
         return getBrowserMockReadFilePayload(workspaceId, relPath);
       },
+      readFileRange: async (args: any) => {
+        const offset = Number.isFinite(args?.offset) ? Math.max(0, Math.floor(args.offset)) : 0;
+        return {
+          path: String(args?.path ?? ""),
+          encoding: "utf-8" as const,
+          content: "",
+          rangeStart: offset,
+          rangeEnd: offset,
+          totalSize: offset,
+          nextOffset: null,
+          eof: true,
+        };
+      },
+      gitBlame: async (args: any) => ({ path: String(args?.path ?? ""), lines: [] }),
       writeText: resolvedArg(undefined),
       createFile: resolvedArg(undefined),
       createDirectory: resolvedArg(undefined),

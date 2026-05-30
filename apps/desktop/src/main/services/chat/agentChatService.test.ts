@@ -1493,6 +1493,7 @@ beforeEach(() => {
   vi.mocked(startOpenCodeSession).mockClear();
   vi.mocked(buildOpenCodePromptParts).mockClear();
   vi.mocked(acquireCursorSdkConnection).mockClear();
+  vi.mocked(releaseCursorSdkConnection).mockClear();
   vi.mocked(acquireDroidSdkConnection).mockClear();
   vi.mocked(streamText).mockReset();
   vi.mocked(claudeSdkCreateSessionCompat).mockReset();
@@ -17158,6 +17159,95 @@ describe("createAgentChatService", () => {
     )).toBe(false);
   });
 
+  it("keeps Cursor SDK approvals live when preview persistence fails", async () => {
+    process.env.CURSOR_API_KEY = "cursor-test-key";
+    const events: AgentChatEventEnvelope[] = [];
+    const { service, sessionService, logger } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+      cursorModeId: "agent",
+    });
+
+    const previewError = new Error("database is not open");
+    vi.mocked(sessionService.setLastOutputPreview).mockImplementation(() => {
+      throw previewError;
+    });
+
+    let releaseGate: () => void = () => {};
+    mockState.cursorSendPromptGate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+
+    const pendingTurn = service.sendMessage({
+      sessionId: session.id,
+      text: "Run a command that needs approval.",
+    }, { awaitDispatch: true });
+
+    try {
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBe(1);
+      });
+
+      expect(() => {
+        mockState.cursorSdkPooled.bridge.onEvent({
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "I need to inspect the lane." }],
+          },
+        });
+      }).not.toThrow();
+
+      const hookResponse = mockState.cursorSdkPooled.bridge.onHookRequest({
+        id: "cursor-hook-preview-failure",
+        toolName: "shell",
+        title: "Run shell command",
+        summary: "Run git status",
+        cwd: tmpRoot,
+        raw: { command: "git status --short" },
+        toolInput: { command: "git status --short" },
+        risk: "shell",
+      });
+
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "cursor-hook-preview-failure",
+      );
+
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: approvalEvent.event.itemId,
+        decision: "accept_for_session",
+      });
+
+      await expect(hookResponse).resolves.toEqual({ permission: "allow" });
+      expect(logger.warn).toHaveBeenCalledWith(
+        "agent_chat.preview_update_failed",
+        expect.objectContaining({
+          sessionId: session.id,
+          error: "database is not open",
+        }),
+      );
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        "agent_chat.approval_without_live_runtime",
+        expect.anything(),
+      );
+      expect(releaseCursorSdkConnection).not.toHaveBeenCalled();
+    } finally {
+      releaseGate();
+      await pendingTurn;
+    }
+  });
+
   it("exits Cursor SDK plan mode through ADE plan approval control blocks", async () => {
     process.env.CURSOR_API_KEY = "cursor-test-key";
     const events: AgentChatEventEnvelope[] = [];
@@ -17212,6 +17302,109 @@ describe("createAgentChatService", () => {
     await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
       cursorModeId: "agent",
     });
+  });
+
+  it("pushes Cursor SDK mode changes into the live worker while a turn is active", async () => {
+    process.env.CURSOR_API_KEY = "cursor-test-key";
+    const { service } = createService();
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+      cursorModeId: "agent",
+    });
+
+    let releaseGate: () => void = () => {};
+    mockState.cursorSendPromptGate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const pendingTurn = service.sendMessage({
+      sessionId: session.id,
+      text: "Keep this Cursor turn open while I switch modes.",
+    }, { awaitDispatch: true });
+
+    try {
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThan(0);
+      });
+
+      const updated = await service.updateSession({
+        sessionId: session.id,
+        cursorModeId: "full-auto",
+      });
+
+      expect(updated.cursorModeId).toBe("full-auto");
+      expect(updated.cursorModeSnapshot?.currentModeId).toBe("full-auto");
+      expect(mockState.cursorSdkPolicyUpdates.at(-1)).toMatchObject({
+        chatMode: "agent",
+        approvalPolicy: "never",
+        force: true,
+      });
+    } finally {
+      releaseGate();
+      await pendingTurn;
+    }
+  });
+
+  it("defers Cursor SDK runtime reset when switching models during an active turn", async () => {
+    process.env.CURSOR_API_KEY = "cursor-test-key";
+    const { service } = createService();
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+      cursorModeId: "agent",
+    });
+
+    let releaseGate: () => void = () => {};
+    mockState.cursorSendPromptGate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const pendingTurn = service.sendMessage({
+      sessionId: session.id,
+      text: "Keep this Cursor turn open while I switch models.",
+    }, { awaitDispatch: true });
+
+    try {
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBe(1);
+      });
+
+      await expect(service.updateSession({
+        sessionId: session.id,
+        modelId: "cursor/composer-2.5",
+      })).resolves.toMatchObject({
+        provider: "cursor",
+        model: "cursor/composer-2.5",
+        modelId: "cursor/composer-2.5",
+      });
+
+      expect(releaseCursorSdkConnection).not.toHaveBeenCalled();
+    } finally {
+      releaseGate();
+      await pendingTurn;
+    }
+
+    await vi.waitFor(() => {
+      expect(releaseCursorSdkConnection).toHaveBeenCalledTimes(1);
+    });
+    mockState.cursorSendPromptGate = null;
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Use the newly selected Cursor model.",
+    }, { awaitDispatch: true });
+
+    expect(mockState.cursorSdkAcquireCalls.at(-1)).toEqual(
+      expect.objectContaining({ modelSdkId: "composer-2.5" }),
+    );
+    expect(mockState.cursorSdkSendCalls.at(-1)).toEqual(
+      expect.objectContaining({ modelSdkId: "composer-2.5" }),
+    );
   });
 
   it("configures a new Droid SDK session with the selected model before prompting", async () => {

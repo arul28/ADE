@@ -35,7 +35,7 @@ import {
 import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { ChatIosSimulatorPanel } from "../chat/ChatIosSimulatorPanel";
-import { FilesPage } from "../files/FilesPage";
+import { FilesTab } from "../files/FilesTab";
 import { LaneDiffPane } from "../lanes/LaneDiffPane";
 import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
 import { GlowMenu, type GlowMenuItem } from "../ui/GlowMenu";
@@ -508,7 +508,7 @@ export function WorkSidebar({
     }
 
     if (tab === "files") {
-      return <FilesPage preferredLaneId={laneId} embedded />;
+      return <FilesTab preferredLaneId={laneId} embedded />;
     }
 
     const panel = tab === "ios" ? (
