@@ -1,5 +1,44 @@
 import { describe, expect, it } from "vitest";
-import { canRenderMultiChatGrid, computeTileRects, focusedSessionIdForMultiView } from "../multiChatLayout";
+import {
+  canRenderMultiChatGrid,
+  computeTileRects,
+  focusedSessionIdForMultiView,
+  resolveOpenChatSessionIds,
+} from "../multiChatLayout";
+
+describe("resolveOpenChatSessionIds", () => {
+  const multiView = {
+    tiles: [
+      { sessionId: "tile-a", laneId: "lane-1" },
+      { sessionId: "tile-b", laneId: "lane-1" },
+    ],
+    focusedIndex: 0,
+  };
+
+  it("streams tile sessions when the grid is visible", () => {
+    expect(resolveOpenChatSessionIds({
+      gridViewActive: true,
+      multiView,
+      activeSessionId: "other-chat",
+    })).toEqual(new Set(["tile-a", "tile-b"]));
+  });
+
+  it("streams only the active chat when a resumable grid is hidden", () => {
+    expect(resolveOpenChatSessionIds({
+      gridViewActive: false,
+      multiView,
+      activeSessionId: "solo-chat",
+    })).toEqual(new Set(["solo-chat"]));
+  });
+
+  it("streams the active chat when no grid exists", () => {
+    expect(resolveOpenChatSessionIds({
+      gridViewActive: false,
+      multiView: null,
+      activeSessionId: "solo-chat",
+    })).toEqual(new Set(["solo-chat"]));
+  });
+});
 
 describe("multi chat layout", () => {
   it("computes the locked 1-6 tile patterns inside the available area", () => {

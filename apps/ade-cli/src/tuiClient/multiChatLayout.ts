@@ -88,3 +88,15 @@ export function focusedSessionIdForMultiView(multiView: MultiViewState | null): 
   if (!multiView) return null;
   return multiView.tiles[multiView.focusedIndex]?.sessionId ?? null;
 }
+
+/** Session ids that should receive live chat event streaming (not summary-only refresh). */
+export function resolveOpenChatSessionIds(args: {
+  gridViewActive: boolean;
+  multiView: MultiViewState | null;
+  activeSessionId: string | null;
+}): Set<string> {
+  if (args.gridViewActive && args.multiView) {
+    return new Set(args.multiView.tiles.map((tile) => tile.sessionId));
+  }
+  return args.activeSessionId ? new Set([args.activeSessionId]) : new Set();
+}
