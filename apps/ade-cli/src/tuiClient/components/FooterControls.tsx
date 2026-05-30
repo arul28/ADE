@@ -19,7 +19,7 @@ function Hint({ keyLabel, action }: { keyLabel: string; action: string }) {
   );
 }
 
-function tokenBarColor(percent: number): string {
+export function tokenBarColor(percent: number): string {
   // Context-usage fill: on-brand violet while healthy, escalating to amber then
   // red as context runs low. (No green — a green block here read as a glitch.)
   if (percent >= 95) return theme.color.danger;

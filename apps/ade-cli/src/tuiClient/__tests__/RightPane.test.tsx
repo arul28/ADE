@@ -1,7 +1,9 @@
 import React from "react";
 import { describe, expect, it } from "vitest";
 import { render } from "ink-testing-library";
-import { LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, laneDetailsInteractionLayout, rightPaneScrollableRowCount, RightPane } from "../components/RightPane";
+import { LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, feedbackStateFromContent, laneDetailsInteractionLayout, rightPaneScrollableRowCount, RightPane } from "../components/RightPane";
+import { feedbackFormToFormValues } from "../feedbackForm";
+import { buildFeedbackDraftInput } from "../feedback";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 
 describe("rightPaneScrollableRowCount", () => {
@@ -614,5 +616,91 @@ describe("RightPane details", () => {
     expect(frame).toContain("gpt-5.5");
     expect(frame).toContain("12.0k / 20.0k (60%)");
     expect(frame).toContain("messages");
+  });
+});
+
+describe("RightPane feedback form", () => {
+  // The feedback pane render is exercised end-to-end through the deterministic
+  // helper contract below (state rebuild -> serialize -> daemon draft). Full-frame
+  // string assertions are intentionally avoided: ink-testing-library leaks tall
+  // frames between renders in this suite, making pixel-frame matches flaky.
+
+  it("feedbackStateFromContent rebuilds the framework-free form state", () => {
+    const content = {
+      kind: "form" as const,
+      title: "Feedback",
+      command: "feedback" as const,
+      fields: [],
+      feedback: {
+        type: "idea" as const,
+        body: "add dark mode\nplease",
+        showContext: false,
+        provider: "anthropic",
+        model: "opus",
+        lane: "L",
+        lastError: "boom",
+      },
+    };
+    const state = feedbackStateFromContent(content);
+    expect(state.type).toBe("idea");
+    expect(state.text).toBe("add dark mode\nplease");
+    expect(state.showContext).toBe(false);
+    expect(state.context).toEqual({ provider: "anthropic", model: "opus", lane: "L", lastError: "boom" });
+  });
+
+  it("submit path: feedbackStateFromContent -> feedbackFormToFormValues -> buildFeedbackDraftInput keeps the multiline body", () => {
+    const content = {
+      kind: "form" as const,
+      title: "Feedback",
+      command: "feedback" as const,
+      fields: [],
+      feedback: {
+        type: "bug" as const,
+        body: "crash on launch\nstep one\nstep two",
+        showContext: true,
+        provider: "anthropic",
+        model: "opus",
+        lane: "my-lane",
+        lastError: "boom",
+      },
+    };
+    const values = feedbackFormToFormValues(feedbackStateFromContent(content));
+    expect(values.category).toBe("bug");
+    expect(values.summary).toBe("crash on launch");
+    const draft = buildFeedbackDraftInput(values);
+    expect(draft.category).toBe("bug");
+    expect(draft.summary).toBe("crash on launch");
+    if (draft.category === "bug") {
+      expect(draft.stepsToReproduce).toBe("crash on launch\nstep one\nstep two");
+    }
+    expect(draft.additionalContext).toContain("--- Context ---");
+    expect(draft.additionalContext).toContain("Provider/Model: anthropic / opus");
+    expect(draft.additionalContext).toContain("Lane: my-lane");
+    expect(draft.additionalContext).toContain("Last error/notice: boom");
+  });
+
+  it("omits the context footer from the serialized draft when showContext is false", () => {
+    const content = {
+      kind: "form" as const,
+      title: "Feedback",
+      command: "feedback" as const,
+      fields: [],
+      feedback: { type: "idea" as const, body: "an idea", showContext: false, lane: "L" },
+    };
+    const values = feedbackFormToFormValues(feedbackStateFromContent(content));
+    expect(values.additionalContext).toBeUndefined();
+  });
+
+  it("idea type maps to a feature draft", () => {
+    const content = {
+      kind: "form" as const,
+      title: "Feedback",
+      command: "feedback" as const,
+      fields: [],
+      feedback: { type: "idea" as const, body: "add dark mode\nplease", showContext: false },
+    };
+    const draft = buildFeedbackDraftInput(feedbackFormToFormValues(feedbackStateFromContent(content)));
+    expect(draft.category).toBe("feature");
+    expect(draft.summary).toBe("add dark mode");
   });
 });

@@ -5,12 +5,12 @@ import type { SetupPaneRow, SetupPaneRowKind } from "../../types";
 import { useHoveredHitId } from "../../hitTestRegistry";
 import { KeyHints } from "../designKit";
 import type { ModelPickerAuthStatus, ModelPickerEntry, ModelPickerRailEntry, ModelPickerState } from "./types";
-
 // The model list is a FIXED-height window so a long catalog (e.g. OpenCode's
 // dozens of providers) scrolls inside its own region instead of shoving the
-// settings footer around. Settings stay stickied below.
-const RAIL_WIDTH = 4;
-const MODEL_LIST_ROWS = 9;
+// settings footer around. Settings stay stickied below. Geometry constants +
+// the windowing function live in modelPickerGeometry so the click hit-test in
+// app.tsx computes identical rects from a SINGLE source.
+import { MODEL_LIST_ROWS, RAIL_WIDTH, rowWindow, modelPickerGeometry } from "./modelPickerGeometry";
 
 function endTruncate(value: string, max: number): string {
   if (max <= 1) return value.length ? "…" : "";
@@ -201,14 +201,40 @@ function SettingsFooter({
 }
 
 // ── Windowing ────────────────────────────────────────────────────────────────
+// rowWindow + RAIL_WIDTH + MODEL_LIST_ROWS are imported from modelPickerGeometry
+// (the single geometry source shared with the app.tsx click hit-test).
 
-function rowWindow(rowCount: number, selected: number, capacity: number): { start: number; end: number } {
-  if (rowCount <= capacity) return { start: 0, end: rowCount };
-  const half = Math.floor(capacity / 2);
-  let start = Math.max(0, selected - half);
-  const end = Math.min(rowCount, start + capacity);
-  start = Math.max(0, end - capacity);
-  return { start, end };
+// ── Dev-only hit-test verifier ───────────────────────────────────────────────
+// Gated on ADE_DEBUG_HITTEST. Lists the relative (paneTop/paneLeft = 0) rects
+// the SHARED geometry helper produces for the current state, so a developer can
+// cross-check that the painted rows line up with the clickable rects. Static
+// (no timers, idle = zero extra re-renders); neutral chrome colors only.
+function DebugHitOverlay({ state }: { state: ModelPickerState }) {
+  if (!process.env.ADE_DEBUG_HITTEST) return null;
+  const geometry = modelPickerGeometry({
+    paneLeft: 0,
+    paneTop: 0,
+    paneWidth: 40,
+    state,
+    rows: 100,
+  });
+  const fmt = (id: string, r: { x: number; y: number; w: number; h: number }) =>
+    `${id}  y${r.y} x${r.x} ${r.w}×${r.h}`;
+  const lines: string[] = [
+    fmt("search", geometry.search),
+    ...geometry.rail.map((entry) => fmt(`rail[${entry.id.split(":").pop()}]`, entry.rect)),
+    ...geometry.entries.map((entry) => fmt(`entry#${entry.index}`, entry.rect)),
+    ...geometry.settings.map((entry) => fmt(`set:${entry.id.split(":").pop()}`, entry.rect)),
+    ...(geometry.apply ? [fmt("apply", geometry.apply)] : []),
+  ];
+  return (
+    <Box flexDirection="column" marginTop={1} borderStyle="single" borderColor={theme.color.border} paddingX={1}>
+      <Text color={theme.color.t4} dimColor>hit-test geometry (ADE_DEBUG_HITTEST)</Text>
+      {lines.map((line, index) => (
+        <Text key={`dbg-${index}`} color={theme.color.t5} dimColor>{line}</Text>
+      ))}
+    </Box>
+  );
 }
 
 function emptyStateLabel(state: ModelPickerState, railEntry: ModelPickerRailEntry | undefined): string {
@@ -342,6 +368,8 @@ export function ModelPickerPane({
           ["esc", "close"],
         ]}
       />
+
+      <DebugHitOverlay state={state} />
     </Box>
   );
 }

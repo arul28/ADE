@@ -8,6 +8,15 @@ function stripAnsi(value: string): string {
   return value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
 }
 
+/** Poll until `check()` is truthy (xterm write callbacks are async). */
+async function waitFor(check: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!check()) {
+    if (Date.now() > deadline) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 function row(text: string): TerminalSnapshotRow {
   return {
     text,
@@ -361,5 +370,105 @@ describe("TerminalPane", () => {
     expect(frame).not.toContain("Churned");
     expect(frame).not.toContain("MCP server failed");
     expect(frame).not.toContain("Resume this session");
+  });
+
+  it("shows the amber '↓ N new' jump chip when scrolled up and new output is pending", () => {
+    const result = render(
+      <TerminalPane
+        title="Claude Code"
+        preview={preview([row("visible one"), row("visible two")])}
+        liveChunks={[]}
+        attached={false}
+        width={80}
+        height={4}
+        hiddenBottomRows={2}
+        scrollOffset={5}
+        pendingNewCount={3}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+    expect(frame).toContain("↓ 3 new");
+  });
+
+  it("shows a muted scrollback hint (no chip) when scrolled up with no new output", () => {
+    const result = render(
+      <TerminalPane
+        title="Claude Code"
+        preview={preview([row("visible one"), row("visible two")])}
+        liveChunks={[]}
+        attached={false}
+        width={80}
+        height={4}
+        hiddenBottomRows={2}
+        scrollOffset={5}
+        pendingNewCount={0}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+    expect(frame).not.toContain("new");
+    expect(frame).toContain("scrollback");
+  });
+
+  it("hides the new-output chip when attached (Claude owns the terminal, always follows bottom)", () => {
+    const result = render(
+      <TerminalPane
+        title="Claude Code"
+        preview={preview([row("permission prompt"), row("1. Yes")])}
+        liveChunks={[]}
+        attached
+        width={80}
+        height={5}
+        hiddenBottomRows={2}
+        scrollOffset={5}
+        pendingNewCount={9}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+    expect(frame).not.toContain("9 new");
+    expect(frame).toContain("CLAUDE CONTROL");
+  });
+
+  it("reports viewport metrics (max scrollable rows + visible text) for keyboard scroll + copy", async () => {
+    const metrics: { maxScrollable: number; visibleText: string }[] = [];
+    render(
+      <TerminalPane
+        title="Claude Code"
+        preview={null}
+        liveChunks={["line one\r\nline two\r\nline three\r\n"]}
+        attached={false}
+        width={80}
+        height={6}
+        hiddenBottomRows={0}
+        onViewportMetrics={(m) => metrics.push(m)}
+      />,
+    );
+    // xterm's write() callback is async; poll until the visible text settles.
+    await waitFor(() => metrics.some((m) => m.visibleText.includes("line three")));
+    const last = metrics[metrics.length - 1];
+    expect(last).toBeDefined();
+    expect(typeof last?.maxScrollable).toBe("number");
+    expect(metrics.some((m) => m.visibleText.includes("line one"))).toBe(true);
+    expect(metrics.some((m) => m.visibleText.includes("line three"))).toBe(true);
+  });
+
+  it("advances the write cursor past 500 chunks (desync regression) without dropping later output", async () => {
+    // Feed > 500 incremental chunks; the final chunk must still render. The old
+    // slice(-500) on every chunk pinned the buffer and froze the write cursor.
+    const chunks = Array.from({ length: 540 }, (_unused, index) => `row${index}\r\n`);
+    const result = render(
+      <TerminalPane
+        title="Claude Code"
+        preview={null}
+        liveChunks={chunks}
+        attached={false}
+        width={80}
+        height={6}
+        hiddenBottomRows={0}
+      />,
+    );
+    // The most recent rows (well past index 500) must be visible at the bottom
+    // once xterm flushes — proving the write cursor advanced past 500.
+    await waitFor(() => stripAnsi(result.lastFrame() ?? "").includes("row539"));
+    expect(stripAnsi(result.lastFrame() ?? "")).toContain("row539");
   });
 });

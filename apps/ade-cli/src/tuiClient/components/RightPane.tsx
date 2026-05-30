@@ -13,10 +13,20 @@ import { buildSubagentPaneRows, type SubagentPaneRow } from "../subagentPane";
 import { ModelPickerPane } from "./ModelPicker/ModelPickerPane";
 import { buildModelPickerLayout } from "./ModelPicker/modelPickerLayout";
 import { TokenBar } from "./FooterControls";
+import { UsagePane } from "./UsagePane";
 import type { AgentChatModelCatalog, AgentChatModelInfo } from "../../../../desktop/src/shared/types/chat";
 import type { AiSettingsStatus } from "../../../../desktop/src/shared/types/config";
 import { useHoveredHitId } from "../hitTestRegistry";
 import { diffLineKind, type DiffLineKind } from "../format";
+import type { HelpRow } from "../helpIndex";
+import { useShimmerTick } from "../spinTick";
+import {
+  FEEDBACK_TYPES,
+  feedbackFormCanSubmit,
+  serializeContextFooter,
+  type FeedbackFormState,
+  type FeedbackType,
+} from "../feedbackForm";
 
 // Cap per-file diff body so a pathological 50k-line file can't make the right
 // pane build a giant row array on every scroll. The window only shows
@@ -820,19 +830,86 @@ function ChatInfoPane({
 // help, empty) — kept compact, refreshed to use theme tokens.
 // ---------------------------------------------------------------------------
 
-function HelpPane() {
+type HelpPaneContent = Extract<RightPaneContent, { kind: "help" }>;
+
+function HelpPane({ content, width }: { content: HelpPaneContent; width: number }) {
+  const groups = content.groupedRows ?? [];
+  const query = content.filterQuery ?? "";
+  const selectedIndex = content.selectedIndex ?? 0;
+  const inner = Math.max(12, width - 4);
+
+  // Flatten to navigation order so the single selected index maps to one row,
+  // interleaving heading markers so the renderer can print each category title.
+  type FlatItem =
+    | { kind: "heading"; category: string }
+    | { kind: "row"; row: HelpRow; flatIndex: number };
+  const flat: FlatItem[] = [];
+  let flatIndex = 0;
+  for (const group of groups) {
+    flat.push({ kind: "heading", category: group.category });
+    for (const row of group.rows) {
+      flat.push({ kind: "row", row, flatIndex });
+      flatIndex += 1;
+    }
+  }
+  const totalRows = flatIndex;
+
+  // Scroll the flat list to keep the selection visible. Reserve a few lines for
+  // the filter line, spacer, footer hint, and overflow markers.
+  const bodyMax = Math.max(4, Math.min(DETAILS_BODY_MAX_LINES, width > 0 ? 24 : 4));
+  const selectedFlatPos = flat.findIndex((item) => item.kind === "row" && item.flatIndex === selectedIndex);
+  let windowStart = 0;
+  if (flat.length > bodyMax) {
+    windowStart = selectedFlatPos < 0 ? 0 : Math.max(0, Math.min(selectedFlatPos - 2, flat.length - bodyMax));
+  }
+  const windowEnd = Math.min(flat.length, windowStart + bodyMax);
+  const visible = flat.slice(windowStart, windowEnd);
+  const hasAbove = windowStart > 0;
+  const hasBelow = windowEnd < flat.length;
+
   return (
     <Box flexDirection="column">
-      <Text color={theme.color.t3} dimColor>↓ from prompt enters the model row; ↑ returns</Text>
-      <Text color={theme.color.t3} dimColor>in the row: ← → moves between cells, ↓ cycles values</Text>
-      <Text color={theme.color.t3} dimColor>/model opens the model picker · /info opens chat info</Text>
-      <Text color={theme.color.t3} dimColor>ctrl-o opens or focuses lanes and chats</Text>
-      <Text color={theme.color.t3} dimColor>ctrl-g starts split chat add-mode; enter adds, esc cancels</Text>
-      <Text color={theme.color.t3} dimColor>in split chat: tab focuses tiles, ctrl-w closes the focused tile</Text>
-      <Text color={theme.color.t3} dimColor>ctrl-p opens or focuses info · ctrl-a toggles chat info</Text>
-      <Text color={theme.color.t3} dimColor>shift-tab cycles pane focus · esc closes the active side pane</Text>
-      <Text color={theme.color.t3} dimColor>ctrl-c interrupts a running chat; press again to quit</Text>
-      <Text color={theme.color.t3} dimColor>/ opens commands, @ opens references, tab inserts selected</Text>
+      <Box>
+        <Text color={theme.color.t4}>{"› "}</Text>
+        {query ? (
+          <Text color={theme.color.t1}>{query}</Text>
+        ) : (
+          <Text color={theme.color.t4} dimColor>Filter commands…</Text>
+        )}
+      </Box>
+      <Box marginTop={1} flexDirection="column">
+        {hasAbove ? <Text color={theme.color.t4} dimColor>↑ more</Text> : null}
+        {totalRows === 0 ? (
+          <Text color={theme.color.t3}>{query ? `No commands match “${query}”.` : "No commands."}</Text>
+        ) : (
+          visible.map((item, idx) => {
+            if (item.kind === "heading") {
+              return (
+                <Box key={`h-${item.category}`} marginTop={windowStart + idx === 0 ? 0 : 1}>
+                  <Text color={theme.color.violet} bold>{item.category.toUpperCase()}</Text>
+                </Box>
+              );
+            }
+            const selected = item.flatIndex === selectedIndex;
+            const nameWidth = item.row.name.length;
+            const descRoom = Math.max(4, inner - nameWidth - 2 - (item.row.keybind ? item.row.keybind.length + 2 : 0));
+            return (
+              <Box key={`r-${item.row.name}`} flexDirection="row" justifyContent="space-between">
+                <Box flexDirection="row">
+                  <Text color={selected ? theme.color.violet : theme.color.t5}>{selected ? theme.rail : " "}</Text>
+                  <Text color={selected ? theme.color.violet : theme.color.t2} bold={selected}>{` ${item.row.name}`}</Text>
+                  <Text color={theme.color.t3} dimColor wrap="truncate-end">{`  ${endTruncate(item.row.description, descRoom)}`}</Text>
+                </Box>
+                {item.row.keybind ? <Text color={theme.color.violet}>{item.row.keybind}</Text> : null}
+              </Box>
+            );
+          })
+        )}
+        {hasBelow ? <Text color={theme.color.t4} dimColor>↓ more</Text> : null}
+      </Box>
+      <Box marginTop={1}>
+        <Text color={theme.color.t4} dimColor>↑↓ move · ↵ run · esc close</Text>
+      </Box>
     </Box>
   );
 }
@@ -987,6 +1064,144 @@ export function rightPaneScrollableRowCount(content: RightPaneContent): number {
 
 type FormPaneContent = Extract<RightPaneContent, { kind: "form" }>;
 type LaneDeleteFormContent = FormPaneContent & { command: "lane-delete" };
+type FeedbackFormContent = FormPaneContent & { command: "feedback" };
+
+// Rebuild the framework-free FeedbackFormState (from feedbackForm.ts) out of the
+// FeedbackContextMeta carried on the form content. app.tsx seeds + edits that
+// meta; this keeps the render in lock-step with the reducer/serializer that
+// validation + submission go through.
+export function feedbackStateFromContent(content: FeedbackFormContent): FeedbackFormState {
+  const meta = content.feedback ?? {};
+  const rawType = (meta.type ?? "bug") as FeedbackType;
+  const type = FEEDBACK_TYPES.includes(rawType) ? rawType : "bug";
+  return {
+    type,
+    text: meta.body ?? "",
+    showContext: meta.showContext !== false,
+    context: {
+      provider: meta.provider ?? null,
+      model: meta.model ?? null,
+      lane: meta.lane ?? null,
+      lastError: meta.lastError ?? null,
+    },
+  };
+}
+
+function FeedbackTypeSelector({ type }: { type: FeedbackType }) {
+  // ‹ bug · idea · praise › — violet is the only selection accent; the rest is
+  // neutral idle chrome.
+  return (
+    <Text>
+      <Text color={theme.color.t4}>‹ </Text>
+      {FEEDBACK_TYPES.map((option, index) => (
+        <React.Fragment key={option}>
+          {index > 0 ? <Text color={theme.color.t5}> · </Text> : null}
+          <Text
+            color={option === type ? theme.color.violet : theme.color.t4}
+            bold={option === type}
+          >
+            {option === type ? `[${option}]` : option}
+          </Text>
+        </React.Fragment>
+      ))}
+      <Text color={theme.color.t4}> ›</Text>
+    </Text>
+  );
+}
+
+function FeedbackFormPane({
+  content,
+  focused,
+  width,
+}: {
+  content: FeedbackFormContent;
+  focused: boolean;
+  width: number;
+}) {
+  const hoveredId = useHoveredHitId();
+  const tick = useShimmerTick();
+  const inner = Math.max(12, width - 4);
+  const state = feedbackStateFromContent(content);
+  const submitted = content.feedback?.feedback === "submitted";
+  const canSubmit = feedbackFormCanSubmit(state);
+
+  if (submitted) {
+    // The single sanctioned green (#22C55E === theme.color.done) for a success
+    // ✓, faded in via the shared spin tick (no bare setInterval). Dim for the
+    // first ~200ms so it reads as a gentle confirm rather than a flash.
+    const settled = (tick ?? 0) % 1000 >= 2;
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <Text color={theme.color.done} bold dimColor={!settled}>
+          ✓ Feedback sent
+        </Text>
+        <Text color={theme.color.t4} dimColor>Closing…</Text>
+      </Box>
+    );
+  }
+
+  const bodyLines = state.text.length ? state.text.split("\n") : [];
+  const bodyHover = hoveredId === "right:feedback:body";
+  const footer = state.showContext ? serializeContextFooter(state.context) : "";
+
+  return (
+    <Box flexDirection="column">
+      <Box flexDirection="row">
+        <Text color={focused ? theme.color.violet : theme.color.t5}>{focused ? theme.rail : " "}</Text>
+        <Text color={theme.color.t3}> Type  </Text>
+        <FeedbackTypeSelector type={state.type} />
+      </Box>
+
+      <Box flexDirection="column" marginTop={1}>
+        <Text color={bodyHover ? theme.color.violet : theme.color.t3}>{bodyHover ? theme.rail : " "} Body</Text>
+        <Box flexDirection="column">
+          {bodyLines.length ? (
+            bodyLines.map((line, index) => (
+              <Text key={index} color={theme.color.t1} wrap="truncate-end">
+                {endTruncate(line.length ? line : " ", inner)}
+                {index === bodyLines.length - 1 ? <Text color={theme.color.violet}>▏</Text> : null}
+              </Text>
+            ))
+          ) : (
+            <Text color={theme.color.t4} dimColor>
+              Describe it…<Text color={theme.color.violet}>▏</Text>
+            </Text>
+          )}
+        </Box>
+      </Box>
+
+      {state.showContext && footer ? (
+        <Box flexDirection="column" marginTop={1}>
+          {footer.split("\n").map((line, index) => (
+            <Text
+              key={index}
+              color={index === 0 ? theme.color.t3 : theme.color.t4}
+              dimColor={index !== 0}
+              wrap="truncate-end"
+            >
+              {endTruncate(line, inner)}
+            </Text>
+          ))}
+        </Box>
+      ) : (
+        <Box marginTop={1}>
+          <Text color={theme.color.t4} dimColor>
+            --- Context --- (hidden · Ctrl+T)
+          </Text>
+        </Box>
+      )}
+
+      <Box marginTop={1} flexDirection="row" justifyContent="space-between">
+        <Text color={canSubmit ? theme.color.t3 : theme.color.t4} dimColor={!canSubmit}>
+          ⏎ newline · Ctrl+S send · esc cancel
+        </Text>
+        <Text color={hoveredId === "right:feedback:send" && canSubmit ? theme.color.violet : theme.color.t5}>
+          {canSubmit ? "[send]" : ""}
+        </Text>
+      </Box>
+    </Box>
+  );
+}
 
 function LaneDeleteFormPane({
   content,
@@ -1163,6 +1378,8 @@ function paneTitle(content: RightPaneContent): { title: string; hint?: string; b
       return { title: content.title.toUpperCase() };
     case "context-usage":
       return { title: content.title.toUpperCase() };
+    case "usage":
+      return { title: (content.title ?? "USAGE").toUpperCase() };
     case "form":
       return { title: content.title.toUpperCase() };
     default:
@@ -1237,7 +1454,7 @@ export function RightPane({
         <Text color={theme.color.t4} dimColor>Run /status, /diff, /model, or /help.</Text>
       ) : null}
 
-      {content.kind === "help" ? <HelpPane /> : null}
+      {content.kind === "help" ? <HelpPane content={content} width={paneWidth} /> : null}
 
       {content.kind === "status" ? (
         <Box flexDirection="column">
@@ -1286,6 +1503,10 @@ export function RightPane({
 
       {content.kind === "context-usage" ? (
         <ContextUsagePane content={content} width={paneWidth} />
+      ) : null}
+
+      {content.kind === "usage" ? (
+        <UsagePane content={content} width={paneWidth} />
       ) : null}
 
       {content.kind === "diff" ? (
@@ -1369,7 +1590,15 @@ export function RightPane({
         />
       ) : null}
 
-      {content.kind === "form" && content.command !== "lane-delete" ? (
+      {content.kind === "form" && content.command === "feedback" ? (
+        <FeedbackFormPane
+          content={content as FeedbackFormContent}
+          focused={focused}
+          width={paneWidth}
+        />
+      ) : null}
+
+      {content.kind === "form" && content.command !== "lane-delete" && content.command !== "feedback" ? (
         <Box flexDirection="column">
           {content.description ? (
             <Box marginBottom={1}>

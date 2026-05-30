@@ -94,7 +94,8 @@ import {
 } from "./adeApi";
 import { aggregateChatBlocks, derivePendingSteers, type AggregatedBlock } from "./aggregate";
 import { deriveChatInfoSnapshot } from "./chatInfo";
-import { paletteCommands, parseCommand } from "./commands";
+import { BUILTIN_COMMANDS, paletteCommands, parseCommand } from "./commands";
+import { buildHelpIndex, buildHelpRows, flattenHelpRows, pushRecent } from "./helpIndex";
 import { hasFirstUserMessage, isPlanMode } from "./planMode";
 import { connectToAde } from "./connection";
 import { Drawer, visibleDrawerChatCount, visibleDrawerLaneCount, type DrawerPrSummary } from "./components/Drawer";
@@ -108,9 +109,19 @@ import {
   type ChatTextSelection,
 } from "./components/ChatView";
 import { TerminalPane, clampTerminalPaneCols } from "./components/TerminalPane";
+import {
+  type TerminalScrollBySessionId,
+  clampTerminalScrollOffset,
+  jumpTerminalToBottom,
+  noteTerminalNewRows,
+  readTerminalScroll,
+  scrollTerminalBy,
+  terminalPageStep,
+} from "./components/TerminalScrollState";
 import { Header } from "./components/Header";
 import { computeLaneChatCounts, DETAILS_BODY_MAX_LINES, LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, laneDetailsInteractionLayout, rightPaneScrollableRowCount, RightPane } from "./components/RightPane";
 import { buildModelPickerLayout, defaultSelectionFor, railEntrySelection } from "./components/ModelPicker/modelPickerLayout";
+import { modelPickerGeometry } from "./components/ModelPicker/modelPickerGeometry";
 import { SlashPalette, slashPaletteReservedRows } from "./components/SlashPalette";
 import { MentionPalette, MENTION_PALETTE_ROWS } from "./components/MentionPalette";
 import { CommandPalette, COMMAND_PALETTE_ROWS, type CommandPaletteItem } from "./components/CommandPalette";
@@ -146,6 +157,13 @@ import {
   feedbackSubmissionNotice,
   type FeedbackFormValues,
 } from "./feedback";
+import {
+  cycleFeedbackType,
+  feedbackFormCanSubmit,
+  feedbackFormToFormValues,
+  type FeedbackFormState,
+  type FeedbackType,
+} from "./feedbackForm";
 import { buildPendingInputAnswers, latestPendingApproval } from "./pendingInput";
 import { claudeHomePath, defaultKeybindingsPath, dispatchKeybinding, openKeybindingsFile, readClaudeKeybindingsFile, type KeybindingDispatchState, type TuiKeybindingAction } from "./keybindings";
 import { buildDeeplinkForRow, type DeeplinkRow } from "./deeplinkRow";
@@ -177,6 +195,7 @@ import type {
   PendingApproval,
   ProviderReadinessRow,
   ProjectLaunchContext,
+  FeedbackContextMeta,
   RightPaneContent,
   SetupPaneRow,
   SetupPaneRowKind,
@@ -384,6 +403,26 @@ function paletteMatchScore(item: CommandPaletteItem, query: string): number | nu
     cursor = found + 1;
   }
   return score + haystack.length;
+}
+
+// Rebuild the framework-free FeedbackFormState (feedbackForm.ts) from the
+// FeedbackContextMeta carried on the feedback form content. Keeps validation +
+// serialization (feedbackFormCanSubmit / feedbackFormToFormValues) in lock-step
+// with what the right pane renders.
+function feedbackStateFromMeta(meta: FeedbackContextMeta): FeedbackFormState {
+  const rawType = (meta.type ?? "bug") as FeedbackType;
+  const type: FeedbackType = rawType === "bug" || rawType === "idea" || rawType === "praise" ? rawType : "bug";
+  return {
+    type,
+    text: meta.body ?? "",
+    showContext: meta.showContext !== false,
+    context: {
+      provider: meta.provider ?? null,
+      model: meta.model ?? null,
+      lane: meta.lane ?? null,
+      lastError: meta.lastError ?? null,
+    },
+  };
 }
 
 function openExternalUrl(url: string, notice: (message: string, tone?: LocalNotice["tone"]) => void): boolean {
@@ -2425,6 +2464,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const [terminalPreview, setTerminalPreview] = useState<ChatTerminalPreviewResult | null>(null);
   const [attachedTerminalId, setAttachedTerminalId] = useState<string | null>(null);
   const [terminalLiveChunks, setTerminalLiveChunks] = useState<Record<string, string[]>>({});
+  // Scrollback position + "↓ N new" counter per Claude PTY session.
+  const [terminalScrollBySessionId, setTerminalScrollBySessionId] = useState<TerminalScrollBySessionId>({});
+  // Pending pty_data chunks buffered off-React; flushed on a ~16ms timer so the
+  // write cursor keeps advancing (no per-chunk O(n) array rebuild + slice(-500)
+  // that would pin the buffer at 500 and freeze TerminalPane's incremental write).
+  const pendingPtyChunksRef = useRef<Map<string, string[]>>(new Map());
+  const ptyFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Latest visible text + max scrollback rows reported by the live TerminalPane,
+  // so keyboard scroll can clamp and copy can grab the visible region.
+  const terminalViewportMetricsRef = useRef<{ maxScrollable: number; visibleText: string }>({
+    maxScrollable: 0,
+    visibleText: "",
+  });
   const [activeLaneId, setActiveLaneId] = useState<string | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [events, setEvents] = useState<AgentChatEventEnvelope[]>([]);
@@ -2492,6 +2544,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [commandPaletteQuery, setCommandPaletteQuery] = useState("");
   const [commandPaletteIndex, setCommandPaletteIndex] = useState(0);
+  // /help command reference: live filter, focused row, and a small in-memory
+  // recents list (most-recent-first) that floats lately-run commands to the top.
+  const [helpFilterQuery, setHelpFilterQuery] = useState("");
+  const [helpSelectedIndex, setHelpSelectedIndex] = useState(0);
+  const [helpRecents, setHelpRecents] = useState<string[]>([]);
+  const helpRecentsRef = useRef<string[]>([]);
+  helpRecentsRef.current = helpRecents;
+  // Indexed (grouped, keybind-enriched) command reference. Rebuilt only when the
+  // user's Claude keybinding registry changes, so keybind chips reflect config.
+  const helpIndexGroups = useMemo(() => buildHelpIndex(BUILTIN_COMMANDS, keybindings), [keybindings]);
   const [drawerSection, setDrawerSection] = useState<"lanes" | "chats">("lanes");
   const [drawerPreviewSessionId, setDrawerPreviewSessionId] = useState<string | null>(null);
   const [drawerPreviewEvents, setDrawerPreviewEvents] = useState<AgentChatEventEnvelope[]>([]);
@@ -3699,6 +3761,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     attachedTerminalIdRef.current = attachedTerminalId;
   }, [attachedTerminalId]);
 
+  // Mirror terminal scroll state into a ref so the pty subscription (bound only
+  // on reconnect) can read "is this session scrolled up?" without re-binding.
+  const terminalScrollBySessionIdRef = useRef<TerminalScrollBySessionId>(terminalScrollBySessionId);
+  useEffect(() => {
+    terminalScrollBySessionIdRef.current = terminalScrollBySessionId;
+  }, [terminalScrollBySessionId]);
+
   useEffect(() => {
     if (!connection || !activeTerminalSession) return;
     const cols = clampTerminalPaneCols(claudeTerminalControlActive ? terminalPaneWidth - 2 : terminalPaneWidth);
@@ -4869,13 +4938,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   }, [activeSession, focusDetails, openForm, sessions]);
 
   const openFeedbackForm = useCallback(() => {
+    // Seed the multiline feedback form's serializable state (feedbackForm.ts)
+    // onto content.feedback: context = active provider/model + lane + last error,
+    // with the context footer toggled ON by default so reports are actionable.
+    const lastError = [...notices].reverse().find((entry) => entry.tone === "error")?.text ?? null;
     openForm({
       kind: "form",
       title: "Feedback",
       command: "feedback",
       fields: feedbackFormFields(buildFeedbackEnvironment(project, activeLane ?? null)),
+      feedback: {
+        provider: modelState.provider ?? null,
+        model: modelState.modelId ?? null,
+        lane: activeLane?.name ?? null,
+        lastError,
+        type: "bug",
+        showContext: true,
+        body: "",
+      },
     });
-  }, [activeLane, openForm, project]);
+  }, [activeLane, modelState.modelId, modelState.provider, notices, openForm, project]);
 
   const openNewChatSetup = useCallback((title?: string | null) => {
     const laneId = activeLaneIdRef.current;
@@ -5837,16 +5919,63 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     if (!connection) return;
     let disposed = false;
     let unsubscribe: (() => void) | null = null;
+
+    // Cap on retained chunks. We append monotonically (so TerminalPane's
+    // chunkIndexRef keeps advancing — the desync fix) and only trim well past
+    // 500 so trims are rare; on a trim TerminalPane resets + replays the tail.
+    const MAX_RETAINED_CHUNKS = 4_000;
+    const TRIM_TO_CHUNKS = 2_000;
+
+    const flushPendingPty = () => {
+      ptyFlushTimerRef.current = null;
+      const pending = pendingPtyChunksRef.current;
+      if (pending.size === 0) return;
+      const drained = new Map(pending);
+      pending.clear();
+      // Bump "↓ N new" for sessions the user has scrolled away from.
+      const scrollMap = terminalScrollBySessionIdRef.current;
+      let scrollPatch: TerminalScrollBySessionId | null = null;
+      for (const [sid, chunks] of drained) {
+        const current = readTerminalScroll(scrollMap, sid);
+        if (current.scrollOffset > 0) {
+          const arrivedRows = chunks.reduce(
+            (sum, chunk) => sum + Math.max(0, (chunk.match(/\n/g)?.length ?? 0)),
+            0,
+          );
+          const next = noteTerminalNewRows(current, arrivedRows);
+          if (next !== current) {
+            scrollPatch = { ...(scrollPatch ?? scrollMap), [sid]: next };
+          }
+        }
+      }
+      if (scrollPatch) setTerminalScrollBySessionId(scrollPatch);
+      setTerminalLiveChunks((prev) => {
+        const next: Record<string, string[]> = { ...prev };
+        for (const [sid, chunks] of drained) {
+          if (chunks.length === 0) continue;
+          let merged = [...(next[sid] ?? []), ...chunks];
+          if (merged.length > MAX_RETAINED_CHUNKS) merged = merged.slice(-TRIM_TO_CHUNKS);
+          next[sid] = merged;
+        }
+        return next;
+      });
+    };
+
+    const scheduleFlush = () => {
+      if (ptyFlushTimerRef.current) return; // timer only while chunks pending → idle cost zero
+      ptyFlushTimerRef.current = setTimeout(flushPendingPty, 16);
+    };
+
     void connection.subscribeRuntimeEvents({ category: "pty", cursor: 0, limit: 50, replay: false }, (event) => {
       const payload = event.payload as { type?: unknown; event?: unknown };
       const terminalEvent = payload.event as { sessionId?: unknown; data?: unknown } | undefined;
       const sessionId = typeof terminalEvent?.sessionId === "string" ? terminalEvent.sessionId : null;
       if (!sessionId) return;
       if (payload.type === "pty_data" && typeof terminalEvent?.data === "string") {
-        setTerminalLiveChunks((prev) => {
-          const nextChunks = [...(prev[sessionId] ?? []), terminalEvent.data as string].slice(-500);
-          return { ...prev, [sessionId]: nextChunks };
-        });
+        const buf = pendingPtyChunksRef.current.get(sessionId);
+        if (buf) buf.push(terminalEvent.data);
+        else pendingPtyChunksRef.current.set(sessionId, [terminalEvent.data]);
+        scheduleFlush();
         return;
       }
       if (payload.type === "pty_exit") {
@@ -5862,6 +5991,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     return () => {
       disposed = true;
       unsubscribe?.();
+      if (ptyFlushTimerRef.current) {
+        clearTimeout(ptyFlushTimerRef.current);
+        ptyFlushTimerRef.current = null;
+      }
+      // Flush whatever is buffered so a reconnect doesn't strand chunks.
+      flushPendingPty();
     };
   }, [connection, refreshState]);
 
@@ -6379,6 +6514,33 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
   }, [addNotice, recordPromptHistoryForSession, refreshState, sessions, setSessionStreaming]);
 
+  // Build the help RightPaneContent for the given filter/selection/recents and
+  // push it into the right pane. Centralised so /help open + every keystroke in
+  // the pane recompute the grouped+ranked rows the same way.
+  const renderHelpPane = useCallback(
+    (query: string, selectedIndex: number, recents: string[]) => {
+      const groupedRows = buildHelpRows(helpIndexGroups, query, recents);
+      const total = flattenHelpRows(groupedRows).length;
+      const clamped = total === 0 ? 0 : Math.max(0, Math.min(selectedIndex, total - 1));
+      setRightPane({
+        kind: "help",
+        title: "Help",
+        filterQuery: query,
+        selectedIndex: clamped,
+        groupedRows,
+      });
+    },
+    [helpIndexGroups],
+  );
+
+  const openHelpPane = useCallback(() => {
+    setHelpFilterQuery("");
+    setHelpSelectedIndex(0);
+    renderHelpPane("", 0, helpRecentsRef.current);
+    setRightOpen(true);
+    setPaneFocus("details");
+  }, [renderHelpPane, setPaneFocus]);
+
   const runRightCommand = useCallback(async (name: string, args: string) => {
     const conn = connectionRef.current;
     const laneId = activeLaneIdRef.current;
@@ -6392,7 +6554,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 
     if (!conn) {
       if (name === "/help") {
-        setRightPane({ kind: "help", title: "Help" });
+        renderHelpPane("", 0, helpRecentsRef.current);
         return;
       }
       if (name === "/status") {
@@ -6449,7 +6611,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
 
     if (name === "/help") {
-      setRightPane({ kind: "help", title: "Help" });
+      renderHelpPane("", 0, helpRecentsRef.current);
       return;
     }
     if (name === "/keybindings") {
@@ -6531,6 +6693,41 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           error: `Context usage is not available for this ${activeSession?.provider ?? "chat"} session.\n\n${message}`,
         });
       }
+      return;
+    }
+    if (name === "/usage") {
+      if (!sessionId) {
+        addNotice("Usage needs an active chat.", "error");
+        return;
+      }
+      if (activeCommandProvider !== "claude") {
+        addNotice("Usage is available for Claude chats.", "error");
+        return;
+      }
+      // Session tokens/cost come straight off the local event stream — always
+      // available even when the daemon snapshot carries no quota window. Mirror
+      // the token-summary effect's fallback-context resolution.
+      const usageFallbackContext = activeSession?.modelId
+        ? getModelById(activeSession.modelId)?.contextWindow ?? null
+        : null;
+      const stats = latestTokenStats(events, usageFallbackContext);
+      const sessionBlock = {
+        input: stats.inputTokens,
+        output: stats.outputTokens,
+        cost: stats.costUsd,
+      };
+      // Quota windows are reuse-only: the daemon exposes at most a single
+      // rate-limit window (parsed into stats.rateLimit). Render it when present,
+      // otherwise degrade to the session block.
+      const quotaWindows = stats.rateLimit?.usedPercentage != null
+        ? [{
+            id: "rate-limit",
+            label: "Rate limit",
+            percent: stats.rateLimit.usedPercentage,
+            resetAt: stats.rateLimit.resetsAt,
+          }]
+        : undefined;
+      setRightPane({ kind: "usage", title: "Usage", quotaWindows, session: sessionBlock });
       return;
     }
     if (name === "/agents") {
@@ -7640,9 +7837,23 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
 
     if (form.command === "feedback") {
-      const summary = requireField("summary", "Summary");
-      if (!summary) return;
-      const draftInput = buildFeedbackDraftInput({ ...values, summary } as FeedbackFormValues);
+      // Prefer the multiline feedback state carried on content.feedback (seeded
+      // by openFeedbackForm, edited in the right-pane input guard). Falls back to
+      // the legacy single-line formValues path when no meta is present.
+      let feedbackValues: FeedbackFormValues;
+      if (form.feedback) {
+        const state: FeedbackFormState = feedbackStateFromMeta(form.feedback);
+        if (!feedbackFormCanSubmit(state)) {
+          addNotice("Add some feedback before sending.", "error");
+          return;
+        }
+        feedbackValues = feedbackFormToFormValues(state);
+      } else {
+        const summary = requireField("summary", "Summary");
+        if (!summary) return;
+        feedbackValues = { ...values, summary } as FeedbackFormValues;
+      }
+      const draftInput = buildFeedbackDraftInput(feedbackValues);
       setRightPane({ kind: "details", title: "Feedback", body: "Posting feedback to GitHub..." });
       try {
         const draft = await conn.action<FeedbackPreparedDraft>("feedback", "prepareDraft", {
@@ -7656,6 +7867,31 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           body: draft.body,
           labels: draft.labels,
         });
+        const notice = feedbackSubmissionNotice(submission);
+        if (notice.tone === "success" && form.feedback) {
+          // Flash the sanctioned green ✓ (rendered by FeedbackFormPane via the
+          // shared spin tick), then auto-close. A single one-shot timer is fine —
+          // the motion itself is gated on useShimmerTick, not a bare setInterval.
+          setRightPane({
+            kind: "form",
+            title: "Feedback",
+            command: "feedback",
+            fields: form.fields,
+            feedback: { ...form.feedback, feedback: "submitted" },
+          });
+          addNotice(notice.text, notice.tone);
+          setTimeout(() => {
+            setFormDiscardArmed(false);
+            setFormValues({});
+            setFormFieldIndex(0);
+            setPrompt("");
+            setRightOpen(false);
+            setRightPane({ kind: "empty" });
+            lastUserOpenedPaneRef.current = null;
+            focusAfterDetails();
+          }, 900);
+          return;
+        }
         setFormDiscardArmed(false);
         setFormValues({});
         setFormFieldIndex(0);
@@ -7664,7 +7900,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         setRightPane({ kind: "empty" });
         lastUserOpenedPaneRef.current = null;
         focusAfterDetails();
-        const notice = feedbackSubmissionNotice(submission);
         addNotice(notice.text, notice.tone);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -8503,7 +8738,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return true;
     }
     if (action === "app:help") {
-      setRightPane({ kind: "help", title: "Help" });
+      renderHelpPane("", 0, helpRecentsRef.current);
       focusDetails();
       return true;
     }
@@ -8849,6 +9084,49 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
       return;
     }
+    // Claude live PTY pane (not attached, single view): keyboard scrollback over
+    // the headless xterm buffer + copy of the visible region. PageUp/PageDown,
+    // Home/End and Shift+Up/Down (when not editing the prompt) drive scrollback;
+    // Ctrl/Cmd+C copies the visible window via the shared writeClipboardText.
+    {
+      const terminalForScroll = (activeTerminalSession ?? activeTerminalSessionRef.current);
+      const terminalPaneVisible = Boolean(terminalForScroll) && !multiViewRef.current;
+      if (terminalPaneVisible && terminalForScroll) {
+        const sid = terminalForScroll.terminalId;
+        const metrics = terminalViewportMetricsRef.current;
+        const step = terminalPageStep(Math.max(1, chatRowBudget));
+        const isHome = input === "\x1b[H" || input === "\x1b[1~";
+        const isEnd = input === "\x1b[F" || input === "\x1b[4~";
+        const promptHasText = promptRef.current.trim().length > 0;
+        const wantsScrollUp = key.pageUp || (key.shift && key.upArrow && !promptHasText);
+        const wantsScrollDown = key.pageDown || (key.shift && key.downArrow && !promptHasText);
+        if (wantsScrollUp || wantsScrollDown || isHome || isEnd) {
+          setTerminalScrollBySessionId((prev) => {
+            const current = readTerminalScroll(prev, sid);
+            let next = current;
+            if (isEnd) next = jumpTerminalToBottom(current);
+            else if (isHome) {
+              next = {
+                scrollOffset: clampTerminalScrollOffset(metrics.maxScrollable, metrics.maxScrollable),
+                pendingNewCount: 0,
+              };
+            } else if (wantsScrollUp) next = scrollTerminalBy(current, step, metrics.maxScrollable);
+            else if (wantsScrollDown) next = scrollTerminalBy(current, -step, metrics.maxScrollable);
+            if (next === current) return prev;
+            return { ...prev, [sid]: next };
+          });
+          return;
+        }
+        if (isCtrlInput(input, key, "c") && metrics.visibleText.trim().length > 0) {
+          if (writeClipboardText(metrics.visibleText)) {
+            addNotice("Copied terminal output", "success");
+          } else {
+            addNotice("Clipboard unavailable", "error");
+          }
+          return;
+        }
+      }
+    }
     const mouse = parseTerminalMouseInput(input);
     if (mouse) {
       const activeSelection = chatMouseSelectionRef.current;
@@ -9103,6 +9381,80 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     const footerActive = footerControlRef.current != null;
     const textInputActive = (pane === "chat" && !footerActive) || detailsFormActive;
 
+    // Searchable /help command reference: filter type-ahead + ↑↓ navigation + ↵
+    // run. Handled before the command palette so the help pane owns keystrokes
+    // while it is the active right pane. esc / Ctrl+K close it.
+    if (rightPane.kind === "help" && !isCtrlInput(input, key, "c")) {
+      const helpGroups = buildHelpRows(helpIndexGroups, helpFilterQuery, helpRecentsRef.current);
+      const helpFlatRows = flattenHelpRows(helpGroups);
+      const helpTotal = helpFlatRows.length;
+      if (key.escape || isCtrlInput(input, key, "k")) {
+        setHelpFilterQuery("");
+        setHelpSelectedIndex(0);
+        setRightPane({ kind: "empty" });
+        focusChat();
+        return;
+      }
+      if (key.upArrow || (key.tab && key.shift)) {
+        const next = helpTotal === 0 ? 0 : (helpSelectedIndex - 1 + helpTotal) % helpTotal;
+        setHelpSelectedIndex(next);
+        renderHelpPane(helpFilterQuery, next, helpRecentsRef.current);
+        return;
+      }
+      if (key.downArrow || key.tab) {
+        const next = helpTotal === 0 ? 0 : (helpSelectedIndex + 1) % helpTotal;
+        setHelpSelectedIndex(next);
+        renderHelpPane(helpFilterQuery, next, helpRecentsRef.current);
+        return;
+      }
+      if (key.return) {
+        const picked = helpFlatRows[helpSelectedIndex];
+        if (picked) {
+          const nextRecents = pushRecent(helpRecentsRef.current, picked.name);
+          setHelpRecents(nextRecents);
+          setHelpFilterQuery("");
+          setHelpSelectedIndex(0);
+          const parsed = parseCommand(picked.name, slashCommands);
+          const placement = parsed?.spec?.placement;
+          if (placement === "right") {
+            void runRightCommand(parsed!.name, "")
+              .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+          } else if (placement === "inline") {
+            setRightPane({ kind: "empty" });
+            void runInlineCommand(parsed!.name, "")
+              .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+          } else {
+            // chat / unknown placement: seed the prompt so the user can complete it.
+            const draft = `${(parsed?.name ?? picked.name)} `;
+            setRightPane({ kind: "empty" });
+            setPrompt(draft);
+            promptRef.current = draft;
+            chatDraftRef.current = draft;
+            focusChat();
+          }
+        }
+        return;
+      }
+      if (isPromptLineBackspace(input, key) || key.backspace || key.delete) {
+        const nextQuery = isPromptLineBackspace(input, key) ? "" : helpFilterQuery.slice(0, -1);
+        setHelpFilterQuery(nextQuery);
+        setHelpSelectedIndex(0);
+        renderHelpPane(nextQuery, 0, helpRecentsRef.current);
+        return;
+      }
+      if (!key.ctrl && !key.meta) {
+        const suffix = printableInput(input);
+        if (suffix) {
+          const nextQuery = helpFilterQuery + suffix;
+          setHelpFilterQuery(nextQuery);
+          setHelpSelectedIndex(0);
+          renderHelpPane(nextQuery, 0, helpRecentsRef.current);
+        }
+        return;
+      }
+      return;
+    }
+
     if (commandPaletteOpen && !isCtrlInput(input, key, "c")) {
       // Ctrl/Cmd+K toggles the palette shut (mirrors Esc) so the same chord
       // opens and closes it — no need to reach for Escape.
@@ -9147,6 +9499,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
 
     if (isCtrlInput(input, key, "k")) {
+      // Ctrl+K opens the command palette (it toggles shut via the
+      // command-palette branch above when the palette is already open). The
+      // searchable /help reference stays reachable via the `/help` slash command
+      // and the "help" entry inside the command palette.
       openCommandPalette();
       return;
     }
@@ -9771,6 +10127,69 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
     }
 
+    // Feedback form: dedicated multiline editing handled ABOVE the generic form
+    // key handlers so the body gets a real text cursor (the shared prompt-input
+    // primitive) while type/context/validation/serialization go through
+    // feedbackForm.ts. Left/right cycle the type; Ctrl+T toggles the context
+    // footer; Ctrl+S submits; Enter inserts a newline.
+    if (pane === "details" && rightOpen && rightPane.kind === "form" && rightPane.command === "feedback") {
+      const form = rightPane;
+      const meta = form.feedback ?? {};
+      // While the success check is showing, swallow keys (auto-close handles exit).
+      if (meta.feedback === "submitted") return;
+      const updateFeedback = (patch: Partial<FeedbackContextMeta>) => {
+        setRightPane({ ...form, feedback: { ...meta, ...patch } });
+        setFormDiscardArmed(false);
+      };
+      if (key.escape) {
+        if (formDiscardArmedRef.current) {
+          setFormDiscardArmed(false);
+          setFormValues({});
+          setFormFieldIndex(0);
+          setRightPane({ kind: "empty" });
+          setRightOpen(false);
+          focusAfterDetails();
+          return;
+        }
+        setFormDiscardArmed(true);
+        return;
+      }
+      if (isCtrlInput(input, key, "s")) {
+        const state = feedbackStateFromMeta(meta);
+        if (!feedbackFormCanSubmit(state)) {
+          addNotice("Add some feedback before sending.", "error");
+          return;
+        }
+        void submitRightForm(form, currentFormValues())
+          .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+        return;
+      }
+      if (isCtrlInput(input, key, "t")) {
+        updateFeedback({ showContext: meta.showContext === false });
+        return;
+      }
+      if (key.leftArrow || key.rightArrow) {
+        const nextType = cycleFeedbackType(feedbackStateFromMeta(meta).type, key.leftArrow ? -1 : 1);
+        updateFeedback({ type: nextType });
+        return;
+      }
+      if (key.return) {
+        updateFeedback({ body: `${meta.body ?? ""}\n` });
+        return;
+      }
+      const currentBody = meta.body ?? "";
+      const edit = applyCoalescedPromptInput(currentBody, currentBody.length, input);
+      if (edit.value !== currentBody) {
+        updateFeedback({ body: edit.value });
+        return;
+      }
+      if (key.backspace || key.delete) {
+        if (currentBody.length > 0) updateFeedback({ body: currentBody.slice(0, -1) });
+        return;
+      }
+      return;
+    }
+
     if (pane === "details" && rightOpen && rightPane.kind === "form" && (key.upArrow || key.downArrow || key.return)) {
       const fields = rightPane.fields;
       const nextValues = currentFormValues();
@@ -10366,7 +10785,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const handlePromptChange = useCallback((value: string, cursor: number = value.length) => {
     setFormDiscardArmed(false);
     if (activePaneRef.current === "chat" && value === "?") {
-      setRightPane({ kind: "help", title: "Help" });
+      renderHelpPane("", 0, helpRecentsRef.current);
       focusDetails();
       setPromptValue("");
       return;
@@ -10952,29 +11371,34 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           focusedIndex: picker.focusedIndex,
           searchMode: picker.searchMode,
         });
-        const visibleCapacity = 12;
-        const half = Math.floor(visibleCapacity / 2);
-        let windowStart = Math.max(0, layout.focusedIndex - half);
-        if (windowStart + visibleCapacity > layout.entries.length) {
-          windowStart = Math.max(0, layout.entries.length - visibleCapacity);
-        }
-        const windowEnd = Math.min(layout.entries.length, windowStart + visibleCapacity);
+        // Single geometry source: derive every clickable rect from the SAME
+        // constants + windowing the render uses (modelPickerGeometry), so a
+        // click always lands on the row the user sees — even when scrolled.
+        const geometry = modelPickerGeometry({
+          paneLeft: rightStartColumn,
+          paneTop: rightBodyTop,
+          paneWidth: rightPaneWidth,
+          state: layout,
+          rows,
+        });
         addTarget({
           id: "right:model-picker:search",
-          rect: { x: rightStartColumn, y: rightBodyTop + 1, w: rightPaneWidth, h: 1 },
+          rect: geometry.search,
           onClick: () => setRightPane({ ...picker, searchMode: true, query: picker.query, focusedIndex: 0 }),
           zIndex: 4,
         });
         addTarget({
           id: "right:model-picker:show-all",
-          rect: { x: rightStartColumn, y: Math.min(rows - 2, rightBodyTop + 3), w: rightPaneWidth, h: 1 },
+          rect: geometry.showAll,
           onClick: () => setRightPane({ ...picker, showAll: !picker.showAll, focusedIndex: 0 }),
-          zIndex: 4,
+          zIndex: 3,
         });
-        layout.railEntries.forEach((entry, index) => {
+        geometry.rail.forEach(({ id, rect }, index) => {
+          const entry = layout.railEntries[index];
+          if (!entry) return;
           addTarget({
-            id: `right:model-picker:rail:${index}`,
-            rect: { x: rightStartColumn, y: rightBodyTop + 6 + index, w: Math.max(8, Math.floor(rightPaneWidth / 4)), h: 1 },
+            id,
+            rect,
             onClick: () => {
               const nextSelection = railEntrySelection(entry);
               if (nextSelection.kind === "provider") {
@@ -10997,42 +11421,33 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             zIndex: 4,
           });
         });
-        layout.providerTabs.forEach((tab, index) => {
+        geometry.favorites.forEach(({ modelId, rect }) => {
           addTarget({
-            id: `right:model-picker:provider-tab:${tab.key}`,
-            rect: { x: rightStartColumn + Math.floor(rightPaneWidth / 4) + 1 + index * 13, y: rightBodyTop + 7, w: 13, h: 1 },
-            onClick: () => setRightPane({ ...picker, providerTabKey: tab.key, focusedIndex: 0 }),
-            zIndex: 4,
-          });
-        });
-        let modelEntryY = rightBodyTop + 8;
-        layout.entries.slice(windowStart, windowEnd).forEach((entry, sliceIndex) => {
-          const index = windowStart + sliceIndex;
-          const rowHeight = entry.subProvider || !entry.isAvailable ? 2 : 1;
-          const y = modelEntryY;
-          addTarget({
-            id: `right:model-picker:favorite:${entry.modelId}`,
-            rect: { x: rightStartColumn + Math.floor(rightPaneWidth / 4) + 2, y, w: 3, h: 1 },
-            onClick: () => toggleModelPickerFavoriteId(entry.modelId),
+            id: `right:model-picker:favorite:${modelId}`,
+            rect,
+            onClick: () => toggleModelPickerFavoriteId(modelId),
             zIndex: 6,
           });
+        });
+        geometry.entries.forEach(({ id, index, modelId, rect }) => {
+          const entry = layout.entries[index];
           addTarget({
-            id: `right:model-picker:entry:${entry.modelId}`,
-            rect: { x: rightStartColumn + Math.floor(rightPaneWidth / 4) + 1, y, w: Math.max(10, rightPaneWidth - Math.floor(rightPaneWidth / 4) - 2), h: rowHeight },
+            id,
+            rect,
             onClick: () => {
               setRightPane({ ...picker, focusedIndex: index });
-              if (entry.isAvailable) commitModelPickerSelection(entry.modelId);
+              if (entry?.isAvailable) commitModelPickerSelection(modelId);
             },
             zIndex: 5,
           });
-          modelEntryY += rowHeight;
         });
-        const settingRows = (picker.settingsRows ?? []).filter((row) => row.kind !== "provider" && row.kind !== "model");
-        const settingsY = Math.min(rows - 3, Math.max(modelEntryY + 1, rightBodyTop + 20));
-        settingRows.forEach((row, index) => {
+        geometry.settings.forEach(({ id, rect }, index) => {
+          const row = layout.settingsRows
+            .filter((r) => r.kind !== "provider" && r.kind !== "model" && r.kind !== "apply")[index];
+          if (!row) return;
           addTarget({
-            id: `right:model-picker:setting:${row.kind}`,
-            rect: { x: rightStartColumn + 1 + index * Math.max(10, Math.floor(rightPaneWidth / Math.max(1, settingRows.length))), y: settingsY, w: Math.max(8, Math.floor(rightPaneWidth / Math.max(1, settingRows.length))), h: 1 },
+            id,
+            rect,
             onClick: () => {
               setRightPane({ ...picker, footerFocus: row.kind });
               handleSetupRow(row, 1);
@@ -11040,6 +11455,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             zIndex: 5,
           });
         });
+        if (geometry.apply) {
+          const applyRow = layout.settingsRows.find((r) => r.kind === "apply");
+          if (applyRow) {
+            addTarget({
+              id: "right:model-picker:setting:apply",
+              rect: geometry.apply,
+              onClick: () => {
+                setRightPane({ ...picker, footerFocus: "apply" });
+                handleSetupRow(applyRow, 1);
+              },
+              zIndex: 6,
+            });
+          }
+        }
       } else if (rightPane.kind === "chat-info") {
         const subagentContent = subagentPaneContentFromRightPane(rightPane);
         const subagentPaneTop = 4 + goalBannerRows + addModeRows;
@@ -11102,6 +11531,40 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             zIndex: 3,
           });
         }
+      } else if (rightPane.kind === "form" && rightPane.command === "feedback") {
+        // Feedback pane hit-rects (left-click only): the Type row cycles
+        // bug/idea/praise; the send row submits. Rows mirror FeedbackFormPane
+        // (Type, blank, Body label + body lines, context block, footer w/ [send]).
+        const fb = rightPane.feedback ?? {};
+        const bodyLines = Math.max(1, fb.body && fb.body.length ? fb.body.split("\n").length : 1);
+        const contextRows = fb.showContext === false ? 1 : 4;
+        addTarget({
+          id: "right:feedback:type",
+          rect: { x: rightStartColumn, y: rightBodyTop, w: rightPaneWidth, h: 1 },
+          onClick: () => {
+            const meta = rightPane.feedback ?? {};
+            const nextType = cycleFeedbackType(feedbackStateFromMeta(meta).type, 1);
+            setRightPane({ ...rightPane, feedback: { ...meta, type: nextType } });
+            setFormDiscardArmed(false);
+            focusDetails();
+          },
+          zIndex: 3,
+        });
+        const sendY = rightBodyTop + 2 + bodyLines + 1 + contextRows + 1;
+        addTarget({
+          id: "right:feedback:send",
+          rect: { x: rightStartColumn, y: sendY, w: rightPaneWidth, h: 1 },
+          onClick: () => {
+            const state = feedbackStateFromMeta(rightPane.feedback ?? {});
+            if (!feedbackFormCanSubmit(state)) {
+              addNotice("Add some feedback before sending.", "error");
+              return;
+            }
+            void submitRightForm(rightPane, formValues)
+              .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+          },
+          zIndex: 3,
+        });
       } else if (rightPane.kind === "form") {
         rightPane.fields.forEach((field, index) => {
           const y = rightPane.command === "lane-delete" ? rightBodyTop + ([7, 11, 14, 17][index] ?? (3 + index)) : rightBodyTop + 3 + index;
@@ -11390,6 +11853,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
                 width={terminalPaneWidth}
                 height={chatRowBudget}
                 hiddenBottomRows={CLAUDE_TERMINAL_HIDDEN_INPUT_ROWS}
+                scrollOffset={readTerminalScroll(terminalScrollBySessionId, activeTerminalSession.terminalId).scrollOffset}
+                pendingNewCount={readTerminalScroll(terminalScrollBySessionId, activeTerminalSession.terminalId).pendingNewCount}
+                onViewportMetrics={(metrics) => {
+                  terminalViewportMetricsRef.current = metrics;
+                }}
               />
             ) : (
               <>

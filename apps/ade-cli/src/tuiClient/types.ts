@@ -22,6 +22,7 @@ import type {
 } from "../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import type { BufferedEvent } from "../eventBuffer";
+import type { HelpGroup } from "./helpIndex";
 
 export type RuntimeMode = "attached" | "embedded";
 
@@ -152,10 +153,36 @@ export type ModelPickerRightPaneContent = {
   laneLabel?: string | null;
 };
 
+// Serializable state carried on the feedback form's RightPaneContent. Mirrors
+// the framework-free FeedbackFormState in feedbackForm.ts (type + multiline body
+// + toggleable auto-context footer) so the right-pane render, the keyboard input
+// guard, and the submit path all read/write the same object. `feedback:
+// "submitted"` is the transient flag that switches the pane to the success check.
+export interface FeedbackContextMeta {
+  type?: "bug" | "idea" | "praise";
+  body?: string;
+  showContext?: boolean;
+  provider?: string | null;
+  model?: string | null;
+  lane?: string | null;
+  lastError?: string | null;
+  feedback?: "submitted";
+}
+
 export type RightPaneContent =
   | { kind: "empty" }
   | ModelPickerRightPaneContent
-  | { kind: "help"; title: string }
+  | {
+      kind: "help";
+      title: string;
+      // Live filter text the user has typed into the help search field.
+      filterQuery?: string;
+      // Focused row in the flattened (filtered) command list, 0-based.
+      selectedIndex?: number;
+      // Grouped + filtered + ranked rows produced by helpIndex.ts and passed
+      // down from app.tsx. Undefined ⇒ the pane builds nothing (empty state).
+      groupedRows?: HelpGroup[];
+    }
   | { kind: "status"; rows: Array<[string, string]> }
   | {
       kind: "list";
@@ -171,6 +198,18 @@ export type RightPaneContent =
   | { kind: "context-usage"; title: string; usage: AgentChatContextUsage | null; error?: string | null }
   | { kind: "diff"; title: string; files: Array<{ path: string; additions?: number; deletions?: number; body?: string }> }
   | { kind: "chat-info"; info: ChatInfoSnapshot }
+  | {
+      // /usage pane: provider quota window(s) + this session's tokens & cost.
+      // `quotaWindows` undefined ⇒ no quota data in the snapshot (the daemon
+      // exposes at most a single rate-limit window today), so the pane degrades
+      // to the session block only.
+      kind: "usage";
+      title?: string;
+      loading?: boolean;
+      error?: string | null;
+      quotaWindows?: Array<{ id: string; label: string; percent: number; resetAt?: number | null }>;
+      session?: { input: number | null; output: number | null; cost: number | null } | null;
+    }
   | {
       kind: "form";
       title: string;
@@ -188,6 +227,9 @@ export type RightPaneContent =
         branchRef: string | null;
         dirty: boolean;
       };
+      // Present only for the feedback form (command === "feedback"): the
+      // multiline form's serializable state (see FeedbackContextMeta).
+      feedback?: FeedbackContextMeta;
       fields: Array<{
         name: string;
         label: string;
