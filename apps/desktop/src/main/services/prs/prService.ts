@@ -181,6 +181,8 @@ type PullRequestRow = {
   review_status: string | null;
   additions: number | null;
   deletions: number | null;
+  merge_conflicts?: number | null;
+  behind_base_by?: number | null;
   last_synced_at: string | null;
   created_at: string;
   updated_at: string;
@@ -607,6 +609,8 @@ function rowToSummary(row: PullRequestRow): PrSummary {
     reviewStatus: (row.review_status as PrReviewStatus) ?? "none",
     additions: Number(row.additions ?? 0),
     deletions: Number(row.deletions ?? 0),
+    mergeConflicts: rowMergeConflicts(row),
+    behindBaseBy: normalizeBehindBaseBy(row.behind_base_by),
     lastSyncedAt: row.last_synced_at ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -618,6 +622,44 @@ const BACKGROUND_REFRESH_MAX_PRS = 4;
 const REFRESH_CONCURRENCY = 4;
 const BACKGROUND_REFRESH_MIN_STALE_MS = 2 * 60_000;
 const BACKGROUND_REFRESH_CLOSED_STALE_MS = 15 * 60_000;
+const MERGEABILITY_POLL_DELAYS_MS = [500, 1_000, 2_000] as const;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function hasMergeabilityFields(pr: any): boolean {
+  return Boolean(pr) && ("mergeable" in pr || "mergeable_state" in pr);
+}
+
+function isMergeabilityPending(pr: any): boolean {
+  if (!hasMergeabilityFields(pr)) return false;
+  const mergeableState = asString(pr?.mergeable_state).trim().toLowerCase();
+  return mergeableState === "unknown" || (!mergeableState && pr?.mergeable == null);
+}
+
+function mergeConflictsFromPull(pr: any): boolean | null {
+  if (!hasMergeabilityFields(pr)) return null;
+  if (isMergeabilityPending(pr)) return null;
+  return asString(pr?.mergeable_state).trim().toLowerCase() === "dirty";
+}
+
+function rowMergeConflicts(row: PullRequestRow): boolean | null {
+  if (row.merge_conflicts == null) return null;
+  return Number(row.merge_conflicts) !== 0;
+}
+
+function normalizeMergeConflictsValue(value: boolean | null | undefined): number | null {
+  if (typeof value !== "boolean") return null;
+  return value ? 1 : 0;
+}
+
+function normalizeBehindBaseBy(value: number | null | undefined): number | null {
+  if (value == null) return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.max(0, Math.trunc(numeric));
+}
 
 function parseIsoMs(value: string | null | undefined): number {
   if (!value) return 0;
@@ -657,7 +699,9 @@ function hasMaterialSummaryChange(row: PullRequestRow, summary: PrSummary): bool
     || row.github_url !== summary.githubUrl
     || (row.github_node_id ?? "") !== (summary.githubNodeId ?? "")
     || Number(row.additions ?? 0) !== Number(summary.additions ?? 0)
-    || Number(row.deletions ?? 0) !== Number(summary.deletions ?? 0);
+    || Number(row.deletions ?? 0) !== Number(summary.deletions ?? 0)
+    || (Object.prototype.hasOwnProperty.call(summary, "mergeConflicts") && rowMergeConflicts(row) !== (summary.mergeConflicts ?? null))
+    || (Object.prototype.hasOwnProperty.call(summary, "behindBaseBy") && normalizeBehindBaseBy(row.behind_base_by) !== normalizeBehindBaseBy(summary.behindBaseBy));
 }
 
 function parsePrLocator(raw: string): { owner?: string; repo?: string; number: number } {
@@ -886,7 +930,7 @@ export function createPrService({
   const PR_COLUMNS = `id, lane_id, project_id, repo_owner, repo_name, github_pr_number,
     github_url, github_node_id, title, state, base_branch, head_branch,
     checks_status, review_status, additions, deletions, last_synced_at,
-    created_at, updated_at, creation_strategy`;
+    created_at, updated_at, creation_strategy, merge_conflicts, behind_base_by`;
 
   const acquireLaneMutationLock = (args: {
     lane: LaneSummary;
@@ -1543,6 +1587,10 @@ export function createPrService({
     options?: { allowRepoPrAdoption?: boolean },
   ): string => {
     const now = nowIso();
+    const hasMergeConflicts = Object.prototype.hasOwnProperty.call(summary, "mergeConflicts");
+    const mergeConflictsValue = normalizeMergeConflictsValue(summary.mergeConflicts);
+    const hasBehindBaseBy = Object.prototype.hasOwnProperty.call(summary, "behindBaseBy");
+    const behindBaseByValue = normalizeBehindBaseBy(summary.behindBaseBy);
     // By default we only adopt an existing row that is already associated with
     // this lane. Callers like `linkToLane`/`refreshOne` must not silently
     // reassign an existing PR row from another lane just because the repo/PR
@@ -1580,7 +1628,9 @@ export function createPrService({
                  deletions = ?,
                  last_synced_at = ?,
                  updated_at = ?,
-                 creation_strategy = coalesce(?, creation_strategy)
+                 creation_strategy = coalesce(?, creation_strategy),
+                 merge_conflicts = case when ? then ? else merge_conflicts end,
+                 behind_base_by = case when ? then ? else behind_base_by end
            where id = ? and project_id = ?
         `,
         [
@@ -1601,6 +1651,10 @@ export function createPrService({
           summary.lastSyncedAt,
           summary.updatedAt ?? now,
           summary.creationStrategy ?? null,
+          hasMergeConflicts ? 1 : 0,
+          mergeConflictsValue,
+          hasBehindBaseBy ? 1 : 0,
+          behindBaseByValue,
           existing.id,
           projectId,
         ]
@@ -1630,8 +1684,10 @@ export function createPrService({
           last_synced_at,
           created_at,
           updated_at,
-          creation_strategy
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          creation_strategy,
+          merge_conflicts,
+          behind_base_by
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         summary.id,
@@ -1653,7 +1709,9 @@ export function createPrService({
         summary.lastSyncedAt,
         summary.createdAt ?? now,
         summary.updatedAt ?? now,
-        summary.creationStrategy ?? null
+        summary.creationStrategy ?? null,
+        mergeConflictsValue,
+        behindBaseByValue
       ]
     );
     return summary.id;
@@ -2072,12 +2130,37 @@ export function createPrService({
     throw new Error(`Push failed for "${headBranch}".${detail ? ` ${detail}` : ""}`);
   };
 
-  const fetchPr = async (repo: GitHubRepoRef, prNumber: number): Promise<any> => {
+  const fetchPr = async (
+    repo: GitHubRepoRef,
+    prNumber: number,
+    options: { waitForKnownMergeability?: boolean } = {},
+  ): Promise<any> => {
     const { data } = await githubService.apiRequest<any>({
       method: "GET",
       path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}`
     });
-    return data;
+    if (!options.waitForKnownMergeability || !isMergeabilityPending(data)) {
+      return data;
+    }
+    let latest = data;
+    for (const delayMs of MERGEABILITY_POLL_DELAYS_MS) {
+      await delay(delayMs);
+      const next = await githubService.apiRequest<any>({
+        method: "GET",
+        path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}`
+      });
+      latest = next.data;
+      if (!isMergeabilityPending(latest)) break;
+    }
+    if (isMergeabilityPending(latest)) {
+      logger.warn("prs.mergeability_poll_exhausted", {
+        repo: `${repo.owner}/${repo.name}`,
+        prNumber,
+        attempts: MERGEABILITY_POLL_DELAYS_MS.length + 1,
+        mergeableState: asString(latest?.mergeable_state) || null,
+      });
+    }
+    return latest;
   };
 
   const createLaneFromPrBranchBlock = (
@@ -2845,14 +2928,17 @@ export function createPrService({
     if (!row) throw new Error(`PR not found: ${prId}`);
     const repo = { owner: row.repo_owner, name: row.repo_name };
 
-    const pr = await fetchPr(repo, Number(row.github_pr_number));
+    const pr = await fetchPr(repo, Number(row.github_pr_number), { waitForKnownMergeability: true });
     const headSha = asString(pr?.head?.sha);
+    const baseSha = asString(pr?.base?.sha);
+    const mergeConflicts = mergeConflictsFromPull(pr);
     const requestedReviewers = Array.isArray(pr?.requested_reviewers) ? pr.requested_reviewers.map((u: any) => asString(u?.login)).filter(Boolean) : [];
 
-    const [combinedStatus, checkRuns, reviews] = await Promise.all([
+    const [combinedStatus, checkRuns, reviews, compare] = await Promise.all([
       headSha ? fetchCombinedStatus(repo, headSha) : Promise.resolve({ state: "", statuses: [] }),
       headSha ? fetchCheckRuns(repo, headSha).catch((err) => { console.warn("[prService] fetchCheckRuns failed in refreshOne:", err?.message ?? err); return []; }) : Promise.resolve([]),
-      fetchReviews(repo, Number(row.github_pr_number)).catch(() => [])
+      fetchReviews(repo, Number(row.github_pr_number)).catch(() => []),
+      baseSha && headSha ? fetchCompare(repo, baseSha, headSha).catch(() => ({ behindBy: null as number | null })) : Promise.resolve({ behindBy: null as number | null })
     ]);
     const reviewStatesByUser = new Map<string, string>();
     for (const review of reviews) {
@@ -2891,11 +2977,17 @@ export function createPrService({
       reviewStatus,
       additions,
       deletions,
+      // Unknown mergeability is cached as null so list views show pending
+      // instead of stale clean/dirty status after GitHub times out.
+      mergeConflicts,
       lastSyncedAt: nowIso(),
       createdAt: row.created_at,
       updatedAt: asString(pr?.updated_at) || row.updated_at || nowIso(),
       creationStrategy: normalizePrCreationStrategy(row.creation_strategy)
     };
+    if (compare.behindBy != null) {
+      updated.behindBaseBy = compare.behindBy;
+    }
 
     if (hasMaterialSummaryChange(row, updated)) {
       invalidateGithubSnapshotCache();
@@ -2961,11 +3053,10 @@ export function createPrService({
 
   const computeStatus = async (summary: PrSummary): Promise<PrStatus> => {
     const repo: GitHubRepoRef = { owner: summary.repoOwner, name: summary.repoName };
-    const pr = await fetchPr(repo, summary.githubPrNumber);
+    const pr = await fetchPr(repo, summary.githubPrNumber, { waitForKnownMergeability: true });
     const headSha = asString(pr?.head?.sha);
     const baseSha = asString(pr?.base?.sha);
-    const mergeableState = asString(pr?.mergeable_state);
-    const mergeConflicts = mergeableState.toLowerCase() === "dirty";
+    const mergeConflicts = mergeConflictsFromPull(pr);
 
     const [combinedStatus, checkRuns, reviews, compare] = await Promise.all([
       headSha ? fetchCombinedStatus(repo, headSha) : Promise.resolve({ state: "", statuses: [] }),
@@ -2989,6 +3080,7 @@ export function createPrService({
     const checksStatus = toChecksStatusFromCheckRuns(checkRuns) ?? toChecksStatus(combinedStatus.state);
     const reviewStatus = computeReviewStatus({ requestedReviewers, reviewStatesByUser });
     const isMergeable = Boolean(pr?.mergeable) && checksStatus !== "failing" && reviewStatus !== "changes_requested";
+    const behindBaseBy = compare.behindBy;
 
     const refreshed: PrSummary = {
       ...summary,
@@ -2997,6 +3089,8 @@ export function createPrService({
       reviewStatus,
       additions: Number(pr?.additions ?? summary.additions),
       deletions: Number(pr?.deletions ?? summary.deletions),
+      mergeConflicts,
+      behindBaseBy,
       lastSyncedAt: nowIso(),
       updatedAt: nowIso()
     };
@@ -3008,8 +3102,8 @@ export function createPrService({
       checksStatus,
       reviewStatus,
       isMergeable,
-      mergeConflicts,
-      behindBaseBy: compare.behindBy
+      mergeConflicts: mergeConflicts === true,
+      behindBaseBy
     };
   };
 
