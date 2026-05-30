@@ -1536,4 +1536,62 @@ describe("orchestration watcher resilience", () => {
     off();
     await svc.dispose();
   });
+
+  it("reloads manifest and plan when both external files change inside the debounce window", async () => {
+    const creator = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const { manifest } = await creator.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+      title: "Initial",
+    });
+    await creator.dispose();
+
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const events: Array<{
+      kind?: string;
+      manifest?: { title?: string };
+      planMd?: string;
+    }> = [];
+    const off = svc.on("event", (payload) => events.push(payload));
+    try {
+      await svc.subscribe(manifest.runId, manifest.bundlePath);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      const manifestPath = path.join(manifest.bundlePath, "manifest.json");
+      const planPath = path.join(manifest.bundlePath, "plan.md");
+      const currentManifest = JSON.parse(
+        await fsp.readFile(manifestPath, "utf-8"),
+      ) as typeof manifest;
+      const externalManifest = {
+        ...currentManifest,
+        title: "Externally updated manifest",
+        serverGeneration: currentManifest.serverGeneration + 1,
+        etag: `g${currentManifest.serverGeneration + 1}-external`,
+      };
+      const externalPlan = "# Externally updated plan\n\nBoth files changed in one batch.\n";
+
+      await Promise.all([
+        fsp.writeFile(manifestPath, JSON.stringify(externalManifest, null, 2)),
+        fsp.writeFile(planPath, externalPlan),
+      ]);
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.kind === "manifest"
+          && event.manifest?.title === externalManifest.title,
+        )).toBe(true);
+        expect(events.some((event) =>
+          event.kind === "plan" && event.planMd === externalPlan,
+        )).toBe(true);
+      }, { timeout: 2_000 });
+
+      const bundle = await svc.bundleRead(manifest.runId, manifest.bundlePath);
+      expect(bundle.manifest.title).toBe(externalManifest.title);
+      expect(bundle.planMd).toBe(externalPlan);
+    } finally {
+      off();
+      await svc.dispose();
+    }
+  });
 });
