@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  CrsqlChangeRow,
   SyncMobileProjectSummary,
   SyncPeerMetadata,
   SyncRemoteCommandDescriptor,
@@ -11,6 +12,7 @@ import {
   buildSyncHostHelloOkPayload,
   createSyncHostService,
   resolveSyncHostInboundProjectScope,
+  selectChangesetBatchChunk,
 } from "./syncHostService";
 
 const publishMock = vi.hoisted(() => vi.fn());
@@ -165,6 +167,88 @@ describe("buildSyncHostHelloOkPayload", () => {
       supportedActions: [remoteCommand.action, localPresenceCommand.action],
       actions: [remoteCommand, localPresenceCommand],
     });
+  });
+});
+
+function makeChange(dbVersion: number, seq: number, value = `value-${seq}`): CrsqlChangeRow {
+  return {
+    table: "kv",
+    pk: `key-${seq}`,
+    cid: "value",
+    val: value,
+    col_version: dbVersion,
+    db_version: dbVersion,
+    site_id: "site-host",
+    cl: 1,
+    seq,
+  };
+}
+
+describe("selectChangesetBatchChunk", () => {
+  it("keeps a single db_version together when the row limit would split it", () => {
+    const changes = [
+      ...Array.from({ length: 400 }, (_, seq) => makeChange(7, seq)),
+      makeChange(8, 400),
+    ];
+
+    const chunk = selectChangesetBatchChunk({
+      changes,
+      fromDbVersion: 0,
+      toDbVersion: 8,
+      maxRows: 250,
+      maxBytes: Number.MAX_SAFE_INTEGER,
+    });
+
+    expect(chunk?.changes).toHaveLength(400);
+    expect(chunk?.changes.every((change) => change.db_version === 7)).toBe(true);
+    expect(chunk?.toDbVersion).toBe(7);
+  });
+
+  it("does not spread an unbounded same-db_version chunk to compute the watermark", () => {
+    const changes = Array.from({ length: 70_000 }, (_, seq) => makeChange(9, seq));
+
+    const chunk = selectChangesetBatchChunk({
+      changes,
+      fromDbVersion: 0,
+      toDbVersion: 9,
+      maxRows: 250,
+      maxBytes: Number.MAX_SAFE_INTEGER,
+    });
+
+    expect(chunk?.changes).toHaveLength(70_000);
+    expect(chunk?.toDbVersion).toBe(9);
+  });
+
+  it("keeps a single db_version together when the byte limit would split it", () => {
+    const largeValue = "x".repeat(180_000);
+    const changes = [
+      makeChange(4, 0, largeValue),
+      makeChange(4, 1, largeValue),
+      makeChange(5, 2, "next-version"),
+    ];
+
+    const chunk = selectChangesetBatchChunk({
+      changes,
+      fromDbVersion: 0,
+      toDbVersion: 5,
+      maxRows: 250,
+      maxBytes: 256 * 1024,
+    });
+
+    expect(chunk?.changes).toEqual(changes.slice(0, 2));
+    expect(chunk?.toDbVersion).toBe(4);
+  });
+
+  it("can advance an empty changeset when all changes were filtered locally", () => {
+    const chunk = selectChangesetBatchChunk({
+      changes: [],
+      fromDbVersion: 3,
+      toDbVersion: 4,
+      maxRows: 250,
+      maxBytes: 256 * 1024,
+    });
+
+    expect(chunk).toEqual({ changes: [], toDbVersion: 4 });
   });
 });
 

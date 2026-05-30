@@ -487,6 +487,9 @@ consecutive missed heartbeats; mobile peers get a wider grace window
 (`MOBILE_SYNC_HEARTBEAT_MISS_LIMIT = 6`) because iOS can briefly suspend
 foreground networking during app and route transitions. Reconnection
 resumes from the last-known `db_version` so no changesets are lost.
+Host-side batching keeps every row for a given `db_version` in the same
+`changeset_batch`; otherwise an ack for a partial transaction would
+advance the receiver past unsent rows.
 
 `changeset_batch` envelopes carry a `batchId`; legacy batches without
 one are decoded with a deterministic fallback so older desktops can

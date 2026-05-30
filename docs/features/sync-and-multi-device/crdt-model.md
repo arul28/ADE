@@ -284,7 +284,9 @@ SELECT * FROM crsql_changes WHERE db_version > ?;
 
 Wrapped in `AdeDb.sync.exportChangesSince(version)`. Returns an array
 of `CrsqlChangeRow` objects; the transport layer batches them into
-`changeset_batch` envelopes.
+`changeset_batch` envelopes. Because the replication watermark is the
+integer `db_version`, the transport must not split rows that share one
+`db_version` across separate host batches.
 
 ### Apply
 
