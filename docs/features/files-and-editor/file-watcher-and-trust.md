@@ -235,7 +235,11 @@ same handler shapes; the desktop fallback handlers are registered in
 |---|---|
 | `ade.files.listWorkspaces` | calls `laneService.getFilesWorkspaces`, sorts primary first |
 | `ade.files.listTree` | resolves workspace, optionally lazy per `parentPath`/`depth`, returns `FileTreeNode[]` |
-| `ade.files.readFile` | bounded preview read: inline text/image up to 1 MB, small unsupported binaries up to 256 KB, metadata-only `contentOmitted` response above those caps |
+| `ade.files.listTreeChildren` | paginated child listing with the same filtering/order as `listTree` |
+| `ade.files.refreshGitDecorations` | returns flat file statuses plus ancestor directory rollups without refetching tree structure |
+| `ade.files.readFile` | bounded preview read: inline text/image up to 1 MB, small unsupported binaries up to 256 KB, partial first chunk for oversized text, metadata-only `contentOmitted` for oversized images/binaries |
+| `ade.files.readFileRange` | byte-range reader; UTF-8 text ranges are trimmed to code-point boundaries, binary/image ranges are base64 |
+| `ade.files.gitBlame` | `git blame --line-porcelain` result mapped to per-line author/sha/time/summary records |
 | `ade.files.writeTextAtomic` | temp file + rename |
 | `ade.files.writeText` | plain write |
 | `ade.files.createFile` | throws if exists, otherwise writes empty or provided content |

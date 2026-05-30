@@ -3,7 +3,17 @@
 Renderer surfaces that present the Files tab and embed Monaco editors
 for edit, diff, and conflict modes.
 
-## Main entry: `FilesPage.tsx`
+## Main entry: `FilesTab.tsx`
+
+Path: `apps/desktop/src/renderer/components/files/FilesTab.tsx`
+
+`FilesTab` is the shared entry point for the standalone Files route and
+the embedded Work sidebar. It renders `FilesPage` by default. The v2
+workbench renders only when `localStorage["ade.files.workbenchV2"] ===
+"1"` so the shipped experience stays on the legacy page until the
+parity checklist intentionally flips the flag.
+
+## Legacy entry: `FilesPage.tsx`
 
 Path: `apps/desktop/src/renderer/components/files/FilesPage.tsx`
 
@@ -71,9 +81,12 @@ workspace is pinned first. Switching workspaces:
 ## File explorer tree
 
 Implementation: `FilesExplorer.tsx` over `FileTreeNode[]` from
-`files.listTree`. Lazy loading: each directory is fetched only when
-expanded, with a `depth: 1` request. The tree uses sorted output
-(directories first, then files, alphabetical).
+`files.listTree`. Lazy loading uses `files.listTreeChildren` when a
+directory is expanded, following `nextOffset` until all children are
+loaded or the renderer hits its safety cap. `listTree` and
+`listTreeChildren` intentionally share the same filtering and ordering:
+volatile `.ade` runtime paths and `.git` are hidden, ignored files
+respect `includeIgnored`, and directories sort before files.
 
 Visual indicators per node:
 
@@ -147,13 +160,13 @@ Protection rails:
   the error.
 
 The page keeps one Monaco editor instance alive while the edit host is
-mounted. Opening another text file swaps the editor to a new Monaco
-model for that path/language and disposes the previous active model;
-it does not recreate the whole editor on every file switch. Re-opening
-a path that is already in the tab bar (via the explorer or quick open)
-reselects the existing tab instead of issuing another `files.readFile`
-— the read-side guard short-circuits when the requested path matches a
-known open tab, preserving any in-flight editor state.
+mounted. Opening another text file swaps the editor to a cached Monaco
+model for that path/language through `monacoModelRegistry`; it does not
+recreate the whole editor or dispose the model on every file switch.
+Re-opening a path that is already in the tab bar (via the explorer or
+quick open) reselects the existing tab instead of issuing another
+`files.readFile` — the read-side guard short-circuits when the requested
+path matches a known open tab, preserving any in-flight editor state.
 
 ### Markdown preview
 
@@ -254,6 +267,24 @@ remain reachable. File-tree context menus measure their rendered size
 and clamp to the renderer viewport on both axes before opening; do the
 same for any new Files context menu surface.
 
+## V2 workbench
+
+The flagged v2 workbench lives under
+`apps/desktop/src/renderer/components/files/v2/`. It keeps editor-group
+state per `projectRoot::laneId`, reuses the same `FilesExplorer`,
+`monacoModelRegistry`, preload API, and file service contracts, and adds:
+
+- preview tabs that promote to pinned tabs on edit/save
+- split editor groups and drag-to-move or drag-to-split tab behavior
+- per-path dirty tracking backed by Monaco alternative version ids
+- workbench-level search/create overlays
+- viewers for code, markdown, image, CSV/TSV, PDF, large text, binary,
+  and diffs
+
+Do not change the default flag state as a side effect of renderer or
+service refactors; the v2 shell is intentionally opt-in until the
+parity rollout flips it.
+
 ## Keyboard shortcuts
 
 Registered through the global keybinding service
@@ -272,17 +303,18 @@ Registered through the global keybinding service
 
 ## Gotchas
 
-- **Monaco model lifecycle.** The Files page keeps one active Monaco
-  model for edit mode and disposes it when switching files, leaving
-  edit content in React tab state. Any new per-tab model caching needs
-  an explicit disposal path on tab close and workspace switch.
+- **Monaco model lifecycle.** Monaco models are reused per path and
+  disposed on tab close, rename/delete cleanup, workspace switch, or
+  unmount. Do not dispose them on tab switch, theme change, read-only
+  toggle, or v2 group move.
 - **External change + dirty tab.** A file modified on disk with
   unsaved edits surfaces a "file changed on disk" banner. The user
   must explicitly choose "Reload" (discards edits) or "Keep editing"
   (leaves the warning up). The model is never overwritten silently.
-- **Large files.** Files over `MAX_EDITOR_READ_BYTES = 5 MB` open as
-  read-only with a binary-file notice. Binary files never enter edit
-  mode.
+- **Large files.** Oversized text opens as a read-only streamed view:
+  `readFile` returns a UTF-8-safe first chunk and viewers request
+  follow-up ranges via `readFileRange`. Oversized images and unsupported
+  binaries still render non-editable fallback views.
 - **Breadcrumb on root.** Files in the workspace root show only the
   filename in the breadcrumb; clicking it has no effect.
 - **Tab ordering.** The tab order is stored in renderer memory and
@@ -293,6 +325,6 @@ Registered through the global keybinding service
 
 - Main-process services and watcher: [file-watcher-and-trust.md](./file-watcher-and-trust.md)
 - Files tab entry from the app shell:
-  `apps/desktop/src/renderer/components/app/AppShell.tsx`
+  `apps/desktop/src/renderer/components/app/App.tsx`
 - Conflict resolution data: `apps/desktop/src/main/services/conflicts/`
 - Diff data: `apps/desktop/src/main/services/diffs/`

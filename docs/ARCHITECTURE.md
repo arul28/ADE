@@ -394,6 +394,9 @@ ade.prs.*                    # stacked PR queue, integration, issue inventory,
 ade.conflicts.*              # risk matrix, simulation, proposals
 ade.cto.*                    # identity, agent roster, Linear
 ade.sessions.*               # terminal session CRUD
+ade.files.*                  # runtime-routed file workspace/tree/read/write/watch/search actions,
+                             # including paginated children, Git decorations, range reads,
+                             # and blame; fallback IPC handlers run the same fileService code.
 ade.agentChat.*              # agent chat sessions, model inventory, parallel launch state.
                              # Includes ade.agentChat.modelCatalog (provider-grouped catalog
                              # used by desktop + TUI + iOS ModelPickers; accepts
