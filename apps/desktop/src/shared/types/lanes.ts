@@ -340,6 +340,7 @@ export type DeleteLaneArgs = {
   laneId: string;
   deleteBranch?: boolean;
   deleteRemoteBranch?: boolean;
+  requireRemoteBranchDelete?: boolean;
   remoteName?: string;
   force?: boolean;
 };

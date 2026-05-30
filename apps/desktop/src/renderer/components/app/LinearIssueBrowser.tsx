@@ -262,10 +262,19 @@ function selectionStorageKey(projectRoot: string | null | undefined): string | n
   return root ? `${SELECTION_STORAGE_PREFIX}${root}` : null;
 }
 
-// Multi-select survives a route change / remount (e.g. proceeding to the launch
-// modal and navigating back) by mirroring the selected ids to localStorage,
-// matching the safeSaveFilters pattern. Capped so a huge selection can never
-// bloat storage.
+export function clearLinearQuickViewSelection(projectRoot: string | null | undefined): void {
+  const key = selectionStorageKey(projectRoot);
+  if (!key || typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // Best effort only; losing this selection should never block browsing issues.
+  }
+}
+
+// Multi-select survives the temporary remount while the launch modal is open by
+// mirroring ids to localStorage. The quick-view host clears this key on real
+// pane close, so a fresh open starts unchecked.
 function safeLoadSelection(projectRoot: string | null | undefined): Set<string> {
   const key = selectionStorageKey(projectRoot);
   if (!key || typeof window === "undefined") return new Set();
@@ -283,7 +292,7 @@ function safeSaveSelection(projectRoot: string | null | undefined, ids: Set<stri
   if (!key || typeof window === "undefined") return;
   try {
     if (ids.size === 0) {
-      window.localStorage.removeItem(key);
+      clearLinearQuickViewSelection(projectRoot);
       return;
     }
     window.localStorage.setItem(key, JSON.stringify([...ids].slice(0, SELECTION_STORAGE_MAX)));

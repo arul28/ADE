@@ -988,7 +988,12 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       } else {
         laneDeleteWarningMessagesRef.current.delete(laneId);
         const remainingWarnings = formatLaneDeleteWarningMessages(laneDeleteWarningMessagesRef.current);
-        setLaneActionError((current) => remainingWarnings ?? (current && /\bdelet(?:e|ed|ing)\b/i.test(current) ? null : current));
+        // Reconstruct from the tracked warnings only. Any delete-warning we ever
+        // show is mirrored into laneDeleteWarningMessagesRef, so this clears a
+        // stale warning once its lane is re-deleted cleanly — without nulling an
+        // unrelated standing error that merely contains the word "delete" (e.g.
+        // the "deleted, but refresh failed" message for a different lane).
+        setLaneActionError((current) => remainingWarnings ?? current);
       }
       queueLaneDeleteRefresh([laneId]);
     });
@@ -1189,7 +1194,14 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setDeleteProgressByLaneId((prev) => {
       const next: Record<string, LaneDeleteProgress> = {};
       for (const [laneId, progress] of Object.entries(prev)) {
-        if (lanesById.has(laneId) && isLaneDeleteProgressActive(progress)) next[laneId] = progress;
+        // Once the deleted lane has left the list its progress entry no longer
+        // renders (the per-lane progress UI is gated on lanesById), so drop it —
+        // including completed_with_warnings, whose warning text is surfaced
+        // independently via laneActionError. Keeping it here only leaked the
+        // entry (and pinned the id in deletingLaneIds) for the whole session.
+        if (isLaneDeleteProgressActive(progress) && lanesById.has(laneId)) {
+          next[laneId] = progress;
+        }
       }
       return Object.keys(next).length === Object.keys(prev).length ? prev : next;
     });
@@ -1579,8 +1591,17 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           if (progress.overallStatus !== "completed" && progress.overallStatus !== "completed_with_warnings") continue;
           if (completedLaneDeleteRefreshesRef.current.has(progress.laneId)) continue;
           completedLaneDeleteRefreshesRef.current.add(progress.laneId);
+          if (progress.overallStatus === "completed_with_warnings") {
+            const laneName = lanesByIdRef.current?.get(progress.laneId)?.name ?? progress.laneId;
+            laneDeleteWarningMessagesRef.current.set(
+              progress.laneId,
+              formatLaneDeleteProgressError(progress, laneName),
+            );
+          }
           refreshLaneIds.push(progress.laneId);
         }
+        const warningMessage = formatLaneDeleteWarningMessages(laneDeleteWarningMessagesRef.current);
+        if (warningMessage) setLaneActionError(warningMessage);
         queueLaneDeleteRefresh(refreshLaneIds);
       })
       .catch((error) => {

@@ -3149,6 +3149,106 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(db.get<{ id: string }>("select id from lanes where id = ?", ["lane-child"])).toBeNull();
   });
 
+  it("keeps the lane visible when required remote branch cleanup fails", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { service, db } = await setupWithLane({ teardown: fake, events, createWorktree: false });
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      if (args[0] === "show-ref") return { exitCode: 0, stdout: "", stderr: "" } as any;
+      if (args[0] === "remote" && args[1] === "get-url") return { exitCode: 0, stdout: "git@example.test/repo.git\n", stderr: "" } as any;
+      if (args[0] === "ls-remote") return { exitCode: 0, stdout: "abc\trefs/heads/feature/child\n", stderr: "" } as any;
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+      if (args[0] === "push") throw new Error("remote rejected delete");
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+
+    await expect(
+      service.delete({
+        laneId: "lane-child",
+        deleteBranch: true,
+        deleteRemoteBranch: true,
+        requireRemoteBranchDelete: true,
+        remoteName: "origin",
+      }),
+    ).rejects.toThrow("remote rejected delete");
+
+    const last = events[events.length - 1];
+    expect(last.progress.overallStatus).toBe("failed");
+    expect(last.progress.steps.find((s: any) => s.name === "git_branch_delete")?.status).toBe("completed");
+    const remoteStep = last.progress.steps.find((s: any) => s.name === "git_remote_branch_delete");
+    expect(remoteStep?.status).toBe("failed");
+    expect(remoteStep?.errorMessage).toContain("remote rejected delete");
+    expect(db.get<{ id: string }>("select id from lanes where id = ?", ["lane-child"])?.id).toBe("lane-child");
+  });
+
+  it("normalizes remote-shaped lane refs before deleting local and remote branches", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { service, db } = await setupWithLane({ teardown: fake, events, createWorktree: false });
+    db.run("update lanes set branch_ref = ? where id = ?", ["origin/feature/child", "lane-child"]);
+    const gitOrThrowCalls: string[][] = [];
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      if (args[0] === "show-ref") return { exitCode: 0, stdout: "", stderr: "" } as any;
+      if (args[0] === "remote" && args[1] === "get-url") return { exitCode: 0, stdout: "git@example.test/repo.git\n", stderr: "" } as any;
+      if (args[0] === "ls-remote") return { exitCode: 0, stdout: "abc\trefs/heads/feature/child\n", stderr: "" } as any;
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+      gitOrThrowCalls.push(args);
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+
+    await service.delete({
+      laneId: "lane-child",
+      deleteBranch: true,
+      deleteRemoteBranch: true,
+      remoteName: "origin",
+    });
+
+    expect(runGit).toHaveBeenCalledWith(
+      ["ls-remote", "--heads", "origin", "feature/child"],
+      expect.objectContaining({ timeoutMs: 30_000 }),
+    );
+    expect(gitOrThrowCalls).toContainEqual(["branch", "-D", "feature/child"]);
+    expect(gitOrThrowCalls).toContainEqual(["push", "origin", "--delete", "feature/child"]);
+    const last = events[events.length - 1];
+    expect(last.progress.overallStatus).toBe("completed");
+  });
+
+  it("surfaces remote branch lookup failures as delete warnings", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { service } = await setupWithLane({ teardown: fake, events, createWorktree: false });
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      if (args[0] === "show-ref") return { exitCode: 0, stdout: "", stderr: "" } as any;
+      if (args[0] === "remote" && args[1] === "get-url") return { exitCode: 0, stdout: "git@example.test/repo.git\n", stderr: "" } as any;
+      if (args[0] === "ls-remote") return { exitCode: 128, stdout: "", stderr: "Could not read from remote repository.\n" } as any;
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+    vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
+
+    await service.delete({
+      laneId: "lane-child",
+      deleteBranch: true,
+      deleteRemoteBranch: true,
+      remoteName: "origin",
+    });
+
+    const last = events[events.length - 1];
+    expect(last.progress.overallStatus).toBe("completed_with_warnings");
+    const remoteStep = last.progress.steps.find((s: any) => s.name === "git_remote_branch_delete");
+    expect(remoteStep?.status).toBe("warning");
+    expect(remoteStep?.errorMessage).toContain("Could not read from remote repository");
+  });
+
   it("cleans lane-owned database state when deleting a lane", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();

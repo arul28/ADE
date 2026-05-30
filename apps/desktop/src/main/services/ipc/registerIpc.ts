@@ -9,11 +9,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IPC } from "../../../shared/ipc";
 import { getModelById } from "../../../shared/modelRegistry";
-import {
-  buildTrackedCliLaunchCommand,
-  LAUNCH_PROFILE_TITLE,
-  LAUNCH_PROFILE_TOOL_TYPE,
-} from "../../../shared/cliLaunch";
 import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
 import { buildPrAiResolutionContextKey } from "../../../shared/types";
 import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../prs/prIssueResolver";
@@ -27,6 +22,7 @@ import {
   resolveProjectIconPath,
   setProjectIconOverrideFromSelection,
 } from "../projects/projectIconResolver";
+import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { runGit } from "../git/git";
 import type { AdeCleanupResult, AdeProjectSnapshot, IosSimulatorWindowState } from "../../../shared/types";
 import { toRecentProjectSummary } from "../projects/recentProjectSummary";
@@ -5580,73 +5576,14 @@ export function registerIpc({
   // provider's startup command / initialInput.
   ipcMain.handle(IPC.agentChatLaunchCli, async (_event, arg: AgentChatLaunchCliArgs): Promise<AgentChatLaunchCliResult> => {
     const ctx = getCtx();
-    const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
-    if (!laneId) throw new Error("agentChat.launchCli requires a laneId.");
-    const provider = arg?.provider;
-    if (!provider) throw new Error("agentChat.launchCli requires a provider.");
-    const kickoffPrompt = typeof arg?.kickoffPrompt === "string" ? arg.kickoffPrompt : "";
-    if (!kickoffPrompt.trim().length) {
-      throw new Error("agentChat.launchCli requires a kickoff prompt.");
+    if (!ctx.laneService) {
+      throw new Error("agentChat.launchCli requires an active project runtime lane service.");
     }
-
-    const worktreePath = ctx.laneService.getLaneWorktreePath(laneId);
-
-    // The terminal session id is the Linear link key. For Claude, reuse it as
-    // the CLI `--session-id` so resume stays consistent.
-    const sessionId = randomUUID();
-    const permissionMode = arg.permissionMode ?? "full-auto";
-
-    // The Linear issues are attached inside ptyService.create AFTER the terminal
-    // row is created (so the lane-mirror link lands) but BEFORE the env is built
-    // (so the spawned agent inherits ADE_LINEAR_*). Report the resolved ids back
-    // to the caller for optimistic UI without re-querying.
-    const issues = Array.isArray(arg.linearIssues) ? arg.linearIssues : [];
-    const attachedLinearIssueIds = issues
-      .map((issue) => issue?.id)
-      .filter((id): id is string => typeof id === "string" && id.length > 0);
-
-    const launch = buildTrackedCliLaunchCommand({
-      provider,
-      permissionMode,
-      ...(provider === "claude" ? { sessionId } : {}),
-      model: arg.model ?? null,
-      reasoningEffort: arg.reasoningEffort ?? null,
-      initialPrompt: kickoffPrompt,
-      laneWorktreePath: worktreePath,
+    return launchAgentChatCli(arg, {
+      laneService: ctx.laneService,
+      ptyService: ctx.ptyService,
+      logger: ctx.logger,
     });
-
-    const result = await ctx.ptyService.create({
-      sessionId,
-      allowNewSessionId: true,
-      chatSessionId: sessionId,
-      laneId,
-      cols: 100,
-      rows: 30,
-      title: arg.title?.trim() || LAUNCH_PROFILE_TITLE[provider],
-      tracked: true,
-      toolType: LAUNCH_PROFILE_TOOL_TYPE[provider],
-      startupCommand: launch.startupCommand,
-      ...(issues.length ? { linearIssues: issues } : {}),
-      ...(launch.command !== undefined ? { command: launch.command } : {}),
-      ...(launch.args !== undefined ? { args: launch.args } : {}),
-      ...(launch.initialInput !== undefined ? { initialInput: launch.initialInput } : {}),
-      ...(launch.initialInputDelayMs !== undefined ? { initialInputDelayMs: launch.initialInputDelayMs } : {}),
-      ...(launch.env ? { env: launch.env } : {}),
-    });
-
-    ctx.logger.info("agentChat.launchCli.created", {
-      laneId,
-      sessionId: result.sessionId,
-      provider,
-      attachedLinearIssueCount: attachedLinearIssueIds.length,
-    });
-
-    return {
-      sessionId: result.sessionId,
-      ptyId: result.ptyId,
-      pid: result.pid,
-      attachedLinearIssueIds,
-    };
   });
 
   ipcMain.handle(IPC.agentChatSuggestLaneName, async (_event, arg: unknown): Promise<string> => {

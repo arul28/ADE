@@ -142,14 +142,47 @@ type PerIssueState = BatchLaunchIssueConfig & {
   laneTarget: "new" | "existing";
 };
 
-function makeInitialConfig(defaultModelId: string, issue: LaneLinearIssue): PerIssueState {
+const DEFAULT_PROMPT_STORAGE_PREFIX = "ade.linear.batchLaunch.defaultPrompt.v1:";
+
+function defaultPromptStorageKey(projectRoot: string | null | undefined): string | null {
+  const root = projectRoot?.trim();
+  return root ? `${DEFAULT_PROMPT_STORAGE_PREFIX}${root}` : null;
+}
+
+function safeLoadDefaultPrompt(projectRoot: string | null | undefined): string | null {
+  const key = defaultPromptStorageKey(projectRoot);
+  if (!key || typeof window === "undefined") return null;
+  try {
+    const value = window.localStorage.getItem(key);
+    return value && value.trim().length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function safeSaveDefaultPrompt(projectRoot: string | null | undefined, prompt: string): void {
+  const key = defaultPromptStorageKey(projectRoot);
+  if (!key || typeof window === "undefined") return;
+  try {
+    const value = prompt.trim();
+    if (!value) {
+      window.localStorage.removeItem(key);
+      return;
+    }
+    window.localStorage.setItem(key, prompt);
+  } catch {
+    // Best effort only; failing to persist a prompt should never block launch.
+  }
+}
+
+function makeInitialConfig(defaultModelId: string, kickoffPrompt: string): PerIssueState {
   return {
     modelId: defaultModelId,
     reasoningEffort: null,
     codexFastMode: false,
     // Seed the kickoff prompt with the default so the textarea is editable
     // in-place (rather than only showing it as a placeholder).
-    kickoffPrompt: defaultKickoffPrompt(),
+    kickoffPrompt,
     branchOverride: "",
     sessionType: "chat",
     permissionMode: null,
@@ -206,6 +239,7 @@ export type BatchLaunchSubmit = {
 
 export function BatchLaunchModal({
   open,
+  projectRoot,
   issues,
   lanes,
   laneOnly = false,
@@ -213,6 +247,7 @@ export function BatchLaunchModal({
   onLaunch,
 }: {
   open: boolean;
+  projectRoot?: string | null;
   issues: LaneLinearIssue[];
   lanes: LaneSummary[];
   /** When true, only create lanes (no agent kickoff) — hides the model pickers. */
@@ -236,6 +271,7 @@ export function BatchLaunchModal({
   const [defaultFast, setDefaultFast] = useState(false);
   const [defaultSessionType, setDefaultSessionType] = useState<BatchLaunchSessionType>("chat");
   const [defaultPermission, setDefaultPermission] = useState<AgentChatPermissionMode | null>(null);
+  const [projectDefaultPrompt, setProjectDefaultPrompt] = useState<string | null>(null);
   const [perIssue, setPerIssue] = useState<Record<string, PerIssueState>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
@@ -247,17 +283,47 @@ export function BatchLaunchModal({
   );
 
   // Seed config when the modal opens (or the issue set changes while open).
+  // New rows inherit the LIVE Default row (model / Chat↔CLI / reasoning / fast /
+  // permission), not hardcoded chat defaults — otherwise reopening (which clears
+  // perIssue below) would silently launch rows that disagree with the Default
+  // control the user still sees.
   useEffect(() => {
     if (!open) return;
-    setDefaultModel((current) => current || defaultModelId);
+    const savedPrompt = safeLoadDefaultPrompt(projectRoot);
+    const kickoffPrompt = savedPrompt ?? defaultKickoffPrompt();
+    const seedModel = defaultModel || defaultModelId;
+    setProjectDefaultPrompt(savedPrompt);
+    setDefaultModel(seedModel);
     setPerIssue((current) => {
       const next: Record<string, PerIssueState> = {};
       for (const issue of issues) {
-        next[issue.id] = current[issue.id] ?? makeInitialConfig(defaultModelId, issue);
+        next[issue.id] = current[issue.id] ?? {
+          ...makeInitialConfig(seedModel, kickoffPrompt),
+          sessionType: defaultSessionType,
+          reasoningEffort: defaultEffort,
+          codexFastMode: defaultFast,
+          permissionMode: defaultPermission,
+        };
       }
       return next;
     });
-  }, [open, issues, defaultModelId]);
+  }, [
+    open,
+    projectRoot,
+    issues,
+    defaultModelId,
+    defaultModel,
+    defaultSessionType,
+    defaultEffort,
+    defaultFast,
+    defaultPermission,
+  ]);
+
+  useEffect(() => {
+    if (open) return;
+    setPerIssue({});
+    setExpanded({});
+  }, [open]);
 
   const patchIssue = useCallback((issueId: string, patch: Partial<PerIssueState>) => {
     setPerIssue((current) => ({
@@ -331,6 +397,11 @@ export function BatchLaunchModal({
       return next;
     });
   }, []);
+
+  const savePromptAsDefault = useCallback((prompt: string) => {
+    safeSaveDefaultPrompt(projectRoot, prompt);
+    setProjectDefaultPrompt(prompt.trim() ? prompt : null);
+  }, [projectRoot]);
 
   const includedIssues = useMemo(
     () => issues.filter((issue) => perIssue[issue.id]?.include !== false),
@@ -433,6 +504,8 @@ export function BatchLaunchModal({
           const isExpanded = expanded[issue.id] === true;
           const skipped = state.include === false;
           const branch = state.branchOverride.trim() || linearIssueBranchName(issue);
+          const promptSavedAsDefault =
+            state.kickoffPrompt.trim().length > 0 && projectDefaultPrompt === state.kickoffPrompt;
           return (
             <div
               key={issue.id}
@@ -520,11 +593,25 @@ export function BatchLaunchModal({
                 <div className="space-y-2 border-t border-white/[0.05] px-2.5 py-2.5">
                   {!laneOnly ? (
                     <div className="space-y-1">
-                      <div className="flex items-center justify-between">
+                      <div className="flex items-center justify-between gap-2">
                         <span className="text-[10px] font-medium uppercase tracking-[0.08em] text-muted-fg/55">
                           Kickoff prompt
                         </span>
-                        {issues.length > 1 ? (
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => savePromptAsDefault(state.kickoffPrompt)}
+                            disabled={!projectRoot?.trim() || !state.kickoffPrompt.trim()}
+                            className="inline-flex h-5 items-center rounded-md border border-white/[0.1] bg-white/[0.04] px-2 text-[10px] font-medium text-fg/70 transition-colors hover:border-white/[0.18] hover:bg-white/[0.08] hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
+                            title={
+                              projectRoot?.trim()
+                                ? "Use this prompt as the default for future Linear launches in this project"
+                                : "Open a project to save a default prompt"
+                            }
+                          >
+                            {promptSavedAsDefault ? "Default saved" : "Save default"}
+                          </button>
+                          {issues.length > 1 ? (
                           <button
                             type="button"
                             onClick={() => applyPromptToAll(state.kickoffPrompt)}
@@ -533,7 +620,8 @@ export function BatchLaunchModal({
                           >
                             Apply to all
                           </button>
-                        ) : null}
+                          ) : null}
+                        </div>
                       </div>
                       <textarea
                         value={state.kickoffPrompt}

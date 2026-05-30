@@ -9,7 +9,7 @@ import type {
 import {
   makeLinearIssueContextAttachment,
 } from "../../shared/chatContextAttachments";
-import { linearIssueBranchName, linearIssueLaneName } from "../../shared/linearIssueBranch";
+import { linearIssueLaneName } from "../../shared/linearIssueBranch";
 import {
   getModelById,
   getRuntimeModelRefForDescriptor,
@@ -191,8 +191,8 @@ export type BatchLaunchDeps = {
   /** Create a worktree lane for an issue. */
   createLane: (args: {
     name: string;
-    branchName: string;
-    linearIssue: LaneLinearIssue & { branchName: string };
+    branchName?: string;
+    linearIssue: LaneLinearIssue;
   }) => Promise<{ id: string }>;
   /**
    * Create the agent chat session AND run the kickoff turn headlessly in a single
@@ -228,7 +228,14 @@ export type BatchLaunchDeps = {
     linearIssues: LaneLinearIssue[];
   }) => Promise<{ sessionId: string }>;
   /** Roll back a lane created in this run when the agent launch fails. */
-  deleteLane?: (laneId: string) => Promise<void>;
+  deleteLane?: (args: {
+    laneId: string;
+    deleteBranch?: boolean;
+    deleteRemoteBranch?: boolean;
+    requireRemoteBranchDelete?: boolean;
+    remoteName?: string;
+    force?: boolean;
+  }) => Promise<void>;
 };
 
 type RunOptions = {
@@ -271,12 +278,13 @@ export async function runBatchLaunch(
         options.onItem(issue.id, { status: "launching-agent", error: null, laneId });
       } else {
         options.onItem(issue.id, { status: "creating-lane", error: null });
-        const branchName = (config.branchOverride.trim() || linearIssueBranchName(issue)).trim();
-        const lane = await deps.createLane({
+        const branchOverride = config.branchOverride.trim();
+        const createArgs: Parameters<BatchLaunchDeps["createLane"]>[0] = {
           name: linearIssueLaneName(issue),
-          branchName,
-          linearIssue: { ...issue, branchName },
-        });
+          linearIssue: issue,
+        };
+        if (branchOverride) createArgs.branchName = branchOverride;
+        const lane = await deps.createLane(createArgs);
         laneId = lane.id;
         createdLane = true;
         result.createdLaneIds.push(lane.id);
@@ -332,8 +340,6 @@ export async function runBatchLaunch(
       result.createdSessionIds.push(session.id);
       options.onItem(issue.id, { sessionId: session.id, status: "done" });
     } catch (error) {
-      // TEMP DIAGNOSTIC: surface the real launch failure to the dev console.
-      console.error(`[BatchLaunch] ${issue.identifier} failed (sessionType=${entry.config.sessionType}):`, error);
       let detail = error instanceof Error ? error.message : String(error);
       // If the agent launch failed but we created the lane this run, roll the
       // lane back so retries don't pile up orphan lanes for the same issue.
@@ -343,7 +349,19 @@ export async function runBatchLaunch(
       // open/clean it up, rather than leaving an invisible orphan.
       if (laneId && createdLane && deps.deleteLane) {
         try {
-          await deps.deleteLane(laneId);
+          // Best-effort cleanup of any branch the lane pushed at create time.
+          // Deliberately NOT requireRemoteBranchDelete: a transient remote/network
+          // failure must stay non-fatal so the local teardown (worktree + DB row)
+          // still completes and the lane is fully rolled back rather than left as a
+          // half-deleted visible orphan. A genuinely fatal failure (worktree/DB)
+          // still throws and is surfaced below.
+          await deps.deleteLane({
+            laneId,
+            force: true,
+            deleteBranch: true,
+            deleteRemoteBranch: true,
+            remoteName: "origin",
+          });
           const idx = result.createdLaneIds.indexOf(laneId);
           if (idx >= 0) result.createdLaneIds.splice(idx, 1);
           laneId = null;

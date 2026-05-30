@@ -832,6 +832,18 @@ function isActiveProcess(p: ProcessRuntime): boolean {
 
 const LANE_DELETE_PROGRESS_HISTORY_TTL_MS = 60_000;
 
+function branchNameForDelete(branchRef: string, remoteName = "origin"): string {
+  const trimmed = branchRef.trim().replace(/^refs\/heads\//, "");
+  if (!trimmed) return "";
+  if (trimmed.startsWith("refs/remotes/")) {
+    const rest = trimmed.slice("refs/remotes/".length);
+    const remotePrefix = `${remoteName.trim() || "origin"}/`;
+    return rest.startsWith(remotePrefix) ? rest.slice(remotePrefix.length) : rest;
+  }
+  const remotePrefix = `${remoteName.trim() || "origin"}/`;
+  return trimmed.startsWith(remotePrefix) ? trimmed.slice(remotePrefix.length) : trimmed;
+}
+
 function cloneLaneDeleteProgress(progress: LaneDeleteProgress): LaneDeleteProgress {
   return {
     ...progress,
@@ -4425,6 +4437,7 @@ export function createLaneService({
         laneId,
         deleteBranch = true,
         deleteRemoteBranch = false,
+        requireRemoteBranchDelete = false,
         remoteName = "origin",
         force = false
       } = args;
@@ -4633,33 +4646,39 @@ export function createLaneService({
 
         if (deleteBranch && row.branch_ref) {
           await runStep("git_branch_delete", async () => {
-            const refCheck = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${row.branch_ref}`], {
+            const branchName = branchNameForDelete(row.branch_ref, remoteName);
+            const refCheck = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`], {
               cwd: projectRoot,
               timeoutMs: 8_000,
             });
             if (refCheck.exitCode !== 0) return { detail: "ref not found" };
-            await runGitOrThrow(["branch", "-D", row.branch_ref], { cwd: projectRoot, timeoutMs: 30_000 });
-            return { detail: row.branch_ref };
-          }, { fatal: false });
+            await runGitOrThrow(["branch", "-D", branchName], { cwd: projectRoot, timeoutMs: 30_000 });
+            return { detail: branchName };
+          }, { fatal: requireRemoteBranchDelete });
         }
 
         if (deleteRemoteBranch && row.branch_ref) {
           await runStep("git_remote_branch_delete", async () => {
             const remote = remoteName.trim() || "origin";
+            const branchName = branchNameForDelete(row.branch_ref, remote);
             const remoteCheck = await runGit(["remote", "get-url", remote], { cwd: projectRoot, timeoutMs: 8_000 });
             if (remoteCheck.exitCode !== 0) {
               throw new Error(`Remote '${remote}' is not configured for this repository`);
             }
-            const remoteRefCheck = await runGit(["ls-remote", "--heads", remote, row.branch_ref], {
+            const remoteRefCheck = await runGit(["ls-remote", "--heads", remote, branchName], {
               cwd: projectRoot,
               timeoutMs: 30_000,
             });
-            if (remoteRefCheck.exitCode !== 0 || remoteRefCheck.stdout.trim().length === 0) {
-              return { detail: "remote branch not found" };
+            if (remoteRefCheck.exitCode !== 0) {
+              const detail = (remoteRefCheck.stderr || remoteRefCheck.stdout).trim();
+              throw new Error(detail || `Unable to check ${remote}/${branchName}`);
             }
-            await runGitOrThrow(["push", remote, "--delete", row.branch_ref], { cwd: projectRoot, timeoutMs: 45_000 });
-            return { detail: `${remote}/${row.branch_ref}` };
-          }, { fatal: false });
+            if (remoteRefCheck.stdout.trim().length === 0) {
+              return { detail: `${remote}/${branchName} not found` };
+            }
+            await runGitOrThrow(["push", remote, "--delete", branchName], { cwd: projectRoot, timeoutMs: 45_000 });
+            return { detail: `${remote}/${branchName}` };
+          }, { fatal: requireRemoteBranchDelete });
         }
 
         await runStep("pack_dir_remove", async () => {
@@ -4729,10 +4748,14 @@ export function createLaneService({
       let hasUnpushedCommits = false;
       let unpushedCommitCount = 0;
       let remoteBranchExists = false;
-      if (row.branch_ref) {
+      // Normalize the same way delete() does, so the risk the user confirms
+      // against matches the branch the delete actually touches (a remote-shaped
+      // ref like "origin/feature" must probe "feature").
+      const riskBranchName = row.branch_ref ? branchNameForDelete(row.branch_ref, "origin") : "";
+      if (riskBranchName) {
         const cwd = worktreeExists ? row.worktree_path : projectRoot;
         const unpushed = await runGit(
-          ["rev-list", "--count", row.branch_ref, "--not", "--remotes"],
+          ["rev-list", "--count", riskBranchName, "--not", "--remotes"],
           { cwd, timeoutMs: 8_000 }
         );
         if (unpushed.exitCode === 0) {
@@ -4740,7 +4763,7 @@ export function createLaneService({
           hasUnpushedCommits = unpushedCommitCount > 0;
         }
         const remoteCheck = await runGit(
-          ["ls-remote", "--heads", "origin", row.branch_ref],
+          ["ls-remote", "--heads", "origin", riskBranchName],
           { cwd: projectRoot, timeoutMs: 8_000 }
         );
         remoteBranchExists = remoteCheck.exitCode === 0 && remoteCheck.stdout.trim().length > 0;

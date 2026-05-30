@@ -1152,6 +1152,7 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "deleteSession",
   "updateSession",
   "handoffSession",
+  "launchCli",
   "launchHeadless",
   "setClaudeOutputStyle",
   "reloadClaudePlugins",
@@ -4779,9 +4780,17 @@ contextBridge.exposeInMainWorld("ade", {
     launchCli: async (
       args: AgentChatLaunchCliArgs,
     ): Promise<AgentChatLaunchCliResult> => {
-      // Composes lane (Linear attach) + pty (spawn) services, so it runs on the
-      // desktop bridge rather than the in-process runtime daemon.
-      const result = await ipcRenderer.invoke(IPC.agentChatLaunchCli, args);
+      agentChatSummaryCache.clear();
+      const runtime =
+        await callProjectRuntimeActionIfBound<AgentChatLaunchCliResult>(
+          "chat",
+          "launchCli",
+          { args },
+        );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.agentChatLaunchCli, args);
+      agentChatSummaryCache.clear();
       return result as AgentChatLaunchCliResult;
     },
     suggestLaneName: async (

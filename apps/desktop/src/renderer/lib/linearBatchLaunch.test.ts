@@ -135,7 +135,7 @@ describe("defaultKickoffPrompt", () => {
 
 describe("runBatchLaunch", () => {
   it("launches every issue: lane → headless launch (session + kickoff)", async () => {
-    const createLane = vi.fn(async (args: { name: string }) => ({ id: `lane-${args.name}` }));
+    const createLane = vi.fn(async (args: { name: string; linearIssue: LaneLinearIssue; branchName?: string }) => ({ id: `lane-${args.name}` }));
     const launch = vi.fn(async (args: { kickoffText: string; contextAttachments?: unknown[] }) => {
       void args;
       return { id: "sess" };
@@ -149,6 +149,8 @@ describe("runBatchLaunch", () => {
     const result = await runBatchLaunch(entries, { createLane, launch, launchCli: makeLaunchCli() }, { onItem });
 
     expect(createLane).toHaveBeenCalledTimes(2);
+    expect(createLane.mock.calls[0]?.[0]).not.toHaveProperty("branchName");
+    expect(createLane.mock.calls[0]?.[0]?.linearIssue).toMatchObject({ id: "a", identifier: "ENG-1" });
     expect(launch).toHaveBeenCalledTimes(2);
     // The kickoff text is GENERIC (names no issue); each agent's specific issue
     // rides on its own context attachment — so agents never cross-wire.
@@ -159,6 +161,22 @@ describe("runBatchLaunch", () => {
     expect(result.createdLaneIds).toHaveLength(2);
     expect(result.createdSessionIds).toHaveLength(2);
     expect(result.failedIssueIds).toHaveLength(0);
+  });
+
+  it("passes only user branch overrides as explicit branch names", async () => {
+    const createLane = vi.fn(async (_args: { name: string; linearIssue: LaneLinearIssue; branchName?: string }) => ({ id: "lane-a" }));
+    const launch = vi.fn(async () => ({ id: "sess" }));
+
+    await runBatchLaunch(
+      [{ issue: makeIssue({ id: "a" }), config: makeConfig({ branchOverride: "custom/branch" }) }],
+      { createLane, launch, launchCli: makeLaunchCli() },
+      { onItem: vi.fn() },
+    );
+
+    expect(createLane.mock.calls[0]?.[0]).toMatchObject({
+      branchName: "custom/branch",
+      linearIssue: expect.objectContaining({ id: "a" }),
+    });
   });
 
   it("keeps siblings alive when one issue fails and records the failure", async () => {
@@ -196,7 +214,13 @@ describe("runBatchLaunch", () => {
       { onItem },
     );
 
-    expect(deleteLane).toHaveBeenCalledWith("lane-a");
+    expect(deleteLane).toHaveBeenCalledWith({
+      laneId: "lane-a",
+      force: true,
+      deleteBranch: true,
+      deleteRemoteBranch: true,
+      remoteName: "origin",
+    });
     expect(result.createdLaneIds).toHaveLength(0);
     expect(result.failedIssueIds).toEqual(["a"]);
   });
@@ -218,7 +242,13 @@ describe("runBatchLaunch", () => {
       { onItem },
     );
 
-    expect(deleteLane).toHaveBeenCalledWith("lane-a");
+    expect(deleteLane).toHaveBeenCalledWith({
+      laneId: "lane-a",
+      force: true,
+      deleteBranch: true,
+      deleteRemoteBranch: true,
+      remoteName: "origin",
+    });
     // Rollback failed, so the lane stays visible instead of becoming an invisible orphan.
     expect(result.createdLaneIds).toEqual(["lane-a"]);
     expect(result.failedIssueIds).toEqual(["a"]);

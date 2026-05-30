@@ -17,6 +17,7 @@ import { cn } from "../ui/cn";
 import { linearIssueLaneName } from "../../../shared/linearIssueBranch";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import {
+  clearLinearQuickViewSelection,
   LinearIssueBrowser,
   linearBrowserIssueToLaneIssue,
   type BatchProgress,
@@ -192,8 +193,9 @@ export function LinearQuickViewButton({
   }, []);
 
   const close = useCallback(() => {
+    clearLinearQuickViewSelection(project?.rootPath);
     setOpen(false);
-  }, []);
+  }, [project?.rootPath]);
 
   useEffect(() => {
     if (!open) return;
@@ -289,8 +291,8 @@ export function LinearQuickViewButton({
             kickoffPrompt: args.kickoffPrompt,
             linearIssues: args.linearIssues,
           }),
-        deleteLane: (laneId) =>
-          window.ade.lanes.delete({ laneId, force: true }).then(() => undefined),
+        deleteLane: (args) =>
+          window.ade.lanes.delete(args).then(() => undefined),
       },
       {
         onItem: (issueId, patch) => {
@@ -626,6 +628,7 @@ export function LinearQuickViewButton({
 
       <BatchLaunchModal
         open={batchModalOpen}
+        projectRoot={project?.rootPath}
         issues={batchIssues}
         lanes={lanes}
         laneOnly={batchLaneOnly}

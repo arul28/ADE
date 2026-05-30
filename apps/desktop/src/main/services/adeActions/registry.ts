@@ -20,6 +20,8 @@ import type {
   AgentChatCodexOpenInCliArgs,
   AgentChatCodexOpenInCliResult,
   AgentChatGetTurnFileDiffArgs,
+  AgentChatLaunchCliArgs,
+  AgentChatLaunchCliResult,
   AgentChatParallelLaunchState,
   AgentChatSetParallelLaunchStateArgs,
   AgentChatTurnFileDiff,
@@ -81,6 +83,7 @@ import {
   detectCodexResumeStrategy,
   spawnInNewTerminalWindow,
 } from "../chat/codexCliLauncher";
+import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { createApnsBridgeService } from "../notifications/apnsBridgeService";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 
@@ -442,6 +445,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getTurnFileDiff",
     "getParallelLaunchState",
     "interrupt",
+    "launchCli",
     "launchHeadless",
     "listClaudePlugins",
     "listClaudeSessions",
@@ -942,6 +946,19 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         parentLaneId,
       );
     },
+    launchCli: async (
+      args: AgentChatLaunchCliArgs,
+    ): Promise<AgentChatLaunchCliResult> =>
+      launchAgentChatCli(args, {
+        laneService: requireService(
+          runtime.laneService,
+          "Lane service not available.",
+        ),
+        ptyService: requireService(
+          runtime.ptyService,
+          "Terminal service not available.",
+        ),
+      }),
     modelCatalog: (args?: unknown) =>
       agentChatService.getModelCatalog(args && typeof args === "object" ? args as never : undefined),
     codexOpenInCli: async (
