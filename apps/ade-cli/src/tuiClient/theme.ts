@@ -25,6 +25,9 @@ const T5 = "#4A4955";
 // Brand violet family
 const VIOLET = "#A78BFA";
 const VIOLET_DEEP = "#7C3AED";
+// Darker violets used for the wordmark's layered 3D drop shadow.
+const VIOLET_DEEPER = "#5B21B6";
+const VIOLET_DEEPEST = "#3B1675";
 
 // Status family
 const RUNNING = "#22C55E";
@@ -154,6 +157,8 @@ export const theme = {
     accentDim: VIOLET_DEEP,
     violet: VIOLET,
     violetDeep: VIOLET_DEEP,
+    violetDeeper: VIOLET_DEEPER,
+    violetDeepest: VIOLET_DEEPEST,
 
     // Text
     fg: T1,

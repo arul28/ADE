@@ -621,6 +621,46 @@ describe("JsonRpcClient", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("fires onClose when the socket drops unexpectedly", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-jsonrpc-"));
+    const socketPath = path.join(tmpDir, "rpc.sock");
+    let resolveServerSocket: (socket: net.Socket) => void = () => {};
+    const serverSocketReady = new Promise<net.Socket>((resolve) => {
+      resolveServerSocket = resolve;
+    });
+    const server = net.createServer((socket) => resolveServerSocket(socket));
+    await listenRpc(server, socketPath);
+    const client = await JsonRpcClient.connect(socketPath);
+    const socket = await serverSocketReady;
+    try {
+      const closed = new Promise<void>((resolve) => client.onClose(resolve));
+      socket.destroy();
+      await expect(closed).resolves.toBeUndefined();
+    } finally {
+      client.close();
+      await closeServer(server);
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not fire onClose on an intentional close()", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-jsonrpc-"));
+    const socketPath = path.join(tmpDir, "rpc.sock");
+    const server = net.createServer(() => {});
+    await listenRpc(server, socketPath);
+    const client = await JsonRpcClient.connect(socketPath);
+    try {
+      const onClose = vi.fn();
+      client.onClose(onClose);
+      client.close();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(onClose).not.toHaveBeenCalled();
+    } finally {
+      await closeServer(server);
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 async function loadStateModule(home: string): Promise<typeof import("../state")> {

@@ -10,7 +10,12 @@ import {
   drawerMouseHitForLine,
   encodeTerminalPromptSubmit,
   encodeTerminalPromptSubmitConfirm,
+  applyCoalescedPromptInput,
+  firstUrlInText,
   footerControlsForAvailability,
+  inlineRowCellOrder,
+  formatGitConflictReport,
+  formatLaneDeleteRisk,
   formFieldUsesPromptInput,
   isChatSessionAnimating,
   isPromptLineBackspace,
@@ -29,6 +34,8 @@ import {
   chatSelectionFromAnchor,
   chatSessionToOptimisticSummary,
   chatSelectionPointFromVisibleRows,
+  codexApprovalSandboxLabel,
+  cursorModeIdsForState,
   moveChatSelectionFocusByRows,
   mergeOptimisticChatSessions,
   insertPromptText,
@@ -39,7 +46,6 @@ import {
   promptDisplayRows,
   promptDisplayRowsWithCursor,
   promptHitLine,
-  modelPickerSurfaceForSetupPane,
   resolveContextDefault,
   resolveDrawerPaneWidth,
   resolveModelPickerEscape,
@@ -360,20 +366,12 @@ describe("right pane context defaults", () => {
     });
 
     expect(pane).toMatchObject({
-      kind: "new-chat-setup",
+      kind: "model-picker",
+      surface: "new-chat",
       laneId: "lane-1",
       laneLabel: "Lane one",
+      selection: { kind: "provider", provider: "claude" },
     });
-  });
-});
-
-describe("model setup picker routing", () => {
-  it("opens the rich picker against the current chat from /model or /effort setup panes", () => {
-    expect(modelPickerSurfaceForSetupPane("model-setup")).toBe("chat");
-  });
-
-  it("keeps the new-chat picker scoped to the draft setup pane", () => {
-    expect(modelPickerSurfaceForSetupPane("new-chat-setup")).toBe("new-chat");
   });
 });
 
@@ -542,12 +540,153 @@ describe("footer control ordering", () => {
   });
 });
 
+describe("firstUrlInText", () => {
+  it("finds a bare URL with its index + width and strips trailing punctuation", () => {
+    const hit = firstUrlInText("see https://example.com/docs. thanks");
+    expect(hit?.url).toBe("https://example.com/docs");
+    expect(hit?.index).toBe(4);
+    expect(hit?.width).toBe("https://example.com/docs".length);
+  });
+  it("resolves a markdown link to its href but spans the visible label", () => {
+    const hit = firstUrlInText("[the docs](https://example.com/x)");
+    expect(hit?.url).toBe("https://example.com/x");
+    expect(hit?.index).toBe(0);
+    expect(hit?.width).toBe("the docs".length);
+  });
+  it("returns null when there is no link", () => {
+    expect(firstUrlInText("just some plain text")).toBeNull();
+  });
+});
+
+describe("inlineRowCellOrder", () => {
+  it("includes fast + reasoning only when supported, and provider/subagents per context", () => {
+    expect(inlineRowCellOrder({ providerLocked: false, fastSupported: true, reasoningSupported: true, subagentsVisible: true }))
+      .toEqual(["provider", "model", "fast", "reasoning", "permission", "subagents"]);
+    // No fast/reasoning support → those cells are absent (not dead focus stops).
+    expect(inlineRowCellOrder({ providerLocked: false, fastSupported: false, reasoningSupported: false, subagentsVisible: false }))
+      .toEqual(["provider", "model", "permission"]);
+    // Provider locked (chat underway) drops the provider cell.
+    expect(inlineRowCellOrder({ providerLocked: true, fastSupported: true, reasoningSupported: false, subagentsVisible: false }))
+      .toEqual(["model", "fast", "permission"]);
+  });
+});
+
+describe("provider permission helpers", () => {
+  it("summarizes Codex approval and sandbox as a footer detail", () => {
+    expect(codexApprovalSandboxLabel({
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "workspace-write",
+    })).toBe("on-request · workspace-write");
+  });
+
+  it("uses Cursor runtime snapshot modes before falling back to static modes", () => {
+    expect(cursorModeIdsForState({ cursorAvailableModeIds: ["ask", "plan"] })).toEqual(["ask", "plan"]);
+    expect(cursorModeIdsForState({ cursorAvailableModeIds: [] })).toContain("agent");
+  });
+});
+
+describe("formatGitConflictReport", () => {
+  it("lists conflicted files and the continue/abort actions for a rebase", () => {
+    const report = formatGitConflictReport({
+      laneId: "lane-1",
+      kind: "rebase",
+      inProgress: true,
+      conflictedFiles: ["src/a.ts", "src/b.ts"],
+      canContinue: true,
+      canAbort: true,
+    });
+    expect(report.title).toBe("Rebase conflict");
+    expect(report.body).toContain("2 files need resolution");
+    expect(report.body).toContain("src/a.ts");
+    expect(report.body).toContain("/pull --continue");
+    expect(report.body).toContain("/pull --abort");
+    expect(report.summary).toContain("Rebase conflict — 2 files");
+  });
+
+  it("uses merge wording and falls back when no continue/abort is available", () => {
+    const report = formatGitConflictReport({
+      laneId: "lane-1",
+      kind: "merge",
+      inProgress: true,
+      conflictedFiles: [],
+      canContinue: false,
+      canAbort: false,
+    });
+    expect(report.title).toBe("Merge conflict");
+    expect(report.body).toContain("0 files need resolution");
+    expect(report.body).toContain("git did not report specific files");
+    expect(report.body).toContain("Resolve the conflicts in your editor");
+    expect(report.body).not.toContain("/pull --continue");
+  });
+});
+
+describe("applyCoalescedPromptInput", () => {
+  const DEL = "\u007f";
+  it("inserts pure printable input unchanged", () => {
+    expect(applyCoalescedPromptInput("", 0, "abc")).toEqual({ value: "abc", cursor: 3 });
+    expect(applyCoalescedPromptInput("ac", 1, "b")).toEqual({ value: "abc", cursor: 2 });
+  });
+  it("applies a backspace that was coalesced with a typed char (the bug)", () => {
+    // "x" typed then immediately backspaced, delivered as one chunk.
+    expect(applyCoalescedPromptInput("", 0, `x${DEL}`)).toEqual({ value: "", cursor: 0 });
+  });
+  it("applies multiple coalesced backspaces", () => {
+    expect(applyCoalescedPromptInput("ab", 2, `${DEL}${DEL}`)).toEqual({ value: "", cursor: 0 });
+  });
+  it("interleaves deletes and inserts in order", () => {
+    expect(applyCoalescedPromptInput("", 0, `a${DEL}b`)).toEqual({ value: "b", cursor: 1 });
+    expect(applyCoalescedPromptInput("yz", 2, `${DEL}x`)).toEqual({ value: "yx", cursor: 2 });
+  });
+  it("strips other control bytes but keeps text", () => {
+    expect(applyCoalescedPromptInput("", 0, "a\u0000b")).toEqual({ value: "ab", cursor: 2 });
+  });
+});
+
+describe("formatLaneDeleteRisk", () => {
+  const base = {
+    laneId: "lane-1",
+    branchRef: "feat/x",
+    dirty: false,
+    hasUnpushedCommits: false,
+    unpushedCommitCount: 0,
+    remoteBranchExists: false,
+    runningProcessCount: 0,
+    activePtyCount: 0,
+    activeWatcherCount: 0,
+    envInitialized: false,
+  };
+
+  it("summarizes everything that would be lost, pluralizing correctly", () => {
+    const summary = formatLaneDeleteRisk({
+      ...base,
+      dirty: true,
+      hasUnpushedCommits: true,
+      unpushedCommitCount: 1,
+      runningProcessCount: 2,
+      activePtyCount: 1,
+      remoteBranchExists: true,
+    });
+    expect(summary).toContain("uncommitted changes");
+    expect(summary).toContain("1 unpushed commit");
+    expect(summary).not.toContain("1 unpushed commits");
+    expect(summary).toContain("2 running processes");
+    expect(summary).toContain("1 terminal");
+    expect(summary).toContain("remote branch exists");
+    expect(summary.startsWith("⚠")).toBe(true);
+  });
+
+  it("reports a clean lane when there is nothing at risk", () => {
+    expect(formatLaneDeleteRisk(base)).toBe("Clean — no unpushed work or running processes.");
+  });
+});
+
 describe("model picker escape handling", () => {
   const picker = {
     kind: "model-picker" as const,
     surface: "chat" as const,
     query: "",
     searchMode: false,
+    showAll: false,
     selection: { kind: "favorites" as const },
     focusedIndex: 3,
   };

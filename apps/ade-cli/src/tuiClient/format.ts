@@ -78,11 +78,12 @@ export type InlineRun = {
   italic?: boolean;
   code?: boolean;
   link?: boolean;
+  href?: string;
   color?: string;
   dim?: boolean;
 };
 
-type InlineFlags = { bold?: boolean; italic?: boolean; code?: boolean; link?: boolean };
+type InlineFlags = { bold?: boolean; italic?: boolean; code?: boolean; link?: boolean; href?: string };
 
 function pushInlineRun(runs: InlineRun[], text: string, flags: InlineFlags): void {
   if (!text.length) return;
@@ -91,7 +92,8 @@ function pushInlineRun(runs: InlineRun[], text: string, flags: InlineFlags): voi
     && (last.bold ?? false) === (flags.bold ?? false)
     && (last.italic ?? false) === (flags.italic ?? false)
     && (last.code ?? false) === (flags.code ?? false)
-    && (last.link ?? false) === (flags.link ?? false);
+    && (last.link ?? false) === (flags.link ?? false)
+    && last.href === flags.href;
   if (sameFlags && last) {
     last.text += text;
     return;
@@ -101,6 +103,7 @@ function pushInlineRun(runs: InlineRun[], text: string, flags: InlineFlags): voi
   if (flags.italic) run.italic = true;
   if (flags.code) run.code = true;
   if (flags.link) run.link = true;
+  if (flags.href) run.href = flags.href;
   runs.push(run);
 }
 
@@ -137,8 +140,9 @@ function walkInlineTokens(tokens: Token[], runs: InlineRun[], flags: InlineFlags
       case "link": {
         const link = token as Tokens.Link;
         const child: InlineRun[] = [];
-        if (link.tokens && link.tokens.length) walkInlineTokens(link.tokens, child, { ...flags, link: true });
-        else pushInlineRun(child, link.text, { ...flags, link: true });
+        const href = typeof link.href === "string" ? link.href : undefined;
+        if (link.tokens && link.tokens.length) walkInlineTokens(link.tokens, child, { ...flags, link: true, href });
+        else pushInlineRun(child, link.text, { ...flags, link: true, href });
         for (const c of child) runs.push(c);
         break;
       }
@@ -232,9 +236,10 @@ function flattenInlineTokensToText(tokens: Token[] | undefined): string {
       continue;
     }
     if (token.type === "link") {
-      // Preserve only the visible label — the URL is dropped because the TUI
-      // doesn't render hyperlinks distinctly today.
-      out += flattenInlineTokensToText(generic.tokens) || (typeof generic.text === "string" ? generic.text : "");
+      const link = generic as unknown as { href?: unknown; text?: unknown; tokens?: Tokens.Generic[] };
+      const href = typeof link.href === "string" ? link.href : "";
+      const label = flattenInlineTokensToText(generic.tokens) || (typeof generic.text === "string" ? generic.text : href);
+      out += href ? `[${label}](${href})` : label;
       continue;
     }
     if (generic.tokens && generic.tokens.length) {
@@ -799,8 +804,22 @@ export function formatLaneLabel(lane: LaneSummary | null): string {
 
 export function formatSessionLabel(session: AgentChatSessionSummary): string {
   const label = (session.title ?? session.goal ?? session.summary ?? session.sessionId).trim();
-  const state = session.awaitingInput ? " ?" : session.status === "active" ? " ●" : "";
-  return `${label}${state}`;
+  const tag = session.orchestrationTag ? ` #${session.orchestrationTag}` : "";
+  const completion = session.completion?.status;
+  const state = session.archivedAt
+    ? " ×"
+    : session.awaitingInput
+      ? " ?"
+      : session.status === "active"
+        ? " ●"
+        : completion === "blocked"
+          ? " !"
+          : completion === "partial"
+            ? " ◐"
+            : completion === "completed"
+              ? " ✓"
+              : "";
+  return `${label}${tag}${state}`;
 }
 
 export function renderObject(value: unknown, maxLines = 24): string {
@@ -828,4 +847,33 @@ export function summarizeDiffChanges(value: unknown): Array<{ path: string; addi
       };
     })
     .slice(0, 20);
+}
+
+/**
+ * Classify a single unified-diff line so the renderer can colorize it.
+ * Pure + theme-free so it stays testable; the caller maps the kind to a
+ * theme token. File-meta lines (`diff --git`, `index`, the `+++`/`---`
+ * header pair) are distinguished from real `+`/`-` content so they don't
+ * paint the whole file header green/red.
+ */
+export type DiffLineKind = "add" | "del" | "hunk" | "meta" | "context";
+
+export function diffLineKind(line: string): DiffLineKind {
+  if (line.startsWith("@@")) return "hunk";
+  if (
+    line.startsWith("+++") ||
+    line.startsWith("---") ||
+    line.startsWith("diff --git") ||
+    line.startsWith("index ") ||
+    line.startsWith("new file") ||
+    line.startsWith("deleted file") ||
+    line.startsWith("rename ") ||
+    line.startsWith("similarity ") ||
+    line.startsWith("\\ No newline")
+  ) {
+    return "meta";
+  }
+  if (line.startsWith("+")) return "add";
+  if (line.startsWith("-")) return "del";
+  return "context";
 }

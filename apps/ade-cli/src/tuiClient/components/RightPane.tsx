@@ -12,7 +12,45 @@ import { theme } from "../theme";
 import { buildSubagentPaneRows, type SubagentPaneRow } from "../subagentPane";
 import { ModelPickerPane } from "./ModelPicker/ModelPickerPane";
 import { buildModelPickerLayout } from "./ModelPicker/modelPickerLayout";
+import { TokenBar } from "./FooterControls";
+import { UsagePane } from "./UsagePane";
 import type { AgentChatModelCatalog, AgentChatModelInfo } from "../../../../desktop/src/shared/types/chat";
+import type { AiSettingsStatus } from "../../../../desktop/src/shared/types/config";
+import { useHoveredHitId } from "../hitTestRegistry";
+import { diffLineKind, type DiffLineKind } from "../format";
+import type { HelpRow } from "../helpIndex";
+import { useShimmerTick } from "../spinTick";
+import {
+  FEEDBACK_TYPES,
+  feedbackFormCanSubmit,
+  serializeContextFooter,
+  type FeedbackFormState,
+  type FeedbackType,
+} from "../feedbackForm";
+
+// Cap per-file diff body so a pathological 50k-line file can't make the right
+// pane build a giant row array on every scroll. The window only shows
+// DETAILS_BODY_MAX_LINES at a time, but the flattened array is built in full —
+// this keeps that bounded while still covering any realistic review diff.
+const DIFF_FILE_BODY_MAX = 600;
+
+// Map a diff line kind to a theme token. Green/red here is diff *content*
+// semantics (the universal add/remove convention Claude Code uses), not idle
+// chrome — so it's exempt from the "no green chrome" rule.
+function diffLineTone(kind: DiffLineKind): { color: string; dim: boolean; bold: boolean } {
+  switch (kind) {
+    case "add":
+      return { color: theme.color.done, dim: false, bold: false };
+    case "del":
+      return { color: theme.color.error, dim: false, bold: false };
+    case "hunk":
+      return { color: theme.color.violet, dim: false, bold: true };
+    case "meta":
+      return { color: theme.color.t4, dim: true, bold: false };
+    default:
+      return { color: theme.color.t3, dim: true, bold: false };
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Right-pane width / focus chrome
@@ -20,7 +58,7 @@ import type { AgentChatModelCatalog, AgentChatModelInfo } from "../../../../desk
 
 const DEFAULT_PANE_WIDTH = 38;
 const LANE_FILE_PREVIEW_ROWS = 5;
-const DETAILS_BODY_MAX_LINES = 26;
+export const DETAILS_BODY_MAX_LINES = 26;
 
 // ---------------------------------------------------------------------------
 // Actions for the lane-details pane (5 rows · wireframe)
@@ -287,6 +325,13 @@ function endTruncate(value: string, max: number): string {
   return `${value.slice(0, Math.max(0, max - 1))}…`;
 }
 
+function compactNumber(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  return String(Math.round(value));
+}
+
 function compactPath(value: string, max: number): string {
   if (value.length <= max) return value;
   const parts = value.split("/").filter(Boolean);
@@ -356,6 +401,7 @@ function LaneDetailsPane({
   content: Extract<RightPaneContent, { kind: "lane-details" }>;
   width: number;
 }) {
+  const hoveredId = useHoveredHitId();
   const lane = content.lane;
   const worktreeMissing = content.worktreeAvailable === false;
   const git = content.git;
@@ -438,7 +484,7 @@ function LaneDetailsPane({
                 detail={action.detail}
                 glyph={action.glyph}
                 glyphColorKind={action.glyphColorKind}
-                selected={idx === content.selectedActionIndex}
+                selected={idx === content.selectedActionIndex || hoveredId === `right:lane-action:${idx}`}
                 width={contentWidth}
               />
             ))}
@@ -539,10 +585,16 @@ function rosterRowDetail(snapshot: SubagentSnapshot): string | null {
   return unique.length ? unique.join(" · ") : null;
 }
 
-function ChatInfoSectionHead({ title, hint, color }: { title: string; hint?: string; color: string }) {
+function ChatInfoSectionHead({ title, hint, color, width }: { title: string; hint?: string; color: string; width?: number }) {
+  // Section header with a hairline rule that fills the gap to the hint, so each
+  // block reads as a titled card divider rather than a bare label.
+  const inner = Math.max(12, (width ?? 40) - 4);
+  const used = title.length + 2 + (hint ? hint.length + 1 : 0);
+  const ruleLen = Math.max(1, inner - used);
   return (
-    <Box flexDirection="row" justifyContent="space-between" marginTop={1}>
+    <Box flexDirection="row" marginTop={1}>
       <Text bold color={color}>{title}</Text>
+      <Text color={theme.color.borderSoft}>{` ${"─".repeat(ruleLen)}${hint ? " " : ""}`}</Text>
       {hint ? <Text color={theme.color.t4} dimColor>{hint}</Text> : null}
     </Box>
   );
@@ -564,13 +616,21 @@ function ChatInfoHeader({ info, width }: { info: ChatInfoSnapshot; width: number
           <Text color={theme.color.t2}>{endTruncate(info.laneLabel, Math.max(6, inner - 7))}</Text>
         </Box>
       ) : null}
-      <Box flexDirection="row">
+      <Box flexDirection="row" marginTop={1}>
         <Text color={info.streaming ? theme.color.running : theme.color.t4} bold={info.streaming}>
-          {info.streaming ? "●" : "○"} {info.streaming ? "active" : "idle"}
+          {info.streaming ? "● live" : "○ idle"}
         </Text>
-        {info.contextPercent != null ? <Text color={theme.color.t4} dimColor>{` · ${info.contextPercent}% ctx`}</Text> : null}
-        {info.tokenSummary ? <Text color={theme.color.t4} dimColor>{` · ${info.tokenSummary}`}</Text> : null}
+        {info.contextPercent != null ? (
+          <>
+            <Text>{"   "}</Text>
+            <TokenBar percent={info.contextPercent} />
+            <Text color={theme.color.t4} dimColor>{` ${info.contextPercent}%`}</Text>
+          </>
+        ) : null}
       </Box>
+      {info.tokenSummary ? (
+        <Text color={theme.color.t4} dimColor wrap="truncate-end">{endTruncate(info.tokenSummary, inner)}</Text>
+      ) : null}
     </Box>
   );
 }
@@ -581,14 +641,14 @@ function ChatInfoPlanBlock({ info, brandColor, width }: { info: ChatInfoSnapshot
   if (!plan || !plan.steps.length) {
     return (
       <Box flexDirection="column">
-        <ChatInfoSectionHead title="PLAN" color={brandColor} />
+        <ChatInfoSectionHead title="PLAN" color={brandColor} width={width} />
         <Text color={theme.color.t4} dimColor>No plan yet.</Text>
       </Box>
     );
   }
   return (
     <Box flexDirection="column">
-      <ChatInfoSectionHead title="PLAN" hint={`${plan.current}/${plan.total}`} color={brandColor} />
+      <ChatInfoSectionHead title="PLAN" hint={`${plan.current}/${plan.total}`} color={brandColor} width={width} />
       {plan.steps.slice(0, 6).map((step, index) => (
         <Text key={`${index}:${step.text}`} color={planStepColor(step.status)} wrap="truncate-end">
           {planStepGlyph(step.status)} {endTruncate(step.text, inner - 2)}
@@ -604,7 +664,7 @@ function ChatInfoGoalBlock({ info, brandColor, width }: { info: ChatInfoSnapshot
   const inner = Math.max(10, width - 4);
   return (
     <Box flexDirection="column">
-      <ChatInfoSectionHead title="GOAL" hint={secondsElapsed(goal.timeUsedSeconds)} color={brandColor} />
+      <ChatInfoSectionHead title="GOAL" hint={secondsElapsed(goal.timeUsedSeconds)} color={brandColor} width={width} />
       {goal.objective ? (
         <Text color={theme.color.t2} wrap="truncate-end">{endTruncate(goal.objective, inner)}</Text>
       ) : null}
@@ -665,7 +725,7 @@ function ChatInfoRoster({
 
   return (
     <Box flexDirection="column">
-      <ChatInfoSectionHead title="CHATS" hint={hint} color={brandColor} />
+      <ChatInfoSectionHead title="CHATS" hint={hint} color={brandColor} width={width} />
       {/* Main row — always present, tagged with the current middle-pane state */}
       <Box flexDirection="row" justifyContent="space-between">
         <Box flexDirection="row">
@@ -766,35 +826,102 @@ function ChatInfoPane({
 }
 
 // ---------------------------------------------------------------------------
-// Other content modes (status, list, details, diff, form, new-chat-setup,
+// Other content modes (status, list, details, diff, form,
 // help, empty) — kept compact, refreshed to use theme tokens.
 // ---------------------------------------------------------------------------
 
-function HelpPane() {
+type HelpPaneContent = Extract<RightPaneContent, { kind: "help" }>;
+
+function HelpPane({ content, width }: { content: HelpPaneContent; width: number }) {
+  const groups = content.groupedRows ?? [];
+  const query = content.filterQuery ?? "";
+  const selectedIndex = content.selectedIndex ?? 0;
+  const inner = Math.max(12, width - 4);
+
+  // Flatten to navigation order so the single selected index maps to one row,
+  // interleaving heading markers so the renderer can print each category title.
+  type FlatItem =
+    | { kind: "heading"; category: string }
+    | { kind: "row"; row: HelpRow; flatIndex: number };
+  const flat: FlatItem[] = [];
+  let flatIndex = 0;
+  for (const group of groups) {
+    flat.push({ kind: "heading", category: group.category });
+    for (const row of group.rows) {
+      flat.push({ kind: "row", row, flatIndex });
+      flatIndex += 1;
+    }
+  }
+  const totalRows = flatIndex;
+
+  // Scroll the flat list to keep the selection visible. Reserve a few lines for
+  // the filter line, spacer, footer hint, and overflow markers.
+  const bodyMax = Math.max(4, Math.min(DETAILS_BODY_MAX_LINES, width > 0 ? 24 : 4));
+  const selectedFlatPos = flat.findIndex((item) => item.kind === "row" && item.flatIndex === selectedIndex);
+  let windowStart = 0;
+  if (flat.length > bodyMax) {
+    windowStart = selectedFlatPos < 0 ? 0 : Math.max(0, Math.min(selectedFlatPos - 2, flat.length - bodyMax));
+  }
+  const windowEnd = Math.min(flat.length, windowStart + bodyMax);
+  const visible = flat.slice(windowStart, windowEnd);
+  const hasAbove = windowStart > 0;
+  const hasBelow = windowEnd < flat.length;
+
   return (
     <Box flexDirection="column">
-      <Text color={theme.color.t3} dimColor>↓ from prompt enters the model row; ↑ returns</Text>
-      <Text color={theme.color.t3} dimColor>in the row: ← → moves between cells, ↓ cycles values</Text>
-      <Text color={theme.color.t3} dimColor>/model opens the model picker · /info opens chat info</Text>
-      <Text color={theme.color.t3} dimColor>ctrl-o opens or focuses lanes and chats</Text>
-      <Text color={theme.color.t3} dimColor>ctrl-g starts split chat add-mode; enter adds, esc cancels</Text>
-      <Text color={theme.color.t3} dimColor>in split chat: tab focuses tiles, ctrl-w closes the focused tile</Text>
-      <Text color={theme.color.t3} dimColor>ctrl-p opens or focuses info · ctrl-a toggles chat info</Text>
-      <Text color={theme.color.t3} dimColor>shift-tab cycles pane focus · esc closes the active side pane</Text>
-      <Text color={theme.color.t3} dimColor>ctrl-c interrupts a running chat; press again to quit</Text>
-      <Text color={theme.color.t3} dimColor>/ opens commands, @ opens references, tab inserts selected</Text>
+      <Box>
+        <Text color={theme.color.t4}>{"› "}</Text>
+        {query ? (
+          <Text color={theme.color.t1}>{query}</Text>
+        ) : (
+          <Text color={theme.color.t4} dimColor>Filter commands…</Text>
+        )}
+      </Box>
+      <Box marginTop={1} flexDirection="column">
+        {hasAbove ? <Text color={theme.color.t4} dimColor>↑ more</Text> : null}
+        {totalRows === 0 ? (
+          <Text color={theme.color.t3}>{query ? `No commands match “${query}”.` : "No commands."}</Text>
+        ) : (
+          visible.map((item, idx) => {
+            if (item.kind === "heading") {
+              return (
+                <Box key={`h-${item.category}`} marginTop={windowStart + idx === 0 ? 0 : 1}>
+                  <Text color={theme.color.violet} bold>{item.category.toUpperCase()}</Text>
+                </Box>
+              );
+            }
+            const selected = item.flatIndex === selectedIndex;
+            const nameWidth = item.row.name.length;
+            const descRoom = Math.max(4, inner - nameWidth - 2 - (item.row.keybind ? item.row.keybind.length + 2 : 0));
+            return (
+              <Box key={`r-${item.row.name}`} flexDirection="row" justifyContent="space-between">
+                <Box flexDirection="row">
+                  <Text color={selected ? theme.color.violet : theme.color.t5}>{selected ? theme.rail : " "}</Text>
+                  <Text color={selected ? theme.color.violet : theme.color.t2} bold={selected}>{` ${item.row.name}`}</Text>
+                  <Text color={theme.color.t3} dimColor wrap="truncate-end">{`  ${endTruncate(item.row.description, descRoom)}`}</Text>
+                </Box>
+                {item.row.keybind ? <Text color={theme.color.violet}>{item.row.keybind}</Text> : null}
+              </Box>
+            );
+          })
+        )}
+        {hasBelow ? <Text color={theme.color.t4} dimColor>↓ more</Text> : null}
+      </Box>
+      <Box marginTop={1}>
+        <Text color={theme.color.t4} dimColor>↑↓ move · ↵ run · esc close</Text>
+      </Box>
     </Box>
   );
 }
 
-function detailsBodyLines(body: string): string[] {
+function detailsBodyLines(body: string, scrollOffsetRows = 0): string[] {
   const lines = body.split(/\r?\n/);
-  if (lines.length <= DETAILS_BODY_MAX_LINES) return lines;
-  const remaining = lines.length - DETAILS_BODY_MAX_LINES;
-  return [
-    ...lines.slice(0, DETAILS_BODY_MAX_LINES),
-    `… ${remaining} more line${remaining === 1 ? "" : "s"}`,
-  ];
+  const start = Math.max(0, Math.min(Math.floor(scrollOffsetRows), Math.max(0, lines.length - DETAILS_BODY_MAX_LINES)));
+  const window = lines.slice(start, start + DETAILS_BODY_MAX_LINES);
+  if (start > 0) window.unshift(`↑ ${start} earlier`);
+  const remaining = Math.max(0, lines.length - (start + DETAILS_BODY_MAX_LINES));
+  if (remaining > 0) window.push(`↓ ${remaining} more line${remaining === 1 ? "" : "s"}`);
+  return window;
 }
 
 function isDetailsSectionLine(line: string): boolean {
@@ -814,9 +941,9 @@ function detailsKeyValue(line: string): { key: string; value: string } | null {
   return { key, value };
 }
 
-function DetailsPane({ title, body, width }: { title: string; body: string; width: number }) {
+function DetailsPane({ title, body, width, scrollOffsetRows = 0 }: { title: string; body: string; width: number; scrollOffsetRows?: number }) {
   const bodyWidth = Math.max(12, width - 4);
-  const lines = detailsBodyLines(body);
+  const lines = detailsBodyLines(body, scrollOffsetRows);
   return (
     <Box flexDirection="column">
       {lines.map((line, index) => {
@@ -875,8 +1002,232 @@ function DetailsPane({ title, body, width }: { title: string; body: string; widt
   );
 }
 
+type DiffRenderLine = {
+  key: string;
+  text: string;
+  color: string;
+  dim: boolean;
+  bold: boolean;
+  // Set on per-file header rows so the renderer can colorize the +/− counts
+  // (green adds / red dels) to match the hunk body and ChatView's file rows.
+  header?: { path: string; additions: number; deletions: number };
+};
+
+// Flatten a diff into colorized, fully-scrollable lines: a bold per-file header
+// (path + add/del counts) followed by each hunk line tinted by kind. Shared by
+// the renderer and the scroll-row counter so they never drift.
+function buildDiffRenderLines(
+  files: Array<{ path: string; additions?: number; deletions?: number; body?: string }>,
+): DiffRenderLine[] {
+  const out: DiffRenderLine[] = [];
+  for (const file of files) {
+    const additions = file.additions ?? 0;
+    const deletions = file.deletions ?? 0;
+    out.push({
+      key: `${file.path}:head`,
+      text: `▸ ${file.path}  +${additions} −${deletions}`,
+      color: theme.color.t1,
+      dim: false,
+      bold: true,
+      header: { path: file.path, additions, deletions },
+    });
+    if (!file.body) continue;
+    const lines = file.body.split(/\r?\n/);
+    const shown = lines.slice(0, DIFF_FILE_BODY_MAX);
+    shown.forEach((line, index) => {
+      const tone = diffLineTone(diffLineKind(line));
+      out.push({ key: `${file.path}:${index}`, text: line, color: tone.color, dim: tone.dim, bold: tone.bold });
+    });
+    const hidden = lines.length - shown.length;
+    if (hidden > 0) {
+      out.push({
+        key: `${file.path}:truncated`,
+        text: `  … ${hidden} more line${hidden === 1 ? "" : "s"} in this file`,
+        color: theme.color.t4,
+        dim: true,
+        bold: false,
+      });
+    }
+  }
+  return out;
+}
+
+export function rightPaneScrollableRowCount(content: RightPaneContent): number {
+  switch (content.kind) {
+    case "details":
+      return content.body.split(/\r?\n/).length;
+    case "context-usage":
+      return (content.usage?.categories.length ?? 0) + 4;
+    case "list":
+      return content.rows.length;
+    case "diff":
+      return buildDiffRenderLines(content.files).length;
+    case "usage":
+      // Mirror UsagePane's rendered rows so the bottom stays reachable when a
+      // provider exposes multiple quota windows: each QuotaWindowRow is label(1)
+      // + bar(1) + marginBottom(1) = 3 rows, plus up to ~4 rows for the session
+      // block (marginTop + "Session" + body) and any loading/error line.
+      return (content.quotaWindows?.length ?? 0) * 3 + 4;
+    case "status":
+      // Flat key/value list — scrolls by row count.
+      return content.rows.length;
+    case "empty":
+    case "form":
+    case "chat-info":
+    case "model-picker":
+    case "help":
+    case "lane-details":
+      // These panes have their own internal navigation (help uses selectedIndex,
+      // lane-details uses selectedActionIndex) or no scrollable body.
+      return 0;
+    default: {
+      const _exhaustive: never = content;
+      void _exhaustive;
+      return 0;
+    }
+  }
+}
+
 type FormPaneContent = Extract<RightPaneContent, { kind: "form" }>;
 type LaneDeleteFormContent = FormPaneContent & { command: "lane-delete" };
+type FeedbackFormContent = FormPaneContent & { command: "feedback" };
+
+// Rebuild the framework-free FeedbackFormState (from feedbackForm.ts) out of the
+// FeedbackContextMeta carried on the form content. app.tsx seeds + edits that
+// meta; this keeps the render in lock-step with the reducer/serializer that
+// validation + submission go through.
+export function feedbackStateFromContent(content: FeedbackFormContent): FeedbackFormState {
+  const meta = content.feedback ?? {};
+  const rawType = (meta.type ?? "bug") as FeedbackType;
+  const type = FEEDBACK_TYPES.includes(rawType) ? rawType : "bug";
+  return {
+    type,
+    text: meta.body ?? "",
+    showContext: meta.showContext !== false,
+    context: {
+      provider: meta.provider ?? null,
+      model: meta.model ?? null,
+      lane: meta.lane ?? null,
+      lastError: meta.lastError ?? null,
+    },
+  };
+}
+
+function FeedbackTypeSelector({ type }: { type: FeedbackType }) {
+  // ‹ bug · idea · praise › — violet is the only selection accent; the rest is
+  // neutral idle chrome.
+  return (
+    <Text>
+      <Text color={theme.color.t4}>‹ </Text>
+      {FEEDBACK_TYPES.map((option, index) => (
+        <React.Fragment key={option}>
+          {index > 0 ? <Text color={theme.color.t5}> · </Text> : null}
+          <Text
+            color={option === type ? theme.color.violet : theme.color.t4}
+            bold={option === type}
+          >
+            {option === type ? `[${option}]` : option}
+          </Text>
+        </React.Fragment>
+      ))}
+      <Text color={theme.color.t4}> ›</Text>
+    </Text>
+  );
+}
+
+function FeedbackFormPane({
+  content,
+  focused,
+  width,
+}: {
+  content: FeedbackFormContent;
+  focused: boolean;
+  width: number;
+}) {
+  const hoveredId = useHoveredHitId();
+  const tick = useShimmerTick();
+  const inner = Math.max(12, width - 4);
+  const state = feedbackStateFromContent(content);
+  const submitted = content.feedback?.feedback === "submitted";
+  const canSubmit = feedbackFormCanSubmit(state);
+
+  if (submitted) {
+    // The single sanctioned green (#22C55E === theme.color.done) for a success
+    // ✓, faded in via the shared spin tick (no bare setInterval). Dim for the
+    // first ~200ms so it reads as a gentle confirm rather than a flash.
+    const settled = (tick ?? 0) % 1000 >= 2;
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <Text color={theme.color.done} bold dimColor={!settled}>
+          ✓ Feedback sent
+        </Text>
+        <Text color={theme.color.t4} dimColor>Closing…</Text>
+      </Box>
+    );
+  }
+
+  const bodyLines = state.text.length ? state.text.split("\n") : [];
+  const bodyHover = hoveredId === "right:feedback:body";
+  const footer = state.showContext ? serializeContextFooter(state.context) : "";
+
+  return (
+    <Box flexDirection="column">
+      <Box flexDirection="row">
+        <Text color={focused ? theme.color.violet : theme.color.t5}>{focused ? theme.rail : " "}</Text>
+        <Text color={theme.color.t3}> Type  </Text>
+        <FeedbackTypeSelector type={state.type} />
+      </Box>
+
+      <Box flexDirection="column" marginTop={1}>
+        <Text color={bodyHover ? theme.color.violet : theme.color.t3}>{bodyHover ? theme.rail : " "} Body</Text>
+        <Box flexDirection="column">
+          {bodyLines.length ? (
+            bodyLines.map((line, index) => (
+              <Text key={index} color={theme.color.t1} wrap="truncate-end">
+                {endTruncate(line.length ? line : " ", inner)}
+                {index === bodyLines.length - 1 ? <Text color={theme.color.violet}>▏</Text> : null}
+              </Text>
+            ))
+          ) : (
+            <Text color={theme.color.t4} dimColor>
+              Describe it…<Text color={theme.color.violet}>▏</Text>
+            </Text>
+          )}
+        </Box>
+      </Box>
+
+      {state.showContext && footer ? (
+        <Box flexDirection="column" marginTop={1}>
+          {footer.split("\n").map((line, index) => (
+            <Text
+              key={index}
+              color={index === 0 ? theme.color.t3 : theme.color.t4}
+              dimColor={index !== 0}
+              wrap="truncate-end"
+            >
+              {endTruncate(line, inner)}
+            </Text>
+          ))}
+        </Box>
+      ) : (
+        <Box marginTop={1}>
+          <Text color={theme.color.t4} dimColor>
+            --- Context --- (hidden · Ctrl+T)
+          </Text>
+        </Box>
+      )}
+
+      <Box marginTop={1} flexDirection="row" justifyContent="space-between">
+        <Text color={canSubmit ? theme.color.t3 : theme.color.t4} dimColor={!canSubmit}>
+          ⏎ newline · Ctrl+S send · esc cancel
+        </Text>
+        <Text color={hoveredId === "right:feedback:send" && canSubmit ? theme.color.violet : theme.color.t5}>
+          {canSubmit ? "[send]" : ""}
+        </Text>
+      </Box>
+    </Box>
+  );
+}
 
 function LaneDeleteFormPane({
   content,
@@ -889,6 +1240,7 @@ function LaneDeleteFormPane({
   activeFormField: number;
   width: number;
 }) {
+  const hoveredId = useHoveredHitId();
   const inner = Math.max(12, width - 4);
   const meta = content.laneDelete;
   const scope = formValues.scope === "local_branch" || formValues.scope === "remote_branch"
@@ -903,7 +1255,7 @@ function LaneDeleteFormPane({
   if (scope === "local_branch") scopeHint = "also delete the local branch";
   else if (scope === "remote_branch") scopeHint = `also delete ${remoteName}/${meta?.branchRef ?? "branch"}`;
   const activeName = fields[activeFormField]?.name ?? fields[0]?.name ?? "scope";
-  const active = (name: string) => activeName === name;
+  const active = (name: string) => activeName === name || hoveredId === `right:form:${name}`;
   const scopeOption = (value: string, label: string) => (
     <Text color={scope === value ? theme.color.error : theme.color.t3} bold={scope === value}>
       {scope === value ? `[${label}]` : ` ${label} `}
@@ -982,6 +1334,49 @@ function LaneDeleteFormPane({
   );
 }
 
+function ContextUsagePane({
+  content,
+  width,
+}: {
+  content: Extract<RightPaneContent, { kind: "context-usage" }>;
+  width: number;
+}) {
+  const inner = Math.max(12, width - 4);
+  if (content.error) {
+    return (
+      <Box flexDirection="column">
+        <Text color={theme.color.error}>Context unavailable</Text>
+        <Text color={theme.color.t3} wrap="wrap">{endTruncate(content.error, inner * 3)}</Text>
+      </Box>
+    );
+  }
+  if (!content.usage) {
+    return (
+      <Box flexDirection="column">
+        <Text color={theme.color.t3}>Context usage is not available yet.</Text>
+      </Box>
+    );
+  }
+  const usage = content.usage;
+  const percent = Math.max(0, Math.min(100, usage.percentage));
+  return (
+    <Box flexDirection="column">
+      <Text color={theme.color.t2}>{usage.model ? endTruncate(usage.model, inner) : "Model context"}</Text>
+      <Box marginTop={1}>
+        <TokenBar percent={percent} />
+        <Text color={theme.color.t2}>{` ${compactNumber(usage.totalTokens)} / ${compactNumber(usage.maxTokens)} (${percent.toFixed(0)}%)`}</Text>
+      </Box>
+      <Box flexDirection="column" marginTop={1}>
+        {usage.categories.map((category, index) => (
+          <Text key={`${category.name}:${index}`} color={category.isDeferred ? theme.color.t4 : theme.color.t2}>
+            {endTruncate(category.name.padEnd(18), 18)} {compactNumber(category.tokens).padStart(7)} {category.percentage.toFixed(category.percentage > 0 && category.percentage < 10 ? 1 : 0).padStart(5)}%
+          </Text>
+        ))}
+      </Box>
+    </Box>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Pane title resolution
 // ---------------------------------------------------------------------------
@@ -993,10 +1388,6 @@ function paneTitle(content: RightPaneContent): { title: string; hint?: string; b
         title: content.lane.name,
         branch: content.lane.branchRef,
       };
-    case "new-chat-setup":
-      return { title: "NEW CHAT" };
-    case "model-setup":
-      return { title: "MODEL" };
     case "chat-info":
       return { title: `CHAT INFO · ${theme.provider(content.info.provider).label.toUpperCase()}` };
     case "model-picker":
@@ -1011,6 +1402,10 @@ function paneTitle(content: RightPaneContent): { title: string; hint?: string; b
       return { title: content.title.toUpperCase() };
     case "details":
       return { title: content.title.toUpperCase() };
+    case "context-usage":
+      return { title: content.title.toUpperCase() };
+    case "usage":
+      return { title: (content.title ?? "USAGE").toUpperCase() };
     case "form":
       return { title: content.title.toUpperCase() };
     default:
@@ -1030,6 +1425,7 @@ export function RightPane({
   focused = false,
   width = DEFAULT_PANE_WIDTH,
   modelPickerInputs,
+  scrollOffsetRows = 0,
 }: {
   content: RightPaneContent;
   formValues?: Record<string, string>;
@@ -1038,17 +1434,21 @@ export function RightPane({
   focused?: boolean;
   activeProvider?: AdeCodeProvider | null;
   width?: number;
+  scrollOffsetRows?: number;
   /** Data passed in by app.tsx for the model-picker content kind. */
-	  modelPickerInputs?: {
-	    models: AgentChatModelInfo[];
-	    catalog?: AgentChatModelCatalog | null;
-	    favorites: string[];
-    recents: string[];
-    activeModelId: string | null;
-  };
+		  modelPickerInputs?: {
+		    models: AgentChatModelInfo[];
+		    catalog?: AgentChatModelCatalog | null;
+		    favorites: string[];
+	    recents: string[];
+	    activeModelId: string | null;
+	    activeReasoningEffort?: string | null;
+	    aiStatus?: AiSettingsStatus | null;
+	  };
 }) {
   const { title, hint, branch } = paneTitle(content);
   const paneWidth = Math.max(30, width);
+  const hoveredId = useHoveredHitId();
 
   return (
     <Box
@@ -1080,7 +1480,7 @@ export function RightPane({
         <Text color={theme.color.t4} dimColor>Run /status, /diff, /model, or /help.</Text>
       ) : null}
 
-      {content.kind === "help" ? <HelpPane /> : null}
+      {content.kind === "help" ? <HelpPane content={content} width={paneWidth} /> : null}
 
       {content.kind === "status" ? (
         <Box flexDirection="column">
@@ -1094,14 +1494,29 @@ export function RightPane({
 
       {content.kind === "list" ? (
         <Box flexDirection="column">
-          {content.rows.length ? content.rows.map((row, index) => (
-            <Text
-              key={`${content.action?.ids[index] ?? row}:${index}`}
-              color={content.action && index === selectedIndex ? theme.color.violet : undefined}
-            >
-              {content.action ? `${index === selectedIndex ? theme.rail : " "} ${row}` : row}
+          {(() => {
+            // Clamp so a stale offset (after switching to a shorter same-kind
+            // list) can't scroll past the content into a blank pane.
+            const listStart = Math.max(0, Math.min(scrollOffsetRows, Math.max(0, content.rows.length - DETAILS_BODY_MAX_LINES)));
+            const visibleRows = content.rows.slice(listStart, listStart + DETAILS_BODY_MAX_LINES);
+            return content.rows.length ? visibleRows.map((row, visibleIndex) => {
+              const index = listStart + visibleIndex;
+              return (
+	            <Text
+	              key={`${content.action?.ids[index] ?? row}:${index}`}
+	              color={content.action && (index === selectedIndex || hoveredId === `right:list:${index}`) ? theme.color.violet : undefined}
+	            >
+	              {content.action ? `${index === selectedIndex ? theme.rail : " "} ${row}` : row}
+	            </Text>
+              );
+            }) : <Text color={theme.color.t4} dimColor>{content.emptyText ?? "No data."}</Text>;
+          })()}
+          {content.rows.length > DETAILS_BODY_MAX_LINES ? (
+            <Text color={theme.color.t4} dimColor>
+              {scrollOffsetRows > 0 ? `↑ ${scrollOffsetRows} earlier · ` : ""}
+              {Math.max(0, content.rows.length - scrollOffsetRows - DETAILS_BODY_MAX_LINES)} more
             </Text>
-          )) : <Text color={theme.color.t4} dimColor>{content.emptyText ?? "No data."}</Text>}
+          ) : null}
           {content.action && content.rows.length ? (
             <Text color={theme.color.t4} dimColor>arrows move · enter opens</Text>
           ) : null}
@@ -1109,26 +1524,54 @@ export function RightPane({
       ) : null}
 
       {content.kind === "details" ? (
-        <DetailsPane title={content.title} body={content.body} width={paneWidth} />
+        <DetailsPane title={content.title} body={content.body} width={paneWidth} scrollOffsetRows={scrollOffsetRows} />
+      ) : null}
+
+      {content.kind === "context-usage" ? (
+        <ContextUsagePane content={content} width={paneWidth} />
+      ) : null}
+
+      {content.kind === "usage" ? (
+        <UsagePane content={content} width={paneWidth} />
       ) : null}
 
       {content.kind === "diff" ? (
         <Box flexDirection="column">
-          {content.files.length ? content.files.map((file) => (
-            <Box key={file.path} flexDirection="column" marginBottom={1}>
-              <Text color={theme.color.info}>
-                {file.path}{" "}
-                <Text color={theme.color.t4} dimColor>
-                  +{file.additions ?? 0} -{file.deletions ?? 0}
-                </Text>
-              </Text>
-              {file.body ? (
-                <Text color={theme.color.t3} dimColor>
-                  {file.body.split(/\r?\n/).slice(0, 8).join("\n")}
-                </Text>
-              ) : null}
-            </Box>
-          )) : <Text color={theme.color.t4} dimColor>No changes.</Text>}
+          {content.files.length ? (() => {
+            const diffLines = buildDiffRenderLines(content.files);
+            const window = diffLines.slice(scrollOffsetRows, scrollOffsetRows + DETAILS_BODY_MAX_LINES);
+            const maxLineWidth = Math.max(10, paneWidth - 4);
+            return (
+              <>
+                {window.map((line) => {
+                  if (line.header) {
+                    // Counts stay neutral (t4) to match ChatView's file rows and
+                    // keep green confined to actual diff-body add lines — a green
+                    // count on the header row would read as idle chrome.
+                    const counts = ` +${line.header.additions} −${line.header.deletions}`;
+                    const pathRoom = Math.max(6, maxLineWidth - counts.length - 2);
+                    return (
+                      <Text key={line.key} wrap="truncate-end">
+                        <Text color={theme.color.t1} bold>{`▸ ${endTruncate(line.header.path, pathRoom)}`}</Text>
+                        <Text color={theme.color.t4}>{counts}</Text>
+                      </Text>
+                    );
+                  }
+                  return (
+                    <Text key={line.key} color={line.color} dimColor={line.dim} bold={line.bold} wrap="truncate-end">
+                      {endTruncate(line.text, maxLineWidth)}
+                    </Text>
+                  );
+                })}
+                {diffLines.length > DETAILS_BODY_MAX_LINES ? (
+                  <Text color={theme.color.t4} dimColor>
+                    {scrollOffsetRows > 0 ? `↑ ${scrollOffsetRows} earlier · ` : ""}
+                    {Math.max(0, diffLines.length - scrollOffsetRows - DETAILS_BODY_MAX_LINES)} more · ↑↓ scroll
+                  </Text>
+                ) : null}
+              </>
+            );
+          })() : <Text color={theme.color.t4} dimColor>No changes.</Text>}
         </Box>
       ) : null}
 
@@ -1147,8 +1590,14 @@ export function RightPane({
 	            catalog: modelPickerInputs.catalog,
 	            favorites: modelPickerInputs.favorites,
 	            recents: modelPickerInputs.recents,
-	            activeModelId: modelPickerInputs.activeModelId,
-	            query: content.query,
+		            activeModelId: modelPickerInputs.activeModelId,
+		            activeReasoningEffort: modelPickerInputs.activeReasoningEffort,
+		            aiStatus: modelPickerInputs.aiStatus,
+		            showAll: content.showAll,
+		            settingsRows: content.settingsRows,
+		            footerFocus: content.footerFocus ?? null,
+		            laneLabel: content.laneLabel ?? null,
+		            query: content.query,
 	            selection: content.selection,
 	            providerTabKey: content.providerTabKey ?? null,
 	            focusedIndex: content.focusedIndex,
@@ -1156,37 +1605,6 @@ export function RightPane({
           })}
           width={paneWidth}
         />
-      ) : null}
-
-      {content.kind === "new-chat-setup" || content.kind === "model-setup" ? (
-        <Box flexDirection="column">
-          {content.kind === "new-chat-setup" ? (
-            <Text color={theme.color.t4} dimColor>Lane: {content.laneLabel}</Text>
-          ) : null}
-          <Box flexDirection="column" marginTop={1}>
-            {content.rows.map((row, index) => {
-              const selected = index === selectedIndex;
-              return (
-                <Box key={`${row.kind}:${row.label}`} flexDirection="column">
-                  <Text
-                    color={selected ? theme.color.violet : row.disabled ? theme.color.t4 : theme.color.t2}
-                    bold={selected}
-                  >
-                    {selected ? theme.rail : " "} {row.label}: {row.value}
-                  </Text>
-                  {selected && row.detail ? (
-                    <Text color={theme.color.t4} dimColor>    {row.detail}</Text>
-                  ) : null}
-                </Box>
-              );
-            })}
-          </Box>
-          <Text color={theme.color.t4} dimColor>
-            {content.kind === "new-chat-setup"
-              ? "↑↓ rows · ←→ change · ↵ prompt · cmd+↵ background"
-              : "↑↓ rows · ←→ change · ↵ apply · esc close"}
-          </Text>
-        </Box>
       ) : null}
 
       {content.kind === "form" && content.command === "lane-delete" ? (
@@ -1198,7 +1616,15 @@ export function RightPane({
         />
       ) : null}
 
-      {content.kind === "form" && content.command !== "lane-delete" ? (
+      {content.kind === "form" && content.command === "feedback" ? (
+        <FeedbackFormPane
+          content={content as FeedbackFormContent}
+          focused={focused}
+          width={paneWidth}
+        />
+      ) : null}
+
+      {content.kind === "form" && content.command !== "lane-delete" && content.command !== "feedback" ? (
         <Box flexDirection="column">
           {content.description ? (
             <Box marginBottom={1}>
@@ -1207,17 +1633,17 @@ export function RightPane({
               </Text>
             </Box>
           ) : null}
-          {content.fields.map((field, index) => {
+	          {content.fields.map((field, index) => {
             const value = formValues[field.name]?.trim();
             const displayValue = endTruncate(
               (value || field.placeholder || "").replace(/\s+/g, " "),
               Math.max(8, paneWidth - field.label.length - 8),
             );
-            return (
-              <Text
-                key={field.name}
-                color={index === activeFormField ? theme.color.violet : undefined}
-              >
+	            return (
+	              <Text
+	                key={field.name}
+	                color={index === activeFormField || hoveredId === `right:form:${field.name}` ? theme.color.violet : undefined}
+	              >
                 {index === activeFormField ? theme.rail : " "} {field.label}
                 {field.required ? " *" : ""}: {displayValue}
               </Text>

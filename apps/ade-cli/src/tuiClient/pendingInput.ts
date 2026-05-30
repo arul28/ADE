@@ -50,9 +50,11 @@ export function latestPendingApproval(events: AgentChatEventEnvelope[]): Pending
     return {
       itemId: event.itemId,
       description,
+      // Permission grants (write/network/external scope) keep the typed
+      // high-stakes confirmation. Only plan_approval / model_selection were
+      // intentionally relaxed to the one-key card.
       highStakes: mode === "approval" && (
         request?.kind === "permissions"
-        || request?.kind === "plan_approval"
         || looksHighStakesApproval(description, event.detail)
       ),
       mode,

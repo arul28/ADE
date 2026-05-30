@@ -1,8 +1,24 @@
 import React from "react";
 import { describe, expect, it } from "vitest";
 import { render } from "ink-testing-library";
-import { LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, laneDetailsInteractionLayout, RightPane } from "../components/RightPane";
+import { LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, feedbackStateFromContent, laneDetailsInteractionLayout, rightPaneScrollableRowCount, RightPane } from "../components/RightPane";
+import { feedbackFormToFormValues } from "../feedbackForm";
+import { buildFeedbackDraftInput } from "../feedback";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
+
+describe("rightPaneScrollableRowCount", () => {
+  it("counts details body lines and list rows; flows full diff bodies for scrolling", () => {
+    expect(rightPaneScrollableRowCount({ kind: "details", title: "t", body: "a\nb\nc" })).toBe(3);
+    expect(rightPaneScrollableRowCount({ kind: "list", title: "t", rows: ["a", "b"] })).toBe(2);
+    expect(rightPaneScrollableRowCount({ kind: "empty" })).toBe(0);
+    const bigBody = Array.from({ length: 50 }, (_, i) => `line ${i}`).join("\n");
+    // 1 header row + all 50 body rows (diffs scroll in full, capped per file at 600).
+    expect(rightPaneScrollableRowCount({ kind: "diff", title: "d", files: [{ path: "a.ts", body: bigBody }] })).toBe(51);
+    // Per-file cap: 600 body rows shown + 1 header + 1 "more lines" row.
+    const huge = Array.from({ length: 650 }, (_, i) => `+line ${i}`).join("\n");
+    expect(rightPaneScrollableRowCount({ kind: "diff", title: "d", files: [{ path: "a.ts", body: huge }] })).toBe(602);
+  });
+});
 
 function stripAnsi(text: string): string {
   return text.replace(/\u001b(?:\[[0-9;]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001b\\))/g, "");
@@ -511,19 +527,33 @@ describe("RightPane setup panes", () => {
     expect(frame).toContain("enter deletes this lane");
   });
 
-  it("renders model setup rows and selected row detail", () => {
+  it("renders the unified model picker with model list and settings footer", () => {
     const result = render(
       <RightPane
         content={{
-          kind: "model-setup",
-          rows: [
-            { kind: "provider", label: "Provider", value: "Claude", detail: "Claude CLI", cyclable: true },
-            { kind: "model", label: "Model", value: "Sonnet", detail: "3 available", cyclable: true },
+          kind: "model-picker",
+          surface: "chat",
+          query: "",
+          searchMode: false,
+          showAll: false,
+          selection: { kind: "provider", provider: "claude" },
+          providerTabKey: null,
+          focusedIndex: 0,
+          footerFocus: null,
+          settingsRows: [
             { kind: "reasoning", label: "Reasoning", value: "high", detail: "low, medium, high", cyclable: true },
             { kind: "permission", label: "Permissions", value: "auto", detail: "default · auto", cyclable: true },
           ],
         }}
-        selectedIndex={2}
+        modelPickerInputs={{
+          models: [
+            { id: "anthropic/claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", isDefault: true },
+          ],
+          favorites: [],
+          recents: [],
+          activeModelId: "anthropic/claude-sonnet-4-6",
+          activeReasoningEffort: "high",
+        }}
         focused
         width={80}
       />,
@@ -531,12 +561,11 @@ describe("RightPane setup panes", () => {
     const frame = stripAnsi(result.lastFrame() ?? "");
 
     expect(frame).toContain("MODEL");
-    expect(frame).toContain("Provider: Claude");
-    expect(frame).toContain("Model: Sonnet");
-    expect(frame).toContain("Reasoning: high");
-    expect(frame).toContain("low, medium, high");
-    expect(frame).toContain("Permissions: auto");
-    expect(frame).toContain("↑↓ rows · ←→ change · ↵ apply · esc close");
+    expect(frame).toContain("Claude Sonnet 4.6");
+    // Reasoning is shown in the settings footer, not as an inline per-model
+    // "think high" chip (that detail was removed from model rows).
+    expect(frame).toContain("reasoning");
+    expect(frame).not.toContain("think high");
   });
 });
 
@@ -557,6 +586,121 @@ describe("RightPane details", () => {
 
     expect(frame).toContain("SKILLS");
     expect(frame).toContain("line 1");
-    expect(frame).toContain("… 14 more lines");
+    expect(frame).toContain("↓ 14 more lines");
+  });
+
+  it("renders context usage as a visual pane", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "context-usage",
+          title: "Context",
+          usage: {
+            totalTokens: 12000,
+            maxTokens: 20000,
+            percentage: 60,
+            model: "gpt-5.5",
+            categories: [
+              { name: "messages", tokens: 8000, percentage: 40 },
+              { name: "tools", tokens: 4000, percentage: 20 },
+            ],
+          },
+        }}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("CONTEXT");
+    expect(frame).toContain("gpt-5.5");
+    expect(frame).toContain("12.0k / 20.0k (60%)");
+    expect(frame).toContain("messages");
+  });
+});
+
+describe("RightPane feedback form", () => {
+  // The feedback pane render is exercised end-to-end through the deterministic
+  // helper contract below (state rebuild -> serialize -> daemon draft). Full-frame
+  // string assertions are intentionally avoided: ink-testing-library leaks tall
+  // frames between renders in this suite, making pixel-frame matches flaky.
+
+  it("feedbackStateFromContent rebuilds the framework-free form state", () => {
+    const content = {
+      kind: "form" as const,
+      title: "Feedback",
+      command: "feedback" as const,
+      fields: [],
+      feedback: {
+        type: "idea" as const,
+        body: "add dark mode\nplease",
+        showContext: false,
+        provider: "anthropic",
+        model: "opus",
+        lane: "L",
+        lastError: "boom",
+      },
+    };
+    const state = feedbackStateFromContent(content);
+    expect(state.type).toBe("idea");
+    expect(state.text).toBe("add dark mode\nplease");
+    expect(state.showContext).toBe(false);
+    expect(state.context).toEqual({ provider: "anthropic", model: "opus", lane: "L", lastError: "boom" });
+  });
+
+  it("submit path: feedbackStateFromContent -> feedbackFormToFormValues -> buildFeedbackDraftInput keeps the multiline body", () => {
+    const content = {
+      kind: "form" as const,
+      title: "Feedback",
+      command: "feedback" as const,
+      fields: [],
+      feedback: {
+        type: "bug" as const,
+        body: "crash on launch\nstep one\nstep two",
+        showContext: true,
+        provider: "anthropic",
+        model: "opus",
+        lane: "my-lane",
+        lastError: "boom",
+      },
+    };
+    const values = feedbackFormToFormValues(feedbackStateFromContent(content));
+    expect(values.category).toBe("bug");
+    expect(values.summary).toBe("crash on launch");
+    const draft = buildFeedbackDraftInput(values);
+    expect(draft.category).toBe("bug");
+    expect(draft.summary).toBe("crash on launch");
+    if (draft.category === "bug") {
+      expect(draft.stepsToReproduce).toBe("crash on launch\nstep one\nstep two");
+    }
+    expect(draft.additionalContext).toContain("--- Context ---");
+    expect(draft.additionalContext).toContain("Provider/Model: anthropic / opus");
+    expect(draft.additionalContext).toContain("Lane: my-lane");
+    expect(draft.additionalContext).toContain("Last error/notice: boom");
+  });
+
+  it("omits the context footer from the serialized draft when showContext is false", () => {
+    const content = {
+      kind: "form" as const,
+      title: "Feedback",
+      command: "feedback" as const,
+      fields: [],
+      feedback: { type: "idea" as const, body: "an idea", showContext: false, lane: "L" },
+    };
+    const values = feedbackFormToFormValues(feedbackStateFromContent(content));
+    expect(values.additionalContext).toBeUndefined();
+  });
+
+  it("idea type maps to a feature draft", () => {
+    const content = {
+      kind: "form" as const,
+      title: "Feedback",
+      command: "feedback" as const,
+      fields: [],
+      feedback: { type: "idea" as const, body: "add dark mode\nplease", showContext: false },
+    };
+    const draft = buildFeedbackDraftInput(feedbackFormToFormValues(feedbackStateFromContent(content)));
+    expect(draft.category).toBe("feature");
+    expect(draft.summary).toBe("add dark mode");
   });
 });

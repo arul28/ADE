@@ -1,5 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { latestExpandableFailureId, parseAssistantMarkdown, parseInlineRuns, renderChatLines, renderObject } from "../format";
+import { diffLineKind, latestExpandableFailureId, parseAssistantMarkdown, parseInlineRuns, renderChatLines, renderObject } from "../format";
+
+describe("diffLineKind", () => {
+  it("classifies hunk, meta, add, del, and context lines", () => {
+    expect(diffLineKind("@@ -1,4 +1,6 @@ fn main()")).toBe("hunk");
+    expect(diffLineKind("diff --git a/x b/x")).toBe("meta");
+    expect(diffLineKind("index 1234..5678 100644")).toBe("meta");
+    expect(diffLineKind("--- a/x")).toBe("meta");
+    expect(diffLineKind("+++ b/x")).toBe("meta");
+    expect(diffLineKind("new file mode 100644")).toBe("meta");
+    expect(diffLineKind("\\ No newline at end of file")).toBe("meta");
+    expect(diffLineKind("+added content")).toBe("add");
+    expect(diffLineKind("-removed content")).toBe("del");
+    expect(diffLineKind(" unchanged context")).toBe("context");
+    expect(diffLineKind("")).toBe("context");
+  });
+});
 
 describe("renderChatLines", () => {
   it("parses assistant markdown into stable blocks", () => {

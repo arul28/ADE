@@ -44,3 +44,9 @@ export function useDotPulse(): string {
   const index = Math.floor(tick / 3) % DOT_FRAMES.length;
   return DOT_FRAMES[index]!;
 }
+
+// Raw tick for callers that compute their own motion (e.g. a shimmer that sweeps
+// a bright cell across a label). Advances every ~100ms.
+export function useShimmerTick(): number {
+  return useContext(SpinTickContext);
+}

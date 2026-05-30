@@ -40,6 +40,27 @@ describe("commands", () => {
     }));
   });
 
+  it("parses the /lane management commands as multi-word ADE commands", () => {
+    const rename = parseCommand("/lane rename My New Lane");
+    expect(rename?.name).toBe("/lane rename");
+    expect(rename?.args).toBe("My New Lane");
+    expect(rename ? commandPlacement(rename) : null).toBe("right");
+
+    const archive = parseCommand("/lane archive");
+    expect(archive?.name).toBe("/lane archive");
+    expect(archive?.args).toBe("");
+
+    const unarchive = parseCommand("/lane unarchive feat/x");
+    expect(unarchive?.name).toBe("/lane unarchive");
+    expect(unarchive?.args).toBe("feat/x");
+
+    // /lane delete must still match (longest-name-first ordering).
+    expect(parseCommand("/lane delete")?.name).toBe("/lane delete");
+    expect(paletteCommands("/lane").map((c) => c.name)).toEqual(
+      expect.arrayContaining(["/lane rename", "/lane archive", "/lane unarchive", "/lane archived", "/lane delete"]),
+    );
+  });
+
   it("routes /effort to the ADE Code right pane", () => {
     const parsed = parseCommand("/effort");
     expect(parsed?.spec?.name).toBe("/effort");
@@ -187,7 +208,7 @@ describe("commands", () => {
   });
 
   it("filters provider-specific ADE commands outside supported chats", () => {
-    expect(paletteCommands("/context", [], { provider: "codex" })).not.toContainEqual(
+    expect(paletteCommands("/context", [], { provider: "codex" })).toContainEqual(
       expect.objectContaining({ name: "/context" }),
     );
     expect(paletteCommands("/output-style", [], { provider: "codex" })).not.toContainEqual(
