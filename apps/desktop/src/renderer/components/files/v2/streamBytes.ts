@@ -8,7 +8,7 @@
 export async function streamFileBytes(
   workspaceId: string,
   path: string,
-  opts: { chunkLength?: number; isCancelled?: () => boolean } = {},
+  opts: { chunkLength?: number; isCancelled?: () => boolean; maxBytes?: number } = {},
 ): Promise<Uint8Array> {
   const chunkLength = opts.chunkLength ?? 512 * 1024;
   const parts: Uint8Array[] = [];
@@ -22,6 +22,9 @@ export async function streamFileBytes(
       const binary = atob(page.content);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      if (opts.maxBytes != null && total + bytes.length > opts.maxBytes) {
+        throw new Error(`File is too large to stream into memory (${opts.maxBytes} byte limit).`);
+      }
       parts.push(bytes);
       total += bytes.length;
     }

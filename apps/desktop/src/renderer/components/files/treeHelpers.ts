@@ -65,7 +65,12 @@ export function mergeTreePreservingLoadedChildren(
     if (node.type !== "directory") return node;
     const previous = previousByPath.get(node.path);
     if (!previous?.children || node.children) return node;
-    return { ...node, children: previous.children, childrenTruncated: previous.childrenTruncated };
+    return {
+      ...node,
+      children: previous.children,
+      childrenTruncated: previous.childrenTruncated,
+      loadMoreOffset: previous.loadMoreOffset,
+    };
   });
 }
 
@@ -82,6 +87,32 @@ export function replaceTreeNodeChildren(
     }
     if (node.children?.length) {
       return { ...node, children: replaceTreeNodeChildren(node.children, parentPath, children, loadMoreOffset) };
+    }
+    return node;
+  });
+}
+
+/** Append another page of children to a directory node. */
+export function appendTreeNodeChildren(
+  nodes: FileTreeNode[],
+  parentPath: string,
+  children: FileTreeNode[],
+  loadMoreOffset: number | null = null,
+): FileTreeNode[] {
+  return nodes.map((node) => {
+    if (node.path === parentPath) {
+      const existing = node.children ?? [];
+      const seen = new Set(existing.map((child) => child.path));
+      const merged = [...existing];
+      for (const child of children) {
+        if (seen.has(child.path)) continue;
+        seen.add(child.path);
+        merged.push(child);
+      }
+      return { ...node, children: merged, loadMoreOffset, childrenTruncated: loadMoreOffset != null };
+    }
+    if (node.children?.length) {
+      return { ...node, children: appendTreeNodeChildren(node.children, parentPath, children, loadMoreOffset) };
     }
     return node;
   });

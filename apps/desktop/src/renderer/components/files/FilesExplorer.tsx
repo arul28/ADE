@@ -25,10 +25,20 @@ type InlineRenameRequest = {
   nonce: number;
 } | null;
 
-type ExplorerRow = {
+type ExplorerNodeRow = {
+  kind: "node";
   node: FileTreeNode;
   level: number;
 };
+
+type ExplorerLoadMoreRow = {
+  kind: "load-more";
+  node: FileTreeNode;
+  level: number;
+  offset: number;
+};
+
+type ExplorerRow = ExplorerNodeRow | ExplorerLoadMoreRow;
 
 export type FilesExplorerContextMenuEvent = {
   x: number;
@@ -59,6 +69,7 @@ export type FilesExplorerProps = {
   onCreateFile: (basePath: string) => void;
   onCreateDirectory: (basePath: string) => void;
   onToggleDirectory: (path: string, isExpanded: boolean, hasLoadedChildren: boolean) => void;
+  onLoadMoreChildren?: (path: string, offset: number) => void;
   onOpenFile: (path: string) => void;
   /** Double-click on a file row: pin it (promote out of the preview slot), VSCode-style. */
   onActivateFile?: (path: string) => void;
@@ -92,6 +103,7 @@ function flattenVisibleRows(args: {
   nodes: FileTreeNode[];
   expanded: Set<string>;
   query: string;
+  includeLoadMore?: boolean;
   level?: number;
 }): ExplorerRow[] {
   const level = args.level ?? 0;
@@ -101,18 +113,33 @@ function flattenVisibleRows(args: {
   for (const node of args.nodes) {
     const children = node.children ?? [];
     if (!query) {
-      rows.push({ node, level });
+      rows.push({ kind: "node", node, level });
       if (node.type === "directory" && args.expanded.has(node.path) && children.length) {
-        rows.push(...flattenVisibleRows({ nodes: children, expanded: args.expanded, query, level: level + 1 }));
+        rows.push(...flattenVisibleRows({
+          nodes: children,
+          expanded: args.expanded,
+          query,
+          includeLoadMore: args.includeLoadMore,
+          level: level + 1,
+        }));
+        if (args.includeLoadMore && node.childrenTruncated && node.loadMoreOffset != null) {
+          rows.push({ kind: "load-more", node, level: level + 1, offset: node.loadMoreOffset });
+        }
       }
       continue;
     }
 
     const childRows = children.length
-      ? flattenVisibleRows({ nodes: children, expanded: args.expanded, query, level: level + 1 })
+      ? flattenVisibleRows({
+        nodes: children,
+        expanded: args.expanded,
+        query,
+        includeLoadMore: false,
+        level: level + 1,
+      })
       : [];
     if (matchesQuery(node, query) || childRows.length > 0) {
-      rows.push({ node, level });
+      rows.push({ kind: "node", node, level });
       rows.push(...childRows);
     }
   }
@@ -138,6 +165,7 @@ export function FilesExplorer({
   onCreateFile,
   onCreateDirectory,
   onToggleDirectory,
+  onLoadMoreChildren,
   onOpenFile,
   onActivateFile,
   onSelectNode,
@@ -153,8 +181,13 @@ export function FilesExplorer({
   const [renameValue, setRenameValue] = useState("");
   const [renameError, setRenameError] = useState<string | null>(null);
   const rows = useMemo(
-    () => flattenVisibleRows({ nodes: tree, expanded, query: searchQuery }),
-    [tree, expanded, searchQuery],
+    () => flattenVisibleRows({
+      nodes: tree,
+      expanded,
+      query: searchQuery,
+      includeLoadMore: Boolean(onLoadMoreChildren),
+    }),
+    [tree, expanded, searchQuery, onLoadMoreChildren],
   );
 
   const virtualizer = useVirtualizer({
@@ -166,9 +199,11 @@ export function FilesExplorer({
 
   useEffect(() => {
     if (!inlineRenameRequest?.path) return;
-    const target = rows.find((row) => arePathsEqual(row.node.path, inlineRenameRequest.path, workspaceComparisonRoot));
+    const target = rows.find((row) =>
+      row.kind === "node" && arePathsEqual(row.node.path, inlineRenameRequest.path, workspaceComparisonRoot)
+    );
     setRenamingPath(inlineRenameRequest.path);
-    setRenameValue(target?.node.name ?? inlineRenameRequest.path.split("/").pop() ?? inlineRenameRequest.path);
+    setRenameValue(target?.kind === "node" ? target.node.name : inlineRenameRequest.path.split("/").pop() ?? inlineRenameRequest.path);
     setRenameError(null);
     onInlineRenameSettled();
   }, [inlineRenameRequest, onInlineRenameSettled, rows, workspaceComparisonRoot]);
@@ -467,6 +502,46 @@ export function FilesExplorer({
             {virtualizer.getVirtualItems().map((virtualRow) => {
               const row = rows[virtualRow.index];
               if (!row) return null;
+              if (row.kind === "load-more") {
+                const isLoadingMore = loadingDirectories.has(row.node.path);
+                return (
+                  <div
+                    key={`${row.node.path}:load-more:${row.offset}`}
+                    className="absolute left-0 top-0 w-full"
+                    style={{ height: virtualRow.size, transform: `translateY(${virtualRow.start}px)` }}
+                  >
+                    <button
+                      type="button"
+                      className="group relative flex w-full items-center gap-1.5 text-left transition-colors"
+                      disabled={isLoadingMore}
+                      style={{
+                        height: ROW_HEIGHT,
+                        paddingLeft: `${10 + row.level * 14}px`,
+                        paddingRight: 8,
+                        fontFamily: MONO_FONT,
+                        fontSize: 11,
+                        color: isLoadingMore ? COLORS.textMuted : COLORS.accent,
+                        background: "transparent",
+                        border: "none",
+                        borderLeft: "2px solid transparent",
+                        cursor: isLoadingMore ? "default" : "pointer",
+                        opacity: isLoadingMore ? 0.75 : 1,
+                      }}
+                      onClick={() => onLoadMoreChildren?.(row.node.path, row.offset)}
+                      onMouseEnter={(event) => {
+                        if (!isLoadingMore) event.currentTarget.style.background = COLORS.hoverBg;
+                      }}
+                      onMouseLeave={(event) => {
+                        event.currentTarget.style.background = "transparent";
+                      }}
+                      title={`Load more from ${row.node.path}`}
+                    >
+                      <span style={{ width: 12, flexShrink: 0 }} />
+                      <span className="truncate">{isLoadingMore ? "Loading more..." : "Load more..."}</span>
+                    </button>
+                  </div>
+                );
+              }
               const { node, level } = row;
               const isExpanded = expanded.has(node.path);
               const isLoading = node.type === "directory" && loadingDirectories.has(node.path);

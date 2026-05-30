@@ -243,6 +243,7 @@ function mergeTreePreservingLoadedChildren(nextNodes: FileTreeNode[], previousNo
       ...node,
       children: previous.children,
       childrenTruncated: previous.childrenTruncated,
+      loadMoreOffset: previous.loadMoreOffset,
     };
   });
 }
@@ -292,6 +293,31 @@ function replaceTreeNodeChildren(
     }
     if (node.children?.length) {
       return { ...node, children: replaceTreeNodeChildren(node.children, parentPath, children, loadMoreOffset) };
+    }
+    return node;
+  });
+}
+
+function appendTreeNodeChildren(
+  nodes: FileTreeNode[],
+  parentPath: string,
+  children: FileTreeNode[],
+  loadMoreOffset: number | null = null,
+): FileTreeNode[] {
+  return nodes.map((node) => {
+    if (node.path === parentPath) {
+      const existing = node.children ?? [];
+      const seen = new Set(existing.map((child) => child.path));
+      const merged = [...existing];
+      for (const child of children) {
+        if (seen.has(child.path)) continue;
+        seen.add(child.path);
+        merged.push(child);
+      }
+      return { ...node, children: merged, loadMoreOffset, childrenTruncated: loadMoreOffset != null };
+    }
+    if (node.children?.length) {
+      return { ...node, children: appendTreeNodeChildren(node.children, parentPath, children, loadMoreOffset) };
     }
     return node;
   });
@@ -2097,9 +2123,57 @@ export function FilesPage({
             next.delete(nodePath);
             return next;
           });
-        });
+      });
     }
   }, [refreshTree, workspaceId]);
+
+  const loadMoreChildren = useCallback(async (parentPath: string, startOffset: number) => {
+    if (!workspaceId) return;
+    const requestWorkspaceId = workspaceId;
+    setLoadingDirectories((prev) => {
+      if (prev.has(parentPath)) return prev;
+      const next = new Set(prev);
+      next.add(parentPath);
+      return next;
+    });
+    try {
+      const children: FileTreeNode[] = [];
+      let offset = startOffset;
+      let loadMoreOffset: number | null = null;
+      for (;;) {
+        const page = await window.ade.files.listTreeChildren({
+          workspaceId: requestWorkspaceId,
+          parentPath,
+          offset,
+          limit: FILES_TREE_PAGE_SIZE,
+          includeIgnored: true,
+        });
+        if (workspaceIdRef.current !== requestWorkspaceId) return;
+        children.push(...page.children);
+        if (page.nextOffset == null) break;
+        if (children.length >= FILES_MAX_AUTO_LOADED_CHILDREN) {
+          loadMoreOffset = page.nextOffset;
+          break;
+        }
+        offset = page.nextOffset;
+      }
+      setTree((prev) => {
+        const nextTree = appendTreeNodeChildren(prev, parentPath, children, loadMoreOffset);
+        writeCachedFilesRootTree(projectRootPath, requestWorkspaceId, nextTree);
+        return nextTree;
+      });
+    } catch (err) {
+      if (workspaceIdRef.current === requestWorkspaceId) setError(formatFilesError(err));
+    } finally {
+      if (workspaceIdRef.current !== requestWorkspaceId) return;
+      setLoadingDirectories((prev) => {
+        if (!prev.has(parentPath)) return prev;
+        const next = new Set(prev);
+        next.delete(parentPath);
+        return next;
+      });
+    }
+  }, [projectRootPath, workspaceId]);
 
   const runContextAction = (fn: () => Promise<void>) => {
     setContextMenu(null);
@@ -2132,6 +2206,7 @@ export function FilesPage({
           onCreateFile={(basePath) => createFileAt(basePath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
           onCreateDirectory={(basePath) => createDirectoryAt(basePath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
           onToggleDirectory={toggleDirectory}
+          onLoadMoreChildren={(path, offset) => { loadMoreChildren(path, offset).catch(() => {}); }}
           onOpenFile={(path) => { openFile(path).catch(() => {}); }}
           onSelectNode={setSelectedNodePath}
           onContextMenu={(event) => setContextMenu(event)}
@@ -2446,7 +2521,7 @@ export function FilesPage({
     searchQuery, inlineRenameRequest, selectedTreeNodePath, conflictHunks, editorTheme, editorModeHint,
     resolvedConflictKeys, createFileAt, createDirectoryAt, saveActive,
     closeTab, stagePath, unstagePath, discardPath, openFile, setShowQuickOpen, navigate,
-    applyConflictResolution, setEditorHostRef, workspaceComparisonRoot, toggleDirectory, renamePathTo,
+    applyConflictResolution, setEditorHostRef, workspaceComparisonRoot, toggleDirectory, loadMoreChildren, renamePathTo,
     loadingDirectories,
     embedded
   ]);

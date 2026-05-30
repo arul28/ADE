@@ -58,6 +58,8 @@ const GIT_BLAME_TIMEOUT_MS = 5_000;
 const GIT_STATUS_CACHE_TTL_MS = 5_000;
 const GIT_STATUS_BACKGROUND_TIMEOUT_MS = 2_000;
 const GIT_STATUS_FOREGROUND_TIMEOUT_MS = 10_000;
+const PAGED_DIRECTORY_ENTRIES_CACHE_TTL_MS = 2_000;
+const PAGED_DIRECTORY_ENTRIES_CACHE_MAX = 32;
 const VOLATILE_ADE_PREFIXES = [
   ".ade/artifacts/",
   ".ade/cache/",
@@ -381,6 +383,13 @@ type GitStatusCacheEntry = {
   inFlight: Promise<GitStatusSnapshot> | null;
 };
 
+type VisibleChildEntries = { entry: fs.Dirent; rel: string }[];
+
+type VisibleChildEntriesCacheEntry = {
+  fetchedAt: number;
+  entries: VisibleChildEntries;
+};
+
 function buildGitStatusSnapshot(fileStatus: Map<string, FileTreeChangeStatus>): GitStatusSnapshot {
   const changedDirectories = new Set<string>();
   for (const [filePath, status] of fileStatus) {
@@ -422,6 +431,7 @@ export function createFileService({
   const ignoredPrefixCache = new Set<string>();
   const emptyGitStatusSnapshot = buildGitStatusSnapshot(new Map());
   const gitStatusCache = new Map<string, GitStatusCacheEntry>();
+  const pagedDirectoryEntriesCache = new Map<string, VisibleChildEntriesCacheEntry>();
 
   const clearIgnoreCacheForRoot = (rootPath: string): void => {
     const prefix = `${rootPath}::`;
@@ -446,6 +456,21 @@ export function createFileService({
       inFlight: null,
     });
   };
+
+  const clearPagedDirectoryEntriesCacheForRoot = (rootPath: string): void => {
+    const prefix = `${rootPath}::`;
+    for (const key of pagedDirectoryEntriesCache.keys()) {
+      if (key.startsWith(prefix)) {
+        pagedDirectoryEntriesCache.delete(key);
+      }
+    }
+  };
+
+  const pagedDirectoryEntriesCacheKey = (
+    rootPath: string,
+    parentPath: string,
+    includeIgnored: boolean,
+  ): string => `${rootPath}::${parentPath}::${includeIgnored ? "ignored" : "tracked"}`;
 
   const resolveWorkspace = (workspaceId: string) => laneService.resolveWorkspaceById(workspaceId);
 
@@ -637,7 +662,7 @@ export function createFileService({
     rootPath: string,
     parentPath: string,
     includeIgnored: boolean,
-  ): Promise<{ entry: fs.Dirent; rel: string }[]> => {
+  ): Promise<VisibleChildEntries> => {
     const { absPath: dirPath } = ensureSafePath(rootPath, parentPath);
     const entries = await fsp.readdir(dirPath, { withFileTypes: true });
     const entryPaths = entries.map((entry) => normalizeRelative(path.join(parentPath, entry.name)));
@@ -657,6 +682,27 @@ export function createFileService({
       visible.push({ entry, rel });
     }
     return visible;
+  };
+
+  const collectPagedVisibleChildEntries = async (
+    rootPath: string,
+    parentPath: string,
+    includeIgnored: boolean,
+  ): Promise<VisibleChildEntries> => {
+    const key = pagedDirectoryEntriesCacheKey(rootPath, parentPath, includeIgnored);
+    const now = Date.now();
+    const cached = pagedDirectoryEntriesCache.get(key);
+    if (cached && now - cached.fetchedAt <= PAGED_DIRECTORY_ENTRIES_CACHE_TTL_MS) {
+      return cached.entries;
+    }
+    const entries = await collectVisibleChildEntries(rootPath, parentPath, includeIgnored);
+    pagedDirectoryEntriesCache.set(key, { fetchedAt: now, entries });
+    while (pagedDirectoryEntriesCache.size > PAGED_DIRECTORY_ENTRIES_CACHE_MAX) {
+      const oldestKey = pagedDirectoryEntriesCache.keys().next().value;
+      if (!oldestKey) break;
+      pagedDirectoryEntriesCache.delete(oldestKey);
+    }
+    return entries;
   };
 
   const buildChildNode = (
@@ -730,6 +776,7 @@ export function createFileService({
       assertMutablePathAllowed(worktreePath, relPath);
       secureWriteTextAtomicWithinRoot(worktreePath, relPath, text);
       invalidateGitStatusCache(worktreePath);
+      clearPagedDirectoryEntriesCacheForRoot(worktreePath);
       if (onLaneWorktreeMutation) {
         onLaneWorktreeMutation({
           laneId,
@@ -796,7 +843,7 @@ export function createFileService({
         : 500;
       const includeIgnored = Boolean(args.includeIgnored);
       const statusSnapshot = await getGitStatusSnapshot(workspace.rootPath, { forceFresh: false });
-      const visible = await collectVisibleChildEntries(workspace.rootPath, parentPath, includeIgnored);
+      const visible = await collectPagedVisibleChildEntries(workspace.rootPath, parentPath, includeIgnored);
 
       const total = visible.length;
       const pageEnd = Math.min(offset + limit, total);
@@ -1017,6 +1064,7 @@ export function createFileService({
       const normalizedRel = assertMutablePathAllowed(workspace.rootPath, args.path);
       secureWriteTextAtomicWithinRoot(workspace.rootPath, args.path, args.text);
       invalidateGitStatusCache(workspace.rootPath);
+      clearPagedDirectoryEntriesCacheForRoot(workspace.rootPath);
       if (normalizedRel === ".gitignore") {
         clearIgnoreCacheForRoot(workspace.rootPath);
       }
@@ -1038,6 +1086,7 @@ export function createFileService({
         secureWriteFileWithinRoot(workspace.rootPath, args.path, args.content ?? "", "utf8");
       }
       invalidateGitStatusCache(workspace.rootPath);
+      clearPagedDirectoryEntriesCacheForRoot(workspace.rootPath);
       indexService.onFileChanged({
         workspaceId: args.workspaceId,
         rootPath: workspace.rootPath,
@@ -1053,6 +1102,7 @@ export function createFileService({
       assertMutablePathAllowed(workspace.rootPath, args.path);
       secureMkdirWithinRoot(workspace.rootPath, args.path);
       invalidateGitStatusCache(workspace.rootPath);
+      clearPagedDirectoryEntriesCacheForRoot(workspace.rootPath);
       indexService.invalidateWorkspace(args.workspaceId);
       emitLaneMutation(args.workspaceId, "directory_create");
     },
@@ -1063,6 +1113,7 @@ export function createFileService({
       const newRel = assertMutablePathAllowed(workspace.rootPath, args.newPath);
       secureRenameWithinRoot(workspace.rootPath, args.oldPath, args.newPath);
       invalidateGitStatusCache(workspace.rootPath);
+      clearPagedDirectoryEntriesCacheForRoot(workspace.rootPath);
       if (oldRel === ".gitignore" || newRel === ".gitignore") {
         clearIgnoreCacheForRoot(workspace.rootPath);
       }
@@ -1085,6 +1136,7 @@ export function createFileService({
       }
       fs.rmSync(absPath, { recursive: true, force: true });
       invalidateGitStatusCache(workspace.rootPath);
+      clearPagedDirectoryEntriesCacheForRoot(workspace.rootPath);
       if (normalizedRel === ".gitignore") {
         clearIgnoreCacheForRoot(workspace.rootPath);
       }
@@ -1117,6 +1169,7 @@ export function createFileService({
         },
         (ev) => {
           invalidateGitStatusCache(workspace.rootPath);
+          clearPagedDirectoryEntriesCacheForRoot(workspace.rootPath);
           if (ev.path === ".gitignore") {
             clearIgnoreCacheForRoot(workspace.rootPath);
           }

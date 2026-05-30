@@ -8,8 +8,10 @@ import { FilesExplorer, type FilesExplorerContextMenuEvent } from "../FilesExplo
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import {
   applyGitStatusToTree,
+  appendTreeNodeChildren,
   defaultFilesWorkspaceId,
   filesSessionKey,
+  formatFilesError,
   mergeTreePreservingLoadedChildren,
   replaceTreeNodeChildren,
 } from "../treeHelpers";
@@ -221,8 +223,8 @@ export function FilesWorkbench({
           offset = page.nextOffset;
         }
         setTree((prev) => replaceTreeNodeChildren(prev, parentPath, children, loadMoreOffset));
-      } catch {
-        /* ignore — directory may have been removed */
+      } catch (err) {
+        if (workspaceIdRef.current === reqId) setError(formatFilesError(err));
       } finally {
         setLoadingDirs((prev) => {
           const next = new Set(prev);
@@ -232,6 +234,50 @@ export function FilesWorkbench({
       }
     },
     [workspaceId],
+  );
+
+  const loadMoreChildren = useCallback(
+    async (parentPath: string, startOffset: number) => {
+      if (!workspaceId) return;
+      const reqId = workspaceId;
+      setLoadingDirs((prev) => new Set(prev).add(parentPath));
+      try {
+        const children: FileTreeNode[] = [];
+        let offset = startOffset;
+        let loadMoreOffset: number | null = null;
+        for (;;) {
+          const page = await window.ade.files.listTreeChildren({
+            workspaceId: reqId,
+            parentPath,
+            offset,
+            limit: TREE_PAGE_SIZE,
+            includeIgnored: true,
+          });
+          if (workspaceIdRef.current !== reqId) return;
+          children.push(...page.children);
+          if (page.nextOffset == null) break;
+          if (children.length >= MAX_AUTO_LOADED_CHILDREN) {
+            loadMoreOffset = page.nextOffset;
+            break;
+          }
+          offset = page.nextOffset;
+        }
+        setTree((prev) => {
+          const nextTree = appendTreeNodeChildren(prev, parentPath, children, loadMoreOffset);
+          rootTreeCacheByKey.set(rootTreeCacheKey(projectRootPath, reqId), nextTree);
+          return nextTree;
+        });
+      } catch (err) {
+        if (workspaceIdRef.current === reqId) setError(formatFilesError(err));
+      } finally {
+        setLoadingDirs((prev) => {
+          const next = new Set(prev);
+          next.delete(parentPath);
+          return next;
+        });
+      }
+    },
+    [projectRootPath, workspaceId],
   );
 
   const toggleDirectory = useCallback(
@@ -519,6 +565,7 @@ export function FilesWorkbench({
               onCreateFile={(basePath) => setOverlay({ kind: "create", create: "file", baseDir: basePath })}
               onCreateDirectory={(basePath) => setOverlay({ kind: "create", create: "directory", baseDir: basePath })}
               onToggleDirectory={toggleDirectory}
+              onLoadMoreChildren={(path, offset) => { loadMoreChildren(path, offset).catch(() => {}); }}
               onOpenFile={(path) => void openFile(path, { preview: true })}
               onActivateFile={(path) => void openFile(path, { preview: false })}
               onSelectNode={setSelectedNodePath}

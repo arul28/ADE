@@ -62,4 +62,13 @@ describe("streamFileBytes", () => {
     const result = await streamFileBytes("ws", "x", { chunkLength: 5, isCancelled: () => true });
     expect(result.length).toBe(0);
   });
+
+  it("rejects when a full-file stream would exceed the caller cap", async () => {
+    const original = new Uint8Array(20);
+    installReadFileRange(original);
+
+    await expect(streamFileBytes("ws", "x", { chunkLength: 8, maxBytes: 12 }))
+      .rejects
+      .toThrow(/too large/i);
+  });
 });
