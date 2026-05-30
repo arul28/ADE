@@ -82,6 +82,8 @@ const RUN_LIST_DEFAULT_LIMIT = 100;
 const RUN_LIST_MAX_LIMIT = 250;
 const RUN_SUSPENDED_MESSAGE =
   "orchestration run is suspended (bundle changed externally); re-open the run or restore the correct branch";
+type WatcherFileKind = "manifest" | "plan";
+type WatcherDebounceTimers = Partial<Record<WatcherFileKind, NodeJS.Timeout>>;
 
 class OrchestrationRunSuspendedError extends Error {
   constructor() {
@@ -103,7 +105,7 @@ type RunRuntime = {
   watcher: FSWatcher | null;
   refCount: number;
   recentSelfWriteUntil: number;
-  watcherDebounceTimer: NodeJS.Timeout | null;
+  watcherDebounceTimers: WatcherDebounceTimers;
   watcherIdleTimer: NodeJS.Timeout | null;
   suspended: boolean;
 };
@@ -443,10 +445,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       void runtime.watcher.close().catch(() => undefined);
       runtime.watcher = null;
     }
-    if (runtime.watcherDebounceTimer) {
-      clearTimeout(runtime.watcherDebounceTimer);
-      runtime.watcherDebounceTimer = null;
-    }
+    clearWatcherDebounceTimers(runtime);
     if (runtime.watcherIdleTimer) {
       clearTimeout(runtime.watcherIdleTimer);
       runtime.watcherIdleTimer = null;
@@ -473,7 +472,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         watcher: null,
         refCount: 0,
         recentSelfWriteUntil: 0,
-        watcherDebounceTimer: null,
+        watcherDebounceTimers: {},
         watcherIdleTimer: null,
         suspended: false,
       };
@@ -545,6 +544,13 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     runtime.recentSelfWriteUntil = Date.now() + SELF_WRITE_WINDOW_MS;
   }
 
+  function clearWatcherDebounceTimers(runtime: RunRuntime): void {
+    for (const timer of Object.values(runtime.watcherDebounceTimers)) {
+      if (timer) clearTimeout(timer);
+    }
+    runtime.watcherDebounceTimers = {};
+  }
+
   async function startWatcher(runtime: RunRuntime): Promise<void> {
     if (runtime.watcherIdleTimer) {
       clearTimeout(runtime.watcherIdleTimer);
@@ -564,12 +570,13 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       },
     );
     runtime.watcher = watcher;
-    const debouncedReload = (kind: "manifest" | "plan"): void => {
-      if (runtime.watcherDebounceTimer) {
-        clearTimeout(runtime.watcherDebounceTimer);
+    const debouncedReload = (kind: WatcherFileKind): void => {
+      const existingTimer = runtime.watcherDebounceTimers[kind];
+      if (existingTimer) {
+        clearTimeout(existingTimer);
       }
-      runtime.watcherDebounceTimer = setTimeout(() => {
-        runtime.watcherDebounceTimer = null;
+      runtime.watcherDebounceTimers[kind] = setTimeout(() => {
+        delete runtime.watcherDebounceTimers[kind];
         void runtime.mutex.run(async () => {
           if (Date.now() < runtime.recentSelfWriteUntil) {
             return; // suppress self-emitted events
@@ -1513,10 +1520,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     if (!runtime) return;
     runtime.refCount = Math.max(0, runtime.refCount - 1);
     if (runtime.refCount === 0) {
-      if (runtime.watcherDebounceTimer) {
-        clearTimeout(runtime.watcherDebounceTimer);
-        runtime.watcherDebounceTimer = null;
-      }
+      clearWatcherDebounceTimers(runtime);
       if (runtime.watcher) {
         if (runtime.watcherIdleTimer) clearTimeout(runtime.watcherIdleTimer);
         runtime.watcherIdleTimer = setTimeout(() => {
@@ -1538,7 +1542,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
   async function dispose(): Promise<void> {
     for (const runtime of runs.values()) {
       if (runtime.watcher) await runtime.watcher.close();
-      if (runtime.watcherDebounceTimer) clearTimeout(runtime.watcherDebounceTimer);
+      clearWatcherDebounceTimers(runtime);
       if (runtime.watcherIdleTimer) clearTimeout(runtime.watcherIdleTimer);
     }
     runs.clear();
