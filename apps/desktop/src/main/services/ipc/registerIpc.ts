@@ -483,6 +483,8 @@ import type {
   LinearWorkflowRunDetail,
   LinearWorkflowConfig,
   NormalizedLinearIssue,
+  AdeUsageStats,
+  GetAdeUsageStatsArgs,
   UsageSnapshot,
   BudgetCheckResult,
   BudgetCapScope,
@@ -4547,6 +4549,11 @@ export function registerIpc({
 
 
   // ── Usage tracking + budget cap IPC ──────────────────────────
+  ipcMain.handle(IPC.usageGetAdeStats, async (_event, arg: GetAdeUsageStatsArgs | undefined): Promise<AdeUsageStats | null> => {
+    const ctx = getCtx();
+    return ctx.usageTrackingService?.getAdeUsageStats(arg ?? {}) ?? null;
+  });
+
   ipcMain.handle(IPC.usageGetSnapshot, async (): Promise<UsageSnapshot | null> => {
     const ctx = getCtx();
     return ctx.usageTrackingService?.getUsageSnapshot() ?? null;

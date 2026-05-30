@@ -662,7 +662,15 @@ export async function createAdeRuntime(args: {
     logger,
     broadcastData: (event) => pushEvent("pty", { type: "pty_data", event }),
     broadcastExit: (event) => pushEvent("pty", { type: "pty_exit", event }),
-    onSessionEnded: () => {},
+    onSessionEnded: (event) => {
+      void sessionDeltaService.computeSessionDelta(event.sessionId).catch((error) => {
+        logger.warn("runtime.session_delta_compute_failed", {
+          laneId: event.laneId,
+          sessionId: event.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    },
     getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
     loadPty: ptyBackend ?? (() => nodePty),
     disposePtyBackend: ptyBackend?.dispose
@@ -984,6 +992,7 @@ export async function createAdeRuntime(args: {
     logger,
     pollIntervalMs: 120_000,
     onUpdate: (snapshot) => pushEvent("runtime", { type: "usage", snapshot }),
+    projectRoot,
   });
   const budgetCapService = createBudgetCapService({
     db,

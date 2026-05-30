@@ -83,7 +83,7 @@ describe("preload OAuth bridge", () => {
       project,
       { rootPath: "/repo/b", displayName: "B", baseRef: "main" },
     ];
-    const invoke = vi.fn(async (channel: string) => {
+    const invoke = vi.fn(async (channel: string, _payload?: unknown) => {
       if (channel === IPC.appGetWindowSession) {
         return { windowId: 7, project, binding: null, openProjectTabs };
       }
@@ -378,7 +378,7 @@ describe("preload OAuth bridge", () => {
       rootPath: "/remote/project",
       displayName: "Project",
     };
-    const invoke = vi.fn(async (channel: string) => {
+    const invoke = vi.fn(async (channel: string, _payload?: unknown) => {
       if (channel === IPC.appGetWindowSession) {
         return { windowId: 1, project: null, binding };
       }
@@ -1856,7 +1856,7 @@ describe("preload OAuth bridge", () => {
     }
   });
 
-  it("uses desktop usage IPC directly for local project usage reads", async () => {
+  it("routes local project usage reads through the shared project runtime when bound", async () => {
     const binding = {
       kind: "local",
       key: "local:/repo",
@@ -1883,14 +1883,23 @@ describe("preload OAuth bridge", () => {
       errors: [],
     };
     const refreshed = { ...snapshot, lastPolledAt: "2026-05-14T14:01:00.000Z" };
-    const invoke = vi.fn(async (channel: string) => {
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
       if (channel === IPC.appGetWindowSession) {
         return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
       }
-      if (channel === IPC.usageGetSnapshot) return snapshot;
-      if (channel === IPC.usageRefresh) return refreshed;
       if (channel === IPC.localRuntimeCallAction) {
-        throw new Error("usage should not call the local runtime daemon");
+        const request = (payload as { request?: { domain?: string; action?: string } } | undefined)?.request;
+        if (request?.domain !== "usage") throw new Error("unexpected local runtime domain");
+        return {
+          ok: true,
+          domain: request.domain,
+          action: request.action,
+          result: request.action === "forceRefresh" ? refreshed : snapshot,
+          statusHints: {},
+        };
+      }
+      if (channel === IPC.usageGetSnapshot || channel === IPC.usageRefresh) {
+        throw new Error("local bound usage should not fall back to desktop usage IPC");
       }
       return undefined;
     });
@@ -1917,12 +1926,16 @@ describe("preload OAuth bridge", () => {
     await expect(bridge.usage.getSnapshot()).resolves.toEqual(snapshot);
     await expect(bridge.usage.refresh()).resolves.toEqual(refreshed);
 
-    expect(invoke).toHaveBeenCalledWith(IPC.usageGetSnapshot);
-    expect(invoke).toHaveBeenCalledWith(IPC.usageRefresh);
-    expect(invoke).not.toHaveBeenCalledWith(
-      IPC.localRuntimeCallAction,
-      expect.anything(),
-    );
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
+      request: { domain: "usage", action: "getUsageSnapshot" },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
+      request: { domain: "usage", action: "forceRefresh" },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.usageGetSnapshot);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.usageRefresh);
   });
 
   it("routes usage reads through a remote project runtime when bound", async () => {

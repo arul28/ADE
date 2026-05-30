@@ -525,6 +525,8 @@ import type {
   TestRunSummary,
   TestSuiteDefinition,
   WriteTextAtomicArgs,
+  AdeUsageStats,
+  GetAdeUsageStatsArgs,
   UsageSnapshot,
   BudgetCheckResult,
   BudgetCapScope,
@@ -4004,12 +4006,16 @@ contextBridge.exposeInMainWorld("ade", {
     },
   },
   usage: {
+    getAdeStats: async (args: GetAdeUsageStatsArgs = {}): Promise<AdeUsageStats | null> =>
+      callProjectRuntimeActionOr("usage", "getAdeUsageStats", { args }, () =>
+        ipcRenderer.invoke(IPC.usageGetAdeStats, args),
+      ),
     getSnapshot: async (): Promise<UsageSnapshot | null> =>
-      callRemoteProjectRuntimeActionOr("usage", "getUsageSnapshot", {}, () =>
+      callProjectRuntimeActionOr("usage", "getUsageSnapshot", {}, () =>
         ipcRenderer.invoke(IPC.usageGetSnapshot),
       ),
     refresh: async (): Promise<UsageSnapshot | null> =>
-      callRemoteProjectRuntimeActionOr("usage", "forceRefresh", {}, () =>
+      callProjectRuntimeActionOr("usage", "forceRefresh", {}, () =>
         ipcRenderer.invoke(IPC.usageRefresh),
       ),
     checkBudget: async (args: {
@@ -4017,7 +4023,7 @@ contextBridge.exposeInMainWorld("ade", {
       scopeId?: string;
       provider: BudgetCapProvider;
     }): Promise<BudgetCheckResult> =>
-      callRemoteProjectRuntimeActionOr("budget", "checkBudget", { args }, () =>
+      callProjectRuntimeActionOr("budget", "checkBudget", { args }, () =>
         ipcRenderer.invoke(IPC.usageCheckBudget, args),
       ),
     getCumulativeUsage: async (args: {
@@ -4029,17 +4035,17 @@ contextBridge.exposeInMainWorld("ade", {
       totalCostUsd: number;
       weekKey: string;
     }> =>
-      callRemoteProjectRuntimeActionOr("budget", "getCumulativeUsage", { args }, () =>
+      callProjectRuntimeActionOr("budget", "getCumulativeUsage", { args }, () =>
         ipcRenderer.invoke(IPC.usageGetCumulativeUsage, args),
       ),
     getBudgetConfig: async (): Promise<BudgetCapConfig> =>
-      callRemoteProjectRuntimeActionOr("budget", "getConfig", {}, () =>
+      callProjectRuntimeActionOr("budget", "getConfig", {}, () =>
         ipcRenderer.invoke(IPC.usageGetBudgetConfig),
       ),
     saveBudgetConfig: async (
       config: BudgetCapConfig,
     ): Promise<BudgetCapConfig> =>
-      callRemoteProjectRuntimeActionOr(
+      callProjectRuntimeActionOr(
         "budget",
         "updateConfig",
         { args: config },

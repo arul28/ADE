@@ -1,5 +1,5 @@
 import type { Icon as PhosphorIcon } from "@phosphor-icons/react";
-import { Brain, DeviceMobile, FolderSimple, GearSix, Lightning, Palette, Plugs, Stack } from "@phosphor-icons/react";
+import { Brain, ChartLineUp, DeviceMobile, FolderSimple, GearSix, Palette, Plugs, Stack } from "@phosphor-icons/react";
 
 type SettingsSectionDefinition = {
   id: string;
@@ -16,7 +16,7 @@ export const SETTINGS_SECTIONS = [
   { id: "mobile-push", label: "Mobile Push", icon: DeviceMobile, localOnly: true },
   { id: "integrations", label: "Integrations", icon: Plugs },
   { id: "lane-templates", label: "Lane Templates", icon: Stack },
-  { id: "usage", label: "Usage", icon: Lightning },
+  { id: "ade-usage", label: "Stats", icon: ChartLineUp },
 ] as const satisfies readonly SettingsSectionDefinition[];
 
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
@@ -38,6 +38,8 @@ const TAB_ALIASES: Record<string, SectionId> = {
   onboarding: "general",
   help: "general",
   tours: "general",
+  usage: "ade-usage",
+  stats: "ade-usage",
 };
 
 export function getVisibleSettingsSections(showLocalOnlySections: boolean): SettingsSection[] {
