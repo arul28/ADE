@@ -5822,22 +5822,22 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.agentChatCodexGetGoal, async (_event, arg: AgentChatCodexGetGoalArgs): Promise<CodexThreadGoal | null> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return ctx.agentChatService.getCodexGoal(arg);
   });
 
   ipcMain.handle(IPC.agentChatCodexSetGoal, async (_event, arg: AgentChatCodexSetGoalArgs): Promise<CodexThreadGoal | null> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return ctx.agentChatService.setCodexGoal(arg);
   });
 
   ipcMain.handle(IPC.agentChatCodexSetGoalStatus, async (_event, arg: AgentChatCodexSetGoalStatusArgs): Promise<CodexThreadGoal | null> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return ctx.agentChatService.setCodexGoalStatus(arg);
   });
 
   ipcMain.handle(IPC.agentChatCodexClearGoal, async (_event, arg: AgentChatCodexClearGoalArgs): Promise<CodexThreadGoal | null> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return ctx.agentChatService.clearCodexGoal(arg);
   });
 
