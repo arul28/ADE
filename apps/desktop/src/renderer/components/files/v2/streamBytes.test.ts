@@ -56,6 +56,25 @@ describe("streamFileBytes", () => {
     expect(Array.from(result)).toEqual([1, 2, 3, 4]);
   });
 
+  it("encodes UTF-8 ranges without base64 decoding them", async () => {
+    const content = "hello cafe";
+    const readFileRange = vi.fn(async () => ({
+      path: "x",
+      encoding: "utf-8" as const,
+      content,
+      rangeStart: 0,
+      rangeEnd: content.length,
+      totalSize: content.length,
+      nextOffset: null,
+      eof: true,
+    }));
+    (globalThis as any).window = { ade: { files: { readFileRange } } };
+
+    const result = await streamFileBytes("ws", "x", { chunkLength: 1024 });
+
+    expect(Array.from(result)).toEqual(Array.from(new TextEncoder().encode(content)));
+  });
+
   it("stops early when cancelled", async () => {
     const original = new Uint8Array(100);
     installReadFileRange(original);

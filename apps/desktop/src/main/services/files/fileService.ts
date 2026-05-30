@@ -121,6 +121,7 @@ const TEXT_EXTENSIONS = new Set([
   ".yml",
   ".zsh",
 ]);
+const BASE64_RANGE_EXTENSIONS = new Set([".pdf"]);
 
 function containsDotGit(absPath: string): boolean {
   const parts = absPath.split(path.sep);
@@ -177,6 +178,10 @@ function inferImageMimeType(relPath: string): string | null {
     default:
       return null;
   }
+}
+
+function shouldReturnRangeAsBase64(relPath: string): boolean {
+  return isImagePath(relPath) || BASE64_RANGE_EXTENSIONS.has(path.extname(relPath).toLowerCase());
 }
 
 function looksLikeBinary(buf: Buffer, relPath: string): boolean {
@@ -981,8 +986,8 @@ export function createFileService({
         const buf = Buffer.alloc(Math.min(length, totalSize - offset));
         const { bytesRead } = await fd.read(buf, 0, buf.length, offset);
         const slice = buf.subarray(0, bytesRead);
-        const isImage = inferImageMimeType(normalizedRel) != null;
-        const treatAsBinary = isImage || (offset === 0 && looksLikeBinary(slice, normalizedRel));
+        const treatAsBinary = shouldReturnRangeAsBase64(normalizedRel)
+          || (offset === 0 && looksLikeBinary(slice, normalizedRel));
 
         if (treatAsBinary) {
           const rangeEnd = offset + bytesRead;

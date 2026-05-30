@@ -19,9 +19,14 @@ export async function streamFileBytes(
     const page = await window.ade.files.readFileRange({ workspaceId, path, offset: next, length: chunkLength });
     if (opts.isCancelled?.()) return new Uint8Array();
     if (page.content) {
-      const binary = atob(page.content);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      let bytes: Uint8Array;
+      if (page.encoding === "base64") {
+        const binary = atob(page.content);
+        bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      } else {
+        bytes = new TextEncoder().encode(page.content);
+      }
       if (opts.maxBytes != null && total + bytes.length > opts.maxBytes) {
         throw new Error(`File is too large to stream into memory (${opts.maxBytes} byte limit).`);
       }

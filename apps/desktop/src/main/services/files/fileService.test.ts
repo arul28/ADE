@@ -166,6 +166,42 @@ describe("fileService", () => {
     }
   });
 
+  it("streams PDF byte ranges as base64 for every chunk", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-pdf-range-"));
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      const pdfBytes = Buffer.concat([
+        Buffer.from("%PDF-1.7\n", "utf8"),
+        Buffer.from([0x00, 0xff, 0xd8, 0x11, 0x22, 0x33, 0x44, 0x55]),
+        Buffer.alloc(96, 0x61),
+      ]);
+      fs.writeFileSync(path.join(rootPath, "report.pdf"), pdfBytes);
+
+      let offset = 0;
+      const chunks: Buffer[] = [];
+      let guard = 0;
+      for (;;) {
+        const page = await service.readFileRange({
+          workspaceId: "workspace-1",
+          path: "report.pdf",
+          offset,
+          length: 7,
+        });
+        expect(page.encoding).toBe("base64");
+        chunks.push(Buffer.from(page.content, "base64"));
+        if (page.nextOffset == null) break;
+        offset = page.nextOffset;
+        if (++guard > 10_000) throw new Error("readFileRange did not terminate");
+      }
+
+      expect(Buffer.concat(chunks)).toEqual(pdfBytes);
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
   it("returns per-line blame records", async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-blame-"));
     const { execSync } = await import("node:child_process");

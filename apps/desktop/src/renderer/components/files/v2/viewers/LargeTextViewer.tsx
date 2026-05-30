@@ -5,6 +5,7 @@ import { COLORS, MONO_FONT } from "../../../lanes/laneDesignTokens";
 import type { ViewerProps } from "./types";
 
 const LINE_HEIGHT = 18;
+const STREAM_CHUNK_BYTES = 512 * 1024;
 // Cap streamed text so a multi-GB file can't exhaust renderer memory.
 const MAX_STREAM_BYTES = 25 * 1024 * 1024;
 
@@ -24,34 +25,42 @@ export function LargeTextViewer({ workspaceId, tab, content }: ViewerProps) {
   useEffect(() => {
     let cancelled = false;
     setText(content.content);
+    setCapped(false);
     if (!content.isPartial || content.nextOffset == null) {
       setStreaming(false);
       return;
     }
     setStreaming(true);
     (async () => {
-      let acc = content.content;
+      const parts: string[] = [content.content];
       let next: number | null = content.nextOffset ?? null;
       let guard = 0;
       while (next != null) {
+        const remainingBytes = MAX_STREAM_BYTES - next;
+        if (remainingBytes <= 0) {
+          setCapped(true);
+          break;
+        }
+        const requestOffset = next;
         const page = await window.ade.files.readFileRange({
           workspaceId,
           path: tab.path,
-          offset: next,
-          length: 512 * 1024,
+          offset: requestOffset,
+          length: Math.min(STREAM_CHUNK_BYTES, remainingBytes),
         });
         if (cancelled) return;
-        acc += page.content;
+        parts.push(page.content);
         next = page.nextOffset;
-        // Surface progressively so the user sees content while it loads.
-        setText(acc);
-        if (acc.length >= MAX_STREAM_BYTES) {
+        if ((page.rangeEnd >= MAX_STREAM_BYTES && next != null) || page.rangeEnd <= requestOffset) {
           setCapped(true);
           break;
         }
         if (++guard > 10_000) break;
       }
-      if (!cancelled) setStreaming(false);
+      if (!cancelled) {
+        setText(parts.join(""));
+        setStreaming(false);
+      }
     })();
     return () => {
       cancelled = true;
