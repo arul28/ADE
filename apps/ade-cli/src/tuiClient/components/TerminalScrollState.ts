@@ -85,12 +85,17 @@ export function jumpTerminalToBottom(current: TerminalScrollState): TerminalScro
 export function noteTerminalNewRows(
   current: TerminalScrollState,
   arrivedRows: number,
+  maxScrollable = Number.POSITIVE_INFINITY,
 ): TerminalScrollState {
   if (current.scrollOffset <= 0) return current;
   const add = Math.max(0, Math.floor(arrivedRows));
   if (add === 0) return current;
+  // The render window starts at viewportY - scrollOffset and viewportY grows by
+  // `add` per arrived row, so advance scrollOffset by the same amount to keep the
+  // user's viewed content anchored to its absolute buffer line instead of
+  // drifting down a line per write. Clamp to the (grown) maxScrollable.
   return {
-    scrollOffset: current.scrollOffset,
+    scrollOffset: clampTerminalScrollOffset(current.scrollOffset + add, maxScrollable),
     pendingNewCount: current.pendingNewCount + add,
   };
 }

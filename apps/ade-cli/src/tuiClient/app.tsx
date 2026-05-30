@@ -1697,14 +1697,24 @@ export function deletePromptForward(value: string, cursor: number): PromptEditRe
 // Ink emits multiple fast keystrokes as ONE chunk and only recognizes a *lone*
 // DEL/BS byte as backspace — so a burst like "x" (type then delete) arrives
 // as plain text with no backspace flag, and naive insertion would drop the
+// Like printableInput but keeps tabs (0x09) and newlines (0x0a), normalizing
+// CR/LF to "\n", so a pasted multi-line / tabbed block survives verbatim in the
+// feedback body editor. Strips the remaining C0 controls and DEL.
+function printableMultilineInput(input: string): string {
+  return input
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/[ --]/g, "");
+}
+
 // delete. Here we walk the chunk: printable runs are inserted, embedded
 // DEL/BS bytes delete backward, all in order. Fixes intermittent "backspace
 // does nothing" when typing quickly.
-export function applyCoalescedPromptInput(value: string, cursor: number, input: string): PromptEditResult {
+export function applyCoalescedPromptInput(value: string, cursor: number, input: string, preserveMultiline = false): PromptEditResult {
   let result: PromptEditResult = { value, cursor: clampPromptCursor(value, cursor) };
   let buffer = "";
   const flush = () => {
-    const printable = printableInput(buffer);
+    const printable = preserveMultiline ? printableMultilineInput(buffer) : printableInput(buffer);
     buffer = "";
     if (printable) result = insertPromptText(result.value, result.cursor, printable);
   };
@@ -2471,6 +2481,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   // that would pin the buffer at 500 and freeze TerminalPane's incremental write).
   const pendingPtyChunksRef = useRef<Map<string, string[]>>(new Map());
   const ptyFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Owns the feedback success auto-close timer so it can be cleared on
+  // unmount / re-open and never fire against a different right pane.
+  const feedbackCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   // Latest visible text + max scrollback rows reported by the live TerminalPane,
   // so keyboard scroll can clamp and copy can grab the visible region.
   const terminalViewportMetricsRef = useRef<{ maxScrollable: number; visibleText: string }>({
@@ -4773,6 +4788,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 	  }, []);
 
   const openForm = useCallback((content: Extract<RightPaneContent, { kind: "form" }>) => {
+    // Cancel any pending feedback-success auto-close so a stale timer can't fire
+    // against this freshly opened pane.
+    if (feedbackCloseTimerRef.current) {
+      clearTimeout(feedbackCloseTimerRef.current);
+      feedbackCloseTimerRef.current = null;
+    }
     const previousPane = activePaneRef.current;
     stashActiveInput();
     if (previousPane !== "details") {
@@ -5743,6 +5764,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         clearTimeout(pendingModelCommitTimerRef.current);
         pendingModelCommitTimerRef.current = null;
       }
+      if (feedbackCloseTimerRef.current) {
+        clearTimeout(feedbackCloseTimerRef.current);
+        feedbackCloseTimerRef.current = null;
+      }
       pendingModelCommitStateRef.current = null;
       const conn = connectionRef.current;
       connectionRef.current = null;
@@ -5905,11 +5930,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     });
     return () => {
       unsubscribe();
-      if (chatFlushTimerRef.current) {
-        clearTimeout(chatFlushTimerRef.current);
-        chatFlushTimerRef.current = null;
-      }
-      pendingChatEnvelopesRef.current = [];
+      // Flush whatever is buffered so a reconnect doesn't strand token deltas.
+      // flushPendingChatEvents() already clears chatFlushTimerRef and resets
+      // pendingChatEnvelopesRef after draining, mirroring the PTY cleanup.
+      flushPendingChatEvents();
     };
     // Re-bind only when the connection itself changes (reconnect). clearedAt and
     // refreshState are read via refs so their churn doesn't drop the buffer.
@@ -5942,7 +5966,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             (sum, chunk) => sum + Math.max(0, (chunk.match(/\n/g)?.length ?? 0)),
             0,
           );
-          const next = noteTerminalNewRows(current, arrivedRows);
+          // Anchor scrolled-up content to its absolute buffer line: advance
+          // scrollOffset by arrivedRows (clamped) so the viewed window does not
+          // drift down as viewportY grows. The next onViewportMetrics report
+          // re-clamps on commit.
+          const maxScrollable =
+            terminalViewportMetricsRef.current?.maxScrollable ??
+            Number.POSITIVE_INFINITY;
+          const next = noteTerminalNewRows(current, arrivedRows, maxScrollable);
           if (next !== current) {
             scrollPatch = { ...(scrollPatch ?? scrollMap), [sid]: next };
           }
@@ -7880,15 +7911,30 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             feedback: { ...form.feedback, feedback: "submitted" },
           });
           addNotice(notice.text, notice.tone);
-          setTimeout(() => {
-            setFormDiscardArmed(false);
-            setFormValues({});
-            setFormFieldIndex(0);
-            setPrompt("");
-            setRightOpen(false);
-            setRightPane({ kind: "empty" });
-            lastUserOpenedPaneRef.current = null;
-            focusAfterDetails();
+          if (feedbackCloseTimerRef.current) {
+            clearTimeout(feedbackCloseTimerRef.current);
+          }
+          feedbackCloseTimerRef.current = setTimeout(() => {
+            feedbackCloseTimerRef.current = null;
+            setRightPane((prev) => {
+              // Only close if the submitted feedback form is still showing; a
+              // different pane may have been opened while the timer was pending.
+              if (
+                prev.kind === "form" &&
+                prev.command === "feedback" &&
+                prev.feedback?.feedback === "submitted"
+              ) {
+                setFormDiscardArmed(false);
+                setFormValues({});
+                setFormFieldIndex(0);
+                setPrompt("");
+                setRightOpen(false);
+                lastUserOpenedPaneRef.current = null;
+                focusAfterDetails();
+                return { kind: "empty" };
+              }
+              return prev;
+            });
           }, 900);
           return;
         }
@@ -10131,7 +10177,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     // key handlers so the body gets a real text cursor (the shared prompt-input
     // primitive) while type/context/validation/serialization go through
     // feedbackForm.ts. Left/right cycle the type; Ctrl+T toggles the context
-    // footer; Ctrl+S submits; Enter inserts a newline.
+    // footer; Ctrl+S submits; Enter inserts a newline; pasted blocks keep their
+    // embedded newlines and tabs verbatim (preserveMultiline).
     if (pane === "details" && rightOpen && rightPane.kind === "form" && rightPane.command === "feedback") {
       const form = rightPane;
       const meta = form.feedback ?? {};
@@ -10178,7 +10225,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
       const currentBody = meta.body ?? "";
-      const edit = applyCoalescedPromptInput(currentBody, currentBody.length, input);
+      // preserveMultiline keeps embedded newlines and tabs from a pasted block so
+      // the body stays verbatim (a real Enter keypress is handled above).
+      const edit = applyCoalescedPromptInput(currentBody, currentBody.length, input, true);
       if (edit.value !== currentBody) {
         updateFeedback({ body: edit.value });
         return;

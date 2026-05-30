@@ -1053,13 +1053,39 @@ function buildDiffRenderLines(
 }
 
 export function rightPaneScrollableRowCount(content: RightPaneContent): number {
-  if (content.kind === "details") return content.body.split(/\r?\n/).length;
-  if (content.kind === "context-usage") return (content.usage?.categories.length ?? 0) + 4;
-  if (content.kind === "list") return content.rows.length;
-  if (content.kind === "diff") {
-    return buildDiffRenderLines(content.files).length;
+  switch (content.kind) {
+    case "details":
+      return content.body.split(/\r?\n/).length;
+    case "context-usage":
+      return (content.usage?.categories.length ?? 0) + 4;
+    case "list":
+      return content.rows.length;
+    case "diff":
+      return buildDiffRenderLines(content.files).length;
+    case "usage":
+      // Mirror UsagePane's rendered rows so the bottom stays reachable when a
+      // provider exposes multiple quota windows: each QuotaWindowRow is label(1)
+      // + bar(1) + marginBottom(1) = 3 rows, plus up to ~4 rows for the session
+      // block (marginTop + "Session" + body) and any loading/error line.
+      return (content.quotaWindows?.length ?? 0) * 3 + 4;
+    case "status":
+      // Flat key/value list — scrolls by row count.
+      return content.rows.length;
+    case "empty":
+    case "form":
+    case "chat-info":
+    case "model-picker":
+    case "help":
+    case "lane-details":
+      // These panes have their own internal navigation (help uses selectedIndex,
+      // lane-details uses selectedActionIndex) or no scrollable body.
+      return 0;
+    default: {
+      const _exhaustive: never = content;
+      void _exhaustive;
+      return 0;
+    }
   }
-  return 0;
 }
 
 type FormPaneContent = Extract<RightPaneContent, { kind: "form" }>;

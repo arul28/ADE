@@ -80,9 +80,17 @@ describe("jumpTerminalToBottom", () => {
 });
 
 describe("noteTerminalNewRows", () => {
-  it("accumulates the new-line counter only while scrolled up", () => {
+  it("accumulates the counter AND advances scrollOffset to anchor content while scrolled up", () => {
+    // viewportY grows by 3, so scrollOffset must grow by 3 to keep
+    // viewportY - scrollOffset constant (content stays pinned, no drift).
     const scrolled = { scrollOffset: 12, pendingNewCount: 2 };
-    expect(noteTerminalNewRows(scrolled, 3)).toEqual({ scrollOffset: 12, pendingNewCount: 5 });
+    expect(noteTerminalNewRows(scrolled, 3)).toEqual({ scrollOffset: 15, pendingNewCount: 5 });
+  });
+
+  it("clamps the advanced scrollOffset to maxScrollable", () => {
+    expect(
+      noteTerminalNewRows({ scrollOffset: 98, pendingNewCount: 0 }, 5, 100),
+    ).toEqual({ scrollOffset: 100, pendingNewCount: 5 });
   });
 
   it("does not count new output while pinned to the bottom (no chip)", () => {

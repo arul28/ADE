@@ -245,7 +245,9 @@ describe("modelPickerGeometry — settings footer + apply", () => {
     expect(g.footerTop).toBe(listTop + MODEL_LIST_ROWS + 1);
     expect(g.settings.length).toBe(2);
     g.settings.forEach((s) => {
-      expect(s.rect.y).toBe(g.footerTop + 1);
+      // divider at footerTop, blank (chips Box marginTop) at footerTop+1,
+      // chips painted at footerTop+2.
+      expect(s.rect.y).toBe(g.footerTop + 2);
       expect(s.rect.h).toBe(1);
     });
     // provider/model rows are excluded from the footer chips.
@@ -265,8 +267,9 @@ describe("modelPickerGeometry — settings footer + apply", () => {
     // Only the reasoning chip is a footer setting.
     expect(g.settings.map((s) => s.id)).toEqual(["right:model-picker:setting:reasoning"]);
     expect(g.apply).not.toBeNull();
-    // Apply sits below the chip row (chipsY + 2 when chips exist).
-    expect(g.apply!.y).toBe(g.footerTop + 1 + 2);
+    // chips at footerTop+2, blank (apply Box marginTop) at footerTop+3,
+    // [ Apply ] painted at footerTop+4 (chipsY + 2 when chips exist).
+    expect(g.apply!.y).toBe(g.footerTop + 2 + 2);
     expect(g.apply!.h).toBe(1);
   });
 

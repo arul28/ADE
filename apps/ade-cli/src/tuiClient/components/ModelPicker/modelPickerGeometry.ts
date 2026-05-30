@@ -194,8 +194,11 @@ export function modelPickerGeometry(input: GeometryInput): ModelPickerGeometry {
   const settingRows = visibleRows.filter((row) => row.kind !== "apply");
   const applyRow = visibleRows.find((row) => row.kind === "apply") ?? null;
 
-  // The chip row sits one marginTop (1) below the divider.
-  const chipsY = footerTop + 1;
+  // The chips Box has its OWN marginTop (1) below the divider (the divider sits
+  // at footerTop), so chips paint at footerTop+2 — and Apply, with its own
+  // marginTop, lands at chipsY+2 = footerTop+4. (footerTop already accounts for
+  // the footer Box's outer marginTop.)
+  const chipsY = footerTop + 2;
   // Chips are a flexWrap row of natural-width pills; their precise x cannot be
   // derived from a formula without measuring rendered glyph widths. We register
   // each chip as a coarse equal slice across the body — good enough to route a
