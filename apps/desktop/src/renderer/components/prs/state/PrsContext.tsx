@@ -750,6 +750,29 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     });
   }, []);
 
+  const conflictAnalysisRefreshSeq = React.useRef(0);
+  const refreshConflictAnalyses = useCallback(async () => {
+    const shouldRefreshConflictAnalysis = () => activeTabRef.current !== "normal";
+    if (!active || !shouldRefreshConflictAnalysis()) return;
+    const requestSeq = ++conflictAnalysisRefreshSeq.current;
+    try {
+      const refreshedPrs = await window.ade.prs.listWithConflicts({ includeConflictAnalysis: true });
+      if (requestSeq !== conflictAnalysisRefreshSeq.current || !shouldRefreshConflictAnalysis()) return;
+      const conflictAnalysisByPrId = new Map(
+        refreshedPrs.map((pr) => [pr.id, pr.conflictAnalysis] as const),
+      );
+      const next = prsRef.current.map((pr) => (
+        conflictAnalysisByPrId.has(pr.id)
+          ? { ...pr, conflictAnalysis: conflictAnalysisByPrId.get(pr.id) ?? null }
+          : pr
+      ));
+      prsRef.current = next;
+      setPrs((prev) => (jsonEqual(prev, next) ? prev : next));
+    } catch (err) {
+      console.warn("[PrsContext] Failed to refresh PR conflict analysis:", err);
+    }
+  }, [active]);
+
   // Track whether the initial data load has completed
   const initialLoadDone = React.useRef(Boolean(warmCache));
 
@@ -1462,6 +1485,12 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     void refreshMergeContexts(prIds);
   }, [active, activeTab, prs, refreshMergeContexts]);
 
+  const prsConflictRefreshKey = useMemo(() => prs.map((pr) => pr.id).sort().join("|"), [prs]);
+  useEffect(() => {
+    if (!active || activeTab === "normal" || prsConflictRefreshKey.length === 0) return;
+    void refreshConflictAnalyses();
+  }, [active, activeTab, prsConflictRefreshKey, refreshConflictAnalyses]);
+
   useEffect(() => {
     if (!active || activeTab === "normal") return;
     let cancelled = false;
@@ -1512,6 +1541,9 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
 
         if (changedPrIds.length > 0) {
           void refreshMergeContexts(changedPrIds);
+          if (activeTabRef.current !== "normal") {
+            void refreshConflictAnalyses();
+          }
           const affectedQueueGroupIds = new Set<string>();
           for (const prId of changedPrIds) {
             const context = mergeContextByPrIdRef.current[prId];
@@ -1540,7 +1572,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     return () => {
       unsub();
     };
-  }, [active, refreshDetailSilently, refreshMergeContexts, refreshQueueStates]);
+  }, [active, refreshConflictAnalyses, refreshDetailSilently, refreshMergeContexts, refreshQueueStates]);
 
   // Subscribe to rebase events
   useEffect(() => {
