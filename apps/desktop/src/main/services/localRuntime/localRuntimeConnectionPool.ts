@@ -653,16 +653,57 @@ export class LocalRuntimeConnectionPool {
     const normalizedRoot = path.resolve(rootPath);
     const cached = this.projectsByRoot.get(normalizedRoot);
     if (cached) return cached;
-    const entry = await this.connect();
-    const project = await entry.client.call(
-      "projects.add",
-      { rootPath: normalizedRoot },
-      { timeoutMs: LOCAL_RUNTIME_PROJECT_TIMEOUT_MS },
-    );
-    const record = coerceProjects([project])[0];
-    if (!record) throw new Error("Local ADE service did not return a project record.");
-    this.projectsByRoot.set(normalizedRoot, record);
-    return record;
+
+    let lastError: Error | null = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const entry = await this.connect();
+      if (entry.client.isClosed()) {
+        const error = new Error("Remote ADE service connection closed.");
+        this.logger.warn("local_runtime.ensure_project_connection_dropped", {
+          rootPath: normalizedRoot,
+          socketPath: entry.socketPath,
+          attempt,
+          willRetry: attempt < 2,
+          error: error.message,
+        });
+        this.resetActiveConnection(entry);
+        lastError = error;
+        if (attempt < 2) continue;
+        throw error;
+      }
+
+      try {
+        const project = await entry.client.call(
+          "projects.add",
+          { rootPath: normalizedRoot },
+          { timeoutMs: LOCAL_RUNTIME_PROJECT_TIMEOUT_MS },
+        );
+        const record = coerceProjects([project])[0];
+        if (!record) throw new Error("Local ADE service did not return a project record.");
+        this.projectsByRoot.set(normalizedRoot, record);
+        return record;
+      } catch (error) {
+        const projectError = error instanceof Error ? error : new Error(String(error));
+        if (!isLocalRuntimeConnectionDropped(projectError)) {
+          throw projectError;
+        }
+        this.logger.warn("local_runtime.ensure_project_connection_dropped", {
+          rootPath: normalizedRoot,
+          socketPath: entry.socketPath,
+          attempt,
+          willRetry: attempt < 2,
+          error: projectError.message,
+        });
+        this.resetActiveConnection(entry);
+        lastError = projectError;
+        if (attempt < 2) continue;
+        throw projectError;
+      }
+    }
+
+    // Unreachable: the loop always returns or throws on the final attempt.
+    // Required here only for TypeScript's control-flow narrowing.
+    throw lastError ?? new Error("Local ADE service did not return a project record.");
   }
 
   async projects(): Promise<RemoteRuntimeProjectRecord[]> {
