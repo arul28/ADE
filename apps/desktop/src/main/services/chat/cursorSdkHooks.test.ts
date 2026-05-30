@@ -99,7 +99,6 @@ describe("Cursor SDK hook installation", () => {
     try {
       ensureCursorSdkUserHook({ userHomeDir: home });
       const stdout = execFileSync("/bin/sh", [cursorSdkHookShellCommandPath(home)], {
-        input: "{}",
         env: {
           PATH: "",
           HOME: home,
@@ -300,7 +299,6 @@ describe("Cursor SDK hook installation", () => {
       expect(content).toContain("script_path='/tmp/ADE Hooks/ade-tool-gate.cjs'");
       expect(content).toContain("configured_node='/tmp/node'\\''s/bin/node'");
       const stdout = execFileSync("/bin/sh", [commandPath, `--socket=${path.join(home, "missing.sock")}`], {
-        input: "{}",
         env: {
           PATH: "",
           HOME: home,
