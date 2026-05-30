@@ -1421,6 +1421,24 @@ export type AgentChatInterruptArgs = {
   sessionId: string;
 };
 
+export type AgentChatCodexGetGoalArgs = {
+  sessionId: string;
+};
+
+export type AgentChatCodexSetGoalArgs = {
+  sessionId: string;
+  objective: string;
+};
+
+export type AgentChatCodexSetGoalStatusArgs = {
+  sessionId: string;
+  status: Extract<CodexThreadGoalStatus, "active" | "paused" | "blocked" | "complete">;
+};
+
+export type AgentChatCodexClearGoalArgs = {
+  sessionId: string;
+};
+
 export type AgentChatApproveArgs = {
   sessionId: string;
   itemId: string;

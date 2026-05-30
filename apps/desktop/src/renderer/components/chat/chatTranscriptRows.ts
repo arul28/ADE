@@ -52,10 +52,8 @@ type HiddenTranscriptEvent =
   | Extract<AgentChatEvent, { type: "web_search" }>
   | Extract<AgentChatEvent, { type: "reasoning" }>
   | Extract<AgentChatEvent, { type: "pending_input_resolved" }>
-  // Goal and token-usage events drive the pinned goal banner and chat-column-bottom
-  // token footer; the inline transcript rows would be duplicate noise.
-  | Extract<AgentChatEvent, { type: "codex_goal_updated" }>
-  | Extract<AgentChatEvent, { type: "codex_goal_cleared" }>
+  // Token usage drives the chat-column-bottom token footer; inline transcript
+  // rows would be duplicate noise.
   | Extract<AgentChatEvent, { type: "codex_token_usage" }>;
 
 type ChatTranscriptVisibleEvent = Exclude<AgentChatEvent, HiddenTranscriptEvent>;
@@ -564,13 +562,9 @@ export function appendCollapsedChatTranscriptEvent(
     return;
   }
 
-  // Codex goal + token usage events drive the pinned goal banner / chat-bottom
-  // token footer; inline transcript rows would be duplicate noise.
-  if (
-    event.type === "codex_goal_updated"
-    || event.type === "codex_goal_cleared"
-    || event.type === "codex_token_usage"
-  ) {
+  // Codex token usage drives the chat-bottom token footer; inline transcript
+  // rows would be duplicate noise.
+  if (event.type === "codex_token_usage") {
     return;
   }
 

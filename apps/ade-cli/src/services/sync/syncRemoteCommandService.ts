@@ -3,6 +3,10 @@ import type {
   AgentChatCreateArgs,
   AgentChatArchiveArgs,
   AgentChatApproveArgs,
+  AgentChatCodexClearGoalArgs,
+  AgentChatCodexGetGoalArgs,
+  AgentChatCodexSetGoalArgs,
+  AgentChatCodexSetGoalStatusArgs,
   AgentChatFileRef,
   AgentChatGetSummaryArgs,
   AgentChatListArgs,
@@ -866,6 +870,32 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
   }
   if ("manuallyNamed" in value) parsed.manuallyNamed = value.manuallyNamed === true;
   return parsed;
+}
+
+function parseAgentChatCodexGetGoalArgs(value: Record<string, unknown>): AgentChatCodexGetGoalArgs {
+  return {
+    sessionId: requireString(value.sessionId, "chat.getCodexGoal requires sessionId."),
+  };
+}
+
+function parseAgentChatCodexSetGoalArgs(value: Record<string, unknown>): AgentChatCodexSetGoalArgs {
+  return {
+    sessionId: requireString(value.sessionId, "chat.setCodexGoal requires sessionId."),
+    objective: requireString(value.objective, "chat.setCodexGoal requires objective."),
+  };
+}
+
+function parseAgentChatCodexSetGoalStatusArgs(value: Record<string, unknown>): AgentChatCodexSetGoalStatusArgs {
+  return {
+    sessionId: requireString(value.sessionId, "chat.setCodexGoalStatus requires sessionId."),
+    status: requireString(value.status, "chat.setCodexGoalStatus requires status.") as AgentChatCodexSetGoalStatusArgs["status"],
+  };
+}
+
+function parseAgentChatCodexClearGoalArgs(value: Record<string, unknown>): AgentChatCodexClearGoalArgs {
+  return {
+    sessionId: requireString(value.sessionId, "chat.clearCodexGoal requires sessionId."),
+  };
 }
 
 function parseAgentChatArchiveArgs(value: Record<string, unknown>, action: string): AgentChatArchiveArgs {
@@ -2236,6 +2266,14 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     }));
   register("chat.updateSession", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").updateSession(parseAgentChatUpdateSessionArgs(payload)));
+  register("chat.getCodexGoal", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").getCodexGoal(parseAgentChatCodexGetGoalArgs(payload)));
+  register("chat.setCodexGoal", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").setCodexGoal(parseAgentChatCodexSetGoalArgs(payload)));
+  register("chat.setCodexGoalStatus", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").setCodexGoalStatus(parseAgentChatCodexSetGoalStatusArgs(payload)));
+  register("chat.clearCodexGoal", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").clearCodexGoal(parseAgentChatCodexClearGoalArgs(payload)));
   register("chat.archive", { viewerAllowed: true, queueable: true }, async (payload) => {
     await requireService(args.agentChatService, "Agent chat service not available.").archiveSession(parseAgentChatArchiveArgs(payload, "chat.archive"));
     return { ok: true };

@@ -68,8 +68,12 @@ import type {
   AgentTool,
   AgentChatApproveArgs,
   AgentChatArchiveArgs,
+  AgentChatCodexClearGoalArgs,
+  AgentChatCodexGetGoalArgs,
   AgentChatCodexOpenInCliArgs,
   AgentChatCodexOpenInCliResult,
+  AgentChatCodexSetGoalArgs,
+  AgentChatCodexSetGoalStatusArgs,
   AgentChatCreateArgs,
   AgentChatLaunchArgs,
   AgentChatLaunchCliArgs,
@@ -119,6 +123,7 @@ import type {
   AgentChatSessionCapabilities,
   AgentChatSessionCapabilitiesArgs,
   AgentChatSessionSummary,
+  CodexThreadGoal,
   AgentChatSteerArgs,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
@@ -1377,6 +1382,18 @@ declare global {
           maxEvents?: number;
         }) => Promise<AgentChatEventHistorySnapshot>;
         codex: {
+          getGoal: (
+            args: AgentChatCodexGetGoalArgs,
+          ) => Promise<CodexThreadGoal | null>;
+          setGoal: (
+            args: AgentChatCodexSetGoalArgs,
+          ) => Promise<CodexThreadGoal | null>;
+          setGoalStatus: (
+            args: AgentChatCodexSetGoalStatusArgs,
+          ) => Promise<CodexThreadGoal | null>;
+          clearGoal: (
+            args: AgentChatCodexClearGoalArgs,
+          ) => Promise<CodexThreadGoal | null>;
           openInCli: (
             args: AgentChatCodexOpenInCliArgs,
           ) => Promise<AgentChatCodexOpenInCliResult>;

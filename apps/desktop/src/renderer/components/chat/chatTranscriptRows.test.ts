@@ -980,6 +980,28 @@ describe("chatTranscriptRows edge cases", () => {
     expect(rows).toHaveLength(0);
   });
 
+  it("keeps Codex goal lifecycle events visible", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "codex_goal_updated",
+          goal: { objective: "Ship CLI parity", status: "active", tokenBudget: null },
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "codex_goal_cleared" },
+      },
+    ]);
+    expect(rows.map((row) => row.event.type)).toEqual([
+      "codex_goal_updated",
+      "codex_goal_cleared",
+    ]);
+  });
+
   it("filters out low-value system notices", () => {
     const rows = collapseChatTranscriptEvents([
       {

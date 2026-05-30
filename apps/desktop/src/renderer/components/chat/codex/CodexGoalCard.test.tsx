@@ -29,7 +29,7 @@ describe("CodexGoalCard", () => {
     expect(screen.getByText(/12\.3k/)).toBeTruthy();
   });
 
-  it("renders a filled progress bar and tokens used/budget when budget is set", () => {
+  it("ignores provider token budgets and only shows tokens used", () => {
     render(
       <CodexGoalCard
         goal={{
@@ -40,11 +40,9 @@ describe("CodexGoalCard", () => {
         }}
       />,
     );
-    const progressbar = screen.getByRole("progressbar");
-    expect(progressbar).toBeTruthy();
-    expect(progressbar.getAttribute("aria-valuenow")).toBe("250000");
-    expect(progressbar.getAttribute("aria-valuemax")).toBe("1000000");
-    expect(screen.getByText(/250\.0k\s*\/\s*1\.0M/)).toBeTruthy();
+    expect(screen.queryByRole("progressbar")).toBeNull();
+    expect(screen.getByText(/250\.0k/)).toBeTruthy();
+    expect(screen.queryByText(/1\.0M/)).toBeNull();
   });
 
   it("submits an edited objective via onEdit when the user presses Enter", () => {
@@ -106,12 +104,22 @@ describe("CodexGoalCard", () => {
     expect(button?.hasAttribute("disabled")).toBe(true);
   });
 
-  it("uses 'budget hit' label for budget_limited status", () => {
+  it("shows provider budget-limited goals as active", () => {
     render(
       <CodexGoalCard
         goal={{ objective: "Finish verification", status: "budget_limited", tokensUsed: 9, tokenBudget: 10 }}
       />,
     );
-    expect(screen.getByText(/budget hit/i)).toBeTruthy();
+    expect(screen.getByText(/^active$/i)).toBeTruthy();
+    expect(screen.queryByText(/budget/i)).toBeNull();
+  });
+
+  it("labels provider usage limits without debug wording", () => {
+    render(
+      <CodexGoalCard
+        goal={{ objective: "Wait for reset", status: "usage_limited" }}
+      />,
+    );
+    expect(screen.getByText(/^usage paused$/i)).toBeTruthy();
   });
 });

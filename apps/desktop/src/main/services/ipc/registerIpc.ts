@@ -254,8 +254,13 @@ import type {
   ExportHistoryResult,
   AgentChatApproveArgs,
   AgentChatArchiveArgs,
+  AgentChatCodexClearGoalArgs,
+  AgentChatCodexGetGoalArgs,
   AgentChatCodexOpenInCliArgs,
   AgentChatCodexOpenInCliResult,
+  AgentChatCodexSetGoalArgs,
+  AgentChatCodexSetGoalStatusArgs,
+  CodexThreadGoal,
   AgentChatClaudeSessionInfo,
   AgentChatClaudeSessionInfoArgs,
   AgentChatClaudeSessionListArgs,
@@ -5814,6 +5819,26 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatSlashCommands, async (_event, arg: AgentChatSlashCommandsArgs): Promise<AgentChatSlashCommand[]> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.getSlashCommands(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatCodexGetGoal, async (_event, arg: AgentChatCodexGetGoalArgs): Promise<CodexThreadGoal | null> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.getCodexGoal(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatCodexSetGoal, async (_event, arg: AgentChatCodexSetGoalArgs): Promise<CodexThreadGoal | null> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.setCodexGoal(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatCodexSetGoalStatus, async (_event, arg: AgentChatCodexSetGoalStatusArgs): Promise<CodexThreadGoal | null> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.setCodexGoalStatus(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatCodexClearGoal, async (_event, arg: AgentChatCodexClearGoalArgs): Promise<CodexThreadGoal | null> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.clearCodexGoal(arg);
   });
 
   ipcMain.handle(IPC.agentChatListClaudePlugins, async (_event, arg: AgentChatClaudePluginsArgs = {}): Promise<AgentChatClaudePlugin[]> => {

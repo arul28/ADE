@@ -108,9 +108,13 @@ import type {
   AgentChatReloadClaudePluginsResult,
   AgentChatClaudePermissionMode,
   AgentChatCompletionReport,
+  AgentChatCodexClearGoalArgs,
   AgentChatCodexApprovalPolicy,
   AgentChatCodexConfigSource,
+  AgentChatCodexGetGoalArgs,
   AgentChatCodexSandbox,
+  AgentChatCodexSetGoalArgs,
+  AgentChatCodexSetGoalStatusArgs,
   AgentChatCreateArgs,
   AgentChatLaunchArgs,
   AgentChatContextUsage,
@@ -418,6 +422,8 @@ type PersistedChatState = {
   automationRunId?: string | null;
   capabilityMode?: CtoCapabilityMode;
   completion?: AgentChatCompletionReport | null;
+  codexGoal?: CodexThreadGoal | null;
+  codexTokenUsage?: CodexThreadTokenUsage | null;
   threadId?: string;
   /** Factory Droid SDK session id for Droid resume across app restarts (best-effort). */
   droidSdkSessionId?: string;
@@ -677,7 +683,7 @@ const CODEX_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
   { name: "/experimental", description: "Toggle experimental features.", source: "sdk" },
   { name: "/feedback", description: "Send logs to the Codex maintainers.", source: "sdk" },
   { name: "/init", description: "Generate an AGENTS.md scaffold in the current directory.", source: "sdk" },
-  { name: "/goal", description: "Set, show, pause, resume, or clear the thread goal.", source: "local", argumentHint: "[pause|resume|clear|<objective>]" },
+  { name: "/goal", description: "Set, show, pause, resume, or clear the chat goal.", source: "local", argumentHint: "[pause|resume|clear|<objective>]" },
   { name: "/inject", description: "Inject context text into Codex thread history.", source: "local", argumentHint: "<context text>" },
   { name: "/logout", description: "Sign out of Codex.", source: "sdk" },
   { name: "/model", description: "Choose the active model and reasoning effort.", source: "sdk" },
@@ -1837,6 +1843,9 @@ const CODEX_REQUEST_TIMEOUT_MS = 30_000;
 const CODEX_INLINE_COMMAND_TIMEOUT_MS = 10_000;
 const CODEX_INTERRUPT_REQUEST_TIMEOUT_MS = 2_500;
 const CODEX_ARCHIVE_REQUEST_TIMEOUT_MS = 3_000;
+const CODEX_GOAL_OBJECTIVE_MAX_CHARS = 4_000;
+const CODEX_GOAL_OBJECTIVE_REQUIRED_MESSAGE = "Goal text is required.";
+const CODEX_GOAL_OBJECTIVE_TOO_LONG_MESSAGE = "Goal is too long. Keep it under 4,000 characters.";
 // Idle stream watchdog removed — time-based idle detection produced false
 // positives during long-running tool calls (Agent, Bash, etc.) where no
 // stream events are emitted while the SDK waits for tool results. The user
@@ -2299,7 +2308,34 @@ function normalizeCodexGoalPayload(value: unknown): CodexThreadGoal | null {
     updatedAt: codexTimestampOrNull(goalRecord.updatedAt ?? goalRecord.updated_at),
     ...(status ? { status } : {}),
   };
-  return Object.values(normalized).some((entry) => entry != null) ? normalized : null;
+  return normalizeAdeCodexGoal(Object.values(normalized).some((entry) => entry != null) ? normalized : null);
+}
+
+function normalizeAdeCodexGoal(goal: CodexThreadGoal | null): CodexThreadGoal | null {
+  if (!goal) return null;
+  return {
+    ...goal,
+    tokenBudget: null,
+    ...(goal.status === "budget_limited" ? { status: "active" as const } : {}),
+  };
+}
+
+function codexGoalSetParams(params: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...params,
+    tokenBudget: null,
+  };
+}
+
+function codexGoalPayloadRequiresBudgetClear(value: unknown): boolean {
+  const record = asRecord(value);
+  if (!record) return false;
+  const goalRecord = asRecord(record.goal) ?? record;
+  const statusRaw = stringOrNull(goalRecord.status)?.toLowerCase() ?? "";
+  return numberOrNull(goalRecord.tokenBudget ?? goalRecord.token_budget) != null
+    || statusRaw === "budgetlimited"
+    || statusRaw === "budget_limited"
+    || statusRaw === "budget-limited";
 }
 
 type CodexGoalSettableStatus = "active" | "paused" | "blocked" | "complete";
@@ -2317,6 +2353,28 @@ function isCodexGoalSlashInput(value: string): boolean {
 
 function normalizeCodexGoalObjectiveText(value: string | null | undefined): string {
   return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function validateCodexGoalObjectiveText(value: string | null | undefined): string {
+  const objective = normalizeCodexGoalObjectiveText(value);
+  if (!objective) {
+    throw new Error(CODEX_GOAL_OBJECTIVE_REQUIRED_MESSAGE);
+  }
+  if (objective.length > CODEX_GOAL_OBJECTIVE_MAX_CHARS) {
+    throw new Error(CODEX_GOAL_OBJECTIVE_TOO_LONG_MESSAGE);
+  }
+  return objective;
+}
+
+function parseCodexGoalObjectiveArg(rawObjective: string, explicitSet: boolean): ParsedCodexGoalSlashCommand {
+  const objective = normalizeCodexGoalObjectiveText(rawObjective);
+  if (!objective) {
+    return { kind: "invalid", message: "Usage: /goal <objective>." };
+  }
+  if (objective.length > CODEX_GOAL_OBJECTIVE_MAX_CHARS) {
+    return { kind: "invalid", message: CODEX_GOAL_OBJECTIVE_TOO_LONG_MESSAGE };
+  }
+  return { kind: "objective", objective, explicitSet };
 }
 
 function parseCodexGoalSlashCommand(value: string): ParsedCodexGoalSlashCommand {
@@ -2353,13 +2411,10 @@ function parseCodexGoalSlashCommand(value: string): ParsedCodexGoalSlashCommand 
 
   const explicitSetMatch = /^set(?:\s+([\s\S]*))?$/i.exec(goalArgs);
   if (explicitSetMatch) {
-    const objective = normalizeCodexGoalObjectiveText(explicitSetMatch[1] ?? "");
-    return objective
-      ? { kind: "objective", objective, explicitSet: true }
-      : { kind: "invalid", message: "Usage: /goal <objective>." };
+    return parseCodexGoalObjectiveArg(explicitSetMatch[1] ?? "", true);
   }
 
-  return { kind: "objective", objective: normalizeCodexGoalObjectiveText(goalArgs), explicitSet: false };
+  return parseCodexGoalObjectiveArg(goalArgs, false);
 }
 
 function normalizeCodexWebSearchAction(value: unknown): CodexWebSearchAction | null {
@@ -7794,6 +7849,8 @@ export function createAgentChatService(args: {
       ...(managed.session.automationRunId ? { automationRunId: managed.session.automationRunId } : {}),
       ...(managed.session.capabilityMode ? { capabilityMode: managed.session.capabilityMode } : {}),
       ...(managed.session.completion ? { completion: managed.session.completion } : {}),
+      ...(managed.session.codexGoal ? { codexGoal: normalizeAdeCodexGoal(managed.session.codexGoal) } : {}),
+      ...(managed.session.codexTokenUsage ? { codexTokenUsage: managed.session.codexTokenUsage } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
       ...(managed.session.runtimeMode ? { runtimeMode: managed.session.runtimeMode } : {}),
       ...(managed.runtime?.kind === "droid" && managed.runtime.sdkSessionId
@@ -7949,6 +8006,9 @@ export function createAgentChatService(args: {
       const surface = record.surface === "automation" ? record.surface : "work";
       const capabilityMode = normalizeCapabilityMode(record.capabilityMode);
       const completion = normalizePersistedCompletion(record.completion);
+      const codexGoal = normalizeCodexGoalPayload(record.codexGoal);
+      const codexTokenUsageRecord = asRecord(record.codexTokenUsage);
+      const codexTokenUsage = codexTokenUsageRecord ? normalizeCodexThreadTokenUsage(codexTokenUsageRecord) : null;
       if (!laneId || !model) return null;
       const recentConversationEntries = Array.isArray(record.recentConversationEntries)
         ? record.recentConversationEntries
@@ -8067,6 +8127,8 @@ export function createAgentChatService(args: {
           : {}),
         ...(capabilityMode ? { capabilityMode } : {}),
         ...(completion ? { completion } : {}),
+        ...(codexGoal ? { codexGoal } : {}),
+        ...(codexTokenUsage ? { codexTokenUsage } : {}),
         ...(typeof record.threadId === "string" && record.threadId.trim().length
           ? { threadId: record.threadId.trim() }
           : {}),
@@ -8584,20 +8646,20 @@ export function createAgentChatService(args: {
     runtime: CodexRuntime,
     goal: CodexThreadGoal | null,
     turnId?: string,
+    reportedBudgetLimit = false,
   ): void => {
-    if (!goal || goal.tokenBudget == null) return;
+    if (!goal || (!reportedBudgetLimit && goal.tokenBudget == null)) return;
     const threadId = managed.session.threadId?.trim();
     if (!threadId || runtime.goalBudgetClearInFlight.has(threadId)) return;
     const retryAfter = runtime.goalBudgetClearRetryAfterByThreadId.get(threadId) ?? 0;
     if (retryAfter > Date.now()) return;
 
     const nextStatus = goal.status === "budget_limited" ? "active" : goal.status;
-    const params: Record<string, unknown> = {
+    const params = codexGoalSetParams({
       threadId,
-      tokenBudget: null,
-    };
+    });
     if (goal.objective) params.objective = goal.objective;
-    if (nextStatus === "active" || nextStatus === "paused" || nextStatus === "complete") {
+    if (nextStatus === "active" || nextStatus === "paused" || nextStatus === "blocked" || nextStatus === "complete") {
       params.status = nextStatus;
     }
 
@@ -8620,9 +8682,9 @@ export function createAgentChatService(args: {
         emitChatEvent(managed, {
           type: "system_notice",
           noticeKind: "info",
-          message: goal.status === "budget_limited"
-            ? "Codex goal resumed."
-            : "Codex goal updated.",
+          message: reportedBudgetLimit
+            ? "Goal limit removed. ADE keeps goals unlimited."
+            : "Goal updated.",
           ...(turnId ? { turnId } : {}),
         });
         persistChatState(managed);
@@ -8636,7 +8698,7 @@ export function createAgentChatService(args: {
           type: "system_notice",
           noticeKind: "error",
           severity: "error",
-          message: `Codex goal update failed: ${error instanceof Error ? error.message : String(error)}`,
+          message: `Goal update failed: ${error instanceof Error ? error.message : String(error)}`,
           ...(turnId ? { turnId } : {}),
         });
       })
@@ -8651,6 +8713,7 @@ export function createAgentChatService(args: {
     value: unknown,
     turnId?: string,
   ): CodexThreadGoal | null => {
+    const reportedBudgetLimit = codexGoalPayloadRequiresBudgetClear(value);
     const goal = normalizeCodexGoalPayload(value);
     managed.session.codexGoal = goal;
     emitChatEvent(managed, {
@@ -8658,7 +8721,7 @@ export function createAgentChatService(args: {
       goal,
       ...(turnId ? { turnId } : {}),
     });
-    maybeClearCodexGoalBudget(managed, runtime, goal, turnId);
+    maybeClearCodexGoalBudget(managed, runtime, goal, turnId, reportedBudgetLimit);
     return goal;
   };
 
@@ -9507,6 +9570,8 @@ export function createAgentChatService(args: {
         ...(persisted?.identityKey ? { identityKey: persisted.identityKey } : {}),
         capabilityMode: persisted?.capabilityMode ?? inferCapabilityMode(provider),
         completion: persisted?.completion ?? null,
+        codexGoal: persisted?.codexGoal ?? null,
+        codexTokenUsage: persisted?.codexTokenUsage ?? null,
         status: mapTerminalStatusToChatStatus(row.status),
         idleSinceAt: persisted?.idleSinceAt ?? null,
         ...(persisted?.threadId ? { threadId: persisted.threadId } : {}),
@@ -9706,47 +9771,47 @@ export function createAgentChatService(args: {
       value: unknown,
       fallback: CodexThreadGoal | null,
     ): CodexThreadGoal | null => {
-      const normalized = normalizeCodexGoalPayload(value);
-      if (normalized) {
-        return applyCodexGoalUpdate(managed, runtime, normalized);
+      if (normalizeCodexGoalPayload(value)) {
+        return applyCodexGoalUpdate(managed, runtime, value);
       }
-      managed.session.codexGoal = fallback;
+      const sanitizedFallback = normalizeAdeCodexGoal(fallback);
+      managed.session.codexGoal = sanitizedFallback;
       emitChatEvent(managed, {
         type: "codex_goal_updated",
-        goal: fallback,
+        goal: sanitizedFallback,
         ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
       });
-      maybeClearCodexGoalBudget(managed, runtime, fallback, runtime.activeTurnId ?? undefined);
-      return fallback;
+      return sanitizedFallback;
     };
     const setCodexGoalObjective = async (objective: string): Promise<CodexThreadGoal | null> => {
-      const response = await requestCodexGoalControl<{ goal?: unknown }>("thread/goal/set", {
+      const normalizedObjective = validateCodexGoalObjectiveText(objective);
+      const response = await requestCodexGoalControl<{ goal?: unknown }>("thread/goal/set", codexGoalSetParams({
         threadId: managed.session.threadId,
-        objective,
+        objective: normalizedObjective,
         status: "active",
-      }, "Codex goal command failed");
+      }), "Goal update failed");
       if (!response) return null;
       return applyCodexGoalUpdateWithFallback(response, {
-        objective,
+        objective: normalizedObjective,
         status: "active",
         tokenBudget: null,
       });
     };
     const setCodexGoalStatus = async (status: CodexGoalSettableStatus): Promise<CodexThreadGoal | null> => {
       const previous = managed.session.codexGoal ?? null;
-      const response = await requestCodexGoalControl<{ goal?: unknown }>("thread/goal/set", {
+      const response = await requestCodexGoalControl<{ goal?: unknown }>("thread/goal/set", codexGoalSetParams({
         threadId: managed.session.threadId,
         status,
-      }, "Codex goal command failed");
+      }), "Goal update failed");
       if (!response) return null;
       return applyCodexGoalUpdateWithFallback(response, previous
-        ? { ...previous, status }
-        : { status });
+        ? { ...previous, status, tokenBudget: null }
+        : { status, tokenBudget: null });
     };
     const clearCodexGoal = async (): Promise<boolean> => {
       const response = await requestCodexGoalControl("thread/goal/clear", {
         threadId: managed.session.threadId,
-      }, "Codex goal command failed");
+      }, "Goal update failed");
       if (!response) return false;
       managed.session.codexGoal = null;
       emitChatEvent(managed, {
@@ -9779,25 +9844,25 @@ export function createAgentChatService(args: {
         response.answers.goal_action?.[0] ?? response.responseText ?? "",
       ).toLowerCase();
       if (response.decision !== "accept" && response.decision !== "accept_for_session") {
-        emitCodexGoalNotice("Keeping the current Codex goal.");
+        emitCodexGoalNotice("Keeping the current goal.");
         persistChatState(managed);
         return;
       }
       if (answer === "clear_goal") {
         if (await clearCodexGoal()) {
-          emitCodexGoalNotice("Codex goal cleared.");
+          emitCodexGoalNotice("Goal cleared.");
           persistChatState(managed);
         }
         return;
       }
       if (answer !== "update_goal") {
-        emitCodexGoalNotice("Keeping the current Codex goal.");
+        emitCodexGoalNotice("Keeping the current goal.");
         persistChatState(managed);
         return;
       }
       const updatedGoal = await setCodexGoalObjective(nextObjective);
       if (!updatedGoal) return;
-      emitCodexGoalNotice("Codex goal updated.");
+      emitCodexGoalNotice("Goal updated.");
       persistChatState(managed);
       if (!runtime.activeTurnId) {
         const preparedGoalTurn = prepareSendMessage({
@@ -9820,28 +9885,34 @@ export function createAgentChatService(args: {
     if (isCodexGoalSlashInput(slashText)) {
       const parsedGoalCommand = parseCodexGoalSlashCommand(slashText);
       if (parsedGoalCommand.kind === "invalid") {
-        completeCodexGoalControl(parsedGoalCommand.message);
+        completeCodexGoalControl(parsedGoalCommand.message, "error");
         return;
       }
       if (parsedGoalCommand.kind === "show") {
         const response = await requestCodexGoalControl<{ goal?: unknown }>("thread/goal/get", {
           threadId: managed.session.threadId,
-        }, "Codex goal command failed");
+        }, "Goal update failed");
         if (!response) return;
         const goal = applyCodexGoalUpdate(managed, runtime, response);
-        completeCodexGoalControl(goal?.objective ? "Codex goal is current." : "No active Codex goal.");
+        completeCodexGoalControl(goal?.objective ? "Goal is set." : "No goal set.");
         return;
       }
       if (parsedGoalCommand.kind === "clear") {
         if (await clearCodexGoal()) {
-          completeCodexGoalControl("Codex goal cleared.");
+          completeCodexGoalControl("Goal cleared.");
         }
         return;
       }
       if (parsedGoalCommand.kind === "status") {
         const updatedGoal = await setCodexGoalStatus(parsedGoalCommand.status);
         if (!updatedGoal) return;
-        completeCodexGoalControl(`Codex goal ${parsedGoalCommand.status === "active" ? "resumed" : parsedGoalCommand.status}.`);
+        completeCodexGoalControl(
+          parsedGoalCommand.status === "active"
+            ? "Goal resumed."
+            : parsedGoalCommand.status === "complete"
+              ? "Goal marked complete."
+              : `Goal ${parsedGoalCommand.status}.`,
+        );
         return;
       }
 
@@ -9852,7 +9923,7 @@ export function createAgentChatService(args: {
       if (shouldConfirmReplacement) {
         const responsePromise = requestChatInput({
           chatSessionId: managed.session.id,
-          title: "Replace Codex goal?",
+          title: "Replace goal?",
           body: `Current goal: ${existingObjective}\nNew goal: ${parsedGoalCommand.objective}`,
           source: "codex",
           kind: "structured_question",
@@ -9862,11 +9933,11 @@ export function createAgentChatService(args: {
             currentObjective: existingObjective,
             nextObjective: parsedGoalCommand.objective,
           },
-          eventDescription: "Codex goal replacement needs confirmation.",
+          eventDescription: "Goal replacement needs confirmation.",
           questions: [{
             id: "goal_action",
             header: "Goal",
-            question: "A Codex goal already exists. What should ADE do?",
+            question: "A goal already exists. What should ADE do?",
             allowsFreeform: false,
             options: [
               {
@@ -9896,7 +9967,7 @@ export function createAgentChatService(args: {
               error: error instanceof Error ? error.message : String(error),
             });
             emitCodexGoalNotice(
-              `Codex goal command failed: ${error instanceof Error ? error.message : String(error)}`,
+              `Goal update failed: ${error instanceof Error ? error.message : String(error)}`,
               "error",
             );
           });
@@ -9906,7 +9977,7 @@ export function createAgentChatService(args: {
       const updatedGoal = await setCodexGoalObjective(parsedGoalCommand.objective);
       if (!updatedGoal) return;
       if (parsedGoalCommand.explicitSet || runtime.activeTurnId) {
-        completeCodexGoalControl("Codex goal updated.");
+        completeCodexGoalControl("Goal updated.");
         return;
       }
       await startCodexGoalObjectiveTurn(parsedGoalCommand.objective, markDispatched);
@@ -21583,6 +21654,8 @@ export function createAgentChatService(args: {
       automationRunId: liveSession?.automationRunId ?? persisted?.automationRunId ?? null,
       capabilityMode: liveSession?.capabilityMode ?? persisted?.capabilityMode ?? inferCapabilityMode(provider),
       completion: liveSession?.completion ?? persisted?.completion ?? null,
+      codexGoal: normalizeAdeCodexGoal(liveSession?.codexGoal ?? persisted?.codexGoal ?? null),
+      codexTokenUsage: liveSession?.codexTokenUsage ?? persisted?.codexTokenUsage ?? null,
       status: liveSession?.status ?? (row.status === "running" ? "idle" : "ended"),
       idleSinceAt: (liveSession?.status ?? (row.status === "running" ? "idle" : "ended")) === "idle"
         ? liveSession?.idleSinceAt ?? persisted?.idleSinceAt ?? null
@@ -24885,6 +24958,202 @@ export function createAgentChatService(args: {
     return session;
   };
 
+  const ensureCodexGoalRuntime = async (
+    sessionId: string,
+  ): Promise<{ managed: ManagedChatSession; runtime: CodexRuntime }> => {
+    const normalizedSessionId = sessionId.trim();
+    if (!normalizedSessionId) {
+      throw new Error("Select a Codex chat before updating the goal.");
+    }
+    const managed = ensureManagedSession(normalizedSessionId);
+    if (managed.session.provider !== "codex") {
+      throw new Error("Goals can only be updated in Codex chats.");
+    }
+    const runtime = managed.runtime?.kind === "codex"
+      ? managed.runtime
+      : await ensureCodexSessionRuntime(managed);
+    return { managed, runtime };
+  };
+
+  const resolveExistingCodexGoalThreadId = (managed: ManagedChatSession): string => (
+    managed.session.threadId?.trim()
+    || readPersistedState(managed.session.id)?.threadId?.trim()
+    || ""
+  );
+
+  const ensureCodexGoalThread = async (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+  ): Promise<string> => {
+    let threadId = resolveExistingCodexGoalThreadId(managed);
+    if (runtime.threadResumed && threadId) {
+      managed.session.threadId = threadId;
+      return threadId;
+    }
+
+    const { codexPolicy } = resolveCodexThreadParams(managed);
+    if (threadId) {
+      try {
+        const dynamicTools = refreshCodexDynamicTools(managed, runtime);
+        const resumeReasoningEffort = resolveCodexReasoningEffortForRuntime(
+          managed.session.reasoningEffort,
+          readPersistedState(managed.session.id)?.reasoningEffort,
+          resolveSessionModelDescriptor(managed.session),
+        );
+        managed.session.reasoningEffort = resumeReasoningEffort;
+        const resumeResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/resume", {
+          threadId,
+          model: managed.session.model,
+          cwd: managed.laneWorktreePath,
+          effort: resumeReasoningEffort,
+          developerInstructions: buildCodexDeveloperInstructions({
+            laneWorktreePath: managed.laneWorktreePath,
+            session: managed.session,
+            collaborationMode: resolveCodexInstructionCollaborationMode(managed.session),
+          }),
+          ...codexServiceTierArgs(managed.session),
+          ...codexPolicyArgs(codexPolicy),
+          ...(dynamicTools.length ? { dynamicTools } : {}),
+          excludeTurns: true,
+          persistExtendedHistory: true,
+        }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+        applyCodexEffectiveThreadState(managed, resumeResponse, {
+          requestedCodexPolicy: codexPolicy,
+          requestedReasoningEffort: resumeReasoningEffort,
+          onReasoningMismatch: (mismatch) => logger.warn("agent_chat.codex_reasoning_runtime_mismatch", {
+            sessionId: managed.session.id,
+            phase: "thread_resume_goal_control",
+            model: managed.session.model,
+            threadId,
+            ...mismatch,
+          }),
+        });
+        adoptRuntimeSessionTitle(managed, resumeResponse, "codex_thread_resume_goal_control");
+        threadId = typeof resumeResponse.thread?.id === "string" ? resumeResponse.thread.id : threadId;
+        managed.session.threadId = threadId;
+        sessionService.setResumeCommand(managed.session.id, `chat:codex:${threadId}`);
+        runtime.threadResumed = true;
+        runtime.canAttachResumedTurnStart = true;
+        persistChatState(managed);
+        return threadId;
+      } catch (error) {
+        logger.warn("agent_chat.codex_goal_thread_resume_failed", {
+          sessionId: managed.session.id,
+          threadId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    await startFreshCodexThread(managed, runtime, codexPolicy);
+    threadId = managed.session.threadId?.trim() ?? "";
+    if (!threadId) {
+      throw new Error("Could not start goal tracking for this chat.");
+    }
+    return threadId;
+  };
+
+  const applyCodexGoalRpcResponse = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    value: unknown,
+    fallback: CodexThreadGoal | null,
+  ): CodexThreadGoal | null => {
+    if (normalizeCodexGoalPayload(value)) {
+      return applyCodexGoalUpdate(managed, runtime, value, runtime.activeTurnId ?? undefined);
+    }
+    const sanitizedFallback = normalizeAdeCodexGoal(fallback);
+    managed.session.codexGoal = sanitizedFallback;
+    emitChatEvent(managed, {
+      type: "codex_goal_updated",
+      goal: sanitizedFallback,
+      ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
+    });
+    return sanitizedFallback;
+  };
+
+  const getCodexGoal = async ({
+    sessionId,
+  }: AgentChatCodexGetGoalArgs): Promise<CodexThreadGoal | null> => {
+    const { managed, runtime } = await ensureCodexGoalRuntime(sessionId);
+    if (!resolveExistingCodexGoalThreadId(managed)) {
+      managed.session.codexGoal = null;
+      persistChatState(managed);
+      return null;
+    }
+    const threadId = await ensureCodexGoalThread(managed, runtime);
+    const response = await runtime.request<{ goal?: unknown }>("thread/goal/get", {
+      threadId,
+    }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+    const goal = applyCodexGoalUpdate(managed, runtime, response, runtime.activeTurnId ?? undefined);
+    persistChatState(managed);
+    return goal;
+  };
+
+  const setCodexGoal = async ({
+    sessionId,
+    objective,
+  }: AgentChatCodexSetGoalArgs): Promise<CodexThreadGoal | null> => {
+    const normalizedObjective = validateCodexGoalObjectiveText(objective);
+    const { managed, runtime } = await ensureCodexGoalRuntime(sessionId);
+    const threadId = await ensureCodexGoalThread(managed, runtime);
+    const response = await runtime.request<{ goal?: unknown }>("thread/goal/set", codexGoalSetParams({
+      threadId,
+      objective: normalizedObjective,
+      status: "active",
+    }), { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+    const goal = applyCodexGoalRpcResponse(managed, runtime, response, {
+      objective: normalizedObjective,
+      status: "active",
+      tokenBudget: null,
+    });
+    persistChatState(managed);
+    return goal;
+  };
+
+  const setCodexGoalStatus = async ({
+    sessionId,
+    status,
+  }: AgentChatCodexSetGoalStatusArgs): Promise<CodexThreadGoal | null> => {
+    if (status !== "active" && status !== "paused" && status !== "blocked" && status !== "complete") {
+      throw new Error("Goal status must be active, paused, blocked, or complete.");
+    }
+    const { managed, runtime } = await ensureCodexGoalRuntime(sessionId);
+    if (!resolveExistingCodexGoalThreadId(managed)) {
+      throw new Error("Set a goal in this Codex chat before changing its status.");
+    }
+    const threadId = await ensureCodexGoalThread(managed, runtime);
+    const previous = managed.session.codexGoal ?? null;
+    const response = await runtime.request<{ goal?: unknown }>("thread/goal/set", codexGoalSetParams({
+      threadId,
+      status,
+    }), { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+    const goal = applyCodexGoalRpcResponse(managed, runtime, response, previous
+      ? { ...previous, status, tokenBudget: null }
+      : { status, tokenBudget: null });
+    persistChatState(managed);
+    return goal;
+  };
+
+  const clearCodexGoal = async ({
+    sessionId,
+  }: AgentChatCodexClearGoalArgs): Promise<CodexThreadGoal | null> => {
+    const { managed, runtime } = await ensureCodexGoalRuntime(sessionId);
+    if (resolveExistingCodexGoalThreadId(managed)) {
+      const threadId = await ensureCodexGoalThread(managed, runtime);
+      await runtime.request("thread/goal/clear", { threadId }, {
+        timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS,
+      });
+    }
+    managed.session.codexGoal = null;
+    emitChatEvent(managed, {
+      type: "codex_goal_cleared",
+      ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
+    });
+    persistChatState(managed);
+    return null;
+  };
+
   return {
     createSession,
     launchHeadless,
@@ -24893,6 +25162,10 @@ export function createAgentChatService(args: {
     sendMessage,
     readTranscript,
     setOrchestrationFields,
+    getCodexGoal,
+    setCodexGoal,
+    setCodexGoalStatus,
+    clearCodexGoal,
     runSessionTurn,
     steer,
     cancelSteer,

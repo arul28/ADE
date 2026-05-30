@@ -358,7 +358,7 @@ export function ChatSubagentsPanel({
 
   const body = (
     <div className="flex min-h-0 flex-1 flex-col font-sans">
-      {/* ── Goal (Codex thread goal) ─────────────────────────────── */}
+      {/* ── Goal (Codex chat goal) ───────────────────────────────── */}
       {hasGoal && goal ? (
         <CodexGoalCard
           goal={goal}

@@ -458,6 +458,10 @@ function createMockAgentChatService() {
     respondToInput: vi.fn().mockResolvedValue(undefined),
     resumeSession: vi.fn().mockResolvedValue(undefined),
     updateSession: vi.fn().mockResolvedValue(undefined),
+    getCodexGoal: vi.fn().mockResolvedValue({ objective: "Ship it", status: "active", tokenBudget: null }),
+    setCodexGoal: vi.fn().mockResolvedValue({ objective: "Ship it", status: "active", tokenBudget: null }),
+    setCodexGoalStatus: vi.fn().mockResolvedValue({ objective: "Ship it", status: "paused", tokenBudget: null }),
+    clearCodexGoal: vi.fn().mockResolvedValue(null),
     dispose: vi.fn().mockResolvedValue(undefined),
     getAvailableModels: vi.fn().mockResolvedValue([{ id: "model-1", modelId: "m1" }]),
     getModelCatalog: vi.fn().mockResolvedValue({ groups: [], fetchedAt: "2026-01-01T00:00:00.000Z" }),
@@ -682,6 +686,10 @@ describe("createSyncRemoteCommandService", () => {
       expect(actions).toContain("git.getFileHistory");
       expect(actions).toContain("chat.create");
       expect(actions).toContain("chat.send");
+      expect(actions).toContain("chat.getCodexGoal");
+      expect(actions).toContain("chat.setCodexGoal");
+      expect(actions).toContain("chat.setCodexGoalStatus");
+      expect(actions).toContain("chat.clearCodexGoal");
       expect(actions).toContain("files.writeTextAtomic");
       expect(actions).toContain("work.listSessions");
       expect(actions).toContain("processes.listDefinitions");
@@ -1771,6 +1779,56 @@ describe("createSyncRemoteCommandService", () => {
           temperature: 0.5,
         },
       });
+    });
+
+    it("chat.getCodexGoal routes to agentChatService.getCodexGoal", async () => {
+      const result = await service.execute(makePayload("chat.getCodexGoal", {
+        sessionId: "sess-1",
+      }));
+
+      expect(agentChatService.getCodexGoal).toHaveBeenCalledWith({ sessionId: "sess-1" });
+      expect(result).toEqual({ objective: "Ship it", status: "active", tokenBudget: null });
+    });
+
+    it("chat.setCodexGoal trims and forwards the objective without a budget field", async () => {
+      await service.execute(makePayload("chat.setCodexGoal", {
+        sessionId: "sess-1",
+        objective: "  Keep the lane shipping  ",
+        tokenBudget: 1000,
+      }));
+
+      expect(agentChatService.setCodexGoal).toHaveBeenCalledWith({
+        sessionId: "sess-1",
+        objective: "Keep the lane shipping",
+      });
+    });
+
+    it("chat.setCodexGoalStatus routes to agentChatService.setCodexGoalStatus", async () => {
+      const result = await service.execute(makePayload("chat.setCodexGoalStatus", {
+        sessionId: "sess-1",
+        status: "paused",
+      }));
+
+      expect(agentChatService.setCodexGoalStatus).toHaveBeenCalledWith({
+        sessionId: "sess-1",
+        status: "paused",
+      });
+      expect(result).toEqual({ objective: "Ship it", status: "paused", tokenBudget: null });
+    });
+
+    it("chat.clearCodexGoal routes to agentChatService.clearCodexGoal", async () => {
+      const result = await service.execute(makePayload("chat.clearCodexGoal", {
+        sessionId: "sess-1",
+      }));
+
+      expect(agentChatService.clearCodexGoal).toHaveBeenCalledWith({ sessionId: "sess-1" });
+      expect(result).toBeNull();
+    });
+
+    it("chat.setCodexGoal throws when objective is missing", async () => {
+      await expect(service.execute(makePayload("chat.setCodexGoal", {
+        sessionId: "sess-1",
+      }))).rejects.toThrow("chat.setCodexGoal requires objective.");
     });
 
     it("chat.interrupt routes to agentChatService.interrupt", async () => {
