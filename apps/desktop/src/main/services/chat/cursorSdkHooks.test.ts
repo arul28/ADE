@@ -6,10 +6,12 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   __buildCursorSdkHookCommandForTests,
+  cursorSdkHookShellCommandPath,
   cursorSdkHookScriptPath,
   cursorSdkHookWindowsCommandPath,
   cursorSdkHooksJsonPath,
   ensureCursorSdkUserHook,
+  writeCursorSdkHookShellCommandScript,
   writeCursorSdkHookWindowsCommandScript,
 } from "./cursorSdkHooks";
 
@@ -40,17 +42,26 @@ describe("Cursor SDK hook installation", () => {
         nodePath: "/node path/bin/node",
       });
       expect(first.changed).toBe(true);
-      expect(first.command).toContain("\"/node path/bin/node\"");
-      expect(first.command).toContain("\"");
+      if (process.platform === "win32") {
+        expect(first.command).toContain("ade-tool-gate.cjs");
+      } else {
+        expect(first.command).toContain("/bin/sh");
+        expect(first.command).toContain("ade-tool-gate.sh");
+      }
 
       const config = readJson(hooksPath);
       expect(config.version).toBe(2);
       expect(config.hooks.postToolUse).toEqual([{ command: "node post-hook.cjs" }]);
       expect(config.hooks.preToolUse).toHaveLength(2);
-      expect(config.hooks.preToolUse[0].command).toContain("ade-tool-gate.cjs");
+      expect(config.hooks.preToolUse[0].command).toContain(
+        process.platform === "win32" ? "ade-tool-gate.cjs" : "ade-tool-gate.sh",
+      );
       expect(config.hooks.preToolUse[0].failClosed).toBe(true);
       expect(config.hooks.preToolUse[1]).toEqual({ command: "node existing-hook.cjs", failClosed: false });
       expect(fs.existsSync(cursorSdkHookScriptPath(home))).toBe(true);
+      if (process.platform !== "win32") {
+        expect(fs.existsSync(cursorSdkHookShellCommandPath(home))).toBe(true);
+      }
 
       const second = ensureCursorSdkUserHook({
         userHomeDir: home,
@@ -77,6 +88,51 @@ describe("Cursor SDK hook installation", () => {
         encoding: "utf8",
       });
       expect(JSON.parse(stdout)).toEqual({ permission: "allow" });
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("uses a shell wrapper that allows non-ADE Cursor when Node is unavailable", () => {
+    if (process.platform === "win32") return;
+    const home = tempHome();
+    try {
+      ensureCursorSdkUserHook({ userHomeDir: home });
+      const stdout = execFileSync("/bin/sh", [cursorSdkHookShellCommandPath(home)], {
+        input: "{}",
+        env: {
+          PATH: "",
+          HOME: home,
+          USERPROFILE: home,
+        },
+        encoding: "utf8",
+      });
+      expect(JSON.parse(stdout)).toEqual({ permission: "allow" });
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed for ADE Cursor hook invocations when no Node runner is available", () => {
+    if (process.platform === "win32") return;
+    const home = tempHome();
+    try {
+      ensureCursorSdkUserHook({ userHomeDir: home });
+      const stdout = execFileSync("/bin/sh", [cursorSdkHookShellCommandPath(home)], {
+        input: "{}",
+        env: {
+          PATH: "",
+          HOME: home,
+          USERPROFILE: home,
+          ADE_CURSOR_SDK_SOCKET: path.join(home, "missing.sock"),
+          ADE_CURSOR_SDK_SESSION_ID: "session-1",
+          ADE_CURSOR_SDK_LANE_ROOT: "/tmp/lane",
+        },
+        encoding: "utf8",
+      });
+      const decision = JSON.parse(stdout);
+      expect(decision.permission).toBe("deny");
+      expect(decision.user_message).toContain("requires Node.js");
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
@@ -126,6 +182,22 @@ describe("Cursor SDK hook installation", () => {
       const decision = JSON.parse(stdout);
       expect(decision.permission).toBe("deny");
       expect(decision.user_message).toContain("ENOENT");
+
+      const equalsStdout = execFileSync(process.execPath, [
+        cursorSdkHookScriptPath(home),
+        `--socket=${path.join(home, "missing.sock")}`,
+      ], {
+        input: "{}",
+        env: {
+          PATH: process.env.PATH ?? "",
+          HOME: home,
+          USERPROFILE: home,
+        },
+        encoding: "utf8",
+      });
+      const equalsDecision = JSON.parse(equalsStdout);
+      expect(equalsDecision.permission).toBe("deny");
+      expect(equalsDecision.user_message).toContain("ENOENT");
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
@@ -201,6 +273,7 @@ describe("Cursor SDK hook installation", () => {
         undefined,
         String.raw`C:\Users\Ada Lovelace\.cursor\hooks\ade-tool-gate.cjs`,
         String.raw`C:\Users\Ada Lovelace\.cursor\hooks\ade-tool-gate.cmd`,
+        undefined,
       );
       expect(command).toBe(`cmd /d /c "C:\\Users\\Ada Lovelace\\.cursor\\hooks\\ade-tool-gate.cmd"`);
     } finally {
@@ -210,6 +283,36 @@ describe("Cursor SDK hook installation", () => {
       } else {
         Object.defineProperty(process.versions, "electron", { value: originalElectron, configurable: true });
       }
+    }
+  });
+
+  it("writes the POSIX shell wrapper with escaped paths", () => {
+    if (process.platform === "win32") return;
+    const home = tempHome();
+    try {
+      const commandPath = cursorSdkHookShellCommandPath(home);
+      writeCursorSdkHookShellCommandScript({
+        commandPath,
+        nodePath: "/tmp/node's/bin/node",
+        scriptPath: "/tmp/ADE Hooks/ade-tool-gate.cjs",
+      });
+      const content = fs.readFileSync(commandPath, "utf8");
+      expect(content).toContain("script_path='/tmp/ADE Hooks/ade-tool-gate.cjs'");
+      expect(content).toContain("configured_node='/tmp/node'\\''s/bin/node'");
+      const stdout = execFileSync("/bin/sh", [commandPath, `--socket=${path.join(home, "missing.sock")}`], {
+        input: "{}",
+        env: {
+          PATH: "",
+          HOME: home,
+          USERPROFILE: home,
+        },
+        encoding: "utf8",
+      });
+      const decision = JSON.parse(stdout);
+      expect(decision.permission).toBe("deny");
+      expect(decision.user_message).toContain("requires Node.js");
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
     }
   });
 

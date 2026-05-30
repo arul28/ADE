@@ -1114,6 +1114,127 @@ describe("validation concerns gating", () => {
     await svc.dispose();
   });
 
+  it.each(["done", "failed"] as const)(
+    "rejects claims against %s tasks",
+    async (terminalStatus) => {
+      const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+      const { manifest } = await svc.runCreate({
+        laneId: "L-1",
+        leadSessionId: "S-lead",
+        bundleRoot: lane,
+      });
+      const seeded = await svc.manifestPatch(
+        {
+          runId: manifest.runId,
+          ifMatchEtag: manifest.etag,
+          actorRole: "lead",
+          actorSessionId: "S-lead",
+          patches: [
+            {
+              op: "add",
+              path: "/agents/-",
+              value: {
+                sessionId: "S-worker",
+                role: "worker",
+                tag: "impl",
+                goalSummary: "implement",
+                status: "running",
+                spawnedAt: "now",
+              },
+            },
+            {
+              op: "add",
+              path: "/agents/-",
+              value: {
+                sessionId: "S-other-worker",
+                role: "worker",
+                tag: "other",
+                goalSummary: "try to claim terminal work",
+                status: "running",
+                spawnedAt: "now",
+              },
+            },
+            {
+              op: "add",
+              path: "/tasks/-",
+              value: {
+                id: "T-terminal",
+                phaseId: "developing",
+                title: "terminal task",
+                description: "",
+                status: "claimed",
+                validationGate: { required: false, stepIds: [] },
+                assigneeSessionId: "S-worker",
+                claimLeaseUntil: new Date(Date.now() + 60_000).toISOString(),
+              },
+            },
+          ],
+        },
+        manifest.bundlePath,
+      );
+      expect(seeded.ok).toBe(true);
+      if (!seeded.ok) {
+        throw new Error("failed to seed terminal task claim test");
+      }
+
+      const released = await svc.releaseTask(
+        {
+          runId: manifest.runId,
+          taskId: "T-terminal",
+          sessionId: "S-worker",
+          status: terminalStatus,
+        },
+        manifest.bundlePath,
+      );
+      const releasedTask = released.manifest.tasks.find(
+        (task) => task.id === "T-terminal",
+      );
+      expect(releasedTask?.status).toBe(terminalStatus);
+      expect(releasedTask?.claimLeaseUntil).toBeNull();
+
+      const claimed = await svc.claimTask(
+        {
+          runId: manifest.runId,
+          taskId: "T-terminal",
+          sessionId: "S-worker",
+          leaseMs: 30 * 60 * 1000,
+        },
+        manifest.bundlePath,
+      );
+      expect(claimed.ok).toBe(false);
+      if (claimed.ok) {
+        throw new Error("terminal task claim unexpectedly succeeded");
+      }
+      expect(claimed.reason).toContain(`terminal (${terminalStatus})`);
+      const taskAfterClaim = claimed.manifest.tasks.find(
+        (task) => task.id === "T-terminal",
+      );
+      expect(taskAfterClaim?.status).toBe(terminalStatus);
+      expect(taskAfterClaim?.claimLeaseUntil).toBeNull();
+
+      const otherClaim = await svc.claimTask(
+        {
+          runId: manifest.runId,
+          taskId: "T-terminal",
+          sessionId: "S-other-worker",
+          leaseMs: 30 * 60 * 1000,
+        },
+        manifest.bundlePath,
+      );
+      expect(otherClaim.ok).toBe(false);
+      if (otherClaim.ok) {
+        throw new Error("terminal task claim by other worker unexpectedly succeeded");
+      }
+      expect(otherClaim.reason).toContain(`terminal (${terminalStatus})`);
+      const taskAfterOtherClaim = otherClaim.manifest.tasks.find(
+        (task) => task.id === "T-terminal",
+      );
+      expect(taskAfterOtherClaim?.status).toBe(terminalStatus);
+      expect(taskAfterOtherClaim?.claimLeaseUntil).toBeNull();
+      await svc.dispose();
+    },
+  );
+
   it("lead cannot lower validationGate.required without override pair", async () => {
     const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
     const { manifest } = await svc.runCreate({

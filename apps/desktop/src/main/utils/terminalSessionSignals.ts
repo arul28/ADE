@@ -14,6 +14,7 @@ import {
   modelToCliFlag,
   normalizeCliFlagValue,
   resolveClaudeCliModelForLaunch,
+  resolveCursorCliModelForLaunch,
   sanitizeTrackedCliResumeTargetId,
 } from "../../shared/cliLaunch";
 import { decodeOpenCodeRegistryId } from "../../shared/modelRegistry";
@@ -35,10 +36,6 @@ function commandArrayToLine(parts: string[]): string {
 }
 
 export const sanitizeResumeTargetId = sanitizeTrackedCliResumeTargetId;
-
-function resolveCursorCliModelForLaunch(model: string | null | undefined): string {
-  return normalizeCliFlagValue(model) ?? "auto";
-}
 
 function normalizeDroidCliModel(model: string | null | undefined): string | null {
   const normalized = normalizeCliFlagValue(model);
@@ -156,7 +153,7 @@ function permissionModeToCodexFlags(permissionMode: AgentChatPermissionMode | nu
 }
 
 function permissionModeToCursorFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
-  if (permissionMode === "full-auto") return ["--force"];
+  if (permissionMode === "full-auto") return ["--force", "--trust"];
   if (permissionMode === "plan") return ["--mode", "plan"];
   if (permissionMode === "edit") return ["--mode", "ask"];
   return [];

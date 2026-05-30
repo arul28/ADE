@@ -6,9 +6,14 @@ import type { Logger } from "../logging/logger";
 import { isRecord, getErrorMessage, isEnoentError } from "../shared/utils";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import {
+  linearInvalidGrantLikelyStaleRotation,
   linearTokenNeedsRefresh,
   refreshLinearOAuthAccessToken,
 } from "./linearTokenRefresh";
+import {
+  LinearOAuthRefreshLockTimeoutError,
+  withLinearOAuthRefreshLock,
+} from "./linearOAuthRefreshLock";
 
 // Bundled OAuth client ID — ships with ADE so users get "Sign in with Linear"
 // out of the box without configuring their own OAuth app.
@@ -530,39 +535,81 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     if (!client) return;
     const refreshToken = stored.refreshToken;
     refreshInFlight = (async () => {
-      const result = await refreshLinearOAuthAccessToken({
-        refreshToken,
-        clientId: client.clientId,
-        clientSecret: client.clientSecret,
-        fetchImpl: args.fetchImpl,
-      });
-      if (result.ok) {
-        persistToken({
-          token: result.accessToken,
-          authMode: "oauth",
-          refreshToken: result.refreshToken ?? refreshToken,
-          expiresAt: result.expiresAt,
+      const performRefresh = async (tokenToRefresh: string): Promise<void> => {
+        const result = await refreshLinearOAuthAccessToken({
+          refreshToken: tokenToRefresh,
+          clientId: client.clientId,
+          clientSecret: client.clientSecret,
+          fetchImpl: args.fetchImpl,
         });
-        invalidateCache();
-        args.logger?.info("linear_sync.oauth_token_refreshed", {
-          expiresAt: result.expiresAt,
-        });
-      } else if (result.invalidGrant) {
-        // Refresh token revoked/expired — clear the connection so the UI prompts
-        // the user to reconnect rather than retrying a dead token forever.
-        persistToken(null);
-        invalidateCache();
-        args.logger?.warn("linear_sync.oauth_refresh_invalid_grant", {
-          status: result.status,
-          message: result.message,
-        });
-      } else {
-        // Transient (network / 5xx): keep the token and let the caller retry.
+        if (result.ok) {
+          persistToken({
+            token: result.accessToken,
+            authMode: "oauth",
+            refreshToken: result.refreshToken ?? tokenToRefresh,
+            expiresAt: result.expiresAt,
+          });
+          invalidateCache();
+          args.logger?.info("linear_sync.oauth_token_refreshed", {
+            expiresAt: result.expiresAt,
+          });
+          return;
+        }
+        if (result.invalidGrant) {
+          invalidateCache();
+          const reread = getStoredToken();
+          if (
+            linearInvalidGrantLikelyStaleRotation({
+              attemptedRefreshToken: tokenToRefresh,
+              rereadRefreshToken: reread?.refreshToken,
+              rereadExpiresAt: reread?.expiresAt,
+              trustFreshExpiresAt: !opts?.force,
+            })
+          ) {
+            args.logger?.info("linear_sync.oauth_refresh_rotated_elsewhere", {
+              status: result.status,
+              message: result.message,
+            });
+            return;
+          }
+          persistToken(null);
+          invalidateCache();
+          args.logger?.warn("linear_sync.oauth_refresh_invalid_grant", {
+            status: result.status,
+            message: result.message,
+          });
+          return;
+        }
         args.logger?.warn("linear_sync.oauth_refresh_failed", {
           status: result.status,
           message: result.message,
         });
+      };
+
+      if (credentialStore) {
+        try {
+          await withLinearOAuthRefreshLock(secretsDir, async () => {
+            invalidateCache();
+            const latest = getStoredToken();
+            if (
+              !latest
+              || latest.authMode !== "oauth"
+              || !latest.refreshToken
+              || (!opts?.force && !linearTokenNeedsRefresh(latest.expiresAt, Date.now()))
+            ) {
+              return;
+            }
+            await performRefresh(latest.refreshToken);
+          });
+        } catch (error: unknown) {
+          if (!(error instanceof LinearOAuthRefreshLockTimeoutError)) throw error;
+          args.logger?.warn("linear_sync.oauth_refresh_lock_timeout", {
+            message: error.message,
+          });
+        }
+        return;
       }
+      await performRefresh(refreshToken);
     })().finally(() => {
       refreshInFlight = null;
     });

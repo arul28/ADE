@@ -17,6 +17,8 @@ import {
   buildLocalRuntimeServeArgs,
   computeLocalRuntimeBuildHash,
   createLocalRuntimeOutputLogger,
+  isLocalRuntimeConnectionDropped,
+  isRetryableReadAction,
   LocalRuntimeConnectionPool,
   parseRuntimeServiceManagerOutput,
 } from "./localRuntimeConnectionPool";
@@ -474,6 +476,66 @@ describe("local runtime connection pool", () => {
     }
   });
 
+  it("does not let a stale dropped connection clear an in-flight reconnect", () => {
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never, { disableSync: true });
+    const reconnect = new Promise<unknown>(() => {});
+    const staleClient = { close: vi.fn() };
+    const staleEntry = {
+      client: staleClient,
+      child: null,
+      socketPath: "/tmp/old-ade.sock",
+    };
+    (pool as unknown as {
+      connection: Promise<unknown>;
+      activeClient: unknown;
+      activeConnection: unknown;
+    }).connection = reconnect;
+    (pool as unknown as { activeClient: unknown }).activeClient = null;
+    (pool as unknown as { activeConnection: unknown }).activeConnection = null;
+
+    (pool as unknown as {
+      resetActiveConnection: (entry: typeof staleEntry) => void;
+    }).resetActiveConnection(staleEntry);
+
+    expect((pool as unknown as { connection: Promise<unknown> | null }).connection).toBe(reconnect);
+    expect(staleClient.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let a stale timed-out action clear an in-flight reconnect", () => {
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never, { disableSync: true });
+    const reconnect = new Promise<unknown>(() => {});
+    const staleClient = { close: vi.fn() };
+    const staleEntry = {
+      client: staleClient,
+      child: null,
+      socketPath: "/tmp/old-ade.sock",
+    };
+    (pool as unknown as {
+      connection: Promise<unknown>;
+      activeClient: unknown;
+      activeConnection: unknown;
+    }).connection = reconnect;
+    (pool as unknown as { activeClient: unknown }).activeClient = null;
+    (pool as unknown as { activeConnection: unknown }).activeConnection = null;
+
+    (pool as unknown as {
+      resetConnectionAfterActionTimeout: (entry: typeof staleEntry) => void;
+    }).resetConnectionAfterActionTimeout(staleEntry);
+
+    expect((pool as unknown as { connection: Promise<unknown> | null }).connection).toBe(reconnect);
+    expect(staleClient.close).toHaveBeenCalledTimes(1);
+  });
+
   it("normalizes local action registry entries from runtime action names", async () => {
     const pool = new LocalRuntimeConnectionPool("1.2.3", {
       debug: vi.fn(),
@@ -543,7 +605,7 @@ describe("local runtime connection pool", () => {
       gitOriginUrl: null,
     });
     (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
-      client: { call },
+      client: { call, isClosed: vi.fn(() => false) },
       child: null,
       socketPath: "/tmp/ade.sock",
     });
@@ -1199,7 +1261,7 @@ describe("local runtime connection pool", () => {
       gitOriginUrl: null,
     });
     (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
-      client: { call },
+      client: { call, isClosed: vi.fn(() => false) },
       child: null,
       socketPath: "/tmp/ade.sock",
     });
@@ -1260,7 +1322,7 @@ describe("local runtime connection pool", () => {
       gitOriginUrl: null,
     });
     (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
-      client: { call },
+      client: { call, isClosed: vi.fn(() => false) },
       child: null,
       socketPath: "/tmp/ade.sock",
     });
@@ -1313,11 +1375,15 @@ describe("local runtime connection pool", () => {
       lastOpenedAt: 1,
       gitOriginUrl: null,
     });
-    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
-      client: { call, close },
+    const client = { call, close, isClosed: vi.fn(() => false) };
+    const entry = {
+      client,
       child,
       socketPath: "/tmp/ade.sock",
-    });
+    };
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve(entry);
+    (pool as unknown as { activeConnection: unknown; activeClient: unknown }).activeConnection = entry;
+    (pool as unknown as { activeClient: unknown }).activeClient = client;
     (pool as unknown as { ownedRuntimeChild: unknown }).ownedRuntimeChild = child;
 
     await expect(pool.callActionForRoot(rootPath, {
@@ -1366,7 +1432,7 @@ describe("local runtime connection pool", () => {
       gitOriginUrl: null,
     });
     (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
-      client: { call },
+      client: { call, isClosed: () => false },
       child: null,
       socketPath: "/tmp/ade.sock",
     });
@@ -1465,5 +1531,37 @@ describe("local runtime connection pool", () => {
 
     cleanup();
     expect(call).toHaveBeenCalledWith("runtimeEvents.unsubscribe", { subscriptionId: "runtime-events-4" });
+  });
+});
+
+describe("local runtime action retry classification", () => {
+  it("recognizes dropped/closed daemon connection errors", () => {
+    expect(isLocalRuntimeConnectionDropped(new Error("Remote ADE service connection closed."))).toBe(true);
+    expect(isLocalRuntimeConnectionDropped(new Error("Remote ADE service connection failed: ECONNRESET"))).toBe(true);
+    // Must NOT treat unrelated failures as a connection drop (would wrongly retry).
+    expect(isLocalRuntimeConnectionDropped(new Error("Remote ADE service timed out waiting for method ade/actions/call (5000ms)."))).toBe(false);
+    expect(isLocalRuntimeConnectionDropped(new Error("Local ADE service action failed."))).toBe(false);
+  });
+
+  it("only retries idempotent read actions, never mutations", () => {
+    // Reads — safe to retry after a connection drop.
+    expect(isRetryableReadAction("lane", "list")).toBe(true);
+    expect(isRetryableReadAction("lane", "listSnapshots")).toBe(true);
+    expect(isRetryableReadAction("diff", "getChanges")).toBe(true);
+    expect(isRetryableReadAction("diff", "getFilePatch")).toBe(true);
+    expect(isRetryableReadAction("file", "readFile")).toBe(true);
+    expect(isRetryableReadAction("chat", "getChatEventHistory")).toBe(true);
+    expect(isRetryableReadAction("file", "quickOpen")).toBe(true);
+
+    // Mutations — must NOT be retried (a retry could re-run the side effect).
+    expect(isRetryableReadAction("lane", "delete")).toBe(false);
+    expect(isRetryableReadAction("lane", "create")).toBe(false);
+    expect(isRetryableReadAction("lane", "archive")).toBe(false);
+    expect(isRetryableReadAction("file", "writeTextAtomic")).toBe(false);
+    expect(isRetryableReadAction("chat", "sendMessage")).toBe(false);
+    expect(isRetryableReadAction("pr", "merge")).toBe(false);
+    // Prefix must respect a camelCase boundary, not arbitrary substrings.
+    expect(isRetryableReadAction("lane", "getaway")).toBe(false);
+    expect(isRetryableReadAction("lane", "listenStop")).toBe(false);
   });
 });

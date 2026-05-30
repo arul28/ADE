@@ -1109,7 +1109,7 @@ const TOOL_SPECS: ToolSpec[] = [
         title: { type: "string", minLength: 1 },
         body: { type: "string" },
         draft: { type: "boolean", default: false },
-        closeLinearIssueOnMerge: { type: "boolean", default: false },
+        closeLinearIssueOnMerge: { type: "boolean", default: true },
       }
     }
   },
@@ -4720,7 +4720,7 @@ async function runTool(args: {
     const prSvc = requirePrService(runtime);
     let title = asOptionalTrimmedString(toolArgs.title);
     let body = typeof toolArgs.body === "string" ? toolArgs.body : null;
-    const closeLinearIssueOnMerge = asBoolean(toolArgs.closeLinearIssueOnMerge, false);
+    const closeLinearIssueOnMerge = asBoolean(toolArgs.closeLinearIssueOnMerge, true);
     if (!title || body == null) {
       const draft = await prSvc.draftDescription({
         laneId,

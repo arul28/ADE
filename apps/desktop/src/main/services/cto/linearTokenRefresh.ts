@@ -29,6 +29,39 @@ export function linearTokenNeedsRefresh(
   return nowMs >= expMs - bufferMs;
 }
 
+/**
+ * True when an invalid_grant response is likely because another ADE runtime
+ * already rotated the refresh token in the shared credential store — not
+ * because the user's connection is actually dead.
+ *
+ * A fresh stored expiry only counts as evidence for proactive refreshes. During
+ * a forced refresh after a 401, the access token was already rejected, so expiry
+ * alone should not keep a dead refresh token around.
+ */
+export function linearInvalidGrantLikelyStaleRotation(args: {
+  attemptedRefreshToken: string;
+  rereadRefreshToken: string | null | undefined;
+  rereadExpiresAt: string | null | undefined;
+  trustFreshExpiresAt?: boolean;
+  nowMs?: number;
+}): boolean {
+  const nowMs = args.nowMs ?? Date.now();
+  if (
+    args.rereadRefreshToken
+    && args.rereadRefreshToken !== args.attemptedRefreshToken
+  ) {
+    return true;
+  }
+  if (
+    args.trustFreshExpiresAt !== false
+    && args.rereadExpiresAt
+    && !linearTokenNeedsRefresh(args.rereadExpiresAt, nowMs)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export type LinearTokenRefreshResult =
   | {
       ok: true;

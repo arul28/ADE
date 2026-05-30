@@ -1272,6 +1272,68 @@ describe("linearCredentialService OAuth token refresh", () => {
     expect(service.getStatus().tokenStored).toBe(false);
   });
 
+  it("keeps the connection when invalid_grant follows a concurrent refresh rotation", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-refresh-race-"));
+    const store = new MemoryCredentialStore();
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = String(init?.body ?? "");
+      if (body.includes("refresh_token=rt_old")) {
+        store.setSync("linear.token.v1", "at_from_peer");
+        store.setSync("linear.authMode.v1", "oauth");
+        store.setSync("linear.refreshToken.v1", "rt_new");
+        store.setSync(
+          "linear.tokenExpiresAt.v1",
+          new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        );
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({ error: "invalid_grant" }),
+        };
+      }
+      return okResponse({ access_token: "at", refresh_token: "rt", expires_in: 86399 });
+    });
+    const service = createLinearCredentialService({
+      adeDir: path.join(root, ".ade"),
+      logger: createLogger(),
+      credentialStore: store,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    service.setOAuthToken({
+      accessToken: "at_old",
+      refreshToken: "rt_old",
+      expiresAt: new Date(Date.now() - 1000).toISOString(),
+    });
+
+    await service.ensureFreshToken();
+
+    expect(service.getToken()).toBe("at_from_peer");
+    expect(service.getStatus()).toMatchObject({
+      tokenStored: true,
+      authMode: "oauth",
+      refreshTokenStored: true,
+    });
+  });
+
+  it("does not keep a forced-refresh invalid_grant just because the recorded expiry is fresh", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: "invalid_grant" }),
+    }));
+    const service = makeService(fetchImpl);
+    service.setOAuthToken({
+      accessToken: "at_rejected",
+      refreshToken: "rt_dead",
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    });
+
+    await service.ensureFreshToken({ force: true });
+
+    expect(service.getToken()).toBeNull();
+    expect(service.getStatus().tokenStored).toBe(false);
+  });
+
   it("keeps the existing token on a transient refresh failure", async () => {
     const fetchImpl = vi.fn(async () => ({
       ok: false,

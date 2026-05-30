@@ -1,6 +1,12 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import Bonjour from "bonjour-service";
+// Named import: bonjour-service exports the constructor as a named `Bonjour`.
+// A default import (`import Bonjour from …`) survives typecheck (the package
+// also declares a default) but breaks under CJS bundling — the interop helper
+// reads `.default`, which resolves to the module namespace, not the
+// constructor ("import_bonjour_service.default is not a constructor"). The
+// daemon's syncHostService.ts uses this same named form.
+import { Bonjour } from "bonjour-service";
 import { resolveTailscaleCliPath } from "../../../../../ade-cli/src/services/sync/resolveTailscaleCliPath";
 import type {
   RemoteRuntimeDiscoveredMachine,

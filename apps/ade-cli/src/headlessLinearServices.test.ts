@@ -603,6 +603,38 @@ describe("headlessLinearServices", () => {
     }
   });
 
+  it("clears headless OAuth credentials when forced refresh gets invalid_grant without rotation", async () => {
+    const previousAdeHome = process.env.ADE_HOME;
+    const previousFetch = globalThis.fetch;
+    process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-linear-forced-refresh-"));
+    const fetchImpl = vi.fn(async () => ({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: "invalid_grant" }),
+    })) as unknown as typeof fetch;
+    globalThis.fetch = fetchImpl;
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-linear-forced-project-"));
+    const adeDir = path.join(projectRoot, ".ade");
+    const services = createHeadlessLinearServices(createDeps({ projectRoot, adeDir }));
+    try {
+      services.linearCredentialService.setOAuthToken({
+        accessToken: "at_rejected",
+        refreshToken: "rt_dead",
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      });
+
+      await services.linearCredentialService.ensureFreshToken({ force: true });
+
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(services.linearCredentialService.getStatus().tokenStored).toBe(false);
+    } finally {
+      services.dispose();
+      globalThis.fetch = previousFetch;
+      if (previousAdeHome == null) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = previousAdeHome;
+    }
+  });
+
   it("assigns CTO default title for cto identityKey", async () => {
     const services = createHeadlessLinearServices(createDeps());
 
