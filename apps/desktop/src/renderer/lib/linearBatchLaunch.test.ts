@@ -136,7 +136,7 @@ describe("defaultKickoffPrompt", () => {
 describe("runBatchLaunch", () => {
   it("launches every issue: lane → headless launch (session + kickoff)", async () => {
     const createLane = vi.fn(async (args: { name: string }) => ({ id: `lane-${args.name}` }));
-    const launch = vi.fn(async (args: { kickoffText: string }) => {
+    const launch = vi.fn(async (args: { kickoffText: string; contextAttachments?: unknown[] }) => {
       void args;
       return { id: "sess" };
     });
