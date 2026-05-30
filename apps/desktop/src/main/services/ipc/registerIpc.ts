@@ -244,6 +244,9 @@ import type {
   LandPrArgs,
   LandStackArgs,
   GetLaneConflictStatusArgs,
+  DiffChanges,
+  FileDiff,
+  FilePatch,
   GetDiffChangesArgs,
   GetFileDiffArgs,
   GetFilePatchArgs,
@@ -601,6 +604,7 @@ import type { createWorkerTaskSessionService } from "../cto/workerTaskSessionSer
 import type { createLinearCredentialService } from "../cto/linearCredentialService";
 import { createLinearOAuthService, type LinearOAuthService } from "../cto/linearOAuthService";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
+import type { RemoteRuntimeActionRequest } from "../../../shared/types/remoteRuntime";
 import { registerRuntimeBridge } from "./runtimeBridge";
 import type { createFlowPolicyService } from "../cto/flowPolicyService";
 import type { createLinearRoutingService } from "../cto/linearRoutingService";
@@ -1319,6 +1323,16 @@ export function registerIpc({
     const rootPath = getLocalRuntimeRootForEvent(event);
     if (!rootPath) return null;
     return await action(localRuntimeConnectionPool, rootPath);
+  };
+
+  const tryLocalRuntimeAction = async <T>(
+    event: { sender: Electron.WebContents },
+    request: RemoteRuntimeActionRequest,
+  ): Promise<T | null> => {
+    const response = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+      pool.callActionForRoot(rootPath, request),
+    );
+    return response ? (response.result as T) : null;
   };
 
   // Backend services use Error.code for known failures (e.g.
@@ -5501,15 +5515,34 @@ export function registerIpc({
     return ctx.sessionDeltaService?.getSessionDelta(arg.sessionId) ?? null;
   });
 
-  ipcMain.handle(IPC.agentChatList, async (_event, arg: AgentChatListArgs = {}): Promise<AgentChatSessionSummary[]> => {
+  ipcMain.handle(IPC.agentChatList, async (event, arg: AgentChatListArgs = {}): Promise<AgentChatSessionSummary[]> => {
     const ctx = getCtx();
     const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
-    return ctx.agentChatService.listSessions(laneId || undefined, { includeAutomation: Boolean(arg?.includeAutomation) });
+    if (ctx.agentChatService) {
+      return ctx.agentChatService.listSessions(laneId || undefined, {
+        includeAutomation: Boolean(arg?.includeAutomation),
+      });
+    }
+    const runtime = await tryLocalRuntimeAction<AgentChatSessionSummary[]>(event, {
+      domain: "chat",
+      action: "listSessions",
+      argsList: [laneId, { includeAutomation: Boolean(arg?.includeAutomation) }],
+    });
+    return runtime ?? [];
   });
 
-  ipcMain.handle(IPC.agentChatGetSummary, async (_event, arg: AgentChatGetSummaryArgs): Promise<AgentChatSessionSummary | null> => {
+  ipcMain.handle(IPC.agentChatGetSummary, async (event, arg: AgentChatGetSummaryArgs): Promise<AgentChatSessionSummary | null> => {
     const ctx = getCtx();
-    return await ctx.agentChatService.getSessionSummary(arg?.sessionId ?? "");
+    const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
+    if (ctx.agentChatService) {
+      return await ctx.agentChatService.getSessionSummary(sessionId);
+    }
+    if (!sessionId) return null;
+    return await tryLocalRuntimeAction<AgentChatSessionSummary | null>(event, {
+      domain: "chat",
+      action: "getSessionSummary",
+      arg: sessionId,
+    });
   });
 
   ipcMain.handle(IPC.agentChatCreate, async (_event, arg: AgentChatCreateArgs): Promise<AgentChatSession> => {
@@ -6965,25 +6998,53 @@ export function registerIpc({
     await requirePtyService().reattachChatCli(parseTerminalReattachArgs(arg)),
   );
 
-  ipcMain.handle(IPC.diffGetChanges, async (_event, arg: GetDiffChangesArgs) => {
+  ipcMain.handle(IPC.diffGetChanges, async (event, arg: GetDiffChangesArgs) => {
     const ctx = getCtx();
-    return await withIpcTiming(ctx, "diff.getChanges", async () => await ctx.diffService.getChanges(arg.laneId), {
+    return await withIpcTiming(ctx, "diff.getChanges", async () => {
+      if (ctx.diffService) {
+        return await ctx.diffService.getChanges(arg.laneId);
+      }
+      const runtime = await tryLocalRuntimeAction<DiffChanges>(event, {
+        domain: "diff",
+        action: "getChanges",
+        arg: arg.laneId,
+      });
+      if (runtime != null) return runtime;
+      throw new Error("Diff service is not available.");
+    }, {
       laneId: arg.laneId,
     });
   });
 
-  ipcMain.handle(IPC.diffGetFile, async (_event, arg: GetFileDiffArgs) => {
+  ipcMain.handle(IPC.diffGetFile, async (event, arg: GetFileDiffArgs) => {
     const ctx = getCtx();
     return await withIpcTiming(
       ctx,
       "diff.getFile",
-      async () => await ctx.diffService.getFileDiff({
-        laneId: arg.laneId,
-        filePath: arg.path,
-        mode: arg.mode,
-        compareRef: arg.compareRef,
-        compareTo: arg.compareTo
-      }),
+      async () => {
+        if (ctx.diffService) {
+          return await ctx.diffService.getFileDiff({
+            laneId: arg.laneId,
+            filePath: arg.path,
+            mode: arg.mode,
+            compareRef: arg.compareRef,
+            compareTo: arg.compareTo,
+          });
+        }
+        const runtime = await tryLocalRuntimeAction<FileDiff>(event, {
+          domain: "diff",
+          action: "getFileDiff",
+          args: {
+            laneId: arg.laneId,
+            filePath: arg.path,
+            mode: arg.mode,
+            compareRef: arg.compareRef,
+            compareTo: arg.compareTo,
+          },
+        });
+        if (runtime != null) return runtime;
+        throw new Error("Diff service is not available.");
+      },
       {
         laneId: arg.laneId,
         mode: arg.mode,
@@ -6992,18 +7053,35 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.diffGetFilePatch, async (_event, arg: GetFilePatchArgs) => {
+  ipcMain.handle(IPC.diffGetFilePatch, async (event, arg: GetFilePatchArgs) => {
     const ctx = getCtx();
     return await withIpcTiming(
       ctx,
       "diff.getFilePatch",
-      async () => await ctx.diffService.getFilePatch({
-        laneId: arg.laneId,
-        filePath: arg.path,
-        mode: arg.mode,
-        compareRef: arg.compareRef,
-        compareTo: arg.compareTo
-      }),
+      async () => {
+        if (ctx.diffService) {
+          return await ctx.diffService.getFilePatch({
+            laneId: arg.laneId,
+            filePath: arg.path,
+            mode: arg.mode,
+            compareRef: arg.compareRef,
+            compareTo: arg.compareTo,
+          });
+        }
+        const runtime = await tryLocalRuntimeAction<FilePatch>(event, {
+          domain: "diff",
+          action: "getFilePatch",
+          args: {
+            laneId: arg.laneId,
+            filePath: arg.path,
+            mode: arg.mode,
+            compareRef: arg.compareRef,
+            compareTo: arg.compareTo,
+          },
+        });
+        if (runtime != null) return runtime;
+        throw new Error("Diff service is not available.");
+      },
       {
         laneId: arg.laneId,
         mode: arg.mode,
