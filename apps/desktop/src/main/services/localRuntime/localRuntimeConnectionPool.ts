@@ -701,6 +701,8 @@ export class LocalRuntimeConnectionPool {
       }
     }
 
+    // Unreachable: the loop always returns or throws on the final attempt.
+    // Required here only for TypeScript's control-flow narrowing.
     throw lastError ?? new Error("Local ADE service did not return a project record.");
   }
 
