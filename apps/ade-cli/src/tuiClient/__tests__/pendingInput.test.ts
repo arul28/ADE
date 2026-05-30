@@ -103,4 +103,32 @@ describe("pendingInput", () => {
       highStakes: true,
     }));
   });
+
+  it("keeps plan approvals on the one-key approval path", () => {
+    const request: PendingInputRequest = {
+      ...baseRequest,
+      kind: "plan_approval",
+      title: "Approve plan",
+      questions: [],
+      allowsFreeform: false,
+    };
+    const events: AgentChatEventEnvelope[] = [{
+      sessionId: "s1",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      sequence: 1,
+      event: {
+        type: "approval_request",
+        itemId: "item-plan",
+        kind: "tool_call",
+        description: "Approve plan",
+        detail: { request },
+      },
+    }];
+
+    expect(latestPendingApproval(events)).toEqual(expect.objectContaining({
+      itemId: "item-plan",
+      mode: "approval",
+      highStakes: false,
+    }));
+  });
 });

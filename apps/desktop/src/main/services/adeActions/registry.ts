@@ -819,6 +819,44 @@ function toService(value: unknown): OpaqueService | null {
   return (value ?? null) as OpaqueService | null;
 }
 
+type CachedApnsBridgeDomainService = {
+  projectConfigService: AdeRuntime["projectConfigService"];
+  apnsService: AdeRuntime["apnsService"];
+  apnsKeyStore: AdeRuntime["apnsKeyStore"];
+  service: OpaqueService;
+};
+
+const apnsBridgeDomainServices = new WeakMap<AdeRuntime, CachedApnsBridgeDomainService>();
+
+function getApnsBridgeDomainService(runtime: AdeRuntime): OpaqueService {
+  const projectConfigService = runtime.projectConfigService;
+  const apnsService = runtime.apnsService;
+  const apnsKeyStore = runtime.apnsKeyStore;
+  const cached = apnsBridgeDomainServices.get(runtime);
+  if (
+    cached &&
+    cached.projectConfigService === projectConfigService &&
+    cached.apnsService === apnsService &&
+    cached.apnsKeyStore === apnsKeyStore
+  ) {
+    return cached.service;
+  }
+  const service = createApnsBridgeService({
+    projectConfigService,
+    apnsService,
+    apnsKeyStore,
+    getDeviceRegistryService: () =>
+      runtime.syncService?.getDeviceRegistryService?.() ?? null,
+  }) as OpaqueService;
+  apnsBridgeDomainServices.set(runtime, {
+    projectConfigService,
+    apnsService,
+    apnsKeyStore,
+    service,
+  });
+  return service;
+}
+
 const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
 function agentChatParallelLaunchStateKey(projectRoot: string, parentLaneId: string): string {
@@ -2751,15 +2789,9 @@ export function getAdeActionDomainServices(
     automations: toService(buildAutomationsDomainService(runtime)),
     review: toService(runtime.reviewService),
     issue: toService(buildIssueDomainService(runtime)),
-    notifications_apns: toService(
-      createApnsBridgeService({
-        projectConfigService: runtime.projectConfigService,
-        apnsService: runtime.apnsService,
-        apnsKeyStore: runtime.apnsKeyStore,
-        getDeviceRegistryService: () =>
-          runtime.syncService?.getDeviceRegistryService?.() ?? null,
-      }),
-    ),
+    get notifications_apns() {
+      return toService(getApnsBridgeDomainService(runtime));
+    },
   };
 }
 

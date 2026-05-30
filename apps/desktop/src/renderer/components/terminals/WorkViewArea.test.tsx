@@ -76,6 +76,9 @@ vi.mock("./CliSessionWorkSurfaceHeader", () => ({
     <div data-testid="work-cli-session-header" data-session-id={session.id} />
   ),
   CliSurfaceTrailingActions: () => null,
+  GridTileSessionHeaderActions: ({ session }: { session: TerminalSessionSummary }) => (
+    <div data-testid="grid-tile-session-header-actions" data-session-id={session.id} />
+  ),
 }));
 
 vi.mock("../chat/AgentChatPane", async () => {

@@ -16,10 +16,27 @@ function placementGlyph(placement?: CommandPlacement): string {
   return PLACEMENT_GLYPHS[placement] ?? " ";
 }
 
-const VISIBLE_ROWS = 5;
-export const SLASH_PALETTE_ROWS = VISIBLE_ROWS + 3;
+const MIN_VISIBLE_ROWS = 6;
+const MAX_VISIBLE_ROWS = 14;
+const CHROME_ROWS = 3; // header + selected-summary + footer
 const DEFAULT_PALETTE_WIDTH = 88;
-const MAX_PALETTE_WIDTH = 104;
+const MAX_PALETTE_WIDTH = 132;
+
+// The palette grows with the available terminal height: more commands visible
+// on bigger screens, clamped so it never dominates a short terminal.
+export function slashPaletteVisibleRows(maxRows?: number): number {
+  if (!Number.isFinite(maxRows)) return MIN_VISIBLE_ROWS;
+  return Math.max(MIN_VISIBLE_ROWS, Math.min(MAX_VISIBLE_ROWS, Math.floor(maxRows ?? 0) - CHROME_ROWS));
+}
+
+// Total rows the palette occupies (visible command rows + chrome) — used by the
+// caller to reserve overlay height so it lines up with the prompt.
+export function slashPaletteReservedRows(maxRows?: number): number {
+  return slashPaletteVisibleRows(maxRows) + CHROME_ROWS;
+}
+
+// Back-compat default reservation when no height budget is supplied.
+export const SLASH_PALETTE_ROWS = MIN_VISIBLE_ROWS + CHROME_ROWS;
 
 function clampPaletteWidth(width?: number): number {
   const available = Number.isFinite(width) ? Math.floor(width ?? DEFAULT_PALETTE_WIDTH) : DEFAULT_PALETTE_WIDTH;
@@ -108,22 +125,25 @@ export function SlashPalette({
   selectedIndex,
   provider,
   width,
+  maxRows,
 }: {
   query: string;
   userCommands: AgentChatSlashCommand[];
   selectedIndex: number;
   provider?: AgentChatProvider | null;
   width?: number;
+  maxRows?: number;
 }) {
   const rows = paletteCommands(query, userCommands, { provider });
   if (!query.startsWith("/") || !rows.length) return null;
   const paletteWidth = clampPaletteWidth(width);
+  const visibleRows = slashPaletteVisibleRows(maxRows);
   const total = rows.length;
   const safeIndex = Math.max(0, Math.min(selectedIndex, total - 1));
-  const half = Math.floor(VISIBLE_ROWS / 2);
+  const half = Math.floor(visibleRows / 2);
   let start = Math.max(0, safeIndex - half);
-  let end = Math.min(total, start + VISIBLE_ROWS);
-  start = Math.max(0, end - VISIBLE_ROWS);
+  let end = Math.min(total, start + visibleRows);
+  start = Math.max(0, end - visibleRows);
   const window = rows.slice(start, end);
   const aboveCount = start;
   const belowCount = total - end;
@@ -160,7 +180,7 @@ export function SlashPalette({
       value: bodyLine(rowText, paletteWidth),
     };
   });
-  while (rowLines.length < VISIBLE_ROWS) {
+  while (rowLines.length < visibleRows) {
     rowLines.push({ kind: "blank" as const, value: bodyLine("", paletteWidth) });
   }
   const footer = bottomLine(

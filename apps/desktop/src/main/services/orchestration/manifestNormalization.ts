@@ -286,31 +286,37 @@ export function validateManifestShape(manifest: OrchestrationManifest): string |
 }
 
 function validateTasks(tasks: OrchestrationManifest["tasks"]): string | null {
+  const seenIds = new Set<string>();
   for (const task of tasks ?? []) {
     if (!task || typeof task !== "object") return "manifest.tasks entries must be objects";
     if (typeof task.id !== "string" || !task.id.trim()) {
       return "manifest.tasks entries must include a non-empty id";
     }
+    const taskId = task.id.trim();
+    if (seenIds.has(taskId)) {
+      return `manifest.tasks contains duplicate id ${taskId}`;
+    }
+    seenIds.add(taskId);
     if (!isPhaseId((task as { phaseId?: unknown }).phaseId)) {
-      return `manifest task ${task.id} must include phaseId; use phaseId, not phase`;
+      return `manifest task ${taskId} must include phaseId; use phaseId, not phase`;
     }
     if (typeof task.title !== "string" || !task.title.trim()) {
-      return `manifest task ${task.id} must include a non-empty title`;
+      return `manifest task ${taskId} must include a non-empty title`;
     }
     if (typeof task.description !== "string") {
-      return `manifest task ${task.id} must include description`;
+      return `manifest task ${taskId} must include description`;
     }
     if (!isTaskStatus(task.status)) {
-      return `manifest task ${task.id} has invalid status`;
+      return `manifest task ${taskId} has invalid status`;
     }
     if (!task.validationGate || typeof task.validationGate !== "object") {
-      return `manifest task ${task.id} must include validationGate`;
+      return `manifest task ${taskId} must include validationGate`;
     }
     if (typeof task.validationGate.required !== "boolean") {
-      return `manifest task ${task.id} validationGate.required must be boolean`;
+      return `manifest task ${taskId} validationGate.required must be boolean`;
     }
     if (!Array.isArray(task.validationGate.stepIds)) {
-      return `manifest task ${task.id} validationGate.stepIds must be an array`;
+      return `manifest task ${taskId} validationGate.stepIds must be an array`;
     }
   }
   return null;

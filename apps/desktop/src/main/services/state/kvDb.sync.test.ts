@@ -170,6 +170,70 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
     db2.close();
   });
 
+  it("applies CRDT changes for composite primary-key tables", async () => {
+    const db1 = await openKvDb(makeDbPath("ade-kvdb-sync-composite-pk-a-"), createLogger() as any);
+    const db2 = await openKvDb(makeDbPath("ade-kvdb-sync-composite-pk-b-"), createLogger() as any);
+    const now = "2026-03-15T00:00:00.000Z";
+
+    db1.run(
+      `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)
+       values (?, ?, ?, ?, ?, ?)`,
+      ["project-composite", "/repo/composite", "Composite", "main", now, now],
+    );
+    db1.run(
+      `insert into lanes(
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path, attached_root_path,
+        is_edit_protected, parent_lane_id, color, icon, tags_json, folder, status, created_at, archived_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "lane-composite",
+        "project-composite",
+        "Composite Lane",
+        null,
+        "worktree",
+        "main",
+        "feature/composite",
+        "/repo/composite/.ade/worktrees/lane-composite",
+        null,
+        0,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "active",
+        now,
+        null,
+      ],
+    );
+
+    const baselineChanges = db1.sync.exportChangesSince(0);
+    db2.sync.applyChanges(baselineChanges);
+
+    const versionBeforeRuntime = db1.sync.getDbVersion();
+    db1.run(
+      `insert into process_runtime(project_id, lane_id, process_key, status, readiness, updated_at)
+       values (?, ?, ?, ?, ?, ?)`,
+      ["project-composite", "lane-composite", "dev", "running", "ready", "2026-03-15T00:01:00.000Z"],
+    );
+
+    const runtimeChanges = db1.sync.exportChangesSince(versionBeforeRuntime);
+    expect(runtimeChanges.some((change) => change.table === "process_runtime")).toBe(true);
+
+    const result = db2.sync.applyChanges(runtimeChanges);
+    expect(result.appliedCount).toBe(runtimeChanges.length);
+    expect(result.touchedTables).toContain("process_runtime");
+    expect(
+      db2.get<{ status: string }>(
+        "select status from process_runtime where project_id = ? and lane_id = ? and process_key = ?",
+        ["project-composite", "lane-composite", "dev"],
+      )?.status,
+    ).toBe("running");
+
+    db1.close();
+    db2.close();
+  });
+
   it("repairs a legacy projects unique constraint before CRR marking", async () => {
     const dbPath = makeDbPath("ade-kvdb-sync-projects-legacy-");
     const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (path: string) => { exec: (sql: string) => void; close: () => void } };

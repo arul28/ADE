@@ -50,9 +50,12 @@ import type { AdeCodeConnection, ChatHistorySnapshot, CreatedChat, NavigateReque
 
 export const DEFAULT_CODEX_REASONING_EFFORT = "low";
 
-export async function listLanes(connection: AdeCodeConnection): Promise<LaneSummary[]> {
+export async function listLanes(
+  connection: AdeCodeConnection,
+  options: { includeArchived?: boolean } = {},
+): Promise<LaneSummary[]> {
   return await connection.action<LaneSummary[]>("lane", "list", {
-    includeArchived: false,
+    includeArchived: options.includeArchived ?? false,
     includeStatus: true,
   });
 }
@@ -69,9 +72,32 @@ export async function listLaneDiffStats(
 export async function listChatSessions(
   connection: AdeCodeConnection,
   laneId?: string | null,
+  options: { includeArchived?: boolean } = {},
 ): Promise<AgentChatSessionSummary[]> {
-  const argsList = laneId ? [laneId] : [];
+  const listOptions = { includeArchived: options.includeArchived ?? false };
+  const argsList = laneId ? [laneId, listOptions] : [null, listOptions];
   return await connection.actionList<AgentChatSessionSummary[]>("chat", "listSessions", argsList);
+}
+
+export async function archiveChatSession(
+  connection: AdeCodeConnection,
+  sessionId: string,
+): Promise<void> {
+  await connection.action("chat", "archiveSession", { sessionId });
+}
+
+export async function unarchiveChatSession(
+  connection: AdeCodeConnection,
+  sessionId: string,
+): Promise<void> {
+  await connection.action("chat", "unarchiveSession", { sessionId });
+}
+
+export async function deleteChatSession(
+  connection: AdeCodeConnection,
+  sessionId: string,
+): Promise<void> {
+  await connection.action("chat", "deleteSession", { sessionId });
 }
 
 const CHAT_BACKED_TERMINAL_TOOL_TYPES = new Set([

@@ -1,753 +1,313 @@
-# ADE CLI sessions: finish correctness, UX, and performance proof
-
-You are taking over the `app-control-fixes` lane in:
-
-`/Users/arul/ADE/.ade/worktrees/app-control-fixes-d55c0422`
-
-The user is debugging ADE Work-tab CLI sessions across Codex, Claude, Cursor,
-OpenCode, and Droid. They are frustrated because prior smoke testing created
-confusing stale sessions, stale green status indicators, duplicate resumed
-rows, auto-closing PTYs, and high memory/lag. Do not give a theoretical answer.
-Trace the real code, fix the real issue, and verify in the dev Electron app.
-
-## Non-negotiable expectations
-
-- Preserve user changes in the dirty worktree. Do not reset or revert unrelated
-  files.
-- Use Node 22 for desktop commands:
-  `PATH=$HOME/.asdf/installs/nodejs/22.13.1/bin:$PATH`.
-- Use the dev Electron app as the UI source of truth, not Safari.
-- Use Codex Computer Use or CDP to verify the actual Electron UI behavior.
-- Stop and report clearly if a provider cannot work because auth/setup is
-  missing. Do not fake a passing result.
-- Run small focused tests while iterating. Do not jump straight to full test
-  suites until the implementation and smoke proof are complete.
-- When testing CLI sessions, clean up the sessions/processes you create.
-
-## Current known state from the previous pass
-
-Several fixes are already present on this branch. Re-read the code before
-trusting this list, but these are the intended current changes:
-
-- Dead/stale CLI rows should no longer stay green after app restart. Detached or
-  killed PTY-backed sessions should render as ended/red.
-- Sending a resume message to a dead CLI session should reuse the same session
-  row and create a new PTY under that same session id, not create a duplicate
-  sidebar row.
-- Resume composer UI was simplified to message-only; the previous model and
-  runtime metadata should be reused for the resume.
-- Cursor CLI launch defaults should use `cursor-agent --model auto`, not GPT
-  model names.
-- Cursor CLI resume should preserve the Cursor session id and should not append
-  a stray literal `n` to the resume id.
-- PTY termination paths were changed to kill the process tree instead of only
-  the top-level PTY process.
-- Droid CLI exists on the machine, but Droid is blocked by account/subscription
-  setup unless the user has since authenticated it.
-
-Important files likely involved:
-
-- `apps/desktop/src/main/services/pty/ptyService.ts`
-- `apps/desktop/src/main/utils/terminalSessionSignals.ts`
-- `apps/desktop/src/main/services/sessions/sessionService.ts`
-- `apps/desktop/src/shared/cliLaunch.ts`
-- `apps/desktop/src/shared/types/sessions.ts`
-- `apps/desktop/src/renderer/components/terminals/cliLaunch.ts`
-- `apps/desktop/src/renderer/components/terminals/useWorkSessions.ts`
-- `apps/desktop/src/renderer/components/terminals/TerminalsPage.tsx`
-- `apps/desktop/src/renderer/components/terminals/WorkViewArea.tsx`
-- Settings/runtime availability files for Cursor SDK and CLI model discovery.
-  Find these with `rg "Cursor|cursor-agent|CURSOR_API_KEY|models.list|list-models" apps/desktop/src`.
-
-## Task 1: fully investigate the PTY lag and memory issue
-
-The user observed that only four ADE CLI sessions made the computer feel slow
-and memory-heavy. Four normal terminal sessions should not do that. Treat this
-as a real product bug until disproven.
-
-Do a focused performance/resource investigation before making guesses:
-
-1. Launch the dev desktop app from `apps/desktop` with the current lane code.
-   Use a throwaway ADE home/project root if needed so smoke sessions do not
-   pollute the user's real state.
-2. Create a small controlled set of CLI sessions: one each for Codex, Claude,
-   Cursor, and OpenCode. Skip Droid unless auth/subscription is available.
-3. Record process tree and RSS before, during, after stop/delete, and after app
-   restart. Include Electron main, Electron renderer, node child processes,
-   PTYs, provider CLIs, and any lingering descendants.
-4. Inspect whether ADE is doing expensive renderer work:
-   - transcript re-render frequency
-   - session list polling/subscription churn
-   - title/summary extraction or preview parsing
-   - hidden terminal rendering
-   - unbounded transcript buffers or IPC payloads
-5. Inspect whether main process leaves stale resources:
-   - process trees after stop/delete
-   - timers
-   - event subscriptions
-   - file watchers
-   - session list intervals
-   - leaked PTY objects
-6. Add instrumentation only if needed, and remove or gate noisy logging before
-   finalizing.
-
-Expected outcome:
-
-- Either fix the root cause, or produce a concrete measured bottleneck with a
-  small high-confidence fix plan.
-- If you fix it, add tests or a smoke assertion that would catch the regression
-  where feasible.
-- Confirm cleanup leaves no stale provider CLI processes from your smoke run.
-
-## Task 2: fix Cursor model availability UX for CLI and SDK separately
-
-Current bad UX:
-
-- The ADE UI model picker does not show Cursor models until the Cursor SDK is
-  configured.
-- That is wrong because Cursor CLI sessions can still be available through the
-  local `cursor-agent` binary even when `@cursor/sdk` / `CURSOR_API_KEY` is not
-  configured.
-
-Desired UX:
-
-- ADE should check both Cursor availability paths:
-  - Cursor SDK/native runtime availability via `@cursor/sdk` and
-    `CURSOR_API_KEY`.
-  - Cursor CLI availability via the local `cursor-agent` binary and its CLI
-    model listing, for example `cursor-agent models` or
-    `cursor-agent --list-models`.
-- If only Cursor CLI is available, show Cursor models in model selection with a
-  small `CLI only` tag.
-- If only Cursor SDK/chat runtime is available, show Cursor models with a small
-  `Chat only` tag.
-- If both are available, show Cursor models normally with no tag.
-- Do not block CLI model selection just because the Cursor SDK settings card
-  says sign-in required.
-- Keep copy concise and stateful.
-
-Implementation guidance:
-
-- Do not hard-code only `auto` unless there is no reliable discovery path.
-  Prefer real CLI discovery and cache it with sane invalidation/error handling.
-- If SDK and CLI return overlapping model ids, merge them by model id and keep
-  source availability metadata.
-- If a model exists only in CLI discovery, it must still be launchable by
-  Cursor CLI sessions.
-- If a model exists only in SDK discovery, it must not be offered for Cursor CLI
-  launch unless Cursor CLI accepts it.
-- Add focused tests for:
-  - SDK unavailable + CLI available => models visible with `CLI only`.
-  - SDK available + CLI unavailable => models visible with `Chat only`.
-  - both available => merged models, no source tag.
-  - neither available => current sign-in/setup UI remains understandable.
-
-## Task 3: smoke every permission mode for each supported CLI runtime
-
-The user explicitly asked for every permission mode on every runtime that has a
-CLI session option:
-
-- Codex
-- Claude
-- Cursor
-- OpenCode
-- Droid only if auth/subscription is actually available
-
-Use one model per runtime. For Cursor, use `auto` or another real Cursor CLI
-model, not GPT model ids. For each runtime, use two reasoning/autonomy levels
-where that runtime exposes them. If a runtime does not have an equivalent
-reasoning control, document that as "not applicable" with the exact help/doc
-evidence.
-
-Before testing, verify current CLI flags against installed help output and, if
-needed, official/runtime docs:
-
-- `codex --help` and `codex resume --help`
-- `claude --help`
-- `cursor-agent --help` and `cursor-agent models` or `cursor-agent --list-models`
-- `opencode --help` and `opencode run --help`
-- `droid --help` and `droid exec --help`
-
-For each runtime and mode:
-
-1. Launch from the ADE UI or the same IPC path the UI uses.
-2. Confirm the spawned command contains the expected permission/autonomy flags.
-3. Confirm the prompt opens the PTY immediately after sending a message.
-4. Send 2-3 small messages back and forth where possible.
-5. Stop/kill/close ADE, reopen it, and confirm old CLI rows appear ended/red,
-   not green and not gray.
-6. Resume by sending a message to the dead row.
-7. Confirm the same session row is reused in-place, with no duplicate sidebar
-   row.
-8. Confirm the resume command uses the right provider/session id and preserved
-   launch metadata.
-9. Delete the session after it is stopped or dead; deletion should not fail
-   with "Running terminal sessions must be...".
-10. Confirm no stale processes from that session remain.
-
-If a runtime cannot be tested because setup is missing, stop and report the
-exact blocker. For Droid, the acceptable blocker is the local Droid CLI saying
-there is no active subscription or no credentials.
-
-## Task 4: verify app close/reopen behavior
-
-This is separate from normal stop/delete. The required product behavior is:
-
-- If the Electron app exits, live PTYs are gone.
-- On next launch, ADE should not pretend those process-local PTYs are still
-  live.
-- The old rows should show ended/red.
-- The transcript should still be viewable.
-- The user should be able to type a resume message into the same row.
-- Resume should create a new PTY backing the same session row.
-
-Do this for Codex, Claude, Cursor, and OpenCode. Droid only if setup permits.
-
-## Task 5: clean up old smoke/test sessions in the dev ADE app
-
-The prior pass created confusing "soak" and smoke rows. Before final smoke
-proof, clean your own test sessions out of the dev ADE home/project state.
-
-If deletion fails because ADE thinks a dead PTY is running:
-
-- Trace why the session still reports running.
-- Fix the status/enrichment/delete guard path.
-- Verify the user can delete dead/unreachable sessions from the UI.
-
-Do not delete user-owned real sessions unless the user explicitly asks.
-
-## Task 6: run validation and final commands
-
-After fixes and smoke proof:
-
-1. Run focused tests for the touched surfaces.
-2. Run:
-   - `npm --prefix apps/desktop run typecheck`
-   - relevant focused desktop Vitest files
-   - `npm --prefix apps/desktop run lint` if touched code should be linted
-3. If broad validation is requested, follow `AGENTS.md` validation order.
-4. The user previously requested the repo commands:
-   - `/Users/arul/ADE/.claude/commands/automate.md`
-   - `/Users/arul/ADE/.claude/commands/finalize.md`
-
-Before running broad automate/finalize-style checks, make sure the actual
-implementation and smoke proof above are done. Do not run huge suites as a
-substitute for the missing UI/runtime verification.
-
-## Required final report
-
-The final response must be concrete and must include:
-
-- What was fixed.
-- What was measured for lag/memory and the before/after or blocker.
-- Cursor model UX behavior for SDK-only, CLI-only, and both-available cases.
-- A matrix of runtime x permission mode x reasoning/autonomy levels tested.
-- For each runtime, whether app close/reopen showed ended/red and resumed
-  in-place without duplicates.
-- Any provider blockers, with exact command output summary.
-- Validation commands run and their results.
-- Confirmation that smoke sessions/processes were cleaned up.
-
-## Handoff update: 2026-05-26 16:35 EDT
-
-This goal is not complete. Resume from this file and the current worktree state.
-The worktree is intentionally dirty from earlier passes; do not reset it. The
-changes from this pass are focused in:
-
-- `apps/desktop/src/main/services/pty/ptyService.ts`
-- `apps/desktop/src/main/services/pty/ptyService.test.ts`
-- `apps/desktop/src/shared/cliLaunch.ts`
-- `apps/desktop/src/main/utils/terminalSessionSignals.ts`
-- `apps/desktop/src/renderer/components/terminals/cliLaunch.test.ts`
-- this `codexGoal.md`
-
-### Socket and lane discipline
-
-- This lane socket is `/tmp/ade-runtime-app-control-fixes-d55c0422.sock`.
-- Another active lane socket exists at
-  `/tmp/ade-runtime-ui-clean-up-3470f34e.sock`. Do not touch or kill it.
-- User explicitly wants: if this lane socket is already up, reuse it. If not,
-  create a new socket only for this lane when launching the desktop app.
-- Dev launch command used:
-  ```bash
-  PATH=$HOME/.asdf/installs/nodejs/22.13.1/bin:$PATH \
-  ADE_PROJECT_ROOT=/Users/arul/ADE \
-  ADE_DEV_RUNTIME_SOCKET_PATH=/tmp/ade-runtime-app-control-fixes-d55c0422.sock \
-  NO_DEVTOOLS=1 \
-  npm run dev:desktop -- --skip-runtime-build
-  ```
-- The dev app may rebuild stale CLI/main bundles before opening Electron. That
-  happened in the latest run and is expected.
-
-### Computer Use workflow that worked best
-
-The user specifically wants real Work-tab testing through Codex Computer Use,
-not direct CLI launch flags. Keep using this flow:
-
-1. Start the dev Electron app from this worktree, pointed at this lane socket.
-2. Before any UI action in a new assistant turn, call Computer Use
-   `get_app_state({"app":"Electron"})`.
-3. Confirm the state shows the local dev Electron app:
-   - bundle `com.github.Electron`
-   - HTML URL includes `localhost:5173`
-   - Work tab URL is `/work?...`
-4. Interact with the Work tab exactly as a user would:
-   - click the existing lane row
-   - click an existing stopped CLI row or create a new Work CLI session
-   - type into the Work composer
-   - click Send
-   - use the visible Stop button for cleanup
-5. Use shell/SQLite only for evidence after the UI action:
-   - process tree/RSS
-   - transcript tail
-   - `.ade/ade.db` row state
-   - no lingering provider processes
-
-Do not use Safari as the parity reference. Do not bypass the Work tab with
-direct CLI flags except for harmless help/docs/probe commands.
-
-### Official/runtime docs checked in this pass
-
-Use these as the runtime truth sources when continuing:
-
-- OpenAI Codex CLI docs:
-  `https://developers.openai.com/codex/cli/reference`
-  - Current docs say `codex resume` accepts the same global flags as `codex`,
-    including model and sandbox overrides.
-  - Current docs list `codex exec resume` for non-interactive resume, but ADE
-    Work-tab CLI sessions are interactive TUI sessions.
-- OpenAI Codex security/permissions docs:
-  `https://developers.openai.com/codex/security`
-- Claude Code CLI docs:
-  `https://docs.anthropic.com/en/docs/claude-code/cli-usage`
-  - `--permission-mode default|acceptEdits|plan|bypassPermissions` are valid.
-  - `--resume` resumes a specific session.
-- Claude permission docs:
-  `https://docs.anthropic.com/en/docs/claude-code/iam`
-  - Confirms the permission-mode meanings.
-- Cursor CLI docs:
-  `https://docs.cursor.com/en/cli/overview`
-  `https://docs.cursor.com/en/cli/reference/parameters`
-  `https://docs.cursor.com/en/cli/using`
-  - Confirms `cursor-agent --resume`, `--model`, `--force`, `--mode plan`,
-    and command approval behavior.
-  - Cursor modes doc confirms Agent/Ask/Plan behavior.
-- OpenCode CLI docs:
-  `https://dev.opencode.ai/docs/cli/`
-  - Confirms bare `opencode` starts the TUI, and `opencode run` is the
-    non-interactive path with `--interactive`, `--session`, `--continue`,
-    `--model`, `--agent`, `--replay`, and `--replay-limit`.
-- Factory Droid CLI docs:
-  `https://docs.factory.ai/cli/configuration/cli-reference`
-  `https://docs.factory.ai/cli/configuration/settings`
-  `https://docs.factory.ai/cli/user-guides/auto-run`
-  - Confirms bare `droid` is interactive and `droid "<prompt>"` starts the
-    same interactive CLI with initial context.
-  - Confirms `droid exec` is non-interactive.
-  - Confirms `--auto low|medium|high`, `--session-id`, and
-    `--skip-permissions-unsafe` for `droid exec`.
-  - Confirms interactive Droid uses settings such as `model`,
-    `reasoningEffort`, `sessionDefaultSettings.interactionMode`, and
-    `sessionDefaultSettings.autonomyLevel`.
-
-Local installed help also confirmed:
-
-- `droid --help`: "Running 'droid' without any options starts interactive mode.
-  Provide an inline prompt to start the session with initial context."
-- `droid exec --help`: "Execute a single command (non-interactive mode)" and
-  lists `--auto low|medium|high`, `--skip-permissions-unsafe`,
-  `--session-id`, `--model`, and `--reasoning-effort`.
-
-### What was verified with Computer Use
-
-The following was driven from the real Work tab in Electron:
-
-- The Work tab was open on lane `cli perf resource smoke 20260526`.
-- A stopped Cursor Agent row was selected:
-  `b491b60d-5e97-4e8c-8aca-70f652f5f5c8`.
-- The row had previously printed
-  `MATRIX_CURSOR_AGENT_RESUME_AFTER_REOPEN_526` after an app quit/reopen.
-- After reloading the patched main bundle, a Work-tab follow-up was sent:
-  `Print MATRIX_CURSOR_AGENT_PATCHED_DIRECT_RESUME_526 and then wait.`
-- The same session row was reused in place. It did not create a duplicate
-  sidebar row.
-- DB evidence after sending:
-  - `id`: `b491b60d-5e97-4e8c-8aca-70f652f5f5c8`
-  - `title`: `Print MATRIX_CURSOR_AGENT_PATCHED_DIRECT_RESUME_526 then wait`
-  - `status`: `running` during smoke, later returned to follow-up/ended state
-    after Cursor printed the marker and waited.
-  - `pty_id`: `b52eeea6-4955-49a5-9fcb-69c567818490`
-  - `owner_pid`: Electron PID at the time, `21997` before tsup restarted it.
-  - `resume_command` remained
-    `cursor-agent --model auto --resume 53c58376-3e41-4e89-a417-138712566865`
-  - `resume_metadata_json` preserved provider `cursor`, target id
-    `53c58376-3e41-4e89-a417-138712566865`, permission mode `default`, model
-    `auto`.
-- Process tree evidence while the patched resume was alive:
-  - `cursor-agent --model auto --resume 53c58376-...` was a child of Electron
-    and its own process group.
-  - Cursor again spawned AWS MCP sidecars:
-    `uv tool uvx awslabs.aws-iac-mcp-server@latest`,
-    `uv tool uvx awslabs.aws-pricing-mcp-server@latest`, and their Python
-    children.
-- Transcript evidence:
-  - Old pre-patch resume had zsh/asdf noise:
-    `/Users/arul/.asdf/completions/asdf.bash:98: command not found: complete`.
-  - The patched follow-up appended
-    `MATRIX_CURSOR_AGENT_PATCHED_DIRECT_RESUME_526` without new asdf/zsh
-    startup noise.
-
-The latest CUA state after the marker printed showed the Cursor row as
-"Add a follow-up" rather than a visible running terminal. It did not need a
-Stop click at that point. Reconfirm with `ps` when resuming.
-
-### Fix 1: non-interactive clean shell for resumed CLI sessions
-
-Problem found:
-
-- Resumed ended CLI sessions were being relaunched by starting an interactive
-  shell and typing the resume command into it.
-- For Cursor this produced user shell startup noise:
-  `/Users/arul/.asdf/completions/asdf.bash:98: command not found: complete`.
-- It also made process ownership/cleanup harder to reason about.
-
-Patch made:
-
-- `apps/desktop/src/main/services/pty/ptyService.ts`
-  - Added `directShellLaunchForCommandLine(...)`.
-  - On non-Windows, resumed command lines now launch as:
-    `/bin/bash --noprofile --norc -lc <resume command>`.
-  - Applied this to:
-    - `sendToSession(...)` resume path.
-    - `reattachChatCli(...)` resume path.
-- `apps/desktop/src/main/services/pty/ptyService.test.ts`
-  - Updated tests so resumed CLI follow-ups assert direct non-interactive bash
-    spawn instead of typed startup commands.
-  - Cursor resumed follow-up test now asserts no startup command is typed before
-    readiness and that the follow-up message is submitted normally.
-  - OpenCode replay resume test now inspects spawn args.
-
-Validation run:
-
-```bash
-PATH=$HOME/.asdf/installs/nodejs/22.13.1/bin:$PATH \
-npm --prefix apps/desktop run test -- --run src/main/services/pty/ptyService.test.ts -t "sendToSession|reattach"
-```
-
-Result:
-
-- Passed.
-- Vitest output: `1 passed`, `21 passed | 118 skipped` inside the filtered file
-  run.
-
-Important nuance:
-
-- In `ps`, bash may not remain visible because `bash -lc` can exec the final
-  command. That is okay. The evidence to check is: no interactive zsh prompt,
-  no `.asdf/completions/asdf.bash` noise, correct resume command, and cleanup of
-  the provider process tree.
-
-### Fix 2: Droid Work-tab launches should be interactive, not `droid exec`
-
-Problem found:
-
-- ADE fresh Droid Work-tab launches were built with `droid exec ...`.
-- Factory docs and local help say `droid exec` is non-interactive.
-- That contradicts the Work-tab expectation and the user's explicit test
-  requirement that CLI sessions stay up for a while and support follow-ups.
-
-Patch started:
-
-- `apps/desktop/src/shared/cliLaunch.ts`
-  - Fresh Droid Work-tab launches now build an interactive command using
-    `droid --settings "$ADE_DROID_SETTINGS" "<prompt>"` through
-    `/bin/bash -lc`, not `droid exec`.
-  - Droid model IDs now strip ADE's `droid/` prefix before passing them to the
-    Factory CLI/settings. Example: `droid/gpt-5.4` becomes `gpt-5.4`.
-  - Temporary Droid settings now include:
-    - `model`
-    - `reasoningEffort`
-    - `sessionDefaultSettings.interactionMode`
-    - `sessionDefaultSettings.autonomyLevel`
-    - for plan/spec mode, `specModeModel` and `specModeReasoningEffort`
-  - Droid resume command generation now carries preserved model/reasoning into
-    the temp settings file.
-- `apps/desktop/src/main/utils/terminalSessionSignals.ts`
-  - Mirrored the Droid temp-settings/model-prefix behavior for resume command
-    reconstruction from terminal signals.
-- `apps/desktop/src/renderer/components/terminals/cliLaunch.test.ts`
-  - Updated the Droid launch test to expect an interactive Droid command and
-    settings JSON instead of `droid exec`.
-  - Added resume override coverage for Droid model/reasoning/autonomy.
-
-This Droid patch has not yet been validated. Run tests before trusting it.
-
-Recommended next validation for this patch:
-
-```bash
-PATH=$HOME/.asdf/installs/nodejs/22.13.1/bin:$PATH \
-npm --prefix apps/desktop run test -- --run \
-  src/renderer/components/terminals/cliLaunch.test.ts \
-  src/main/utils/terminalSessionSignals.test.ts \
-  -t "Droid|droid|resume-time model"
-```
-
-Then run a real Work-tab Droid launch only if Droid auth/subscription is
-available. If blocked, capture the exact Droid CLI error and put it in the
-final matrix.
-
-### Runtime matrix status
-
-Not complete. Current visible Work-tab rows show broad partial coverage:
-
-- Cursor:
-  - Plan long session printed `MATRIX_CURSOR_PLAN_AUTO_LONG_526`.
-  - Agent long session printed `MATRIX_CURSOR_AGENT_AUTO_LONG_526`.
-  - Ask session printed `MATRIX_CURSOR_ASK_AUTO_CLI_526`.
-  - Agent resumed after app reopen printed
-    `MATRIX_CURSOR_AGENT_RESUME_AFTER_REOPEN_526`.
-  - Patched direct resume smoke printed
-    `MATRIX_CURSOR_AGENT_PATCHED_DIRECT_RESUME_526`.
-- Claude:
-  - Default, Plan, Accept/Edit rows exist and have markers around
-    `MATRIX_CLAUDE_*_HAIKU_526`.
-  - Need verify exact process cleanup and close/reopen behavior with current
-    patch state.
-- Codex:
-  - Default/Plan/Edit rows exist and have markers around
-    `MATRIX_CODEX_*_MED_526` and `MATRIX_CODEX_RESUME_PATCHED_UI_526`.
-  - Codex often showed `linear` MCP startup incomplete. Treat that as a real
-    runtime startup warning, not a blocker to Codex CLI itself unless the tested
-    task needs Linear.
-- OpenCode:
-  - Edit/Plan rows exist and have markers around
-    `MATRIX_OPENCODE_*_BIGPICKLE_526`.
-  - One OpenCode Plan row preview still shows Kitty graphics payload text:
-    `Gi=31337,s=1,v=1,a=q,t=d,f=24;AAAA`. This needs follow-up. It may be an
-    ANSI/terminal-preview filtering issue or an old row from before a preview
-    fix.
-- Droid:
-  - Not completed.
-  - Droid CLI exists at `/Users/arul/.local/bin/droid`.
-  - Must check auth/subscription through the Work tab or harmless local CLI
-    probes before claiming coverage.
-  - Fresh launch code has just been changed to interactive Droid but is not
-    validated.
-
-The matrix needs to be converted from "visible rows exist" into proof:
-
-- For each runtime/mode, query the DB row for `resume_command`,
-  `resume_metadata_json`, `status`, `pty_id`, `ended_at`, and transcript path.
-- Check transcript markers.
-- Check process tree before/after stop/app quit.
-- Use UI close/reopen and in-place resume where still missing.
-
-### Performance/resource findings so far
-
-The clearest measured resource issue is provider-side process fan-out, especially
-Cursor:
-
-- A single live Cursor session can spawn:
-  - `cursor-agent`
-  - `uv tool uvx awslabs.aws-iac-mcp-server@latest`
-  - `uv tool uvx awslabs.aws-pricing-mcp-server@latest`
-  - Python children for those MCP servers.
-- Two Cursor sessions produced multiple AWS MCP sidecar trees.
-- Earlier samples had `cursor-agent` around hundreds of MB RSS and Python MCP
-  sidecars with non-trivial RSS. The latest post-wait sample had smaller Cursor
-  RSS but sidecars still present.
-- `cursor-agent mcp list` only showed `posthog`; the AWS sidecars appear to be
-  coming from Cursor/plugin/runtime configuration outside ADE's direct MCP
-  list. Do not disable them with invented flags. Find official Cursor-supported
-  config if continuing.
-
-ADE-side issues fixed/started:
-
-- Resume relaunch no longer uses the user's interactive zsh startup path.
-- Droid fresh launch is being aligned to interactive sessions so it can stay up
-  instead of exiting like an automation command.
-
-Still needed for performance:
-
-- Measure renderer/main churn, not just process RSS.
-- Inspect terminal preview/title extraction for hidden or old rows, especially
-  the OpenCode Kitty payload preview.
-- Confirm stop/delete/app-close cleanup leaves no provider descendants for each
-  runtime.
-
-### Commands and queries that were useful
-
-Socket/process checks:
-
-```bash
-lsof -nU | rg '/tmp/ade-runtime-(app-control-fixes-d55c0422|ui-clean-up-3470f34e)\\.sock|COMMAND'
-ps -axo pid,ppid,pgid,rss,command | rg 'app-control-fixes-d55c0422|cursor-agent|awslabs|opencode|claude|codex|droid'
-```
-
-DB row check for the Cursor resume smoke:
-
-```bash
-sqlite3 /Users/arul/ADE/.ade/ade.db \
-"select id,title,status,pty_id,owner_pid,owner_process_started_at,resume_command,substr(resume_metadata_json,1,300),transcript_path from terminal_sessions where id='b491b60d-5e97-4e8c-8aca-70f652f5f5c8';"
-```
-
-Transcript checks:
-
-```bash
-tail -n 160 /Users/arul/ADE/.ade/transcripts/b491b60d-5e97-4e8c-8aca-70f652f5f5c8.log
-rg -n 'asdf\\.bash|command not found: complete|MATRIX_CURSOR_AGENT_PATCHED_DIRECT_RESUME_526|cursor-agent --model auto --resume' \
-  /Users/arul/ADE/.ade/transcripts/b491b60d-5e97-4e8c-8aca-70f652f5f5c8.log
-```
-
-Official/help probes:
-
-```bash
-codex --help
-codex resume --help
-claude --help
-cursor-agent --help
-cursor-agent models
-opencode --help
-opencode run --help
-droid --help
-droid exec --help
-```
-
-### Immediate next steps when resuming
-
-1. Reconfirm current working tree and do not revert unrelated dirty files.
-2. Check no smoke provider process is still running from this handoff:
-   ```bash
-   ps -axo pid,ppid,pgid,rss,command | rg 'cursor-agent|opencode|claude|codex|droid|awslabs|cli-perf-resource-smoke-20260526'
-   ```
-3. If the dev app is not running, relaunch with this lane socket. Do not touch
-   `/tmp/ade-runtime-ui-clean-up-3470f34e.sock`.
-4. Run the focused tests for the unvalidated Droid/CLI launch changes:
-   ```bash
-   PATH=$HOME/.asdf/installs/nodejs/22.13.1/bin:$PATH \
-   npm --prefix apps/desktop run test -- --run \
-     src/renderer/components/terminals/cliLaunch.test.ts \
-     src/main/utils/terminalSessionSignals.test.ts \
-     -t "Droid|droid|resume-time model"
-   ```
-5. Rerun the PTY focused test if `ptyService.ts` changes further:
-   ```bash
-   PATH=$HOME/.asdf/installs/nodejs/22.13.1/bin:$PATH \
-   npm --prefix apps/desktop run test -- --run \
-     src/main/services/pty/ptyService.test.ts \
-     -t "sendToSession|reattach"
-   ```
-6. Use Computer Use to continue the Work-tab matrix. Do not substitute a direct
-   CLI run for the Work-tab launch.
-7. Finish stop/delete/app-close/reopen proof by runtime.
-8. Fix remaining confirmed bugs:
-   - OpenCode Kitty graphics payload in previews if reproducible on fresh rows.
-   - Any Droid launch/auth/resume issue exposed by Work-tab smoke.
-   - Any stale green/deletion guard issue still present after app close/reopen.
-9. Only after proof is complete, run broader validation from AGENTS.md as
-   appropriate.
-
-### Current cleanup note
-
-At handoff time the latest Cursor patched resume had already printed its marker
-and returned to "Add a follow-up" in the Work tab. A final `ps` check should be
-done on resume anyway because Cursor sidecars can outlive the obvious row if a
-cleanup path regressed.
-
-Final stop-state check after this handoff:
-
-- The dev Electron/Vite/tsup processes launched from this lane were stopped with
-  `Ctrl-C`; the dev launcher ran `app.process_cleanup_now`.
-- The lane runtime socket remained up and was not killed:
-  `/tmp/ade-runtime-app-control-fixes-d55c0422.sock`.
-- The other active lane socket was only inspected and was not touched:
-  `/tmp/ade-runtime-ui-clean-up-3470f34e.sock`.
-- A process check after stopping the dev app still showed provider/runtime
-  descendants unrelated to the dev Electron process, including AWS MCP sidecars,
-  Claude/Codex sessions, and a Droid `droid exec` process from earlier matrix
-  work. Treat these as part of the remaining cleanup/audit work: identify which
-  terminal session owns each process from ADE's DB/transcripts, stop them
-  through the Work tab where possible, and only kill manually after confirming
-  ownership.
-
-## Handoff update: 2026-05-26 16:45 EDT
-
-User asked to stop, update this file, push, and report.
-
-Latest work completed after the prior handoff:
-
-- Validated the previously untested Droid launch patch against the installed
-  Droid CLI help:
-  - `droid --help` says bare `droid` starts interactive mode and an inline
-    prompt starts the same interactive CLI with initial context.
-  - `droid exec --help` says `exec` is non-interactive and exposes
-    `--auto low|medium|high`, `--model`, `--reasoning-effort`,
-    `--spec-model`, and `--spec-reasoning-effort`.
-- Confirmed the generated Work-tab Droid command now uses interactive Droid via
-  `droid --settings "$ADE_DROID_SETTINGS" "<prompt>"`, not `droid exec`.
-- Found and fixed a real resume-metadata bug in
-  `apps/desktop/src/main/utils/terminalSessionSignals.ts`:
-  - After the interactive Droid settings-file patch, Droid launch metadata
-    lived inside the generated `printf %s <json> > "$ADE_DROID_SETTINGS"`
-    command.
-  - `parseTrackedCliLaunchConfig(...)` was still looking only for plain CLI
-    flags or unescaped JSON fragments.
-  - Result before fix: a generated Droid edit launch parsed as only
-    `{ permissionMode: "plan" }`, losing model, reasoning effort, and autonomy.
-  - Result after fix: the same generated launch parses as
-    `{ permissionMode: "edit", model: "claude-sonnet-4-6", reasoningEffort:
-    "high" }`.
-- Updated focused tests:
-  - `apps/desktop/src/main/utils/terminalSessionSignals.test.ts` now covers
-    generated Droid settings JSON for edit/auto and plan/spec settings.
-  - `apps/desktop/src/renderer/components/terminals/cliLaunch.test.ts` now
-    asserts the shell-escaped JSON format produced by `quoteShellArg(...)`.
-
-Validation run after this patch:
-
-```bash
-PATH=$HOME/.asdf/installs/nodejs/22.13.1/bin:$PATH \
-npm --prefix apps/desktop run test -- --run \
-  src/renderer/components/terminals/cliLaunch.test.ts \
-  src/main/utils/terminalSessionSignals.test.ts
-```
-
-Result:
-
-- Passed.
-- `2 passed`, `70 passed`.
-
-Runtime/UI state when stopped:
-
-- Dev Electron/Vite/tsup was not running after the user interruption.
-- I had restarted this lane's runtime socket during the aborted dev launch
-  because the launcher detected a build-hash change:
-  `/tmp/ade-runtime-app-control-fixes-d55c0422.sock`.
-- This lane runtime should be stopped for this handoff because the user asked
-  to stop.
-- The other lane socket remains off-limits:
-  `/tmp/ade-runtime-ui-clean-up-3470f34e.sock`.
-- The Work-tab Computer Use smoke for Droid was not completed. The app state
-  was inspected and the Work tab was visible, but no new Droid session was
-  launched before the user stopped the run.
-
-Files from this latest stop-point that should be committed/pushed as one
-focused follow-up:
-
-- `apps/desktop/src/shared/cliLaunch.ts`
-- `apps/desktop/src/main/utils/terminalSessionSignals.ts`
-- `apps/desktop/src/main/utils/terminalSessionSignals.test.ts`
-- `apps/desktop/src/renderer/components/terminals/cliLaunch.test.ts`
-- `codexGoal.md`
-
-Remaining high-priority work:
-
-1. Resume through Codex Computer Use from the Work tab and run an actual Droid
-   UI smoke if Droid auth/subscription permits.
-2. Finish the runtime matrix and app close/reopen proof for Codex, Claude,
-   Cursor, OpenCode, and Droid if available.
-3. Clean or account for old smoke sessions and provider sidecars through the
-   Work tab, then verify no stale provider descendants remain.
-4. Investigate the OpenCode Kitty graphics payload still visible in one old
-   Work sidebar preview.
-5. Continue performance/resource measurement from real Work-tab UI evidence.
+# ADE `ade code` TUI — finish Phase 3, build Phase 4 + 5
+
+## Kickoff prompt (paste this to the agent)
+
+> You're continuing the ADE TUI parity pass on branch `ade/tui-parity-pass` in
+> this worktree. The TUI is the Ink/React terminal client at
+> `apps/ade-cli/src/tuiClient/` (`ade code`). Implement, in order: the **remaining
+> Phase 3** items, then **all of Phase 4**, then **all of Phase 5**, exactly as
+> specified in this file (`codexGoal.md`). Work in small, committed, tested
+> increments — after each task run `npx tsc -p tsconfig.json --noEmit` and the
+> relevant `npx vitest run <file>` from `apps/ade-cli/`, and add a focused unit
+> test for any new pure helper. Do NOT regress the 842 passing tests. `app.tsx`
+> is a ~10k-line monolith touched by most tasks: edit it sequentially (no
+> parallel agents writing it concurrently); use read-only agents only for
+> investigation. Follow the existing patterns described below. Build with
+> `npm run build` in `apps/ade-cli` before declaring a task done. The user runs
+> the live TUI for validation — keep each increment shippable and eyeball-able.
+
+---
+
+## Context & ground rules
+
+**Where:** `apps/ade-cli/src/tuiClient/` — `app.tsx` (the monolith: state, input
+handling, command dispatch, render), plus `components/` (ChatView, RightPane,
+Drawer, MultiChatGrid, ModelPicker, FooterControls, ApprovalPrompt, Header,
+SlashPalette, MentionPalette), and helpers (`adeApi.ts`, `connection.ts`,
+`jsonRpcClient.ts`, `hitTestRegistry.ts`, `theme.ts`, `format.ts`,
+`aggregate.ts`, `spinTick.tsx`, `commands.ts`, `types.ts`). It speaks ADE
+JSON-RPC to the runtime daemon and shares types/logic with the desktop under
+`apps/desktop/src/shared/`. The desktop renderer (`apps/desktop/src/renderer/`)
+is the design reference — match its semantics, not its layout (this is a
+width-constrained terminal: Ink `Box`/`Text` only, colors from `theme.ts`).
+
+**Build / test (from `apps/ade-cli/`):**
+- Typecheck: `npx tsc -p tsconfig.json --noEmit`
+- Scoped tests: `npx vitest run src/tuiClient/__tests__/<file>`
+- Full TUI-ish suite: `npx vitest run`
+- Bundle (must pass before "done"): `npm run build`
+
+**Live test (the user does this; you can smoke it):** rebuild, then
+`ADE_DEFAULT_ROLE=cto ADE_HOME=/Users/admin/.ade-tui-parity node apps/ade-cli/dist/cli.cjs runtime start`
+and `ADE_HOME=/Users/admin/.ade-tui-parity node apps/ade-cli/dist/cli.cjs --socket code`
+(a dedicated isolated daemon; rebuilding changes the build hash so restart the
+daemon after each build). Shut down with `runtime stop`.
+
+**Conventions / patterns already in place — reuse, don't reinvent:**
+- **Theme:** all colors via `theme.ts` tokens (`theme.color.*`, `theme.provider(family)`,
+  `theme.lane(lane)`, `theme.rail`). Brand violet `#A78BFA` is the accent;
+  selected/focused = violet, neutral borders = `theme.color.border`. No raw hex,
+  no green for "healthy/idle" chrome (green reads as a glitch — reserve it for
+  the running spinner only).
+- **Hit-test / mouse:** `hitTestRegistry.ts` — `useHitTestTarget({id, rect, onClick, zIndex})`
+  returns an `isHovered` boolean; the move handler in `app.tsx` (`hoverTest`,
+  grep `hoverTest`) sets `hoveredHitId` which flows via `HitTestProvider`. Mouse
+  parsing: `parseTerminalMouseInput` (SGR/rxvt/X10), `decodeMouseButton`. Many
+  app-level targets are registered in the render pass in `app.tsx` (grep
+  `addFooterInlineTarget`, `appHitTargetIdsRef`, `registry.register`).
+- **Streaming:** chat events are coalesced (`flushPendingChatEvents` /
+  `scheduleChatFlush` / `CHAT_EVENT_FLUSH_MS`); a single shared `displayBlocks`
+  (`aggregateChatBlocks`) is threaded into ChatView + the `render*`/`compute*`
+  helpers. Don't add per-token work or new full-transcript walks.
+- **Grid:** `multiView` ("grid exists") is decoupled from `gridViewActive`
+  ("grid shown") via `setGridView(active)` + `gridViewActiveRef`. Submit/scroll/
+  selection routing and the grid sync effect already gate on `gridViewActive`.
+- **Footer inline cells:** the cell order is a single source of truth —
+  `inlineRowCellOrder({providerLocked, fastSupported, reasoningSupported, subagentsVisible})`
+  (exported from `app.tsx`). Keyboard nav, mouse down-cycle, and hit-tests all
+  derive from it. Add new cells there.
+- **Prompt input:** `applyCoalescedPromptInput` segments coalesced chunks
+  (Ink merges fast keystrokes). Reuse the prompt helpers (`insertPromptText`,
+  `deletePromptBackward`, etc.).
+- **Right pane:** `RightPaneContent` is a discriminated union in `types.ts`;
+  `RightPane.tsx` renders each `kind`. Forms use the `{kind:"form", command, fields}`
+  shape; submit handled in `app.tsx` (grep `form.command ===`).
+- Line numbers in this file are approximate (the monolith shifts) — **grep for
+  the named symbol** to find the current site.
+
+**Out of scope / non-goals (do not build):** 2D React-Flow graph canvas,
+multi-project tabs, Monaco-grade editing, full structured automation-rule editor.
+
+---
+
+# PHASE 3 — remaining runtime UX + model picker
+
+Already done (do not redo): model-picker glyph/color unification + `⌕` search +
+shortId/alias search; Codex `custom` preset cycle fix; footer fast/reasoning
+reachability via `inlineRowCellOrder`; shimmer working indicator.
+
+## 3.1 — Codex approval × sandbox readout (S)
+**Goal:** When provider is `codex`, show the resolved approval policy × sandbox
+pair in the footer so it's legible even when the preset word is `custom`/`config-toml`.
+**Files:** `app.tsx` (`resolveCodexPreset`, `permissionSummary`, `permissionOptionsDetail`),
+`components/FooterControls.tsx`.
+**Approach:** Add a pure helper `codexApprovalSandboxLabel(modelState)` near
+`resolveCodexPreset` returning e.g. `"on-request · workspace-write"` from
+`modelState.codexApprovalPolicy` / `codexSandbox`. Pass a `permissionDetail?: string|null`
+prop to `FooterControls` and render it dim immediately after the permission cell
+(only when provider === codex). Keep the headline preset word as-is.
+**Acceptance:** Codex footer shows the approval/sandbox pair; switching presets
+updates it; non-codex providers unaffected; unit-test the label helper.
+
+## 3.2 — Cursor modes from the runtime snapshot (M)
+**Goal:** Cursor permission cycling should use the session's actual available
+modes, not the static `CURSOR_AVAILABLE_MODE_IDS`.
+**Files:** `types.ts` (`AdeCodeModelState`), `app.tsx` (model-state normalize/
+restore sites — grep `cursorModeId`, `cursorModeSnapshot`; `cyclePermission`
+cursor branch; `permissionOptionsDetail` cursor branch), shared type
+`AgentChatCursorModeSnapshot` in `apps/desktop/src/shared/types/chat.ts`.
+**Approach:** Add `cursorAvailableModeIds: string[]` to `AdeCodeModelState`
+(default `[]`); populate it from `configSession.cursorModeSnapshot?.availableModeIds`
+everywhere `cursorModeId` is set from a snapshot. Add a resolver
+`cursorModeIdsForState(modelState)` = snapshot ids when non-empty else the static
+fallback (mirror desktop `AgentChatComposer` behavior). Use it in the
+`cyclePermission` cursor branch and `permissionOptionsDetail`. `cursorModeLabel`
+already handles unknown ids.
+**Acceptance:** With a Cursor session whose snapshot lists a subset of modes,
+cycling only visits those modes; with no snapshot, the static list is used.
+
+## 3.3 — Plan-approval card (M)
+**Goal:** Render plan-mode / approval requests as a one-key approve/reject card
+instead of forcing the typed high-stakes path.
+**Files:** `pendingInput.ts` (the request → `PendingApproval` mapping), 
+`components/ApprovalPrompt.tsx`, `app.tsx` (the pending-approval render + the
+approval resolution path — grep `pendingApproval`, `resolvePendingApproval`).
+Also handle an orchestration `model_selection` request kind if present.
+**Approach:** Detect plan-approval / model-selection request kinds in
+`pendingInput.ts` and surface them as a structured `ApprovalPrompt` with labeled
+choices; wire keys (e.g. `y`/`n` or numbered) + clickable footer buttons (reuse
+the existing approval footer items pattern). Don't break the existing high-stakes
+modal path.
+**Acceptance:** A plan/approval request shows a readable card with one-key
+accept/reject; resolving sends the right response.
+
+## 3.4 — Structural model-picker unification (L)
+**Goal:** One picker for both `/model` and the new-chat flow. Retire the duplicate
+inline `model-setup` / `new-chat-setup` rows as the *model* surface; fold
+Permissions / Fast / Output-style into a slim settings strip inside
+`ModelPickerPane`; add auth dots + sign-in hints + per-row reasoning chips.
+**Files:** `components/ModelPicker/ModelPickerPane.tsx` (presentation),
+`components/ModelPicker/modelPickerLayout.ts` (+ `types.ts` in that dir),
+`tuiClient/types.ts` (`ModelPickerRightPaneContent`, maybe retire `model-setup`),
+`components/RightPane.tsx` (the `model-setup`/`new-chat-setup` block + `modelPickerInputs`),
+`app.tsx` (`openModelRow`, `modelSetupRows`/`modelPickerRows`, `openNewChatSetup`,
+`commitModelPickerSelection`, the setup-row keyboard branch, the `aiStatus`
+threading). Desktop reference: `apps/desktop/src/renderer/components/.../ModelPicker/`
+(`ModelListRow.tsx`, `ModelPickerRail.tsx`) and `useProviderAuthStatus.ts`
+(`familiesFromStatus`).
+**Approach (sequence — ship pieces independently):**
+1. **Reasoning chip** on the focused/active row (port `REASONING_LABELS`); cycle
+   via the existing `modelPicker:increaseEffort`/`decreaseEffort` actions.
+2. **Auth dots + sign-in hint:** port pure `familiesFromStatus` into
+   `modelPickerLayout.ts`; thread `aiStatus` through `modelPickerInputs`; render a
+   1-cell red/amber dot after each rail glyph and a `Sign in: /login <provider>`
+   hint when the active rail provider is unauthed.
+3. **"Show all models" toggle** (desktop `authOnly`): add `showAll` to the picker
+   state + an `authOnly` filter in `buildModelPickerLayout`; bind a key + hit-test.
+4. **Settings strip + retire duplicate rows (the big one):** render Permissions/
+   Fast/Output-style as a compact focusable strip at the bottom of `ModelPickerPane`
+   driven by the existing `buildSetupRows` (`SetupPaneRow`); extend the picker
+   state with `footerFocus?: SetupPaneRowKind`; Tab/arrows cycle into the strip and
+   reuse the existing `handleSetupRow`. Repoint `/effort` and `openNewChatSetup`
+   to open the unified picker; delete `openModelRow`, the `model-setup` kind, and
+   the inline `model-setup`/`new-chat-setup` rendering block once their rows feed
+   the strip. New-chat-only affordances (lane label, "prompt now"/background
+   dispatch, Apply) survive as picker header/footer actions.
+**Cautions:** the picker re-renders on every keystroke (keep it pure/cheap; no
+per-row IPC — precompute auth status and pass it in). Width-degrade all chips/dots
+via the existing `endTruncate`/`innerWidth` budget.
+**Acceptance:** `/model` and new-chat show the same picker; reasoning chip + auth
+dots + show-all work; permissions/fast/output-style are editable inside the picker;
+the old inline setup rows are gone; tests for the layout function extended.
+
+---
+
+# PHASE 4 — full mouse control + global navigation
+
+The hover pipeline is wired (`hoverTest` fires on move, `hoveredHitId` flows via
+`HitTestProvider`, `useHitTestTarget` returns is-hovered) but **only `MultiChatGrid`
+consumes it**. Make every interactive surface mouse-driven, with hover affordances.
+
+## 4.1 — Universal hover (L)
+**Goal:** Hovering any clickable row tints it. Consume `hoveredId` in `Drawer`
+(lane/chat rows), `FooterControls` (cells/buttons), `ModelPicker` (rail + rows),
+`RightPane` (list/diff/file rows, form fields), `ApprovalPrompt`.
+**Files:** the component files above + `app.tsx` (where their hit-test targets are
+registered — grep `registry.register`, `appHitTargetIdsRef`; many rows are
+registered centrally in the render pass).
+**Approach:** For each clickable region that already registers a hit-test target,
+pass the hovered state down (or have the row call `useHitTestTarget` with its id +
+rect) and tint on match (e.g. `theme.color.borderActive` background or violet
+text). The move handler already re-renders on hover change, so this is mostly
+plumbing. Keep the registration the single source (don't double-register).
+**Acceptance:** moving the mouse over drawer lanes/chats, footer cells, model rows,
+right-pane rows highlights the row under the cursor; clicking still works.
+
+## 4.2 — Wheel routed to the pane under the cursor (M)
+**Goal:** The wheel scrolls whatever pane the pointer is over, not only the center
+transcript. (Grid tiles already scroll-under-cursor — keep that.)
+**Files:** `app.tsx` (wheel handler — grep `mouse.kind === "wheel"`), `RightPane.tsx`.
+**Approach:** Add scroll-offset state for the right pane (copy ChatView's
+`sliceRows`/`maxScrollOffsetForRows`/`scrollOffsetRows` machinery) so `/diff` and
+detail/list panes become scrollable instead of truncating. In the wheel handler,
+dispatch by pointer region: drawer → drawer scroll; right pane → right-pane offset;
+center → existing transcript/tile logic.
+**Acceptance:** wheel over the drawer, right pane, and center each scroll the
+correct region; long `/diff` and detail panes scroll.
+
+## 4.3 — Clickable chat links (M)
+**Goal:** URLs in chat are openable (OSC-8 + click).
+**Files:** `format.ts` (link runs — grep `link`, `LINK_COLOR`; the href is
+currently dropped, see the comment "doesn't render hyperlinks distinctly today"),
+`components/ChatView.tsx` (`InlineSpans` link branch), `app.tsx`
+(`openExternal`/external-open path — grep the PR-url open).
+**Approach:** Carry the href on the link `InlineRun`; emit an OSC-8 hyperlink
+escape around the visible text; register a hit target over the link rect that
+calls the existing external-open helper. Verify the OSC-8 sequence is width-0 (no
+layout shift).
+**Acceptance:** a URL in an assistant message is underlined, OSC-8 clickable in
+supporting terminals, and a mouse click opens it.
+
+## 4.4 — Ctrl+K command / lane / chat palette (L)
+**Goal:** A global fuzzy palette to jump to lanes, chats, and commands (like the
+desktop `CommandPalette` / Claude Code's `/`-less quick switch).
+**Files:** new overlay component (model it on `components/SlashPalette.tsx`), 
+`keybindings/index.ts` (add `app:openCommandPalette`), `app.tsx` (state + render +
+key handling), `commands.ts` (reuse `paletteCommands`).
+**Approach:** Ctrl+K opens an overlay listing: built-in + user slash commands,
+lanes (jump/switch), and chats (jump/switch). Fuzzy filter as you type (reuse the
+slash/mention palette filtering); ↑↓ + mouse hover to select; Enter runs/jumps;
+Esc closes. Selecting a lane/chat routes through `applyDrawerChatSelection`
+(so grid re-entry works); selecting a command dispatches via the existing
+command runner.
+**Acceptance:** Ctrl+K opens; typing filters across commands/lanes/chats; Enter
+jumps or runs; mouse hover + click work; Esc closes; no conflict with Ctrl+R
+(history) or other bindings.
+
+## 4.5 — `[` / `]` lane cycling + `/switch` restores last chat + reverse pane cycle (S)
+**Files:** `app.tsx` (grep `cycleScope`/`[`/`]` currently bound only in the model
+picker; `/switch` handler ~grep `"/switch"`; `tabs:previous`).
+**Approach:** Bind `[`/`]` (when not in a text field/palette) to cycle the active
+lane prev/next. Make `/switch <lane>` restore that lane's last-active chat
+(`lastChatByLaneRef`). Fix `tabs:previous` aliasing forward (make it reverse).
+**Acceptance:** `[`/`]` move between lanes; `/switch` lands on the last chat;
+reverse pane-cycle goes backward.
+
+---
+
+# PHASE 5 — chat management completeness
+
+## 5.1 — Delete / archive / unarchive chat (L)
+**Goal:** Manage chat sessions from the TUI (the runtime supports it; the TUI has
+no wrappers and never filters archived chats).
+**Files:** `adeApi.ts` (add `deleteSession`/`archiveSession`/`unarchiveSession`
+wrappers — confirm the exact action names via the runtime action registry,
+`apps/desktop/src/main/services/adeActions/registry.ts` chat/session domain),
+`app.tsx` (session list — **filter out `session.archivedAt`**; add drawer chat-row
+actions + `/chat …` commands + a confirm gate), `commands.ts` (add the commands),
+`components/Drawer.tsx` (a click-× / hotkey on chat rows), `types.ts` if a form is
+needed.
+**Approach:** Mirror the lane-management pattern already in place
+(`/lane archive|unarchive|delete` + drawer hotkeys r/a/x + delete-risk preflight):
+add `/chat rename|archive|unarchive|delete` (or reuse `/rename` for chat title),
+drawer hotkeys on the selected chat row, and a confirm for delete. Filter
+`!session.archivedAt` from the displayed session list (grep where sessions are
+listed/filtered) so externally-archived chats stop polluting the drawer/grid;
+add an "archived chats" listing.
+**Acceptance:** can delete/archive/unarchive a chat from the drawer + slash
+commands; archived chats are hidden from the normal list and listable on demand;
+delete is confirmed.
+
+## 5.2 — Browse / search chats (M)
+**Goal:** `/chats` is filterable; `/switch` resolves chats (not just lanes);
+Ctrl+R recalls.
+**Files:** `app.tsx` (`/chats`, `/switch`, Ctrl+R history-search — grep
+`"/chats"`, `"/switch"`, `historySearch`, `cycleScope` (remove dead code)).
+**Approach:** Make `/chats` list the active lane's chats with a filter; make
+`/switch` accept a chat reference and resolve it via `applyDrawerChatSelection`
+(grid re-entry aware); make Ctrl+R recall prompt history (fix the path that
+currently can't recall) and remove the dead `cycleScope`.
+**Acceptance:** `/chats` filters; `/switch <chat>` switches chats; Ctrl+R recalls
+prior prompts.
+
+## 5.3 — Session legibility: tag + completion + status glyphs (M)
+**Goal:** Surface session tag, completion, and a colored wait/running glyph in the
+drawer/grid so state reads at a glance.
+**Files:** `format.ts` (tag rendering — grep `tag`, currently invisible),
+`components/Drawer.tsx`, `chatInfo.ts`.
+**Approach:** Render the session tag where chats are listed; add per-chat status
+glyphs (running spinner / amber awaiting / dim ended) consistent with the grid
+tile glyphs already added (`ChatView` tile header). Bucket by status/time if
+useful.
+**Acceptance:** tagged chats show their tag; chat rows show a clear status glyph.
+
+## 5.4 — `/context` visual breakdown + relax the Claude gate (M)
+**Goal:** `/context` shows a visual token/context breakdown and works wherever the
+runtime supports it (not Claude-only, text-only).
+**Files:** `app.tsx` (`/context` handler — grep `"/context"`, `getContextUsage`),
+`components/RightPane.tsx`, reuse the `TokenBar` from `FooterControls.tsx`.
+**Approach:** Render context usage as a visual breakdown (a `TokenBar`-style bar +
+per-bucket lines) in the right pane; relax the `provider === "claude"` gate where
+the runtime returns usage for other providers.
+**Acceptance:** `/context` shows a visual breakdown; works for supported non-Claude
+providers; degrades gracefully when unavailable.
+
+---
+
+## Definition of done (each task)
+1. Typecheck clean (`tsc --noEmit`).
+2. Relevant scoped vitest green + a new unit test for any pure helper added.
+3. Full `npx vitest run` green (currently 842 tests — don't regress).
+4. `npm run build` succeeds (verifies the bundled CLI).
+5. TUI-appropriate (Ink Box/Text, theme tokens, width-degrades) and consistent
+   with the patterns above. Commit per task with a clear message.

@@ -84,6 +84,7 @@ describe("FooterControls", () => {
         provider="codex"
         modelDisplay="GPT-5.5"
         permissionLabel="full-auto"
+        permissionDetail="never · danger-full-access"
         fastMode
       />,
     );
@@ -92,6 +93,7 @@ describe("FooterControls", () => {
     expect(frame).toContain("GPT-5.5");
     expect(frame).toContain("fast");
     expect(frame).toContain("full-auto");
+    expect(frame).toContain("full-auto ·");
   });
 
   it("renders the resting hint strip with lanes/pane/chat-info/cmds/help", () => {

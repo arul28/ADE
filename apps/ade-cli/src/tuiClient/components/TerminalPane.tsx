@@ -23,6 +23,17 @@ type TerminalPaneProps = {
   width: number;
   height: number;
   hiddenBottomRows?: number;
+  /** Rows scrolled up from the live bottom. 0 = pinned (auto-follow). */
+  scrollOffset?: number;
+  /** Count of new lines that arrived while scrolled up; renders the "↓ N new" chip. */
+  pendingNewCount?: number;
+  /**
+   * Reports the maximum rows the buffer can scroll back (so app.tsx can clamp
+   * keyboard scroll requests) plus the current plain-text of the visible window
+   * (so app.tsx can copy the visible region via its existing writeClipboardText).
+   * Cheap: only fires when the rendered window actually changes.
+   */
+  onViewportMetrics?: (metrics: { maxScrollable: number; visibleText: string }) => void;
 };
 
 type HeadlessTerminalInstance = InstanceType<typeof HeadlessTerminal>;
@@ -292,9 +303,16 @@ function snapshotCellFromXtermCell(cell: XtermBufferCell | undefined): TerminalS
   };
 }
 
-function styledRowsFromTerminal(terminal: HeadlessTerminalInstance, maxRows: number): TerminalStyledRow[] {
+function styledRowsFromTerminal(
+  terminal: HeadlessTerminalInstance,
+  maxRows: number,
+  scrollUpRows = 0,
+): TerminalStyledRow[] {
   const buffer = terminal.buffer.active;
-  const start = Math.max(0, buffer.viewportY);
+  // viewportY is the live bottom. Scrolling up reads earlier lines, clamped so
+  // we never index before the start of the buffer (which includes scrollback).
+  const baseStart = Math.max(0, buffer.viewportY);
+  const start = Math.max(0, baseStart - Math.max(0, Math.floor(scrollUpRows)));
   const rows: TerminalStyledRow[] = [];
   for (let row = 0; row < Math.max(0, maxRows); row += 1) {
     const line = buffer.getLine(start + row);
@@ -309,6 +327,19 @@ function styledRowsFromTerminal(terminal: HeadlessTerminalInstance, maxRows: num
     rows.push(styledRowFromCells(cells, line.translateToString(true)));
   }
   return rows;
+}
+
+/** Rows of scrollback above the live viewport that can still be revealed by scrolling up. */
+function terminalMaxScrollableRows(terminal: HeadlessTerminalInstance | null): number {
+  if (!terminal) return 0;
+  return Math.max(0, terminal.buffer.active.viewportY);
+}
+
+/** Flatten styled rows to plain text for clipboard copy (reuses app's writeClipboardText). */
+function plainTextFromStyledRows(rows: TerminalStyledRow[]): string {
+  return rows
+    .map((row) => row.runs.map((run) => run.text).join("").replace(/\s+$/u, ""))
+    .join("\n");
 }
 
 export function styledRowsFromSnapshotRows(rows: TerminalSnapshotRow[], maxRows: number): TerminalStyledRow[] {
@@ -343,8 +374,14 @@ export function TerminalPane({
   width,
   height,
   hiddenBottomRows = 0,
+  scrollOffset = 0,
+  pendingNewCount = 0,
+  onViewportMetrics,
 }: TerminalPaneProps) {
   const spinFrame = useSpinFrame();
+  // Scrollback only applies to the live (non-attached) preview. When attached,
+  // Claude owns the terminal and we always follow the bottom.
+  const effectiveScrollOffset = attached ? 0 : Math.max(0, Math.floor(scrollOffset));
   const effectiveHiddenBottomRows = attached ? 0 : hiddenBottomRows;
   const contentWidth = attached ? Math.max(1, width - 2) : width;
   const visibleHeight = attached ? Math.max(1, height - 1) : height;
@@ -403,8 +440,16 @@ export function TerminalPane({
   useEffect(() => {
     const terminal = terminalRef.current;
     if (!terminal) return;
-    const start = chunkIndexRef.current;
-    if (liveChunks.length < start) chunkIndexRef.current = 0;
+    // Incremental write: only the chunks past chunkIndexRef are fed to xterm, so
+    // the write cursor keeps advancing as new chunks append (this is what the
+    // app.tsx ref/timer flush relies on — no destructive per-chunk slice(-500)
+    // that would pin length and freeze this loop). If the owner trims the array
+    // (length shrinks below our cursor), reset xterm and replay the retained
+    // tail so the visible buffer stays consistent without duplication.
+    if (liveChunks.length < chunkIndexRef.current) {
+      terminal.reset();
+      chunkIndexRef.current = 0;
+    }
     for (let index = chunkIndexRef.current; index < liveChunks.length; index += 1) {
       terminal.write(liveChunks[index] ?? "", () => setRenderTick((tick) => tick + 1));
     }
@@ -417,9 +462,21 @@ export function TerminalPane({
       return transcriptPreviewRows(preview.transcript, rows);
     }
     const terminal = terminalRef.current;
-    if (terminal) return styledRowsFromTerminal(terminal, rows);
+    if (terminal) return styledRowsFromTerminal(terminal, rows, effectiveScrollOffset);
     return fallbackPreviewRows(preview, rows);
-  }, [liveChunks.length, preview, renderTick, rows, snapshotRows]);
+  }, [effectiveScrollOffset, liveChunks.length, preview, renderTick, rows, snapshotRows]);
+
+  // Surface scrollback bounds + the current visible text to the owner so it can
+  // clamp keyboard scroll requests and copy the visible region. Cheap: gated on
+  // the values that actually change the window. Only meaningful for the live
+  // (non-attached) xterm-backed preview.
+  const reportMetrics = onViewportMetrics;
+  useEffect(() => {
+    if (!reportMetrics) return;
+    const terminal = terminalRef.current;
+    const maxScrollable = snapshotRows?.length ? 0 : terminalMaxScrollableRows(terminal);
+    reportMetrics({ maxScrollable, visibleText: plainTextFromStyledRows(lines) });
+  }, [lines, reportMetrics, snapshotRows]);
 
   const status = attached
     ? "CLAUDE CONTROL · Ctrl+T returns to ADE · Ctrl+] escape"
@@ -429,6 +486,8 @@ export function TerminalPane({
         ? "closed, resumable · Enter resumes"
         : "closed";
 
+  const scrolledBack = !attached && effectiveScrollOffset > 0;
+  const showNewChip = scrolledBack && pendingNewCount > 0;
   const content = (
     <>
       <Box width={contentWidth}>
@@ -436,6 +495,13 @@ export function TerminalPane({
           {attached ? `${spinFrame} ${title}` : title}
         </Text>
         <Text color={theme.color.mutedFg}>  {status}</Text>
+        {showNewChip ? (
+          // Amber "attention" chip: new output landed while the user is reading
+          // scrollback. Press End / Shift+Down-to-bottom to jump and clear it.
+          <Text color={theme.color.warning}>{`  ↓ ${pendingNewCount} new`}</Text>
+        ) : scrolledBack ? (
+          <Text color={theme.color.mutedFg}>{`  ↑ scrollback · End to follow`}</Text>
+        ) : null}
       </Box>
       <Box flexDirection="column" width={contentWidth} height={visibleHeight} overflow="hidden">
         {lines.slice(0, visibleHeight).map((line, index) => (

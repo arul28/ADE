@@ -21,7 +21,7 @@ import {
   type WorkToolStatus,
 } from "../aggregate";
 import { theme } from "../theme";
-import { useBrailleSpin, useDotPulse, useSpinFrame } from "../spinTick";
+import { useBrailleSpin, useDotPulse, useShimmerTick, useSpinFrame } from "../spinTick";
 import {
   ADE_WORDMARK_COMPACT_WIDTH,
   ADE_WORDMARK_FULL_WIDTH,
@@ -38,6 +38,10 @@ const HERO_WORDMARK_FULL_MIN_USABLE = ADE_WORDMARK_FULL_WIDTH + 2;
 const HERO_WORDMARK_COMPACT_MIN_USABLE = ADE_WORDMARK_COMPACT_WIDTH + 2;
 const DEFAULT_VIEW_WIDTH = 88;
 const BLANK_ROW_TEXT = " ";
+// Placeholder frame for historical (non-live) blocks. Non-live blocks never
+// read the animation frame, so any fixed value keeps their rows identical while
+// letting us memoize them independently of the spinner tick.
+const STATIC_SPIN_FRAME = "◐";
 
 type RenderedChatRow = {
   id: string;
@@ -159,6 +163,7 @@ function wrapInlineRuns(runs: InlineRun[], width: number, firstPrefix: string, r
     if (run.italic) style.italic = true;
     if (run.code) style.code = true;
     if (run.link) style.link = true;
+    if (run.href) style.href = run.href;
     for (const part of parts) {
       if (!part) continue;
       const isSpace = /^\s+$/.test(part);
@@ -898,13 +903,29 @@ function planRows(block: Extract<AggregatedBlock, { kind: "plan" }>, spinFrame: 
   return out;
 }
 
-function activeTurnRows(dots: string, showWorkingIndicator = true): RenderedChatRow[] {
+const WORKING_LABEL = "✦ model working";
+
+// A bright cell sweeps left→right across the label, then a gap before repeating —
+// a terminal "shimmer" like Claude Code's working indicator. shimmerPos < 0 (the
+// default, used by the non-animated selection/plain-text paths) renders it flat.
+function workingShimmerRuns(shimmerPos: number): InlineRun[] {
+  const chars = [...WORKING_LABEL];
+  return chars.map((ch, index) => {
+    const dist = shimmerPos < 0 ? 99 : shimmerPos - index;
+    if (dist === 0) return { text: ch, color: theme.color.t1, bold: true };
+    if (dist === 1) return { text: ch, color: theme.color.fg, bold: true };
+    if (dist === 2 || dist === -1) return { text: ch, color: theme.color.violet };
+    return { text: ch, color: theme.color.t3 };
+  });
+}
+
+function activeTurnRows(dots: string, showWorkingIndicator = true, shimmerPos = -1): RenderedChatRow[] {
   if (!showWorkingIndicator) return [];
   return [{
     id: "model-working",
     tone: "work",
-    text: `✦ model working${dots}`,
-    color: theme.color.violet,
+    runs: [...workingShimmerRuns(shimmerPos), { text: dots, color: theme.color.violet }],
+    text: `${WORKING_LABEL}${dots}`,
     bold: true,
     rail: null,
   }];
@@ -1027,6 +1048,13 @@ function shouldInsertSpacer(prev: AggregatedBlock["kind"], next: AggregatedBlock
   return true;
 }
 
+// A block is "live" (animating) when its group is still in progress. Only live
+// blocks read the spinner frame; everything before the first live block renders
+// identically regardless of the tick, so it can be memoized independently.
+function isLiveBlock(block: AggregatedBlock): boolean {
+  return "live" in block && (block as { live?: boolean }).live === true;
+}
+
 function maxScrollOffsetForRows(rowCount: number, maxRows?: number): number {
   if (!maxRows || maxRows <= 0 || rowCount <= maxRows) return 0;
   return Math.max(0, rowCount - Math.max(1, maxRows - 1));
@@ -1045,7 +1073,12 @@ function sliceRows(
   scrollOffsetRows = 0,
   unseenMessageCount = 0,
 ): RenderedChatRow[] {
-  const indexedRows = rows.map((row, index) => ({ ...row, sourceRowIndex: index }));
+  // Preserve object identity when sourceRowIndex is already correct (pre-indexed
+  // historical rows), so React.memo(ChatRow) can skip re-rendering unchanged rows
+  // on every spinner tick. Rows without a matching index are cloned as before.
+  const indexedRows = rows.map((row, index) => (
+    row.sourceRowIndex === index ? row : { ...row, sourceRowIndex: index }
+  ));
   if (!maxRows || maxRows <= 0) return indexedRows;
   const viewportRows = Math.max(1, maxRows);
   if (indexedRows.length <= viewportRows) {
@@ -1099,7 +1132,7 @@ function railColorForTone(_tone: RenderedChatRow["tone"]): string | null {
   return null;
 }
 
-function InlineSpans({ runs }: { runs: InlineRun[] }) {
+const InlineSpans = React.memo(function InlineSpans({ runs }: { runs: InlineRun[] }) {
   return (
     <>
       {runs.map((run, index) => {
@@ -1113,9 +1146,12 @@ function InlineSpans({ runs }: { runs: InlineRun[] }) {
           );
         }
         if (run.link) {
+          const content = run.href
+            ? `\u001B]8;;${run.href}\u0007${run.text}\u001B]8;;\u0007`
+            : run.text;
           return (
             <Text key={key} color={run.color ?? LINK_COLOR} underline>
-              {run.text}
+              {content}
             </Text>
           );
         }
@@ -1127,7 +1163,7 @@ function InlineSpans({ runs }: { runs: InlineRun[] }) {
       })}
     </>
   );
-}
+});
 
 function normalizeSelection(selection: ChatTextSelection): ChatTextSelection {
   if (
@@ -1165,7 +1201,7 @@ function splitTextByColumns(value: string, start: number, end: number): [string,
   ];
 }
 
-function ChatRow({
+const ChatRow = React.memo(function ChatRow({
   row,
   selection,
 }: {
@@ -1204,7 +1240,7 @@ function ChatRow({
       {row.runs ? <InlineSpans runs={row.runs} /> : plainText}
     </Text>
   );
-}
+});
 
 function renderedRowText(row: RenderedChatRow): string {
   if (!row.runs && row.text === BLANK_ROW_TEXT) return "";
@@ -1328,6 +1364,7 @@ export function renderChatVisibleRowTexts({
 
 export function renderChatVisibleSelectionRows({
   events,
+  blocks: providedBlocks,
   notices,
   activeSession,
   expandedLineIds,
@@ -1340,6 +1377,7 @@ export function renderChatVisibleSelectionRows({
   showWorkingIndicator = true,
 }: {
   events: AgentChatEventEnvelope[];
+  blocks?: AggregatedBlock[];
   notices: LocalNotice[];
   activeSession: AgentChatSessionSummary | null;
   expandedLineIds?: Set<string>;
@@ -1351,7 +1389,7 @@ export function renderChatVisibleSelectionRows({
   interrupted?: boolean;
   showWorkingIndicator?: boolean;
 }): ChatVisibleSelectionRow[] {
-  const blocks = aggregateChatBlocks({
+  const blocks = providedBlocks ?? aggregateChatBlocks({
     events,
     notices,
     activeSession,
@@ -1374,6 +1412,7 @@ export function renderChatVisibleSelectionRows({
 
 export function renderChatSelectableRowTexts({
   events,
+  blocks: providedBlocks,
   notices,
   activeSession,
   expandedLineIds,
@@ -1383,6 +1422,7 @@ export function renderChatSelectableRowTexts({
   showWorkingIndicator = true,
 }: {
   events: AgentChatEventEnvelope[];
+  blocks?: AggregatedBlock[];
   notices: LocalNotice[];
   activeSession: AgentChatSessionSummary | null;
   expandedLineIds?: Set<string>;
@@ -1391,7 +1431,7 @@ export function renderChatSelectableRowTexts({
   interrupted?: boolean;
   showWorkingIndicator?: boolean;
 }): string[] {
-  const blocks = aggregateChatBlocks({
+  const blocks = providedBlocks ?? aggregateChatBlocks({
     events,
     notices,
     activeSession,
@@ -1453,8 +1493,18 @@ export function renderChatTranscriptPlainText({
     .trimEnd();
 }
 
+// The splash (BootHero) stays on screen until the chat has real conversation
+// content. Informational notices ("Model set to …", "No prompt history", nav
+// hints) aggregate into `notice` blocks but must NOT dismiss the splash — only
+// a sent prompt or a streaming response (any non-notice block) makes it "a
+// chat." Keeps the new-chat surface clean: nothing but the splash until send.
+export function hasConversationContent(blocks: ReadonlyArray<{ kind: string }>): boolean {
+  return blocks.some((block) => block.kind !== "notice");
+}
+
 export function computeChatScrollMaxOffset({
   events,
+  blocks: providedBlocks,
   notices,
   activeSession,
   expandedLineIds,
@@ -1465,6 +1515,7 @@ export function computeChatScrollMaxOffset({
   width = DEFAULT_VIEW_WIDTH,
 }: {
   events: AgentChatEventEnvelope[];
+  blocks?: AggregatedBlock[];
   notices: LocalNotice[];
   activeSession: AgentChatSessionSummary | null;
   expandedLineIds?: Set<string>;
@@ -1474,13 +1525,13 @@ export function computeChatScrollMaxOffset({
   showWorkingIndicator?: boolean;
   width?: number;
 }): number {
-  const blocks = aggregateChatBlocks({
+  const blocks = providedBlocks ?? aggregateChatBlocks({
     events,
     notices,
     activeSession,
     expandedLineIds,
   });
-  if (!blocks.length && !streaming && !interrupted) return 0;
+  if (!hasConversationContent(blocks) && !streaming && !interrupted) return 0;
   const innerWidth = Math.max(24, width - 4);
   let statusRows = 0;
   if (streaming) statusRows = activeTurnRows("", showWorkingIndicator).length;
@@ -1491,6 +1542,7 @@ export function computeChatScrollMaxOffset({
 
 export function ChatView({
   events,
+  blocks: providedBlocks,
   notices,
   activeSession,
   projectName,
@@ -1513,6 +1565,8 @@ export function ChatView({
   onRemove,
 }: {
   events: AgentChatEventEnvelope[];
+  /** Pre-aggregated blocks. When provided, skips the internal aggregation pass. */
+  blocks?: AggregatedBlock[];
   notices: LocalNotice[];
   activeSession: AgentChatSessionSummary | null;
   projectName: string;
@@ -1538,36 +1592,68 @@ export function ChatView({
   // shouldn't re-run on every spinner tick. Events identity changes only when
   // the underlying chat history advances, which is the right invalidation key.
   const blocks = useMemo(
-    () => aggregateChatBlocks({ events, notices, activeSession, expandedLineIds }),
-    [events, notices, activeSession, expandedLineIds],
+    () => providedBlocks ?? aggregateChatBlocks({ events, notices, activeSession, expandedLineIds }),
+    [providedBlocks, events, notices, activeSession, expandedLineIds],
   );
   const tileMode = focused || Boolean(onRemove);
   const bodyRows = tileMode ? Math.max(1, (maxRows ?? 4) - 4) : maxRows;
   const brailleFrame = useBrailleSpin();
   const spinFrame = useSpinFrame();
   const dotPulse = useDotPulse();
+  const shimmerTick = useShimmerTick();
   const showWorkingIndicator = provider !== "claude" && activeSession?.provider !== "claude";
-  // Memoize the rendered row list. Spinner ticks change brailleFrame/spinFrame
-  // every animation frame; without memoization we'd rebuild every row tree per
-  // tick. Most non-live rows don't depend on the frames, so this is a big win
-  // for large transcripts.
-  const rows = useMemo(
-    () => visibleRowsForBlocks({
-      blocks,
-      maxRows: bodyRows,
-      scrollOffsetRows,
-      unseenMessageCount,
-      width,
-      streaming,
-      interrupted,
-      brailleFrame,
-      spinFrame,
-      dotPulse,
-      showWorkingIndicator,
-    }),
-    [blocks, bodyRows, brailleFrame, dotPulse, interrupted, scrollOffsetRows, showWorkingIndicator, spinFrame, streaming, unseenMessageCount, width],
+  const rowInnerWidth = Math.max(24, width - 4);
+  // Split the transcript at the first live (animating) block. Everything before
+  // it is frame-independent, so we memoize those rows on [blocks, width] and the
+  // 100ms spinner tick no longer rebuilds the whole transcript — only the few
+  // trailing live blocks (the current turn's running tool/plan/compaction groups)
+  // are rebuilt per tick.
+  const { historicalBlocks, tailBlocks } = useMemo(() => {
+    const idx = blocks.findIndex(isLiveBlock);
+    return idx < 0
+      ? { historicalBlocks: blocks, tailBlocks: [] as AggregatedBlock[] }
+      : { historicalBlocks: blocks.slice(0, idx), tailBlocks: blocks.slice(idx) };
+  }, [blocks]);
+  const historicalRows = useMemo(
+    // Pre-index historical rows by their final position (they always occupy
+    // slots 0..H-1, before the seam spacer + live tail). sliceRows then reuses
+    // these stable objects instead of cloning them every tick.
+    () => rowsForBlocks(historicalBlocks, rowInnerWidth, STATIC_SPIN_FRAME, STATIC_SPIN_FRAME)
+      .map((row, index) => ({ ...row, sourceRowIndex: index })),
+    [historicalBlocks, rowInnerWidth],
   );
-  const isEmpty = !blocks.length && !streaming && !interrupted;
+  const rows = useMemo(() => {
+    const tailRows = tailBlocks.length
+      ? rowsForBlocks(tailBlocks, rowInnerWidth, brailleFrame, spinFrame)
+      : [];
+    let baseRows: RenderedChatRow[];
+    if (historicalBlocks.length && tailBlocks.length) {
+      // Match single-pass rowsForBlocks: the seam spacer is keyed off the
+      // adjacent block KINDS (its prevKind), not whether the historical blocks
+      // happened to produce any rows — a zero-row historical block (e.g. an
+      // empty group) still seeds prevKind there.
+      const lastHistKind = historicalBlocks[historicalBlocks.length - 1]?.kind;
+      const firstTailKind = tailBlocks[0]?.kind;
+      const needSpacer = lastHistKind != null && firstTailKind != null
+        && shouldInsertSpacer(lastHistKind, firstTailKind);
+      baseRows = needSpacer
+        ? [...historicalRows, spacerRow(`${tailBlocks[0]!.id}:spacer`), ...tailRows]
+        : [...historicalRows, ...tailRows];
+    } else {
+      baseRows = tailBlocks.length ? [...historicalRows, ...tailRows] : historicalRows;
+    }
+    let withSuffix = baseRows;
+    if (streaming) {
+      // Sweep a bright cell across the label, with a short gap before repeating.
+      const sweepLength = WORKING_LABEL.length + 6;
+      const shimmerPos = shimmerTick % sweepLength;
+      withSuffix = [...baseRows, ...activeTurnRows(dotPulse, showWorkingIndicator, shimmerPos)];
+    } else if (interrupted) {
+      withSuffix = [...baseRows, ...modelInterruptedRows()];
+    }
+    return sliceRows(withSuffix, bodyRows, scrollOffsetRows, unseenMessageCount);
+  }, [historicalRows, historicalBlocks, tailBlocks, rowInnerWidth, brailleFrame, spinFrame, dotPulse, shimmerTick, streaming, interrupted, showWorkingIndicator, bodyRows, scrollOffsetRows, unseenMessageCount]);
+  const isEmpty = !hasConversationContent(blocks) && !streaming && !interrupted;
   let content: React.ReactNode;
   if (isEmpty && tileMode) {
     content = (
@@ -1601,18 +1687,40 @@ export function ChatView({
 
   const innerWidth = Math.max(8, width - 4);
   const title = activeSession?.title ?? activeSession?.goal ?? activeSession?.summary ?? activeSession?.sessionId ?? "chat";
-  const streamingDot = streaming ? " ●" : "";
   const removeSlot = onRemove ? " ×" : "";
-  const available = Math.max(4, innerWidth - streamingDot.length - removeSlot.length - 3);
+  // Lane identity: an explicit lane color tints the rail + border so tiles for
+  // the same lane read at a glance (the focused tile still wins with cyan).
+  const laneAccent = lane?.color ?? null;
+  const railSlot = laneAccent ? 2 : 0;
+  // Multi-state status glyph (mirrors the desktop board's per-card state dot).
+  let statusGlyph: string;
+  let statusColor: string;
+  if (streaming) {
+    statusGlyph = brailleFrame;
+    statusColor = theme.color.running;
+  } else if (interrupted) {
+    statusGlyph = "◌";
+    statusColor = theme.color.attention;
+  } else if (activeSession?.status === "ended") {
+    statusGlyph = "○";
+    statusColor = theme.color.t5;
+  } else {
+    statusGlyph = "·";
+    statusColor = theme.color.t4;
+  }
+  const available = Math.max(4, innerWidth - railSlot - 2 /* status */ - removeSlot.length - 3);
   const lanePart = truncateEnd(laneName || "(lane removed)", Math.max(3, Math.floor(available * 0.4)));
   const titlePart = truncateEnd(title, Math.max(3, available - textWidth(lanePart) - 3));
-  const header = truncateEnd(`${lanePart} / ${titlePart}${streamingDot}`, Math.max(4, innerWidth - removeSlot.length));
+  const header = truncateEnd(`${lanePart} / ${titlePart}`, Math.max(4, innerWidth - railSlot - removeSlot.length - 2));
+  // Borders stay neutral; only the focused tile is accented (violet). Lane
+  // identity lives INSIDE the tile (the colored rail + title), never the border,
+  // so the grid doesn't read as a jumble of differently-colored frames.
   let tileBorderColor: string;
-  if (focused) tileBorderColor = "cyan";
-  else if (hovered) tileBorderColor = theme.color.borderFocused;
+  if (focused) tileBorderColor = theme.color.violet;
+  else if (hovered) tileBorderColor = theme.color.borderActive;
   else tileBorderColor = theme.color.border;
   let headerColor: string;
-  if (focused) headerColor = "cyan";
+  if (focused) headerColor = theme.color.violet;
   else if (activeSession?.status === "ended") headerColor = theme.color.t4;
   else headerColor = theme.color.t2;
   return (
@@ -1623,15 +1731,21 @@ export function ChatView({
       height={maxRows}
       width={width}
     >
-      <Box paddingX={1} justifyContent="space-between" flexShrink={0}>
-        <Text color={headerColor} wrap="truncate-end">
-          {header}
-        </Text>
-        {onRemove ? (
-          <Text color={removeHovered ? theme.color.error : theme.color.t4} inverse={removeHovered}>
-            ×
+      <Box paddingX={1} flexDirection="row" justifyContent="space-between" flexShrink={0}>
+        <Box flexDirection="row" flexShrink={1}>
+          {laneAccent ? <Text color={laneAccent}>{"▎ "}</Text> : null}
+          <Text color={headerColor} wrap="truncate-end">
+            {header}
           </Text>
-        ) : null}
+        </Box>
+        <Box flexDirection="row" flexShrink={0}>
+          <Text color={statusColor}>{statusGlyph}</Text>
+          {onRemove ? (
+            <Text color={removeHovered ? theme.color.error : theme.color.t4} inverse={removeHovered}>
+              {" ×"}
+            </Text>
+          ) : null}
+        </Box>
       </Box>
       {content}
     </Box>

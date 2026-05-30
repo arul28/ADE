@@ -202,6 +202,43 @@ type PersistedMobileCommand = {
   completedAtMs: number;
 };
 
+export function selectChangesetBatchChunk(args: {
+  changes: CrsqlChangeRow[];
+  fromDbVersion: number;
+  toDbVersion: number;
+  maxRows: number;
+  maxBytes: number;
+}): { changes: CrsqlChangeRow[]; toDbVersion: number } | null {
+  let chunk: CrsqlChangeRow[] = [];
+  let chunkBytes = 0;
+  let lastIncludedDbVersion: number | null = null;
+
+  for (const change of args.changes) {
+    const changeDbVersion = Number(change.db_version ?? args.fromDbVersion);
+    const changeBytes = Buffer.byteLength(JSON.stringify(change), "utf8");
+    // The host watermark is db_version-only, so rows sharing a db_version must ack together.
+    if (
+      chunk.length > 0
+      && changeDbVersion !== lastIncludedDbVersion
+      && (chunk.length >= args.maxRows || chunkBytes + changeBytes > args.maxBytes)
+    ) {
+      break;
+    }
+    chunk.push(change);
+    chunkBytes += changeBytes;
+    lastIncludedDbVersion = changeDbVersion;
+  }
+
+  if (chunk.length === 0 && args.changes.length > 0) {
+    chunk = [args.changes[0]!];
+    lastIncludedDbVersion = Number(chunk[0]!.db_version ?? args.fromDbVersion);
+  }
+  if (chunk.length === 0 && args.toDbVersion <= args.fromDbVersion) return null;
+
+  const chunkToDbVersion = lastIncludedDbVersion ?? args.toDbVersion;
+  return { changes: chunk, toDbVersion: chunkToDbVersion };
+}
+
 const PERSISTED_MOBILE_COMMAND_ACTIONS = new Set<string>([
   "lanes.presence.announce",
   "lanes.presence.release",
@@ -1817,34 +1854,21 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     toDbVersion: number,
     changes: CrsqlChangeRow[],
   ): PendingChangesetBatch | null {
-    let chunk: CrsqlChangeRow[] = [];
-    let chunkBytes = 0;
-
-    for (const change of changes) {
-      const changeBytes = Buffer.byteLength(JSON.stringify(change), "utf8");
-      if (
-        chunk.length > 0
-        && (chunk.length >= maxChangesetBatchRows || chunkBytes + changeBytes > maxChangesetBatchBytes)
-      ) {
-        break;
-      }
-      chunk.push(change);
-      chunkBytes += changeBytes;
-    }
-    if (chunk.length === 0 && changes.length > 0) {
-      chunk = [changes[0]!];
-    }
-    if (chunk.length === 0 && toDbVersion <= fromDbVersion) return null;
-
-    const chunkToDbVersion = chunk.length > 0
-      ? Math.max(...chunk.map((change) => Number(change.db_version ?? fromDbVersion)))
-      : toDbVersion;
+    const selected = selectChangesetBatchChunk({
+      changes,
+      fromDbVersion,
+      toDbVersion,
+      maxRows: maxChangesetBatchRows,
+      maxBytes: maxChangesetBatchBytes,
+    });
+    if (!selected) return null;
+    const chunkToDbVersion = selected.toDbVersion;
     const batch: PendingChangesetBatch = {
       batchId: makeChangesetBatchId(peer, fromDbVersion, chunkToDbVersion),
       reason,
       fromDbVersion,
       toDbVersion: chunkToDbVersion,
-      changes: chunk,
+      changes: selected.changes,
       sentAtMs: Date.now(),
       retryCount: 0,
     };
@@ -1853,7 +1877,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       reason,
       fromDbVersion,
       toDbVersion: chunkToDbVersion,
-      changes: chunk,
+      changes: selected.changes,
     });
     return sent ? batch : null;
   }

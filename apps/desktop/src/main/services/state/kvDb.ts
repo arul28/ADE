@@ -1048,17 +1048,20 @@ function normalizeIncomingCrsqlChange(db: DatabaseSyncType, change: CrsqlChangeR
     `pragma table_info('${change.table.replace(/'/g, "''")}')`
   );
   const primaryKeyColumns = tableInfo.filter((column) => Number(column.pk) > 0);
+  if (isSyncScalarBytes(change.pk)) {
+    if (primaryKeyColumns.length === 0) {
+      throw new Error(`Unsupported incoming CRSQL primary key for ${change.table}.${change.cid}: no primary key.`);
+    }
+    const packedPk = packedCrsqlPrimaryKey(change.pk);
+    if (packedPk) return change;
+    throw new Error(`Unsupported incoming CRSQL primary key for ${change.table}.${change.cid}: invalid packed key.`);
+  }
+
   if (primaryKeyColumns.length !== 1) {
     const shape = primaryKeyColumns.length === 0
       ? "no primary key"
       : `${primaryKeyColumns.length} primary key columns`;
     throw new Error(`Unsupported incoming CRSQL primary key for ${change.table}.${change.cid}: ${shape}.`);
-  }
-
-  if (isSyncScalarBytes(change.pk)) {
-    const packedPk = packedCrsqlPrimaryKey(change.pk);
-    if (packedPk) return change;
-    throw new Error(`Unsupported incoming CRSQL primary key for ${change.table}.${change.cid}: invalid packed key.`);
   }
 
   const packedPk = packedCrsqlPrimaryKey(change.pk);
@@ -1754,6 +1757,8 @@ function migrate(db: MigrationDb) {
   try { db.run("alter table pull_requests add column last_polled_at text"); } catch {}
   try { db.run("alter table pull_requests add column head_sha text"); } catch {}
   try { db.run("alter table pull_requests add column creation_strategy text"); } catch {}
+  try { db.run("alter table pull_requests add column merge_conflicts integer"); } catch {}
+  try { db.run("alter table pull_requests add column behind_base_by integer"); } catch {}
 
   db.run("drop table if exists github_pr_cache");
 
@@ -3118,6 +3123,9 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       try {
         runStatement(db, sql, params);
       } catch (error) {
+        // Commit the alter even on failure so the CRR state stays consistent,
+        // then re-throw so callers (e.g. safeAlter) can handle duplicate columns.
+        getRow(db, "select crsql_commit_alter(?) as ok", [alterTable]);
         throw error;
       }
       getRow(db, "select crsql_commit_alter(?) as ok", [alterTable]);

@@ -22,7 +22,6 @@ import type {
   AgentChatCodexSandbox,
   AgentChatClaudePlugin,
   AgentChatReloadClaudePluginsResult,
-  AgentChatContextUsage,
 	  AgentChatEventEnvelope,
 	  AgentChatFileRef,
 	  AgentChatModelCatalog,
@@ -36,15 +35,17 @@ import type {
   CodexThreadGoal,
 } from "../../../desktop/src/shared/types/chat";
 import type { AiSettingsStatus, OpenCodeRuntimeSnapshot } from "../../../desktop/src/shared/types/config";
-import type { DiffLineStats } from "../../../desktop/src/shared/types/git";
-import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
+import type { DiffLineStats, GitConflictState } from "../../../desktop/src/shared/types/git";
+import type { LaneDeleteRisk, LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import type { FeedbackPreparedDraft, FeedbackSubmission } from "../../../desktop/src/shared/types/feedback";
 import type { ChatTerminalPreviewResult, ChatTerminalSession } from "../../../desktop/src/shared/types";
 import {
   DEFAULT_CODEX_REASONING_EFFORT,
   approveToolUse,
+  archiveChatSession,
   cancelSteerMessage,
   createChatSession,
+  deleteChatSession,
   discoverProjectSlashCommands,
   dispatchSteerMessage,
   editSteerMessage,
@@ -86,13 +87,15 @@ import {
   startClaudeTerminalSession,
   steerChatMessage,
   tagChat,
+  unarchiveChatSession,
   updateChatModel,
   writeTerminal,
   type TokenStats,
 } from "./adeApi";
-import { derivePendingSteers } from "./aggregate";
+import { aggregateChatBlocks, derivePendingSteers, type AggregatedBlock } from "./aggregate";
 import { deriveChatInfoSnapshot } from "./chatInfo";
-import { paletteCommands, parseCommand } from "./commands";
+import { BUILTIN_COMMANDS, paletteCommands, parseCommand } from "./commands";
+import { buildHelpIndex, buildHelpRows, flattenHelpRows, pushRecent } from "./helpIndex";
 import { hasFirstUserMessage, isPlanMode } from "./planMode";
 import { connectToAde } from "./connection";
 import { Drawer, visibleDrawerChatCount, visibleDrawerLaneCount, type DrawerPrSummary } from "./components/Drawer";
@@ -106,11 +109,22 @@ import {
   type ChatTextSelection,
 } from "./components/ChatView";
 import { TerminalPane, clampTerminalPaneCols } from "./components/TerminalPane";
+import {
+  type TerminalScrollBySessionId,
+  clampTerminalScrollOffset,
+  jumpTerminalToBottom,
+  noteTerminalNewRows,
+  readTerminalScroll,
+  scrollTerminalBy,
+  terminalPageStep,
+} from "./components/TerminalScrollState";
 import { Header } from "./components/Header";
-import { computeLaneChatCounts, LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, laneDetailsInteractionLayout, RightPane } from "./components/RightPane";
+import { computeLaneChatCounts, DETAILS_BODY_MAX_LINES, LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, laneDetailsInteractionLayout, rightPaneScrollableRowCount, RightPane } from "./components/RightPane";
 import { buildModelPickerLayout, defaultSelectionFor, railEntrySelection } from "./components/ModelPicker/modelPickerLayout";
-import { SlashPalette, SLASH_PALETTE_ROWS } from "./components/SlashPalette";
+import { modelPickerGeometry } from "./components/ModelPicker/modelPickerGeometry";
+import { SlashPalette, slashPaletteReservedRows } from "./components/SlashPalette";
 import { MentionPalette, MENTION_PALETTE_ROWS } from "./components/MentionPalette";
+import { CommandPalette, COMMAND_PALETTE_ROWS, type CommandPaletteItem } from "./components/CommandPalette";
 import { ApprovalPrompt } from "./components/ApprovalPrompt";
 import { ModelStatus } from "./components/ModelStatus";
 import { FooterControls } from "./components/FooterControls";
@@ -123,7 +137,7 @@ import { sortLanesForStackGraph } from "./laneTree";
 import { latestExpandableFailureId, renderObject, summarizeDiffChanges } from "./format";
 import { startTuiHeartbeat, type TuiHeartbeat } from "./heartbeat";
 import { isImageFilePath, latestOpenableImageTarget, readClipboardImageAttachment, readImageDimensions } from "./imageTargets";
-import { appendDedupedTuiEvent, appendReservedTuiEvent, dedupeTuiEvents, reserveTuiEventDedupKey, syncTuiEventDedupKeys } from "./eventDedup";
+import { appendReservedTuiEvent, dedupeTuiEvents, reserveTuiEventDedupKey, syncTuiEventDedupKeys } from "./eventDedup";
 import { loadAdeCodeState, saveAdeCodeProjectState, scopedAdeCodeState } from "./state";
 import { SpinTickProvider } from "./spinTick";
 import { ACTIVE_SESSION_PLACEHOLDER, buildLinearToolRequest } from "./linearCommands";
@@ -143,6 +157,13 @@ import {
   feedbackSubmissionNotice,
   type FeedbackFormValues,
 } from "./feedback";
+import {
+  cycleFeedbackType,
+  feedbackFormCanSubmit,
+  feedbackFormToFormValues,
+  type FeedbackFormState,
+  type FeedbackType,
+} from "./feedbackForm";
 import { buildPendingInputAnswers, latestPendingApproval } from "./pendingInput";
 import { claudeHomePath, defaultKeybindingsPath, dispatchKeybinding, openKeybindingsFile, readClaudeKeybindingsFile, type KeybindingDispatchState, type TuiKeybindingAction } from "./keybindings";
 import { buildDeeplinkForRow, type DeeplinkRow } from "./deeplinkRow";
@@ -174,6 +195,7 @@ import type {
   PendingApproval,
   ProviderReadinessRow,
   ProjectLaunchContext,
+  FeedbackContextMeta,
   RightPaneContent,
   SetupPaneRow,
   SetupPaneRowKind,
@@ -206,8 +228,90 @@ export type FooterControl = "drawer" | "details" | "agents";
 type DrawerLaneAction = "new-lane";
 type DrawerChatAction = "new-chat";
 
+// Streaming chat events are coalesced into a single React render per frame
+// (~40fps) instead of one render per token. Lifecycle edges (turn start/stop,
+// done, user messages, subagent/error) force an immediate flush so the spinner,
+// interrupt flags, and right pane stay responsive.
+const CHAT_EVENT_FLUSH_MS = 24;
+
+function isChatFlushEdge(eventType: string): boolean {
+  // Only the event types that drive an immediate side-effect below (spinner /
+  // interrupt / right-pane) force a synchronous flush. Notably NOT the broad
+  // "subagent" prefix — subagent_progress is high-frequency and would defeat
+  // coalescing; only subagent_started opens the right pane.
+  return (
+    eventType === "status"
+    || eventType === "done"
+    || eventType === "user_message"
+    || eventType === "error"
+    || eventType === "subagent_started"
+    || eventType === "subagent.started"
+  );
+}
+
 export function footerControlsForAvailability(agentsAvailable: boolean): FooterControl[] {
   return agentsAvailable ? ["agents", "drawer", "details"] : ["drawer", "details"];
+}
+
+export type InlineRowCellName = "provider" | "model" | "fast" | "reasoning" | "permission" | "subagents";
+
+// Single source of truth for the footer's inline cells. A cell only appears (and
+// is focusable by keyboard/mouse) when it applies — so fast mode and reasoning
+// are reachable exactly when supported, and neither is a dead focus stop.
+export function inlineRowCellOrder(opts: {
+  providerLocked: boolean;
+  fastSupported: boolean;
+  reasoningSupported: boolean;
+  subagentsVisible: boolean;
+}): InlineRowCellName[] {
+  const cells: InlineRowCellName[] = [];
+  if (!opts.providerLocked) cells.push("provider");
+  cells.push("model");
+  if (opts.fastSupported) cells.push("fast");
+  if (opts.reasoningSupported) cells.push("reasoning");
+  cells.push("permission");
+  if (opts.subagentsVisible) cells.push("subagents");
+  return cells;
+}
+
+// Turn a git conflict into a right-pane detail body + a one-line notice. Used by
+// /pull and /reparent so a rebase/merge conflict is surfaced instead of being
+// silently reported as success.
+export function formatGitConflictReport(state: GitConflictState): { title: string; body: string; summary: string } {
+  const label = state.kind === "rebase" ? "Rebase" : "Merge";
+  const count = state.conflictedFiles.length;
+  const plural = count === 1 ? "" : "s";
+  const fileList = count
+    ? state.conflictedFiles.map((file) => `  • ${file}`).join("\n")
+    : "  (git did not report specific files)";
+  const resolveActions = [
+    state.canContinue ? "/pull --continue to finish" : null,
+    state.canAbort ? "/pull --abort to back out" : null,
+  ].filter((value): value is string => Boolean(value));
+  const actionsLine = resolveActions.length
+    ? `Resolve the conflicts, then run ${resolveActions.join(", or ")}.`
+    : "Resolve the conflicts in your editor to continue.";
+  return {
+    title: `${label} conflict`,
+    body: [`${count} file${plural} need resolution:`, fileList, "", actionsLine].join("\n"),
+    summary: `${label} conflict — ${count} file${plural} need resolution. ${actionsLine}`,
+  };
+}
+
+// One-line summary of what deleting a lane would lose, shown in the delete form
+// so the confirmation isn't blind (mirrors the desktop's delete-risk surface).
+export function formatLaneDeleteRisk(risk: LaneDeleteRisk): string {
+  const parts: string[] = [];
+  if (risk.dirty) parts.push("uncommitted changes");
+  if (risk.hasUnpushedCommits) {
+    parts.push(`${risk.unpushedCommitCount} unpushed commit${risk.unpushedCommitCount === 1 ? "" : "s"}`);
+  }
+  if (risk.runningProcessCount > 0) {
+    parts.push(`${risk.runningProcessCount} running process${risk.runningProcessCount === 1 ? "" : "es"}`);
+  }
+  if (risk.activePtyCount > 0) parts.push(`${risk.activePtyCount} terminal${risk.activePtyCount === 1 ? "" : "s"}`);
+  if (risk.remoteBranchExists) parts.push("remote branch exists");
+  return parts.length ? `⚠ ${parts.join(" · ")}` : "Clean — no unpushed work or running processes.";
 }
 
 export type ModelPickerEscapeAction =
@@ -256,6 +360,90 @@ export function isTerminalSessionFastPollActive(session: TerminalSessionActivity
   return session.status === "running"
     && (session.runtimeState === "running" || session.runtimeState === "waiting-input")
     && isProcessLikelyAlive(session.pid);
+}
+
+const URL_IN_TEXT_RE = /\bhttps?:\/\/[^\s<>"')\]]+/gi;
+const MARKDOWN_LINK_IN_TEXT_RE = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/i;
+
+export function firstUrlInText(value: string): { url: string; index: number; width: number } | null {
+  const markdownMatch = MARKDOWN_LINK_IN_TEXT_RE.exec(value);
+  const markdownCandidate = markdownMatch?.[1] && markdownMatch[2]
+    ? {
+      url: markdownMatch[2].replace(/[.,;:!?]+$/u, ""),
+      index: markdownMatch.index,
+      width: markdownMatch[1].length,
+    }
+    : null;
+  URL_IN_TEXT_RE.lastIndex = 0;
+  const match = URL_IN_TEXT_RE.exec(value);
+  const rawCandidate = match?.[0]
+    ? {
+      url: match[0].replace(/[.,;:!?]+$/u, ""),
+      index: match.index,
+      width: match[0].replace(/[.,;:!?]+$/u, "").length,
+    }
+    : null;
+  if (markdownCandidate && rawCandidate) {
+    return markdownCandidate.index <= rawCandidate.index ? markdownCandidate : rawCandidate;
+  }
+  return markdownCandidate ?? rawCandidate;
+}
+
+function paletteMatchScore(item: CommandPaletteItem, query: string): number | null {
+  const trimmed = query.trim().toLowerCase();
+  if (!trimmed) return 0;
+  const haystack = `${item.label} ${item.detail}`.toLowerCase();
+  if (haystack.includes(trimmed)) return haystack.indexOf(trimmed);
+  let cursor = 0;
+  let score = 0;
+  for (const char of trimmed) {
+    const found = haystack.indexOf(char, cursor);
+    if (found < 0) return null;
+    score += found - cursor;
+    cursor = found + 1;
+  }
+  return score + haystack.length;
+}
+
+// Rebuild the framework-free FeedbackFormState (feedbackForm.ts) from the
+// FeedbackContextMeta carried on the feedback form content. Keeps validation +
+// serialization (feedbackFormCanSubmit / feedbackFormToFormValues) in lock-step
+// with what the right pane renders.
+function feedbackStateFromMeta(meta: FeedbackContextMeta): FeedbackFormState {
+  const rawType = (meta.type ?? "bug") as FeedbackType;
+  const type: FeedbackType = rawType === "bug" || rawType === "idea" || rawType === "praise" ? rawType : "bug";
+  return {
+    type,
+    text: meta.body ?? "",
+    showContext: meta.showContext !== false,
+    context: {
+      provider: meta.provider ?? null,
+      model: meta.model ?? null,
+      lane: meta.lane ?? null,
+      lastError: meta.lastError ?? null,
+    },
+  };
+}
+
+function openExternalUrl(url: string, notice: (message: string, tone?: LocalNotice["tone"]) => void): boolean {
+  const trimmed = url.trim();
+  if (!/^https?:\/\//i.test(trimmed)) return false;
+  const bridge = (globalThis as { window?: { ade?: { app?: { openExternal?: (url: string) => unknown } } } }).window;
+  const opener = bridge?.ade?.app?.openExternal;
+  if (typeof opener === "function") {
+    try {
+      opener(trimmed);
+      notice("Opening link in browser…", "info");
+      return true;
+    } catch {
+      // Fall through to the platform opener.
+    }
+  }
+  const command = process.platform === "darwin" ? "open" : process.platform === "linux" ? "xdg-open" : null;
+  if (!command) return false;
+  spawn(command, [trimmed], { stdio: "ignore", detached: true }).unref();
+  notice("Opening link in browser…", "info");
+  return true;
 }
 
 export function isTerminalSessionResumable(session: ChatTerminalSession | null | undefined): boolean {
@@ -434,6 +622,7 @@ function initialModelState(): AdeCodeModelState {
     opencodePermissionMode: "edit",
     droidPermissionMode: "auto-low",
     cursorModeId: "agent",
+    cursorAvailableModeIds: [],
     cursorConfigValues: {},
   };
 }
@@ -538,6 +727,10 @@ function resolveCodexPreset(modelState: AdeCodeModelState): CodexPreset | "custo
   return "custom";
 }
 
+export function codexApprovalSandboxLabel(modelState: Pick<AdeCodeModelState, "codexApprovalPolicy" | "codexSandbox">): string {
+  return `${modelState.codexApprovalPolicy} · ${modelState.codexSandbox}`;
+}
+
 function codexPresetPatch(preset: CodexPreset): Pick<AdeCodeModelState, "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "permissionMode"> {
   if (preset === "full-auto") {
     return {
@@ -591,6 +784,13 @@ function cursorModeLabel(modeId: string | null | undefined): string {
   return CURSOR_MODE_LABELS[normalized] ?? normalized;
 }
 
+export function cursorModeIdsForState(modelState: Pick<AdeCodeModelState, "cursorAvailableModeIds">): string[] {
+  const snapshotIds = modelState.cursorAvailableModeIds
+    .map((modeId) => modeId.trim())
+    .filter(Boolean);
+  return snapshotIds.length ? snapshotIds : [...CURSOR_AVAILABLE_MODE_IDS];
+}
+
 function permissionSummary(modelState: AdeCodeModelState): string {
   if (modelState.provider === "codex") return resolveCodexPreset(modelState);
   if (modelState.provider === "claude") {
@@ -637,7 +837,7 @@ function permissionOptionsDetail(modelState: AdeCodeModelState): string {
   if (modelState.provider === "claude") return "default · plan · auto · bypass";
   if (modelState.provider === "opencode") return OPENCODE_PERMISSION_OPTIONS.join(" · ");
   if (modelState.provider === "droid") return DROID_PERMISSION_OPTIONS.join(" · ");
-  return CURSOR_AVAILABLE_MODE_IDS.map((modeId) => cursorModeLabel(modeId)).join(" · ");
+  return cursorModeIdsForState(modelState).map((modeId) => cursorModeLabel(modeId)).join(" · ");
 }
 
 function applyProviderPermissionMode(modelState: AdeCodeModelState): Partial<AdeCodeModelState> {
@@ -739,22 +939,6 @@ function formatGoalBannerLine(goal: CodexThreadGoal | null): string | null {
   const visibleStatus = goal.status === "budget_limited" ? "active" : goal.status;
   if (visibleStatus) right.push(visibleStatus.replace(/_/g, " "));
   return right.length ? `◎ ${objective}   ${right.join(" · ")}` : `◎ ${objective}`;
-}
-
-function formatContextUsage(usage: AgentChatContextUsage | null): string {
-  if (!usage) return "Context usage is not available for this session yet.";
-  const total = compactNumber(usage.totalTokens);
-  const max = compactNumber(usage.maxTokens);
-  const header = `Context usage: ${total} / ${max} tokens (${usage.percentage.toFixed(0)}%)`;
-  const rows = usage.categories.map((category) => {
-    const pct = category.percentage < 10 && category.percentage > 0
-      ? category.percentage.toFixed(1)
-      : category.percentage.toFixed(0);
-    return `${category.name.padEnd(22)} ${compactNumber(category.tokens).padStart(7)}  ${pct.padStart(5)}%`;
-  });
-  return [header, usage.model ? `Model: ${usage.model}` : null, "", ...rows]
-    .filter((line): line is string => line != null)
-    .join("\n");
 }
 
 import { subagentSnapshotsFromEvents } from "../../../desktop/src/shared/chatSubagents";
@@ -890,10 +1074,18 @@ export function resolveContextDefault(args: ContextDefaultArgs): RightPaneConten
         return seedLaneDetails(nav.lane, !args.unavailableLaneIds.has(nav.lane.id));
       case "new-chat":
         return {
-          kind: "new-chat-setup",
+          kind: "model-picker",
+          surface: "new-chat",
+          query: "",
+          searchMode: false,
+          showAll: true,
+          selection: { kind: "provider", provider: args.provider },
+          providerTabKey: null,
+          focusedIndex: 0,
+          footerFocus: "apply",
+          settingsRows: nav.rows,
           laneId: nav.laneId,
           laneLabel: nav.laneLabel,
-          rows: nav.rows,
         };
       case "chat":
         return { kind: "chat-info", info: nav.info };
@@ -905,10 +1097,18 @@ export function resolveContextDefault(args: ContextDefaultArgs): RightPaneConten
     && !args.unavailableLaneIds.has(args.newChatSetup.laneId)
   ) {
     return {
-      kind: "new-chat-setup",
+      kind: "model-picker",
+      surface: "new-chat",
+      query: "",
+      searchMode: false,
+      showAll: true,
+      selection: { kind: "provider", provider: args.provider },
+      providerTabKey: null,
+      focusedIndex: 0,
+      footerFocus: "apply",
+      settingsRows: args.newChatSetup.rows,
       laneId: args.newChatSetup.laneId,
       laneLabel: args.newChatSetup.laneLabel,
-      rows: args.newChatSetup.rows,
     };
   }
   if (args.drawerMode === "lanes" && args.highlightedDrawerLane) {
@@ -1224,7 +1424,7 @@ function buildSetupRows(args: {
   if (args.includeApply) {
     rows.push({
       kind: "apply",
-      label: "Use these settings",
+      label: "Confirm",
       value: "ready",
       detail: "returns focus to the chat composer",
     });
@@ -1497,6 +1697,43 @@ export function deletePromptForward(value: string, cursor: number): PromptEditRe
     value: `${value.slice(0, safeCursor)}${value.slice(end)}`,
     cursor: safeCursor,
   };
+}
+
+// Apply a possibly-coalesced input chunk to the prompt, character by character.
+// Ink emits multiple fast keystrokes as ONE chunk and only recognizes a *lone*
+// DEL/BS byte as backspace — so a burst like "x" (type then delete) arrives
+// as plain text with no backspace flag, and naive insertion would drop the
+// Like printableInput but keeps tabs (0x09) and newlines (0x0a), normalizing
+// CR/LF to "\n", so a pasted multi-line / tabbed block survives verbatim in the
+// feedback body editor. Strips the remaining C0 controls and DEL.
+function printableMultilineInput(input: string): string {
+  return input
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/[ --]/g, "");
+}
+
+// delete. Here we walk the chunk: printable runs are inserted, embedded
+// DEL/BS bytes delete backward, all in order. Fixes intermittent "backspace
+// does nothing" when typing quickly.
+export function applyCoalescedPromptInput(value: string, cursor: number, input: string, preserveMultiline = false): PromptEditResult {
+  let result: PromptEditResult = { value, cursor: clampPromptCursor(value, cursor) };
+  let buffer = "";
+  const flush = () => {
+    const printable = preserveMultiline ? printableMultilineInput(buffer) : printableInput(buffer);
+    buffer = "";
+    if (printable) result = insertPromptText(result.value, result.cursor, printable);
+  };
+  for (const ch of input) {
+    if (ch === "\u007f" || ch === "\b") {
+      flush();
+      result = deletePromptBackward(result.value, result.cursor, "char");
+    } else {
+      buffer += ch;
+    }
+  }
+  flush();
+  return result;
 }
 
 function inputBeforeLineBreak(input: string): string | null {
@@ -1895,12 +2132,6 @@ export function formFieldUsesPromptInput(command: string, fieldName: string): bo
   return true;
 }
 
-export function modelPickerSurfaceForSetupPane(
-  paneKind: "new-chat-setup" | "model-setup",
-): "new-chat" | "chat" {
-  return paneKind === "new-chat-setup" ? "new-chat" : "chat";
-}
-
 export function clampChatScrollOffsetRows(value: number, maxOffset: number): number {
   const safeMax = Number.isFinite(maxOffset) ? Math.max(0, Math.floor(maxOffset)) : 0;
   if (Number.isNaN(value)) return 0;
@@ -2238,6 +2469,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   useTerminalMouseTracking();
   const [connection, setConnection] = useState<AdeCodeConnection | null>(null);
   const [mode, setMode] = useState<RuntimeMode | "connecting">("connecting");
+  // True after an attached socket drops unexpectedly, until we re-attach. Drives
+  // the reconnect probe below and a one-shot "reconnecting…" notice.
+  const [connectionLost, setConnectionLost] = useState(false);
   const [lanes, setLanes] = useState<LaneSummary[]>([]);
   const [prByLaneId, setPrByLaneId] = useState<Record<string, DrawerPrSummary>>({});
   const [diffByLaneId, setDiffByLaneId] = useState<Record<string, DiffLineStats>>({});
@@ -2246,6 +2480,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const [terminalPreview, setTerminalPreview] = useState<ChatTerminalPreviewResult | null>(null);
   const [attachedTerminalId, setAttachedTerminalId] = useState<string | null>(null);
   const [terminalLiveChunks, setTerminalLiveChunks] = useState<Record<string, string[]>>({});
+  // Scrollback position + "↓ N new" counter per Claude PTY session.
+  const [terminalScrollBySessionId, setTerminalScrollBySessionId] = useState<TerminalScrollBySessionId>({});
+  // Pending pty_data chunks buffered off-React; flushed on a ~16ms timer so the
+  // write cursor keeps advancing (no per-chunk O(n) array rebuild + slice(-500)
+  // that would pin the buffer at 500 and freeze TerminalPane's incremental write).
+  const pendingPtyChunksRef = useRef<Map<string, string[]>>(new Map());
+  const ptyFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Owns the feedback success auto-close timer so it can be cleared on
+  // unmount / re-open and never fire against a different right pane.
+  const feedbackCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  // Latest visible text + max scrollback rows reported by the live TerminalPane,
+  // so keyboard scroll can clamp and copy can grab the visible region.
+  const terminalViewportMetricsRef = useRef<{ maxScrollable: number; visibleText: string }>({
+    maxScrollable: 0,
+    visibleText: "",
+  });
   const [activeLaneId, setActiveLaneId] = useState<string | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [events, setEvents] = useState<AgentChatEventEnvelope[]>([]);
@@ -2287,6 +2539,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const [interruptedBySessionId, setInterruptedBySessionId] = useState<Record<string, boolean>>({});
   const [eventsBySessionId, setEventsBySessionId] = useState<Record<string, AgentChatEventEnvelope[]>>({});
   const [multiView, setMultiView] = useState<MultiViewState | null>(null);
+  // "Grid exists" (multiView) is decoupled from "grid is showing" (gridViewActive).
+  // Creating/opening a non-grid chat hides the grid without destroying it, so it
+  // stays resumable; navigating back to one of its tiles re-shows it.
+  const [gridViewActive, setGridViewActive] = useState(false);
   const [scrollBySessionId, setScrollBySessionId] = useState<Record<string, number>>({});
   const [selectionBySessionId, setSelectionBySessionId] = useState<Record<string, ChatTextSelection | null>>({});
   const [promptHistoryBySessionId, setPromptHistoryBySessionId] = useState<Record<string, string[]>>({});
@@ -2298,12 +2554,27 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const [clearedAt, setClearedAt] = useState<string | null>(null);
   const [expandedLineIds, setExpandedLineIds] = useState<Set<string>>(() => new Set());
   const [chatScrollOffsetRows, setChatScrollOffsetRows] = useState(0);
+  const [drawerScrollOffsetRows, setDrawerScrollOffsetRows] = useState(0);
+  const [rightPaneScrollOffsetRows, setRightPaneScrollOffsetRows] = useState(0);
   const [inspectedSubagentId, setInspectedSubagentId] = useState<string | null>(null);
   const [mentionSuggestions, setMentionSuggestions] = useState<MentionSuggestion[]>([]);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [selectedMentions, setSelectedMentions] = useState<MentionSuggestion[]>([]);
   const [attachmentFocusIndex, setAttachmentFocusIndex] = useState<number | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [commandPaletteQuery, setCommandPaletteQuery] = useState("");
+  const [commandPaletteIndex, setCommandPaletteIndex] = useState(0);
+  // /help command reference: live filter, focused row, and a small in-memory
+  // recents list (most-recent-first) that floats lately-run commands to the top.
+  const [helpFilterQuery, setHelpFilterQuery] = useState("");
+  const [helpSelectedIndex, setHelpSelectedIndex] = useState(0);
+  const [helpRecents, setHelpRecents] = useState<string[]>([]);
+  const helpRecentsRef = useRef<string[]>([]);
+  helpRecentsRef.current = helpRecents;
+  // Indexed (grouped, keybind-enriched) command reference. Rebuilt only when the
+  // user's Claude keybinding registry changes, so keybind chips reflect config.
+  const helpIndexGroups = useMemo(() => buildHelpIndex(BUILTIN_COMMANDS, keybindings), [keybindings]);
   const [drawerSection, setDrawerSection] = useState<"lanes" | "chats">("lanes");
   const [drawerPreviewSessionId, setDrawerPreviewSessionId] = useState<string | null>(null);
   const [drawerPreviewEvents, setDrawerPreviewEvents] = useState<AgentChatEventEnvelope[]>([]);
@@ -2314,7 +2585,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const [selectedDrawerChatAction, setSelectedDrawerChatAction] = useState<DrawerChatAction | null>(null);
   const [, setFormDiscardArmedState] = useState(false);
   const [footerControl, setFooterControl] = useState<FooterControl | null>(null);
-  const [inlineRowFocus, setInlineRowFocus] = useState<{ cell: 'provider' | 'model' | 'reasoning' | 'permission' | 'subagents' | null }>({ cell: null });
+  const [inlineRowFocus, setInlineRowFocus] = useState<{ cell: InlineRowCellName | null }>({ cell: null });
   const inlineRowFocused = inlineRowFocus.cell !== null;
   // Cross-surface model picker favorites/recents — authoritative copy lives in ade-cli.
 	  const [modelPickerFavorites, setModelPickerFavorites] = useState<string[]>([]);
@@ -2322,9 +2593,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 	  const [modelCatalog, setModelCatalog] = useState<AgentChatModelCatalog | null>(null);
 
   const connectionRef = useRef<AdeCodeConnection | null>(null);
+  const connectionLostRef = useRef(false);
   const activeLaneIdRef = useRef<string | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
   const multiViewRef = useRef<MultiViewState | null>(null);
+  const gridViewActiveRef = useRef(false);
+  // Show/hide the grid without destroying it. Sets the ref synchronously so the
+  // input/submit paths read the new value immediately (before the re-render).
+  // Declared early because navigation handlers above the grid helpers use it.
+  const setGridView = useCallback((active: boolean) => {
+    gridViewActiveRef.current = active;
+    setGridViewActive(active);
+  }, []);
   const addModeRef = useRef<AddModeState | null>(null);
   const streamingBySessionIdRef = useRef<Record<string, boolean>>({});
   const interruptedBySessionIdRef = useRef<Record<string, boolean>>({});
@@ -2334,6 +2614,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const hitTestRegistryRef = useRef(createHitTestRegistry());
   const hoveredTargetRef = useRef<HitTarget | null>(null);
   const appHitTargetIdsRef = useRef<string[]>([]);
+  // Chat link click-targets are registered in their own effect (keyed on the
+  // visible rows) so they track scrolling/streaming without rebuilding the
+  // whole app hit-target set on every coalesced flush.
+  const chatLinkTargetIdsRef = useRef<string[]>([]);
   const previousDimensionsRef = useRef<[number, number]>([columns, rows]);
   const draftChatActiveRef = useRef(false);
   const formDiscardArmedRef = useRef(false);
@@ -2359,6 +2643,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const eventCountRef = useRef<number>(0);
   const eventDedupKeysRef = useRef<Set<string>>(new Set());
   const eventDedupKeyOrderRef = useRef<string[]>([]);
+  // Streaming-event coalescing: buffer incoming envelopes and flush them in one
+  // batched render on a short timer (see flushPendingChatEvents / scheduleChatFlush).
+  const pendingChatEnvelopesRef = useRef<AgentChatEventEnvelope[]>([]);
+  const chatFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshGenerationRef = useRef(0);
   const chatScrollOffsetRowsRef = useRef(0);
   const chatScrollMaxOffsetRef = useRef(0);
@@ -2472,7 +2760,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   }, [project.projectRoot]);
 
   const setChatScrollOffset = useCallback((value: number | ((previous: number) => number)) => {
-    const multiSessionId = focusedSessionIdForMultiView(multiViewRef.current);
+    const multiSessionId = (gridViewActiveRef.current ? focusedSessionIdForMultiView(multiViewRef.current) : null);
     if (multiSessionId) {
       setScrollBySessionId((prev) => {
         const previous = prev[multiSessionId] ?? 0;
@@ -2610,7 +2898,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 
   useEffect(() => {
     chatMouseSelectionRef.current = chatMouseSelection;
-    const focusedSessionId = focusedSessionIdForMultiView(multiViewRef.current);
+    const focusedSessionId = (gridViewActiveRef.current ? focusedSessionIdForMultiView(multiViewRef.current) : null);
     if (focusedSessionId) {
       setSelectionBySessionId((prev) => ({ ...prev, [focusedSessionId]: chatMouseSelection }));
     }
@@ -2794,14 +3082,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     focusDetails();
   }, [focusChat, focusDetails, rightOpen, rightPane.kind, selectFooterControl]);
 
-  const cyclePaneFocus = useCallback(() => {
+  const cyclePaneFocus = useCallback((direction: 1 | -1 = 1) => {
     const order: PaneFocus[] = [
       ...(drawerOpen ? (["drawer"] as PaneFocus[]) : []),
       "chat",
       ...(rightOpen ? (["details"] as PaneFocus[]) : []),
     ];
     const currentIndex = order.indexOf(activePaneRef.current);
-    const nextPane = order[(currentIndex >= 0 ? currentIndex + 1 : 0) % order.length] ?? "chat";
+    const startIndex = currentIndex >= 0 ? currentIndex : direction > 0 ? -1 : 0;
+    const nextPane = order[(startIndex + direction + order.length) % order.length] ?? "chat";
     if (nextPane === "drawer") {
       focusDrawerOnly();
     } else if (nextPane === "details") {
@@ -2845,7 +3134,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   );
   const activeTerminalProvider = terminalSessionProvider(activeTerminalSession);
   const displaySessions = useMemo(
-    () => [...sessions, ...terminalSessions.map(terminalSessionToChatSummary)]
+    () => [...sessions.filter((session) => !session.archivedAt), ...terminalSessions.map(terminalSessionToChatSummary)]
       .sort((left, right) => {
         const rightMs = Date.parse(right.lastActivityAt ?? right.startedAt);
         const leftMs = Date.parse(left.lastActivityAt ?? left.startedAt);
@@ -2858,7 +3147,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     for (const session of displaySessions) out[session.sessionId] = session;
     return out;
   }, [displaySessions]);
-  const tileableSessionIds = useMemo(() => new Set(sessions.map((session) => session.sessionId)), [sessions]);
+  const tileableSessionIds = useMemo(() => new Set(sessions.filter((session) => !session.archivedAt).map((session) => session.sessionId)), [sessions]);
   const tileableDisplaySessions = useMemo(
     () => displaySessions.filter((session) => tileableSessionIds.has(session.sessionId)),
     [displaySessions, tileableSessionIds],
@@ -2891,6 +3180,25 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   useEffect(() => {
     providerLockedRef.current = providerLocked;
   }, [providerLocked]);
+  // Whether the active model supports fast mode / reasoning effort — drives which
+  // footer cells exist and are focusable (refs let the input handler read current
+  // values without stale closures).
+  const footerFastSupported = useMemo(() => {
+    const descriptor = modelState.modelId ? getModelById(modelState.modelId) : undefined;
+    const activeModel = models.find((entry) => entry.id === modelState.modelId || entry.modelId === modelState.modelId);
+    return Boolean(activeModel?.serviceTiers?.some((tier) => tier.trim().toLowerCase() === "fast"))
+      || modelSupportsFastMode(descriptor);
+  }, [models, modelState.modelId]);
+  const footerReasoningSupported = useMemo(
+    () => modelReasoningEfforts(modelState, models).length > 0,
+    [modelState, models],
+  );
+  const footerFastSupportedRef = useRef(false);
+  const footerReasoningSupportedRef = useRef(false);
+  useEffect(() => {
+    footerFastSupportedRef.current = footerFastSupported;
+    footerReasoningSupportedRef.current = footerReasoningSupported;
+  }, [footerFastSupported, footerReasoningSupported]);
   const latestFailedLineId = useMemo(() => latestExpandableFailureId(events), [events]);
   const subagentSnapshots = useMemo(() => subagentSnapshotsFromEvents(events), [events]);
   const liveAgentCount = useMemo(
@@ -2949,14 +3257,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       selectFooterControl(null);
     }
   }, [footerControl, selectFooterControl, subagentPaneCommandAvailable]);
-  useEffect(() => {
-    if (rightPaneKindRef.current !== rightPane.kind) {
-      if (rightPane.kind === "chat-info") {
-        setRightSelectionIndex(0);
-      }
-      rightPaneKindRef.current = rightPane.kind;
-    }
-  }, [rightPane.kind]);
+	  useEffect(() => {
+	    if (rightPaneKindRef.current !== rightPane.kind) {
+	      if (rightPane.kind === "chat-info") {
+	        setRightSelectionIndex(0);
+	      }
+	      setRightPaneScrollOffsetRows(0);
+	      rightPaneKindRef.current = rightPane.kind;
+	    }
+	  }, [rightPane.kind]);
   useEffect(() => {
     const content = subagentPaneContentFromRightPane(rightPane);
     if (!content) return;
@@ -3059,10 +3368,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     () => sortLanesForStackGraph(lanes),
     [lanes],
   );
-  const drawerLaneRows = useMemo(
-    () => orderedDrawerLanes.slice(0, visibleDrawerLaneCount(chatRowBudget, orderedDrawerLanes.length)),
-    [chatRowBudget, orderedDrawerLanes],
-  );
+	  const drawerLaneRows = useMemo(
+	    () => {
+	      const count = visibleDrawerLaneCount(chatRowBudget, orderedDrawerLanes.length);
+	      const start = Math.max(0, Math.min(drawerScrollOffsetRows, Math.max(0, orderedDrawerLanes.length - count)));
+	      return orderedDrawerLanes.slice(start, start + count);
+	    },
+	    [chatRowBudget, drawerScrollOffsetRows, orderedDrawerLanes],
+	  );
   const diffLaneIdsKey = useMemo(
     () => lanes.filter((lane) => !lane.archivedAt).map((lane) => lane.id).sort().join("\n"),
     [lanes],
@@ -3121,6 +3434,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       newChatPreviewLaneIdRef.current = laneId;
       draftChatActiveRef.current = true;
       setDraftChatMode(true);
+      setGridView(false);
       selectActiveSessionId(null);
       clearLoadedTranscript();
       return;
@@ -3129,12 +3443,25 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     if (!selection.session) {
       draftChatActiveRef.current = false;
       setDraftChatMode(false);
+      setGridView(false);
       selectActiveSessionId(null);
       clearLoadedTranscript();
       return;
     }
 
     const session = selection.session;
+    // If the selected chat is one of the (possibly hidden) grid's tiles, re-enter
+    // the grid focused on it; otherwise show it as a normal single chat and leave
+    // the grid resumable in the background.
+    const gridTileIndex = multiViewRef.current?.tiles.findIndex((tile) => tile.sessionId === session.sessionId) ?? -1;
+    if (gridTileIndex >= 0) {
+      draftChatActiveRef.current = false;
+      setDraftChatMode(false);
+      setMultiView((prev) => (prev ? { ...prev, focusedIndex: gridTileIndex } : prev));
+      setGridView(true);
+      return;
+    }
+    setGridView(false);
     newChatPreviewLaneIdRef.current = null;
     draftChatActiveRef.current = false;
     setDraftChatMode(false);
@@ -3198,7 +3525,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         // Best-effort preview hydration; leave prior content on transient errors.
       }
     })();
-  }, [selectActiveLaneId, selectActiveSessionId, setDraftChatMode, setSessionInterrupted, setSessionStreaming, setStreaming]);
+  }, [selectActiveLaneId, selectActiveSessionId, setDraftChatMode, setGridView, setSessionInterrupted, setSessionStreaming, setStreaming]);
   const enterDrawerChatListForLane = useCallback((lane: LaneSummary) => {
     const laneSessions = displaySessions.filter((entry) => entry.laneId === lane.id);
     const visibleSessions = laneSessions.slice(0, visibleDrawerChatCount(laneSessions.length));
@@ -3219,11 +3546,42 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const activeMentionRange = useMemo(() => (
     activePane === "chat" ? activeMention(prompt) : null
   ), [activePane, prompt]);
-  const slashRows = useMemo(() => (
-    activePane === "chat" && prompt.startsWith("/")
-      ? paletteCommands(prompt, slashCommands, { provider: activeCommandProvider })
-      : []
-  ), [activeCommandProvider, activePane, prompt, slashCommands]);
+	  const slashRows = useMemo(() => (
+	    activePane === "chat" && prompt.startsWith("/")
+	      ? paletteCommands(prompt, slashCommands, { provider: activeCommandProvider })
+	      : []
+	  ), [activeCommandProvider, activePane, prompt, slashCommands]);
+  const commandPaletteItems = useMemo<CommandPaletteItem[]>(() => {
+    if (!commandPaletteOpen) return [];
+    const commandItems = paletteCommands("", slashCommands, { provider: activeCommandProvider }).map((command) => ({
+      key: `command:${command.name}`,
+      kind: "command" as const,
+      label: command.argumentHint ? `${command.name} ${command.argumentHint}` : command.name,
+      detail: command.description,
+    }));
+    const laneItems = lanes.map((lane) => ({
+      key: `lane:${lane.id}`,
+      kind: "lane" as const,
+      label: lane.name,
+      detail: lane.branchRef ?? lane.id,
+    }));
+    const chatItems = displaySessions.map((session) => ({
+      key: `chat:${session.sessionId}`,
+      kind: "chat" as const,
+      label: session.title ?? session.sessionId,
+      detail: `${lanes.find((lane) => lane.id === session.laneId)?.name ?? session.laneId} · ${session.provider}`,
+    }));
+    return [...commandItems, ...laneItems, ...chatItems]
+      .map((item) => ({ item, score: paletteMatchScore(item, commandPaletteQuery) }))
+      .filter((entry): entry is { item: CommandPaletteItem; score: number } => entry.score != null)
+      .sort((a, b) => a.score - b.score || a.item.label.localeCompare(b.item.label))
+      .map((entry) => entry.item)
+      .slice(0, 80);
+  }, [activeCommandProvider, commandPaletteOpen, commandPaletteQuery, displaySessions, lanes, slashCommands]);
+  useEffect(() => {
+    if (!commandPaletteOpen) return;
+    setCommandPaletteIndex((index) => Math.max(0, Math.min(index, Math.max(0, commandPaletteItems.length - 1))));
+  }, [commandPaletteItems.length, commandPaletteOpen]);
   const pendingApproval = useMemo(() => latestPendingApproval(events), [events]);
   const pendingSteers = useMemo(() => derivePendingSteers(events), [events]);
   const activeFormField = rightPane.kind === "form"
@@ -3239,6 +3597,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       : events
   ), [activeSession, events, selectedAgentSnapshot]);
   const displayNotices = useMemo(() => (selectedAgentSnapshot ? [] : notices), [notices, selectedAgentSnapshot]);
+  // Aggregate the transcript exactly once per render and thread the result into
+  // every consumer (scroll math, selection rows, selectable text, and ChatView
+  // itself). Previously each of those re-walked the full event list, so a single
+  // token caused ~4 full-transcript passes.
+  const displayBlocks = useMemo(
+    () => aggregateChatBlocks({
+      events: displayEvents,
+      notices: displayNotices,
+      activeSession,
+      expandedLineIds,
+    }),
+    [activeSession, displayEvents, displayNotices, expandedLineIds],
+  );
   const displayStreaming = selectedAgentSnapshot ? selectedAgentSnapshot.status === "running" : streaming;
   const displayInterrupted = selectedAgentSnapshot ? false : interrupted && !displayStreaming;
   useEffect(() => {
@@ -3253,6 +3624,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     || liveAgentCount > 0;
   const showChatWorkingIndicator = modelState.provider !== "claude" && activeSession?.provider !== "claude";
   const chatScrollMaxOffset = useMemo(() => computeChatScrollMaxOffset({
+    blocks: displayBlocks,
     events: displayEvents,
     notices: displayNotices,
     activeSession,
@@ -3262,7 +3634,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     interrupted: displayInterrupted,
     showWorkingIndicator: showChatWorkingIndicator,
     width: chatWrapWidth,
-  }), [activeSession, chatRowBudget, chatWrapWidth, displayEvents, displayInterrupted, displayNotices, displayStreaming, expandedLineIds, showChatWorkingIndicator]);
+  }), [activeSession, chatRowBudget, chatWrapWidth, displayBlocks, displayEvents, displayInterrupted, displayNotices, displayStreaming, expandedLineIds, showChatWorkingIndicator]);
   chatScrollMaxOffsetRef.current = chatScrollMaxOffset;
   const effectiveChatScrollOffsetRows = clampChatScrollOffsetRows(chatScrollOffsetRows, chatScrollMaxOffset);
   chatScrollOffsetRowsRef.current = effectiveChatScrollOffsetRows;
@@ -3276,6 +3648,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     ? Math.max(0, displayEvents.length - lastSeenAtBottomEventCountRef.current)
     : 0;
   const visibleChatSelectionRows = useMemo(() => renderChatVisibleSelectionRows({
+    blocks: displayBlocks,
     events: displayEvents,
     notices: displayNotices,
     activeSession,
@@ -3291,6 +3664,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     activeSession,
     chatRowBudget,
     chatWrapWidth,
+    displayBlocks,
     displayEvents,
     displayInterrupted,
     displayNotices,
@@ -3301,6 +3675,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     unseenMessageCount,
   ]);
   const selectableChatRowTexts = useMemo(() => renderChatSelectableRowTexts({
+    blocks: displayBlocks,
     events: displayEvents,
     notices: displayNotices,
     activeSession,
@@ -3312,6 +3687,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   }), [
     activeSession,
     chatWrapWidth,
+    displayBlocks,
     displayEvents,
     displayInterrupted,
     displayNotices,
@@ -3405,6 +3781,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   useEffect(() => {
     attachedTerminalIdRef.current = attachedTerminalId;
   }, [attachedTerminalId]);
+
+  // Mirror terminal scroll state into a ref so the pty subscription (bound only
+  // on reconnect) can read "is this session scrolled up?" without re-binding.
+  const terminalScrollBySessionIdRef = useRef<TerminalScrollBySessionId>(terminalScrollBySessionId);
+  useEffect(() => {
+    terminalScrollBySessionIdRef.current = terminalScrollBySessionId;
+  }, [terminalScrollBySessionId]);
 
   useEffect(() => {
     if (!connection || !activeTerminalSession) return;
@@ -3631,7 +4014,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       if (prev.kind === "chat-info" && next.kind === "chat-info") {
         return next;
       }
-      if (prev.kind === "new-chat-setup" && next.kind === "new-chat-setup") {
+      if (prev.kind === "model-picker" && prev.surface === "new-chat" && next.kind === "model-picker" && next.surface === "new-chat") {
         return next;
       }
       // Avoid stomping on lane-details that has been hydrated with git data;
@@ -3668,22 +4051,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   ]);
 
   useEffect(() => {
-    if (rightPane.kind === "new-chat-setup") {
+    if (rightPane.kind === "model-picker" && rightPane.surface === "new-chat") {
       setRightPane((prev) => {
-        if (prev.kind !== "new-chat-setup") return prev;
+        if (prev.kind !== "model-picker" || prev.surface !== "new-chat") return prev;
         if (drawerNavTarget?.kind === "new-chat") {
           return {
             ...prev,
             laneId: drawerNavTarget.laneId,
             laneLabel: drawerNavTarget.laneLabel,
-            rows: drawerNavTarget.rows,
+            settingsRows: drawerNavTarget.rows,
           };
         }
         return {
           ...prev,
           laneId: activeLaneId ?? prev.laneId,
           laneLabel: activeLane?.name ?? prev.laneLabel,
-          rows: newChatSetupRows,
+          settingsRows: newChatSetupRows,
         };
       });
     } else if (rightPane.kind === "lane-details") {
@@ -3693,9 +4076,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             chats: computeLaneChatCounts(displaySessions, prev.lane.id),
           }
         : prev);
-    } else if (rightPane.kind === "model-setup") {
-      setRightPane((prev) => prev.kind === "model-setup"
-        ? { ...prev, rows: providerLocked ? modelPickerRows : modelSetupRows }
+    } else if (rightPane.kind === "model-picker" && rightPane.surface === "chat") {
+      setRightPane((prev) => prev.kind === "model-picker" && prev.surface === "chat"
+        ? { ...prev, settingsRows: providerLocked ? modelPickerRows : modelSetupRows }
         : prev);
     }
   }, [activeLane?.name, activeLaneId, displaySessions, drawerNavTarget, modelPickerRows, modelSetupRows, newChatSetupRows, providerLocked, rightPane.kind]);
@@ -4000,6 +4383,33 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     ]);
   }, []);
 
+  const activateLaneWithLastChat = useCallback((lane: LaneSummary, options: { notify?: boolean } = {}) => {
+    const laneSessions = displaySessions.filter((entry) => entry.laneId === lane.id);
+    const lastSessionId = lastChatByLaneRef.current.get(lane.id);
+    const session =
+      laneSessions.find((entry) => entry.sessionId === lastSessionId)
+      ?? newestSession(laneSessions);
+    const action: DrawerChatAction | null = session ? null : "new-chat";
+    selectActiveLaneId(lane.id);
+    setDrawerLaneId(lane.id);
+    setSelectedDrawerLaneId(lane.id);
+    setSelectedDrawerLaneAction(null);
+    setSelectedDrawerChatId(session?.sessionId ?? null);
+    setSelectedDrawerChatAction(action);
+    applyDrawerChatSelection({ session: session ?? null, action });
+    if (options.notify) addNotice(`Switched to lane ${lane.name}.`, "success");
+  }, [addNotice, applyDrawerChatSelection, displaySessions, selectActiveLaneId]);
+
+  const cycleActiveLane = useCallback((direction: 1 | -1) => {
+    if (!orderedDrawerLanes.length) return;
+    const currentLaneId = activeLaneIdRef.current;
+    const currentIndex = currentLaneId ? orderedDrawerLanes.findIndex((lane) => lane.id === currentLaneId) : -1;
+    const startIndex = currentIndex >= 0 ? currentIndex : direction > 0 ? -1 : 0;
+    const lane = orderedDrawerLanes[(startIndex + direction + orderedDrawerLanes.length) % orderedDrawerLanes.length];
+    if (!lane) return;
+    activateLaneWithLastChat(lane, { notify: true });
+  }, [activateLaneWithLastChat, orderedDrawerLanes]);
+
   const flashMultiViewNotice = useCallback((text: string) => {
     setMultiViewNotice(text);
     setTimeout(() => {
@@ -4043,8 +4453,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       const focusedIndex = Math.max(0, Math.min(index, prev.tiles.length - 1));
       return focusedIndex === prev.focusedIndex ? prev : { ...prev, focusedIndex };
     });
+    setGridView(true);
     setPaneFocus("chat");
-  }, [setPaneFocus]);
+  }, [setGridView, setPaneFocus]);
 
   const removeMultiViewTile = useCallback((index: number) => {
     const prev = multiViewRef.current;
@@ -4053,11 +4464,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     const survivor = tiles.length < 2 ? tiles[0] ?? null : null;
     setMultiView(tiles.length < 2 ? null : { tiles, focusedIndex: Math.min(prev.focusedIndex, tiles.length - 1) });
     if (survivor) {
+      // Grid collapsed to one chat → leave grid view into that single chat.
+      setGridView(false);
       selectActiveLaneId(survivor.laneId);
       selectActiveSessionId(survivor.sessionId);
     }
     setPaneFocus("chat");
-  }, [selectActiveLaneId, selectActiveSessionId, setPaneFocus]);
+  }, [selectActiveLaneId, selectActiveSessionId, setGridView, setPaneFocus]);
 
   const isTileableChatSessionId = useCallback((sessionId: string | null | undefined) => {
     if (!sessionId) return false;
@@ -4079,18 +4492,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       const existingIndex = tiles.findIndex((tile) => tile.sessionId === sessionId);
       if (existingIndex >= 0) {
         setMultiView({ tiles, focusedIndex: existingIndex });
+        setGridView(true);
         setAddMode(null);
         setPaneFocus("chat");
         return;
       }
       if (tiles.length >= 6) {
         flashMultiViewNotice("Multi-view full (max 6)");
+        setGridView(true);
         setAddMode(null);
         setPaneFocus("chat");
         return;
       }
       if (!tiles.length) {
         setMultiView(null);
+        setGridView(false);
         selectActiveLaneId(laneId);
         selectActiveSessionId(sessionId);
       } else {
@@ -4098,11 +4514,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           tiles: [...tiles, { sessionId, laneId }],
           focusedIndex: Math.max(focusedIndex, tiles.length),
         });
+        setGridView(true);
       }
     } else {
       const currentSessionId = activeSessionIdRef.current;
       const currentLaneId = activeLaneIdRef.current;
       if (!currentSessionId || !currentLaneId || !isTileableChatSessionId(currentSessionId)) {
+        setGridView(false);
         selectActiveLaneId(laneId);
         selectActiveSessionId(sessionId);
       } else if (currentSessionId !== sessionId) {
@@ -4113,6 +4531,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           ],
           focusedIndex: 1,
         });
+        setGridView(true);
       }
     }
     void hydrateTileHistory(sessionId).catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
@@ -4122,7 +4541,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
     setAddMode(null);
     setPaneFocus("chat");
-  }, [addNotice, flashMultiViewNotice, hydrateTileHistory, isTileableChatSessionId, selectActiveLaneId, selectActiveSessionId, setPaneFocus]);
+  }, [addNotice, flashMultiViewNotice, hydrateTileHistory, isTileableChatSessionId, selectActiveLaneId, selectActiveSessionId, setGridView, setPaneFocus]);
 
   const startAddMode = useCallback(() => {
     const firstLane = orderedDrawerLanes[0] ?? null;
@@ -4176,8 +4595,44 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     addTileToGrid(current.cursorChatId, current.cursorLaneId);
   }, [addNotice, addTileToGrid]);
 
+  // The grid toggle (Ctrl+G / footer button). Behavior depends on context:
+  //  - in the grid          -> open the "add chat" picker
+  //  - on a chat that's a tile of a resumable grid -> re-enter that grid
+  //  - on a non-grid chat with a resumable grid    -> add this chat to the grid
+  //    (errors if full)
+  //  - no grid yet          -> open the add-mode picker to build one
+  const toggleGridView = useCallback(() => {
+    if (gridViewActiveRef.current) {
+      startAddMode();
+      return;
+    }
+    const grid = multiViewRef.current;
+    if (grid) {
+      const sessionId = activeSessionIdRef.current;
+      const tileIndex = sessionId ? grid.tiles.findIndex((tile) => tile.sessionId === sessionId) : -1;
+      if (tileIndex >= 0) {
+        setMultiView({ ...grid, focusedIndex: tileIndex });
+        setGridView(true);
+        setPaneFocus("chat");
+        return;
+      }
+      const laneId = activeLaneIdRef.current;
+      if (sessionId && laneId && isTileableChatSessionId(sessionId)) {
+        addTileToGrid(sessionId, laneId);
+        return;
+      }
+      // Current view isn't a tileable chat (draft/terminal) — just resume the grid.
+      setGridView(true);
+      setPaneFocus("chat");
+      return;
+    }
+    startAddMode();
+  }, [addTileToGrid, isTileableChatSessionId, setGridView, setPaneFocus, startAddMode]);
+
   useEffect(() => {
-    if (!multiView) return;
+    // Only the *shown* grid drives the active lane/session. A dormant (hidden but
+    // resumable) grid must not hijack the single chat the user is viewing.
+    if (!multiView || !gridViewActive) return;
     const tile = multiView.tiles[multiView.focusedIndex] ?? multiView.tiles[0] ?? null;
     if (!tile) return;
     if (tile.laneId !== activeLaneIdRef.current) {
@@ -4193,7 +4648,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     if (!eventsBySessionIdRef.current[tile.sessionId]) {
       void hydrateTileHistory(tile.sessionId).catch(() => undefined);
     }
-  }, [hydrateTileHistory, multiView, selectActiveLaneId, selectActiveSessionId]);
+  }, [gridViewActive, hydrateTileHistory, multiView, selectActiveLaneId, selectActiveSessionId]);
 
   useEffect(() => {
     if (!connection || !attachedTerminalId) return;
@@ -4345,6 +4800,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 	  }, []);
 
   const openForm = useCallback((content: Extract<RightPaneContent, { kind: "form" }>) => {
+    // Cancel any pending feedback-success auto-close so a stale timer can't fire
+    // against this freshly opened pane.
+    if (feedbackCloseTimerRef.current) {
+      clearTimeout(feedbackCloseTimerRef.current);
+      feedbackCloseTimerRef.current = null;
+    }
     const previousPane = activePaneRef.current;
     stashActiveInput();
     if (previousPane !== "details") {
@@ -4398,8 +4859,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     });
   }, [activeLane, focusDetails, lanes, openForm]);
 
-  const openLaneDeleteForm = useCallback(() => {
-    const laneId = activeLaneIdRef.current;
+  const openLaneDeleteForm = useCallback((laneIdArg?: string) => {
+    const laneId = laneIdArg ?? activeLaneIdRef.current;
     const lane = lanes.find((entry) => entry.id === laneId) ?? activeLane;
     if (!laneId || !lane) {
       setRightPane({ kind: "details", title: "Delete lane", body: "No active lane is selected." });
@@ -4411,52 +4872,125 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       focusDetails();
       return;
     }
+    // Fetch the delete-risk first so the confirmation shows what would be lost
+    // (unpushed commits, dirty tree, running processes) rather than a blind prompt.
+    void (async () => {
+      let description: string | undefined;
+      const conn = connectionRef.current;
+      if (conn) {
+        try {
+          const risk = await conn.action<LaneDeleteRisk>("lane", "getDeleteRisk", { laneId });
+          description = formatLaneDeleteRisk(risk);
+        } catch {
+          // Risk is advisory; fall back to the plain form if it can't be fetched.
+        }
+      }
+      openForm({
+        kind: "form",
+        title: "Delete lane",
+        command: "lane-delete",
+        laneId,
+        description,
+        laneDelete: {
+          laneId,
+          laneName: lane.name,
+          branchRef: lane.branchRef,
+          dirty: lane.status?.dirty === true,
+        },
+        fields: [
+          { name: "scope", label: "Scope", initialValue: "worktree" },
+          { name: "remoteName", label: "Remote name", placeholder: "origin", initialValue: "origin" },
+          { name: "force", label: "Force delete", initialValue: "no" },
+          { name: "confirm", label: "Type lane name", required: true, placeholder: lane.name },
+        ],
+      });
+    })();
+  }, [activeLane, focusDetails, lanes, openForm]);
+
+  const openLaneRenameForm = useCallback((laneIdArg?: string) => {
+    const laneId = laneIdArg ?? activeLaneIdRef.current;
+    const lane = lanes.find((entry) => entry.id === laneId) ?? activeLane;
+    if (!laneId || !lane) {
+      setRightPane({ kind: "details", title: "Rename lane", body: "No lane is selected." });
+      focusDetails();
+      return;
+    }
+    if (lane.laneType === "primary") {
+      setRightPane({ kind: "details", title: "Rename lane", body: "The primary lane can't be renamed." });
+      focusDetails();
+      return;
+    }
     openForm({
       kind: "form",
-      title: "Delete lane",
-      command: "lane-delete",
+      title: "Rename lane",
+      command: "lane-rename",
       laneId,
-      laneDelete: {
-        laneId,
-        laneName: lane.name,
-        branchRef: lane.branchRef,
-        dirty: lane.status?.dirty === true,
-      },
-      fields: [
-        {
-          name: "scope",
-          label: "Scope",
-          initialValue: "worktree",
-        },
-        {
-          name: "remoteName",
-          label: "Remote name",
-          placeholder: "origin",
-          initialValue: "origin",
-        },
-        {
-          name: "force",
-          label: "Force delete",
-          initialValue: "no",
-        },
-        {
-          name: "confirm",
-          label: "Type lane name",
-          required: true,
-          placeholder: lane.name,
-        },
-      ],
+      fields: [{ name: "name", label: "Lane name", required: true, initialValue: lane.name }],
     });
   }, [activeLane, focusDetails, lanes, openForm]);
 
+  const openChatDeleteForm = useCallback((sessionIdArg?: string) => {
+    const targetId = sessionIdArg ?? activeSessionIdRef.current;
+    const session = sessions.find((entry) => entry.sessionId === targetId) ?? activeSession;
+    if (!targetId || !session || session.sessionId !== targetId) {
+      setRightPane({ kind: "details", title: "Delete chat", body: "No runtime-backed chat is selected." });
+      focusDetails();
+      return;
+    }
+    const title = session.title ?? session.goal ?? session.sessionId;
+    openForm({
+      kind: "form",
+      title: "Delete chat",
+      command: "chat-delete",
+      sessionId: targetId,
+      chatDelete: { sessionId: targetId, title },
+      description: "This removes the chat session and its transcript from ADE.",
+      fields: [
+        { name: "confirm", label: "Type chat title", required: true, placeholder: title },
+      ],
+    });
+  }, [activeSession, focusDetails, openForm, sessions]);
+
+  const openChatRenameForm = useCallback((sessionIdArg?: string) => {
+    const targetId = sessionIdArg ?? activeSessionIdRef.current;
+    const session = sessions.find((entry) => entry.sessionId === targetId) ?? activeSession;
+    if (!targetId || !session || session.sessionId !== targetId) {
+      setRightPane({ kind: "details", title: "Rename chat", body: "No runtime-backed chat is selected." });
+      focusDetails();
+      return;
+    }
+    openForm({
+      kind: "form",
+      title: "Rename chat",
+      command: "rename",
+      sessionId: targetId,
+      fields: [
+        { name: "title", label: "Title", required: true, initialValue: session.title ?? "" },
+      ],
+    });
+  }, [activeSession, focusDetails, openForm, sessions]);
+
   const openFeedbackForm = useCallback(() => {
+    // Seed the multiline feedback form's serializable state (feedbackForm.ts)
+    // onto content.feedback: context = active provider/model + lane + last error,
+    // with the context footer toggled ON by default so reports are actionable.
+    const lastError = [...notices].reverse().find((entry) => entry.tone === "error")?.text ?? null;
     openForm({
       kind: "form",
       title: "Feedback",
       command: "feedback",
       fields: feedbackFormFields(buildFeedbackEnvironment(project, activeLane ?? null)),
+      feedback: {
+        provider: modelState.provider ?? null,
+        model: modelState.modelId ?? null,
+        lane: activeLane?.name ?? null,
+        lastError,
+        type: "bug",
+        showContext: true,
+        body: "",
+      },
     });
-  }, [activeLane, openForm, project]);
+  }, [activeLane, modelState.modelId, modelState.provider, notices, openForm, project]);
 
   const openNewChatSetup = useCallback((title?: string | null) => {
     const laneId = activeLaneIdRef.current;
@@ -4487,6 +5021,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       paneBeforeDetailsRef.current = previousPane;
     }
     setDraftChatMode(true);
+    // Creating a new chat leaves the grid (shown as a single draft chat) but
+    // keeps the grid resumable — navigating back to a tile re-enters it.
+    setGridView(false);
     selectActiveSessionId(null);
     setAttachedTerminalId(null);
     // New-chat-setup is part of the context default; let the resolver drive it.
@@ -4501,36 +5038,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     setRightSelectionIndex(defaultSetupSelectionIndex(newChatSetupRows));
     setFormDiscardArmed(false);
     setRightPane({
-      kind: "new-chat-setup",
+      kind: "model-picker",
+      surface: "new-chat",
+      query: "",
+      searchMode: false,
+      showAll: true,
+      selection: { kind: "provider", provider: modelState.provider },
+      providerTabKey: null,
+      focusedIndex: 0,
+      footerFocus: "apply",
+      settingsRows: newChatSetupRows,
       laneId,
       laneLabel: lane.name,
-      rows: newChatSetupRows,
     });
     setRightOpen(true);
     setPaneFocus("details");
     void refreshAiSetupStatus().catch(() => undefined);
     void loadProviderModels(modelState.provider, { applyDefault: false }).catch(() => undefined);
-  }, [activeLane, addNotice, focusDetails, lanes, loadProviderModels, modelState.provider, newChatSetupRows, refreshAiSetupStatus, selectActiveSessionId, setDraftChatMode, setPaneFocus, stashActiveInput]);
-
-  // /model opens the right-pane model picker. Provider stays editable on a fresh
-  // chat; once the thread has user messages the provider row is locked to the
-  // active chat family.
-  const openModelRow = useCallback((options: { forceRefresh?: boolean; focusKind?: SetupPaneRowKind } = {}) => {
-    const rows = providerLockedRef.current ? modelPickerRows : modelSetupRows;
-    userDismissedRightPaneRef.current = false;
-    lastUserOpenedPaneRef.current = "details";
-    setRightSelectionIndex(setupSelectionIndexForKind(rows, options.focusKind));
-    setRightPane({ kind: "model-setup", rows });
-    setRightOpen(true);
-    focusDetails();
-    void refreshAiSetupStatus({ force: options.forceRefresh === true }).catch((err) => {
-      addNotice(err instanceof Error ? err.message : String(err), "error");
-    });
-    void loadProviderModels(
-      (activeSessionRef.current?.provider ?? modelState.provider) as AdeCodeProvider,
-      { applyDefault: false },
-    ).catch(() => undefined);
-  }, [addNotice, focusDetails, loadProviderModels, modelPickerRows, modelSetupRows, modelState.provider, refreshAiSetupStatus]);
+  }, [activeLane, addNotice, focusDetails, lanes, loadProviderModels, modelState.provider, newChatSetupRows, refreshAiSetupStatus, selectActiveSessionId, setDraftChatMode, setGridView, setPaneFocus, stashActiveInput]);
 
   // Hydrate favorites/recents from the ade-cli RPC once the connection is up.
   useEffect(() => {
@@ -4559,7 +5084,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   // via /model or new-chat. Reuses the same data the inline row uses (models)
   // plus favorites/recents sourced from ade-cli for cross-surface sync.
 	  const openModelPicker = useCallback(
-	    (options: { surface?: "chat" | "new-chat" } = {}) => {
+	    (options: { surface?: "chat" | "new-chat"; forceRefresh?: boolean; focusKind?: SetupPaneRowKind } = {}) => {
 	      void refreshModelCatalog();
 	      const surface = options.surface ?? "chat";
       // Build a starter selection from current activeModelId/recents so the
@@ -4569,13 +5094,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 	        models,
 	        catalog: modelCatalogRef.current ?? modelCatalog,
 	        favorites: modelPickerFavorites,
-        recents: modelPickerRecents,
+	        recents: modelPickerRecents,
         activeModelId: modelState.modelId,
+        activeReasoningEffort: modelState.reasoningEffort,
+        aiStatus,
+        showAll: true,
 	        query: "",
 	        selection: { kind: "provider", provider },
 	        providerTabKey: null,
 	        focusedIndex: 0,
-        searchMode: false,
+	        searchMode: false,
+        settingsRows: surface === "new-chat" ? newChatSetupRows : (providerLockedRef.current ? modelPickerRows : modelSetupRows),
+        footerFocus: options.focusKind ?? null,
+        laneLabel: surface === "new-chat"
+          ? (lanes.find((entry) => entry.id === activeLaneIdRef.current)?.name ?? activeLane?.name ?? null)
+          : null,
       });
       const selection = defaultSelectionFor(
         modelState.modelId,
@@ -4586,25 +5119,40 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         kind: "model-picker",
         surface,
         query: "",
+        showAll: true,
 	        searchMode: false,
 	        selection,
 	        providerTabKey: null,
 	        focusedIndex: 0,
+        footerFocus: options.focusKind ?? null,
+        settingsRows: surface === "new-chat" ? newChatSetupRows : (providerLockedRef.current ? modelPickerRows : modelSetupRows),
+        ...(surface === "new-chat"
+          ? {
+              laneId: activeLaneIdRef.current,
+              laneLabel: lanes.find((entry) => entry.id === activeLaneIdRef.current)?.name ?? activeLane?.name ?? null,
+            }
+          : {}),
       });
       setRightOpen(true);
       setPaneFocus("details");
       lastUserOpenedPaneRef.current = "model-picker";
-	      void refreshAiSetupStatus().catch(() => undefined);
+	      void refreshAiSetupStatus({ force: options.forceRefresh === true }).catch(() => undefined);
 	      void loadProviderModels(provider, { applyDefault: false }).catch(() => undefined);
 	    },
     [
+      activeLane?.name,
+      aiStatus,
+      lanes,
       loadProviderModels,
+      modelPickerRows,
       modelPickerFavorites,
       modelPickerRecents,
+      modelSetupRows,
       modelState.modelId,
-	      modelState.provider,
-	      models,
-	      modelCatalog,
+		      modelState.provider,
+		      models,
+      newChatSetupRows,
+		      modelCatalog,
 	      refreshAiSetupStatus,
 	      refreshModelCatalog,
 	      setPaneFocus,
@@ -4881,13 +5429,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     if (launchToNewChatPreview) {
       initialNewChatPreviewRef.current = false;
       newChatPreviewLaneIdRef.current = nextLaneId;
-      setDraftChatMode(false);
+      // Start as a true draft new chat so the center always shows the splash and
+      // NO existing chat is resolved/hydrated. Draft mode cascades through the
+      // drawer-selection + preview effects (they keep "new-chat", skip the
+      // history preview), so opening the drawer below can't activate a chat.
+      setDraftChatMode(true);
       setDrawerSection("chats");
       setDrawerLaneId(nextLaneId);
       setSelectedDrawerLaneId(nextLaneId);
       setSelectedDrawerLaneAction(null);
       setSelectedDrawerChatId(null);
       setSelectedDrawerChatAction(nextLaneId ? "new-chat" : null);
+      // Open BOTH side panes so `ade code` launches with the full layout.
+      setDrawerOpen(true);
       setRightOpen(true);
     }
     if (nextTerminalSession && nextSessionId) {
@@ -4937,12 +5491,150 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           opencodePermissionMode: configSession.opencodePermissionMode ?? prev.opencodePermissionMode,
           droidPermissionMode: configSession.droidPermissionMode ?? prev.droidPermissionMode,
           cursorModeId: configSession.cursorModeId ?? configSession.cursorModeSnapshot?.currentModeId ?? prev.cursorModeId,
+          cursorAvailableModeIds: configSession.cursorModeSnapshot?.availableModeIds ?? prev.cursorAvailableModeIds,
           cursorConfigValues: configSession.cursorConfigValues ?? prev.cursorConfigValues,
         }));
       }
       if (draftMode) draftSeededFromHistoryRef.current = true;
     }
   }, [clearedAt, drawerLaneId, loadProviderModels, modelState.provider, project, selectActiveLaneId, selectActiveSessionId, selectedDrawerChatAction, setDraftChatMode, setSessionInterrupted, setSessionStreaming, setStreaming]);
+
+  const renameLane = useCallback(async (laneIdArg: string | null, name: string) => {
+    const conn = connectionRef.current;
+    const targetId = laneIdArg ?? activeLaneIdRef.current;
+    if (!conn || !targetId) {
+      addNotice("No lane is selected.", "error");
+      return;
+    }
+    const trimmed = name.trim();
+    if (!trimmed) {
+      addNotice("Lane name can't be empty.", "error");
+      return;
+    }
+    try {
+      await conn.action("lane", "rename", { laneId: targetId, name: trimmed });
+      addNotice(`Renamed lane to "${trimmed}".`, "success");
+      await refreshState();
+    } catch (err) {
+      addNotice(err instanceof Error ? err.message : String(err), "error");
+    }
+  }, [addNotice, refreshState]);
+
+  const archiveLane = useCallback(async (laneIdArg?: string) => {
+    const conn = connectionRef.current;
+    const targetId = laneIdArg ?? activeLaneIdRef.current;
+    const lane = lanes.find((entry) => entry.id === targetId) ?? null;
+    if (!conn || !targetId || !lane) {
+      addNotice("No lane is selected.", "error");
+      return;
+    }
+    if (lane.laneType === "primary") {
+      addNotice("The primary lane can't be archived.", "error");
+      return;
+    }
+    try {
+      await conn.action("lane", "archive", { laneId: targetId });
+      addNotice(`Archived lane ${lane.name}.`, "success");
+      // If we archived the lane we were on, fall back to another live lane.
+      if (activeLaneIdRef.current === targetId) {
+        const fallback = lanes.find((entry) => entry.id !== targetId && !entry.archivedAt) ?? null;
+        selectActiveLaneId(fallback?.id ?? null);
+      }
+      await refreshState();
+    } catch (err) {
+      addNotice(err instanceof Error ? err.message : String(err), "error");
+    }
+  }, [addNotice, lanes, refreshState, selectActiveLaneId]);
+
+  const unarchiveLane = useCallback(async (query: string) => {
+    const conn = connectionRef.current;
+    if (!conn) return;
+    const term = query.trim();
+    if (!term) {
+      addNotice("Usage: /lane unarchive <lane-id|name>", "error");
+      return;
+    }
+    try {
+      const archived = (await listLanes(conn, { includeArchived: true })).filter((entry) => entry.archivedAt);
+      const lower = term.toLowerCase();
+      const match = archived.find((entry) => entry.id === term)
+        ?? archived.find((entry) => entry.name.toLowerCase() === lower)
+        ?? archived.find((entry) => entry.name.toLowerCase().includes(lower));
+      if (!match) {
+        addNotice(`No archived lane matched "${term}".`, "error");
+        return;
+      }
+      await conn.action("lane", "unarchive", { laneId: match.id });
+      addNotice(`Unarchived lane ${match.name}.`, "success");
+      await refreshState();
+      selectActiveLaneId(match.id);
+    } catch (err) {
+      addNotice(err instanceof Error ? err.message : String(err), "error");
+    }
+  }, [addNotice, refreshState, selectActiveLaneId]);
+
+  const selectFallbackChatAfterRemoval = useCallback((removedSession: AgentChatSessionSummary) => {
+    const fallback = displaySessions.find((entry) => (
+      entry.laneId === removedSession.laneId
+      && entry.sessionId !== removedSession.sessionId
+      && !entry.archivedAt
+    )) ?? null;
+    setSelectedDrawerChatId(fallback?.sessionId ?? null);
+    setSelectedDrawerChatAction(fallback ? null : "new-chat");
+    applyDrawerChatSelection({ session: fallback, action: fallback ? null : "new-chat" });
+  }, [applyDrawerChatSelection, displaySessions]);
+
+  const archiveChat = useCallback(async (sessionIdArg?: string) => {
+    const conn = connectionRef.current;
+    const targetId = sessionIdArg ?? activeSessionIdRef.current;
+    const session = sessions.find((entry) => entry.sessionId === targetId) ?? null;
+    if (!conn || !targetId || !session) {
+      addNotice("No runtime-backed chat is selected.", "error");
+      return;
+    }
+    try {
+      await archiveChatSession(conn, targetId);
+      if (activeSessionIdRef.current === targetId) {
+        selectFallbackChatAfterRemoval(session);
+      }
+      addNotice(`Archived chat ${session.title ?? session.sessionId}.`, "success");
+      await refreshState();
+    } catch (err) {
+      addNotice(err instanceof Error ? err.message : String(err), "error");
+    }
+  }, [addNotice, refreshState, selectFallbackChatAfterRemoval, sessions]);
+
+  const unarchiveChat = useCallback(async (query: string) => {
+    const conn = connectionRef.current;
+    if (!conn) return;
+    const term = query.trim();
+    if (!term) {
+      addNotice("Usage: /chat unarchive <chat-id|title>", "error");
+      return;
+    }
+    try {
+      const archived = (await listChatSessions(conn, null, { includeArchived: true })).filter((entry) => entry.archivedAt);
+      const lower = term.toLowerCase();
+      const match = archived.find((entry) => entry.sessionId === term)
+        ?? archived.find((entry) => (entry.title ?? "").toLowerCase() === lower)
+        ?? archived.find((entry) => (entry.title ?? "").toLowerCase().includes(lower) || entry.sessionId.toLowerCase().includes(lower));
+      if (!match) {
+        addNotice(`No archived chat matched "${term}".`, "error");
+        return;
+      }
+      await unarchiveChatSession(conn, match.sessionId);
+      addNotice(`Unarchived chat ${match.title ?? match.sessionId}.`, "success");
+      await refreshState();
+      selectActiveLaneId(match.laneId);
+      setDrawerLaneId(match.laneId);
+      setSelectedDrawerLaneId(match.laneId);
+      setSelectedDrawerChatId(match.sessionId);
+      setSelectedDrawerChatAction(null);
+      applyDrawerChatSelection({ session: match, action: null });
+    } catch (err) {
+      addNotice(err instanceof Error ? err.message : String(err), "error");
+    }
+  }, [addNotice, applyDrawerChatSelection, refreshState, selectActiveLaneId]);
 
   const commitModelStateToSession = useCallback(async (nextState: AdeCodeModelState) => {
     const conn = connectionRef.current;
@@ -5084,6 +5776,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         clearTimeout(pendingModelCommitTimerRef.current);
         pendingModelCommitTimerRef.current = null;
       }
+      if (feedbackCloseTimerRef.current) {
+        clearTimeout(feedbackCloseTimerRef.current);
+        feedbackCloseTimerRef.current = null;
+      }
       pendingModelCommitStateRef.current = null;
       const conn = connectionRef.current;
       connectionRef.current = null;
@@ -5091,9 +5787,89 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     };
   }, [forceEmbedded, project, requireSocket, signalActiveTerminalForExit, signalActiveTerminalForExitSync, socketPath]);
 
+  // Stable handle to the latest refreshState so the chat-event subscription can
+  // call it without listing refreshState as a dependency (its identity churns on
+  // drawer/lane/model changes, which would needlessly re-bind the subscription).
+  const refreshStateRef = useRef(refreshState);
+  useEffect(() => {
+    refreshStateRef.current = refreshState;
+  }, [refreshState]);
+
+  const flushPendingChatEvents = useCallback(() => {
+    if (chatFlushTimerRef.current) {
+      clearTimeout(chatFlushTimerRef.current);
+      chatFlushTimerRef.current = null;
+    }
+    const buffered = pendingChatEnvelopesRef.current;
+    if (buffered.length === 0) return;
+    pendingChatEnvelopesRef.current = [];
+    // Re-apply the clearedAt guard at flush time: if the transcript was cleared
+    // after these envelopes were buffered (e.g. /clear armed the timer), drop the
+    // stale ones so they don't re-materialize in the cleared transcript.
+    const clearedAtValue = clearedAtRef.current;
+    const pending = clearedAtValue
+      ? buffered.filter((envelope) => envelope.timestamp > clearedAtValue)
+      : buffered;
+    if (pending.length === 0) return;
+
+    // (1) Per-session transcript map — append all buffered envelopes for each
+    // affected session in a single deduped update. Previously this ran one O(n)
+    // dedupe per token; now it runs once per flush per session.
+    setEventsBySessionId((prev) => {
+      const grouped = new Map<string, AgentChatEventEnvelope[]>();
+      for (const envelope of pending) {
+        const arr = grouped.get(envelope.sessionId);
+        if (arr) arr.push(envelope);
+        else grouped.set(envelope.sessionId, [envelope]);
+      }
+      const next = { ...prev };
+      for (const [sessionId, envelopes] of grouped) {
+        next[sessionId] = dedupeTuiEvents([...(prev[sessionId] ?? []), ...envelopes]);
+      }
+      return next;
+    });
+
+    // (2) Active-session transcript — incremental reserve/append, batched into a
+    // single setState so a burst of tokens triggers one React render, not N.
+    const activeId = activeSessionIdRef.current;
+    if (activeId) {
+      const reserved: Array<{ envelope: AgentChatEventEnvelope; key: string }> = [];
+      for (const envelope of pending) {
+        if (envelope.sessionId !== activeId) continue;
+        const key = reserveTuiEventDedupKey(envelope, eventDedupKeysRef.current);
+        if (key !== null) reserved.push({ envelope, key });
+      }
+      if (reserved.length > 0) {
+        setEvents((prev) => {
+          let events = prev;
+          let order = eventDedupKeyOrderRef.current;
+          for (const { envelope, key } of reserved) {
+            const appended = appendReservedTuiEvent(events, envelope, eventDedupKeysRef.current, order, key);
+            events = appended.events;
+            order = appended.eventKeys;
+          }
+          eventDedupKeyOrderRef.current = order;
+          eventCountRef.current = events.length;
+          return events;
+        });
+      }
+    }
+    // Note: stable deps ([]) — uses only refs + stable setters. This keeps the
+    // onChatEvent subscription from re-binding (and discarding the buffer) every
+    // time refreshState's identity churns.
+  }, []);
+
+  const scheduleChatFlush = useCallback(() => {
+    if (chatFlushTimerRef.current) return;
+    chatFlushTimerRef.current = setTimeout(() => {
+      chatFlushTimerRef.current = null;
+      flushPendingChatEvents();
+    }, CHAT_EVENT_FLUSH_MS);
+  }, [flushPendingChatEvents]);
+
   useEffect(() => {
     if (!connection) return;
-    return connection.onChatEvent((envelope) => {
+    const unsubscribe = connection.onChatEvent((envelope) => {
       const currentMultiView = multiViewRef.current;
       const openSessionIds = new Set(
         currentMultiView
@@ -5101,33 +5877,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           : [activeSessionIdRef.current].filter((value): value is string => Boolean(value)),
       );
       if (!openSessionIds.has(envelope.sessionId)) {
-        void refreshState({ hydrateHistory: false }).catch(() => undefined);
+        // Event for a session we're not displaying — refresh summaries (cheap,
+        // dedup-guarded). Only the open-session token stream below is coalesced.
+        void refreshStateRef.current({ hydrateHistory: false }).catch(() => undefined);
         return;
       }
-      if (clearedAt && envelope.timestamp <= clearedAt) return;
+      const clearedAtNow = clearedAtRef.current;
+      if (clearedAtNow && envelope.timestamp <= clearedAtNow) return;
       const event = envelope.event as Record<string, unknown>;
       const isActiveSessionEvent = envelope.sessionId === activeSessionIdRef.current;
-      setEventsBySessionId((prev) => ({
-        ...prev,
-        [envelope.sessionId]: appendDedupedTuiEvent(prev[envelope.sessionId] ?? [], envelope),
-      }));
-      if (isActiveSessionEvent) {
-        const reservedKey = reserveTuiEventDedupKey(envelope, eventDedupKeysRef.current);
-        if (reservedKey !== null) {
-          setEvents((prev) => {
-            const next = appendReservedTuiEvent(
-              prev,
-              envelope,
-              eventDedupKeysRef.current,
-              eventDedupKeyOrderRef.current,
-              reservedKey,
-            );
-            eventDedupKeyOrderRef.current = next.eventKeys;
-            eventCountRef.current = next.events.length;
-            return next.events;
-          });
-        }
-      }
+
+      // Buffer the envelope; the transcript state is applied on the next flush.
+      // High-frequency token deltas coalesce on the timer; lifecycle edges flush
+      // immediately so the transcript is consistent with the side-effects below.
+      pendingChatEnvelopesRef.current.push(envelope);
+      const eventType = typeof event.type === "string" ? event.type : "";
+      if (isChatFlushEdge(eventType)) flushPendingChatEvents();
+      else scheduleChatFlush();
+
+      // Lifecycle side-effects stay immediate (low-frequency): they drive the
+      // streaming spinner, interrupt flags, and the right pane.
       if (event.type === "status" && event.turnStatus === "started") {
         setSessionStreaming(envelope.sessionId, true);
         setSessionInterrupted(envelope.sessionId, false);
@@ -5171,22 +5940,85 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         });
       }
     });
-  }, [clearedAt, connection, refreshState, setSessionInterrupted, setSessionStreaming]);
+    return () => {
+      unsubscribe();
+      // Flush whatever is buffered so a reconnect doesn't strand token deltas.
+      // flushPendingChatEvents() already clears chatFlushTimerRef and resets
+      // pendingChatEnvelopesRef after draining, mirroring the PTY cleanup.
+      flushPendingChatEvents();
+    };
+    // Re-bind only when the connection itself changes (reconnect). clearedAt and
+    // refreshState are read via refs so their churn doesn't drop the buffer.
+  }, [connection, flushPendingChatEvents, scheduleChatFlush, setSessionInterrupted, setSessionStreaming]);
 
   useEffect(() => {
     if (!connection) return;
     let disposed = false;
     let unsubscribe: (() => void) | null = null;
+
+    // Cap on retained chunks. We append monotonically (so TerminalPane's
+    // chunkIndexRef keeps advancing — the desync fix) and only trim well past
+    // 500 so trims are rare; on a trim TerminalPane resets + replays the tail.
+    const MAX_RETAINED_CHUNKS = 4_000;
+    const TRIM_TO_CHUNKS = 2_000;
+
+    const flushPendingPty = () => {
+      ptyFlushTimerRef.current = null;
+      const pending = pendingPtyChunksRef.current;
+      if (pending.size === 0) return;
+      const drained = new Map(pending);
+      pending.clear();
+      // Bump "↓ N new" for sessions the user has scrolled away from.
+      const scrollMap = terminalScrollBySessionIdRef.current;
+      let scrollPatch: TerminalScrollBySessionId | null = null;
+      for (const [sid, chunks] of drained) {
+        const current = readTerminalScroll(scrollMap, sid);
+        if (current.scrollOffset > 0) {
+          const arrivedRows = chunks.reduce(
+            (sum, chunk) => sum + Math.max(0, (chunk.match(/\n/g)?.length ?? 0)),
+            0,
+          );
+          // Anchor scrolled-up content to its absolute buffer line: advance
+          // scrollOffset by arrivedRows (clamped) so the viewed window does not
+          // drift down as viewportY grows. The next onViewportMetrics report
+          // re-clamps on commit.
+          const maxScrollable =
+            terminalViewportMetricsRef.current?.maxScrollable ??
+            Number.POSITIVE_INFINITY;
+          const next = noteTerminalNewRows(current, arrivedRows, maxScrollable);
+          if (next !== current) {
+            scrollPatch = { ...(scrollPatch ?? scrollMap), [sid]: next };
+          }
+        }
+      }
+      if (scrollPatch) setTerminalScrollBySessionId(scrollPatch);
+      setTerminalLiveChunks((prev) => {
+        const next: Record<string, string[]> = { ...prev };
+        for (const [sid, chunks] of drained) {
+          if (chunks.length === 0) continue;
+          let merged = [...(next[sid] ?? []), ...chunks];
+          if (merged.length > MAX_RETAINED_CHUNKS) merged = merged.slice(-TRIM_TO_CHUNKS);
+          next[sid] = merged;
+        }
+        return next;
+      });
+    };
+
+    const scheduleFlush = () => {
+      if (ptyFlushTimerRef.current) return; // timer only while chunks pending → idle cost zero
+      ptyFlushTimerRef.current = setTimeout(flushPendingPty, 16);
+    };
+
     void connection.subscribeRuntimeEvents({ category: "pty", cursor: 0, limit: 50, replay: false }, (event) => {
       const payload = event.payload as { type?: unknown; event?: unknown };
       const terminalEvent = payload.event as { sessionId?: unknown; data?: unknown } | undefined;
       const sessionId = typeof terminalEvent?.sessionId === "string" ? terminalEvent.sessionId : null;
       if (!sessionId) return;
       if (payload.type === "pty_data" && typeof terminalEvent?.data === "string") {
-        setTerminalLiveChunks((prev) => {
-          const nextChunks = [...(prev[sessionId] ?? []), terminalEvent.data as string].slice(-500);
-          return { ...prev, [sessionId]: nextChunks };
-        });
+        const buf = pendingPtyChunksRef.current.get(sessionId);
+        if (buf) buf.push(terminalEvent.data);
+        else pendingPtyChunksRef.current.set(sessionId, [terminalEvent.data]);
+        scheduleFlush();
         return;
       }
       if (payload.type === "pty_exit") {
@@ -5202,6 +6034,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     return () => {
       disposed = true;
       unsubscribe?.();
+      if (ptyFlushTimerRef.current) {
+        clearTimeout(ptyFlushTimerRef.current);
+        ptyFlushTimerRef.current = null;
+      }
+      // Flush whatever is buffered so a reconnect doesn't strand chunks.
+      flushPendingPty();
     };
   }, [connection, refreshState]);
 
@@ -5296,10 +6134,29 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     };
   }, [connection]);
 
+  // Detect an attached socket dropping mid-session. Without this the UI freezes
+  // on a stale snapshot (and a spinner that never resolves) with no retry.
   useEffect(() => {
-    if (!connection || mode === "attached" || forceEmbedded) return;
+    if (!connection?.onConnectionClose) return;
+    return connection.onConnectionClose(() => {
+      if (connectionLostRef.current) return;
+      connectionLostRef.current = true;
+      setConnectionLost(true);
+      // Clear streaming across all sessions so the spinner doesn't hang and the
+      // reconnect probe below isn't gated on a turn that can never complete.
+      setStreamingBySessionId({});
+      addNotice("Connection to the ADE runtime dropped — reconnecting…", "error");
+    });
+  }, [addNotice, connection]);
+
+  useEffect(() => {
+    if (!connection || forceEmbedded) return;
+    // Reconnect when running embedded (try to upgrade to the shared daemon) OR
+    // when an attached socket dropped (connectionLost). A healthy attached
+    // connection needs no probe.
+    if (mode === "attached" && !connectionLost) return;
     const timer = setInterval(() => {
-      if (streaming || attachProbeInFlightRef.current) return;
+      if ((streaming && !connectionLostRef.current) || attachProbeInFlightRef.current) return;
       attachProbeInFlightRef.current = true;
       void (async () => {
         let attached: AdeCodeConnection | null = null;
@@ -5318,6 +6175,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           connectionRef.current = attached;
           setConnection(attached);
           setMode(attached.mode);
+          if (connectionLostRef.current) {
+            connectionLostRef.current = false;
+            setConnectionLost(false);
+            addNotice("Reconnected to the ADE runtime.", "success");
+          }
           await previous?.close().catch(() => {});
           await refreshState();
         } catch {
@@ -5328,7 +6190,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       })();
     }, 3_000);
     return () => clearInterval(timer);
-  }, [connection, forceEmbedded, mode, project, refreshState, socketPath, streaming]);
+  }, [addNotice, connection, connectionLost, forceEmbedded, mode, project, refreshState, socketPath, streaming]);
 
   const ensureActiveSession = useCallback(async (): Promise<string | null> => {
     const conn = connectionRef.current;
@@ -5695,6 +6557,33 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
   }, [addNotice, recordPromptHistoryForSession, refreshState, sessions, setSessionStreaming]);
 
+  // Build the help RightPaneContent for the given filter/selection/recents and
+  // push it into the right pane. Centralised so /help open + every keystroke in
+  // the pane recompute the grouped+ranked rows the same way.
+  const renderHelpPane = useCallback(
+    (query: string, selectedIndex: number, recents: string[]) => {
+      const groupedRows = buildHelpRows(helpIndexGroups, query, recents);
+      const total = flattenHelpRows(groupedRows).length;
+      const clamped = total === 0 ? 0 : Math.max(0, Math.min(selectedIndex, total - 1));
+      setRightPane({
+        kind: "help",
+        title: "Help",
+        filterQuery: query,
+        selectedIndex: clamped,
+        groupedRows,
+      });
+    },
+    [helpIndexGroups],
+  );
+
+  const openHelpPane = useCallback(() => {
+    setHelpFilterQuery("");
+    setHelpSelectedIndex(0);
+    renderHelpPane("", 0, helpRecentsRef.current);
+    setRightOpen(true);
+    setPaneFocus("details");
+  }, [renderHelpPane, setPaneFocus]);
+
   const runRightCommand = useCallback(async (name: string, args: string) => {
     const conn = connectionRef.current;
     const laneId = activeLaneIdRef.current;
@@ -5708,7 +6597,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 
     if (!conn) {
       if (name === "/help") {
-        setRightPane({ kind: "help", title: "Help" });
+        renderHelpPane("", 0, helpRecentsRef.current);
         return;
       }
       if (name === "/status") {
@@ -5733,7 +6622,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
       if (name === "/effort") {
-        openModelRow({ focusKind: "reasoning" });
+        openModelPicker({ focusKind: "reasoning" });
         return;
       }
       if (name === "/info") {
@@ -5765,7 +6654,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
 
     if (name === "/help") {
-      setRightPane({ kind: "help", title: "Help" });
+      renderHelpPane("", 0, helpRecentsRef.current);
       return;
     }
     if (name === "/keybindings") {
@@ -5825,25 +6714,63 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
     if (name === "/context") {
       if (!sessionId) {
-        setRightPane({ kind: "details", title: "Context", body: "No active chat is selected." });
+        setRightPane({ kind: "context-usage", title: "Context", usage: null, error: "No active chat is selected." });
         return;
       }
-      if (activeSession?.provider !== "claude") {
-        setRightPane({ kind: "details", title: "Context", body: "/context is only available for Claude chats." });
+      // The runtime only computes context usage for Claude sessions today; give a
+      // clean message for other providers rather than surfacing a raw exception.
+      if (activeCommandProvider !== "claude") {
+        setRightPane({ kind: "context-usage", title: "Context", usage: null, error: "Context usage is currently only available for Claude sessions." });
         return;
       }
-      setRightPane({ kind: "details", title: "Context", body: "Loading Claude context usage..." });
+      setRightPane({ kind: "context-usage", title: "Context", usage: null });
       try {
         const usage = await getContextUsage(conn, sessionId);
-        setRightPane({ kind: "details", title: "Context", body: formatContextUsage(usage) });
+        setRightPane({ kind: "context-usage", title: "Context", usage });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         setRightPane({
-          kind: "details",
+          kind: "context-usage",
           title: "Context",
-          body: `Claude context usage is not available for this session.\n\n${message}`,
+          usage: null,
+          error: `Context usage is not available for this ${activeSession?.provider ?? "chat"} session.\n\n${message}`,
         });
       }
+      return;
+    }
+    if (name === "/usage") {
+      if (!sessionId) {
+        addNotice("Usage needs an active chat.", "error");
+        return;
+      }
+      if (activeCommandProvider !== "claude") {
+        addNotice("Usage is available for Claude chats.", "error");
+        return;
+      }
+      // Session tokens/cost come straight off the local event stream — always
+      // available even when the daemon snapshot carries no quota window. Mirror
+      // the token-summary effect's fallback-context resolution.
+      const usageFallbackContext = activeSession?.modelId
+        ? getModelById(activeSession.modelId)?.contextWindow ?? null
+        : null;
+      const stats = latestTokenStats(events, usageFallbackContext);
+      const sessionBlock = {
+        input: stats.inputTokens,
+        output: stats.outputTokens,
+        cost: stats.costUsd,
+      };
+      // Quota windows are reuse-only: the daemon exposes at most a single
+      // rate-limit window (parsed into stats.rateLimit). Render it when present,
+      // otherwise degrade to the session block.
+      const quotaWindows = stats.rateLimit?.usedPercentage != null
+        ? [{
+            id: "rate-limit",
+            label: "Rate limit",
+            percent: stats.rateLimit.usedPercentage,
+            resetAt: stats.rateLimit.resetsAt,
+          }]
+        : undefined;
+      setRightPane({ kind: "usage", title: "Usage", quotaWindows, session: sessionBlock });
       return;
     }
     if (name === "/agents") {
@@ -5952,25 +6879,50 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       setSelectedDrawerLaneAction(null);
       return;
     }
-    if (name === "/rename") {
+    if (name === "/rename" || name === "/chat rename") {
       if (!sessionId) {
         setRightPane({ kind: "details", title: "Rename chat", body: "No active chat is selected." });
         return;
       }
       if (!args) {
-        openForm({
-          kind: "form",
-          title: "Rename chat",
-          command: "rename",
-          fields: [
-            { name: "title", label: "Title", required: true, initialValue: activeSession?.title ?? "" },
-          ],
-        });
+        openChatRenameForm(sessionId);
         return;
       }
       await renameChat(conn, sessionId, args);
       addNotice(`Renamed chat to "${args}".`, "success");
       await refreshState();
+      return;
+    }
+    if (name === "/chat archive") {
+      await archiveChat();
+      return;
+    }
+    if (name === "/chat unarchive") {
+      await unarchiveChat(args);
+      return;
+    }
+    if (name === "/chat archived") {
+      const archived = (await listChatSessions(conn, null, { includeArchived: true }))
+        .filter((session) => session.archivedAt);
+      const query = args.trim().toLowerCase();
+      const rows = archived
+        .filter((session) => !query
+          || session.sessionId.toLowerCase().includes(query)
+          || (session.title ?? "").toLowerCase().includes(query)
+          || (lanes.find((lane) => lane.id === session.laneId)?.name ?? session.laneId).toLowerCase().includes(query))
+        .map((session) => {
+          const laneName = lanes.find((lane) => lane.id === session.laneId)?.name ?? session.laneId;
+          return `${session.title ?? session.sessionId} · ${laneName} · archived ${session.archivedAt ?? ""}`;
+        });
+      setRightPane({
+        kind: "details",
+        title: "Archived chats",
+        body: rows.length ? rows.join("\n") : "No archived chats matched.",
+      });
+      return;
+    }
+    if (name === "/chat delete") {
+      openChatDeleteForm();
       return;
     }
     if (name === "/tag") {
@@ -6056,12 +7008,62 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         newParentLaneId: parent.id,
         ...(stackBaseBranchRef ? { stackBaseBranchRef } : {}),
       });
+      // Reparent rebases the lane onto its new parent, which can stop on
+      // conflicts. Surface them instead of reporting an unconditional success.
+      const reparentConflict = await conn
+        .action<GitConflictState>("git", "getConflictState", { laneId })
+        .catch(() => null);
+      if (reparentConflict?.inProgress && reparentConflict.kind) {
+        const report = formatGitConflictReport(reparentConflict);
+        setRightPane({ kind: "details", title: report.title, body: report.body });
+        setRightOpen(true);
+        addNotice(report.summary, "error");
+        await refreshState();
+        return;
+      }
       showReparentDetails(renderObject(result, 20));
       addNotice(
         `Reparented ${lane.name} under ${parent.name}${stackBaseBranchRef ? ` using ${stackBaseBranchRef}` : ""}.`,
         "success",
       );
       await refreshState();
+      return;
+    }
+    if (name === "/lane rename") {
+      if (args.trim()) {
+        await renameLane(laneId, args);
+        return;
+      }
+      openLaneRenameForm();
+      return;
+    }
+    if (name === "/lane archive") {
+      await archiveLane();
+      return;
+    }
+    if (name === "/lane unarchive") {
+      await unarchiveLane(args);
+      return;
+    }
+    if (name === "/lane archived") {
+      if (!conn) return;
+      try {
+        const archived = (await listLanes(conn, { includeArchived: true })).filter((entry) => entry.archivedAt);
+        if (!archived.length) {
+          setRightPane({ kind: "details", title: "Archived lanes", body: "No archived lanes." });
+        } else {
+          setRightPane({
+            kind: "list",
+            title: `Archived lanes (${archived.length}) · /lane unarchive <name>`,
+            rows: archived.map((entry) => `${entry.name}${entry.branchRef ? `  ·  ${entry.branchRef}` : ""}`),
+            emptyText: "No archived lanes.",
+          });
+        }
+        setRightOpen(true);
+        focusDetails();
+      } catch (err) {
+        addNotice(err instanceof Error ? err.message : String(err), "error");
+      }
       return;
     }
     if (name === "/lane delete") {
@@ -6136,6 +7138,68 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         setRightPane({ kind: "details", title: "PR comments", body: formatPrComments(comments) });
         return;
       }
+      const prRef = typeof activePr?.number === "number" ? `PR #${activePr.number}` : "the PR";
+      if (name === "/pr land") {
+        const parts = args.trim().split(/\s+/).filter(Boolean);
+        const confirmed = parts[0]?.toLowerCase() === "confirm";
+        const methodArg = (confirmed ? parts[1] : parts[0])?.toLowerCase();
+        const method = (["merge", "squash", "rebase"].includes(methodArg ?? "") ? methodArg : "squash") as "merge" | "squash" | "rebase";
+        if (!confirmed) {
+          // Merging is irreversible and runs post-merge cleanup, so require an
+          // explicit confirm step rather than landing on the first keystroke.
+          setRightPane({
+            kind: "details",
+            title: "Land PR",
+            body: [
+              `About to merge ${prRef} using the "${method}" method.`,
+              "",
+              "This merges on GitHub and runs post-merge cleanup (branch delete, child rebase). It cannot be undone.",
+              "",
+              `Run  /pr land confirm ${method}  to proceed.`,
+              "Choose a method:  /pr land confirm merge | squash | rebase",
+            ].join("\n"),
+          });
+          return;
+        }
+        try {
+          const landed = await conn.action("pr", "land", { prId, method });
+          addNotice(`Merged ${prRef} (${method}).`, "success");
+          setRightPane({ kind: "details", title: "PR landed", body: renderObject(landed, 24) });
+          await refreshState();
+        } catch (err) {
+          addNotice(err instanceof Error ? err.message : String(err), "error");
+        }
+        return;
+      }
+      if (name === "/pr comment") {
+        if (!args.trim()) {
+          setRightPane({ kind: "details", title: "PR comment", body: "Usage: /pr comment <text>" });
+          return;
+        }
+        try {
+          await conn.action("pr", "addComment", { prId, body: args.trim() });
+          addNotice(`Commented on ${prRef}.`, "success");
+        } catch (err) {
+          addNotice(err instanceof Error ? err.message : String(err), "error");
+        }
+        return;
+      }
+      if (name === "/pr approve" || name === "/pr request-changes") {
+        const event = name === "/pr approve" ? "APPROVE" : "REQUEST_CHANGES";
+        const body = args.trim();
+        if (event === "REQUEST_CHANGES" && !body) {
+          setRightPane({ kind: "details", title: "PR review", body: "Usage: /pr request-changes <text>" });
+          return;
+        }
+        try {
+          await conn.action("pr", "submitReview", { prId, event, ...(body ? { body } : {}) });
+          addNotice(event === "APPROVE" ? `Approved ${prRef}.` : `Requested changes on ${prRef}.`, "success");
+          await refreshState();
+        } catch (err) {
+          addNotice(err instanceof Error ? err.message : String(err), "error");
+        }
+        return;
+      }
       const review = await Promise.all([
         conn.actionList("pr", "getReviews", [prId]).catch((err) => ({ error: err instanceof Error ? err.message : String(err) })),
         conn.actionList("pr", "getReviewThreads", [prId]).catch((err) => ({ error: err instanceof Error ? err.message : String(err) })),
@@ -6164,7 +7228,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         setRightPane({ kind: "details", title: "Linear pull", body: `Linear issue ${args} was not found.` });
         return;
       }
-      const targetSessionId = focusedSessionIdForMultiView(multiViewRef.current) ?? await ensureActiveSession();
+      const targetSessionId = (gridViewActiveRef.current ? focusedSessionIdForMultiView(multiViewRef.current) : null) ?? await ensureActiveSession();
       const issueContext = `Linear issue context:\n${renderObject(issue, 28)}`;
       if (targetSessionId) {
         await sendOrSteerChatMessage(targetSessionId, issueContext);
@@ -6257,20 +7321,27 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
     if (name === "/chats") {
-      const laneSessions = displaySessions.filter((session) => session.laneId === laneId);
+      const query = args.trim().toLowerCase();
+      const laneSessions = displaySessions
+        .filter((session) => session.laneId === laneId)
+        .filter((session) => !query
+          || session.sessionId.toLowerCase().includes(query)
+          || (session.title ?? "").toLowerCase().includes(query)
+          || (session.goal ?? "").toLowerCase().includes(query)
+          || session.provider.toLowerCase().includes(query));
       const selectedIndex = Math.max(0, laneSessions.findIndex((session) => session.sessionId === sessionId));
       setRightSelectionIndex(selectedIndex);
       setRightPane({
         kind: "list",
-        title: "Chats",
-        rows: laneSessions.map((session) => `${session.sessionId === sessionId ? "●" : "○"} ${session.title ?? session.sessionId}`),
-        emptyText: "No chats in this lane.",
+        title: query ? `Chats · ${args.trim()}` : "Chats",
+        rows: laneSessions.map((session) => `${session.sessionId === sessionId ? "●" : "○"} ${session.title ?? session.sessionId} · ${session.provider}`),
+        emptyText: query ? "No chats matched this filter." : "No chats in this lane.",
         action: { kind: "switch-chat", ids: laneSessions.map((session) => session.sessionId) },
       });
       return;
     }
     if (name === "/switch") {
-      const query = args.toLowerCase();
+      const query = args.trim().toLowerCase();
       if (!query) {
         const selectedIndex = Math.max(0, lanes.findIndex((lane) => lane.id === laneId));
         setRightSelectionIndex(selectedIndex);
@@ -6283,17 +7354,28 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         });
         return;
       }
-      const lane = lanes.find((entry) => entry.id.toLowerCase() === query || entry.name.toLowerCase().includes(query));
-      if (lane) {
-        selectActiveLaneId(lane.id);
-        setDrawerLaneId(lane.id);
-        setSelectedDrawerLaneId(lane.id);
-        const session = newestSession(displaySessions.filter((entry) => entry.laneId === lane.id));
-        selectActiveSessionId(session?.sessionId ?? null);
-        setSelectedDrawerChatId(session?.sessionId ?? null);
-        addNotice(`Switched to lane ${lane.name}.`, "success");
+      const exactLane = lanes.find((entry) => entry.id.toLowerCase() === query || entry.name.toLowerCase() === query) ?? null;
+      const exactChat = displaySessions.find((entry) => (
+        entry.sessionId.toLowerCase() === query
+        || (entry.title ?? "").toLowerCase() === query
+      )) ?? null;
+      const lane = exactLane ?? lanes.find((entry) => entry.id.toLowerCase().includes(query) || entry.name.toLowerCase().includes(query)) ?? null;
+      const chat = exactChat ?? displaySessions.find((entry) => (
+        entry.sessionId.toLowerCase().includes(query)
+        || (entry.title ?? "").toLowerCase().includes(query)
+      )) ?? null;
+      if (exactLane || (lane && !exactChat)) {
+        activateLaneWithLastChat(exactLane ?? lane!, { notify: true });
+      } else if (chat) {
+        selectActiveLaneId(chat.laneId);
+        setDrawerLaneId(chat.laneId);
+        setSelectedDrawerLaneId(chat.laneId);
+        setSelectedDrawerChatAction(null);
+        setSelectedDrawerChatId(chat.sessionId);
+        applyDrawerChatSelection({ session: chat, action: null });
+        addNotice(`Switched to chat ${chat.title ?? chat.sessionId}.`, "success");
       } else {
-        setRightPane({ kind: "details", title: "Switch", body: `No lane matched "${args}".` });
+        setRightPane({ kind: "details", title: "Switch", body: `No lane or chat matched "${args}".` });
       }
       return;
     }
@@ -6302,7 +7384,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
     if (name === "/effort") {
-      openModelRow({ focusKind: "reasoning" });
+      openModelPicker({ focusKind: "reasoning" });
       return;
     }
     if (name === "/info") {
@@ -6362,7 +7444,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         : result;
       setRightPane({ kind: "details", title: `ADE ${domain}.${action}`, body: renderObject(body, 24) });
     }
-  }, [activeCommandProvider, activeLane?.name, activeSession?.provider, activeSession?.sessionId, activeSession?.title, addNotice, ensureActiveSession, focusDetails, lanes, mode, modelState.modelId, modelState.reasoningEffort, models, openFeedbackForm, openForm, openLaneDeleteForm, openModelRow, openNewChatSetup, openNewLaneForm, openSubagentsPane, pendingSteers, project, refreshState, selectActiveLaneId, selectActiveSessionId, sendOrSteerChatMessage, sessions, setChatScrollOffset, subagentPaneCommandAvailable]);
+  }, [activateLaneWithLastChat, activeCommandProvider, activeLane?.name, activeSession?.provider, activeSession?.sessionId, activeSession?.title, addNotice, applyDrawerChatSelection, archiveChat, archiveLane, ensureActiveSession, focusDetails, lanes, mode, modelState.modelId, modelState.reasoningEffort, models, openChatDeleteForm, openChatRenameForm, openFeedbackForm, openForm, openLaneDeleteForm, openLaneRenameForm, openModelPicker, openNewChatSetup, openNewLaneForm, openSubagentsPane, pendingSteers, project, refreshState, renameLane, selectActiveLaneId, selectActiveSessionId, sendOrSteerChatMessage, sessions, setChatScrollOffset, subagentPaneCommandAvailable, unarchiveChat, unarchiveLane]);
 
   const runInlineCommand = useCallback(async (name: string, args: string) => {
     if (name === "/quit") {
@@ -6448,6 +7530,33 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
       const tokens = args.split(/\s+/).filter(Boolean);
+
+      // Resolve an in-progress conflict from a previous pull/reparent.
+      if (tokens.includes("--continue") || tokens.includes("--abort")) {
+        const wantContinue = tokens.includes("--continue");
+        const state = await conn.action<GitConflictState>("git", "getConflictState", { laneId });
+        if (!state?.inProgress || !state.kind) {
+          addNotice("No merge or rebase conflict is in progress for this lane.", "info");
+          return;
+        }
+        if (wantContinue) {
+          if (state.conflictedFiles.length > 0) {
+            const report = formatGitConflictReport(state);
+            setRightPane({ kind: "details", title: report.title, body: report.body });
+            setRightOpen(true);
+            addNotice(`Still ${state.conflictedFiles.length} unresolved file(s). Resolve them, then /pull --continue.`, "error");
+            return;
+          }
+          await conn.action("git", state.kind === "rebase" ? "rebaseContinue" : "mergeContinue", { laneId });
+          addNotice(`${state.kind === "rebase" ? "Rebase" : "Merge"} continued.`, "success");
+        } else {
+          await conn.action("git", state.kind === "rebase" ? "rebaseAbort" : "mergeAbort", { laneId });
+          addNotice(`${state.kind === "rebase" ? "Rebase" : "Merge"} aborted.`, "success");
+        }
+        await refreshState();
+        return;
+      }
+
       const modeFlags = tokens.filter((token) => token === "--ff-only" || token === "--rebase" || token === "--merge");
       if (modeFlags.length > 1) {
         addNotice("Choose only one pull mode: --ff-only, --rebase, or --merge.", "error");
@@ -6467,6 +7576,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
       const result = await conn.action("git", "pull", { laneId, ...(mode ? { mode } : {}) });
+      // Pull/rebase reports success even when it stops on conflicts (the working
+      // tree is left mid-merge). Check before claiming success.
+      const conflict = await conn
+        .action<GitConflictState>("git", "getConflictState", { laneId })
+        .catch(() => null);
+      if (conflict?.inProgress && conflict.kind) {
+        const report = formatGitConflictReport(conflict);
+        setRightPane({ kind: "details", title: report.title, body: report.body });
+        setRightOpen(true);
+        addNotice(report.summary, "error");
+        return;
+      }
       addNotice(`Pull complete: ${renderObject(result, 4).replace(/\n/g, " ")}`, "success");
       return;
     }
@@ -6659,16 +7780,28 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
 
     if (form.command === "rename") {
-      if (!sessionId) return;
+      const targetSessionId = form.sessionId ?? sessionId;
+      if (!targetSessionId) return;
       const title = requireField("title", "Title");
       if (!title) return;
-      await renameChat(conn, sessionId, title);
+      await renameChat(conn, targetSessionId, title);
       setRightOpen(false);
       setRightPane({ kind: "empty" });
       lastUserOpenedPaneRef.current = null;
       focusAfterDetails();
       addNotice(`Renamed chat to "${title}".`, "success");
       await refreshState();
+      return;
+    }
+
+    if (form.command === "lane-rename") {
+      const name = requireField("name", "Lane name");
+      if (!name) return;
+      await renameLane(form.laneId ?? activeLaneIdRef.current, name);
+      setRightOpen(false);
+      setRightPane({ kind: "empty" });
+      lastUserOpenedPaneRef.current = null;
+      focusAfterDetails();
       return;
     }
 
@@ -6741,10 +7874,57 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
 
+    if (form.command === "chat-delete") {
+      const targetSessionId = form.chatDelete?.sessionId ?? form.sessionId ?? sessionId;
+      if (!targetSessionId) return;
+      const session = sessions.find((entry) => entry.sessionId === targetSessionId) ?? null;
+      if (!session) {
+        addNotice("Selected chat is no longer loaded.", "error");
+        return;
+      }
+      const expected = form.chatDelete?.title ?? session.title ?? session.goal ?? session.sessionId;
+      const confirm = requireField("confirm", "Chat title");
+      if (!confirm) return;
+      if (confirm !== expected) {
+        addNotice(`Type "${expected}" exactly to delete this chat.`, "error");
+        return;
+      }
+      setRightPane({ kind: "details", title: "Delete chat", body: `Deleting ${expected}...` });
+      await deleteChatSession(conn, targetSessionId);
+      setFormDiscardArmed(false);
+      setFormValues({});
+      setFormFieldIndex(0);
+      setPrompt("");
+      if (activeSessionIdRef.current === targetSessionId) {
+        selectFallbackChatAfterRemoval(session);
+      }
+      setRightOpen(false);
+      setRightPane({ kind: "empty" });
+      lastUserOpenedPaneRef.current = null;
+      focusAfterDetails();
+      addNotice(`Deleted chat ${expected}.`, "success");
+      await refreshState();
+      return;
+    }
+
     if (form.command === "feedback") {
-      const summary = requireField("summary", "Summary");
-      if (!summary) return;
-      const draftInput = buildFeedbackDraftInput({ ...values, summary } as FeedbackFormValues);
+      // Prefer the multiline feedback state carried on content.feedback (seeded
+      // by openFeedbackForm, edited in the right-pane input guard). Falls back to
+      // the legacy single-line formValues path when no meta is present.
+      let feedbackValues: FeedbackFormValues;
+      if (form.feedback) {
+        const state: FeedbackFormState = feedbackStateFromMeta(form.feedback);
+        if (!feedbackFormCanSubmit(state)) {
+          addNotice("Add some feedback before sending.", "error");
+          return;
+        }
+        feedbackValues = feedbackFormToFormValues(state);
+      } else {
+        const summary = requireField("summary", "Summary");
+        if (!summary) return;
+        feedbackValues = { ...values, summary } as FeedbackFormValues;
+      }
+      const draftInput = buildFeedbackDraftInput(feedbackValues);
       setRightPane({ kind: "details", title: "Feedback", body: "Posting feedback to GitHub..." });
       try {
         const draft = await conn.action<FeedbackPreparedDraft>("feedback", "prepareDraft", {
@@ -6758,6 +7938,46 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           body: draft.body,
           labels: draft.labels,
         });
+        const notice = feedbackSubmissionNotice(submission);
+        if (notice.tone === "success" && form.feedback) {
+          // Flash the sanctioned green ✓ (rendered by FeedbackFormPane via the
+          // shared spin tick), then auto-close. A single one-shot timer is fine —
+          // the motion itself is gated on useShimmerTick, not a bare setInterval.
+          setRightPane({
+            kind: "form",
+            title: "Feedback",
+            command: "feedback",
+            fields: form.fields,
+            feedback: { ...form.feedback, feedback: "submitted" },
+          });
+          addNotice(notice.text, notice.tone);
+          if (feedbackCloseTimerRef.current) {
+            clearTimeout(feedbackCloseTimerRef.current);
+          }
+          feedbackCloseTimerRef.current = setTimeout(() => {
+            feedbackCloseTimerRef.current = null;
+            setRightPane((prev) => {
+              // Only close if the submitted feedback form is still showing; a
+              // different pane may have been opened while the timer was pending.
+              if (
+                prev.kind === "form" &&
+                prev.command === "feedback" &&
+                prev.feedback?.feedback === "submitted"
+              ) {
+                setFormDiscardArmed(false);
+                setFormValues({});
+                setFormFieldIndex(0);
+                setPrompt("");
+                setRightOpen(false);
+                lastUserOpenedPaneRef.current = null;
+                focusAfterDetails();
+                return { kind: "empty" };
+              }
+              return prev;
+            });
+          }, 900);
+          return;
+        }
         setFormDiscardArmed(false);
         setFormValues({});
         setFormFieldIndex(0);
@@ -6766,7 +7986,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         setRightPane({ kind: "empty" });
         lastUserOpenedPaneRef.current = null;
         focusAfterDetails();
-        const notice = feedbackSubmissionNotice(submission);
         addNotice(notice.text, notice.tone);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -6781,7 +8000,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         addNotice(`Feedback failed: ${message}`, "error");
       }
     }
-  }, [addNotice, focusAfterDetails, lanes, refreshState, selectActiveLaneId, selectActiveSessionId]);
+  }, [addNotice, focusAfterDetails, lanes, refreshState, renameLane, selectActiveLaneId, selectActiveSessionId, selectFallbackChatAfterRemoval, sessions]);
 
   const openLatestImage = useCallback(() => {
     const target = latestOpenableImageTarget(events);
@@ -6836,6 +8055,68 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
     return false;
   }, [activeCommandProvider, addNotice, clearChatPromptDraft, runInlineCommand, runRightCommand, slashCommands]);
+
+  const openCommandPalette = useCallback(() => {
+    setCommandPaletteOpen(true);
+    setCommandPaletteQuery("");
+    setCommandPaletteIndex(0);
+    selectFooterControl(null);
+    setInlineRowFocus({ cell: null });
+  }, [selectFooterControl]);
+
+  const runCommandPaletteItem = useCallback(async (item: CommandPaletteItem | null | undefined) => {
+    if (!item) return;
+    setCommandPaletteOpen(false);
+    setCommandPaletteQuery("");
+    setCommandPaletteIndex(0);
+    if (item.kind === "command") {
+      const commandName = item.key.startsWith("command:") ? item.key.slice("command:".length) : item.label.split(/\s+/)[0] ?? "";
+      const parsed = parseCommand(commandName, slashCommands);
+      if (parsed?.spec?.placement === "right") {
+        await runRightCommand(parsed.name, "");
+      } else if (parsed?.spec?.placement === "inline") {
+        if (parsed.spec.argumentHint) {
+          const draft = `${parsed.name} `;
+          setPrompt(draft);
+          promptRef.current = draft;
+          chatDraftRef.current = draft;
+          focusChat();
+        } else {
+          await runInlineCommand(parsed.name, "");
+        }
+      } else if (parsed?.spec?.placement === "chat") {
+        const draft = `${parsed.name} `;
+        setPrompt(draft);
+        promptRef.current = draft;
+        chatDraftRef.current = draft;
+        focusChat();
+      } else if (parsed?.name) {
+        const draft = `${parsed.name} `;
+        setPrompt(draft);
+        promptRef.current = draft;
+        chatDraftRef.current = draft;
+        focusChat();
+      }
+      return;
+    }
+    if (item.kind === "lane") {
+      const laneId = item.key.slice("lane:".length);
+      const lane = lanes.find((entry) => entry.id === laneId) ?? null;
+      if (lane) activateLaneWithLastChat(lane, { notify: true });
+      return;
+    }
+    const sessionId = item.key.slice("chat:".length);
+    const session = displaySessions.find((entry) => entry.sessionId === sessionId) ?? null;
+    if (session) {
+      selectActiveLaneId(session.laneId);
+      setDrawerLaneId(session.laneId);
+      setSelectedDrawerLaneId(session.laneId);
+      setSelectedDrawerChatAction(null);
+      setSelectedDrawerChatId(session.sessionId);
+      applyDrawerChatSelection({ session, action: null });
+      addNotice(`Switched to chat ${session.title ?? session.sessionId}.`, "success");
+    }
+  }, [activateLaneWithLastChat, addNotice, applyDrawerChatSelection, displaySessions, focusChat, lanes, runInlineCommand, runRightCommand, selectActiveLaneId, slashCommands]);
 
   const submitPrompt = useCallback(async (value: string) => {
     const text = value.trim();
@@ -6934,7 +8215,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             await submitClaudePromptToTerminal(activeTerminal, selected.name);
             return;
           }
-          const sessionId = focusedSessionIdForMultiView(multiViewRef.current) ?? await ensureActiveSession();
+          const sessionId = (gridViewActiveRef.current ? focusedSessionIdForMultiView(multiViewRef.current) : null) ?? await ensureActiveSession();
           if (sessionId) {
             await sendOrSteerChatMessage(sessionId, selected.name);
           }
@@ -6978,7 +8259,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         }
         return;
       }
-      const focusedSessionId = focusedSessionIdForMultiView(multiViewRef.current);
+      const focusedSessionId = (gridViewActiveRef.current ? focusedSessionIdForMultiView(multiViewRef.current) : null);
       const sessionId = focusedSessionId ?? await ensureActiveSession();
       if (!sessionId) {
         addNotice("No active lane is available for chat.", "error");
@@ -7186,26 +8467,23 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           .then((recents) => setModelPickerRecents(recents))
           .catch(() => undefined);
       }
-      // If we were picking for a new-chat draft, return to the setup pane so
-      // the user can finish configuring and dispatch. Otherwise close the pane.
-      let restoreSetup = false;
       setRightPane((prev) => {
         if (prev.kind === "model-picker" && prev.surface === "new-chat") {
-          const laneId = activeLaneIdRef.current;
-          const lane = laneId ? lanes.find((entry) => entry.id === laneId) : null;
-          if (lane) {
-            restoreSetup = true;
-            return {
-              kind: "new-chat-setup",
-              laneId: lane.id,
-              laneLabel: lane.name,
-              rows: newChatSetupRows,
-            };
-          }
+          // Picking a model drops focus DOWN into the settings (reasoning first)
+          // per the "pick → settings → Confirm" flow — the picker stays open.
+          const firstSetting = (prev.settingsRows ?? []).find(
+            (row) => row.kind !== "provider" && row.kind !== "model",
+          )?.kind ?? "apply";
+          return {
+            ...prev,
+            selection: { kind: "provider", provider },
+            focusedIndex: 0,
+            footerFocus: firstSetting,
+          };
         }
         return { kind: "empty" };
       });
-      if (restoreSetup) {
+      if (rightPane.kind === "model-picker" && rightPane.surface === "new-chat") {
         setRightOpen(true);
         setPaneFocus("details");
       } else {
@@ -7218,7 +8496,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
       addNotice(`Model set to ${target.displayName}.`, "success");
     },
-	    [addNotice, lanes, models, modelCatalog, newChatSetupRows, rightPane, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setPaneFocus],
+	    [addNotice, models, modelCatalog, rightPane, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setPaneFocus],
 	  );
 
   const selectProvider = useCallback((provider: AdeCodeProvider) => {
@@ -7280,9 +8558,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     userInitiatedModeChangeRef.current = true;
     if (modelState.provider === "codex") {
       const current = resolveCodexPreset(modelState);
-      const index = Math.max(0, CODEX_PRESETS.findIndex((entry) => entry === current));
-      const next = CODEX_PRESETS[(index + delta + CODEX_PRESETS.length) % CODEX_PRESETS.length] ?? "default";
-      applyModelState((prev) => ({ ...prev, ...codexPresetPatch(next) }));
+      // A "custom" approval×sandbox combo isn't in CODEX_PRESETS (findIndex → -1).
+      // The old `Math.max(0, -1)` collapsed it to index 0, so cycling out of a
+      // custom combo always jumped to "default" and silently discarded it.
+      // Step deterministically into the preset list instead: forward → first,
+      // backward → last.
+      const found = CODEX_PRESETS.findIndex((entry) => entry === current);
+      const next = found === -1
+        ? (delta >= 0 ? CODEX_PRESETS[0] : CODEX_PRESETS[CODEX_PRESETS.length - 1])
+        : CODEX_PRESETS[(found + delta + CODEX_PRESETS.length) % CODEX_PRESETS.length];
+      applyModelState((prev) => ({ ...prev, ...codexPresetPatch(next ?? "default") }));
       return;
     }
     if (modelState.provider === "claude") {
@@ -7317,8 +8602,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       applyModelState((prev) => ({ ...prev, droidPermissionMode: next, permissionMode: droidPermissionToLegacy(next) }));
       return;
     }
-    const index = Math.max(0, CURSOR_AVAILABLE_MODE_IDS.findIndex((entry) => entry === modelState.cursorModeId));
-    const next = CURSOR_AVAILABLE_MODE_IDS[(index + delta + CURSOR_AVAILABLE_MODE_IDS.length) % CURSOR_AVAILABLE_MODE_IDS.length] ?? "agent";
+    const modeIds = cursorModeIdsForState(modelState);
+    const index = Math.max(0, modeIds.findIndex((entry) => entry === modelState.cursorModeId));
+    const next = modeIds[(index + delta + modeIds.length) % modeIds.length] ?? "agent";
     applyModelState((prev) => ({
       ...prev,
       cursorModeId: next,
@@ -7402,7 +8688,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   }, [addNotice, applyModelState, cycleModel, cyclePermission, cycleProvider, cycleReasoning, focusChat, refreshAiSetupStatus, refreshState, sendClaudeModelCommandToTerminal]);
 
   const recallPromptHistory = useCallback((direction: "previous" | "next"): boolean => {
-    const focusedSessionId = focusedSessionIdForMultiView(multiViewRef.current);
+    const focusedSessionId = (gridViewActiveRef.current ? focusedSessionIdForMultiView(multiViewRef.current) : null);
     const history = focusedSessionId
       ? promptHistoryBySessionIdRef.current[focusedSessionId] ?? []
       : promptHistoryRef.current;
@@ -7544,7 +8830,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return true;
     }
     if (action === "app:help") {
-      setRightPane({ kind: "help", title: "Help" });
+      renderHelpPane("", 0, helpRecentsRef.current);
       focusDetails();
       return true;
     }
@@ -7660,10 +8946,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       focusChat();
       return true;
     }
-    if (action === "historySearch:cycleScope") {
-      addNotice("History search scope cycling is not available yet.", "info");
-      return true;
-    }
     if (action === "pane:toggle") {
       toggleDetailsPane();
       return true;
@@ -7718,11 +9000,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return true;
     }
     if (action === "tabs:next" || action === "footer:next") {
-      cyclePaneFocus();
+      cyclePaneFocus(1);
       return true;
     }
     if (action === "tabs:previous" || action === "footer:previous") {
-      cyclePaneFocus();
+      cyclePaneFocus(-1);
       return true;
     }
     if (action === "footer:up" || action === "footer:down") {
@@ -7837,11 +9119,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
       return true;
     }
+    if (action === "app:openCommandPalette") {
+      openCommandPalette();
+      return true;
+    }
     if (action.startsWith("selection:")) {
       return reportUnavailable();
     }
     return reportUnavailable();
-  }, [addNotice, applyModelState, attachClipboardImage, chatRowBudget, copyChatSelection, cycleFooterControl, cyclePaneFocus, cyclePermission, cycleReasoning, drawerOpen, focusAfterDetails, focusChat, focusDetails, footerControls, launchPromptInBackground, modelState.provider, openHistorySearch, openModelRow, prompt, recallPromptHistory, refreshState, requestAppExit, resolveFocusedDeeplinkRow, rightOpen, selectFooterControl, setChatScrollOffset, submitPrompt, toggleDetailsPane, toggleSubagentsPane]);
+  }, [addNotice, applyModelState, attachClipboardImage, chatRowBudget, copyChatSelection, cycleFooterControl, cyclePaneFocus, cyclePermission, cycleReasoning, drawerOpen, focusAfterDetails, focusChat, focusDetails, footerControls, launchPromptInBackground, modelState.provider, openCommandPalette, openHistorySearch, openModelPicker, prompt, recallPromptHistory, refreshState, requestAppExit, resolveFocusedDeeplinkRow, rightOpen, selectFooterControl, setChatScrollOffset, submitPrompt, toggleDetailsPane, toggleSubagentsPane]);
 
   const chatPointFromMouse = useCallback((
     x: number | null,
@@ -7889,6 +9175,49 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         setAttachedTerminalId(terminal.terminalId);
       }
       return;
+    }
+    // Claude live PTY pane (not attached, single view): keyboard scrollback over
+    // the headless xterm buffer + copy of the visible region. PageUp/PageDown,
+    // Home/End and Shift+Up/Down (when not editing the prompt) drive scrollback;
+    // Ctrl/Cmd+C copies the visible window via the shared writeClipboardText.
+    {
+      const terminalForScroll = (activeTerminalSession ?? activeTerminalSessionRef.current);
+      const terminalPaneVisible = Boolean(terminalForScroll) && !multiViewRef.current;
+      if (terminalPaneVisible && terminalForScroll) {
+        const sid = terminalForScroll.terminalId;
+        const metrics = terminalViewportMetricsRef.current;
+        const step = terminalPageStep(Math.max(1, chatRowBudget));
+        const isHome = input === "\x1b[H" || input === "\x1b[1~";
+        const isEnd = input === "\x1b[F" || input === "\x1b[4~";
+        const promptHasText = promptRef.current.trim().length > 0;
+        const wantsScrollUp = key.pageUp || (key.shift && key.upArrow && !promptHasText);
+        const wantsScrollDown = key.pageDown || (key.shift && key.downArrow && !promptHasText);
+        if (wantsScrollUp || wantsScrollDown || isHome || isEnd) {
+          setTerminalScrollBySessionId((prev) => {
+            const current = readTerminalScroll(prev, sid);
+            let next = current;
+            if (isEnd) next = jumpTerminalToBottom(current);
+            else if (isHome) {
+              next = {
+                scrollOffset: clampTerminalScrollOffset(metrics.maxScrollable, metrics.maxScrollable),
+                pendingNewCount: 0,
+              };
+            } else if (wantsScrollUp) next = scrollTerminalBy(current, step, metrics.maxScrollable);
+            else if (wantsScrollDown) next = scrollTerminalBy(current, -step, metrics.maxScrollable);
+            if (next === current) return prev;
+            return { ...prev, [sid]: next };
+          });
+          return;
+        }
+        if (isCtrlInput(input, key, "c") && metrics.visibleText.trim().length > 0) {
+          if (writeClipboardText(metrics.visibleText)) {
+            addNotice("Copied terminal output", "success");
+          } else {
+            addNotice("Clipboard unavailable", "error");
+          }
+          return;
+        }
+      }
     }
     const mouse = parseTerminalMouseInput(input);
     if (mouse) {
@@ -8078,15 +9407,45 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
 
-      const centerStart = drawerWidth + 1;
-      const centerEnd = columns - rightWidth;
-      const inCenterPane = mouse.x == null || (mouse.x >= centerStart && mouse.x <= centerEnd);
-      const inTranscriptRows = mouse.y == null || mouse.y > 2;
-      if (mouse.kind === "wheel" && inCenterPane && inTranscriptRows) {
-        if (mouse.direction === "up") {
-          setChatScrollOffset((offset) => offset + 3);
-        } else if (mouse.direction === "down") {
-          setChatScrollOffset((offset) => offset - 3);
+	      const centerStart = drawerWidth + 1;
+	      const centerEnd = columns - rightWidth;
+	      const inCenterPane = mouse.x == null || (mouse.x >= centerStart && mouse.x <= centerEnd);
+	      const inRightPane = mouse.x != null && rightOpen && rightWidth > 0 && mouse.x >= rightStart;
+	      const inTranscriptRows = mouse.y == null || mouse.y > 2;
+	      if (mouse.kind === "wheel" && inDrawerPane) {
+	        const visibleCount = visibleDrawerLaneCount(chatRowBudget, orderedDrawerLanes.length);
+	        const maxOffset = Math.max(0, orderedDrawerLanes.length - visibleCount);
+	        const delta = mouse.direction === "down" ? 3 : mouse.direction === "up" ? -3 : 0;
+	        if (delta !== 0) {
+	          setDrawerScrollOffsetRows((offset) => Math.max(0, Math.min(maxOffset, offset + delta)));
+	        }
+	      } else if (mouse.kind === "wheel" && inRightPane) {
+	        const maxOffset = Math.max(0, rightPaneScrollableRowCount(rightPane) - DETAILS_BODY_MAX_LINES);
+	        const delta = mouse.direction === "down" ? 3 : mouse.direction === "up" ? -3 : 0;
+	        if (delta !== 0) {
+	          setRightPaneScrollOffsetRows((offset) => Math.max(0, Math.min(maxOffset, offset + delta)));
+	        }
+	      } else if (mouse.kind === "wheel" && inCenterPane && inTranscriptRows) {
+	        const delta = mouse.direction === "up" ? 3 : mouse.direction === "down" ? -3 : 0;
+        if (delta !== 0) {
+          // In a grid, scroll the tile under the cursor rather than only the
+          // focused one. ChatView clamps the upper bound per-tile, so a lower
+          // bound is enough here.
+          const grid = multiViewRef.current;
+          const TILE_PREFIX = "multi-chat:tile:";
+          let scrolledTile = false;
+          if (grid && mouse.x != null && mouse.y != null) {
+            const hit = hitTestRegistryRef.current.hitTest(mouse.x, mouse.y);
+            const sessionId = hit?.id.startsWith(TILE_PREFIX) ? hit.id.slice(TILE_PREFIX.length) : null;
+            if (sessionId && sessionId !== focusedSessionIdForMultiView(grid)) {
+              setScrollBySessionId((prev) => ({
+                ...prev,
+                [sessionId]: Math.max(0, (prev[sessionId] ?? 0) + delta),
+              }));
+              scrolledTile = true;
+            }
+          }
+          if (!scrolledTile) setChatScrollOffset((offset) => offset + delta);
         }
       } else if (
         mouse.kind === "click"
@@ -8114,6 +9473,132 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     const footerActive = footerControlRef.current != null;
     const textInputActive = (pane === "chat" && !footerActive) || detailsFormActive;
 
+    // Searchable /help command reference: filter type-ahead + ↑↓ navigation + ↵
+    // run. Handled before the command palette so the help pane owns keystrokes
+    // while it is the active right pane. esc / Ctrl+K close it.
+    if (rightPane.kind === "help" && !isCtrlInput(input, key, "c")) {
+      const helpGroups = buildHelpRows(helpIndexGroups, helpFilterQuery, helpRecentsRef.current);
+      const helpFlatRows = flattenHelpRows(helpGroups);
+      const helpTotal = helpFlatRows.length;
+      if (key.escape || isCtrlInput(input, key, "k")) {
+        setHelpFilterQuery("");
+        setHelpSelectedIndex(0);
+        setRightPane({ kind: "empty" });
+        focusChat();
+        return;
+      }
+      if (key.upArrow || (key.tab && key.shift)) {
+        const next = helpTotal === 0 ? 0 : (helpSelectedIndex - 1 + helpTotal) % helpTotal;
+        setHelpSelectedIndex(next);
+        renderHelpPane(helpFilterQuery, next, helpRecentsRef.current);
+        return;
+      }
+      if (key.downArrow || key.tab) {
+        const next = helpTotal === 0 ? 0 : (helpSelectedIndex + 1) % helpTotal;
+        setHelpSelectedIndex(next);
+        renderHelpPane(helpFilterQuery, next, helpRecentsRef.current);
+        return;
+      }
+      if (key.return) {
+        const picked = helpFlatRows[helpSelectedIndex];
+        if (picked) {
+          const nextRecents = pushRecent(helpRecentsRef.current, picked.name);
+          setHelpRecents(nextRecents);
+          setHelpFilterQuery("");
+          setHelpSelectedIndex(0);
+          const parsed = parseCommand(picked.name, slashCommands);
+          const placement = parsed?.spec?.placement;
+          if (placement === "right") {
+            void runRightCommand(parsed!.name, "")
+              .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+          } else if (placement === "inline") {
+            setRightPane({ kind: "empty" });
+            void runInlineCommand(parsed!.name, "")
+              .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+          } else {
+            // chat / unknown placement: seed the prompt so the user can complete it.
+            const draft = `${(parsed?.name ?? picked.name)} `;
+            setRightPane({ kind: "empty" });
+            setPrompt(draft);
+            promptRef.current = draft;
+            chatDraftRef.current = draft;
+            focusChat();
+          }
+        }
+        return;
+      }
+      if (isPromptLineBackspace(input, key) || key.backspace || key.delete) {
+        const nextQuery = isPromptLineBackspace(input, key) ? "" : helpFilterQuery.slice(0, -1);
+        setHelpFilterQuery(nextQuery);
+        setHelpSelectedIndex(0);
+        renderHelpPane(nextQuery, 0, helpRecentsRef.current);
+        return;
+      }
+      if (!key.ctrl && !key.meta) {
+        const suffix = printableInput(input);
+        if (suffix) {
+          const nextQuery = helpFilterQuery + suffix;
+          setHelpFilterQuery(nextQuery);
+          setHelpSelectedIndex(0);
+          renderHelpPane(nextQuery, 0, helpRecentsRef.current);
+        }
+        return;
+      }
+      return;
+    }
+
+    if (commandPaletteOpen && !isCtrlInput(input, key, "c")) {
+      // Ctrl/Cmd+K toggles the palette shut (mirrors Esc) so the same chord
+      // opens and closes it — no need to reach for Escape.
+      if (key.escape || isCtrlInput(input, key, "k")) {
+        setCommandPaletteOpen(false);
+        setCommandPaletteQuery("");
+        setCommandPaletteIndex(0);
+        return;
+      }
+      if (key.upArrow || (key.tab && key.shift)) {
+        setCommandPaletteIndex((index) => (commandPaletteItems.length ? (index - 1 + commandPaletteItems.length) % commandPaletteItems.length : 0));
+        return;
+      }
+      if (key.downArrow || key.tab) {
+        setCommandPaletteIndex((index) => (commandPaletteItems.length ? (index + 1) % commandPaletteItems.length : 0));
+        return;
+      }
+      if (key.return) {
+        void runCommandPaletteItem(commandPaletteItems[commandPaletteIndex] ?? commandPaletteItems[0])
+          .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+        return;
+      }
+      if (isPromptLineBackspace(input, key)) {
+        setCommandPaletteQuery("");
+        setCommandPaletteIndex(0);
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setCommandPaletteQuery((query) => query.slice(0, -1));
+        setCommandPaletteIndex(0);
+        return;
+      }
+      if (!key.ctrl && !key.meta) {
+        const suffix = printableInput(input);
+        if (suffix) {
+          setCommandPaletteQuery((query) => `${query}${suffix}`);
+          setCommandPaletteIndex(0);
+        }
+        return;
+      }
+      return;
+    }
+
+    if (isCtrlInput(input, key, "k")) {
+      // Ctrl+K opens the command palette (it toggles shut via the
+      // command-palette branch above when the palette is already open). The
+      // searchable /help reference stays reachable via the `/help` slash command
+      // and the "help" entry inside the command palette.
+      openCommandPalette();
+      return;
+    }
+
     if (pane === "addMode" || addModeRef.current) {
       if (key.escape) {
         cancelAddMode();
@@ -8137,15 +9622,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
 
-    if (pane === "chat" && multiViewRef.current && isCtrlInput(input, key, "w")) {
+    if (pane === "chat" && gridViewActiveRef.current && multiViewRef.current && isCtrlInput(input, key, "w")) {
       removeMultiViewTile(multiViewRef.current.focusedIndex);
       return;
     }
 
-    if (pane === "chat" && multiViewRef.current && key.tab && !key.shift) {
-      setMultiView((prev) => prev
-        ? { ...prev, focusedIndex: (prev.focusedIndex + 1) % Math.max(1, prev.tiles.length) }
-        : prev);
+    if (pane === "chat" && gridViewActiveRef.current && multiViewRef.current && key.tab) {
+      // Tab focuses the next tile; Shift+Tab the previous. Scoped to a SHOWN grid
+      // so Shift+Tab still cycles permission mode in single-chat view and Ctrl+W
+      // doesn't remove a tile from a dormant (hidden) grid.
+      const direction = key.shift ? -1 : 1;
+      setMultiView((prev) => {
+        if (!prev) return prev;
+        const count = Math.max(1, prev.tiles.length);
+        return { ...prev, focusedIndex: (prev.focusedIndex + direction + count) % count };
+      });
       return;
     }
 
@@ -8163,23 +9654,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       if (key.downArrow) {
         if (cell === "provider") cycleProvider(1);
         else if (cell === "model") cycleModel(1);
+        else if (cell === "fast") applyModelState((prev) => ({ ...prev, codexFastMode: !prev.codexFastMode }));
         else if (cell === "reasoning") cycleReasoning(1);
         else if (cell === "permission") cyclePermission(1);
         else if (cell === "subagents") openSubagentsPane();
         return;
       }
       if (key.leftArrow || key.rightArrow) {
-        const fullOrder: Array<'provider' | 'model' | 'reasoning' | 'permission' | 'subagents'> = [
-          "provider",
-          "model",
-          "reasoning",
-          "permission",
-          "subagents",
-        ];
-        const order = fullOrder.filter((entry) => {
-          if (entry === "provider" && providerLockedRef.current) return false;
-          if (entry === "subagents" && !subagentsButtonVisibleRef.current) return false;
-          return true;
+        const order = inlineRowCellOrder({
+          providerLocked: providerLockedRef.current,
+          fastSupported: footerFastSupportedRef.current,
+          reasoningSupported: footerReasoningSupportedRef.current,
+          subagentsVisible: subagentsButtonVisibleRef.current,
         });
         const idx = cell ? order.indexOf(cell) : 0;
         const delta = key.rightArrow ? 1 : -1;
@@ -8258,7 +9744,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         movePromptCursor(1);
         return;
       }
-      if (key.upArrow) {
+      // When the slash-command suggester or @-mention list is open, ↑/↓ belong
+      // exclusively to that palette (handled just below) — don't let cursor /
+      // history movement swallow them.
+      const slashOrMentionOpen = slashRows.length > 0 || (activeMentionRange != null && mentionSuggestions.length > 0);
+      if (key.upArrow && !slashOrMentionOpen) {
         if (prompt.length === 0 && attachedImageChips.length === 0) {
           recallPromptHistory("previous");
           return;
@@ -8267,15 +9757,28 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           return;
         }
       }
-      if (key.downArrow) {
+      if (key.downArrow && !slashOrMentionOpen) {
         movePromptCursorVerticalAndMaybeAttach(1);
         return;
       }
     }
 
-    if (pane === "chat" && textInputActive && (key.ctrl || key.meta) && (key.leftArrow || key.rightArrow)) {
-      movePromptCursor(key.leftArrow ? -1 : 1, "word");
-      return;
+    if (pane === "chat" && textInputActive && (key.ctrl || key.meta)) {
+      // Option/Alt+Left/Right move by word. macOS sends these either as
+      // meta+arrow, or — with Option-as-Meta — as the emacs escape sequences
+      // ESC-b / ESC-f, which Ink surfaces as meta + input "b"/"f". Without this
+      // second case they fell through to the text-insert path and literally
+      // typed "b"/"f" instead of moving the cursor.
+      const optWordLeft = key.meta && !key.ctrl && input.toLowerCase() === "b";
+      const optWordRight = key.meta && !key.ctrl && input.toLowerCase() === "f";
+      if (key.leftArrow || optWordLeft) {
+        movePromptCursor(-1, "word");
+        return;
+      }
+      if (key.rightArrow || optWordRight) {
+        movePromptCursor(1, "word");
+        return;
+      }
     }
 
     if (pane === "chat") {
@@ -8371,7 +9874,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       setDraftChatMode(false);
       setSelectedDrawerChatAction(null);
       clearChatPromptDraft();
-      setRightPane((prev) => prev.kind === "new-chat-setup" ? { kind: "empty" } : prev);
+      setRightPane((prev) => prev.kind === "model-picker" && prev.surface === "new-chat" ? { kind: "empty" } : prev);
       setRightOpen(false);
       lastUserOpenedPaneRef.current = null;
       userDismissedRightPaneRef.current = true;
@@ -8435,6 +9938,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       if (runKeybindingAction("app:copyAdeDeeplink")) return;
     }
 
+    if (
+      !textInputActive
+      && !footerActive
+      && !key.ctrl
+      && !key.meta
+      && (input === "[" || input === "]")
+      // The model picker consumes [ ] for provider tabs (and as search text), so
+      // don't hijack them for lane cycling while it's focused.
+      && rightPane.kind !== "model-picker"
+    ) {
+      cycleActiveLane(input === "]" ? 1 : -1);
+      return;
+    }
+
     if (footerActive) {
       if (key.leftArrow || key.rightArrow) {
         cycleFooterControl(key.rightArrow ? 1 : -1);
@@ -8461,9 +9978,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
       if (key.backspace || key.delete) {
         selectFooterControl(null);
-        const next = key.delete && !key.backspace
-          ? deletePromptForward(prompt, promptCursorRef.current)
-          : deletePromptBackward(prompt, promptCursorRef.current);
+        // See the prompt handler below: Ink can't distinguish ⌫ from forward-
+        // delete, so always delete backward.
+        const next = deletePromptBackward(prompt, promptCursorRef.current);
         handlePromptChange(next.value, next.cursor);
         return;
       }
@@ -8479,7 +9996,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
 
     if (pane === "chat" && textInputActive && isCtrlInput(input, key, "r")) {
-      openHistorySearch();
+      recallPromptHistory("previous");
       return;
     }
 
@@ -8489,7 +10006,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
 
     if (pane === "chat" && isCtrlInput(input, key, "g")) {
-      startAddMode();
+      toggleGridView();
       return;
     }
 
@@ -8552,19 +10069,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
       if (escapeAction.kind === "return-new-chat") {
-        const laneId = activeLaneIdRef.current;
-        const lane = laneId ? lanes.find((entry) => entry.id === laneId) : null;
-        if (lane) {
-          setRightPane({
-            kind: "new-chat-setup",
-            laneId: lane.id,
-            laneLabel: lane.name,
-            rows: newChatSetupRows,
-          });
-          setRightOpen(true);
-          setPaneFocus("details");
-          return;
-        }
+        if (confirmOrDiscardChatDraft()) return;
       }
       setRightPane({ kind: "empty" });
       setRightOpen(false);
@@ -8587,7 +10092,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
       if (pane === "details" && rightOpen) {
-        if (rightPane.kind === "new-chat-setup" && confirmOrDiscardChatDraft()) {
+        if (rightPane.kind === "model-picker" && rightPane.surface === "new-chat" && confirmOrDiscardChatDraft()) {
           return;
         }
         if (rightPane.kind === "form") {
@@ -8660,10 +10165,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
 
-    if (pendingApproval?.mode === "approval" && !pendingApproval.highStakes && (input === "a" || input === "d")) {
-      void resolvePendingApproval(pendingApproval, input === "a" ? "accept" : "decline")
+    if (pendingApproval?.mode === "approval" && !pendingApproval.highStakes && ["a", "d", "y", "n"].includes(input)) {
+      void resolvePendingApproval(pendingApproval, input === "a" || input === "y" ? "accept" : "decline")
         .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
       return;
+    }
+    if (pendingApproval?.mode === "question" && /^[1-6]$/.test(input)) {
+      const question = pendingApproval.request?.questions[0] ?? null;
+      const options = question?.options?.length ? question.options : pendingApproval.request?.options ?? [];
+      const option = options[Number(input) - 1] ?? null;
+      if (option) {
+        void answerPendingInput(pendingApproval, option.value)
+          .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+        return;
+      }
     }
 
     if (pane === "details" && rightOpen && rightPane.kind === "form" && rightPane.command === "lane-delete") {
@@ -8702,6 +10217,72 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         }
         if (printableInput(input) && !key.ctrl && !key.meta && !key.return) return;
       }
+    }
+
+    // Feedback form: dedicated multiline editing handled ABOVE the generic form
+    // key handlers so the body gets a real text cursor (the shared prompt-input
+    // primitive) while type/context/validation/serialization go through
+    // feedbackForm.ts. Left/right cycle the type; Ctrl+T toggles the context
+    // footer; Ctrl+S submits; Enter inserts a newline; pasted blocks keep their
+    // embedded newlines and tabs verbatim (preserveMultiline).
+    if (pane === "details" && rightOpen && rightPane.kind === "form" && rightPane.command === "feedback") {
+      const form = rightPane;
+      const meta = form.feedback ?? {};
+      // While the success check is showing, swallow keys (auto-close handles exit).
+      if (meta.feedback === "submitted") return;
+      const updateFeedback = (patch: Partial<FeedbackContextMeta>) => {
+        setRightPane({ ...form, feedback: { ...meta, ...patch } });
+        setFormDiscardArmed(false);
+      };
+      if (key.escape) {
+        if (formDiscardArmedRef.current) {
+          setFormDiscardArmed(false);
+          setFormValues({});
+          setFormFieldIndex(0);
+          setRightPane({ kind: "empty" });
+          setRightOpen(false);
+          focusAfterDetails();
+          return;
+        }
+        setFormDiscardArmed(true);
+        return;
+      }
+      if (isCtrlInput(input, key, "s")) {
+        const state = feedbackStateFromMeta(meta);
+        if (!feedbackFormCanSubmit(state)) {
+          addNotice("Add some feedback before sending.", "error");
+          return;
+        }
+        void submitRightForm(form, currentFormValues())
+          .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+        return;
+      }
+      if (isCtrlInput(input, key, "t")) {
+        updateFeedback({ showContext: meta.showContext === false });
+        return;
+      }
+      if (key.leftArrow || key.rightArrow) {
+        const nextType = cycleFeedbackType(feedbackStateFromMeta(meta).type, key.leftArrow ? -1 : 1);
+        updateFeedback({ type: nextType });
+        return;
+      }
+      if (key.return) {
+        updateFeedback({ body: `${meta.body ?? ""}\n` });
+        return;
+      }
+      const currentBody = meta.body ?? "";
+      // preserveMultiline keeps embedded newlines and tabs from a pasted block so
+      // the body stays verbatim (a real Enter keypress is handled above).
+      const edit = applyCoalescedPromptInput(currentBody, currentBody.length, input, true);
+      if (edit.value !== currentBody) {
+        updateFeedback({ body: edit.value });
+        return;
+      }
+      if (key.backspace || key.delete) {
+        if (currentBody.length > 0) updateFeedback({ body: currentBody.slice(0, -1) });
+        return;
+      }
+      return;
     }
 
     if (pane === "details" && rightOpen && rightPane.kind === "form" && (key.upArrow || key.downArrow || key.return)) {
@@ -8756,40 +10337,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
 
-    if (
-      pane === "details"
-      && rightOpen
-      && (rightPane.kind === "new-chat-setup" || rightPane.kind === "model-setup")
-      && (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow || key.return)
-    ) {
-      const rows = rightPane.rows;
-      const totalRows = rows.length;
-      if (key.upArrow || key.downArrow) {
-        const delta = key.upArrow ? -1 : 1;
-        setRightSelectionIndex((index) => totalRows ? (index + delta + totalRows) % totalRows : 0);
-        return;
-      }
-      if (key.return) {
-        // Enter on the model row opens the rich picker (favorites/recents/providers).
-        // Other rows still fall through to "apply" for parity with the prior flow.
-        const focusedRow = rows[rightSelectionIndex];
-        if (focusedRow?.kind === "model" && !focusedRow.disabled) {
-          openModelPicker({ surface: modelPickerSurfaceForSetupPane(rightPane.kind) });
-          return;
-        }
-        const applyRow = rows.find((entry) => entry.kind === "apply");
-        if (applyRow) handleSetupRow(applyRow, 1);
-        return;
-      }
-      if (rightSelectionIndex >= rows.length) {
-        return;
-      }
-      const row = rows[rightSelectionIndex] ?? rows[0];
-      if (!row) return;
-      handleSetupRow(row, key.leftArrow ? -1 : 1);
-      return;
-    }
-
     if (pane === "details" && rightOpen && rightPane.kind === "model-picker") {
       const picker = rightPane;
       // Re-derive layout each keystroke so we never select stale indexes.
@@ -8797,93 +10344,110 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 	        models,
 	        catalog: modelCatalogRef.current ?? modelCatalog,
 	        favorites: modelPickerFavorites,
-	        recents: modelPickerRecents,
-	        activeModelId: modelState.modelId,
-	        query: picker.query,
+		        recents: modelPickerRecents,
+		        activeModelId: modelState.modelId,
+            activeReasoningEffort: modelState.reasoningEffort,
+            aiStatus,
+            showAll: picker.showAll,
+            settingsRows: picker.settingsRows ?? [],
+            footerFocus: picker.footerFocus ?? null,
+            laneLabel: picker.laneLabel ?? null,
+		        query: picker.query,
 	        selection: picker.selection,
 	        providerTabKey: picker.providerTabKey ?? null,
 	        focusedIndex: picker.focusedIndex,
 	        searchMode: picker.searchMode,
       });
+      const pickerSettingsRows = (picker.settingsRows ?? []).filter((row) => row.kind !== "provider" && row.kind !== "model");
+      const lastModelIndex = Math.max(0, layout.entries.length - 1);
+      // Unified, single vertical flow: ↑/↓ runs the model list → the settings
+      // rows → the Confirm button. footerFocus !== null means focus is in the
+      // settings region; otherwise it's in the model list.
+      const inSettings = picker.footerFocus != null && pickerSettingsRows.length > 0;
+      const settingIndex = inSettings
+        ? Math.max(0, pickerSettingsRows.findIndex((row) => row.kind === picker.footerFocus))
+        : -1;
 
-      if (key.upArrow) {
-        setRightPane((prev) => {
-          if (prev.kind !== "model-picker") return prev;
-          const currentLayout = buildModelPickerLayout({
-            models,
-            catalog: modelCatalogRef.current ?? modelCatalog,
-            favorites: modelPickerFavorites,
-            recents: modelPickerRecents,
-            activeModelId: modelState.modelId,
-            query: prev.query,
-            selection: prev.selection,
-            providerTabKey: prev.providerTabKey ?? null,
-            focusedIndex: prev.focusedIndex,
-            searchMode: prev.searchMode,
-          });
-          const next = Math.max(0, currentLayout.focusedIndex - 1);
-          return next === prev.focusedIndex ? prev : { ...prev, focusedIndex: next };
-        });
-        return;
-      }
-      if (key.downArrow) {
-        setRightPane((prev) => {
-          if (prev.kind !== "model-picker") return prev;
-          const currentLayout = buildModelPickerLayout({
-            models,
-            catalog: modelCatalogRef.current ?? modelCatalog,
-            favorites: modelPickerFavorites,
-            recents: modelPickerRecents,
-            activeModelId: modelState.modelId,
-            query: prev.query,
-            selection: prev.selection,
-            providerTabKey: prev.providerTabKey ?? null,
-            focusedIndex: prev.focusedIndex,
-            searchMode: prev.searchMode,
-          });
-          const maxIndex = Math.max(0, currentLayout.entries.length - 1);
-          const next = Math.min(maxIndex, currentLayout.focusedIndex + 1);
-          return next === prev.focusedIndex ? prev : { ...prev, focusedIndex: next };
-        });
-        return;
-      }
-      if (key.tab || (key.shift && key.tab)) {
+      // Switch the provider/category rail. Tab does this from anywhere; ←/→ does
+      // it while focus is in the model list (where there's no value to cycle).
+      const switchRail = (delta: -1 | 1) => {
         const total = layout.railEntries.length;
         if (total === 0) return;
-        const delta = key.shift ? -1 : 1;
         const nextIndex = (layout.railIndex + delta + total) % total;
         const nextEntry = layout.railEntries[nextIndex];
         if (!nextEntry) return;
-	        const nextSelection =
-	          nextEntry.kind === "favorites"
-	            ? ({ kind: "favorites" } as const)
-	            : nextEntry.kind === "recents"
-	              ? ({ kind: "recents" } as const)
-	              : ({ kind: "provider", provider: nextEntry.provider } as const);
-	        if (nextSelection.kind === "provider") {
-	          const refreshProvider =
-	            nextSelection.provider === "opencode" || nextSelection.provider === "cursor" || nextSelection.provider === "droid"
-	            || nextSelection.provider === "lmstudio" || nextSelection.provider === "ollama"
-	              ? nextSelection.provider
-	              : null;
-	          if (refreshProvider) void refreshModelCatalog({ refreshProvider });
-	        }
-	        setRightPane({
-	          ...picker,
-	          selection: nextSelection,
-	          providerTabKey: null,
-	          focusedIndex: 0,
-	          query: "",
-          searchMode: false,
-        });
+        const nextSelection =
+          nextEntry.kind === "favorites"
+            ? ({ kind: "favorites" } as const)
+            : nextEntry.kind === "recents"
+              ? ({ kind: "recents" } as const)
+              : ({ kind: "provider", provider: nextEntry.provider } as const);
+        if (nextSelection.kind === "provider") {
+          const refreshProvider =
+            nextSelection.provider === "opencode" || nextSelection.provider === "cursor" || nextSelection.provider === "droid"
+            || nextSelection.provider === "lmstudio" || nextSelection.provider === "ollama"
+              ? nextSelection.provider
+              : null;
+          if (refreshProvider) void refreshModelCatalog({ refreshProvider });
+        }
+        setRightPane({ ...picker, selection: nextSelection, providerTabKey: null, focusedIndex: 0, footerFocus: null, query: "", searchMode: false });
+      };
+
+      if (key.tab) {
+        switchRail(key.shift ? -1 : 1);
         return;
       }
-	      if (key.return) {
-	        const target = layout.entries[layout.focusedIndex];
-	        if (target?.isAvailable) commitModelPickerSelection(target.modelId);
-	        return;
-	      }
-	      if ((input === "[" || input === "]") && layout.providerTabs.length > 1) {
+
+      if (key.upArrow) {
+        if (inSettings) {
+          if (settingIndex <= 0) setRightPane({ ...picker, footerFocus: null });
+          else setRightPane({ ...picker, footerFocus: pickerSettingsRows[settingIndex - 1]?.kind ?? null });
+          return;
+        }
+        const next = Math.max(0, layout.focusedIndex - 1);
+        if (next !== picker.focusedIndex) setRightPane({ ...picker, focusedIndex: next });
+        return;
+      }
+      if (key.downArrow) {
+        if (inSettings) {
+          if (settingIndex < pickerSettingsRows.length - 1) {
+            setRightPane({ ...picker, footerFocus: pickerSettingsRows[settingIndex + 1]?.kind ?? null });
+          }
+          return;
+        }
+        // Past the last model, drop focus down into the settings rows.
+        if (layout.focusedIndex >= lastModelIndex && pickerSettingsRows.length > 0) {
+          setRightPane({ ...picker, footerFocus: pickerSettingsRows[0]?.kind ?? null });
+          return;
+        }
+        const next = Math.min(lastModelIndex, layout.focusedIndex + 1);
+        if (next !== picker.focusedIndex) setRightPane({ ...picker, focusedIndex: next });
+        return;
+      }
+      if (key.leftArrow || key.rightArrow) {
+        if (inSettings) {
+          const row = pickerSettingsRows[settingIndex];
+          if (row) handleSetupRow(row, key.leftArrow ? -1 : 1);
+          return;
+        }
+        switchRail(key.leftArrow ? -1 : 1);
+        return;
+      }
+      if (key.return) {
+        if (inSettings) {
+          const row = pickerSettingsRows[settingIndex];
+          if (row) handleSetupRow(row, 1);
+          return;
+        }
+        const target = layout.entries[layout.focusedIndex];
+        if (target?.isAvailable) commitModelPickerSelection(target.modelId);
+        return;
+      }
+      if (input === "s" && !picker.searchMode && !key.ctrl && !key.meta) {
+        setRightPane({ ...picker, showAll: !picker.showAll, focusedIndex: 0 });
+        return;
+      }
+	      if ((input === "[" || input === "]") && !picker.searchMode && layout.providerTabs.length > 1) {
 	        const delta = input === "[" ? -1 : 1;
 	        const nextIndex = (layout.providerTabIndex + delta + layout.providerTabs.length) % layout.providerTabs.length;
 	        const nextTab = layout.providerTabs[nextIndex];
@@ -8915,9 +10479,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         });
         return;
       }
-      // Plain printable input either starts or extends the query.
+      // Printable input extends the query only once search is active (entered
+      // via '/'), so single-letter shortcuts (s/f) and bracket tab-cycling stay
+      // usable while browsing and aren't swallowed as the first search char.
       if (
-        typeof input === "string"
+        picker.searchMode
+        && typeof input === "string"
         && input.length === 1
         && !key.ctrl
         && !key.meta
@@ -8977,25 +10544,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         }
         if (laneDetails.pr) {
           const url = laneDetails.pr.url;
-          const bridge = (globalThis as { window?: { ade?: { app?: { openExternal?: (url: string) => unknown } } } }).window;
-          const opener = bridge?.ade?.app?.openExternal;
-          if (typeof opener === "function") {
-            try {
-              opener(url);
-              addNotice("Opening PR in browser…", "info");
-              return;
-            } catch {
-              // fall through to platform open
-            }
-          }
-          if (process.platform === "darwin" && url) {
-            spawn("open", [url], { stdio: "ignore", detached: true }).unref();
-            addNotice("Opening PR in browser…", "info");
-            return;
-          }
-          if (process.platform === "linux" && url) {
-            spawn("xdg-open", [url], { stdio: "ignore", detached: true }).unref();
-            addNotice("Opening PR in browser…", "info");
+          if (url && openExternalUrl(url, addNotice)) {
             return;
           }
           setPrompt("/pr open");
@@ -9023,13 +10572,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       if (rightPane.action.kind === "switch-lane") {
         const lane = lanes.find((entry) => entry.id === selectedId);
         if (!lane) return;
-        selectActiveLaneId(lane.id);
-        setDrawerLaneId(lane.id);
-        setSelectedDrawerLaneId(lane.id);
-        const session = newestSession(displaySessions.filter((entry) => entry.laneId === lane.id));
-        selectActiveSessionId(session?.sessionId ?? null);
-        setSelectedDrawerChatId(session?.sessionId ?? null);
-        addNotice(`Switched to lane ${lane.name}.`, "success");
+        activateLaneWithLastChat(lane, { notify: true });
         return;
       }
       const session = displaySessions.find((entry) => entry.sessionId === selectedId);
@@ -9107,6 +10650,45 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
 
+    // Per-lane hotkeys on the selected lane card: r=rename, a=archive, x=delete.
+    // Skips the primary lane and the "+ new lane" action row, and ignores
+    // modified keystrokes (e.g. Ctrl+R history search).
+    if (
+      pane === "drawer"
+      && drawerOpen
+      && drawerSection === "lanes"
+      && selectedDrawerLaneAction !== "new-lane"
+      && !key.ctrl
+      && !key.meta
+      && (input === "r" || input === "R" || input === "a" || input === "A" || input === "x" || input === "X")
+    ) {
+      const selectedLane = drawerLaneRows[selectedLaneIndex] ?? null;
+      if (selectedLane && selectedLane.laneType !== "primary") {
+        const hotkey = input.toLowerCase();
+        if (hotkey === "r") openLaneRenameForm(selectedLane.id);
+        else if (hotkey === "a") void archiveLane(selectedLane.id);
+        else openLaneDeleteForm(selectedLane.id);
+        return;
+      }
+    }
+    if (
+      pane === "drawer"
+      && drawerOpen
+      && drawerSection === "chats"
+      && selectedDrawerChatAction !== "new-chat"
+      && !key.ctrl
+      && !key.meta
+      && (input === "r" || input === "R" || input === "a" || input === "A" || input === "x" || input === "X")
+    ) {
+      const selectedChat = drawerVisibleLaneSessions[selectedChatIndex] ?? null;
+      if (selectedChat && sessions.some((session) => session.sessionId === selectedChat.sessionId)) {
+        const hotkey = input.toLowerCase();
+        if (hotkey === "r") openChatRenameForm(selectedChat.sessionId);
+        else if (hotkey === "a") void archiveChat(selectedChat.sessionId);
+        else openChatDeleteForm(selectedChat.sessionId);
+        return;
+      }
+    }
     if (pane === "drawer" && drawerOpen && key.tab) {
       setDrawerSection((section) => section === "lanes" ? "chats" : "lanes");
       return;
@@ -9274,16 +10856,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
     if (textInputActive && (key.backspace || key.delete)) {
-      const next = key.delete && !key.backspace
-        ? deletePromptForward(prompt, promptCursorRef.current)
-        : deletePromptBackward(prompt, promptCursorRef.current);
+      // Ink 5.x reports the macOS Backspace key (\x7f) as key.delete — and it
+      // can't tell it apart from forward-delete (\x1b[3~): both arrive as
+      // key.delete with empty input. So always delete backward, which is what
+      // pressing ⌫ should do. (Forward-delete is unrecoverable here and rare in
+      // a chat prompt.) This is THE fix for "backspace does nothing".
+      const next = deletePromptBackward(prompt, promptCursorRef.current);
       handlePromptChange(next.value, next.cursor);
       return;
     }
     if (textInputActive && !key.ctrl && input) {
-      const suffix = printableInput(input);
-      if (suffix) {
-        const next = insertPromptText(prompt, promptCursorRef.current, suffix);
+      // Segment the chunk so a coalesced "type + backspace" burst (which Ink
+      // hands us as one chunk with no backspace flag) applies its deletes
+      // instead of dropping them. Pure-printable input inserts as before.
+      const cursor = promptCursorRef.current;
+      const next = applyCoalescedPromptInput(prompt, cursor, input);
+      if (next.value !== prompt || next.cursor !== cursor) {
         handlePromptChange(next.value, next.cursor);
       }
     }
@@ -9292,7 +10880,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const handlePromptChange = useCallback((value: string, cursor: number = value.length) => {
     setFormDiscardArmed(false);
     if (activePaneRef.current === "chat" && value === "?") {
-      setRightPane({ kind: "help", title: "Help" });
+      renderHelpPane("", 0, helpRecentsRef.current);
       focusDetails();
       setPromptValue("");
       return;
@@ -9361,14 +10949,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
     if (delta > 0 && isPromptCursorOnLastVisualRow(prompt, width, current)) {
       setAttachmentFocusIndex(null);
-      setInlineRowFocus({ cell: providerLockedRef.current ? "model" : "provider" });
+      // Down past the last prompt row opens the full model picker pane. The
+      // footer inline model row mirrors the same `modelState`, so both surfaces
+      // stay in sync live; surface follows whether we're drafting a new chat.
+      openModelPicker({ surface: activeSessionIdRef.current ? "chat" : "new-chat" });
       return;
     }
     const next = movePromptCursorVertical(prompt, width, current, delta);
     promptCursorRef.current = next;
     setPromptCursor(next);
     setAttachmentFocusIndex(null);
-  }, [attachedImageChips.length, prompt, promptPaneWidth]);
+  }, [attachedImageChips.length, openModelPicker, prompt, promptPaneWidth]);
 
   const rightPaneVisible = rightPaneWidth > 0;
   const laneName = activeLane?.name ?? "main";
@@ -9381,6 +10972,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const detailsFooterSelected = footerControl === "details";
   const agentsFooterSelected = footerControl === "agents";
   const rightPaneShowsAgents = rightPaneVisible && rightPane.kind === "chat-info";
+  const showCommandPalette = commandPaletteOpen;
   const showMentionPalette = activeMentionRange != null && mentionSuggestions.length > 0;
   const showSlashPalette = prompt.startsWith("/") && slashRows.length > 0;
   const paletteBottomRows = 5
@@ -9388,11 +10980,30 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     + modelStatusOverlayRows
     + (attachedImageChips.length ? 1 : 0)
     + (error ? 1 : 0);
-  const paletteOverlayRows = showMentionPalette ? MENTION_PALETTE_ROWS : SLASH_PALETTE_ROWS;
+  // Slash palette grows with available terminal height (clamped) so it's bigger
+  // on large screens. Reserve exactly what it will render so it lines up.
+  const slashPaletteHeightBudget = Math.max(8, Math.min(17, rows - paletteBottomRows - 4));
+  const paletteOverlayRows = showCommandPalette
+    ? COMMAND_PALETTE_ROWS
+    : showMentionPalette
+      ? MENTION_PALETTE_ROWS
+      : slashPaletteReservedRows(slashPaletteHeightBudget);
   const paletteOverlayTop = Math.max(1, rows - paletteBottomRows - paletteOverlayRows);
   const drawerPaneWidth = resolveDrawerPaneWidth(columns, drawerOpen);
   const paletteOverlayLeft = drawerPaneWidth;
   const paletteOverlayWidth = Math.max(MIN_CENTER_PANE_WIDTH, centerWidth);
+  const commandPaletteVisibleRows = Math.max(1, COMMAND_PALETTE_ROWS - 3);
+  const commandPaletteWindowStart = (() => {
+    const total = commandPaletteItems.length;
+    if (total <= commandPaletteVisibleRows) return 0;
+    const safeIndex = Math.max(0, Math.min(commandPaletteIndex, total - 1));
+    const half = Math.floor(commandPaletteVisibleRows / 2);
+    let start = Math.max(0, safeIndex - half);
+    if (start + commandPaletteVisibleRows > total) {
+      start = Math.max(0, total - commandPaletteVisibleRows);
+    }
+    return start;
+  })();
   // Drawer selected-chat index: in add-mode the cursor tracks the candidate
   // chat to add; otherwise we only highlight when the drawer is on the chats
   // section, leaving lane rows un-marked.
@@ -9478,14 +11089,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       });
       footerX += width;
     }
-    if (modelState.codexFastMode) {
+    if (footerFastSupported) {
       footerX += 2;
-      addFooterInlineTarget("footer:inline:fast", footerX, "fast".length, () => {
-        void runKeybindingAction("chat:fastMode");
+      const width = footerCellWidth("fast", "fast");
+      addFooterInlineTarget("footer:inline:fast", footerX, width, () => {
+        selectFooterControl(null);
+        setPaneFocus("chat");
+        setInlineRowFocus({ cell: "fast" });
+        applyModelState((prev) => ({ ...prev, codexFastMode: !prev.codexFastMode }));
       });
-      footerX += "fast".length;
+      footerX += width;
     }
-    if (modelState.reasoningEffort) {
+    if (footerReasoningSupported && modelState.reasoningEffort) {
       footerX += 2;
       const width = footerCellWidth(modelState.reasoningEffort, "reasoning");
       addFooterInlineTarget("footer:inline:reasoning", footerX, width, () => {
@@ -9549,6 +11164,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             const cell = inlineRowFocus.cell;
             if (cell === "provider") cycleProvider(1);
             else if (cell === "model") cycleModel(1);
+            else if (cell === "fast") applyModelState((prev) => ({ ...prev, codexFastMode: !prev.codexFastMode }));
             else if (cell === "reasoning") cycleReasoning(1);
             else if (cell === "permission") cyclePermission(1);
             else if (cell === "subagents") openSubagentsPane();
@@ -9565,8 +11181,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
       rightFooterItems.push({
         id: "footer:split",
-        label: multiView ? "^g add chat" : "^g split",
-        onClick: () => startAddMode(),
+        label: gridViewActive ? "^g add chat" : multiView ? "^g grid" : "^g split",
+        onClick: () => toggleGridView(),
       });
       if (multiView) {
         rightFooterItems.push(
@@ -9746,7 +11362,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
     }
 
-    if (showMentionPalette) {
+    if (showCommandPalette) {
+      commandPaletteItems
+        .slice(commandPaletteWindowStart, commandPaletteWindowStart + commandPaletteVisibleRows)
+        .forEach((item, visibleIndex) => {
+          const index = commandPaletteWindowStart + visibleIndex;
+          addTarget({
+            id: `command-palette:${index}`,
+            rect: { x: paletteOverlayLeft + 1, y: paletteOverlayTop + visibleIndex + 1, w: paletteOverlayWidth, h: 1 },
+            onClick: () => {
+              setCommandPaletteIndex(index);
+              void runCommandPaletteItem(item)
+                .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+            },
+            onHover: (hovered) => { if (hovered) setCommandPaletteIndex(index); },
+            zIndex: 22,
+          });
+        });
+    } else if (showMentionPalette) {
       mentionSuggestions.forEach((suggestion, index) => {
         addTarget({
           id: `mention:${index}`,
@@ -9794,9 +11427,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       });
     } else if (pendingApproval?.mode === "question") {
       const question = pendingApproval.request?.questions[0] ?? null;
+      const options = question?.options?.length ? question.options : pendingApproval.request?.options ?? [];
       const centerStart = drawerPaneWidth + 1;
       const optionStartY = Math.max(1, 4 + goalBannerRows + addModeRows + chatRowBudget - 2);
-      question?.options?.slice(0, 6).forEach((option, index) => {
+      options.slice(0, 6).forEach((option, index) => {
         addTarget({
           id: `approval:question-option:${option.value}:${index}`,
           rect: { x: centerStart + 1, y: optionStartY + index, w: Math.max(12, centerWidth - 2), h: 1 },
@@ -9820,29 +11454,46 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           favorites: modelPickerFavorites,
           recents: modelPickerRecents,
           activeModelId: modelState.modelId,
+          activeReasoningEffort: modelState.reasoningEffort,
+          aiStatus,
+          showAll: picker.showAll,
+          settingsRows: picker.settingsRows ?? [],
+          footerFocus: picker.footerFocus ?? null,
+          laneLabel: picker.laneLabel ?? null,
           query: picker.query,
           selection: picker.selection,
           providerTabKey: picker.providerTabKey ?? null,
           focusedIndex: picker.focusedIndex,
           searchMode: picker.searchMode,
         });
-        const visibleCapacity = 12;
-        const half = Math.floor(visibleCapacity / 2);
-        let windowStart = Math.max(0, layout.focusedIndex - half);
-        if (windowStart + visibleCapacity > layout.entries.length) {
-          windowStart = Math.max(0, layout.entries.length - visibleCapacity);
-        }
-        const windowEnd = Math.min(layout.entries.length, windowStart + visibleCapacity);
+        // Single geometry source: derive every clickable rect from the SAME
+        // constants + windowing the render uses (modelPickerGeometry), so a
+        // click always lands on the row the user sees — even when scrolled.
+        const geometry = modelPickerGeometry({
+          paneLeft: rightStartColumn,
+          paneTop: rightBodyTop,
+          paneWidth: rightPaneWidth,
+          state: layout,
+          rows,
+        });
         addTarget({
           id: "right:model-picker:search",
-          rect: { x: rightStartColumn, y: rightBodyTop + 1, w: rightPaneWidth, h: 1 },
+          rect: geometry.search,
           onClick: () => setRightPane({ ...picker, searchMode: true, query: picker.query, focusedIndex: 0 }),
           zIndex: 4,
         });
-        layout.railEntries.forEach((entry, index) => {
+        addTarget({
+          id: "right:model-picker:show-all",
+          rect: geometry.showAll,
+          onClick: () => setRightPane({ ...picker, showAll: !picker.showAll, focusedIndex: 0 }),
+          zIndex: 3,
+        });
+        geometry.rail.forEach(({ id, rect }, index) => {
+          const entry = layout.railEntries[index];
+          if (!entry) return;
           addTarget({
-            id: `right:model-picker:rail:${index}`,
-            rect: { x: rightStartColumn, y: rightBodyTop + 6 + index, w: Math.max(8, Math.floor(rightPaneWidth / 4)), h: 1 },
+            id,
+            rect,
             onClick: () => {
               const nextSelection = railEntrySelection(entry);
               if (nextSelection.kind === "provider") {
@@ -9865,36 +11516,54 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             zIndex: 4,
           });
         });
-        layout.providerTabs.forEach((tab, index) => {
+        geometry.favorites.forEach(({ modelId, rect }) => {
           addTarget({
-            id: `right:model-picker:provider-tab:${tab.key}`,
-            rect: { x: rightStartColumn + Math.floor(rightPaneWidth / 4) + 1 + index * 13, y: rightBodyTop + 7, w: 13, h: 1 },
-            onClick: () => setRightPane({ ...picker, providerTabKey: tab.key, focusedIndex: 0 }),
-            zIndex: 4,
-          });
-        });
-        let modelEntryY = rightBodyTop + 8;
-        layout.entries.slice(windowStart, windowEnd).forEach((entry, sliceIndex) => {
-          const index = windowStart + sliceIndex;
-          const rowHeight = entry.subProvider || !entry.isAvailable ? 2 : 1;
-          const y = modelEntryY;
-          addTarget({
-            id: `right:model-picker:favorite:${entry.modelId}`,
-            rect: { x: rightStartColumn + Math.floor(rightPaneWidth / 4) + 2, y, w: 3, h: 1 },
-            onClick: () => toggleModelPickerFavoriteId(entry.modelId),
+            id: `right:model-picker:favorite:${modelId}`,
+            rect,
+            onClick: () => toggleModelPickerFavoriteId(modelId),
             zIndex: 6,
           });
+        });
+        geometry.entries.forEach(({ id, index, modelId, rect }) => {
+          const entry = layout.entries[index];
           addTarget({
-            id: `right:model-picker:entry:${entry.modelId}`,
-            rect: { x: rightStartColumn + Math.floor(rightPaneWidth / 4) + 1, y, w: Math.max(10, rightPaneWidth - Math.floor(rightPaneWidth / 4) - 2), h: rowHeight },
+            id,
+            rect,
             onClick: () => {
               setRightPane({ ...picker, focusedIndex: index });
-              if (entry.isAvailable) commitModelPickerSelection(entry.modelId);
+              if (entry?.isAvailable) commitModelPickerSelection(modelId);
             },
             zIndex: 5,
           });
-          modelEntryY += rowHeight;
         });
+        geometry.settings.forEach(({ id, rect }, index) => {
+          const row = layout.settingsRows
+            .filter((r) => r.kind !== "provider" && r.kind !== "model" && r.kind !== "apply")[index];
+          if (!row) return;
+          addTarget({
+            id,
+            rect,
+            onClick: () => {
+              setRightPane({ ...picker, footerFocus: row.kind });
+              handleSetupRow(row, 1);
+            },
+            zIndex: 5,
+          });
+        });
+        if (geometry.apply) {
+          const applyRow = layout.settingsRows.find((r) => r.kind === "apply");
+          if (applyRow) {
+            addTarget({
+              id: "right:model-picker:setting:apply",
+              rect: geometry.apply,
+              onClick: () => {
+                setRightPane({ ...picker, footerFocus: "apply" });
+                handleSetupRow(applyRow, 1);
+              },
+              zIndex: 6,
+            });
+          }
+        }
       } else if (rightPane.kind === "chat-info") {
         const subagentContent = subagentPaneContentFromRightPane(rightPane);
         const subagentPaneTop = 4 + goalBannerRows + addModeRows;
@@ -9957,20 +11626,39 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             zIndex: 3,
           });
         }
-      } else if (rightPane.kind === "new-chat-setup" || rightPane.kind === "model-setup") {
-        const firstRow = rightPane.kind === "new-chat-setup" ? rightBodyTop + 5 : rightBodyTop + 4;
-        rightPane.rows.forEach((row, index) => {
-          const y = firstRow + index + (index === rightSelectionIndex ? 1 : 0);
-          addTarget({
-            id: `right:setup:${row.kind}:${index}`,
-            rect: { x: rightStartColumn, y, w: rightPaneWidth, h: index === rightSelectionIndex && row.detail ? 2 : 1 },
-            onClick: () => {
-              setRightSelectionIndex(index);
-              if (row.kind === "model" && !row.disabled) openModelPicker({ surface: modelPickerSurfaceForSetupPane(rightPane.kind) });
-              else if (row.kind === "apply") handleSetupRow(row, 1);
-            },
-            zIndex: 3,
-          });
+      } else if (rightPane.kind === "form" && rightPane.command === "feedback") {
+        // Feedback pane hit-rects (left-click only): the Type row cycles
+        // bug/idea/praise; the send row submits. Rows mirror FeedbackFormPane
+        // (Type, blank, Body label + body lines, context block, footer w/ [send]).
+        const fb = rightPane.feedback ?? {};
+        const bodyLines = Math.max(1, fb.body && fb.body.length ? fb.body.split("\n").length : 1);
+        const contextRows = fb.showContext === false ? 1 : 4;
+        addTarget({
+          id: "right:feedback:type",
+          rect: { x: rightStartColumn, y: rightBodyTop, w: rightPaneWidth, h: 1 },
+          onClick: () => {
+            const meta = rightPane.feedback ?? {};
+            const nextType = cycleFeedbackType(feedbackStateFromMeta(meta).type, 1);
+            setRightPane({ ...rightPane, feedback: { ...meta, type: nextType } });
+            setFormDiscardArmed(false);
+            focusDetails();
+          },
+          zIndex: 3,
+        });
+        const sendY = rightBodyTop + 2 + bodyLines + 1 + contextRows + 1;
+        addTarget({
+          id: "right:feedback:send",
+          rect: { x: rightStartColumn, y: sendY, w: rightPaneWidth, h: 1 },
+          onClick: () => {
+            const state = feedbackStateFromMeta(rightPane.feedback ?? {});
+            if (!feedbackFormCanSubmit(state)) {
+              addNotice("Add some feedback before sending.", "error");
+              return;
+            }
+            void submitRightForm(rightPane, formValues)
+              .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+          },
+          zIndex: 3,
         });
       } else if (rightPane.kind === "form") {
         rightPane.fields.forEach((field, index) => {
@@ -10003,10 +11691,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           });
         });
       } else if (rightPane.kind === "list" && rightPane.action) {
-        rightPane.rows.forEach((_, index) => {
+        // Clamp to match RightPane's list rendering so click targets align with
+        // the visible rows even after a stale offset.
+        const listStart = Math.max(0, Math.min(rightPaneScrollOffsetRows, Math.max(0, rightPane.rows.length - DETAILS_BODY_MAX_LINES)));
+        rightPane.rows
+          .slice(listStart, listStart + DETAILS_BODY_MAX_LINES)
+          .forEach((_, visibleIndex) => {
+          const index = listStart + visibleIndex;
           addTarget({
             id: `right:list:${index}`,
-            rect: { x: rightStartColumn, y: rightBodyTop + 2 + index, w: rightPaneWidth, h: 1 },
+            rect: { x: rightStartColumn, y: rightBodyTop + 2 + visibleIndex, w: rightPaneWidth, h: 1 },
             onClick: () => {
               setRightSelectionIndex(index);
               const selectedId = rightPane.action?.ids[index] ?? null;
@@ -10014,13 +11708,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
               if (rightPane.action.kind === "switch-lane") {
                 const lane = lanes.find((entry) => entry.id === selectedId);
                 if (!lane) return;
-                selectActiveLaneId(lane.id);
-                setDrawerLaneId(lane.id);
-                setSelectedDrawerLaneId(lane.id);
-                const session = newestSession(displaySessions.filter((entry) => entry.laneId === lane.id));
-                selectActiveSessionId(session?.sessionId ?? null);
-                setSelectedDrawerChatId(session?.sessionId ?? null);
-                addNotice(`Switched to lane ${lane.name}.`, "success");
+                activateLaneWithLastChat(lane, { notify: true });
                 return;
               }
               const session = displaySessions.find((entry) => entry.sessionId === selectedId);
@@ -10050,11 +11738,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     addNotice,
     addTileToGrid,
     answerPendingInput,
+    activateLaneWithLastChat,
     applyDrawerChatSelection,
     centerWidth,
     chatRowBudget,
     columns,
     commitModelPickerSelection,
+    commandPaletteItems,
+    commandPaletteVisibleRows,
+    commandPaletteWindowStart,
     cycleModel,
     cyclePermission,
     cycleProvider,
@@ -10096,11 +11788,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     promptRows.length,
     removeMultiViewTile,
     rightPane,
+    rightPaneScrollOffsetRows,
     rightPaneVisible,
     rightPaneWidth,
     resolvePendingApproval,
     rows,
     runKeybindingAction,
+    runCommandPaletteItem,
     runRightCommand,
     selectActiveLaneId,
     selectActiveSessionId,
@@ -10112,6 +11806,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     setFormDiscardArmed,
     setPaneFocus,
     showMentionPalette,
+    showCommandPalette,
     showSlashPalette,
     slashRows,
     startAddMode,
@@ -10124,6 +11819,40 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     toggleModelPickerFavoriteId,
     toggleSubagentsPane,
   ]);
+
+  // Chat link click-targets, isolated so they re-register as the transcript
+  // scrolls/streams (keyed on the visible rows) without rebuilding the entire
+  // app hit-target set on every coalesced flush.
+  useEffect(() => {
+    const registry = hitTestRegistryRef.current;
+    for (const id of chatLinkTargetIdsRef.current) registry.unregister(id);
+    const ids: string[] = [];
+    const chatTopRow = 3 + goalBannerRows + addModeRows;
+    const chatStartColumn = drawerPaneWidth + 3;
+    visibleChatSelectionRows.forEach((row, index) => {
+      if (row.sourceRow == null) return;
+      const match = firstUrlInText(row.text);
+      if (!match) return;
+      const y = chatTopRow + index;
+      if (y < chatTopRow || y > chatTopRow + chatRowBudget) return;
+      const id = `chat:link:${index}:${match.url}`;
+      ids.push(id);
+      registry.register({
+        id,
+        rect: { x: chatStartColumn + match.index, y, w: Math.max(1, match.width), h: 1 },
+        onClick: () => {
+          if (!openExternalUrl(match.url, addNotice)) {
+            addNotice(`Couldn't open ${match.url}.`, "error");
+          }
+        },
+        zIndex: 6,
+      });
+    });
+    chatLinkTargetIdsRef.current = ids;
+    return () => {
+      for (const id of ids) registry.unregister(id);
+    };
+  }, [addModeRows, addNotice, chatRowBudget, drawerPaneWidth, goalBannerRows, visibleChatSelectionRows]);
 
   if (error && !connection) {
     return (
@@ -10179,14 +11908,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
               loading={mode === "connecting" || lanes.length === 0}
               prByLaneId={prByLaneId}
               diffByLaneId={diffByLaneId}
-              unavailableLaneIds={unavailableLaneIds}
-              width={drawerPaneWidth}
-            />
+	              unavailableLaneIds={unavailableLaneIds}
+	              width={drawerPaneWidth}
+	              scrollOffsetRows={drawerScrollOffsetRows}
+	            />
           ) : null}
           <Box width={centerWidth} flexDirection="column">
             {pendingApproval?.highStakes ? (
               <ApprovalPrompt approval={pendingApproval} modal />
-            ) : multiView ? (
+            ) : (gridViewActive && multiView) ? (
               <MultiChatGrid
                 tiles={multiView.tiles}
                 focusedIndex={multiView.focusedIndex}
@@ -10218,12 +11948,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
                 width={terminalPaneWidth}
                 height={chatRowBudget}
                 hiddenBottomRows={CLAUDE_TERMINAL_HIDDEN_INPUT_ROWS}
+                scrollOffset={readTerminalScroll(terminalScrollBySessionId, activeTerminalSession.terminalId).scrollOffset}
+                pendingNewCount={readTerminalScroll(terminalScrollBySessionId, activeTerminalSession.terminalId).pendingNewCount}
+                onViewportMetrics={(metrics) => {
+                  terminalViewportMetricsRef.current = metrics;
+                }}
               />
             ) : (
               <>
                 <ChatView
                   events={displayEvents}
                   notices={displayNotices}
+                  blocks={displayBlocks}
                   activeSession={activeSession}
                   projectName={projectName}
                   laneName={laneName}
@@ -10251,19 +11987,32 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
               activeFormField={formFieldIndex}
               selectedIndex={rightSelectionIndex}
               focused={activePane === "details"}
-              activeProvider={activeCommandProvider as AdeCodeProvider}
-              width={rightPaneWidth}
-	              modelPickerInputs={{
+	              activeProvider={activeCommandProvider as AdeCodeProvider}
+	              width={rightPaneWidth}
+              scrollOffsetRows={rightPaneScrollOffsetRows}
+		              modelPickerInputs={{
 	                models,
-	                catalog: modelCatalog,
-	                favorites: modelPickerFavorites,
-                recents: modelPickerRecents,
-                activeModelId: modelState.modelId,
-              }}
+		                catalog: modelCatalog,
+		                favorites: modelPickerFavorites,
+	                recents: modelPickerRecents,
+	                activeModelId: modelState.modelId,
+                activeReasoningEffort: modelState.reasoningEffort,
+                aiStatus,
+	              }}
             />
           ) : null}
         </Box>
-        {showMentionPalette ? (
+        {showCommandPalette ? (
+          <Box position="absolute" marginTop={paletteOverlayTop} marginLeft={paletteOverlayLeft}>
+            <CommandPalette
+              query={commandPaletteQuery}
+              items={commandPaletteItems}
+              selectedIndex={commandPaletteIndex}
+              width={paletteOverlayWidth}
+            />
+          </Box>
+        ) : null}
+        {!showCommandPalette && showMentionPalette ? (
           <Box position="absolute" marginTop={paletteOverlayTop} marginLeft={paletteOverlayLeft}>
             <MentionPalette
               suggestions={mentionSuggestions}
@@ -10273,7 +12022,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             />
           </Box>
         ) : null}
-        {!showMentionPalette && showSlashPalette ? (
+        {!showCommandPalette && !showMentionPalette && showSlashPalette ? (
           <Box position="absolute" marginTop={paletteOverlayTop} marginLeft={paletteOverlayLeft}>
             <SlashPalette
               query={prompt}
@@ -10281,6 +12030,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
               selectedIndex={slashIndex}
               provider={activeCommandProvider}
               width={paletteOverlayWidth}
+              maxRows={slashPaletteHeightBudget}
             />
           </Box>
         ) : null}
@@ -10351,11 +12101,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           modelDisplay={modelState.displayName}
           reasoningEffort={modelState.reasoningEffort}
           permissionLabel={permissionSummary(modelState)}
+          permissionDetail={modelState.provider === "codex" ? codexApprovalSandboxLabel(modelState) : null}
           contextPercent={contextPercent}
           tokenSummary={tokenSummary}
           approvalActive={pendingApproval?.mode === "approval" && !pendingApproval.highStakes}
           liveAgentCount={liveAgentCount}
           fastMode={modelState.codexFastMode}
+          fastSupported={footerFastSupported}
           inlineRowFocused={inlineRowFocused}
           inlineRowCell={inlineRowFocus.cell}
           providerLocked={providerLocked}

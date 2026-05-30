@@ -119,7 +119,9 @@ describe("SlashPalette", () => {
     ).lastFrame() ?? "");
     const lines = frame.split("\n").filter(Boolean);
 
-    expect(lines).toHaveLength(8);
+    // 6 command rows (MIN_VISIBLE_ROWS, no maxRows budget passed) + header +
+    // selected-summary + footer.
+    expect(lines).toHaveLength(9);
     expect(lines.every((line) => /^[┌│└]/.test(line) && /[┐│┘]$/.test(line))).toBe(true);
     expect(frame).toContain("/feedback");
     expect(frame).toContain("Submit ADE feedback to GitHub issues");

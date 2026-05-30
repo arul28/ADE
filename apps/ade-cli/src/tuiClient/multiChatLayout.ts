@@ -61,14 +61,21 @@ export function computeTileRects(n: 1 | 2 | 3 | 4 | 5 | 6, width: number, height
   const pattern = PATTERNS[n];
   const cols = pattern[0]?.cols ?? 1;
   const rows = pattern[0]?.rows ?? 1;
-  const colW = Math.max(1, Math.floor(safeWidth / cols));
-  const rowH = Math.max(1, Math.floor(safeHeight / rows));
-  return pattern.map((tile) => ({
-    x: tile.col * colW,
-    y: tile.row * rowH,
-    w: tile.colSpan * colW,
-    h: tile.rowSpan * rowH,
-  }));
+  // Snap each column/row boundary to an integer cell edge that distributes the
+  // remainder across the grid, so the tiles fill the full pane with no dead
+  // margin on the right/bottom (floor(width/cols) left up to cols-1 dead cells).
+  const colEdge = (index: number) => Math.round((index * safeWidth) / cols);
+  const rowEdge = (index: number) => Math.round((index * safeHeight) / rows);
+  return pattern.map((tile) => {
+    const x = colEdge(tile.col);
+    const y = rowEdge(tile.row);
+    return {
+      x,
+      y,
+      w: Math.max(1, colEdge(tile.col + tile.colSpan) - x),
+      h: Math.max(1, rowEdge(tile.row + tile.rowSpan) - y),
+    };
+  });
 }
 
 export function canRenderMultiChatGrid(count: number, width: number, height: number): boolean {

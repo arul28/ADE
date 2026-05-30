@@ -99,6 +99,10 @@ export function useHitTest(): HitTestContextValue {
   return context;
 }
 
+export function useHoveredHitId(): string | null {
+  return useContext(HitTestContext)?.hoveredId ?? null;
+}
+
 export function useHitTestTarget(target: HitTarget | null | false | undefined): boolean {
   const { registry, hoveredId } = useHitTest();
   const latestTargetRef = useRef<HitTarget | null>(null);

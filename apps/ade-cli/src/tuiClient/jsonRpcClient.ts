@@ -23,15 +23,13 @@ export class JsonRpcClient {
   private buffer = Buffer.alloc(0);
   private pending = new Map<number, PendingRequest>();
   private notificationHandlers = new Map<string, Set<(params: unknown) => void>>();
+  private closeHandlers = new Set<() => void>();
   private closed = false;
 
   constructor(private readonly socket: net.Socket) {
     socket.on("data", (chunk: Buffer | string) => this.handleData(chunk));
-    socket.on("error", (error) => this.rejectAll(error));
-    socket.on("close", () => {
-      this.closed = true;
-      this.rejectAll(new Error("ADE RPC socket closed."));
-    });
+    socket.on("error", (error) => this.handleSocketClosed(error));
+    socket.on("close", () => this.handleSocketClosed(new Error("ADE RPC socket closed.")));
   }
 
   static connect(socketPath: string): Promise<JsonRpcClient> {
@@ -86,10 +84,41 @@ export class JsonRpcClient {
   }
 
   close(): void {
+    // Mark closed before tearing down so the subsequent socket "close" event is
+    // treated as intentional and does NOT fire the unexpected-close handlers.
     this.closed = true;
     this.rejectAll(new Error("ADE RPC socket closed."));
     this.socket.end();
     this.socket.destroy();
+  }
+
+  /**
+   * Register a listener fired when the socket drops unexpectedly (peer close or
+   * error) — but NOT on an intentional `close()`. Returns an unsubscribe fn.
+   */
+  onClose(handler: () => void): () => void {
+    if (this.closed) {
+      handler();
+      return () => {};
+    }
+    this.closeHandlers.add(handler);
+    return () => {
+      this.closeHandlers.delete(handler);
+    };
+  }
+
+  private handleSocketClosed(error: Error): void {
+    const wasClosed = this.closed;
+    this.closed = true;
+    this.rejectAll(error);
+    if (wasClosed) return;
+    for (const handler of [...this.closeHandlers]) {
+      try {
+        handler();
+      } catch {
+        // A listener throwing must not break the others or the teardown.
+      }
+    }
   }
 
   onNotification(method: string, handler: (params: unknown) => void): () => void {

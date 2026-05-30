@@ -20,6 +20,7 @@ function baseModelState(overrides: Partial<AdeCodeModelState>): AdeCodeModelStat
     opencodePermissionMode: "edit",
     droidPermissionMode: "auto-low",
     cursorModeId: "agent",
+    cursorAvailableModeIds: [],
     cursorConfigValues: {},
     ...overrides,
   };

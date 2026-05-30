@@ -36,6 +36,8 @@ export type PrSummary = {
   reviewStatus: PrReviewStatus;
   additions: number;
   deletions: number;
+  mergeConflicts?: boolean | null;
+  behindBaseBy?: number | null;
   lastSyncedAt: string | null;
   createdAt: string;
   updatedAt: string;

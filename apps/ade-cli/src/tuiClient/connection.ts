@@ -529,6 +529,7 @@ async function connectAttachedSocket(args: {
       socketPath: args.socketPath,
       request,
       ...createAdeActionHelpers(request),
+      onConnectionClose: (handler: () => void) => attachedClient.onClose(handler),
       onChatEvent: (callback: (event: AgentChatEventEnvelope) => void) => {
         const stopChatNotification = attachedClient.onNotification("chat/event", (params) =>
           callback(params as AgentChatEventEnvelope),
@@ -788,6 +789,8 @@ export async function connectToAde(args: {
     socketPath: null,
     request,
     ...createAdeActionHelpers(request),
+    // Embedded runtimes live in-process and never "drop" — no-op listener.
+    onConnectionClose: () => () => {},
     onChatEvent: (callback) => chatEvents(callback),
     subscribeRuntimeEvents: async (subscriptionArgs, callback) => {
       const category = subscriptionArgs.category ?? "runtime";
