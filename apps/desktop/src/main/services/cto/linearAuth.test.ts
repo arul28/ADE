@@ -929,10 +929,12 @@ describe("linearClient", () => {
           state: { type: { in: ["unstarted", "started"] } },
           assignee: { id: { eq: "user-1" } },
           priority: { eq: 2 },
+          // Linear's IssueFilter has no `identifier` field, so a text query
+          // expands only to title/description (a numeric query would also add a
+          // `number` eq clause).
           or: [
             { title: { containsIgnoreCase: "auth" } },
             { description: { containsIgnoreCase: "auth" } },
-            { identifier: { containsIgnoreCase: "auth" } },
           ],
         },
       });

@@ -1011,7 +1011,9 @@ describe("AgentChatComposer", () => {
 
     await waitFor(() => expect(searchLinearIssues).toHaveBeenCalled());
     const issueIdentifier = (await screen.findAllByText("ADE-123"))[0]!;
-    const issueRow = issueIdentifier.closest("button");
+    // The issue row is a `div role="button"` (the checkbox is a real <button>
+    // sibling, so the row can't be a nested <button>).
+    const issueRow = issueIdentifier.closest('[role="button"]');
     expect(issueRow).toBeTruthy();
     fireEvent.click(issueRow!);
     fireEvent.click(screen.getByRole("button", { name: "Attach issue" }));
