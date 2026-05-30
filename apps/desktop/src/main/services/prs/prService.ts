@@ -2152,6 +2152,14 @@ export function createPrService({
       latest = next.data;
       if (!isMergeabilityPending(latest)) break;
     }
+    if (isMergeabilityPending(latest)) {
+      logger.warn("prs.mergeability_poll_exhausted", {
+        repo: `${repo.owner}/${repo.name}`,
+        prNumber,
+        attempts: MERGEABILITY_POLL_DELAYS_MS.length + 1,
+        mergeableState: asString(latest?.mergeable_state) || null,
+      });
+    }
     return latest;
   };
 
@@ -2969,6 +2977,8 @@ export function createPrService({
       reviewStatus,
       additions,
       deletions,
+      // Unknown mergeability is cached as null so list views show pending
+      // instead of stale clean/dirty status after GitHub times out.
       mergeConflicts,
       lastSyncedAt: nowIso(),
       createdAt: row.created_at,

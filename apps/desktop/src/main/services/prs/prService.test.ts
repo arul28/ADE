@@ -1456,6 +1456,63 @@ describe("prService.refresh", () => {
     });
   }
 
+  it("logs and caches pending mergeability when retries are exhausted", async () => {
+    vi.useFakeTimers();
+    try {
+      const row = makePrRow({ id: "pr-stale", github_pr_number: 90, merge_conflicts: 0 });
+      const db = makeMockDb();
+      installPullRequestRowStore(db, [row]);
+      const githubService = makeGithubService({
+        apiRequest: vi.fn(async (args: { path: string }) => {
+          if (args.path === "/repos/test-owner/test-repo/pulls/90") {
+            return {
+              data: makeGitHubPull({
+                number: 90,
+                html_url: row.github_url,
+                title: row.title,
+                mergeable: null,
+                mergeable_state: "unknown",
+                head: { ref: "my-feature", sha: "head-sha" },
+              }),
+            };
+          }
+          if (args.path === "/repos/test-owner/test-repo/commits/head-sha/status") {
+            return { data: { state: "success", statuses: [] } };
+          }
+          if (args.path === "/repos/test-owner/test-repo/commits/head-sha/check-runs") {
+            return { data: { check_runs: [] } };
+          }
+          if (args.path === "/repos/test-owner/test-repo/pulls/90/reviews") {
+            return { data: [] };
+          }
+          throw new Error(`Unexpected GitHub API path: ${args.path}`);
+        }),
+      });
+      const { service, logger } = buildService({ db, githubService });
+
+      const refreshPromise = service.refresh({ prId: "pr-stale" });
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(3_500);
+      await refreshPromise;
+
+      expect(logger.warn).toHaveBeenCalledWith("prs.mergeability_poll_exhausted", {
+        repo: "test-owner/test-repo",
+        prNumber: 90,
+        attempts: 4,
+        mergeableState: "unknown",
+      });
+      const updateCall = db.run.mock.calls.find(([sql]: [unknown]) =>
+        String(sql).includes("update pull_requests")
+        && String(sql).includes("merge_conflicts")
+        && String(sql).includes("behind_base_by")
+      );
+      const updateParams = updateCall?.[1] as unknown[] | undefined;
+      expect(updateParams?.slice(-6)).toEqual([1, null, 0, null, "pr-stale", "proj-1"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps successful explicit PR refreshes when a sibling fails", async () => {
     const okRow = makePrRow({ id: "pr-ok", github_pr_number: 90 });
     const failingRow = makePrRow({ id: "pr-bad", github_pr_number: 91 });
