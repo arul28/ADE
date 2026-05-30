@@ -5600,9 +5600,18 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.agentChatList, async (_event, arg: AgentChatListArgs = {}): Promise<AgentChatSessionSummary[]> => {
-    const ctx = ensureAgentChatContext();
+    const ctx = getCtx();
+    const service = ctx.agentChatService;
+    if (!service || typeof (service as unknown as { listSessions?: unknown }).listSessions !== "function") {
+      return [];
+    }
     const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
-    return ctx.agentChatService.listSessions(laneId || undefined, { includeAutomation: Boolean(arg?.includeAutomation) });
+    return await (service as unknown as {
+      listSessions: (
+        laneId?: string,
+        options?: { includeAutomation?: boolean },
+      ) => Promise<AgentChatSessionSummary[]>;
+    }).listSessions(laneId || undefined, { includeAutomation: Boolean(arg?.includeAutomation) });
   });
 
   ipcMain.handle(IPC.agentChatGetSummary, async (_event, arg: AgentChatGetSummaryArgs): Promise<AgentChatSessionSummary | null> => {

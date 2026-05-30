@@ -840,6 +840,58 @@ describe("registerIpc sync bridge", () => {
     });
   });
 
+  it("returns an empty agent chat list when the service is unavailable", async () => {
+    registerIpc({
+      getCtx: () => ({
+        agentChatService: null,
+      }) as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo" } as any,
+        binding: localBinding("/repo"),
+      }),
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.agentChatList)?.(
+        eventForSender(),
+        { laneId: " lane-1 ", includeAutomation: true },
+      ),
+    ).resolves.toEqual([]);
+  });
+
+  it("forwards agent chat list arguments when the service is available", async () => {
+    const sessions = [{ sessionId: "chat-1" }];
+    const listSessions = vi.fn(async () => sessions);
+    registerIpc({
+      getCtx: () => ({
+        agentChatService: { listSessions },
+      }) as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo" } as any,
+        binding: localBinding("/repo"),
+      }),
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.agentChatList)?.(
+        eventForSender(),
+        { laneId: " lane-1 ", includeAutomation: true },
+      ),
+    ).resolves.toBe(sessions);
+
+    expect(listSessions).toHaveBeenCalledWith("lane-1", { includeAutomation: true });
+  });
+
   it("disposes a live terminal runtime before deleting the session", async () => {
     const terminalSession = {
       id: "terminal-1",
