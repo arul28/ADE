@@ -601,6 +601,7 @@ import type { createWorkerTaskSessionService } from "../cto/workerTaskSessionSer
 import type { createLinearCredentialService } from "../cto/linearCredentialService";
 import { createLinearOAuthService, type LinearOAuthService } from "../cto/linearOAuthService";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
+import type { RemoteRuntimeActionRequest } from "../../../shared/types/remoteRuntime";
 import { registerRuntimeBridge } from "./runtimeBridge";
 import type { createFlowPolicyService } from "../cto/flowPolicyService";
 import type { createLinearRoutingService } from "../cto/linearRoutingService";
@@ -1348,6 +1349,16 @@ export function registerIpc({
     const rootPath = getLocalRuntimeRootForEvent(event);
     if (!rootPath) return null;
     return await action(localRuntimeConnectionPool, rootPath);
+  };
+
+  const tryLocalRuntimeAction = async <T>(
+    event: { sender: Electron.WebContents },
+    request: RemoteRuntimeActionRequest,
+  ): Promise<T | null> => {
+    const response = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+      pool.callActionForRoot(rootPath, request),
+    );
+    return response ? (response.result as T) : null;
   };
 
   // Backend services use Error.code for known failures (e.g.
@@ -5482,9 +5493,17 @@ export function registerIpc({
     return ctx;
   };
 
-  ipcMain.handle(IPC.sessionsList, async (_event, arg: ListSessionsArgs): Promise<TerminalSessionSummary[]> => {
-    const ctx = ensureSessionContext();
-    const ptyService = requirePtyService();
+  ipcMain.handle(IPC.sessionsList, async (event, arg: ListSessionsArgs): Promise<TerminalSessionSummary[]> => {
+    const ctx = getCtx();
+    if (!ctx.sessionService || !ctx.ptyService) {
+      const runtime = await tryLocalRuntimeAction<TerminalSessionSummary[]>(event, {
+        domain: "session",
+        action: "list",
+        args: arg ?? {},
+      });
+      return runtime ?? [];
+    }
+    const ptyService = ctx.ptyService;
     return await withIpcTiming(
       ctx,
       "sessions.list",
@@ -5538,16 +5557,25 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.sessionsGet, async (_event, arg: { sessionId: string }): Promise<TerminalSessionDetail | null> => {
-    const ctx = ensureSessionContext();
-    const ptyService = requirePtyService();
-    let session = ctx.sessionService.get(arg.sessionId);
+  ipcMain.handle(IPC.sessionsGet, async (event, arg: { sessionId: string }): Promise<TerminalSessionDetail | null> => {
+    const ctx = getCtx();
+    const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
+    if (!sessionId) return null;
+    if (!ctx.sessionService || !ctx.ptyService) {
+      return await tryLocalRuntimeAction<TerminalSessionDetail | null>(event, {
+        domain: "session",
+        action: "get",
+        arg: sessionId,
+      });
+    }
+    const ptyService = ctx.ptyService;
+    let session = ctx.sessionService.get(sessionId);
     if (!session) return null;
     if (sessionNeedsResumeTargetHydration(session)) {
       const sessionId = session.id;
       try {
         await ptyService.ensureResumeTargets([sessionId]);
-        const hydratedSession = ctx.sessionService.get(arg.sessionId);
+        const hydratedSession = ctx.sessionService.get(sessionId);
         if (hydratedSession) session = hydratedSession;
       } catch (err) {
         ctx.logger.warn("sessions.resume_target_hydration_failed", {

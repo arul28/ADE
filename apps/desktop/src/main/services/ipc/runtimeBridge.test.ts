@@ -840,6 +840,94 @@ describe("registerIpc sync bridge", () => {
     });
   });
 
+  it("routes sessions.list through the local runtime when in-process session services are null", async () => {
+    const sessions = [{ id: "session-1", toolType: "shell", status: "running" }];
+    const localRuntimeConnectionPool = {
+      callActionForRoot: vi.fn(async () => ({
+        domain: "session",
+        action: "list",
+        result: sessions,
+        statusHints: {},
+      })),
+    };
+    registerIpc({
+      getCtx: () => ({
+        sessionService: null,
+        ptyService: null,
+      }) as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo" } as any,
+        binding: localBinding("/repo"),
+      }),
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+      localRuntimeConnectionPool: localRuntimeConnectionPool as any,
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.sessionsList)?.(
+        eventForSender(),
+        { laneId: "lane-1" },
+      ),
+    ).resolves.toBe(sessions);
+
+    expect(localRuntimeConnectionPool.callActionForRoot).toHaveBeenCalledWith(
+      "/repo",
+      {
+        domain: "session",
+        action: "list",
+        args: { laneId: "lane-1" },
+      },
+    );
+  });
+
+  it("routes sessions.get through the local runtime when in-process session services are null", async () => {
+    const session = { id: "session-1", toolType: "shell", status: "running", ptyId: "pty-1" };
+    const localRuntimeConnectionPool = {
+      callActionForRoot: vi.fn(async () => ({
+        domain: "session",
+        action: "get",
+        result: session,
+        statusHints: {},
+      })),
+    };
+    registerIpc({
+      getCtx: () => ({
+        sessionService: null,
+        ptyService: null,
+      }) as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo" } as any,
+        binding: localBinding("/repo"),
+      }),
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+      localRuntimeConnectionPool: localRuntimeConnectionPool as any,
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.sessionsGet)?.(
+        eventForSender(),
+        { sessionId: "session-1" },
+      ),
+    ).resolves.toBe(session);
+
+    expect(localRuntimeConnectionPool.callActionForRoot).toHaveBeenCalledWith(
+      "/repo",
+      {
+        domain: "session",
+        action: "get",
+        arg: "session-1",
+      },
+    );
+  });
+
   it("returns an empty agent chat list when the service is unavailable", async () => {
     registerIpc({
       getCtx: () => ({
