@@ -73,6 +73,18 @@ export function hasSubProviderSelector(state: ModelPickerState): boolean {
   return !isSearching(state) && state.providerTabs.length > 1;
 }
 
+// Settings chip cell width — mirrors SettingsFooter's render EXACTLY so the
+// hit-rects and the painted chips share one source of truth:
+//   focus/rail indicator (1) + "icon " (icon 1 + space 1 = 2)
+//   + lowercased label (≤12) + trailing space (1) + value (≤14) + marginRight (2)
+const SETTING_LABEL_MAX = 12;
+const SETTING_VALUE_MAX = 14;
+export function settingsChipWidth(label: string, value: string): number {
+  const labelLen = Math.min(label.toLowerCase().length, SETTING_LABEL_MAX);
+  const valueLen = Math.min(value.length, SETTING_VALUE_MAX);
+  return 1 + 2 + labelLen + 1 + valueLen + 2;
+}
+
 export type GeometryRect = { id: string; rect: HitRect };
 
 export type ModelPickerGeometry = {
@@ -195,31 +207,37 @@ export function modelPickerGeometry(input: GeometryInput): ModelPickerGeometry {
   const applyRow = visibleRows.find((row) => row.kind === "apply") ?? null;
 
   // The chips Box has its OWN marginTop (1) below the divider (the divider sits
-  // at footerTop), so chips paint at footerTop+2 — and Apply, with its own
-  // marginTop, lands at chipsY+2 = footerTop+4. (footerTop already accounts for
-  // the footer Box's outer marginTop.)
+  // at footerTop), so chips paint at footerTop+2. (footerTop already accounts
+  // for the footer Box's outer marginTop.)
   const chipsY = footerTop + 2;
-  // Chips are a flexWrap row of natural-width pills; their precise x cannot be
-  // derived from a formula without measuring rendered glyph widths. We register
-  // each chip as a coarse equal slice across the body — good enough to route a
-  // click to the right chip in the common (single-row) case. Hover precision is
-  // handled by the render via id match, not by these rects.
+  // SIMULATE SettingsFooter's `flexWrap="wrap"` row: lay each natural-width chip
+  // left-to-right from paneLeft, wrapping to the next row when the next chip
+  // would overrun the pane. One rect per chip, keyed by kind, with the rendered
+  // cell width — so the painted chips and the click rects share one source.
   const settings: GeometryRect[] = [];
-  if (settingRows.length) {
-    const slice = Math.max(8, Math.floor(paneWidth / Math.max(1, settingRows.length)));
-    settingRows.forEach((row, index) => {
-      settings.push({
-        id: `right:model-picker:setting:${row.kind}`,
-        rect: { x: paneLeft + index * slice, y: chipsY, w: slice, h: 1 },
-      });
+  const paneRight = paneLeft + paneWidth;
+  let chipX = paneLeft;
+  let chipRowY = chipsY;
+  for (const row of settingRows) {
+    const w = settingsChipWidth(row.label, row.value);
+    // Wrap before placing (unless this chip is the first on its row).
+    if (chipX > paneLeft && chipX + w > paneRight) {
+      chipRowY += 1;
+      chipX = paneLeft;
+    }
+    settings.push({
+      id: `right:model-picker:setting:${row.kind}`,
+      rect: { x: chipX, y: chipRowY, w, h: 1 },
     });
+    chipX += w;
   }
 
-  // Apply button: its own marginTop (1) below the chip row (or below the
-  // divider when there are no chips), rendered as "[ Apply ]".
+  // Apply button: its own marginTop (1) below the LAST (possibly wrapped) chip
+  // row — i.e. one blank row below it — or below the divider when there are no
+  // chips. Rendered as "[ Apply ]".
   let apply: HitRect | null = null;
   if (applyRow) {
-    const applyY = settingRows.length ? chipsY + 2 : footerTop + 2;
+    const applyY = settingRows.length ? chipRowY + 2 : footerTop + 2;
     apply = { x: paneLeft, y: applyY, w: Math.max(8, Math.min(paneWidth, 24)), h: 1 };
   }
 

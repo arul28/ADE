@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Text } from "ink";
+import { Box, Text, useStdout } from "ink";
 import type { PendingApproval } from "../types";
 import { theme } from "../theme";
 import { useHoveredHitId } from "../hitTestRegistry";
@@ -43,6 +43,7 @@ export function ApprovalPrompt({
   modal?: boolean;
 }) {
   const hoveredId = useHoveredHitId();
+  const { stdout } = useStdout();
   if (!approval) return null;
 
   const question = approval.request?.questions[0] ?? null;
@@ -80,7 +81,12 @@ export function ApprovalPrompt({
   }
 
   const borderColor = highStakes ? theme.color.error : theme.color.borderActive;
-  const innerWidth = modal ? MODAL_WIDTH : INLINE_WIDTH;
+  // Clamp the fixed card width to the terminal so it never overflows a narrow
+  // window. Border (2) + paddingX (2) = 4 cols of chrome around innerWidth.
+  const fixedWidth = modal ? MODAL_WIDTH : INLINE_WIDTH;
+  const terminalCols = stdout?.columns ?? 0;
+  const innerWidth =
+    terminalCols > 0 ? Math.max(20, Math.min(fixedWidth, terminalCols - 4)) : fixedWidth;
   // The content region sits inside a single border (2 cols) + paddingX of 1
   // (2 cols), so usable text columns are innerWidth - 4. Rules/truncation use
   // this so nothing wraps past the card edge.

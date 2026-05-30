@@ -106,18 +106,29 @@ function SubProviderSelector({
 
 // ── Model list row (single line — no overlapping second line) ────────────────
 
+// Fixed prefix drawn before every name: selection rail (1) + favorite star (1)
+// + " glyph " (space + brand glyph + space = 3) = 5 cols.
+const ROW_PREFIX_WIDTH = 5;
+// Per-row suffixes, measured to the character so the name reservation is exact
+// and a row can never wrap onto a second line (the geometry assumes 1 line each):
+//   active     -> "  ● now"     (7 cols)
+//   unavailable-> "  · sign in" (11 cols)
+const ROW_SUFFIX_ACTIVE = "  ● now".length;
+const ROW_SUFFIX_UNAVAILABLE = "  · sign in".length;
+const ROW_NAME_MIN = 6;
+
 function ModelListRow({
   entry,
   selected,
   active,
   hovered,
-  nameWidth,
+  contentWidth,
 }: {
   entry: ModelPickerEntry;
   selected: boolean;
   active: boolean;
   hovered: boolean;
-  nameWidth: number;
+  contentWidth: number;
 }) {
   const accent = selected || hovered;
   const brand = theme.provider(entry.family);
@@ -128,6 +139,15 @@ function ModelListRow({
       : active
         ? theme.color.t1
         : theme.color.t2;
+  // Reserve the EXACT suffix this row draws (active and unavailable are mutually
+  // exclusive — an active model is by definition available). The name column is
+  // whatever is left after the fixed prefix and this row's suffix.
+  const suffixWidth = active
+    ? ROW_SUFFIX_ACTIVE
+    : !entry.isAvailable
+      ? ROW_SUFFIX_UNAVAILABLE
+      : 0;
+  const nameWidth = Math.max(ROW_NAME_MIN, contentWidth - ROW_PREFIX_WIDTH - suffixWidth);
   return (
     <Box flexDirection="row">
       {/* Selection rail (violet) — selection is shown by COLOR, not indentation. */}
@@ -135,7 +155,7 @@ function ModelListRow({
       <Text color={entry.isFavorite ? theme.color.warning : theme.color.t5}>{entry.isFavorite ? "★" : "☆"}</Text>
       <Text color={entry.isAvailable ? brand.color : theme.color.t5}>{` ${brand.glyph} `}</Text>
       <Text color={nameColor} dimColor={!entry.isAvailable} bold={selected}>
-        {endTruncate(entry.displayName, Math.max(6, nameWidth))}
+        {endTruncate(entry.displayName, nameWidth)}
       </Text>
       {active ? <Text color={theme.color.violet}>{"  ● now"}</Text> : null}
       {!entry.isAvailable ? <Text color={theme.color.t5} dimColor>{"  · sign in"}</Text> : null}
@@ -264,10 +284,11 @@ export function ModelPickerPane({
   const visibleEntries = state.entries.slice(window.start, window.end);
   const hiddenAfter = state.entries.length - window.end;
   const hiddenBefore = window.start;
-  // Content sits right of the icon rail (full width while searching). Reserve
-  // columns for rail (star+glyph) + "● now" so names align.
+  // Content sits right of the icon rail (full width while searching). Each row
+  // reserves its OWN prefix + (active/unavailable) suffix from contentWidth, so
+  // the precise name width is computed per row inside ModelListRow — guaranteeing
+  // every row stays exactly one line at any terminal width.
   const contentWidth = searching ? innerWidth : Math.max(14, innerWidth - RAIL_WIDTH - 2);
-  const nameWidth = Math.max(6, contentWidth - 12);
 
   // The list always occupies exactly MODEL_LIST_ROWS rows (padded with blanks)
   // so the settings footer never shifts as the catalog length changes.
@@ -288,7 +309,7 @@ export function ModelPickerPane({
           selected={flatIndex === state.focusedIndex}
           active={state.activeModelId != null && entry.modelId === state.activeModelId}
           hovered={hoveredId === `right:model-picker:entry:${entry.modelId}`}
-          nameWidth={nameWidth}
+          contentWidth={contentWidth}
         />,
       );
     });

@@ -221,6 +221,8 @@ export function Drawer({
         addMode={addMode}
         emphasisColor={emphasisColor}
         lanes={laneRows}
+        laneStart={laneStart}
+        laneTotal={ordered.length}
         sessions={laneSessions}
         activeLaneId={activeLaneId}
         activeSessionId={activeSessionId}
@@ -258,7 +260,11 @@ export function Drawer({
           </Box>
         ) : null}
         {laneRows.map((lane, index) => {
-          const isSelected = index === selectedLaneIndex;
+          // laneRows is sliced by laneStart for scrolling, but selectedLaneIndex
+          // is an ABSOLUTE index into `ordered`; rebase before comparing so the
+          // highlight tracks the right lane once the list is scrolled.
+          const absoluteIndex = laneStart + index;
+          const isSelected = absoluteIndex === selectedLaneIndex;
           const isHovered = hoveredId?.startsWith(`drawer:lane:${lane.id}:`) ?? false;
           const meta = visibleRowMeta[index] ?? { depth: 0, isLast: false, prefix: "" };
           const worktreeAvailable = !unavailableLaneIds.has(lane.id);
@@ -330,8 +336,8 @@ export function Drawer({
       />
       <Box paddingX={1} flexShrink={0}>
         <Text
-          color={focused && mode === "lanes" && selectedLaneIndex >= laneRows.length ? theme.color.violet : theme.color.t4}
-          bold={focused && mode === "lanes" && selectedLaneIndex >= laneRows.length}
+          color={focused && mode === "lanes" && selectedLaneIndex >= ordered.length ? theme.color.violet : theme.color.t4}
+          bold={focused && mode === "lanes" && selectedLaneIndex >= ordered.length}
         >
           + new lane
         </Text>
@@ -754,6 +760,8 @@ function MiniDrawer({
   addMode,
   emphasisColor,
   lanes,
+  laneStart,
+  laneTotal,
   sessions,
   activeLaneId,
   activeSessionId,
@@ -772,6 +780,8 @@ function MiniDrawer({
   addMode: boolean;
   emphasisColor: string;
   lanes: LaneSummary[];
+  laneStart: number;
+  laneTotal: number;
   sessions: AgentChatSessionSummary[];
   activeLaneId: string | null;
   activeSessionId: string | null;
@@ -804,7 +814,8 @@ function MiniDrawer({
       {lanes.map((lane, index) => {
         const status = deriveLaneStatus(lane, rawSessions, activeLaneId, unavailableLaneIds);
         const meta = rowMeta[index] ?? { depth: 0, prefix: "", isLast: false };
-        const selected = index === selectedLaneIndex;
+        // lanes is sliced by laneStart; selectedLaneIndex is absolute.
+        const selected = laneStart + index === selectedLaneIndex;
         const hovered = hoveredId?.startsWith(`drawer:lane:${lane.id}:`) ?? false;
         const detail = formatLaneAge(lane);
         const isVmLane = lane.runtimePlacement === "macos-vm";
@@ -870,7 +881,7 @@ function MiniDrawer({
             );
           })}
           <Box paddingX={1}>
-            {lanes[selectedLaneIndex] && unavailableLaneIds.has(lanes[selectedLaneIndex].id) ? (
+            {lanes[selectedLaneIndex - laneStart] && unavailableLaneIds.has(lanes[selectedLaneIndex - laneStart]!.id) ? (
               <Text color={theme.color.error}>worktree missing</Text>
             ) : (
               <Text color={selectedChatIndex === sessions.length || (hoveredId?.startsWith("drawer:new-chat:") ?? false) ? theme.color.violet : theme.color.t4}>
@@ -893,8 +904,8 @@ function MiniDrawer({
       </Box>
       <Box paddingX={1} flexShrink={0}>
         <Text
-          color={focused && mode === "lanes" && selectedLaneIndex >= lanes.length ? theme.color.violet : theme.color.t4}
-          bold={focused && mode === "lanes" && selectedLaneIndex >= lanes.length}
+          color={focused && mode === "lanes" && selectedLaneIndex >= laneTotal ? theme.color.violet : theme.color.t4}
+          bold={focused && mode === "lanes" && selectedLaneIndex >= laneTotal}
         >
           + lane
         </Text>

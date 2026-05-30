@@ -62,11 +62,15 @@ function QuotaWindowRow({
   const percent = Math.max(0, Math.min(100, Math.round(window.percent)));
   const color = tokenBarColor(percent);
   const countdown = formatResetCountdown(window.resetAt, nowMs);
-  const labelWidth = Math.max(6, width - 2);
+  // Reserve room for the "↻ <countdown>" chip (+ a gap) only when a countdown is
+  // actually shown; otherwise just leave a small gutter. Previously this always
+  // subtracted a fixed 8, needlessly truncating labels when no countdown exists.
+  const reserved = countdown ? countdown.length + 4 : 2;
+  const labelWidth = Math.max(4, Math.floor(width) - reserved);
   return (
     <Box flexDirection="column" marginTop={marginTop}>
       <Box flexDirection="row" justifyContent="space-between">
-        <Text color={theme.color.t2}>{endTruncate(window.label, labelWidth - 8)}</Text>
+        <Text color={theme.color.t2}>{endTruncate(window.label, labelWidth)}</Text>
         {countdown ? (
           <Text color={theme.color.t4} dimColor>{`↻ ${countdown}`}</Text>
         ) : null}

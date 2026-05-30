@@ -64,7 +64,13 @@ export function scrollTerminalBy(
 ): TerminalScrollState {
   // Up (older) increases offset; our `delta` convention: up = +, down = -.
   const nextOffset = clampTerminalScrollOffset(current.scrollOffset + delta, maxScrollable);
-  if (nextOffset === current.scrollOffset && nextOffset === 0) return current;
+  // No-op scroll past the clamp (offset unchanged) must not allocate a new state
+  // object — but still clear a stale pending counter once we're pinned at bottom.
+  if (nextOffset === current.scrollOffset) {
+    return nextOffset === 0 && current.pendingNewCount !== 0
+      ? { scrollOffset: 0, pendingNewCount: 0 }
+      : current;
+  }
   return {
     scrollOffset: nextOffset,
     pendingNewCount: nextOffset === 0 ? 0 : current.pendingNewCount,

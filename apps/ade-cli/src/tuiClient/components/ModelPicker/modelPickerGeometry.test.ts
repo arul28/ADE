@@ -8,6 +8,7 @@ import {
   isSearching,
   modelPickerGeometry,
   rowWindow,
+  settingsChipWidth,
 } from "./modelPickerGeometry";
 import type { ModelPickerEntry, ModelPickerState, ModelPickerProviderTab } from "./types";
 
