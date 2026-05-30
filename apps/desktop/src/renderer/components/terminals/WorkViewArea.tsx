@@ -40,7 +40,7 @@ import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/Agen
 import { ChatCommandMenu, handleCommandMenuKeyDown, type ChatCommandMenuHandle, type ChatCommandMenuItem } from "../chat/ChatCommandMenu";
 import { ChatComposerShell } from "../chat/ChatComposerShell";
 import { WorkStartSurface } from "./WorkStartSurface";
-import { CliSessionWorkSurfaceHeader } from "./CliSessionWorkSurfaceHeader";
+import { CliSessionWorkSurfaceHeader, GridTileSessionHeaderActions } from "./CliSessionWorkSurfaceHeader";
 import { isChatToolType, primarySessionLabel, stripTerminalLabelControls, truncateSessionLabel, formatToolTypeLabel } from "../../lib/sessions";
 import { sessionNeedsChatTabHighlight, sessionStatusDot } from "../../lib/terminalAttention";
 import type { WorkTabGroup } from "./useWorkSessions";
@@ -52,7 +52,6 @@ import { launchProfileForTerminalSession, type WorkPtyLaunchArgs, type WorkPtyLa
 import { buildWorkSessionTilingTree, type TilingPreset } from "./workSessionTiling";
 import { laneSurfaceTint } from "../lanes/laneDesignTokens";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
-import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 
 function isSessionAwaitingInput(session: TerminalSessionSummary): boolean {
   return sessionNeedsChatTabHighlight({
@@ -538,13 +537,14 @@ function ClosedCliSessionSurface({
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-card">
-      <CliSessionWorkSurfaceHeader
-        session={session}
-        lanes={lanes}
-        compact={layoutVariant === "grid-tile"}
-        onInfoClick={onInfoClick}
-        onContextMenu={onContextMenu}
-      />
+      {layoutVariant !== "grid-tile" ? (
+        <CliSessionWorkSurfaceHeader
+          session={session}
+          lanes={lanes}
+          onInfoClick={onInfoClick}
+          onContextMenu={onContextMenu}
+        />
+      ) : null}
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4 py-3">
         <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] pb-3">
           <div className="min-w-0">
@@ -638,15 +638,16 @@ function SessionSurface({
     if (isAgentCliSession(session)) {
       return (
         <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">
-          <CliSessionWorkSurfaceHeader
-            session={session}
-            lanes={lanes}
-            compact={layoutVariant === "grid-tile"}
-            stopping={stopping}
-            onInfoClick={onInfoClick}
-            onContextMenu={onContextMenu}
-            onStopRunningSession={onStopRunningSession}
-          />
+          {layoutVariant !== "grid-tile" ? (
+            <CliSessionWorkSurfaceHeader
+              session={session}
+              lanes={lanes}
+              stopping={stopping}
+              onInfoClick={onInfoClick}
+              onContextMenu={onContextMenu}
+              onStopRunningSession={onStopRunningSession}
+            />
+          ) : null}
           <TerminalView
             key={session.id}
             ptyId={session.ptyId}
@@ -1311,12 +1312,6 @@ export function WorkViewArea({
     return map;
   }, [lanes]);
 
-  const laneBranchById = useMemo(() => {
-    const map = new Map<string, string | null>();
-    for (const lane of lanes) map.set(lane.id, lane.branchRef);
-    return map;
-  }, [lanes]);
-
   const tabVisibleSessions = useMemo(
     () => (tabVisibleSessionIds ?? visibleSessions.map((session) => session.id))
       .map((sessionId) => sessionsById.get(sessionId))
@@ -1356,6 +1351,7 @@ export function WorkViewArea({
     visibleSessions.map((session) => {
       const dot = sessionStatusDot(session);
       const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
+      const isCliAgentSession = isAgentCliSession(session);
       const isActive = activeItemId === session.id;
       const rawLaneColor = laneColorById.get(session.laneId) ?? null;
       const laneAccentColor = rawLaneColor?.trim() ? rawLaneColor.trim() : null;
@@ -1368,7 +1364,6 @@ export function WorkViewArea({
             sessionTitle={truncateSessionLabel(primarySessionLabel(session))}
             laneName={session.laneName}
             laneColor={laneAccentColor}
-            branchLabel={branchNameFromRef(laneBranchById.get(session.laneId) ?? null)}
             onSessionTitleClick={openInTabs}
             onLaneClick={gotoLane}
             onLaneContextMenu={(e) => triggerLaneContextMenu(session.laneId, e)}
@@ -1380,10 +1375,20 @@ export function WorkViewArea({
         bodyClassName: "overflow-hidden",
         headerActions: (
           <>
-            <span
-              title={dot.label}
-              className={`${dot.cls} h-2 w-2 shrink-0${dot.spinning ? " animate-spin" : ""}`}
-            />
+            {isCliAgentSession ? (
+              <GridTileSessionHeaderActions
+                session={session}
+                stopping={isBusy}
+                onInfoClick={onInfoClick}
+                onContextMenu={onContextMenu}
+                onStopRunningSession={onStopRunningSession}
+              />
+            ) : (
+              <span
+                title={dot.label}
+                className={`${dot.cls} h-2 w-2 shrink-0${dot.spinning ? " animate-spin" : ""}`}
+              />
+            )}
             <button
               type="button"
               onClick={() => onCloseItem(session.id)}
@@ -1432,7 +1437,6 @@ export function WorkViewArea({
     handleContextMenu,
     lanes,
     laneColorById,
-    laneBranchById,
     onCloseItem,
     onContextMenu,
     onGoToLane,
