@@ -17177,6 +17177,15 @@ export function createAgentChatService(args: {
       managed.session.executionMode = "focused";
     }
 
+    // Reserve the session before sendMessage returns so overlapping Cursor/Droid
+    // sends cannot both pass the idle check and reach the SDK.
+    if (
+      (managed.session.provider === "cursor" || managed.session.provider === "droid")
+      && !allowActiveSession
+    ) {
+      setSessionActive(managed);
+    }
+
     return {
       sessionId,
       managed,

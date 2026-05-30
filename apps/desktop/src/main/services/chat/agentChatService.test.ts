@@ -6211,6 +6211,43 @@ describe("createAgentChatService", () => {
       }
     });
 
+    it("rejects overlapping Cursor sends before a second SDK prompt is dispatched", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      let finishTurn = () => {};
+      mockState.cursorSendPromptGate = new Promise<void>((resolve) => { finishTurn = resolve; });
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      try {
+        const first = service.sendMessage({
+          sessionId: session.id,
+          text: "First concurrent Cursor send.",
+        }, { awaitDispatch: true });
+        await vi.waitFor(() => {
+          expect(mockState.cursorSdkSendCalls.length).toBe(1);
+        });
+
+        await expect(service.sendMessage({
+          sessionId: session.id,
+          text: "Second concurrent Cursor send.",
+        })).rejects.toThrow(/already active/i);
+        expect(mockState.cursorSdkSendCalls).toHaveLength(1);
+
+        finishTurn();
+        await expect(first).resolves.toBeUndefined();
+      } finally {
+        finishTurn();
+      }
+    });
+
     it("does not treat an idle reusable Claude query as an active workload", async () => {
       const events: AgentChatEventEnvelope[] = [];
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
