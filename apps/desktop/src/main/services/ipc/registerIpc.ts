@@ -4849,7 +4849,7 @@ export function registerIpc({
     _event,
     arg: { chatSessionId: string; issues: LaneLinearIssue[] },
   ): Promise<SessionLinearIssueLink[]> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     return ctx.laneService.attachLinearIssueToSession(arg);
   });
 
@@ -4857,7 +4857,7 @@ export function registerIpc({
     _event,
     arg: { chatSessionId: string; issueId?: string },
   ): Promise<boolean> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     return ctx.laneService.detachLinearIssueFromSession(arg);
   });
 
@@ -4865,7 +4865,7 @@ export function registerIpc({
     _event,
     arg: { chatSessionId: string },
   ): Promise<SessionLinearIssueLink[]> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     return ctx.laneService.listLinearIssuesForSession(arg);
   });
 
@@ -4873,7 +4873,7 @@ export function registerIpc({
     _event,
     arg: { laneId: string },
   ): Promise<SessionLinearIssueLink[]> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     return ctx.laneService.listLinearIssuesForLaneSessions(arg);
   });
 
@@ -4881,7 +4881,7 @@ export function registerIpc({
     _event,
     arg: { laneId: string; issueId?: string },
   ): Promise<boolean> => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     return ctx.laneService.unlinkLinearIssues(arg);
   });
 
@@ -5671,7 +5671,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.agentChatLaunch, async (_event, arg: AgentChatLaunchArgs): Promise<AgentChatSession> => {
-    const ctx = getCtx();
+    const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.launchHeadless(arg);
   });
 
@@ -5685,6 +5685,9 @@ export function registerIpc({
     const ctx = getCtx();
     if (!ctx.laneService) {
       throw new Error("agentChat.launchCli requires an active project runtime lane service.");
+    }
+    if (!ctx.ptyService) {
+      throw new Error("agentChat.launchCli requires an active terminal (pty) service.");
     }
     return launchAgentChatCli(arg, {
       laneService: ctx.laneService,
