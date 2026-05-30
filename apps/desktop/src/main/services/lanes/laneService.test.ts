@@ -3989,3 +3989,432 @@ describe("laneService - branchSwitch", () => {
     });
   });
 });
+
+describe("laneService session-scoped Linear issue links", () => {
+  function seedClaudeSession(db: any, args: { sessionId: string; laneId: string }) {
+    const now = "2026-05-20T10:00:00.000Z";
+    db.run(
+      `
+        insert into claude_sessions(session_id, lane_id, chat_session_id, title, tags_json, created_at, updated_at)
+        values (?, ?, ?, ?, ?, ?, ?)
+      `,
+      [args.sessionId, args.laneId, null, null, null, now, now],
+    );
+  }
+
+  it("persists and lists Linear issues attached to a standalone session with no lane", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-session-standalone-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-session-standalone", repoRoot });
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-session-standalone",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      // "chat-no-lane" is not present in claude_sessions/terminal_sessions, so
+      // it resolves to no lane — the standalone case.
+      const links = service.attachLinearIssueToSession({
+        chatSessionId: "chat-no-lane",
+        issues: [makeLinearIssue()],
+      });
+
+      expect(links).toHaveLength(1);
+      expect(links[0]?.sessionId).toBe("chat-no-lane");
+      expect(links[0]?.laneId).toBeNull();
+      expect(links[0]?.role).toBe("worked");
+      expect(links[0]?.source).toBe("chat_attach");
+      expect(links[0]?.issue.identifier).toBe("ABC-42");
+
+      const listed = service.listLinearIssuesForSession({ chatSessionId: "chat-no-lane" });
+      expect(listed).toHaveLength(1);
+      expect(listed[0]?.issue.id).toBe("issue-1");
+
+      // No lane → nothing mirrored into the lane-scoped link table.
+      expect(service.listLinearIssuesForLaneSessions({ laneId: "lane-child" })).toHaveLength(0);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("attaches multiple issues in one batch call", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-session-batch-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-session-batch", repoRoot });
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-session-batch",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      const links = service.attachLinearIssueToSession({
+        chatSessionId: "chat-batch",
+        issues: [
+          makeLinearIssue(),
+          { ...makeLinearIssue(), id: "issue-2", identifier: "ABC-43", title: "Second" },
+          // Duplicate id is deduped.
+          { ...makeLinearIssue(), title: "Dupe id" },
+        ],
+      });
+
+      expect(links).toHaveLength(2);
+      expect(service.listLinearIssuesForSession({ chatSessionId: "chat-batch" })).toHaveLength(2);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("mirrors a session attach into the lane link table when the session has a lane", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-session-laned-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-session-laned", repoRoot });
+      seedClaudeSession(db, { sessionId: "chat-on-child", laneId: "lane-child" });
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-session-laned",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      const links = service.attachLinearIssueToSession({
+        chatSessionId: "chat-on-child",
+        issues: [makeLinearIssue()],
+      });
+      expect(links[0]?.laneId).toBe("lane-child");
+
+      // Mirrored into lane_linear_issue_links so the lane surfaces the issue.
+      const lanes = await service.list({ includeStatus: false });
+      const child = lanes.find((lane) => lane.id === "lane-child");
+      expect(child?.linearIssueLinks).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          source: "chat_attach",
+          issue: expect.objectContaining({ identifier: "ABC-42" }),
+        }),
+      ]));
+
+      // And aggregated by lane across its sessions.
+      const laneSessionLinks = service.listLinearIssuesForLaneSessions({ laneId: "lane-child" });
+      expect(laneSessionLinks).toHaveLength(1);
+      expect(laneSessionLinks[0]?.sessionId).toBe("chat-on-child");
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("detaches an issue from both the session and the mirrored lane link", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-session-detach-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-session-detach", repoRoot });
+      seedClaudeSession(db, { sessionId: "chat-detach", laneId: "lane-child" });
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-session-detach",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      service.attachLinearIssueToSession({ chatSessionId: "chat-detach", issues: [makeLinearIssue()] });
+      expect(service.listLinearIssuesForSession({ chatSessionId: "chat-detach" })).toHaveLength(1);
+      expect(service.listLinearIssuesForLaneSessions({ laneId: "lane-child" })).toHaveLength(1);
+
+      const detached = service.detachLinearIssueFromSession({ chatSessionId: "chat-detach", issueId: "issue-1" });
+      expect(detached).toBe(true);
+      expect(service.listLinearIssuesForSession({ chatSessionId: "chat-detach" })).toHaveLength(0);
+      expect(service.listLinearIssuesForLaneSessions({ laneId: "lane-child" })).toHaveLength(0);
+
+      const lanes = await service.list({ includeStatus: false });
+      const child = lanes.find((lane) => lane.id === "lane-child");
+      expect((child?.linearIssueLinks ?? []).some((l) => l.source === "chat_attach")).toBe(false);
+
+      // Detaching an unknown issue is a no-op.
+      expect(service.detachLinearIssueFromSession({ chatSessionId: "chat-detach", issueId: "issue-1" })).toBe(false);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("detaches all issues from a session when issueId is omitted", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-session-detach-all-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-session-detach-all", repoRoot });
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-session-detach-all",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      service.attachLinearIssueToSession({
+        chatSessionId: "chat-all",
+        issues: [
+          makeLinearIssue(),
+          { ...makeLinearIssue(), id: "issue-2", identifier: "ABC-43", title: "Second" },
+        ],
+      });
+      expect(service.listLinearIssuesForSession({ chatSessionId: "chat-all" })).toHaveLength(2);
+
+      const detached = service.detachLinearIssueFromSession({ chatSessionId: "chat-all" });
+      expect(detached).toBe(true);
+      expect(service.listLinearIssuesForSession({ chatSessionId: "chat-all" })).toHaveLength(0);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("re-attaching the same issue+role replaces rather than duplicates", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-session-dedupe-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-session-dedupe", repoRoot });
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-session-dedupe",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      service.attachLinearIssueToSession({ chatSessionId: "chat-dupe", issues: [makeLinearIssue()] });
+      service.attachLinearIssueToSession({
+        chatSessionId: "chat-dupe",
+        issues: [{ ...makeLinearIssue(), stateName: "Done", stateType: "completed" }],
+      });
+
+      const listed = service.listLinearIssuesForSession({ chatSessionId: "chat-dupe" });
+      expect(listed).toHaveLength(1);
+      // Latest write wins.
+      expect(listed[0]?.issue.stateName).toBe("Done");
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("skips issues missing required fields without persisting them", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-session-invalid-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-session-invalid", repoRoot });
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-session-invalid",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      // Mirrors linkLinearIssues: unlinkable issues are skipped, not thrown.
+      const links = service.attachLinearIssueToSession({
+        chatSessionId: "chat-invalid",
+        issues: [{ ...makeLinearIssue(), id: "", identifier: "" }],
+      });
+      expect(links).toHaveLength(0);
+      expect(service.listLinearIssuesForSession({ chatSessionId: "chat-invalid" })).toHaveLength(0);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("laneService unlinkLinearIssues", () => {
+  function seedPrimaryLinearIssue(db: any, args: { projectId: string; laneId: string; issue: ReturnType<typeof makeLinearIssue> }) {
+    const now = "2026-05-20T10:00:00.000Z";
+    db.run(
+      `
+        insert into lane_linear_issues(id, project_id, lane_id, issue_id, issue_json, created_at, updated_at)
+        values (?, ?, ?, ?, ?, ?, ?)
+      `,
+      [`primary-${args.laneId}`, args.projectId, args.laneId, args.issue.id, JSON.stringify(args.issue), now, now],
+    );
+  }
+
+  it("removes a specific non-primary lane link, leaving the primary intact", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-unlink-one-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-unlink-one", repoRoot });
+      const primaryIssue = { ...makeLinearIssue(), id: "issue-primary", identifier: "ABC-1", title: "Primary" };
+      seedPrimaryLinearIssue(db, { projectId: "proj-unlink-one", laneId: "lane-child", issue: primaryIssue });
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-unlink-one",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      service.linkLinearIssues({
+        laneId: "lane-child",
+        issues: [
+          { ...makeLinearIssue(), id: "issue-a", identifier: "ABC-2", title: "A" },
+          { ...makeLinearIssue(), id: "issue-b", identifier: "ABC-3", title: "B" },
+        ],
+      });
+
+      const removed = service.unlinkLinearIssues({ laneId: "lane-child", issueId: "issue-a" });
+      expect(removed).toBe(true);
+
+      const lanes = await service.list({ includeStatus: false });
+      const child = lanes.find((lane) => lane.id === "lane-child");
+      const linkIds = (child?.linearIssueLinks ?? []).map((l) => l.issue.id);
+      expect(linkIds).not.toContain("issue-a");
+      expect(linkIds).toContain("issue-b");
+      // Primary survives.
+      expect(child?.linearIssue?.id).toBe("issue-primary");
+      expect(linkIds).toContain("issue-primary");
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("removes all non-primary links when issueId is omitted but never the primary", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-unlink-all-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-unlink-all", repoRoot });
+      const primaryIssue = { ...makeLinearIssue(), id: "issue-primary", identifier: "ABC-1", title: "Primary" };
+      seedPrimaryLinearIssue(db, { projectId: "proj-unlink-all", laneId: "lane-child", issue: primaryIssue });
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-unlink-all",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      service.linkLinearIssues({
+        laneId: "lane-child",
+        issues: [
+          { ...makeLinearIssue(), id: "issue-a", identifier: "ABC-2", title: "A" },
+          { ...makeLinearIssue(), id: "issue-b", identifier: "ABC-3", title: "B" },
+        ],
+      });
+
+      const removed = service.unlinkLinearIssues({ laneId: "lane-child" });
+      expect(removed).toBe(true);
+
+      const lanes = await service.list({ includeStatus: false });
+      const child = lanes.find((lane) => lane.id === "lane-child");
+      const linkIds = (child?.linearIssueLinks ?? []).map((l) => l.issue.id);
+      expect(linkIds).not.toContain("issue-a");
+      expect(linkIds).not.toContain("issue-b");
+      // Primary is preserved (synthesized as a link + the lane primary issue).
+      expect(child?.linearIssue?.id).toBe("issue-primary");
+
+      // Nothing left to remove → no-op.
+      expect(service.unlinkLinearIssues({ laneId: "lane-child" })).toBe(false);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("laneService createWorktreeLane orphan cleanup", () => {
+  beforeEach(() => {
+    vi.mocked(getHeadSha).mockReset();
+    vi.mocked(runGit).mockReset();
+    vi.mocked(runGitOrThrow).mockReset();
+  });
+
+  it("removes the created worktree and branch when the lane-row insert fails", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-create-cleanup-"));
+    const realDb = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const now = "2026-05-12T20:00:00.000Z";
+    realDb.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      ["proj-create-cleanup", repoRoot, "demo", "main", now, now],
+    );
+
+    // Inject a failure on the `insert into lanes(...)` AFTER `git worktree add`
+    // already succeeded, simulating a DB write that orphans the worktree.
+    const db = new Proxy(realDb, {
+      get(target, prop, receiver) {
+        if (prop === "run") {
+          return (sql: string, params?: unknown[]) => {
+            if (/insert into lanes\(/i.test(sql)) {
+              throw new Error("simulated lane insert failure");
+            }
+            return (target.run as (sql: string, params?: unknown[]) => void)(sql, params as never);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    let worktreeAdded = false;
+    let worktreeRemoved = false;
+    let branchDeleted = false;
+
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+      if (args[0] === "worktree" && args[1] === "add") {
+        worktreeAdded = true;
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      if (args[0] === "worktree" && args[1] === "remove") {
+        worktreeRemoved = true;
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      if (args[0] === "rev-parse" && args[1] === "main") return { exitCode: 0, stdout: "sha-main\n", stderr: "" };
+      if (args[0] === "branch" && args[1] === "-D") {
+        branchDeleted = true;
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-create-cleanup",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    try {
+      await expect(
+        service.create({ name: "ENG-9 Orphan guard" }),
+      ).rejects.toThrow(/simulated lane insert failure/);
+
+      // The worktree was created, so cleanup must remove it and the branch.
+      expect(worktreeAdded).toBe(true);
+      expect(worktreeRemoved).toBe(true);
+      expect(branchDeleted).toBe(true);
+
+      // No lane row was persisted for the failed create.
+      const rows = realDb.all<{ id: string }>(
+        "select id from lanes where project_id = ?",
+        ["proj-create-cleanup"],
+      );
+      expect(rows).toHaveLength(0);
+    } finally {
+      realDb.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+});

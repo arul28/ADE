@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { CircleNotch, Warning, X } from "@phosphor-icons/react";
 
@@ -7,61 +7,38 @@ import type {
   LaneLinearIssue,
   NormalizedLinearIssue,
 } from "../../../shared/types";
-import { linearIssueBranchName, linearIssueLaneName } from "../../../shared/linearIssueBranch";
 import { useAppStore } from "../../state/appStore";
-import { requestLinearIssueWorkContext } from "../../lib/linearIssueWorkNavigation";
 import {
   consumePendingLinearIssueQuickViewRequest,
   subscribeLinearIssueQuickViewRequests,
   type LinearIssueQuickViewRequest,
 } from "../../lib/linearIssueQuickViewNavigation";
 import { cn } from "../ui/cn";
+import { linearIssueLaneName } from "../../../shared/linearIssueBranch";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
-import { LinearIssueBrowser, linearBrowserIssueToLaneIssue } from "./LinearIssueBrowser";
 import {
-  BatchCreateLanesModal,
-  BatchResolveInExistingLaneModal,
-  BatchResolveInNewLanesModal,
-  CreateLaneAttachedModal,
-  ResolveInExistingLaneModal,
-  ResolveInNewLaneModal,
-  useLinearIssueResolveModalState,
-  type LinearIssueResolveModalKind,
-} from "./LinearIssueResolveModals";
+  LinearIssueBrowser,
+  linearBrowserIssueToLaneIssue,
+  type BatchProgress,
+} from "./LinearIssueBrowser";
+import { BatchLaunchModal, type BatchLaunchSubmit } from "./BatchLaunchModal";
+import { BatchLaunchStatusToast } from "./BatchLaunchStatusToast";
+import {
+  findIssueConflicts,
+  runBatchLaunch,
+  type BatchLaunchIssueConfig,
+  type BatchLaunchItemState,
+} from "../../lib/linearBatchLaunch";
+import {
+  clearCreatingIssue,
+  rememberCreatingIssues,
+  rememberLaunchedLanes,
+} from "../../lib/launchedLanesHighlight";
 
 const INITIAL_VISIBILITY_CHECK_DELAY_MS = 2_000;
 
 const HEADER_STATUS_MENU_ROW_CLASS =
   "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] font-medium text-muted-fg/80 transition-colors duration-150 hover:bg-white/[0.06] hover:text-fg/90";
-
-function openWorkDraftForLinearIssue(args: {
-  projectRoot: string | null | undefined;
-  laneId: string;
-  issue: LaneLinearIssue;
-  contextSource: "lane_link" | "manual";
-  modelId?: string | null;
-  selectLane: (laneId: string) => void;
-  setWorkViewState: ReturnType<typeof useAppStore.getState>["setWorkViewState"];
-  setLaneWorkViewState: ReturnType<typeof useAppStore.getState>["setLaneWorkViewState"];
-}): void {
-  requestLinearIssueWorkContext({
-    laneId: args.laneId,
-    issue: args.issue,
-    contextSource: args.contextSource,
-    modelId: args.modelId ?? null,
-  });
-  args.selectLane(args.laneId);
-  const draftState = {
-    draftKind: "chat" as const,
-    draftLaneId: args.laneId,
-    viewMode: "tabs" as const,
-    activeItemId: null,
-    selectedItemId: null,
-  };
-  args.setWorkViewState(args.projectRoot, draftState);
-  args.setLaneWorkViewState(args.projectRoot, args.laneId, draftState);
-  window.location.hash = `#/work?laneId=${encodeURIComponent(args.laneId)}`;
-}
 
 function openProjectPickerRoute(): void {
   window.location.hash = "#/project";
@@ -78,8 +55,6 @@ export function LinearQuickViewButton({
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const selectLane = useAppStore((s) => s.selectLane);
-  const setWorkViewState = useAppStore((s) => s.setWorkViewState);
-  const setLaneWorkViewState = useAppStore((s) => s.setLaneWorkViewState);
   const [visible, setVisible] = useState(false);
   const [open, setOpen] = useState(false);
   const [quickView, setQuickView] = useState<CtoLinearQuickView | null>(null);
@@ -87,18 +62,15 @@ export function LinearQuickViewButton({
   const [connectionPrompt, setConnectionPrompt] = useState<LinearIssueQuickViewRequest | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [browserLoading, setBrowserLoading] = useState(false);
-  const [busyModal, setBusyModal] = useState<LinearIssueResolveModalKind | null>(null);
-  const [batchProgress, setBatchProgress] = useState<{
-    completed: number;
-    total: number;
-    action: string;
-  } | null>(null);
-  const { activeModal, activeIssue, openModal, closeModal } = useLinearIssueResolveModalState();
-  const [batchModal, setBatchModal] = useState<"batch-create-lanes" | "batch-resolve-new" | "batch-resolve-existing" | null>(null);
+  const [batchModalOpen, setBatchModalOpen] = useState(false);
   const [batchIssues, setBatchIssues] = useState<LaneLinearIssue[]>([]);
+  const [batchLaneOnly, setBatchLaneOnly] = useState(false);
+  const [batchLaunchStates, setBatchLaunchStates] = useState<Map<string, BatchLaunchItemState>>(new Map());
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
   const cachedQuickViewRef = useRef<CtoLinearQuickView | null>(null);
+  // Remembers each issue's chosen config so "Retry failed" reuses the same model.
+  const batchConfigByIssueRef = useRef<Map<string, BatchLaunchIssueConfig>>(new Map());
 
   const loadVisibility = useCallback(async (): Promise<boolean> => {
     if (!project?.rootPath || !window.ade.cto?.getLinearConnectionStatus) {
@@ -221,8 +193,7 @@ export function LinearQuickViewButton({
 
   const close = useCallback(() => {
     setOpen(false);
-    closeModal();
-  }, [closeModal]);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -247,161 +218,181 @@ export function LinearQuickViewButton({
     };
   }, [close, open]);
 
-  const createLaneForIssue = useCallback(async (issue: LaneLinearIssue) => {
-    const name = linearIssueLaneName(issue);
-    const branchName = linearIssueBranchName(issue);
-    const lane = await window.ade.lanes.create({
-      name,
-      branchName,
-      linearIssue: { ...issue, branchName },
+  // The launch dock opens one unified launch-config modal for 1..N issues. The
+  // modal closes on Launch and the bounded-parallel orchestrator runs below, so
+  // the user lands on the Lanes tab immediately rather than watching a progress
+  // bar. Both the multi-select dock and the single-issue row route here, so
+  // every issue→lane(+chat/CLI) launch shares one path.
+  const handleBatchLaunchOpen = useCallback(
+    (issues: Array<NormalizedLinearIssue | LaneLinearIssue>, options: { laneOnly?: boolean }) => {
+      setBatchIssues(issues.map((i) => ("raw" in i ? linearBrowserIssueToLaneIssue(i) : (i as LaneLinearIssue))));
+      setBatchLaunchStates(new Map());
+      setBatchLaneOnly(options.laneOnly === true);
+      setOpen(false);
+      setBatchModalOpen(true);
+    },
+    [],
+  );
+
+  const launchBatch = useCallback(async (entries: BatchLaunchSubmit[]) => {
+    if (!entries.length) return;
+    // Record optimistic "creating lane" placeholders for issues that mint a NEW
+    // lane (existing-lane targets already have a lane), keyed by issue id. The
+    // Lanes tab renders these as spinner tabs immediately on reroute and clears
+    // each one as its real lane materializes (below + on lane match).
+    const creatingPlaceholders = entries
+      .filter(({ config }) => !config.existingLaneId)
+      .map(({ issue }) => ({ issueId: issue.id, name: linearIssueLaneName(issue) }));
+    if (creatingPlaceholders.length) {
+      rememberCreatingIssues({ issues: creatingPlaceholders });
+    }
+    // Seed per-issue status so the status toast (and Retry failed) has rows,
+    // and remember each issue's config for retries.
+    setBatchLaunchStates(() => {
+      const next = new Map<string, BatchLaunchItemState>();
+      for (const { issue, config } of entries) {
+        next.set(issue.id, { issue, status: "pending", laneId: null, sessionId: null, error: null });
+        batchConfigByIssueRef.current.set(issue.id, config);
+      }
+      return next;
     });
+    const result = await runBatchLaunch(
+      entries,
+      {
+        createLane: (args) => window.ade.lanes.create(args),
+        // Single headless launch: creates the session and runs the kickoff turn
+        // server-side without a mounted chat pane. When the user picked a
+        // permission mode it is forwarded; otherwise the IPC defaults to an
+        // autonomous-runnable mode.
+        launch: (args) =>
+          window.ade.agentChat.launch({
+            laneId: args.laneId,
+            provider: args.provider,
+            model: args.model,
+            modelId: args.modelId,
+            reasoningEffort: args.reasoningEffort,
+            ...(args.codexFastMode !== undefined ? { codexFastMode: args.codexFastMode } : {}),
+            ...(args.permissionMode != null ? { permissionMode: args.permissionMode } : {}),
+            kickoffText: args.kickoffText,
+            contextAttachments: args.contextAttachments,
+          }),
+        // CLI-agent variant: spawns a tracked terminal pty with the issue
+        // attached so the agent drives it via `ade linear`. Returns the pty
+        // session id, which runBatchLaunch records like a chat session id.
+        launchCli: (args) =>
+          window.ade.agentChat.launchCli({
+            laneId: args.laneId,
+            provider: args.provider,
+            model: args.model,
+            reasoningEffort: args.reasoningEffort,
+            ...(args.permissionMode != null ? { permissionMode: args.permissionMode } : {}),
+            kickoffPrompt: args.kickoffPrompt,
+            linearIssues: args.linearIssues,
+          }),
+        deleteLane: (laneId) =>
+          window.ade.lanes.delete({ laneId, force: true }).then(() => undefined),
+      },
+      {
+        onItem: (issueId, patch) => {
+          // As soon as an issue reports its materialized lane id, drop its
+          // optimistic spinner placeholder — the real lane will render instead.
+          if (patch.laneId) clearCreatingIssue(issueId);
+          setBatchLaunchStates((current) => {
+            const prev = current.get(issueId);
+            if (!prev) return current;
+            const next = new Map(current);
+            next.set(issueId, { ...prev, ...patch });
+            return next;
+          });
+        },
+      },
+    );
+    // Clear any placeholders whose issues failed before a lane materialized so a
+    // failed launch never leaves a permanent spinner tab.
+    for (const issueId of result.failedIssueIds) clearCreatingIssue(issueId);
     await refreshLanes({ includeStatus: false }).catch(() => undefined);
-    return lane;
+    if (result.createdLaneIds.length || result.createdSessionIds.length) {
+      rememberLaunchedLanes({
+        laneIds: result.createdLaneIds,
+        sessionIds: result.createdSessionIds,
+      });
+    }
   }, [refreshLanes]);
 
-  const openLaneInLanesTab = useCallback((laneId: string) => {
-    selectLane(laneId);
+  const handleBatchLaunch = useCallback((entries: BatchLaunchSubmit[]) => {
+    // Close + reroute synchronously; the orchestrator runs detached so the
+    // Lanes tab opens immediately rather than this being a progress view.
+    setBatchModalOpen(false);
     close();
-    window.location.hash = `#/lanes?laneId=${encodeURIComponent(laneId)}&focus=single`;
-  }, [close, selectLane]);
-
-  const openWorkDraft = useCallback((
-    laneId: string,
-    issue: LaneLinearIssue,
-    contextSource: "lane_link" | "manual",
-    modelId?: string | null,
-  ) => {
-    openWorkDraftForLinearIssue({
-      projectRoot: project?.rootPath,
-      laneId,
-      issue,
-      contextSource,
-      modelId,
-      selectLane,
-      setWorkViewState,
-      setLaneWorkViewState,
+    window.location.hash = "#/lanes?drawer=stack";
+    void launchBatch(entries).catch((err) => {
+      console.error("[Linear] Batch launch failed:", err);
     });
-    close();
-  }, [close, project?.rootPath, selectLane, setLaneWorkViewState, setWorkViewState]);
+  }, [close, launchBatch]);
 
-  const handleCreateLaneAttached = useCallback(async () => {
-    if (!activeIssue) return;
-    setBusyModal("create-lane");
-    try {
-      const lane = await createLaneForIssue(activeIssue);
-      openLaneInLanesTab(lane.id);
-      closeModal();
-    } finally {
-      setBusyModal(null);
-    }
-  }, [activeIssue, closeModal, createLaneForIssue, openLaneInLanesTab]);
-
-  const handleResolveInNewLane = useCallback(async (modelId: string) => {
-    if (!activeIssue) return;
-    setBusyModal("resolve-new-lane");
-    try {
-      const lane = await createLaneForIssue(activeIssue);
-      openWorkDraft(lane.id, activeIssue, "lane_link", modelId);
-      closeModal();
-    } finally {
-      setBusyModal(null);
-    }
-  }, [activeIssue, closeModal, createLaneForIssue, openWorkDraft]);
-
-  const handleResolveInExistingLane = useCallback(async (laneId: string, modelId: string) => {
-    if (!activeIssue) return;
-    setBusyModal("resolve-existing-lane");
-    try {
-      openWorkDraft(laneId, activeIssue, "manual", modelId);
-      closeModal();
-    } finally {
-      setBusyModal(null);
-    }
-  }, [activeIssue, closeModal, openWorkDraft]);
-
-  const handleResolveModalOpen = useCallback(
-    (kind: LinearIssueResolveModalKind, issue: NormalizedLinearIssue | LaneLinearIssue) => {
-      openModal(kind, linearBrowserIssueToLaneIssue(issue));
-      setOpen(false); // Close the Linear pane so the modal is visible
-    },
-    [openModal],
-  );
-
-  const openBatchModal = useCallback((modal: NonNullable<typeof batchModal>, issues: Array<NormalizedLinearIssue | LaneLinearIssue>) => {
-    setBatchIssues(issues.map((i) => "raw" in i ? linearBrowserIssueToLaneIssue(i) : i as LaneLinearIssue));
-    setOpen(false);
-    setBatchModal(modal);
+  // Cancelling the launch modal (vs. launching) must return the user to the
+  // Linear pane they came from — not strand them on whatever tab is behind it
+  // (handleBatchLaunchOpen hid the pane to show the modal). The launch path
+  // closes the modal via setBatchModalOpen(false) directly, so Radix only fires
+  // this on a genuine user dismiss (Esc/overlay/Cancel); reopen the pane there.
+  // The browser remounts with its persisted filters so the selection context is
+  // preserved.
+  const handleBatchModalOpenChange = useCallback((next: boolean) => {
+    setBatchModalOpen(next);
+    if (!next) setOpen(true);
   }, []);
 
-  const handleBatchCreateLanes = useCallback(
-    (issues: Array<NormalizedLinearIssue | LaneLinearIssue>) => openBatchModal("batch-create-lanes", issues),
-    [openBatchModal],
-  );
-  const handleBatchResolveNewLanes = useCallback(
-    (issues: Array<NormalizedLinearIssue | LaneLinearIssue>) => openBatchModal("batch-resolve-new", issues),
-    [openBatchModal],
-  );
-  const handleBatchResolveExistingLane = useCallback(
-    (issues: Array<NormalizedLinearIssue | LaneLinearIssue>) => openBatchModal("batch-resolve-existing", issues),
-    [openBatchModal],
+  const handleRetryFailed = useCallback(() => {
+    const failed = [...batchLaunchStates.values()].filter((state) => state.status === "failed");
+    if (!failed.length) return;
+    const entries: BatchLaunchSubmit[] = failed.map((state) => ({
+      issue: state.issue,
+      config: batchConfigByIssueRef.current.get(state.issue.id) ?? {
+        modelId: "",
+        reasoningEffort: null,
+        codexFastMode: false,
+        kickoffPrompt: "",
+        branchOverride: "",
+      },
+    }));
+    void launchBatch(entries).catch((err) => {
+      console.error("[Linear] Batch retry failed:", err);
+    });
+  }, [batchLaunchStates, launchBatch]);
+
+  const handleDismissBatchStatus = useCallback(() => {
+    setBatchLaunchStates(new Map());
+  }, []);
+
+  // Pre-launch duplicate guard: passed to the browser so the multi-select dock
+  // and single-issue rows can show a "Has lane"/"Has agent" badge and confirm a
+  // re-attach. We don't know the issues being browsed here, so compute against
+  // the issues currently attached to lanes (the browser narrows per row).
+  const conflicts = useMemo(
+    () => findIssueConflicts(
+      lanes.flatMap((lane) => {
+        const ids: LaneLinearIssue[] = [];
+        if (lane.linearIssue) ids.push(lane.linearIssue);
+        for (const link of lane.linearIssueLinks ?? []) {
+          if (link.issue) ids.push(link.issue);
+        }
+        return ids;
+      }),
+      lanes,
+    ),
+    [lanes],
   );
 
-  const confirmBatchCreateLanes = useCallback(async () => {
-    setBusyModal("create-lane");
-    setBatchProgress({ completed: 0, total: batchIssues.length, action: "Creating lanes" });
-    try {
-      for (let i = 0; i < batchIssues.length; i++) {
-        await createLaneForIssue(batchIssues[i]);
-        setBatchProgress({ completed: i + 1, total: batchIssues.length, action: "Creating lanes" });
-      }
-      setBatchModal(null);
-      close();
-      window.location.hash = "#/lanes";
-    } catch (err) {
-      console.error("[Linear] Batch create lanes failed:", err);
-      setBatchModal(null);
-    } finally {
-      setBusyModal(null);
-      setBatchProgress(null);
-    }
-  }, [batchIssues, close, createLaneForIssue]);
-
-  const confirmBatchResolveNewLanes = useCallback(async (modelId: string) => {
-    setBusyModal("resolve-new-lane");
-    setBatchProgress({ completed: 0, total: batchIssues.length, action: "Creating lanes + chats" });
-    try {
-      for (let i = 0; i < batchIssues.length; i++) {
-        const lane = await createLaneForIssue(batchIssues[i]);
-        openWorkDraft(lane.id, batchIssues[i], "lane_link", modelId);
-        setBatchProgress({ completed: i + 1, total: batchIssues.length, action: "Creating lanes + chats" });
-      }
-      setBatchModal(null);
-    } catch (err) {
-      console.error("[Linear] Batch resolve (new lanes) failed:", err);
-      setBatchModal(null);
-    } finally {
-      setBusyModal(null);
-      setBatchProgress(null);
-    }
-  }, [batchIssues, createLaneForIssue, openWorkDraft]);
-
-  const confirmBatchResolveExistingLane = useCallback(async (laneId: string, modelId: string) => {
-    setBusyModal("resolve-existing-lane");
-    setBatchProgress({ completed: 0, total: batchIssues.length, action: "Assigning to lane" });
-    try {
-      for (let i = 0; i < batchIssues.length; i++) {
-        openWorkDraft(laneId, batchIssues[i], "manual", modelId);
-        setBatchProgress({ completed: i + 1, total: batchIssues.length, action: "Assigning to lane" });
-      }
-      setBatchModal(null);
-    } catch (err) {
-      console.error("[Linear] Batch resolve (existing lane) failed:", err);
-      setBatchModal(null);
-    } finally {
-      setBusyModal(null);
-      setBatchProgress(null);
-    }
-  }, [batchIssues, openWorkDraft]);
+  // Live progress for the browser's dock indicator, derived from the per-issue
+  // launch states of the in-flight batch.
+  const batchProgress = useMemo<BatchProgress | null>(() => {
+    if (batchLaunchStates.size === 0) return null;
+    const states = [...batchLaunchStates.values()];
+    const completed = states.filter((s) => s.status === "done").length;
+    const failed = states.filter((s) => s.status === "failed").length;
+    const running = states.some((s) => s.status !== "done" && s.status !== "failed");
+    return { total: states.length, completed, failed, running };
+  }, [batchLaunchStates]);
 
   const connectionPromptModal = connectionPrompt ? createPortal(
     <div
@@ -612,11 +603,6 @@ export function LinearQuickViewButton({
                 actionBusyLabel="Creating lane"
                 refreshKey={refreshKey}
                 onIssueAction={async () => undefined}
-                resolveActions={{
-                  onOpenModal: handleResolveModalOpen,
-                  busyModal,
-                  disabled: Boolean(busyModal),
-                }}
                 onConnectionVisibilityChange={setVisible}
                 onOpenLinearSettings={openLinearSettings}
                 requestedIssueIdentifier={quickViewRequest?.issueIdentifier ?? null}
@@ -627,9 +613,8 @@ export function LinearQuickViewButton({
                 }}
                 onLoadingChange={setBrowserLoading}
                 batchActions={{
-                  onBatchCreateLanes: handleBatchCreateLanes,
-                  onBatchResolveNewLanes: handleBatchResolveNewLanes,
-                  onBatchResolveExistingLane: handleBatchResolveExistingLane,
+                  onBatchLaunch: handleBatchLaunchOpen,
+                  conflicts,
                   batchProgress,
                 }}
               />
@@ -639,50 +624,22 @@ export function LinearQuickViewButton({
         document.body,
       ) : null}
 
-      <CreateLaneAttachedModal
-        open={activeModal === "create-lane"}
-        issue={activeIssue}
-        busy={busyModal === "create-lane"}
-        onOpenChange={(next) => { if (!next) closeModal(); }}
-        onConfirm={handleCreateLaneAttached}
-      />
-      <ResolveInNewLaneModal
-        open={activeModal === "resolve-new-lane"}
-        issue={activeIssue}
-        busy={busyModal === "resolve-new-lane"}
-        onOpenChange={(next) => { if (!next) closeModal(); }}
-        onConfirm={handleResolveInNewLane}
-      />
-      <ResolveInExistingLaneModal
-        open={activeModal === "resolve-existing-lane"}
-        issue={activeIssue}
-        lanes={lanes}
-        busy={busyModal === "resolve-existing-lane"}
-        onOpenChange={(next) => { if (!next) closeModal(); }}
-        onConfirm={handleResolveInExistingLane}
-      />
-
-      <BatchCreateLanesModal
-        open={batchModal === "batch-create-lanes"}
-        issues={batchIssues}
-        busy={Boolean(busyModal)}
-        onOpenChange={(next) => { if (!next) setBatchModal(null); }}
-        onConfirm={() => void confirmBatchCreateLanes()}
-      />
-      <BatchResolveInNewLanesModal
-        open={batchModal === "batch-resolve-new"}
-        issues={batchIssues}
-        busy={Boolean(busyModal)}
-        onOpenChange={(next) => { if (!next) setBatchModal(null); }}
-        onConfirm={(modelId) => void confirmBatchResolveNewLanes(modelId)}
-      />
-      <BatchResolveInExistingLaneModal
-        open={batchModal === "batch-resolve-existing"}
+      <BatchLaunchModal
+        open={batchModalOpen}
         issues={batchIssues}
         lanes={lanes}
-        busy={Boolean(busyModal)}
-        onOpenChange={(next) => { if (!next) setBatchModal(null); }}
-        onConfirm={(laneId, modelId) => void confirmBatchResolveExistingLane(laneId, modelId)}
+        laneOnly={batchLaneOnly}
+        onOpenChange={handleBatchModalOpenChange}
+        onLaunch={handleBatchLaunch}
+      />
+      <BatchLaunchStatusToast
+        states={batchLaunchStates}
+        onRetryFailed={handleRetryFailed}
+        onDismiss={handleDismissBatchStatus}
+        onOpenLane={(laneId) => {
+          selectLane(laneId);
+          window.location.hash = `#/lanes?laneId=${encodeURIComponent(laneId)}&focus=single`;
+        }}
       />
     </>
   );

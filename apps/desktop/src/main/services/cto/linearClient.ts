@@ -619,11 +619,21 @@ export function createLinearClient(args: LinearClientArgs) {
       filter.priority = { eq: params.priority };
     }
     if (query) {
-      filter.or = [
+      const orClauses: Record<string, unknown>[] = [
         { title: { containsIgnoreCase: query } },
         { description: { containsIgnoreCase: query } },
-        { identifier: { containsIgnoreCase: query } },
       ];
+      // Linear's IssueFilter has no `identifier` field (that filter is rejected by
+      // the API). Match by issue number when the query is a bare number ("122") or
+      // an identifier like "VER-122" — pull the trailing digits and filter on it.
+      const numberMatch = query.match(/(\d+)\s*$/);
+      if (numberMatch) {
+        const parsedNumber = Number.parseInt(numberMatch[1]!, 10);
+        if (Number.isFinite(parsedNumber)) {
+          orClauses.push({ number: { eq: parsedNumber } });
+        }
+      }
+      filter.or = orClauses;
     }
 
     return filter;
@@ -1059,6 +1069,41 @@ export function createLinearClient(args: LinearClientArgs) {
     }
   };
 
+  // Add/remove a label by its known label id (no name lookup). The CLI daemon
+  // bridge resolves a label id from `listLabels` first, then calls these — the
+  // name-based `addLabel` above is for callers that only have a label name.
+  const addIssueLabel = async (issueId: string, labelId: string): Promise<void> => {
+    const trimmed = labelId.trim();
+    if (!trimmed.length) return;
+    await request({
+      query: `
+        mutation AddIssueLabel($id: String!, $addedLabelIds: [String!]) {
+          issueUpdate(id: $id, input: { addedLabelIds: $addedLabelIds }) {
+            success
+          }
+        }
+      `,
+      variables: { id: issueId, addedLabelIds: [trimmed] },
+      maxRetries: 1,
+    });
+  };
+
+  const removeIssueLabel = async (issueId: string, labelId: string): Promise<void> => {
+    const trimmed = labelId.trim();
+    if (!trimmed.length) return;
+    await request({
+      query: `
+        mutation RemoveIssueLabel($id: String!, $removedLabelIds: [String!]) {
+          issueUpdate(id: $id, input: { removedLabelIds: $removedLabelIds }) {
+            success
+          }
+        }
+      `,
+      variables: { id: issueId, removedLabelIds: [trimmed] },
+      maxRetries: 1,
+    });
+  };
+
   const uploadAttachment = async (params: { issueId: string; filePath: string; title?: string }): Promise<{ url: string; id?: string }> => {
     const absPath = path.resolve(params.filePath);
     const stat = fs.statSync(absPath);
@@ -1403,6 +1448,8 @@ export function createLinearClient(args: LinearClientArgs) {
     createComment,
     updateComment,
     addLabel,
+    addIssueLabel,
+    removeIssueLabel,
     uploadAttachment,
     createIssueAttachment,
     fetchIssueComments,

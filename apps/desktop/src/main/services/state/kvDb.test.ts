@@ -236,6 +236,46 @@ describe("lane_linear_issue_links schema", () => {
   });
 });
 
+describe("session_linear_issues schema", () => {
+  it("creates the table with session/lane/issue columns", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-session-linear-cols-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => db.close());
+
+    const columns = db
+      .all<{ name: string }>("pragma table_info('session_linear_issues')")
+      .map((row) => row.name);
+    expect(columns).toEqual(expect.arrayContaining([
+      "id",
+      "project_id",
+      "session_id",
+      "lane_id",
+      "issue_id",
+      "issue_json",
+      "role",
+      "source",
+      "include_in_pr",
+      "close_on_merge",
+      "evidence_json",
+      "created_at",
+      "updated_at",
+    ]));
+  });
+
+  it("carries no non-PK unique index that would block crsql_as_crr", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-session-linear-index-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => db.close());
+
+    const uniqueIndexes = db.all<{ name: string }>(
+      "select name from sqlite_master where type = 'index' and tbl_name = 'session_linear_issues' and sql like '%unique%'",
+    );
+    expect(uniqueIndexes).toHaveLength(0);
+  });
+});
+
 describe.skipIf(!isCrsqliteAvailable())("openKvDb CRR repair", () => {
   it("enables CRR on lane_linear_issue_links without a blocking unique index", async () => {
     const projectRoot = makeProjectRoot("ade-kvdb-linear-issue-links-crr-");
@@ -247,6 +287,20 @@ describe.skipIf(!isCrsqliteAvailable())("openKvDb CRR repair", () => {
     expect(
       db.get<{ present: number }>(
         "select 1 as present from sqlite_master where type = 'table' and name = 'lane_linear_issue_links__crsql_clock' limit 1",
+      )?.present,
+    ).toBe(1);
+  });
+
+  it("enables CRR on session_linear_issues without a blocking unique index", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-session-linear-crr-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => db.close());
+
+    expect(() => db.get("select crsql_as_crr(?) as ok", ["session_linear_issues"])).not.toThrow();
+    expect(
+      db.get<{ present: number }>(
+        "select 1 as present from sqlite_master where type = 'table' and name = 'session_linear_issues__crsql_clock' limit 1",
       )?.present,
     ).toBe(1);
   });

@@ -9,6 +9,7 @@ export function LinearTriggerFilters({
   onPatch: (patch: Partial<AutomationTrigger>) => void;
 }) {
   const isStateTransition = trigger.type === "linear.issue_status_changed";
+  const isLabeled = trigger.type === "linear.issue_labeled";
   return (
     <div className="grid gap-2 md:grid-cols-2">
       <LabeledInput
@@ -35,6 +36,14 @@ export function LinearTriggerFilters({
           value={trigger.stateTransition ?? ""}
           placeholder="In Progress->Done"
           onChange={(value) => onPatch({ stateTransition: value })}
+        />
+      ) : isLabeled ? (
+        <LabeledInput
+          label="Label added"
+          value={(trigger.labels ?? []).join(", ")}
+          placeholder="agent, ready-to-build"
+          hint="Fires only when one of these labels is added. Leave blank to match any label."
+          onChange={(value) => onPatch({ labels: parseList(value) })}
         />
       ) : (
         <LabeledInput
@@ -68,11 +77,13 @@ function LabeledInput({
   label,
   value,
   placeholder,
+  hint,
   onChange,
 }: {
   label: string;
   value: string;
   placeholder?: string;
+  hint?: string;
   onChange: (value: string) => void;
 }) {
   return (
@@ -85,6 +96,7 @@ function LabeledInput({
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
       />
+      {hint ? <span className="block text-[10px] leading-snug text-[#6B7A90]">{hint}</span> : null}
     </label>
   );
 }

@@ -1238,6 +1238,62 @@ function migrate(db: MigrationDb) {
     // best-effort migration; duplicates will be coalesced on the next upsert.
   }
 
+  // Session-scoped Linear issue links. A chat (`claude_sessions`) or CLI
+  // session (`terminal_sessions`) can attach a Linear issue even when it has
+  // no lane (standalone chats, `ade chat` sessions). `session_id` is the chat
+  // session id / terminal session id; `lane_id` mirrors the session's lane
+  // when one exists (so PR-open linking can fan out from session → lane). The
+  // schema mirrors `lane_linear_issue_links` so the two share parse/clone
+  // helpers and the same app-layer uniqueness discipline.
+  db.run(`
+    create table if not exists session_linear_issues (
+      id text primary key,
+      project_id text not null,
+      session_id text not null,
+      lane_id text,
+      issue_id text not null,
+      issue_json text not null,
+      role text not null,
+      source text not null,
+      include_in_pr integer not null default 1,
+      close_on_merge integer not null default 0,
+      evidence_json text,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(project_id) references projects(id) on delete cascade
+    )
+  `);
+  db.run("create index if not exists idx_session_linear_issues_session on session_linear_issues(project_id, session_id)");
+  db.run("create index if not exists idx_session_linear_issues_lane on session_linear_issues(project_id, lane_id)");
+  db.run("create index if not exists idx_session_linear_issues_issue on session_linear_issues(project_id, issue_id)");
+  // CRR-converted tables cannot carry UNIQUE indices besides the primary key
+  // (`crsql_as_crr` rejects them with "Table … has unique indices besides the
+  // primary key. This is not allowed for CRRs"), so uniqueness on
+  // (project_id, session_id, issue_id, role) is enforced at the application
+  // layer inside `upsertSessionLinearIssueLink` (delete-then-insert in a
+  // transaction). Coalesce any duplicates older dev builds may have produced —
+  // keep the most recently updated row per tuple and delete the rest.
+  try {
+    db.run(`
+      delete from session_linear_issues
+      where rowid not in (
+        select rowid from session_linear_issues as keep
+        where keep.id = (
+          select id from session_linear_issues inner_p
+          where inner_p.project_id = keep.project_id
+            and inner_p.session_id = keep.session_id
+            and inner_p.issue_id = keep.issue_id
+            and inner_p.role = keep.role
+          order by inner_p.updated_at desc,
+                   inner_p.id asc
+          limit 1
+        )
+      )
+    `);
+  } catch {
+    // best-effort migration; duplicates will be coalesced on the next upsert.
+  }
+
   db.run(`
     create table if not exists lane_branch_profiles (
       id text primary key,

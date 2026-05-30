@@ -335,10 +335,92 @@ describe("linear command routing", () => {
   });
 
   it("shows usage for bare /linear instead of running a default tool", () => {
-    expect(buildLinearToolRequest("")).toEqual({
-      kind: "usage",
-      title: "Linear",
-      body: "Usage: /linear <workflows|run|route|sync|ingress> ...",
+    const result = buildLinearToolRequest("");
+    expect(result.kind).toBe("usage");
+    if (result.kind !== "usage") return;
+    expect(result.title).toBe("Linear");
+    expect(result.body).toContain("attach");
+    expect(result.body).toContain("comment");
+    expect(result.body).toContain("workflows");
+  });
+
+  it("routes /linear attach to a session attach action with the active-session placeholder", () => {
+    expect(buildLinearToolRequest("attach --issue-id ENG-431")).toEqual({
+      kind: "action",
+      title: "Linear attach",
+      domain: "lane",
+      action: "attachLinearIssueToSession",
+      args: { chatSessionId: "__ACTIVE_SESSION__", issues: [{ id: "ENG-431", identifier: "ENG-431" }] },
+    });
+  });
+
+  it("routes /linear attach --lane to a lane-scoped link", () => {
+    expect(buildLinearToolRequest("attach --issue-id ENG-431 --lane lane-1")).toEqual({
+      kind: "action",
+      title: "Linear attach (lane)",
+      domain: "lane",
+      action: "linkLinearIssues",
+      args: { laneId: "lane-1", issues: [{ id: "ENG-431", identifier: "ENG-431" }] },
+    });
+  });
+
+  it("routes /linear detach, with or without a specific issue id", () => {
+    expect(buildLinearToolRequest("detach ENG-431 --session s1")).toEqual({
+      kind: "action",
+      title: "Linear detach",
+      domain: "lane",
+      action: "detachLinearIssueFromSession",
+      args: { chatSessionId: "s1", issueId: "ENG-431" },
+    });
+    // No issue id: detach-all (issueId omitted by compactArgs).
+    expect(buildLinearToolRequest("detach --session s1")).toEqual({
+      kind: "action",
+      title: "Linear detach",
+      domain: "lane",
+      action: "detachLinearIssueFromSession",
+      args: { chatSessionId: "s1" },
+    });
+    // --lane (no session) routes to the lane-scoped unlink action.
+    expect(buildLinearToolRequest("detach --lane lane-1")).toEqual({
+      kind: "action",
+      title: "Linear detach (lane)",
+      domain: "lane",
+      action: "unlinkLinearIssues",
+      args: { laneId: "lane-1" },
+    });
+  });
+
+  it("routes /linear issues to a session list action", () => {
+    expect(buildLinearToolRequest("issues")).toEqual({
+      kind: "action",
+      title: "Linear attached issues",
+      domain: "lane",
+      action: "listLinearIssuesForSession",
+      args: { chatSessionId: "__ACTIVE_SESSION__" },
+    });
+  });
+
+  it("routes the /linear write-bridge commands to linear_issue_tracker positional actions", () => {
+    expect(buildLinearToolRequest("comment ENG-431 done")).toEqual({
+      kind: "actionList",
+      title: "Linear comment",
+      domain: "linear_issue_tracker",
+      action: "createComment",
+      argsList: ["ENG-431", "done"],
+    });
+    expect(buildLinearToolRequest("set-state ENG-431 state-done")).toEqual({
+      kind: "actionList",
+      title: "Linear set-state",
+      domain: "linear_issue_tracker",
+      action: "updateIssueState",
+      argsList: ["ENG-431", "state-done"],
+    });
+    expect(buildLinearToolRequest("assign ENG-431 none")).toEqual({
+      kind: "actionList",
+      title: "Linear assign",
+      domain: "linear_issue_tracker",
+      action: "updateIssueAssignee",
+      argsList: ["ENG-431", null],
     });
   });
 

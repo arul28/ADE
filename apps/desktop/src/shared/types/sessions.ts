@@ -9,6 +9,7 @@ import type {
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
 } from "./chat";
+import type { LaneLinearIssue } from "./lanes";
 import type { OrchestrationRole } from "./orchestration";
 
 export type TerminalSessionStatus = "running" | "completed" | "failed" | "disposed" | "detached";
@@ -142,6 +143,12 @@ export type PtyCreateArgs = {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  /**
+   * Linear issues to attach to this session before the process spawns, so the
+   * CLI agent inherits `ADE_LINEAR_ISSUE_IDS` + `ADE_LINEAR_CONTEXT_FILE` and
+   * can read/update its issue through `ade linear` (no Linear MCP/creds needed).
+   */
+  linearIssues?: LaneLinearIssue[];
 };
 
 export type PtyCreateResult = {

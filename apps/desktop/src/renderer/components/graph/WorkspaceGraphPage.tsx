@@ -60,6 +60,12 @@ import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
+import { useLaneAgents, type LaneAgent } from "../lanes/laneAgents";
+import { openAgentInWorkTabPath } from "../../lib/laneNavigation";
+import {
+  consumeLaunchedLanesHighlight,
+  subscribeLaunchedLanesHighlight,
+} from "../../lib/launchedLanesHighlight";
 import { RiskMatrix } from "./shared/RiskMatrix";
 import type {
   GraphNodeData,
@@ -194,6 +200,26 @@ function GraphInner({ active = true }: { active?: boolean }) {
   React.useEffect(() => {
     lanesRef.current = lanes;
   }, [lanes]);
+
+  // Inline per-lane agent rosters for the graph cards.
+  const allLaneIds = React.useMemo(() => lanes.map((lane) => lane.id), [lanes]);
+  const agentsByLaneId = useLaneAgents(allLaneIds);
+  const [highlightedSessionIds, setHighlightedSessionIds] = React.useState<Set<string>>(new Set());
+
+  const handleOpenAgent = React.useCallback((agent: LaneAgent) => {
+    navigate(openAgentInWorkTabPath(agent.laneId, agent.sessionId));
+  }, [navigate]);
+
+  React.useEffect(() => {
+    const apply = (highlight: { sessionIds: string[] }) => {
+      if (!highlight.sessionIds.length) return;
+      setHighlightedSessionIds(new Set(highlight.sessionIds));
+      window.setTimeout(() => setHighlightedSessionIds(new Set()), 6000);
+    };
+    const pending = consumeLaunchedLanesHighlight();
+    if (pending) apply(pending);
+    return subscribeLaunchedLanesHighlight(apply);
+  }, []);
 
   React.useEffect(() => {
     projectRootRef.current = projectRoot;
@@ -1313,7 +1339,10 @@ function GraphInner({ active = true }: { active?: boolean }) {
           focusGlow: false,
           isVirtualProposal: false,
           integrationSources,
-          pr: prOverlayByLaneId.get(lane.id) ?? null
+          pr: prOverlayByLaneId.get(lane.id) ?? null,
+          agents: agentsByLaneId.get(lane.id) ?? [],
+          highlightedSessionIds,
+          onOpenAgent: handleOpenAgent
         },
         selected: false,
         draggable: true
@@ -1576,7 +1605,10 @@ function GraphInner({ active = true }: { active?: boolean }) {
     statusByLane,
     syncByLaneId,
     viewMode,
-    activityScoreByLaneId
+    activityScoreByLaneId,
+    agentsByLaneId,
+    highlightedSessionIds,
+    handleOpenAgent
   ]);
 
   React.useEffect(() => {

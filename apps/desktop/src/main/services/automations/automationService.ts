@@ -393,10 +393,19 @@ export function triggerMatches(
     if (!triggerAuthor || !expectedAuthors.includes(triggerAuthor)) return false;
   }
 
-  const eventLabels = normalizeSet(trigger.issue?.labels ?? trigger.pr?.labels ?? trigger.labels ?? []);
+  // For `linear.issue_labeled` the dispatch carries only the *added* label names
+  // in `trigger.labels`, so the label filter matches the rule's configured label
+  // against what was just added (one-shot on add), not the issue's full label set.
+  const eventLabels = canonicalType === "linear.issue_labeled"
+    ? normalizeSet(trigger.labels ?? [])
+    : normalizeSet(trigger.issue?.labels ?? trigger.pr?.labels ?? trigger.labels ?? []);
   if (ruleTrigger.labels?.length) {
     const expected = ruleTrigger.labels.map((l) => l.trim().toLowerCase()).filter(Boolean);
     if (!expected.every((l) => eventLabels.has(l))) return false;
+  } else if (canonicalType === "linear.issue_labeled" && eventLabels.size === 0) {
+    // A labeled rule with no configured label still requires at least one added
+    // label to have triggered the event.
+    return false;
   }
 
   if (ruleTrigger.paths?.length) {

@@ -13,6 +13,16 @@ import { useDockLayout } from "../ui/DockLayoutState";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton } from "./laneDesignTokens";
 import { ResizeGutter } from "../ui/ResizeGutter";
 import { LaneStackPane } from "./LaneStackPane";
+import { useLaneAgents, type LaneAgent } from "./laneAgents";
+import { openAgentInWorkTabPath } from "../../lib/laneNavigation";
+import {
+  consumeLaunchedLanesHighlight,
+  subscribeLaunchedLanesHighlight,
+  consumeCreatingIssues,
+  subscribeCreatingIssues,
+  clearCreatingIssue,
+  type CreatingIssuePlaceholder,
+} from "../../lib/launchedLanesHighlight";
 import { LaneGitActionsPane } from "./LaneGitActionsPane";
 import { LaneWorkPane } from "./LaneWorkPane";
 import { QuickRunMenu } from "../run/QuickRunMenu";
@@ -391,6 +401,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       laneIdsRaw: p.get("laneIds"),
       laneId: p.get("laneId"),
       sessionId: p.get("sessionId"),
+      drawer: p.get("drawer"),
       inspectorTab: p.get("inspectorTab"),
       focus: p.get("focus"),
       commitSha: p.get("commitSha"),
@@ -409,6 +420,20 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const [activeLaneIds, setActiveLaneIds] = useState<string[]>([]);
   const [pinnedLaneIds, setPinnedLaneIds] = useState<Set<string>>(new Set());
   const [pulsingLaneId, setPulsingLaneId] = useState<string | null>(null);
+  // Sessions freshly launched from the Linear batch flow, to highlight in the drawer.
+  const [highlightedSessionIds, setHighlightedSessionIds] = useState<Set<string>>(new Set());
+  // Lanes freshly launched from the Linear batch flow that have not yet shown a
+  // live agent session. While in this set the lane tab renders a "creating"
+  // placeholder (spinner) so the new lane feels like it is materializing +
+  // auto-starting its chat. Cleared per-lane once a session appears (or by a
+  // safety TTL below).
+  const [creatingLaneIds, setCreatingLaneIds] = useState<Set<string>>(new Set());
+  // Optimistic placeholders keyed by Linear ISSUE id, recorded by the batch
+  // launcher BEFORE the real lanes exist (lane ids are minted as each worktree
+  // materializes). Each renders a spinner "Creating <name>…" tab until the real
+  // lane carrying that issue id appears, at which point the placeholder is
+  // dropped and the real tab (with its loading agent) takes over.
+  const [creatingIssues, setCreatingIssues] = useState<CreatingIssuePlaceholder[]>(() => consumeCreatingIssues());
   const [gridResetKey, setGridResetKey] = useState(0);
   const [laneFilter, setLaneFilter] = useState("");
   const [manageOpen, setManageOpen] = useState(false);
@@ -566,7 +591,18 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     () => new Map(laneSnapshots.map((snapshot) => [snapshot.lane.id, snapshot] as const)),
     [laneSnapshots],
   );
-  const sortedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
+  const sortedLanes = useMemo(() => {
+    // Defensive: the lanes store can momentarily hold a duplicate lane id (e.g.
+    // an optimistic create racing the refreshed list), which would produce
+    // duplicate React keys and drop/duplicate tabs. Dedupe by id before sorting.
+    const seen = new Set<string>();
+    const deduped = lanes.filter((lane) => {
+      if (seen.has(lane.id)) return false;
+      seen.add(lane.id);
+      return true;
+    });
+    return sortLanesForTabs(deduped);
+  }, [lanes]);
   const lanePrBranchSignature = useMemo(
     () => sortedLanes
       .map((lane) => `${lane.id}:${lane.laneType}:${lane.branchRef ?? ""}:${lane.baseRef ?? ""}`)
@@ -659,6 +695,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const stackGraphLanes = useMemo(() => sortLanesForStackGraph(filteredLanes), [filteredLanes]);
 
   const filteredLaneIds = useMemo(() => filteredLanes.map((lane) => lane.id), [filteredLanes]);
+  // Per-lane agent rosters (ADE chat + CLI agents) for the inline dashboards.
+  const agentsByLaneId = useLaneAgents(filteredLaneIds);
   const selectableFilteredLaneIds = useMemo(
     () => filteredLaneIds.filter((laneId) => !deletingLaneIds.has(laneId)),
     [filteredLaneIds, deletingLaneIds],
@@ -1707,6 +1745,27 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     navigate(`/lanes?laneId=${encodeURIComponent(laneId)}`);
   }, [deletingLaneIds, lanesById, navigate, pinnedLaneIds, project?.rootPath, selectLane, setLaneWorkViewState]);
 
+  // Open a specific agent (chat or CLI) in the Work tab of its lane, from any
+  // of the inline lane dashboards (stack drawer, graph card, lane list row).
+  const handleOpenAgent = useCallback((agent: LaneAgent) => {
+    const laneId = agent.laneId;
+    if (deletingLaneIds.has(laneId) || !lanesById.has(laneId)) return;
+    const pinned = Array.from(pinnedLaneIds).filter((id) => id !== laneId && lanesById.has(id) && !deletingLaneIds.has(id));
+    setActiveLaneIds(mergeUnique([laneId], pinned));
+    selectLane(laneId);
+    setStackGraphHeaderOpen(false);
+    setLaneWorkViewState(project?.rootPath ?? null, laneId, (prev) => ({
+      ...prev,
+      viewMode: "tabs",
+      openItemIds: prev.openItemIds.includes(agent.sessionId)
+        ? prev.openItemIds
+        : [...prev.openItemIds, agent.sessionId],
+      activeItemId: agent.sessionId,
+      selectedItemId: agent.sessionId,
+    }));
+    navigate(openAgentInWorkTabPath(laneId, agent.sessionId));
+  }, [deletingLaneIds, lanesById, navigate, pinnedLaneIds, project?.rootPath, selectLane, setLaneWorkViewState]);
+
   const removeSplitLane = useCallback((laneId: string) => {
     if (pinnedLaneIds.has(laneId)) return;
     const pinned = Array.from(pinnedLaneIds).filter((id) => lanesById.has(id) && !deletingLaneIds.has(id));
@@ -2306,6 +2365,100 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     if (!urlLaneDeeplinks.sessionId) return;
     focusSession(urlLaneDeeplinks.sessionId);
   }, [urlLaneDeeplinks.sessionId, focusSession]);
+
+  // ?drawer=stack opens the stack drawer (used after a Linear batch launch so
+  // the freshly created lanes + agents are visible). Scrub the param so it does
+  // not re-open on refresh.
+  useEffect(() => {
+    if (urlLaneDeeplinks.drawer !== "stack") return;
+    setStackGraphHeaderOpen(true);
+    const next = new URLSearchParams(location.search);
+    next.delete("drawer");
+    const search = next.toString();
+    navigate(`${location.pathname}${search ? `?${search}` : ""}`, { replace: true });
+  }, [urlLaneDeeplinks.drawer, location.pathname, location.search, navigate]);
+
+  // Consume the "just launched" highlight and pulse the new agents for a beat.
+  useEffect(() => {
+    const apply = (highlight: { laneIds: string[]; sessionIds: string[] }) => {
+      if (highlight.laneIds.length) {
+        // Mark the new lanes as "creating" so their tabs show a spinner until the
+        // headless agent session lands. A safety TTL drops the marker even if the
+        // session never surfaces (e.g. launch failed after the lane was created).
+        const newLaneIds = highlight.laneIds;
+        setCreatingLaneIds((prev) => {
+          const next = new Set(prev);
+          for (const laneId of newLaneIds) next.add(laneId);
+          return next;
+        });
+        window.setTimeout(() => {
+          setCreatingLaneIds((prev) => {
+            if (!newLaneIds.some((id) => prev.has(id))) return prev;
+            const next = new Set(prev);
+            for (const laneId of newLaneIds) next.delete(laneId);
+            return next;
+          });
+        }, 30_000);
+      }
+      if (!highlight.sessionIds.length) return;
+      setStackGraphHeaderOpen(true);
+      setHighlightedSessionIds(new Set(highlight.sessionIds));
+      window.setTimeout(() => setHighlightedSessionIds(new Set()), 6000);
+    };
+    const pending = consumeLaunchedLanesHighlight();
+    if (pending) apply(pending);
+    return subscribeLaunchedLanesHighlight(apply);
+  }, []);
+
+  // Drop the "creating" marker once a lane has a live agent session (the headless
+  // kickoff has surfaced), or when the lane is gone. This is what makes the
+  // placeholder resolve into the real lane tab automatically.
+  useEffect(() => {
+    if (creatingLaneIds.size === 0) return;
+    setCreatingLaneIds((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      for (const laneId of prev) {
+        const runtime = laneRuntimeById.get(laneId);
+        if (!lanesById.has(laneId) || (runtime?.sessionCount ?? 0) > 0) {
+          next.delete(laneId);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [creatingLaneIds, laneRuntimeById, lanesById]);
+
+  // Keep the optimistic issue-keyed placeholders (spinner tabs that appear
+  // before the real lanes exist) in sync with the launcher's store.
+  useEffect(() => {
+    setCreatingIssues(consumeCreatingIssues());
+    return subscribeCreatingIssues(setCreatingIssues);
+  }, []);
+
+  // Index real lanes by the Linear issue they carry so a placeholder can resolve
+  // into its real tab the moment that lane materializes.
+  const laneIdByLinearIssueId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const lane of sortedLanes) {
+      const issueId = lane.linearIssue?.id;
+      if (issueId && !map.has(issueId)) map.set(issueId, lane.id);
+    }
+    return map;
+  }, [sortedLanes]);
+
+  // Placeholders still waiting for their real lane — anything already matched by
+  // a real lane is dropped (and cleared from the store defensively, in case the
+  // launcher hasn't called clearCreatingIssue yet).
+  const pendingCreatingIssues = useMemo(
+    () => creatingIssues.filter((placeholder) => !laneIdByLinearIssueId.has(placeholder.issueId)),
+    [creatingIssues, laneIdByLinearIssueId],
+  );
+  useEffect(() => {
+    for (const placeholder of creatingIssues) {
+      if (laneIdByLinearIssueId.has(placeholder.issueId)) clearCreatingIssue(placeholder.issueId);
+    }
+  }, [creatingIssues, laneIdByLinearIssueId]);
 
   const handleCreateDialogOpenChange = useCallback((open: boolean) => {
     if (!open && createBusy) return;
@@ -3335,13 +3488,13 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                 <LaneStackPane
                   lanes={stackGraphLanes}
                   selectedLaneId={selectedLaneId}
-                  onSelect={(id) => {
-                    handleLaneSelect(id, { extend: false });
-                    setStackGraphHeaderOpen(false);
-                  }}
+                  onSelect={(id) => handleLaneSelect(id, { extend: false })}
                   runtimeByLaneId={laneRuntimeById}
                   integrationSourcesByLaneId={integrationSourcesByLaneId}
                   onStartChatWithLinearIssue={handleStartChatWithLinearIssue}
+                  agentsByLaneId={agentsByLaneId}
+                  highlightedSessionIds={highlightedSessionIds}
+                  onOpenAgent={handleOpenAgent}
                 />
               </div>
             ) : null}
@@ -3460,7 +3613,12 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           const lanePr = lanePrByLaneId.get(lane.id) ?? null;
           const deleteProgress = deleteProgressByLaneId[lane.id] ?? null;
           const isDeleting = isLaneDeleteProgressActive(deleteProgress);
-          const showMergedManageShortcut = !isDeleting && !isPrimary && lanePr?.state === "merged";
+          // A freshly batch-launched lane whose headless agent session has not yet
+          // surfaced. Renders a "creating" placeholder (spinner) like the deleting
+          // overlay so the new tab feels like it is materializing + auto-starting
+          // its chat. Deleting always wins if both somehow apply.
+          const isCreating = !isDeleting && creatingLaneIds.has(lane.id);
+          const showMergedManageShortcut = !isDeleting && !isCreating && !isPrimary && lanePr?.state === "merged";
 
           return (
             <div
@@ -3763,10 +3921,80 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                   <CircleNotch size={12} className="animate-spin" />
                   <span>{getLaneDeleteStatusLabel(deleteProgress)}</span>
                 </div>
+              ) : isCreating ? (
+                // Mirrors the deleting overlay, but accent-tinted: a freshly
+                // launched lane materializing its agent session rather than a
+                // destructive action. Stays click-through so the tab is usable.
+                <div
+                  className="pointer-events-none absolute inset-0 flex items-center justify-center gap-1.5"
+                  style={{
+                    background: "rgba(12, 15, 20, 0.72)",
+                    color: COLORS.accent,
+                    fontFamily: MONO_FONT,
+                    fontSize: 9,
+                    fontWeight: 700,
+                    letterSpacing: "0.8px",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  <CircleNotch size={12} className="animate-spin" />
+                  <span>Creating</span>
+                </div>
               ) : null}
             </div>
           );
         })}
+
+        {/* Optimistic "creating lane" placeholder tabs for batch-launched issues
+            whose real lanes haven't materialized yet. Non-interactive; each
+            drops automatically once its real lane (carrying the same Linear
+            issue id) appears. Mirrors the deleting/creating overlay styling but
+            accent-tinted + positive. */}
+        {pendingCreatingIssues.map((placeholder) => (
+          <div
+            key={`creating:${placeholder.issueId}`}
+            aria-disabled
+            className="group flex items-center gap-2 shrink-0 pointer-events-none"
+            style={{
+              position: "relative",
+              padding: "0 16px",
+              height: 44,
+              borderLeft: "2px solid transparent",
+              background: "transparent",
+              borderBottom: "1px solid transparent",
+              opacity: 0.92,
+            }}
+          >
+            <CircleNotch size={13} className="animate-spin" style={{ color: COLORS.accent }} />
+            <span
+              className="truncate"
+              style={{
+                maxWidth: 180,
+                fontFamily: SANS_FONT,
+                fontSize: 12,
+                color: COLORS.textSecondary,
+              }}
+              title={`Creating ${placeholder.name}…`}
+            >
+              {placeholder.name}
+            </span>
+            <div
+              className="pointer-events-none absolute inset-0 flex items-center justify-center gap-1.5"
+              style={{
+                background: "rgba(12, 15, 20, 0.72)",
+                color: COLORS.accent,
+                fontFamily: MONO_FONT,
+                fontSize: 9,
+                fontWeight: 700,
+                letterSpacing: "0.8px",
+                textTransform: "uppercase",
+              }}
+            >
+              <CircleNotch size={12} className="animate-spin" />
+              <span>Creating</span>
+            </div>
+          </div>
+        ))}
       </div>
 
       {/* Rebase / auto-rebase banners */}

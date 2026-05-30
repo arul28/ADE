@@ -19,11 +19,6 @@ import {
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
 import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
-import {
-  consumeLinearIssueWorkContext,
-  peekLinearIssueWorkContext,
-  type PendingLinearIssueWorkContext,
-} from "../../lib/linearIssueWorkNavigation";
 
 const TERMINALS_TILING_TREE: PaneSplit = {
   type: "split",
@@ -98,7 +93,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const [infoPopover, setInfoPopover] = useState<InfoPopoverState>(null);
   const [sessionActionError, setSessionActionError] = useState<string | null>(null);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
-  const [pendingLinearIssueWork, setPendingLinearIssueWork] = useState<PendingLinearIssueWorkContext | null>(null);
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
   const workContentPaneRef = useRef<HTMLDivElement | null>(null);
@@ -638,21 +632,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     document.addEventListener("mouseup", onUp);
   }, [work]);
 
-  useEffect(() => {
-    const laneId = work.draftLaneId?.trim() || "";
-    if (!laneId || work.activeItemId) {
-      setPendingLinearIssueWork(null);
-      return;
-    }
-    setPendingLinearIssueWork(peekLinearIssueWorkContext(laneId));
-  }, [work.activeItemId, work.draftLaneId, work.draftKind]);
-
-  const handleInitialLinearIssueContextConsumed = useCallback(() => {
-    const laneId = work.draftLaneId?.trim() || "";
-    if (laneId) consumeLinearIssueWorkContext(laneId);
-    setPendingLinearIssueWork(null);
-  }, [work.draftLaneId]);
-
   const workViewArea = useMemo(
     () => (
       <WorkViewArea
@@ -697,10 +676,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           work.setActiveItemId(sessionId);
         }}
         onGoToLane={handleGoToLaneById}
-        initialLinearIssueContext={pendingLinearIssueWork?.issue ?? null}
-        initialLinearIssueContextSource={pendingLinearIssueWork?.contextSource ?? "lane_link"}
-        initialModelId={pendingLinearIssueWork?.modelId ?? null}
-        onInitialLinearIssueContextConsumed={handleInitialLinearIssueContextConsumed}
       />
     ),
     [
@@ -741,8 +716,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       work.reorderLaneSessions,
       work.openSessionTab,
       handleGoToLaneById,
-      pendingLinearIssueWork,
-      handleInitialLinearIssueContextConsumed,
     ],
   );
 

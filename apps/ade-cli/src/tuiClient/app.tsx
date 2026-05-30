@@ -126,7 +126,7 @@ import { isImageFilePath, latestOpenableImageTarget, readClipboardImageAttachmen
 import { appendDedupedTuiEvent, appendReservedTuiEvent, dedupeTuiEvents, reserveTuiEventDedupKey, syncTuiEventDedupKeys } from "./eventDedup";
 import { loadAdeCodeState, saveAdeCodeProjectState, scopedAdeCodeState } from "./state";
 import { SpinTickProvider } from "./spinTick";
-import { buildLinearToolRequest } from "./linearCommands";
+import { ACTIVE_SESSION_PLACEHOLDER, buildLinearToolRequest } from "./linearCommands";
 import {
   formatLinearIssueComments,
   formatLinearStatus,
@@ -6220,6 +6220,34 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
       setRightPane({ kind: "details", title: request.title, body: "Loading Linear data..." });
+      if (request.kind === "action") {
+        // Session-scoped attach/detach/list default to the active chat session:
+        // the ACTIVE_SESSION_PLACEHOLDER sentinel on chatSessionId is substituted
+        // with the live id.
+        const actionArgs = { ...request.args };
+        if (actionArgs.chatSessionId === ACTIVE_SESSION_PLACEHOLDER) {
+          if (!sessionId) {
+            setRightPane({ kind: "details", title: request.title, body: "No active chat session. Pass --session <id>." });
+            return;
+          }
+          actionArgs.chatSessionId = sessionId;
+        }
+        const result = await conn.action(request.domain, request.action, actionArgs);
+        setRightPane({ kind: "details", title: request.title, body: renderObject(result, 24) });
+        return;
+      }
+      if (request.kind === "actionList") {
+        const argsList = request.argsList.map((entry) =>
+          entry === ACTIVE_SESSION_PLACEHOLDER ? sessionId : entry,
+        );
+        if (argsList.some((entry) => entry == null)) {
+          setRightPane({ kind: "details", title: request.title, body: "No active chat session. Pass --session <id>." });
+          return;
+        }
+        const result = await conn.actionList(request.domain, request.action, argsList);
+        setRightPane({ kind: "details", title: request.title, body: renderObject(result, 24) });
+        return;
+      }
       const result = await conn.tool(request.toolName, request.args);
       setRightPane({ kind: "details", title: request.title, body: renderObject(result, 24) });
       return;

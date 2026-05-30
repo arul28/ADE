@@ -283,6 +283,9 @@ import type {
   AgentChatApproveArgs,
   AgentChatArchiveArgs,
   AgentChatCreateArgs,
+  AgentChatLaunchArgs,
+  AgentChatLaunchCliArgs,
+  AgentChatLaunchCliResult,
   AgentChatCodexOpenInCliArgs,
   AgentChatCodexOpenInCliResult,
   AgentChatDeleteArgs,
@@ -348,8 +351,10 @@ import type {
   OnboardingStatus,
   OnboardingTourProgress,
   OnboardingTourVariant,
+  LaneLinearIssue,
   LaneListSnapshot,
   LaneSummary,
+  SessionLinearIssueLink,
   ListOverlapsArgs,
   ListLanesArgs,
   ImportBranchLaneArgs,
@@ -1147,6 +1152,7 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "deleteSession",
   "updateSession",
   "handoffSession",
+  "launchHeadless",
   "setClaudeOutputStyle",
   "reloadClaudePlugins",
   "setParallelLaunchState",
@@ -4236,6 +4242,33 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("lane", "getChildren", { arg: laneId }, () =>
         ipcRenderer.invoke(IPC.lanesGetChildren, { laneId }),
       ),
+    attachLinearIssueToSession: async (args: {
+      chatSessionId: string;
+      issues: LaneLinearIssue[];
+      role?: string;
+      source?: string;
+      includeInPr?: boolean;
+      closeOnMerge?: boolean;
+    }): Promise<SessionLinearIssueLink[]> =>
+      callProjectRuntimeActionOr("lane", "attachLinearIssueToSession", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesAttachLinearIssueToSession, args),
+      ),
+    detachLinearIssueFromSession: async (args: { chatSessionId: string; issueId?: string }): Promise<boolean> =>
+      callProjectRuntimeActionOr("lane", "detachLinearIssueFromSession", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesDetachLinearIssueFromSession, args),
+      ),
+    listLinearIssuesForSession: async (args: { chatSessionId: string }): Promise<SessionLinearIssueLink[]> =>
+      callProjectRuntimeActionOr("lane", "listLinearIssuesForSession", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesListLinearIssuesForSession, args),
+      ),
+    listLinearIssuesForLaneSessions: async (args: { laneId: string }): Promise<SessionLinearIssueLink[]> =>
+      callProjectRuntimeActionOr("lane", "listLinearIssuesForLaneSessions", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesListLinearIssuesForLaneSessions, args),
+      ),
+    unlinkLinearIssues: async (args: { laneId: string; issueId?: string }): Promise<boolean> =>
+      callProjectRuntimeActionOr("lane", "unlinkLinearIssues", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesUnlinkLinearIssues, args),
+      ),
     rebaseStart: async (args: RebaseStartArgs): Promise<RebaseStartResult> =>
       callProjectRuntimeActionOr("lane", "rebaseStart", { args }, () =>
         ipcRenderer.invoke(IPC.lanesRebaseStart, args),
@@ -4729,6 +4762,27 @@ contextBridge.exposeInMainWorld("ade", {
         : await ipcRenderer.invoke(IPC.agentChatCreate, args);
       agentChatSummaryCache.clear();
       return session as AgentChatSession;
+    },
+    launch: async (args: AgentChatLaunchArgs): Promise<AgentChatSession> => {
+      agentChatSummaryCache.clear();
+      const runtime = await callProjectRuntimeActionIfBound<AgentChatSession>(
+        "chat",
+        "launchHeadless",
+        { args },
+      );
+      const session = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.agentChatLaunch, args);
+      agentChatSummaryCache.clear();
+      return session as AgentChatSession;
+    },
+    launchCli: async (
+      args: AgentChatLaunchCliArgs,
+    ): Promise<AgentChatLaunchCliResult> => {
+      // Composes lane (Linear attach) + pty (spawn) services, so it runs on the
+      // desktop bridge rather than the in-process runtime daemon.
+      const result = await ipcRenderer.invoke(IPC.agentChatLaunchCli, args);
+      return result as AgentChatLaunchCliResult;
     },
     suggestLaneName: async (
       args: AgentChatSuggestLaneNameArgs,

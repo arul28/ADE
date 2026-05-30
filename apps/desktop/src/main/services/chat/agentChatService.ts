@@ -112,6 +112,7 @@ import type {
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
   AgentChatCreateArgs,
+  AgentChatLaunchArgs,
   AgentChatContextUsage,
   AgentChatContextUsageArgs,
   AgentChatDeleteArgs,
@@ -188,6 +189,7 @@ import type {
   TerminalToolType,
   CtoCapabilityMode,
   LaneLinearIssue,
+  SessionLinearIssueLink,
 } from "../../../shared/types";
 import {
   buildChatContextAttachmentPrompt,
@@ -3467,6 +3469,75 @@ function composeLaunchDirectives(baseText: string, directives: Array<string | nu
   return `${filtered.join("\n\n")}\n\nUser request:\n${baseText}`;
 }
 
+/**
+ * Materialize a session's attached Linear issues into a per-session context
+ * file the spawned agent (ADE chat or CLI) can read without Linear creds, and
+ * derive the env vars (`ADE_LINEAR_ISSUE_IDS`, `ADE_LINEAR_CONTEXT_FILE`) that
+ * point at it. When `links` is empty, any stale file is removed and `null` is
+ * returned. Pure transform + filesystem side effect — extracted from the chat
+ * service so it can be unit-tested directly (see `buildComputerUseDirective`).
+ */
+export function writeSessionLinearIssueContextFile(args: {
+  contextDir: string;
+  sessionId: string;
+  links: SessionLinearIssueLink[];
+  now: string;
+}): { filePath: string; issueIds: string; identifiers: string } | null {
+  const sessionContextDir = path.join(args.contextDir, args.sessionId);
+  const filePath = path.join(sessionContextDir, "linear-issues.json");
+  if (!args.links.length) {
+    // Clear any stale file from a prior attach so the agent never sees
+    // detached issues.
+    try { fs.rmSync(filePath, { force: true }); } catch { /* best-effort */ }
+    return null;
+  }
+  const payload = {
+    sessionId: args.sessionId,
+    updatedAt: args.now,
+    issues: args.links.map((link) => ({
+      id: link.issue.id,
+      identifier: link.issue.identifier,
+      title: link.issue.title,
+      url: link.issue.url,
+      stateName: link.issue.stateName,
+      role: link.role,
+      teamKey: link.issue.teamKey,
+    })),
+  };
+  fs.mkdirSync(sessionContextDir, { recursive: true });
+  const tempPath = `${filePath}.tmp`;
+  fs.writeFileSync(tempPath, `${JSON.stringify(payload, null, 2)}\n`);
+  fs.renameSync(tempPath, filePath);
+  return {
+    filePath,
+    issueIds: args.links.map((link) => link.issue.id).join(","),
+    identifiers: args.links.map((link) => link.issue.identifier).join(","),
+  };
+}
+
+/**
+ * Build the system-prompt directive injected when a chat/CLI session has
+ * attached Linear issues. Tells the agent that ADE already owns the Linear
+ * connection so it should drive issues through the `ade linear` CLI rather than
+ * reaching for a Linear MCP/API (which it has no creds for). Returns null when
+ * the session has no attached issues. Pure transform — unit-tested directly.
+ */
+export function buildLinearSessionDirective(
+  links: SessionLinearIssueLink[],
+): string | null {
+  const identifiers = uniqueNonEmpty(links.map((link) => link.issue.identifier));
+  if (!identifiers.length) return null;
+  const idList = identifiers.join(", ");
+  // Keep this short and point at `ade linear --help` + the bundled ade-linear
+  // skill rather than enumerating the full surface — set-state needs a resolved
+  // workflow state-id, so the skill is the authoritative reference.
+  return [
+    "## Linear-tracked work",
+    `This work is tracked by Linear issue(s) ${idList}. You have ADE's Linear connection — read and update them with the \`ade linear\` CLI (issue, comment, set-state, assign, label; run \`ade linear --help\` or see the bundled **ade-linear** skill for exact syntax).`,
+    "Prefer `ade linear` over any Linear MCP or direct Linear API — those are not authenticated in this environment.",
+  ].join("\n");
+}
+
 export function buildComputerUseDirective(
   backendStatus: ComputerUseBackendStatus | null,
 ): string | null {
@@ -4315,11 +4386,13 @@ function buildCodexDeveloperInstructions(args: {
     | "orchestrationStepId"
   >;
   collaborationMode: "default" | "plan";
+  /** Optional Linear-tracked-work directive appended to the base instructions. */
+  linearDirective?: string | null;
 }): string {
   const promptMode = args.collaborationMode === "plan" || args.session.interactionMode === "plan"
     ? "planning"
     : "coding";
-  return buildCodingAgentSystemPrompt({
+  const base = buildCodingAgentSystemPrompt({
     cwd: args.laneWorktreePath,
     mode: promptMode,
     permissionMode: toHarnessPermissionMode(args.session.permissionMode),
@@ -4333,6 +4406,7 @@ function buildCodexDeveloperInstructions(args: {
     orchestrationParentSessionId: args.session.orchestrationParentSessionId,
     orchestrationStepId: args.session.orchestrationStepId,
   });
+  return args.linearDirective ? `${base}\n\n${args.linearDirective}` : base;
 }
 
 function resolveCodexInstructionCollaborationMode(
@@ -4348,6 +4422,7 @@ function buildCodexCollaborationMode(
   >,
   supportedModes: Set<string> | null,
   laneWorktreePath: string,
+  linearDirective?: string | null,
 ): CodexCollaborationModePayload | null {
   if (session.provider !== "codex") return null;
   if (resolveSessionCodexConfigSource(session) === "config-toml") return null;
@@ -4370,6 +4445,7 @@ function buildCodexCollaborationMode(
             laneWorktreePath,
             session,
             collaborationMode: mode,
+            linearDirective,
           }),
     },
   };
@@ -4946,13 +5022,73 @@ export function createAgentChatService(args: {
   }
   const claudeSubprocessReaper = injectedClaudeSubprocessReaper ?? createClaudeSubprocessReaper({ logger });
 
-  const buildAgentRuntimeEnv = (managed: ManagedChatSession): NodeJS.ProcessEnv => ({
-    ...(getAdeCliAgentEnv?.(process.env) ?? process.env),
-    ADE_CHAT_SESSION_ID: managed.session.id,
-    ADE_LANE_ID: managed.session.laneId,
-    ADE_PROJECT_ROOT: projectRoot,
-    ADE_WORKSPACE_ROOT: managed.laneWorktreePath,
-  });
+  // Materialize the session's attached Linear issues into a per-session context
+  // file the spawned agent (ADE chat or CLI) can read without Linear creds.
+  // Returns the absolute file path and the comma-joined identifier list, or
+  // null when the session has no attached issues. Best-effort: a write failure
+  // never blocks the spawn.
+  const writeSessionLinearIssueContext = (
+    sessionId: string,
+  ): { filePath: string; issueIds: string; identifiers: string } | null => {
+    let links: SessionLinearIssueLink[] = [];
+    try {
+      links = laneService.listLinearIssuesForSession?.({ chatSessionId: sessionId }) ?? [];
+    } catch (error) {
+      logger.warn("agent_chat.linear_context_read_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+    try {
+      return writeSessionLinearIssueContextFile({
+        contextDir: resolveAdeLayout(projectRoot).contextDir,
+        sessionId,
+        links,
+        now: nowIso(),
+      });
+    } catch (error) {
+      logger.warn("agent_chat.linear_context_write_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+
+  // Resolve the system-prompt directive for a session's attached Linear issues,
+  // or null when none are attached. Best-effort: a read failure never blocks the
+  // prompt build. Shared by the Claude and Codex prompt builders so both agents
+  // are steered toward `ade linear` over a (credential-less) Linear MCP/API.
+  const resolveSessionLinearDirective = (sessionId: string): string | null => {
+    let links: SessionLinearIssueLink[] = [];
+    try {
+      links = laneService.listLinearIssuesForSession?.({ chatSessionId: sessionId }) ?? [];
+    } catch (error) {
+      logger.warn("agent_chat.linear_directive_read_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+    return buildLinearSessionDirective(links);
+  };
+
+  const buildAgentRuntimeEnv = (managed: ManagedChatSession): NodeJS.ProcessEnv => {
+    const env: NodeJS.ProcessEnv = {
+      ...(getAdeCliAgentEnv?.(process.env) ?? process.env),
+      ADE_CHAT_SESSION_ID: managed.session.id,
+      ADE_LANE_ID: managed.session.laneId,
+      ADE_PROJECT_ROOT: projectRoot,
+      ADE_WORKSPACE_ROOT: managed.laneWorktreePath,
+    };
+    const linearContext = writeSessionLinearIssueContext(managed.session.id);
+    if (linearContext) {
+      env.ADE_LINEAR_ISSUE_IDS = linearContext.identifiers;
+      env.ADE_LINEAR_CONTEXT_FILE = linearContext.filePath;
+    }
+    return env;
+  };
 
   const eventSubscribers = new Set<(event: AgentChatEventEnvelope) => void>();
 
@@ -5019,12 +5155,37 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     contextAttachments: AgentChatContextAttachment[],
   ): void => {
-    if (!managed.session.laneId || contextAttachments.length === 0) return;
+    if (contextAttachments.length === 0) return;
     const issues = contextAttachments
       .filter((attachment): attachment is Extract<AgentChatContextAttachment, { type: "linear_issue" }> =>
         attachment.type === "linear_issue")
       .map((attachment) => attachment.issue);
     if (!issues.length) return;
+
+    // Always persist a SESSION-scoped link so standalone chats and CLI sessions
+    // (which may have no lane) keep their attached issues. When the session has
+    // a lane, attachLinearIssueToSession also mirrors into the lane-scoped link
+    // table — but it never promotes a lane's primary issue, so we still run the
+    // lane-scoped linkLinearIssues path below for the lane/card semantics.
+    try {
+      laneService.attachLinearIssueToSession?.({
+        chatSessionId: managed.session.id,
+        issues,
+        role: "worked",
+        source: "chat_attach",
+        includeInPr: true,
+        closeOnMerge: false,
+        evidence: { chatSessionId: managed.session.id },
+      });
+    } catch (error) {
+      logger.warn("agent_chat.linear_issue_session_link_failed", {
+        sessionId: managed.session.id,
+        issueCount: issues.length,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    if (!managed.session.laneId) return;
     try {
       laneService.linkLinearIssues({
         laneId: managed.session.laneId,
@@ -10023,6 +10184,7 @@ export function createAgentChatService(args: {
       managed.session,
       runtime.collaborationModes,
       managed.laneWorktreePath,
+      resolveSessionLinearDirective(managed.session.id),
     );
     if (
       requestedCollaborationMode === "plan"
@@ -15266,6 +15428,7 @@ export function createAgentChatService(args: {
         laneWorktreePath: managed.laneWorktreePath,
         session: managed.session,
         collaborationMode: resolveCodexInstructionCollaborationMode(managed.session),
+        linearDirective: resolveSessionLinearDirective(managed.session.id),
       }),
       ...codexServiceTierArgs(managed.session),
       ...codexPolicyArgs(codexPolicy),
@@ -15634,6 +15797,7 @@ export function createAgentChatService(args: {
           ] : []),
         ]
         : [];
+      const linearDirective = resolveSessionLinearDirective(managed.session.id);
       opts.systemPrompt = {
         type: "preset",
         preset: "claude_code",
@@ -15647,6 +15811,7 @@ export function createAgentChatService(args: {
           `ADE launched this session in lane worktree: ${managed.laneWorktreePath}.`,
           "Read, edit, and run commands only inside that worktree. Do not switch to project root, another lane, or another repo unless ADE explicitly relaunches you there.",
           "",
+          ...(linearDirective ? [linearDirective, ""] : []),
           ...slashCommandsSection,
           "",
           buildAdeGuidanceForLane(managed.laneWorktreePath),
@@ -16725,6 +16890,10 @@ export function createAgentChatService(args: {
       transcriptPath,
       toolType: toolTypeFromProvider(effectiveProvider),
       resumeCommand: resumeCommandForProvider(effectiveProvider, sessionId),
+      // Tag the backing terminal row with its owning chat session so the lane
+      // agent list (laneAgents.ts) excludes it instead of surfacing a phantom
+      // "CLI" agent alongside the chat row it belongs to.
+      chatSessionId: sessionId,
       ownerPid: processRegistry?.pid ?? null,
       ownerProcessStartedAt: processRegistry?.startedAt ?? null,
     });
@@ -19986,6 +20155,7 @@ export function createAgentChatService(args: {
                 laneWorktreePath: managed.laneWorktreePath,
                 session: managed.session,
                 collaborationMode: resolveCodexInstructionCollaborationMode(managed.session),
+                linearDirective: resolveSessionLinearDirective(managed.session.id),
               }),
               ...codexServiceTierArgs(managed.session),
               ...codexPolicyArgs(codexPolicy),
@@ -20065,6 +20235,7 @@ export function createAgentChatService(args: {
       return;
     }
 
+    const prevClaudeEffort = managed.session.reasoningEffort ?? null;
     const nextClaudeEffort = validateReasoningEffortForDescriptor(
       "claude",
       normalizeReasoningEffort(reasoningEffort),
@@ -20072,6 +20243,26 @@ export function createAgentChatService(args: {
     );
     if (nextClaudeEffort) {
       managed.session.reasoningEffort = nextClaudeEffort;
+    }
+    // A warm/live query bakes in the effort it was built with (see
+    // buildClaudeQueryOptions). When this turn carries a different effort —
+    // e.g. the user picks xhigh after the session pre-warmed at medium —
+    // ensureClaudeQuery would otherwise reuse the stale warm query and the new
+    // effort would never reach the SDK. Invalidate it so a fresh query is built
+    // with the updated thinking configuration. Mirrors the explicit
+    // setOrchestrationFields effort-change path.
+    if (
+      nextClaudeEffort
+      && nextClaudeEffort !== prevClaudeEffort
+      && managed.runtime?.kind === "claude"
+      && (managed.runtime.query || managed.runtime.warmQuery || managed.runtime.warmupDone)
+    ) {
+      if (managed.runtime.busy) {
+        managed.runtime.pendingSessionReset = true;
+        managed.runtime.pendingSessionResetClearSdkSessionId = false;
+      } else {
+        resetClaudeQuerySession(managed, managed.runtime, "session_reset");
+      }
     }
 
     ensureClaudeSessionRuntime(managed);
@@ -24202,6 +24393,7 @@ export function createAgentChatService(args: {
     text,
     displayText,
     attachments = [],
+    contextAttachments = [],
     reasoningEffort,
     executionMode,
     timeoutMs,
@@ -24242,6 +24434,7 @@ export function createAgentChatService(args: {
       text,
       displayText,
       attachments,
+      contextAttachments,
       reasoningEffort,
       executionMode,
     });
@@ -24649,8 +24842,52 @@ export function createAgentChatService(args: {
     persistChatState(managed);
   };
 
+  /**
+   * Create a session and fire its first turn without a mounted chat pane.
+   *
+   * The interactive launch path (`sendMessage`) only drives a turn once a pane
+   * mounts and pumps the queue, so a batch launch that creates lanes but never
+   * opens panes would enqueue the kickoff and never run it. This mirrors the
+   * automation `agent-session` headless path: createSession + runSessionTurn.
+   *
+   * The kickoff turn is fire-and-forget — N long turns must not block the
+   * launch, so we return the created session immediately and let the turn run
+   * in the background (logging on failure).
+   */
+  const launchHeadless = async ({
+    kickoffText,
+    kickoffDisplayText,
+    contextAttachments,
+    ...createArgs
+  }: AgentChatLaunchArgs): Promise<AgentChatSession> => {
+    // Default to full-auto (bypassPermissions) when the caller hasn't pinned a
+    // mode, so the background turn never stalls on a permission prompt that no
+    // mounted pane could answer. Identity-pinned sessions are locked to
+    // full-auto inside createSession regardless.
+    const session = await createSession({
+      ...createArgs,
+      sessionProfile: createArgs.sessionProfile ?? "workflow",
+      permissionMode: createArgs.permissionMode ?? "full-auto",
+    });
+    void runSessionTurn({
+      sessionId: session.id,
+      text: kickoffText,
+      displayText: kickoffDisplayText ?? kickoffText,
+      contextAttachments: contextAttachments ?? [],
+      reasoningEffort: createArgs.reasoningEffort,
+    }).catch((err) => {
+      logger.warn("agentChat.launchHeadless turn failed", {
+        sessionId: session.id,
+        laneId: createArgs.laneId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+    return session;
+  };
+
   return {
     createSession,
+    launchHeadless,
     suggestLaneNameFromPrompt,
     handoffSession,
     sendMessage,

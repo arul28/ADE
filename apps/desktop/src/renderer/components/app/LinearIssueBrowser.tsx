@@ -4,7 +4,6 @@ import {
   CaretRight,
   Check,
   CircleNotch,
-  GitBranch,
   MagnifyingGlass,
   Minus,
   Plus,
@@ -38,10 +37,24 @@ import {
 } from "../lanes/LinearIssuePicker";
 import { LinearPriorityIcon, LinearStateIcon } from "../lanes/linearBrand";
 import { LinearProjectIcon } from "../lanes/linearProjectIcon";
-import { LinearIssueOpenLink, type LinearIssueResolveModalKind } from "./LinearIssueResolveModals";
+import { LinearIssueOpenLink } from "./LinearIssueResolveModals";
+import type { IssueConflict } from "../../lib/linearBatchLaunch";
 
 type BrowserIssue = NormalizedLinearIssue | LaneLinearIssue;
 type IssueSort = "updated_desc" | "created_desc" | "priority" | "due_soon" | "identifier_asc";
+
+/**
+ * Shape of the in-flight batch-launch progress the host passes down. Declared
+ * locally (and kept permissive) so the browser stays decoupled from the launch
+ * orchestration owned by the batch-launch surface; the host renders its own
+ * detailed status toast, the browser only needs the headline counts.
+ */
+export type BatchProgress = {
+  total: number;
+  completed: number;
+  failed?: number;
+  running?: boolean;
+};
 
 type LinearIssueBrowserFilters = {
   projectId: string;
@@ -61,6 +74,8 @@ const STATE_TABS = [
 const ACTIVE_LINEAR_STATE_TYPES = ["backlog", "unstarted", "started"];
 const STATE_GROUP_ORDER = ["started", "unstarted", "backlog", "triage", "completed", "canceled", "duplicate"] as const;
 const FILTER_STORAGE_PREFIX = "ade.linear.quickView.filters.v1:";
+const SELECTION_STORAGE_PREFIX = "ade.linear.quickView.selection.v1:";
+const SELECTION_STORAGE_MAX = 100;
 const LINEAR_BROWSER_CACHE_STALE_MS = 90_000;
 const LINEAR_BROWSER_CACHE_MAX_SEARCHES = 16;
 
@@ -242,6 +257,41 @@ function safeSaveFilters(projectRoot: string | null | undefined, filters: Linear
   }
 }
 
+function selectionStorageKey(projectRoot: string | null | undefined): string | null {
+  const root = projectRoot?.trim();
+  return root ? `${SELECTION_STORAGE_PREFIX}${root}` : null;
+}
+
+// Multi-select survives a route change / remount (e.g. proceeding to the launch
+// modal and navigating back) by mirroring the selected ids to localStorage,
+// matching the safeSaveFilters pattern. Capped so a huge selection can never
+// bloat storage.
+function safeLoadSelection(projectRoot: string | null | undefined): Set<string> {
+  const key = selectionStorageKey(projectRoot);
+  if (!key || typeof window === "undefined") return new Set();
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(key) ?? "null");
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((id): id is string => typeof id === "string").slice(0, SELECTION_STORAGE_MAX));
+  } catch {
+    return new Set();
+  }
+}
+
+function safeSaveSelection(projectRoot: string | null | undefined, ids: Set<string>): void {
+  const key = selectionStorageKey(projectRoot);
+  if (!key || typeof window === "undefined") return;
+  try {
+    if (ids.size === 0) {
+      window.localStorage.removeItem(key);
+      return;
+    }
+    window.localStorage.setItem(key, JSON.stringify([...ids].slice(0, SELECTION_STORAGE_MAX)));
+  } catch {
+    // Best effort only; losing this selection should never block browsing issues.
+  }
+}
+
 function issueListKey(issue: BrowserIssue): string {
   return `${issue.id}:${issue.updatedAt}`;
 }
@@ -366,7 +416,6 @@ export function LinearIssueBrowser({
   onConnectionVisibilityChange,
   onQuickViewChange,
   onLoadingChange,
-  resolveActions,
   batchActions,
 }: {
   projectRoot?: string | null;
@@ -386,16 +435,20 @@ export function LinearIssueBrowser({
   onConnectionVisibilityChange?: (visible: boolean) => void;
   onQuickViewChange?: (quickView: CtoLinearQuickView | null) => void;
   onLoadingChange?: (loading: boolean) => void;
-  resolveActions?: {
-    onOpenModal: (kind: LinearIssueResolveModalKind, issue: BrowserIssue) => void;
-    busyModal?: LinearIssueResolveModalKind | null;
-    disabled?: boolean;
-  };
   batchActions?: {
-    onBatchCreateLanes: (issues: BrowserIssue[]) => void | Promise<void>;
-    onBatchResolveNewLanes: (issues: BrowserIssue[]) => void | Promise<void>;
-    onBatchResolveExistingLane: (issues: BrowserIssue[]) => void | Promise<void>;
-    batchProgress: { completed: number; total: number; action: string } | null;
+    /**
+     * Opens the unified launch config modal for 1..N issues. The single-issue
+     * row dock and the multi-select dock both route here so there is one launch
+     * path. `laneOnly` creates lanes without kicking off an agent.
+     */
+    onBatchLaunch: (issues: BrowserIssue[], options: { laneOnly?: boolean }) => void;
+    /** In-flight batch progress, if a launch is currently running. */
+    batchProgress?: BatchProgress | null;
+    /**
+     * Issues already attached to a lane/session, keyed by issue id. Drives the
+     * per-row "Has lane"/"Has agent" warning chip and the re-attach confirm.
+     */
+    conflicts?: Map<string, IssueConflict>;
   };
 }) {
   const cacheKey = browserCacheKey(projectRoot);
@@ -410,7 +463,7 @@ export function LinearIssueBrowser({
   const [loadingIssues, setLoadingIssues] = useState(false);
   const [localActionIssueId, setLocalActionIssueId] = useState<string | null>(null);
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(featuredIssue?.id ?? null);
-  const [selectedIssueIds, setSelectedIssueIds] = useState<Set<string>>(new Set());
+  const [selectedIssueIds, setSelectedIssueIds] = useState<Set<string>>(() => safeLoadSelection(projectRoot));
   const [lastCheckedId, setLastCheckedId] = useState<string | null>(null);
   const anyChecked = selectedIssueIds.size > 0;
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
@@ -419,6 +472,14 @@ export function LinearIssueBrowser({
   const catalogRequestIdRef = useRef(0);
   const searchRequestIdRef = useRef(0);
   const lastRequestedIssueKeyRef = useRef<string | null>(null);
+  // Skips the filter-clear effect on the first filters value (mount and on each
+  // project/scope switch) so a restored persisted selection is not wiped.
+  const filtersInitializedRef = useRef(false);
+  // Accumulated data for every issue displayed this session, so a selection
+  // built across multiple searches stays resolvable when an earlier pick is no
+  // longer on the current page. seenVersion forces a re-render when it grows.
+  const seenIssuesRef = useRef<Map<string, BrowserIssue>>(new Map());
+  const [seenVersion, setSeenVersion] = useState(0);
 
   useEffect(() => {
     onQuickViewChange?.(quickView);
@@ -427,6 +488,13 @@ export function LinearIssueBrowser({
   useEffect(() => {
     pageInfoRef.current = pageInfo;
   }, [pageInfo]);
+
+  // Persist the multi-select so it survives a remount/route change (proceed to
+  // the launch modal → back). Cleared automatically when the selection empties
+  // (safeSaveSelection removes the key) and when filters change (effect below).
+  useEffect(() => {
+    safeSaveSelection(projectRoot, selectedIssueIds);
+  }, [projectRoot, selectedIssueIds]);
 
   useEffect(() => {
     const nextFilters = safeLoadFilters(projectRoot);
@@ -437,6 +505,11 @@ export function LinearIssueBrowser({
     setCatalog(entry.catalog ?? emptyCatalog());
     setIssues(cachedSearch?.issues ?? []);
     setPageInfo(cachedSearch?.pageInfo ?? emptyPageInfo());
+    setSelectedIssueIds(safeLoadSelection(projectRoot));
+    // This is a project/scope switch, not a user filter change — treat the
+    // resulting setFilters as an "initial" pass so the filter-clear effect does
+    // not wipe the selection we just restored for the new project.
+    filtersInitializedRef.current = false;
   }, [cacheKey, projectRoot]);
 
   useEffect(() => {
@@ -630,6 +703,7 @@ export function LinearIssueBrowser({
     setPageInfo({ hasNextPage: false, endCursor: null });
     setSelectedIssueId(null);
     setSelectedIssueIds(new Set());
+    safeSaveSelection(projectRoot, new Set());
     setCollapsedGroups({});
   }, [projectRoot, requestedIssueIdentifier, requestedIssueRequestKey]);
 
@@ -650,6 +724,18 @@ export function LinearIssueBrowser({
   }, [displayIssues, requestedIssueIdentifier, selectedIssueId]);
 
   const selectedIssue = displayIssues.find((issue) => issue.id === selectedIssueId) ?? displayIssues[0] ?? null;
+
+  // The full data for the current selection, resolved from issues seen across
+  // any search/filter (not just the current page) so off-page picks still launch.
+  const resolvedSelectedIssues = useMemo(() => {
+    void seenVersion;
+    const out: BrowserIssue[] = [];
+    for (const id of selectedIssueIds) {
+      const issue = seenIssuesRef.current.get(id) ?? displayIssues.find((i) => i.id === id);
+      if (issue) out.push(issue);
+    }
+    return out;
+  }, [selectedIssueIds, displayIssues, seenVersion]);
 
   const handleToggleCheck = useCallback((issueId: string, event: React.MouseEvent) => {
     setSelectedIssueIds((prev) => {
@@ -681,20 +767,26 @@ export function LinearIssueBrowser({
     });
   }, [displayIssues]);
 
-  // Clear selection when filters change
+  // Accumulate the data of every issue we have displayed, so a selection built
+  // up across multiple searches/filters can still be resolved (and launched)
+  // even when an earlier pick is no longer on the current filtered page.
   useEffect(() => {
-    setSelectedIssueIds(new Set());
-    setLastCheckedId(null);
-  }, [filters]);
-
-  // Prune stale selections when issues change
-  useEffect(() => {
-    const validIds = new Set(displayIssues.map((i) => i.id));
-    setSelectedIssueIds((prev) => {
-      const pruned = new Set([...prev].filter((id) => validIds.has(id)));
-      return pruned.size === prev.size ? prev : pruned;
-    });
+    if (displayIssues.length === 0) return;
+    const map = seenIssuesRef.current;
+    let changed = false;
+    for (const issue of displayIssues) {
+      if (!map.has(issue.id)) {
+        map.set(issue.id, issue);
+        changed = true;
+      }
+    }
+    if (changed) setSeenVersion((v) => v + 1);
   }, [displayIssues]);
+
+  // NOTE: selection deliberately persists across search/filter changes — the
+  // user builds up a multi-issue selection by searching for each one. We only
+  // drop selections via the explicit Clear control, a project switch, or a
+  // deep-link request (handled above), never on a query change.
 
   const assigneeOptions = useMemo(
     () => [
@@ -714,6 +806,37 @@ export function LinearIssueBrowser({
   }, [catalog.projects, quickView?.projects]);
 
   const issueGroups = useMemo(() => groupIssuesByState(displayIssues), [displayIssues]);
+
+  const conflicts = batchActions?.conflicts;
+
+  // Unified launch entry point. When any target issue is already attached to a
+  // lane/session we surface a soft confirm first — re-attaching is allowed (the
+  // data model supports the same issue on multiple lanes), the user just gets a
+  // heads-up. Once confirmed (or when there is no conflict) we hand off to the
+  // host's onBatchLaunch.
+  const onBatchLaunch = batchActions?.onBatchLaunch;
+  const handleBatchLaunch = useCallback((issues: BrowserIssue[], options: { laneOnly?: boolean }) => {
+    if (!onBatchLaunch || issues.length === 0) return;
+    const conflicting = conflicts
+      ? issues.map((issue) => conflicts.get(issue.id)).filter((c): c is IssueConflict => Boolean(c))
+      : [];
+    if (conflicting.length > 0) {
+      const laneNames = [...new Set(conflicting.map((c) => c.laneName).filter((n): n is string => Boolean(n)))];
+      const target = laneNames.length === 1
+        ? `“${laneNames[0]}”`
+        : laneNames.length > 1
+          ? `${laneNames.length} lanes`
+          : "another lane";
+      const subject = conflicting.length === 1
+        ? "This issue is already attached to"
+        : `${conflicting.length} of these issues are already attached to`;
+      const ok = typeof window !== "undefined"
+        ? window.confirm(`${subject} ${target}. You can attach ${conflicting.length === 1 ? "it" : "them"} again — proceed?`)
+        : true;
+      if (!ok) return;
+    }
+    onBatchLaunch(issues, options);
+  }, [onBatchLaunch, conflicts]);
 
   const handleIssueAction = useCallback(async (issue: BrowserIssue) => {
     const busyIssueId = actionBusyIssueId ?? localActionIssueId;
@@ -920,6 +1043,7 @@ export function LinearIssueBrowser({
                           busy={busyIssueId === issue.id}
                           checked={selectedIssueIds.has(issue.id)}
                           anyChecked={anyChecked}
+                          conflict={conflicts?.get(issue.id) ?? null}
                           onToggleCheck={(e) => handleToggleCheck(issue.id, e)}
                           onClick={() => setSelectedIssueId(issue.id)}
                         />
@@ -947,11 +1071,12 @@ export function LinearIssueBrowser({
           </div>
         </section>
 
-        {selectedIssueIds.size > 1 && batchActions ? (
+        {selectedIssueIds.size > 1 && onBatchLaunch ? (
           <BatchActionView
-            selectedIssues={displayIssues.filter((i) => selectedIssueIds.has(i.id))}
+            selectedIssues={resolvedSelectedIssues}
             onClearSelection={() => setSelectedIssueIds(new Set())}
-            batchActions={batchActions}
+            conflicts={conflicts}
+            onLaunch={handleBatchLaunch}
           />
         ) : (
           <IssueDetails
@@ -963,7 +1088,8 @@ export function LinearIssueBrowser({
             actionDisabled={actionDisabled || Boolean(busyIssueId && busyIssueId !== selectedIssue?.id)}
             showBranchPreview={showBranchPreview}
             onIssueAction={handleIssueAction}
-            resolveActions={resolveActions}
+            conflict={selectedIssue ? conflicts?.get(selectedIssue.id) ?? null : null}
+            onLaunch={onBatchLaunch ? handleBatchLaunch : undefined}
           />
         )}
       </div>
@@ -1053,6 +1179,7 @@ function LinearBrowserIssueRow({
   busy,
   checked,
   anyChecked: anyRowChecked,
+  conflict,
   onToggleCheck,
   onClick,
 }: {
@@ -1062,35 +1189,65 @@ function LinearBrowserIssueRow({
   busy?: boolean;
   checked: boolean;
   anyChecked: boolean;
+  conflict?: IssueConflict | null;
   onToggleCheck: (event: React.MouseEvent) => void;
   onClick: () => void;
 }) {
   const listDate = linearIssueListDate(issue);
 
+  // The row is a `div role="button"` rather than a real <button> so the
+  // checkbox can be a sibling interactive control. A <button> nested inside a
+  // <button> is invalid HTML and made checkbox clicks finnicky/missed (the row
+  // and checkbox handlers raced), which is what produced the "bounce" on click.
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={busy ? -1 : 0}
+      aria-disabled={busy || undefined}
+      aria-pressed={active}
       className={cn(
-        "group/row flex h-[34px] w-full items-center gap-3 border-b border-white/[0.04] px-3 text-left transition-colors disabled:opacity-50",
+        "group/row flex h-[34px] w-full items-center gap-3 border-b border-white/[0.04] px-3 text-left transition-colors outline-none focus-visible:bg-white/[0.06]",
+        busy && "pointer-events-none opacity-50",
         active ? "bg-white/[0.06]" : "hover:bg-white/[0.03]",
       )}
-      onClick={onClick}
-      disabled={busy}
+      onClick={() => { if (!busy) onClick(); }}
+      onKeyDown={(e) => {
+        if (busy) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick();
+        }
+      }}
     >
-      <span
+      {/*
+        The checkbox is a ≥24px hit target (the inner box stays 14px) so the
+        click registers reliably across the whole left gutter — the old 14px
+        target was easy to miss. Unselected boxes stay visible (dimmed via
+        border/color, not an opacity-collapse) so there is no layout shift or
+        "bounce" when the row toggles. stopPropagation keeps the toggle from
+        also triggering the row's preview-select.
+      */}
+      <button
+        type="button"
         role="checkbox"
         aria-checked={checked}
+        aria-label={checked ? `Deselect ${issue.identifier}` : `Select ${issue.identifier}`}
         onClick={(e) => { e.stopPropagation(); onToggleCheck(e); }}
-        className={cn(
-          "flex h-[14px] w-[14px] shrink-0 items-center justify-center rounded-[3px] border transition-all cursor-pointer",
-          checked
-            ? "border-[color:var(--color-accent,#A78BFA)] bg-[color:var(--color-accent,#A78BFA)]"
-            : "border-white/[0.15] bg-transparent hover:border-white/30",
-          !anyRowChecked && !checked && "opacity-0 group-hover/row:opacity-100",
-        )}
+        className="-ml-1 grid h-6 w-6 shrink-0 cursor-pointer place-items-center rounded-md outline-none focus-visible:bg-white/[0.06]"
       >
-        {checked ? <Check size={10} weight="bold" className="text-[#0F0D14]" /> : null}
-      </span>
+        <span
+          className={cn(
+            "flex h-[14px] w-[14px] items-center justify-center rounded-[3px] border transition-colors",
+            checked
+              ? "border-[color:var(--color-accent,#A78BFA)] bg-[color:var(--color-accent,#A78BFA)]"
+              : anyRowChecked
+                ? "border-white/[0.18] bg-transparent group-hover/row:border-white/35"
+                : "border-white/[0.12] bg-transparent group-hover/row:border-white/35",
+          )}
+        >
+          {checked ? <Check size={10} weight="bold" className="text-[#0F0D14]" /> : null}
+        </span>
+      </button>
       <span className="w-[54px] shrink-0 truncate font-mono text-[11px] text-muted-fg/50">
         {issue.identifier}
       </span>
@@ -1100,12 +1257,39 @@ function LinearBrowserIssueRow({
         ) : null}
         {issue.title}
       </span>
+      {conflict ? <LinearConflictBadge conflict={conflict} /> : null}
       {listDate ? (
         <span className="shrink-0 text-[11px] tabular-nums text-muted-fg/45">
           {listDate}
         </span>
       ) : null}
-    </button>
+    </div>
+  );
+}
+
+/**
+ * Subtle Linear-brand warning chip for an issue that is already attached to a
+ * lane or chat/CLI session. Intentionally low-key (accent-tinted, not red) — the
+ * issue can still be launched again, this is just a heads-up. The lane name
+ * rides in the tooltip so the row stays compact.
+ */
+function LinearConflictBadge({ conflict }: { conflict: IssueConflict }) {
+  const label = conflict.reason === "lane" ? "Has lane" : "Has agent";
+  const tooltip = conflict.laneName
+    ? `Already attached to “${conflict.laneName}”`
+    : "Already attached to another lane";
+  return (
+    <span
+      className="shrink-0 rounded-full border px-1.5 py-0.5 text-[9.5px] font-medium leading-none"
+      style={{
+        borderColor: "rgba(167, 139, 250, 0.28)",
+        backgroundColor: "rgba(167, 139, 250, 0.10)",
+        color: "rgba(196, 181, 253, 0.95)",
+      }}
+      title={tooltip}
+    >
+      {label}
+    </span>
   );
 }
 
@@ -1140,29 +1324,26 @@ function FilterSelect({
   );
 }
 
-const RESOLVE_ACTIONS: Array<{
-  kind: LinearIssueResolveModalKind;
+// The single-issue dock mirrors the multi-select dock: one unified launch path
+// (lane + agent, or lane only) that opens the same config modal via onLaunch.
+// This replaces the old three-way resolve-modal menu.
+const SINGLE_LAUNCH_ACTIONS: Array<{
+  laneOnly: boolean;
   label: string;
   description: string;
   icon: React.ReactNode;
 }> = [
   {
-    kind: "create-lane",
-    label: "Create lane attached to issue",
-    description: "New lane with this issue linked to the lane.",
-    icon: <Plus size={14} weight="bold" />,
-  },
-  {
-    kind: "resolve-new-lane",
-    label: "Resolve issue in new chat in new lane",
-    description: "New lane plus a Work chat with the issue linked to that chat.",
+    laneOnly: false,
+    label: "Launch lane + agent",
+    description: "New lane with this issue linked, plus an agent kicked off on it.",
     icon: <Sparkle size={14} weight="fill" />,
   },
   {
-    kind: "resolve-existing-lane",
-    label: "Resolve issue in new chat in existing lane",
-    description: "Pick a lane and start a chat with the issue linked to that chat only.",
-    icon: <BranchIcon size={14} />,
+    laneOnly: true,
+    label: "Create lane only",
+    description: "New lane with this issue linked. Start an agent later.",
+    icon: <Plus size={14} weight="bold" />,
   },
 ];
 
@@ -1175,7 +1356,8 @@ function IssueDetails({
   actionDisabled,
   showBranchPreview,
   onIssueAction,
-  resolveActions,
+  conflict,
+  onLaunch,
 }: {
   issue: BrowserIssue | null;
   actionLabel: string;
@@ -1185,11 +1367,8 @@ function IssueDetails({
   actionDisabled: boolean;
   showBranchPreview: boolean;
   onIssueAction: (issue: BrowserIssue) => void | Promise<void>;
-  resolveActions?: {
-    onOpenModal: (kind: LinearIssueResolveModalKind, issue: BrowserIssue) => void;
-    busyModal?: LinearIssueResolveModalKind | null;
-    disabled?: boolean;
-  };
+  conflict?: IssueConflict | null;
+  onLaunch?: (issues: BrowserIssue[], options: { laneOnly?: boolean }) => void;
 }) {
   if (!issue) {
     return (
@@ -1305,34 +1484,39 @@ function IssueDetails({
           <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-fg/82" title={issue.title}>
             {issue.title}
           </span>
+          {conflict ? <LinearConflictBadge conflict={conflict} /> : null}
         </div>
-        {resolveActions ? (
+        {onLaunch ? (
           <div className="space-y-2">
+            {conflict ? (
+              <div className="flex items-start gap-1.5 rounded-lg border border-[color:rgba(167,139,250,0.22)] bg-[color:rgba(167,139,250,0.08)] px-2.5 py-1.5 text-[10.5px] leading-relaxed text-[color:rgba(196,181,253,0.95)]">
+                <Warning size={12} className="mt-px shrink-0" />
+                <span>
+                  {conflict.reason === "lane" ? "Already has a lane" : "Already has an agent"}
+                  {conflict.laneName ? ` (“${conflict.laneName}”)` : ""}. You can attach it again.
+                </span>
+              </div>
+            ) : null}
             <div className="grid gap-1.5">
-              {RESOLVE_ACTIONS.map((action) => {
-                const busy = resolveActions.busyModal === action.kind;
-                const disabled = resolveActions.disabled || Boolean(resolveActions.busyModal && !busy);
-                return (
-                  <button
-                    key={action.kind}
-                    type="button"
-                    disabled={disabled}
-                    className="grid w-full grid-cols-[28px_minmax(0,1fr)] items-start gap-2.5 rounded-lg border border-white/[0.075] bg-white/[0.025] px-2.5 py-2 text-left transition-colors hover:border-white/[0.16] hover:bg-white/[0.055] disabled:cursor-not-allowed disabled:opacity-45"
-                    onClick={() => resolveActions.onOpenModal(action.kind, issue)}
+              {SINGLE_LAUNCH_ACTIONS.map((action) => (
+                <button
+                  key={action.label}
+                  type="button"
+                  className="grid w-full grid-cols-[28px_minmax(0,1fr)] items-start gap-2.5 rounded-lg border border-white/[0.075] bg-white/[0.025] px-2.5 py-2 text-left transition-colors hover:border-white/[0.16] hover:bg-white/[0.055]"
+                  onClick={() => onLaunch([issue], { laneOnly: action.laneOnly })}
+                >
+                  <span
+                    className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-[color:var(--color-accent,#A78BFA)]"
+                    style={{ background: "rgba(167, 139, 250, 0.12)" }}
                   >
-                    <span
-                      className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-[color:var(--color-accent,#A78BFA)]"
-                      style={{ background: "rgba(167, 139, 250, 0.12)" }}
-                    >
-                      {busy ? <CircleNotch size={13} className="animate-spin" /> : action.icon}
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-[11.5px] font-medium leading-snug text-fg/90">{action.label}</span>
-                      <span className="mt-0.5 block text-[10.5px] leading-relaxed text-muted-fg/55">{action.description}</span>
-                    </span>
-                  </button>
-                );
-              })}
+                    {action.icon}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[11.5px] font-medium leading-snug text-fg/90">{action.label}</span>
+                    <span className="mt-0.5 block text-[10.5px] leading-relaxed text-muted-fg/55">{action.description}</span>
+                  </span>
+                </button>
+              ))}
             </div>
             <LinearIssueOpenLink url={issue.url} />
           </div>
@@ -1478,29 +1662,24 @@ function ActivitySection({ issueId }: { issueId: string }) {
 }
 
 const BATCH_ACTIONS_CONFIG = [
-  { key: "create", icon: <Plus size={13} />, label: "Create lanes for", sublabel: "New lane per issue" },
-  { key: "resolve-new", icon: <Sparkle size={13} />, label: "Resolve all in new lanes", sublabel: "Lane + chat per issue" },
-  { key: "resolve-existing", icon: <GitBranch size={13} />, label: "Assign all to one lane", sublabel: "Pick lane, chat per issue" },
+  { key: "launch", icon: <Sparkle size={13} />, label: "Launch lanes + agents", sublabel: "A lane and an agent kicked off per issue" },
+  { key: "create", icon: <Plus size={13} />, label: "Create lanes only", sublabel: "A lane per issue, start agents later" },
 ] as const;
 
 function BatchActionView({
   selectedIssues,
   onClearSelection,
-  batchActions,
+  conflicts,
+  onLaunch,
 }: {
   selectedIssues: BrowserIssue[];
   onClearSelection: () => void;
-  batchActions: NonNullable<Parameters<typeof LinearIssueBrowser>[0]["batchActions"]>;
+  conflicts?: Map<string, IssueConflict>;
+  onLaunch: (issues: BrowserIssue[], options: { laneOnly?: boolean }) => void;
 }) {
-  const busy = Boolean(batchActions.batchProgress);
-
-  function handleAction(key: string): void {
-    switch (key) {
-      case "create": void batchActions.onBatchCreateLanes(selectedIssues); break;
-      case "resolve-new": void batchActions.onBatchResolveNewLanes(selectedIssues); break;
-      case "resolve-existing": void batchActions.onBatchResolveExistingLane(selectedIssues); break;
-    }
-  }
+  const conflictCount = conflicts
+    ? selectedIssues.reduce((count, issue) => (conflicts.has(issue.id) ? count + 1 : count), 0)
+    : 0;
 
   return (
     <aside className="flex min-h-0 flex-col overflow-hidden">
@@ -1511,13 +1690,25 @@ function BatchActionView({
             Clear
           </button>
         </div>
+        {conflictCount > 0 ? (
+          <div className="mt-2 flex items-start gap-1.5 rounded-lg border border-[color:rgba(167,139,250,0.22)] bg-[color:rgba(167,139,250,0.08)] px-2.5 py-1.5 text-[10.5px] leading-relaxed text-[color:rgba(196,181,253,0.95)]">
+            <Warning size={12} className="mt-px shrink-0" />
+            <span>
+              {conflictCount === 1 ? "1 issue is" : `${conflictCount} issues are`} already attached to a lane. You can attach again — we&apos;ll confirm first.
+            </span>
+          </div>
+        ) : null}
         <div className="mt-2 space-y-1">
-          {selectedIssues.map((issue) => (
-            <div key={issue.id} className="flex items-center gap-2 rounded-md bg-white/[0.03] px-2 py-1">
-              <span className="rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-fg/80">{issue.identifier}</span>
-              <span className="min-w-0 flex-1 truncate text-[11px] text-muted-fg/70">{issue.title}</span>
-            </div>
-          ))}
+          {selectedIssues.map((issue) => {
+            const issueConflict = conflicts?.get(issue.id) ?? null;
+            return (
+              <div key={issue.id} className="flex items-center gap-2 rounded-md bg-white/[0.03] px-2 py-1">
+                <span className="rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-fg/80">{issue.identifier}</span>
+                <span className="min-w-0 flex-1 truncate text-[11px] text-muted-fg/70">{issue.title}</span>
+                {issueConflict ? <LinearConflictBadge conflict={issueConflict} /> : null}
+              </div>
+            );
+          })}
         </div>
       </div>
       <div className="shrink-0 border-t border-white/10 px-4 py-3" data-linear-action-dock="true">
@@ -1526,36 +1717,21 @@ function BatchActionView({
             <button
               key={action.key}
               type="button"
-              disabled={busy}
-              className="flex w-full items-start gap-2.5 rounded-lg border border-white/[0.07] bg-white/[0.02] px-2.5 py-2 text-left transition-colors hover:border-white/[0.12] hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-45"
-              onClick={() => handleAction(action.key)}
+              className="flex w-full items-start gap-2.5 rounded-lg border border-white/[0.07] bg-white/[0.02] px-2.5 py-2 text-left transition-colors hover:border-white/[0.12] hover:bg-white/[0.05]"
+              onClick={() => onLaunch(selectedIssues, { laneOnly: action.key === "create" })}
             >
               <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-md text-[color:var(--color-accent,#A78BFA)]" style={{ background: "rgba(167, 139, 250, 0.12)" }}>
                 {action.icon}
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block text-[11.5px] font-medium leading-snug text-fg/90">
-                  {action.key === "create" ? `${action.label} ${selectedIssues.length} issues` : action.label}
+                  {`${action.label} · ${selectedIssues.length} ${selectedIssues.length === 1 ? "issue" : "issues"}`}
                 </span>
                 <span className="mt-0.5 block text-[10.5px] leading-relaxed text-muted-fg/55">{action.sublabel}</span>
               </span>
             </button>
           ))}
         </div>
-        {batchActions.batchProgress && (
-          <div className="mt-2">
-            <div className="flex items-center justify-between text-[10px] text-muted-fg/55">
-              <span>{batchActions.batchProgress.action}</span>
-              <span>{batchActions.batchProgress.completed}/{batchActions.batchProgress.total}</span>
-            </div>
-            <div className="mt-1 h-1 overflow-hidden rounded-full bg-white/[0.06]">
-              <div
-                className="h-full rounded-full bg-[color:var(--color-accent,#A78BFA)] transition-all"
-                style={{ width: `${batchActions.batchProgress.total > 0 ? (batchActions.batchProgress.completed / batchActions.batchProgress.total) * 100 : 0}%` }}
-              />
-            </div>
-          </div>
-        )}
       </div>
     </aside>
   );

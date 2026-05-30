@@ -17,6 +17,25 @@ describe("isAllowedAdeAction", () => {
     expect(isAllowedAdeAction("issue", "addComment")).toBe(true);
   });
 
+  it("exposes the session-scoped Linear link lane actions for CLI/automation reach", () => {
+    expect(isAllowedAdeAction("lane", "attachLinearIssueToSession")).toBe(true);
+    expect(isAllowedAdeAction("lane", "detachLinearIssueFromSession")).toBe(true);
+    expect(isAllowedAdeAction("lane", "listLinearIssuesForSession")).toBe(true);
+    expect(isAllowedAdeAction("lane", "listLinearIssuesForLaneSessions")).toBe(true);
+    expect(isAllowedAdeAction("lane", "unlinkLinearIssues")).toBe(true);
+  });
+
+  it("exposes the Linear issue tracker write actions for the CLI daemon bridge", () => {
+    // CLI agents have no Linear creds; they write back through the daemon
+    // bridge, so these must be agent-reachable (not CTO-gated).
+    expect(isAllowedAdeAction("linear_issue_tracker", "updateIssueState")).toBe(true);
+    expect(isAllowedAdeAction("linear_issue_tracker", "createComment")).toBe(true);
+    expect(isAllowedAdeAction("linear_issue_tracker", "updateIssueAssignee")).toBe(true);
+    expect(isAllowedAdeAction("linear_issue_tracker", "addLabel")).toBe(true);
+    expect(isCtoOnlyAdeAction("linear_issue_tracker", "updateIssueState")).toBe(false);
+    expect(isCtoOnlyAdeAction("linear_issue_tracker", "addLabel")).toBe(false);
+  });
+
   it("rejects an unknown action on a known domain", () => {
     expect(isAllowedAdeAction("git", "rmRf")).toBe(false);
     expect(isAllowedAdeAction("issue", "deleteAllIssues")).toBe(false);

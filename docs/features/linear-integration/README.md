@@ -203,6 +203,12 @@ Core Linear services on desktop
   events for observability.
 - `linearIngressService.ts` — webhook HTTP listener + relay poller, hands
   off to `syncService.processIssueUpdate`
+- `linearLiveStatusService.ts` — optional live status round-trip
+  (`createLinearLiveStatusService`). As an ADE agent moves an issue through
+  its lifecycle the service reflects that back into Linear via the existing
+  `issueTracker` write surface (`updateIssueState` / `updateIssueAssignee` /
+  `createComment`) — no new credentials. **Gated OFF** unless
+  `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`. See "Live status round-trip" below.
 
 Shared types and helpers:
 
@@ -226,7 +232,15 @@ Shared types and helpers:
   (`primary | worked | referenced | inferred`), and
   `LaneLinearIssueLinkSource` (`lane_create | lane_link |
   chat_attach | linear_open_issue | commit | pr_body | manual`),
-  used for multi-issue lane linkage.
+  used for multi-issue lane linkage. Also exports
+  `SessionLinearIssueLink` — the session-scoped link shape
+  (`id`, `sessionId`, `laneId | null`, `issue`, `role`, `source`,
+  `includeInPr`, `closeOnMerge`, `evidence`, timestamps) that lets a
+  chat or CLI session attach an issue even when it has no lane. It
+  reuses the same `role` / `source` vocabulary as the lane links.
+  `AgentChatSessionSummary.linearIssueLinks` (in
+  `apps/desktop/src/shared/types/chat.ts`) carries these on the
+  session summary, populated from `session_linear_issues`.
 - `apps/desktop/src/shared/linearIssueBranch.ts` — pure helpers
   `linearIssueLaneName(issue)` ("IDENT title") and
   `linearIssueBranchName(issue)` (slugified, sanitised against git
@@ -305,14 +319,44 @@ Renderer wiring:
   issue row when the search results return. The issue detail pane displays
   cycle metadata and child-issue status.
 - `apps/desktop/src/renderer/components/app/LinearIssueResolveModals.tsx`
-  — modal dialogs for resolving Linear issues directly from the
-  quick-view or issue browser: create a new lane from the issue,
-  attach to an existing lane, or launch an agent chat to work on the
-  issue with model selection and branch preview. Also provides
-  batch modals: `BatchCreateLanesModal` (create one lane per
-  selected issue), `BatchResolveInNewLanesModal` (create lanes and
-  launch agents), and `BatchResolveInExistingLaneModal` (resolve
-  multiple issues into a single existing lane).
+  — single-issue modal dialogs for resolving a Linear issue directly
+  from the quick-view or issue browser: `CreateLaneAttachedModal`
+  (create a new lane from the issue), `ResolveInNewLaneModal`
+  (create a lane and launch an agent), and `ResolveInExistingLaneModal`
+  (attach to an existing lane), plus `useLinearIssueResolveModalState`
+  and the `LinearIssueOpenLink` external-URL helper. Multi-select batch
+  flows now route through the unified `BatchLaunchModal` (below) rather
+  than the older per-action batch modals.
+- `apps/desktop/src/renderer/components/app/BatchLaunchModal.tsx` — the
+  unified multi-select batch launch dialog. Given the selected issues
+  it shows a per-issue config row (model, reasoning effort, Codex fast
+  mode, editable kickoff prompt, editable branch override) with a
+  "default" config that applies to every row, flags issues that already
+  have a lane or attached session via `findIssueConflicts`, and can run
+  in `laneOnly` mode (create lanes, no agent kickoff — hides the model
+  pickers). On submit it closes synchronously and hands the entries to
+  the orchestrator, which drives `runBatchLaunch` (see `linearBatchLaunch.ts`).
+- `apps/desktop/src/renderer/components/app/BatchLaunchStatusToast.tsx`
+  — live progress toast for an in-flight batch launch: per-issue status
+  (`pending` → `creating-lane` → `launching-agent` → `done` / `failed`),
+  a "Retry failed" affordance, and a jump-to-lane action.
+- `apps/desktop/src/renderer/lib/linearBatchLaunch.ts` — the launch
+  orchestrator (no React). `runBatchLaunch(entries, deps, options)` runs
+  bounded-parallel (`BATCH_LAUNCH_CONCURRENCY = 3`) create-lane →
+  create-session → send-kickoff per issue; sibling failures never abort
+  the pool. On an agent-launch failure after the lane was created it rolls
+  the lane back so retries don't pile up orphans (and surfaces the orphan
+  if the rollback itself fails). Returns `createdLaneIds`,
+  `createdSessionIds`, and `failedIssueIds`. Also exports
+  `defaultKickoffPrompt` (reuses the shared context-attachment formatter),
+  `resolveLaunchProviderAndModel`, `batchLaunchSupportsFastMode`, and
+  `findIssueConflicts` (the duplicate guard, which also reads each lane's
+  `linearIssueLinks` so session-only links are caught).
+- `apps/desktop/src/renderer/lib/launchedLanesHighlight.ts` — cross-page
+  one-shot signal (`rememberLaunchedLanes` / `consumeLaunchedLanesHighlight`
+  / `subscribeLaunchedLanesHighlight`, 30s TTL) so after a batch launch
+  reroutes from the quick view, the Lanes tab opens its stack drawer and
+  pulses the newly launched agents.
 - `apps/desktop/src/renderer/components/chat/AgentChatComposer.tsx`
   — the composer's Linear attach affordance opens a
   `LinearIssueContextDialog` that hosts the same
@@ -366,6 +410,13 @@ IPC wiring (`apps/desktop/src/main/services/ipc/registerIpc.ts`):
   `IssueTrackerIssueSearchQuery` covers project / state-types /
   assignee / priority / free-text / cursor pagination filters; the
   result is `{ issues, pageInfo }`.
+- Session-scoped issue attachment runs over the **lane** IPC surface
+  (named in `apps/desktop/src/shared/ipc.ts`): `lanesAttachLinearIssueToSession`,
+  `lanesDetachLinearIssueFromSession`, `lanesListLinearIssuesForSession`,
+  `lanesListLinearIssuesForLaneSessions`, and `lanesUnlinkLinearIssues`.
+  They are exposed on `window.ade.lane.*` and backed by the matching
+  `laneService` methods (see `docs/features/lanes/README.md`). The CLI/TUI
+  routes the same actions over the daemon bridge to the desktop runtime.
 
 Headless ADE CLI mode:
 
@@ -466,14 +517,21 @@ exposes that path in three places that all share the same primitives:
   attachment through `LinearIssueContextDialog`, which reuses
   `LinearIssueBrowser`. Helpers live in
   `shared/chatContextAttachments.ts`. When a chat attaches one or
-  more Linear issues at run time, `agentChatService` calls
-  `laneService.linkLinearIssues({ issues, role: "worked", source:
-  "chat_attach", includeInPr: true, evidence: { chatSessionId } })`
-  so the attached issues survive across PR creation and show up in
-  the rendered "Linked Linear issues" block. ADE also publishes a Linear issue
+  more Linear issues at run time, `agentChatService` first calls
+  `laneService.attachLinearIssueToSession({ chatSessionId, issues,
+  role: "worked", source: "chat_attach", includeInPr: true, evidence:
+  { chatSessionId } })` so the link is persisted **per session** — this
+  keeps the attachment for standalone chats and `ade chat` sessions that
+  have no lane. When the session belongs to a lane, that call also mirrors
+  each issue into `lane_linear_issue_links` (never promoting the lane's
+  primary), and `agentChatService` additionally runs the lane-scoped
+  `laneService.linkLinearIssues(...)` for the lane/card semantics, so the
+  issues survive across PR creation and show up in the rendered "Linked
+  Linear issues" block. ADE also publishes a Linear issue
   attachment for the chat session (`Open ADE chat: IDENT`) with a local
   `ade://session/<id>` deeplink so the same desktop can reopen the exact
-  chat without presenting the link as portable across machines.
+  chat without presenting the link as portable across machines. See
+  "Session-scoped issue attachment and CLI context injection" below.
 - **Top-bar quick view.** `TopBar` mounts
   `LinearQuickViewButton`. The button only appears once the active project is
   connected to Linear, but the component still listens for inbound issue
@@ -482,8 +540,9 @@ exposes that path in three places that all share the same primitives:
   explains whether they need to open the project first or connect Linear from
   Settings. Clicking an issue creates a fresh lane via `lanes.create`,
   refreshes the lane store, and selects the new lane. Multi-select in the
-  browser enables batch flows: create one lane per selected issue, create
-  lanes and launch agents, or resolve multiple issues into an existing lane.
+  browser opens the unified `BatchLaunchModal`, which can create one lane
+  per selected issue (`laneOnly`) or create lanes and launch agents in one
+  bounded-parallel run (see "Multi-select batch launch" below).
   The issue detail pane renders the comment thread (via
   `getLinearIssueComments`) with markdown and shows cycle and child-issue
   metadata.
@@ -494,6 +553,108 @@ exposes that path in three places that all share the same primitives:
   through `linear_sync_events` so each Linear issue gets one ADE entry point.
   The URL is portable across machines because it uses the canonical
   `https://ade-app.dev/open` web handoff instead of a local-only scheme.
+
+## Multi-select batch launch
+
+From the top-bar quick view's `LinearIssueBrowser`, selecting multiple
+issues opens `BatchLaunchModal` (one unified dialog, replacing the older
+per-action batch modals). The modal renders a per-issue config row (model,
+reasoning effort, Codex fast mode, editable kickoff prompt, editable branch
+override) plus a "default" config that seeds every row, and flags issues
+that already have a lane or attached session via `findIssueConflicts`
+(which inspects both each lane's primary `linearIssue` and its
+`linearIssueLinks` so session-only links are caught). It supports a
+`laneOnly` mode that creates lanes without launching agents.
+
+On submit the orchestrator in `linearBatchLaunch.ts` runs `runBatchLaunch`:
+
+- Bounded parallel at `BATCH_LAUNCH_CONCURRENCY = 3` to keep daemon
+  git-worktree mutations and warmups in check.
+- Each issue runs create-lane → create-session → send-kickoff with its own
+  model config. The kickoff prompt defaults to `defaultKickoffPrompt(issue)`,
+  which reuses the shared `buildChatContextAttachmentPrompt` formatter so a
+  batch-launched agent reads issue context the same way a composer attach does.
+- **Sibling failures never abort the pool** — a failed issue is recorded and
+  the rest keep going. If an agent launch fails *after* the lane was created,
+  the lane is rolled back so retries don't pile up orphan lanes; if the
+  rollback itself fails the orphan is surfaced (kept in `createdLaneIds` /
+  the failed item's `laneId`) rather than left invisible.
+- Returns `createdLaneIds`, `createdSessionIds`, and `failedIssueIds` so the
+  caller can reroute + highlight and offer "Retry failed".
+
+`BatchLaunchStatusToast` shows live per-issue progress (`pending` →
+`creating-lane` → `launching-agent` → `done` / `failed`) with retry and
+jump-to-lane affordances. After the run, `rememberLaunchedLanes`
+(`launchedLanesHighlight.ts`) signals the Lanes tab to open its stack drawer
+and pulse the newly launched agents (one-shot, 30s TTL).
+
+## Session-scoped issue attachment and CLI context injection
+
+Issues can be attached to a **session** (chat or CLI) independently of any
+lane. This is what lets a standalone chat or an `ade chat` / `ade serve`
+CLI session carry an attached issue even when it has no lane. The store is
+`session_linear_issues`; the lane service owns the surface:
+
+- `attachLinearIssueToSession({ chatSessionId, issues, role, source,
+  includeInPr, closeOnMerge, evidence })` — resolves the session's lane (if
+  any) from `claude_sessions` / `terminal_sessions`, persists a
+  `SessionLinearIssueLink` per issue (deduped by id, skipping unlinkable
+  issues), and when the session has a lane also mirrors each issue into
+  `lane_linear_issue_links` (source `chat_attach`). It **never** promotes a
+  lane's primary issue.
+- `detachLinearIssueFromSession({ chatSessionId, issueId? })` — omit
+  `issueId` to detach all; removes the mirrored `chat_attach` lane links too.
+- `listLinearIssuesForSession({ chatSessionId })` and
+  `listLinearIssuesForLaneSessions({ laneId })` — read paths; the latter is
+  used on PR-open to fan out session → lane → Linear.
+- `unlinkLinearIssues({ laneId, issueId? })` — lane-level detach counterpart
+  to `linkLinearIssues`; never touches the lane's primary issue.
+
+**CLI context injection.** When `agentChatService` spawns the agent runtime
+(ADE chat or CLI), `buildAgentRuntimeEnv` materializes the session's attached
+issues into a per-session context file via
+`writeSessionLinearIssueContextFile` (`<contextDir>/<sessionId>/linear-issues.json`,
+written atomically; stale files cleared when no issues are attached) and sets
+two env vars the spawned agent reads **without Linear credentials**:
+
+- `ADE_LINEAR_ISSUE_IDS` — comma-joined attached issue identifiers.
+- `ADE_LINEAR_CONTEXT_FILE` — absolute path to the JSON context file.
+
+The agent (or `ade linear …` commands) then writes back to the issue over
+the daemon bridge — see `docs/features/ade-code/README.md` for the CLI
+commands and `docs/features/chat/README.md` for the session-link flow.
+
+**PR-open fan-out.** On PR open, `prService.publishLinearPrCardsForLane`
+combines the lane's own references (`collectLinearPrIssueReferences`) with
+`collectLinearPrIssueReferencesForLaneSessions(laneId)` — issues attached
+only to a session in the lane — deduped via `dedupeLinearPrIssueReferences`,
+so a session-only issue still gets a PR attachment. `session_linear_issues`
+is authoritative for sessions whose lane mirror never landed.
+
+## Live status round-trip
+
+`linearLiveStatusService.ts` (`createLinearLiveStatusService`) reflects an
+ADE agent's progress back into Linear as it moves an issue through its
+lifecycle, reusing the existing `issueTracker` write surface — **no new
+Linear credentials**. It is **gated OFF** by default and only runs when
+`ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1` (mirrors the `ADE_ENABLE_*`
+background-task flag convention in `main.ts`).
+
+- **On agent launch** (`onAgentLaunched`, wired from `main.ts` after a chat
+  launches against a Linear issue): move the issue to the team's "In Progress"
+  state (workflow state of type `started`), self-assign it to the connected
+  Linear viewer, and post a branch-link comment. Workflow states are resolved
+  once per team and cached; In-Progress / Done transitions are de-duped per
+  issue per direction.
+- **On PR open** (`onPrOpened`, from `prService`): comment the PR link onto
+  each linked issue.
+- **On merge** (`onIssueMerged`, from `main.ts` when a PR transitions into
+  the merged state): move each linked issue to the team's Done state (type
+  `completed`).
+
+Every write is best-effort: failures are logged (`linear_live_status.*`
+warnings) and de-dupe markers are rolled back so a transient failure can
+retry, but they never block the launch / PR / merge path.
 
 ## Database tables (selected)
 
@@ -520,6 +681,19 @@ other ADE table. Key tables the Linear stack writes:
   `LaneSummary.linearIssueLinks` and combined with the primary
   `linearIssue` by `prService.applyLinearPrLinkage` to render the
   PR's "Linked Linear issues" block.
+- `session_linear_issues` — session-scoped issue links (defined in
+  `kvDb.ts`). A chat (`claude_sessions`) or CLI session
+  (`terminal_sessions`) can attach a Linear issue even when it has no
+  lane (standalone chats, `ade chat` sessions). `session_id` is the chat
+  / terminal session id; `lane_id` mirrors the session's lane when one
+  exists so PR-open linking can fan out from session → lane. The schema
+  mirrors `lane_linear_issue_links` (`role`, `source`, `include_in_pr`,
+  `close_on_merge`, `evidence_json`) so the two share parse/clone helpers.
+  Like the other CRR-converted Linear tables it carries no secondary
+  UNIQUE index; uniqueness on `(project_id, session_id, issue_id, role)`
+  is enforced at the application layer (delete-then-insert in a
+  transaction inside `upsertSessionLinearIssueLink`). Hydrated into
+  `AgentChatSessionSummary.linearIssueLinks`.
 - `linear_issue_claims` — active-claim ledger (one active row per
   `(project_id, issue_id)`) so two lanes don't try to drive the
   same issue simultaneously.
@@ -589,4 +763,16 @@ once configured, but:
 - **Non-PK uniqueness is stripped by CRR retrofit.** Linear tables do
   not rely on secondary UNIQUE constraints for upserts; dispatcher
   merges use explicit select-then-update instead of
-  `ON CONFLICT(some_unique_col)`.
+  `ON CONFLICT(some_unique_col)`. `session_linear_issues` follows the
+  same discipline — uniqueness on `(project_id, session_id, issue_id,
+  role)` is enforced in `upsertSessionLinearIssueLink` (delete-then-insert
+  in a transaction).
+- **Live status round-trip is off by default.** Nothing writes back to
+  Linear on launch / PR / merge unless `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`
+  is set; `linearLiveStatusService.enabled` reflects the flag and every
+  hook short-circuits when false.
+- **`linear.issue_labeled` matches added labels only.** The trigger fires
+  once when labels are added (current `labelIds` minus
+  `updatedFrom.labelIds`), and its `labels` filter matches the added names,
+  not the issue's full set. A label add suppresses the generic
+  `linear.issue_updated` fallthrough so it is not double-counted.

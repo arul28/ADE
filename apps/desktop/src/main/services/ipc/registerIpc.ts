@@ -9,6 +9,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IPC } from "../../../shared/ipc";
 import { getModelById } from "../../../shared/modelRegistry";
+import {
+  buildTrackedCliLaunchCommand,
+  LAUNCH_PROFILE_TITLE,
+  LAUNCH_PROFILE_TOOL_TYPE,
+} from "../../../shared/cliLaunch";
 import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
 import { buildPrAiResolutionContextKey } from "../../../shared/types";
 import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../prs/prIssueResolver";
@@ -270,6 +275,9 @@ import type {
   AgentChatReloadClaudePluginsResult,
   AgentChatClaudePermissionMode,
   AgentChatCreateArgs,
+  AgentChatLaunchArgs,
+  AgentChatLaunchCliArgs,
+  AgentChatLaunchCliResult,
   AgentChatDeleteArgs,
   AgentChatGetSummaryArgs,
   AgentChatEventHistorySnapshot,
@@ -321,6 +329,7 @@ import type {
   OnboardingStatus,
   OnboardingTourProgress,
   OnboardingTourVariant,
+  LaneLinearIssue,
   LaneListSnapshot,
   LaneSummary,
   ListOperationsArgs,
@@ -394,6 +403,7 @@ import type {
   CancelResolverSessionArgs,
   RunTestSuiteArgs,
   SessionDeltaSummary,
+  SessionLinearIssueLink,
   StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
@@ -4761,6 +4771,46 @@ export function registerIpc({
     return await ctx.laneService.getChildren(arg.laneId);
   });
 
+  ipcMain.handle(IPC.lanesAttachLinearIssueToSession, async (
+    _event,
+    arg: { chatSessionId: string; issues: LaneLinearIssue[] },
+  ): Promise<SessionLinearIssueLink[]> => {
+    const ctx = getCtx();
+    return ctx.laneService.attachLinearIssueToSession(arg);
+  });
+
+  ipcMain.handle(IPC.lanesDetachLinearIssueFromSession, async (
+    _event,
+    arg: { chatSessionId: string; issueId?: string },
+  ): Promise<boolean> => {
+    const ctx = getCtx();
+    return ctx.laneService.detachLinearIssueFromSession(arg);
+  });
+
+  ipcMain.handle(IPC.lanesListLinearIssuesForSession, async (
+    _event,
+    arg: { chatSessionId: string },
+  ): Promise<SessionLinearIssueLink[]> => {
+    const ctx = getCtx();
+    return ctx.laneService.listLinearIssuesForSession(arg);
+  });
+
+  ipcMain.handle(IPC.lanesListLinearIssuesForLaneSessions, async (
+    _event,
+    arg: { laneId: string },
+  ): Promise<SessionLinearIssueLink[]> => {
+    const ctx = getCtx();
+    return ctx.laneService.listLinearIssuesForLaneSessions(arg);
+  });
+
+  ipcMain.handle(IPC.lanesUnlinkLinearIssues, async (
+    _event,
+    arg: { laneId: string; issueId?: string },
+  ): Promise<boolean> => {
+    const ctx = getCtx();
+    return ctx.laneService.unlinkLinearIssues(arg);
+  });
+
   ipcMain.handle(IPC.lanesRebaseStart, async (_event, arg: RebaseStartArgs): Promise<RebaseStartResult> => {
     const ctx = getCtx();
     return await ctx.laneService.rebaseStart(arg);
@@ -5515,6 +5565,88 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatCreate, async (_event, arg: AgentChatCreateArgs): Promise<AgentChatSession> => {
     const ctx = getCtx();
     return await ctx.agentChatService.createSession(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatLaunch, async (_event, arg: AgentChatLaunchArgs): Promise<AgentChatSession> => {
+    const ctx = getCtx();
+    return await ctx.agentChatService.launchHeadless(arg);
+  });
+
+  // Launch a tracked CLI/terminal agent with Linear issues attached *before* the
+  // process spawns. The new terminal's own session id doubles as the Linear
+  // link key, so `getSessionLinearEnv` injects ADE_LINEAR_ISSUE_IDS +
+  // ADE_LINEAR_CONTEXT_FILE into the PTY env (the agent reads/updates its issue
+  // via `ade linear`, no token needed). The kickoff prompt is built into the
+  // provider's startup command / initialInput.
+  ipcMain.handle(IPC.agentChatLaunchCli, async (_event, arg: AgentChatLaunchCliArgs): Promise<AgentChatLaunchCliResult> => {
+    const ctx = getCtx();
+    const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
+    if (!laneId) throw new Error("agentChat.launchCli requires a laneId.");
+    const provider = arg?.provider;
+    if (!provider) throw new Error("agentChat.launchCli requires a provider.");
+    const kickoffPrompt = typeof arg?.kickoffPrompt === "string" ? arg.kickoffPrompt : "";
+    if (!kickoffPrompt.trim().length) {
+      throw new Error("agentChat.launchCli requires a kickoff prompt.");
+    }
+
+    const worktreePath = ctx.laneService.getLaneWorktreePath(laneId);
+
+    // The terminal session id is the Linear link key. For Claude, reuse it as
+    // the CLI `--session-id` so resume stays consistent.
+    const sessionId = randomUUID();
+    const permissionMode = arg.permissionMode ?? "full-auto";
+
+    // The Linear issues are attached inside ptyService.create AFTER the terminal
+    // row is created (so the lane-mirror link lands) but BEFORE the env is built
+    // (so the spawned agent inherits ADE_LINEAR_*). Report the resolved ids back
+    // to the caller for optimistic UI without re-querying.
+    const issues = Array.isArray(arg.linearIssues) ? arg.linearIssues : [];
+    const attachedLinearIssueIds = issues
+      .map((issue) => issue?.id)
+      .filter((id): id is string => typeof id === "string" && id.length > 0);
+
+    const launch = buildTrackedCliLaunchCommand({
+      provider,
+      permissionMode,
+      ...(provider === "claude" ? { sessionId } : {}),
+      model: arg.model ?? null,
+      reasoningEffort: arg.reasoningEffort ?? null,
+      initialPrompt: kickoffPrompt,
+      laneWorktreePath: worktreePath,
+    });
+
+    const result = await ctx.ptyService.create({
+      sessionId,
+      allowNewSessionId: true,
+      chatSessionId: sessionId,
+      laneId,
+      cols: 100,
+      rows: 30,
+      title: arg.title?.trim() || LAUNCH_PROFILE_TITLE[provider],
+      tracked: true,
+      toolType: LAUNCH_PROFILE_TOOL_TYPE[provider],
+      startupCommand: launch.startupCommand,
+      ...(issues.length ? { linearIssues: issues } : {}),
+      ...(launch.command !== undefined ? { command: launch.command } : {}),
+      ...(launch.args !== undefined ? { args: launch.args } : {}),
+      ...(launch.initialInput !== undefined ? { initialInput: launch.initialInput } : {}),
+      ...(launch.initialInputDelayMs !== undefined ? { initialInputDelayMs: launch.initialInputDelayMs } : {}),
+      ...(launch.env ? { env: launch.env } : {}),
+    });
+
+    ctx.logger.info("agentChat.launchCli.created", {
+      laneId,
+      sessionId: result.sessionId,
+      provider,
+      attachedLinearIssueCount: attachedLinearIssueIds.length,
+    });
+
+    return {
+      sessionId: result.sessionId,
+      ptyId: result.ptyId,
+      pid: result.pid,
+      attachedLinearIssueIds,
+    };
   });
 
   ipcMain.handle(IPC.agentChatSuggestLaneName, async (_event, arg: unknown): Promise<string> => {

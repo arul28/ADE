@@ -923,7 +923,13 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade lanes create --name <name>                Create a lane from the current project context
     $ ade lanes create --linear-issue-json '{...}'  Create a lane linked to a Linear issue
     $ ade lanes link-linear-issue <lane> --linear-issue-json '{...}'
-                                                    Link an existing lane to a Linear issue
+                                                    Link an existing lane to a Linear issue (alias: attach-linear-issue)
+    $ ade lanes detach-linear-issue <lane> [--issue-id ENG-431]
+                                                    Unlink one issue (or all non-primary links) from a lane
+    $ ade lanes create-from-linear --linear-issue-json '{...}' [--start-chat --provider codex --model <m>]
+                                                    Create a lane from an issue, optionally auto-launching an agent
+    $ ade lanes batch-create-from-linear --linear-issues-json '[{...},{...}]'
+                                                    Create one lane per issue (partial success, no orphans)
     $ ade lanes create --branch-name <branch>       Override the auto-generated branch name
     $ ade lanes child --lane <parent> --name <name> Create a child lane under a parent
     $ ade lanes import --branch <branch>            Register an existing branch/worktree
@@ -1105,7 +1111,13 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
     $ ade chat list --text                          List chat sessions
     $ ade chat create --lane <lane> --provider codex --model <model> [--fast]
+    $ ade chat create --from-linear-issue ENG-431   Start a chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message
+    $ ade chat attach-linear-issue <session> --issue-id ENG-431
+                                                    Attach a Linear issue to a chat/CLI session
+    $ ade chat detach-linear-issue <session> [--issue-id ENG-431]
+                                                    Detach one issue (or all) from a session
+    $ ade chat linear-issues <session> --text       List issues attached to a session
     $ ade chat interrupt <session>                  Stop an active turn
     $ ade chat slash <session> --text               List slash commands for a session
     $ ade agent spawn --lane <lane> --prompt "fix"  Start a new agent work session
@@ -1388,6 +1400,25 @@ const HELP_BY_COMMAND: Record<string, string> = {
   linear: `${ADE_BANNER}
   Linear workflows
 
+  Daemon bridge (for an agent running inside a tracked ADE CLI session):
+  these commands route over the ADE daemon to the desktop runtime, which holds
+  the Linear credentials — the CLI never needs a Linear token. When ADE launches
+  an agent with an attached issue it injects \$ADE_CHAT_SESSION_ID and
+  \$ADE_LINEAR_ISSUE_IDS, so the agent can read and write its issue with no ids.
+
+    $ ade linear attach --this-session --issue-id ENG-431
+                                                    Attach an issue to the current CLI session
+    $ ade linear issues --this-session --text       List issues attached to this session
+    $ ade linear issue ENG-431 --text               Read one issue (defaults to the session's attached issue)
+    $ ade linear comment "Pushed a fix, running CI" Comment on the attached issue (or pass an id first)
+    $ ade linear comment ENG-431 "Done"             Comment on a specific issue
+    $ ade linear set-state ENG-431 <state-id>       Move an issue to a workflow state
+    $ ade linear assign ENG-431 <user-id|none>      Assign or clear an issue assignee
+    $ ade linear label ENG-431 "needs-review"       Add a label to an issue
+    $ ade linear detach --this-session [--issue-id ENG-431]
+                                                    Detach one issue (or all) from this session
+
+  Workspace + automation (typically run with --role cto):
     $ ade --role cto linear quick-view --text      Show connected workspace, projects, and issues
     $ ade --role cto linear picker-data --text     Read projects/users/states for the issue picker
     $ ade --role cto linear search-issues --query "auth" --state-type started,unstarted --first 50
@@ -1924,6 +1955,213 @@ function maybePut(target: JsonObject, key: string, value: unknown): void {
 }
 
 /**
+ * Foundation-owned daemon action names for Linear issue ↔ lane/session linking.
+ * Centralized here so any rename in the foundation registry is a one-line patch
+ * in the CLI. The lane domain owns lane-scoped and session-scoped attachment;
+ * the linear_issue_tracker domain owns the read/write bridge an attached CLI
+ * agent uses via `ade linear ...` (creds live in the desktop runtime).
+ */
+const LINEAR_ATTACH_ACTIONS = {
+  domain: "lane",
+  /** Lane-scoped link: linkLinearIssues({ laneId, issues: [...] }). */
+  linkLane: "linkLinearIssues",
+  /** Lane-scoped unlink (issueId omitted = remove all non-primary links): unlinkLinearIssues({ laneId, issueId? }). */
+  unlinkLane: "unlinkLinearIssues",
+  /** Attach issues to a session: attachLinearIssueToSession({ chatSessionId, issues: [...] }). */
+  attachSession: "attachLinearIssueToSession",
+  /** Detach one issue (or all if issueId omitted): detachLinearIssueFromSession({ chatSessionId, issueId? }). */
+  detachSession: "detachLinearIssueFromSession",
+  /** List issues for a session: listLinearIssuesForSession({ chatSessionId }). */
+  listSession: "listLinearIssuesForSession",
+} as const;
+
+/**
+ * Read the session id for session-scoped Linear commands. Prefers explicit
+ * flags, then the agent-environment session id ($ADE_CHAT_SESSION_ID) so an
+ * agent running inside a tracked CLI session can self-reference. `--this-session`
+ * forces the env path and errors if it is unset.
+ */
+function readSessionId(args: string[], options: { thisSession?: boolean } = {}): string | null {
+  const explicit = asString(
+    readValue(args, [
+      "--chat-session",
+      "--chat-session-id",
+      "--session",
+      "--session-id",
+    ]),
+  );
+  if (explicit) return explicit;
+  const envSession = asString(process.env.ADE_CHAT_SESSION_ID);
+  if (options.thisSession && !envSession) {
+    throw new CliUsageError(
+      "--this-session requires ADE_CHAT_SESSION_ID, which ADE sets inside a tracked CLI session.",
+    );
+  }
+  return envSession;
+}
+
+/**
+ * Parse `--linear-issue-json` (a single object or an array of objects) plus the
+ * `--issue-id`/`--linear-issue-id` shorthands (repeatable) into a normalized
+ * array of Linear issue objects. At least one issue must resolve.
+ */
+function parseLinearIssuesInput(args: string[], label = "--linear-issue-json"): JsonObject[] {
+  const issues: JsonObject[] = [];
+  const json = readValue(args, ["--linear-issue-json", "--issue-json", "--linear-issues-json"]);
+  if (json != null) {
+    const parsed = parseJson(json, label);
+    const candidates = Array.isArray(parsed) ? parsed : [parsed];
+    if (candidates.length === 0 || candidates.some((entry) => !isRecord(entry))) {
+      throw new CliUsageError(`${label} must decode to an object or a non-empty array of objects.`);
+    }
+    issues.push(...(candidates as JsonObject[]));
+  }
+  // `--issue-id`/`--linear-issue-id` may be repeated; each becomes a minimal
+  // issue object the daemon can hydrate from its identifier.
+  const idFlags = ["--issue-id", "--linear-issue-id", "--issue", "--from-linear-issue"];
+  let idShorthand = readValue(args, idFlags);
+  while (idShorthand != null) {
+    issues.push({ id: idShorthand, identifier: idShorthand });
+    idShorthand = readValue(args, idFlags);
+  }
+  if (issues.length === 0) {
+    throw new CliUsageError(`${label} or --issue-id <id> is required.`);
+  }
+  // Cheap pre-flight so the daemon never receives an unresolvable issue: every
+  // issue must carry an id or identifier.
+  const invalid = issues.findIndex(
+    (issue) => !asString(issue.id) && !asString(issue.identifier),
+  );
+  if (invalid >= 0) {
+    throw new CliUsageError(
+      `${label} entry ${invalid + 1} is missing both "id" and "identifier".`,
+    );
+  }
+  return issues;
+}
+
+/** First Linear issue id ADE injected into the session via $ADE_LINEAR_ISSUE_IDS. */
+function sessionLinearIssueId(): string | null {
+  const envIds = asString(process.env.ADE_LINEAR_ISSUE_IDS);
+  return (
+    envIds
+      ?.split(",")
+      .map((entry) => entry.trim())
+      .find(Boolean) ?? null
+  );
+}
+
+/** Consume the single-issue-id flag (`--issue-id`/`--linear-issue-id`/`--issue`) from args. */
+function readIssueIdFlag(args: string[]): string | null {
+  return readValue(args, ["--issue-id", "--linear-issue-id", "--issue"]);
+}
+
+/**
+ * Resolve a Linear write-bridge command's issue id when the command takes no
+ * positional value (e.g. `ade linear issue [<id>]`). Precedence: --issue-id flag
+ * → leading positional → the session's injected issue id.
+ */
+function requireLinearIssueId(args: string[]): string {
+  const explicit = asString(readIssueIdFlag(args));
+  if (explicit) return explicit;
+  const positional = asString(firstPositional(args));
+  if (positional) return positional;
+  const fromSession = sessionLinearIssueId();
+  if (fromSession) return fromSession;
+  throw new CliUsageError(
+    "Linear issue id is required. Pass --issue-id <id> or run inside a session with an attached issue (ADE sets $ADE_LINEAR_ISSUE_IDS).",
+  );
+}
+
+/**
+ * Resolve the issue id + a single positional value for write commands that take
+ * both (comment/set-state/label). Handles the ambiguity of one positional:
+ *  - `comment ENG-431 "done"` → issueId=ENG-431, value="done"
+ *  - `comment "done"` (session has an attached issue) → issueId from session, value="done"
+ *  - `comment ENG-431` (no value flag) → issueId=ENG-431, value missing (caller errors)
+ * An explicit --issue-id flag or value flag always wins over positionals.
+ */
+function resolveLinearWriteCommand(
+  args: string[],
+  valueFlagNames: string[],
+): { issueId: string; value: string | null } {
+  const explicitIssueId = asString(readIssueIdFlag(args));
+  const explicitValue = asString(readValue(args, valueFlagNames));
+  const positionals: string[] = [];
+  let next = firstPositional(args);
+  while (next != null) {
+    positionals.push(next);
+    next = firstPositional(args);
+  }
+  const sessionId = sessionLinearIssueId();
+
+  let issueId = explicitIssueId;
+  let value = explicitValue;
+
+  if (!issueId) {
+    // With no explicit id: if the session injected one and exactly one positional
+    // remains for the value, treat that positional as the value. Otherwise the
+    // first positional is the issue id.
+    if (sessionId && (positionals.length <= 1 || explicitValue)) {
+      issueId = sessionId;
+    } else {
+      issueId = asString(positionals.shift() ?? null);
+    }
+  }
+  if (!issueId) {
+    throw new CliUsageError(
+      "Linear issue id is required. Pass --issue-id <id> or run inside a session with an attached issue (ADE sets $ADE_LINEAR_ISSUE_IDS).",
+    );
+  }
+  if (!value) {
+    value = positionals.length ? positionals.join(" ").trim() : null;
+  }
+  return { issueId, value };
+}
+
+/** Shared link/attachment flags (source, include-in-pr, close-on-merge, role). */
+function readLinearAttachmentFlags(args: string[]): JsonObject {
+  const flags: JsonObject = {};
+  maybePut(flags, "role", readValue(args, ["--role"]));
+  maybePut(flags, "source", readValue(args, ["--source"]));
+  if (readFlag(args, ["--no-include-in-pr"])) flags.includeInPr = false;
+  if (readFlag(args, ["--include-in-pr"])) flags.includeInPr = true;
+  if (readFlag(args, ["--close-on-merge"])) flags.closeOnMerge = true;
+  if (readFlag(args, ["--no-close-on-merge"])) flags.closeOnMerge = false;
+  return flags;
+}
+
+/**
+ * Build args for lane.attachLinearIssueToSession({ chatSessionId, issues: [...] }).
+ * The runtime accepts an array, so one or many issues attach in a single call.
+ */
+function buildSessionAttachArgs(
+  chatSessionId: string,
+  issues: JsonObject[],
+  flags: JsonObject,
+): JsonObject {
+  return { chatSessionId, issues, ...flags };
+}
+
+/**
+ * Derive a kickoff prompt for a `--start-chat` / `--from-linear-issue` launch
+ * from the issue's identifier/title/url when the caller did not pass an explicit
+ * `--prompt`/`--kickoff`. Keeps the agent's first turn grounded in the issue.
+ */
+function deriveLinearKickoffPrompt(issue: JsonObject): string {
+  const identifier = asString(issue.identifier) ?? asString(issue.id) ?? "the linked issue";
+  const title = asString(issue.title);
+  const url = asString(issue.url);
+  const lines = [
+    `Work on Linear issue ${identifier}${title ? `: ${title}` : ""}.`,
+    "Read the attached issue context, then implement the change end-to-end.",
+    "Use `ade linear` to read comments and post status/comments back to the issue as you progress.",
+  ];
+  if (url) lines.push(`Issue: ${url}`);
+  return lines.join("\n");
+}
+
+/**
  * Parse the PR pipeline-settings flags shared by `prs path-to-merge` and
  * `prs pipeline` subcommands. Returns a partial `PipelineSettings` patch
  * suitable for `issue_inventory.savePipelineSettings`. Only fields the user
@@ -2424,41 +2662,89 @@ function buildLanePlan(args: string[]): CliPlan {
       steps: [actionArgsListStep("result", "lane", "getChildren", [laneId])],
     };
   }
-  if (sub === "link-linear-issue" || sub === "link-linear" || sub === "linear-link") {
+  if (
+    sub === "link-linear-issue" ||
+    sub === "link-linear" ||
+    sub === "linear-link" ||
+    sub === "attach-linear-issue" ||
+    sub === "attach-linear"
+  ) {
+    // `link-*` and `attach-*` are aliases for lane-scoped linking; the
+    // session-scoped attach lives under `ade chat attach-linear-issue`.
     const laneId = requireValue(
       readLaneId(args) ?? firstPositional(args),
       "laneId",
     );
-    const linearIssueJson = requireValue(
-      readValue(args, ["--linear-issue-json", "--issue-json"]),
-      "--linear-issue-json",
-    );
-    const parsed = parseJson(linearIssueJson, "--linear-issue-json");
-    const issues = Array.isArray(parsed) ? parsed : [parsed];
-    if (issues.length === 0 || issues.some((issue) => !isRecord(issue))) {
-      throw new CliUsageError("--linear-issue-json must decode to an object or array of objects.");
-    }
+    const issues = parseLinearIssuesInput(args);
     const input: JsonObject = {
       laneId,
-      issues: issues as JsonObject[],
+      issues,
+      ...readLinearAttachmentFlags(args),
     };
-    maybePut(input, "role", readValue(args, ["--role"]));
-    maybePut(input, "source", readValue(args, ["--source"]));
-    if (readFlag(args, ["--no-include-in-pr"])) input.includeInPr = false;
-    if (readFlag(args, ["--include-in-pr"])) input.includeInPr = true;
-    if (readFlag(args, ["--close-on-merge"])) input.closeOnMerge = true;
     return {
       kind: "execute",
       label: "lane link Linear issue",
       steps: [
         actionStep(
           "result",
-          "lane",
-          "linkLinearIssues",
+          LINEAR_ATTACH_ACTIONS.domain,
+          LINEAR_ATTACH_ACTIONS.linkLane,
           collectGenericObjectArgs(args, input),
         ),
       ],
     };
+  }
+  if (
+    sub === "detach-linear-issue" ||
+    sub === "detach-linear" ||
+    sub === "unlink-linear-issue" ||
+    sub === "unlink-linear"
+  ) {
+    // Lane-scoped unlink: omitting --issue-id removes all non-primary lane links;
+    // the lane's primary (lane-create) issue is never removed by this action.
+    const laneId = requireValue(
+      readLaneId(args) ?? firstPositional(args),
+      "laneId",
+    );
+    const issueId = asString(readIssueIdFlag(args));
+    const input: JsonObject = { laneId };
+    maybePut(input, "issueId", issueId);
+    return {
+      kind: "execute",
+      label: "lane detach Linear issue",
+      steps: [
+        actionStep(
+          "result",
+          LINEAR_ATTACH_ACTIONS.domain,
+          LINEAR_ATTACH_ACTIONS.unlinkLane,
+          collectGenericObjectArgs(args, input),
+        ),
+      ],
+    };
+  }
+  if (
+    sub === "create-from-linear" ||
+    sub === "create-from-linear-issue" ||
+    sub === "create-from-issue"
+  ) {
+    // Create a lane from a Linear issue, optionally auto-launching a chat agent
+    // grounded in the issue. Accepts a single issue (object or single-element
+    // array); batching across many issues is `ade lanes batch-create-from-linear`.
+    const issues = parseLinearIssuesInput(args);
+    if (issues.length !== 1) {
+      throw new CliUsageError(
+        "lanes create-from-linear expects exactly one issue. Use `ade lanes batch-create-from-linear` for multiple.",
+      );
+    }
+    return buildCreateLaneFromLinearPlan(args, issues[0]!);
+  }
+  if (
+    sub === "batch-create-from-linear" ||
+    sub === "batch-create-from-linear-issue" ||
+    sub === "batch-create-from-issue"
+  ) {
+    const issues = parseLinearIssuesInput(args, "--linear-issues-json");
+    return buildBatchCreateLanesFromLinearPlan(args, issues);
   }
   if (sub === "stack") {
     const laneId = requireValue(
@@ -2706,6 +2992,176 @@ function buildLanePlan(args: string[]): CliPlan {
     label: `lane ${sub}`,
     steps: [actionStep("result", "lane", sub, collectGenericObjectArgs(args))],
   };
+}
+
+/**
+ * Read the model/provider/effort launch config shared by `--start-chat` and
+ * `ade chat create`. Returns only the keys the caller explicitly set so the
+ * daemon can fall back to its own defaults.
+ */
+function readChatLaunchConfig(args: string[]): JsonObject {
+  const modelArg = readValue(args, ["--model", "--model-id"]);
+  const fastRequested = readFlag(args, ["--fast", "--codex-fast"]);
+  const standardRequested = readFlag(args, ["--standard", "--no-fast", "--no-codex-fast"]);
+  if (fastRequested && standardRequested) {
+    throw new CliUsageError(
+      "Use either --fast/--codex-fast or --standard/--no-fast/--no-codex-fast, not both.",
+    );
+  }
+  const config: JsonObject = {};
+  maybePut(config, "provider", readValue(args, ["--provider"]));
+  maybePut(config, "model", modelArg);
+  maybePut(config, "modelId", modelArg);
+  maybePut(config, "reasoningEffort", readValue(args, ["--reasoning-effort", "--effort"]));
+  maybePut(
+    config,
+    "permissionMode",
+    readValue(args, ["--permission-mode", "--permissions"]),
+  );
+  if (fastRequested) config.codexFastMode = true;
+  if (standardRequested) config.codexFastMode = false;
+  return config;
+}
+
+/**
+ * Build a `lanes create-from-linear` plan: create a lane linked to the issue and,
+ * when `--start-chat` is set, chain a chat session + an issue-grounded kickoff
+ * message. Steps share results through the executor's `values` map (step.key),
+ * so the chat session is created against the lane that step one just made.
+ */
+function buildCreateLaneFromLinearPlan(args: string[], issue: JsonObject): CliPlan {
+  const explicitName = readValue(args, ["--name"]);
+  const derivedName =
+    asString(issue.title) ??
+    asString(issue.identifier) ??
+    asString(issue.id) ??
+    "Linear lane";
+  const createInput: JsonObject = {
+    name: explicitName ?? derivedName,
+    linearIssue: issue,
+  };
+  maybePut(createInput, "description", readValue(args, ["--description", "--desc"]));
+  maybePut(createInput, "baseBranch", readValue(args, ["--base", "--base-branch"]));
+  maybePut(createInput, "branchName", readValue(args, ["--branch-name"]));
+  maybePut(createInput, "parentLaneId", readValue(args, ["--parent", "--parent-lane", "--parent-lane-id"]));
+
+  const startChat = readFlag(args, ["--start-chat", "--launch", "--start-agent"]);
+  const kickoff =
+    readValue(args, ["--prompt", "--kickoff", "--kickoff-prompt"]) ??
+    deriveLinearKickoffPrompt(issue);
+  // Launch config is read before collectGenericObjectArgs sees the lane-create
+  // args so `--provider`/`--model`/`--fast` go to the chat, not the lane.
+  const launchConfig = startChat ? readChatLaunchConfig(args) : {};
+  const surface = startChat ? readValue(args, ["--surface"]) ?? "work" : null;
+
+  const steps: InvocationStep[] = [
+    actionCallStep("lane", "create_lane", collectGenericObjectArgs(args, createInput)),
+  ];
+
+  if (startChat) {
+    steps.push({
+      key: "chat",
+      method: "ade/actions/call",
+      params: (values) => {
+        const laneId = laneIdFromCreateLaneValue(values.lane);
+        if (!laneId) {
+          throw new CliUsageError("create-from-linear could not resolve the new lane id to launch a chat.");
+        }
+        return {
+          name: "run_ade_action",
+          arguments: {
+            domain: "chat",
+            action: "createSession",
+            args: { laneId, surface, ...launchConfig },
+          },
+        };
+      },
+      unwrapToolResult: true,
+    });
+    steps.push({
+      key: "result",
+      method: "ade/actions/call",
+      params: (values) => {
+        const sessionId = sessionIdFromCreateChatValue(values.chat);
+        if (!sessionId) {
+          throw new CliUsageError("create-from-linear launched a chat but could not resolve its session id.");
+        }
+        return {
+          name: "run_ade_action",
+          arguments: {
+            domain: "chat",
+            action: "sendMessage",
+            args: { sessionId, text: kickoff },
+          },
+        };
+      },
+      unwrapToolResult: true,
+    });
+  }
+
+  return {
+    kind: "execute",
+    label: startChat ? "lane create-from-linear + chat" : "lane create-from-linear",
+    steps,
+  };
+}
+
+/**
+ * Build a batch `lanes batch-create-from-linear` plan: one create_lane step per
+ * issue. Failures are isolated (`optional: true`) so a bad issue does not orphan
+ * the lanes already created for its siblings — mirroring the renderer's
+ * bounded-parallel "partial success, no orphans" contract. Each step is keyed by
+ * the issue identifier so the JSON output reports per-issue success/failure.
+ * `--start-chat` is intentionally rejected here: auto-launching N agents belongs
+ * to the desktop BatchLaunchModal; the CLI batch path only creates lanes.
+ */
+function buildBatchCreateLanesFromLinearPlan(args: string[], issues: JsonObject[]): CliPlan {
+  if (readFlag(args, ["--start-chat", "--launch", "--start-agent"])) {
+    throw new CliUsageError(
+      "batch-create-from-linear creates lanes only. Use the desktop launch modal, or `ade lanes create-from-linear --start-chat` per issue, to auto-launch agents.",
+    );
+  }
+  const baseBranch = readValue(args, ["--base", "--base-branch"]);
+  const parentLaneId = readValue(args, ["--parent", "--parent-lane", "--parent-lane-id"]);
+  const steps: InvocationStep[] = issues.map((issue, index) => {
+    const key =
+      asString(issue.identifier) ?? asString(issue.id) ?? `issue-${index + 1}`;
+    const createInput: JsonObject = {
+      name:
+        asString(issue.title) ??
+        asString(issue.identifier) ??
+        asString(issue.id) ??
+        `Linear lane ${index + 1}`,
+      linearIssue: issue,
+    };
+    maybePut(createInput, "baseBranch", baseBranch);
+    maybePut(createInput, "parentLaneId", parentLaneId);
+    return {
+      ...actionCallStep(key, "create_lane", createInput),
+      optional: true,
+    };
+  });
+  return {
+    kind: "execute",
+    label: `lane batch-create-from-linear (${issues.length})`,
+    steps,
+  };
+}
+
+/** Extract a lane id from an unwrapped `create_lane` run_ade_action result. */
+function laneIdFromCreateLaneValue(value: unknown): string | null {
+  const result = unwrapActionEnvelope(value);
+  if (!isRecord(result)) return null;
+  const lane = isRecord(result.lane) ? result.lane : result;
+  return asString(lane.id) ?? asString(lane.laneId);
+}
+
+/** Extract a session id from an unwrapped `chat.createSession` result. */
+function sessionIdFromCreateChatValue(value: unknown): string | null {
+  const result = unwrapActionEnvelope(value);
+  if (!isRecord(result)) return null;
+  const session = isRecord(result.session) ? result.session : result;
+  return asString(session.id) ?? asString(session.sessionId);
 }
 
 function resolveStashSelectionForCli(listResult: unknown, stashRef: string | null, stashOid: string | null): {
@@ -4802,9 +5258,24 @@ function buildChatPlan(args: string[]): CliPlan {
       label: "chat actions",
       steps: [listActionsStep("actions", "chat")],
     };
+  // Linear session-scoped subcommands resolve their own session id AFTER
+  // consuming --issue-id (so firstPositional can't mistake an issue id flag value
+  // for the session), so they opt out of the shared positional grab here.
+  const linearSessionSub =
+    sub === "attach-linear-issue" ||
+    sub === "attach-linear" ||
+    sub === "attach-issue" ||
+    sub === "detach-linear-issue" ||
+    sub === "detach-linear" ||
+    sub === "detach-issue" ||
+    sub === "linear-issues" ||
+    sub === "list-linear-issues" ||
+    sub === "issues";
   const sessionId =
     readValue(args, ["--session", "--session-id"]) ??
-    (sub !== "create" && sub !== "list" ? firstPositional(args) : null);
+    (sub !== "create" && sub !== "list" && !linearSessionSub
+      ? firstPositional(args)
+      : null);
   const withSession = (base: JsonObject = {}) =>
     collectGenericObjectArgs(args, {
       ...base,
@@ -4833,6 +5304,87 @@ function buildChatPlan(args: string[]): CliPlan {
         ]),
       ],
     };
+  if (
+    sub === "attach-linear-issue" ||
+    sub === "attach-linear" ||
+    sub === "attach-issue"
+  ) {
+    // Session-scoped attach: links an issue to a chat / CLI session (standalone
+    // or lane-backed). The agent inside the session then reads it via injected
+    // context and reads/writes back through `ade linear ...`. Parse issues first
+    // so --issue-id is consumed before the positional session id is resolved.
+    const issues = parseLinearIssuesInput(args);
+    const targetSession = requireValue(
+      sessionId ?? firstPositional(args) ?? readSessionId(args),
+      "sessionId",
+    );
+    const input = buildSessionAttachArgs(
+      targetSession,
+      issues,
+      readLinearAttachmentFlags(args),
+    );
+    return {
+      kind: "execute",
+      label: "chat attach Linear issue",
+      steps: [
+        actionStep(
+          "result",
+          LINEAR_ATTACH_ACTIONS.domain,
+          LINEAR_ATTACH_ACTIONS.attachSession,
+          collectGenericObjectArgs(args, input),
+        ),
+      ],
+    };
+  }
+  if (
+    sub === "detach-linear-issue" ||
+    sub === "detach-linear" ||
+    sub === "detach-issue"
+  ) {
+    // Consume --issue-id before resolving the positional session id. Omitting
+    // --issue-id detaches every issue from the session.
+    const issueId = asString(readIssueIdFlag(args));
+    const targetSession = requireValue(
+      sessionId ?? firstPositional(args) ?? readSessionId(args),
+      "sessionId",
+    );
+    const input: JsonObject = { chatSessionId: targetSession };
+    maybePut(input, "issueId", issueId);
+    return {
+      kind: "execute",
+      label: "chat detach Linear issue",
+      steps: [
+        actionStep(
+          "result",
+          LINEAR_ATTACH_ACTIONS.domain,
+          LINEAR_ATTACH_ACTIONS.detachSession,
+          collectGenericObjectArgs(args, input),
+        ),
+      ],
+    };
+  }
+  if (
+    sub === "linear-issues" ||
+    sub === "list-linear-issues" ||
+    sub === "issues"
+  ) {
+    const targetSession = requireValue(
+      sessionId ?? firstPositional(args) ?? readSessionId(args),
+      "sessionId",
+    );
+    return {
+      kind: "execute",
+      label: "chat Linear issues",
+      steps: [
+        actionStep(
+          "result",
+          LINEAR_ATTACH_ACTIONS.domain,
+          LINEAR_ATTACH_ACTIONS.listSession,
+          collectGenericObjectArgs(args, { chatSessionId: targetSession }),
+        ),
+      ],
+    };
+  }
   if (sub === "create" || sub === "spawn") {
     const modelArg = readValue(args, ["--model", "--model-id"]);
     const fastRequested = readFlag(args, ["--fast", "--codex-fast"]);
@@ -4855,36 +5407,104 @@ function buildChatPlan(args: string[]): CliPlan {
     // print-mode (suppresses delta notification streams). Must be set at create
     // time because the handshake runs once when the runtime starts.
     const createRuntimeMode = readFlag(args, ["--print"]) ? "print" : undefined;
-    return {
-      kind: "execute",
-      label: "chat create",
-      steps: [
-        actionStep(
-          "result",
-          "chat",
-          "createSession",
-          collectGenericObjectArgs(args, {
-            laneId: readLaneId(args),
-            provider: readValue(args, ["--provider"]),
-            model: modelArg,
-            modelId: modelArg,
-            permissionMode: readValue(args, [
-              "--permission-mode",
-              "--permissions",
-            ]),
-            droidPermissionMode: readValue(args, [
-              "--droid-permission-mode",
-              "--droid-autonomy",
-              "--autonomy",
-            ]),
-            title: readValue(args, ["--title"]),
-            surface: readValue(args, ["--surface"]) ?? "work",
-            ...(codexFastMode !== undefined ? { codexFastMode } : {}),
-            ...(createRuntimeMode ? { runtimeMode: createRuntimeMode } : {}),
-          }),
-        ),
-      ],
-    };
+    // `--from-linear-issue <id>` / `--linear-issue-json` start the chat with an
+    // attached issue: create the session, attach the issue to it, then send an
+    // issue-grounded kickoff (skipped with --no-kickoff). Read these before
+    // collectGenericObjectArgs consumes the remaining args.
+    const fromLinear =
+      args.some((t) =>
+        t === "--from-linear-issue" ||
+        t.startsWith("--from-linear-issue=") ||
+        t === "--linear-issue-json" ||
+        t.startsWith("--linear-issue-json="),
+      );
+    let linearIssue: JsonObject | null = null;
+    if (fromLinear) {
+      const issues = parseLinearIssuesInput(args, "--from-linear-issue");
+      if (issues.length !== 1) {
+        throw new CliUsageError("chat create accepts exactly one Linear issue to attach.");
+      }
+      linearIssue = issues[0]!;
+    }
+    const noKickoff = readFlag(args, ["--no-kickoff"]);
+    const explicitKickoff = readValue(args, ["--prompt", "--kickoff", "--kickoff-prompt"]);
+    const attachmentFlags = linearIssue ? readLinearAttachmentFlags(args) : {};
+    const createStep = actionStep(
+      "result",
+      "chat",
+      "createSession",
+      collectGenericObjectArgs(args, {
+        laneId: readLaneId(args),
+        provider: readValue(args, ["--provider"]),
+        model: modelArg,
+        modelId: modelArg,
+        permissionMode: readValue(args, [
+          "--permission-mode",
+          "--permissions",
+        ]),
+        droidPermissionMode: readValue(args, [
+          "--droid-permission-mode",
+          "--droid-autonomy",
+          "--autonomy",
+        ]),
+        title: readValue(args, ["--title"]),
+        surface: readValue(args, ["--surface"]) ?? "work",
+        ...(codexFastMode !== undefined ? { codexFastMode } : {}),
+        ...(createRuntimeMode ? { runtimeMode: createRuntimeMode } : {}),
+      }),
+    );
+    if (!linearIssue) {
+      return { kind: "execute", label: "chat create", steps: [createStep] };
+    }
+    const issueForKickoff = linearIssue;
+    const steps: InvocationStep[] = [
+      // First step keyed "session" so attach/kickoff can read the new id.
+      { ...createStep, key: "session" },
+      {
+        key: noKickoff ? "result" : "attach",
+        method: "ade/actions/call",
+        params: (values) => {
+          const targetSession = sessionIdFromCreateChatValue(values.session);
+          if (!targetSession) {
+            throw new CliUsageError("chat create could not resolve the new session id to attach the issue.");
+          }
+          return {
+            name: "run_ade_action",
+            arguments: {
+              domain: LINEAR_ATTACH_ACTIONS.domain,
+              action: LINEAR_ATTACH_ACTIONS.attachSession,
+              args: { chatSessionId: targetSession, issues: [issueForKickoff], ...attachmentFlags },
+            },
+          };
+        },
+        unwrapToolResult: true,
+      },
+    ];
+    if (!noKickoff) {
+      steps.push({
+        key: "result",
+        method: "ade/actions/call",
+        params: (values) => {
+          const targetSession = sessionIdFromCreateChatValue(values.session);
+          if (!targetSession) {
+            throw new CliUsageError("chat create could not resolve the new session id to send the kickoff.");
+          }
+          return {
+            name: "run_ade_action",
+            arguments: {
+              domain: "chat",
+              action: "sendMessage",
+              args: {
+                sessionId: targetSession,
+                text: explicitKickoff ?? deriveLinearKickoffPrompt(issueForKickoff),
+              },
+            },
+          };
+        },
+        unwrapToolResult: true,
+      });
+    }
+    return { kind: "execute", label: "chat create from Linear issue", steps };
   }
   if (sub === "send") {
     const imageUrl = readValue(args, ["--image-url"]);
@@ -8010,6 +8630,152 @@ function buildAutomationsPlan(args: string[]): CliPlan {
 
 function buildLinearPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "workflows";
+  // --- Daemon-bridge commands for a CLI-session agent ---
+  // These let an agent running inside a tracked ADE CLI session read and write
+  // its attached Linear issue without holding Linear credentials: every call is
+  // routed over the daemon to the desktop runtime, which owns the creds. The
+  // issue id defaults to the session's first attached issue ($ADE_LINEAR_ISSUE_IDS)
+  // so an agent can run `ade linear comment "done"` with no id.
+  if (
+    sub === "attach" ||
+    sub === "attach-issue" ||
+    sub === "attach-linear-issue"
+  ) {
+    // `ade linear attach --this-session` attaches an issue to the current CLI
+    // session (the agent's own session). Explicit --session/--lane override.
+    const thisSession = readFlag(args, ["--this-session", "--self", "--current-session"]);
+    const laneId = readLaneId(args);
+    const targetSession = readSessionId(args, { thisSession });
+    const issues = parseLinearIssuesInput(args);
+    const flags = readLinearAttachmentFlags(args);
+    if (laneId && !targetSession) {
+      // No session in scope: fall back to a lane-scoped link.
+      return {
+        kind: "execute",
+        label: "linear attach (lane)",
+        steps: [
+          actionStep(
+            "result",
+            LINEAR_ATTACH_ACTIONS.domain,
+            LINEAR_ATTACH_ACTIONS.linkLane,
+            collectGenericObjectArgs(args, { laneId, issues, ...flags }),
+          ),
+        ],
+      };
+    }
+    const sessionId = requireValue(
+      targetSession,
+      thisSession ? "ADE_CHAT_SESSION_ID" : "session id (use --this-session, --session <id>, or --lane <id>)",
+    );
+    return {
+      kind: "execute",
+      label: "linear attach (session)",
+      steps: [
+        actionStep(
+          "result",
+          LINEAR_ATTACH_ACTIONS.domain,
+          LINEAR_ATTACH_ACTIONS.attachSession,
+          collectGenericObjectArgs(args, buildSessionAttachArgs(sessionId, issues, flags)),
+        ),
+      ],
+    };
+  }
+  if (sub === "detach" || sub === "detach-issue" || sub === "detach-linear-issue") {
+    const thisSession = readFlag(args, ["--this-session", "--self", "--current-session"]);
+    const chatSessionId = requireValue(
+      readSessionId(args, { thisSession }),
+      thisSession ? "ADE_CHAT_SESSION_ID" : "session id (use --this-session or --session <id>)",
+    );
+    // Omitting an issue id detaches every issue from the session; default a
+    // positional / the session's injected issue when one is available.
+    const issueId = asString(
+      readIssueIdFlag(args) ?? firstPositional(args) ?? sessionLinearIssueId(),
+    );
+    const input: JsonObject = { chatSessionId };
+    maybePut(input, "issueId", issueId);
+    return {
+      kind: "execute",
+      label: "linear detach (session)",
+      steps: [
+        actionStep(
+          "result",
+          LINEAR_ATTACH_ACTIONS.domain,
+          LINEAR_ATTACH_ACTIONS.detachSession,
+          collectGenericObjectArgs(args, input),
+        ),
+      ],
+    };
+  }
+  if (sub === "issues" || sub === "attached" || sub === "my-issues") {
+    // `issues` always targets the current session; consume the alias flags so
+    // they don't linger, but the session id always resolves via --session/env.
+    readFlag(args, ["--this-session", "--self", "--current-session"]);
+    const chatSessionId = requireValue(
+      readSessionId(args, { thisSession: true }),
+      "ADE_CHAT_SESSION_ID",
+    );
+    return {
+      kind: "execute",
+      label: "linear attached issues",
+      steps: [
+        actionStep(
+          "result",
+          LINEAR_ATTACH_ACTIONS.domain,
+          LINEAR_ATTACH_ACTIONS.listSession,
+          collectGenericObjectArgs(args, { chatSessionId }),
+        ),
+      ],
+    };
+  }
+  if (sub === "comment") {
+    const { issueId, value } = resolveLinearWriteCommand(args, ["--body", "--text", "-m", "--message"]);
+    const body = requireValue(value, "comment body");
+    return {
+      kind: "execute",
+      label: "linear comment",
+      steps: [actionArgsListStep("result", "linear_issue_tracker", "createComment", [issueId, body])],
+    };
+  }
+  if (sub === "set-state" || sub === "status" || sub === "state" || sub === "move") {
+    const { issueId, value } = resolveLinearWriteCommand(args, ["--state-id", "--state", "--status"]);
+    const stateId = requireValue(value, "state id");
+    return {
+      kind: "execute",
+      label: "linear set-state",
+      steps: [actionArgsListStep("result", "linear_issue_tracker", "updateIssueState", [issueId, stateId])],
+    };
+  }
+  if (sub === "assign") {
+    const { issueId, value } = resolveLinearWriteCommand(args, ["--assignee", "--assignee-id", "--user"]);
+    // `none`/`null`/`unassigned` (or an omitted assignee) clears the assignee.
+    const normalized = (value ?? "").trim().toLowerCase();
+    const assigneeId =
+      value == null || normalized === "none" || normalized === "null" || normalized === "unassigned"
+        ? null
+        : value.trim();
+    return {
+      kind: "execute",
+      label: "linear assign",
+      steps: [actionArgsListStep("result", "linear_issue_tracker", "updateIssueAssignee", [issueId, assigneeId])],
+    };
+  }
+  if (sub === "label" || sub === "add-label") {
+    const { issueId, value } = resolveLinearWriteCommand(args, ["--label", "--label-name", "--name"]);
+    const labelName = requireValue(value, "label name");
+    return {
+      kind: "execute",
+      label: "linear add-label",
+      steps: [actionArgsListStep("result", "linear_issue_tracker", "addLabel", [issueId, labelName])],
+    };
+  }
+  if (sub === "issue" || sub === "show-issue" || sub === "get-issue") {
+    const issueId = requireLinearIssueId(args);
+    return {
+      kind: "execute",
+      label: "linear issue",
+      steps: [actionArgsListStep("result", "linear_issue_tracker", "fetchIssueById", [issueId])],
+    };
+  }
   if (sub === "quick-view" || sub === "quick" || sub === "overview") {
     return {
       kind: "execute",
