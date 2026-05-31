@@ -2144,8 +2144,8 @@ export function TerminalView({
         parkRuntime(runtime);
       }
 
-      setRuntimeVisibilityState(runtime, false);
       const wasReceivingBeforeUnref = shouldRuntimeReceivePtyData(runtime);
+      setRuntimeVisibilityState(runtime, false);
       runtime.refs = Math.max(0, runtime.refs - 1);
       syncRuntimePtyDataStreaming(runtime, wasReceivingBeforeUnref);
       // Keep live runtimes parked until the PTY exits so switching away from a

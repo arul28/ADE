@@ -32,7 +32,7 @@ export function shouldSendPtyDataToWebContents(
   sender: WebContents,
   ptyId: string,
 ): boolean {
-  if (subscriptionsByWebContentsId.size === 0) return true;
   const subscriptions = subscriptionsByWebContentsId.get(sender.id);
+  if (!subscriptions) return true;
   return Boolean(subscriptions?.has(ptyId));
 }
