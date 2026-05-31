@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
+import { BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import type {
   AutomationManualTriggerRequest,
   AutomationIngressEventRecord,
@@ -679,7 +680,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   computer_use_artifacts: ["getOwnerSnapshot", "ingest", "listArtifacts", "readArtifactPreview", "routeArtifact", "updateArtifactReview"],
   ios_simulator: ["getStatus", "claim", "listDevices", "listLaunchTargets", "launch", "attachToChatSession", "shutdown", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint", "getPreviewCapability", "listPreviewTargets", "renderPreview", "openPreviewWorkspace", "startStream", "stopStream", "getStreamStatus", "tap", "typeText", "drag", "swipe", "selectPoint"],
   app_control: ["getStatus", "claim", "launch", "launchInTerminal", "connect", "stop", "focusWindow", "minimizeWindow", "screenshot", "getSnapshot", "inspectPoint", "selectPoint", "click", "typeText", "scroll", "dispatchKey", "listTargets", "attachToTarget", "readTerminal", "writeTerminal", "signalTerminal"],
-  built_in_browser: ["getStatus", "claim", "showPanel", "setBounds", "navigate", "createTab", "switchTab", "closeTab", "reload", "goBack", "goForward", "stop", "startInspect", "stopInspect", "captureScreenshot", "selectPoint", "selectCurrent", "clearSelection"],
+  built_in_browser: [...BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS],
   // Note: detachLane is intentionally NOT in this allowlist — it lives on
   // laneService.detachVmLane, not on macosVmService. Wire it through a lane
   // action if/when it needs to be agent-callable.

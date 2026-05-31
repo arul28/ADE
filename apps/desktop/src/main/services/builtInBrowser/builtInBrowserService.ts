@@ -164,6 +164,9 @@ export function createBuiltInBrowserService(args: {
     getStatus(sourceWindow?: BrowserWindow | null): BuiltInBrowserStatus {
       return serviceFor(sourceWindow).getStatus();
     },
+    claim(input: BuiltInBrowserClaimArgs = {}, sourceWindow?: BrowserWindow | null): BuiltInBrowserStatus {
+      return serviceFor(sourceWindow).claim(input);
+    },
     showPanel(input: BuiltInBrowserOpenPanelArgs = {}, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
       return serviceFor(sourceWindow).showPanel(input);
     },

@@ -2,6 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { JsonRpcClient } from "../../tuiClient/jsonRpcClient";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
+import {
+  isBuiltInBrowserDesktopBridgeMethod,
+  type BuiltInBrowserDesktopBridgeClient,
+} from "./desktopBridgeMethods";
 
 /**
  * Proxy `built_in_browser` service used by the runtime daemon.
@@ -39,27 +43,10 @@ async function raceWithTimeout<T>(
   }
 }
 
-export type BuiltInBrowserDesktopBridgeClient = {
-  getStatus: (args?: unknown) => Promise<unknown>;
-  claim: (args?: unknown) => Promise<unknown>;
-  showPanel: (args?: unknown) => Promise<unknown>;
-  setBounds: (args: unknown) => Promise<unknown>;
-  navigate: (args: unknown) => Promise<unknown>;
-  createTab: (args?: unknown) => Promise<unknown>;
-  switchTab: (args: unknown) => Promise<unknown>;
-  closeTab: (args: unknown) => Promise<unknown>;
-  reload: () => Promise<unknown>;
-  goBack: () => Promise<unknown>;
-  goForward: () => Promise<unknown>;
-  stop: () => Promise<unknown>;
-  startInspect: () => Promise<unknown>;
-  stopInspect: () => Promise<unknown>;
-  captureScreenshot: () => Promise<unknown>;
-  selectPoint: (args: unknown) => Promise<unknown>;
-  selectCurrent: () => Promise<unknown>;
-  clearSelection: () => Promise<unknown>;
-  dispose: () => void;
-};
+function isClosedSocketError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /(?:socket (?:is )?closed|socket hang up|EPIPE|ECONNRESET|ERR_STREAM_DESTROYED)/i.test(message);
+}
 
 export function createBuiltInBrowserDesktopBridgeClient(args: {
   socketPath: string;
@@ -101,6 +88,9 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
             }
             throw new Error("Desktop browser bridge client has been disposed.");
           }
+          c.onClose(() => {
+            if (client === c) client = null;
+          });
           client = c;
           return c;
         })
@@ -128,7 +118,7 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
     }
   }
 
-  async function callBridge(method: string, params?: unknown): Promise<unknown> {
+  async function callBridge(method: string, params?: unknown, retried = false): Promise<unknown> {
     const c = await ensureClient();
     try {
       return await raceWithTimeout(
@@ -139,32 +129,26 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
     } catch (error) {
       // Drop the connection on any error so the next call reconnects.
       drop(error);
+      if (!retried && isClosedSocketError(error)) {
+        return await callBridge(method, params, true);
+      }
       throw error;
     }
   }
 
-  return {
-    getStatus: (args) => callBridge("getStatus", args),
-    claim: (args) => callBridge("claim", args),
-    showPanel: (args) => callBridge("showPanel", args),
-    setBounds: (args) => callBridge("setBounds", args),
-    navigate: (args) => callBridge("navigate", args),
-    createTab: (args) => callBridge("createTab", args),
-    switchTab: (args) => callBridge("switchTab", args),
-    closeTab: (args) => callBridge("closeTab", args),
-    reload: () => callBridge("reload"),
-    goBack: () => callBridge("goBack"),
-    goForward: () => callBridge("goForward"),
-    stop: () => callBridge("stop"),
-    startInspect: () => callBridge("startInspect"),
-    stopInspect: () => callBridge("stopInspect"),
-    captureScreenshot: () => callBridge("captureScreenshot"),
-    selectPoint: (args) => callBridge("selectPoint", args),
-    selectCurrent: () => callBridge("selectCurrent"),
-    clearSelection: () => callBridge("clearSelection"),
+  const bridge = {
     dispose: () => {
       disposed = true;
       drop();
     },
   };
+
+  return new Proxy(bridge, {
+    get(target, property, receiver) {
+      if (typeof property === "string" && isBuiltInBrowserDesktopBridgeMethod(property)) {
+        return (params?: unknown) => callBridge(property, params);
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  }) as BuiltInBrowserDesktopBridgeClient;
 }
