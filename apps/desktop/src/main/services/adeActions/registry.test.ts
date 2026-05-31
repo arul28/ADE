@@ -381,11 +381,13 @@ describe("runtime Linear issue tracker actions", () => {
       getIssuePickerData: () => Promise<unknown>;
       listIssues: (args?: Record<string, unknown>) => Promise<unknown>;
       graphql: (args?: Record<string, unknown>) => Promise<unknown>;
+      runGraphQL: (args?: Record<string, unknown>) => Promise<unknown>;
     } & Record<string, unknown>;
 
     expect(listAllowedAdeActionNames("linear_issue_tracker", service)).toContain("getStatus");
     expect(listAllowedAdeActionNames("linear_issue_tracker", service)).toContain("listIssues");
     expect(listAllowedAdeActionNames("linear_issue_tracker", service)).toContain("graphql");
+    expect(listAllowedAdeActionNames("linear_issue_tracker", service)).toContain("runGraphQL");
     expect(listAllowedAdeActionNames("linear_issue_tracker", service)).toContain("getWorkflowCatalog");
     expect(listAllowedAdeActionNames("linear_issue_tracker", service)).toContain("getIssuePickerData");
     await expect(service.getStatus()).resolves.toMatchObject({ connected: true, tokenStored: true });
@@ -397,6 +399,13 @@ describe("runtime Linear issue tracker actions", () => {
     expect(tracker.runGraphQL).toHaveBeenCalledWith({
       query: "query Viewer { viewer { id } }",
       variables: { first: 1 },
+    });
+    await expect(service.runGraphQL({ query: "query Viewer { viewer { id } }", variables: { first: 2 } })).resolves.toEqual({
+      data: { query: "query Viewer { viewer { id } }", variables: { first: 2 } },
+    });
+    expect(tracker.runGraphQL).toHaveBeenLastCalledWith({
+      query: "query Viewer { viewer { id } }",
+      variables: { first: 2 },
     });
     await expect(service.getWorkflowCatalog()).resolves.toEqual({ users, labels, states });
     await expect(service.getIssuePickerData()).resolves.toEqual({ projects, users, states });

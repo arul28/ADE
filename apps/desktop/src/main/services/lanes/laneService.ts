@@ -2767,9 +2767,11 @@ export function createLaneService({
       }
       if (links.length) {
         invalidateLaneListCache();
-        const summary = laneSummaryForLinearNotification(row);
-        for (const link of links) {
-          notifyLinearIssueLinked(summary, link.issue);
+        if ((args.source ?? "manual") !== "chat_attach") {
+          const summary = laneSummaryForLinearNotification(row);
+          for (const link of links) {
+            notifyLinearIssueLinked(summary, link.issue);
+          }
         }
       }
       return links;

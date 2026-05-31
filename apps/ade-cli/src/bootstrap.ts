@@ -437,6 +437,42 @@ export async function createAdeRuntime(args: {
   let linearIssueTrackerRef: ReturnType<typeof createLinearIssueTracker> | null = null;
   let githubServiceRef: ReturnType<typeof createGithubService> | null = null;
   const linearChatCardPublishKeys = new Set<string>();
+  const publishLinearChatLink = ({
+    laneId,
+    sessionId,
+    sessionTitle,
+    issue,
+    linkedAt,
+  }: {
+    laneId: string;
+    sessionId: string;
+    sessionTitle?: string | null;
+    issue: Parameters<typeof publishLinearChatSessionCard>[0]["issue"];
+    linkedAt: string;
+  }) => {
+    const tracker = linearIssueTrackerRef;
+    if (!tracker) return;
+    const key = `${issue.id}:${sessionId}`;
+    if (linearChatCardPublishKeys.has(key)) return;
+    linearChatCardPublishKeys.add(key);
+    void publishLinearChatSessionCard({
+      issueTracker: tracker,
+      issue,
+      laneId,
+      sessionId,
+      sessionTitle,
+      linkedAt,
+    }).catch((error) => {
+      linearChatCardPublishKeys.delete(key);
+      logger.warn("linear.chat_session_card_publish_failed", {
+        laneId,
+        sessionId,
+        issueId: issue.id,
+        issueIdentifier: issue.identifier,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
 
   const laneService = createLaneService({
     db,
@@ -494,30 +530,7 @@ export async function createAdeRuntime(args: {
           });
         });
     },
-    onLinearIssueSessionLinked: ({ laneId, sessionId, sessionTitle, issue, linkedAt }) => {
-      const tracker = linearIssueTrackerRef;
-      if (!tracker) return;
-      const key = `${issue.id}:${sessionId}`;
-      if (linearChatCardPublishKeys.has(key)) return;
-      linearChatCardPublishKeys.add(key);
-      void publishLinearChatSessionCard({
-        issueTracker: tracker,
-        issue,
-        laneId,
-        sessionId,
-        sessionTitle,
-        linkedAt,
-      }).catch((error) => {
-        linearChatCardPublishKeys.delete(key);
-        logger.warn("linear.chat_session_card_publish_failed", {
-          laneId,
-          sessionId,
-          issueId: issue.id,
-          issueIdentifier: issue.identifier,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-    },
+    onLinearIssueSessionLinked: publishLinearChatLink,
     logger,
   });
   await laneService.ensurePrimaryLane();
@@ -962,30 +975,7 @@ export async function createAdeRuntime(args: {
       logger,
       appVersion: "ade-cli",
       getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
-      onLinearIssueChatLinked: ({ laneId, sessionId, sessionTitle, issue, linkedAt }) => {
-        const tracker = linearIssueTrackerRef;
-        if (!tracker) return;
-        const key = `${issue.id}:${sessionId}`;
-        if (linearChatCardPublishKeys.has(key)) return;
-        linearChatCardPublishKeys.add(key);
-        void publishLinearChatSessionCard({
-          issueTracker: tracker,
-          issue,
-          laneId,
-          sessionId,
-          sessionTitle,
-          linkedAt,
-        }).catch((error) => {
-          linearChatCardPublishKeys.delete(key);
-          logger.warn("linear.chat_session_card_publish_failed", {
-            laneId,
-            sessionId,
-            issueId: issue.id,
-            issueIdentifier: issue.identifier,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-      },
+      onLinearIssueChatLinked: publishLinearChatLink,
       onEvent: (event) => {
         pushEvent("runtime", event as unknown as Record<string, unknown>);
       },

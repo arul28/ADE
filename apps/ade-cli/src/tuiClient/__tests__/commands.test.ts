@@ -477,6 +477,14 @@ describe("linear command routing", () => {
     });
   });
 
+  it("keeps fallback usage in sync with /linear graphql", () => {
+    expect(buildLinearToolRequest("unknown")).toMatchObject({
+      kind: "usage",
+      title: "Linear",
+      body: expect.stringContaining("graphql"),
+    });
+  });
+
   it("routes sync dashboard and queue resolution", () => {
     expect(buildLinearToolRequest("sync dashboard")).toEqual({
       kind: "tool",

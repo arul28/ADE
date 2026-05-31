@@ -438,6 +438,6 @@ export function buildLinearToolRequest(input: string): LinearToolRequest {
 
   return usage(
     "Linear",
-    "Usage: /linear <attach|detach|issues|comment|set-state|assign|label|issue|create-from|workflows|run|route|sync|ingress> ...",
+    "Usage: /linear <attach|detach|issues|comment|set-state|assign|label|issue|graphql|create-from|workflows|run|route|sync|ingress> ...",
   );
 }

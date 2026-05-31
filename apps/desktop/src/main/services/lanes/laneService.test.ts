@@ -4226,6 +4226,17 @@ describe("laneService session-scoped Linear issue links", () => {
         sessionTitle: "Fix flaky sync run",
         issue: expect.objectContaining({ identifier: "ABC-42" }),
       }));
+
+      onLinearIssueLinked.mockClear();
+      const mirroredAgain = service.linkLinearIssues({
+        laneId: "lane-child",
+        issues: [makeLinearIssue()],
+        role: "worked",
+        source: "chat_attach",
+        evidence: { chatSessionId: "chat-on-child" },
+      });
+      expect(mirroredAgain).toHaveLength(1);
+      expect(onLinearIssueLinked).not.toHaveBeenCalled();
     } finally {
       db.close();
       fs.rmSync(repoRoot, { recursive: true, force: true });
