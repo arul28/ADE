@@ -26,6 +26,7 @@ export function selectChangesetBatchChunk(args: {
   for (const change of args.changes) {
     const changeDbVersion = Number(change.db_version ?? args.fromDbVersion);
     const changeBytes = Buffer.byteLength(JSON.stringify(change), "utf8");
+    // maxBytes is a split target, not a hard per-row cap; one CRR row cannot be split safely.
     // The watermark is db_version-only, so rows sharing a db_version must ack together.
     if (
       chunk.length > 0
@@ -39,10 +40,6 @@ export function selectChangesetBatchChunk(args: {
     lastIncludedDbVersion = changeDbVersion;
   }
 
-  if (chunk.length === 0 && args.changes.length > 0) {
-    chunk = [args.changes[0]!];
-    lastIncludedDbVersion = Number(chunk[0]!.db_version ?? args.fromDbVersion);
-  }
   if (chunk.length === 0 && args.toDbVersion <= args.fromDbVersion) return null;
 
   const chunkToDbVersion = lastIncludedDbVersion ?? args.toDbVersion;
@@ -79,7 +76,7 @@ export function buildChangesetBatchPayload(args: {
     maxRows: args.maxRows ?? DEFAULT_MAX_CHANGESET_BATCH_ROWS,
     maxBytes: args.maxBytes ?? DEFAULT_MAX_CHANGESET_BATCH_BYTES,
   });
-  if (!selected) return null;
+  if (!selected || selected.changes.length === 0) return null;
 
   const batchId = makeChangesetBatchId({
     deviceId: args.deviceId,
