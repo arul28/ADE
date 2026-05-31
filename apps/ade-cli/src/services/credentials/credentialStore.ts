@@ -30,12 +30,17 @@ type SafeStorageLike = {
 };
 
 const DEFAULT_CREDENTIALS_FILE = "credentials.json.enc";
+const DEFAULT_SAFE_STORAGE_CREDENTIALS_FILE = "credentials.safe.enc";
 const DEFAULT_MACHINE_KEY_FILE = ".machine-key";
-const DEFAULT_LOCK_FILE = "credentials.lock";
 const STORE_AAD = Buffer.from("ade.credentials.v1");
 const LOCK_TIMEOUT_MS = 15_000;
 const LOCK_STALE_MS = 10_000;
 const LOCK_RETRY_MS = 25;
+
+type CredentialLockMetadata = {
+  pid?: number;
+  createdAt?: string;
+};
 
 function normalizeKey(key: string): string {
   const normalized = key.trim();
@@ -90,14 +95,70 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-function removeStaleLock(lockPath: string): void {
+function defaultLockPath(credentialsPath: string): string {
+  return `${credentialsPath}.lock`;
+}
+
+function isSamePath(left: string, right: string): boolean {
+  return path.resolve(left) === path.resolve(right);
+}
+
+function parseLockMetadata(raw: string): CredentialLockMetadata {
   try {
-    const stat = fs.statSync(lockPath);
-    if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
-      fs.unlinkSync(lockPath);
-    }
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const record = parsed as Record<string, unknown>;
+    return {
+      pid: Number.isSafeInteger(record.pid) && Number(record.pid) > 0 ? Number(record.pid) : undefined,
+      createdAt: typeof record.createdAt === "string" ? record.createdAt : undefined,
+    };
   } catch {
-    // ignore
+    return {};
+  }
+}
+
+function isProcessRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: unknown) {
+    return !(
+      typeof error === "object"
+      && error !== null
+      && "code" in error
+      && (error as { code?: unknown }).code === "ESRCH"
+    );
+  }
+}
+
+function isSameLockStat(left: fs.Stats, right: fs.Stats): boolean {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs;
+}
+
+function removeStaleLock(lockPath: string): void {
+  let originalStat: fs.Stats;
+  let originalRaw: string;
+  try {
+    originalStat = fs.statSync(lockPath);
+    if (Date.now() - originalStat.mtimeMs <= LOCK_STALE_MS) return;
+    originalRaw = fs.readFileSync(lockPath, "utf8");
+  } catch {
+    return;
+  }
+
+  const metadata = parseLockMetadata(originalRaw);
+  if (metadata.pid && isProcessRunning(metadata.pid)) return;
+
+  try {
+    const currentStat = fs.statSync(lockPath);
+    if (!isSameLockStat(currentStat, originalStat)) return;
+    if (fs.readFileSync(lockPath, "utf8") !== originalRaw) return;
+    fs.unlinkSync(lockPath);
+  } catch {
+    // Another process won the lock race or removed the stale file first.
   }
 }
 
@@ -108,11 +169,27 @@ function withCredentialFileLock<T>(lockPath: string, fn: () => T): T {
 
   while (fd === null) {
     try {
-      fd = fs.openSync(lockPath, "wx", 0o600);
-      fs.writeFileSync(
-        fd,
-        JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }),
-      );
+      const candidateFd = fs.openSync(lockPath, "wx", 0o600);
+      try {
+        fs.writeFileSync(
+          candidateFd,
+          JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }),
+        );
+        fd = candidateFd;
+      } catch (error: unknown) {
+        try {
+          fs.closeSync(candidateFd);
+        } catch {
+          // ignore
+        }
+        try {
+          fs.unlinkSync(lockPath);
+        } catch {
+          // ignore
+        }
+        throw error;
+      }
+      ensureMode600(lockPath);
     } catch (error: unknown) {
       if (!isEexist(error)) throw error;
       removeStaleLock(lockPath);
@@ -137,6 +214,19 @@ function withCredentialFileLock<T>(lockPath: string, fn: () => T): T {
       // ignore
     }
   }
+}
+
+function unlinkIfExists(filePath: string): void {
+  try {
+    fs.unlinkSync(filePath);
+  } catch (error: unknown) {
+    if (!isEnoent(error)) throw error;
+  }
+}
+
+function withOptionalCredentialFileLock<T>(lockPath: string, skippedLockPath: string, fn: () => T): T {
+  if (isSamePath(lockPath, skippedLockPath)) return fn();
+  return withCredentialFileLock(lockPath, fn);
 }
 
 function readJsonObject(filePath: string): Record<string, unknown> | null {
@@ -238,7 +328,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     const secretsDir = args.secretsDir ?? resolveMachineAdeLayout().secretsDir;
     this.credentialsPath = args.credentialsPath ?? path.join(secretsDir, DEFAULT_CREDENTIALS_FILE);
     this.machineKeyPath = args.machineKeyPath ?? path.join(secretsDir, DEFAULT_MACHINE_KEY_FILE);
-    this.lockPath = args.lockPath ?? path.join(path.dirname(this.credentialsPath), DEFAULT_LOCK_FILE);
+    this.lockPath = args.lockPath ?? defaultLockPath(this.credentialsPath);
   }
 
   async get(key: string): Promise<string | null> {
@@ -300,21 +390,27 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
 export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
   private readonly safeStorage: SafeStorageLike;
   private readonly credentialsPath: string;
+  private readonly legacyCredentialsPath: string;
   private readonly legacyMachineKeyPath: string;
   private readonly lockPath: string;
+  private readonly legacyLockPath: string;
 
   constructor(args: {
     safeStorage: SafeStorageLike;
     credentialsPath?: string;
     secretsDir?: string;
+    legacyCredentialsPath?: string;
     legacyMachineKeyPath?: string;
     lockPath?: string;
+    legacyLockPath?: string;
   }) {
     this.safeStorage = args.safeStorage;
     const secretsDir = args.secretsDir ?? resolveMachineAdeLayout().secretsDir;
-    this.credentialsPath = args.credentialsPath ?? path.join(secretsDir, DEFAULT_CREDENTIALS_FILE);
+    this.credentialsPath = args.credentialsPath ?? path.join(secretsDir, DEFAULT_SAFE_STORAGE_CREDENTIALS_FILE);
+    this.legacyCredentialsPath = args.legacyCredentialsPath ?? path.join(secretsDir, DEFAULT_CREDENTIALS_FILE);
     this.legacyMachineKeyPath = args.legacyMachineKeyPath ?? path.join(secretsDir, DEFAULT_MACHINE_KEY_FILE);
-    this.lockPath = args.lockPath ?? path.join(path.dirname(this.credentialsPath), DEFAULT_LOCK_FILE);
+    this.lockPath = args.lockPath ?? defaultLockPath(this.credentialsPath);
+    this.legacyLockPath = args.legacyLockPath ?? defaultLockPath(this.legacyCredentialsPath);
   }
 
   async get(key: string): Promise<string | null> {
@@ -367,13 +463,11 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
       const decrypted = this.safeStorage.decryptString(encrypted);
       return normalizeStoredCredentialValues(JSON.parse(decrypted));
     } catch (error: unknown) {
-      if (isEnoent(error)) return {};
-      const legacyValues = this.readLegacyEncryptedFileStore();
+      const legacyValues = this.migrateLegacyEncryptedFileStore();
       if (legacyValues) {
-        this.writeAll(legacyValues);
-        this.removeLegacyMachineKey();
         return legacyValues;
       }
+      if (isEnoent(error)) return {};
       throw error;
     }
   }
@@ -386,9 +480,10 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
   }
 
   private readLegacyEncryptedFileStore(): Record<string, string> | null {
+    if (!fs.existsSync(this.legacyCredentialsPath)) return null;
     let raw: Record<string, unknown> | null;
     try {
-      raw = readJsonObject(this.credentialsPath);
+      raw = readJsonObject(this.legacyCredentialsPath);
     } catch {
       return null;
     }
@@ -399,11 +494,20 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
     return deserializeStore(raw, key);
   }
 
-  private removeLegacyMachineKey(): void {
-    try {
-      fs.unlinkSync(this.legacyMachineKeyPath);
-    } catch (error: unknown) {
-      if (!isEnoent(error)) throw error;
+  private migrateLegacyEncryptedFileStore(): Record<string, string> | null {
+    return withOptionalCredentialFileLock(this.legacyLockPath, this.lockPath, () => {
+      const legacyValues = this.readLegacyEncryptedFileStore();
+      if (!legacyValues) return null;
+      this.writeAll(legacyValues);
+      this.removeLegacyFileStore();
+      return legacyValues;
+    });
+  }
+
+  private removeLegacyFileStore(): void {
+    unlinkIfExists(this.legacyMachineKeyPath);
+    if (!isSamePath(this.legacyCredentialsPath, this.credentialsPath)) {
+      unlinkIfExists(this.legacyCredentialsPath);
     }
   }
 

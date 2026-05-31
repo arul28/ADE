@@ -54,7 +54,7 @@ describe("EncryptedFileCredentialStore", () => {
     expect(fs.statSync(path.join(secretsDir, "credentials.json.enc")).mode & 0o777).toBe(0o600);
   });
 
-  it("recovers from a missing first-run machine key by treating the encrypted map as empty", () => {
+  it("recovers from a replaced first-run machine key by treating the encrypted map as empty", () => {
     const store = new EncryptedFileCredentialStore({ secretsDir: tempDir });
 
     store.setSync("agent.token", "secret");
@@ -149,17 +149,34 @@ describe("ElectronSafeStorageCredentialStore", () => {
     await store.set("openai", "sk-test");
 
     expect(await store.get("openai")).toBe("sk-test");
-    expect(fs.readFileSync(path.join(tempDir, "credentials.json.enc"), "utf8")).toContain("safe:");
+    expect(fs.readFileSync(path.join(tempDir, "credentials.safe.enc"), "utf8")).toContain("safe:");
   });
 
-  it("migrates a legacy encrypted-file store to safeStorage and removes the sibling key", () => {
+  it("migrates a legacy encrypted-file store to safeStorage and removes the sibling file store", () => {
     const legacyStore = new EncryptedFileCredentialStore({ secretsDir: tempDir });
     legacyStore.setSync("linear.token.v1", "lin_secret");
 
     const store = new ElectronSafeStorageCredentialStore({ secretsDir: tempDir, safeStorage });
 
     expect(store.getSync("linear.token.v1")).toBe("lin_secret");
-    expect(fs.readFileSync(path.join(tempDir, "credentials.json.enc"), "utf8")).toContain("safe:");
+    expect(fs.readFileSync(path.join(tempDir, "credentials.safe.enc"), "utf8")).toContain("safe:");
+    expect(fs.existsSync(path.join(tempDir, "credentials.json.enc"))).toBe(false);
     expect(fs.existsSync(path.join(tempDir, ".machine-key"))).toBe(false);
+  });
+
+  it("keeps the safeStorage store separate from the headless fallback store", () => {
+    const legacyStore = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    legacyStore.setSync("linear.token.v1", "lin_secret");
+
+    const desktopStore = new ElectronSafeStorageCredentialStore({ secretsDir: tempDir, safeStorage });
+    expect(desktopStore.getSync("linear.token.v1")).toBe("lin_secret");
+
+    const fallbackStore = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    fallbackStore.setSync("github.token.v1", "ghp_headless");
+
+    expect(desktopStore.getSync("linear.token.v1")).toBe("lin_secret");
+    expect(fallbackStore.getSync("github.token.v1")).toBe("ghp_headless");
+    expect(fs.readFileSync(path.join(tempDir, "credentials.safe.enc"), "utf8")).toContain("safe:");
+    expect(fs.readFileSync(path.join(tempDir, "credentials.json.enc"), "utf8")).not.toContain("safe:");
   });
 });
