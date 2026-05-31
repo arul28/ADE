@@ -97,6 +97,7 @@ describe("ElectronSafeStorageCredentialStore", () => {
 
     expect(await store.get("openai")).toBe("sk-test");
     expect(fs.readFileSync(path.join(tempDir, "credentials.json.enc"), "utf8")).toContain("enc:");
+    expect(fs.readFileSync(path.join(tempDir, "credentials.json.enc"), "utf8")).toContain("ADE_SAFE_STORAGE_CREDENTIALS_V1");
   });
 
   it("reads legacy file-store credentials before rewriting with safeStorage", async () => {
@@ -128,6 +129,42 @@ describe("ElectronSafeStorageCredentialStore", () => {
     expect(fs.readFileSync(path.join(tempDir, "credentials.json.enc"), "utf8")).toContain("safe:");
     expect(store.getSync("github.token.v1")).toBe("ghp_safe");
     expect(() => legacyStore.getSync("github.token.v1")).toThrow();
+  });
+
+  it("does not fall back to legacy AES when a safeStorage-marked file fails to decrypt", async () => {
+    const legacyStore = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterialProvider: () => null,
+    });
+    const safeStorage = {
+      isEncryptionAvailable: () => true,
+      encryptString: (value: string) => Buffer.from(`safe:${value}`, "utf8"),
+      decryptString: (value: Buffer) => {
+        const raw = value.toString("utf8");
+        if (!raw.startsWith("safe:")) throw new Error("safeStorage decrypt failed");
+        return raw.slice("safe:".length);
+      },
+    };
+    const store = new ElectronSafeStorageCredentialStore({
+      secretsDir: tempDir,
+      safeStorage,
+      legacyStore,
+    });
+    store.setSync("github.token.v1", "ghp_safe");
+
+    const failingStore = new ElectronSafeStorageCredentialStore({
+      secretsDir: tempDir,
+      safeStorage: {
+        isEncryptionAvailable: () => true,
+        encryptString: safeStorage.encryptString,
+        decryptString: () => {
+          throw new Error("safeStorage decrypt failed");
+        },
+      },
+      legacyStore,
+    });
+
+    expect(() => failingStore.getSync("github.token.v1")).toThrow("safeStorage decrypt failed");
   });
 });
 

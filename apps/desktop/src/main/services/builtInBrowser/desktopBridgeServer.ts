@@ -53,6 +53,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
   socketPath: string;
   service: BuiltInBrowserService;
   logger: Logger;
+  umask?: (mask?: number) => number;
 }): BuiltInBrowserDesktopBridgeServer {
   const { socketPath, service, logger } = args;
   const isNamedPipe = socketPath.startsWith("\\\\");
@@ -109,26 +110,58 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     });
   });
 
+  let restoreSocketUmask: (() => void) | null = null;
+  if (!isNamedPipe && process.platform !== "win32") {
+    const setUmask = args.umask ?? process.umask.bind(process);
+    try {
+      const previousUmask = setUmask(0o177);
+      let restored = false;
+      restoreSocketUmask = () => {
+        if (restored) return;
+        restored = true;
+        setUmask(previousUmask);
+      };
+    } catch (error) {
+      logger.warn("built_in_browser_bridge.sock_umask_failed", {
+        socketPath,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   server.on("error", (error) => {
+    restoreSocketUmask?.();
     logger.error("built_in_browser_bridge.server_error", {
       socketPath,
       reason: error instanceof Error ? error.message : String(error),
     });
   });
 
-  server.listen(socketPath, () => {
-    if (!isNamedPipe) {
-      try {
-        fs.chmodSync(socketPath, 0o600);
-      } catch (error) {
-        logger.warn("built_in_browser_bridge.sock_chmod_failed", {
-          socketPath,
-          reason: error instanceof Error ? error.message : String(error),
-        });
+  try {
+    server.listen(socketPath, () => {
+      restoreSocketUmask?.();
+      if (!isNamedPipe) {
+        try {
+          fs.chmodSync(socketPath, 0o600);
+        } catch (error) {
+          logger.warn("built_in_browser_bridge.sock_chmod_failed", {
+            socketPath,
+            reason: error instanceof Error ? error.message : String(error),
+          });
+          try {
+            server.close();
+          } catch {
+            // ignore close failures after chmod failure
+          }
+          return;
+        }
       }
-    }
-    logger.info("built_in_browser_bridge.listening", { socketPath });
-  });
+      logger.info("built_in_browser_bridge.listening", { socketPath });
+    });
+  } catch (error) {
+    restoreSocketUmask?.();
+    throw error;
+  }
 
   async function handleRequest(request: JsonRpcRequest): Promise<unknown> {
     const method = request.method ?? "";

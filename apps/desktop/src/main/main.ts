@@ -117,6 +117,7 @@ import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects
 import {
   ElectronSafeStorageCredentialStore,
   EncryptedFileCredentialStore,
+  isElectronSafeStorageCredentialFile,
   type SyncCredentialStore,
 } from "../../../ade-cli/src/services/credentials/credentialStore";
 import { createKeybindingsService } from "./services/keybindings/keybindingsService";
@@ -375,6 +376,7 @@ function getRendererUrl(): string {
 
 function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
   const legacyStore = new EncryptedFileCredentialStore({ secretsDir });
+  const credentialsPath = path.join(secretsDir, "credentials.json.enc");
   try {
     if (safeStorage.isEncryptionAvailable()) {
       return new ElectronSafeStorageCredentialStore({
@@ -385,6 +387,29 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
     }
   } catch {
     // Fall through to the file store when Electron cannot reach the OS keychain.
+  }
+  if (isElectronSafeStorageCredentialFile(credentialsPath)) {
+    const message = "Electron safeStorage is unavailable; unlock the OS credential store to read ADE credentials.";
+    return {
+      get: async () => {
+        throw new Error(message);
+      },
+      set: async () => {
+        throw new Error(message);
+      },
+      delete: async () => {
+        throw new Error(message);
+      },
+      getSync: () => {
+        throw new Error(message);
+      },
+      setSync: () => {
+        throw new Error(message);
+      },
+      deleteSync: () => {
+        throw new Error(message);
+      },
+    };
   }
   return legacyStore;
 }
