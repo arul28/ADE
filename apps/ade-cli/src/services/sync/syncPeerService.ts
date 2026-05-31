@@ -16,6 +16,11 @@ import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { nowIso } from "../../../../desktop/src/main/services/shared/utils";
 import type { DeviceRegistryService } from "./deviceRegistryService";
 import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, encodeSyncEnvelope, parseSyncEnvelope, wsDataToText } from "./syncProtocol";
+import {
+  buildChangesetBatchPayload,
+  DEFAULT_MAX_CHANGESET_BATCH_BYTES,
+  DEFAULT_MAX_CHANGESET_BATCH_ROWS,
+} from "./changesetPump";
 
 type SyncPeerServiceArgs = {
   db: AdeDb;
@@ -42,6 +47,8 @@ type PendingChangesetBatch = {
 
 const CHANGESET_ACK_TIMEOUT_MS = 10_000;
 const MAX_CHANGESET_ACK_RETRIES = 6;
+const MAX_OUTBOUND_CHANGESET_BATCH_BYTES = DEFAULT_MAX_CHANGESET_BATCH_BYTES;
+const MAX_OUTBOUND_CHANGESET_BATCH_ROWS = DEFAULT_MAX_CHANGESET_BATCH_ROWS;
 
 export function createSyncPeerService(args: SyncPeerServiceArgs) {
   let ws: WebSocket | null = null;
@@ -204,16 +211,19 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
       outboundLocalDbVersion = currentDbVersion;
       return;
     }
-    const batchId = `changeset:${currentLocalPeerMetadata().deviceId}:${previousDbVersion}:${currentDbVersion}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+    const payload = buildChangesetBatchPayload({
+      deviceId: currentLocalPeerMetadata().deviceId,
+      reason: "relay",
+      fromDbVersion: previousDbVersion,
+      toDbVersion: currentDbVersion,
+      changes,
+      maxRows: MAX_OUTBOUND_CHANGESET_BATCH_ROWS,
+      maxBytes: MAX_OUTBOUND_CHANGESET_BATCH_BYTES,
+    });
+    if (!payload) return;
     pendingOutboundChangeset = {
-      batchId,
-      payload: {
-        batchId,
-        reason: "relay",
-        fromDbVersion: previousDbVersion,
-        toDbVersion: currentDbVersion,
-        changes,
-      },
+      batchId: payload.batchId,
+      payload,
       sentAtMs: nowMs,
       retryCount: 0,
     };
