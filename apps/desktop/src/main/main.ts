@@ -162,7 +162,7 @@ import { createLinearIntakeService } from "./services/cto/linearIntakeService";
 import { createLinearOutboundService } from "./services/cto/linearOutboundService";
 import { createLinearCloseoutService } from "./services/cto/linearCloseoutService";
 import { createLinearDispatcherService } from "./services/cto/linearDispatcherService";
-import { publishLinearChatSessionCard, publishLinearLaneCard } from "./services/cto/linearLaneCardService";
+import { createLinearChatLinkPublisher, publishLinearLaneCard } from "./services/cto/linearLaneCardService";
 import { createLinearIngressService } from "./services/cto/linearIngressService";
 import { createLinearSyncService } from "./services/cto/linearSyncService";
 import { createOrchestrationService } from "./services/orchestration/orchestrationService";
@@ -1792,8 +1792,11 @@ app.whenReady().then(async () => {
       null;
     let linearIssueTrackerRef: LinearIssueTracker | null = null;
     let linearLiveStatusServiceRef: LinearLiveStatusService | null = null;
-    const linearChatCardPublishKeys = new Set<string>();
     const linearLiveStatusLaunchKeys = new Set<string>();
+    const publishLinearChatCard = createLinearChatLinkPublisher({
+      getIssueTracker: () => linearIssueTrackerRef,
+      log: (event, fields) => logger.warn(event, fields),
+    });
     const publishLinearChatLink = ({ laneId, sessionId, sessionTitle, issue, linkedAt }: {
       laneId: string;
       sessionId: string;
@@ -1801,29 +1804,9 @@ app.whenReady().then(async () => {
       issue: LaneLinearIssue;
       linkedAt: string;
     }) => {
-      const tracker = linearIssueTrackerRef;
-      if (!tracker) return;
+      if (!linearIssueTrackerRef) return;
       const key = `${issue.id}:${sessionId}`;
-      if (!linearChatCardPublishKeys.has(key)) {
-        linearChatCardPublishKeys.add(key);
-        void publishLinearChatSessionCard({
-          issueTracker: tracker,
-          issue,
-          laneId,
-          sessionId,
-          sessionTitle,
-          linkedAt,
-        }).catch((error) => {
-          linearChatCardPublishKeys.delete(key);
-          logger.warn("linear.chat_session_card_publish_failed", {
-            laneId,
-            sessionId,
-            issueId: issue.id,
-            issueIdentifier: issue.identifier,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-      }
+      publishLinearChatCard({ laneId, sessionId, sessionTitle, issue, linkedAt });
       // Agent launched against a Linear issue → reflect status into Linear
       // (no-op unless the live round-trip flag is set).
       const liveStatusService = linearLiveStatusServiceRef;

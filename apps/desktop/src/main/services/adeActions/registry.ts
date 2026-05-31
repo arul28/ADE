@@ -77,6 +77,7 @@ import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../
 import { launchRebaseResolutionChat } from "../prs/prRebaseResolver";
 import { mapPermissionModeForModelFamily } from "../prs/resolverUtils";
 import { getErrorMessage, isRecord, nowIso } from "../shared/utils";
+import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import {
   buildResumeArgv,
@@ -609,7 +610,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listWorkflowStates",
     "listUsers",
     "removeIssueLabel",
-    "runGraphQL",
     "searchIssues",
     "updateComment",
     "updateIssueAssignee",
@@ -2471,13 +2471,15 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
 function buildLinearIssueTrackerDomainService(runtime: AdeRuntime): OpaqueService | null {
   const tracker = runtime.linearIssueTracker;
   if (!tracker) return null;
+  const connectionPrecheckCache: LinearConnectionPrecheckCache = {
+    checkedAt: 0,
+    connection: null,
+  };
   return {
     ...(tracker as unknown as OpaqueService),
     async graphql(args?: unknown) {
-      return tracker.runGraphQL(readLinearGraphQLActionArgs(args));
-    },
-    async runGraphQL(args?: unknown) {
-      return tracker.runGraphQL(readLinearGraphQLActionArgs(args));
+      await requireRuntimeLinearConnection(runtime, connectionPrecheckCache);
+      return tracker.runGraphQL(parseLinearGraphQLInput(asActionRecord(args)));
     },
     async getStatus() {
       return buildRuntimeLinearConnectionStatus(runtime);
@@ -2528,34 +2530,6 @@ function buildLinearIssueTrackerDomainService(runtime: AdeRuntime): OpaqueServic
       ]);
       return { projects, users, states };
     },
-  };
-}
-
-function readLinearGraphQLActionArgs(args?: unknown): {
-  query: string;
-  variables?: Record<string, unknown>;
-  operationName?: string | null;
-  maxRetries?: number;
-} {
-  const actionArgs = asActionRecord(args);
-  const query = requireNonEmptyString(actionArgs.query, "query");
-  const variables = actionArgs.variables;
-  if (variables != null && !isRecord(variables)) {
-    throw new Error("Expected 'variables' to be a JSON object when provided.");
-  }
-  const operationName =
-    typeof actionArgs.operationName === "string" && actionArgs.operationName.trim().length
-      ? actionArgs.operationName.trim()
-      : null;
-  const maxRetries =
-    typeof actionArgs.maxRetries === "number" && Number.isFinite(actionArgs.maxRetries)
-      ? Math.max(0, Math.min(10, Math.floor(actionArgs.maxRetries)))
-      : undefined;
-  return {
-    query,
-    ...(variables ? { variables } : {}),
-    ...(operationName ? { operationName } : {}),
-    ...(maxRetries !== undefined ? { maxRetries } : {}),
   };
 }
 
@@ -2624,6 +2598,42 @@ async function buildRuntimeLinearConnectionStatus(runtime: AdeRuntime): Promise<
       ),
     };
   }
+}
+
+const LINEAR_CONNECTION_PRECHECK_TTL_MS = 30_000;
+
+type LinearConnectionPrecheckCache = {
+  checkedAt: number;
+  connection: LinearConnectionStatus | null;
+};
+
+async function requireRuntimeLinearConnection(
+  runtime: AdeRuntime,
+  cache?: LinearConnectionPrecheckCache,
+): Promise<LinearConnectionStatus> {
+  const now = Date.now();
+  if (
+    cache?.connection?.connected
+    && now - cache.checkedAt < LINEAR_CONNECTION_PRECHECK_TTL_MS
+  ) {
+    return cache.connection;
+  }
+  const connection = await buildRuntimeLinearConnectionStatus(runtime);
+  if (connection.connected) {
+    if (cache) {
+      cache.connection = connection;
+      cache.checkedAt = now;
+    }
+    return connection;
+  }
+  if (cache) {
+    cache.connection = null;
+    cache.checkedAt = 0;
+  }
+  const message = connection.message?.trim();
+  const error = new Error(message ? `Linear is not connected: ${message}` : "Linear is not connected.");
+  Object.assign(error, { code: "LINEAR_NOT_CONNECTED", connection });
+  throw error;
 }
 
 function formatLinearConnectionMessage(

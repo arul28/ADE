@@ -18,6 +18,7 @@ import {
   runDeeplinkCommand,
 } from "./commands/deeplinks";
 import { buildDeeplink } from "../../desktop/src/shared/deeplinks";
+import { parseLinearGraphQLInput } from "../../desktop/src/main/services/cto/linearGraphQLInput";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import {
   findAdeManagedWorktreeRoot,
@@ -2073,32 +2074,11 @@ function readIssueIdFlag(args: string[]): string | null {
 }
 
 function normalizeLinearGraphQLInput(input: JsonObject): JsonObject {
-  const query = asString(input.query);
-  if (!query) {
-    throw new CliUsageError("GraphQL query is required.");
+  try {
+    return parseLinearGraphQLInput(input) as JsonObject;
+  } catch (error) {
+    throw new CliUsageError(error instanceof Error ? error.message : String(error));
   }
-
-  const variables = input.variables;
-  if (variables != null && !isRecord(variables)) {
-    throw new CliUsageError("--variables-json must be a JSON object.");
-  }
-
-  const maxRetries = input.maxRetries;
-  if (maxRetries != null && (typeof maxRetries !== "number" || !Number.isFinite(maxRetries))) {
-    throw new CliUsageError("--max-retries must be a number.");
-  }
-
-  const normalized: JsonObject = { ...input, query };
-  if (variables == null) {
-    delete normalized.variables;
-  }
-  const operationName = asString(input.operationName);
-  if (operationName) {
-    normalized.operationName = operationName;
-  } else {
-    delete normalized.operationName;
-  }
-  return normalized;
 }
 
 function readLinearGraphQLArgs(args: string[]): JsonObject {
@@ -2115,9 +2095,6 @@ function readLinearGraphQLArgs(args: string[]): JsonObject {
     ["--variables-file", "--vars-file"],
     "--variables-json",
   );
-  if (variables !== undefined && !isRecord(variables)) {
-    throw new CliUsageError("--variables-json must be a JSON object.");
-  }
   const input: JsonObject = { query };
   if (variables !== undefined) input.variables = variables;
   maybePut(input, "operationName", readValue(args, ["--operation-name", "--operation"]));

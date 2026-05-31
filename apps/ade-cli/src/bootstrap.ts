@@ -66,7 +66,7 @@ import type { createLinearIngressService } from "../../desktop/src/main/services
 import type { createLinearRoutingService } from "../../desktop/src/main/services/cto/linearRoutingService";
 import type { createLinearSyncService } from "../../desktop/src/main/services/cto/linearSyncService";
 import {
-  publishLinearChatSessionCard,
+  createLinearChatLinkPublisher,
   publishLinearLaneCard,
 } from "../../desktop/src/main/services/cto/linearLaneCardService";
 import { createAiIntegrationService } from "../../desktop/src/main/services/ai/aiIntegrationService";
@@ -436,43 +436,10 @@ export async function createAdeRuntime(args: {
   let autoRebaseServiceRef: ReturnType<typeof createAutoRebaseService> | null = null;
   let linearIssueTrackerRef: ReturnType<typeof createLinearIssueTracker> | null = null;
   let githubServiceRef: ReturnType<typeof createGithubService> | null = null;
-  const linearChatCardPublishKeys = new Set<string>();
-  const publishLinearChatLink = ({
-    laneId,
-    sessionId,
-    sessionTitle,
-    issue,
-    linkedAt,
-  }: {
-    laneId: string;
-    sessionId: string;
-    sessionTitle?: string | null;
-    issue: Parameters<typeof publishLinearChatSessionCard>[0]["issue"];
-    linkedAt: string;
-  }) => {
-    const tracker = linearIssueTrackerRef;
-    if (!tracker) return;
-    const key = `${issue.id}:${sessionId}`;
-    if (linearChatCardPublishKeys.has(key)) return;
-    linearChatCardPublishKeys.add(key);
-    void publishLinearChatSessionCard({
-      issueTracker: tracker,
-      issue,
-      laneId,
-      sessionId,
-      sessionTitle,
-      linkedAt,
-    }).catch((error) => {
-      linearChatCardPublishKeys.delete(key);
-      logger.warn("linear.chat_session_card_publish_failed", {
-        laneId,
-        sessionId,
-        issueId: issue.id,
-        issueIdentifier: issue.identifier,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
-  };
+  const publishLinearChatLink = createLinearChatLinkPublisher({
+    getIssueTracker: () => linearIssueTrackerRef,
+    log: (event, fields) => logger.warn(event, fields),
+  });
 
   const laneService = createLaneService({
     db,
@@ -928,7 +895,7 @@ export async function createAdeRuntime(args: {
   linearIssueTrackerRef = headlessLinearServices.linearIssueTracker;
   githubServiceRef = headlessLinearServices.githubService as ReturnType<typeof createGithubService>;
   const linearOAuthService = createLinearOAuthService({
-    credentials: headlessLinearServices.linearCredentialService as never,
+    credentials: headlessLinearServices.linearCredentialService,
     logger,
   });
 
@@ -937,7 +904,7 @@ export async function createAdeRuntime(args: {
     logger,
     projectRoot,
     aiIntegrationService,
-    githubService: headlessLinearServices.githubService as never,
+    githubService: headlessLinearServices.githubService,
     onSubmissionUpdated: (event) => pushEvent("runtime", { type: "feedback_submission_event", event }),
   });
 
@@ -955,7 +922,7 @@ export async function createAdeRuntime(args: {
       flowPolicyService: headlessLinearServices.flowPolicyService,
       getLinearDispatcherService: () => headlessLinearServices.linearDispatcherService,
       linearClient: headlessLinearServices.linearClient,
-      linearCredentials: headlessLinearServices.linearCredentialService as never,
+      linearCredentials: headlessLinearServices.linearCredentialService,
       prService: headlessLinearServices.prService,
       issueInventoryService,
       processService,
@@ -1215,10 +1182,10 @@ export async function createAdeRuntime(args: {
     adeProjectService,
     workerBudgetService,
     workerRevisionService,
-    githubService: headlessLinearServices.githubService as never,
+    githubService: headlessLinearServices.githubService,
     workerTaskSessionService: headlessLinearServices.workerTaskSessionService,
     workerHeartbeatService: headlessLinearServices.workerHeartbeatService,
-    linearCredentialService: headlessLinearServices.linearCredentialService as never,
+    linearCredentialService: headlessLinearServices.linearCredentialService,
     linearOAuthService,
     prService: headlessLinearServices.prService,
     fileService: headlessLinearServices.fileService,

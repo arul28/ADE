@@ -6,6 +6,7 @@ import {
   buildLinearChatSessionAttachment,
   buildLinearIssueQuickViewAttachment,
   buildLinearPrCardAttachment,
+  createLinearChatLinkPublisher,
   publishLinearChatSessionCard,
   publishLinearIssueQuickViewAttachment,
   publishLinearLaneCard,
@@ -214,6 +215,26 @@ describe("linearLaneCardService", () => {
       title: "Open ADE chat: ABC-42",
       url: "ade://session/session-1?lane=lane-1",
     }));
+  });
+
+  it("dedupes chat session card publishing per issue and session", async () => {
+    const createIssueAttachment = vi.fn(async () => ({ id: "attachment-chat", url: "ade://session/session-1?lane=lane-1" }));
+    const publisher = createLinearChatLinkPublisher({
+      getIssueTracker: () => ({ createIssueAttachment } as any),
+    });
+
+    const args = {
+      issue: makeIssue(),
+      laneId: "lane-1",
+      sessionId: "session-1",
+      sessionTitle: "Investigate sync flakes",
+      linkedAt: "2026-05-12T20:15:00.000Z",
+    };
+    publisher(args);
+    publisher(args);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(createIssueAttachment).toHaveBeenCalledTimes(1);
   });
 
   it("returns null comment when repo is unknown", () => {

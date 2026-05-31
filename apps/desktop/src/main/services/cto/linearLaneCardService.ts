@@ -422,3 +422,46 @@ export async function publishLinearChatSessionCard(args: {
     }),
   );
 }
+
+export function createLinearChatLinkPublisher(args: {
+  getIssueTracker: () => IssueTracker | null | undefined;
+  log?: (event: string, fields: Record<string, unknown>) => void;
+}) {
+  const publishKeys = new Set<string>();
+  return ({
+    laneId,
+    sessionId,
+    sessionTitle,
+    issue,
+    linkedAt,
+  }: {
+    laneId: string;
+    sessionId: string;
+    sessionTitle?: string | null;
+    issue: LinearIssueCardIssue;
+    linkedAt: string;
+  }): void => {
+    const issueTracker = args.getIssueTracker();
+    if (!issueTracker) return;
+    const key = `${issue.id}:${sessionId}`;
+    if (publishKeys.has(key)) return;
+    publishKeys.add(key);
+    void publishLinearChatSessionCard({
+      issueTracker,
+      issue,
+      laneId,
+      sessionId,
+      sessionTitle,
+      linkedAt,
+    }).catch((error) => {
+      publishKeys.delete(key);
+      args.log?.("linear.chat_session_card_publish_failed", {
+        laneId,
+        sessionId,
+        issueId: issue.id,
+        issueIdentifier: issue.identifier,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+}
