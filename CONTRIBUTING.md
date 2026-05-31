@@ -25,7 +25,7 @@ UI work, see [apps/desktop/README.md](apps/desktop/README.md).
 - Run the smallest relevant checks for your change first
 - Desktop: `npm --prefix apps/desktop run typecheck`, targeted Vitest files, and `npm --prefix apps/desktop run lint` when touching renderer or main-process code
 - ADE CLI: `npm --prefix apps/ade-cli run typecheck` and `npm --prefix apps/ade-cli run test` when touching CLI/runtime code
-- Docs: `node scripts/validate-docs.mjs`
+- Docs: `node scripts/validate-docs.mjs` (fetch tags first if your clone is shallow)
 - TypeScript strict mode is enabled
 - Tests use Vitest
 

@@ -187,10 +187,15 @@ function compareSemver(a, b) {
 }
 
 function semverGitTags() {
-  const output = execFileSync("git", ["tag", "--list", "v[0-9]*.[0-9]*.[0-9]*"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  });
+  let output;
+  try {
+    output = execFileSync("git", ["tag", "--list", "v[0-9]*.[0-9]*.[0-9]*"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+  } catch {
+    return null;
+  }
   return output
     .split(/\r?\n/)
     .map(parseSemverTag)
@@ -200,9 +205,19 @@ function semverGitTags() {
 
 async function validateReleaseDocs() {
   const gitTags = semverGitTags();
+  if (gitTags === null) {
+    errors.push("CHANGELOG.md: failed to read git tags; ensure git is installed and this is a git checkout");
+    return;
+  }
+
   const latestTag = gitTags.at(-1) ?? null;
   if (!latestTag) {
-    errors.push("CHANGELOG.md: no vX.Y.Z git tags found; fetch tags before validating release docs");
+    const message = "CHANGELOG.md: no vX.Y.Z git tags found; fetch tags before validating release docs";
+    if (process.env.CI) {
+      errors.push(message);
+    } else {
+      console.warn(`Documentation validation warning: ${message}`);
+    }
     return;
   }
 
@@ -231,6 +246,14 @@ async function validateReleaseDocs() {
 
   if (!(await targetExists({ absolute: `/changelog/${latestTag.raw}`, source: latestTag.raw, fromFile: "CHANGELOG.md" }))) {
     errors.push(`changelog/${latestTag.raw}.mdx: missing docs page for latest git tag ${latestTag.raw}`);
+  }
+
+  const changelogIndex = await fs.readFile(path.join(repoRoot, "changelog/index.mdx"), "utf8");
+  if (!changelogIndex.includes(`/changelog/${latestTag.raw}`)) {
+    errors.push(`changelog/index.mdx: latest release card must link to /changelog/${latestTag.raw}`);
+  }
+  if (!changelogIndex.includes(latestTag.raw)) {
+    errors.push(`changelog/index.mdx: latest release copy must mention ${latestTag.raw}`);
   }
 
   const readme = await fs.readFile(path.join(repoRoot, "README.md"), "utf8");
