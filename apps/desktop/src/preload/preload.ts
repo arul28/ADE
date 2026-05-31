@@ -1436,6 +1436,8 @@ const remoteLaneDiagnosticsEventCallbacks = new Set<
 >();
 const remotePtyDataEventCallbacks = new Set<(payload: PtyDataEvent) => void>();
 const remotePtyExitEventCallbacks = new Set<(payload: PtyExitEvent) => void>();
+let ptyDataSubscriptionsConfigured = false;
+let subscribedPtyDataIds = new Set<string>();
 const remoteProcessEventCallbacks = new Set<(payload: ProcessEvent) => void>();
 const remoteTestEventCallbacks = new Set<(payload: TestEvent) => void>();
 const remoteFileChangeEventCallbacks = new Set<
@@ -1622,6 +1624,31 @@ function hasRemoteRuntimeEventSubscribers(): boolean {
     remoteAppControlEventCallbacks.size > 0 ||
     remotePrAiResolutionEventCallbacks.size > 0
   );
+}
+
+function normalizePtyDataSubscriptionIds(value: unknown): Set<string> {
+  const ids = new Set<string>();
+  if (!Array.isArray(value)) return ids;
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const id = item.trim();
+    if (id) ids.add(id);
+  }
+  return ids;
+}
+
+function shouldDispatchPtyDataEvent(payload: PtyDataEvent): boolean {
+  if (!ptyDataSubscriptionsConfigured) return true;
+  return subscribedPtyDataIds.has(payload.ptyId);
+}
+
+async function setPtyDataSubscriptions(args: { ptyIds?: string[] }): Promise<void> {
+  ptyDataSubscriptionsConfigured = true;
+  subscribedPtyDataIds = normalizePtyDataSubscriptionIds(args?.ptyIds);
+  ensureRemoteRuntimeEventPump();
+  await ipcRenderer.invoke(IPC.ptyDataSubscriptions, {
+    ptyIds: [...subscribedPtyDataIds],
+  });
 }
 
 function ensureRemoteRuntimeEventPump(): void {
@@ -2110,6 +2137,7 @@ function dispatchRemoteRuntimeEventPayload(
 
   const ptyDataEvent = toWrappedEvent<PtyDataEvent>(payload, "pty_data");
   if (ptyDataEvent) {
+    if (!shouldDispatchPtyDataEvent(ptyDataEvent)) return;
     for (const cb of [...remotePtyDataEventCallbacks]) {
       try {
         cb(ptyDataEvent);
@@ -2543,8 +2571,11 @@ function subscribeAgentChatEvents(
 function subscribePtyDataEvents(
   cb: (payload: PtyDataEvent) => void,
 ): () => void {
-  const removeLocal = ptyDataEventFanout(cb);
-  const removeRemote = subscribeRemotePtyDataEvents(cb);
+  const filteredCb = (payload: PtyDataEvent) => {
+    if (shouldDispatchPtyDataEvent(payload)) cb(payload);
+  };
+  const removeLocal = ptyDataEventFanout(filteredCb);
+  const removeRemote = subscribeRemotePtyDataEvents(filteredCb);
   return () => {
     removeRemote();
     removeLocal();
@@ -5964,6 +5995,7 @@ contextBridge.exposeInMainWorld("ade", {
       );
       if (!runtime.handled) await ipcRenderer.invoke(IPC.ptyDispose, arg);
     },
+    setDataSubscriptions: setPtyDataSubscriptions,
     onData: subscribePtyDataEvents,
     onExit: subscribePtyExitEvents,
   },

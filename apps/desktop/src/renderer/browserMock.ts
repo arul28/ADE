@@ -5080,6 +5080,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       write: resolvedArg(undefined),
       resize: resolvedArg(undefined),
       dispose: resolvedArg(undefined),
+      setDataSubscriptions: resolvedArg(undefined),
       onData: noop,
       onExit: noop,
     },

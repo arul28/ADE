@@ -343,6 +343,7 @@ export const IPC = {
   ptyWrite: "ade.pty.write",
   ptyResize: "ade.pty.resize",
   ptyDispose: "ade.pty.dispose",
+  ptyDataSubscriptions: "ade.pty.dataSubscriptions",
   ptyData: "ade.pty.data",
   ptyExit: "ade.pty.exit",
   terminalList: "ade.terminal.list",

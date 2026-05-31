@@ -1,4 +1,4 @@
-import { app, BrowserWindow, desktopCapturer, dialog, Menu, nativeImage, protocol, safeStorage, shell } from "electron";
+import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, nativeImage, protocol, safeStorage, shell } from "electron";
 import { AsyncLocalStorage } from "node:async_hooks";
 import os from "node:os";
 import path from "node:path";
@@ -42,6 +42,11 @@ import { createSessionService } from "./services/sessions/sessionService";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
 import { createPtyService } from "./services/pty/ptyService";
 import { createSupervisedPtyLoader } from "./services/pty/supervisedPtyHost";
+import {
+  normalizePtyDataSubscriptions,
+  setPtyDataSubscriptionsForSender,
+  shouldSendPtyDataToWebContents,
+} from "./services/pty/ptyDataSubscriptions";
 import {
   createProcessRegistryService,
   DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS,
@@ -91,6 +96,7 @@ import type {
   PortLease,
   PrEventPayload,
   ProjectInfo,
+  PtyDataEvent,
   SyncMobileProjectSummary,
   SyncProjectConnectionPayload,
   SyncProjectSwitchRequestPayload,
@@ -1012,6 +1018,24 @@ app.whenReady().then(async () => {
         win.webContents.send(channel, payload);
       } catch {
         // ignore
+      }
+    }
+  };
+
+  ipcMain.handle(IPC.ptyDataSubscriptions, (event, arg: { ptyIds?: unknown } | undefined) => {
+    setPtyDataSubscriptionsForSender(
+      event.sender,
+      normalizePtyDataSubscriptions(arg?.ptyIds),
+    );
+  });
+
+  const broadcastPtyData = (payload: PtyDataEvent) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!shouldSendPtyDataToWebContents(win.webContents, payload.ptyId)) continue;
+      try {
+        win.webContents.send(IPC.ptyData, payload);
+      } catch {
+        // ignore stale window sends
       }
     }
   };
@@ -2606,7 +2630,7 @@ app.whenReady().then(async () => {
       getAdeCliAgentEnv: adeCliService.agentEnv,
       logger,
       broadcastData: (ev) => {
-        broadcast(IPC.ptyData, ev);
+        broadcastPtyData(ev);
         const { projectRoot: _projectRoot, ...syncEvent } = ev;
         syncServiceRef?.handlePtyData(syncEvent);
       },

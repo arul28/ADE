@@ -165,6 +165,7 @@ function installWindowAde() {
     pty: {
       resize: vi.fn().mockResolvedValue(undefined),
       write: vi.fn().mockResolvedValue(undefined),
+      setDataSubscriptions: vi.fn().mockResolvedValue(undefined),
       onData: vi.fn((listener: (event: { ptyId: string; sessionId?: string; projectRoot?: string; data: string }) => void) => {
         mockState.ptyDataListeners.add(listener);
         return () => {
@@ -432,6 +433,29 @@ describe("TerminalView", () => {
     expect((window as any).ade.pty.onExit).toHaveBeenCalledTimes(1);
     expect(mockState.ptyDataListeners.size).toBe(1);
     expect(mockState.ptyExitListeners.size).toBe(1);
+  });
+
+  it("subscribes PTY data only for visible mounted runtimes", async () => {
+    const setDataSubscriptions = (window as any).ade.pty.setDataSubscriptions as ReturnType<typeof vi.fn>;
+    const view = render(<TerminalView ptyId="pty-visible-sub" sessionId="session-visible-sub" isActive />);
+
+    expect(setDataSubscriptions).toHaveBeenLastCalledWith({ ptyIds: ["pty-visible-sub"] });
+
+    view.rerender(
+      <TerminalView
+        ptyId="pty-visible-sub"
+        sessionId="session-visible-sub"
+        isActive={false}
+        isVisible={false}
+      />,
+    );
+    expect(setDataSubscriptions).toHaveBeenLastCalledWith({ ptyIds: [] });
+
+    view.rerender(<TerminalView ptyId="pty-visible-sub" sessionId="session-visible-sub" isActive />);
+    expect(setDataSubscriptions).toHaveBeenLastCalledWith({ ptyIds: ["pty-visible-sub"] });
+
+    view.unmount();
+    expect(setDataSubscriptions).toHaveBeenLastCalledWith({ ptyIds: [] });
   });
 
   it("uses the DOM renderer on Linux when localStorage is unavailable", async () => {
@@ -1046,11 +1070,12 @@ describe("TerminalView", () => {
     expect(terminal?.dispose).not.toHaveBeenCalled();
   });
 
-  it("keeps live parked runtimes current across project switches", async () => {
+  it("keeps live parked runtimes available across project switches without rendering background output", async () => {
     const view = render(<TerminalView ptyId="pty-switch" sessionId="session-switch" isActive />);
     await flushAllTimers();
 
     const readTranscriptTailMock = window.ade.sessions.readTranscriptTail as unknown as { mock: { calls: unknown[][] } };
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
     const firstTerminal = mockState.terminalInstances.at(-1) as {
       dispose: ReturnType<typeof vi.fn>;
       write: ReturnType<typeof vi.fn>;
@@ -1085,10 +1110,19 @@ describe("TerminalView", () => {
 
     mockState.projectRoot = "/project/a";
     mockState.projectRevision += 1;
+    previewMock.mockResolvedValueOnce({
+      terminalId: "session-switch",
+      session: null,
+      source: "transcript",
+      snapshot: null,
+      transcript: "snapshot after remount\n",
+      capturedAt: new Date().toISOString(),
+    });
 
     render(<TerminalView ptyId="pty-switch" sessionId="session-switch" isActive />);
     await flushAllTimers();
-    expect(firstTerminal?.write).toHaveBeenCalledWith("still running in project a\n");
+    expect(firstTerminal?.write).not.toHaveBeenCalledWith("still running in project a\n");
+    expect(firstTerminal?.write).toHaveBeenCalledWith("snapshot after remount\n");
 
     const secondTerminal = mockState.terminalInstances.at(-1) as {
       dispose: ReturnType<typeof vi.fn>;
@@ -1819,9 +1853,10 @@ describe("TerminalView", () => {
     expect(view.queryByTestId("terminal-startup-loading")).toBeNull();
   });
 
-  it("buffers PTY output for parked runtimes and flushes it on remount", async () => {
+  it("refreshes parked runtimes from preview instead of buffering background PTY output", async () => {
     const firstView = render(<TerminalView ptyId="pty-buffered" sessionId="session-buffered" isActive />);
     await flushAllTimers();
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
 
     const terminal = mockState.terminalInstances.at(-1) as {
       write: ReturnType<typeof vi.fn>;
@@ -1840,12 +1875,21 @@ describe("TerminalView", () => {
     expect(terminal?.write).not.toHaveBeenCalledWith("hello from background\n");
 
     terminal?.write.mockClear();
+    previewMock.mockResolvedValueOnce({
+      terminalId: "session-buffered",
+      session: null,
+      source: "transcript",
+      snapshot: null,
+      transcript: "fresh preview after park\n",
+      capturedAt: new Date().toISOString(),
+    });
     render(<TerminalView ptyId="pty-buffered" sessionId="session-buffered" isActive />);
-    await flushAnimationFrame();
-    expect(terminal?.write).toHaveBeenCalledWith("hello from background\n");
+    await flushAllTimers();
+    expect(terminal?.write).not.toHaveBeenCalledWith("hello from background\n");
+    expect(terminal?.write).toHaveBeenCalledWith("fresh preview after park\n");
   });
 
-  it("keeps parked runtime output buffered while the document is hidden", async () => {
+  it("does not buffer parked runtime output while the document is hidden", async () => {
     const rafSpy = vi.spyOn(globalThis, "requestAnimationFrame");
     const firstView = render(<TerminalView ptyId="pty-hidden" sessionId="session-hidden" isActive />);
     await flushAllTimers();
