@@ -95,6 +95,10 @@ export function FilesWorkbench({
   const [selectedNodePath, setSelectedNodePath] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [dirtyPaths, setDirtyPaths] = useState<Set<string>>(new Set());
+  /** Bumped per path when disk content should be re-read into ViewerHost. */
+  const [reloadTokensByPath, setReloadTokensByPath] = useState<Record<string, number>>({});
+  /** Open tabs with unsaved edits where the file also changed on disk. */
+  const [diskChangedPaths, setDiskChangedPaths] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [overlay, setOverlay] = useState<
     | null
@@ -110,9 +114,13 @@ export function FilesWorkbench({
   const dragRef = useRef<{ groupId: string; path: string } | null>(null);
   const workspaceIdRef = useRef(workspaceId);
   workspaceIdRef.current = workspaceId;
+  const groupsStateRef = useRef(createInitialGroupsState());
+  const dirtyPathsRef = useRef(dirtyPaths);
+  dirtyPathsRef.current = dirtyPaths;
 
   const store = useEditorGroupsStore();
   const groupsState = store.sessions[sessionKey] ?? createInitialGroupsState();
+  groupsStateRef.current = groupsState;
   const applyGroups = useCallback(
     (reducer: Parameters<typeof store.apply>[1]) => store.apply(sessionKey, reducer),
     [store, sessionKey],
@@ -293,27 +301,70 @@ export function FilesWorkbench({
     [loadDirectory],
   );
 
-  /* ---- File watching: refresh the tree on disk changes (debounced) ---- */
-  useEffect(() => {
-    if (!active || !workspaceId) return;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const unsub = window.ade.files.onChange((ev) => {
-      if (ev.workspaceId !== workspaceIdRef.current) return;
-      // Drop the cached content for the changed path so a reopen re-reads disk.
-      invalidateFileContent(ev.workspaceId, ev.path);
-      if (ev.oldPath) invalidateFileContent(ev.workspaceId, ev.oldPath);
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        void refreshRoot();
-      }, 200);
-    });
-    void window.ade.files.watchChanges({ workspaceId, includeIgnored: true }).catch(() => {});
-    return () => {
-      if (timer) clearTimeout(timer);
-      unsub();
-      void window.ade.files.stopWatching({ workspaceId, includeIgnored: true }).catch(() => {});
-    };
-  }, [active, workspaceId, refreshRoot]);
+  const collectOpenPaths = useCallback((): string[] => {
+    const paths = new Set<string>();
+    for (const group of Object.values(groupsStateRef.current.groups)) {
+      for (const tab of group.tabs) paths.add(tab.path);
+    }
+    return Array.from(paths);
+  }, []);
+
+  const syncCleanTabFromDisk = useCallback(async (filePath: string) => {
+    const reqId = workspaceIdRef.current;
+    if (!reqId) return;
+    if (dirtyPathsRef.current.has(filePath)) {
+      setDiskChangedPaths((prev) => {
+        if (prev.has(filePath)) return prev;
+        const next = new Set(prev);
+        next.add(filePath);
+        return next;
+      });
+      return;
+    }
+    try {
+      const loaded = await window.ade.files.readFile({ workspaceId: reqId, path: filePath });
+      if (workspaceIdRef.current !== reqId) return;
+      primeFileContent(reqId, filePath, loaded);
+      setReloadTokensByPath((prev) => ({
+        ...prev,
+        [filePath]: (prev[filePath] ?? 0) + 1,
+      }));
+      setDiskChangedPaths((prev) => {
+        if (!prev.has(filePath)) return prev;
+        const next = new Set(prev);
+        next.delete(filePath);
+        return next;
+      });
+    } catch {
+      // Deleted/renamed paths can race the sync; ignore quietly.
+    }
+  }, []);
+
+  const reloadTabFromDisk = useCallback(
+    async (filePath: string) => {
+      if (!workspaceId) return;
+      const ok = dirtyPaths.has(filePath)
+        ? window.confirm(`Reload "${filePath}" from disk? Unsaved edits will be lost.`)
+        : true;
+      if (!ok) return;
+      registryRef.current.dispose(filePath);
+      invalidateFileContent(workspaceId, filePath);
+      setDirtyPaths((prev) => {
+        if (!prev.has(filePath)) return prev;
+        const next = new Set(prev);
+        next.delete(filePath);
+        return next;
+      });
+      setDiskChangedPaths((prev) => {
+        if (!prev.has(filePath)) return prev;
+        const next = new Set(prev);
+        next.delete(filePath);
+        return next;
+      });
+      await syncCleanTabFromDisk(filePath);
+    },
+    [workspaceId, dirtyPaths, syncCleanTabFromDisk],
+  );
 
   /* ---- Open file ---- */
   const openFile = useCallback(
@@ -376,6 +427,14 @@ export function FilesWorkbench({
       else next.delete(path);
       return next;
     });
+    if (!dirty) {
+      setDiskChangedPaths((prev) => {
+        if (!prev.has(path)) return prev;
+        const next = new Set(prev);
+        next.delete(path);
+        return next;
+      });
+    }
   }, []);
 
   const handleTabDragStart = useCallback((groupId: string, path: string) => {
@@ -431,6 +490,46 @@ export function FilesWorkbench({
     },
     [groupsState, applyGroups],
   );
+
+  /* ---- File watching: tree refresh + open-tab disk sync (debounced) ---- */
+  useEffect(() => {
+    if (!active || !workspaceId) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const pendingTabSyncPaths = new Set<string>();
+    const unsub = window.ade.files.onChange((ev) => {
+      if (ev.workspaceId !== workspaceIdRef.current) return;
+      const nextPath = ev.path?.trim() ?? "";
+      const oldPath = ev.oldPath?.trim() ?? "";
+      invalidateFileContent(ev.workspaceId, nextPath);
+      if (oldPath) invalidateFileContent(ev.workspaceId, oldPath);
+
+      if (ev.type === "deleted" && nextPath) {
+        closeOpenTabsUnder(nextPath);
+      } else if (nextPath) {
+        for (const openPath of collectOpenPaths()) {
+          if (openPath === nextPath || openPath.startsWith(`${nextPath}/`)) {
+            pendingTabSyncPaths.add(openPath);
+          }
+        }
+      }
+
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        void refreshRoot();
+        const pathsToSync = Array.from(pendingTabSyncPaths);
+        pendingTabSyncPaths.clear();
+        for (const path of pathsToSync) {
+          void syncCleanTabFromDisk(path);
+        }
+      }, 200);
+    });
+    void window.ade.files.watchChanges({ workspaceId, includeIgnored: true }).catch(() => {});
+    return () => {
+      if (timer) clearTimeout(timer);
+      unsub();
+      void window.ade.files.stopWatching({ workspaceId, includeIgnored: true }).catch(() => {});
+    };
+  }, [active, workspaceId, refreshRoot, syncCleanTabFromDisk, collectOpenPaths, closeOpenTabsUnder]);
 
   const renamePath = useCallback(
     async (sourcePath: string, destinationPath: string) => {
@@ -598,6 +697,9 @@ export function FilesWorkbench({
             theme={theme}
             registry={registryRef.current}
             dirtyPaths={dirtyPaths}
+            diskChangedPaths={diskChangedPaths}
+            reloadTokensByPath={reloadTokensByPath}
+            onReloadFromDisk={(path) => { void reloadTabFromDisk(path); }}
             onActivateTab={(groupId, path) => applyGroups((s) => activateTab(s, groupId, path))}
             onCloseTab={handleCloseTab}
             onCloseOthers={(groupId, path) => applyGroups((s) => closeOtherTabs(s, groupId, path))}

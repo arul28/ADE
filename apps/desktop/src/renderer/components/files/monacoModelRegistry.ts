@@ -48,6 +48,12 @@ export function createMonacoModelRegistry() {
           monaco.editor.setModelLanguage(existing.model, languageId);
           existing.languageId = languageId;
         }
+        // Clean tabs must track disk: reuse the model but replace buffer text when
+        // an external writer changed the file (agent, git, terminal).
+        if (!this.isDirty(path) && existing.model.getValue() !== content) {
+          existing.model.setValue(content);
+          existing.baseVersionId = existing.model.getAlternativeVersionId();
+        }
         return existing.model;
       }
       const model = monaco.editor.createModel(content, languageId);

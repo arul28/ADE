@@ -21,6 +21,9 @@ export type EditorGroupsProps = {
   theme: EditorThemeMode;
   registry: MonacoModelRegistry;
   dirtyPaths: ReadonlySet<string>;
+  diskChangedPaths: ReadonlySet<string>;
+  reloadTokensByPath: Readonly<Record<string, number>>;
+  onReloadFromDisk: (path: string) => void;
   onActivateTab: (groupId: string, path: string) => void;
   onCloseTab: (groupId: string, path: string) => void;
   onCloseOthers: (groupId: string, path: string) => void;
@@ -81,6 +84,9 @@ export function EditorGroups(props: EditorGroupsProps) {
               theme={props.theme}
               registry={props.registry}
               dirtyPaths={props.dirtyPaths}
+              diskChangedPaths={props.diskChangedPaths}
+              reloadToken={props.reloadTokensByPath[props.state.groups[id]?.activeTabId ?? ""] ?? 0}
+              onReloadFromDisk={props.onReloadFromDisk}
               onActivateTab={props.onActivateTab}
               onCloseTab={props.onCloseTab}
               onCloseOthers={props.onCloseOthers}

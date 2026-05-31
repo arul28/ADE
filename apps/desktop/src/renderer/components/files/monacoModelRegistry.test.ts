@@ -8,14 +8,18 @@ import { createMonacoModelRegistry } from "./monacoModelRegistry";
 function createFakeMonaco() {
   let created = 0;
   const setModelLanguage = vi.fn();
-  const makeModel = (content: string, languageId: string) => {
+  const makeModel = (initialContent: string, languageId: string) => {
     let disposed = false;
     let version = 1;
+    let content = initialContent;
     return {
-      content,
       languageId,
       isDisposed: () => disposed,
       getValue: () => content,
+      setValue: (next: string) => {
+        content = next;
+        version += 1;
+      },
       getAlternativeVersionId: () => version,
       // Test helper: simulate an edit bumping the version id.
       __edit: () => {
@@ -114,6 +118,29 @@ describe("monacoModelRegistry", () => {
     for (const model of models) {
       expect((model as any).dispose).toHaveBeenCalledTimes(1);
     }
+  });
+
+  it("replaces buffer text on revisit when clean and disk content changed", () => {
+    const { monaco } = createFakeMonaco();
+    const registry = createMonacoModelRegistry();
+
+    registry.getOrCreate(monaco, "a", "v1", "plaintext");
+    registry.getOrCreate(monaco, "a", "v2", "plaintext");
+
+    expect(registry.getValue("a")).toBe("v2");
+    expect(registry.isDirty("a")).toBe(false);
+  });
+
+  it("does not overwrite buffer text on revisit when the tab is dirty", () => {
+    const { monaco } = createFakeMonaco();
+    const registry = createMonacoModelRegistry();
+
+    const model = registry.getOrCreate(monaco, "a", "v1", "plaintext") as any;
+    model.__edit();
+    registry.getOrCreate(monaco, "a", "v2", "plaintext");
+
+    expect(registry.getValue("a")).not.toBe("v2");
+    expect(registry.isDirty("a")).toBe(true);
   });
 
   it("tracks dirty state against the last saved baseline", () => {

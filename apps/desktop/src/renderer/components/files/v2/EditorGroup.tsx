@@ -20,6 +20,9 @@ export type EditorGroupProps = {
   theme: EditorThemeMode;
   registry: MonacoModelRegistry;
   dirtyPaths: ReadonlySet<string>;
+  diskChangedPaths: ReadonlySet<string>;
+  reloadToken: number;
+  onReloadFromDisk: (path: string) => void;
   onActivateTab: (groupId: string, path: string) => void;
   onCloseTab: (groupId: string, path: string) => void;
   onCloseOthers: (groupId: string, path: string) => void;
@@ -102,6 +105,7 @@ export function EditorGroup(props: EditorGroupProps) {
               tab={tab}
               active={tab.path === group.activeTabId}
               dirty={dirtyPaths.has(tab.path)}
+              diskChanged={props.diskChangedPaths.has(tab.path)}
               onActivate={() => props.onActivateTab(group.id, tab.path)}
               onClose={() => props.onCloseTab(group.id, tab.path)}
               onPromote={() => props.onPromoteTab(group.id, tab.path)}
@@ -112,6 +116,23 @@ export function EditorGroup(props: EditorGroupProps) {
           ))
         )}
       </div>
+
+      {activeTab && props.diskChangedPaths.has(activeTab.path) ? (
+        <div
+          className="flex shrink-0 items-center justify-between gap-2 border-b px-2 py-1 text-xs"
+          style={{ borderColor: COLORS.border, background: "rgba(255, 180, 0, 0.08)", color: COLORS.textMuted }}
+        >
+          <span>File changed on disk</span>
+          <button
+            type="button"
+            className="rounded px-2 py-0.5 hover:bg-white/5"
+            style={{ color: COLORS.textPrimary }}
+            onClick={() => props.onReloadFromDisk(activeTab.path)}
+          >
+            Reload from disk
+          </button>
+        </div>
+      ) : null}
 
       {/* Breadcrumb + toolbar */}
       {activeTab ? (
@@ -160,6 +181,7 @@ export function EditorGroup(props: EditorGroupProps) {
             canEdit={props.canEdit}
             theme={props.theme}
             registry={props.registry}
+            reloadToken={props.reloadToken}
             onDirtyChange={props.onDirtyChange}
             onEdit={(path) => props.onPromoteTab(group.id, path)}
             onRegisterEditorApi={registerApi}
@@ -218,6 +240,7 @@ function TabButton({
   tab,
   active,
   dirty,
+  diskChanged,
   onActivate,
   onClose,
   onPromote,
@@ -228,6 +251,7 @@ function TabButton({
   tab: EditorTab;
   active: boolean;
   dirty: boolean;
+  diskChanged: boolean;
   onActivate: () => void;
   onClose: () => void;
   onPromote: () => void;
@@ -273,6 +297,8 @@ function TabButton({
       <span className="truncate">{tab.title}</span>
       {dirty ? (
         <span className="ml-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: COLORS.textMuted }} />
+      ) : diskChanged ? (
+        <span className="ml-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: "#e6a700" }} title="Changed on disk" />
       ) : null}
       <button
         type="button"
