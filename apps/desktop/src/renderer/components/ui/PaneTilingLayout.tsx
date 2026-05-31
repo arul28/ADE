@@ -39,6 +39,7 @@ export type PaneConfig = {
   hideHeaderWhenExpanded?: boolean;
   onPaneMouseDown?: (e: React.MouseEvent<HTMLDivElement>) => void;
   onPaneContextMenu?: (e: React.MouseEvent<HTMLDivElement>) => void;
+  renderChildren?: (args: { minimized: boolean; paneId: string; layoutId: string }) => React.ReactNode;
   children: React.ReactNode;
 };
 
@@ -383,6 +384,10 @@ export function PaneTilingLayout({
       const currentDropEdge =
         dropTargetId === paneId && dragSourceId !== paneId ? dropEdge : null;
 
+      const children = config.renderChildren
+        ? config.renderChildren({ minimized: isMinimized, paneId, layoutId })
+        : config.children;
+
       return (
         <FloatingPane
           id={paneId}
@@ -412,7 +417,7 @@ export function PaneTilingLayout({
           minimizeBehavior="css"
           hideHeaderWhenExpanded={config.hideHeaderWhenExpanded ?? false}
         >
-          {config.children}
+          {children}
         </FloatingPane>
       );
     }

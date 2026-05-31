@@ -26,6 +26,8 @@ export type LaneTabPrTag = {
 
 export const VISIBLE_LANE_PR_REFRESH_LIMIT = 4;
 export const VISIBLE_LANE_PR_REFRESH_STALE_MS = 15_000;
+export const DEFERRED_LANE_PANE_STEP_MS = 220;
+export const DEFERRED_LANE_PANE_MAX_MS = 3_300;
 
 export function resolveCreateLaneRequest(args: {
   name: string;
@@ -364,6 +366,20 @@ export function selectVisibleLanePrRefreshIds(args: {
   }
 
   return selected;
+}
+
+export function getDeferredLanePaneDelayMs(args: {
+  laneId: string | null;
+  visibleLaneIds: readonly string[];
+  stepMs?: number;
+  maxMs?: number;
+}): number {
+  if (!args.laneId) return 0;
+  const index = args.visibleLaneIds.indexOf(args.laneId);
+  if (index <= 0) return 0;
+  const stepMs = args.stepMs ?? DEFERRED_LANE_PANE_STEP_MS;
+  const maxMs = args.maxMs ?? DEFERRED_LANE_PANE_MAX_MS;
+  return Math.min(index * stepMs, maxMs);
 }
 
 type LaneRuntimeBucket = LaneListSnapshot["runtime"]["bucket"];

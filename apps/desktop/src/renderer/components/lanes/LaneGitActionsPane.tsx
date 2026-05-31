@@ -562,6 +562,7 @@ function ActionButton({
 
 export function LaneGitActionsPane({
   laneId,
+  active = true,
   autoRebaseEnabled,
   autoRebaseStatusSnapshot,
   onOpenSettings,
@@ -578,6 +579,7 @@ export function LaneGitActionsPane({
   selectedCommitSha
 }: {
   laneId: string | null;
+  active?: boolean;
   autoRebaseEnabled: boolean;
   autoRebaseStatusSnapshot?: AutoRebaseLaneStatus | null;
   onOpenSettings: () => void;
@@ -988,7 +990,7 @@ export function LaneGitActionsPane({
     setAutoRebaseStatus(autoRebaseStatusSnapshotRef.current ?? cached?.autoRebaseStatus ?? null);
     setConflictState(cached?.conflictState ?? null);
     setStuckRebase(cached?.stuckRebase ?? null);
-    if (!laneId) return;
+    if (!active || !laneId) return;
     Promise.all([refreshChanges(laneId), refreshGitMeta(laneId)]).catch((err) => {
       patchLaneGitActionRuntimeState(laneId, {
         notice: null,
@@ -996,10 +998,10 @@ export function LaneGitActionsPane({
       });
     });
     void refreshCommitMessageAiState();
-  }, [laneId, lane?.branchRef, projectRoot, refreshCommitMessageAiState]);
+  }, [active, laneId, lane?.branchRef, projectRoot, refreshCommitMessageAiState]);
 
   useEffect(() => {
-    if (!laneId) return;
+    if (!active || !laneId) return;
     if (autoRebaseStatusSnapshotRef.current !== undefined) return;
     const targetLaneId = laneId;
     const timer = window.setTimeout(() => {
@@ -1008,10 +1010,10 @@ export function LaneGitActionsPane({
       void refreshAutoRebaseStatus(targetLaneId);
     }, 3_500);
     return () => window.clearTimeout(timer);
-  }, [laneId, lane?.branchRef, refreshAutoRebaseStatus]);
+  }, [active, laneId, lane?.branchRef, refreshAutoRebaseStatus]);
 
   useEffect(() => {
-    if (!laneId) return;
+    if (!active || !laneId) return;
     let refreshTimer: number | null = null;
     const effectLaneId = laneId;
     const refreshSyncStatus = () => {
@@ -1053,9 +1055,10 @@ export function LaneGitActionsPane({
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [isViewingLane, laneId, projectRoot]);
+  }, [active, isViewingLane, laneId, projectRoot]);
 
   useEffect(() => {
+    if (!active) return;
     const unsubscribe = window.ade.lanes.onAutoRebaseEvent((event) => {
       if (event.type !== "auto-rebase-updated") return;
       if (!laneId) {
@@ -1067,7 +1070,7 @@ export function LaneGitActionsPane({
       setAutoRebaseStatus(nextStatus);
     });
     return unsubscribe;
-  }, [laneId, projectRoot]);
+  }, [active, laneId, projectRoot]);
 
   const changedFileCount = useMemo(() => {
     const paths = new Set<string>();
@@ -2837,6 +2840,7 @@ export function LaneGitActionsPane({
             <div style={{ flex: 1, minHeight: 0 }}>
               <CommitTimeline
                 laneId={laneId ?? null}
+                active={active}
                 selectedSha={selectedCommitSha}
                 refreshTrigger={commitTimelineKey}
                 hasUpstream={syncStatus?.hasUpstream ?? null}

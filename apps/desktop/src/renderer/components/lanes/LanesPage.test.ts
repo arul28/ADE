@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildLaneActionClearedSearch,
+  getDeferredLanePaneDelayMs,
   githubPrMatchesCurrentBranch,
   laneHasAncestor,
   lanePrMatchesCurrentBranch,
@@ -319,6 +320,31 @@ describe("resolveVisibleLaneIds", () => {
       selectableFilteredLaneIds: ["lane-other"],
       deletingLaneIds: ["lane-deleting"],
     })).toEqual(["lane-other"]);
+  });
+});
+
+describe("getDeferredLanePaneDelayMs", () => {
+  it("keeps the first visible lane eager and staggers later lanes", () => {
+    const visibleLaneIds = ["lane-a", "lane-b", "lane-c"];
+
+    expect(getDeferredLanePaneDelayMs({ laneId: "lane-a", visibleLaneIds, stepMs: 100 })).toBe(0);
+    expect(getDeferredLanePaneDelayMs({ laneId: "lane-b", visibleLaneIds, stepMs: 100 })).toBe(100);
+    expect(getDeferredLanePaneDelayMs({ laneId: "lane-c", visibleLaneIds, stepMs: 100 })).toBe(200);
+  });
+
+  it("does not defer unknown lanes and caps long queues", () => {
+    expect(getDeferredLanePaneDelayMs({
+      laneId: "lane-z",
+      visibleLaneIds: ["lane-a", "lane-b"],
+      stepMs: 100,
+      maxMs: 150,
+    })).toBe(0);
+    expect(getDeferredLanePaneDelayMs({
+      laneId: "lane-d",
+      visibleLaneIds: ["lane-a", "lane-b", "lane-c", "lane-d"],
+      stepMs: 100,
+      maxMs: 150,
+    })).toBe(150);
   });
 });
 

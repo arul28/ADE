@@ -39,6 +39,7 @@ import { useOnboardingStore } from "../../state/onboardingStore";
 import { useDialogBus } from "../../lib/useDialogBus";
 import {
   buildLaneActionClearedSearch,
+  getDeferredLanePaneDelayMs,
   parseLaneIdsParam,
   laneHasAncestor,
   planLaneDeleteBatches,
@@ -183,13 +184,28 @@ function getDevicePresenceTitle(devicesOpen: LaneSummary["devicesOpen"]): string
 }
 
 function DeferredLanePane({
+  cacheKey,
   children,
+  delayMs = 0,
 }: {
   cacheKey: string;
   label: string;
   children: React.ReactNode;
+  delayMs?: number;
 }) {
-  return <>{children}</>;
+  const [ready, setReady] = useState(delayMs <= 0);
+
+  useEffect(() => {
+    if (delayMs <= 0) {
+      setReady(true);
+      return;
+    }
+    setReady(false);
+    const timer = window.setTimeout(() => setReady(true), delayMs);
+    return () => window.clearTimeout(timer);
+  }, [cacheKey, delayMs]);
+
+  return ready ? <>{children}</> : null;
 }
 
 function lanePrTagColor(state: PrSummary["state"]): string {
@@ -3015,6 +3031,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       expandedGitActionsLaneId,
       surface,
     });
+    const gitActionsDelayMs = surface === "inline"
+      ? getDeferredLanePaneDelayMs({ laneId, visibleLaneIds })
+      : 0;
     return {
       "git-actions": {
         title: "Git Actions",
@@ -3043,10 +3062,12 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           </>
         ),
         bodyClassName: "overflow-hidden",
-        children: mountGitActionsPane ? (
-          <DeferredLanePane cacheKey={`git:${laneId ?? "none"}`} label="git actions">
+        children: null,
+        renderChildren: ({ minimized }: { minimized: boolean }) => mountGitActionsPane ? (
+          <DeferredLanePane cacheKey={`git:${laneId ?? "none"}`} label="git actions" delayMs={gitActionsDelayMs}>
             <LaneGitActionsPane
               laneId={laneId}
+              active={!minimized}
               autoRebaseEnabled={autoRebaseEnabled}
               autoRebaseStatusSnapshot={laneSnapshot?.autoRebaseStatus}
               onOpenSettings={openAutoRebaseSettings}
@@ -3098,6 +3119,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     laneSnapshotByLaneId,
     linearIssueChatContextRequest,
     expandedGitActionsLaneId,
+    visibleLaneIds,
     autoRebaseEnabled,
     openAutoRebaseSettings,
     runRebaseFlow,
