@@ -7,6 +7,7 @@ import { Box, Text, useApp, useInput } from "ink";
 import {
   getDefaultModelDescriptor,
   getModelById,
+  getRuntimeModelRefForDescriptor,
   listModelDescriptorsForProvider,
   modelSupportsFastMode,
   resolveModelDescriptor,
@@ -221,7 +222,6 @@ const MODEL_CATALOG_LOCAL_CLIENT_REFRESH_TTL_MS = 30_000;
 const CLAUDE_PERMISSION_OPTIONS = ["default", "auto", "plan", "acceptEdits", "bypassPermissions"] as const;
 const OPENCODE_PERMISSION_OPTIONS = ["plan", "edit", "full-auto", "config-toml"] as const;
 const DROID_PERMISSION_OPTIONS = ["read-only", "auto-low", "auto-medium", "auto-high"] as const;
-const SETTINGS_AI_ROUTE = "/settings?tab=ai#ai-providers";
 type PaneFocus = "drawer" | "chat" | "details" | "addMode";
 type AddModeState = { cursorLaneId: string; cursorChatId: string | null };
 export type FooterControl = "drawer" | "details" | "agents";
@@ -330,6 +330,50 @@ export function resolveModelPickerEscape(
   }
   if (picker.surface === "new-chat") return { kind: "return-new-chat" };
   return { kind: "close" };
+}
+
+// RightPane wraps the model picker in a single-line border (1) + a "MODEL" title
+// row (1) and paddingX (1), so ModelPickerPane's first painted cell sits 2 rows
+// below / 2 cols right of the pane's outer top-left and its usable width is 4
+// narrower. The click hit-test MUST feed modelPickerGeometry this CONTENT origin
+// (not the outer box) or every rect drifts and hover/clicks land on the wrong
+// row. Exported as a pure helper so the offset is unit-tested and stays in
+// lockstep with RightPane's chrome.
+export const MODEL_PICKER_PANE_CHROME_ROWS = 2; // top border + "MODEL" title row
+export const MODEL_PICKER_PANE_CHROME_COLS = 2; // left border + paddingX
+export function modelPickerPaneContentOrigin(args: {
+  paneTop: number;
+  paneLeft: number;
+  paneWidth: number;
+}): { paneTop: number; paneLeft: number; paneWidth: number } {
+  return {
+    paneTop: args.paneTop + MODEL_PICKER_PANE_CHROME_ROWS,
+    paneLeft: args.paneLeft + MODEL_PICKER_PANE_CHROME_COLS,
+    paneWidth: Math.max(8, args.paneWidth - MODEL_PICKER_PANE_CHROME_COLS * 2),
+  };
+}
+
+export function modelPickerProviderSwitchBlocked(args: {
+  providerLocked: boolean;
+  surface: "chat" | "new-chat";
+  currentProvider: AdeCodeProvider;
+  nextProvider: AdeCodeProvider;
+}): boolean {
+  return args.surface === "chat"
+    && args.providerLocked
+    && args.currentProvider !== args.nextProvider;
+}
+
+export function mergeNewChatModelPickerContext(
+  prev: Extract<RightPaneContent, { kind: "model-picker" }>,
+  next: Extract<RightPaneContent, { kind: "model-picker" }>,
+): Extract<RightPaneContent, { kind: "model-picker" }> {
+  return {
+    ...prev,
+    laneId: next.laneId,
+    laneLabel: next.laneLabel,
+    settingsRows: next.settingsRows,
+  };
 }
 
 type ChatSessionActivity = Pick<AgentChatSessionSummary, "status" | "awaitingInput" | "idleSinceAt">;
@@ -637,8 +681,25 @@ function normalizeProvider(value: string | null | undefined): AdeCodeProvider {
   return PROVIDERS.has(value as AdeCodeProvider) ? value as AdeCodeProvider : "codex";
 }
 
+export function normalizeCatalogProvider(value: string | null | undefined): AdeCodeProvider {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (normalized === "anthropic") return "claude";
+  if (normalized === "openai") return "codex";
+  if (normalized === "factory") return "droid";
+  return normalizeProvider(normalized);
+}
+
 function runtimeProviderForUiProvider(provider: AdeCodeProvider): ModelProviderGroup {
   return provider === "ollama" || provider === "lmstudio" ? "opencode" : provider;
+}
+
+function claudeModelCommandKey(state: AdeCodeModelState, terminalId: string | null | undefined): string {
+  return JSON.stringify([
+    terminalId ?? null,
+    state.modelId ?? null,
+    state.model,
+    state.reasoningEffort?.trim() || null,
+  ]);
 }
 
 function modelCatalogClientRefreshTtlMs(provider?: AgentChatModelCatalogRefreshProvider): number {
@@ -662,9 +723,10 @@ function modelStatePatchForModel(provider: AdeCodeProvider, model: AgentChatMode
   const modelId = model.modelId ?? model.id;
   const descriptor = getModelById(modelId);
   const resolvedProvider = descriptor ? normalizeProvider(resolveProviderGroupForModel(descriptor)) : provider;
+  const runtimeProvider = runtimeProviderForUiProvider(resolvedProvider);
   return {
     provider: resolvedProvider,
-    model: model.id,
+    model: descriptor ? getRuntimeModelRefForDescriptor(descriptor, runtimeProvider) : model.id,
     modelId,
     displayName: model.displayName,
     reasoningEffort: firstReasoningEffortForModel(model, resolvedProvider),
@@ -684,7 +746,7 @@ function fallbackModelStatePatch(provider: AdeCodeProvider): Pick<AdeCodeModelSt
     ?? getDefaultModelDescriptor("codex");
   return {
     provider,
-    model: descriptor?.providerModelId ?? descriptor?.shortId ?? descriptor?.id ?? "gpt-5.5",
+    model: descriptor ? getRuntimeModelRefForDescriptor(descriptor, registryProvider) : "gpt-5.5",
     modelId: descriptor?.id ?? null,
     displayName: descriptor?.displayName ?? providerLabel(provider),
     reasoningEffort: descriptor?.reasoningTiers?.[0] ?? (provider === "codex" ? DEFAULT_CODEX_REASONING_EFFORT : null),
@@ -1078,11 +1140,11 @@ export function resolveContextDefault(args: ContextDefaultArgs): RightPaneConten
           surface: "new-chat",
           query: "",
           searchMode: false,
-          showAll: true,
           selection: { kind: "provider", provider: args.provider },
           providerTabKey: null,
           focusedIndex: 0,
-          footerFocus: "apply",
+          footerFocus: null,
+          railFocused: true,
           settingsRows: nav.rows,
           laneId: nav.laneId,
           laneLabel: nav.laneLabel,
@@ -1101,11 +1163,11 @@ export function resolveContextDefault(args: ContextDefaultArgs): RightPaneConten
       surface: "new-chat",
       query: "",
       searchMode: false,
-      showAll: true,
       selection: { kind: "provider", provider: args.provider },
       providerTabKey: null,
       focusedIndex: 0,
-      footerFocus: "apply",
+      footerFocus: null,
+      railFocused: true,
       settingsRows: args.newChatSetup.rows,
       laneId: args.newChatSetup.laneId,
       laneLabel: args.newChatSetup.laneLabel,
@@ -1415,12 +1477,6 @@ function buildSetupRows(args: {
       detail: "checks provider auth/runtime state",
     });
   }
-  rows.push({
-    kind: "open-settings",
-    label: "Full settings",
-    value: "open desktop",
-    detail: "Settings > AI Providers",
-  });
   if (args.includeApply) {
     rows.push({
       kind: "apply",
@@ -1430,18 +1486,6 @@ function buildSetupRows(args: {
     });
   }
   return rows;
-}
-
-function setupRowsForRuntime(rows: SetupPaneRow[], mode: RuntimeMode | "connecting"): SetupPaneRow[] {
-  if (mode === "attached") return rows;
-  return rows.map((row) => row.kind === "open-settings"
-    ? {
-        ...row,
-        value: "unavailable",
-        detail: "use /login for Claude, Codex, or OpenCode; open ADE desktop for full settings",
-        disabled: true,
-      }
-    : row);
 }
 
 function defaultSetupSelectionIndex(rows: SetupPaneRow[]): number {
@@ -1701,7 +1745,7 @@ export function deletePromptForward(value: string, cursor: number): PromptEditRe
 
 // Apply a possibly-coalesced input chunk to the prompt, character by character.
 // Ink emits multiple fast keystrokes as ONE chunk and only recognizes a *lone*
-// DEL/BS byte as backspace — so a burst like "x" (type then delete) arrives
+// DEL/BS byte as backspace — so a burst like "x\x7f" (type then delete) arrives
 // as plain text with no backspace flag, and naive insertion would drop the
 // Like printableInput but keeps tabs (0x09) and newlines (0x0a), normalizing
 // CR/LF to "\n", so a pasted multi-line / tabbed block survives verbatim in the
@@ -1710,7 +1754,7 @@ function printableMultilineInput(input: string): string {
   return input
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
-    .replace(/[ --]/g, "");
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
 }
 
 // delete. Here we walk the chunk: printable runs are inserted, embedded
@@ -2255,6 +2299,7 @@ const DRAWER_PANE_MAX_WIDTH = 48;
 const MIN_CENTER_PANE_WIDTH = 24;
 const MIN_RIGHT_PANE_WIDTH = 30;
 const RIGHT_PANE_MAX_WIDTH = 42;
+const MODEL_PICKER_RIGHT_PANE_MAX_WIDTH = 64;
 const CLAUDE_TERMINAL_HIDDEN_INPUT_ROWS = 3;
 export const CLAUDE_TERMINAL_SUBMIT_CONFIRM_DELAY_MS = 1200;
 const CLAUDE_TERMINAL_SUBMIT_REFRESH_DELAY_MS = 150;
@@ -2518,6 +2563,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const [storedApiKeyProviders, setStoredApiKeyProviders] = useState<string[]>([]);
   const [openCodeDiagnostics, setOpenCodeDiagnostics] = useState<OpenCodeRuntimeSnapshot | null>(null);
   const [rightPane, setRightPane] = useState<RightPaneContent>({ kind: "empty" });
+  // Measured (1-based) content origin of the model picker, reported by
+  // ModelPickerPane via Ink/Yoga so the click hit-test maps to where rows
+  // actually paint — robust to window size, no hardcoded offset. Null until the
+  // first measurement; the hit-test falls back to geometry math meanwhile.
+  const [pickerMeasuredOrigin, setPickerMeasuredOrigin] = useState<{ x: number; y: number; width: number } | null>(null);
+  const handlePickerMeasureOrigin = useCallback((origin: { x: number; y: number; width: number }) => {
+    setPickerMeasuredOrigin((prev) =>
+      prev && prev.x === origin.x && prev.y === origin.y && prev.width === origin.width ? prev : origin,
+    );
+  }, []);
   const [formValues, setFormValues] = useState<Record<string, string>>({});
   const [formFieldIndex, setFormFieldIndex] = useState(0);
   const [rightSelectionIndex, setRightSelectionIndex] = useState(0);
@@ -2670,6 +2725,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const terminalSessionsRef = useRef<ChatTerminalSession[]>([]);
   const attachedTerminalIdRef = useRef<string | null>(null);
   const claudeTerminalSubmitQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const lastModelPickerClaudeSentKeyRef = useRef<string | null>(null);
   const exitRequestedRef = useRef(false);
   const modelStateRef = useRef<AdeCodeModelState>(initialModelState());
   const chatMouseSelectionRef = useRef<ChatSelectionState | null>(null);
@@ -3355,7 +3411,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     + (draftChatActive || (vimModeEnabled && !hideVimModeIndicator) || modelState.codexFastMode ? 1 : 0);
   const goalBannerRows = goalBannerText ? 1 : 0;
   const addModeRows = addMode ? 1 : 0;
-  const rightPaneMaxWidth = RIGHT_PANE_MAX_WIDTH;
+  const rightPaneMaxWidth = rightPane.kind === "model-picker"
+    ? MODEL_PICKER_RIGHT_PANE_MAX_WIDTH
+    : RIGHT_PANE_MAX_WIDTH;
   const rightPaneWidth = resolveRightPaneWidth(columns, rightOpen, drawerOpen, rightPaneMaxWidth);
   const centerWidth = resolveCenterPaneWidth(columns, drawerOpen, rightPaneWidth);
   const promptPaneWidth = Math.max(MIN_CENTER_PANE_WIDTH, finiteFloor(columns, MIN_CENTER_PANE_WIDTH));
@@ -3704,26 +3762,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     [aiStatus, openCodeDiagnostics, storedApiKeyProviders],
   );
   const newChatSetupRows = useMemo(
-    () => setupRowsForRuntime(buildSetupRows({
+    () => buildSetupRows({
       modelState,
       models,
       includeRefresh: false,
       includeApply: true,
       outputStyle: "default",
       outputStyleEditable: false,
-    }), mode),
-    [mode, modelState, models],
+    }),
+    [modelState, models],
   );
   const modelSetupRows = useMemo(
-    () => setupRowsForRuntime(buildSetupRows({
+    () => buildSetupRows({
       modelState,
       models,
       includeRefresh: true,
       includeApply: true,
       outputStyle: activeSession?.claudeOutputStyle ?? "default",
       outputStyleEditable: Boolean(activeSession?.sessionId && activeSession.provider === "claude"),
-    }), mode),
-    [activeSession?.claudeOutputStyle, activeSession?.provider, activeSession?.sessionId, mode, modelState, models],
+    }),
+    [activeSession?.claudeOutputStyle, activeSession?.provider, activeSession?.sessionId, modelState, models],
   );
   const modelPickerRows = useMemo(() => {
     if (!providerLocked) return modelSetupRows;
@@ -4015,7 +4073,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return next;
       }
       if (prev.kind === "model-picker" && prev.surface === "new-chat" && next.kind === "model-picker" && next.surface === "new-chat") {
-        return next;
+        return mergeNewChatModelPickerContext(prev, next);
       }
       // Avoid stomping on lane-details that has been hydrated with git data;
       // only refresh when the lane reference itself changed.
@@ -5042,11 +5100,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       surface: "new-chat",
       query: "",
       searchMode: false,
-      showAll: true,
       selection: { kind: "provider", provider: modelState.provider },
       providerTabKey: null,
       focusedIndex: 0,
-      footerFocus: "apply",
+      footerFocus: null,
+      railFocused: true,
       settingsRows: newChatSetupRows,
       laneId,
       laneLabel: lane.name,
@@ -5055,12 +5113,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     setPaneFocus("details");
     void refreshAiSetupStatus().catch(() => undefined);
     void loadProviderModels(modelState.provider, { applyDefault: false }).catch(() => undefined);
-  }, [activeLane, addNotice, focusDetails, lanes, loadProviderModels, modelState.provider, newChatSetupRows, refreshAiSetupStatus, selectActiveSessionId, setDraftChatMode, setGridView, setPaneFocus, stashActiveInput]);
+    // Load the model catalog so the new-chat picker has provider rails + models
+    // even in a fresh runtime — without this it opens on the empty favorites rail
+    // ("0 models") until the catalog is loaded by some other path (/model, etc.).
+    void refreshModelCatalog().catch(() => undefined);
+  }, [activeLane, addNotice, focusDetails, lanes, loadProviderModels, modelState.provider, newChatSetupRows, refreshAiSetupStatus, refreshModelCatalog, selectActiveSessionId, setDraftChatMode, setGridView, setPaneFocus, stashActiveInput]);
 
   // Hydrate favorites/recents from the ade-cli RPC once the connection is up.
   useEffect(() => {
     const conn = connectionRef.current;
     if (!conn) return;
+    // Warm the model catalog on connect so every picker entry point (including
+    // the new-chat picker) has provider rails + models ready, even on a fresh
+    // runtime where nothing else has loaded the catalog yet.
+    void refreshModelCatalog().catch(() => undefined);
     let cancelled = false;
     void (async () => {
       try {
@@ -5080,6 +5146,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     };
   }, [socketPath]);
 
+  // Load the model catalog whenever the picker opens without one. This is the
+  // reliable trigger: it fires for EVERY entry path (new-chat draft via
+  // resolveContextDefault, /model, drawer) once the connection is live — unlike
+  // the connect-time warm above, which can run before the socket is ready. Until
+  // the catalog lands, the picker falls back to the single active-provider list
+  // (which looked like "only the codex group" in the rail).
+  useEffect(() => {
+    if (rightPane.kind !== "model-picker") return;
+    if (modelCatalogRef.current) return;
+    void refreshModelCatalog().catch(() => undefined);
+  }, [rightPane.kind, refreshModelCatalog]);
+
   // Right-pane model picker — replaces the inline-row focus path when launched
   // via /model or new-chat. Reuses the same data the inline row uses (models)
   // plus favorites/recents sourced from ade-cli for cross-surface sync.
@@ -5098,8 +5176,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         activeModelId: modelState.modelId,
         activeReasoningEffort: modelState.reasoningEffort,
         aiStatus,
-        showAll: true,
-	        query: "",
+		        query: "",
 	        selection: { kind: "provider", provider },
 	        providerTabKey: null,
 	        focusedIndex: 0,
@@ -5115,16 +5192,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         modelPickerRecents,
         layoutSeed.railEntries,
       );
+      // Open Stage 1 (model list) positioned on the active model for an existing
+      // chat; new chats start at the top of the list.
+      const activeFocusIndex = surface === "chat" && selection.kind === "provider"
+        ? Math.max(0, layoutSeed.entries.findIndex((entry) => entry.modelId === modelState.modelId))
+        : 0;
       setRightPane({
         kind: "model-picker",
         surface,
         query: "",
-        showAll: true,
-	        searchMode: false,
+		        searchMode: false,
 	        selection,
 	        providerTabKey: null,
-	        focusedIndex: 0,
+	        focusedIndex: activeFocusIndex,
         footerFocus: options.focusKind ?? null,
+        railFocused: surface === "new-chat",
         settingsRows: surface === "new-chat" ? newChatSetupRows : (providerLockedRef.current ? modelPickerRows : modelSetupRows),
         ...(surface === "new-chat"
           ? {
@@ -7466,7 +7548,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     const laneId = activeLaneIdRef.current;
     const sessionId = activeSessionIdRef.current;
     if (name === "/login") {
-      const provider = normalizeProvider(activeSession?.provider ?? modelState.provider);
+      const requestedProvider = args.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+      if (requestedProvider && !PROVIDERS.has(requestedProvider as AdeCodeProvider)) {
+        addNotice(`Unknown provider "${requestedProvider}". Try one of: ${PROVIDER_OPTIONS.map((entry) => entry.value).join(", ")}.`, "error");
+        return;
+      }
+      const provider = requestedProvider
+        ? requestedProvider as AdeCodeProvider
+        : normalizeProvider(activeSession?.provider ?? modelState.provider);
       const loginCommands = loginCommandsForProvider(provider);
       if (!loginCommands.length) {
         addNotice(`/login is not available for ${providerLabel(provider)}. ${loginUnavailableHint(provider)}`, "error");
@@ -8426,18 +8515,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 	        for (const provider of group.providers) {
 	          for (const subsection of provider.subsections) {
 	            const found = subsection.models.find((entry) => entry.id === modelId || entry.modelId === modelId);
-	            if (found) {
-	              catalogModel = found;
-	              catalogProvider = normalizeProvider(group.key as AdeCodeProvider);
-	              break;
-	            }
+		            if (found) {
+		              catalogModel = found;
+		              catalogProvider = normalizeCatalogProvider(group.key);
+		              break;
+		            }
 	          }
 	          if (catalogModel) break;
 	        }
 	        if (catalogModel) break;
 	      }
 	      const target = models.find((entry) => (entry.modelId ?? entry.id) === modelId)
-	        ?? (catalogModel?.isAvailable === true ? catalogModel as AgentChatModelInfo : null);
+	        ?? (catalogModel?.isAvailable === true ? catalogModel as AgentChatModelInfo : null)
+          ?? modelInfoFromDescriptor(modelId);
 	      if (!target) {
 	        addNotice(`Model ${modelId} is not available right now.`, "error");
 	        return;
@@ -8446,6 +8536,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       const provider: AdeCodeProvider = descriptor
         ? normalizeProvider(resolveProviderGroupForModel(descriptor))
         : catalogProvider ?? modelStateRef.current.provider;
+      if (modelPickerProviderSwitchBlocked({
+        providerLocked: providerLockedRef.current,
+        surface: rightPane.kind === "model-picker" ? rightPane.surface : "chat",
+        currentProvider: modelStateRef.current.provider,
+        nextProvider: provider,
+      })) {
+        addNotice("Provider is locked for this chat. /new chat to switch.", "info");
+        return;
+      }
       const previousModelState = modelStateRef.current;
       const nextModelState: AdeCodeModelState = {
         ...previousModelState,
@@ -8457,6 +8556,23 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       modelStateRef.current = nextModelState;
       setModelState(nextModelState);
       scheduleModelStateCommit(nextModelState);
+      if (activeTerminalSessionRef.current && provider === "claude") {
+        const terminalId = activeTerminalSessionRef.current.terminalId;
+        const commandKey = claudeModelCommandKey(nextModelState, terminalId);
+        lastModelPickerClaudeSentKeyRef.current = commandKey;
+        void sendClaudeModelCommandToTerminal(nextModelState.modelId ?? nextModelState.model)
+          .then((sent) => {
+            if (!sent && lastModelPickerClaudeSentKeyRef.current === commandKey) {
+              lastModelPickerClaudeSentKeyRef.current = null;
+            }
+          })
+          .catch((err) => {
+            if (lastModelPickerClaudeSentKeyRef.current === commandKey) {
+              lastModelPickerClaudeSentKeyRef.current = null;
+            }
+            addNotice(err instanceof Error ? err.message : String(err), "error");
+          });
+      }
       setModelPickerRecents((prev) => {
         const filtered = prev.filter((entry) => entry !== modelId);
         return [modelId, ...filtered].slice(0, 10);
@@ -8468,32 +8584,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           .catch(() => undefined);
       }
       setRightPane((prev) => {
-        if (prev.kind === "model-picker" && prev.surface === "new-chat") {
-          // Picking a model drops focus DOWN into the settings (reasoning first)
-          // per the "pick → settings → Confirm" flow — the picker stays open.
-          const firstSetting = (prev.settingsRows ?? []).find(
-            (row) => row.kind !== "provider" && row.kind !== "model",
-          )?.kind ?? "apply";
-          return {
-            ...prev,
-            selection: { kind: "provider", provider },
-            focusedIndex: 0,
-            footerFocus: firstSetting,
-          };
-        }
-        return { kind: "empty" };
+        if (prev.kind !== "model-picker") return prev;
+        // "pick → settings → Confirm" for BOTH surfaces: selecting a model drops
+        // focus DOWN into the settings (reasoning first) and keeps the picker
+        // open. Confirm (the apply row) is the only thing that closes the pane
+        // and pushes the model to a running session — selection never closes it.
+        // focusedIndex is preserved so the just-picked row stays highlighted; ↑
+        // out of the settings re-homes onto the active model (see key handler).
+        const firstSetting = (prev.settingsRows ?? []).find(
+          (row) => row.kind !== "provider" && row.kind !== "model",
+        )?.kind ?? "apply";
+        return {
+          ...prev,
+          selection: { kind: "provider", provider },
+          footerFocus: firstSetting,
+        };
       });
-      if (rightPane.kind === "model-picker" && rightPane.surface === "new-chat") {
-        setRightOpen(true);
-        setPaneFocus("details");
-      } else {
-        setRightOpen(false);
-        setPaneFocus("chat");
-      }
-      if (rightPane.kind === "model-picker" && rightPane.surface === "chat" && activeTerminalSessionRef.current && provider === "claude") {
-        void sendClaudeModelCommandToTerminal(modelId)
-          .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
-      }
+      setRightOpen(true);
+      setPaneFocus("details");
       addNotice(`Model set to ${target.displayName}.`, "success");
     },
 	    [addNotice, models, modelCatalog, rightPane, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setPaneFocus],
@@ -8666,19 +8774,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
       return;
     }
-    if (row.kind === "open-settings") {
-      if (!conn) return;
-      void navigateDesktop(conn, { source: "ade-code", target: { kind: "route", route: SETTINGS_AI_ROUTE } })
-        .then((result) => {
-          addNotice(result.ok ? "Opened ADE Settings > AI Providers." : result.message ?? "Desktop settings are unavailable.", result.ok ? "success" : "error");
-        })
-        .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
-      return;
-    }
     if (row.kind === "apply") {
       if (activeTerminalSessionRef.current && modelStateRef.current.provider === "claude") {
-        void sendClaudeModelCommandToTerminal()
-          .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+        const commandKey = claudeModelCommandKey(modelStateRef.current, activeTerminalSessionRef.current.terminalId);
+        if (lastModelPickerClaudeSentKeyRef.current !== commandKey) {
+          lastModelPickerClaudeSentKeyRef.current = commandKey;
+          void sendClaudeModelCommandToTerminal()
+            .then((sent) => {
+              if (!sent && lastModelPickerClaudeSentKeyRef.current === commandKey) {
+                lastModelPickerClaudeSentKeyRef.current = null;
+              }
+            })
+            .catch((err) => {
+              if (lastModelPickerClaudeSentKeyRef.current === commandKey) {
+                lastModelPickerClaudeSentKeyRef.current = null;
+              }
+              addNotice(err instanceof Error ? err.message : String(err), "error");
+            });
+        }
       }
       setRightOpen(false);
       setRightPane({ kind: "empty" });
@@ -10348,7 +10461,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 		        activeModelId: modelState.modelId,
             activeReasoningEffort: modelState.reasoningEffort,
             aiStatus,
-            showAll: picker.showAll,
             settingsRows: picker.settingsRows ?? [],
             footerFocus: picker.footerFocus ?? null,
             laneLabel: picker.laneLabel ?? null,
@@ -10360,22 +10472,31 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       });
       const pickerSettingsRows = (picker.settingsRows ?? []).filter((row) => row.kind !== "provider" && row.kind !== "model");
       const lastModelIndex = Math.max(0, layout.entries.length - 1);
-      // Unified, single vertical flow: ↑/↓ runs the model list → the settings
-      // rows → the Confirm button. footerFocus !== null means focus is in the
-      // settings region; otherwise it's in the model list.
+      // Navigation has two stages. Stage 1 is the SELECTION AREA — two columns:
+      // the category rail (favorites/recents/providers) and the model list. ←/→
+      // move focus between the columns; ↑/↓ navigate within the focused column
+      // (rail = change category, list = move the model cursor). Enter on a rail
+      // entry steps right into its models; Enter on a model picks it and drops
+      // into Stage 2 = the settings (footerFocus !== null), where ↑/↓ walk the
+      // rows, ←/→ cycle a row's value, and ↑ off the first row returns to the
+      // model list. Down never spills the list into the settings.
       const inSettings = picker.footerFocus != null && pickerSettingsRows.length > 0;
       const settingIndex = inSettings
         ? Math.max(0, pickerSettingsRows.findIndex((row) => row.kind === picker.footerFocus))
         : -1;
+      // Search hides the rail (results are cross-provider), so treat focus as
+      // the list there — ↑/↓ move results, not rail categories.
+      const railFocused = !inSettings && !picker.searchMode && picker.railFocused === true;
 
-      // Switch the provider/category rail. Tab does this from anywhere; ←/→ does
-      // it while focus is in the model list (where there's no value to cycle).
-      const switchRail = (delta: -1 | 1) => {
+      // Move the rail selection by one (clamped), refreshing dynamic providers
+      // and switching the model list to the newly selected category. Keeps focus
+      // on the rail column.
+      const moveRail = (delta: -1 | 1) => {
         const total = layout.railEntries.length;
         if (total === 0) return;
-        const nextIndex = (layout.railIndex + delta + total) % total;
+        const nextIndex = Math.max(0, Math.min(total - 1, layout.railIndex + delta));
         const nextEntry = layout.railEntries[nextIndex];
-        if (!nextEntry) return;
+        if (!nextEntry || nextIndex === layout.railIndex) return;
         const nextSelection =
           nextEntry.kind === "favorites"
             ? ({ kind: "favorites" } as const)
@@ -10390,20 +10511,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
               : null;
           if (refreshProvider) void refreshModelCatalog({ refreshProvider });
         }
-        setRightPane({ ...picker, selection: nextSelection, providerTabKey: null, focusedIndex: 0, footerFocus: null, query: "", searchMode: false });
+        setRightPane({ ...picker, selection: nextSelection, providerTabKey: null, focusedIndex: 0, footerFocus: null, railFocused: true, query: "", searchMode: false });
       };
-
-      if (key.tab) {
-        switchRail(key.shift ? -1 : 1);
-        return;
-      }
 
       if (key.upArrow) {
         if (inSettings) {
-          if (settingIndex <= 0) setRightPane({ ...picker, footerFocus: null });
-          else setRightPane({ ...picker, footerFocus: pickerSettingsRows[settingIndex - 1]?.kind ?? null });
+          if (settingIndex <= 0) {
+            // Off the top of the settings → back to Stage 1's model list, re-homed
+            // onto the active model so focus lands where the user expects.
+            const activeIdx = Math.max(0, layout.entries.findIndex((entry) => entry.modelId === modelState.modelId));
+            setRightPane({ ...picker, footerFocus: null, railFocused: false, focusedIndex: activeIdx });
+          } else {
+            setRightPane({ ...picker, footerFocus: pickerSettingsRows[settingIndex - 1]?.kind ?? null });
+          }
           return;
         }
+        if (railFocused) { moveRail(-1); return; }
         const next = Math.max(0, layout.focusedIndex - 1);
         if (next !== picker.focusedIndex) setRightPane({ ...picker, focusedIndex: next });
         return;
@@ -10415,22 +10538,38 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           }
           return;
         }
-        // Past the last model, drop focus down into the settings rows.
-        if (layout.focusedIndex >= lastModelIndex && pickerSettingsRows.length > 0) {
-          setRightPane({ ...picker, footerFocus: pickerSettingsRows[0]?.kind ?? null });
-          return;
-        }
+        if (railFocused) { moveRail(1); return; }
+        // Model list: clamp at the last model. Down does NOT spill into the
+        // settings — Enter on a model is the only gate into Stage 2.
         const next = Math.min(lastModelIndex, layout.focusedIndex + 1);
         if (next !== picker.focusedIndex) setRightPane({ ...picker, focusedIndex: next });
         return;
       }
-      if (key.leftArrow || key.rightArrow) {
+      if (key.leftArrow) {
         if (inSettings) {
           const row = pickerSettingsRows[settingIndex];
-          if (row) handleSetupRow(row, key.leftArrow ? -1 : 1);
+          if (row) handleSetupRow(row, -1);
           return;
         }
-        switchRail(key.leftArrow ? -1 : 1);
+        // Move focus left, onto the category rail (no-op if already there, or
+        // while searching where the rail is hidden).
+        if (!railFocused && !picker.searchMode) setRightPane({ ...picker, railFocused: true });
+        return;
+      }
+      if (key.rightArrow) {
+        if (inSettings) {
+          const row = pickerSettingsRows[settingIndex];
+          if (row) handleSetupRow(row, 1);
+          return;
+        }
+        // Move focus right, onto the model list (no-op if already there).
+        if (railFocused) setRightPane({ ...picker, railFocused: false });
+        return;
+      }
+      if (key.tab) {
+        if (inSettings) return;
+        // Tab toggles between the rail and the model list (same axis as ←/→).
+        setRightPane({ ...picker, railFocused: !railFocused });
         return;
       }
       if (key.return) {
@@ -10439,21 +10578,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           if (row) handleSetupRow(row, 1);
           return;
         }
+        if (railFocused) {
+          // Step from the rail into its model list.
+          setRightPane({ ...picker, railFocused: false, focusedIndex: 0 });
+          return;
+        }
         const target = layout.entries[layout.focusedIndex];
-        if (target?.isAvailable) commitModelPickerSelection(target.modelId);
-        return;
-      }
-      if (input === "s" && !picker.searchMode && !key.ctrl && !key.meta) {
-        setRightPane({ ...picker, showAll: !picker.showAll, focusedIndex: 0 });
+        if (target?.isAvailable) {
+          commitModelPickerSelection(target.modelId);
+        } else if (target) {
+          void runInlineCommand("/login", target.family);
+        }
         return;
       }
 	      if ((input === "[" || input === "]") && !picker.searchMode && layout.providerTabs.length > 1) {
 	        const delta = input === "[" ? -1 : 1;
 	        const nextIndex = (layout.providerTabIndex + delta + layout.providerTabs.length) % layout.providerTabs.length;
-	        const nextTab = layout.providerTabs[nextIndex];
-	        if (nextTab) {
-	          setRightPane({ ...picker, providerTabKey: nextTab.key, focusedIndex: 0 });
-	        }
+		        const nextTab = layout.providerTabs[nextIndex];
+		        if (nextTab) {
+		          setRightPane({ ...picker, providerTabKey: nextTab.key, focusedIndex: 0, footerFocus: null, railFocused: false });
+		        }
 	        return;
 	      }
       // 'f' toggles favorite on focused row when not actively editing a search.
@@ -11456,7 +11600,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           activeModelId: modelState.modelId,
           activeReasoningEffort: modelState.reasoningEffort,
           aiStatus,
-          showAll: picker.showAll,
           settingsRows: picker.settingsRows ?? [],
           footerFocus: picker.footerFocus ?? null,
           laneLabel: picker.laneLabel ?? null,
@@ -11468,11 +11611,28 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         });
         // Single geometry source: derive every clickable rect from the SAME
         // constants + windowing the render uses (modelPickerGeometry), so a
-        // click always lands on the row the user sees — even when scrolled.
+        // click lands on the row the user sees. Prefer the pane's MEASURED
+        // content origin (reported by ModelPickerPane via Ink/Yoga) — that's
+        // where rows actually paint at any window size, no hardcoded offset.
+        // Fall back to geometry math when no/implausible measurement exists.
+        const measured = pickerMeasuredOrigin;
+        const measuredOk = Boolean(
+          measured
+          && measured.y >= 1 && measured.y <= rows
+          && measured.x >= 1 && measured.x <= columns
+          && measured.width >= 8,
+        );
+        const paneOrigin = measuredOk && measured
+          ? { paneLeft: measured.x, paneTop: measured.y, paneWidth: measured.width }
+          : modelPickerPaneContentOrigin({
+              paneTop: rightBodyTop,
+              paneLeft: rightStartColumn,
+              paneWidth: rightPaneWidth,
+            });
         const geometry = modelPickerGeometry({
-          paneLeft: rightStartColumn,
-          paneTop: rightBodyTop,
-          paneWidth: rightPaneWidth,
+          paneLeft: paneOrigin.paneLeft,
+          paneTop: paneOrigin.paneTop,
+          paneWidth: paneOrigin.paneWidth,
           state: layout,
           rows,
         });
@@ -11481,12 +11641,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           rect: geometry.search,
           onClick: () => setRightPane({ ...picker, searchMode: true, query: picker.query, focusedIndex: 0 }),
           zIndex: 4,
-        });
-        addTarget({
-          id: "right:model-picker:show-all",
-          rect: geometry.showAll,
-          onClick: () => setRightPane({ ...picker, showAll: !picker.showAll, focusedIndex: 0 }),
-          zIndex: 3,
         });
         geometry.rail.forEach(({ id, rect }, index) => {
           const entry = layout.railEntries[index];
@@ -11509,6 +11663,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
                 selection: nextSelection,
                 providerTabKey: null,
                 focusedIndex: 0,
+                footerFocus: null,
+                railFocused: true,
                 query: "",
                 searchMode: false,
               });
@@ -11530,8 +11686,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             id,
             rect,
             onClick: () => {
-              setRightPane({ ...picker, focusedIndex: index });
-              if (entry?.isAvailable) commitModelPickerSelection(modelId);
+              setRightPane({ ...picker, focusedIndex: index, railFocused: false });
+              if (entry?.isAvailable) {
+                commitModelPickerSelection(modelId);
+              } else if (entry) {
+                void runInlineCommand("/login", entry.family);
+              }
             },
             zIndex: 5,
           });
@@ -11770,6 +11930,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     mentionSuggestions,
     modelState,
     modelCatalog,
+    pickerMeasuredOrigin,
     modelPickerFavorites,
     modelPickerRecents,
     modelStatusOverlayRows,
@@ -11999,6 +12160,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
                 activeReasoningEffort: modelState.reasoningEffort,
                 aiStatus,
 	              }}
+              onModelPickerMeasureOrigin={handlePickerMeasureOrigin}
             />
           ) : null}
         </Box>

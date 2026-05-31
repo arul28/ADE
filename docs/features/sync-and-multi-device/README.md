@@ -161,7 +161,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
 - `syncRemoteCommandService.ts` (~2,840 lines) — command registry
   (lanes, chat, git, PR, sessions, conflicts, files,
   `prs.getMobileSnapshot`, `lanes.presence.*`, `work.runQuickCommand`,
-  `work.startCliSession`, …). Each registration carries a
+  `work.startCliSession`, `modelPicker.*`, …). Each registration carries a
   `SyncRemoteCommandDescriptor` with a **scope** label of
   `"runtime"` or `"project"`. The host rejects a `project`-scoped
   command when no project is open or when the caller did not bundle a
@@ -169,6 +169,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   controller CLI launches resolve the target lane worktree before
   building provider argv/env so Agent Skill roots and
   `ADE_AGENT_SKILLS_DIRS` stay lane-aware.
+  Model-picker commands read/write the same per-project CRR-backed
+  favorites/recents store as desktop and the TUI; the sync host falls
+  back to the DB-wired shared store when no explicit accessor is
+  injected, so iOS never reads an empty process stub in production.
   Lane reparent commands parse the optional `stackBaseBranchRef`
   override and forward it to the host lane service so controllers can
   pick a specific branch to stack onto instead of always using the

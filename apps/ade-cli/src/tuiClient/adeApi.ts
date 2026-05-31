@@ -335,7 +335,15 @@ export async function getAvailableModels(
 ): Promise<AgentChatModelInfo[]> {
   return await connection.action<AgentChatModelInfo[]>("chat", "getAvailableModels", {
     provider,
-    activateRuntime: provider === "cursor",
+    // cursor + droid only report their live "fast" service tiers when their
+    // runtime is probed — loadAvailableModels gates serviceTiers on
+    // activateRuntime for these two (droid via discoverDroidSdkModelDescriptors'
+    // "probe" mode). Without probing droid, the TUI's model list carried no
+    // droid service tiers, so the fast toggle stayed disabled on droid models
+    // the desktop chat picker shows it on. codex is intentionally NOT here: its
+    // tiers come from the app-server, which loadAvailableModels always queries
+    // regardless of activateRuntime.
+    activateRuntime: provider === "cursor" || provider === "droid",
   });
 }
 

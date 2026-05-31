@@ -3964,10 +3964,9 @@ final class SyncService: ObservableObject {
   // MARK: - Cross-surface model picker (favorites + recents)
   //
   // Mirrors the desktop `useModelFavorites` / `useModelRecents` hooks and the
-  // TUI implementation. Backed by `~/.ade/modelPicker.json` on the ade-cli
-  // host so favorites and recents follow the user across worktrees, projects,
-  // and surfaces (desktop, TUI, iOS). Recents are capped at 10 server-side
-  // — the client should not pre-trim.
+  // TUI implementation. Backed by the per-project cr-sqlite DB on the ade-cli
+  // host so favorites and recents converge across desktop, TUI, and iOS via
+  // sync. Recents are capped at 10 server-side — the client should not pre-trim.
 
   func getModelFavorites() async throws -> [String] {
     let payload = try await sendDecodableCommand(

@@ -2255,3 +2255,20 @@ create index if not exists idx_lane_worktree_locks_lane on lane_worktree_locks(l
 create index if not exists idx_lane_worktree_locks_session on lane_worktree_locks(owner_session_id);
 
 create index if not exists idx_lane_worktree_locks_expires on lane_worktree_locks(expires_at);
+
+-- Model-picker favorites + recents. Per-project (the DB instance is the scope,
+-- so no project_id column) and CRR-replicated so desktop, TUI, and iOS converge
+-- on the same set for a project. PK-only by design: CRR-converted tables cannot
+-- carry any UNIQUE index besides the primary key, so model_id is the only
+-- uniqueness constraint and the recents cap is enforced in app code.
+-- ensureCrrTables auto-discovers these (PK present, not excluded) and runs
+-- crsql_as_crr on each, mirroring desktop's kvDb.ts.
+create table if not exists model_picker_favorites (
+      model_id text primary key,
+      created_at text not null
+    );
+
+create table if not exists model_picker_recents (
+      model_id text primary key,
+      used_at text not null
+    );

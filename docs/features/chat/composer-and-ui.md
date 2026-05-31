@@ -287,7 +287,7 @@ power the TUI picker (`apps/ade-cli/src/tuiClient/components/ModelPicker/`).
 | Module | Role |
 |---|---|
 | `ModelPicker.tsx` | Trigger + popover entry point. Owns runtime-catalog loading via `runtimeCatalogCache`, fast-mode chip, and the favorites/recents fan-out. |
-| `ModelPickerContent.tsx` | The popover body: search bar, rail, virtualized list (`@tanstack/react-virtual`), empty state. New props: `hidePermissionRail` (forward-compat hook for orchestrated surfaces that suppress permission-related affordances), `allowCliOnlyModels` (switch Cursor filtering from SDK chat models to CLI launch models), `allowRegistryExpansion` (when false, skip merging `MODEL_REGISTRY` entries into the runtime catalog — useful for constrained surfaces). Estimated row height `MODEL_ROW_ESTIMATED_HEIGHT = 44`. |
+| `ModelPickerContent.tsx` | The popover body: search bar, rail, virtualized list (`@tanstack/react-virtual`), empty state. Props include `hidePermissionRail` (forward-compat hook for orchestrated surfaces that suppress permission-related affordances), `allowCliOnlyModels` (switch Cursor filtering from SDK chat models to CLI launch models), `allowRegistryExpansion` (when false, skip merging `MODEL_REGISTRY` entries into the runtime catalog — useful for constrained surfaces). Estimated row height `MODEL_ROW_ESTIMATED_HEIGHT = 44`. |
 | `ModelPickerRail.tsx` | Left-rail tabs (Favorites / Recents / per-provider groups). Reads `AuthStatus` per family to render auth gates and the OpenCode "Install OpenCode" CTA from `providerEmptyState`. |
 | `ModelListRow.tsx` | A single model row (favorite star, brand logo, display name, sub-provider chip, availability tone). |
 | `ReasoningEffortPicker.tsx` | Standalone reasoning-effort dropdown, mounted next to the model trigger and inside per-slot parallel-launch controls. |
@@ -298,7 +298,7 @@ power the TUI picker (`apps/ade-cli/src/tuiClient/components/ModelPicker/`).
 | `runtimeCatalogCache.ts` | Renderer-side shared catalog cache. Tracks per-provider freshness (30 min for `opencode`/`cursor`/`droid`, 30 s for `lmstudio`/`ollama`) and dedupes concurrent `modelCatalog` requests by `${mode}:${refreshProvider}` keys. |
 | `useProviderAuthStatus.ts` | Resolves `AuthStatus` (`authenticated` / `missing` / `unknown`) per `ProviderFamily` from the AI integration status. |
 | `useAuthOnlyFilter.ts` | Hides models whose provider is not authenticated, with a toggle for the catalog browse mode. |
-| `useModelFavorites.ts` / `useModelRecents.ts` | Cross-surface favorites and recents persisted to `~/.ade/modelPicker.json` via the `modelPicker.*` JSON-RPC methods on `adeRpcServer`. The TUI shares the same store. |
+| `useModelFavorites.ts` / `useModelRecents.ts` | Cross-surface favorites and recents persisted to the per-project `ade.db` tables `model_picker_favorites` and `model_picker_recents` via the `modelPicker.*` JSON-RPC methods on `adeRpcServer`. Desktop, TUI, and iOS share the CRR-backed store; the legacy `~/.ade/modelPicker.json` file is only a one-time migration source. |
 | `usePerSurfaceModelDefaults.ts` | Per-surface default-model resolver (Settings, parallel slots, worker delegation, etc.) — keyed by surface so each call site can have its own remembered default. |
 | `useReasoningByFamily.ts` | Last-used reasoning effort per model family. |
 
@@ -308,7 +308,10 @@ Renderer state and the TUI share descriptors and ordering: the TUI
 so behaviour stays in lockstep. The TUI layout also preserves
 `serviceTiers` and Cursor `cursorAvailability` from the same catalog so
 Fast Mode and chat-vs-CLI model availability do not drift between
-desktop and `ade code`.
+desktop and `ade code`. Its provider rail stays stable across auth and
+runtime-loading states, always shows the full provider catalog with
+unavailable rows dimmed, and uses separate rail/list focus so arrow-key
+navigation matches the rendered two-column picker.
 
 ### Attachment handling
 

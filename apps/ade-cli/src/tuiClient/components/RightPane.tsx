@@ -1425,6 +1425,7 @@ export function RightPane({
   focused = false,
   width = DEFAULT_PANE_WIDTH,
   modelPickerInputs,
+  onModelPickerMeasureOrigin,
   scrollOffsetRows = 0,
 }: {
   content: RightPaneContent;
@@ -1435,6 +1436,8 @@ export function RightPane({
   activeProvider?: AdeCodeProvider | null;
   width?: number;
   scrollOffsetRows?: number;
+  /** Reports the model-picker's measured content origin for click hit-testing. */
+  onModelPickerMeasureOrigin?: (origin: { x: number; y: number; width: number }) => void;
   /** Data passed in by app.tsx for the model-picker content kind. */
 		  modelPickerInputs?: {
 		    models: AgentChatModelInfo[];
@@ -1590,11 +1593,10 @@ export function RightPane({
 	            catalog: modelPickerInputs.catalog,
 	            favorites: modelPickerInputs.favorites,
 	            recents: modelPickerInputs.recents,
-		            activeModelId: modelPickerInputs.activeModelId,
-		            activeReasoningEffort: modelPickerInputs.activeReasoningEffort,
-		            aiStatus: modelPickerInputs.aiStatus,
-		            showAll: content.showAll,
-		            settingsRows: content.settingsRows,
+			            activeModelId: modelPickerInputs.activeModelId,
+			            activeReasoningEffort: modelPickerInputs.activeReasoningEffort,
+			            aiStatus: modelPickerInputs.aiStatus,
+			            settingsRows: content.settingsRows,
 		            footerFocus: content.footerFocus ?? null,
 		            laneLabel: content.laneLabel ?? null,
 		            query: content.query,
@@ -1604,6 +1606,8 @@ export function RightPane({
             searchMode: content.searchMode,
           })}
           width={paneWidth}
+          railFocused={content.railFocused === true}
+          onMeasureOrigin={onModelPickerMeasureOrigin}
         />
       ) : null}
 

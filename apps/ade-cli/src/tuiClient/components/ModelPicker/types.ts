@@ -36,7 +36,6 @@ export type ModelPickerProviderTab = {
 export type ModelPickerState = {
   query: string;
   searchMode: boolean;
-  showAll: boolean;
   railEntries: ModelPickerRailEntry[];
   railIndex: number;
   entries: ModelPickerEntry[];

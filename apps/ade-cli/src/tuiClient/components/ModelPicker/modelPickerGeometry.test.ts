@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  MODEL_ENTRY_HEIGHT,
+  MODEL_LIST_BODY_LINES,
   MODEL_LIST_ROWS,
+  PROVIDER_MODEL_ENTRY_HEIGHT,
+  PROVIDER_MODEL_LIST_ROWS,
   RAIL_WIDTH,
   RAIL_TO_LIST_GAP,
   headerLineCount,
@@ -37,13 +41,12 @@ function makeState(overrides: Partial<ModelPickerState>): ModelPickerState {
   return {
     query: "",
     searchMode: false,
-    showAll: false,
     railEntries: [
       { kind: "favorites", label: "Favorites" },
       { kind: "recents", label: "Recents" },
       { kind: "provider", provider: "claude", label: "Anthropic", authStatus: "ready", signInHint: null },
     ],
-    railIndex: 2,
+    railIndex: 0,
     entries: [],
     providerTabs: [],
     providerTabIndex: 0,
@@ -81,13 +84,13 @@ describe("rowWindow", () => {
   });
 
   it("centers the focused row once the list overflows", () => {
-    // 20 entries, capacity 9, focus 10 -> half=4 -> start=6, end=15.
-    expect(rowWindow(20, 10, MODEL_LIST_ROWS)).toEqual({ start: 6, end: 15 });
+    // 20 entries, capacity 5, focus 10 -> half=2 -> start=8, end=13.
+    expect(rowWindow(20, 10, MODEL_LIST_ROWS)).toEqual({ start: 8, end: 13 });
   });
 
   it("clamps the window to the end of the list", () => {
     // focus at the last index pins the window to the tail.
-    expect(rowWindow(20, 19, MODEL_LIST_ROWS)).toEqual({ start: 11, end: 20 });
+    expect(rowWindow(20, 19, MODEL_LIST_ROWS)).toEqual({ start: 15, end: 20 });
   });
 });
 
@@ -96,12 +99,12 @@ describe("headerLineCount", () => {
     expect(headerLineCount(makeState({}))).toBe(1);
   });
 
-  it("adds a line for the active model when it is in the list", () => {
+  it("does not add a header line for the active model (the '● now' line was removed)", () => {
     const state = makeState({
       entries: [entry({ modelId: "anthropic/claude-opus-4-8" })],
       activeModelId: "anthropic/claude-opus-4-8",
     });
-    expect(headerLineCount(state)).toBe(2);
+    expect(headerLineCount(state)).toBe(1);
   });
 
   it("adds a sign-in line when the provider is unavailable", () => {
@@ -114,7 +117,7 @@ describe("headerLineCount", () => {
 });
 
 describe("modelPickerGeometry — list rows", () => {
-  it("places each entry on its own single line below the header + search", () => {
+  it("places each entry in a two-line block below the header + search", () => {
     const state = makeState({
       entries: [
         entry({ modelId: "a" }),
@@ -131,17 +134,17 @@ describe("modelPickerGeometry — list rows", () => {
     const listTop = searchY + 2;
     expect(g.search).toEqual({ x: PANE_LEFT, y: searchY, w: PANE_WIDTH, h: 1 });
     g.entries.forEach((e, index) => {
-      expect(e.rect.h).toBe(1);
-      expect(e.rect.y).toBe(listTop + index);
+      expect(e.rect.h).toBe(MODEL_ENTRY_HEIGHT);
+      expect(e.rect.y).toBe(listTop + (index * MODEL_ENTRY_HEIGHT));
       // not searching -> list sits to the right of the rail.
       expect(e.rect.x).toBe(PANE_LEFT + RAIL_WIDTH + RAIL_TO_LIST_GAP);
     });
-    // y increments by exactly 1 per row (no phantom 2-line drift).
-    expect(at(g.entries, 1).rect.y - at(g.entries, 0).rect.y).toBe(1);
-    expect(at(g.entries, 2).rect.y - at(g.entries, 1).rect.y).toBe(1);
+    // y increments by exactly the rendered row height.
+    expect(at(g.entries, 1).rect.y - at(g.entries, 0).rect.y).toBe(MODEL_ENTRY_HEIGHT);
+    expect(at(g.entries, 2).rect.y - at(g.entries, 1).rect.y).toBe(MODEL_ENTRY_HEIGHT);
   });
 
-  it("keeps single-line rows even for sub-provider / unavailable entries", () => {
+  it("keeps fixed-height rows even for sub-provider / unavailable entries", () => {
     const state = makeState({
       entries: [
         entry({ modelId: "x", subProvider: "anthropic via OpenCode", isAvailable: true }),
@@ -150,8 +153,8 @@ describe("modelPickerGeometry — list rows", () => {
       focusedIndex: 0,
     });
     const g = geo(state);
-    expect(g.entries.every((e) => e.rect.h === 1)).toBe(true);
-    expect(at(g.entries, 1).rect.y - at(g.entries, 0).rect.y).toBe(1);
+    expect(g.entries.every((e) => e.rect.h === MODEL_ENTRY_HEIGHT)).toBe(true);
+    expect(at(g.entries, 1).rect.y - at(g.entries, 0).rect.y).toBe(MODEL_ENTRY_HEIGHT);
   });
 
   it("windows a long scrolled list using MODEL_LIST_ROWS, mapping screen rows to true indices", () => {
@@ -173,7 +176,23 @@ describe("modelPickerGeometry — list rows", () => {
     const listTop = PANE_TOP + headerLines + 1 + 2;
     const focusRect = g.entries.find((e) => e.index === focusedIndex);
     expect(focusRect).toBeDefined();
-    expect(focusRect!.rect.y).toBe(listTop + (focusedIndex - window.start));
+    expect(focusRect!.rect.y).toBe(listTop + ((focusedIndex - window.start) * MODEL_ENTRY_HEIGHT));
+  });
+
+  it("uses one-line rows and a taller window inside a selected provider family", () => {
+    const entries: ModelPickerEntry[] = Array.from({ length: 12 }, (_v, i) =>
+      entry({ modelId: `m${i}` }),
+    );
+    const focusedIndex = 9;
+    const state = makeState({ railIndex: 2, entries, focusedIndex });
+    const g = geo(state);
+    const window = rowWindow(entries.length, focusedIndex, PROVIDER_MODEL_LIST_ROWS);
+    expect(g.window).toEqual(window);
+    expect(g.entries.length).toBe(PROVIDER_MODEL_LIST_ROWS);
+    g.entries.forEach((e, index) => {
+      expect(e.rect.h).toBe(PROVIDER_MODEL_ENTRY_HEIGHT);
+      expect(e.rect.y).toBe(at(g.entries, 0).rect.y + index);
+    });
   });
 });
 
@@ -242,13 +261,13 @@ describe("modelPickerGeometry — settings footer + apply", () => {
     });
     const g = geo(state);
     const listTop = PANE_TOP + 1 + 3; // header+mb+search+mb = +4, no selector.
-    // footer divider: listTop + MODEL_LIST_ROWS + (no more-line) + marginTop(1).
-    expect(g.footerTop).toBe(listTop + MODEL_LIST_ROWS + 1);
+    // footer divider: listTop + fixed list body + (no more-line) + marginTop(1).
+    expect(g.footerTop).toBe(listTop + MODEL_LIST_BODY_LINES + 1);
     expect(g.settings.length).toBe(2);
-    g.settings.forEach((s) => {
+    g.settings.forEach((s, index) => {
       // divider at footerTop, blank (chips Box marginTop) at footerTop+1,
-      // chips painted at footerTop+2.
-      expect(s.rect.y).toBe(g.footerTop + 2);
+      // settings painted vertically starting at footerTop+2.
+      expect(s.rect.y).toBe(g.footerTop + 2 + index);
       expect(s.rect.h).toBe(1);
     });
     // provider/model rows are excluded from the footer chips.
@@ -268,9 +287,8 @@ describe("modelPickerGeometry — settings footer + apply", () => {
     // Only the reasoning chip is a footer setting.
     expect(g.settings.map((s) => s.id)).toEqual(["right:model-picker:setting:reasoning"]);
     expect(g.apply).not.toBeNull();
-    // chips at footerTop+2, blank (apply Box marginTop) at footerTop+3,
-    // [ Apply ] painted at footerTop+4 (chipsY + 2 when chips exist).
-    expect(g.apply!.y).toBe(g.footerTop + 2 + 2);
+    // settings start at footerTop+2; apply has its own margin after them.
+    expect(g.apply!.y).toBe(g.footerTop + 2 + 1 + 1);
     expect(g.apply!.h).toBe(1);
   });
 
@@ -284,7 +302,7 @@ describe("modelPickerGeometry — settings footer + apply", () => {
     expect(g.apply!.y).toBe(g.footerTop + 2);
   });
 
-  it("shifts the footer down by one when a scroll indicator row is shown", () => {
+  it("keeps the footer stable when a long list is windowed", () => {
     const entries: ModelPickerEntry[] = Array.from({ length: 25 }, (_v, i) =>
       entry({ modelId: `m${i}` }),
     );
@@ -292,7 +310,6 @@ describe("modelPickerGeometry — settings footer + apply", () => {
     const noScroll = makeState({ entries: [entry({ modelId: "a" })], settingsRows: [settingRow("reasoning")] });
     const gMore = geo(withMore);
     const gNone = geo(noScroll);
-    // The scrolled case adds the "↑ n / ↓ n more" line, pushing the footer +1.
-    expect(gMore.footerTop).toBe(gNone.footerTop + 1);
+    expect(gMore.footerTop).toBe(gNone.footerTop);
   });
 });

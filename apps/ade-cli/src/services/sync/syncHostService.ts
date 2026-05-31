@@ -743,6 +743,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     pinStore: args.pinStore,
   });
   const remoteCommandService = args.remoteCommandService ?? createSyncRemoteCommandService({
+    db: args.db,
     laneService: args.laneService,
     prService: args.prService,
     ptyService: args.ptyService,

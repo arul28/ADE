@@ -166,8 +166,17 @@ import type { createQueueLandingService } from "../../../../desktop/src/main/ser
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
 import { getSharedModelPickerStore, type ModelPickerStore } from "../modelPickerStore";
+import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 
 type SyncRemoteCommandServiceArgs = {
+  /**
+   * Per-project cr-sqlite DB. Source of truth for the model-picker store
+   * (favorites + recents) when no explicit `getModelPickerStore` accessor is
+   * wired, so the sync host never falls back to an empty store in production.
+   * Optional only so unit tests that never touch `modelPicker.*` can omit it;
+   * production callers (bootstrap, syncHostService) always pass it.
+   */
+  db?: AdeDb;
   laneService: ReturnType<typeof createLaneService>;
   prService: ReturnType<typeof createPrService>;
   issueInventoryService?: ReturnType<typeof createIssueInventoryService> | null;
@@ -208,11 +217,12 @@ type SyncRemoteCommandServiceArgs = {
   rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService> | null;
   autoRebaseService?: ReturnType<typeof createAutoRebaseService> | null;
   /**
-   * Lazy accessor for the process-wide model picker store (favorites + recents
-   * persisted to `~/.ade/modelPicker.json`). iOS hits these via the
-   * `modelPicker.*` sync commands so favorites/recents stay in sync with
-   * desktop + TUI. Optional so older callers without the accessor wired keep
-   * compiling — handlers reject with a clear error when missing.
+   * Lazy accessor for the model picker store (favorites + recents, backed by
+   * the per-project cr-sqlite DB). iOS hits these via the `modelPicker.*` sync
+   * commands so favorites/recents stay in sync with desktop + TUI. Optional —
+   * when unset, handlers fall back to the per-db shared store built from
+   * `args.db`, so the sync host always reads/writes the real DB rather than an
+   * empty stub.
    */
   getModelPickerStore?: () => ModelPickerStore | null;
   /**
@@ -2305,13 +2315,18 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
 function registerModelPickerRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   // Cross-surface ModelPicker favorites + recents — see modelPickerStore.ts.
   // Mirrors the direct JSON-RPC `modelPicker.*` methods on adeRpcServer so iOS
-  // (which routes through the WebSocket sync command envelope) shares the
-  // same persisted store at ~/.ade/modelPicker.json.
-  // Falls back to the process-wide singleton when no accessor is wired —
-  // older bootstraps (tests, embedded uses) still get a working store without
-  // having to thread the accessor explicitly.
-  const requireModelPickerStore = (): ModelPickerStore =>
-    args.getModelPickerStore?.() ?? getSharedModelPickerStore();
+  // (which routes through the WebSocket sync command envelope) shares the same
+  // per-project cr-sqlite-backed store. Falls back to the per-db shared store
+  // built from `args.db` when no explicit accessor is wired — so the sync host
+  // always reads/writes the real DB rather than an empty stub.
+  const requireModelPickerStore = (): ModelPickerStore => {
+    const injected = args.getModelPickerStore?.();
+    if (injected) return injected;
+    if (!args.db) {
+      throw new Error("Model picker store is not available: no DB wired for this runtime.");
+    }
+    return getSharedModelPickerStore(args.db);
+  };
 
   register("modelPicker.getFavorites", { viewerAllowed: true }, async () => ({
     favorites: requireModelPickerStore().getFavorites(),
