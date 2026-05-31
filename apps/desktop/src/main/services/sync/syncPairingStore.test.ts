@@ -149,6 +149,21 @@ describe("syncPairingStore", () => {
       expect(typeof after[deviceId].lastUsedAt).toBe("string");
       expect(after[deviceId].lastUsedAt.length).toBeGreaterThan(0);
     });
+
+    it("returns stored pairing metadata for authorization decisions", () => {
+      const { store, pinStore } = makeHarness("ade-pairing-auth-record-");
+      pinStore.setPin("101010");
+      const { deviceId, secret } = store.pairPeer(samplePeer, "101010");
+
+      expect(store.authenticate(deviceId, secret)).toBe(true);
+      expect(store.getPairingRecord(deviceId)).toMatchObject({
+        peerName: samplePeer.deviceName,
+        peerPlatform: "iOS",
+        peerDeviceType: "phone",
+      });
+      expect(store.hasPairingRecord(deviceId)).toBe(true);
+      expect(store.getPairingRecord("missing")).toBeNull();
+    });
   });
 
   describe("revoke", () => {

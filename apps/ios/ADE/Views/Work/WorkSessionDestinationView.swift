@@ -256,6 +256,7 @@ struct WorkSessionDestinationView: View {
           syncService.releaseLaneOpen(laneId: announcedLaneId)
           self.announcedLaneId = nil
         }
+        cleanupLoadedArtifactContent()
         Task {
           try? await syncService.unsubscribeFromChatEvents(sessionId: sessionId)
         }
@@ -483,6 +484,13 @@ struct WorkSessionDestinationView: View {
   }
 
   @MainActor
+  func cleanupLoadedArtifactContent() {
+    artifactContent.values.forEach { workRemoveLoadedArtifactTempFile($0) }
+    artifactContent.removeAll()
+    artifactContentLoadsInFlight.removeAll()
+  }
+
+  @MainActor
   func refreshArtifacts(force: Bool) async {
     guard let currentSession = session ?? initialSession,
           isChatSession(currentSession)
@@ -502,10 +510,14 @@ struct WorkSessionDestinationView: View {
       let refreshed = try await syncService.fetchComputerUseArtifacts(ownerKind: "chat_session", ownerId: sessionId)
       let validArtifactIds = Set(refreshed.map(\.id))
 
+      for (artifactId, content) in artifactContent where !validArtifactIds.contains(artifactId) {
+        workRemoveLoadedArtifactTempFile(content)
+      }
       artifactContent = artifactContent.filter { validArtifactIds.contains($0.key) }
       artifactContentLoadsInFlight = Set(artifactContentLoadsInFlight.filter { validArtifactIds.contains($0) })
 
       for artifact in refreshed where previousURIs[artifact.id] != nil && previousURIs[artifact.id] != artifact.uri {
+        workRemoveLoadedArtifactTempFile(artifactContent[artifact.id])
         artifactContent.removeValue(forKey: artifact.id)
       }
 

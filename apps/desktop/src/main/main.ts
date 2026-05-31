@@ -1404,7 +1404,10 @@ app.whenReady().then(async () => {
         persistRecentProject(ctx.project, { recordLastProject: false, preserveRecentOrder: true });
       }
       if (!shouldUseInProcessProjectRuntime()) {
-        void localRuntimePool.ensureProject(normalizedRoot).catch((error) => {
+        const projectRegistration = (options.foreground ?? true)
+          ? localRuntimePool.switchSyncHostForRoot(normalizedRoot)
+          : localRuntimePool.ensureProject(normalizedRoot);
+        void projectRegistration.catch((error) => {
           localRuntimeLogger.warn("local_runtime.project_registration_failed", {
             rootPath: normalizedRoot,
             error: error instanceof Error ? error.message : String(error),

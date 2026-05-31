@@ -40,6 +40,7 @@ function makeRuntime(label: string) {
     },
     syncService: {
       getStatus: vi.fn(async () => ({ role: "brain", label })),
+      listDevices: vi.fn(async () => [{ deviceId: `${label}-device` }]),
     },
     eventBuffer: createEventBuffer(),
     dispose: vi.fn(),
@@ -171,7 +172,7 @@ describe("multi-project RPC server", () => {
     handler.dispose();
   });
 
-  it("exposes runtime sync PIN methods through the selected sync host scope", async () => {
+  it("exposes runtime sync PIN methods through the active sync host scope", async () => {
     const { projectRoot, registry } = createRegistry();
     const added = registry.add(projectRoot);
     const syncService = {
@@ -188,7 +189,9 @@ describe("multi-project RPC server", () => {
     };
     const scopeRegistry = {
       get: vi.fn(),
-      ensureSyncHost: vi.fn(async () => ({
+      ensureSyncHost: vi.fn(),
+      switchSyncHost: vi.fn(),
+      resolveActiveSyncHost: vi.fn(async () => ({
         registryProjectId: added.projectId,
         record: added,
         runtime: { syncService },
@@ -259,13 +262,116 @@ describe("multi-project RPC server", () => {
       params: { projectId: added.projectId, laneIds: ["lane-1", 42, "lane-2"] },
     })).toBeNull();
 
-    expect(scopeRegistry.ensureSyncHost).toHaveBeenCalledWith(added.projectId);
+    expect(scopeRegistry.resolveActiveSyncHost).toHaveBeenCalled();
+    expect(scopeRegistry.switchSyncHost).not.toHaveBeenCalled();
     expect(syncService.setPin).toHaveBeenCalledWith("654321");
     expect(syncService.generatePin).toHaveBeenCalledTimes(1);
     expect(syncService.clearPin).toHaveBeenCalledTimes(1);
     expect(syncService.updateLocalDevice).toHaveBeenCalledWith({ name: "Mac Studio" });
     expect(syncService.forgetDevice).toHaveBeenCalledWith("phone-1");
     expect(syncService.setActiveLanePresence).toHaveBeenCalledWith(["lane-1", "lane-2"]);
+
+    handler.dispose();
+  });
+
+  it("does not switch the active sync host for read-only sync polls with a projectId", async () => {
+    const { root, projectRoot, registry } = createRegistry();
+    const active = registry.add(projectRoot);
+    const otherRoot = path.join(root, "other-project");
+    fs.mkdirSync(otherRoot, { recursive: true });
+    const other = registry.add(otherRoot);
+    const activeRuntime = makeRuntime("active");
+    const scopeRegistry = {
+      get: vi.fn(),
+      ensureSyncHost: vi.fn(),
+      switchSyncHost: vi.fn(),
+      resolveActiveSyncHost: vi.fn(async () => ({
+        registryProjectId: active.projectId,
+        record: active,
+        runtime: activeRuntime,
+        dispose: vi.fn(),
+      })),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: {},
+    });
+
+    expect(await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "sync.getStatus",
+      params: { projectId: other.projectId },
+    })).toEqual({ role: "brain", label: "active" });
+
+    expect(await handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "sync.listDevices",
+      params: { projectId: other.projectId },
+    })).toEqual([{ deviceId: "active-device" }]);
+
+    expect(scopeRegistry.resolveActiveSyncHost).toHaveBeenCalledTimes(2);
+    expect(scopeRegistry.switchSyncHost).not.toHaveBeenCalled();
+    expect(scopeRegistry.ensureSyncHost).not.toHaveBeenCalled();
+
+    handler.dispose();
+  });
+
+  it("switches the active sync host only through the explicit switch RPC", async () => {
+    const { root, projectRoot, registry } = createRegistry();
+    const first = registry.add(projectRoot);
+    const secondRoot = path.join(root, "second-project");
+    fs.mkdirSync(secondRoot, { recursive: true });
+    const second = registry.add(secondRoot);
+    const secondRuntime = makeRuntime("second");
+    const scopeRegistry = {
+      get: vi.fn(),
+      ensureSyncHost: vi.fn(),
+      switchSyncHost: vi.fn(async () => ({
+        registryProjectId: second.projectId,
+        record: second,
+        runtime: secondRuntime,
+        dispose: vi.fn(),
+      })),
+      resolveActiveSyncHost: vi.fn(),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: {},
+    });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "sync.switchHost",
+      params: { projectId: second.projectId },
+    })).resolves.toEqual({ switched: true });
+
+    expect(scopeRegistry.switchSyncHost).toHaveBeenCalledWith(second.projectId);
+    expect(scopeRegistry.resolveActiveSyncHost).not.toHaveBeenCalled();
+    expect(scopeRegistry.ensureSyncHost).not.toHaveBeenCalled();
+    expect(first.projectId).not.toBe(second.projectId);
 
     handler.dispose();
   });
@@ -284,15 +390,14 @@ describe("multi-project RPC server", () => {
         runtime: getCount++ === 0 ? firstRuntime : secondRuntime,
         dispose: vi.fn(),
       })),
-      ensureSyncHost: vi.fn(async () => {
-        disposeListener?.(added.projectId);
-        return {
-          registryProjectId: added.projectId,
-          record: added,
-          runtime: secondRuntime,
-          dispose: vi.fn(),
-        };
-      }),
+      ensureSyncHost: vi.fn(),
+      switchSyncHost: vi.fn(),
+      resolveActiveSyncHost: vi.fn(async () => ({
+        registryProjectId: added.projectId,
+        record: added,
+        runtime: firstRuntime,
+        dispose: vi.fn(),
+      })),
       dispose: vi.fn(),
       disposeAll: vi.fn(),
       onDispose: vi.fn((listener: (projectId: string) => void) => {
@@ -327,12 +432,7 @@ describe("multi-project RPC server", () => {
     }) as { result: Array<{ id: string }> };
     expect(first.result[0]?.id).toBe("first-lane");
 
-    await handler({
-      jsonrpc: "2.0",
-      id: 3,
-      method: "sync.getStatus",
-      params: { projectId: added.projectId },
-    });
+    (disposeListener as ((projectId: string) => void) | null)?.(added.projectId);
 
     const second = await handler({
       jsonrpc: "2.0",

@@ -38,6 +38,7 @@ struct PrDetailView: View {
   @State private var aiResolverSheetPresented: Bool = false
   @State private var actionsSheetPresented: Bool = false
   @State private var hasLoadedLiveSidecars = false
+  @State private var hasAttemptedInitialLoad = false
   /// True while a `prs.pathToMerge.start` or `prs.pathToMerge.stop` round-trip
   /// is in flight. Used to disable the convergence toggle and show a spinner.
   @State private var isPathToMergeBusy: Bool = false
@@ -51,7 +52,7 @@ struct PrDetailView: View {
   }
 
   private var canRunPrActions: Bool {
-    isLive && busyAction == nil
+    isLive && busyAction == nil && hasActionablePrId
   }
 
   private var canOpenCurrentPrInGitHub: Bool {
@@ -87,6 +88,51 @@ struct PrDetailView: View {
     return state == "open" && !status.isMergeable && !status.mergeConflicts
   }
 
+  private var routedPrNumber: Int? {
+    Self.prNumber(fromRouteId: prId)
+  }
+
+  private var hasPrDetailData: Bool {
+    pr != nil || githubItem != nil || snapshot != nil
+  }
+
+  private var effectivePrId: String {
+    pr?.id ?? githubItem?.linkedPrId ?? prId
+  }
+
+  private var hasActionablePrId: Bool {
+    pr != nil || snapshot != nil || githubItem?.linkedPrId != nil
+  }
+
+  private var isAwaitingInitialPrDetail: Bool {
+    !hasAttemptedInitialLoad && !hasPrDetailData
+  }
+
+  private var isPrDetailUnavailable: Bool {
+    hasAttemptedInitialLoad && !hasPrDetailData
+  }
+
+  private var unavailablePrLabel: String {
+    if let routedPrNumber {
+      return "#\(routedPrNumber)"
+    }
+    return "this pull request"
+  }
+
+  private var displayedPrNumber: Int? {
+    if let pr { return pr.githubPrNumber }
+    if let githubItem { return githubItem.githubPrNumber }
+    if let routedPrNumber { return routedPrNumber }
+    return nil
+  }
+
+  private var detailHeaderAccessibilityLabel: String {
+    if let displayedPrNumber {
+      return "Pull request \(displayedPrNumber), \(currentPr.title)"
+    }
+    return "Pull request, \(currentPr.title)"
+  }
+
   private var currentPr: PullRequestListItem {
     if let pr { return pr }
     let detail = snapshot?.detail
@@ -101,9 +147,9 @@ struct PrDetailView: View {
       projectId: "",
       repoOwner: githubItem?.repoOwner ?? "",
       repoName: githubItem?.repoName ?? "",
-      githubPrNumber: githubItem?.githubPrNumber ?? 0,
+      githubPrNumber: githubItem?.githubPrNumber ?? routedPrNumber ?? 0,
       githubUrl: githubItem?.githubUrl ?? "",
-      title: githubItem?.title ?? "Pull request",
+      title: githubItem?.title ?? routedPrNumber.map { "Pull request #\($0)" } ?? "Pull request",
       state:
         detail?.isDraft == true || githubItem?.isDraft == true
           ? "draft"
@@ -175,7 +221,7 @@ struct PrDetailView: View {
     // The Activity tab has its own comment/reply composer at the end of the
     // content. A global merge bar in the same bottom slot hides that composer
     // on phone-sized screens.
-    selectedTab != .activity
+    hasPrDetailData && selectedTab != .activity
   }
 
   private var behindBaseBy: Int {
@@ -257,27 +303,43 @@ struct PrDetailView: View {
           icon: "exclamationmark.triangle.fill",
           tint: ADEColor.danger,
           actionTitle: "Retry",
-          action: { Task { await reload(refreshRemote: true) } }
+          action: { Task { await retryPrDetailLoad() } }
         )
         .prListRow()
       }
 
-      heroCard
+      if isAwaitingInitialPrDetail {
+        ADECardSkeleton(rows: 4)
+          .prListRow()
+      } else if isPrDetailUnavailable {
+        ADENoticeCard(
+          title: "Pull request unavailable",
+          message: isLive
+            ? "ADE could not find \(unavailablePrLabel). Refresh the PR list and try again."
+            : "Reconnect to your Mac to load \(unavailablePrLabel).",
+          icon: "arrow.triangle.merge",
+          tint: ADEColor.warning,
+          actionTitle: "Retry",
+          action: { Task { await retryPrDetailLoad() } }
+        )
         .prListRow()
+      } else {
+        heroCard
+          .prListRow()
 
-      PrMergeGateCard(info: mergeGateInfo) {
-        switch mergeGateInfo.target {
-        case .checks: selectedTab = .checks
-        case .reviews: selectedTab = .activity
-        case .overview: selectedTab = .overview
+        PrMergeGateCard(info: mergeGateInfo) {
+          switch mergeGateInfo.target {
+          case .checks: selectedTab = .checks
+          case .reviews: selectedTab = .activity
+          case .overview: selectedTab = .overview
+          }
         }
-      }
-      .prListRow()
-
-      subTabPicker
         .prListRow()
 
-      switch selectedTab {
+        subTabPicker
+          .prListRow()
+
+        switch selectedTab {
       case .overview:
         PrOverviewTab(
           pr: currentPr,
@@ -392,6 +454,7 @@ struct PrDetailView: View {
         )
         .prListRow()
       }
+      }
     }
     .listStyle(.plain)
     .listRowSpacing(12)
@@ -482,7 +545,7 @@ struct PrDetailView: View {
           submitTitle: "Save"
         ) { value in
           runPrAction("Updating PR title") {
-            try await syncService.updatePullRequestTitle(prId: prId, title: value)
+            try await syncService.updatePullRequestTitle(prId: effectivePrId, title: value)
           } onSuccess: {
             editorSheet = nil
           }
@@ -494,7 +557,7 @@ struct PrDetailView: View {
           submitTitle: "Save"
         ) { value in
           runPrAction("Updating PR description") {
-            try await syncService.updatePullRequestBody(prId: prId, body: value)
+            try await syncService.updatePullRequestBody(prId: effectivePrId, body: value)
           } onSuccess: {
             editorSheet = nil
           }
@@ -511,7 +574,7 @@ struct PrDetailView: View {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
           runPrAction("Updating labels") {
-            try await syncService.setPullRequestLabels(prId: prId, labels: labels)
+            try await syncService.setPullRequestLabels(prId: effectivePrId, labels: labels)
           } onSuccess: {
             editorSheet = nil
           }
@@ -519,7 +582,7 @@ struct PrDetailView: View {
       case .review:
         PrSubmitReviewSheet { event, body in
           runPrAction("Submitting review") {
-            try await syncService.submitPullRequestReview(prId: prId, event: event.rawValue, body: body)
+            try await syncService.submitPullRequestReview(prId: effectivePrId, event: event.rawValue, body: body)
           } onSuccess: {
             editorSheet = nil
           }
@@ -541,9 +604,11 @@ struct PrDetailView: View {
       .accessibilityLabel("Back to PRs")
 
       VStack(alignment: .leading, spacing: 2) {
-        Text("#\(currentPr.githubPrNumber)")
-          .font(.system(size: 11, weight: .bold, design: .monospaced))
-          .foregroundStyle(prStateTint(currentPr.state))
+        if let displayedPrNumber {
+          Text("#\(displayedPrNumber)")
+            .font(.system(size: 11, weight: .bold, design: .monospaced))
+            .foregroundStyle(prStateTint(currentPr.state))
+        }
         Text(currentPr.title)
           .font(.headline.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
@@ -551,7 +616,7 @@ struct PrDetailView: View {
           .truncationMode(.tail)
       }
       .accessibilityElement(children: .combine)
-      .accessibilityLabel("Pull request \(currentPr.githubPrNumber), \(currentPr.title)")
+      .accessibilityLabel(detailHeaderAccessibilityLabel)
 
       Spacer(minLength: 0)
 
@@ -935,53 +1000,76 @@ struct PrDetailView: View {
 
   // MARK: - Data loading
 
+  private static func prNumber(fromRouteId routeId: String) -> Int? {
+    let prefix = "github-pr-number:"
+    guard routeId.hasPrefix(prefix) else { return nil }
+    return Int(routeId.dropFirst(prefix.count))
+  }
+
   @MainActor
   private func reload(refreshRemote: Bool = false, includeLiveSidecars: Bool? = nil) async {
-    let shouldFetchLiveSidecars = isLive && (includeLiveSidecars ?? refreshRemote)
-    let capabilitiesTask: Task<PrActionCapabilities?, Never>? = shouldFetchLiveSidecars
-      ? Task {
-          do {
-            let mobileSnapshot = try await syncService.fetchPrMobileSnapshot()
-            return mobileSnapshot.capabilities[prId]
-          } catch {
-            return nil
-          }
-        }
-      : nil
+    let requestedPrNumber = routedPrNumber
+    let shouldFetchLiveSidecars = isLive && ((includeLiveSidecars ?? refreshRemote) || requestedPrNumber != nil)
 
     do {
       var refreshError: Error?
       if refreshRemote {
         do {
-          try await syncService.refreshPullRequestSnapshots(prId: prId)
+          if requestedPrNumber == nil {
+            try await syncService.refreshPullRequestSnapshots(prId: effectivePrId)
+          } else {
+            try await syncService.refreshPullRequestSnapshots()
+          }
         } catch {
           refreshError = error
         }
       }
-      async let listItemsTask = syncService.fetchPullRequestListItems()
-      async let snapshotTask = syncService.fetchPullRequestSnapshot(prId: prId)
-      let reviewThreadsTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestReviewThreads(prId: prId) } : nil
-      let actionRunsTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestActionRuns(prId: prId) } : nil
-      let activityTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestActivity(prId: prId) } : nil
-      let deploymentsTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestDeployments(prId: prId) } : nil
-      let aiSummaryTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestAiSummary(prId: prId) } : nil
-      let issueInventoryTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchIssueInventory(prId: prId) } : nil
-      let pipelineSettingsTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPipelineSettings(prId: prId) } : nil
+      let listItems = try await syncService.fetchPullRequestListItems()
+      var fallbackGitHubItem: GitHubPrListItem?
+      if shouldFetchLiveSidecars && requestedPrNumber != nil {
+        fallbackGitHubItem = await fetchGitHubFallbackItem(requestedPrNumber: requestedPrNumber)
+      }
 
-      let listItems = try await listItemsTask
-      pr = listItems.first(where: { $0.id == prId })
-      snapshot = try await snapshotTask
-
+      pr = prDetailRouteListItem(
+        from: listItems,
+        prId: prId,
+        requestedPrNumber: requestedPrNumber,
+        githubItem: fallbackGitHubItem
+      )
+      let snapshotPrId = pr?.id ?? (requestedPrNumber == nil ? prId : nil)
+      if let snapshotPrId {
+        snapshot = try await syncService.fetchPullRequestSnapshot(prId: snapshotPrId)
+      } else {
+        snapshot = nil
+      }
       // Fall back to the repo-scoped GitHub snapshot when the PR isn't in the
       // lane-PR list. This keeps the hero card from collapsing into
       // "Pull request / @unknown" placeholders without resurrecting legacy
       // cross-repo snapshot items.
       if pr == nil && shouldFetchLiveSidecars {
-        if let github = try? await syncService.fetchGitHubPullRequestSnapshot() {
-          githubItem = repoScopedGitHubPullRequests(from: github)
-            .first { $0.linkedPrId == prId || $0.id == prId }
+        if fallbackGitHubItem == nil {
+          fallbackGitHubItem = await fetchGitHubFallbackItem(requestedPrNumber: requestedPrNumber)
         }
+        githubItem = fallbackGitHubItem
+      } else if pr != nil {
+        githubItem = nil
       }
+      let sidecarPrId = snapshotPrId ?? githubItem?.linkedPrId ?? prId
+      let capabilitiesTask: Task<PrActionCapabilities?, Never>? = shouldFetchLiveSidecars ? Task {
+        do {
+          let mobileSnapshot = try await syncService.fetchPrMobileSnapshot()
+          return mobileSnapshot.capabilities[sidecarPrId]
+        } catch {
+          return nil
+        }
+      } : nil
+      let reviewThreadsTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestReviewThreads(prId: sidecarPrId) } : nil
+      let actionRunsTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestActionRuns(prId: sidecarPrId) } : nil
+      let activityTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestActivity(prId: sidecarPrId) } : nil
+      let deploymentsTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestDeployments(prId: sidecarPrId) } : nil
+      let aiSummaryTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestAiSummary(prId: sidecarPrId) } : nil
+      let issueInventoryTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchIssueInventory(prId: sidecarPrId) } : nil
+      let pipelineSettingsTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPipelineSettings(prId: sidecarPrId) } : nil
       if let reviewThreadsTask {
         reviewThreads = await reviewThreadsTask.value ?? []
       }
@@ -1003,6 +1091,9 @@ struct PrDetailView: View {
       if let settings = await pipelineSettingsTask?.value {
         pipelineSettings = settings
       }
+      if let capabilitiesTask {
+        capabilities = await capabilitiesTask.value
+      }
       if let groupId = pr?.linkedGroupId {
         groupMembers = try await syncService.fetchPullRequestGroupMembers(groupId: groupId)
       } else {
@@ -1016,9 +1107,25 @@ struct PrDetailView: View {
     if shouldFetchLiveSidecars {
       hasLoadedLiveSidecars = true
     }
-    if let capabilitiesTask {
-      capabilities = await capabilitiesTask.value
-    }
+    hasAttemptedInitialLoad = true
+  }
+
+  @MainActor
+  private func retryPrDetailLoad() async {
+    hasAttemptedInitialLoad = false
+    errorMessage = nil
+    await reload(refreshRemote: true)
+  }
+
+  @MainActor
+  private func fetchGitHubFallbackItem(requestedPrNumber: Int?) async -> GitHubPrListItem? {
+    guard let github = try? await syncService.fetchGitHubPullRequestSnapshot() else { return nil }
+    return repoScopedGitHubPullRequests(from: github)
+      .first {
+        $0.linkedPrId == prId ||
+          $0.id == prId ||
+          (requestedPrNumber != nil && $0.githubPrNumber == requestedPrNumber)
+      }
   }
 
   @MainActor
@@ -1042,15 +1149,15 @@ struct PrDetailView: View {
   }
 
   private func mergeCurrentPr() {
-    runPrAction("Merging pull request") { try await syncService.mergePullRequest(prId: prId, method: mergeMethod.rawValue) }
+    runPrAction("Merging pull request") { try await syncService.mergePullRequest(prId: effectivePrId, method: mergeMethod.rawValue) }
   }
 
   private func closeCurrentPr() {
-    runPrAction("Closing pull request") { try await syncService.closePullRequest(prId: prId) }
+    runPrAction("Closing pull request") { try await syncService.closePullRequest(prId: effectivePrId) }
   }
 
   private func reopenCurrentPr() {
-    runPrAction("Reopening pull request") { try await syncService.reopenPullRequest(prId: prId) }
+    runPrAction("Reopening pull request") { try await syncService.reopenPullRequest(prId: effectivePrId) }
   }
 
   private func requestReviewers() {
@@ -1063,13 +1170,13 @@ struct PrDetailView: View {
 
     runPrAction(
       "Requesting reviewers",
-      action: { try await syncService.requestReviewers(prId: prId, reviewers: reviewers) },
+      action: { try await syncService.requestReviewers(prId: effectivePrId, reviewers: reviewers) },
       onSuccess: { reviewerInput = "" }
     )
   }
 
   private func rerunChecks() {
-    runPrAction("Re-running checks") { try await syncService.rerunPullRequestChecks(prId: prId) }
+    runPrAction("Re-running checks") { try await syncService.rerunPullRequestChecks(prId: effectivePrId) }
   }
 
   private var aiResolverRunning: Bool {
@@ -1084,7 +1191,7 @@ struct PrDetailView: View {
       defer { isAiResolverBusy = false }
       do {
         let state = try await syncService.startPrAiResolution(
-          prId: prId,
+          prId: effectivePrId,
           model: model,
           reasoningEffort: reasoningEffort
         )
@@ -1102,7 +1209,7 @@ struct PrDetailView: View {
       isAiResolverBusy = true
       defer { isAiResolverBusy = false }
       do {
-        try await syncService.stopPrAiResolution(prId: prId)
+        try await syncService.stopPrAiResolution(prId: effectivePrId)
         if let current = aiResolution {
           aiResolution = AiResolutionState(
             prId: current.prId,
@@ -1131,7 +1238,7 @@ struct PrDetailView: View {
       isPathToMergeBusy = true
       defer { isPathToMergeBusy = false }
       do {
-        let result = try await syncService.startPathToMerge(prId: prId)
+        let result = try await syncService.startPathToMerge(prId: effectivePrId)
         applyConvergenceRuntime(result.runtime)
         if !result.scheduled {
           errorMessage = result.blockedBy?.message ?? "Path to Merge is blocked by another lane task."
@@ -1153,7 +1260,7 @@ struct PrDetailView: View {
       isPathToMergeBusy = true
       defer { isPathToMergeBusy = false }
       do {
-        let result = try await syncService.stopPathToMerge(prId: prId, reason: "Stopped from iOS.")
+        let result = try await syncService.stopPathToMerge(prId: effectivePrId, reason: "Stopped from iOS.")
         if let runtime = result.runtime {
           applyConvergenceRuntime(runtime)
         }
@@ -1182,7 +1289,7 @@ struct PrDetailView: View {
       isAiSummaryLoading = true
       defer { isAiSummaryLoading = false }
       do {
-        let summary = try await syncService.fetchPullRequestAiSummary(prId: prId)
+        let summary = try await syncService.fetchPullRequestAiSummary(prId: effectivePrId)
         aiSummary = summary
       } catch {
         errorMessage = error.localizedDescription
@@ -1192,7 +1299,7 @@ struct PrDetailView: View {
 
   private func syncIssueInventory() {
     runPrAction("Syncing issue inventory") {
-      let inventory = try await syncService.syncIssueInventory(prId: prId)
+      let inventory = try await syncService.syncIssueInventory(prId: effectivePrId)
       await MainActor.run {
         issueInventory = inventory
       }
@@ -1215,18 +1322,18 @@ struct PrDetailView: View {
     runPrAction(label) {
       switch action {
       case .fixed:
-        try await syncService.markIssueInventoryFixed(prId: prId, itemIds: [itemId])
+        try await syncService.markIssueInventoryFixed(prId: effectivePrId, itemIds: [itemId])
       case .dismissed:
-        try await syncService.markIssueInventoryDismissed(prId: prId, itemIds: [itemId], reason: "Dismissed from iOS")
+        try await syncService.markIssueInventoryDismissed(prId: effectivePrId, itemIds: [itemId], reason: "Dismissed from iOS")
       case .escalated:
-        try await syncService.markIssueInventoryEscalated(prId: prId, itemIds: [itemId])
+        try await syncService.markIssueInventoryEscalated(prId: effectivePrId, itemIds: [itemId])
       }
     }
   }
 
   private func resetIssueInventory() {
     runPrAction("Resetting issue inventory") {
-      try await syncService.resetIssueInventory(prId: prId)
+      try await syncService.resetIssueInventory(prId: effectivePrId)
       await MainActor.run {
         issueInventory = nil
       }
@@ -1256,14 +1363,14 @@ struct PrDetailView: View {
       var next: PipelineSettings
       if let current = pipelineSettings {
         next = current
-      } else if let fetched = try? await syncService.fetchPipelineSettings(prId: prId) {
+      } else if let fetched = try? await syncService.fetchPipelineSettings(prId: effectivePrId) {
         next = fetched
       } else {
         next = defaultPipelineSettings()
       }
       mutate(&next)
-      try await syncService.savePipelineSettings(prId: prId, settings: next)
-      let settings = try await syncService.fetchPipelineSettings(prId: prId)
+      try await syncService.savePipelineSettings(prId: effectivePrId, settings: next)
+      let settings = try await syncService.fetchPipelineSettings(prId: effectivePrId)
       await MainActor.run {
         pipelineSettings = settings
       }
@@ -1384,7 +1491,7 @@ struct PrDetailView: View {
 
     runPrAction(
       "Posting comment",
-      action: { try await syncService.addPullRequestComment(prId: prId, body: trimmed) },
+      action: { try await syncService.addPullRequestComment(prId: effectivePrId, body: trimmed) },
       onSuccess: { commentInput = "" }
     )
   }
@@ -1393,13 +1500,13 @@ struct PrDetailView: View {
     let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return }
     runPrAction("Replying to review thread") {
-      try await syncService.replyToPullRequestReviewThread(prId: prId, threadId: threadId, body: trimmed)
+      try await syncService.replyToPullRequestReviewThread(prId: effectivePrId, threadId: threadId, body: trimmed)
     }
   }
 
   private func setThreadResolved(threadId: String, resolved: Bool) {
     runPrAction(resolved ? "Resolving review thread" : "Reopening review thread") {
-      try await syncService.setPullRequestReviewThreadResolved(prId: prId, threadId: threadId, resolved: resolved)
+      try await syncService.setPullRequestReviewThreadResolved(prId: effectivePrId, threadId: threadId, resolved: resolved)
     }
   }
 

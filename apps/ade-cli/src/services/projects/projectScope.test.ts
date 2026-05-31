@@ -45,7 +45,7 @@ describe("ProjectScopeRegistry", () => {
     }));
   });
 
-  it("starts sync discovery only for the first opened daemon project scope", async () => {
+  it("does not elect a sync host while opening ordinary daemon project scopes", async () => {
     const { registry, first, second } = createRegistry();
     const scopeRegistry = new ProjectScopeRegistry(registry, {
       syncRuntime: {
@@ -68,8 +68,8 @@ describe("ProjectScopeRegistry", () => {
       projectRoot: first.rootPath,
       syncRuntime: {
         enabled: true,
-        hostStartupEnabled: true,
-        hostDiscoveryEnabled: true,
+        hostStartupEnabled: false,
+        hostDiscoveryEnabled: false,
         initializeInBackground: true,
         runtimeKind: "daemon",
       },
