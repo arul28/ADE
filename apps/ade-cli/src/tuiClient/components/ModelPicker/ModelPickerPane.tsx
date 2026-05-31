@@ -556,7 +556,7 @@ export function ModelPickerPane({
     const origin = measurePaneOrigin(node);
     // Yoga is 0-based; mouse/hit-test coords are 1-based.
     if (origin) onMeasureOrigin({ x: origin.x + 1, y: origin.y + 1, width: origin.width });
-  });
+  }, [onMeasureOrigin, width]);
   const innerWidth = Math.max(20, width - 4);
   const searching = isSearching(state);
   const railEntry = state.railEntries[state.railIndex] ?? state.railEntries[0];
@@ -565,6 +565,16 @@ export function ModelPickerPane({
   const visibleRowCount = modelListRowsForState(state);
   const window = rowWindow(state.entries.length, state.focusedIndex, visibleRowCount);
   const visibleEntries = state.entries.slice(window.start, window.end);
+  const headerLines = headerLineCount(state);
+  const selectorLines = hasSubProviderSelector(state) ? 2 : 0;
+  const railLogoKey = React.useMemo(
+    () => state.railEntries.map((entry) => entry.kind === "provider" ? entry.provider : entry.kind).join("|"),
+    [state.railEntries],
+  );
+  const visibleLogoKey = React.useMemo(
+    () => visibleEntries.map((entry) => `${entry.modelId}:${entry.family}:${entry.subProvider ?? ""}`).join("|"),
+    [visibleEntries],
+  );
   // Content sits right of the rail (full width while searching). Each row
   // reserves its OWN prefix + unavailable suffix from contentWidth, so the title
   // and subtitle stay inside the fixed two-line row budget.
@@ -583,8 +593,7 @@ export function ModelPickerPane({
     if (!origin) return;
     const rootX = origin.x + 1;
     const rootY = origin.y + 1;
-    const modelRegionY = rootY + headerLineCount(state) + 3;
-    const selectorLines = hasSubProviderSelector(state) ? 2 : 0;
+    const modelRegionY = rootY + headerLines + 3;
     const listTop = modelRegionY + selectorLines;
     const listLeft = searching ? rootX : rootX + RAIL_WIDTH + RAIL_TO_LIST_GAP;
 
@@ -598,7 +607,15 @@ export function ModelPickerPane({
     visibleEntries.forEach((entry, sliceIndex) => {
       drawInlineLogo(markForEntry(entry), listLeft + 3, listTop + (sliceIndex * entryHeight));
     });
-  });
+  }, [
+    entryHeight,
+    headerLines,
+    railLogoKey,
+    rowProviderMarksVisible,
+    searching,
+    selectorLines,
+    visibleLogoKey,
+  ]);
 
   // The list always occupies exactly the same line budget for this view (padded
   // with blanks) so the settings footer never shifts as the catalog length changes.

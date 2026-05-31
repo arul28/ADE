@@ -31,6 +31,17 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+let stampSequence = 0;
+
+function indexedStamp(base: string, index: number): string {
+  return `${base}#${String(index).padStart(4, "0")}`;
+}
+
+function sequencedNowStamp(): string {
+  stampSequence = (stampSequence + 1) % 1_000_000;
+  return `${nowIso()}#${String(stampSequence).padStart(6, "0")}`;
+}
+
 function defaultLegacyFilePath(): string {
   return path.join(os.homedir(), ".ade", "modelPicker.json");
 }
@@ -121,25 +132,32 @@ function migrateLegacyFileIfNeeded(db: AdeDb, legacyFilePath: string): void {
     }
 
     const base = nowIso();
-    legacy.favorites.forEach((id, index) => {
-      // Stagger created_at by index so the imported order is preserved by the
-      // `order by created_at` read above without colliding on identical stamps.
-      const createdAt = `${base}#${String(index).padStart(4, "0")}`;
-      db.run(
-        "insert into model_picker_favorites (model_id, created_at) values (?, ?) on conflict(model_id) do nothing",
-        [id, createdAt],
-      );
-    });
-    // Legacy recents are newest-first; map index → descending used_at so the
-    // DB read (order by used_at desc) reproduces the original ordering.
-    legacy.recents.forEach((id, index) => {
-      const usedAt = `${base}#${String(legacy.recents.length - index).padStart(4, "0")}`;
-      db.run(
-        "insert into model_picker_recents (model_id, used_at) values (?, ?) on conflict(model_id) do update set used_at = excluded.used_at",
-        [id, usedAt],
-      );
-    });
-    db.setJson(LEGACY_IMPORT_MARKER_KEY, { importedAt: nowIso(), favorites: legacy.favorites.length, recents: legacy.recents.length });
+    db.run("begin");
+    try {
+      legacy.favorites.forEach((id, index) => {
+        // Stagger created_at by index so the imported order is preserved by the
+        // `order by created_at` read above without colliding on identical stamps.
+        const createdAt = indexedStamp(base, index);
+        db.run(
+          "insert into model_picker_favorites (model_id, created_at) values (?, ?) on conflict(model_id) do nothing",
+          [id, createdAt],
+        );
+      });
+      // Legacy recents are newest-first; map index to descending used_at so the
+      // DB read (order by used_at desc) reproduces the original ordering.
+      legacy.recents.forEach((id, index) => {
+        const usedAt = indexedStamp(base, legacy.recents.length - index);
+        db.run(
+          "insert into model_picker_recents (model_id, used_at) values (?, ?) on conflict(model_id) do update set used_at = excluded.used_at",
+          [id, usedAt],
+        );
+      });
+      db.setJson(LEGACY_IMPORT_MARKER_KEY, { importedAt: nowIso(), favorites: legacy.favorites.length, recents: legacy.recents.length });
+      db.run("commit");
+    } catch (error) {
+      db.run("rollback");
+      throw error;
+    }
   } catch {
     // best-effort migration — leave the file alone and continue.
   }
@@ -173,19 +191,26 @@ export function createModelPickerStore(options: CreateModelPickerStoreOptions): 
       const existing = new Set(readFavoritesFromDb(db));
       // Reconcile to the desired set: delete dropped and restamp every desired
       // row so the caller's order is preserved even for existing favorites.
-      for (const id of existing) {
-        if (!desiredSet.has(id)) {
-          db.run("delete from model_picker_favorites where model_id = ?", [id]);
+      db.run("begin");
+      try {
+        for (const id of existing) {
+          if (!desiredSet.has(id)) {
+            db.run("delete from model_picker_favorites where model_id = ?", [id]);
+          }
         }
+        const base = nowIso();
+        desired.forEach((id, index) => {
+          const createdAt = indexedStamp(base, index);
+          db.run(
+            "insert into model_picker_favorites (model_id, created_at) values (?, ?) on conflict(model_id) do update set created_at = excluded.created_at",
+            [id, createdAt],
+          );
+        });
+        db.run("commit");
+      } catch (error) {
+        db.run("rollback");
+        throw error;
       }
-      const base = nowIso();
-      desired.forEach((id, index) => {
-        const createdAt = `${base}#${String(index).padStart(4, "0")}`;
-        db.run(
-          "insert into model_picker_favorites (model_id, created_at) values (?, ?) on conflict(model_id) do update set created_at = excluded.created_at",
-          [id, createdAt],
-        );
-      });
       return readFavoritesFromDb(db);
     },
     toggleFavorite: (modelId) => {
@@ -202,7 +227,7 @@ export function createModelPickerStore(options: CreateModelPickerStoreOptions): 
       } else {
         db.run(
           "insert into model_picker_favorites (model_id, created_at) values (?, ?) on conflict(model_id) do nothing",
-          [id, nowIso()],
+          [id, sequencedNowStamp()],
         );
         isFavorite = true;
       }
@@ -214,7 +239,7 @@ export function createModelPickerStore(options: CreateModelPickerStoreOptions): 
       if (!id) return readRecentsFromDb(db);
       db.run(
         "insert into model_picker_recents (model_id, used_at) values (?, ?) on conflict(model_id) do update set used_at = excluded.used_at",
-        [id, nowIso()],
+        [id, sequencedNowStamp()],
       );
       pruneRecents(db);
       return readRecentsFromDb(db);

@@ -2264,11 +2264,11 @@ create index if not exists idx_lane_worktree_locks_expires on lane_worktree_lock
 -- ensureCrrTables auto-discovers these (PK present, not excluded) and runs
 -- crsql_as_crr on each, mirroring desktop's kvDb.ts.
 create table if not exists model_picker_favorites (
-      model_id text primary key,
-      created_at text not null
-    );
+  model_id text primary key,
+  created_at text not null
+);
 
 create table if not exists model_picker_recents (
-      model_id text primary key,
-      used_at text not null
-    );
+  model_id text primary key,
+  used_at text not null
+);

@@ -154,6 +154,10 @@ function providerFromCatalogGroup(groupKey: string, fallbackFamily?: string): Ad
   return normalizeProvider(fallbackFamily ?? normalized);
 }
 
+function modelAvailability(authStatus: ModelPickerAuthStatus, intrinsicAvailable = true): boolean {
+  return intrinsicAvailable && authStatus !== "unavailable";
+}
+
 function descriptorFor(modelInfo: AgentChatModelInfo): ModelDescriptor | undefined {
   const id = modelInfo.modelId ?? modelInfo.id;
   return getModelById(id);
@@ -187,7 +191,7 @@ function entriesFromCatalog(
               ? subsection.key || model.providerId || provider.key || undefined
               : model.providerId || provider.key || subsection.key || undefined,
             isFavorite: favoritesSet.has(model.id),
-            isAvailable: model.isAvailable && authStatus !== "unavailable",
+            isAvailable: modelAvailability(authStatus, model.isAvailable),
             authStatus,
             reasoningLabel: activeReasoningEffort ? `think ${activeReasoningEffort}` : null,
             ...(model.serviceTiers?.length ? { serviceTiers: [...model.serviceTiers] } : {}),
@@ -217,7 +221,7 @@ function entryFromDescriptor(
     subProvider: providerLabel(provider),
     subProviderKey: provider,
     isFavorite: favoritesSet.has(descriptor.id),
-    isAvailable: authStatus !== "unavailable",
+    isAvailable: modelAvailability(authStatus),
     authStatus,
     reasoningLabel: activeReasoningEffort ? `think ${activeReasoningEffort}` : null,
     ...(descriptor.serviceTiers?.length ? { serviceTiers: [...descriptor.serviceTiers] } : {}),
@@ -266,7 +270,7 @@ function entryFromModelInfo(
         }
       : {}),
     isFavorite: favoritesSet.has(modelId),
-    isAvailable: authStatus !== "unavailable",
+    isAvailable: modelAvailability(authStatus),
     authStatus,
     reasoningLabel: activeReasoningEffort ? `think ${activeReasoningEffort}` : null,
     ...(modelInfo.serviceTiers?.length ? { serviceTiers: [...modelInfo.serviceTiers] } : {}),

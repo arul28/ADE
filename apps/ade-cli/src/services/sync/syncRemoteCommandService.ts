@@ -2330,29 +2330,29 @@ function registerModelPickerRemoteCommands({ args, register }: RemoteCommandRegi
 
   register("modelPicker.getFavorites", { viewerAllowed: true }, async () => ({
     favorites: requireModelPickerStore().getFavorites(),
-  }), "runtime");
+  }));
   register("modelPicker.setFavorites", { viewerAllowed: true }, async (payload) => {
     const rawFavorites = (payload as { favorites?: unknown }).favorites;
     const favoritesInput = Array.isArray(rawFavorites)
       ? rawFavorites.filter((entry): entry is string => typeof entry === "string")
       : [];
     return { favorites: requireModelPickerStore().setFavorites(favoritesInput) };
-  }, "runtime");
+  });
   register("modelPicker.toggleFavorite", { viewerAllowed: true }, async (payload) => {
     const modelId = typeof (payload as { modelId?: unknown }).modelId === "string"
       ? ((payload as { modelId?: string }).modelId as string)
       : "";
     return requireModelPickerStore().toggleFavorite(modelId);
-  }, "runtime");
+  });
   register("modelPicker.getRecents", { viewerAllowed: true }, async () => ({
     recents: requireModelPickerStore().getRecents(),
-  }), "runtime");
+  }));
   register("modelPicker.pushRecent", { viewerAllowed: true }, async (payload) => {
     const modelId = typeof (payload as { modelId?: unknown }).modelId === "string"
       ? ((payload as { modelId?: string }).modelId as string)
       : "";
     return { recents: requireModelPickerStore().pushRecent(modelId) };
-  }, "runtime");
+  });
 }
 
 function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {

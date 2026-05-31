@@ -19,6 +19,7 @@ describe("modelPickerStore (db-backed)", () => {
   const openDbs: AdeDb[] = [];
 
   afterEach(() => {
+    vi.useRealTimers();
     for (const db of openDbs.splice(0)) {
       try {
         db.close();
@@ -110,6 +111,16 @@ describe("modelPickerStore (db-backed)", () => {
     expect(moved[0]).toBe(tail);
     expect(moved).toHaveLength(MODEL_PICKER_MAX_RECENTS);
     expect(new Set(moved).size).toBe(MODEL_PICKER_MAX_RECENTS);
+  });
+
+  it("preserves recency when multiple models are pushed in the same millisecond", async () => {
+    const { db, root } = await makeDb();
+    const store = createModelPickerStore({ db, legacyFilePath: noMigration(root) });
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-31T23:30:00.000Z"));
+
+    store.pushRecent("z-model");
+    expect(store.pushRecent("a-model")).toEqual(["a-model", "z-model"]);
   });
 
   it("ignores empty/whitespace modelId for toggleFavorite and pushRecent", async () => {
