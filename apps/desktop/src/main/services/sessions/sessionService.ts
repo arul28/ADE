@@ -342,6 +342,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
   const list =({ laneId, status, limit, toolTypes }: ListSessionsArgs = {}) => {
     const where: string[] = [];
     const params: (string | number | null)[] = [];
+    const effectiveLimit = limit === null ? null : typeof limit === "number" ? limit : 200;
 
     if (laneId) {
       where.push("s.lane_id = ?");
@@ -352,55 +353,73 @@ export function createSessionService({ db }: { db: AdeDb }) {
       params.push(status);
     }
     const normalizedToolTypes = normalizeToolTypes(toolTypes);
+    const fetchRows = (
+      extraWhere: string[] = [],
+      extraParams: (string | number | null)[] = [],
+    ): SessionRow[] => {
+      const queryWhere = [...where, ...extraWhere];
+      const queryParams: (string | number | null)[] = [...params, ...extraParams];
+      const whereSql = queryWhere.length ? `where ${queryWhere.join(" and ")}` : "";
+      const limitSql = effectiveLimit === null ? "" : "limit ?";
+      if (effectiveLimit !== null) queryParams.push(effectiveLimit);
+
+      return db.all<SessionRow>(
+        `
+          select ${SESSION_COLUMNS}
+          from terminal_sessions s
+          join lanes l on l.id = s.lane_id
+          ${whereSql}
+          order by s.started_at desc
+          ${limitSql}
+        `,
+        queryParams
+      );
+    };
+
     if (normalizedToolTypes.length > 0) {
-      const directPlaceholders = normalizedToolTypes.map(() => "?").join(", ");
-      const toolTypeClauses = [`s.tool_type in (${directPlaceholders})`];
-      const toolTypeParams: (string | number | null)[] = [...normalizedToolTypes];
       const legacyChatClauses: string[] = [];
+      const legacyChatParams: (string | number | null)[] = [];
 
       for (const toolType of normalizedToolTypes) {
         if (toolType === "codex-chat") {
           legacyChatClauses.push(
-            "(s.tool_type = 'other' and (lower(coalesce(s.resume_command, '')) = ? or lower(coalesce(s.resume_command, '')) like ?))",
+            "(lower(coalesce(s.resume_command, '')) = ? or lower(coalesce(s.resume_command, '')) like ?)",
           );
-          toolTypeParams.push("chat:codex", "chat:codex:%");
+          legacyChatParams.push("chat:codex", "chat:codex:%");
         } else if (toolType === "claude-chat") {
-          legacyChatClauses.push("(s.tool_type = 'other' and lower(coalesce(s.resume_command, '')) like ?)");
-          toolTypeParams.push("chat:claude:%");
+          legacyChatClauses.push("lower(coalesce(s.resume_command, '')) like ?");
+          legacyChatParams.push("chat:claude:%");
         } else if (toolType === "opencode-chat") {
-          legacyChatClauses.push("(s.tool_type = 'other' and lower(coalesce(s.resume_command, '')) like ?)");
-          toolTypeParams.push("chat:unified:%");
+          legacyChatClauses.push("lower(coalesce(s.resume_command, '')) like ?");
+          legacyChatParams.push("chat:unified:%");
         } else if (toolType === "cursor") {
-          legacyChatClauses.push("(s.tool_type = 'other' and lower(coalesce(s.resume_command, '')) like ?)");
-          toolTypeParams.push("chat:cursor:%");
+          legacyChatClauses.push("lower(coalesce(s.resume_command, '')) like ?");
+          legacyChatParams.push("chat:cursor:%");
         } else if (toolType === "droid-chat") {
-          legacyChatClauses.push("(s.tool_type = 'other' and lower(coalesce(s.resume_command, '')) like ?)");
-          toolTypeParams.push("chat:droid:%");
+          legacyChatClauses.push("lower(coalesce(s.resume_command, '')) like ?");
+          legacyChatParams.push("chat:droid:%");
         }
       }
 
-      if (legacyChatClauses.length > 0) {
-        toolTypeClauses.push(`(${legacyChatClauses.join(" or ")})`);
+      const rowsById = new Map<string, SessionRow>();
+      for (const toolType of normalizedToolTypes) {
+        for (const row of fetchRows(["s.tool_type = ?"], [toolType])) {
+          rowsById.set(row.id, row);
+        }
       }
-      where.push(`(${toolTypeClauses.join(" or ")})`);
-      params.push(...toolTypeParams);
+      if (legacyChatClauses.length > 0) {
+        for (const row of fetchRows(["s.tool_type = 'other'", `(${legacyChatClauses.join(" or ")})`], legacyChatParams)) {
+          rowsById.set(row.id, row);
+        }
+      }
+
+      const rows = Array.from(rowsById.values())
+        .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt));
+      const limitedRows = effectiveLimit === null ? rows : rows.slice(0, effectiveLimit);
+      return limitedRows.map(mapRow) as TerminalSessionSummary[];
     }
 
-    const whereSql = where.length ? `where ${where.join(" and ")}` : "";
-    const limitSql = limit === null ? "" : "limit ?";
-    if (limit !== null) params.push(typeof limit === "number" ? limit : 200);
-
-    const rows = db.all<SessionRow>(
-      `
-        select ${SESSION_COLUMNS}
-        from terminal_sessions s
-        join lanes l on l.id = s.lane_id
-        ${whereSql}
-        order by s.started_at desc
-        ${limitSql}
-      `,
-      params
-    );
+    const rows = fetchRows();
 
     return rows.map(mapRow) as TerminalSessionSummary[];
   };

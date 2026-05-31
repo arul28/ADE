@@ -1503,6 +1503,8 @@ function migrate(db: MigrationDb) {
   db.run("create index if not exists idx_terminal_sessions_status on terminal_sessions(status)");
   db.run("create index if not exists idx_terminal_sessions_started_at on terminal_sessions(started_at desc)");
   db.run("create index if not exists idx_terminal_sessions_lane_started_at on terminal_sessions(lane_id, started_at desc)");
+  db.run("create index if not exists idx_terminal_sessions_lane_tool_started on terminal_sessions(lane_id, tool_type, started_at desc)");
+  db.run("create index if not exists idx_terminal_sessions_tool_started on terminal_sessions(tool_type, started_at desc)");
 
   // Migration: add resume_command to existing databases that pre-date this column.
   safeAddColumn(db, "alter table terminal_sessions add column resume_command text");
