@@ -24,7 +24,7 @@ function parseMaxRetries(value: unknown): number | undefined {
         ? Number(value)
         : Number.NaN;
   if (!Number.isFinite(parsed)) {
-    throw new Error("--max-retries must be a number.");
+    throw new Error("'maxRetries' must be a number (--max-retries).");
   }
   return Math.max(0, Math.min(LINEAR_GRAPHQL_MAX_RETRIES, Math.floor(parsed)));
 }
@@ -41,7 +41,7 @@ export function parseLinearGraphQLInput(raw: unknown): LinearGraphQLInput {
 
   const variables = raw.variables;
   if (variables != null && !isRecord(variables)) {
-    throw new Error("--variables-json must be a JSON object.");
+    throw new Error("'variables' must be a JSON object (--variables-json).");
   }
 
   const operationName = optionalString(raw.operationName);

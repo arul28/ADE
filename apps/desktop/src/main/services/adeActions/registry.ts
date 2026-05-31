@@ -2471,10 +2471,14 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
 function buildLinearIssueTrackerDomainService(runtime: AdeRuntime): OpaqueService | null {
   const tracker = runtime.linearIssueTracker;
   if (!tracker) return null;
+  const connectionPrecheckCache: LinearConnectionPrecheckCache = {
+    checkedAt: 0,
+    connection: null,
+  };
   return {
     ...(tracker as unknown as OpaqueService),
     async graphql(args?: unknown) {
-      await requireRuntimeLinearConnection(runtime);
+      await requireRuntimeLinearConnection(runtime, connectionPrecheckCache);
       return tracker.runGraphQL(parseLinearGraphQLInput(asActionRecord(args)));
     },
     async getStatus() {
@@ -2596,9 +2600,36 @@ async function buildRuntimeLinearConnectionStatus(runtime: AdeRuntime): Promise<
   }
 }
 
-async function requireRuntimeLinearConnection(runtime: AdeRuntime): Promise<LinearConnectionStatus> {
+const LINEAR_CONNECTION_PRECHECK_TTL_MS = 30_000;
+
+type LinearConnectionPrecheckCache = {
+  checkedAt: number;
+  connection: LinearConnectionStatus | null;
+};
+
+async function requireRuntimeLinearConnection(
+  runtime: AdeRuntime,
+  cache?: LinearConnectionPrecheckCache,
+): Promise<LinearConnectionStatus> {
+  const now = Date.now();
+  if (
+    cache?.connection?.connected
+    && now - cache.checkedAt < LINEAR_CONNECTION_PRECHECK_TTL_MS
+  ) {
+    return cache.connection;
+  }
   const connection = await buildRuntimeLinearConnectionStatus(runtime);
-  if (connection.connected) return connection;
+  if (connection.connected) {
+    if (cache) {
+      cache.connection = connection;
+      cache.checkedAt = now;
+    }
+    return connection;
+  }
+  if (cache) {
+    cache.connection = null;
+    cache.checkedAt = 0;
+  }
   const message = connection.message?.trim();
   const error = new Error(message ? `Linear is not connected: ${message}` : "Linear is not connected.");
   Object.assign(error, { code: "LINEAR_NOT_CONNECTED", connection });

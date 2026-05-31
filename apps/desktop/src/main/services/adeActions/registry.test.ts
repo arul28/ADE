@@ -406,6 +406,7 @@ describe("runtime Linear issue tracker actions", () => {
       query: "query Viewer { viewer { id } }",
       maxRetries: 10,
     });
+    expect(tracker.getConnectionStatus).toHaveBeenCalledTimes(2);
     await expect(service.getWorkflowCatalog()).resolves.toEqual({ users, labels, states });
     await expect(service.getIssuePickerData()).resolves.toEqual({ projects, users, states });
   });

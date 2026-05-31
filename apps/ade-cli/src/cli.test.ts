@@ -2466,7 +2466,7 @@ describe("ADE CLI", () => {
         "--arg-json",
         "variables=[]",
       ]),
-    ).toThrow(/--variables-json must be a JSON object/);
+    ).toThrow(/'variables' must be a JSON object/);
 
     expect(() =>
       buildCliPlan([
@@ -2488,7 +2488,7 @@ describe("ADE CLI", () => {
         "--input-json",
         "{\"maxRetries\":\"many\"}",
       ]),
-    ).toThrow(/--max-retries must be a number/);
+    ).toThrow(/'maxRetries' must be a number/);
   });
 
   it("attaches an issue to the current session via linear attach --this-session", () => {

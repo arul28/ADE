@@ -2095,9 +2095,6 @@ function readLinearGraphQLArgs(args: string[]): JsonObject {
     ["--variables-file", "--vars-file"],
     "--variables-json",
   );
-  if (variables !== undefined && !isRecord(variables)) {
-    throw new CliUsageError("--variables-json must be a JSON object.");
-  }
   const input: JsonObject = { query };
   if (variables !== undefined) input.variables = variables;
   maybePut(input, "operationName", readValue(args, ["--operation-name", "--operation"]));

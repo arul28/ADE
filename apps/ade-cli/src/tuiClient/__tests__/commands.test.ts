@@ -481,7 +481,7 @@ describe("linear command routing", () => {
     ).toMatchObject({
       kind: "usage",
       title: "Linear GraphQL",
-      body: expect.stringContaining("--max-retries must be a number"),
+      body: expect.stringContaining("'maxRetries' must be a number"),
     });
   });
 
