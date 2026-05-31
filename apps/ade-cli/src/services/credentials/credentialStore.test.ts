@@ -41,6 +41,47 @@ describe("EncryptedFileCredentialStore", () => {
     expect(await store.get("agent.token")).toBeNull();
     expect(fs.existsSync(path.join(tempDir, ".machine-key"))).toBe(true);
   });
+
+  it("derives file encryption from OS-bound key material when available", async () => {
+    const osMaterial = Buffer.from("test-os-material");
+    const store = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterialProvider: () => osMaterial,
+    });
+
+    store.setSync("linear.token.v1", "lin_secret");
+
+    const reloaded = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterialProvider: () => osMaterial,
+    });
+    expect(reloaded.getSync("linear.token.v1")).toBe("lin_secret");
+
+    const unbound = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterialProvider: () => null,
+    });
+    expect(() => unbound.getSync("linear.token.v1")).toThrow();
+  });
+
+  it("can read legacy machine-key ciphertext before rewriting with OS-bound key material", async () => {
+    const legacy = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterialProvider: () => null,
+    });
+    legacy.setSync("agent.token", "legacy_secret");
+
+    const upgraded = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterialProvider: () => Buffer.from("test-os-material"),
+    });
+    expect(upgraded.getSync("agent.token")).toBe("legacy_secret");
+    expect(() => legacy.getSync("agent.token")).toThrow();
+
+    upgraded.setSync("agent.token", "bound_secret");
+
+    expect(upgraded.getSync("agent.token")).toBe("bound_secret");
+  });
 });
 
 describe("ElectronSafeStorageCredentialStore", () => {
@@ -56,6 +97,37 @@ describe("ElectronSafeStorageCredentialStore", () => {
 
     expect(await store.get("openai")).toBe("sk-test");
     expect(fs.readFileSync(path.join(tempDir, "credentials.json.enc"), "utf8")).toContain("enc:");
+  });
+
+  it("reads legacy file-store credentials before rewriting with safeStorage", async () => {
+    const legacyStore = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterialProvider: () => null,
+    });
+    legacyStore.setSync("github.token.v1", "ghp_legacy");
+    const safeStorage = {
+      isEncryptionAvailable: () => true,
+      encryptString: (value: string) => Buffer.from(`safe:${value}`, "utf8"),
+      decryptString: (value: Buffer) => {
+        const raw = value.toString("utf8");
+        if (!raw.startsWith("safe:")) throw new Error("not safeStorage ciphertext");
+        return raw.slice("safe:".length);
+      },
+    };
+    const store = new ElectronSafeStorageCredentialStore({
+      secretsDir: tempDir,
+      safeStorage,
+      legacyStore,
+    });
+
+    expect(store.getSync("github.token.v1")).toBe("ghp_legacy");
+    expect(fs.readFileSync(path.join(tempDir, "credentials.json.enc"), "utf8")).toContain("safe:");
+
+    store.setSync("github.token.v1", "ghp_safe");
+
+    expect(fs.readFileSync(path.join(tempDir, "credentials.json.enc"), "utf8")).toContain("safe:");
+    expect(store.getSync("github.token.v1")).toBe("ghp_safe");
+    expect(() => legacyStore.getSync("github.token.v1")).toThrow();
   });
 });
 

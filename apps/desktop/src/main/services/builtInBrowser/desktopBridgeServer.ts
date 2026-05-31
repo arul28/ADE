@@ -59,7 +59,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
 
   if (!isNamedPipe) {
     try {
-      fs.mkdirSync(path.dirname(socketPath), { recursive: true });
+      fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
     } catch (error) {
       logger.warn("built_in_browser_bridge.sockdir_create_failed", {
         socketPath,
@@ -117,6 +117,16 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
   });
 
   server.listen(socketPath, () => {
+    if (!isNamedPipe) {
+      try {
+        fs.chmodSync(socketPath, 0o600);
+      } catch (error) {
+        logger.warn("built_in_browser_bridge.sock_chmod_failed", {
+          socketPath,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     logger.info("built_in_browser_bridge.listening", { socketPath });
   });
 
