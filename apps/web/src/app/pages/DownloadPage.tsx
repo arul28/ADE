@@ -16,7 +16,8 @@ type PlatformHint = "mac" | "windows" | "linux" | "ios" | "unknown";
 
 function detectPlatform(): PlatformHint {
   const ua = typeof navigator !== "undefined" ? navigator.userAgent.toLowerCase() : "";
-  const navigatorPlatform = typeof navigator !== "undefined" ? navigator.platform.toLowerCase() : "";
+  // navigator.platform is deprecated; used only as an iPad-spoof fallback.
+  const navigatorPlatform = typeof navigator !== "undefined" ? (navigator.platform ?? "").toLowerCase() : "";
   const maxTouchPoints = typeof navigator !== "undefined" ? navigator.maxTouchPoints : 0;
   if (/(iphone|ipad|ipod)/.test(ua) || (navigatorPlatform === "macintel" && maxTouchPoints > 1)) return "ios";
   if (ua.includes("mac os") || ua.includes("macintosh")) return "mac";
@@ -77,10 +78,10 @@ export function DownloadPage() {
         key: "ios" as const,
         title: "iOS",
         icon: <Smartphone className="h-5 w-5" />,
-        note: "The companion app is in TestFlight while the App Store listing is prepared.",
-        hint: "Use the iOS beta for remote review, approvals, and push state.",
-        actionHref: LINKS.changelogLatest,
-        actionLabel: "View TestFlight notes"
+        note: "The companion app is available to current TestFlight testers while the App Store listing is prepared.",
+        hint: "Mobile release notes cover remote review, approvals, and push state.",
+        actionHref: LINKS.changelog,
+        actionLabel: "Read mobile release notes"
       }
     ],
     []

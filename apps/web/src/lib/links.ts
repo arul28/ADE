@@ -8,6 +8,6 @@ export const LINKS = {
   github: `https://github.com/${repo}`,
   releases: `https://github.com/${repo}/releases/latest`,
   docs: "https://ade-app.dev/docs",
-  changelogLatest: "https://ade-app.dev/docs/changelog/v1.1.12",
+  changelog: "https://ade-app.dev/docs/changelog",
   prd: `https://github.com/${repo}/blob/main/docs/PRD.md`,
 } as const;
