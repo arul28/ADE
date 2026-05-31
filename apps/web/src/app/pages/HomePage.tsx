@@ -19,8 +19,9 @@ import { IPhoneFrame } from "../../components/editorial/IPhoneFrame";
 import { FeatureGrid } from "../../components/editorial/FeatureGrid";
 import { IndexPage } from "../../components/editorial/IndexPage";
 import { BackCover } from "../../components/editorial/BackCover";
+import { EDITORIAL_ISSUE } from "../../components/editorial/issue";
 
-const MOBILE_BYLINE_DATE = "April 2026 · iOS 17+";
+const MOBILE_BYLINE_DATE = `${EDITORIAL_ISSUE.monthYear} · iOS 17+`;
 
 function AgentBadge({
   src,
@@ -383,7 +384,7 @@ export function HomePage() {
                 macOS continues on iOS without a refresh.
               </ChapterBody>
               <PullQuote tone="ink">
-                &ldquo;None of the eleven apps we replace have a mobile client.
+                &ldquo;None of the ten apps we replace have a mobile client.
                 We built the one that does.&rdquo;
               </PullQuote>
               <Byline tone="ink" date={MOBILE_BYLINE_DATE} />

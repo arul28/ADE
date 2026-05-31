@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import { cn } from "../../lib/cn";
+import { EDITORIAL_ISSUE } from "./issue";
 
 /**
  * Cream article chapter scaffold. Includes:
@@ -38,9 +39,9 @@ export function Chapter({
       <div className="mx-auto max-w-[1520px] px-[clamp(20px,3vw,48px)] py-[clamp(24px,3vw,52px)]">
         {/* running head */}
         <div className="mb-6 flex items-baseline justify-between border-b border-[color:var(--color-ink-hairline)] pb-3 text-[11px] uppercase tracking-[0.24em] text-[color:var(--color-ink-muted)]">
-          <span>ADE &middot; April &rsquo;26</span>
+          <span>ADE &middot; {EDITORIAL_ISSUE.shortMonthYear}</span>
           <span className="hidden sm:block">The Agentic Development Environment</span>
-          <span>{`Vol. 1 · v1.1.0 · ${pageNumber}`}</span>
+          <span>{EDITORIAL_ISSUE.volume} &middot; {EDITORIAL_ISSUE.version} &middot; {pageNumber}</span>
         </div>
 
         {/* folio */}
@@ -106,7 +107,7 @@ export function ChapterBody({
 /** Italic byline with short rule. */
 export function Byline({
   author = "By ADE Staff",
-  date = "April 2026",
+  date = EDITORIAL_ISSUE.monthYear,
   tone = "ink",
 }: {
   author?: string;

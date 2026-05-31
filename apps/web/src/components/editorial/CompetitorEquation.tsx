@@ -16,7 +16,7 @@ const COMPETITORS = [
 
 /**
  * Two-row competitor equation.
- *   Row 1: 11 competitor chips + `+` separators, staggered in left→right.
+ *   Row 1: 10 competitor chips + `+` separators, staggered in left→right.
  *   Row 2: italic serif "equals" + ADE dock icon with violet halo pulse.
  */
 export function CompetitorEquation() {
