@@ -381,7 +381,10 @@ const RETRYABLE_READ_ACTIONS = new Set<string>([
   "chat.codexFuzzyFileSearch",
   "chat.fileSearch",
   "chat.modelCatalog",
+  "file.listTreeChildren",
   "file.quickOpen",
+  "file.readFileRange",
+  "file.refreshGitDecorations",
   "terminal.activeForChat",
   "terminal.preview",
 ]);

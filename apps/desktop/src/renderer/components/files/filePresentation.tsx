@@ -69,6 +69,62 @@ export function getFileIcon(fileName: string): { icon: React.ComponentType<any>;
   return { icon: FileText, color: FILE_ICON_COLORS.default };
 }
 
+// Extension → Monaco language id. Far broader than the server's languageIdFromPath
+// so the editor highlights real-world files instead of falling back to plaintext.
+const EXT_TO_MONACO_LANGUAGE: Record<string, string> = {
+  ts: "typescript", tsx: "typescript", mts: "typescript", cts: "typescript",
+  js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
+  json: "json", jsonc: "json", json5: "json",
+  yml: "yaml", yaml: "yaml",
+  md: "markdown", mdx: "markdown", markdown: "markdown",
+  py: "python", pyi: "python",
+  rs: "rust", go: "go", java: "java", kt: "kotlin", kts: "kotlin",
+  c: "c", h: "c", cpp: "cpp", cc: "cpp", cxx: "cpp", hpp: "cpp", hh: "cpp",
+  cs: "csharp", swift: "swift", m: "objective-c", mm: "objective-c",
+  rb: "ruby", php: "php", pl: "perl", lua: "lua", r: "r", scala: "scala",
+  sh: "shell", bash: "shell", zsh: "shell", fish: "shell", ps1: "powershell",
+  css: "css", scss: "scss", sass: "scss", less: "less",
+  html: "html", htm: "html", xml: "xml", svg: "xml", vue: "html",
+  sql: "sql", graphql: "graphql", gql: "graphql",
+  toml: "ini", ini: "ini", cfg: "ini", conf: "ini", env: "ini", properties: "ini",
+  dockerfile: "dockerfile", makefile: "makefile",
+  proto: "proto", tf: "hcl", hcl: "hcl",
+  txt: "plaintext", log: "plaintext", csv: "plaintext", tsv: "plaintext",
+};
+
+// Filename (lowercased, no directory) → Monaco language id, for files where the
+// name matters more than the extension.
+const FILENAME_TO_MONACO_LANGUAGE: Record<string, string> = {
+  dockerfile: "dockerfile",
+  makefile: "makefile",
+  "gnumakefile": "makefile",
+  "cmakelists.txt": "cmake",
+  ".gitignore": "ignore",
+  ".gitattributes": "ignore",
+  ".npmignore": "ignore",
+  ".dockerignore": "ignore",
+  ".env": "ini",
+  "go.mod": "go-mod",
+  "go.sum": "plaintext",
+};
+
+/**
+ * Resolve the Monaco language id for a file. Prefers a meaningful server-provided
+ * id, then a filename special-case (Dockerfile, Makefile, .env…), then the
+ * extension map, and only then falls back to plaintext. This replaces the old
+ * `languageId || "plaintext"` that left most files unhighlighted.
+ */
+export function resolveLanguageId(fileName: string, serverLanguageId?: string | null): string {
+  if (serverLanguageId && serverLanguageId !== "plaintext" && serverLanguageId !== "image") {
+    return serverLanguageId;
+  }
+  const base = fileName.toLowerCase().split(/[\\/]/).pop() ?? fileName.toLowerCase();
+  const byName = FILENAME_TO_MONACO_LANGUAGE[base];
+  if (byName) return byName;
+  const ext = base.includes(".") ? base.slice(base.lastIndexOf(".") + 1) : base;
+  return EXT_TO_MONACO_LANGUAGE[ext] ?? "plaintext";
+}
+
 export function changeStatusColor(changeStatus: FileTreeNode["changeStatus"]): string {
   if (changeStatus === "added" || changeStatus === "untracked" || changeStatus === "A") return COLORS.success;
   if (changeStatus === "deleted" || changeStatus === "D") return COLORS.danger;

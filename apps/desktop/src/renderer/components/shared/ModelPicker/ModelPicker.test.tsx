@@ -405,13 +405,14 @@ describe("ModelPicker", () => {
 
     await user.click(screen.getByRole("button", { name: /Select model/i }));
 
-    expect(screen.getByText("CLI only")).toBeTruthy();
+    expect(screen.queryByText("CLI only")).toBeNull();
     expect(screen.queryByText("Chat only")).toBeNull();
-    expect(screen.getByText("Cursor Both").parentElement?.textContent).not.toContain("only");
-
-    expect(screen
+    const visibleIds = screen
       .getAllByRole("option")
-      .some((el) => el.getAttribute("data-model-id") === chatOnly.id)).toBe(false);
+      .map((el) => el.getAttribute("data-model-id"));
+    expect(visibleIds).toContain(cliOnly.id);
+    expect(visibleIds).toContain(both.id);
+    expect(visibleIds).not.toContain(chatOnly.id);
 
     const cliOnlyRow = screen
       .getAllByRole("option")
@@ -442,7 +443,7 @@ describe("ModelPicker", () => {
     await user.click(screen.getByRole("button", { name: /Select model/i }));
 
     expect(screen.queryByText("CLI only")).toBeNull();
-    expect(screen.getByText("Chat only")).toBeTruthy();
+    expect(screen.queryByText("Chat only")).toBeNull();
     const visibleIds = screen
       .getAllByRole("option")
       .map((el) => el.getAttribute("data-model-id"));

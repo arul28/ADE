@@ -237,6 +237,11 @@ export function descriptorsFromAgentChatModelCatalog(
               : base.cursorAvailability
                 ? { cursorAvailability: base.cursorAvailability }
                 : {}),
+            ...(model.cursorCliVariants?.length
+              ? { cursorCliVariants: model.cursorCliVariants }
+              : base.cursorCliVariants?.length
+                ? { cursorCliVariants: base.cursorCliVariants }
+                : {}),
             subProvider: useSubsectionAsProvider
               ? subsection.label || model.providerName || provider.displayName || undefined
               : model.providerName || provider.displayName || subsection.label || undefined,

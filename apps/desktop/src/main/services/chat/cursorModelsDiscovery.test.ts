@@ -322,16 +322,71 @@ describe("parseCursorCliModelsStdout", () => {
       id: "composer-2.5",
       aliases: ["composer-2.5-fast"],
       serviceTiers: ["fast"],
+      cliVariants: [
+        { modelId: "composer-2.5", fastMode: false },
+        { modelId: "composer-2.5-fast", fastMode: true },
+      ],
     });
     expect(descriptors).toHaveLength(1);
     expect(descriptors[0]).toMatchObject({
       id: "cursor/composer-2.5",
       aliases: ["composer-2.5-fast"],
       serviceTiers: ["fast"],
+      cursorCliVariants: [
+        { modelId: "composer-2.5", fastMode: false },
+        { modelId: "composer-2.5-fast", fastMode: true },
+      ],
     });
     expect(resolveCachedCursorModelAvailability("cursor/composer-2.5-fast", "crsr_test")).toEqual({
       cli: true,
       sdk: false,
+    });
+  });
+
+  it("folds Cursor CLI reasoning and fast concrete rows into an abstract base descriptor", async () => {
+    spawnAsyncMock.mockResolvedValueOnce({
+      status: 0,
+      stdout: [
+        "claude-opus-4-7-thinking-low - Opus 4.7 1M Low Thinking",
+        "claude-opus-4-7-thinking-low-fast - Opus 4.7 1M Low Thinking Fast",
+        "claude-opus-4-7-thinking-medium - Opus 4.7 1M Medium Thinking",
+        "claude-opus-4-7-thinking-medium-fast - Opus 4.7 1M Medium Thinking Fast",
+      ].join("\n"),
+      stderr: "",
+    });
+
+    const rows = await listCursorModelsFromCli("/usr/local/bin/cursor-agent");
+    const descriptors = await discoverCursorCliModelDescriptors("/usr/local/bin/cursor-agent", { mode: "cached-only" });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: "claude-opus-4-7-thinking",
+      displayName: "Opus 4.7 1M Thinking",
+      aliases: [
+        "claude-opus-4-7-thinking-low",
+        "claude-opus-4-7-thinking-low-fast",
+        "claude-opus-4-7-thinking-medium",
+        "claude-opus-4-7-thinking-medium-fast",
+      ],
+      reasoningTiers: ["low", "medium"],
+      serviceTiers: ["fast"],
+      cliVariants: [
+        { modelId: "claude-opus-4-7-thinking-low", reasoningEffort: "low", fastMode: false },
+        { modelId: "claude-opus-4-7-thinking-low-fast", reasoningEffort: "low", fastMode: true },
+        { modelId: "claude-opus-4-7-thinking-medium", reasoningEffort: "medium", fastMode: false },
+        { modelId: "claude-opus-4-7-thinking-medium-fast", reasoningEffort: "medium", fastMode: true },
+      ],
+    });
+    expect(descriptors[0]).toMatchObject({
+      id: "cursor/claude-opus-4-7-thinking",
+      reasoningTiers: ["low", "medium"],
+      serviceTiers: ["fast"],
+      cursorCliVariants: [
+        { modelId: "claude-opus-4-7-thinking-low", reasoningEffort: "low", fastMode: false },
+        { modelId: "claude-opus-4-7-thinking-low-fast", reasoningEffort: "low", fastMode: true },
+        { modelId: "claude-opus-4-7-thinking-medium", reasoningEffort: "medium", fastMode: false },
+        { modelId: "claude-opus-4-7-thinking-medium-fast", reasoningEffort: "medium", fastMode: true },
+      ],
     });
   });
 

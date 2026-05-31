@@ -1,5 +1,6 @@
 import {
   type CursorModelAvailability,
+  type CursorCliModelVariant,
   createDynamicCursorCliModelDescriptor,
   sortCursorCliDescriptorsForPicker,
   type ModelDescriptor,
@@ -31,6 +32,7 @@ export type CursorCliModelRow = {
   aliases?: string[];
   parameters?: CursorModelParameterDefinition[];
   variants?: CursorModelVariant[];
+  cliVariants?: CursorCliModelVariant[];
   reasoningTiers?: string[];
   serviceTiers?: string[];
 };
@@ -117,37 +119,170 @@ function markCursorRowFast(row: CursorCliModelRow): void {
   }
 }
 
-function foldCursorFastVariantRows(rows: CursorCliModelRow[]): CursorCliModelRow[] {
-  if (!rows.length) return [];
-  const cloned = rows.map((row) => ({
+function addCursorRowReasoningTier(row: CursorCliModelRow, reasoningEffort: string | null | undefined): void {
+  const normalized = normalizeCursorReasoningValue(reasoningEffort);
+  if (!normalized) return;
+  const tiers = row.reasoningTiers ?? [];
+  if (!tiers.some((entry) => normalizeCursorMetadataText(entry) === normalized)) {
+    row.reasoningTiers = [...tiers, normalized];
+  }
+}
+
+function addCursorCliVariant(row: CursorCliModelRow, variant: CursorCliModelVariant): void {
+  const modelId = normalizeCursorModelRef(variant.modelId);
+  if (!modelId) return;
+  const variants = row.cliVariants ?? [];
+  if (variants.some((entry) =>
+    normalizeCursorModelRef(entry.modelId).toLowerCase() === modelId.toLowerCase()
+    && normalizeCursorMetadataText(entry.reasoningEffort) === normalizeCursorMetadataText(variant.reasoningEffort)
+    && (entry.fastMode === true) === (variant.fastMode === true)
+  )) {
+    return;
+  }
+  row.cliVariants = [...variants, { ...variant, modelId }];
+}
+
+type ParsedCursorCliVariant = {
+  baseId: string;
+  reasoningEffort?: string;
+  fastMode: boolean;
+};
+
+const CURSOR_CLI_REASONING_SUFFIXES = [
+  ["extra-high", "xhigh"],
+  ["xhigh", "xhigh"],
+  ["minimal", "minimal"],
+  ["medium", "medium"],
+  ["none", "none"],
+  ["high", "high"],
+  ["low", "low"],
+  ["max", "max"],
+] as const;
+
+function parseCursorCliVariantId(id: string): ParsedCursorCliVariant | null {
+  const trimmed = normalizeCursorModelRef(id);
+  if (!trimmed) return null;
+  let base = trimmed;
+  let fastMode = false;
+  if (base.toLowerCase().endsWith("-fast")) {
+    base = base.slice(0, -"-fast".length);
+    fastMode = true;
+  }
+
+  for (const [suffix, reasoningEffort] of CURSOR_CLI_REASONING_SUFFIXES) {
+    const tail = `-${suffix}`;
+    if (base.toLowerCase().endsWith(tail)) {
+      return {
+        baseId: base.slice(0, -tail.length),
+        reasoningEffort,
+        fastMode,
+      };
+    }
+  }
+
+  const thinkingMiddle = base.match(/^(.*)-(none|minimal|low|medium|high|xhigh|extra-high|max)-thinking$/i);
+  if (thinkingMiddle) {
+    const reasoningEffort = normalizeCursorReasoningValue(thinkingMiddle[2]);
+    if (reasoningEffort) {
+      return {
+        baseId: `${thinkingMiddle[1]}-thinking`,
+        reasoningEffort,
+        fastMode,
+      };
+    }
+  }
+
+  return fastMode ? { baseId: base, fastMode } : null;
+}
+
+function stripCursorCliVariantDisplayTokens(
+  displayName: string | undefined,
+  parsed: ParsedCursorCliVariant,
+): string | undefined {
+  let label = displayName?.replace(/\s*\(default\)\s*$/i, "").trim();
+  if (!label) return undefined;
+  if (parsed.fastMode) {
+    label = label.replace(/\s+Fast\b/i, "").trim();
+  }
+  const effort = parsed.reasoningEffort;
+  if (effort) {
+    const effortPattern = effort === "xhigh" ? "(?:Extra\\s+High|XHigh|X-High)" : effort;
+    label = label
+      .replace(new RegExp(`\\s+${effortPattern}\\s+Thinking\\b`, "i"), " Thinking")
+      .replace(new RegExp(`\\s+Thinking\\s+${effortPattern}\\b`, "i"), " Thinking")
+      .replace(new RegExp(`\\s+${effortPattern}\\b`, "i"), "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+  }
+  return label || displayName;
+}
+
+function cloneCursorModelRow(row: CursorCliModelRow): CursorCliModelRow {
+  return {
     ...row,
     ...(row.aliases ? { aliases: [...row.aliases] } : {}),
+    ...(row.parameters ? { parameters: row.parameters.map((parameter) => ({
+      ...parameter,
+      values: parameter.values.map((value) => ({ ...value })),
+    })) } : {}),
+    ...(row.variants ? { variants: row.variants.map((variant) => ({
+      ...variant,
+      params: variant.params.map((param) => ({ ...param })),
+    })) } : {}),
+    ...(row.cliVariants ? { cliVariants: row.cliVariants.map((variant) => ({ ...variant })) } : {}),
     ...(row.reasoningTiers ? { reasoningTiers: [...row.reasoningTiers] } : {}),
     ...(row.serviceTiers ? { serviceTiers: [...row.serviceTiers] } : {}),
-  }));
+  };
+}
+
+function foldCursorCliVariantRows(rows: CursorCliModelRow[]): CursorCliModelRow[] {
+  if (!rows.length) return [];
+  const cloned = rows.map(cloneCursorModelRow);
   const byId = new Map<string, CursorCliModelRow>();
   for (const row of cloned) {
     byId.set(normalizeCursorModelRef(row.id).toLowerCase(), row);
   }
 
-  const foldedFastIds = new Set<string>();
+  const foldedIds = new Set<string>();
+  const syntheticByBase = new Map<string, CursorCliModelRow>();
   for (const row of cloned) {
     const id = normalizeCursorModelRef(row.id);
     const key = id.toLowerCase();
-    if (!key.endsWith("-fast")) continue;
-    const baseKey = key.slice(0, -"-fast".length);
-    const base = byId.get(baseKey);
-    if (!base) {
-      markCursorRowFast(row);
+    const parsed = parseCursorCliVariantId(id);
+    if (!parsed) {
+      addCursorCliVariant(row, { modelId: id, fastMode: false });
       continue;
     }
-    markCursorRowFast(base);
+
+    const baseKey = parsed.baseId.toLowerCase();
+    let base = byId.get(baseKey) ?? syntheticByBase.get(baseKey);
+    if (!base) {
+      base = {
+        id: parsed.baseId,
+        displayName: stripCursorCliVariantDisplayTokens(row.displayName, parsed) ?? parsed.baseId,
+      };
+      syntheticByBase.set(baseKey, base);
+    }
+
+    if (parsed.fastMode) markCursorRowFast(base);
+    addCursorRowReasoningTier(base, parsed.reasoningEffort);
     addCursorRowAlias(base, id);
     for (const alias of row.aliases ?? []) addCursorRowAlias(base, alias);
-    foldedFastIds.add(key);
+    addCursorCliVariant(base, {
+      modelId: id,
+      ...(parsed.reasoningEffort ? { reasoningEffort: parsed.reasoningEffort } : {}),
+      ...(parsed.fastMode ? { fastMode: true } : { fastMode: false }),
+    });
+    foldedIds.add(key);
   }
 
-  return cloned.filter((row) => !foldedFastIds.has(normalizeCursorModelRef(row.id).toLowerCase()));
+  const out = cloned.filter((row) => !foldedIds.has(normalizeCursorModelRef(row.id).toLowerCase()));
+  for (const row of syntheticByBase.values()) {
+    if (!byId.has(normalizeCursorModelRef(row.id).toLowerCase())) {
+      out.push(row);
+    }
+  }
+  return out;
 }
 
 export function clearCursorCliModelsCache(): void {
@@ -423,10 +558,10 @@ function normalizeSdkModelRows(models: SDKModel[]): CursorCliModelRow[] {
       ...(tiers.serviceTiers.length ? { serviceTiers: tiers.serviceTiers } : {}),
     });
   }
-  return foldCursorFastVariantRows(rows);
+  return rows;
 }
 
-function normalizeCursorModelRows(models: unknown[]): CursorCliModelRow[] {
+function normalizeCursorModelRows(models: unknown[], options?: { foldCliVariants?: boolean }): CursorCliModelRow[] {
   const rows: CursorCliModelRow[] = [];
   const seen = new Set<string>();
   for (const model of models) {
@@ -470,7 +605,7 @@ function normalizeCursorModelRows(models: unknown[]): CursorCliModelRow[] {
       ...(tiers.serviceTiers.length ? { serviceTiers: tiers.serviceTiers } : {}),
     });
   }
-  return foldCursorFastVariantRows(rows);
+  return options?.foldCliVariants ? foldCursorCliVariantRows(rows) : rows;
 }
 
 function getCachedCursorSdkModels(apiKey?: string | null): CursorCliModelRow[] | null {
@@ -682,6 +817,7 @@ function cursorRowsToDescriptors(rows: CursorCliModelRow[]): ModelDescriptor[] {
     const descriptorOptions = {
       ...(row.reasoningTiers?.length ? { reasoningTiers: row.reasoningTiers } : {}),
       ...(row.serviceTiers?.length ? { serviceTiers: row.serviceTiers } : {}),
+      ...(row.cliVariants?.length ? { cursorCliVariants: row.cliVariants } : {}),
     };
     descriptors.push(createDynamicCursorCliModelDescriptor(id, row.displayName, {
       ...descriptorOptions,
@@ -745,6 +881,12 @@ export function mergeCursorModelDescriptorSources(args: {
     const aliases = [...new Set([...(previous.aliases ?? []), ...(descriptor.aliases ?? [])])];
     const reasoningTiers = [...new Set([...(previous.reasoningTiers ?? []), ...(descriptor.reasoningTiers ?? [])])];
     const serviceTiers = [...new Set([...(previous.serviceTiers ?? []), ...(descriptor.serviceTiers ?? [])])];
+    const cursorCliVariants = [...(previous.cursorCliVariants ?? []), ...(descriptor.cursorCliVariants ?? [])]
+      .filter((variant, index, all) => all.findIndex((candidate) =>
+        candidate.modelId.trim().toLowerCase() === variant.modelId.trim().toLowerCase()
+        && normalizeCursorMetadataText(candidate.reasoningEffort) === normalizeCursorMetadataText(variant.reasoningEffort)
+        && (candidate.fastMode === true) === (variant.fastMode === true)
+      ) === index);
     const preferred = source === "sdk" ? descriptor : previous;
     merged.set(key, {
       ...previous,
@@ -757,6 +899,7 @@ export function mergeCursorModelDescriptorSources(args: {
       ...(aliases.length ? { aliases } : {}),
       ...(reasoningTiers.length ? { reasoningTiers } : {}),
       ...(serviceTiers.length ? { serviceTiers } : {}),
+      ...(cursorCliVariants.length ? { cursorCliVariants } : {}),
     });
     for (const ref of refs) keyByRef.set(ref, key);
     for (const ref of refsFor(previous)) keyByRef.set(ref, key);
@@ -870,7 +1013,7 @@ export async function listCursorModelsFromCli(agentPath: string): Promise<Cursor
       try {
         const parsed = JSON.parse(stdout) as unknown;
         if (Array.isArray(parsed)) {
-          const models = normalizeCursorModelRows(parsed);
+          const models = normalizeCursorModelRows(parsed, { foldCliVariants: true });
           if (models.length) {
             cached = { at: now, models };
             return models;
@@ -882,7 +1025,7 @@ export async function listCursorModelsFromCli(agentPath: string): Promise<Cursor
 
       const parsedLines = parseCursorCliModelsStdout(stdout);
       if (parsedLines.length) {
-        const models = foldCursorFastVariantRows(parsedLines);
+        const models = foldCursorCliVariantRows(parsedLines);
         cached = { at: now, models };
         return models;
       }

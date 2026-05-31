@@ -1292,7 +1292,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           workspaceId,
           laneId,
         });
-        const file = deps.fileService.readFile({ workspaceId: resolvedWorkspaceId, path });
+        const file = await deps.fileService.readFile({ workspaceId: resolvedWorkspaceId, path });
         return {
           success: true,
           workspaceId: resolvedWorkspaceId,

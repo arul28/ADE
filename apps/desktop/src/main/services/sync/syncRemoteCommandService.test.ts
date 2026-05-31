@@ -2442,7 +2442,7 @@ describe("createSyncRemoteCommandService", () => {
       }))).rejects.toThrow("work.sendToSession requires text.");
     });
 
-    it("work.startCliSession sends Cursor initial input after the launch command", async () => {
+    it("work.startCliSession passes Cursor initial input as the documented prompt argument", async () => {
       await service.execute(makePayload("work.startCliSession", {
         laneId: "lane-1",
         provider: "cursor",
@@ -2450,13 +2450,15 @@ describe("createSyncRemoteCommandService", () => {
       }));
 
       const call = ptyService.create.mock.calls.at(-1)?.[0];
-      expect(call?.startupCommand).toContain("cursor-agent create-chat");
-      expect(call?.startupCommand).toContain("cursor-agent --resume");
-      expect(call?.initialInput).toContain("fix the tests");
-      expect(call?.initialInputDelayMs).toBe(750);
+      expect(call?.startupCommand).toContain("cursor-agent");
+      expect(call?.startupCommand).toContain("fix the tests");
+      expect(call?.startupCommand).not.toContain("cursor-agent create-chat");
+      expect(call?.startupCommand).not.toContain("--resume");
+      expect(call?.initialInput).toBeUndefined();
+      expect(call?.initialInputDelayMs).toBeUndefined();
       expect(call).not.toHaveProperty("awaitInitialInput");
-      expect(call?.command).toBe("/bin/bash");
-      expect(call?.args).toEqual(["-lc", call?.startupCommand]);
+      expect(call?.command).toBe("cursor-agent");
+      expect(call?.args?.at(-1)).toContain("fix the tests");
       expect(ptyService.writeBySessionId).not.toHaveBeenCalled();
       expect(ptyService.dispose).not.toHaveBeenCalled();
     });

@@ -42,6 +42,9 @@ export type FileTreeNode = {
   size?: number;
   // Set on a directory node when its children list was truncated at MAX_TREE_CHILDREN_PER_DIRECTORY.
   childrenTruncated?: boolean;
+  // Offset to request the next page of children via listTreeChildren, or null/undefined
+  // when all children are loaded. Replaces the old silent truncation behaviour.
+  loadMoreOffset?: number | null;
 };
 
 export type FilesListTreeArgs = {
@@ -51,6 +54,50 @@ export type FilesListTreeArgs = {
   includeIgnored?: boolean;
   /** Prefer cached/background Git decorations unless the caller explicitly needs fresh status. */
   forceFreshStatus?: boolean;
+};
+
+export type FilesRefreshGitDecorationsArgs = {
+  workspaceId: string;
+  /** Block on a fresh `git status` instead of returning the cached snapshot. */
+  forceFresh?: boolean;
+};
+
+export type FilesListTreeChildrenArgs = {
+  workspaceId: string;
+  parentPath: string;
+  /** Page offset into the directory's sorted, filtered children. Defaults to 0. */
+  offset?: number;
+  /** Page size, clamped to [1, 2000]. Defaults to 500. */
+  limit?: number;
+  includeIgnored?: boolean;
+};
+
+export type FilesListTreeChildrenResult = {
+  parentPath: string;
+  children: FileTreeNode[];
+  offset: number;
+  limit: number;
+  /** Total visible children in the directory after filtering. */
+  total: number;
+  /** Offset for the next page, or null when this page is the last. */
+  nextOffset: number | null;
+};
+
+export type FileTreeStatusEntry = {
+  path: string;
+  changeStatus: FileTreeChangeStatus;
+};
+
+/**
+ * Resolved Git decorations for a workspace, sent independently of the tree
+ * structure so `listTree` never blocks on `git status`. `directories` already
+ * includes every ancestor of a changed file, so callers can apply it flat
+ * without recomputing roll-ups.
+ */
+export type FilesGitStatusEvent = {
+  workspaceId: string;
+  files: FileTreeStatusEntry[];
+  directories: FileTreeStatusEntry[];
 };
 
 export type FilePreviewKind = "text" | "image" | "binary";
@@ -66,6 +113,59 @@ export type FileContent = {
   dataUrl?: string;
   contentOmitted?: boolean;
   omittedReason?: "too_large" | "unsupported_binary";
+  // Streaming fields: when a text file exceeds the inline editor limit, `content`
+  // holds the first chunk, `isPartial` is true, and the rest is fetched via
+  // readFileRange starting at `nextOffset`. `totalSize` is the file's full byte size.
+  totalSize?: number;
+  isPartial?: boolean;
+  rangeStart?: number;
+  rangeEnd?: number;
+  nextOffset?: number | null;
+};
+
+export type FilesReadFileRangeArgs = {
+  workspaceId: string;
+  path: string;
+  /** Byte offset to start reading from. */
+  offset: number;
+  /** Bytes to read, clamped to [1, 512KB]. Defaults to 256KB. */
+  length?: number;
+};
+
+export type FilesReadFileRangeResult = {
+  path: string;
+  encoding: "utf-8" | "base64";
+  /** UTF-8 text slice (encoding "utf-8") or base64 bytes (encoding "base64"). */
+  content: string;
+  rangeStart: number;
+  /** Exclusive end byte offset actually returned (may trim a partial UTF-8 char). */
+  rangeEnd: number;
+  totalSize: number;
+  /** Next byte offset to request, or null at EOF. */
+  nextOffset: number | null;
+  eof: boolean;
+};
+
+export type FilesGitBlameArgs = {
+  workspaceId: string;
+  path: string;
+  /** Optional 1-based inclusive line range; omitted = whole file. */
+  startLine?: number;
+  endLine?: number;
+};
+
+export type FilesGitBlameLine = {
+  line: number;
+  sha: string;
+  author: string;
+  /** Commit time as epoch seconds. */
+  authorTime: number;
+  summary: string;
+};
+
+export type FilesGitBlameResult = {
+  path: string;
+  lines: FilesGitBlameLine[];
 };
 
 export type FilesReadFileArgs = {

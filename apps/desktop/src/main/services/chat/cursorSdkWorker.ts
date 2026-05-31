@@ -383,11 +383,13 @@ async function sendPrompt(payload: {
     model: buildCursorModelSelection(payload.modelSdkId, payload.modelParams),
     local: { force: payload.force === true },
   });
+  const runModelParams = normalizeCursorModelParams(payload.modelParams ?? initState.modelParams);
   post({
     type: "run_started",
     agentId: currentRun.agentId,
     runId: currentRun.id,
     modelSdkId: payload.modelSdkId ?? initState.modelSdkId,
+    ...(runModelParams ? { modelParams: runModelParams } : {}),
     runtime: "local",
   });
   for await (const event of currentRun.stream()) {
@@ -532,6 +534,7 @@ async function streamCloudRun(args: {
   agentId: string;
   run: SdkRun;
   modelSdkId?: string | null;
+  modelParams?: CursorSdkModelParameterValue[];
 }): Promise<unknown> {
   const { requestId, agentId, run } = args;
   const runId = run.id;
@@ -546,11 +549,13 @@ async function streamCloudRun(args: {
       requestId,
     });
   });
+  const runModelParams = normalizeCursorModelParams(args.modelParams);
   post({
     type: "run_started",
     agentId,
     runId,
     modelSdkId: args.modelSdkId ?? null,
+    ...(runModelParams ? { modelParams: runModelParams } : {}),
     runtime: "cloud",
     requestId,
   });
@@ -644,6 +649,7 @@ async function handleCloudRequest(req: CursorSdkWorkerRequest): Promise<unknown>
       agentId: cloudAgent.agentId,
       run,
       modelSdkId: req.payload.modelSdkId,
+      modelParams: req.payload.modelParams,
     });
     try {
       const info = await Agent.get(cloudAgent.agentId, { apiKey: req.payload.apiKey?.trim() || undefined });
@@ -666,6 +672,7 @@ async function handleCloudRequest(req: CursorSdkWorkerRequest): Promise<unknown>
       agentId: cloudAgent.agentId,
       run,
       modelSdkId: req.payload.modelSdkId,
+      modelParams: req.payload.modelParams,
     });
     try {
       const info = await Agent.get(cloudAgent.agentId, { apiKey: req.payload.apiKey?.trim() || undefined });

@@ -69,6 +69,7 @@ import {
   getRuntimeModelRefForDescriptor,
   modelSupportsFastMode,
   parseLocalProviderFromModelId,
+  resolveCursorCliModelVariant,
   resolveCliProviderForModel,
   resolveProviderGroupForModel,
   resolveModelDescriptorForProvider,
@@ -1582,26 +1583,6 @@ function writeLastLaunchConfig(storageKey: string, config: LastLaunchConfig): vo
   }
 }
 
-function cursorCliRuntimeModelForFastMode(desc: ModelDescriptor, runtimeModel: string, fastMode: boolean): string {
-  if (desc.family !== "cursor" || !fastMode || !modelSupportsFastMode(desc)) return runtimeModel;
-  const base = runtimeModel.trim();
-  if (!base || base.toLowerCase().endsWith("-fast")) return runtimeModel;
-  const fastRef = `${base}-fast`;
-  const normalizedBase = base.toLowerCase();
-  const normalizeAlias = (alias: string): string => {
-    const normalized = alias.trim().toLowerCase();
-    return normalized.startsWith("cursor/") ? normalized.slice("cursor/".length) : normalized;
-  };
-  const matchingAlias = (desc.aliases ?? []).find((alias) => normalizeAlias(alias) === fastRef.toLowerCase())
-    ?? (desc.aliases ?? []).find((alias) => {
-      const normalized = normalizeAlias(alias);
-      return normalized.endsWith("-fast") && normalized.startsWith(`${normalizedBase}-`);
-    });
-  const selected = matchingAlias?.trim();
-  if (!selected) return fastRef;
-  return selected.toLowerCase().startsWith("cursor/") ? selected.slice("cursor/".length) : selected;
-}
-
 function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length ? value : null;
 }
@@ -1888,9 +1869,9 @@ function cursorModelAllowedForDraftKind(
 ): boolean {
   if (descriptor?.family !== "cursor") return true;
   const availability = descriptor.cursorAvailability;
-  if (!availability) return true;
-  if (workDraftKind === "cli") return availability.cli !== false;
-  return availability.sdk !== false;
+  if (!availability) return false;
+  if (workDraftKind === "cli") return availability.cli === true;
+  return availability.sdk === true;
 }
 
 function filterCursorModelIdsForDraftKind(
@@ -5886,12 +5867,17 @@ export function AgentChatPane({
     if (!prepared.modelId) throw new Error("Select a model before launching a CLI session.");
     const desc = resolveModelDescriptorWithRuntimeCatalog(prepared.modelId) ?? getModelById(prepared.modelId);
     if (!desc) throw new Error("Select a model before launching a CLI session.");
-    if (desc.family === "cursor" && desc.cursorAvailability?.cli === false) {
+    if (desc.family === "cursor" && desc.cursorAvailability?.cli !== true) {
       throw new Error("This Cursor model is available for chat only. Choose a Cursor CLI model for a CLI session.");
     }
     const provider = desc.family === "cursor" ? "cursor" : resolveCliProviderForModel(desc) ?? "opencode";
     const runtimeModel = getRuntimeModelRefForDescriptor(desc, provider);
-    const launchModel = cursorCliRuntimeModelForFastMode(desc, runtimeModel, prepared.codexFastMode);
+    const launchModel = desc.family === "cursor"
+      ? resolveCursorCliModelVariant(desc, {
+          reasoningEffort: prepared.reasoningEffort,
+          fastMode: prepared.codexFastMode,
+        })
+      : runtimeModel;
     const permissionMode = cliPermissionModeFromNativeControls(provider, prepared.nativeControls);
     const cliPrompt = buildWorkCliInitialPrompt({
       text: prepared.finalText,

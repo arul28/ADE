@@ -46,11 +46,19 @@ import type {
   FilesCreateDirectoryArgs,
   FilesCreateFileArgs,
   FilesDeleteArgs,
+  FilesGitBlameArgs,
+  FilesGitBlameResult,
+  FilesGitStatusEvent,
   FilesListTreeArgs,
+  FilesListTreeChildrenArgs,
+  FilesListTreeChildrenResult,
   FilesListWorkspacesArgs,
   FilesQuickOpenArgs,
   FilesQuickOpenItem,
   FilesReadFileArgs,
+  FilesReadFileRangeArgs,
+  FilesReadFileRangeResult,
+  FilesRefreshGitDecorationsArgs,
   FilesRenameArgs,
   FilesSearchTextArgs,
   FilesSearchTextMatch,
@@ -1657,7 +1665,17 @@ declare global {
           args?: FilesListWorkspacesArgs,
         ) => Promise<FilesWorkspace[]>;
         listTree: (args: FilesListTreeArgs) => Promise<FileTreeNode[]>;
+        listTreeChildren: (
+          args: FilesListTreeChildrenArgs,
+        ) => Promise<FilesListTreeChildrenResult>;
+        refreshGitDecorations: (
+          args: FilesRefreshGitDecorationsArgs,
+        ) => Promise<FilesGitStatusEvent>;
         readFile: (args: FilesReadFileArgs) => Promise<FileContent>;
+        readFileRange: (
+          args: FilesReadFileRangeArgs,
+        ) => Promise<FilesReadFileRangeResult>;
+        gitBlame: (args: FilesGitBlameArgs) => Promise<FilesGitBlameResult>;
         writeText: (args: FilesWriteTextArgs) => Promise<void>;
         createFile: (args: FilesCreateFileArgs) => Promise<void>;
         createDirectory: (args: FilesCreateDirectoryArgs) => Promise<void>;

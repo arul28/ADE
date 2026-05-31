@@ -171,7 +171,7 @@ describe("terminalSessionSignals", () => {
       targetKind: "session",
       targetId: "chat-2",
       launch: { permissionMode: "full-auto", model: "cursor/composer-2.5" },
-    })).toBe("cursor-agent --force --trust --model composer-2.5 --resume chat-2");
+    })).toBe("cursor-agent --force --model composer-2.5 --resume chat-2");
 
     expect(buildTrackedCliResumeCommand({
       provider: "opencode",

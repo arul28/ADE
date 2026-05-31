@@ -315,7 +315,11 @@ turn on that chat can therefore rehydrate the same Claude SDK session
 instead of creating a fresh one, even though the SDK process was
 released to reclaim budget or compact the pool. Terminal closes still
 run the full invalidation path so runtime stops and explicit model
-switches don't leave stale continuation pointers behind.
+switches don't leave stale continuation pointers behind. Cursor SDK
+model switches are deferred while a turn is busy: the session model
+updates immediately, the active turn keeps reporting the model it
+started with, and runtime teardown waits until the turn finishes so
+approvals and stream callbacks are not orphaned mid-run.
 
 On app shutdown the service exposes `forceDisposeAll()` — called from
 `runImmediateProcessCleanup()` in `main.ts`. It stops the cleanup timer,

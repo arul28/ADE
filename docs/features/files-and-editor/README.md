@@ -2,8 +2,9 @@
 
 An IDE-style file explorer and Monaco editor surface integrated into
 ADE. Shared workspace selection, atomic writes, file watching with
-reference-counted chokidar subscriptions, and two specialized view
-modes (diff and conflict).
+reference-counted chokidar subscriptions, Monaco model reuse, streaming
+large-file previews, and specialized view modes (diff, conflict, and the
+flagged v2 workbench shell).
 
 This feature sits at the boundary between the filesystem and everything
 else: context packs use it to discover docs, the chat surface links
@@ -45,8 +46,8 @@ targets for the legacy IPC path.
   including per-call timeout overrides for file actions and event
   polling.
 - `apps/desktop/src/main/services/files/fileService.ts` — directory
-  listing, atomic writes, quick open, cross-file search, path safety.
-  ~620 lines.
+  listing, paginated child loading, Git status decorations, range reads,
+  blame, atomic writes, quick open, cross-file search, path safety.
 - `apps/desktop/src/main/services/files/fileWatcherService.ts` —
   chokidar wrapper with per-sender ref counting, debounced events,
   idle watcher close, plus `stopAllForWorkspace(workspaceId)` and
@@ -67,8 +68,10 @@ targets for the legacy IPC path.
 Shared types and IPC:
 
 - `apps/desktop/src/shared/types/files.ts` — `FilesWorkspace`,
-  `FileTreeNode`, `FileContent`, `FilesQuickOpenItem`,
-  `FilesSearchTextMatch`, the IPC arg shapes.
+  `FileTreeNode`, `FilesListTreeChildrenResult`, `FileContent`,
+  `FilesReadFileRangeResult`, `FilesGitStatusEvent`,
+  `FilesGitBlameResult`, `FilesQuickOpenItem`, `FilesSearchTextMatch`,
+  and the IPC arg shapes.
 - `apps/desktop/src/shared/types/git.ts` (and related shared types) —
   `FileDiff`, `FilePatch`, and other shapes returned by `diffService`
   for the diff viewer.
@@ -76,7 +79,9 @@ Shared types and IPC:
   `ade.diff.getChanges` / `ade.diff.getFile` / `ade.diff.getFilePatch`
   (lane-scoped diff lists and per-file payloads).
 - `apps/desktop/src/main/services/ipc/registerIpc.ts` — handler
-  registrations (`filesListWorkspaces`, `filesListTree`, `filesReadFile`,
+  registrations (`filesListWorkspaces`, `filesListTree`,
+  `filesListTreeChildren`, `filesRefreshGitDecorations`,
+  `filesReadFile`, `filesReadFileRange`, `filesGitBlame`,
   `filesWriteTextAtomic`, `filesWriteText`, `filesCreateFile`,
   `filesCreateDirectory`, `filesRename`, `filesDelete`, `filesQuickOpen`,
   `filesSearchText`, `filesWatchChanges`, `filesStopWatching`, plus
@@ -90,6 +95,10 @@ Preload bridge:
 
 Renderer:
 
+- `apps/desktop/src/renderer/components/files/FilesTab.tsx` — shared
+  route/sidebar entry point. It renders the v2 workbench only when
+  `localStorage["ade.files.workbenchV2"] === "1"`; the default remains
+  the legacy `FilesPage`.
 - `apps/desktop/src/renderer/components/files/FilesPage.tsx` — Files
   tab shell (~2,840 lines): workspace chrome, tab bar, Monaco edit host,
   diff and conflict modes, quick open, text search, trust warnings. It
@@ -104,6 +113,15 @@ Renderer:
   helpers from `filePresentation.tsx`.
 - `apps/desktop/src/renderer/components/files/filePresentation.tsx` —
   file-type icons and `changeStatus*` helpers shared with the explorer.
+- `apps/desktop/src/renderer/components/files/monacoModelRegistry.ts`
+  and `treeHelpers.ts` — reusable Monaco model lifetime tracking and
+  tree/decorations helpers used by both FilesPage and the v2 workbench.
+- `apps/desktop/src/renderer/components/files/v2/` — flagged VS
+  Code-style workbench shell: editor groups, preview/pinned tabs,
+  split/move support, warm empty state, search/create overlays, and
+  viewers for code, markdown, image, CSV/TSV, PDF, large text, binary,
+  and diffs. The workbench is off by default until the parity checklist
+  intentionally flips it.
 - `apps/desktop/src/renderer/components/shared/AdeDiffViewer.tsx` —
   shared read-only diff chrome (`@pierre/diffs` `MultiFileDiff` /
   `PatchDiff` with split/unified, wrap, line numbers); editable working-tree
@@ -233,11 +251,27 @@ Quick open results are `{ path, score }`. Text-search matches are
 
 ## Git status overlay
 
-File tree listings include a `changeStatus`: `'M' | 'A' | 'D' | null`.
-The status map is cached per workspace root for 5 seconds
-(`GIT_STATUS_CACHE_TTL_MS`) and populated by a single `git status
---porcelain=v2` call. `inferDirectoryStatus` walks the map to decide
-whether a directory should show the "has changes" dot.
+File tree listings include a `changeStatus`. The status map is cached
+per workspace root for 5 seconds (`GIT_STATUS_CACHE_TTL_MS`) and
+populated by a single `git status --porcelain=v2` call. The first tree
+paint should not block on a fresh status scan: renderers can call
+`files.refreshGitDecorations({ forceFresh: true })` after the structure
+loads and apply the returned flat file statuses plus ancestor directory
+rollups without refetching the tree.
+
+## Large-file and range reads
+
+`files.readFile` returns inline text up to 1 MB, inline image previews
+up to 1 MB, and small unsupported binary payloads up to 256 KB. When a
+text-like file is larger than the editor limit, the service returns a
+UTF-8-safe first chunk with `isPartial`, `rangeStart`, `rangeEnd`, and
+`nextOffset`. Viewers stream the rest with `files.readFileRange`.
+
+`readFileRange` uses byte offsets, clamps each request, and trims
+non-final UTF-8 responses to a complete code-point boundary so chunks
+can be concatenated without corrupting text. Binary/image/PDF range
+responses are base64-encoded per range; consumers must treat each range
+as independently decodable bytes and advance only by `nextOffset`.
 
 ## Trust boundary
 
@@ -266,9 +300,17 @@ For deeper detail on the watcher + trust boundary, see
   per-mode.
 - `fileService.readFile` sends inline text previews up to 1 MB, inline
   image previews up to 1 MB, and small unsupported binary payloads up
-  to 256 KB. Larger files return metadata-only `FileContent` with
-  `contentOmitted`, so Monaco is not mounted for payloads that would
-  spike renderer memory.
+  to 256 KB. Oversized text returns a partial first chunk and streams
+  through `readFileRange`; oversized images and unsupported binaries
+  still return `contentOmitted`.
+- `listTree` and `listTreeChildren` must share filtering and ordering:
+  skip `.git`, skip volatile `.ade` runtime paths, honor
+  `includeIgnored`, sort directories before files, and paginate via
+  `nextOffset` rather than silently dropping entries.
+- Monaco models are reused per path and disposed on tab close,
+  rename/delete cleanup, workspace switch, or unmount. Do not dispose
+  them on ordinary tab switches, theme changes, read-only toggles, or
+  v2 group moves.
 - `writeTextAtomic` creates a temp file in the target's directory. If
   the directory has no write permission, the operation throws, which
   surfaces as an IPC rejection at the editor tab.

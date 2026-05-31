@@ -1,4 +1,4 @@
-import fs from "node:fs";
+import fs, { promises as fsp } from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import type {
@@ -6,12 +6,22 @@ import type {
   FileContent,
   FileTreeChangeStatus,
   FileTreeNode,
+  FileTreeStatusEntry,
   FilesCreateDirectoryArgs,
   FilesCreateFileArgs,
   FilesDeleteArgs,
+  FilesGitBlameArgs,
+  FilesGitBlameLine,
+  FilesGitBlameResult,
+  FilesGitStatusEvent,
   FilesListTreeArgs,
+  FilesListTreeChildrenArgs,
+  FilesListTreeChildrenResult,
   FilesListWorkspacesArgs,
   FilesQuickOpenArgs,
+  FilesReadFileRangeArgs,
+  FilesReadFileRangeResult,
+  FilesRefreshGitDecorationsArgs,
   FilesQuickOpenItem,
   FilesReadFileArgs,
   FilesRenameArgs,
@@ -39,9 +49,17 @@ const MAX_EDITOR_TEXT_READ_BYTES = 1024 * 1024;
 const MAX_INLINE_IMAGE_PREVIEW_BYTES = 1024 * 1024;
 const MAX_INLINE_BINARY_BYTES = 256 * 1024;
 const MAX_TREE_CHILDREN_PER_DIRECTORY = 1_000;
+// Streaming reads: first chunk size for an oversized text file, and the hard cap
+// on a single readFileRange request.
+const STREAM_FIRST_CHUNK_BYTES = 256 * 1024;
+const MAX_RANGE_READ_BYTES = 512 * 1024;
+const DEFAULT_RANGE_READ_BYTES = 256 * 1024;
+const GIT_BLAME_TIMEOUT_MS = 5_000;
 const GIT_STATUS_CACHE_TTL_MS = 5_000;
 const GIT_STATUS_BACKGROUND_TIMEOUT_MS = 2_000;
 const GIT_STATUS_FOREGROUND_TIMEOUT_MS = 10_000;
+const PAGED_DIRECTORY_ENTRIES_CACHE_TTL_MS = 2_000;
+const PAGED_DIRECTORY_ENTRIES_CACHE_MAX = 32;
 const VOLATILE_ADE_PREFIXES = [
   ".ade/artifacts/",
   ".ade/cache/",
@@ -103,6 +121,7 @@ const TEXT_EXTENSIONS = new Set([
   ".yml",
   ".zsh",
 ]);
+const BASE64_RANGE_EXTENSIONS = new Set([".pdf"]);
 
 function containsDotGit(absPath: string): boolean {
   const parts = absPath.split(path.sep);
@@ -161,6 +180,10 @@ function inferImageMimeType(relPath: string): string | null {
   }
 }
 
+function shouldReturnRangeAsBase64(relPath: string): boolean {
+  return isImagePath(relPath) || BASE64_RANGE_EXTENSIONS.has(path.extname(relPath).toLowerCase());
+}
+
 function looksLikeBinary(buf: Buffer, relPath: string): boolean {
   if (hasNullByte(buf)) return true;
   if (TEXT_EXTENSIONS.has(path.extname(relPath).toLowerCase())) return false;
@@ -199,14 +222,37 @@ function isVolatileAdeRuntimePath(normalized: string): boolean {
     || VOLATILE_ADE_PREFIXES.some((prefix) => normalized === prefix.slice(0, -1) || normalized.startsWith(prefix));
 }
 
-function readFilePrefix(absPath: string, maxBytes: number): Buffer {
-  const fd = fs.openSync(absPath, "r");
+/**
+ * Largest prefix length of `buf` that ends on a complete UTF-8 sequence, so a
+ * range read never splits a multi-byte character across two chunks. Returns the
+ * byte count to keep.
+ */
+function completeUtf8ByteLength(buf: Buffer): number {
+  let trailing = 0;
+  let i = buf.length;
+  while (i > 0 && (buf[i - 1] & 0b1100_0000) === 0b1000_0000 && trailing < 3) {
+    i -= 1;
+    trailing += 1;
+  }
+  if (i === 0) return buf.length; // all continuation bytes — leave untouched
+  const lead = buf[i - 1];
+  let seqLen = 1;
+  if ((lead & 0b1000_0000) === 0) seqLen = 1;
+  else if ((lead & 0b1110_0000) === 0b1100_0000) seqLen = 2;
+  else if ((lead & 0b1111_0000) === 0b1110_0000) seqLen = 3;
+  else if ((lead & 0b1111_1000) === 0b1111_0000) seqLen = 4;
+  const have = 1 + trailing;
+  return have >= seqLen ? buf.length : i - 1;
+}
+
+async function readFilePrefix(absPath: string, maxBytes: number): Promise<Buffer> {
+  const fd = await fsp.open(absPath, "r");
   try {
     const buf = Buffer.alloc(maxBytes);
-    const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
+    const { bytesRead } = await fd.read(buf, 0, buf.length, 0);
     return bytesRead === buf.length ? buf : buf.subarray(0, bytesRead);
   } finally {
-    fs.closeSync(fd);
+    await fd.close();
   }
 }
 
@@ -342,6 +388,13 @@ type GitStatusCacheEntry = {
   inFlight: Promise<GitStatusSnapshot> | null;
 };
 
+type VisibleChildEntries = { entry: fs.Dirent; rel: string }[];
+
+type VisibleChildEntriesCacheEntry = {
+  fetchedAt: number;
+  entries: VisibleChildEntries;
+};
+
 function buildGitStatusSnapshot(fileStatus: Map<string, FileTreeChangeStatus>): GitStatusSnapshot {
   const changedDirectories = new Set<string>();
   for (const [filePath, status] of fileStatus) {
@@ -383,6 +436,7 @@ export function createFileService({
   const ignoredPrefixCache = new Set<string>();
   const emptyGitStatusSnapshot = buildGitStatusSnapshot(new Map());
   const gitStatusCache = new Map<string, GitStatusCacheEntry>();
+  const pagedDirectoryEntriesCache = new Map<string, VisibleChildEntriesCacheEntry>();
 
   const clearIgnoreCacheForRoot = (rootPath: string): void => {
     const prefix = `${rootPath}::`;
@@ -407,6 +461,21 @@ export function createFileService({
       inFlight: null,
     });
   };
+
+  const clearPagedDirectoryEntriesCacheForRoot = (rootPath: string): void => {
+    const prefix = `${rootPath}::`;
+    for (const key of pagedDirectoryEntriesCache.keys()) {
+      if (key.startsWith(prefix)) {
+        pagedDirectoryEntriesCache.delete(key);
+      }
+    }
+  };
+
+  const pagedDirectoryEntriesCacheKey = (
+    rootPath: string,
+    parentPath: string,
+    includeIgnored: boolean,
+  ): string => `${rootPath}::${parentPath}::${includeIgnored ? "ignored" : "tracked"}`;
 
   const resolveWorkspace = (workspaceId: string) => laneService.resolveWorkspaceById(workspaceId);
 
@@ -591,6 +660,73 @@ export function createFileService({
     return false;
   };
 
+  // Read, filter (volatile/ignored/.git) and deterministically sort a single
+  // directory's entries. Shared by the recursive `listTreeNode` walk and the
+  // paginated `listTreeChildren` so both apply identical visibility + ordering.
+  const collectVisibleChildEntries = async (
+    rootPath: string,
+    parentPath: string,
+    includeIgnored: boolean,
+  ): Promise<VisibleChildEntries> => {
+    const { absPath: dirPath } = ensureSafePath(rootPath, parentPath);
+    const entries = await fsp.readdir(dirPath, { withFileTypes: true });
+    const entryPaths = entries.map((entry) => normalizeRelative(path.join(parentPath, entry.name)));
+    await primeIgnoreCache(rootPath, entryPaths, includeIgnored);
+    entries.sort((a, b) => {
+      if (a.isDirectory() && !b.isDirectory()) return -1;
+      if (!a.isDirectory() && b.isDirectory()) return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    const visible: { entry: fs.Dirent; rel: string }[] = [];
+    for (const entry of entries) {
+      const rel = normalizeRelative(path.join(parentPath, entry.name));
+      if (isVolatileAdeRuntimePath(rel)) continue;
+      if (entry.name === ".git") continue;
+      if (await isIgnoredPath(rootPath, rel, includeIgnored)) continue;
+      visible.push({ entry, rel });
+    }
+    return visible;
+  };
+
+  const collectPagedVisibleChildEntries = async (
+    rootPath: string,
+    parentPath: string,
+    includeIgnored: boolean,
+  ): Promise<VisibleChildEntries> => {
+    const key = pagedDirectoryEntriesCacheKey(rootPath, parentPath, includeIgnored);
+    const now = Date.now();
+    const cached = pagedDirectoryEntriesCache.get(key);
+    if (cached && now - cached.fetchedAt <= PAGED_DIRECTORY_ENTRIES_CACHE_TTL_MS) {
+      return cached.entries;
+    }
+    const entries = await collectVisibleChildEntries(rootPath, parentPath, includeIgnored);
+    pagedDirectoryEntriesCache.set(key, { fetchedAt: now, entries });
+    while (pagedDirectoryEntriesCache.size > PAGED_DIRECTORY_ENTRIES_CACHE_MAX) {
+      const oldestKey = pagedDirectoryEntriesCache.keys().next().value;
+      if (!oldestKey) break;
+      pagedDirectoryEntriesCache.delete(oldestKey);
+    }
+    return entries;
+  };
+
+  const buildChildNode = (
+    entry: fs.Dirent,
+    rel: string,
+    statusSnapshot: GitStatusSnapshot,
+  ): FileTreeNode => {
+    const node: FileTreeNode = {
+      name: entry.name,
+      path: rel,
+      type: entry.isDirectory() ? "directory" : "file",
+      changeStatus: statusSnapshot.fileStatus.get(rel) ?? null,
+    };
+    if (entry.isDirectory() && !node.changeStatus) {
+      node.changeStatus = inferDirectoryStatus(statusSnapshot, rel);
+    }
+    return node;
+  };
+
   const listTreeNode = async ({
     rootPath,
     parentPath,
@@ -604,53 +740,33 @@ export function createFileService({
     includeIgnored: boolean;
     statusSnapshot: GitStatusSnapshot;
   }): Promise<{ children: FileTreeNode[]; truncated: boolean }> => {
-    const { absPath: dirPath } = ensureSafePath(rootPath, parentPath);
-    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-    const entryPaths = entries.map((entry) => normalizeRelative(path.join(parentPath, entry.name)));
-    await primeIgnoreCache(rootPath, entryPaths, includeIgnored);
-    entries.sort((a, b) => {
-      if (a.isDirectory() && !b.isDirectory()) return -1;
-      if (!a.isDirectory() && b.isDirectory()) return 1;
-      return a.name.localeCompare(b.name);
-    });
+    const visible = await collectVisibleChildEntries(rootPath, parentPath, includeIgnored);
 
     const out: FileTreeNode[] = [];
     let truncated = false;
-    for (const entry of entries) {
+    for (const { entry, rel } of visible) {
       if (out.length >= MAX_TREE_CHILDREN_PER_DIRECTORY) {
         truncated = true;
         break;
       }
-      const rel = normalizeRelative(path.join(parentPath, entry.name));
-      if (isVolatileAdeRuntimePath(rel)) continue;
-      if (await isIgnoredPath(rootPath, rel, includeIgnored)) continue;
-      if (entry.name === ".git") continue;
 
-      const node: FileTreeNode = {
-        name: entry.name,
-        path: rel,
-        type: entry.isDirectory() ? "directory" : "file",
-        changeStatus: statusSnapshot.fileStatus.get(rel) ?? null
-      };
+      const node = buildChildNode(entry, rel, statusSnapshot);
 
-      if (entry.isDirectory()) {
-        if (!node.changeStatus) {
-          node.changeStatus = inferDirectoryStatus(statusSnapshot, rel);
+      if (entry.isDirectory() && depth > 1) {
+        const sub = await listTreeNode({
+          rootPath,
+          parentPath: rel,
+          depth: depth - 1,
+          includeIgnored,
+          statusSnapshot
+        });
+        node.children = sub.children;
+        if (sub.truncated) {
+          node.childrenTruncated = true;
+          node.loadMoreOffset = MAX_TREE_CHILDREN_PER_DIRECTORY;
         }
-
-        if (depth > 1) {
-          const sub = await listTreeNode({
-            rootPath,
-            parentPath: rel,
-            depth: depth - 1,
-            includeIgnored,
-            statusSnapshot
-          });
-          node.children = sub.children;
-          if (sub.truncated) node.childrenTruncated = true;
-          if (!node.changeStatus && node.children.some((child) => child.changeStatus)) {
-            node.changeStatus = "modified";
-          }
+        if (!node.changeStatus && node.children.some((child) => child.changeStatus)) {
+          node.changeStatus = "modified";
         }
       }
 
@@ -665,6 +781,7 @@ export function createFileService({
       assertMutablePathAllowed(worktreePath, relPath);
       secureWriteTextAtomicWithinRoot(worktreePath, relPath, text);
       invalidateGitStatusCache(worktreePath);
+      clearPagedDirectoryEntriesCacheForRoot(worktreePath);
       if (onLaneWorktreeMutation) {
         onLaneWorktreeMutation({
           laneId,
@@ -694,10 +811,60 @@ export function createFileService({
       return result.children;
     },
 
-    readFile(args: FilesReadFileArgs): FileContent {
+    /**
+     * Resolve Git decorations for a workspace independently of the tree walk.
+     * `listTree` returns structure immediately (cached/empty status); the
+     * renderer calls this with `forceFresh` to stream real decorations in once
+     * `git status` resolves, replacing the old fixed-delay double tree fetch.
+     */
+    async refreshGitDecorations(args: FilesRefreshGitDecorationsArgs): Promise<FilesGitStatusEvent> {
+      const workspace = resolveWorkspace(args.workspaceId);
+      const snapshot = await getGitStatusSnapshot(workspace.rootPath, {
+        forceFresh: args.forceFresh === true,
+      });
+      const files: FileTreeStatusEntry[] = [];
+      for (const [filePath, changeStatus] of snapshot.fileStatus) {
+        files.push({ path: filePath, changeStatus });
+      }
+      const directories: FileTreeStatusEntry[] = [];
+      for (const dirPath of snapshot.changedDirectories) {
+        directories.push({ path: dirPath, changeStatus: "modified" });
+      }
+      return { workspaceId: args.workspaceId, files, directories };
+    },
+
+    /**
+     * Paginated lazy load of a directory's children. Replaces the silent
+     * 1,000-child truncation: callers request a page via `offset`/`limit` and
+     * follow `nextOffset` until it is null, so arbitrarily large directories
+     * load fully without blocking or dropping entries.
+     */
+    async listTreeChildren(args: FilesListTreeChildrenArgs): Promise<FilesListTreeChildrenResult> {
+      const workspace = resolveWorkspace(args.workspaceId);
+      const parentPath = normalizeRelative(args.parentPath ?? "");
+      const offset = Number.isFinite(args.offset) ? Math.max(0, Math.floor(args.offset ?? 0)) : 0;
+      const limit = Number.isFinite(args.limit)
+        ? Math.max(1, Math.min(2_000, Math.floor(args.limit ?? 500)))
+        : 500;
+      const includeIgnored = Boolean(args.includeIgnored);
+      const statusSnapshot = await getGitStatusSnapshot(workspace.rootPath, { forceFresh: false });
+      const visible = await collectPagedVisibleChildEntries(workspace.rootPath, parentPath, includeIgnored);
+
+      const total = visible.length;
+      const pageEnd = Math.min(offset + limit, total);
+      const children: FileTreeNode[] = [];
+      for (let i = offset; i < pageEnd; i++) {
+        const { entry, rel } = visible[i];
+        children.push(buildChildNode(entry, rel, statusSnapshot));
+      }
+      const nextOffset = pageEnd < total ? pageEnd : null;
+      return { parentPath, children, offset, limit, total, nextOffset };
+    },
+
+    async readFile(args: FilesReadFileArgs): Promise<FileContent> {
       const workspace = resolveWorkspace(args.workspaceId);
       const { absPath, normalizedRel } = ensureSafePath(workspace.rootPath, args.path);
-      const stat = fs.statSync(absPath);
+      const stat = await fsp.stat(absPath);
       if (!stat.isFile()) {
         throw new Error("Path is not a file.");
       }
@@ -712,7 +879,7 @@ export function createFileService({
             reason: "too_large",
           });
         }
-        const buf = fs.readFileSync(absPath);
+        const buf = await fsp.readFile(absPath);
         const base64 = buf.toString("base64");
         return {
           content: base64,
@@ -724,7 +891,7 @@ export function createFileService({
           mimeType: imageMimeType,
         };
       }
-      const sample = readFilePrefix(absPath, Math.min(stat.size, 8192));
+      const sample = await readFilePrefix(absPath, Math.min(stat.size, 8192));
       const isBinary = looksLikeBinary(sample, normalizedRel);
       if (isBinary) {
         if (stat.size > MAX_INLINE_BINARY_BYTES) {
@@ -736,7 +903,7 @@ export function createFileService({
             reason: "unsupported_binary",
           });
         }
-        const buf = fs.readFileSync(absPath);
+        const buf = await fsp.readFile(absPath);
         return {
           content: buf.toString("base64"),
           encoding: "base64",
@@ -748,15 +915,28 @@ export function createFileService({
         };
       }
       if (stat.size > MAX_EDITOR_TEXT_READ_BYTES) {
-        return omittedFileContent({
-          relPath: normalizedRel,
-          size: stat.size,
+        // Oversized text: return the first chunk and mark it partial. The
+        // renderer streams the remainder via readFileRange into a read-only
+        // virtualized view, rather than showing a blank "preview unavailable".
+        const firstChunk = await readFilePrefix(absPath, STREAM_FIRST_CHUNK_BYTES);
+        const keep = completeUtf8ByteLength(firstChunk);
+        const rangeEnd = keep;
+        return {
+          content: firstChunk.subarray(0, keep).toString("utf8"),
           encoding: "utf-8",
+          size: stat.size,
+          languageId: languageIdFromPath(normalizedRel),
+          isBinary: false,
+          previewKind: "text",
           mimeType: null,
-          reason: "too_large",
-        });
+          totalSize: stat.size,
+          isPartial: true,
+          rangeStart: 0,
+          rangeEnd,
+          nextOffset: rangeEnd < stat.size ? rangeEnd : null,
+        };
       }
-      const buf = fs.readFileSync(absPath);
+      const buf = await fsp.readFile(absPath);
       return {
         content: buf.toString("utf8"),
         encoding: "utf-8",
@@ -765,7 +945,123 @@ export function createFileService({
         isBinary: false,
         previewKind: "text",
         mimeType: null,
+        totalSize: stat.size,
+        isPartial: false,
       };
+    },
+
+    /**
+     * Read a byte range of a file for streaming large text (and CSV/PDF byte
+     * access). UTF-8 reads are trimmed to a complete code-point boundary so
+     * chunks concatenate cleanly; binary/image ranges come back base64.
+     */
+    async readFileRange(args: FilesReadFileRangeArgs): Promise<FilesReadFileRangeResult> {
+      const workspace = resolveWorkspace(args.workspaceId);
+      const { absPath, normalizedRel } = ensureSafePath(workspace.rootPath, args.path);
+      const stat = await fsp.stat(absPath);
+      if (!stat.isFile()) {
+        throw new Error("Path is not a file.");
+      }
+      const totalSize = stat.size;
+      const offset = Math.max(0, Math.floor(args.offset ?? 0));
+      const length = Number.isFinite(args.length)
+        ? Math.max(1, Math.min(MAX_RANGE_READ_BYTES, Math.floor(args.length ?? DEFAULT_RANGE_READ_BYTES)))
+        : DEFAULT_RANGE_READ_BYTES;
+
+      if (offset >= totalSize) {
+        return {
+          path: normalizedRel,
+          encoding: "utf-8",
+          content: "",
+          rangeStart: totalSize,
+          rangeEnd: totalSize,
+          totalSize,
+          nextOffset: null,
+          eof: true,
+        };
+      }
+
+      const fd = await fsp.open(absPath, "r");
+      try {
+        const buf = Buffer.alloc(Math.min(length, totalSize - offset));
+        const { bytesRead } = await fd.read(buf, 0, buf.length, offset);
+        const slice = buf.subarray(0, bytesRead);
+        const treatAsBinary = shouldReturnRangeAsBase64(normalizedRel)
+          || (offset === 0 && looksLikeBinary(slice, normalizedRel));
+
+        if (treatAsBinary) {
+          const rangeEnd = offset + bytesRead;
+          return {
+            path: normalizedRel,
+            encoding: "base64",
+            content: slice.toString("base64"),
+            rangeStart: offset,
+            rangeEnd,
+            totalSize,
+            nextOffset: rangeEnd < totalSize ? rangeEnd : null,
+            eof: rangeEnd >= totalSize,
+          };
+        }
+
+        const atEof = offset + bytesRead >= totalSize;
+        const keep = atEof ? bytesRead : completeUtf8ByteLength(slice);
+        const rangeEnd = offset + keep;
+        return {
+          path: normalizedRel,
+          encoding: "utf-8",
+          content: slice.subarray(0, keep).toString("utf8"),
+          rangeStart: offset,
+          rangeEnd,
+          totalSize,
+          nextOffset: rangeEnd < totalSize ? rangeEnd : null,
+          eof: rangeEnd >= totalSize,
+        };
+      } finally {
+        await fd.close();
+      }
+    },
+
+    /**
+     * `git blame --line-porcelain` for a file (optionally a line range),
+     * returning per-line author/sha/time/summary for hover annotations.
+     */
+    async blame(args: FilesGitBlameArgs): Promise<FilesGitBlameResult> {
+      const workspace = resolveWorkspace(args.workspaceId);
+      const { normalizedRel } = ensureSafePath(workspace.rootPath, args.path);
+      const range = args.startLine && args.endLine && args.endLine >= args.startLine
+        ? ["-L", `${Math.max(1, Math.floor(args.startLine))},${Math.floor(args.endLine)}`]
+        : [];
+      const res = await runGit(
+        ["blame", "--line-porcelain", ...range, "--", normalizedRel],
+        { cwd: workspace.rootPath, timeoutMs: GIT_BLAME_TIMEOUT_MS },
+      );
+      if (res.exitCode !== 0) {
+        return { path: normalizedRel, lines: [] };
+      }
+      const lines: FilesGitBlameLine[] = [];
+      let sha = "";
+      let author = "";
+      let authorTime = 0;
+      let summary = "";
+      let finalLine = 0;
+      for (const raw of res.stdout.split("\n")) {
+        if (/^[0-9a-f]{40} /.test(raw)) {
+          const parts = raw.split(" ");
+          sha = parts[0] ?? "";
+          finalLine = Number.parseInt(parts[2] ?? "0", 10) || 0;
+        } else if (raw.startsWith("author ")) {
+          author = raw.slice("author ".length);
+        } else if (raw.startsWith("author-time ")) {
+          authorTime = Number.parseInt(raw.slice("author-time ".length), 10) || 0;
+        } else if (raw.startsWith("summary ")) {
+          summary = raw.slice("summary ".length);
+        } else if (raw.startsWith("\t")) {
+          if (finalLine > 0) {
+            lines.push({ line: finalLine, sha, author, authorTime, summary });
+          }
+        }
+      }
+      return { path: normalizedRel, lines };
     },
 
     writeWorkspaceText(args: FilesWriteTextArgs): void {
@@ -773,6 +1069,7 @@ export function createFileService({
       const normalizedRel = assertMutablePathAllowed(workspace.rootPath, args.path);
       secureWriteTextAtomicWithinRoot(workspace.rootPath, args.path, args.text);
       invalidateGitStatusCache(workspace.rootPath);
+      clearPagedDirectoryEntriesCacheForRoot(workspace.rootPath);
       if (normalizedRel === ".gitignore") {
         clearIgnoreCacheForRoot(workspace.rootPath);
       }
@@ -794,6 +1091,7 @@ export function createFileService({
         secureWriteFileWithinRoot(workspace.rootPath, args.path, args.content ?? "", "utf8");
       }
       invalidateGitStatusCache(workspace.rootPath);
+      clearPagedDirectoryEntriesCacheForRoot(workspace.rootPath);
       indexService.onFileChanged({
         workspaceId: args.workspaceId,
         rootPath: workspace.rootPath,
@@ -809,6 +1107,7 @@ export function createFileService({
       assertMutablePathAllowed(workspace.rootPath, args.path);
       secureMkdirWithinRoot(workspace.rootPath, args.path);
       invalidateGitStatusCache(workspace.rootPath);
+      clearPagedDirectoryEntriesCacheForRoot(workspace.rootPath);
       indexService.invalidateWorkspace(args.workspaceId);
       emitLaneMutation(args.workspaceId, "directory_create");
     },
@@ -819,6 +1118,7 @@ export function createFileService({
       const newRel = assertMutablePathAllowed(workspace.rootPath, args.newPath);
       secureRenameWithinRoot(workspace.rootPath, args.oldPath, args.newPath);
       invalidateGitStatusCache(workspace.rootPath);
+      clearPagedDirectoryEntriesCacheForRoot(workspace.rootPath);
       if (oldRel === ".gitignore" || newRel === ".gitignore") {
         clearIgnoreCacheForRoot(workspace.rootPath);
       }
@@ -841,6 +1141,7 @@ export function createFileService({
       }
       fs.rmSync(absPath, { recursive: true, force: true });
       invalidateGitStatusCache(workspace.rootPath);
+      clearPagedDirectoryEntriesCacheForRoot(workspace.rootPath);
       if (normalizedRel === ".gitignore") {
         clearIgnoreCacheForRoot(workspace.rootPath);
       }
@@ -873,6 +1174,7 @@ export function createFileService({
         },
         (ev) => {
           invalidateGitStatusCache(workspace.rootPath);
+          clearPagedDirectoryEntriesCacheForRoot(workspace.rootPath);
           if (ev.path === ".gitignore") {
             clearIgnoreCacheForRoot(workspace.rootPath);
           }
