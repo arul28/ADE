@@ -1,6 +1,6 @@
 ---
 title: "Setting Up the CTO"
-description: "Walk through the CTO onboarding wizard, configure heartbeat schedules, and verify the CTO is active and monitoring your project."
+description: "Walk through the CTO onboarding wizard, configure worker heartbeat schedules, and verify the CTO team is active."
 icon: "wand-magic-sparkles"
 ---
 
@@ -14,76 +14,39 @@ icon: "wand-magic-sparkles"
     The wizard walks through three steps:
     1. **Identity creation** — give the CTO a name and an initial persona prompt. This shapes how it communicates and what it prioritizes.
     2. **Project scanning** — the CTO reads your repository structure, existing PRD/architecture docs, recent git history, and `.ade/` state to build its initial Project Pack. This takes 30–90 seconds on a typical project.
-    3. **Integration handoff** — optionally connect Linear (OAuth or manual token) and configure the heartbeat schedule.
+    3. **Integration handoff** — optionally connect Linear (OAuth or manual token) and review the CTO team setup.
 
   </Step>
-  <Step title="Configure the heartbeat">
-    In **CTO > Settings**, set the heartbeat interval. The default is every 15 minutes. You can also configure event-based triggers (e.g., "run when a PR is opened", "run when a lane enters conflict status").
+  <Step title="Configure worker heartbeats">
+    In **CTO > Team**, edit a worker and enable **Timer-based heartbeat**. The interval is stored per worker in seconds; the UI defaults to `300`.
   </Step>
   <Step title="Verify the CTO is active">
-    The CTO Status panel (top of the CTO > Chat sub-tab) shows the last heartbeat time, next scheduled heartbeat, and a green "Active" badge. If it shows "Inactive", check that at least one AI provider is configured in Settings > AI Providers.
+    The CTO surfaces worker state from the Team and Chat views. If a worker cannot run, check that at least one AI provider is configured in Settings > AI Providers.
   </Step>
 </Steps>
 
 ---
 
-## Heartbeat Configuration
+## Worker Heartbeat Configuration
 
-The CTO's heartbeat is its core activation mechanism. On each heartbeat, the CTO runs a full project scan and takes any warranted actions.
+Worker heartbeats are per-agent runtime settings. When enabled, ADE wakes that worker on a timer and runs the worker heartbeat service for that agent.
 
-### What the CTO checks on each heartbeat
+### What happens on each heartbeat
 
-1. **New commits** — compares HEAD SHAs across all lanes to its last-known state
-2. **PR status changes** — checks for newly opened, approved, merged, or failed PRs
-3. **Linear issue updates** — polls for new comments, status transitions, and assignments in connected projects
-4. **Stuck lanes** — identifies lanes in `blocked` or `conflict` status longer than a configurable threshold
-5. **Budget overruns** — flags workers that have exceeded or are approaching their token/cost budgets
-6. **Stale Lane Packs** — identifies packs that have not been regenerated after recent commits
+ADE creates a worker wakeup request with reason `timer`, reconstructs the worker's recent context, and asks the worker to respond with `HEARTBEAT_OK` when no action is required. Wakeups with explicit prompts, events, changes, or task context are escalated into worker work; quiet timer wakeups can complete without action.
 
 ### Heartbeat schedule options
 
-<Tabs>
-  <Tab title="Interval-based">
-    Run every N minutes. Suitable for active development days where you want frequent check-ins.
+Configure heartbeats in **CTO > Team** on each worker:
 
-    ```yaml
-    # .ade/ade.yaml
-    cto:
-      heartbeat:
-        mode: interval
-        interval_minutes: 15
-    ```
-  </Tab>
-  <Tab title="Event-based">
-    Run when specific events occur. Lower noise; triggers only when something notable happens.
+| Setting | Meaning |
+|---|---|
+| Timer-based heartbeat | Enables scheduled wakeups for that worker |
+| Interval (seconds) | Number of seconds between wakeups; the UI default is `300` |
+| Wake on demand | Allows ADE to wake the worker immediately for matching work |
+| Active hours | Restricts wakeups to a start/end window and timezone |
 
-    ```yaml
-    cto:
-      heartbeat:
-        mode: events
-        triggers:
-          - pr_opened
-          - pr_merged
-          - lane_blocked
-          - lane_conflict
-          - linear_issue_assigned
-    ```
-  </Tab>
-  <Tab title="Combined">
-    Both interval and events — interval provides a regular health check while events provide immediate response to important changes.
-
-    ```yaml
-    cto:
-      heartbeat:
-        mode: combined
-        interval_minutes: 30
-        triggers:
-          - pr_opened
-          - lane_blocked
-          - linear_issue_assigned
-    ```
-  </Tab>
-</Tabs>
+This state is stored on the worker identity as `runtimeConfig.heartbeat`. ADE does not parse a project-level `.ade/ade.yaml` `cto.heartbeat` block.
 
 ### Identity Restoration After Compaction
 
@@ -96,4 +59,4 @@ This also applies to worker agents that have an identity key assigned.
 You can trigger the CTO immediately from the UI:
 - Click **Run Heartbeat Now** in the CTO Status panel
 - Type a message in the CTO Chat — this activates the CTO in conversational mode
-- Via Automations using the `cto-route` executor mode
+- Via Automations using a real action such as `agent-session` for worker sessions or `ade-action` for a registered ADE action

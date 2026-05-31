@@ -123,10 +123,27 @@ for (const target of collectConfigTargets(docsConfig)) {
 
 const inlineHrefPattern = /\b(?:href|src)=["']([^"']+)["']/g;
 const markdownLinkPattern = /!?\[[^\]]*\]\(([^)]+)\)/g;
+const leakedAgentMarkupPattern = /<\/(?:invoke|content)>|<parameter\b|antml:/g;
+
+function lineNumberForIndex(content, index) {
+  let line = 1;
+  for (let i = 0; i < index; i += 1) {
+    if (content.charCodeAt(i) === 10) line += 1;
+  }
+  return line;
+}
 
 for (const file of docFiles) {
   const content = await fs.readFile(path.join(repoRoot, file), "utf8");
   const seenTargets = new Set();
+
+  if (file.endsWith(".mdx")) {
+    leakedAgentMarkupPattern.lastIndex = 0;
+    let artifactMatch;
+    while ((artifactMatch = leakedAgentMarkupPattern.exec(content)) !== null) {
+      errors.push(`${file}:${lineNumberForIndex(content, artifactMatch.index)}: remove leaked agent tool-call markup ${artifactMatch[0]}`);
+    }
+  }
 
   for (const pattern of [inlineHrefPattern, markdownLinkPattern]) {
     pattern.lastIndex = 0;

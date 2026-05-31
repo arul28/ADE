@@ -10,7 +10,7 @@ The New Lane dialog walks you through three ways to start, selected by tabs at t
 
 <Steps>
   <Step title="Open the dialog">
-    Click **+ New Lane** at the top of the lane list, or press `Cmd+Shift+L`. The dialog description reads *"Create a lane from Primary, an existing branch, or another lane."*
+    Click **+ New Lane** at the top of the lane list, or open the command palette with `Cmd/Ctrl+K` and choose **Create Lane**. The dialog description reads *"Create a lane from Primary, an existing branch, or another lane."*
   </Step>
   <Step title="Name the lane">
     The name is used for both the lane identifier and the worktree directory name. Keep it task-oriented (`add-health-endpoint`, `fix-auth-redirect`) rather than generic.
@@ -68,15 +68,16 @@ Deleted lane history (packs, checkpoints, sessions) stays in ADE's local databas
 
 | Action | Shortcut |
 |---|---|
-| New Lane | `Cmd+Shift+L` |
-| Focus lane list | `Cmd+1` |
-| Next lane | `Cmd+]` |
-| Previous lane | `Cmd+[` |
-| Open lane in Graph | `Cmd+G` |
-| Commit staged changes | `Cmd+Enter` |
-| Stage all changes | `Cmd+Shift+A` |
-| Archive lane | `Cmd+Shift+W` |
-| Regenerate Lane Pack | `Cmd+Shift+P` |
+| Open command palette | `Cmd/Ctrl+K` |
+| Focus lane filter | `/` or `Cmd/Ctrl+F` |
+| Select next lane | `J` or `Down Arrow` |
+| Select previous lane | `K` or `Up Arrow` |
+| Select next lane tab | `]` |
+| Select previous lane tab | `[` |
+| Pin selected lane tab | `Enter` |
+| Commit staged changes | `Cmd/Ctrl+Enter` in the commit message field |
+
+Create Lane is available from the command palette and the **+ New Lane** button; it does not have a dedicated keyboard shortcut.
 
 ---
 
