@@ -76,6 +76,12 @@ export type AdeDb = {
   all: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: SqlValue[]) => T[];
 
   sync: AdeDbSyncApi;
+
+  /**
+   * Force pending WAL frames onto the main database before shutdown. This uses a
+   * TRUNCATE checkpoint and can wait for active readers, so keep calls on
+   * final-persistence paths instead of latency-sensitive request handling.
+   */
   flushNow: () => void;
   close: () => void;
 };
