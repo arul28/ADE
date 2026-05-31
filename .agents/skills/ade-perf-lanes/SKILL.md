@@ -7,7 +7,7 @@ description: Performance practices for ADE's Lanes tab. Read before editing
   measured UI audit proves a better one.
 metadata:
   author: ade-autoresearch
-  version: 0.2.0
+  version: 0.2.1
   status: active
 ---
 
@@ -89,3 +89,15 @@ Use this as engineering guidance for keeping the Lanes tab fast while adding fea
 - **Apply when**: New lane metadata or appearance handlers update color/name/description without changing branch state.
 - **Avoid**: Bare `refreshLanes()` after appearance-only updates.
 - **Verification**: Real UI manage-dialog trace `lanes-refresh-light-20260511` showed `ade.lanes.updateAppearance` at 1 ms followed by an unnecessary `ade.lanes.listSnapshots` at 308 ms. The lightweight path uses `refreshLanes({ includeStatus: false })` instead.
+
+### Gate Stack Graph agent rosters behind visibility
+- **Why it helped**: Lanes loaded per-lane agent rosters even while Stack Graph was closed. With 30 lanes, initial `/lanes` load fanned out `agentChat.list({ laneId })` and `sessions.list({ laneId })` for every lane before the user opened the graph.
+- **Apply when**: A closed Lanes surface computes per-lane chat/session/agent data that is only rendered inside Stack Graph.
+- **Avoid**: Fetching every lane's agent roster on page load to keep a closed dropdown warm.
+- **Verification**: `lanes-20260531-1421-baseline` Lanes nav spent 87 `ade.localRuntime.callAction` calls / 25.3 s total IPC time. After gating rosters until Stack Graph opens, `lanes-20260531-1421-after1` dropped Lanes nav to 28 `callAction` calls / 13.3 s. Stack Graph then paid the roster cost on demand: 63 calls / 450 ms in the open segment.
+
+### Filter chat session lists before applying caps
+- **Why it helped**: `agentChat.listSessions()` loaded the newest 500 terminal sessions and then filtered to chat rows. Many newer CLI or shell sessions could push older chats out of the capped result, making chat panes look empty or stale even though persisted chats existed.
+- **Apply when**: A session list is intended to show a specific tool family, provider, or surface and the underlying table also stores high-volume shell/run-owned sessions.
+- **Avoid**: Applying a global `limit` before the meaningful filter, or widening limits as a substitute for the right query.
+- **Verification**: `fix(chat): filter chat session lists before caps` adds `toolTypes` to `sessionService.list`, uses it from `agentChatService.listSessions`, preserves legacy chat rows inferred from resume commands, and covers a regression with 505 newer shell sessions hiding an older chat.
