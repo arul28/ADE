@@ -349,6 +349,57 @@ describe("automationService integration", () => {
     expect(String(mapped[0]?.output ?? "")).toContain("hello");
   });
 
+  it("serializes concurrent manual triggers into distinct runs", async () => {
+    const { db, raw } = createInMemoryAdeDb();
+    const logger = createLogger();
+    const projectId = "proj";
+    const projectRoot = "/tmp";
+
+    const rule = {
+      id: "slow-manual",
+      name: "Slow manual",
+      trigger: { type: "manual" as const },
+      actions: [{ type: "run-command" as const, command: "node -e \"setTimeout(() => {}, 150)\"", timeoutMs: 10_000 }],
+      enabled: true
+    };
+
+    const projectConfigService = {
+      get: () => ({
+        trust: { requiresSharedTrust: false },
+        effective: { automations: [rule], providerMode: "guest" }
+      }),
+      save: () => {
+        throw new Error("not used");
+      }
+    } as any;
+
+    const laneService = {
+      list: async () => [],
+      getLaneWorktreePath: () => projectRoot,
+      getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
+    } as any;
+
+    const service = createAutomationService({
+      db: db as any,
+      logger,
+      projectId,
+      projectRoot,
+      laneService,
+      projectConfigService
+    });
+
+    const [first, second] = await Promise.all([
+      service.triggerManually({ id: "slow-manual" }),
+      service.triggerManually({ id: "slow-manual" }),
+    ]);
+
+    expect(first.id).not.toBe(second.id);
+    expect(first.status).toBe("succeeded");
+    expect(second.status).toBe("succeeded");
+    const mapped = mapExecRows(raw.exec("select id from automation_runs where automation_id = 'slow-manual'"));
+    expect(mapped).toHaveLength(2);
+  });
+
   it("runs built-in commands from the configured target lane", async () => {
     const { db, raw } = createInMemoryAdeDb();
     const logger = createLogger();

@@ -382,6 +382,13 @@ export type OrchestrationEventPayload =
     }
   | {
       runId: string;
+      kind: "heartbeat";
+      etag: string;
+      sessionId: string;
+      lastHeartbeatAt: string;
+    }
+  | {
+      runId: string;
       kind: "lifecycle";
       etag: string;
       status: "suspended" | "resumed" | "deleted";

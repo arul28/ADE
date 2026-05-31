@@ -113,6 +113,74 @@ describe("CtoPage chat layout", () => {
     expect(host?.className).toBe("min-h-0 flex-1 overflow-hidden");
     expect(host?.className).not.toContain("rounded");
   });
+
+  it("wires team grid Wake and Edit actions to the clicked worker", async () => {
+    const triggerAgentWakeup = vi.fn().mockResolvedValue({ status: "queued" });
+    const listAgentRuns = vi.fn().mockResolvedValue([]);
+    const worker = {
+      id: "worker-1",
+      name: "Build Fixer",
+      role: "Engineer",
+      status: "active",
+      capabilities: [],
+      adapterType: "codex",
+      adapterConfig: { model: "openai/gpt-5.4-mini" },
+      budgetMonthlyCents: 0,
+      prompt: "",
+      createdAt: "2026-05-01T00:00:00.000Z",
+      updatedAt: "2026-05-01T00:00:00.000Z",
+    };
+    globalThis.window.ade = {
+      ...(globalThis.window.ade ?? {}),
+      cto: {
+        ...(globalThis.window.ade?.cto ?? {}),
+        listAgents: vi.fn().mockResolvedValue([worker]),
+        getBudgetSnapshot: vi.fn().mockResolvedValue({ workers: [] }),
+        getState: vi.fn().mockResolvedValue({
+          identity: {
+            version: 2,
+            persona: "Senior CTO",
+            personality: "strategic",
+            customPersonality: null,
+            modelPreferences: {
+              provider: "anthropic",
+              model: "claude-sonnet-4-6",
+              reasoningEffort: null,
+            },
+          },
+          recentSessions: [],
+        }),
+        getOnboardingState: vi.fn().mockResolvedValue({
+          completedAt: "2026-05-01T00:00:00.000Z",
+          completedSteps: ["identity"],
+          dismissedAt: null,
+        }),
+        listAgentSessionLogs: vi.fn().mockResolvedValue([]),
+        listAgentRuns,
+        listAgentRevisions: vi.fn().mockResolvedValue([]),
+        triggerAgentWakeup,
+      },
+    } as any;
+
+    render(
+      <MemoryRouter>
+        <CtoPage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Team" }));
+    const wake = await screen.findByRole("button", { name: "Wake" });
+    fireEvent.click(wake);
+    expect(triggerAgentWakeup).toHaveBeenCalledWith({
+      agentId: "worker-1",
+      reason: "manual",
+      context: { source: "cto_ui" },
+    });
+    expect(listAgentRuns).toHaveBeenCalledWith({ agentId: "worker-1", limit: 20 });
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(await screen.findByDisplayValue("Build Fixer")).toBeTruthy();
+  });
 });
 
 describe("CtoSettingsPanel (file group)", () => {

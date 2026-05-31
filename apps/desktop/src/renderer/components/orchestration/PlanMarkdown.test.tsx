@@ -95,6 +95,17 @@ describe("PlanMarkdown", () => {
     expect(link?.getAttribute("href")).toBe("https://example.com");
   });
 
+  it("resolves inline image assets from the bundle root when no resolver is provided", () => {
+    const { container } = render(
+      <PlanMarkdown
+        source={"![chart](artifacts/evidence/chart.png)"}
+        bundleRoot="/tmp/ade-bundle"
+      />,
+    );
+    const image = container.querySelector("img");
+    expect(image?.getAttribute("src")).toBe("file:///tmp/ade-bundle/artifacts/evidence/chart.png");
+  });
+
   it("sanitizes raw html while preserving plan-safe anchors and subscript", () => {
     const { container } = render(
       <PlanMarkdown

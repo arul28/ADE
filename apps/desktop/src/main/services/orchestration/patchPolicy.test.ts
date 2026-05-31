@@ -242,6 +242,19 @@ describe("patchPolicy", () => {
     expect(denied.allowed).toBe(false);
   });
 
+  it("worker cannot patch an unassigned task before claiming it", () => {
+    const manifest = makeManifest();
+    delete manifest.tasks[0]!.assigneeSessionId;
+    const denied = checkPatchOp(
+      { op: "replace", path: "/tasks/{id:T-1}/status", value: "done" },
+      { actorRole: "worker", actorSessionId: "S-worker", manifest },
+    );
+    expect(denied.allowed).toBe(false);
+    if (!denied.allowed) {
+      expect(denied.reason).toContain("must claim task");
+    }
+  });
+
   it("validator may patch its own row but must use recordValidationRun for checklist state", () => {
     const manifest = makeManifest();
     const ownRow = checkPatchOp(

@@ -121,6 +121,19 @@ function reducer(state: PanelState, action: PanelAction): PanelState {
       if (p.kind === "plan" && typeof p.planMd === "string") {
         return { ...state, planMd: p.planMd, etag: p.etag };
       }
+      if (p.kind === "heartbeat" && state.manifest) {
+        return {
+          ...state,
+          manifest: {
+            ...state.manifest,
+            agents: state.manifest.agents.map((agent) =>
+              agent.sessionId === p.sessionId
+                ? { ...agent, lastHeartbeatAt: p.lastHeartbeatAt }
+                : agent,
+            ),
+          },
+        };
+      }
       return state;
     }
     default:

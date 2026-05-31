@@ -897,9 +897,16 @@ export function createAutomationService({
     catch { return undefined; }
   };
 
-  const inFlightByAutomationId = new Set<string>();
+  const runQueuesByAutomationId = new Map<string, Promise<unknown>>();
   const scheduleTasks = new Map<string, CronTask>();
   const fileWatchers = new Map<string, FSWatcher>();
+  const fileChangeDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const fileChangeDebounceBatches = new Map<string, {
+    root: WatchedFileRoot;
+    paths: Set<string>;
+    keywords: Set<string>;
+    reasons: Set<string>;
+  }>();
 
   const emit = (payload: {
     type: "runs-updated" | "webhook-status-updated" | "ingress-updated";
@@ -2311,7 +2318,7 @@ export function createAutomationService({
     });
   };
 
-  const runRule = async (
+  const runRuleNow = async (
     rule: AutomationRule,
     trigger: TriggerContext,
     options: { dryRun?: boolean } = {},
@@ -2319,31 +2326,31 @@ export function createAutomationService({
     if (projectConfigService.get().trust.requiresSharedTrust) {
       throw new Error("Shared config is untrusted. Confirm trust to run automations.");
     }
-    if (inFlightByAutomationId.has(rule.id)) {
-      const existing = db.get<AutomationRunRow>(
-        `select
-          id, automation_id, chat_session_id, worker_run_id, worker_agent_id, queue_item_id, ingress_event_id, trigger_type, started_at, ended_at, status, execution_kind, queue_status,
-          executor_mode, actions_completed, actions_total, error_message, verification_required, spend_usd,
-          trigger_metadata, summary, confidence_json, billing_code
-         from automation_runs
-         where project_id = ? and automation_id = ?
-         order by started_at desc
-         limit 1`,
-        [projectId, rule.id]
-      );
-      if (existing) return toRun(existing);
+    if (options.dryRun) {
+      return await simulateDryRun(rule, trigger);
     }
-    inFlightByAutomationId.add(rule.id);
+    const executionKind = resolveExecutionKind(rule);
+    if (executionKind === "agent-session") return await dispatchAgentSessionRun({ rule, trigger });
+    if (executionKind === "built-in") return await runLegacyRule(rule, trigger);
+    throw new Error(`Unsupported automation execution kind: ${executionKind}`);
+  };
+
+  const runRule = async (
+    rule: AutomationRule,
+    trigger: TriggerContext,
+    options: { dryRun?: boolean } = {},
+  ): Promise<AutomationRun> => {
+    const previous = runQueuesByAutomationId.get(rule.id) ?? Promise.resolve();
+    const queued = previous
+      .catch(() => undefined)
+      .then(() => runRuleNow(rule, trigger, options));
+    runQueuesByAutomationId.set(rule.id, queued);
     try {
-      if (options.dryRun) {
-        return await simulateDryRun(rule, trigger);
-      }
-      const executionKind = resolveExecutionKind(rule);
-      if (executionKind === "agent-session") return await dispatchAgentSessionRun({ rule, trigger });
-      if (executionKind === "built-in") return await runLegacyRule(rule, trigger);
-      throw new Error(`Unsupported automation execution kind: ${executionKind}`);
+      return await queued;
     } finally {
-      inFlightByAutomationId.delete(rule.id);
+      if (runQueuesByAutomationId.get(rule.id) === queued) {
+        runQueuesByAutomationId.delete(rule.id);
+      }
     }
   };
 
@@ -2386,6 +2393,48 @@ export function createAutomationService({
     }
   };
 
+  const clearFileChangeBatch = (key: string) => {
+    const existing = fileChangeDebounceTimers.get(key);
+    if (existing) clearTimeout(existing);
+    fileChangeDebounceTimers.delete(key);
+    fileChangeDebounceBatches.delete(key);
+  };
+
+  const flushFileChangeBatch = (key: string) => {
+    const batch = fileChangeDebounceBatches.get(key);
+    if (!batch) return;
+    clearFileChangeBatch(key);
+    const paths = Array.from(batch.paths).sort();
+    const keywords = Array.from(batch.keywords).sort();
+    const reasons = Array.from(batch.reasons).sort();
+    void dispatchTrigger({
+      triggerType: "file.change",
+      laneId: batch.root.laneId,
+      laneName: batch.root.laneName,
+      branch: batch.root.branchRef,
+      paths,
+      keywords,
+      summary: `${paths.length} file change${paths.length === 1 ? "" : "s"}: ${paths.slice(0, 5).join(", ")}${paths.length > 5 ? "..." : ""}`,
+      reason: reasons.join(",") || "file.change",
+      scheduledAt: nowIso(),
+    });
+  };
+
+  const queueFileChange = (root: WatchedFileRoot, kind: "add" | "change" | "unlink" | "addDir" | "unlinkDir", relPath: string) => {
+    const key = root.key;
+    let batch = fileChangeDebounceBatches.get(key);
+    if (!batch) {
+      batch = { root, paths: new Set(), keywords: new Set(), reasons: new Set() };
+      fileChangeDebounceBatches.set(key, batch);
+    }
+    batch.paths.add(relPath);
+    batch.keywords.add(kind);
+    batch.reasons.add(kind);
+    const existing = fileChangeDebounceTimers.get(key);
+    if (existing) clearTimeout(existing);
+    fileChangeDebounceTimers.set(key, setTimeout(() => flushFileChangeBatch(key), 750));
+  };
+
   const listWatchedFileRoots = async (): Promise<WatchedFileRoot[]> => {
     const normalizedProjectRoot = path.resolve(projectRoot);
     const lanes = await laneService.list({ includeArchived: false, includeStatus: false }).catch(() => []);
@@ -2417,7 +2466,9 @@ export function createAutomationService({
       for (const [key, watcher] of fileWatchers.entries()) {
         void watcher.close().catch(() => {});
         fileWatchers.delete(key);
+        clearFileChangeBatch(key);
       }
+      for (const key of Array.from(fileChangeDebounceTimers.keys())) clearFileChangeBatch(key);
       return;
     }
 
@@ -2427,6 +2478,7 @@ export function createAutomationService({
       if (desiredKeys.has(key)) continue;
       void watcher.close().catch(() => {});
       fileWatchers.delete(key);
+      clearFileChangeBatch(key);
     }
 
     for (const root of desired) {
@@ -2446,21 +2498,12 @@ export function createAutomationService({
       const onFileEvent = (kind: "add" | "change" | "unlink" | "addDir" | "unlinkDir", absPath: string) => {
         const relPath = path.relative(root.rootPath, absPath).split(path.sep).join("/");
         if (!relPath || relPath.startsWith(".git/") || relPath.startsWith("node_modules/") || relPath.startsWith(".ade/")) return;
-        void dispatchTrigger({
-          triggerType: "file.change",
-          laneId: root.laneId,
-          laneName: root.laneName,
-          branch: root.branchRef,
-          paths: [relPath],
-          keywords: [kind],
-          summary: `${kind} ${relPath}`,
-          reason: kind,
-          scheduledAt: nowIso(),
-        });
+        queueFileChange(root, kind, relPath);
       };
       watcher.on("error", () => {
         // EMFILE or other watcher error — close gracefully
         fileWatchers.delete(root.key);
+        clearFileChangeBatch(root.key);
         void watcher.close().catch(() => {});
       });
       watcher.on("add", (absPath) => onFileEvent("add", absPath));
@@ -3189,6 +3232,11 @@ export function createAutomationService({
         void watcher.close().catch(() => {});
       }
       fileWatchers.clear();
+      for (const timer of fileChangeDebounceTimers.values()) {
+        clearTimeout(timer);
+      }
+      fileChangeDebounceTimers.clear();
+      fileChangeDebounceBatches.clear();
     }
   };
 }

@@ -247,8 +247,12 @@ export function buildOrchestrationSandboxConfig(
     escapeRegExp(path.join(bundlePath, "manifest.json")),
     escapeRegExp(path.join(bundlePath, "plan.md")),
   ];
+  const safeCommands = base.safeCommands.filter(
+    (pattern) => !/^\^(?:node|tsx)(?:\(|\\|\[|\.|$)/.test(pattern),
+  );
   return {
     ...base,
+    safeCommands,
     protectedFiles: [...base.protectedFiles, ...extraProtected],
     blockByDefault: true,
   };

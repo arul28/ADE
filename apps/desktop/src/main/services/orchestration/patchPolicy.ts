@@ -235,14 +235,12 @@ export function checkPatchOp(
       const taskId = extractTaskId(op.path);
       if (taskId) {
         const task = ctx.manifest.tasks.find((t) => t.id === taskId);
-        if (
-          task &&
-          task.assigneeSessionId &&
-          task.assigneeSessionId !== ctx.actorSessionId
-        ) {
+        if (task && task.assigneeSessionId !== ctx.actorSessionId) {
           return {
             allowed: false,
-            reason: `worker ${ctx.actorSessionId} does not own task ${taskId}`,
+            reason: task.assigneeSessionId
+              ? `worker ${ctx.actorSessionId} does not own task ${taskId}`
+              : `worker ${ctx.actorSessionId} must claim task ${taskId} before patching it`,
             path: op.path,
           };
         }

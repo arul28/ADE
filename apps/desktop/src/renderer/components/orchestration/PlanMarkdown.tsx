@@ -34,6 +34,7 @@ import type { Root, Element as HastElement, Text as HastText } from "hast";
 import { ArrowSquareOut, FileHtml } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
+import { bundleAssetFileUrl } from "./orchestrationDataSource";
 
 export type PlanAssetResolver = (path: string) =>
   | { url: string; kind?: "image" | "html" | "other"; srcDoc?: string }
@@ -453,7 +454,7 @@ function buildComponents({
         const resolved = resolveAsset?.(hrefStr) ?? null;
         const url =
           resolved?.url ??
-          (bundleRoot ? `file://${bundleRoot.replace(/\/$/, "")}/${hrefStr.replace(/^\//, "")}` : null);
+          bundleAssetFileUrl(bundleRoot, hrefStr);
         const label = hrefStr.split("/").slice(-1)[0] ?? hrefStr;
         return <SpecPreviewCard href={hrefStr} resolvedUrl={url} label={label} />;
       }
@@ -476,7 +477,7 @@ function buildComponents({
     img: ({ src, alt }) => {
       const srcStr = typeof src === "string" ? src : "";
       const resolved = resolveAsset?.(srcStr) ?? null;
-      const url = resolved?.url ?? srcStr;
+      const url = resolved?.url ?? bundleAssetFileUrl(bundleRoot, srcStr) ?? srcStr;
       return (
         <img
           src={url}

@@ -320,6 +320,7 @@ export function createLinearIngressService(args: LinearIngressServiceArgs) {
     }
     const payload = (await response.json()) as RelayEnsureWebhookResponse;
     relayWebhook = payload;
+    localSigningSecret = payload.signingSecret;
 
     try {
       const existing = await args.linearClient.listWebhooks();

@@ -8,6 +8,7 @@ export const DEFAULT_WORKER_SANDBOX_CONFIG: WorkerSandboxConfig = {
     "\\bchmod\\s+777\\b",
     "\\bcurl\\b.*\\|\\s*sh",
     "\\bwget\\b.*\\|\\s*sh",
+    "\\|\\s*(?:ba|z|k|c|da|fi)?sh\\b",
     "\\beval\\b",
     ">\\s*/etc/",
     ">\\s*/usr/",

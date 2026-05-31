@@ -473,14 +473,71 @@ describe("orchestrationService", () => {
       manifest.bundlePath,
     );
     expect(withWorker.ok).toBe(true);
+    if (!withWorker.ok) return;
+    const manifestPath = path.join(manifest.bundlePath, "manifest.json");
+    const genPath = path.join(manifest.bundlePath, ".gen");
+    const manifestBefore = await fsp.readFile(manifestPath, "utf-8");
+    const genBefore = await fsp.readFile(genPath, "utf-8");
 
     const heartbeat = await svc.agentHeartbeat(
       { runId: manifest.runId, sessionId: "S-worker" },
       manifest.bundlePath,
     );
     expect(heartbeat.ok).toBe(true);
+    expect(heartbeat.etag).toBe(withWorker.etag);
     const current = svc.getManifestForRun(manifest.runId)!;
     expect(current.agents.find((agent) => agent.sessionId === "S-worker")?.lastHeartbeatAt).toBeTruthy();
+    expect(await fsp.readFile(manifestPath, "utf-8")).toBe(manifestBefore);
+    expect(await fsp.readFile(genPath, "utf-8")).toBe(genBefore);
+    const heartbeats = JSON.parse(await fsp.readFile(path.join(manifest.bundlePath, "heartbeats.json"), "utf-8"));
+    expect(heartbeats["S-worker"]).toBeTruthy();
+    await svc.dispose();
+  });
+
+  it("rejects duplicate agent session ids in service-internal direct patches", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const { manifest } = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+    });
+    await expect(
+      svc.approvePlan(
+        manifest.runId,
+        manifest.bundlePath,
+        [{
+          op: "add",
+          path: "/agents/-",
+          value: {
+            sessionId: "S-lead",
+            role: "worker",
+            tag: "dupe",
+            goalSummary: "duplicate",
+            status: "running",
+            spawnedAt: "now",
+          },
+        }],
+        "duplicate-agent-test",
+      ),
+    ).rejects.toThrow(/duplicate sessionId/);
+    await svc.dispose();
+  });
+
+  it("rejects service-internal direct patches that remove all agents", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const { manifest } = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+    });
+    await expect(
+      svc.approvePlan(
+        manifest.runId,
+        manifest.bundlePath,
+        [{ op: "replace", path: "/agents", value: [] }],
+        "empty-agents-test",
+      ),
+    ).rejects.toThrow(/at least one agent/);
     await svc.dispose();
   });
 
