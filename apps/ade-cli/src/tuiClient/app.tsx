@@ -183,6 +183,7 @@ import {
 } from "./hitTestRegistry";
 import {
   focusedSessionIdForMultiView,
+  resolveOpenChatSessionIds,
   type MultiViewState,
   type MultiViewTile,
 } from "./multiChatLayout";
@@ -5870,12 +5871,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   useEffect(() => {
     if (!connection) return;
     const unsubscribe = connection.onChatEvent((envelope) => {
-      const currentMultiView = multiViewRef.current;
-      const openSessionIds = new Set(
-        currentMultiView
-          ? currentMultiView.tiles.map((tile) => tile.sessionId)
-          : [activeSessionIdRef.current].filter((value): value is string => Boolean(value)),
-      );
+      const openSessionIds = resolveOpenChatSessionIds({
+        gridViewActive: gridViewActiveRef.current,
+        multiView: multiViewRef.current,
+        activeSessionId: activeSessionIdRef.current,
+      });
       if (!openSessionIds.has(envelope.sessionId)) {
         // Event for a session we're not displaying — refresh summaries (cheap,
         // dedup-guarded). Only the open-session token stream below is coalesced.
