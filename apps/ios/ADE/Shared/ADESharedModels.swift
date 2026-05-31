@@ -110,6 +110,10 @@ public struct PrSnapshot: Codable, Hashable, Identifiable, Sendable {
     /// Source branch (headRef), e.g. "feat/auth-refactor". Optional so older
     /// snapshots written before the field was added still decode cleanly.
     public let branch: String?
+    /// PR update timestamp from the host. Attention surfaces use this instead
+    /// of the snapshot write time so a still-open PR does not re-badge every
+    /// time the App Group snapshot is regenerated.
+    public let updatedAt: Date?
 
     public init(
         id: String,
@@ -119,7 +123,8 @@ public struct PrSnapshot: Codable, Hashable, Identifiable, Sendable {
         review: String,
         state: String,
         mergeReady: Bool,
-        branch: String? = nil
+        branch: String? = nil,
+        updatedAt: Date? = nil
     ) {
         self.id = id
         self.number = number
@@ -129,6 +134,7 @@ public struct PrSnapshot: Codable, Hashable, Identifiable, Sendable {
         self.state = state
         self.mergeReady = mergeReady
         self.branch = branch
+        self.updatedAt = updatedAt
     }
 }
 

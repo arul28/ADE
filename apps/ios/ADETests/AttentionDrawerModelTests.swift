@@ -370,6 +370,43 @@ final class AttentionDrawerModelTests: XCTestCase {
         XCTAssertEqual(model.unreadCount, 0, "all items are older than a future lastSeenAt")
     }
 
+    func testViewedOpenPrDoesNotRebadgeWhenSnapshotRegenerates() {
+        let model = AttentionDrawerModel(defaults: defaults)
+        let prUpdatedAt = Date().addingTimeInterval(-60)
+        let firstSnapshot = WorkspaceSnapshot(
+            generatedAt: Date(),
+            agents: [],
+            prs: [
+                PrSnapshot(
+                    id: "pr-still-open",
+                    number: 83,
+                    title: "Still open",
+                    checks: "failing",
+                    review: "approved",
+                    state: "open",
+                    mergeReady: false,
+                    updatedAt: prUpdatedAt
+                )
+            ],
+            connection: "connected"
+        )
+
+        model.rebuild(from: firstSnapshot)
+        XCTAssertEqual(model.unreadCount, 1)
+
+        model.markAllSeen()
+        model.rebuild(from: WorkspaceSnapshot(
+            generatedAt: Date().addingTimeInterval(2),
+            agents: [],
+            prs: firstSnapshot.prs,
+            connection: "connected"
+        ))
+
+        XCTAssertEqual(model.items.map(\.id), ["ci:pr-still-open"])
+        XCTAssertEqual(model.unreadCount, 0)
+        XCTAssertNil(model.badgeLabel)
+    }
+
     // MARK: - Inline summary
 
     func testInlineSummaryIgnoresClosedPrsWhenPickingFocus() {

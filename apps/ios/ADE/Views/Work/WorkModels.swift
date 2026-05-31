@@ -410,6 +410,15 @@ enum WorkLoadedArtifactContent {
   case error(String)
 }
 
+func workRemoveLoadedArtifactTempFile(_ content: WorkLoadedArtifactContent?) {
+  guard case .video(let url) = content,
+        url.isFileURL,
+        url.lastPathComponent.hasPrefix("ade-work-artifact-") else {
+    return
+  }
+  try? FileManager.default.removeItem(at: url)
+}
+
 struct WorkChatEnvelope: Identifiable, Equatable {
   var id: String { "\(sessionId):\(sequence ?? -1):\(timestamp):\(event.typeKey)" }
   let sessionId: String

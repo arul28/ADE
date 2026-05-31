@@ -164,6 +164,7 @@ struct SendToMacCard: View {
   @EnvironmentObject private var syncService: SyncService
   @State private var isSending = false
   @State private var sendCompleted = false
+  @State private var sendOutcome: SyncRemoteCommandDelivery?
 
   var body: some View {
     VStack(spacing: 20) {
@@ -291,7 +292,7 @@ struct SendToMacCard: View {
     case .error:
       return "Last seen offline"
     case .disconnected:
-      return "Offline — we'll deliver when it's back"
+      return "Offline"
     }
   }
 
@@ -333,6 +334,14 @@ struct SendToMacCard: View {
       .buttonStyle(.plain)
       .disabled(isSending || sendCompleted)
 
+      if let sendStatusMessage {
+        Text(sendStatusMessage)
+          .font(.system(.footnote, design: .rounded))
+          .foregroundStyle(sendStatusTint)
+          .multilineTextAlignment(.center)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+
       Button(action: onDismiss) {
         Text(sendCompleted ? "Done" : "Cancel")
           .font(.system(.body, design: .rounded).weight(.medium))
@@ -351,25 +360,50 @@ struct SendToMacCard: View {
 
   private var sendButtonTitle: String {
     if isSending { return "Sending…" }
-    if sendCompleted { return "Sent" }
+    if sendCompleted {
+      if case .queued = sendOutcome { return "Queued" }
+      return "Sent"
+    }
+    if case .dropped = sendOutcome { return "Try again" }
     return "Send to Mac"
+  }
+
+  private var sendStatusMessage: String? {
+    guard let sendOutcome else { return nil }
+    switch sendOutcome {
+    case .dispatched:
+      return "Sent to your Mac."
+    case .queued:
+      return "Queued for when your Mac reconnects."
+    case .dropped(let message):
+      return message.isEmpty ? "This command could not be sent." : message
+    }
+  }
+
+  private var sendStatusTint: Color {
+    guard let sendOutcome else { return ADEColor.textSecondary }
+    switch sendOutcome {
+    case .dispatched, .queued: return ADEColor.success
+    case .dropped: return ADEColor.danger
+    }
   }
 
   @MainActor
   private func sendToMac() async {
-    guard let sync = SyncService.shared else {
-      // Without a SyncService singleton there's nothing to dispatch to;
-      // collapse to the dismiss path so the user isn't stuck.
-      onDismiss()
-      return
-    }
     isSending = true
-    await sync.sendRemoteCommand(.openDeeplink, payload: ["url": target.url.absoluteString])
+    sendOutcome = nil
+    let delivery = await syncService.sendRemoteCommand(.openDeeplink, payload: ["url": target.url.absoluteString])
     isSending = false
-    sendCompleted = true
-    // Brief confirmation pause so the user sees the "Sent" state before the
-    // sheet collapses; 0.6s is short enough not to feel sluggish.
-    try? await Task.sleep(nanoseconds: 600_000_000)
-    onDismiss()
+    sendOutcome = delivery
+    switch delivery {
+    case .dispatched, .queued:
+      sendCompleted = true
+      // Brief confirmation pause so the user sees the outcome before the
+      // sheet collapses; 0.8s is short enough not to feel sluggish.
+      try? await Task.sleep(nanoseconds: 800_000_000)
+      onDismiss()
+    case .dropped:
+      sendCompleted = false
+    }
   }
 }
