@@ -262,12 +262,20 @@ async function validateReleaseDocs() {
     errors.push(`changelog/index.mdx: latest release copy must mention ${latestTag.raw}`);
   }
 
-  const readme = await fs.readFile(path.join(repoRoot, "README.md"), "utf8");
+  let readme;
+  try {
+    readme = await fs.readFile(path.join(repoRoot, "README.md"), "utf8");
+  } catch {
+    errors.push("README.md: file is missing; add it before validating release docs");
+    return;
+  }
+
   const stableChangelogUrl = "https://www.ade-app.dev/docs/changelog";
-  if (!readme.includes(stableChangelogUrl)) {
+  const stableChangelogUrlPattern = /https:\/\/www\.ade-app\.dev\/docs\/changelog\/?(?=$|[\s)"'#?])/;
+  if (!stableChangelogUrlPattern.test(readme)) {
     errors.push(`README.md: missing stable changelog link ${stableChangelogUrl}`);
   }
-  if (/https:\/\/www\.ade-app\.dev\/docs\/changelog\/v\d+\.\d+\.\d+/.test(readme)) {
+  if (/https:\/\/(?:www\.)?ade-app\.dev\/docs\/changelog\/v\d+\.\d+\.\d+(?=$|[/?#)"'\s])/.test(readme)) {
     errors.push("README.md: changelog links must use /docs/changelog, not a version-pinned release page");
   }
 }
