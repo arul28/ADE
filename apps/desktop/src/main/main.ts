@@ -120,7 +120,12 @@ import {
 } from "../../../ade-cli/src/jsonrpc";
 import { resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
-import { EncryptedFileCredentialStore } from "../../../ade-cli/src/services/credentials/credentialStore";
+import {
+  ElectronSafeStorageCredentialStore,
+  EncryptedFileCredentialStore,
+  isElectronSafeStorageCredentialFile,
+  type SyncCredentialStore,
+} from "../../../ade-cli/src/services/credentials/credentialStore";
 import { createKeybindingsService } from "./services/keybindings/keybindingsService";
 import { createAgentToolsService } from "./services/agentTools/agentToolsService";
 import { createAdeCliService } from "./services/cli/adeCliService";
@@ -373,6 +378,46 @@ function getRendererUrl(): string {
     return "http://localhost:5173";
   }
   return pathToFileURL(path.join(__dirname, "../renderer/index.html")).toString();
+}
+
+function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
+  const legacyStore = new EncryptedFileCredentialStore({ secretsDir });
+  const credentialsPath = path.join(secretsDir, "credentials.json.enc");
+  try {
+    if (safeStorage.isEncryptionAvailable()) {
+      return new ElectronSafeStorageCredentialStore({
+        secretsDir,
+        safeStorage,
+        legacyStore,
+      });
+    }
+  } catch {
+    // Fall through to the file store when Electron cannot reach the OS keychain.
+  }
+  if (isElectronSafeStorageCredentialFile(credentialsPath)) {
+    const message = "Electron safeStorage is unavailable; unlock the OS credential store to read ADE credentials.";
+    return {
+      get: async () => {
+        throw new Error(message);
+      },
+      set: async () => {
+        throw new Error(message);
+      },
+      delete: async () => {
+        throw new Error(message);
+      },
+      getSync: () => {
+        throw new Error(message);
+      },
+      setSync: () => {
+        throw new Error(message);
+      },
+      deleteSync: () => {
+        throw new Error(message);
+      },
+    };
+  }
+  return legacyStore;
 }
 
 function isAllowedAdeBrowserWebviewSource(rawSrc: string): boolean {
@@ -1723,9 +1768,7 @@ app.whenReady().then(async () => {
     const adePaths = ensureAdeDirs(projectRoot);
     const { initApiKeyStore } = await import("./services/ai/apiKeyStore");
     initApiKeyStore(projectRoot, {
-      credentialStore: new EncryptedFileCredentialStore({
-        secretsDir: machineAdeLayout.secretsDir,
-      }),
+      credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
     });
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
     const packagedFirstOpenStabilityMode =
@@ -2194,9 +2237,7 @@ app.whenReady().then(async () => {
       logger,
       projectRoot,
       appDataDir: app.getPath("userData"),
-      credentialStore: new EncryptedFileCredentialStore({
-        secretsDir: machineAdeLayout.secretsDir,
-      }),
+      credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
     });
 
     const projectScaffoldService = createProjectScaffoldService({
@@ -2770,9 +2811,7 @@ app.whenReady().then(async () => {
     const linearCredentialService = createLinearCredentialService({
       adeDir: adePaths.adeDir,
       logger,
-      credentialStore: new EncryptedFileCredentialStore({
-        secretsDir: path.join(adePaths.adeDir, "secrets"),
-      }),
+      credentialStore: createDesktopCredentialStore(path.join(adePaths.adeDir, "secrets")),
     });
     const linearClient = createLinearClient({
       credentials: linearCredentialService,
@@ -4307,9 +4346,7 @@ app.whenReady().then(async () => {
       logger,
       projectRoot: normalizedRoot,
       appDataDir: app.getPath("userData"),
-      credentialStore: new EncryptedFileCredentialStore({
-        secretsDir: machineAdeLayout.secretsDir,
-      }),
+      credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
     });
     const dormantProjectScaffoldService = createProjectScaffoldService({
       logger,

@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
@@ -29,9 +30,18 @@ type SafeStorageLike = {
   decryptString(value: Buffer): string;
 };
 
+type CredentialStoreMigrationSource = {
+  readAllForMigration(): Record<string, string>;
+};
+
 const DEFAULT_CREDENTIALS_FILE = "credentials.json.enc";
 const DEFAULT_MACHINE_KEY_FILE = ".machine-key";
 const STORE_AAD = Buffer.from("ade.credentials.v1");
+const OS_BOUND_KEY_INFO = Buffer.from("ade.credentials.file-store.v2");
+const MACOS_KEYCHAIN_SERVICE = "com.ade.runtime.credentials.file-store-key.v1";
+const MACOS_KEYCHAIN_ACCOUNT = "machine";
+const SAFE_STORAGE_FILE_MAGIC = Buffer.from("ADE_SAFE_STORAGE_CREDENTIALS_V1\n");
+let cachedDefaultOsBoundKeyMaterial: Buffer | null = null;
 
 function normalizeKey(key: string): string {
   const normalized = key.trim();
@@ -77,6 +87,47 @@ function readJsonObject(filePath: string): Record<string, unknown> | null {
   }
 }
 
+function isStoredCredentialEnvelope(value: unknown): value is StoredCredentialEnvelope {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Partial<Record<keyof StoredCredentialEnvelope, unknown>>;
+  return candidate.version === 1
+    && candidate.alg === "aes-256-gcm"
+    && typeof candidate.iv === "string"
+    && typeof candidate.tag === "string"
+    && typeof candidate.ciphertext === "string";
+}
+
+function isStoredCredentialEnvelopeBuffer(value: Buffer): boolean {
+  try {
+    return isStoredCredentialEnvelope(JSON.parse(value.toString("utf8")) as unknown);
+  } catch {
+    return false;
+  }
+}
+
+function readSafeStoragePayload(filePath: string): { encrypted: Buffer; hasMagic: boolean } {
+  const raw = fs.readFileSync(filePath);
+  if (raw.subarray(0, SAFE_STORAGE_FILE_MAGIC.length).equals(SAFE_STORAGE_FILE_MAGIC)) {
+    return { encrypted: raw.subarray(SAFE_STORAGE_FILE_MAGIC.length), hasMagic: true };
+  }
+  return { encrypted: raw, hasMagic: false };
+}
+
+export function isElectronSafeStorageCredentialFile(credentialsPath: string): boolean {
+  try {
+    const fd = fs.openSync(credentialsPath, "r");
+    try {
+      const buf = Buffer.alloc(SAFE_STORAGE_FILE_MAGIC.length);
+      const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
+      return bytesRead === SAFE_STORAGE_FILE_MAGIC.length && buf.equals(SAFE_STORAGE_FILE_MAGIC);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+}
+
 function serializeStore(values: Record<string, string>, machineKey: Buffer): StoredCredentialEnvelope {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv("aes-256-gcm", machineKey, iv);
@@ -96,11 +147,8 @@ function serializeStore(values: Record<string, string>, machineKey: Buffer): Sto
 
 function deserializeStore(raw: Record<string, unknown> | null, machineKey: Buffer): Record<string, string> {
   if (!raw || Object.keys(raw).length === 0) return {};
-  if (raw.version !== 1 || raw.alg !== "aes-256-gcm") {
+  if (!isStoredCredentialEnvelope(raw)) {
     throw new Error("Unsupported ADE credential store format.");
-  }
-  if (typeof raw.iv !== "string" || typeof raw.tag !== "string" || typeof raw.ciphertext !== "string") {
-    throw new Error("ADE credential store is malformed.");
   }
   const decipher = crypto.createDecipheriv("aes-256-gcm", machineKey, Buffer.from(raw.iv, "base64"));
   decipher.setAAD(STORE_AAD);
@@ -132,14 +180,83 @@ function readOrCreateMachineKey(machineKeyPath: string): Buffer {
   return key;
 }
 
+function readCredentialPassphraseFromEnv(): Buffer | null {
+  const passphrase = process.env.ADE_CREDENTIAL_STORE_PASSPHRASE?.trim();
+  return passphrase ? Buffer.from(passphrase, "utf8") : null;
+}
+
+function readOrCreateMacKeychainMaterial(): Buffer | null {
+  if (process.platform !== "darwin") return null;
+  try {
+    const raw = execFileSync("security", [
+      "find-generic-password",
+      "-a",
+      MACOS_KEYCHAIN_ACCOUNT,
+      "-s",
+      MACOS_KEYCHAIN_SERVICE,
+      "-w",
+    ], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    const decoded = Buffer.from(raw, "base64");
+    return decoded.length >= 32 ? decoded : Buffer.from(raw, "utf8");
+  } catch {
+    // Missing item or locked keychain; try to create once below.
+  }
+
+  const secret = crypto.randomBytes(32).toString("base64");
+  try {
+    const result = spawnSync("security", [
+      "add-generic-password",
+      "-a",
+      MACOS_KEYCHAIN_ACCOUNT,
+      "-s",
+      MACOS_KEYCHAIN_SERVICE,
+      "-U",
+      "-w",
+    ], {
+      input: `${secret}\n`,
+      stdio: ["pipe", "ignore", "ignore"],
+    });
+    if (result.status !== 0) return null;
+    return Buffer.from(secret, "base64");
+  } catch {
+    return null;
+  }
+}
+
+function readDefaultOsBoundKeyMaterial(): Buffer | null {
+  const envMaterial = readCredentialPassphraseFromEnv();
+  if (envMaterial) return envMaterial;
+  if (process.env.ADE_CREDENTIAL_STORE_DISABLE_OS_BINDING === "1") return null;
+  if (process.env.VITEST === "true" || process.env.NODE_ENV === "test") return null;
+  if (cachedDefaultOsBoundKeyMaterial) return cachedDefaultOsBoundKeyMaterial;
+  const material = readOrCreateMacKeychainMaterial();
+  if (material) cachedDefaultOsBoundKeyMaterial = material;
+  return material;
+}
+
+function deriveOsBoundCredentialKey(machineKey: Buffer, osMaterial: Buffer | null): Buffer {
+  if (!osMaterial || osMaterial.length === 0) return machineKey;
+  return Buffer.from(crypto.hkdfSync("sha256", osMaterial, machineKey, OS_BOUND_KEY_INFO, 32));
+}
+
 export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private readonly credentialsPath: string;
   private readonly machineKeyPath: string;
+  private readonly keyMaterialProvider: () => Buffer | null;
 
-  constructor(args: { secretsDir?: string; credentialsPath?: string; machineKeyPath?: string } = {}) {
+  constructor(args: {
+    secretsDir?: string;
+    credentialsPath?: string;
+    machineKeyPath?: string;
+    keyMaterialProvider?: () => Buffer | null;
+  } = {}) {
     const secretsDir = args.secretsDir ?? resolveMachineAdeLayout().secretsDir;
     this.credentialsPath = args.credentialsPath ?? path.join(secretsDir, DEFAULT_CREDENTIALS_FILE);
     this.machineKeyPath = args.machineKeyPath ?? path.join(secretsDir, DEFAULT_MACHINE_KEY_FILE);
+    this.keyMaterialProvider = args.keyMaterialProvider ?? readDefaultOsBoundKeyMaterial;
   }
 
   async get(key: string): Promise<string | null> {
@@ -179,13 +296,31 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     this.writeAll(values);
   }
 
+  readAllForMigration(): Record<string, string> {
+    return this.readAll();
+  }
+
   private readAll(): Record<string, string> {
-    const key = readOrCreateMachineKey(this.machineKeyPath);
-    return deserializeStore(readJsonObject(this.credentialsPath), key);
+    const raw = readJsonObject(this.credentialsPath);
+    const machineKey = readOrCreateMachineKey(this.machineKeyPath);
+    const key = deriveOsBoundCredentialKey(machineKey, this.keyMaterialProvider());
+    try {
+      return deserializeStore(raw, key);
+    } catch (error) {
+      if (key.equals(machineKey)) throw error;
+      const values = deserializeStore(raw, machineKey);
+      try {
+        this.writeAll(values);
+      } catch {
+        // Preserve read compatibility if migration cannot rewrite right now.
+      }
+      return values;
+    }
   }
 
   private writeAll(values: Record<string, string>): void {
-    const key = readOrCreateMachineKey(this.machineKeyPath);
+    const machineKey = readOrCreateMachineKey(this.machineKeyPath);
+    const key = deriveOsBoundCredentialKey(machineKey, this.keyMaterialProvider());
     writeFileAtomic(this.credentialsPath, `${JSON.stringify(serializeStore(values, key), null, 2)}\n`);
   }
 }
@@ -193,11 +328,18 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
 export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
   private readonly safeStorage: SafeStorageLike;
   private readonly credentialsPath: string;
+  private readonly legacyStore: CredentialStoreMigrationSource | null;
 
-  constructor(args: { safeStorage: SafeStorageLike; credentialsPath?: string; secretsDir?: string }) {
+  constructor(args: {
+    safeStorage: SafeStorageLike;
+    credentialsPath?: string;
+    secretsDir?: string;
+    legacyStore?: CredentialStoreMigrationSource | null;
+  }) {
     this.safeStorage = args.safeStorage;
     const secretsDir = args.secretsDir ?? resolveMachineAdeLayout().secretsDir;
     this.credentialsPath = args.credentialsPath ?? path.join(secretsDir, DEFAULT_CREDENTIALS_FILE);
+    this.legacyStore = args.legacyStore ?? null;
   }
 
   async get(key: string): Promise<string | null> {
@@ -241,9 +383,15 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
     if (!this.safeStorage.isEncryptionAvailable()) {
       throw new Error("Electron safeStorage is unavailable.");
     }
+    let payload: { encrypted: Buffer; hasMagic: boolean };
     try {
-      const encrypted = fs.readFileSync(this.credentialsPath);
-      const decrypted = this.safeStorage.decryptString(encrypted);
+      payload = readSafeStoragePayload(this.credentialsPath);
+    } catch (error: unknown) {
+      if (isEnoent(error)) return {};
+      throw error;
+    }
+    try {
+      const decrypted = this.safeStorage.decryptString(payload.encrypted);
       const parsed = JSON.parse(decrypted) as unknown;
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
       const out: Record<string, string> = {};
@@ -252,16 +400,36 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
       }
       return out;
     } catch (error: unknown) {
-      if (isEnoent(error)) return {};
+      if (!payload.hasMagic && this.legacyStore && isStoredCredentialEnvelopeBuffer(payload.encrypted)) {
+        const values = this.readLegacyAll();
+        try {
+          this.writeAll(values);
+        } catch {
+          // Preserve read compatibility if migration cannot rewrite right now.
+        }
+        return values;
+      }
       throw error;
     }
+  }
+
+  private readLegacyAll(): Record<string, string> {
+    const legacy = this.legacyStore;
+    if (legacy) return legacy.readAllForMigration();
+    throw new Error("Legacy credential store cannot be migrated.");
   }
 
   private writeAll(values: Record<string, string>): void {
     if (!this.safeStorage.isEncryptionAvailable()) {
       throw new Error("Electron safeStorage is unavailable.");
     }
-    writeFileAtomic(this.credentialsPath, this.safeStorage.encryptString(JSON.stringify(values)));
+    writeFileAtomic(
+      this.credentialsPath,
+      Buffer.concat([
+        SAFE_STORAGE_FILE_MAGIC,
+        this.safeStorage.encryptString(JSON.stringify(values)),
+      ]),
+    );
   }
 }
 
