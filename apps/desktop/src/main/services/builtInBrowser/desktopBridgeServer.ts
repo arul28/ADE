@@ -9,6 +9,7 @@ import {
   type JsonRpcServerErrorContext,
   type JsonRpcTransport,
 } from "../../../../../ade-cli/src/jsonrpc";
+import { isBuiltInBrowserDesktopBridgeMethod } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import type { Logger } from "../logging/logger";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
 
@@ -22,27 +23,6 @@ import type { BuiltInBrowserService } from "./builtInBrowserService";
  * outside the allowlist returns `methodNotFound` so a daemon bug or
  * out-of-date desktop doesn't accidentally expose private internals.
  */
-
-const ALLOWED_METHODS = new Set([
-  "getStatus",
-  "claim",
-  "showPanel",
-  "setBounds",
-  "navigate",
-  "createTab",
-  "switchTab",
-  "closeTab",
-  "reload",
-  "goBack",
-  "goForward",
-  "stop",
-  "startInspect",
-  "stopInspect",
-  "captureScreenshot",
-  "selectPoint",
-  "selectCurrent",
-  "clearSelection",
-]);
 
 export type BuiltInBrowserDesktopBridgeServer = {
   socketPath: string;
@@ -174,7 +154,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
       );
     }
     const name = method.slice("built_in_browser.".length);
-    if (!ALLOWED_METHODS.has(name)) {
+    if (!isBuiltInBrowserDesktopBridgeMethod(name)) {
       throw new JsonRpcError(
         JsonRpcErrorCode.methodNotFound,
         `Action 'built_in_browser.${name}' is not exposed by the desktop bridge.`,

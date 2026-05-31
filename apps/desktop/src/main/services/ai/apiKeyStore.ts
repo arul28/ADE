@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import type { SafeStorage } from "electron";
+import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 
 // electron.safeStorage is only available inside an Electron main process.
@@ -21,14 +22,7 @@ try {
 
 type StoredKeys = Record<string, string>;
 
-export type ApiKeyCredentialStore = {
-  get?: (key: string) => Promise<string | null> | string | null;
-  set?: (key: string, value: string) => Promise<void> | void;
-  delete?: (key: string) => Promise<void> | void;
-  getSync?: (key: string) => string | null;
-  setSync?: (key: string, value: string) => void;
-  deleteSync?: (key: string) => void;
-};
+export type ApiKeyCredentialStore = SyncCredentialStore;
 
 export type InitApiKeyStoreOptions = {
   credentialStore?: ApiKeyCredentialStore | null;
@@ -241,16 +235,8 @@ function credentialProviderKey(provider: string): string {
   return `ai.api_key.${provider}.v1`;
 }
 
-function getSyncCredentialStore(): Required<Pick<ApiKeyCredentialStore, "getSync" | "setSync" | "deleteSync">> | null {
-  if (!credentialStore) return null;
-  if (
-    typeof credentialStore.getSync === "function"
-    && typeof credentialStore.setSync === "function"
-    && typeof credentialStore.deleteSync === "function"
-  ) {
-    return credentialStore as Required<Pick<ApiKeyCredentialStore, "getSync" | "setSync" | "deleteSync">>;
-  }
-  throw new Error("API key credentialStore must provide getSync, setSync, and deleteSync.");
+function getSyncCredentialStore(): SyncCredentialStore | null {
+  return credentialStore;
 }
 
 function readCredentialSecret(key: string): string | null {

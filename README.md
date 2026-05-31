@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>A single native workspace for every AI coding agent.</strong><br />
-  <em>macOS, iOS, CLI — synced in real time.</em>
+  <em>macOS, Windows, iOS, CLI — synced in real time.</em>
 </p>
 
 <p align="center">
@@ -16,7 +16,7 @@
   &nbsp;·&nbsp;
   <a href="https://github.com/arul28/ADE/releases/latest"><strong>Download</strong></a>
   &nbsp;·&nbsp;
-  <a href="https://ade-app.dev/docs/changelog/v1.1.12"><strong>Changelog</strong></a>
+  <a href="https://www.ade-app.dev/docs/changelog"><strong>Changelog</strong></a>
 </p>
 
 <p align="center">
@@ -33,7 +33,7 @@
   <img src="assets/readme/hero-iphone.png" alt="ADE on iOS" width="180" />
 </p>
 
-ADE runs **Claude Code, Codex, Cursor, opencode** — every major AI coding agent — inside one native workspace. Claude runs through the bundled Claude Agent SDK, while desktop and `ade code` share the same lane-scoped chat runtime. Every task is its own git worktree, so agents ship features in parallel. Review and merge PRs in-app. Approve a diff from your phone while another agent tests on your Mac.
+ADE runs **Claude Code, Codex, Cursor, Factory Droid, OpenCode** — every major AI coding agent — inside one native workspace. Claude runs through the bundled Claude Agent SDK, while desktop and `ade code` share the same worktree-scoped chat runtime. Every task is its own git worktree, so agents ship features in parallel. Review and merge PRs in-app. Approve a diff from your phone while another agent tests on your Mac.
 
 Free, open source, local-first. Bring your own keys or subs.
 
@@ -56,7 +56,7 @@ Every task gets its own git worktree. Branch, edit, test, and commit side by sid
 <td width="45%" valign="middle">
 
 ### Every coding agent. One workspace.
-Claude Code, Codex, Cursor, opencode — pick whichever model fits the task. All run against the same worktree, with live diffs and approval gates.
+Claude Code, Codex, Cursor, Factory Droid, OpenCode — pick whichever model fits the task. All run against the same worktree, with live diffs and approval gates.
 
 </td>
 <td width="55%" valign="middle">
@@ -105,9 +105,19 @@ Plus files, terminals, git history, workspace graph, multi-tasking, Linear sync,
 
 ## Install
 
-Download the DMG from [**GitHub Releases**](https://github.com/arul28/ADE/releases/latest), drag **ADE.app** into `/Applications`, open it on any git repo, and add a provider key (or subscription) in Settings. Runs in Guest Mode without an account.
+Download ADE from [**GitHub Releases**](https://github.com/arul28/ADE/releases/latest), open it on any git repo, and add a provider key (or subscription) in Settings. Runs in Guest Mode without an account.
+
+### macOS
+
+Download the latest `.dmg`, drag **ADE.app** into `/Applications`, and open it.
 
 Requirements: macOS 13+, git on `PATH`, Node 22+ for headless CLI workflows.
+
+### Windows
+
+Download the latest Windows installer (`ADE-*-win-x64.exe`) from [**GitHub Releases**](https://github.com/arul28/ADE/releases/latest) and run it. Windows builds are published from the same release workflow as macOS and include the ADE runtime plus Windows auto-update metadata.
+
+Requirements: Windows x64, git on `PATH`, Node 22+ for headless CLI workflows.
 
 ## CLI
 
@@ -225,7 +235,7 @@ Validate with `npm --prefix apps/desktop run typecheck` and `npm run test:deskto
 
 ## Links
 
-[Quickstart](https://ade-app.dev/docs/quickstart) · [Key concepts](https://ade-app.dev/docs/key-concepts) · [Worktrees](https://ade-app.dev/docs/lanes/overview) · [Computer use](https://ade-app.dev/docs/computer-use/overview) · [Changelog](https://ade-app.dev/docs/changelog/v1.1.12) · [Contributing](CONTRIBUTING.md)
+[Quickstart](https://www.ade-app.dev/docs/quickstart) · [Key concepts](https://www.ade-app.dev/docs/key-concepts) · [Worktrees](https://www.ade-app.dev/docs/lanes/overview) · [Computer use](https://www.ade-app.dev/docs/computer-use/overview) · [Changelog](https://www.ade-app.dev/docs/changelog) · [Contributing](CONTRIBUTING.md)
 
 ## License
 

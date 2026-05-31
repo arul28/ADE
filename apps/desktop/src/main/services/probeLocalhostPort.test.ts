@@ -26,6 +26,14 @@ async function closeServer(server: Server): Promise<void> {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
+async function closeAndForgetServer(server: Server): Promise<void> {
+  await closeServer(server);
+  const index = openServers.indexOf(server);
+  if (index >= 0) {
+    openServers.splice(index, 1);
+  }
+}
+
 afterEach(async () => {
   while (openServers.length) {
     const server = openServers.pop()!;
@@ -40,10 +48,15 @@ describe("probeLocalhostPort", () => {
   });
 
   it("returns false when nothing is listening on the port", async () => {
-    const { server, port } = await listenOnLoopback();
-    await closeServer(server);
-    openServers.splice(openServers.indexOf(server), 1);
-    await expect(probeLocalhostPort(port, 250)).resolves.toBe(false);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const { server, port } = await listenOnLoopback();
+      await closeAndForgetServer(server);
+      if (!(await probeLocalhostPort(port, 250))) {
+        return;
+      }
+    }
+
+    throw new Error("expected at least one closed ephemeral loopback port to reject connections");
   });
 
   it("rejects invalid ports without crashing", async () => {

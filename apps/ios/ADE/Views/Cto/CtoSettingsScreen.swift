@@ -81,17 +81,13 @@ struct CtoSettingsScreen: View {
     }
   }
 
-  // MARK: - Heartbeat (read-only placeholders)
+  // MARK: - Heartbeat
 
   private var heartbeatSection: some View {
     VStack(alignment: .leading, spacing: 6) {
       SectionHeader(title: "Heartbeat")
       VStack(spacing: 0) {
-        RowItem(label: "Mode", value: "Combined", disabled: true)
-        Sep()
-        RowItem(label: "Interval", value: "every 15 min", disabled: true)
-        Sep()
-        RowItem(label: "Event triggers", value: "—", disabled: true)
+        RowItem(label: "Policy", value: "Managed in ADE on your machine", disabled: true)
       }
       .adeListCard(padding: 0)
     }
@@ -229,7 +225,7 @@ struct CtoSettingsScreen: View {
           .accessibilityLabel("Sync Linear now")
         }
         Sep()
-        IntegrationRow(name: "External MCP", subtitle: "off", connected: false)
+        RowItem(label: "External MCP", value: "Managed in ADE", disabled: true)
       }
       .adeListCard(padding: 0)
     }

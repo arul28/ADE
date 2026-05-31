@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -48,7 +49,11 @@ const routeSet = new Set(
     .filter((file) => file.endsWith(".mdx"))
     .map((file) => {
       const withoutExtension = file.replace(/\.mdx$/, "");
-      return withoutExtension === "index" ? "/" : `/${withoutExtension}`;
+      if (withoutExtension === "index") return "/";
+      if (withoutExtension.endsWith("/index")) {
+        return `/${withoutExtension.slice(0, -"/index".length)}`;
+      }
+      return `/${withoutExtension}`;
     })
 );
 
@@ -162,6 +167,120 @@ for (const file of docFiles) {
     }
   }
 }
+
+function parseSemverTag(tag) {
+  const match = /^v(\d+)\.(\d+)\.(\d+)$/.exec(tag.trim());
+  if (!match) return null;
+  return {
+    raw: tag.trim(),
+    version: `${match[1]}.${match[2]}.${match[3]}`,
+    parts: match.slice(1).map(Number),
+  };
+}
+
+function compareSemver(a, b) {
+  for (let index = 0; index < 3; index += 1) {
+    const diff = a.parts[index] - b.parts[index];
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+function semverGitTags() {
+  let output;
+  try {
+    output = execFileSync("git", ["tag", "--list", "v[0-9]*.[0-9]*.[0-9]*"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+  } catch {
+    return null;
+  }
+  return output
+    .split(/\r?\n/)
+    .map(parseSemverTag)
+    .filter(Boolean)
+    .sort(compareSemver);
+}
+
+async function validateReleaseDocs() {
+  const gitTags = semverGitTags();
+  if (gitTags === null) {
+    errors.push("CHANGELOG.md: failed to read git tags; ensure git is installed and this is a git checkout");
+    return;
+  }
+
+  const latestTag = gitTags.at(-1) ?? null;
+  if (!latestTag) {
+    const message = "CHANGELOG.md: no vX.Y.Z git tags found; fetch tags before validating release docs";
+    if (process.env.CI) {
+      errors.push(message);
+    } else {
+      console.warn(`Documentation validation warning: ${message}`);
+    }
+    return;
+  }
+
+  const changelog = await fs.readFile(path.join(repoRoot, "CHANGELOG.md"), "utf8");
+  const topVersion = changelog.match(/^## \[(\d+\.\d+\.\d+)\]/m)?.[1];
+  if (!topVersion) {
+    errors.push("CHANGELOG.md: missing a released ## [x.y.z] heading after Unreleased");
+  } else if (topVersion !== latestTag.version) {
+    errors.push(`CHANGELOG.md: top release ${topVersion} does not match latest git tag ${latestTag.raw}`);
+  }
+
+  const linkRefs = new Set([...changelog.matchAll(/^\[([^\]]+)\]:\s+\S+/gm)].map((match) => match[1]));
+  const releaseHeadings = new Set();
+  for (const match of changelog.matchAll(/^## \[([^\]]+)\]/gm)) {
+    const heading = match[1];
+    releaseHeadings.add(heading);
+    if (!linkRefs.has(heading)) {
+      errors.push(`CHANGELOG.md: missing link reference for [${heading}]`);
+    }
+  }
+  for (const tag of gitTags) {
+    if (!releaseHeadings.has(tag.version)) {
+      errors.push(`CHANGELOG.md: missing release heading for git tag ${tag.raw}`);
+    }
+  }
+
+  if (!(await targetExists({ absolute: `/changelog/${latestTag.raw}`, source: latestTag.raw, fromFile: "CHANGELOG.md" }))) {
+    errors.push(`changelog/${latestTag.raw}.mdx: missing docs page for latest git tag ${latestTag.raw}`);
+  }
+
+  let changelogIndex;
+  try {
+    changelogIndex = await fs.readFile(path.join(repoRoot, "changelog/index.mdx"), "utf8");
+  } catch {
+    errors.push("changelog/index.mdx: file is missing; create it with a latest-release Card");
+    return;
+  }
+  if (!changelogIndex.includes(`/changelog/${latestTag.raw}`)) {
+    errors.push(`changelog/index.mdx: latest release card must link to /changelog/${latestTag.raw}`);
+  }
+  if (!changelogIndex.includes(latestTag.raw)) {
+    errors.push(`changelog/index.mdx: latest release copy must mention ${latestTag.raw}`);
+  }
+
+  let readme;
+  try {
+    readme = await fs.readFile(path.join(repoRoot, "README.md"), "utf8");
+  } catch {
+    errors.push("README.md: file is missing; add it before validating release docs");
+    return;
+  }
+
+  const stableChangelogUrl = "https://www.ade-app.dev/docs/changelog";
+  const stableChangelogUrlPattern = /https:\/\/www\.ade-app\.dev\/docs\/changelog\/?(?=$|[\s)"'#?])/;
+  if (!stableChangelogUrlPattern.test(readme)) {
+    errors.push(`README.md: missing stable changelog link ${stableChangelogUrl}`);
+  }
+  if (/https:\/\/(?:www\.)?ade-app\.dev\/docs\/changelog\/v\d+\.\d+\.\d+(?=$|[/?#)"'\s])/.test(readme)) {
+    errors.push("README.md: changelog links must use /docs/changelog, not a version-pinned release page");
+  }
+}
+
+await validateReleaseDocs();
 
 if (errors.length > 0) {
   console.error("Documentation validation failed:");
