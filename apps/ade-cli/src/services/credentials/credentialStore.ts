@@ -345,7 +345,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
 
   getSync(key: string): string | null {
     const normalized = normalizeKey(key);
-    return this.withLock(() => this.readAll()[normalized] ?? null);
+    return this.readAll()[normalized] ?? null;
   }
 
   setSync(key: string, value: string): void {
@@ -427,7 +427,7 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
 
   getSync(key: string): string | null {
     const normalized = normalizeKey(key);
-    return this.withLock(() => this.readAll()[normalized] ?? null);
+    return this.readAll()[normalized] ?? null;
   }
 
   setSync(key: string, value: string): void {
@@ -438,7 +438,7 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
       return;
     }
     this.withLock(() => {
-      const values = this.readAll();
+      const values = this.readAll({ safeLockHeld: true });
       values[normalized] = nextValue;
       this.writeAll(values);
     });
@@ -447,14 +447,14 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
   deleteSync(key: string): void {
     const normalized = normalizeKey(key);
     this.withLock(() => {
-      const values = this.readAll();
+      const values = this.readAll({ safeLockHeld: true });
       if (!(normalized in values)) return;
       delete values[normalized];
       this.writeAll(values);
     });
   }
 
-  private readAll(): Record<string, string> {
+  private readAll(args: { safeLockHeld?: boolean } = {}): Record<string, string> {
     if (!this.safeStorage.isEncryptionAvailable()) {
       throw new Error("Electron safeStorage is unavailable.");
     }
@@ -463,7 +463,7 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
       const decrypted = this.safeStorage.decryptString(encrypted);
       return normalizeStoredCredentialValues(JSON.parse(decrypted));
     } catch (error: unknown) {
-      const legacyValues = this.migrateLegacyEncryptedFileStore();
+      const legacyValues = this.migrateLegacyEncryptedFileStore(args.safeLockHeld === true);
       if (legacyValues) {
         return legacyValues;
       }
@@ -494,14 +494,16 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
     return deserializeStore(raw, key);
   }
 
-  private migrateLegacyEncryptedFileStore(): Record<string, string> | null {
-    return withOptionalCredentialFileLock(this.legacyLockPath, this.lockPath, () => {
+  private migrateLegacyEncryptedFileStore(safeLockHeld: boolean): Record<string, string> | null {
+    const migrate = () => withOptionalCredentialFileLock(this.legacyLockPath, this.lockPath, () => {
       const legacyValues = this.readLegacyEncryptedFileStore();
       if (!legacyValues) return null;
       this.writeAll(legacyValues);
       this.removeLegacyFileStore();
       return legacyValues;
     });
+    if (safeLockHeld) return migrate();
+    return withCredentialFileLock(this.lockPath, migrate);
   }
 
   private removeLegacyFileStore(): void {
