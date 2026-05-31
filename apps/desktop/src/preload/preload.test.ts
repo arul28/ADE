@@ -4666,7 +4666,7 @@ describe("preload OAuth bridge", () => {
     await pendingSwitch;
   });
 
-  it("keeps the previous local runtime binding until a project switch succeeds", async () => {
+  it("routes local runtime reads to the target project while a project switch is in flight", async () => {
     let resolveSwitch!: (project: unknown) => void;
     const switchPromise = new Promise((resolve) => {
       resolveSwitch = resolve;
@@ -4718,13 +4718,13 @@ describe("preload OAuth bridge", () => {
 
     await expect(bridge.lanes.list()).resolves.toEqual([]);
     expect(invoke).not.toHaveBeenCalledWith(IPC.lanesList, expect.anything());
-    expect(localRuntimeRoots).toEqual(["/old"]);
+    expect(localRuntimeRoots).toEqual(["/next"]);
 
     resolveSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
     await pendingSwitch;
 
     await expect(bridge.lanes.list()).resolves.toEqual([]);
-    expect(localRuntimeRoots).toEqual(["/old", "/next"]);
+    expect(localRuntimeRoots).toEqual(["/next", "/next"]);
   });
 
   it("rejects empty project switch paths before updating local runtime binding", async () => {

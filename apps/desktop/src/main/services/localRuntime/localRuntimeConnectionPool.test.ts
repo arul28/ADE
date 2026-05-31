@@ -729,14 +729,14 @@ describe("local runtime connection pool", () => {
     expect(firstClient.call).toHaveBeenCalledWith(
       "projects.add",
       { rootPath },
-      { timeoutMs: expect.any(Number) },
+      { timeoutMs: 120_000 },
     );
     expect(firstClient.close).toHaveBeenCalledTimes(1);
     expect(secondClient.call).toHaveBeenNthCalledWith(
       1,
       "projects.add",
       { rootPath },
-      { timeoutMs: expect.any(Number) },
+      { timeoutMs: 120_000 },
     );
     expect(secondClient.call).toHaveBeenNthCalledWith(
       2,
@@ -809,7 +809,7 @@ describe("local runtime connection pool", () => {
     expect(secondClient.call).toHaveBeenCalledWith(
       "projects.add",
       { rootPath },
-      { timeoutMs: expect.any(Number) },
+      { timeoutMs: 120_000 },
     );
     expect(logger.warn).toHaveBeenCalledWith("local_runtime.ensure_project_connection_dropped", {
       rootPath,

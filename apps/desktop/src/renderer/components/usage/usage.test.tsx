@@ -114,10 +114,12 @@ function makeHeaderUsageSnapshot(): UsageSnapshot {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((next) => {
-    resolve = next;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function makeProviderConnection(
@@ -282,45 +284,75 @@ describe("usage components", () => {
       );
     });
 
-    it("force-refreshes on mount and renders weekly top-bar usage before the drawer is opened", async () => {
+    it("renders cached weekly top-bar usage before the drawer is opened", async () => {
+      vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(makeHeaderUsageSnapshot());
+
       render(<HeaderUsageControl />);
 
       await waitFor(() => {
-        expect(window.ade.usage.refresh).toHaveBeenCalledTimes(1);
+        expect(window.ade.usage.getSnapshot).toHaveBeenCalledTimes(1);
       });
 
       expect(await screen.findByText("19%")).toBeTruthy();
       expect(screen.queryByText("9%")).toBeNull();
       expect(screen.getByRole("button", { name: /Codex wk 19%, 5h 9%/ })).toBeTruthy();
+      expect(window.ade.usage.refresh).not.toHaveBeenCalled();
     });
 
-    it("does not let a slower cached startup read overwrite the fresh refresh result", async () => {
-      const cachedSnapshot = deferred<UsageSnapshot | null>();
-      vi.mocked(window.ade.usage.getSnapshot).mockReturnValue(cachedSnapshot.promise);
-      vi.mocked(window.ade.usage.refresh).mockResolvedValue(makeHeaderUsageSnapshot());
+    it("applies pushed usage updates without forcing a refresh", async () => {
+      let onUpdate: ((snapshot: UsageSnapshot) => void) | null = null;
+      vi.mocked(window.ade.usage.onUpdate).mockImplementation((cb) => {
+        onUpdate = cb;
+        return () => {};
+      });
 
       render(<HeaderUsageControl />);
 
-      expect(await screen.findByText("19%")).toBeTruthy();
+      await waitFor(() => {
+        expect(window.ade.usage.getSnapshot).toHaveBeenCalledTimes(1);
+      });
 
       await act(async () => {
-        cachedSnapshot.resolve(makeEmptySnapshot());
-        await cachedSnapshot.promise;
+        onUpdate?.(makeHeaderUsageSnapshot());
       });
 
       expect(screen.getByText("19%")).toBeTruthy();
       expect(screen.queryByText("9%")).toBeNull();
+      expect(window.ade.usage.refresh).not.toHaveBeenCalled();
     });
 
-    it("keeps refreshing while the drawer stays closed", async () => {
+    it("keeps a pushed usage update when the startup cache read resolves late", async () => {
+      const startupSnapshot = deferred<UsageSnapshot | null>();
+      let onUpdate: ((snapshot: UsageSnapshot) => void) | null = null;
+      vi.mocked(window.ade.usage.getSnapshot).mockReturnValue(startupSnapshot.promise);
+      vi.mocked(window.ade.usage.onUpdate).mockImplementation((cb) => {
+        onUpdate = cb;
+        return () => {};
+      });
+
+      render(<HeaderUsageControl />);
+
+      await act(async () => {
+        onUpdate?.(makeHeaderUsageSnapshot());
+      });
+      expect(screen.getByRole("button", { name: /Codex wk 19%, 5h 9%/ })).toBeTruthy();
+
+      await act(async () => {
+        startupSnapshot.resolve(makeEmptySnapshot());
+        await startupSnapshot.promise;
+      });
+
+      expect(screen.getByRole("button", { name: /Codex wk 19%, 5h 9%/ })).toBeTruthy();
+      expect(window.ade.usage.refresh).not.toHaveBeenCalled();
+    });
+
+    it("does not poll usage while the drawer stays closed", async () => {
       vi.useFakeTimers();
       render(<HeaderUsageControl />);
 
-      expect(window.ade.usage.refresh).toHaveBeenCalledTimes(1);
-
       await vi.advanceTimersByTimeAsync(120_000);
 
-      expect(window.ade.usage.refresh).toHaveBeenCalledTimes(2);
+      expect(window.ade.usage.refresh).not.toHaveBeenCalled();
     });
   });
 });
