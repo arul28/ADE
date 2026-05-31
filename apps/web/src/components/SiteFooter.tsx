@@ -76,7 +76,12 @@ export function SiteFooter() {
         </div>
 
         <div className="mt-10 flex flex-col items-start justify-between gap-3 border-t border-border/70 pt-6 text-xs text-muted-fg sm:flex-row sm:items-center">
-          <div>&copy; {year} ADE. MIT License.</div>
+          <div>
+            &copy; {year} ADE.{" "}
+            <a className="focus-ring rounded-md hover:text-fg" href={`${LINKS.github}/blob/main/LICENSE`} target="_blank" rel="noreferrer">
+              AGPL-3.0 License.
+            </a>
+          </div>
           <div className="flex items-center gap-4">
             <Link className="focus-ring rounded-md hover:text-fg" to="/privacy">
               Privacy

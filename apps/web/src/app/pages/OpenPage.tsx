@@ -96,13 +96,13 @@ function describeTarget(target: OpenTarget): { title: string; summary: string } 
   switch (target.kind) {
     case "lane":
       return {
-        title: "Open lane in ADE",
-        summary: `Lane ${target.laneId.slice(0, 8)}…`,
+        title: "Open worktree in ADE",
+        summary: `Worktree ${target.laneId.slice(0, 8)}…`,
       };
     case "session":
       return {
         title: "Open work session in ADE",
-        summary: target.laneId ? `Session ${target.sessionId} · lane ${target.laneId.slice(0, 8)}…` : `Session ${target.sessionId}`,
+        summary: target.laneId ? `Session ${target.sessionId} · worktree ${target.laneId.slice(0, 8)}…` : `Session ${target.sessionId}`,
       };
     case "branch":
       return {

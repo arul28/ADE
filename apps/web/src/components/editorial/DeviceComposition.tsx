@@ -1,4 +1,5 @@
 import { motion, useReducedMotion } from "framer-motion";
+import { EDITORIAL_ISSUE } from "./issue";
 
 /**
  * Right column of the fold — MacBook + iPhone on violet halo + Fig. 1 caption.
@@ -82,7 +83,7 @@ export function DeviceComposition() {
         <span className="mr-[10px] inline-block align-middle font-sans text-[10px] uppercase tracking-[0.22em] not-italic text-[color:var(--color-violet-bright)]">
           Fig. 1
         </span>
-        ADE, <em className="text-[color:var(--color-cream)]">on desk and in hand</em>. Photographed April 2026.
+        ADE, <em className="text-[color:var(--color-cream)]">on desk and in hand</em>. Photographed {EDITORIAL_ISSUE.monthYear}.
       </div>
     </motion.div>
   );

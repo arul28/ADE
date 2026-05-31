@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Apple, ArrowUpRight, Cpu, Download, Github, Laptop, Monitor, Terminal } from "lucide-react";
+import { Apple, ArrowUpRight, Cpu, Download, Github, Laptop, Monitor, Smartphone, Terminal } from "lucide-react";
 import { Badge } from "../../components/Badge";
 import { Card } from "../../components/Card";
 import { CopyButton } from "../../components/CopyButton";
@@ -12,10 +12,13 @@ import { cn } from "../../lib/cn";
 import { LINKS } from "../../lib/links";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
 
-type PlatformHint = "mac" | "windows" | "linux" | "unknown";
+type PlatformHint = "mac" | "windows" | "linux" | "ios" | "unknown";
 
 function detectPlatform(): PlatformHint {
   const ua = typeof navigator !== "undefined" ? navigator.userAgent.toLowerCase() : "";
+  const navigatorPlatform = typeof navigator !== "undefined" ? navigator.platform.toLowerCase() : "";
+  const maxTouchPoints = typeof navigator !== "undefined" ? navigator.maxTouchPoints : 0;
+  if (/(iphone|ipad|ipod)/.test(ua) || (navigatorPlatform === "macintel" && maxTouchPoints > 1)) return "ios";
   if (ua.includes("mac os") || ua.includes("macintosh")) return "mac";
   if (ua.includes("windows")) return "windows";
   if (ua.includes("linux")) return "linux";
@@ -48,21 +51,36 @@ export function DownloadPage() {
         title: "macOS",
         icon: <Apple className="h-5 w-5" />,
         note: "Current beta release target: DMG and ZIP from GitHub Releases.",
-        hint: "Recommended on Apple Silicon and Intel."
+        hint: "Recommended on Apple Silicon and Intel.",
+        actionHref: LINKS.releases,
+        actionLabel: "Download from releases"
       },
       {
         key: "windows" as const,
         title: "Windows",
         icon: <Monitor className="h-5 w-5" />,
         note: "Installer builds are not published yet.",
-        hint: "Use the source build path for now."
+        hint: "Use the source build path for now.",
+        actionHref: LINKS.releases,
+        actionLabel: "Check releases"
       },
       {
         key: "linux" as const,
         title: "Linux",
         icon: <Cpu className="h-5 w-5" />,
         note: "AppImage and package builds are not published yet.",
-        hint: "Use the source build path for now."
+        hint: "Use the source build path for now.",
+        actionHref: LINKS.releases,
+        actionLabel: "Check releases"
+      },
+      {
+        key: "ios" as const,
+        title: "iOS",
+        icon: <Smartphone className="h-5 w-5" />,
+        note: "The companion app is in TestFlight while the App Store listing is prepared.",
+        hint: "Use the iOS beta for remote review, approvals, and push state.",
+        actionHref: LINKS.changelogLatest,
+        actionLabel: "View TestFlight notes"
       }
     ],
     []
@@ -100,7 +118,7 @@ export function DownloadPage() {
           </div>
         </Reveal>
 
-        <div className="mt-12 grid gap-6 md:grid-cols-3">
+        <div className="mt-12 grid gap-6 md:grid-cols-2 xl:grid-cols-4">
           {cards.map((c, idx) => {
             const recommended = platform === c.key;
             return (
@@ -127,11 +145,11 @@ export function DownloadPage() {
                         "focus-ring inline-flex w-full items-center justify-center gap-2 rounded-lg border border-border/70 bg-card/70 px-4 py-2 text-sm font-semibold text-fg",
                         "transition-all duration-200 [transition-timing-function:var(--ease-out)] hover:bg-card hover:shadow-glass-sm"
                       )}
-                      href={LINKS.releases}
+                      href={c.actionHref}
                       target="_blank"
                       rel="noreferrer"
                     >
-                      Download from releases <ArrowUpRight className="h-4 w-4" />
+                      {c.actionLabel} <ArrowUpRight className="h-4 w-4" />
                     </a>
                   </div>
                 </Card>
