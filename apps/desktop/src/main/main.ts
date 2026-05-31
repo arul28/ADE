@@ -1763,6 +1763,7 @@ app.whenReady().then(async () => {
     let linearIssueTrackerRef: LinearIssueTracker | null = null;
     let linearLiveStatusServiceRef: LinearLiveStatusService | null = null;
     const linearChatCardPublishKeys = new Set<string>();
+    const linearLiveStatusLaunchKeys = new Set<string>();
     const publishLinearChatLink = ({ laneId, sessionId, sessionTitle, issue, linkedAt }: {
       laneId: string;
       sessionId: string;
@@ -1795,11 +1796,15 @@ app.whenReady().then(async () => {
       }
       // Agent launched against a Linear issue → reflect status into Linear
       // (no-op unless the live round-trip flag is set).
-      void linearLiveStatusServiceRef?.onAgentLaunched({
+      const liveStatusService = linearLiveStatusServiceRef;
+      if (!liveStatusService || linearLiveStatusLaunchKeys.has(key)) return;
+      linearLiveStatusLaunchKeys.add(key);
+      void liveStatusService.onAgentLaunched({
         issue,
         branchName: issue.branchName,
         laneName: sessionTitle ?? null,
       }).catch((error) => {
+        linearLiveStatusLaunchKeys.delete(key);
         logger.warn("linear.live_status_launch_failed", {
           laneId,
           sessionId,
