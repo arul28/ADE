@@ -114,7 +114,7 @@ import {
 } from "../../../ade-cli/src/jsonrpc";
 import { resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
-import { EncryptedFileCredentialStore } from "../../../ade-cli/src/services/credentials/credentialStore";
+import { ElectronSafeStorageCredentialStore } from "../../../ade-cli/src/services/credentials/credentialStore";
 import { createKeybindingsService } from "./services/keybindings/keybindingsService";
 import { createAgentToolsService } from "./services/agentTools/agentToolsService";
 import { createAdeCliService } from "./services/cli/adeCliService";
@@ -964,6 +964,11 @@ app.whenReady().then(async () => {
     );
 
   const machineAdeLayout = resolveMachineAdeLayout();
+  const createDesktopCredentialStore = (args: { secretsDir?: string } = {}) =>
+    new ElectronSafeStorageCredentialStore({
+      safeStorage,
+      ...args,
+    });
   const startupState = normalizeStartupProjectState({
     saved,
     additionalRecentProjects: readMachineRegistryRecentProjects(machineAdeLayout),
@@ -1699,7 +1704,7 @@ app.whenReady().then(async () => {
     const adePaths = ensureAdeDirs(projectRoot);
     const { initApiKeyStore } = await import("./services/ai/apiKeyStore");
     initApiKeyStore(projectRoot, {
-      credentialStore: new EncryptedFileCredentialStore({
+      credentialStore: createDesktopCredentialStore({
         secretsDir: machineAdeLayout.secretsDir,
       }),
     });
@@ -2187,7 +2192,7 @@ app.whenReady().then(async () => {
       logger,
       projectRoot,
       appDataDir: app.getPath("userData"),
-      credentialStore: new EncryptedFileCredentialStore({
+      credentialStore: createDesktopCredentialStore({
         secretsDir: machineAdeLayout.secretsDir,
       }),
     });
@@ -2763,7 +2768,7 @@ app.whenReady().then(async () => {
     const linearCredentialService = createLinearCredentialService({
       adeDir: adePaths.adeDir,
       logger,
-      credentialStore: new EncryptedFileCredentialStore({
+      credentialStore: createDesktopCredentialStore({
         secretsDir: path.join(adePaths.adeDir, "secrets"),
       }),
     });
@@ -4300,7 +4305,7 @@ app.whenReady().then(async () => {
       logger,
       projectRoot: normalizedRoot,
       appDataDir: app.getPath("userData"),
-      credentialStore: new EncryptedFileCredentialStore({
+      credentialStore: createDesktopCredentialStore({
         secretsDir: machineAdeLayout.secretsDir,
       }),
     });
