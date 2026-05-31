@@ -58,7 +58,10 @@ export class ProjectScopeRegistry {
 
     const pending = (async () => {
       this.projectRegistry.touch(projectId);
-      const syncRuntime = this.buildSyncRuntimeOptions(projectId);
+      const syncRuntime = this.buildSyncRuntimeOptions(
+        projectId,
+        this.syncHostProjectId === projectId,
+      );
       const { createAdeRuntime } = await import("../../bootstrap");
       const runtime = await createAdeRuntime({
         projectRoot: record.rootPath,
@@ -106,25 +109,11 @@ export class ProjectScopeRegistry {
   }
 
   async ensureSyncHost(projectId?: ProjectId): Promise<ProjectScope | null> {
-    if (!this.options.syncRuntime?.enabled) return null;
-    if (projectId) {
-      const existingHostId = this.syncHostProjectId;
-      if (existingHostId && existingHostId !== projectId) {
-        await this.configureCachedSyncHost(existingHostId, false);
-      }
-      this.syncHostProjectId = projectId;
-      try {
-        const scope = await this.get(projectId);
-        await this.configureSyncHost(scope, true);
-        return scope;
-      } catch (error) {
-        if (this.syncHostProjectId === projectId) {
-          this.syncHostProjectId = null;
-        }
-        throw error;
-      }
-    }
+    return projectId ? this.switchSyncHost(projectId) : this.resolveActiveSyncHost();
+  }
 
+  async resolveActiveSyncHost(): Promise<ProjectScope | null> {
+    if (!this.options.syncRuntime?.enabled) return null;
     const existingHostId = this.syncHostProjectId;
     if (existingHostId) {
       try {
@@ -141,7 +130,26 @@ export class ProjectScopeRegistry {
         const openedDelta = right.lastOpenedAt - left.lastOpenedAt;
         return openedDelta !== 0 ? openedDelta : right.addedAt - left.addedAt;
       })[0];
-    return record ? this.ensureSyncHost(record.projectId) : null;
+    return record ? this.switchSyncHost(record.projectId) : null;
+  }
+
+  async switchSyncHost(projectId: ProjectId): Promise<ProjectScope | null> {
+    if (!this.options.syncRuntime?.enabled) return null;
+    const existingHostId = this.syncHostProjectId;
+    if (existingHostId && existingHostId !== projectId) {
+      await this.configureCachedSyncHost(existingHostId, false);
+    }
+    this.syncHostProjectId = projectId;
+    try {
+      const scope = await this.get(projectId);
+      await this.configureSyncHost(scope, true);
+      return scope;
+    } catch (error) {
+      if (this.syncHostProjectId === projectId) {
+        this.syncHostProjectId = null;
+      }
+      throw error;
+    }
   }
 
   private async configureCachedSyncHost(
@@ -165,13 +173,9 @@ export class ProjectScopeRegistry {
     if (enabled) await syncService.initialize();
   }
 
-  private buildSyncRuntimeOptions(projectId: ProjectId): AdeRuntimeSyncOptions | null {
+  private buildSyncRuntimeOptions(projectId: ProjectId, isHost: boolean): AdeRuntimeSyncOptions | null {
     const base = this.options.syncRuntime;
     if (!base?.enabled) return null;
-    const isHost = this.syncHostProjectId === null || this.syncHostProjectId === projectId;
-    if (isHost && this.syncHostProjectId === null) {
-      this.syncHostProjectId = projectId;
-    }
     return {
       ...base,
       enabled: true,

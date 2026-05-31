@@ -1610,6 +1610,36 @@ describe("local runtime connection pool", () => {
     });
   });
 
+  it("switches the active local runtime sync host explicitly for a project root", async () => {
+    const call = vi.fn().mockResolvedValue({ switched: true });
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never);
+    const rootPath = path.resolve("/repo");
+    (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.set(rootPath, {
+      projectId: "project-1",
+      rootPath,
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: null,
+    });
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
+      client: { call, isClosed: () => false },
+      child: null,
+      socketPath: "/tmp/ade.sock",
+    });
+
+    await pool.switchSyncHostForRoot(rootPath);
+
+    expect(call).toHaveBeenCalledWith("sync.switchHost", {
+      projectId: "project-1",
+    });
+  });
+
   it("subscribes to local runtime event notifications", async () => {
     const notificationListeners = new Map<string, Set<(params: unknown) => void>>();
     const call = vi.fn(async (method: string) => {

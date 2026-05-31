@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { Bonjour, type Service as BonjourService } from "bonjour-service";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
@@ -83,7 +83,7 @@ import type { createComputerUseArtifactBrokerService } from "../../../../desktop
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { hasNullByte, normalizeRelative, nowIso, resolvePathWithinRoot, safeJsonParse, toOptionalString, uniqueStrings, writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
 import type { DeviceRegistryService } from "./deviceRegistryService";
-import { createSyncPairingStore } from "./syncPairingStore";
+import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
 import type { NotificationEventBus } from "../../../../desktop/src/main/services/notifications/notificationEventBus";
 import type {
   ApnsEnvironment,
@@ -124,6 +124,7 @@ const SYNC_MDNS_SERVICE_TYPE = "ade-sync";
 const MAX_PROJECT_CATALOG_ENVELOPE_BYTES = 768 * 1024;
 const BONJOUR_PROJECT_TXT_ENTRY_LIMIT = 24;
 const BONJOUR_PROJECT_NAME_MAX_LENGTH = 48;
+const SYNC_HOST_BIND_HOST: string = "127.0.0.1";
 export const SYNC_TAILNET_DISCOVERY_SERVICE_NAME = "svc:ade-sync";
 export const SYNC_TAILNET_DISCOVERY_SERVICE_PORT = DEFAULT_SYNC_HOST_PORT;
 export type SyncRuntimeKind = "desktop-embedded" | "headless" | "remote-stdio" | "desktop" | "daemon" | "remote";
@@ -152,6 +153,7 @@ type PeerState = {
   authenticated: boolean;
   authKind: "bootstrap" | "paired" | null;
   pairedDeviceId: string | null;
+  pairingRecord: SyncPairingRecord | null;
   connectedAt: string;
   lastSeenAt: string;
   lastAppliedAt: string | null;
@@ -635,6 +637,20 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
   };
 }
 
+function safeStringEquals(expected: string, actual: string): boolean {
+  const expectedBuffer = Buffer.from(expected, "utf8");
+  const actualBuffer = Buffer.from(actual, "utf8");
+  if (expectedBuffer.length !== actualBuffer.length) {
+    timingSafeEqual(expectedBuffer, Buffer.alloc(expectedBuffer.length));
+    return false;
+  }
+  return timingSafeEqual(expectedBuffer, actualBuffer);
+}
+
+function isMobilePairingRecord(record: SyncPairingRecord | null): boolean {
+  return record?.peerPlatform === "iOS" || record?.peerDeviceType === "phone";
+}
+
 function parsePairingRequestPayload(payload: unknown): SyncPairingRequestPayload | null {
   const value = payload as SyncPairingRequestPayload | null;
   const code = toOptionalString(value?.code);
@@ -924,46 +940,62 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const PAIR_FAILURE_THRESHOLD = 5;
   const PAIR_COOLDOWN_MS = 10 * 60_000;
   const PAIR_FAILURE_WINDOW_MS = 10 * 60_000;
-  const pairFailures = new Map<string, { count: number; cooldownUntilMs: number; updatedAtMs: number }>();
+  type PairFailureEntry = { count: number; cooldownUntilMs: number; updatedAtMs: number };
+  const pairFailures = new Map<string, PairFailureEntry>();
+  const globalPairFailures: PairFailureEntry = { count: 0, cooldownUntilMs: 0, updatedAtMs: 0 };
+  const resetPairFailureEntry = (entry: PairFailureEntry): void => {
+    entry.count = 0;
+    entry.cooldownUntilMs = 0;
+    entry.updatedAtMs = 0;
+  };
+  const isPairFailureEntryExpired = (entry: PairFailureEntry, now: number): boolean => {
+    if (entry.updatedAtMs <= 0) return false;
+    return (entry.cooldownUntilMs > 0 && entry.cooldownUntilMs <= now)
+      || entry.updatedAtMs + PAIR_FAILURE_WINDOW_MS <= now;
+  };
   const pruneExpiredPairFailures = (now = Date.now()): boolean => {
     let changed = false;
     for (const [ip, entry] of pairFailures) {
-      const cooldownExpired = entry.cooldownUntilMs > 0 && entry.cooldownUntilMs <= now;
-      const failureWindowExpired = entry.updatedAtMs + PAIR_FAILURE_WINDOW_MS <= now;
-      if (cooldownExpired || failureWindowExpired) {
+      if (isPairFailureEntryExpired(entry, now)) {
         pairFailures.delete(ip);
         changed = true;
       }
     }
+    if (isPairFailureEntryExpired(globalPairFailures, now)) {
+      resetPairFailureEntry(globalPairFailures);
+      changed = true;
+    }
     return changed;
   };
-  const registerPairFailure = (ip: string | null): void => {
-    if (!ip) return;
-    const now = Date.now();
-    pruneExpiredPairFailures(now);
-    const entry = pairFailures.get(ip) ?? { count: 0, cooldownUntilMs: 0, updatedAtMs: now };
+  const incrementPairFailureEntry = (entry: PairFailureEntry, now: number): void => {
     entry.count += 1;
     entry.updatedAtMs = now;
     if (entry.count >= PAIR_FAILURE_THRESHOLD) {
       entry.cooldownUntilMs = now + PAIR_COOLDOWN_MS;
       entry.count = 0;
     }
-    pairFailures.set(ip, entry);
+  };
+  const registerPairFailure = (ip: string | null): void => {
+    const now = Date.now();
+    pruneExpiredPairFailures(now);
+    incrementPairFailureEntry(globalPairFailures, now);
+    if (ip) {
+      const entry = pairFailures.get(ip) ?? { count: 0, cooldownUntilMs: 0, updatedAtMs: now };
+      incrementPairFailureEntry(entry, now);
+      pairFailures.set(ip, entry);
+    }
   };
   const pairingCooldownMsRemaining = (ip: string | null): number => {
-    if (!ip) return 0;
-    const entry = pairFailures.get(ip);
-    if (!entry) return 0;
     const now = Date.now();
-    const remaining = entry.cooldownUntilMs - now;
-    if (remaining > 0) return remaining;
-    if (
-      (entry.cooldownUntilMs > 0 && remaining <= 0)
-      || entry.updatedAtMs + PAIR_FAILURE_WINDOW_MS <= now
-    ) {
-      pairFailures.delete(ip);
-    }
-    return 0;
+    pruneExpiredPairFailures(now);
+    const globalRemaining = Math.max(0, globalPairFailures.cooldownUntilMs - now);
+    const ipEntry = ip ? pairFailures.get(ip) ?? null : null;
+    const ipRemaining = ipEntry ? Math.max(0, ipEntry.cooldownUntilMs - now) : 0;
+    return Math.max(globalRemaining, ipRemaining);
+  };
+  const clearPairFailuresAfterSuccessfulPair = (ip: string | null): void => {
+    resetPairFailureEntry(globalPairFailures);
+    if (ip) pairFailures.delete(ip);
   };
 
   const normalizeLaneId = (laneId: string | null | undefined): string | null => {
@@ -1172,7 +1204,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   };
   const server = new WebSocketServer({
-    host: "0.0.0.0",
+    host: SYNC_HOST_BIND_HOST,
     port: args.port ?? DEFAULT_SYNC_HOST_PORT,
     maxPayload: 25 * 1024 * 1024,
   });
@@ -1296,6 +1328,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       authenticated: false,
       authKind: null,
       pairedDeviceId: null,
+      pairingRecord: null,
       connectedAt: nowIso(),
       lastSeenAt: nowIso(),
       lastAppliedAt: null,
@@ -1424,6 +1457,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   const publishLanDiscovery = (port: number, options?: { force?: boolean }): void => {
     if (disposed) return;
+    if (SYNC_HOST_BIND_HOST !== "0.0.0.0" && SYNC_HOST_BIND_HOST !== "::") {
+      unpublishLanDiscovery();
+      return;
+    }
     if (!discoveryEnabled) {
       unpublishLanDiscovery();
       return;
@@ -1799,6 +1836,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       peer.metadata = null;
       peer.authKind = null;
       peer.pairedDeviceId = null;
+      peer.pairingRecord = null;
       try {
         peer.ws.close(4000, "Superseded by a newer connection for this device");
       } catch {
@@ -2262,28 +2300,37 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }
 
   function isMobilePeer(peer: PeerState): boolean {
+    if (peer.authKind === "paired") {
+      return isMobilePairingRecord(peer.pairingRecord);
+    }
     return peer.metadata?.platform === "iOS" || peer.metadata?.deviceType === "phone";
   }
 
-  function assertMobileFileMutationAllowed(peer: PeerState, payload: SyncFileRequest): void {
-    if (!MOBILE_MUTATING_FILE_ACTIONS.has(payload.action)) return;
-    if (!isMobilePeer(peer)) return;
+  function workspaceForId(workspaceId: string | null): FilesWorkspace | null {
+    if (!workspaceId) return null;
+    return args.fileService.listWorkspaces({ includeArchived: true })
+      .find((entry) => entry.id === workspaceId) ?? null;
+  }
 
-    const workspaceId = toOptionalString((payload as { args?: { workspaceId?: unknown } }).args?.workspaceId);
-    if (!workspaceId) return;
-    const workspace = args.fileService.listWorkspaces({ includeArchived: true })
-      .find((entry) => entry.id === workspaceId);
+  function assertWriteAllowed(peer: PeerState, workspace: FilesWorkspace | null): void {
+    if (!isMobilePeer(peer)) return;
     if (!workspace || workspace.mobileReadOnly === true || workspace.isReadOnlyByDefault) {
       throw new Error("Mobile file access is read-only for this workspace.");
     }
   }
 
-  function isMobileLaneFileMutationBlocked(payload: SyncCommandPayload): boolean {
+  function assertFileMutationAllowed(peer: PeerState, payload: SyncFileRequest): void {
+    if (!MOBILE_MUTATING_FILE_ACTIONS.has(payload.action)) return;
+    const workspaceId = toOptionalString((payload as { args?: { workspaceId?: unknown } }).args?.workspaceId);
+    assertWriteAllowed(peer, workspaceForId(workspaceId));
+  }
+
+  function assertLaneFileMutationAllowed(peer: PeerState, payload: SyncCommandPayload): void {
     const laneId = toOptionalString((payload.args as Record<string, unknown> | null | undefined)?.laneId);
-    if (!laneId) return false;
+    if (!laneId) return;
     const workspace = args.fileService.listWorkspaces({ includeArchived: true })
-      .find((entry) => entry.laneId === laneId);
-    return workspace ? workspace.mobileReadOnly === true || workspace.isReadOnlyByDefault : true;
+      .find((entry) => entry.laneId === laneId) ?? null;
+    assertWriteAllowed(peer, workspace);
   }
 
   async function handleFileRequest(peer: PeerState, requestId: string | null, payload: SyncFileRequest): Promise<void> {
@@ -2292,7 +2339,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     };
 
     try {
-      assertMobileFileMutationAllowed(peer, payload);
+      assertFileMutationAllowed(peer, payload);
       let result:
         | FilesWorkspace[]
         | FileTreeNode[]
@@ -2560,9 +2607,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       reject(`Remote command ${payload.action} is not available to paired controller devices.`, "forbidden_command");
       return;
     }
-    if (payload.action === "files.writeTextAtomic" && isMobilePeer(peer) && isMobileLaneFileMutationBlocked(payload)) {
-      reject("Mobile file access is read-only for this workspace.", "mobile_read_only");
-      return;
+    if (payload.action === "files.writeTextAtomic") {
+      try {
+        assertLaneFileMutationAllowed(peer, payload);
+      } catch (error) {
+        reject(error instanceof Error ? error.message : String(error), "mobile_read_only");
+        return;
+      }
     }
     if (policy.localOnly || policy.requiresApproval) {
       reject(`Remote command ${payload.action} requires approval on this machine.`, "approval_required");
@@ -2693,9 +2744,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         }
         try {
           const result = pairingStore.pairPeer(pairing.peer, pairing.code);
-          if (peer.remoteAddress) {
-            pairFailures.delete(peer.remoteAddress);
-          }
+          clearPairFailuresAfterSuccessfulPair(peer.remoteAddress);
           args.deviceRegistryService?.upsertPeerMetadata(pairing.peer, {
             lastSeenAt: nowIso(),
             lastHost: peer.remoteAddress,
@@ -2743,13 +2792,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         }
         return;
       }
+      let authenticatedPairingRecord: SyncPairingRecord | null = null;
       const authFailed = (() => {
         if (hello.auth?.kind === "bootstrap") {
-          return hello.auth.token !== bootstrapToken;
+          if (!safeStringEquals(bootstrapToken, hello.auth.token)) return true;
+          return pairingStore.hasPairingRecord(hello.peer.deviceId);
         }
         if (hello.auth?.kind === "paired") {
           if (hello.auth.deviceId !== hello.peer.deviceId) return true;
-          return !pairingStore.authenticate(hello.auth.deviceId, hello.auth.secret);
+          if (!pairingStore.authenticate(hello.auth.deviceId, hello.auth.secret)) return true;
+          authenticatedPairingRecord = pairingStore.getPairingRecord(hello.auth.deviceId);
+          return !authenticatedPairingRecord;
         }
         return true;
       })();
@@ -2772,6 +2825,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const auth = hello.auth ?? { kind: "bootstrap", token: "" };
       peer.authKind = auth.kind;
       peer.pairedDeviceId = auth.kind === "paired" ? auth.deviceId : null;
+      peer.pairingRecord = auth.kind === "paired" ? authenticatedPairingRecord : null;
       peer.lastKnownServerDbVersion = Math.max(0, Math.floor(hello.peer.dbVersion));
       args.deviceRegistryService?.upsertPeerMetadata(hello.peer, {
         lastSeenAt: nowIso(),
@@ -3277,6 +3331,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         peer.metadata = null;
         peer.authKind = null;
         peer.pairedDeviceId = null;
+        peer.pairingRecord = null;
         try {
           peer.ws.close(4003, "Pairing revoked");
         } catch {

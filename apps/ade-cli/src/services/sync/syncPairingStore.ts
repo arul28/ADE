@@ -5,7 +5,7 @@ import type { SyncPeerMetadata } from "../../../../desktop/src/shared/types";
 import { nowIso, safeJsonParse, writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
 import type { SyncPinStore } from "./syncPinStore";
 
-type PairingRecord = {
+export type SyncPairingRecord = {
   secretHash: string;
   createdAt: string;
   lastUsedAt: string | null;
@@ -14,7 +14,7 @@ type PairingRecord = {
   peerDeviceType: string;
 };
 
-type PairingSecretsFile = Record<string, PairingRecord>;
+type PairingSecretsFile = Record<string, SyncPairingRecord>;
 
 type SyncPairingStoreArgs = {
   filePath: string;
@@ -94,6 +94,18 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       entry.lastUsedAt = nowIso();
       writeRecords(records);
       return true;
+    },
+
+    getPairingRecord(deviceId: string): SyncPairingRecord | null {
+      const normalized = deviceId.trim();
+      if (!normalized) return null;
+      return readRecords()[normalized] ?? null;
+    },
+
+    hasPairingRecord(deviceId: string): boolean {
+      const normalized = deviceId.trim();
+      if (!normalized) return false;
+      return readRecords()[normalized] != null;
     },
 
     revoke(deviceId: string): void {
