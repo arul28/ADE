@@ -3634,6 +3634,90 @@ describe("preload OAuth bridge", () => {
     expect(callback).toHaveBeenCalledTimes(1);
   });
 
+  it("filters remote PTY data notifications to subscribed terminal ids", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeStreamEvents) {
+        return { events: [], nextCursor: 0, hasMore: false };
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await bridge.app.getWindowSession();
+
+    const callback = vi.fn();
+    bridge.pty.onData(callback);
+    await bridge.pty.setDataSubscriptions({ ptyIds: ["pty-visible"] });
+
+    expect(invoke).toHaveBeenCalledWith(IPC.ptyDataSubscriptions, {
+      ptyIds: ["pty-visible"],
+    });
+
+    const runtimeListener = on.mock.calls.find(([channel]) => channel === IPC.runtimeEvent)?.[1];
+    expect(typeof runtimeListener).toBe("function");
+    runtimeListener({}, {
+      bindingKey: binding.key,
+      event: {
+        id: 1,
+        timestamp: "2026-05-10T12:00:01.000Z",
+        category: "pty",
+        payload: {
+          type: "pty_data",
+          event: { ptyId: "pty-hidden", sessionId: "session-hidden", data: "hidden" },
+        },
+      },
+    });
+    runtimeListener({}, {
+      bindingKey: binding.key,
+      event: {
+        id: 2,
+        timestamp: "2026-05-10T12:00:02.000Z",
+        category: "pty",
+        payload: {
+          type: "pty_data",
+          event: { ptyId: "pty-visible", sessionId: "session-visible", data: "visible" },
+        },
+      },
+    });
+
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(callback).toHaveBeenCalledWith({
+      ptyId: "pty-visible",
+      sessionId: "session-visible",
+      data: "visible",
+    });
+  });
+
   it("fans out remote macOS VM notifications from the live runtime event stream", async () => {
     const binding = {
       kind: "remote",

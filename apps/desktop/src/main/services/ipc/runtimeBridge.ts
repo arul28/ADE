@@ -35,8 +35,8 @@ import { discoverLanRuntimes } from "../remoteRuntime/runtimeDiscovery";
 import { RemoteTargetRegistry } from "../remoteRuntime/remoteTargetRegistry";
 import { runGit } from "../git/git";
 import { getProjectWorkSummary } from "../projects/projectDetailService";
-import { toRecentProjectSummary } from "../projects/recentProjectSummary";
 import { readGlobalState } from "../state/globalState";
+import { shouldSendPtyDataToWebContents } from "../pty/ptyDataSubscriptions";
 
 type RuntimeBridgeArgs = {
   appVersion: string;
@@ -322,6 +322,21 @@ export function registerRuntimeBridge({
     });
   };
 
+  const shouldForwardRuntimeEvent = (
+    sender: WebContents,
+    event: RemoteRuntimeBufferedEvent,
+  ): boolean => {
+    if (event.category !== "pty") return true;
+    if (event.payload.type !== "pty_data") return true;
+    const ptyEvent = isObjectRecord(event.payload.event)
+      ? event.payload.event
+      : null;
+    const ptyId = typeof ptyEvent?.ptyId === "string"
+      ? ptyEvent.ptyId
+      : "";
+    return !ptyId || shouldSendPtyDataToWebContents(sender, ptyId);
+  };
+
   const sendRuntimeEvent = (
     sender: WebContents,
     bindingKey: string,
@@ -336,6 +351,7 @@ export function registerRuntimeBridge({
       sender.isDestroyed()
     )
       return;
+    if (!shouldForwardRuntimeEvent(sender, event)) return;
     const payload: RemoteRuntimeEventNotificationPayload = {
       bindingKey,
       event,
@@ -963,7 +979,7 @@ export function registerRuntimeBridge({
         .slice(0, 100)
         .map((entry) => ({
           rootPath: entry.rootPath,
-          displayName: toRecentProjectSummary(entry).displayName,
+          displayName: entry.displayName,
         }));
       const localRuntimeProjects = localRuntimeConnectionPool
         ? await localRuntimeConnectionPool

@@ -1897,6 +1897,14 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
   return Object.keys(out).length ? out : undefined;
 }
 
+function coerceProjectUiConfig(value: unknown): ProjectConfigFile["ui"] {
+  if (!isRecord(value)) return undefined;
+  const linearBatchLaunchDefaultPrompt = asString(value.linearBatchLaunchDefaultPrompt)?.trim();
+  return linearBatchLaunchDefaultPrompt
+    ? { linearBatchLaunchDefaultPrompt }
+    : undefined;
+}
+
 function coerceConfigFile(value: unknown): ProjectConfigFile {
   if (!isRecord(value)) {
     return {
@@ -1954,6 +1962,7 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     : undefined;
   const ai = coerceAiConfig(value.ai);
   const linearSync = coerceLinearSync(value.linearSync);
+  const ui = coerceProjectUiConfig(value.ui);
 
   if (providersRaw) {
     delete providersRaw.mode;
@@ -1980,6 +1989,7 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     ...(ai ? { ai } : {}),
     ...(providersRaw && Object.keys(providersRaw).length ? { providers: providersRaw } : {}),
     ...(linearSync ? { linearSync } : {}),
+    ...(ui ? { ui } : {}),
     ...(notifications ? { notifications } : {})
   };
 }
@@ -2059,6 +2069,7 @@ function toCanonicalYaml(config: ProjectConfigFile): string {
     ...(config.ai ? { ai: config.ai } : {}),
     ...(config.providers ? { providers: config.providers } : {}),
     ...(config.linearSync ? { linearSync: config.linearSync } : {}),
+    ...(config.ui ? { ui: config.ui } : {}),
     ...(config.notifications ? { notifications: config.notifications } : {})
   };
   return YAML.stringify(normalized, { indent: 2 });
@@ -2086,6 +2097,7 @@ function hasSharedConfigContent(config: ProjectConfigFile): boolean {
     || config.defaultLaneTemplate
     || (config.providers && Object.keys(config.providers).length > 0)
     || config.linearSync
+    || config.ui
     || config.notifications
   );
 }
@@ -2398,6 +2410,12 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
 
   const mergedAi = mergeAiConfig(shared.ai, local.ai);
   const mergedLinearSync = mergeLinearSync(shared.linearSync, local.linearSync);
+  const mergedUi = shared.ui || local.ui
+    ? {
+        ...(shared.ui ?? {}),
+        ...(local.ui ?? {}),
+      }
+    : undefined;
   const mergedNotifications = mergeNotificationsConfig(shared.notifications, local.notifications);
 
   const environments = [...(shared.environments ?? []), ...(local.environments ?? [])];
@@ -2450,6 +2468,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     ...(effectiveAi ? { ai: effectiveAi } : {}),
     ...(mergedProviders ? { providers: mergedProviders } : {}),
     ...(mergedLinearSync ? { linearSync: mergedLinearSync } : {}),
+    ...(mergedUi ? { ui: mergedUi } : {}),
     ...(mergedNotifications ? { notifications: mergedNotifications } : {})
   };
 }

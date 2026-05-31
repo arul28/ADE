@@ -1401,6 +1401,10 @@ export type AiIntegrationStatus = {
   availableModelIds?: ModelId[];
 };
 
+export type ProjectUiConfig = {
+  linearBatchLaunchDefaultPrompt?: string;
+};
+
 export type ProjectConfigFile = {
   version?: number;
   project?: ProjectIdentityConfig;
@@ -1428,6 +1432,7 @@ export type ProjectConfigFile = {
   laneCleanup?: LaneCleanupConfig;
   providers?: Record<string, unknown>;
   linearSync?: LinearSyncConfig;
+  ui?: ProjectUiConfig;
   /** Mobile push notification configuration (APNs). */
   notifications?: NotificationsConfig;
 };
@@ -1465,6 +1470,7 @@ export type EffectiveProjectConfig = {
   providerMode?: ProviderMode;
   providers?: Record<string, unknown>;
   linearSync?: LinearSyncConfig;
+  ui?: ProjectUiConfig;
   cto?: {
     companyBudgetMonthlyCents?: number;
     budgetTelemetry?: {

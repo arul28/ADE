@@ -169,6 +169,15 @@ export function inspectRecentProject(entry: RecentProjectEntry): RecentProjectIn
   };
 }
 
+export function toShallowRecentProjectSummary(entry: RecentProjectEntry): RecentProjectSummary {
+  return {
+    rootPath: entry.rootPath,
+    displayName: entry.displayName,
+    lastOpenedAt: entry.lastOpenedAt,
+    exists: fs.existsSync(entry.rootPath),
+  };
+}
+
 export function toRecentProjectSummary(entry: RecentProjectEntry): RecentProjectSummary {
   return inspectRecentProject(entry).summary;
 }

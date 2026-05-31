@@ -308,10 +308,6 @@ function canContinueAgentCliSession(session: TerminalSessionSummary): boolean {
   return Boolean(session.tracked && continuationProviderForSession(session) && (session.resumeMetadata || session.resumeCommand));
 }
 
-function shouldKeepMountedInHiddenTab(session: TerminalSessionSummary): boolean {
-  return isChatToolType(session.toolType) || isRunningPtySession(session);
-}
-
 function continuationProviderLabel(provider: TerminalResumeProvider | null): string {
   if (provider === "claude") return "Claude Code";
   if (provider === "codex") return "Codex";
@@ -1765,7 +1761,7 @@ export function WorkViewArea({
     <div className="relative min-h-0 flex-1" style={{ background: "var(--color-bg)" }}>
       {visibleSessions.map((session) => {
         const isActive = activeSession?.id === session.id;
-        if (!isActive && !shouldKeepMountedInHiddenTab(session)) return null;
+        if (!isActive) return null;
 
         return (
           <div

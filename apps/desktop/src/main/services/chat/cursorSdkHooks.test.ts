@@ -118,7 +118,6 @@ describe("Cursor SDK hook installation", () => {
     try {
       ensureCursorSdkUserHook({ userHomeDir: home });
       const stdout = execFileSync("/bin/sh", [cursorSdkHookShellCommandPath(home)], {
-        input: "{}",
         env: {
           PATH: "",
           HOME: home,

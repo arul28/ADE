@@ -1651,6 +1651,7 @@ declare global {
           rows: number;
         }) => Promise<void>;
         dispose: (args: { ptyId: string; sessionId?: string }) => Promise<void>;
+        setDataSubscriptions: (args: { ptyIds: string[] }) => Promise<void>;
         onData: (cb: (ev: PtyDataEvent) => void) => () => void;
         onExit: (cb: (ev: PtyExitEvent) => void) => () => void;
       };
