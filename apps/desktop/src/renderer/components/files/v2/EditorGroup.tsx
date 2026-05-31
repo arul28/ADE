@@ -29,6 +29,7 @@ export type EditorGroupProps = {
   onFocusGroup: (groupId: string) => void;
   onSplit: (groupId: string) => void;
   onDirtyChange: (path: string, dirty: boolean) => void;
+  onBufferChange: (path: string) => void;
   onTabDragStart: (groupId: string, path: string) => void;
   onTabDragEnd: () => void;
   onTabDrop: (groupId: string) => void;
@@ -161,6 +162,7 @@ export function EditorGroup(props: EditorGroupProps) {
             theme={props.theme}
             registry={props.registry}
             onDirtyChange={props.onDirtyChange}
+            onBufferChange={props.onBufferChange}
             onEdit={(path) => props.onPromoteTab(group.id, path)}
             onRegisterEditorApi={registerApi}
           />

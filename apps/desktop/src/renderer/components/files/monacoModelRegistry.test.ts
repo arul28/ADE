@@ -116,6 +116,22 @@ describe("monacoModelRegistry", () => {
     }
   });
 
+  it("exposes saved baseline text for agent dirty-buffer reads", () => {
+    const { monaco } = createFakeMonaco();
+    const registry = createMonacoModelRegistry();
+
+    registry.getOrCreate(monaco, "a", "hello", "plaintext");
+    expect(registry.getSavedValue("a")).toBe("hello");
+
+    const model = registry.getOrCreate(monaco, "a", "ignored", "plaintext") as any;
+    model.__edit();
+    expect(registry.getValue("a")).toBe("hello");
+    expect(registry.getSavedValue("a")).toBe("hello");
+
+    registry.markSaved("a");
+    expect(registry.getSavedValue("a")).toBe("hello");
+  });
+
   it("tracks dirty state against the last saved baseline", () => {
     const { monaco } = createFakeMonaco();
     const registry = createMonacoModelRegistry();

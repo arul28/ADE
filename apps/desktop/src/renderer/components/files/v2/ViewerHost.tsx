@@ -21,6 +21,7 @@ export type ViewerHostProps = {
   registry: MonacoModelRegistry;
   reloadToken?: number;
   onDirtyChange?: (path: string, dirty: boolean) => void;
+  onBufferChange?: (path: string) => void;
   onEdit?: (path: string) => void;
   onRegisterEditorApi?: (path: string, api: EditorApi | null) => void;
 };
@@ -49,6 +50,7 @@ export function ViewerHost(props: ViewerHostProps) {
     theme: props.theme,
     registry: props.registry,
     onDirtyChange: props.onDirtyChange,
+    onBufferChange: props.onBufferChange,
     onEdit: props.onEdit,
     onRegisterEditorApi: props.onRegisterEditorApi,
   };

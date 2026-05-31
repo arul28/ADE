@@ -29,6 +29,8 @@ export type ViewerProps = {
   registry: MonacoModelRegistry;
   /** Notify the shell that the in-editor buffer became dirty/clean (code viewer only). */
   onDirtyChange?: (path: string, dirty: boolean) => void;
+  /** Notify the shell on each buffer edit (agent dirty-buffer sync; code viewer only). */
+  onBufferChange?: (path: string) => void;
   /** Promote a preview tab to permanent on first edit. */
   onEdit?: (path: string) => void;
   /** Register/unregister the editor's imperative API for toolbar actions. */

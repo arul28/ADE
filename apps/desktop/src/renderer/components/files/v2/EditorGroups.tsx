@@ -30,6 +30,7 @@ export type EditorGroupsProps = {
   onFocusGroup: (groupId: string) => void;
   onSplit: (groupId: string) => void;
   onDirtyChange: (path: string, dirty: boolean) => void;
+  onBufferChange: (path: string) => void;
   onTabDragStart: (groupId: string, path: string) => void;
   onTabDragEnd: () => void;
   onTabDrop: (groupId: string) => void;
@@ -90,6 +91,7 @@ export function EditorGroups(props: EditorGroupsProps) {
               onFocusGroup={props.onFocusGroup}
               onSplit={props.onSplit}
               onDirtyChange={props.onDirtyChange}
+              onBufferChange={props.onBufferChange}
               onTabDragStart={props.onTabDragStart}
               onTabDragEnd={props.onTabDragEnd}
               onTabDrop={props.onTabDrop}

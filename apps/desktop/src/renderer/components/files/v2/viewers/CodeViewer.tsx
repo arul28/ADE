@@ -19,6 +19,7 @@ export function CodeViewer({
   theme,
   registry,
   onDirtyChange,
+  onBufferChange,
   onEdit,
   onRegisterEditorApi,
 }: ViewerProps) {
@@ -28,8 +29,8 @@ export function CodeViewer({
   const changeSubRef = useRef<Monaco.IDisposable | null>(null);
   const dirtyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Latest props for use inside long-lived Monaco callbacks.
-  const ctxRef = useRef({ workspaceId, tab, registry, onDirtyChange, onEdit, onRegisterEditorApi, readOnly });
-  ctxRef.current = { workspaceId, tab, registry, onDirtyChange, onEdit, onRegisterEditorApi, readOnly };
+  const ctxRef = useRef({ workspaceId, tab, registry, onDirtyChange, onBufferChange, onEdit, onRegisterEditorApi, readOnly });
+  ctxRef.current = { workspaceId, tab, registry, onDirtyChange, onBufferChange, onEdit, onRegisterEditorApi, readOnly };
 
   const apiRef = useRef<EditorApi | null>(null);
   const registeredPathRef = useRef<string | null>(null);
@@ -160,8 +161,10 @@ export function CodeViewer({
     }
     changeSubRef.current?.dispose();
     changeSubRef.current = model.onDidChangeContent(() => {
-      const { tab: t, registry: reg, onDirtyChange: onDirty, onEdit: onEditCb } = ctxRef.current;
+      const { tab: t, registry: reg, onDirtyChange: onDirty, onBufferChange: onBuffer, onEdit: onEditCb } =
+        ctxRef.current;
       onEditCb?.(t.path); // first edit promotes a preview tab to permanent
+      onBuffer?.(t.path);
       if (dirtyTimerRef.current) clearTimeout(dirtyTimerRef.current);
       dirtyTimerRef.current = setTimeout(() => {
         onDirty?.(t.path, reg.isDirty(t.path));

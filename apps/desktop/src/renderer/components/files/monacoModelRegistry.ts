@@ -5,6 +5,8 @@ type Entry = {
   languageId: string;
   /** Alternative version id captured at last load/save; dirty = current !== this. */
   baseVersionId: number;
+  /** Buffer text at the last clean baseline (load/save). Used for agent dirty-buffer reads. */
+  savedContent: string;
 };
 
 /**
@@ -51,7 +53,12 @@ export function createMonacoModelRegistry() {
         return existing.model;
       }
       const model = monaco.editor.createModel(content, languageId);
-      models.set(path, { model, languageId, baseVersionId: model.getAlternativeVersionId() });
+      models.set(path, {
+        model,
+        languageId,
+        baseVersionId: model.getAlternativeVersionId(),
+        savedContent: content,
+      });
       return model;
     },
 
@@ -60,6 +67,7 @@ export function createMonacoModelRegistry() {
       const entry = models.get(path);
       if (entry && !entry.model.isDisposed()) {
         entry.baseVersionId = entry.model.getAlternativeVersionId();
+        entry.savedContent = entry.model.getValue();
       }
     },
 
@@ -75,6 +83,13 @@ export function createMonacoModelRegistry() {
       const entry = models.get(path);
       if (!entry || entry.model.isDisposed()) return null;
       return entry.model.getValue();
+    },
+
+    /** Last saved/loaded baseline text for `path`, or null when no model exists. */
+    getSavedValue(path: string): string | null {
+      const entry = models.get(path);
+      if (!entry || entry.model.isDisposed()) return null;
+      return entry.savedContent;
     },
 
     has(path: string): boolean {

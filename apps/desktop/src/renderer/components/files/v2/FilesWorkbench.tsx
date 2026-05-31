@@ -40,7 +40,12 @@ import { CreatePromptModal, SearchOverlay } from "./overlays";
 import { setPendingReveal } from "./pendingReveals";
 import { COLORS } from "../../lanes/laneDesignTokens";
 import { modifierKeyLabel } from "../../../lib/platform";
+import {
+  clearDirtyBuffersForWorkspace,
+  replaceDirtyBuffersForWorkspace,
+} from "../../../lib/dirtyWorkspaceBuffers";
 import type { EditorThemeMode } from "./viewers/types";
+import { buildDirtyBufferTabs, collectOpenTabPaths } from "./filesWorkbenchDirtySync";
 
 const TREE_PAGE_SIZE = 2_000;
 const MAX_AUTO_LOADED_CHILDREN = 10_000;
@@ -110,6 +115,8 @@ export function FilesWorkbench({
   const dragRef = useRef<{ groupId: string; path: string } | null>(null);
   const workspaceIdRef = useRef(workspaceId);
   workspaceIdRef.current = workspaceId;
+  const dirtyWorkspaceRootRef = useRef<string | null>(null);
+  const dirtySyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const store = useEditorGroupsStore();
   const groupsState = store.sessions[sessionKey] ?? createInitialGroupsState();
@@ -117,6 +124,39 @@ export function FilesWorkbench({
     (reducer: Parameters<typeof store.apply>[1]) => store.apply(sessionKey, reducer),
     [store, sessionKey],
   );
+
+  const syncDirtyBuffersToAgent = useCallback(() => {
+    const nextRootPath = rootPath || null;
+    if (!nextRootPath) return;
+    const openPaths = collectOpenTabPaths(groupsState);
+    replaceDirtyBuffersForWorkspace(nextRootPath, buildDirtyBufferTabs(openPaths, registryRef.current));
+  }, [rootPath, groupsState]);
+
+  const scheduleDirtyBuffersSync = useCallback(() => {
+    if (dirtySyncTimerRef.current) clearTimeout(dirtySyncTimerRef.current);
+    dirtySyncTimerRef.current = setTimeout(() => {
+      dirtySyncTimerRef.current = null;
+      syncDirtyBuffersToAgent();
+    }, 100);
+  }, [syncDirtyBuffersToAgent]);
+
+  useEffect(() => {
+    const nextRootPath = rootPath || null;
+    const previousRootPath = dirtyWorkspaceRootRef.current;
+    if (previousRootPath && previousRootPath !== nextRootPath) {
+      clearDirtyBuffersForWorkspace(previousRootPath);
+    }
+    dirtyWorkspaceRootRef.current = nextRootPath;
+    syncDirtyBuffersToAgent();
+  }, [rootPath, groupsState, dirtyPaths, syncDirtyBuffersToAgent]);
+
+  useEffect(() => {
+    return () => {
+      if (dirtySyncTimerRef.current) clearTimeout(dirtySyncTimerRef.current);
+      const root = dirtyWorkspaceRootRef.current;
+      if (root) clearDirtyBuffersForWorkspace(root);
+    };
+  }, []);
 
   const activeGroup = groupsState.groups[groupsState.activeGroupId];
   const activeTab = activeGroup?.tabs.find((t) => t.path === activeGroup.activeTabId) ?? null;
@@ -367,16 +407,24 @@ export function FilesWorkbench({
     [applyGroups, dirtyPaths],
   );
 
-  const handleDirtyChange = useCallback((path: string, dirty: boolean) => {
-    setDirtyPaths((prev) => {
-      const has = prev.has(path);
-      if (has === dirty) return prev;
-      const next = new Set(prev);
-      if (dirty) next.add(path);
-      else next.delete(path);
-      return next;
-    });
-  }, []);
+  const handleDirtyChange = useCallback(
+    (path: string, dirty: boolean) => {
+      setDirtyPaths((prev) => {
+        const has = prev.has(path);
+        if (has === dirty) return prev;
+        const next = new Set(prev);
+        if (dirty) next.add(path);
+        else next.delete(path);
+        return next;
+      });
+      scheduleDirtyBuffersSync();
+    },
+    [scheduleDirtyBuffersSync],
+  );
+
+  const handleBufferChange = useCallback(() => {
+    scheduleDirtyBuffersSync();
+  }, [scheduleDirtyBuffersSync]);
 
   const handleTabDragStart = useCallback((groupId: string, path: string) => {
     dragRef.current = { groupId, path };
@@ -607,6 +655,7 @@ export function FilesWorkbench({
             onFocusGroup={(groupId) => applyGroups((s) => ({ ...s, activeGroupId: groupId }))}
             onSplit={(groupId) => applyGroups((s) => splitGroup(s, groupId))}
             onDirtyChange={handleDirtyChange}
+            onBufferChange={handleBufferChange}
             onTabDragStart={handleTabDragStart}
             onTabDragEnd={handleTabDragEnd}
             onTabDrop={handleTabDrop}
