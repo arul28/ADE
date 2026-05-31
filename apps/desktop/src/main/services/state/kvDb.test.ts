@@ -216,6 +216,17 @@ describe("openKvDb SQL binding", () => {
       db.all("select flag from db_value_test where flag = ?", [{} as any]),
     ).toThrow(/Unsupported database value at parameter 1: object .*sql=select flag from db_value_test/i);
   });
+
+  it("checkpoints pending writes when flushed", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-flush-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => db.close());
+
+    db.setJson("flush:probe", { ok: true });
+    expect(() => db.flushNow()).not.toThrow();
+    expect(db.getJson<{ ok: boolean }>("flush:probe")).toEqual({ ok: true });
+  });
 });
 
 describe("lane_linear_issue_links schema", () => {

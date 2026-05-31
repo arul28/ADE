@@ -212,6 +212,19 @@ function quoteIdentifier(value: string): string {
   return `"${value.replace(/"/g, "\"\"")}"`;
 }
 
+function unquoteSqlIdentifier(value: string): string {
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith("\"") && trimmed.endsWith("\""))
+    || (trimmed.startsWith("'") && trimmed.endsWith("'"))
+    || (trimmed.startsWith("`") && trimmed.endsWith("`"))
+    || (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
 function rewriteCreateTableName(sql: string, fromName: string, toName: string): string {
   const pattern = new RegExp(
     `^(\\s*create\\s+table\\s+(?:if\\s+not\\s+exists\\s+)?)((?:["'\`\\[])?${escapeRegExp(fromName)}(?:["'\`\\]])?)`,
@@ -862,7 +875,7 @@ function rebuildCrrTableWithBackfill(db: DatabaseSyncType, tableName: string): v
     .filter((sql) => sql.length > 0);
 
   runStatement(db, "pragma foreign_keys = off");
-  runStatement(db, "begin");
+  runStatement(db, "BEGIN IMMEDIATE");
   try {
     runStatement(
       db,
@@ -1081,7 +1094,85 @@ type MigrationDb = {
 function parseAlterTableTarget(sql: string): string | null {
   const match = sql.match(/^\s*alter\s+table\s+([`"'[\]A-Za-z0-9_]+)\s+add\s+column\s+/i);
   if (!match?.[1]) return null;
-  return match[1].replace(/^["'`[]|["'`\]]$/g, "");
+  return unquoteSqlIdentifier(match[1]);
+}
+
+function parseAlterTableAddColumn(sql: string): { tableName: string; columnName: string } | null {
+  const identifier = String.raw`(?:"[^"]+"|'[^']+'|` + "`[^`]+`" + String.raw`|\[[^\]]+\]|[A-Za-z0-9_]+)`;
+  const match = sql.match(new RegExp(String.raw`^\s*alter\s+table\s+(${identifier})\s+add\s+column\s+(${identifier})\b`, "i"));
+  if (!match?.[1] || !match[2]) return null;
+  return {
+    tableName: unquoteSqlIdentifier(match[1]),
+    columnName: unquoteSqlIdentifier(match[2]),
+  };
+}
+
+function migrationHasColumn(db: MigrationDb, tableName: string, columnName: string): boolean {
+  return db.all<{ name: string }>(`pragma table_info('${tableName.replace(/'/g, "''")}')`)
+    .some((column) => column.name === columnName);
+}
+
+function isDuplicateColumnError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /duplicate column name/i.test(message);
+}
+
+function safeAddColumn(db: MigrationDb, sql: string): void {
+  const parsed = parseAlterTableAddColumn(sql);
+  if (!parsed) {
+    db.run(sql);
+    return;
+  }
+  if (migrationHasColumn(db, parsed.tableName, parsed.columnName)) return;
+  try {
+    db.run(sql);
+  } catch (error) {
+    if (isDuplicateColumnError(error) && migrationHasColumn(db, parsed.tableName, parsed.columnName)) {
+      return;
+    }
+    console.warn("kvDb.migrate.add_column_failed", {
+      tableName: parsed.tableName,
+      columnName: parsed.columnName,
+      sql: sql.replace(/\s+/g, " ").trim(),
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+}
+
+function makeCrrAwareDb({
+  getDb,
+  isCrsqliteLoaded,
+}: {
+  getDb: () => DatabaseSyncType;
+  isCrsqliteLoaded: () => boolean;
+}): MigrationDb {
+  return {
+    run: (sql: string, params: SqlValue[] = []) => {
+      const db = getDb();
+      const alterTable = parseAlterTableTarget(sql);
+      if (alterTable && isCrsqliteLoaded() && rawHasTable(db, `${alterTable}__crsql_clock`)) {
+        getRow(db, "select crsql_begin_alter(?) as ok", [alterTable]);
+        try {
+          runStatement(db, sql, params);
+        } catch (error) {
+          // Commit the alter even on failure so the CRR state stays consistent,
+          // then re-throw so callers can handle duplicate-column upgrades.
+          getRow(db, "select crsql_commit_alter(?) as ok", [alterTable]);
+          throw error;
+        }
+        getRow(db, "select crsql_commit_alter(?) as ok", [alterTable]);
+        return;
+      }
+      runStatement(db, sql, params);
+    },
+    get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params: SqlValue[] = []) => {
+      return getRow<T>(getDb(), sql, params);
+    },
+    all: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params: SqlValue[] = []) => {
+      return allRows<T>(getDb(), sql, params);
+    },
+  };
 }
 
 function migrate(db: MigrationDb) {
@@ -1135,7 +1226,7 @@ function migrate(db: MigrationDb) {
       foreign key(parent_lane_id) references lanes(id)
     )
   `);
-  try { db.run("alter table lanes add column runtime_placement text not null default 'local'"); } catch {}
+  safeAddColumn(db, "alter table lanes add column runtime_placement text not null default 'local'");
   db.run("create index if not exists idx_lanes_project_id on lanes(project_id)");
   db.run("create index if not exists idx_lanes_project_type on lanes(project_id, lane_type)");
   db.run("create index if not exists idx_lanes_project_parent on lanes(project_id, parent_lane_id)");
@@ -1408,20 +1499,20 @@ function migrate(db: MigrationDb) {
   db.run("create index if not exists idx_terminal_sessions_lane_started_at on terminal_sessions(lane_id, started_at desc)");
 
   // Migration: add resume_command to existing databases that pre-date this column.
-  try { db.run("alter table terminal_sessions add column resume_command text"); } catch {}
-  try { db.run("alter table terminal_sessions add column resume_metadata_json text"); } catch {}
-  try { db.run("alter table terminal_sessions add column manually_named integer not null default 0"); } catch {}
-  try { db.run("alter table terminal_sessions add column archived_at text"); } catch {}
-  try { db.run("alter table terminal_sessions add column chat_session_id text"); } catch {}
+  safeAddColumn(db, "alter table terminal_sessions add column resume_command text");
+  safeAddColumn(db, "alter table terminal_sessions add column resume_metadata_json text");
+  safeAddColumn(db, "alter table terminal_sessions add column manually_named integer not null default 0");
+  safeAddColumn(db, "alter table terminal_sessions add column archived_at text");
+  safeAddColumn(db, "alter table terminal_sessions add column chat_session_id text");
   try { db.run("create index if not exists idx_terminal_sessions_chat_session_id on terminal_sessions(chat_session_id)"); } catch {}
   // owner_pid identifies the ADE OS process that owns this row's runtime
   // (the one with the live PTY or SDK session). Cross-process dispose /
   // reconcile must check it before sweeping or every concurrent surface
   // would happily mark each other's live sessions dead. Nullable because
   // pre-migration rows pre-date ownership tracking.
-  try { db.run("alter table terminal_sessions add column owner_pid integer"); } catch {}
+  safeAddColumn(db, "alter table terminal_sessions add column owner_pid integer");
   try { db.run("create index if not exists idx_terminal_sessions_owner_pid on terminal_sessions(owner_pid)"); } catch {}
-  try { db.run("alter table terminal_sessions add column owner_process_started_at text"); } catch {}
+  safeAddColumn(db, "alter table terminal_sessions add column owner_process_started_at text");
   try { db.run("create index if not exists idx_terminal_sessions_owner_process on terminal_sessions(owner_pid, owner_process_started_at)"); } catch {}
 
   // Machine-local process liveness registry. Every ADE process (desktop main,
@@ -1756,11 +1847,11 @@ function migrate(db: MigrationDb) {
   `);
   db.run("create index if not exists idx_pull_requests_lane_id on pull_requests(lane_id)");
   db.run("create index if not exists idx_pull_requests_project_id on pull_requests(project_id)");
-  try { db.run("alter table pull_requests add column last_polled_at text"); } catch {}
-  try { db.run("alter table pull_requests add column head_sha text"); } catch {}
-  try { db.run("alter table pull_requests add column creation_strategy text"); } catch {}
-  try { db.run("alter table pull_requests add column merge_conflicts integer"); } catch {}
-  try { db.run("alter table pull_requests add column behind_base_by integer"); } catch {}
+  safeAddColumn(db, "alter table pull_requests add column last_polled_at text");
+  safeAddColumn(db, "alter table pull_requests add column head_sha text");
+  safeAddColumn(db, "alter table pull_requests add column creation_strategy text");
+  safeAddColumn(db, "alter table pull_requests add column merge_conflicts integer");
+  safeAddColumn(db, "alter table pull_requests add column behind_base_by integer");
 
   db.run("drop table if exists github_pr_cache");
 
@@ -1807,7 +1898,7 @@ function migrate(db: MigrationDb) {
     )
   `);
   db.run("create index if not exists idx_pull_request_snapshots_updated_at on pull_request_snapshots(updated_at)");
-  try { db.run("alter table pull_request_snapshots add column commits_json text"); } catch {}
+  safeAddColumn(db, "alter table pull_request_snapshots add column commits_json text");
 
   db.run(`
     create table if not exists files_workspaces (
@@ -2028,17 +2119,17 @@ function migrate(db: MigrationDb) {
     )
   `);
   db.run("create index if not exists idx_integration_proposals_project on integration_proposals(project_id)");
-  try { db.run("alter table integration_proposals add column linked_group_id text"); } catch {}
-  try { db.run("alter table integration_proposals add column linked_pr_id text"); } catch {}
-  try { db.run("alter table integration_proposals add column workflow_display_state text not null default 'active'"); } catch {}
-  try { db.run("alter table integration_proposals add column cleanup_state text not null default 'none'"); } catch {}
-  try { db.run("alter table integration_proposals add column closed_at text"); } catch {}
-  try { db.run("alter table integration_proposals add column merged_at text"); } catch {}
-  try { db.run("alter table integration_proposals add column completed_at text"); } catch {}
-  try { db.run("alter table integration_proposals add column cleanup_declined_at text"); } catch {}
-  try { db.run("alter table integration_proposals add column cleanup_completed_at text"); } catch {}
-  try { db.run("alter table integration_proposals add column preferred_integration_lane_id text"); } catch {}
-  try { db.run("alter table integration_proposals add column merge_into_head_sha text"); } catch {}
+  safeAddColumn(db, "alter table integration_proposals add column linked_group_id text");
+  safeAddColumn(db, "alter table integration_proposals add column linked_pr_id text");
+  safeAddColumn(db, "alter table integration_proposals add column workflow_display_state text not null default 'active'");
+  safeAddColumn(db, "alter table integration_proposals add column cleanup_state text not null default 'none'");
+  safeAddColumn(db, "alter table integration_proposals add column closed_at text");
+  safeAddColumn(db, "alter table integration_proposals add column merged_at text");
+  safeAddColumn(db, "alter table integration_proposals add column completed_at text");
+  safeAddColumn(db, "alter table integration_proposals add column cleanup_declined_at text");
+  safeAddColumn(db, "alter table integration_proposals add column cleanup_completed_at text");
+  safeAddColumn(db, "alter table integration_proposals add column preferred_integration_lane_id text");
+  safeAddColumn(db, "alter table integration_proposals add column merge_into_head_sha text");
 
   // Queue landing state table (crash recovery for sequential landing)
   db.run(`
@@ -2062,12 +2153,12 @@ function migrate(db: MigrationDb) {
     )
   `);
   db.run("create index if not exists idx_queue_landing_state_group on queue_landing_state(group_id)");
-  try { db.run("alter table queue_landing_state add column config_json text not null default '{}'"); } catch {}
-  try { db.run("alter table queue_landing_state add column active_pr_id text"); } catch {}
-  try { db.run("alter table queue_landing_state add column active_resolver_run_id text"); } catch {}
-  try { db.run("alter table queue_landing_state add column last_error text"); } catch {}
-  try { db.run("alter table queue_landing_state add column wait_reason text"); } catch {}
-  try { db.run("alter table queue_landing_state add column updated_at text"); } catch {}
+  safeAddColumn(db, "alter table queue_landing_state add column config_json text not null default '{}'");
+  safeAddColumn(db, "alter table queue_landing_state add column active_pr_id text");
+  safeAddColumn(db, "alter table queue_landing_state add column active_resolver_run_id text");
+  safeAddColumn(db, "alter table queue_landing_state add column last_error text");
+  safeAddColumn(db, "alter table queue_landing_state add column wait_reason text");
+  safeAddColumn(db, "alter table queue_landing_state add column updated_at text");
 
   // Rebase dismiss/defer persistence
   db.run(`
@@ -2252,7 +2343,7 @@ function migrate(db: MigrationDb) {
       deleted_at text
     )
   `);
-  try { db.run("alter table worker_agents add column linear_identity_json text not null default '{}'"); } catch {}
+  safeAddColumn(db, "alter table worker_agents add column linear_identity_json text not null default '{}'");
   db.run("create index if not exists idx_worker_agents_project on worker_agents(project_id)");
   db.run("create index if not exists idx_worker_agents_project_active on worker_agents(project_id, deleted_at)");
 
@@ -2514,15 +2605,15 @@ function migrate(db: MigrationDb) {
       updated_at text not null
     )
   `);
-  try { db.run("alter table linear_workflow_runs add column execution_lane_id text"); } catch {}
-  try { db.run("alter table linear_workflow_runs add column supervisor_identity_key text"); } catch {}
-  try { db.run("alter table linear_workflow_runs add column review_ready_reason text"); } catch {}
-  try { db.run("alter table linear_workflow_runs add column pr_state text"); } catch {}
-  try { db.run("alter table linear_workflow_runs add column pr_checks_status text"); } catch {}
-  try { db.run("alter table linear_workflow_runs add column pr_review_status text"); } catch {}
-  try { db.run("alter table linear_workflow_runs add column latest_review_note text"); } catch {}
-  try { db.run("alter table linear_workflow_runs add column route_context_json text"); } catch {}
-  try { db.run("alter table linear_workflow_runs add column execution_context_json text"); } catch {}
+  safeAddColumn(db, "alter table linear_workflow_runs add column execution_lane_id text");
+  safeAddColumn(db, "alter table linear_workflow_runs add column supervisor_identity_key text");
+  safeAddColumn(db, "alter table linear_workflow_runs add column review_ready_reason text");
+  safeAddColumn(db, "alter table linear_workflow_runs add column pr_state text");
+  safeAddColumn(db, "alter table linear_workflow_runs add column pr_checks_status text");
+  safeAddColumn(db, "alter table linear_workflow_runs add column pr_review_status text");
+  safeAddColumn(db, "alter table linear_workflow_runs add column latest_review_note text");
+  safeAddColumn(db, "alter table linear_workflow_runs add column route_context_json text");
+  safeAddColumn(db, "alter table linear_workflow_runs add column execution_context_json text");
   db.run("create index if not exists idx_linear_workflow_runs_project_status on linear_workflow_runs(project_id, status, updated_at)");
   db.run("create index if not exists idx_linear_workflow_runs_issue on linear_workflow_runs(project_id, issue_id, updated_at)");
 
@@ -2736,11 +2827,11 @@ function migrate(db: MigrationDb) {
   `);
   db.run("create index if not exists idx_review_candidate_findings_run on review_candidate_findings(run_id)");
   db.run("create index if not exists idx_review_candidate_findings_reviewer on review_candidate_findings(reviewer_run_id)");
-  try { db.run("alter table review_findings add column finding_class text"); } catch {}
-  try { db.run("alter table review_findings add column originating_passes_json text"); } catch {}
-  try { db.run("alter table review_findings add column adjudication_json text"); } catch {}
-  try { db.run("alter table review_findings add column diff_context_json text"); } catch {}
-  try { db.run("alter table review_findings add column suppression_match_json text"); } catch {}
+  safeAddColumn(db, "alter table review_findings add column finding_class text");
+  safeAddColumn(db, "alter table review_findings add column originating_passes_json text");
+  safeAddColumn(db, "alter table review_findings add column adjudication_json text");
+  safeAddColumn(db, "alter table review_findings add column diff_context_json text");
+  safeAddColumn(db, "alter table review_findings add column suppression_match_json text");
 
   // Per-finding feedback — powers the learning loop.
   db.run(`
@@ -2808,17 +2899,17 @@ function migrate(db: MigrationDb) {
       foreign key(pr_id) references pull_requests(id) on delete cascade
     )
   `);
-  try { db.run("alter table pr_issue_inventory add column thread_comment_count integer"); } catch {}
-  try { db.run("alter table pr_issue_inventory add column thread_latest_comment_id text"); } catch {}
-  try { db.run("alter table pr_issue_inventory add column thread_latest_comment_author text"); } catch {}
-  try { db.run("alter table pr_issue_inventory add column thread_latest_comment_at text"); } catch {}
-  try { db.run("alter table pr_issue_inventory add column thread_latest_comment_source text"); } catch {}
+  safeAddColumn(db, "alter table pr_issue_inventory add column thread_comment_count integer");
+  safeAddColumn(db, "alter table pr_issue_inventory add column thread_latest_comment_id text");
+  safeAddColumn(db, "alter table pr_issue_inventory add column thread_latest_comment_author text");
+  safeAddColumn(db, "alter table pr_issue_inventory add column thread_latest_comment_at text");
+  safeAddColumn(db, "alter table pr_issue_inventory add column thread_latest_comment_source text");
   db.run("create index if not exists idx_inventory_pr_state on pr_issue_inventory(pr_id, state)");
 
   // PR pipeline settings: per-PR auto-converge / auto-merge configuration.
   // Newer fields (conflict_strategy, force_finalize_*, early_merge_on_green,
-  // auto_agent_*) are added via try-catch ALTER below so existing DBs upgrade
-  // in place. The legacy `on_rebase_needed` column is retained for back-compat.
+  // auto_agent_*) are added with safeAddColumn so existing DBs upgrade in
+  // place. The legacy `on_rebase_needed` column is retained for back-compat.
   db.run(`
     create table if not exists pr_pipeline_settings (
       pr_id text primary key,
@@ -2830,20 +2921,20 @@ function migrate(db: MigrationDb) {
       foreign key(pr_id) references pull_requests(id) on delete cascade
     )
   `);
-  try { db.run("alter table pr_pipeline_settings add column conflict_strategy text not null default 'pause'"); } catch {}
-  try { db.run("alter table pr_pipeline_settings add column force_finalize_mode text not null default 'conditional'"); } catch {}
-  try { db.run("alter table pr_pipeline_settings add column force_finalize_require_no_ci_failures integer not null default 1"); } catch {}
-  try { db.run("alter table pr_pipeline_settings add column early_merge_on_green integer not null default 1"); } catch {}
-  try { db.run("alter table pr_pipeline_settings add column auto_agent_provider text"); } catch {}
-  try { db.run("alter table pr_pipeline_settings add column auto_agent_model text"); } catch {}
-  try { db.run("alter table pr_pipeline_settings add column auto_agent_reasoning_effort text"); } catch {}
-  try { db.run("alter table pr_pipeline_settings add column auto_agent_permission_mode text"); } catch {}
-  try { db.run("alter table pr_pipeline_settings add column auto_agent_confidence_threshold real"); } catch {}
-  try { db.run("alter table pr_pipeline_settings add column at_cap_policy text default 'ci_retry_once'"); } catch {}
-  try { db.run("alter table pr_pipeline_settings add column at_cap_wait_minutes integer"); } catch {}
-  try { db.run("alter table pr_pipeline_settings add column at_cap_ci_retry_max integer"); } catch {}
-  try { db.run("alter table pr_pipeline_settings add column force_merge_requires_confirmation integer"); } catch {}
-  try { db.run("alter table pr_pipeline_settings add column ptm_defaults_backfilled_version text"); } catch {}
+  safeAddColumn(db, "alter table pr_pipeline_settings add column conflict_strategy text not null default 'pause'");
+  safeAddColumn(db, "alter table pr_pipeline_settings add column force_finalize_mode text not null default 'conditional'");
+  safeAddColumn(db, "alter table pr_pipeline_settings add column force_finalize_require_no_ci_failures integer not null default 1");
+  safeAddColumn(db, "alter table pr_pipeline_settings add column early_merge_on_green integer not null default 1");
+  safeAddColumn(db, "alter table pr_pipeline_settings add column auto_agent_provider text");
+  safeAddColumn(db, "alter table pr_pipeline_settings add column auto_agent_model text");
+  safeAddColumn(db, "alter table pr_pipeline_settings add column auto_agent_reasoning_effort text");
+  safeAddColumn(db, "alter table pr_pipeline_settings add column auto_agent_permission_mode text");
+  safeAddColumn(db, "alter table pr_pipeline_settings add column auto_agent_confidence_threshold real");
+  safeAddColumn(db, "alter table pr_pipeline_settings add column at_cap_policy text default 'ci_retry_once'");
+  safeAddColumn(db, "alter table pr_pipeline_settings add column at_cap_wait_minutes integer");
+  safeAddColumn(db, "alter table pr_pipeline_settings add column at_cap_ci_retry_max integer");
+  safeAddColumn(db, "alter table pr_pipeline_settings add column force_merge_requires_confirmation integer");
+  safeAddColumn(db, "alter table pr_pipeline_settings add column ptm_defaults_backfilled_version text");
   try {
     db.run(`
       update pr_pipeline_settings
@@ -2900,16 +2991,16 @@ function migrate(db: MigrationDb) {
   // PtM-specific run args (modelId, reasoning, scope, additionalInstructions)
   // serialized as JSON. Persisted so resumeFromPersistedState can re-dispatch
   // the fix agent after a desktop restart instead of pausing on missing modelId.
-  try { db.run("alter table pr_convergence_state add column ptm_args_json text"); } catch {}
-  try { db.run("alter table pr_convergence_state add column force_finalize_used integer not null default 0"); } catch {}
-  try { db.run("alter table pr_convergence_state add column ci_retry_attempts_used integer not null default 0"); } catch {}
-  try { db.run("alter table pr_convergence_state add column wait_for_ci_started_at text"); } catch {}
-  try { db.run("alter table pr_convergence_state add column last_dispatch_head_sha text"); } catch {}
-  try { db.run("alter table pr_convergence_state add column last_bot_ping_head_sha text"); } catch {}
-  try { db.run("alter table pr_convergence_state add column last_bot_ping_at text"); } catch {}
-  try { db.run("alter table pr_convergence_state add column merge_wait_kind text"); } catch {}
-  try { db.run("alter table pr_convergence_state add column pause_repeat_count integer not null default 0"); } catch {}
-  try { db.run("alter table pr_convergence_state add column last_pause_reason_hash text"); } catch {}
+  safeAddColumn(db, "alter table pr_convergence_state add column ptm_args_json text");
+  safeAddColumn(db, "alter table pr_convergence_state add column force_finalize_used integer not null default 0");
+  safeAddColumn(db, "alter table pr_convergence_state add column ci_retry_attempts_used integer not null default 0");
+  safeAddColumn(db, "alter table pr_convergence_state add column wait_for_ci_started_at text");
+  safeAddColumn(db, "alter table pr_convergence_state add column last_dispatch_head_sha text");
+  safeAddColumn(db, "alter table pr_convergence_state add column last_bot_ping_head_sha text");
+  safeAddColumn(db, "alter table pr_convergence_state add column last_bot_ping_at text");
+  safeAddColumn(db, "alter table pr_convergence_state add column merge_wait_kind text");
+  safeAddColumn(db, "alter table pr_convergence_state add column pause_repeat_count integer not null default 0");
+  safeAddColumn(db, "alter table pr_convergence_state add column last_pause_reason_hash text");
 
   // Machine-local runtime guard for PR automation. This table intentionally
   // has no PRIMARY KEY so cr-sqlite does not register it as a CRR table.
@@ -3002,6 +3093,10 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     }
     return crsqliteLoaded;
   };
+  const crrAwareDb = makeCrrAwareDb({
+    getDb: () => db,
+    isCrsqliteLoaded: () => crsqliteLoaded,
+  });
 
   try {
     // Existing CRR tables install triggers that call cr-sqlite functions on
@@ -3013,38 +3108,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       disableCrrTriggersForUnavailableRuntime(db, logger);
     }
 
-    // Build a CRR-aware run wrapper: when crsqlite is loaded and a table has
-    // been converted to a CRR, ALTER TABLE statements must be wrapped with
-    // crsql_begin_alter / crsql_commit_alter so the clock tables stay in sync.
-    const makeMigrateDb = () => ({
-      run: (sql: string, params: SqlValue[] = []) => {
-        const alterTable = parseAlterTableTarget(sql);
-        if (alterTable && crsqliteLoaded && rawHasTable(db, `${alterTable}__crsql_clock`)) {
-          getRow(db, "select crsql_begin_alter(?) as ok", [alterTable]);
-          try {
-            runStatement(db, sql, params);
-          } catch (error) {
-            // Commit the alter even on failure so the CRR state stays consistent,
-            // then re-throw so the caller's try/catch can handle it (e.g. column
-            // already exists on upgrade).
-            getRow(db, "select crsql_commit_alter(?) as ok", [alterTable]);
-            throw error;
-          }
-          getRow(db, "select crsql_commit_alter(?) as ok", [alterTable]);
-          return;
-        }
-        runStatement(db, sql, params);
-      },
-      get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params: SqlValue[] = []) => {
-        return getRow<T>(db, sql, params);
-      },
-      all: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params: SqlValue[] = []) => {
-        return allRows<T>(db, sql, params);
-      },
-    });
-
-    const migrateDb = makeMigrateDb();
-    migrate(migrateDb);
+    migrate(crrAwareDb);
     removeExcludedCrrMetadata(db, logger);
     // Tear down the legacy `unified_memories` schema (removed in #329) before
     // any retrofit pass runs — the FTS4 shadow tables cannot be dropped
@@ -3073,8 +3137,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       if (hasCrsqlMetadata(db) && !crsqliteLoaded) {
         disableCrrTriggersForUnavailableRuntime(db, logger);
       }
-      const remigrateDb = makeMigrateDb();
-      migrate(remigrateDb);
+      migrate(crrAwareDb);
       removeExcludedCrrMetadata(db, logger);
     }
 
@@ -3092,8 +3155,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       if (hasCrsqlMetadata(db) && !crsqliteLoaded) {
         disableCrrTriggersForUnavailableRuntime(db, logger);
       }
-      const remigrateDb = makeMigrateDb();
-      migrate(remigrateDb);
+      migrate(crrAwareDb);
       removeExcludedCrrMetadata(db, logger);
     }
 
@@ -3141,31 +3203,9 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     runStatement(db, "insert into kv(key, value) values (?, ?) on conflict(key) do update set value = excluded.value", [key, value]);
   };
 
-  const run = (sql: string, params: SqlValue[] = []) => {
-    const alterTable = parseAlterTableTarget(sql);
-    if (crsqliteLoaded && alterTable && rawHasTable(db, `${alterTable}__crsql_clock`)) {
-      getRow(db, "select crsql_begin_alter(?) as ok", [alterTable]);
-      try {
-        runStatement(db, sql, params);
-      } catch (error) {
-        // Commit the alter even on failure so the CRR state stays consistent,
-        // then re-throw so callers (e.g. safeAlter) can handle duplicate columns.
-        getRow(db, "select crsql_commit_alter(?) as ok", [alterTable]);
-        throw error;
-      }
-      getRow(db, "select crsql_commit_alter(?) as ok", [alterTable]);
-      return;
-    }
-    runStatement(db, sql, params);
-  };
-
-  const all = <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params: SqlValue[] = []): T[] => {
-    return allRows<T>(db, sql, params);
-  };
-
-  const get = <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params: SqlValue[] = []): T | null => {
-    return getRow<T>(db, sql, params);
-  };
+  const run = crrAwareDb.run;
+  const all = crrAwareDb.all;
+  const get = crrAwareDb.get;
 
   const sync: AdeDbSyncApi = {
     isAvailable: () => crsqliteLoaded,
@@ -3239,7 +3279,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       if (!crsqliteLoaded) return { appliedCount: 0, dbVersion: 0, touchedTables: [], rebuiltFts: false };
       let appliedCount = 0;
       const touchedTables = new Set<string>();
-      runStatement(db, "begin");
+      runStatement(db, "BEGIN IMMEDIATE");
       try {
         for (const rawChange of changes) {
           if (isLocalOnlyQueueWipeMarkerChange(rawChange)) continue;
@@ -3283,10 +3323,10 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     discardUnpublishedChangesForTables: (tableNames: string[]) => {
       const normalizedTableNames = Array.from(new Set(tableNames.map((tableName) => tableName.trim()).filter(Boolean)));
       if (!crsqliteLoaded || normalizedTableNames.length === 0) return;
-      const throughDbVersion = sync.getDbVersion();
-      const createdAt = new Date().toISOString();
-      runStatement(db, "begin");
+      runStatement(db, "BEGIN IMMEDIATE");
       try {
+        const throughDbVersion = sync.getDbVersion();
+        const createdAt = new Date().toISOString();
         for (const tableName of normalizedTableNames) {
           runStatement(
             db,
@@ -3319,7 +3359,9 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     all,
     get,
     sync,
-    flushNow: () => {},
+    flushNow: () => {
+      getRow(db, "pragma wal_checkpoint(TRUNCATE)");
+    },
     close: () => {
       db.close();
     },
