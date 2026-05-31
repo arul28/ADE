@@ -395,10 +395,8 @@ struct CtoTeamScreen: View {
     withAnimation(.easeInOut(duration: 0.2)) { wakeupNotice = text }
     Task {
       try? await Task.sleep(nanoseconds: 4_000_000_000)
-      await MainActor.run {
-        guard wakeupNoticeGeneration == generation else { return }
-        withAnimation(.easeInOut(duration: 0.2)) { wakeupNotice = nil }
-      }
+      guard wakeupNoticeGeneration == generation else { return }
+      withAnimation(.easeInOut(duration: 0.2)) { wakeupNotice = nil }
     }
   }
 
