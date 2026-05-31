@@ -1773,25 +1773,26 @@ app.whenReady().then(async () => {
       const tracker = linearIssueTrackerRef;
       if (!tracker) return;
       const key = `${issue.id}:${sessionId}`;
-      if (linearChatCardPublishKeys.has(key)) return;
-      linearChatCardPublishKeys.add(key);
-      void publishLinearChatSessionCard({
-        issueTracker: tracker,
-        issue,
-        laneId,
-        sessionId,
-        sessionTitle,
-        linkedAt,
-      }).catch((error) => {
-        linearChatCardPublishKeys.delete(key);
-        logger.warn("linear.chat_session_card_publish_failed", {
+      if (!linearChatCardPublishKeys.has(key)) {
+        linearChatCardPublishKeys.add(key);
+        void publishLinearChatSessionCard({
+          issueTracker: tracker,
+          issue,
           laneId,
           sessionId,
-          issueId: issue.id,
-          issueIdentifier: issue.identifier,
-          error: error instanceof Error ? error.message : String(error),
+          sessionTitle,
+          linkedAt,
+        }).catch((error) => {
+          linearChatCardPublishKeys.delete(key);
+          logger.warn("linear.chat_session_card_publish_failed", {
+            laneId,
+            sessionId,
+            issueId: issue.id,
+            issueIdentifier: issue.identifier,
+            error: error instanceof Error ? error.message : String(error),
+          });
         });
-      });
+      }
       // Agent launched against a Linear issue → reflect status into Linear
       // (no-op unless the live round-trip flag is set).
       void linearLiveStatusServiceRef?.onAgentLaunched({

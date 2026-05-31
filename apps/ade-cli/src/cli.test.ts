@@ -2453,6 +2453,30 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("revalidates linear graphql payloads after generic argument overrides", () => {
+    expect(() =>
+      buildCliPlan([
+        "linear",
+        "graphql",
+        "--query",
+        "query Viewer { viewer { id name } }",
+        "--arg-json",
+        "variables=[]",
+      ]),
+    ).toThrow(/--variables-json must be a JSON object/);
+
+    expect(() =>
+      buildCliPlan([
+        "linear",
+        "graphql",
+        "--query",
+        "query Viewer { viewer { id name } }",
+        "--input-json",
+        "{\"query\":123}",
+      ]),
+    ).toThrow(/GraphQL query is required/);
+  });
+
   it("attaches an issue to the current session via linear attach --this-session", () => {
     const prev = process.env.ADE_CHAT_SESSION_ID;
     process.env.ADE_CHAT_SESSION_ID = "current-session";

@@ -961,6 +961,30 @@ export function createLaneService({
     }
   };
 
+  const resolveSessionTitle = (sessionId: string): string | null => {
+    const id = sessionId.trim();
+    if (!id) return null;
+    try {
+      const chat = db.get<{ title: string | null }>(
+        "select title from claude_sessions where session_id = ? limit 1",
+        [id],
+      );
+      if (chat?.title?.trim()) return chat.title.trim();
+    } catch {
+      // Fall through to terminal session lookup.
+    }
+    try {
+      const terminal = db.get<{ title: string | null }>(
+        "select title from terminal_sessions where id = ? limit 1",
+        [id],
+      );
+      if (terminal?.title?.trim()) return terminal.title.trim();
+    } catch {
+      // No title is fine; card builders fall back to the session id.
+    }
+    return null;
+  };
+
   const notifyLinearIssueLinked = (lane: LaneSummary, issue: LaneLinearIssue): void => {
     if (!onLinearIssueLinked) return;
     const logFailure = (error: unknown): void => {
@@ -1206,30 +1230,6 @@ export function createLaneService({
       if (terminal?.lane_id && getLaneRow(terminal.lane_id)) return terminal.lane_id;
     } catch {
       // terminal_sessions may be unavailable in some runtime modes.
-    }
-    return null;
-  };
-
-  const resolveSessionTitle = (sessionId: string): string | null => {
-    const id = sessionId.trim();
-    if (!id) return null;
-    try {
-      const chat = db.get<{ title: string | null }>(
-        "select title from claude_sessions where session_id = ? limit 1",
-        [id],
-      );
-      if (chat?.title?.trim()) return chat.title.trim();
-    } catch {
-      // Fall through to terminal session lookup.
-    }
-    try {
-      const terminal = db.get<{ title: string | null }>(
-        "select title from terminal_sessions where id = ? limit 1",
-        [id],
-      );
-      if (terminal?.title?.trim()) return terminal.title.trim();
-    } catch {
-      // No title is fine; card builders fall back to the session id.
     }
     return null;
   };

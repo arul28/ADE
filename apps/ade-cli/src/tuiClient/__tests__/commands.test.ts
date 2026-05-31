@@ -460,6 +460,23 @@ describe("linear command routing", () => {
     });
   });
 
+  it("rejects malformed /linear graphql variables", () => {
+    expect(
+      buildLinearToolRequest("graphql --query 'query Viewer { viewer { id } }' --variables-json nope"),
+    ).toMatchObject({
+      kind: "usage",
+      title: "Linear GraphQL",
+      body: expect.stringContaining("--variables-json must be valid JSON"),
+    });
+    expect(
+      buildLinearToolRequest("graphql --query 'query Viewer { viewer { id } }' --variables-json '[1]'"),
+    ).toMatchObject({
+      kind: "usage",
+      title: "Linear GraphQL",
+      body: expect.stringContaining("--variables-json must be a JSON object"),
+    });
+  });
+
   it("routes sync dashboard and queue resolution", () => {
     expect(buildLinearToolRequest("sync dashboard")).toEqual({
       kind: "tool",

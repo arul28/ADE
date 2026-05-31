@@ -161,18 +161,22 @@ function attachmentFlags(options: Record<string, unknown>): Record<string, unkno
   });
 }
 
-function parseGraphQLVariables(options: Record<string, unknown>): Record<string, unknown> | undefined {
+type GraphQLVariablesParseResult =
+  | { ok: true; variables?: Record<string, unknown> }
+  | { ok: false; message: string };
+
+function parseGraphQLVariables(options: Record<string, unknown>): GraphQLVariablesParseResult {
   const value = optionString(options, "variablesJson", "varsJson");
-  if (!value) return undefined;
+  if (!value) return { ok: true };
   try {
     const parsed = JSON.parse(value) as unknown;
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
+      return { ok: true, variables: parsed as Record<string, unknown> };
     }
+    return { ok: false, message: "--variables-json must be a JSON object." };
   } catch {
-    return undefined;
+    return { ok: false, message: "--variables-json must be valid JSON." };
   }
-  return undefined;
 }
 
 export function buildLinearToolRequest(input: string): LinearToolRequest {
@@ -297,9 +301,16 @@ export function buildLinearToolRequest(input: string): LinearToolRequest {
         "Usage: /linear graphql --query 'query { viewer { id name } }' [--variables-json '{\"id\":\"...\"}']",
       );
     }
+    const variables = parseGraphQLVariables(options);
+    if (!variables.ok) {
+      return usage(
+        "Linear GraphQL",
+        `${variables.message}\nUsage: /linear graphql --query 'query { viewer { id name } }' [--variables-json '{\"id\":\"...\"}']`,
+      );
+    }
     return action("Linear GraphQL", "linear_issue_tracker", "graphql", {
       query,
-      variables: parseGraphQLVariables(options),
+      variables: variables.variables,
       operationName: optionString(options, "operationName", "operation") ?? undefined,
     });
   }

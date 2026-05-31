@@ -2072,6 +2072,35 @@ function readIssueIdFlag(args: string[]): string | null {
   return readValue(args, ["--issue-id", "--linear-issue-id", "--issue"]);
 }
 
+function normalizeLinearGraphQLInput(input: JsonObject): JsonObject {
+  const query = asString(input.query);
+  if (!query) {
+    throw new CliUsageError("GraphQL query is required.");
+  }
+
+  const variables = input.variables;
+  if (variables != null && !isRecord(variables)) {
+    throw new CliUsageError("--variables-json must be a JSON object.");
+  }
+
+  const maxRetries = input.maxRetries;
+  if (maxRetries != null && (typeof maxRetries !== "number" || !Number.isFinite(maxRetries))) {
+    throw new CliUsageError("--max-retries must be a number.");
+  }
+
+  const normalized: JsonObject = { ...input, query };
+  if (variables == null) {
+    delete normalized.variables;
+  }
+  const operationName = asString(input.operationName);
+  if (operationName) {
+    normalized.operationName = operationName;
+  } else {
+    delete normalized.operationName;
+  }
+  return normalized;
+}
+
 function readLinearGraphQLArgs(args: string[]): JsonObject {
   const inlineQuery = readValue(args, ["--query", "--graphql", "--gql"]);
   const fileQuery = readTextFileOption(args, ["--query-file", "--graphql-file", "--gql-file"], "--query-file");
@@ -2094,7 +2123,7 @@ function readLinearGraphQLArgs(args: string[]): JsonObject {
   maybePut(input, "operationName", readValue(args, ["--operation-name", "--operation"]));
   const maxRetries = readNumberOption(args, ["--max-retries"]);
   if (maxRetries !== undefined) input.maxRetries = maxRetries;
-  return collectGenericObjectArgs(args, input);
+  return normalizeLinearGraphQLInput(collectGenericObjectArgs(args, input));
 }
 
 /**
