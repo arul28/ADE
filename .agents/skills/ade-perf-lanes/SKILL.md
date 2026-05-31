@@ -7,7 +7,7 @@ description: Performance practices for ADE's Lanes tab. Read before editing
   measured UI audit proves a better one.
 metadata:
   author: ade-autoresearch
-  version: 0.2.1
+  version: 0.2.2
   status: active
 ---
 
@@ -101,3 +101,15 @@ Use this as engineering guidance for keeping the Lanes tab fast while adding fea
 - **Apply when**: A session list is intended to show a specific tool family, provider, or surface and the underlying table also stores high-volume shell/run-owned sessions.
 - **Avoid**: Applying a global `limit` before the meaningful filter, or widening limits as a substitute for the right query.
 - **Verification**: `fix(chat): filter chat session lists before caps` adds `toolTypes` to `sessionService.list`, uses it from `agentChatService.listSessions`, preserves legacy chat rows inferred from resume commands, and covers a regression with 505 newer shell sessions hiding an older chat.
+
+### Refresh visible linked PRs opportunistically
+- **Why it helped**: Lanes PR badges and attached-PR status depended on the broad PR poller, so mergeability/check/review state could sit stale for about a minute after opening or switching lanes.
+- **Apply when**: A Lanes surface needs attached PR status for lanes already visible in the grid. Refresh only linked, stale PR ids for visible lanes, dedupe them, cap the batch, and track recent request timestamps so scrolling or layout churn cannot stampede GitHub.
+- **Avoid**: Kicking the global PR poller, refreshing GitHub-only PR rows without lane links, or widening the full PR refresh cadence to make one visible grid feel fresher.
+- **Verification**: `perf(lanes): refresh visible PR status opportunistically` refreshes at most 4 stale visible linked PRs after a 260 ms debounce with a 15 s stale/request gate, merges returned summaries into Lanes tags, and covers selection/dedupe/cap behavior in `LanesPage.test.ts`.
+
+### Pause minimized and delayed Git Actions effects
+- **Why it helped**: Minimized pane bodies were CSS-hidden but still mounted, so Git Actions kept diff/stash/sync/conflict loads, auto-rebase status, sync-status polling, event subscriptions, and commit-history requests alive in the background. Multiple visible lanes could also mount Git Actions panes at once.
+- **Apply when**: A pane body owns timers, subscriptions, local Git reads, PR/AI/runtime status, or history loads. Pass pane minimized state into the render path, make child effects explicitly inactive while minimized, and stagger non-primary visible pane mounts so only the immediate lane warms eagerly.
+- **Avoid**: Treating visual collapse as inactive, or adding a single page-level throttle while hidden pane components keep their own timers running.
+- **Verification**: `perf(lanes): pause minimized git actions panes` adds `PaneConfig.renderChildren`, passes `active={!minimized}` to `LaneGitActionsPane` and `CommitTimeline`, staggers inline Git Actions bodies by visible-lane order, and covers inactive/active transitions in component tests. A real Electron `/lanes` segment, `lanes-minimized-git-idle` in `lanes-20260531-1421-throttles-after3`, kept the Git Actions pane minimized for 33.4 s with no slow Git Actions status/history IPC; main/browser p95 CPU was 0.15% and renderer tab p95 was 0.05%.
