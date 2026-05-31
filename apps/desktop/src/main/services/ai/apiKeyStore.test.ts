@@ -248,19 +248,19 @@ describe("apiKeyStore", () => {
     expect(securityCommandCalls("add-generic-password")).toEqual([]);
   });
 
-  it("prefers an existing Keychain value over an older encrypted blob during migration", async () => {
-    keychain.set("cursor", "crsr_current_key");
+  it("preserves an existing encrypted-store value over a stale Keychain migration fallback", async () => {
+    keychain.set("cursor", "crsr_stale_key");
     const secretsDir = path.join(tempRoot, ".ade", "secrets");
     fs.mkdirSync(secretsDir, { recursive: true });
     fs.writeFileSync(path.join(secretsDir, "api-keys.v1.bin"), Buffer.from("old-encrypted"));
     safeStorageState.available = true;
-    safeStorageState.decrypted = JSON.stringify({ cursor: "crsr_stale_key" });
+    safeStorageState.decrypted = JSON.stringify({ cursor: "crsr_current_key" });
 
     const store = await loadStoreModule();
     store.initApiKeyStore(tempRoot);
 
     expect(store.getApiKey("cursor")).toBe("crsr_current_key");
-    expect(keychain.get("cursor")).toBe("crsr_current_key");
+    expect(keychain.get("cursor")).toBe("crsr_stale_key");
     expect(securityCommandCalls("add-generic-password")).toEqual([]);
   });
 
@@ -413,6 +413,21 @@ describe("apiKeyStore", () => {
 
     expect(store.listStoredProviders()).toEqual(["openai"]);
     expect(JSON.parse(credentialStore.values.get("ai.api_key.index.v1") ?? "[]")).toEqual(["openai"]);
+  });
+
+  it("deletes from memory without throwing when persistent secure storage is unavailable", async () => {
+    safeStorageState.available = true;
+    safeStorageState.decrypted = "{}";
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot);
+    store.storeApiKey("cursor", "crsr_test_key");
+
+    safeStorageState.available = false;
+    process.env.ADE_API_KEY_STORE_DISABLE_KEYCHAIN = "1";
+
+    expect(() => store.deleteApiKey("cursor")).not.toThrow();
+    expect(store.getApiKey("cursor")).toBeNull();
+    expect(store.listStoredProviders()).toEqual([]);
   });
 
   it("can use the ADE CLI encrypted credential store without persisting the raw key", async () => {

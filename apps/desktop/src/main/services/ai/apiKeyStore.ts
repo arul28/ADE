@@ -440,7 +440,7 @@ function migrateLegacyMacosKeychainIntoEncryptedStore(encryptedStore: StoredKeys
   const keychainStore = readMacosKeychainStore(providerCandidates);
   if (Object.keys(keychainStore).length === 0) return encryptedStore;
 
-  const nextStore = { ...encryptedStore, ...keychainStore };
+  const nextStore = { ...keychainStore, ...encryptedStore };
   persistEncryptedStore(nextStore);
   decryptionFailed = false;
   return nextStore;
@@ -604,10 +604,6 @@ export function deleteApiKey(provider: string): void {
   const nextStore = { ...store };
   delete nextStore[normalizedProvider];
   if (canPersistEncryptedStore()) {
-    persistEncryptedStore(nextStore);
-  } else if (isMacosKeychainAvailable()) {
-    deleteMacosKeychainSecret(normalizedProvider);
-  } else {
     persistEncryptedStore(nextStore);
   }
   deleteMacosKeychainSecretBestEffort(normalizedProvider);
