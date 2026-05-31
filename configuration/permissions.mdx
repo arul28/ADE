@@ -70,20 +70,20 @@ ADE is built on a **local-first, trust boundary model**. Your source code, API k
     All command execution sourced from `ade.yaml` pauses. This includes: automation triggers, process startup commands, test suite runs, and worker run executors defined in the config. Agents that are mid-session continue their current operation but cannot launch new commands from the updated config.
   </Step>
   <Step title="Diff presented">
-    ADE shows a structured diff of every changed field in `ade.yaml`. Fields that define commands (`processes[*].command`, `automations[*].executor`, `testSuites[*].run`, `testSuites[*].ci`) are highlighted with a distinct visual treatment — these are the fields that matter most for security review.
+    ADE shows a structured diff of every changed field in `ade.yaml`. Fields that define commands (`processes[*].command`, `automations[*].executor`, `testSuites[*].command`) are highlighted with a distinct visual treatment — these are the fields that matter most for security review.
   </Step>
   <Step title="User reviews and decides">
     You choose one of three actions:
-    - **Approve** — the new SHA is recorded in `local.yaml` and command execution resumes
+    - **Approve** — the new SHA is recorded in local ADE state and command execution resumes
     - **Reject** — ADE reverts to the last-approved version (runs `git checkout .ade/ade.yaml` against the approved SHA)
     - **Dismiss** — the diff dialog closes but commands remain suspended until you approve or reject
   </Step>
   <Step title="SHA recorded">
-    On approval, ADE writes the SHA of the approved file to `local.yaml` under `trust.approvedSha`. This is machine-specific — teammates must approve the same change on their own machines.
+    On approval, ADE records the SHA of the approved file in local ADE state. This is machine-specific — teammates must approve the same change on their own machines.
   </Step>
 </Steps>
 <Warning>
-Do not edit `trust.approvedSha` manually. ADE treats any mismatch between the stored SHA and the current file as an unapproved change and will suspend commands until the approval flow completes. If `local.yaml` becomes inconsistent, use Settings → Config → Re-approve current config.
+Do not try to bypass the trust record manually. ADE treats any mismatch between the stored SHA and the current file as an unapproved change and will suspend commands until the approval flow completes. Use Settings → Config → Re-approve current config when you need to approve the current file again.
 </Warning>
 
 ---
@@ -372,7 +372,7 @@ Every agent action that touches sensitive resources is logged to `.ade/artifacts
     Set restrictive defaults in `ade.yaml` — blocked commands, protected branches, conservative automation permissions. Individual developers can grant themselves additional permissions via `local.yaml` for their machine. It is easier to relax restrictions than to discover that an agent did something unexpected on everyone's machine.
   </Accordion>
   <Accordion title="Review ade.yaml changes in PRs explicitly" icon="eye">
-    Treat `ade.yaml` changes in PRs with the same scrutiny as `Dockerfile` or CI pipeline changes. Any new `processes[*].command`, `automations[*].executor`, or `testSuites[*].ci` entry is a new command that will run on every team member's machine after they pull and approve.
+    Treat `ade.yaml` changes in PRs with the same scrutiny as `Dockerfile` or CI pipeline changes. Any new `processes[*].command`, `automations[*].executor`, or `testSuites[*].command` entry is a new command that will run on every team member's machine after they pull and approve.
 
     Consider adding a CI lint step that fails if `ade.yaml` changes without a review from a designated security reviewer.
   </Accordion>

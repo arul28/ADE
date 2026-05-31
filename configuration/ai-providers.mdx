@@ -237,25 +237,25 @@ OpenCode follows its own internal permission scheme. Set it to `full-auto` for t
 
 ## Model Selection by Context
 
-ADE lets you assign different models to different agent roles. This is the recommended approach for cost efficiency: use Opus for planning and architecture, Sonnet for execution, and Haiku for automation runs.
+ADE lets you assign different models to AI task categories. This is the recommended approach for cost efficiency: use larger models for planning and review, and cheaper models for routine generation tasks.
 
 ```yaml
 # .ade/ade.yaml
 ai:
   defaultModel: "claude-sonnet-4-6"      # Fallback for all agents
-  routingRules:
-    - role: "orchestrator"               # Worker run planning agent
+  taskRouting:
+    planning:
       model: "claude-opus-4-7"
-    - role: "worker"                     # Worker run execution agents
+    implementation:
       model: "claude-sonnet-4-6"
-    - role: "automation"                 # Automation runs (cost-sensitive)
+    review:
       model: "claude-haiku-4-5"
-    - role: "validator"                  # Worker run validation agent
+    commit_message:
       model: "claude-sonnet-4-6"
 ```
 
 <Tip>
-For solo developers running many automations, routing automation runs to `claude-haiku-4-5` and reserving `claude-opus-4-7` for worker run planning can reduce monthly spend by 60–80% with minimal quality impact on routine tasks.
+For solo developers running many automations, routing routine review or text-generation tasks to a cheaper model and reserving `claude-opus-4-7` for planning can reduce monthly spend with minimal quality impact on routine tasks.
 </Tip>
 
 ---
@@ -267,24 +267,27 @@ Budget caps prevent runaway spend from long-running agents or automation loops. 
 ```yaml
 # .ade/ade.yaml
 ai:
-  defaultBudgetPerSession: 1.00         # USD per chat session
-  defaultBudgetPerWorkerRun: 10.00     # USD per delegated worker run
-  defaultBudgetPerAutomation: 0.50      # USD per automation trigger
-  monthlyBudgetCap: 100.00              # Hard monthly ceiling across all agents
+  budgets:
+    commit_messages:
+      dailyLimit: 20
+    pr_descriptions:
+      dailyLimit: 10
+  chat:
+    sessionBudgetUsd: 1.00
 ```
 
 <AccordionGroup>
   <Accordion title="Per-session budget" icon="message">
-    Applied to chat sessions in the Agent Chat pane. When the session's cumulative cost reaches this value, the agent receives a stop signal. You can raise the cap for the current session in the chat header without editing config.
+    `ai.chat.sessionBudgetUsd` sets the default budget for chat sessions that read project config. You can still adjust the current session from chat controls when available.
   </Accordion>
-  <Accordion title="Per-worker run budget" icon="bullseye">
-    Applied to the entire delegated worker run, summing across all workers. If the combined worker spend reaches the cap during execution, the orchestrator suspends remaining tasks and surfaces an intervention request asking whether to extend the budget or abandon the worker run.
+  <Accordion title="Feature daily limits" icon="bullseye">
+    `ai.budgets` is keyed by ADE feature, such as `commit_messages`, `pr_descriptions`, `terminal_summaries`, `narratives`, and `initial_context`. Each entry supports `dailyLimit`.
   </Accordion>
-  <Accordion title="Per-automation budget" icon="bolt">
-    Applied per automation trigger event. Each time an automation fires, it gets a fresh budget for that run. Useful for keeping PR review automations economical.
+  <Accordion title="Worker budgets" icon="bolt">
+    Worker monthly budgets are edited in CTO > Team. They are stored with the worker identity, not as `defaultBudgetPerWorkerRun` in `ade.yaml`.
   </Accordion>
   <Accordion title="Monthly cap" icon="calendar">
-    A hard ceiling across all providers, all agents, all sessions. Once reached, all agent activity pauses. ADE shows a banner and sends a notification. The cap resets on the first day of each calendar month. You can raise or reset it in Settings → Budget.
+    Usage-wide monthly caps are managed from Settings → Usage. They are not configured with `ai.monthlyBudgetCap` in `ade.yaml`.
   </Accordion>
 </AccordionGroup>
 

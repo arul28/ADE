@@ -65,7 +65,6 @@ ADE regenerates the Lane Pack automatically after each committed checkpoint. The
 
 Lane Packs refresh automatically on commit. You can also trigger a manual refresh:
 
-- **Keyboard shortcut** — press `Cmd+Shift+P` from any view in the lane
 - **Packs sub-tab** — click the **Regenerate** button in the right inspector's Packs sub-tab
 - **Agent request** — ask the agent: *"Regenerate the lane pack"* (the agent calls the pack refresh ADE CLI tool)
 
@@ -140,7 +139,7 @@ This means an agent working in a child lane knows:
 
 <AccordionGroup>
   <Accordion title="Pack shows amber freshness but I just committed" icon="clock">
-    Pack regeneration runs asynchronously after a commit. Wait a few seconds, then check again. If it stays amber, trigger a manual refresh with `Cmd+Shift+P`.
+    Pack regeneration runs asynchronously after a commit. Wait a few seconds, then check again. If it stays amber, trigger a manual refresh from the Packs sub-tab.
   </Accordion>
   <Accordion title="Agent is ignoring the lane context" icon="robot">
     Verify the pack exists and is fresh in the Packs sub-tab. If the pack is empty or missing, the agent may have started without lane-specific context. Regenerate the pack and start a new session.

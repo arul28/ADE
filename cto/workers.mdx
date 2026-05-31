@@ -12,14 +12,14 @@ Workers are the CTO's execution arms. The CTO plans and delegates; workers imple
 
 <AccordionGroup>
   <Accordion title="Persistent Workers" icon="person">
-    Persistent workers are assigned to a lane or a role and stay active across heartbeat cycles. Use them for ongoing responsibilities like "always review PRs in this repository" or "monitor the auth module and flag regressions".
+    Persistent workers are assigned to a role and can stay available across wakeups. Use them for ongoing responsibilities like "review PRs in this repository" or "monitor the auth module and flag regressions".
 
-    A persistent worker has a standing assignment and a defined tool palette. It activates when its trigger condition is met (e.g., a new PR opens) and returns to idle when the task is complete.
+    A persistent worker has a standing identity, capabilities, runtime settings, and optional heartbeat configuration. It returns to idle when the task is complete.
   </Accordion>
   <Accordion title="Ephemeral Workers" icon="person-running">
     Ephemeral workers are created for a single task and dissolved when that task is complete. The CTO creates ephemeral workers automatically when it decides a task needs dedicated execution — for example, when it receives a complex request in chat or when a Linear issue comes in that requires implementation.
 
-    Ephemeral workers clean up their lane (or operate in an existing lane) and report results back to the CTO before dissolving.
+    Ephemeral workers report results back to the CTO before dissolving.
   </Accordion>
 </AccordionGroup>
 
@@ -34,14 +34,14 @@ You can create a worker from the **Team sub-tab** without going through the CTO 
   <Step title="Configure the worker">
     Fill in:
     - **Name** — a human-readable identifier (e.g., "test-writer", "pr-reviewer")
-    - **Specialization prompt** — describes the worker's role, constraints, and focus area
-    - **Assigned lane** — the lane this worker operates in (leave blank for cross-lane workers)
-    - **Tool palette** — which ADE CLI tools this worker can use (defaults to a safe read/write subset)
-    - **Budget limit** — maximum token/cost for this worker per activation
-    - **Type** — Persistent or Ephemeral
+    - **Role, title, and capabilities** — describe the worker's focus area
+    - **Linear identity matching** — user IDs, display names, or aliases that map Linear assignments to this worker
+    - **Adapter and model/process command** — the runtime configuration used for work
+    - **Budget** — monthly dollar budget tracked for this worker
+    - **Heartbeat** — optional timer-based wakeups, wake-on-demand, active hours, and max concurrency
   </Step>
   <Step title="Activate the worker">
-    Click **Hire**. The worker appears in the Team org chart with `idle` status. The CTO will use it on the next applicable heartbeat or task delegation.
+    Click **Hire**. The worker appears in the Team org chart with `idle` status. The CTO can use it on the next applicable task delegation or worker wakeup.
   </Step>
 </Steps>
 
@@ -55,41 +55,26 @@ Worker activity is visible in two places:
 
 ## Budget Management
 
-Every agent in ADE — including the CTO itself and all workers — has a configurable token/cost budget. The CTO enforces these limits.
+Workers have configurable monthly budgets for tracking and routing decisions. Provider/session caps are configured separately under AI provider settings.
 
 ### Budget hierarchy
 
 ```
-Project Budget (global cap)
-└── CTO Budget (per heartbeat cycle)
-    ├── Worker: auth-specialist Budget
-    ├── Worker: test-writer Budget
-    └── Ephemeral Worker Budget (inherited from CTO settings)
+AI provider/session caps
+└── Worker monthly budgets
+    ├── Worker: auth-specialist
+    ├── Worker: test-writer
+    └── Ephemeral worker runtime settings
 ```
 
 ### How budget enforcement works
 
-- **Subscription users**: Budgets are tracked internally for visibility and reported as informational. ADE reads session logs from `~/.claude/` to compute accurate token usage. Budget alerts fire when thresholds are hit, but agents are not hard-stopped.
-- **API key users**: Budgets are strictly enforced. When a worker reaches its budget cap, it pauses and the CTO is notified. The CTO decides whether to extend the budget, hand the task to a different worker, or escalate to you.
+- **Worker budgets**: CTO > Team stores a monthly dollar budget on each worker identity.
+- **Provider/session caps**: Settings > AI Providers and chat/session settings control runtime provider budgets and usage display.
 
 ### Configuring budgets
 
-<Tabs>
-  <Tab title="In Settings UI">
-    Go to **Settings > CTO > Budget**. Set the per-heartbeat CTO budget, default worker budget, and the global project cap. These apply to all workers unless overridden at the worker level.
-  </Tab>
-  <Tab title="In ade.yaml">
-    ```yaml
-    # .ade/ade.yaml
-    cto:
-      budget:
-        per_heartbeat_tokens: 50000
-        default_worker_tokens: 20000
-        alert_threshold: 0.8   # alert at 80% of cap
-        hard_stop_api_only: true
-    ```
-  </Tab>
-</Tabs>
+Configure worker budgets in **CTO > Team** when hiring or editing a worker. The value is stored on the worker identity; ADE does not parse a project-level `.ade/ade.yaml` `cto.budget` block.
 
 ---
 
@@ -117,53 +102,45 @@ You can ask the CTO for a narrative summary of recent activity at any time:
 
 _"Summarize what changed in the project since yesterday morning. What's blocked? What shipped? What's at risk?"_
 
-The CTO draws from recent checkpoint history, lane state, and PR status to produce a structured summary. This can also be generated automatically as part of each heartbeat cycle.
+The CTO draws from available project context, recent lane state, and PR status to produce a structured summary.
 
 ### Routing an incoming request via Automations
 
-To have external webhooks or scheduled triggers route to the CTO automatically, configure an Automation with executor mode `cto-route`:
+To have external webhooks or scheduled triggers start work automatically, configure an Automation with real action types such as `agent-session` or `ade-action`:
 
 ```yaml
-# Example: route all new Linear issues to the CTO
-trigger:
-  type: linear-issue-created
-  filter:
-    project: "Backend API"
-executor:
-  mode: cto-route
-  message: "A new Linear issue has been created. Triage it and decide whether to create a worker run, assign to a worker, or flag for human review."
+# Example: start an agent session for new Linear issues
+automations:
+  - id: "linear-triage"
+    name: "Linear triage"
+    trigger:
+      type: "linear.issue_created"
+    execution:
+      kind: "agent-session"
+      laneMode: "reuse"
+    executor:
+      mode: "automation-bot"
+    prompt: "Triage the new Linear issue and recommend whether to create a lane, assign a worker, or flag it for human review."
 ```
 
 ---
 
-## CTO Configuration Reference
+## CTO Worker Configuration Reference
 
-All CTO configuration lives under `cto:` in `.ade/ade.yaml`, with a UI mirror in **Settings > CTO**.
+Worker identity and heartbeat settings are managed in **CTO > Team** and stored in ADE's local worker identity state. Project automation rules still live in `.ade/ade.yaml`.
 
 ```yaml
-cto:
-  name: "CTO"                          # Display name in UI
-  persona: |                            # Initial identity prompt
-    You are a senior engineer who
-    knows this codebase deeply...
+# Worker runtime state shape, shown for reference only.
+runtimeConfig:
   heartbeat:
-    mode: combined                      # interval | events | combined
-    interval_minutes: 15
-    triggers:
-      - pr_opened
-      - lane_blocked
-      - linear_issue_assigned
-  workers:
-    default_budget_tokens: 20000
-    default_tool_palette: standard      # standard | minimal | full
-    auto_dissolve_ephemeral: true
-  linear:
-    sync_enabled: true
-    auto_create_issues: true
-    auto_close_on_merge: true
-  budget:
-    per_heartbeat_tokens: 50000
-    alert_threshold: 0.8
+    enabled: true
+    intervalSec: 300
+    wakeOnDemand: true
+    activeHours:
+      start: "09:00"
+      end: "22:00"
+      timezone: "local"
+  maxConcurrentRuns: 1
 ```
 
 ---
@@ -174,18 +151,13 @@ cto:
   <Accordion title="CTO shows 'Inactive' status" icon="circle-xmark">
     The CTO requires at least one AI provider to be configured. Check **Settings > AI Providers** and verify that a provider is active and its credentials are valid. The CTO also needs the ADE RPC socket to be ready — if you see socket or RPC errors in the main process log, restart ADE.
   </Accordion>
-  <Accordion title="Heartbeat runs but the CTO takes no action" icon="clock">
-    This is usually expected — the CTO only acts when it detects something actionable. Check the **Recent Actions Log** in the CTO Status panel to confirm the heartbeat ran. If the log shows "No actions needed", the CTO saw no changes worth acting on. You can lower the action threshold in Settings > CTO > Heartbeat Sensitivity.
+  <Accordion title="Worker heartbeat runs but takes no action" icon="clock">
+    This is usually expected. Timer wakeups can complete with `HEARTBEAT_OK` when no action is required. Check the worker run history or logs for the heartbeat result.
 
-    If the heartbeat log is empty despite visible project changes, verify that the lane's git history is accessible and that ADE's main process has read access to the `.git` directory.
+    If no heartbeat appears, verify that the worker has **Timer-based heartbeat** enabled, a positive interval in seconds, and active hours that include the current time.
   </Accordion>
   <Accordion title="Budget exhausted — CTO or worker paused" icon="gauge">
-    When a budget is exhausted, the affected agent pauses and an alert appears in the CTO Status panel. For API key users, you can:
-    - Click **Extend Budget** in the alert to increase the cap for this run
-    - Click **Resume with Different Model** to switch to a more cost-efficient model
-    - Click **Dismiss** to cancel the current task
-
-    For subscription users, budget exhaustion is informational. The agent will not be hard-stopped.
+    Review the worker's monthly budget in CTO > Team and the active provider/session budget in Settings > AI Providers or the chat/session controls. Increase the relevant cap or route the work to a cheaper model when needed.
   </Accordion>
   <Accordion title="Linear sync is not updating issues" icon="arrow-right-arrow-left">
     Check the **Linear sub-tab** for the sync status indicator. Common causes:
