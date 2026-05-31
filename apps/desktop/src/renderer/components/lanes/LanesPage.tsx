@@ -48,6 +48,7 @@ import {
   resolveVisibleLaneIds,
   runLaneDeleteBatchWithConcurrency,
   selectLanePrTag,
+  selectVisibleLanePrRefreshIds,
   selectLaneTabPrTag,
   shouldApplyLaneIdsDeepLink,
   sortLaneListRows,
@@ -141,6 +142,7 @@ type RebasePushReviewState = {
 
 const ADOPT_HINT_DISMISSED_KEY = "ade.lanes.adoptHintDismissed.v1";
 const LANE_DELETE_REFRESH_DEBOUNCE_MS = 160;
+const LANE_VISIBLE_PR_REFRESH_DEBOUNCE_MS = 260;
 const EMPTY_LANE_IDS: string[] = [];
 
 function normalizeLaneRuntimePlacement(value: unknown): LaneRuntimePlacement {
@@ -195,6 +197,20 @@ function lanePrTagColor(state: PrSummary["state"]): string {
   if (state === "closed") return COLORS.danger;
   if (state === "draft") return COLORS.warning;
   return COLORS.accent;
+}
+
+function mergePrSummariesById(current: PrSummary[], refreshed: PrSummary[]): PrSummary[] {
+  if (refreshed.length === 0) return current;
+  const refreshedById = new Map(refreshed.map((pr) => [pr.id, pr] as const));
+  const seen = new Set<string>();
+  const next = current.map((pr) => {
+    seen.add(pr.id);
+    return refreshedById.get(pr.id) ?? pr;
+  });
+  for (const pr of refreshed) {
+    if (!seen.has(pr.id)) next.push(pr);
+  }
+  return next;
 }
 
 function isTrustedGitHubUrl(rawUrl: string): boolean {
@@ -504,6 +520,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const [managedLaneIds, setManagedLaneIds] = useState<string[]>([]);
   const lanePrTagsRequestRef = useRef(0);
   const laneGithubPrTagsRequestRef = useRef(0);
+  const laneVisiblePrRefreshRequestedAtRef = useRef<Map<string, number>>(new Map());
+  const laneVisiblePrRefreshProjectRootRef = useRef<string | null>(null);
   const hasActiveLaneRuntimeRef = useRef(false);
   const [autoRebaseEnabled, setAutoRebaseEnabled] = useState(false);
   const [rebaseSuggestionError, setRebaseSuggestionError] = useState<string | null>(null);
@@ -1108,6 +1126,45 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       }
     });
   }, [active, refreshLanePrTags, refreshLaneGithubPrTags]);
+
+  useEffect(() => {
+    const projectRoot = project?.rootPath ?? null;
+    if (laneVisiblePrRefreshProjectRootRef.current !== projectRoot) {
+      laneVisiblePrRefreshProjectRootRef.current = projectRoot;
+      laneVisiblePrRefreshRequestedAtRef.current.clear();
+    }
+    if (!active || !projectRoot || document.visibilityState !== "visible") return;
+
+    const nowMs = Date.now();
+    const prIds = selectVisibleLanePrRefreshIds({
+      visibleLaneIds,
+      lanePrByLaneId,
+      prs: lanePrTags,
+      recentlyRequestedAtByPrId: laneVisiblePrRefreshRequestedAtRef.current,
+      nowMs,
+    });
+    if (prIds.length === 0) return;
+
+    for (const prId of prIds) {
+      laneVisiblePrRefreshRequestedAtRef.current.set(prId, nowMs);
+    }
+
+    const startedRoot = projectRoot;
+    const timer = window.setTimeout(() => {
+      void window.ade.prs.refresh({ prIds })
+        .then((refreshed) => {
+          if ((appStore.getState().project?.rootPath ?? null) !== startedRoot) return;
+          if (refreshed.length === 0) return;
+          lanePrTagsRequestRef.current += 1;
+          setLanePrTags((current) => mergePrSummariesById(current, refreshed));
+        })
+        .catch(() => {
+          // Background PR refresh is opportunistic; the normal PR poller remains the fallback.
+        });
+    }, LANE_VISIBLE_PR_REFRESH_DEBOUNCE_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [active, appStore, project?.rootPath, visibleLaneIds, lanePrByLaneId, lanePrTags]);
 
   useEffect(() => {
     if (!active) return;
