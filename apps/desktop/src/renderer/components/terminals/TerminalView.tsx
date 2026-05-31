@@ -137,7 +137,7 @@ const ptyDataRuntimesByPtyId = new Map<string, Set<CachedRuntime>>();
 const ptyExitRuntimesByPtyId = new Map<string, Set<CachedRuntime>>();
 let sharedPtyDataUnsub: (() => void) | null = null;
 let sharedPtyExitUnsub: (() => void) | null = null;
-let ptyDataSubscriptionSignature = "";
+let ptyDataSubscriptionSignature: string | null = null;
 
 function terminalRuntimeKey(args: {
   sessionId: string;
@@ -1191,6 +1191,7 @@ function subscribeRuntimePtyData(runtime: CachedRuntime): () => void {
     removeRuntimePtySubscription(ptyDataRuntimesByPtyId, runtime);
     updatePtyDataSubscriptions();
     if (ptyDataRuntimesByPtyId.size === 0 && sharedPtyDataUnsub) {
+      ptyDataSubscriptionSignature = null;
       sharedPtyDataUnsub();
       sharedPtyDataUnsub = null;
     }
@@ -1880,6 +1881,7 @@ export function __resetTerminalRuntimesForTests(): void {
     teardownRuntime(runtime);
   }
   runtimeCache.clear();
+  ptyDataSubscriptionSignature = null;
 }
 
 export function TerminalView({

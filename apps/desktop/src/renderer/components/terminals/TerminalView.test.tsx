@@ -458,6 +458,21 @@ describe("TerminalView", () => {
     expect(setDataSubscriptions).toHaveBeenLastCalledWith({ ptyIds: [] });
   });
 
+  it("configures an empty PTY data subscription when the first runtime is hidden", async () => {
+    const setDataSubscriptions = (window as any).ade.pty.setDataSubscriptions as ReturnType<typeof vi.fn>;
+
+    render(
+      <TerminalView
+        ptyId="pty-hidden-first"
+        sessionId="session-hidden-first"
+        isActive={false}
+        isVisible={false}
+      />,
+    );
+
+    expect(setDataSubscriptions).toHaveBeenLastCalledWith({ ptyIds: [] });
+  });
+
   it("uses the DOM renderer on Linux when localStorage is unavailable", async () => {
     vi.useRealTimers();
     const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
