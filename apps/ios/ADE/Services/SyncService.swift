@@ -795,12 +795,36 @@ struct WorkSessionNavigationRequest: Equatable, Identifiable {
 struct PrNavigationRequest: Equatable, Identifiable {
   let id: String
   let prId: String
+  let prNumber: Int?
   let laneId: String?
 
-  init(prId: String, laneId: String? = nil) {
+  init(prId: String, prNumber: Int? = nil, laneId: String? = nil) {
     self.id = UUID().uuidString
     self.prId = prId
+    self.prNumber = prNumber
     self.laneId = laneId
+  }
+
+  init(prNumber: Int) {
+    self.id = UUID().uuidString
+    self.prId = "github-pr-number:\(prNumber)"
+    self.prNumber = prNumber
+    self.laneId = nil
+  }
+}
+
+enum SyncRemoteCommandDelivery: Equatable {
+  case dispatched
+  case queued
+  case dropped(String)
+
+  init(commandResult: Any) {
+    if let dict = commandResult as? [String: Any],
+       dict["queued"] as? Bool == true {
+      self = .queued
+    } else {
+      self = .dispatched
+    }
   }
 }
 
@@ -7539,7 +7563,8 @@ extension SyncService {
   /// (sessionId, prNumber, text, ...) can be forwarded without defining one
   /// envelope per variant. Never logs the payload in plaintext because `text`
   /// for `.replyToSession` is user-authored content.
-  func sendRemoteCommand(_ kind: RemoteCommandKind, payload: [String: Any]) async {
+  @discardableResult
+  func sendRemoteCommand(_ kind: RemoteCommandKind, payload: [String: Any]) async -> SyncRemoteCommandDelivery {
     let action: String
     switch kind {
     case .approveSession: action = "chat.approve"
@@ -7613,20 +7638,19 @@ extension SyncService {
             ADEDeepLinkURLParsing.isADEWebHost(components.host) &&
             components.path == "/open"
           ) else {
-        return
+        return .dropped("This ADE link is not valid.")
       }
       args["url"] = url
     }
 
     // For now we send via the opaque command envelope — the desktop's
-    // `syncRemoteCommandService` dispatches on `action`. Failures are
-    // swallowed: notification actions are fire-and-forget and do not report
-    // errors back to the user through this surface.
+    // `syncRemoteCommandService` dispatches on `action`. Notification actions
+    // may still ignore the result, while interactive surfaces can render it.
     do {
-      _ = try await performCommandRequestSafe(action: action, args: args)
+      let result = try await performCommandRequestSafe(action: action, args: args)
+      return SyncRemoteCommandDelivery(commandResult: result)
     } catch {
-      // Intentionally silent — the host will retry once the user re-opens
-      // the affected surface.
+      return .dropped(error.localizedDescription)
     }
   }
 
@@ -7792,7 +7816,8 @@ extension SyncService {
             mergeReady: (item.reviewStatus == "approved")
               && (item.checksStatus == "passing")
               && item.state == "open",
-            branch: item.headBranch.isEmpty ? nil : item.headBranch
+            branch: item.headBranch.isEmpty ? nil : item.headBranch,
+            updatedAt: Self.parseIso8601(item.updatedAt)
           )
         }
       // Header label = focused (most-recently-active) running chat's lane.
@@ -7838,7 +7863,8 @@ extension SyncService {
         review: item.reviewStatus,
         state: item.state,
         mergeReady: (item.reviewStatus == "approved") && (item.checksStatus == "passing") && item.state == "open",
-        branch: item.headBranch.isEmpty ? nil : item.headBranch
+        branch: item.headBranch.isEmpty ? nil : item.headBranch,
+        updatedAt: Self.parseIso8601(item.updatedAt)
       )
     }
 

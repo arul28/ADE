@@ -282,7 +282,11 @@ struct WorkChatSessionView: View {
   var streamingStatusSection: some View {
     WorkActivityIndicator(
       transcript: transcript,
-      isStreaming: (sessionStatus == "active" && isLive) || timelineSnapshot.transcriptIndicatesActiveTurn
+      isStreaming: workChatIsStreaming(
+        sessionStatus: sessionStatus,
+        isLive: isLive,
+        transcriptIndicatesActiveTurn: timelineSnapshot.transcriptIndicatesActiveTurn
+      )
     )
   }
 

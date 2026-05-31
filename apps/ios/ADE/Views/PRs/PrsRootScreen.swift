@@ -34,6 +34,7 @@ struct PRsTabView: View {
   @State private var selectedPrTransitionId: String?
   @State private var laneContextLaneId: String?
   @State private var rootActionTask: Task<Void, Never>?
+  @State private var rootActionRunId: String?
   @State private var githubDetailRequest: PrGitHubLaneLinkRequest?
   @State private var laneLinkRequest: PrGitHubLaneLinkRequest?
   @State private var pendingLaneLinkRequest: PrGitHubLaneLinkRequest?
@@ -1321,6 +1322,7 @@ struct PRsTabView: View {
     .presentationContentInteraction(.scrolls)
   }
 
+  @MainActor
   private func handleCreateSinglePr(
     laneId: String,
     title: String,
@@ -1330,9 +1332,10 @@ struct PRsTabView: View {
     labels: [String],
     reviewers: [String],
     strategy: String?
-  ) {
-    runPrRootAction(
+  ) async -> Bool {
+    await performPrRootAction(
       "Creating pull request",
+      cancelExisting: true,
       operation: {
         try await syncService.createPullRequest(
           laneId: laneId,
@@ -1351,9 +1354,11 @@ struct PRsTabView: View {
     )
   }
 
-  private func handleCreateQueuePrs(_ request: CreateQueuePrsRequest) {
-    runPrRootAction(
+  @MainActor
+  private func handleCreateQueuePrs(_ request: CreateQueuePrsRequest) async -> Bool {
+    await performPrRootAction(
       "Creating queue PRs",
+      cancelExisting: true,
       operation: {
         _ = try await syncService.createQueuePrs(
           laneIds: request.laneIds,
@@ -1372,9 +1377,11 @@ struct PRsTabView: View {
     )
   }
 
-  private func handleCreateIntegrationPr(_ request: CreateIntegrationRequest) {
-    runPrRootAction(
+  @MainActor
+  private func handleCreateIntegrationPr(_ request: CreateIntegrationRequest) async -> Bool {
+    await performPrRootAction(
       "Creating integration PR",
+      cancelExisting: true,
       operation: {
         let proposal = try await syncService.simulateIntegration(
           sourceLaneIds: request.sourceLaneIds,
@@ -1413,42 +1420,69 @@ struct PRsTabView: View {
   ) {
     rootActionTask?.cancel()
     let task = Task { @MainActor in
-      busyAction = label
-      errorMessage = nil
-      actionMessage = nil
-      do {
-        try await operation()
-        guard !Task.isCancelled else {
-          busyAction = nil
-          return
-        }
-        onSuccess()
-        guard !Task.isCancelled else {
-          busyAction = nil
-          return
-        }
-        await reload(refreshRemote: true)
-        guard !Task.isCancelled else {
-          busyAction = nil
-          return
-        }
-        actionMessage = "\(label) finished."
-      } catch {
-        guard !Task.isCancelled else {
-          busyAction = nil
-          return
-        }
-        let message = error.localizedDescription
-        await reload(refreshRemote: false)
-        guard !Task.isCancelled else {
-          busyAction = nil
-          return
-        }
-        errorMessage = message
-      }
-      busyAction = nil
+      _ = await performPrRootAction(label, operation: operation, onSuccess: onSuccess)
     }
     rootActionTask = task
+  }
+
+  @MainActor
+  @discardableResult
+  private func performPrRootAction(
+    _ label: String,
+    cancelExisting: Bool = false,
+    operation: @escaping () async throws -> Void,
+    onSuccess: @escaping @MainActor () -> Void = {}
+  ) async -> Bool {
+    if cancelExisting {
+      rootActionTask?.cancel()
+      rootActionTask = nil
+    }
+    let runId = UUID().uuidString
+    rootActionRunId = runId
+    busyAction = label
+    errorMessage = nil
+    actionMessage = nil
+    do {
+      try await operation()
+      guard rootActionRunId == runId, !Task.isCancelled else {
+        clearPrRootActionIfCurrent(runId)
+        return false
+      }
+      onSuccess()
+      guard rootActionRunId == runId, !Task.isCancelled else {
+        clearPrRootActionIfCurrent(runId)
+        return false
+      }
+      await reload(refreshRemote: true)
+      guard rootActionRunId == runId, !Task.isCancelled else {
+        clearPrRootActionIfCurrent(runId)
+        return false
+      }
+      actionMessage = "\(label) finished."
+      clearPrRootActionIfCurrent(runId)
+      return true
+    } catch {
+      guard rootActionRunId == runId, !Task.isCancelled else {
+        clearPrRootActionIfCurrent(runId)
+        return false
+      }
+      let message = error.localizedDescription
+      await reload(refreshRemote: false)
+      guard rootActionRunId == runId, !Task.isCancelled else {
+        clearPrRootActionIfCurrent(runId)
+        return false
+      }
+      errorMessage = message
+      clearPrRootActionIfCurrent(runId)
+      return false
+    }
+  }
+
+  @MainActor
+  private func clearPrRootActionIfCurrent(_ runId: String) {
+    guard rootActionRunId == runId else { return }
+    busyAction = nil
+    rootActionRunId = nil
   }
 
   private func openGitHub(urlString: String) {

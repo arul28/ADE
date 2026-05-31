@@ -147,6 +147,7 @@ public final class AttentionDrawerModel: ObservableObject {
         }
 
         for pr in snapshot.prs where pr.state == "open" {
+            let prTimestamp = pr.updatedAt ?? generated
             if pr.checks == "failing" {
                 result.append(
                     AttentionItem(
@@ -157,7 +158,7 @@ public final class AttentionDrawerModel: ObservableObject {
                         prId: pr.id,
                         prNumber: pr.number,
                         deepLink: URL(string: "ade://pr/\(pr.number)"),
-                        timestamp: generated
+                        timestamp: prTimestamp
                     )
                 )
             } else if pr.mergeReady {
@@ -170,7 +171,7 @@ public final class AttentionDrawerModel: ObservableObject {
                         prId: pr.id,
                         prNumber: pr.number,
                         deepLink: URL(string: "ade://pr/\(pr.number)"),
-                        timestamp: generated
+                        timestamp: prTimestamp
                     )
                 )
             } else if pr.review == "pending" || pr.review == "changes_requested" {
@@ -185,7 +186,7 @@ public final class AttentionDrawerModel: ObservableObject {
                         prId: pr.id,
                         prNumber: pr.number,
                         deepLink: URL(string: "ade://pr/\(pr.number)"),
-                        timestamp: generated
+                        timestamp: prTimestamp
                     )
                 )
             }

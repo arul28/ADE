@@ -76,6 +76,14 @@ func workTranscriptIndicatesActiveTurn(_ transcript: [WorkChatEnvelope]) -> Bool
   return bootstrapStartOpen || !activeTurnIds.isEmpty
 }
 
+func workChatIsStreaming(
+  sessionStatus: String,
+  isLive: Bool,
+  transcriptIndicatesActiveTurn: Bool
+) -> Bool {
+  isLive && (sessionStatus == "active" || transcriptIndicatesActiveTurn)
+}
+
 /// Collapse `subagent_*` events into one snapshot per taskId. Preserves host
 /// order via a first-seen index so completed subagents don't jump around when
 /// a later progress event lands.

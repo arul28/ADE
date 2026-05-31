@@ -147,8 +147,13 @@ final class DeepLinkRouter {
     if kind == "session" {
       SyncService.shared?.requestedWorkSessionNavigation = WorkSessionNavigationRequest(sessionId: identifier)
     }
-    if kind == "pr", let prId = resolvePrId(from: identifier) {
-      SyncService.shared?.requestedPrNavigation = PrNavigationRequest(prId: prId)
+    if kind == "pr" {
+      let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+      if let prId = resolvePrId(from: identifier) {
+        SyncService.shared?.requestedPrNavigation = PrNavigationRequest(prId: prId, prNumber: Int(trimmed))
+      } else if let prNumber = Int(trimmed), prNumber > 0 {
+        SyncService.shared?.requestedPrNavigation = PrNavigationRequest(prNumber: prNumber)
+      }
     }
   }
 

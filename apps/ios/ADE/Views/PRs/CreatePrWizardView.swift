@@ -41,18 +41,18 @@ struct CreatePrWizardView: View {
   /// `lanes` list so cached/offline flows still work.
   let createCapabilities: PrCreateCapabilities?
   /// Single-PR submit: (laneId, title, body, draft, baseBranch, labels, reviewers, strategy).
-  let onCreateSingle: (String, String, String, Bool, String, [String], [String], String?) -> Void
+  let onCreateSingle: (String, String, String, Bool, String, [String], [String], String?) async -> Bool
   /// Queue PR batch submit.
-  let onCreateQueue: (CreateQueuePrsRequest) -> Void
+  let onCreateQueue: (CreateQueuePrsRequest) async -> Bool
   /// Integration PR submit (caller runs simulateIntegration → commitIntegration).
-  let onCreateIntegration: (CreateIntegrationRequest) -> Void
+  let onCreateIntegration: (CreateIntegrationRequest) async -> Bool
 
   init(
     lanes: [LaneSummary],
     createCapabilities: PrCreateCapabilities? = nil,
-    onCreateSingle: @escaping (String, String, String, Bool, String, [String], [String], String?) -> Void,
-    onCreateQueue: @escaping (CreateQueuePrsRequest) -> Void,
-    onCreateIntegration: @escaping (CreateIntegrationRequest) -> Void
+    onCreateSingle: @escaping (String, String, String, Bool, String, [String], [String], String?) async -> Bool,
+    onCreateQueue: @escaping (CreateQueuePrsRequest) async -> Bool,
+    onCreateIntegration: @escaping (CreateIntegrationRequest) async -> Bool
   ) {
     self.lanes = lanes
     self.createCapabilities = createCapabilities
@@ -1069,7 +1069,7 @@ struct CreatePrWizardView: View {
 
   private var submitButton: some View {
     Button {
-      submit()
+      Task { await submit() }
     } label: {
       HStack(spacing: 6) {
         if isSubmitting {
@@ -1121,9 +1121,11 @@ struct CreatePrWizardView: View {
     }
   }
 
-  private func submit() {
+  @MainActor
+  private func submit() async {
     guard canSubmit else { return }
     isSubmitting = true
+    errorMessage = nil
     let parsedLabels = labelsInput
       .split(separator: ",")
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -1139,7 +1141,7 @@ struct CreatePrWizardView: View {
         isSubmitting = false
         return
       }
-      onCreateSingle(
+      let completed = await onCreateSingle(
         option.id,
         title.trimmingCharacters(in: .whitespacesAndNewlines),
         bodyText,
@@ -1149,12 +1151,16 @@ struct CreatePrWizardView: View {
         parsedReviewers,
         /* strategy */ strategy.rawValue
       )
+      isSubmitting = false
+      if !completed {
+        errorMessage = "The pull request was not created."
+      }
     case .queue:
       let laneIds = orderedSelectedLaneIds
       let trimmedName = queueName.trimmingCharacters(in: .whitespacesAndNewlines)
       let baseTrim = baseBranch.trimmingCharacters(in: .whitespacesAndNewlines)
       let targetBranch = baseTrim.isEmpty ? defaultTargetBranch : baseTrim
-      onCreateQueue(
+      let completed = await onCreateQueue(
         CreateQueuePrsRequest(
           laneIds: laneIds,
           queueName: trimmedName.isEmpty ? nil : trimmedName,
@@ -1166,13 +1172,17 @@ struct CreatePrWizardView: View {
           baseBranch: targetBranch
         )
       )
+      isSubmitting = false
+      if !completed {
+        errorMessage = "The queue PRs were not created."
+      }
     case .integration:
       let laneIds = orderedSelectedLaneIds
       let trimmedName = integrationLaneName.trimmingCharacters(in: .whitespacesAndNewlines)
       let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
       let baseTrim = baseBranch.trimmingCharacters(in: .whitespacesAndNewlines)
       let targetBranch = baseTrim.isEmpty ? defaultTargetBranch : baseTrim
-      onCreateIntegration(
+      let completed = await onCreateIntegration(
         CreateIntegrationRequest(
           sourceLaneIds: laneIds,
           integrationLaneName: trimmedName,
@@ -1182,12 +1192,10 @@ struct CreatePrWizardView: View {
           baseBranch: targetBranch
         )
       )
-    }
-    // Re-enable the button after a short delay so the spinner clears if the
-    // host keeps the sheet open (e.g. on an error toast). The parent sheet
-    // controller is responsible for dismissing on success.
-    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
       isSubmitting = false
+      if !completed {
+        errorMessage = "The integration PR was not created."
+      }
     }
   }
 

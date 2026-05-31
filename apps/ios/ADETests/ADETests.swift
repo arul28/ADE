@@ -139,6 +139,31 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testDeepLinkRouterRequestsPrNavigationByNumberWhenSnapshotMisses() throws {
+    let previousShared = SyncService.shared
+    let previousSnapshotData = ADESharedContainer.defaults.data(forKey: ADESharedContainer.workspaceSnapshotKey)
+    defer {
+      SyncService.shared = previousShared
+      if let previousSnapshotData {
+        ADESharedContainer.defaults.set(previousSnapshotData, forKey: ADESharedContainer.workspaceSnapshotKey)
+      } else {
+        ADESharedContainer.defaults.removeObject(forKey: ADESharedContainer.workspaceSnapshotKey)
+      }
+    }
+
+    ADESharedContainer.defaults.removeObject(forKey: ADESharedContainer.workspaceSnapshotKey)
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    SyncService.shared = service
+
+    DeepLinkRouter.shared.handleNotificationUserInfo(["prNumber": 9876])
+
+    XCTAssertEqual(service.requestedPrNavigation?.prNumber, 9876)
+    XCTAssertEqual(service.requestedPrNavigation?.prId, "github-pr-number:9876")
+  }
+
+  @MainActor
   func testDeepLinkRouterSendsHttpsAdePrLinksToMac() throws {
     let expected = "https://ade-app.dev/open?type=pr&repo=arul/ADE&number=42"
     let received = expectation(description: "send to Mac request posted")
@@ -4675,11 +4700,12 @@ final class ADETests: XCTestCase {
     UserDefaults.standard.set(try JSONEncoder().encode(descriptors), forKey: remoteCommandDescriptorsKey)
 
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
-    await service.sendRemoteCommand(.approveSession, payload: [
+    let delivery = await service.sendRemoteCommand(.approveSession, payload: [
       "sessionId": "session-1",
       "itemId": "approval-1",
     ])
 
+    XCTAssertEqual(delivery, .queued)
     let queued = service.pendingOperationsForTesting()
     XCTAssertEqual(service.pendingOperationCount, 1)
     XCTAssertEqual(queued.count, 1)
@@ -8165,6 +8191,30 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(completedSnapshot.transcriptIndicatesActiveTurn)
   }
 
+  func testWorkChatStreamingRequiresLiveConnectionForTranscriptActiveTurn() {
+    XCTAssertFalse(
+      workChatIsStreaming(
+        sessionStatus: "idle",
+        isLive: false,
+        transcriptIndicatesActiveTurn: true
+      )
+    )
+    XCTAssertTrue(
+      workChatIsStreaming(
+        sessionStatus: "idle",
+        isLive: true,
+        transcriptIndicatesActiveTurn: true
+      )
+    )
+    XCTAssertTrue(
+      workChatIsStreaming(
+        sessionStatus: "active",
+        isLive: true,
+        transcriptIndicatesActiveTurn: false
+      )
+    )
+  }
+
   func testWorkSessionEmptyStateMessagingExplainsSearchAndArchiveFallbacks() {
     XCTAssertEqual(
       workSessionEmptyStateTitle(status: .all, searchText: "deploy", hasFilters: true),
@@ -8193,6 +8243,17 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(cache.cachedData(for: "artifact-1"), data)
     XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent(cache.diskFilename(for: "artifact-1")).path))
+  }
+
+  func testWorkArtifactVideoTempCleanupRemovesLocalPreviewFile() throws {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("ade-work-artifact-\(UUID().uuidString)")
+      .appendingPathExtension("mp4")
+    try Data([0x00, 0x00, 0x00, 0x18]).write(to: url)
+
+    workRemoveLoadedArtifactTempFile(.video(url))
+
+    XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
   }
 
   func testParseANSISegmentsTracksForegroundColors() {
