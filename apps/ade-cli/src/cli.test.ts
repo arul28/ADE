@@ -2253,7 +2253,7 @@ describe("ADE CLI", () => {
     });
   });
 
-  it("chains create_lane -> chat createSession -> kickoff for create-from-linear --start-chat", () => {
+  it("chains create_lane -> chat createSession -> attach Linear issue -> kickoff for create-from-linear --start-chat", () => {
     const plan = buildCliPlan([
       "lanes",
       "create-from-linear",
@@ -2267,7 +2267,7 @@ describe("ADE CLI", () => {
     ]);
     expect(plan.kind).toBe("execute");
     if (plan.kind !== "execute") return;
-    expect(plan.steps).toHaveLength(3);
+    expect(plan.steps).toHaveLength(4);
     expect(plan.steps[0]?.key).toBe("lane");
 
     // Step 2 derives laneId from the create_lane result.
@@ -2285,8 +2285,26 @@ describe("ADE CLI", () => {
       },
     });
 
-    // Step 3 derives sessionId from the createSession result and sends a kickoff.
-    const sendStep = plan.steps[2]!;
+    // Step 3 attaches the issue to the chat so the runtime posts chat/lane cards.
+    const attachStep = plan.steps[2]!;
+    const attachParams = (attachStep.params as (v: Record<string, unknown>) => Record<string, unknown>)({
+      chat: { domain: "chat", action: "createSession", result: { id: "session-new" } },
+    });
+    expect(attachParams).toMatchObject({
+      arguments: {
+        domain: "lane",
+        action: "attachLinearIssueToSession",
+        args: {
+          chatSessionId: "session-new",
+          issues: [{ id: "issue-1", identifier: "ENG-431", title: "Fix OAuth", url: "https://linear.app/x/ENG-431" }],
+          role: "worked",
+          source: "chat_attach",
+        },
+      },
+    });
+
+    // Step 4 derives sessionId from the createSession result and sends a kickoff.
+    const sendStep = plan.steps[3]!;
     const sendParams = (sendStep.params as (v: Record<string, unknown>) => Record<string, unknown>)({
       chat: { domain: "chat", action: "createSession", result: { id: "session-new" } },
     });

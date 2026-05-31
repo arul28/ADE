@@ -203,12 +203,14 @@ describe("laneService createFromUnstaged", () => {
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-linear-projectless", repoRoot });
 
+    const onLinearIssueLinked = vi.fn();
     const service = createLaneService({
       db,
       projectRoot: repoRoot,
       projectId: "proj-linear-projectless",
       defaultBaseRef: "main",
       worktreesDir: path.join(repoRoot, "worktrees"),
+      onLinearIssueLinked,
     });
 
     const issue = {
@@ -253,6 +255,10 @@ describe("laneService createFromUnstaged", () => {
         }),
       }),
     ]));
+    expect(onLinearIssueLinked).toHaveBeenCalledWith(expect.objectContaining({
+      lane: expect.objectContaining({ id: "lane-child" }),
+      issue: expect.objectContaining({ identifier: "ADE-45" }),
+    }));
   });
 
   it("moves unstaged and untracked changes into a new child lane", async () => {
@@ -4091,14 +4097,14 @@ describe("laneService - branchSwitch", () => {
 });
 
 describe("laneService session-scoped Linear issue links", () => {
-  function seedClaudeSession(db: any, args: { sessionId: string; laneId: string }) {
+  function seedClaudeSession(db: any, args: { sessionId: string; laneId: string; title?: string | null }) {
     const now = "2026-05-20T10:00:00.000Z";
     db.run(
       `
         insert into claude_sessions(session_id, lane_id, chat_session_id, title, tags_json, created_at, updated_at)
         values (?, ?, ?, ?, ?, ?, ?)
       `,
-      [args.sessionId, args.laneId, null, null, null, now, now],
+      [args.sessionId, args.laneId, null, args.title ?? null, null, now, now],
     );
   }
 
@@ -4177,13 +4183,17 @@ describe("laneService session-scoped Linear issue links", () => {
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     try {
       await seedProjectAndStack(db, { projectId: "proj-session-laned", repoRoot });
-      seedClaudeSession(db, { sessionId: "chat-on-child", laneId: "lane-child" });
+      seedClaudeSession(db, { sessionId: "chat-on-child", laneId: "lane-child", title: "Fix flaky sync run" });
+      const onLinearIssueLinked = vi.fn();
+      const onLinearIssueSessionLinked = vi.fn();
       const service = createLaneService({
         db,
         projectRoot: repoRoot,
         projectId: "proj-session-laned",
         defaultBaseRef: "main",
         worktreesDir: path.join(repoRoot, "worktrees"),
+        onLinearIssueLinked,
+        onLinearIssueSessionLinked,
       });
 
       const links = service.attachLinearIssueToSession({
@@ -4206,6 +4216,16 @@ describe("laneService session-scoped Linear issue links", () => {
       const laneSessionLinks = service.listLinearIssuesForLaneSessions({ laneId: "lane-child" });
       expect(laneSessionLinks).toHaveLength(1);
       expect(laneSessionLinks[0]?.sessionId).toBe("chat-on-child");
+      expect(onLinearIssueLinked).toHaveBeenCalledWith(expect.objectContaining({
+        lane: expect.objectContaining({ id: "lane-child" }),
+        issue: expect.objectContaining({ identifier: "ABC-42" }),
+      }));
+      expect(onLinearIssueSessionLinked).toHaveBeenCalledWith(expect.objectContaining({
+        laneId: "lane-child",
+        sessionId: "chat-on-child",
+        sessionTitle: "Fix flaky sync run",
+        issue: expect.objectContaining({ identifier: "ABC-42" }),
+      }));
     } finally {
       db.close();
       fs.rmSync(repoRoot, { recursive: true, force: true });

@@ -86,6 +86,7 @@ import type {
   OpenProjectBinding,
   AppNavigationRequest,
   LaneDeleteProgress,
+  LaneLinearIssue,
   LaneSummary,
   PortLease,
   PrEventPayload,
@@ -1761,6 +1762,51 @@ app.whenReady().then(async () => {
       null;
     let linearIssueTrackerRef: LinearIssueTracker | null = null;
     let linearLiveStatusServiceRef: LinearLiveStatusService | null = null;
+    const linearChatCardPublishKeys = new Set<string>();
+    const publishLinearChatLink = ({ laneId, sessionId, sessionTitle, issue, linkedAt }: {
+      laneId: string;
+      sessionId: string;
+      sessionTitle?: string | null;
+      issue: LaneLinearIssue;
+      linkedAt: string;
+    }) => {
+      const tracker = linearIssueTrackerRef;
+      if (!tracker) return;
+      const key = `${issue.id}:${sessionId}`;
+      if (linearChatCardPublishKeys.has(key)) return;
+      linearChatCardPublishKeys.add(key);
+      void publishLinearChatSessionCard({
+        issueTracker: tracker,
+        issue,
+        laneId,
+        sessionId,
+        sessionTitle,
+        linkedAt,
+      }).catch((error) => {
+        linearChatCardPublishKeys.delete(key);
+        logger.warn("linear.chat_session_card_publish_failed", {
+          laneId,
+          sessionId,
+          issueId: issue.id,
+          issueIdentifier: issue.identifier,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+      // Agent launched against a Linear issue → reflect status into Linear
+      // (no-op unless the live round-trip flag is set).
+      void linearLiveStatusServiceRef?.onAgentLaunched({
+        issue,
+        branchName: issue.branchName,
+        laneName: sessionTitle ?? null,
+      }).catch((error) => {
+        logger.warn("linear.live_status_launch_failed", {
+          laneId,
+          sessionId,
+          issueId: issue.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    };
 
     const lastHeadByLaneId = new Map<string, string>();
 
@@ -1897,6 +1943,7 @@ app.whenReady().then(async () => {
             });
           });
       },
+      onLinearIssueSessionLinked: publishLinearChatLink,
       teardownDeps: laneTeardownDeps,
       logger,
     });
@@ -2380,7 +2427,6 @@ app.whenReady().then(async () => {
       null;
     let orchestrationServiceRef: ReturnType<typeof createOrchestrationService> | null =
       null;
-    const linearChatCardPublishKeys = new Set<string>();
     const queueLandingService = createQueueLandingService({
       db,
       logger,
@@ -2758,44 +2804,7 @@ app.whenReady().then(async () => {
       logger,
       appVersion: app.getVersion(),
       getAdeCliAgentEnv: adeCliService.agentEnv,
-      onLinearIssueChatLinked: ({ laneId, sessionId, sessionTitle, issue, linkedAt }) => {
-        const tracker = linearIssueTrackerRef;
-        if (!tracker) return;
-        const key = `${issue.id}:${sessionId}`;
-        if (linearChatCardPublishKeys.has(key)) return;
-        linearChatCardPublishKeys.add(key);
-        void publishLinearChatSessionCard({
-          issueTracker: tracker,
-          issue,
-          laneId,
-          sessionId,
-          sessionTitle,
-          linkedAt,
-        }).catch((error) => {
-          linearChatCardPublishKeys.delete(key);
-          logger.warn("linear.chat_session_card_publish_failed", {
-            laneId,
-            sessionId,
-            issueId: issue.id,
-            issueIdentifier: issue.identifier,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-        // Agent launched against a Linear issue → reflect status into Linear
-        // (no-op unless the live round-trip flag is set).
-        void linearLiveStatusServiceRef?.onAgentLaunched({
-          issue,
-          branchName: issue.branchName,
-          laneName: sessionTitle,
-        }).catch((error) => {
-          logger.warn("linear.live_status_launch_failed", {
-            laneId,
-            sessionId,
-            issueId: issue.id,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-      },
+      onLinearIssueChatLinked: publishLinearChatLink,
       onEvent: (event) => {
         emitProjectEvent(projectRoot, IPC.agentChatEvent, event);
       },

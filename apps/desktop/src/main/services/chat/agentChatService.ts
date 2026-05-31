@@ -3593,6 +3593,7 @@ export function buildLinearSessionDirective(
     "## Linear-tracked work",
     `This work is tracked by Linear issue(s) ${idList}. You have ADE's Linear connection — read and update them with the \`ade linear\` CLI (issue, comment, set-state, assign, label; run \`ade linear --help\` or see the bundled **ade-linear** skill for exact syntax).`,
     "Prefer `ade linear` over any Linear MCP or direct Linear API — those are not authenticated in this environment.",
+    "When you comment on Linear directly, include relevant ADE deeplinks unless ADE already posted a lane/chat/PR card; see the bundled **ade-deeplinks** skill.",
   ].join("\n");
 }
 

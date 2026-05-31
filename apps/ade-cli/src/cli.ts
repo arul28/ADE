@@ -1417,6 +1417,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade linear label ENG-431 "needs-review"       Add a label to an issue
     $ ade linear graphql --query 'query { viewer { id name } }'
                                                     Run Linear GraphQL through the project connection
+    $ ade linear graphql --query-file query.graphql --variables-file vars.json
+                                                    Use files for larger GraphQL operations
     $ ade linear detach --this-session [--issue-id ENG-431]
                                                     Detach one issue (or all) from this session
 
@@ -3112,6 +3114,25 @@ function buildCreateLaneFromLinearPlan(args: string[], issue: JsonObject): CliPl
             domain: "chat",
             action: "createSession",
             args: { laneId, surface, ...launchConfig },
+          },
+        };
+      },
+      unwrapToolResult: true,
+    });
+    steps.push({
+      key: "attach",
+      method: "ade/actions/call",
+      params: (values) => {
+        const sessionId = sessionIdFromCreateChatValue(values.chat);
+        if (!sessionId) {
+          throw new CliUsageError("create-from-linear launched a chat but could not resolve its session id to attach the issue.");
+        }
+        return {
+          name: "run_ade_action",
+          arguments: {
+            domain: LINEAR_ATTACH_ACTIONS.domain,
+            action: LINEAR_ATTACH_ACTIONS.attachSession,
+            args: { chatSessionId: sessionId, issues: [issue], role: "worked", source: "chat_attach" },
           },
         };
       },
