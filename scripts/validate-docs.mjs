@@ -248,7 +248,13 @@ async function validateReleaseDocs() {
     errors.push(`changelog/${latestTag.raw}.mdx: missing docs page for latest git tag ${latestTag.raw}`);
   }
 
-  const changelogIndex = await fs.readFile(path.join(repoRoot, "changelog/index.mdx"), "utf8");
+  let changelogIndex;
+  try {
+    changelogIndex = await fs.readFile(path.join(repoRoot, "changelog/index.mdx"), "utf8");
+  } catch {
+    errors.push("changelog/index.mdx: file is missing; create it with a latest-release Card");
+    return;
+  }
   if (!changelogIndex.includes(`/changelog/${latestTag.raw}`)) {
     errors.push(`changelog/index.mdx: latest release card must link to /changelog/${latestTag.raw}`);
   }
