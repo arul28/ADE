@@ -99,6 +99,12 @@ import type { SyncPinStore } from "./syncPinStore";
 import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, encodeSyncEnvelope, mapPlatform, parseSyncEnvelope, wsDataToText } from "./syncProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
+import {
+  buildChangesetBatchPayload,
+  DEFAULT_MAX_CHANGESET_BATCH_BYTES,
+  DEFAULT_MAX_CHANGESET_BATCH_ROWS,
+} from "./changesetPump";
+export { selectChangesetBatchChunk } from "./changesetPump";
 const execFileAsync = promisify(execFile);
 const DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS = 30_000;
 const DEFAULT_SYNC_HEARTBEAT_MISS_LIMIT = 2;
@@ -201,43 +207,6 @@ type PersistedMobileCommand = {
   acceptedAtMs: number;
   completedAtMs: number;
 };
-
-export function selectChangesetBatchChunk(args: {
-  changes: CrsqlChangeRow[];
-  fromDbVersion: number;
-  toDbVersion: number;
-  maxRows: number;
-  maxBytes: number;
-}): { changes: CrsqlChangeRow[]; toDbVersion: number } | null {
-  let chunk: CrsqlChangeRow[] = [];
-  let chunkBytes = 0;
-  let lastIncludedDbVersion: number | null = null;
-
-  for (const change of args.changes) {
-    const changeDbVersion = Number(change.db_version ?? args.fromDbVersion);
-    const changeBytes = Buffer.byteLength(JSON.stringify(change), "utf8");
-    // The host watermark is db_version-only, so rows sharing a db_version must ack together.
-    if (
-      chunk.length > 0
-      && changeDbVersion !== lastIncludedDbVersion
-      && (chunk.length >= args.maxRows || chunkBytes + changeBytes > args.maxBytes)
-    ) {
-      break;
-    }
-    chunk.push(change);
-    chunkBytes += changeBytes;
-    lastIncludedDbVersion = changeDbVersion;
-  }
-
-  if (chunk.length === 0 && args.changes.length > 0) {
-    chunk = [args.changes[0]!];
-    lastIncludedDbVersion = Number(chunk[0]!.db_version ?? args.fromDbVersion);
-  }
-  if (chunk.length === 0 && args.toDbVersion <= args.fromDbVersion) return null;
-
-  const chunkToDbVersion = lastIncludedDbVersion ?? args.toDbVersion;
-  return { changes: chunk, toDbVersion: chunkToDbVersion };
-}
 
 const PERSISTED_MOBILE_COMMAND_ACTIONS = new Set<string>([
   "lanes.presence.announce",
@@ -794,8 +763,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const pollIntervalMs = Math.max(100, Math.floor(args.pollIntervalMs ?? DEFAULT_SYNC_POLL_INTERVAL_MS));
   const brainStatusIntervalMs = Math.max(1_000, Math.floor(args.brainStatusIntervalMs ?? DEFAULT_BRAIN_STATUS_INTERVAL_MS));
   const compressionThresholdBytes = Math.max(256, Math.floor(args.compressionThresholdBytes ?? DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES));
-  const maxChangesetBatchBytes = 256 * 1024;
-  const maxChangesetBatchRows = 250;
+  const maxChangesetBatchBytes = DEFAULT_MAX_CHANGESET_BATCH_BYTES;
+  const maxChangesetBatchRows = DEFAULT_MAX_CHANGESET_BATCH_ROWS;
   const maxProjectCatalogEnvelopeBytes = MAX_PROJECT_CATALOG_ENVELOPE_BYTES;
   const maxProjectCatalogChunkBytes = 192 * 1024;
   const localPresenceCommandDescriptors: SyncRemoteCommandDescriptor[] = [
@@ -1838,11 +1807,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
-  function makeChangesetBatchId(peer: PeerState, fromDbVersion: number, toDbVersion: number): string {
-    const deviceId = peer.metadata?.deviceId ?? peer.pairedDeviceId ?? "peer";
-    return `changeset:${deviceId}:${fromDbVersion}:${toDbVersion}:${Date.now()}:${randomBytes(4).toString("hex")}`;
-  }
-
   function peerSupportsChangesetAck(peer: PeerState): boolean {
     return Array.isArray(peer.metadata?.capabilities) && peer.metadata.capabilities.includes("changesetAck");
   }
@@ -1854,31 +1818,26 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     toDbVersion: number,
     changes: CrsqlChangeRow[],
   ): PendingChangesetBatch | null {
-    const selected = selectChangesetBatchChunk({
-      changes,
+    const payload = buildChangesetBatchPayload({
+      deviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? "peer",
+      reason,
       fromDbVersion,
       toDbVersion,
+      changes,
       maxRows: maxChangesetBatchRows,
       maxBytes: maxChangesetBatchBytes,
     });
-    if (!selected) return null;
-    const chunkToDbVersion = selected.toDbVersion;
+    if (!payload) return null;
     const batch: PendingChangesetBatch = {
-      batchId: makeChangesetBatchId(peer, fromDbVersion, chunkToDbVersion),
+      batchId: payload.batchId,
       reason,
       fromDbVersion,
-      toDbVersion: chunkToDbVersion,
-      changes: selected.changes,
+      toDbVersion: payload.toDbVersion,
+      changes: payload.changes,
       sentAtMs: Date.now(),
       retryCount: 0,
     };
-    const sent = send(peer, "changeset_batch", {
-      batchId: batch.batchId,
-      reason,
-      fromDbVersion,
-      toDbVersion: chunkToDbVersion,
-      changes: selected.changes,
-    });
+    const sent = send(peer, "changeset_batch", payload);
     return sent ? batch : null;
   }
 
@@ -2190,6 +2149,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const changes = args.db.sync
         .exportChangesSince(peer.lastKnownServerDbVersion)
         .filter((change: CrsqlChangeRow) => change.site_id !== peer.metadata?.siteId);
+      if (changes.length === 0) {
+        const previousDbVersion = peer.lastKnownServerDbVersion;
+        peer.lastKnownServerDbVersion = currentDbVersion;
+        args.logger.debug("sync_host.changeset_advanced_without_send", {
+          peerDeviceId: peer.metadata?.deviceId ?? null,
+          fromDbVersion: previousDbVersion,
+          toDbVersion: currentDbVersion,
+          reason: "peer_owned_changes_only",
+        });
+        continue;
+      }
       const pending = sendNextChangesetBatch(peer, "broadcast", peer.lastKnownServerDbVersion, currentDbVersion, changes);
       if (pending) {
         if (peerSupportsChangesetAck(peer)) {
