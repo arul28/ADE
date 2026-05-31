@@ -321,27 +321,6 @@ function publishedAnnouncements(): BonjourPublishArgs[] {
   return publishMock.mock.calls.map(([payload]) => payload as BonjourPublishArgs);
 }
 
-type NativeDiscoveryProcess = {
-  child: {
-    kill: ReturnType<typeof vi.fn>;
-    once: ReturnType<typeof vi.fn<[string, (...args: unknown[]) => void], NativeDiscoveryProcess["child"]>>;
-    unref: ReturnType<typeof vi.fn>;
-  };
-  handlers: Map<string, (...args: unknown[]) => void>;
-};
-
-function createNativeDiscoveryProcess(): NativeDiscoveryProcess {
-  const handlers = new Map<string, (...args: unknown[]) => void>();
-  const child = {} as NativeDiscoveryProcess["child"];
-  child.kill = vi.fn();
-  child.once = vi.fn<[string, (...args: unknown[]) => void], NativeDiscoveryProcess["child"]>((event, handler) => {
-    handlers.set(event, handler);
-    return child;
-  });
-  child.unref = vi.fn();
-  return { child, handlers };
-}
-
 function createHostArgs(projectRoot: string, projects: SyncMobileProjectSummary[]) {
   return {
     db: {
@@ -461,7 +440,7 @@ describe("createSyncHostService LAN discovery", () => {
     vi.restoreAllMocks();
   });
 
-  it("publishes headless runtime project metadata in Bonjour TXT records", async () => {
+  it("does not publish LAN Bonjour metadata when the sync host is loopback-bound", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const projects = [
       createDiscoveryProject({ id: "project-1", displayName: "API, Server\nOne", rootPath: "/srv/api" }),
@@ -472,44 +451,18 @@ describe("createSyncHostService LAN discovery", () => {
     );
 
     try {
-      const port = await host.waitUntilListening();
-      await vi.waitFor(() => {
-        expect(publishedAnnouncements().some((announcement) => announcement.txt.projectCount === "2")).toBe(true);
-      });
-
-      const announcement = publishedAnnouncements()
-        .find((candidate) => candidate.txt.projectCount === "2");
-      expect(announcement).toBeDefined();
-      expect(announcement).toMatchObject({
-        name: `ADE Sync ADE Build Host ${port}`,
-        type: "ade-sync",
-        protocol: "tcp",
-        port,
-        disableIPv6: true,
-      });
-      expect(announcement?.txt).toEqual({
-        version: "1",
-        runtimeKind: "headless",
-        runtimeVersion: "2.0.0",
-        projects: "project-1,project-2",
-        projectNames: "API Server One,Worker",
-        projectCount: "2",
-        deviceId: "host-device-1",
-        siteId: "host-site-1",
-        deviceName: "ADE Build Host",
-        port: String(port),
-        host: "192.168.1.50",
-        addresses: "192.168.1.50,100.64.0.10",
-        tailscaleIp: "100.64.0.10",
-        tailscaleDnsName: "ade-build.tailnet.ts.net",
-      });
+      await host.waitUntilListening();
+      host.refreshLanDiscovery({ forceLan: true });
+      expect(publishedAnnouncements()).toEqual([]);
+      expect(bonjourConstructorMock).not.toHaveBeenCalled();
+      expect(spawnMock).not.toHaveBeenCalled();
     } finally {
       await host.dispose();
       cleanup();
     }
   });
 
-  it("forces a fresh LAN Bonjour announcement when discovery is explicitly refreshed", async () => {
+  it("keeps LAN discovery unpublished when discovery is explicitly refreshed", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const publishedServices: Array<{ on: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }> = [];
     publishMock.mockImplementation(() => {
@@ -525,31 +478,22 @@ describe("createSyncHostService LAN discovery", () => {
 
     try {
       await host.waitUntilListening();
-      await vi.waitFor(() => {
-        expect(publishedAnnouncements().some((announcement) => announcement.txt.projectCount === "1")).toBe(true);
-      });
-
-      const activeAnnouncement = publishedServices[publishedServices.length - 1];
       publishMock.mockClear();
 
       host.refreshLanDiscovery();
       expect(publishMock).not.toHaveBeenCalled();
-      expect(activeAnnouncement.stop).not.toHaveBeenCalled();
 
       host.refreshLanDiscovery({ forceLan: true });
 
-      expect(activeAnnouncement.stop).toHaveBeenCalledTimes(1);
-      await vi.waitFor(() => {
-        expect(publishMock).toHaveBeenCalledTimes(1);
-      });
-      expect(publishedAnnouncements()[0]?.txt.projectCount).toBe("1");
+      expect(publishMock).not.toHaveBeenCalled();
+      expect(publishedServices).toEqual([]);
     } finally {
       await host.dispose();
       cleanup();
     }
   });
 
-  it("publishes LAN discovery through native dns-sd when running under Electron on macOS", async () => {
+  it("does not publish native LAN discovery when running under Electron on macOS", async () => {
     Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
     Object.defineProperty(process.versions, "electron", {
       value: "35.0.0",
@@ -570,68 +514,11 @@ describe("createSyncHostService LAN discovery", () => {
 
     try {
       await host.waitUntilListening();
-      await vi.waitFor(() => {
-        expect(spawnMock.mock.calls.some(([, args]) => Array.isArray(args) && args.includes("projectCount=1"))).toBe(true);
-      });
 
       expect(bonjourConstructorMock).not.toHaveBeenCalled();
       expect(publishMock).not.toHaveBeenCalled();
-      const [, args] = spawnMock.mock.calls.find(([, candidateArgs]) =>
-        Array.isArray(candidateArgs) && candidateArgs.includes("projectCount=1")
-      )!;
-      const publishedPort = String(args[4]);
-      expect(args).toEqual(expect.arrayContaining([
-        "-R",
-        `ADE Sync ADE Build Host ${publishedPort}`,
-        "_ade-sync._tcp",
-        "local",
-        publishedPort,
-        "projects=project-1",
-        "projectNames=Project",
-        "addresses=192.168.1.50,100.64.0.10",
-      ]));
-      expect(nativeProcesses.at(-1)?.unref).toHaveBeenCalledTimes(1);
-    } finally {
-      await host.dispose();
-      cleanup();
-    }
-    expect(nativeProcesses.at(-1)?.kill).toHaveBeenCalledWith("SIGTERM");
-  });
-
-  it("falls back to Bonjour when the native dns-sd publisher exits", async () => {
-    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
-    Object.defineProperty(process.versions, "electron", {
-      value: "35.0.0",
-      configurable: true,
-    });
-    const { projectRoot, cleanup } = createTempProjectRoot();
-    const nativeProcesses: ReturnType<typeof createNativeDiscoveryProcess>[] = [];
-    spawnMock.mockImplementation(() => {
-      const nativeProcess = createNativeDiscoveryProcess();
-      nativeProcesses.push(nativeProcess);
-      return nativeProcess.child;
-    });
-    const host = createSyncHostService(
-      createHostArgs(projectRoot, [createDiscoveryProject({ id: "project-1" })]) as unknown as Parameters<
-        typeof createSyncHostService
-      >[0],
-    );
-
-    try {
-      await host.waitUntilListening();
-      await vi.waitFor(() => {
-        expect(spawnMock.mock.calls.some(([, args]) => Array.isArray(args) && args.includes("projectCount=1"))).toBe(true);
-      });
-
-      const nativeSpawnCount = spawnMock.mock.calls.length;
-      publishMock.mockClear();
-      nativeProcesses.at(-1)?.handlers.get("exit")?.(1, null);
-
-      await vi.waitFor(() => {
-        expect(publishMock).toHaveBeenCalledTimes(1);
-      }, { timeout: 2_000 });
-      expect(spawnMock).toHaveBeenCalledTimes(nativeSpawnCount);
-      expect(publishedAnnouncements()[0]?.txt.projectCount).toBe("1");
+      expect(spawnMock).not.toHaveBeenCalled();
+      expect(nativeProcesses).toEqual([]);
     } finally {
       await host.dispose();
       cleanup();

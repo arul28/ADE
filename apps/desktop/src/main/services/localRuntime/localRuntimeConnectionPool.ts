@@ -986,6 +986,12 @@ export class LocalRuntimeConnectionPool {
     }) as T;
   }
 
+  async switchSyncHostForRoot(rootPath: string): Promise<void> {
+    const project = await this.ensureProject(rootPath);
+    const entry = await this.connect();
+    await entry.client.call("sync.switchHost", { projectId: project.projectId });
+  }
+
   dispose(): void {
     const pending = this.connection;
     this.connection = null;

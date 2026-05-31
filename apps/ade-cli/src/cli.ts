@@ -11879,7 +11879,7 @@ async function runServe(
             };
           }
           try {
-            const scope = await scopeRegistry.ensureSyncHost(record.projectId);
+            const scope = await scopeRegistry.switchSyncHost(record.projectId);
             const syncService = scope?.runtime.syncService ?? null;
             if (!scope || !syncService) {
               return {
@@ -12026,13 +12026,14 @@ async function runServe(
   }
 
   if (syncEnabled) {
-    void scopeRegistry
-      .ensureSyncHost(preferredSyncProjectId ?? undefined)
-      .catch((error: unknown) => {
-        process.stderr.write(
-          `ade serve sync host failed: ${error instanceof Error ? error.message : String(error)}\n`,
-        );
-      });
+    const syncHostStartup = preferredSyncProjectId
+      ? scopeRegistry.switchSyncHost(preferredSyncProjectId)
+      : scopeRegistry.resolveActiveSyncHost();
+    void syncHostStartup.catch((error: unknown) => {
+      process.stderr.write(
+        `ade serve sync host failed: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    });
   }
 
   process.stderr.write(

@@ -631,13 +631,14 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const blocker = net.createServer();
     await new Promise<void>((resolve, reject) => {
       blocker.once("error", reject);
-      blocker.listen(0, () => resolve());
+      blocker.listen(0, "127.0.0.1", () => resolve());
     });
     const blockedPort = (blocker.address() as net.AddressInfo).port;
 
     const host = createSyncHostService({
       db,
       logger: createLogger() as any,
+      projectId: "project-1",
       projectRoot,
       port: blockedPort,
       pinStore: createStubPinStore(),
@@ -2190,15 +2191,17 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     expect(chatService.service.deleteSession).toHaveBeenCalledWith({ sessionId: "session-1" });
   }, 15_000);
 
-  it("pairs a phone peer using the desktop PIN and allows paired reconnect auth", async () => {
+  it("pairs a phone peer and keeps paired reconnects read-only even if hello metadata is spoofed", async () => {
     const brainDb = await openKvDb(makeDbPath("ade-sync-pairing-"), createLogger() as any);
     const projectRoot = makeProjectRoot("ade-sync-pairing-project-");
     const workspaceRoot = path.join(projectRoot, "workspace");
     fs.mkdirSync(workspaceRoot, { recursive: true });
+    fs.writeFileSync(path.join(workspaceRoot, "notes.txt"), "original", "utf8");
 
     const host = createSyncHostService({
       db: brainDb,
       logger: createLogger() as any,
+      projectId: "project-1",
       projectRoot,
       port: 0,
       pinStore: createStubPinStore("428193"),
@@ -2269,6 +2272,34 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     pairWs.close();
     await new Promise((resolve) => pairWs.once("close", resolve));
 
+    const bootstrapSpoofWs = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((resolve, reject) => {
+      bootstrapSpoofWs.once("open", () => resolve());
+      bootstrapSpoofWs.once("error", reject);
+    });
+    const bootstrapSpoofQueue = createMessageQueue(bootstrapSpoofWs);
+    bootstrapSpoofWs.send(encodeSyncEnvelope({
+      type: "hello",
+      requestId: "hello-bootstrap-spoof",
+      payload: {
+        token: host.getBootstrapToken(),
+        peer: {
+          deviceId: "ios-phone-1",
+          deviceName: "Spoofed Mac",
+          platform: "macOS",
+          deviceType: "desktop",
+          siteId: "spoofed-mac-site",
+          dbVersion: 0,
+        },
+      },
+    }));
+    const bootstrapSpoofError = await bootstrapSpoofQueue.next("hello_error");
+    expect((bootstrapSpoofError.payload as { code: string }).code).toBe("auth_failed");
+    if (bootstrapSpoofWs.readyState !== WebSocket.CLOSED) {
+      bootstrapSpoofWs.close();
+      await new Promise((resolve) => bootstrapSpoofWs.once("close", resolve));
+    }
+
     const authWs = new WebSocket(`ws://127.0.0.1:${port}`);
     await new Promise<void>((resolve, reject) => {
       authWs.once("open", () => resolve());
@@ -2281,9 +2312,9 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       payload: {
         peer: {
           deviceId: "ios-phone-1",
-          deviceName: "Arul iPhone",
-          platform: "iOS",
-          deviceType: "phone",
+          deviceName: "Spoofed Mac",
+          platform: "macOS",
+          deviceType: "desktop",
           siteId: "ios-site-1",
           dbVersion: 0,
         },
@@ -2339,6 +2370,24 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       ]),
     );
     expect(host.getPeerStates().map((peer) => peer.deviceId)).toContain("ios-phone-1");
+
+    authWs.send(encodeSyncEnvelope({
+      type: "file_request",
+      requestId: "paired-spoofed-write",
+      payload: {
+        action: "writeText",
+        args: {
+          workspaceId: "workspace-1",
+          path: "notes.txt",
+          text: "spoofed update",
+        },
+      },
+    }));
+    const spoofedWriteResponse = await authQueue.next("file_response");
+    const spoofedWritePayload = spoofedWriteResponse.payload as { ok: boolean; error?: { message: string } };
+    expect(spoofedWritePayload.ok).toBe(false);
+    expect(spoofedWritePayload.error?.message).toMatch(/read-only/i);
+    expect(fs.readFileSync(path.join(workspaceRoot, "notes.txt"), "utf8")).toBe("original");
 
     host.revokePairedDevice("ios-phone-1");
     if (authWs.readyState !== WebSocket.CLOSED) {

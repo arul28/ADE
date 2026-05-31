@@ -72,6 +72,7 @@ const RUNTIME_METHODS = new Set([
   "projects.listMyGitHubRepos",
   "runtimeEvents.subscribe",
   "runtimeEvents.unsubscribe",
+  "sync.switchHost",
   "sync.getStatus",
   "sync.refreshDiscovery",
   "sync.listDevices",
@@ -365,14 +366,32 @@ export function createMultiProjectRpcRequestHandler(
     return { removed: true };
   };
 
-  const getSyncService = async (params: Record<string, unknown>) => {
-    const projectId = readProjectId(params);
-    const scope = await scopeRegistry.ensureSyncHost(projectId ?? undefined);
+  const getSyncService = async () => {
+    const scope = await scopeRegistry.resolveActiveSyncHost();
     const syncService = scope?.runtime.syncService ?? null;
     if (!syncService) {
       throw new JsonRpcError(
         JsonRpcErrorCode.invalidRequest,
         "Sync service is not available. Register a project first.",
+      );
+    }
+    return syncService;
+  };
+
+  const switchSyncService = async (params: Record<string, unknown>) => {
+    const projectId = readProjectId(params);
+    if (!projectId) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "sync.switchHost requires params.projectId.",
+      );
+    }
+    const scope = await scopeRegistry.switchSyncHost(projectId);
+    const syncService = scope?.runtime.syncService ?? null;
+    if (!syncService) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidRequest,
+        "Sync service is not available for that project.",
       );
     }
     return syncService;
@@ -566,8 +585,13 @@ export function createMultiProjectRpcRequestHandler(
       return unsubscribeRuntimeEvents(params);
     }
 
+    if (method === "sync.switchHost") {
+      await switchSyncService(params);
+      return { switched: true };
+    }
+
     if (method === "sync.getStatus") {
-      const syncService = await getSyncService(params);
+      const syncService = await getSyncService();
       return await syncService.getStatus({
         includeTransferReadiness: params.includeTransferReadiness === true,
         forceTransferReadiness: params.forceTransferReadiness === true,
@@ -575,11 +599,11 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "sync.refreshDiscovery") {
-      return await (await getSyncService(params)).refreshDiscovery();
+      return await (await getSyncService()).refreshDiscovery();
     }
 
     if (method === "sync.listDevices") {
-      return await (await getSyncService(params)).listDevices();
+      return await (await getSyncService()).listDevices();
     }
 
     if (method === "sync.updateLocalDevice") {
@@ -589,7 +613,7 @@ export function createMultiProjectRpcRequestHandler(
           ? (params.deviceType as SyncPeerDeviceType)
           : undefined;
       return await (
-        await getSyncService(params)
+        await getSyncService()
       ).updateLocalDevice({
         ...(name !== undefined ? { name } : {}),
         ...(deviceType !== undefined ? { deviceType } : {}),
@@ -597,7 +621,7 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "sync.connectToBrain") {
-      const syncService = await getSyncService(params);
+      const syncService = await getSyncService();
       return await syncService.connectToBrain(
         omitProjectId(params) as Parameters<
           typeof syncService.connectToBrain
@@ -606,38 +630,38 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "sync.disconnectFromBrain") {
-      return await (await getSyncService(params)).disconnectFromBrain();
+      return await (await getSyncService()).disconnectFromBrain();
     }
 
     if (method === "sync.forgetDevice") {
       const deviceId =
         typeof params.deviceId === "string" ? params.deviceId : "";
-      return await (await getSyncService(params)).forgetDevice(deviceId);
+      return await (await getSyncService()).forgetDevice(deviceId);
     }
 
     if (method === "sync.getTransferReadiness") {
-      return await (await getSyncService(params)).getTransferReadiness();
+      return await (await getSyncService()).getTransferReadiness();
     }
 
     if (method === "sync.transferBrainToLocal") {
-      return await (await getSyncService(params)).transferBrainToLocal();
+      return await (await getSyncService()).transferBrainToLocal();
     }
 
     if (method === "sync.getPin") {
-      return { pin: (await getSyncService(params)).getPin() };
+      return { pin: (await getSyncService()).getPin() };
     }
 
     if (method === "sync.setPin") {
       const pin = typeof params.pin === "string" ? params.pin : "";
-      return await (await getSyncService(params)).setPin(pin);
+      return await (await getSyncService()).setPin(pin);
     }
 
     if (method === "sync.generatePin") {
-      return await (await getSyncService(params)).generatePin();
+      return await (await getSyncService()).generatePin();
     }
 
     if (method === "sync.clearPin") {
-      return await (await getSyncService(params)).clearPin();
+      return await (await getSyncService()).clearPin();
     }
 
     if (method === "sync.setActiveLanePresence") {
@@ -646,7 +670,7 @@ export function createMultiProjectRpcRequestHandler(
             (laneId): laneId is string => typeof laneId === "string",
           )
         : [];
-      await (await getSyncService(params)).setActiveLanePresence(laneIds);
+      await (await getSyncService()).setActiveLanePresence(laneIds);
       return null;
     }
 
