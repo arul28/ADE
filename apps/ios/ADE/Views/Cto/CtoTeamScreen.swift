@@ -16,6 +16,7 @@ struct CtoTeamScreen: View {
   @State private var showHireSheet = false
   @State private var pendingWakeup: Set<String> = []
   @State private var wakeupNotice: String?
+  @State private var wakeupNoticeGeneration = 0
   @State private var lastLiveReloadAt: Date?
 
   var body: some View {
@@ -101,8 +102,8 @@ struct CtoTeamScreen: View {
     .sheet(isPresented: $showHireSheet) {
       CtoWorkerHireSheet(existingAgents: displayAgents) { saved in
         showHireSheet = false
-        wakeupNotice = "Hired \(saved.name)."
         await load(force: true)
+        flashWakeupNotice("Hired \(saved.name).")
       }
       .environmentObject(syncService)
       .presentationDetents([.large])
@@ -304,6 +305,7 @@ struct CtoTeamScreen: View {
     if isLoading { return }
     if !force && !displayAgents.isEmpty { return }
     isLoading = true
+    clearWakeupNotice()
     defer { isLoading = false }
 
     async let agentsR = CtoTeamAsyncResult { try await syncService.fetchCtoAgents() }
@@ -380,10 +382,29 @@ struct CtoTeamScreen: View {
     defer { pendingWakeup.remove(agent.id) }
     do {
       _ = try await syncService.triggerAgentWakeup(agentId: agent.id)
-      wakeupNotice = "Woke \(agent.name)."
+      flashWakeupNotice("Woke \(agent.name).")
     } catch {
-      wakeupNotice = "Wake failed: \(error.localizedDescription)"
+      flashWakeupNotice("Wake failed: \(error.localizedDescription)")
     }
+  }
+
+  @MainActor
+  private func flashWakeupNotice(_ text: String) {
+    wakeupNoticeGeneration += 1
+    let generation = wakeupNoticeGeneration
+    withAnimation(.easeInOut(duration: 0.2)) { wakeupNotice = text }
+    Task {
+      try? await Task.sleep(nanoseconds: 4_000_000_000)
+      guard wakeupNoticeGeneration == generation else { return }
+      withAnimation(.easeInOut(duration: 0.2)) { wakeupNotice = nil }
+    }
+  }
+
+  @MainActor
+  private func clearWakeupNotice() {
+    guard wakeupNotice != nil else { return }
+    wakeupNoticeGeneration += 1
+    withAnimation(.easeInOut(duration: 0.2)) { wakeupNotice = nil }
   }
 }
 
