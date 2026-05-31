@@ -4,16 +4,28 @@ Pull requests are welcome from anyone. Only the maintainer (Arul) can merge or c
 
 ## Development Setup
 
+Install dependencies for each app from the repo root:
+
 ```bash
-cd apps/desktop
-npm install
+npm run setup
+```
+
+Start the normal desktop development flow from the repo root:
+
+```bash
 npm run dev
 ```
 
+This builds the ADE CLI, refreshes the shared dev runtime when needed, launches
+the Electron desktop app, and points desktop at that runtime. For renderer-only
+UI work, see [apps/desktop/README.md](apps/desktop/README.md).
+
 ## Before Submitting
 
-- Run `npm run typecheck` to check for type errors
-- Run `npm test` to ensure all tests pass
+- Run the smallest relevant checks for your change first
+- Desktop: `npm --prefix apps/desktop run typecheck`, targeted Vitest files, and `npm --prefix apps/desktop run lint` when touching renderer or main-process code
+- ADE CLI: `npm --prefix apps/ade-cli run typecheck` and `npm --prefix apps/ade-cli run test` when touching CLI/runtime code
+- Docs: `node scripts/validate-docs.mjs`
 - TypeScript strict mode is enabled
 - Tests use Vitest
 
