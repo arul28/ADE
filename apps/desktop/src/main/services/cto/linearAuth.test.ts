@@ -781,6 +781,32 @@ describe("linearClient", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it("does not retry non-retryable GraphQL validation errors", async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          errors: [{ message: "Cannot query field \"wat\" on type \"Query\"." }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    const client = createLinearClient({
+      credentials: {
+        getTokenOrThrow: () => "Bearer test-token",
+        getStatus: () => ({ authMode: "oauth" }),
+      } as any,
+      fetchImpl: fetchImpl as any,
+      logger: null,
+    });
+
+    await expect(client.runGraphQL({
+      query: "query Broken { wat }",
+      maxRetries: 4,
+    })).rejects.toThrow("Cannot query field");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("loads connection identity with the authorized Linear workspace", async () => {
     const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
       expect(init?.headers).toMatchObject({ authorization: "Bearer test-token" });

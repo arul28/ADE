@@ -2436,6 +2436,8 @@ describe("ADE CLI", () => {
       "Viewer",
       "--variables-json",
       "{\"includeArchived\":false}",
+      "--max-retries",
+      "99",
     ]);
     expect(plan.kind).toBe("execute");
     if (plan.kind !== "execute") return;
@@ -2448,6 +2450,7 @@ describe("ADE CLI", () => {
           query: "query Viewer { viewer { id name } }",
           operationName: "Viewer",
           variables: { includeArchived: false },
+          maxRetries: 10,
         },
       },
     });
@@ -2475,6 +2478,17 @@ describe("ADE CLI", () => {
         "{\"query\":123}",
       ]),
     ).toThrow(/GraphQL query is required/);
+
+    expect(() =>
+      buildCliPlan([
+        "linear",
+        "graphql",
+        "--query",
+        "query Viewer { viewer { id name } }",
+        "--input-json",
+        "{\"maxRetries\":\"many\"}",
+      ]),
+    ).toThrow(/--max-retries must be a number/);
   });
 
   it("attaches an issue to the current session via linear attach --this-session", () => {

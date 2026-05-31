@@ -224,8 +224,9 @@ export function createLinearClient(args: LinearClientArgs) {
         args.credentials.getTokenOrThrow(),
         args.credentials.getStatus().authMode
       );
+      let res: Response;
       try {
-        const res = await fetchImpl(LINEAR_GRAPHQL_URL, {
+        res = await fetchImpl(LINEAR_GRAPHQL_URL, {
           method: "POST",
           headers: {
             "content-type": "application/json",
@@ -237,50 +238,51 @@ export function createLinearClient(args: LinearClientArgs) {
             ...(params.operationName ? { operationName: params.operationName } : {}),
           }),
         });
-
-        const payload = await res.json().catch(() => ({})) as {
-          data?: TData;
-          errors?: Array<{ message?: string; extensions?: { code?: string } }>;
-        };
-
-        const message = payload.errors?.[0]?.message ?? null;
-        const errorCode = payload.errors?.[0]?.extensions?.code ?? null;
-
-        // Reactive refresh: if the access token was rejected, refresh once and
-        // retry with the new token (covers a token already expired by the time
-        // the request fired, or one with no recorded expiry).
-        const isAuthError =
-          res.status === 401 ||
-          errorCode === "AUTHENTICATION_ERROR" ||
-          (message ? /authentication|unauthor|invalid.*token|token.*expired/i.test(message) : false);
-        if (isAuthError && !didAuthRefresh && args.credentials.getStatus().authMode === "oauth") {
-          didAuthRefresh = true;
-          await ensureFreshAuth({ force: true });
-          continue;
-        }
-
-        const isRateLimited =
-          res.status === 429 ||
-          errorCode === "RATELIMITED" ||
-          (message ? /rate\s*limit|too\s*many\s*requests/i.test(message) : false);
-
-        if ((!res.ok || payload.errors?.length) && (isRateLimited || res.status >= 500) && attempt <= maxRetries) {
-          await sleep(backoffMs);
-          backoffMs = Math.min(15_000, Math.floor(backoffMs * 2));
-          continue;
-        }
-
-        if (!res.ok || payload.errors?.length || !payload.data) {
-          const detail = message ?? `Linear GraphQL request failed (HTTP ${res.status})`;
-          throw new Error(detail);
-        }
-
-        return payload.data;
       } catch (error) {
         if (attempt > maxRetries) throw error;
         await sleep(backoffMs);
         backoffMs = Math.min(15_000, Math.floor(backoffMs * 2));
+        continue;
       }
+
+      const payload = await res.json().catch(() => ({})) as {
+        data?: TData;
+        errors?: Array<{ message?: string; extensions?: { code?: string } }>;
+      };
+
+      const message = payload.errors?.[0]?.message ?? null;
+      const errorCode = payload.errors?.[0]?.extensions?.code ?? null;
+
+      // Reactive refresh: if the access token was rejected, refresh once and
+      // retry with the new token (covers a token already expired by the time
+      // the request fired, or one with no recorded expiry).
+      const isAuthError =
+        res.status === 401 ||
+        errorCode === "AUTHENTICATION_ERROR" ||
+        (message ? /authentication|unauthor|invalid.*token|token.*expired/i.test(message) : false);
+      if (isAuthError && !didAuthRefresh && args.credentials.getStatus().authMode === "oauth") {
+        didAuthRefresh = true;
+        await ensureFreshAuth({ force: true });
+        continue;
+      }
+
+      const isRateLimited =
+        res.status === 429 ||
+        errorCode === "RATELIMITED" ||
+        (message ? /rate\s*limit|too\s*many\s*requests/i.test(message) : false);
+
+      if ((!res.ok || payload.errors?.length) && (isRateLimited || res.status >= 500) && attempt <= maxRetries) {
+        await sleep(backoffMs);
+        backoffMs = Math.min(15_000, Math.floor(backoffMs * 2));
+        continue;
+      }
+
+      if (!res.ok || payload.errors?.length || !payload.data) {
+        const detail = message ?? `Linear GraphQL request failed (HTTP ${res.status})`;
+        throw new Error(detail);
+      }
+
+      return payload.data;
     }
   };
 

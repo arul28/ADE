@@ -447,7 +447,7 @@ describe("linear command routing", () => {
 
   it("routes /linear graphql through the linear_issue_tracker action domain", () => {
     expect(
-      buildLinearToolRequest("graphql --query 'query Viewer { viewer { id } }' --variables-json '{\"first\":10}'"),
+      buildLinearToolRequest("graphql --query 'query Viewer { viewer { id } }' --variables-json '{\"first\":10}' --max-retries 99"),
     ).toEqual({
       kind: "action",
       title: "Linear GraphQL",
@@ -456,6 +456,7 @@ describe("linear command routing", () => {
       args: {
         query: "query Viewer { viewer { id } }",
         variables: { first: 10 },
+        maxRetries: 10,
       },
     });
   });
@@ -474,6 +475,13 @@ describe("linear command routing", () => {
       kind: "usage",
       title: "Linear GraphQL",
       body: expect.stringContaining("--variables-json must be a JSON object"),
+    });
+    expect(
+      buildLinearToolRequest("graphql --query 'query Viewer { viewer { id } }' --max-retries nope"),
+    ).toMatchObject({
+      kind: "usage",
+      title: "Linear GraphQL",
+      body: expect.stringContaining("--max-retries must be a number"),
     });
   });
 

@@ -77,6 +77,7 @@ import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../
 import { launchRebaseResolutionChat } from "../prs/prRebaseResolver";
 import { mapPermissionModeForModelFamily } from "../prs/resolverUtils";
 import { getErrorMessage, isRecord, nowIso } from "../shared/utils";
+import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import {
   buildResumeArgv,
@@ -609,7 +610,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listWorkflowStates",
     "listUsers",
     "removeIssueLabel",
-    "runGraphQL",
     "searchIssues",
     "updateComment",
     "updateIssueAssignee",
@@ -2474,10 +2474,8 @@ function buildLinearIssueTrackerDomainService(runtime: AdeRuntime): OpaqueServic
   return {
     ...(tracker as unknown as OpaqueService),
     async graphql(args?: unknown) {
-      return tracker.runGraphQL(readLinearGraphQLActionArgs(args));
-    },
-    async runGraphQL(args?: unknown) {
-      return tracker.runGraphQL(readLinearGraphQLActionArgs(args));
+      await requireRuntimeLinearConnection(runtime);
+      return tracker.runGraphQL(parseLinearGraphQLInput(asActionRecord(args)));
     },
     async getStatus() {
       return buildRuntimeLinearConnectionStatus(runtime);
@@ -2528,34 +2526,6 @@ function buildLinearIssueTrackerDomainService(runtime: AdeRuntime): OpaqueServic
       ]);
       return { projects, users, states };
     },
-  };
-}
-
-function readLinearGraphQLActionArgs(args?: unknown): {
-  query: string;
-  variables?: Record<string, unknown>;
-  operationName?: string | null;
-  maxRetries?: number;
-} {
-  const actionArgs = asActionRecord(args);
-  const query = requireNonEmptyString(actionArgs.query, "query");
-  const variables = actionArgs.variables;
-  if (variables != null && !isRecord(variables)) {
-    throw new Error("Expected 'variables' to be a JSON object when provided.");
-  }
-  const operationName =
-    typeof actionArgs.operationName === "string" && actionArgs.operationName.trim().length
-      ? actionArgs.operationName.trim()
-      : null;
-  const maxRetries =
-    typeof actionArgs.maxRetries === "number" && Number.isFinite(actionArgs.maxRetries)
-      ? Math.max(0, Math.min(10, Math.floor(actionArgs.maxRetries)))
-      : undefined;
-  return {
-    query,
-    ...(variables ? { variables } : {}),
-    ...(operationName ? { operationName } : {}),
-    ...(maxRetries !== undefined ? { maxRetries } : {}),
   };
 }
 
@@ -2624,6 +2594,15 @@ async function buildRuntimeLinearConnectionStatus(runtime: AdeRuntime): Promise<
       ),
     };
   }
+}
+
+async function requireRuntimeLinearConnection(runtime: AdeRuntime): Promise<LinearConnectionStatus> {
+  const connection = await buildRuntimeLinearConnectionStatus(runtime);
+  if (connection.connected) return connection;
+  const message = connection.message?.trim();
+  const error = new Error(message ? `Linear is not connected: ${message}` : "Linear is not connected.");
+  Object.assign(error, { code: "LINEAR_NOT_CONNECTED", connection });
+  throw error;
 }
 
 function formatLinearConnectionMessage(
