@@ -667,6 +667,7 @@ function createRuntime() {
         labels: [],
         assigneeName: null,
       })),
+      runGraphQL: vi.fn(async (args: unknown) => ({ viewer: { id: "user-1" }, _args: args })),
       createComment: vi.fn(async () => ({ id: "comment-1" })),
       fetchWorkflowStates: vi.fn(async () => [{ id: "state-done", name: "Done" }]),
       updateIssueState: vi.fn(async () => {}),
@@ -2951,6 +2952,18 @@ describe("adeRpcServer", () => {
     });
     expect(setState?.isError).toBeUndefined();
     expect(fixture.runtime.linearIssueTracker.updateIssueState).toHaveBeenCalledWith("ENG-431", "state-done");
+
+    const graphql = await callTool(handler, "run_ade_action", {
+      domain: "linear_issue_tracker",
+      action: "graphql",
+      args: { query: "query Viewer { viewer { id } }", variables: { first: 1 } },
+    });
+    expect(graphql?.isError).toBeUndefined();
+    expect(fixture.runtime.linearIssueTracker.runGraphQL).toHaveBeenCalledWith({
+      query: "query Viewer { viewer { id } }",
+      variables: { first: 1 },
+    });
+    expect(graphql.structuredContent.result).toMatchObject({ viewer: { id: "user-1" } });
   });
 
   it("invokes review.startRun through ADE actions without dropping unlimited budgets", async () => {

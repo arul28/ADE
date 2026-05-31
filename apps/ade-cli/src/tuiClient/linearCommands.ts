@@ -161,6 +161,20 @@ function attachmentFlags(options: Record<string, unknown>): Record<string, unkno
   });
 }
 
+function parseGraphQLVariables(options: Record<string, unknown>): Record<string, unknown> | undefined {
+  const value = optionString(options, "variablesJson", "varsJson");
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
 export function buildLinearToolRequest(input: string): LinearToolRequest {
   const parsed = parseLinearArgs(input);
   const [group, modeArg, ...rest] = parsed.positionals;
@@ -169,7 +183,7 @@ export function buildLinearToolRequest(input: string): LinearToolRequest {
   if (!group) {
     return usage(
       "Linear",
-      "Usage: /linear <attach|detach|issues|comment|set-state|assign|label|issue|create-from|workflows|run|route|sync|ingress> ...",
+      "Usage: /linear <attach|detach|issues|comment|set-state|assign|label|issue|graphql|create-from|workflows|run|route|sync|ingress> ...",
     );
   }
 
@@ -271,6 +285,23 @@ export function buildLinearToolRequest(input: string): LinearToolRequest {
     const issueId = writeCommandIssueId(options, modeArg);
     if (!issueId) return usage("Linear issue", "Usage: /linear issue <issue-id>");
     return actionList("Linear issue", "linear_issue_tracker", "fetchIssueById", [issueId]);
+  }
+
+  if (group === "graphql" || group === "gql") {
+    const query =
+      optionString(options, "query", "graphql", "gql") ??
+      [modeArg, ...rest].filter(Boolean).join(" ").trim();
+    if (!query) {
+      return usage(
+        "Linear GraphQL",
+        "Usage: /linear graphql --query 'query { viewer { id name } }' [--variables-json '{\"id\":\"...\"}']",
+      );
+    }
+    return action("Linear GraphQL", "linear_issue_tracker", "graphql", {
+      query,
+      variables: parseGraphQLVariables(options),
+      operationName: optionString(options, "operationName", "operation") ?? undefined,
+    });
   }
 
   if (group === "create-from" || group === "create-from-linear" || group === "create-lane-from") {

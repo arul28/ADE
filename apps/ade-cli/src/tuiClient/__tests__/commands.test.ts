@@ -445,6 +445,21 @@ describe("linear command routing", () => {
     });
   });
 
+  it("routes /linear graphql through the linear_issue_tracker action domain", () => {
+    expect(
+      buildLinearToolRequest("graphql --query 'query Viewer { viewer { id } }' --variables-json '{\"first\":10}'"),
+    ).toEqual({
+      kind: "action",
+      title: "Linear GraphQL",
+      domain: "linear_issue_tracker",
+      action: "graphql",
+      args: {
+        query: "query Viewer { viewer { id } }",
+        variables: { first: 10 },
+      },
+    });
+  });
+
   it("routes sync dashboard and queue resolution", () => {
     expect(buildLinearToolRequest("sync dashboard")).toEqual({
       kind: "tool",

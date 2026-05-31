@@ -362,6 +362,7 @@ describe("runtime Linear issue tracker actions", () => {
       listUsers: vi.fn(async () => users),
       listLabels: vi.fn(async () => labels),
       listWorkflowStates: vi.fn(async () => states),
+      runGraphQL: vi.fn(async (args: unknown) => ({ data: args })),
     };
     const runtime = {
       linearCredentialService: {
@@ -379,15 +380,24 @@ describe("runtime Linear issue tracker actions", () => {
       getWorkflowCatalog: () => Promise<unknown>;
       getIssuePickerData: () => Promise<unknown>;
       listIssues: (args?: Record<string, unknown>) => Promise<unknown>;
+      graphql: (args?: Record<string, unknown>) => Promise<unknown>;
     } & Record<string, unknown>;
 
     expect(listAllowedAdeActionNames("linear_issue_tracker", service)).toContain("getStatus");
     expect(listAllowedAdeActionNames("linear_issue_tracker", service)).toContain("listIssues");
+    expect(listAllowedAdeActionNames("linear_issue_tracker", service)).toContain("graphql");
     expect(listAllowedAdeActionNames("linear_issue_tracker", service)).toContain("getWorkflowCatalog");
     expect(listAllowedAdeActionNames("linear_issue_tracker", service)).toContain("getIssuePickerData");
     await expect(service.getStatus()).resolves.toMatchObject({ connected: true, tokenStored: true });
     await expect(service.listIssues({ project: "desktop,cli", state: ["open"], limit: 2 })).resolves.toEqual(issues.slice(0, 2));
     expect(fetchCandidateIssues).toHaveBeenCalledWith({ projectSlugs: ["desktop", "cli"], stateTypes: ["open"] });
+    await expect(service.graphql({ query: "query Viewer { viewer { id } }", variables: { first: 1 } })).resolves.toEqual({
+      data: { query: "query Viewer { viewer { id } }", variables: { first: 1 } },
+    });
+    expect(tracker.runGraphQL).toHaveBeenCalledWith({
+      query: "query Viewer { viewer { id } }",
+      variables: { first: 1 },
+    });
     await expect(service.getWorkflowCatalog()).resolves.toEqual({ users, labels, states });
     await expect(service.getIssuePickerData()).resolves.toEqual({ projects, users, states });
   });

@@ -2408,6 +2408,33 @@ describe("ADE CLI", () => {
     }
   });
 
+  it("routes linear graphql through the runtime-owned Linear connection", () => {
+    const plan = buildCliPlan([
+      "linear",
+      "graphql",
+      "--query",
+      "query Viewer { viewer { id name } }",
+      "--operation-name",
+      "Viewer",
+      "--variables-json",
+      "{\"includeArchived\":false}",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "linear_issue_tracker",
+        action: "graphql",
+        args: {
+          query: "query Viewer { viewer { id name } }",
+          operationName: "Viewer",
+          variables: { includeArchived: false },
+        },
+      },
+    });
+  });
+
   it("attaches an issue to the current session via linear attach --this-session", () => {
     const prev = process.env.ADE_CHAT_SESSION_ID;
     process.env.ADE_CHAT_SESSION_ID = "current-session";

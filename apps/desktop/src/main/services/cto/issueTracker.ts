@@ -70,6 +70,12 @@ export type IssueTrackerWorkflowState = {
 };
 
 export type IssueTracker = {
+  runGraphQL(args: {
+    query: string;
+    variables?: Record<string, unknown>;
+    operationName?: string | null;
+    maxRetries?: number;
+  }): Promise<unknown>;
   listProjects(): Promise<CtoLinearProject[]>;
   getQuickView(connection: CtoLinearQuickView["connection"]): Promise<CtoLinearQuickView>;
   listUsers(): Promise<LinearCatalogUser[]>;
