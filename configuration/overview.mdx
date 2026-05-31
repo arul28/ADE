@@ -226,7 +226,7 @@ ADE watches all three config files using filesystem events (debounced 500ms). Ch
 | File | What happens on change |
 |------|------------------------|
 | `ade.yaml` | ADE detects the change, diffs against the approved SHA, and suspends commands until you approve the new version |
-| `local.yaml` | Applied immediately; UI reflects changes (theme, font, notification preferences) within one render cycle |
+| `local.yaml` | Parsed project-config overrides, such as `ai`, `git`, `github`, lane templates, and automations, are reloaded for this machine |
 | `local.secret.yaml` | Automation secret refs reload for services that watch or request secrets; provider keys managed in Settings use the encrypted credential store |
 
 <Tip>
