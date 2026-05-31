@@ -65,6 +65,8 @@ ade linear issues --text                         # list issues attached to this 
 ade linear issue --text                          # read your attached issue (full detail)
 ade linear issue ENG-431 --text                  # read a specific issue
 ade linear issue-comments --issue-id ENG-431 --text   # read an issue's comment thread
+ade linear graphql --query 'query { viewer { id name } }'  # advanced Linear API via ADE credentials
+ade linear graphql --query-file query.graphql --variables-file vars.json
 ```
 
 Use `--text` for human-readable output; omit it for JSON when you want to parse.
@@ -93,6 +95,40 @@ Notes:
 - `comment`, `set-state`, `assign`, and `label` all accept the value via a flag
   too (`--message/-m`, `--state-id`, `--assignee`, `--label`) if a positional is
   ambiguous.
+- Use `ade linear graphql` for Linear operations not covered by the typed
+  commands. It still routes through ADE's saved Linear OAuth/API key; do not ask
+  for or print token material.
+
+## ADE deeplinks in Linear comments
+
+ADE posts deterministic Linear attachments/cards for these flows when the
+runtime owns the Linear connection:
+
+| Flow | ADE handles it |
+| --- | --- |
+| Create a lane from a Linear issue | Lane attachment + one-time ADE branch comment |
+| Attach a Linear issue to an existing lane | Lane attachment + one-time ADE branch comment |
+| Create or attach a chat/CLI session with a Linear issue | ADE chat attachment |
+| Open/create a PR from a linked lane | ADE PR attachment/footer |
+
+For direct issue actions (`comment`, `set-state`, `assign`, `label`, `graphql`)
+include the relevant ADE link in any user-facing Linear comment you write,
+especially when the action creates new Linear state or hands work to a human.
+Use the **ade-deeplinks** skill to mint links:
+
+```bash
+ade link linear-issue ENG-431 --no-clipboard
+ade link branch <owner/repo> <branch> --no-clipboard
+ade link session "$ADE_CHAT_SESSION_ID" --lane <lane-id> --no-clipboard
+ade link pr <owner/repo> <number> --no-clipboard
+```
+
+Example when creating a new Linear issue via GraphQL:
+
+```bash
+ade linear graphql --query-file create-issue.graphql --variables-file vars.json
+ade linear comment NEW-123 "Created via ADE. Open in ADE: $(ade link linear-issue NEW-123 --no-clipboard)"
+```
 
 ## Attaching / detaching this session
 
@@ -107,8 +143,10 @@ ade linear detach --this-session                      # detach every issue from 
 1. When you start real work on the issue, move it to **In Progress**
    (`ade linear set-state <state-id>`), so watchers see it's being worked.
 2. As you make progress, **comment** what you did and link the PR
-   (`ade linear comment "..."`). That comment is how reviewers and the issue's
-   watchers see status — report what you actually did, not what you intend to do.
+   (`ade linear comment "..."`). Include ADE branch/session/PR links when a card
+   was not already posted automatically. That comment is how reviewers and the
+   issue's watchers see status — report what you actually did, not what you
+   intend to do.
 3. When you finish, set the **appropriate final state** (e.g. Done / In Review).
    Defer the exact final-state policy to the user's workflow — if you're unsure
    whether to mark Done vs. In Review, comment your result and ask rather than

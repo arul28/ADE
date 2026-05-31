@@ -445,6 +445,46 @@ describe("linear command routing", () => {
     });
   });
 
+  it("routes /linear graphql through the linear_issue_tracker action domain", () => {
+    expect(
+      buildLinearToolRequest("graphql --query 'query Viewer { viewer { id } }' --variables-json '{\"first\":10}'"),
+    ).toEqual({
+      kind: "action",
+      title: "Linear GraphQL",
+      domain: "linear_issue_tracker",
+      action: "graphql",
+      args: {
+        query: "query Viewer { viewer { id } }",
+        variables: { first: 10 },
+      },
+    });
+  });
+
+  it("rejects malformed /linear graphql variables", () => {
+    expect(
+      buildLinearToolRequest("graphql --query 'query Viewer { viewer { id } }' --variables-json nope"),
+    ).toMatchObject({
+      kind: "usage",
+      title: "Linear GraphQL",
+      body: expect.stringContaining("--variables-json must be valid JSON"),
+    });
+    expect(
+      buildLinearToolRequest("graphql --query 'query Viewer { viewer { id } }' --variables-json '[1]'"),
+    ).toMatchObject({
+      kind: "usage",
+      title: "Linear GraphQL",
+      body: expect.stringContaining("--variables-json must be a JSON object"),
+    });
+  });
+
+  it("keeps fallback usage in sync with /linear graphql", () => {
+    expect(buildLinearToolRequest("unknown")).toMatchObject({
+      kind: "usage",
+      title: "Linear",
+      body: expect.stringContaining("graphql"),
+    });
+  });
+
   it("routes sync dashboard and queue resolution", () => {
     expect(buildLinearToolRequest("sync dashboard")).toEqual({
       kind: "tool",

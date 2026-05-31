@@ -597,6 +597,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "fetchIssueById",
     "fetchIssuesByIds",
     "fetchIssueComments",
+    "graphql",
     "getIssuePickerData",
     "getConnectionStatus",
     "getQuickView",
@@ -608,6 +609,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listWorkflowStates",
     "listUsers",
     "removeIssueLabel",
+    "runGraphQL",
     "searchIssues",
     "updateComment",
     "updateIssueAssignee",
@@ -2471,6 +2473,12 @@ function buildLinearIssueTrackerDomainService(runtime: AdeRuntime): OpaqueServic
   if (!tracker) return null;
   return {
     ...(tracker as unknown as OpaqueService),
+    async graphql(args?: unknown) {
+      return tracker.runGraphQL(readLinearGraphQLActionArgs(args));
+    },
+    async runGraphQL(args?: unknown) {
+      return tracker.runGraphQL(readLinearGraphQLActionArgs(args));
+    },
     async getStatus() {
       return buildRuntimeLinearConnectionStatus(runtime);
     },
@@ -2520,6 +2528,34 @@ function buildLinearIssueTrackerDomainService(runtime: AdeRuntime): OpaqueServic
       ]);
       return { projects, users, states };
     },
+  };
+}
+
+function readLinearGraphQLActionArgs(args?: unknown): {
+  query: string;
+  variables?: Record<string, unknown>;
+  operationName?: string | null;
+  maxRetries?: number;
+} {
+  const actionArgs = asActionRecord(args);
+  const query = requireNonEmptyString(actionArgs.query, "query");
+  const variables = actionArgs.variables;
+  if (variables != null && !isRecord(variables)) {
+    throw new Error("Expected 'variables' to be a JSON object when provided.");
+  }
+  const operationName =
+    typeof actionArgs.operationName === "string" && actionArgs.operationName.trim().length
+      ? actionArgs.operationName.trim()
+      : null;
+  const maxRetries =
+    typeof actionArgs.maxRetries === "number" && Number.isFinite(actionArgs.maxRetries)
+      ? Math.max(0, Math.min(10, Math.floor(actionArgs.maxRetries)))
+      : undefined;
+  return {
+    query,
+    ...(variables ? { variables } : {}),
+    ...(operationName ? { operationName } : {}),
+    ...(maxRetries !== undefined ? { maxRetries } : {}),
   };
 }
 

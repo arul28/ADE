@@ -161,6 +161,24 @@ function attachmentFlags(options: Record<string, unknown>): Record<string, unkno
   });
 }
 
+type GraphQLVariablesParseResult =
+  | { ok: true; variables?: Record<string, unknown> }
+  | { ok: false; message: string };
+
+function parseGraphQLVariables(options: Record<string, unknown>): GraphQLVariablesParseResult {
+  const value = optionString(options, "variablesJson", "varsJson");
+  if (!value) return { ok: true };
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return { ok: true, variables: parsed as Record<string, unknown> };
+    }
+    return { ok: false, message: "--variables-json must be a JSON object." };
+  } catch {
+    return { ok: false, message: "--variables-json must be valid JSON." };
+  }
+}
+
 export function buildLinearToolRequest(input: string): LinearToolRequest {
   const parsed = parseLinearArgs(input);
   const [group, modeArg, ...rest] = parsed.positionals;
@@ -169,7 +187,7 @@ export function buildLinearToolRequest(input: string): LinearToolRequest {
   if (!group) {
     return usage(
       "Linear",
-      "Usage: /linear <attach|detach|issues|comment|set-state|assign|label|issue|create-from|workflows|run|route|sync|ingress> ...",
+      "Usage: /linear <attach|detach|issues|comment|set-state|assign|label|issue|graphql|create-from|workflows|run|route|sync|ingress> ...",
     );
   }
 
@@ -271,6 +289,30 @@ export function buildLinearToolRequest(input: string): LinearToolRequest {
     const issueId = writeCommandIssueId(options, modeArg);
     if (!issueId) return usage("Linear issue", "Usage: /linear issue <issue-id>");
     return actionList("Linear issue", "linear_issue_tracker", "fetchIssueById", [issueId]);
+  }
+
+  if (group === "graphql" || group === "gql") {
+    const query =
+      optionString(options, "query", "graphql", "gql") ??
+      [modeArg, ...rest].filter(Boolean).join(" ").trim();
+    if (!query) {
+      return usage(
+        "Linear GraphQL",
+        "Usage: /linear graphql --query 'query { viewer { id name } }' [--variables-json '{\"id\":\"...\"}']",
+      );
+    }
+    const variables = parseGraphQLVariables(options);
+    if (!variables.ok) {
+      return usage(
+        "Linear GraphQL",
+        `${variables.message}\nUsage: /linear graphql --query 'query { viewer { id name } }' [--variables-json '{\"id\":\"...\"}']`,
+      );
+    }
+    return action("Linear GraphQL", "linear_issue_tracker", "graphql", {
+      query,
+      variables: variables.variables,
+      operationName: optionString(options, "operationName", "operation") ?? undefined,
+    });
   }
 
   if (group === "create-from" || group === "create-from-linear" || group === "create-lane-from") {
@@ -396,6 +438,6 @@ export function buildLinearToolRequest(input: string): LinearToolRequest {
 
   return usage(
     "Linear",
-    "Usage: /linear <attach|detach|issues|comment|set-state|assign|label|issue|create-from|workflows|run|route|sync|ingress> ...",
+    "Usage: /linear <attach|detach|issues|comment|set-state|assign|label|issue|graphql|create-from|workflows|run|route|sync|ingress> ...",
   );
 }

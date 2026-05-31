@@ -392,7 +392,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
     $ ade agent spawn --lane <id> --prompt <text>   Launch an agent session in ADE
     $ ade cto state | chats                         Operate CTO state and Work chats
-    $ ade linear workflows | run | sync             Operate Linear routing and sync workflows
+    $ ade linear graphql | workflows | run | sync   Operate Linear GraphQL, routing, and sync workflows
     $ ade automations list | create | run | runs    Manage automation rules
     $ ade coordinator <tool>                        Call coordinator runtime tools
     $ ade tests list | run | stop | runs | logs     Run configured test suites
@@ -1415,6 +1415,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade linear set-state ENG-431 <state-id>       Move an issue to a workflow state
     $ ade linear assign ENG-431 <user-id|none>      Assign or clear an issue assignee
     $ ade linear label ENG-431 "needs-review"       Add a label to an issue
+    $ ade linear graphql --query 'query { viewer { id name } }'
+                                                    Run Linear GraphQL through the project connection
+    $ ade linear graphql --query-file query.graphql --variables-file vars.json
+                                                    Use files for larger GraphQL operations
     $ ade linear detach --this-session [--issue-id ENG-431]
                                                     Detach one issue (or all) from this session
 
@@ -1910,6 +1914,18 @@ function readJsonFileOption(
   return parseJson(text, label);
 }
 
+function readTextFileOption(args: string[], names: string[], label: string): string | null {
+  const filePath = readValue(args, names);
+  if (filePath == null) return null;
+  const resolvedPath = path.resolve(filePath);
+  try {
+    return fs.readFileSync(resolvedPath, "utf8");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new CliUsageError(`Could not read ${label} file '${filePath}': ${message}`);
+  }
+}
+
 function readJsonPayloadOption(
   args: string[],
   jsonNames: string[],
@@ -2054,6 +2070,60 @@ function sessionLinearIssueId(): string | null {
 /** Consume the single-issue-id flag (`--issue-id`/`--linear-issue-id`/`--issue`) from args. */
 function readIssueIdFlag(args: string[]): string | null {
   return readValue(args, ["--issue-id", "--linear-issue-id", "--issue"]);
+}
+
+function normalizeLinearGraphQLInput(input: JsonObject): JsonObject {
+  const query = asString(input.query);
+  if (!query) {
+    throw new CliUsageError("GraphQL query is required.");
+  }
+
+  const variables = input.variables;
+  if (variables != null && !isRecord(variables)) {
+    throw new CliUsageError("--variables-json must be a JSON object.");
+  }
+
+  const maxRetries = input.maxRetries;
+  if (maxRetries != null && (typeof maxRetries !== "number" || !Number.isFinite(maxRetries))) {
+    throw new CliUsageError("--max-retries must be a number.");
+  }
+
+  const normalized: JsonObject = { ...input, query };
+  if (variables == null) {
+    delete normalized.variables;
+  }
+  const operationName = asString(input.operationName);
+  if (operationName) {
+    normalized.operationName = operationName;
+  } else {
+    delete normalized.operationName;
+  }
+  return normalized;
+}
+
+function readLinearGraphQLArgs(args: string[]): JsonObject {
+  const inlineQuery = readValue(args, ["--query", "--graphql", "--gql"]);
+  const fileQuery = readTextFileOption(args, ["--query-file", "--graphql-file", "--gql-file"], "--query-file");
+  if (inlineQuery != null && fileQuery != null) {
+    throw new CliUsageError("Use either --query or --query-file, not both.");
+  }
+  const positionalQuery = inlineQuery == null && fileQuery == null ? firstPositional(args) : null;
+  const query = requireValue(inlineQuery ?? fileQuery ?? positionalQuery, "GraphQL query");
+  const variables = readJsonPayloadOption(
+    args,
+    ["--variables-json", "--vars-json"],
+    ["--variables-file", "--vars-file"],
+    "--variables-json",
+  );
+  if (variables !== undefined && !isRecord(variables)) {
+    throw new CliUsageError("--variables-json must be a JSON object.");
+  }
+  const input: JsonObject = { query };
+  if (variables !== undefined) input.variables = variables;
+  maybePut(input, "operationName", readValue(args, ["--operation-name", "--operation"]));
+  const maxRetries = readNumberOption(args, ["--max-retries"]);
+  if (maxRetries !== undefined) input.maxRetries = maxRetries;
+  return normalizeLinearGraphQLInput(collectGenericObjectArgs(args, input));
 }
 
 /**
@@ -3073,6 +3143,25 @@ function buildCreateLaneFromLinearPlan(args: string[], issue: JsonObject): CliPl
             domain: "chat",
             action: "createSession",
             args: { laneId, surface, ...launchConfig },
+          },
+        };
+      },
+      unwrapToolResult: true,
+    });
+    steps.push({
+      key: "attach",
+      method: "ade/actions/call",
+      params: (values) => {
+        const sessionId = sessionIdFromCreateChatValue(values.chat);
+        if (!sessionId) {
+          throw new CliUsageError("create-from-linear launched a chat but could not resolve its session id to attach the issue.");
+        }
+        return {
+          name: "run_ade_action",
+          arguments: {
+            domain: LINEAR_ATTACH_ACTIONS.domain,
+            action: LINEAR_ATTACH_ACTIONS.attachSession,
+            args: { chatSessionId: sessionId, issues: [issue], role: "worked", source: "chat_attach" },
           },
         };
       },
@@ -8774,6 +8863,13 @@ function buildLinearPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "linear issue",
       steps: [actionArgsListStep("result", "linear_issue_tracker", "fetchIssueById", [issueId])],
+    };
+  }
+  if (sub === "graphql" || sub === "gql") {
+    return {
+      kind: "execute",
+      label: "Linear GraphQL",
+      steps: [actionStep("result", "linear_issue_tracker", "graphql", readLinearGraphQLArgs(args))],
     };
   }
   if (sub === "quick-view" || sub === "quick" || sub === "overview") {

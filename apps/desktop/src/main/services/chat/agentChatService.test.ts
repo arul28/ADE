@@ -1718,6 +1718,7 @@ describe("buildLinearSessionDirective", () => {
     expect(directive).toContain("ade linear");
     expect(directive).toContain("Prefer `ade linear`");
     expect(directive).toContain("ade-linear");
+    expect(directive).toContain("ade-deeplinks");
   });
 });
 
@@ -2071,6 +2072,7 @@ describe("createAgentChatService", () => {
       expect(appended).toContain("ADE-123");
       expect(appended).toContain("ade linear");
       expect(appended).toContain("Prefer `ade linear`");
+      expect(appended).toContain("ade-deeplinks");
     });
 
     it("keeps ADE tooling guidance out of Claude SDK user turns", async () => {
@@ -2415,6 +2417,7 @@ describe("createAgentChatService", () => {
       expect(opts?.systemPrompt?.append).toBeTruthy();
       expect(opts?.systemPrompt?.append).toContain("## Project slash commands and skills");
       expect(opts?.systemPrompt?.append).toContain("/ade-cli-control-plane");
+      expect(opts?.systemPrompt?.append).toContain("/ade-linear");
       expect(opts?.systemPrompt?.append).not.toContain("Commands (file-backed prompts):");
     });
 

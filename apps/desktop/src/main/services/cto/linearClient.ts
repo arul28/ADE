@@ -207,6 +207,7 @@ export function createLinearClient(args: LinearClientArgs) {
   const request = async <TData = Record<string, unknown>>(params: {
     query: string;
     variables?: Record<string, unknown>;
+    operationName?: string | null;
     maxRetries?: number;
   }): Promise<TData> => {
     // Proactively refresh an OAuth token that is at/near expiry before sending.
@@ -230,7 +231,11 @@ export function createLinearClient(args: LinearClientArgs) {
             "content-type": "application/json",
             authorization: token,
           },
-          body: JSON.stringify({ query: params.query, variables: params.variables ?? {} }),
+          body: JSON.stringify({
+            query: params.query,
+            variables: params.variables ?? {},
+            ...(params.operationName ? { operationName: params.operationName } : {}),
+          }),
         });
 
         const payload = await res.json().catch(() => ({})) as {
@@ -288,6 +293,20 @@ export function createLinearClient(args: LinearClientArgs) {
       id: asString(data.viewer?.id),
       name: asString(data.viewer?.displayName) ?? asString(data.viewer?.name),
     };
+  };
+
+  const runGraphQL = async (params: {
+    query: string;
+    variables?: Record<string, unknown>;
+    operationName?: string | null;
+    maxRetries?: number;
+  }): Promise<unknown> => {
+    return request({
+      query: params.query,
+      variables: params.variables,
+      operationName: params.operationName,
+      maxRetries: params.maxRetries,
+    });
   };
 
   const getConnectionIdentity = async (): Promise<{
@@ -1429,6 +1448,7 @@ export function createLinearClient(args: LinearClientArgs) {
 
   return {
     request,
+    runGraphQL,
     getViewer,
     getConnectionIdentity,
     listProjects,

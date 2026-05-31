@@ -65,6 +65,10 @@ import type { createLinearIssueTracker } from "../../desktop/src/main/services/c
 import type { createLinearIngressService } from "../../desktop/src/main/services/cto/linearIngressService";
 import type { createLinearRoutingService } from "../../desktop/src/main/services/cto/linearRoutingService";
 import type { createLinearSyncService } from "../../desktop/src/main/services/cto/linearSyncService";
+import {
+  publishLinearChatSessionCard,
+  publishLinearLaneCard,
+} from "../../desktop/src/main/services/cto/linearLaneCardService";
 import { createAiIntegrationService } from "../../desktop/src/main/services/ai/aiIntegrationService";
 import { initApiKeyStore } from "../../desktop/src/main/services/ai/apiKeyStore";
 import type { createSyncService } from "./services/sync/syncService";
@@ -430,6 +434,45 @@ export async function createAdeRuntime(args: {
   let conflictServiceRef: ReturnType<typeof createConflictService> | null = null;
   let rebaseSuggestionServiceRef: ReturnType<typeof createRebaseSuggestionService> | null = null;
   let autoRebaseServiceRef: ReturnType<typeof createAutoRebaseService> | null = null;
+  let linearIssueTrackerRef: ReturnType<typeof createLinearIssueTracker> | null = null;
+  let githubServiceRef: ReturnType<typeof createGithubService> | null = null;
+  const linearChatCardPublishKeys = new Set<string>();
+  const publishLinearChatLink = ({
+    laneId,
+    sessionId,
+    sessionTitle,
+    issue,
+    linkedAt,
+  }: {
+    laneId: string;
+    sessionId: string;
+    sessionTitle?: string | null;
+    issue: Parameters<typeof publishLinearChatSessionCard>[0]["issue"];
+    linkedAt: string;
+  }) => {
+    const tracker = linearIssueTrackerRef;
+    if (!tracker) return;
+    const key = `${issue.id}:${sessionId}`;
+    if (linearChatCardPublishKeys.has(key)) return;
+    linearChatCardPublishKeys.add(key);
+    void publishLinearChatSessionCard({
+      issueTracker: tracker,
+      issue,
+      laneId,
+      sessionId,
+      sessionTitle,
+      linkedAt,
+    }).catch((error) => {
+      linearChatCardPublishKeys.delete(key);
+      logger.warn("linear.chat_session_card_publish_failed", {
+        laneId,
+        sessionId,
+        issueId: issue.id,
+        issueIdentifier: issue.identifier,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
 
   const laneService = createLaneService({
     db,
@@ -462,6 +505,32 @@ export async function createAdeRuntime(args: {
         });
       }
     },
+    onLinearIssueLinked: ({ lane, issue, linkedAt }) => {
+      const tracker = linearIssueTrackerRef;
+      if (!tracker) return;
+      void githubServiceRef?.getRepoOrThrow()
+        .catch(() => null)
+        .then((repo) => publishLinearLaneCard({
+          issueTracker: tracker,
+          lane,
+          issue,
+          projectRoot,
+          linkedAt,
+          repoOwner: repo?.owner ?? null,
+          repoName: repo?.name ?? null,
+          postInitialComment: true,
+          log: (event, fields) => logger.warn(event, fields),
+        }))
+        .catch((error) => {
+          logger.warn("linear.lane_card_publish_failed", {
+            laneId: lane.id,
+            issueId: issue.id,
+            issueIdentifier: issue.identifier,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+    },
+    onLinearIssueSessionLinked: publishLinearChatLink,
     logger,
   });
   await laneService.ensurePrimaryLane();
@@ -856,6 +925,8 @@ export async function createAdeRuntime(args: {
     onLinearWorkflowEvent: (event) =>
       pushEvent("runtime", { type: "linear_workflow_event", event }),
   });
+  linearIssueTrackerRef = headlessLinearServices.linearIssueTracker;
+  githubServiceRef = headlessLinearServices.githubService as ReturnType<typeof createGithubService>;
   const linearOAuthService = createLinearOAuthService({
     credentials: headlessLinearServices.linearCredentialService as never,
     logger,
@@ -904,6 +975,7 @@ export async function createAdeRuntime(args: {
       logger,
       appVersion: "ade-cli",
       getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
+      onLinearIssueChatLinked: publishLinearChatLink,
       onEvent: (event) => {
         pushEvent("runtime", event as unknown as Record<string, unknown>);
       },

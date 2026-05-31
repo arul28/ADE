@@ -22,6 +22,7 @@ const bundledAgentSkills = [
   "ade-browser",
   "ade-pr-workflows",
   "ade-lanes-git",
+  "ade-linear",
   "ade-proof-artifacts",
   "ade-macos-vm",
   "ade-deeplinks",

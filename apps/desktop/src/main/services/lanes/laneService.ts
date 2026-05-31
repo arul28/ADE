@@ -913,6 +913,7 @@ export function createLaneService({
   onDeleteEvent,
   onPlacementChanged,
   onLinearIssueLinked,
+  onLinearIssueSessionLinked,
   teardownDeps,
   macosVmHooks,
   logger: injectedLogger
@@ -928,6 +929,13 @@ export function createLaneService({
   onDeleteEvent?: (event: LaneDeleteEvent) => void;
   onPlacementChanged?: (event: LanePlacementChangedEvent) => void | Promise<void>;
   onLinearIssueLinked?: (args: { lane: LaneSummary; issue: LaneLinearIssue; linkedAt: string }) => void | Promise<void>;
+  onLinearIssueSessionLinked?: (args: {
+    laneId: string;
+    sessionId: string;
+    sessionTitle: string | null;
+    issue: LaneLinearIssue;
+    linkedAt: string;
+  }) => void | Promise<void>;
   teardownDeps?: LaneDeleteTeardownDeps;
   macosVmHooks?: LaneMacosVmHooks | null;
   logger?: Logger;
@@ -953,6 +961,30 @@ export function createLaneService({
     }
   };
 
+  const resolveSessionTitle = (sessionId: string): string | null => {
+    const id = sessionId.trim();
+    if (!id) return null;
+    try {
+      const chat = db.get<{ title: string | null }>(
+        "select title from claude_sessions where session_id = ? limit 1",
+        [id],
+      );
+      if (chat?.title?.trim()) return chat.title.trim();
+    } catch {
+      // Fall through to terminal session lookup.
+    }
+    try {
+      const terminal = db.get<{ title: string | null }>(
+        "select title from terminal_sessions where id = ? limit 1",
+        [id],
+      );
+      if (terminal?.title?.trim()) return terminal.title.trim();
+    } catch {
+      // No title is fine; card builders fall back to the session id.
+    }
+    return null;
+  };
+
   const notifyLinearIssueLinked = (lane: LaneSummary, issue: LaneLinearIssue): void => {
     if (!onLinearIssueLinked) return;
     const logFailure = (error: unknown): void => {
@@ -964,6 +996,32 @@ export function createLaneService({
     };
     try {
       const result = onLinearIssueLinked({ lane, issue, linkedAt: lane.createdAt });
+      if (result && typeof (result as Promise<void>).catch === "function") {
+        void (result as Promise<void>).catch(logFailure);
+      }
+    } catch (error) {
+      logFailure(error);
+    }
+  };
+
+  const notifyLinearIssueSessionLinked = (link: SessionLinearIssueLink): void => {
+    if (!onLinearIssueSessionLinked || !link.laneId) return;
+    const logFailure = (error: unknown): void => {
+      logger.warn("laneService.linear_issue_session_link_notify_failed", {
+        laneId: link.laneId,
+        sessionId: link.sessionId,
+        issueId: link.issue.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    };
+    try {
+      const result = onLinearIssueSessionLinked({
+        laneId: link.laneId,
+        sessionId: link.sessionId,
+        sessionTitle: resolveSessionTitle(link.sessionId),
+        issue: link.issue,
+        linkedAt: link.createdAt,
+      });
       if (result && typeof (result as Promise<void>).catch === "function") {
         void (result as Promise<void>).catch(logFailure);
       }
@@ -1175,6 +1233,24 @@ export function createLaneService({
     }
     return null;
   };
+
+  const laneSummaryForLinearNotification = (row: LaneRow): LaneSummary =>
+    toLaneSummary({
+      row,
+      status: {
+        dirty: false,
+        ahead: 0,
+        behind: 0,
+        remoteBehind: -1,
+        rebaseInProgress: false,
+      },
+      parentStatus: null,
+      childCount: 0,
+      stackDepth: 0,
+      activeBranchProfile: ensureBranchProfileForRow(row),
+      linearIssue: getLaneLinearIssue(row.id),
+      linearIssueLinks: getLaneLinearIssueLinks(row.id),
+    });
 
   const getSessionLinearIssueLinks = (sessionId: string): SessionLinearIssueLink[] => {
     const id = sessionId.trim();
@@ -2689,7 +2765,15 @@ export function createLaneService({
           evidence: args.evidence ?? null,
         }));
       }
-      if (links.length) invalidateLaneListCache();
+      if (links.length) {
+        invalidateLaneListCache();
+        if ((args.source ?? "manual") !== "chat_attach") {
+          const summary = laneSummaryForLinearNotification(row);
+          for (const link of links) {
+            notifyLinearIssueLinked(summary, link.issue);
+          }
+        }
+      }
       return links;
     },
 
@@ -2722,6 +2806,7 @@ export function createLaneService({
       const closeOnMerge = args.closeOnMerge ?? false;
       const evidence = args.evidence ?? { chatSessionId };
       const links: SessionLinearIssueLink[] = [];
+      const mirroredLaneLinks: LaneLinearIssueLink[] = [];
       const seen = new Set<string>();
       let mirrored = false;
       for (const issue of args.issues) {
@@ -2748,7 +2833,7 @@ export function createLaneService({
           try {
             const primary = getLaneLinearIssue(laneId);
             if (!primary || (primary.id !== normalized.id && primary.identifier !== normalized.identifier)) {
-              upsertLaneLinearIssueLink({
+              const laneLink = upsertLaneLinearIssueLink({
                 laneId,
                 issue: normalized,
                 role: role === "primary" ? "worked" : role,
@@ -2757,6 +2842,7 @@ export function createLaneService({
                 closeOnMerge,
                 evidence: { chatSessionId },
               });
+              mirroredLaneLinks.push(laneLink);
               mirrored = true;
             }
           } catch (error) {
@@ -2769,7 +2855,18 @@ export function createLaneService({
           }
         }
       }
-      if (mirrored) invalidateLaneListCache();
+      if (mirrored) {
+        invalidateLaneListCache();
+        if (laneRow) {
+          const summary = laneSummaryForLinearNotification(laneRow);
+          for (const link of mirroredLaneLinks) {
+            notifyLinearIssueLinked(summary, link.issue);
+          }
+        }
+      }
+      for (const link of links) {
+        notifyLinearIssueSessionLinked(link);
+      }
       return links;
     },
 

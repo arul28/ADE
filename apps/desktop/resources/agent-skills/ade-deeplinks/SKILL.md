@@ -125,6 +125,24 @@ cross-machine link to any Linear issue linked to the lane (Linear attachment
 + one-time comment). Agents do not need to call `ade link` for those flows —
 they fire on PR creation / Linear-link events.
 
+Linear card/comment matrix:
+
+| Linear-related action | Who adds the ADE link |
+| --- | --- |
+| `ade lanes create --linear-issue-json` / `ade lanes create-from-linear` | ADE posts the lane attachment/comment |
+| `ade lanes link-linear-issue` / `ade chat attach-linear-issue` / `ade linear attach --this-session` | ADE posts lane/chat attachments when a lane/session is known |
+| `ade chat create --from-linear-issue` or `ade lanes create-from-linear --start-chat` | ADE posts the chat attachment after the issue is attached |
+| `ade prs create` on a linked lane | ADE posts the PR attachment/footer |
+| `ade linear comment`, `set-state`, `assign`, `label`, or `graphql` | The agent should include the relevant ADE link in any Linear comment it writes |
+
+If you create new Linear state directly (for example with `ade linear graphql`),
+mint the Linear-pane link yourself and comment it back to the issue:
+
+```bash
+ade link linear-issue ADE-123 --no-clipboard
+ade linear comment ADE-123 "Created via ADE. Open in ADE: <paste link>"
+```
+
 Agents should still include a user-facing ADE PR link when handing off a newly
 created or adopted PR. Use the GitHub PR URL for the browser link and the
 `adeUrl` printed by `ade prs create`. If the PR came from another path, mint
