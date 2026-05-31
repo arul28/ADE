@@ -22,7 +22,7 @@ Default routing for typed commands: prefer the socket if reachable; auto-spawn `
 | `~/.ade/sock/ade.sock` | Runtime daemon socket (POSIX). |
 | `\\.\pipe\ade-runtime` | Runtime daemon named pipe (Windows). |
 | `~/.ade/projects.json` | Project registry. |
-| `~/.ade/secrets/` | Encrypted credential store (`credentials.json.enc` + `.machine-key`). |
+| `~/.ade/secrets/` | Machine credential store (`credentials.safe.enc` for desktop safeStorage, `credentials.json.enc` plus `.machine-key` for headless fallback storage, and per-store `*.lock` files). |
 | `~/.ade/bin/ade` | Bundled static runtime binary (release installs / remote uploads). |
 | `~/.ade/runtime/<platform-arch>/` | Native node modules for that runtime binary. |
 | `~/.ade/runtime/launchd.{out,err}.log` | Daemon stdout/stderr when running as a login service on macOS. |
@@ -187,11 +187,9 @@ sync.setActiveLanePresence
 
 `src/services/credentials/credentialStore.ts` owns the machine-scoped credential store under `~/.ade/secrets/`:
 
-- `KeytarCredentialStore` (default when `keytar` is loadable) keys against the OS keychain under service `com.ade.runtime.credentials.v1`.
-- `EncryptedFileCredentialStore` falls back to AES-256-GCM at `~/.ade/secrets/credentials.json.enc`, with the AES key in `~/.ade/secrets/.machine-key` (mode 600).
-- `ElectronSafeStorageCredentialStore` is used when the desktop process talks to the same files but wants to encrypt with `safeStorage` instead.
-
-Disable keytar with `ADE_CREDENTIAL_STORE_DISABLE_KEYTAR=1` to force the encrypted-file store.
+- Desktop uses `ElectronSafeStorageCredentialStore`, which encrypts `credentials.safe.enc` with Electron `safeStorage` and migrates legacy file-encrypted stores on first read.
+- Headless CLI fallback uses `EncryptedFileCredentialStore`, which keeps `credentials.json.enc` encrypted with AES-256-GCM and serializes read-modify-write access with `credentials.json.enc.lock`.
+- Secret directories are created with mode `0700`; credential blobs, lock files, and legacy machine keys are written with mode `0600`.
 
 ## `ade code`
 

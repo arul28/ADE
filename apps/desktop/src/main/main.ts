@@ -382,7 +382,8 @@ function getRendererUrl(): string {
 
 function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
   const legacyStore = new EncryptedFileCredentialStore({ secretsDir });
-  const credentialsPath = path.join(secretsDir, "credentials.json.enc");
+  const safeCredentialsPath = path.join(secretsDir, "credentials.safe.enc");
+  const legacyCredentialsPath = path.join(secretsDir, "credentials.json.enc");
   try {
     if (safeStorage.isEncryptionAvailable()) {
       return new ElectronSafeStorageCredentialStore({
@@ -394,7 +395,10 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
   } catch {
     // Fall through to the file store when Electron cannot reach the OS keychain.
   }
-  if (isElectronSafeStorageCredentialFile(credentialsPath)) {
+  if (
+    isElectronSafeStorageCredentialFile(safeCredentialsPath)
+    || isElectronSafeStorageCredentialFile(legacyCredentialsPath)
+  ) {
     const message = "Electron safeStorage is unavailable; unlock the OS credential store to read ADE credentials.";
     return {
       get: async () => {

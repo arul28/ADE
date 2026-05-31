@@ -35,13 +35,22 @@ type CredentialStoreMigrationSource = {
 };
 
 const DEFAULT_CREDENTIALS_FILE = "credentials.json.enc";
+const DEFAULT_SAFE_STORAGE_CREDENTIALS_FILE = "credentials.safe.enc";
 const DEFAULT_MACHINE_KEY_FILE = ".machine-key";
 const STORE_AAD = Buffer.from("ade.credentials.v1");
 const OS_BOUND_KEY_INFO = Buffer.from("ade.credentials.file-store.v2");
 const MACOS_KEYCHAIN_SERVICE = "com.ade.runtime.credentials.file-store-key.v1";
 const MACOS_KEYCHAIN_ACCOUNT = "machine";
 const SAFE_STORAGE_FILE_MAGIC = Buffer.from("ADE_SAFE_STORAGE_CREDENTIALS_V1\n");
+const LOCK_TIMEOUT_MS = 15_000;
+const LOCK_STALE_MS = 10_000;
+const LOCK_RETRY_MS = 25;
 let cachedDefaultOsBoundKeyMaterial: Buffer | null = null;
+
+type CredentialLockMetadata = {
+  pid?: number;
+  createdAt?: string;
+};
 
 function normalizeKey(key: string): string {
   const normalized = key.trim();
@@ -59,10 +68,20 @@ function ensureMode600(filePath: string): void {
   }
 }
 
+function ensureDirMode700(dirPath: string): void {
+  fs.mkdirSync(dirPath, { recursive: true, mode: 0o700 });
+  if (process.platform === "win32") return;
+  try {
+    fs.chmodSync(dirPath, 0o700);
+  } catch {
+    // Best effort; some filesystems do not support chmod.
+  }
+}
+
 function writeFileAtomic(filePath: string, contents: string | Buffer): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  ensureDirMode700(path.dirname(filePath));
   const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmpPath, contents);
+  fs.writeFileSync(tmpPath, contents, { mode: 0o600 });
   ensureMode600(tmpPath);
   fs.renameSync(tmpPath, filePath);
   ensureMode600(filePath);
@@ -75,6 +94,151 @@ function isEnoent(error: unknown): boolean {
     && (error as { code?: unknown }).code === "ENOENT";
 }
 
+function isEexist(error: unknown): boolean {
+  return typeof error === "object"
+    && error !== null
+    && "code" in error
+    && (error as { code?: unknown }).code === "EEXIST";
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function defaultLockPath(credentialsPath: string): string {
+  return `${credentialsPath}.lock`;
+}
+
+function isSamePath(left: string, right: string): boolean {
+  return path.resolve(left) === path.resolve(right);
+}
+
+function parseLockMetadata(raw: string): CredentialLockMetadata {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const record = parsed as Record<string, unknown>;
+    return {
+      pid: Number.isSafeInteger(record.pid) && Number(record.pid) > 0 ? Number(record.pid) : undefined,
+      createdAt: typeof record.createdAt === "string" ? record.createdAt : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function isProcessRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: unknown) {
+    return !(
+      typeof error === "object"
+      && error !== null
+      && "code" in error
+      && (error as { code?: unknown }).code === "ESRCH"
+    );
+  }
+}
+
+function isSameLockStat(left: fs.Stats, right: fs.Stats): boolean {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs;
+}
+
+function removeStaleLock(lockPath: string): void {
+  let originalStat: fs.Stats;
+  let originalRaw: string;
+  try {
+    originalStat = fs.statSync(lockPath);
+    if (Date.now() - originalStat.mtimeMs <= LOCK_STALE_MS) return;
+    originalRaw = fs.readFileSync(lockPath, "utf8");
+  } catch {
+    return;
+  }
+
+  const metadata = parseLockMetadata(originalRaw);
+  if (metadata.pid && isProcessRunning(metadata.pid)) return;
+
+  try {
+    const currentStat = fs.statSync(lockPath);
+    if (!isSameLockStat(currentStat, originalStat)) return;
+    if (fs.readFileSync(lockPath, "utf8") !== originalRaw) return;
+    fs.unlinkSync(lockPath);
+  } catch {
+    // Another process won the lock race or removed the stale file first.
+  }
+}
+
+function withCredentialFileLock<T>(lockPath: string, fn: () => T): T {
+  ensureDirMode700(path.dirname(lockPath));
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  let fd: number | null = null;
+
+  while (fd === null) {
+    try {
+      const candidateFd = fs.openSync(lockPath, "wx", 0o600);
+      try {
+        fs.writeFileSync(
+          candidateFd,
+          JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }),
+        );
+        fd = candidateFd;
+      } catch (error: unknown) {
+        try {
+          fs.closeSync(candidateFd);
+        } catch {
+          // ignore
+        }
+        try {
+          fs.unlinkSync(lockPath);
+        } catch {
+          // ignore
+        }
+        throw error;
+      }
+      ensureMode600(lockPath);
+    } catch (error: unknown) {
+      if (!isEexist(error)) throw error;
+      removeStaleLock(lockPath);
+      if (Date.now() >= deadline) {
+        throw new Error("Timed out waiting for ADE credential store lock.");
+      }
+      sleepSync(LOCK_RETRY_MS);
+    }
+  }
+
+  try {
+    return fn();
+  } finally {
+    try {
+      fs.closeSync(fd);
+    } catch {
+      // ignore
+    }
+    try {
+      fs.unlinkSync(lockPath);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function unlinkIfExists(filePath: string): void {
+  try {
+    fs.unlinkSync(filePath);
+  } catch (error: unknown) {
+    if (!isEnoent(error)) throw error;
+  }
+}
+
+function withOptionalCredentialFileLock<T>(lockPath: string, skippedLockPath: string, fn: () => T): T {
+  if (isSamePath(lockPath, skippedLockPath)) return fn();
+  return withCredentialFileLock(lockPath, fn);
+}
+
 function readJsonObject(filePath: string): Record<string, unknown> | null {
   try {
     const raw = fs.readFileSync(filePath, "utf8");
@@ -85,6 +249,15 @@ function readJsonObject(filePath: string): Record<string, unknown> | null {
     if (isEnoent(error)) return {};
     throw error;
   }
+}
+
+function normalizeStoredCredentialValues(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, string> = {};
+  for (const [key, storedValue] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof storedValue === "string") out[key] = storedValue;
+  }
+  return out;
 }
 
 function isStoredCredentialEnvelope(value: unknown): value is StoredCredentialEnvelope {
@@ -145,7 +318,11 @@ function serializeStore(values: Record<string, string>, machineKey: Buffer): Sto
   };
 }
 
-function deserializeStore(raw: Record<string, unknown> | null, machineKey: Buffer): Record<string, string> {
+function deserializeStore(
+  raw: Record<string, unknown> | null,
+  machineKey: Buffer,
+  args: { emptyOnDecryptFailure?: boolean } = {},
+): Record<string, string> {
   if (!raw || Object.keys(raw).length === 0) return {};
   if (!isStoredCredentialEnvelope(raw)) {
     throw new Error("Unsupported ADE credential store format.");
@@ -153,31 +330,46 @@ function deserializeStore(raw: Record<string, unknown> | null, machineKey: Buffe
   const decipher = crypto.createDecipheriv("aes-256-gcm", machineKey, Buffer.from(raw.iv, "base64"));
   decipher.setAAD(STORE_AAD);
   decipher.setAuthTag(Buffer.from(raw.tag, "base64"));
-  const plaintext = Buffer.concat([
-    decipher.update(Buffer.from(raw.ciphertext, "base64")),
-    decipher.final(),
-  ]).toString("utf8");
-  const parsed = JSON.parse(plaintext) as unknown;
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-    if (typeof value === "string") out[key] = value;
+  try {
+    const plaintext = Buffer.concat([
+      decipher.update(Buffer.from(raw.ciphertext, "base64")),
+      decipher.final(),
+    ]).toString("utf8");
+    return normalizeStoredCredentialValues(JSON.parse(plaintext));
+  } catch (error: unknown) {
+    if (args.emptyOnDecryptFailure !== false) return {};
+    throw error;
   }
-  return out;
 }
 
-function readOrCreateMachineKey(machineKeyPath: string): Buffer {
+function readMachineKeyIfExists(machineKeyPath: string): Buffer | null {
   try {
     const raw = fs.readFileSync(machineKeyPath, "utf8").trim();
     const key = Buffer.from(raw, "base64");
     if (key.length === 32) return key;
     throw new Error("ADE credential machine key is invalid.");
   } catch (error: unknown) {
-    if (!isEnoent(error)) throw error;
+    if (isEnoent(error)) return null;
+    throw error;
   }
+}
+
+function readOrCreateMachineKey(machineKeyPath: string): Buffer {
+  const existing = readMachineKeyIfExists(machineKeyPath);
+  if (existing) return existing;
+
   const key = crypto.randomBytes(32);
-  writeFileAtomic(machineKeyPath, `${key.toString("base64")}\n`);
-  return key;
+  ensureDirMode700(path.dirname(machineKeyPath));
+  try {
+    fs.writeFileSync(machineKeyPath, `${key.toString("base64")}\n`, { flag: "wx", mode: 0o600 });
+    ensureMode600(machineKeyPath);
+    return key;
+  } catch (error: unknown) {
+    if (!isEexist(error)) throw error;
+    const winner = readMachineKeyIfExists(machineKeyPath);
+    if (winner) return winner;
+    throw new Error("ADE credential machine key is invalid.");
+  }
 }
 
 function readCredentialPassphraseFromEnv(): Buffer | null {
@@ -245,17 +437,20 @@ function deriveOsBoundCredentialKey(machineKey: Buffer, osMaterial: Buffer | nul
 export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private readonly credentialsPath: string;
   private readonly machineKeyPath: string;
+  private readonly lockPath: string;
   private readonly keyMaterialProvider: () => Buffer | null;
 
   constructor(args: {
     secretsDir?: string;
     credentialsPath?: string;
     machineKeyPath?: string;
+    lockPath?: string;
     keyMaterialProvider?: () => Buffer | null;
   } = {}) {
     const secretsDir = args.secretsDir ?? resolveMachineAdeLayout().secretsDir;
     this.credentialsPath = args.credentialsPath ?? path.join(secretsDir, DEFAULT_CREDENTIALS_FILE);
     this.machineKeyPath = args.machineKeyPath ?? path.join(secretsDir, DEFAULT_MACHINE_KEY_FILE);
+    this.lockPath = args.lockPath ?? defaultLockPath(this.credentialsPath);
     this.keyMaterialProvider = args.keyMaterialProvider ?? readDefaultOsBoundKeyMaterial;
   }
 
@@ -273,7 +468,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
 
   getSync(key: string): string | null {
     const normalized = normalizeKey(key);
-    return this.readAll()[normalized] ?? null;
+    return this.readAll({ allowRewrite: false })[normalized] ?? null;
   }
 
   setSync(key: string, value: string): void {
@@ -283,39 +478,47 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       this.deleteSync(normalized);
       return;
     }
-    const values = this.readAll();
-    values[normalized] = nextValue;
-    this.writeAll(values);
+    this.withLock(() => {
+      const values = this.readAll({ allowRewrite: true });
+      values[normalized] = nextValue;
+      this.writeAll(values);
+    });
   }
 
   deleteSync(key: string): void {
     const normalized = normalizeKey(key);
-    const values = this.readAll();
-    if (!(normalized in values)) return;
-    delete values[normalized];
-    this.writeAll(values);
+    this.withLock(() => {
+      const values = this.readAll({ allowRewrite: true });
+      if (!(normalized in values)) return;
+      delete values[normalized];
+      this.writeAll(values);
+    });
   }
 
   readAllForMigration(): Record<string, string> {
-    return this.readAll();
+    return this.readAll({ allowRewrite: false });
   }
 
-  private readAll(): Record<string, string> {
+  private readAll(args: { allowRewrite: boolean }): Record<string, string> {
     const raw = readJsonObject(this.credentialsPath);
     const machineKey = readOrCreateMachineKey(this.machineKeyPath);
     const key = deriveOsBoundCredentialKey(machineKey, this.keyMaterialProvider());
-    try {
-      return deserializeStore(raw, key);
-    } catch (error) {
-      if (key.equals(machineKey)) throw error;
-      const values = deserializeStore(raw, machineKey);
+    if (!key.equals(machineKey)) {
       try {
-        this.writeAll(values);
+        return deserializeStore(raw, key, { emptyOnDecryptFailure: false });
       } catch {
-        // Preserve read compatibility if migration cannot rewrite right now.
+        const values = deserializeStore(raw, machineKey, { emptyOnDecryptFailure: true });
+        if (args.allowRewrite) {
+          try {
+            this.writeAll(values);
+          } catch {
+            // Preserve read compatibility if migration cannot rewrite right now.
+          }
+        }
+        return values;
       }
-      return values;
     }
+    return deserializeStore(raw, machineKey, { emptyOnDecryptFailure: true });
   }
 
   private writeAll(values: Record<string, string>): void {
@@ -323,23 +526,47 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     const key = deriveOsBoundCredentialKey(machineKey, this.keyMaterialProvider());
     writeFileAtomic(this.credentialsPath, `${JSON.stringify(serializeStore(values, key), null, 2)}\n`);
   }
+
+  private withLock<T>(fn: () => T): T {
+    return withCredentialFileLock(this.lockPath, fn);
+  }
 }
 
 export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
   private readonly safeStorage: SafeStorageLike;
   private readonly credentialsPath: string;
+  private readonly legacyCredentialsPath: string;
+  private readonly legacyMachineKeyPath: string;
+  private readonly lockPath: string;
+  private readonly legacyLockPath: string;
   private readonly legacyStore: CredentialStoreMigrationSource | null;
 
   constructor(args: {
     safeStorage: SafeStorageLike;
     credentialsPath?: string;
     secretsDir?: string;
+    legacyCredentialsPath?: string;
+    legacyMachineKeyPath?: string;
+    lockPath?: string;
+    legacyLockPath?: string;
     legacyStore?: CredentialStoreMigrationSource | null;
+    keyMaterialProvider?: () => Buffer | null;
   }) {
     this.safeStorage = args.safeStorage;
     const secretsDir = args.secretsDir ?? resolveMachineAdeLayout().secretsDir;
-    this.credentialsPath = args.credentialsPath ?? path.join(secretsDir, DEFAULT_CREDENTIALS_FILE);
-    this.legacyStore = args.legacyStore ?? null;
+    this.credentialsPath = args.credentialsPath ?? path.join(secretsDir, DEFAULT_SAFE_STORAGE_CREDENTIALS_FILE);
+    this.legacyCredentialsPath = args.legacyCredentialsPath ?? path.join(secretsDir, DEFAULT_CREDENTIALS_FILE);
+    this.legacyMachineKeyPath = args.legacyMachineKeyPath ?? path.join(secretsDir, DEFAULT_MACHINE_KEY_FILE);
+    this.lockPath = args.lockPath ?? defaultLockPath(this.credentialsPath);
+    this.legacyLockPath = args.legacyLockPath ?? defaultLockPath(this.legacyCredentialsPath);
+    this.legacyStore = args.legacyStore === undefined
+      ? new EncryptedFileCredentialStore({
+        credentialsPath: this.legacyCredentialsPath,
+        machineKeyPath: this.legacyMachineKeyPath,
+        lockPath: this.legacyLockPath,
+        keyMaterialProvider: args.keyMaterialProvider,
+      })
+      : args.legacyStore;
   }
 
   async get(key: string): Promise<string | null> {
@@ -366,20 +593,24 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
       this.deleteSync(normalized);
       return;
     }
-    const values = this.readAll();
-    values[normalized] = nextValue;
-    this.writeAll(values);
+    this.withLock(() => {
+      const values = this.readAll({ safeLockHeld: true });
+      values[normalized] = nextValue;
+      this.writeAll(values);
+    });
   }
 
   deleteSync(key: string): void {
     const normalized = normalizeKey(key);
-    const values = this.readAll();
-    if (!(normalized in values)) return;
-    delete values[normalized];
-    this.writeAll(values);
+    this.withLock(() => {
+      const values = this.readAll({ safeLockHeld: true });
+      if (!(normalized in values)) return;
+      delete values[normalized];
+      this.writeAll(values);
+    });
   }
 
-  private readAll(): Record<string, string> {
+  private readAll(args: { safeLockHeld?: boolean } = {}): Record<string, string> {
     if (!this.safeStorage.isEncryptionAvailable()) {
       throw new Error("Electron safeStorage is unavailable.");
     }
@@ -387,36 +618,67 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
     try {
       payload = readSafeStoragePayload(this.credentialsPath);
     } catch (error: unknown) {
-      if (isEnoent(error)) return {};
+      if (isEnoent(error)) {
+        const legacyValues = this.migrateLegacyStore(args.safeLockHeld === true);
+        return legacyValues ?? {};
+      }
       throw error;
     }
     try {
       const decrypted = this.safeStorage.decryptString(payload.encrypted);
-      const parsed = JSON.parse(decrypted) as unknown;
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-      const out: Record<string, string> = {};
-      for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-        if (typeof value === "string") out[key] = value;
-      }
-      return out;
+      return normalizeStoredCredentialValues(JSON.parse(decrypted));
     } catch (error: unknown) {
-      if (!payload.hasMagic && this.legacyStore && isStoredCredentialEnvelopeBuffer(payload.encrypted)) {
-        const values = this.readLegacyAll();
-        try {
-          this.writeAll(values);
-        } catch {
-          // Preserve read compatibility if migration cannot rewrite right now.
-        }
-        return values;
+      if (!payload.hasMagic && isStoredCredentialEnvelopeBuffer(payload.encrypted)) {
+        const legacyValues = this.migrateLegacyStore(args.safeLockHeld === true);
+        if (legacyValues) return legacyValues;
       }
       throw error;
     }
+  }
+
+  private readLegacySafeStorageFile(): Record<string, string> | null {
+    if (!fs.existsSync(this.legacyCredentialsPath)) return null;
+    let payload: { encrypted: Buffer; hasMagic: boolean };
+    try {
+      payload = readSafeStoragePayload(this.legacyCredentialsPath);
+    } catch (error: unknown) {
+      if (isEnoent(error)) return null;
+      throw error;
+    }
+    if (!payload.hasMagic) return null;
+    const decrypted = this.safeStorage.decryptString(payload.encrypted);
+    return normalizeStoredCredentialValues(JSON.parse(decrypted));
+  }
+
+  private readLegacyEncryptedFileStore(): Record<string, string> | null {
+    if (!fs.existsSync(this.legacyCredentialsPath)) return null;
+    let raw: Record<string, unknown> | null;
+    try {
+      raw = readJsonObject(this.legacyCredentialsPath);
+    } catch {
+      return null;
+    }
+    if (!raw || Object.keys(raw).length === 0) return {};
+    if (!isStoredCredentialEnvelope(raw)) return null;
+    return this.readLegacyAll();
   }
 
   private readLegacyAll(): Record<string, string> {
     const legacy = this.legacyStore;
     if (legacy) return legacy.readAllForMigration();
     throw new Error("Legacy credential store cannot be migrated.");
+  }
+
+  private migrateLegacyStore(safeLockHeld: boolean): Record<string, string> | null {
+    const migrate = () => withOptionalCredentialFileLock(this.legacyLockPath, this.lockPath, () => {
+      const legacyValues = this.readLegacySafeStorageFile() ?? this.readLegacyEncryptedFileStore();
+      if (!legacyValues) return null;
+      this.writeAll(legacyValues);
+      this.removeLegacyFileStore();
+      return legacyValues;
+    });
+    if (safeLockHeld) return migrate();
+    return withCredentialFileLock(this.lockPath, migrate);
   }
 
   private writeAll(values: Record<string, string>): void {
@@ -430,6 +692,17 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
         this.safeStorage.encryptString(JSON.stringify(values)),
       ]),
     );
+  }
+
+  private removeLegacyFileStore(): void {
+    unlinkIfExists(this.legacyMachineKeyPath);
+    if (!isSamePath(this.legacyCredentialsPath, this.credentialsPath)) {
+      unlinkIfExists(this.legacyCredentialsPath);
+    }
+  }
+
+  private withLock<T>(fn: () => T): T {
+    return withCredentialFileLock(this.lockPath, fn);
   }
 }
 
