@@ -109,8 +109,8 @@ import { createMacosVmService } from "../../desktop/src/main/services/macosVm/ma
 import type { BuiltInBrowserService } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
 import {
   createBuiltInBrowserDesktopBridgeClient,
-  type BuiltInBrowserDesktopBridgeClient,
 } from "./services/builtInBrowser/desktopBridgeClient";
+import type { BuiltInBrowserDesktopBridgeClient } from "./services/builtInBrowser/desktopBridgeMethods";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { AppNavigationRequest, AppNavigationResult, PortLease } from "../../desktop/src/shared/types";
@@ -225,7 +225,7 @@ export type AdeRuntime = {
   computerUseArtifactBrokerService: ComputerUseArtifactBrokerService;
   iosSimulatorService?: IosSimulatorService | null;
   appControlService?: AppControlService | null;
-  builtInBrowserService?: BuiltInBrowserService | null;
+  builtInBrowserService?: BuiltInBrowserService | BuiltInBrowserDesktopBridgeClient | null;
   macosVmService?: ReturnType<typeof createMacosVmService> | null;
   syncHostService?: ReturnType<typeof createSyncHostService> | null;
   syncService?: ReturnType<typeof createSyncService> | null;
@@ -1204,7 +1204,7 @@ export async function createAdeRuntime(args: {
     computerUseArtifactBrokerService,
     iosSimulatorService,
     appControlService,
-    builtInBrowserService: builtInBrowserBridge as unknown as BuiltInBrowserService | null,
+    builtInBrowserService: builtInBrowserBridge,
     macosVmService,
     eventBuffer,
     dispose: () => {

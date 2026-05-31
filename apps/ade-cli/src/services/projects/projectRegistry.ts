@@ -155,7 +155,7 @@ export class ProjectRegistry {
       displayName: existing?.displayName ?? path.basename(normalized),
       addedAt: existing?.addedAt ?? now,
       lastOpenedAt: now,
-      gitOriginUrl: readGitOriginUrl(normalized),
+      gitOriginUrl: existing ? existing.gitOriginUrl : readGitOriginUrl(normalized),
     };
     if (existingIndex >= 0) {
       file.projects[existingIndex] = next;
@@ -185,7 +185,6 @@ export class ProjectRegistry {
     const next: ProjectRecord = {
       ...file.projects[index]!,
       lastOpenedAt: Date.now(),
-      gitOriginUrl: readGitOriginUrl(file.projects[index]!.rootPath),
     };
     file.projects[index] = next;
     this.write(file);

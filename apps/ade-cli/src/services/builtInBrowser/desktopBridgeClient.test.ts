@@ -27,11 +27,11 @@ type ServerHandle = {
 
 async function startBridgeServer(
   handler: (request: JsonRpcRequest) => Promise<unknown>,
-): Promise<ServerHandle> {
-  const socketPath = path.join(
+  socketPath = path.join(
     fs.mkdtempSync(path.join(os.tmpdir(), "ade-bridge-test-")),
     "bridge.sock",
-  );
+  ),
+): Promise<ServerHandle> {
   const stopHandles = new Set<() => void>();
   const sockets = new Set<net.Socket>();
   const server = net.createServer((conn) => {
@@ -175,6 +175,30 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     const result = await client.getStatus();
     expect(result).toEqual({ ok: true });
     expect(callCount).toBe(2);
+    client.dispose();
+  });
+
+  it("forgets a cached bridge connection when the socket closes", async () => {
+    const socketPath = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), "ade-bridge-test-restart-")),
+      "bridge.sock",
+    );
+    let generation = 1;
+    server = await startBridgeServer(async () => ({ generation }), socketPath);
+    const client = createBuiltInBrowserDesktopBridgeClient({
+      socketPath,
+      logger: silentLogger(),
+    });
+
+    await expect(client.getStatus()).resolves.toEqual({ generation: 1 });
+    await server.close();
+    server = null;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    generation = 2;
+    server = await startBridgeServer(async () => ({ generation }), socketPath);
+
+    await expect(client.getStatus()).resolves.toEqual({ generation: 2 });
     client.dispose();
   });
 });
