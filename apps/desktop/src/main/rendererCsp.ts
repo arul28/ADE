@@ -6,18 +6,19 @@ export function buildRendererCspPolicy(isDevMode: boolean): string {
   const cspLocalSources = " http://localhost:* http://127.0.0.1:*";
   const cspConnectLocalSources = isDevMode ? "" : cspLocalSources;
   const cspImageSources = `${cspSources}${cspLocalSources} https://avatars.githubusercontent.com https://*.githubusercontent.com https://github.githubassets.com https://opengraph.githubassets.com https://github.com https://vercel.com https://*.vercel.com https://img.shields.io https://*.s3.amazonaws.com`;
+  const cspScriptSources = isDevMode ? `${cspSources} 'unsafe-inline'` : cspSources;
   return [
     `default-src ${cspSources}`,
     `base-uri 'self'`,
     `form-action 'self'`,
     `object-src 'none'`,
     `frame-src ${cspSources}${cspLocalSources} about:`,
-    `script-src ${cspSources} 'unsafe-inline'`,
+    `script-src ${cspScriptSources}`,
     `style-src ${cspSources} 'unsafe-inline'`,
     `img-src ${cspImageSources} ade-artifact: data: blob:`,
     `media-src ${cspSources}${cspLocalSources} ade-artifact: blob: data:`,
     `font-src ${cspSources} data:`,
-    `connect-src ${cspSources}${cspConnectLocalSources}${cspWsSources} https:`,
+    `connect-src ${cspSources}${cspConnectLocalSources}${cspWsSources}`,
     `worker-src 'self' blob:`,
   ].join("; ");
 }

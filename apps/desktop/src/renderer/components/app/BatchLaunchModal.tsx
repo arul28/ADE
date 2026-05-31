@@ -169,10 +169,46 @@ function safeSaveDefaultPrompt(projectRoot: string | null | undefined, prompt: s
       window.localStorage.removeItem(key);
       return;
     }
-    window.localStorage.setItem(key, prompt);
+    window.localStorage.setItem(key, value);
   } catch {
     // Best effort only; failing to persist a prompt should never block launch.
   }
+}
+
+async function loadProjectDefaultPrompt(projectRoot: string | null | undefined): Promise<string | null> {
+  const localFallback = safeLoadDefaultPrompt(projectRoot);
+  if (!projectRoot?.trim() || typeof window === "undefined" || !window.ade?.projectConfig?.get) {
+    return localFallback;
+  }
+  try {
+    const snapshot = await window.ade.projectConfig.get();
+    const prompt = snapshot.effective.ui?.linearBatchLaunchDefaultPrompt?.trim();
+    return prompt || localFallback;
+  } catch {
+    return localFallback;
+  }
+}
+
+async function persistProjectDefaultPrompt(projectRoot: string | null | undefined, prompt: string): Promise<void> {
+  const value = prompt.trim();
+  safeSaveDefaultPrompt(projectRoot, value);
+  if (!projectRoot?.trim() || typeof window === "undefined" || !window.ade?.projectConfig?.get || !window.ade?.projectConfig?.save) {
+    return;
+  }
+  const snapshot = await window.ade.projectConfig.get();
+  const nextUi = { ...(snapshot.local.ui ?? {}) };
+  if (value) {
+    nextUi.linearBatchLaunchDefaultPrompt = value;
+  } else {
+    delete nextUi.linearBatchLaunchDefaultPrompt;
+  }
+  const nextLocal = { ...snapshot.local };
+  if (Object.keys(nextUi).length > 0) {
+    nextLocal.ui = nextUi;
+  } else {
+    delete nextLocal.ui;
+  }
+  await window.ade.projectConfig.save({ shared: snapshot.shared, local: nextLocal });
 }
 
 function makeInitialConfig(defaultModelId: string, kickoffPrompt: string): PerIssueState {
@@ -289,10 +325,10 @@ export function BatchLaunchModal({
   // control the user still sees.
   useEffect(() => {
     if (!open) return;
-    const savedPrompt = safeLoadDefaultPrompt(projectRoot);
-    const kickoffPrompt = savedPrompt ?? defaultKickoffPrompt();
+    const fallbackPrompt = safeLoadDefaultPrompt(projectRoot);
+    const kickoffPrompt = fallbackPrompt ?? defaultKickoffPrompt();
     const seedModel = defaultModel || defaultModelId;
-    setProjectDefaultPrompt(savedPrompt);
+    setProjectDefaultPrompt(fallbackPrompt);
     setDefaultModel(seedModel);
     setPerIssue((current) => {
       const next: Record<string, PerIssueState> = {};
@@ -318,6 +354,36 @@ export function BatchLaunchModal({
     defaultFast,
     defaultPermission,
   ]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    const fallbackPrompt = safeLoadDefaultPrompt(projectRoot);
+    const initialPrompt = fallbackPrompt ?? defaultKickoffPrompt();
+
+    void loadProjectDefaultPrompt(projectRoot).then((savedPrompt) => {
+      if (cancelled) return;
+      setProjectDefaultPrompt(savedPrompt);
+      if (!savedPrompt || savedPrompt === initialPrompt) return;
+      setPerIssue((current) => {
+        let changed = false;
+        const next: Record<string, PerIssueState> = {};
+        for (const [id, state] of Object.entries(current)) {
+          if (state.kickoffPrompt === initialPrompt || (fallbackPrompt != null && state.kickoffPrompt === fallbackPrompt)) {
+            next[id] = { ...state, kickoffPrompt: savedPrompt };
+            changed = true;
+          } else {
+            next[id] = state;
+          }
+        }
+        return changed ? next : current;
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, projectRoot]);
 
   useEffect(() => {
     if (open) return;
@@ -399,8 +465,9 @@ export function BatchLaunchModal({
   }, []);
 
   const savePromptAsDefault = useCallback((prompt: string) => {
-    safeSaveDefaultPrompt(projectRoot, prompt);
-    setProjectDefaultPrompt(prompt.trim() ? prompt : null);
+    const value = prompt.trim();
+    setProjectDefaultPrompt(value || null);
+    void persistProjectDefaultPrompt(projectRoot, value).catch(() => {});
   }, [projectRoot]);
 
   const includedIssues = useMemo(

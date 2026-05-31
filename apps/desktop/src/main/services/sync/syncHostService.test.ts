@@ -1115,6 +1115,8 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const sourceAck = await clientA.queue.next("changeset_ack");
     expect((sourceAck.payload as { ok: boolean; batchId?: string }).ok).toBe(true);
     expect((sourceAck.payload as { ok: boolean; batchId?: string }).batchId).toBe("changes-a");
+    await waitFor(() => host.getPeerStates().find((peer) => peer.deviceId === "peer-a")?.syncLag === 0);
+    await expect(clientA.queue.next("changeset_batch", 250)).rejects.toThrow(/Timed out waiting for changeset_batch/);
 
     const rebroadcast = await clientB.queue.next("changeset_batch");
     const payload = rebroadcast.payload as {

@@ -1,12 +1,14 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ElectronSafeStorageCredentialStore,
   EncryptedFileCredentialStore,
+  KeytarCredentialStore,
+  createDefaultCredentialStore,
 } from "./credentialStore";
 
 let tempDir = "";
@@ -130,6 +132,48 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
       expect(store.getSync(key)).toBe(value);
     }
   }, 10000);
+
+  it("derives file encryption from OS-bound key material when available", async () => {
+    const osMaterial = Buffer.from("test-os-material");
+    const store = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterialProvider: () => osMaterial,
+    });
+
+    store.setSync("linear.token.v1", "lin_secret");
+
+    const reloaded = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterialProvider: () => osMaterial,
+    });
+    expect(reloaded.getSync("linear.token.v1")).toBe("lin_secret");
+
+    const unbound = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterialProvider: () => null,
+    });
+    expect(unbound.getSync("linear.token.v1")).toBeNull();
+  });
+
+  it("can read legacy machine-key ciphertext before rewriting with OS-bound key material", async () => {
+    const legacy = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterialProvider: () => null,
+    });
+    legacy.setSync("agent.token", "legacy_secret");
+
+    const upgraded = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterialProvider: () => Buffer.from("test-os-material"),
+    });
+    expect(upgraded.getSync("agent.token")).toBe("legacy_secret");
+    expect(legacy.getSync("agent.token")).toBe("legacy_secret");
+
+    upgraded.setSync("agent.token", "bound_secret");
+
+    expect(upgraded.getSync("agent.token")).toBe("bound_secret");
+    expect(legacy.getSync("agent.token")).toBeNull();
+  });
 });
 
 describe("ElectronSafeStorageCredentialStore", () => {
@@ -148,8 +192,10 @@ describe("ElectronSafeStorageCredentialStore", () => {
 
     await store.set("openai", "sk-test");
 
+    const raw = fs.readFileSync(path.join(tempDir, "credentials.safe.enc"), "utf8");
     expect(await store.get("openai")).toBe("sk-test");
-    expect(fs.readFileSync(path.join(tempDir, "credentials.safe.enc"), "utf8")).toContain("safe:");
+    expect(raw).toContain("safe:");
+    expect(raw).toContain("ADE_SAFE_STORAGE_CREDENTIALS_V1");
   });
 
   it("migrates a legacy encrypted-file store to safeStorage and removes the sibling file store", () => {
@@ -162,6 +208,22 @@ describe("ElectronSafeStorageCredentialStore", () => {
     expect(fs.readFileSync(path.join(tempDir, "credentials.safe.enc"), "utf8")).toContain("safe:");
     expect(fs.existsSync(path.join(tempDir, "credentials.json.enc"))).toBe(false);
     expect(fs.existsSync(path.join(tempDir, ".machine-key"))).toBe(false);
+  });
+
+  it("migrates a shared-path safeStorage file to the dedicated safeStorage file", () => {
+    const sharedPathStore = new ElectronSafeStorageCredentialStore({
+      secretsDir: tempDir,
+      credentialsPath: path.join(tempDir, "credentials.json.enc"),
+      legacyStore: null,
+      safeStorage,
+    });
+    sharedPathStore.setSync("github.token.v1", "ghp_shared");
+
+    const dedicatedStore = new ElectronSafeStorageCredentialStore({ secretsDir: tempDir, safeStorage });
+
+    expect(dedicatedStore.getSync("github.token.v1")).toBe("ghp_shared");
+    expect(fs.readFileSync(path.join(tempDir, "credentials.safe.enc"), "utf8")).toContain("safe:");
+    expect(fs.existsSync(path.join(tempDir, "credentials.json.enc"))).toBe(false);
   });
 
   it("keeps the safeStorage store separate from the headless fallback store", () => {
@@ -178,5 +240,68 @@ describe("ElectronSafeStorageCredentialStore", () => {
     expect(fallbackStore.getSync("github.token.v1")).toBe("ghp_headless");
     expect(fs.readFileSync(path.join(tempDir, "credentials.safe.enc"), "utf8")).toContain("safe:");
     expect(fs.readFileSync(path.join(tempDir, "credentials.json.enc"), "utf8")).not.toContain("safe:");
+  });
+
+  it("does not fall back to legacy AES when a safeStorage-marked file fails to decrypt", async () => {
+    const legacyStore = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    const store = new ElectronSafeStorageCredentialStore({
+      secretsDir: tempDir,
+      safeStorage,
+      legacyStore,
+    });
+    store.setSync("github.token.v1", "ghp_safe");
+
+    const failingStore = new ElectronSafeStorageCredentialStore({
+      secretsDir: tempDir,
+      safeStorage: {
+        isEncryptionAvailable: () => true,
+        encryptString: safeStorage.encryptString,
+        decryptString: () => {
+          throw new Error("safeStorage decrypt failed");
+        },
+      },
+      legacyStore,
+    });
+
+    expect(() => failingStore.getSync("github.token.v1")).toThrow("safeStorage decrypt failed");
+  });
+});
+
+describe("KeytarCredentialStore", () => {
+  it("uses keytar account names without touching the filesystem", async () => {
+    const values = new Map<string, string>();
+    const store = new KeytarCredentialStore({
+      keytar: {
+        async getPassword(service, account) {
+          return values.get(`${service}:${account}`) ?? null;
+        },
+        async setPassword(service, account, password) {
+          values.set(`${service}:${account}`, password);
+        },
+        async deletePassword(service, account) {
+          return values.delete(`${service}:${account}`);
+        },
+      },
+      service: "test.service",
+    });
+
+    await store.set("cursor", "cur_secret");
+    expect(await store.get("cursor")).toBe("cur_secret");
+    await store.delete("cursor");
+    expect(await store.get("cursor")).toBeNull();
+  });
+});
+
+describe("createDefaultCredentialStore", () => {
+  it("falls back to encrypted-file storage when keytar is disabled", async () => {
+    const store = await createDefaultCredentialStore({
+      env: { ADE_CREDENTIAL_STORE_DISABLE_KEYTAR: "1" } as NodeJS.ProcessEnv,
+      secretsDir: tempDir,
+    });
+
+    await store.set("codex", "token");
+
+    expect(await store.get("codex")).toBe("token");
+    expect(fs.existsSync(path.join(tempDir, "credentials.json.enc"))).toBe(true);
   });
 });

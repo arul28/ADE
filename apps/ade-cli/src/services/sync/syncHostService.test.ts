@@ -14,6 +14,7 @@ import {
   resolveSyncHostInboundProjectScope,
   selectChangesetBatchChunk,
 } from "./syncHostService";
+import { buildChangesetBatchPayload } from "./changesetPump";
 
 const publishMock = vi.hoisted(() => vi.fn());
 const bonjourDestroyMock = vi.hoisted(() => vi.fn());
@@ -239,6 +240,22 @@ describe("selectChangesetBatchChunk", () => {
     expect(chunk?.toDbVersion).toBe(4);
   });
 
+  it("includes one oversized row so sync can keep making progress", () => {
+    const oversizedChange = makeChange(4, 0, "x".repeat(1024));
+    const nextChange = makeChange(5, 1, "next-version");
+
+    const chunk = selectChangesetBatchChunk({
+      changes: [oversizedChange, nextChange],
+      fromDbVersion: 0,
+      toDbVersion: 5,
+      maxRows: 250,
+      maxBytes: 16,
+    });
+
+    expect(chunk?.changes).toEqual([oversizedChange]);
+    expect(chunk?.toDbVersion).toBe(4);
+  });
+
   it("can advance an empty changeset when all changes were filtered locally", () => {
     const chunk = selectChangesetBatchChunk({
       changes: [],
@@ -249,6 +266,22 @@ describe("selectChangesetBatchChunk", () => {
     });
 
     expect(chunk).toEqual({ changes: [], toDbVersion: 4 });
+  });
+});
+
+describe("buildChangesetBatchPayload", () => {
+  it("does not build sendable payloads with empty changes", () => {
+    const payload = buildChangesetBatchPayload({
+      deviceId: "device-1",
+      reason: "broadcast",
+      fromDbVersion: 3,
+      toDbVersion: 4,
+      changes: [],
+      maxRows: 250,
+      maxBytes: 256 * 1024,
+    });
+
+    expect(payload).toBeNull();
   });
 });
 

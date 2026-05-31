@@ -83,6 +83,7 @@ type CachedRuntime = {
   pendingHydrationBytes: number;
   frameWriteChunks: string[];
   frameWriteBytes: number;
+  liveStreamPaused: boolean;
   flushRafId: number | null;
   flushTimer: ReturnType<typeof setTimeout> | null;
   disposeTimer: ReturnType<typeof setTimeout> | null;
@@ -136,6 +137,7 @@ const ptyDataRuntimesByPtyId = new Map<string, Set<CachedRuntime>>();
 const ptyExitRuntimesByPtyId = new Map<string, Set<CachedRuntime>>();
 let sharedPtyDataUnsub: (() => void) | null = null;
 let sharedPtyExitUnsub: (() => void) | null = null;
+let ptyDataSubscriptionSignature: string | null = null;
 
 function terminalRuntimeKey(args: {
   sessionId: string;
@@ -641,8 +643,82 @@ function setRuntimeInteractionState(runtime: CachedRuntime, active: boolean) {
   }
 }
 
+function shouldRuntimeReceivePtyData(runtime: CachedRuntime): boolean {
+  return !runtime.disposed && runtime.refs > 0 && runtime.visible;
+}
+
+function updatePtyDataSubscriptions(): void {
+  const ptyIds = new Set<string>();
+  for (const [ptyId, runtimes] of ptyDataRuntimesByPtyId) {
+    for (const runtime of runtimes) {
+      if (shouldRuntimeReceivePtyData(runtime)) {
+        ptyIds.add(ptyId);
+        break;
+      }
+    }
+  }
+
+  const next = [...ptyIds].sort();
+  const signature = next.join("\0");
+  if (signature === ptyDataSubscriptionSignature) return;
+  ptyDataSubscriptionSignature = signature;
+
+  const setDataSubscriptions = window.ade.pty.setDataSubscriptions;
+  if (typeof setDataSubscriptions !== "function") return;
+  setDataSubscriptions({ ptyIds: next }).catch(() => {});
+}
+
+function clearRuntimeHydrationTimers(runtime: CachedRuntime): void {
+  if (runtime.hydrateTimer) {
+    clearTimeout(runtime.hydrateTimer);
+    runtime.hydrateTimer = null;
+  }
+  if (runtime.hydrateRetryTimer) {
+    clearTimeout(runtime.hydrateRetryTimer);
+    runtime.hydrateRetryTimer = null;
+  }
+  if (runtime.hydrationBackfillTimer) {
+    clearTimeout(runtime.hydrationBackfillTimer);
+    runtime.hydrationBackfillTimer = null;
+  }
+}
+
+function pauseRuntimePtyStream(runtime: CachedRuntime): void {
+  if (runtime.liveStreamPaused) return;
+  runtime.liveStreamPaused = true;
+  runtime.pendingHydrationChunks.length = 0;
+  runtime.pendingHydrationBytes = 0;
+  discardScheduledFrameWrites(runtime);
+}
+
+function resumeRuntimePtyStream(runtime: CachedRuntime): void {
+  if (!runtime.liveStreamPaused || !shouldRuntimeReceivePtyData(runtime)) return;
+  runtime.liveStreamPaused = false;
+  runtime.displayedLiveDataBeforeHydration = false;
+  runtime.hydrationStarted = false;
+  runtime.hydrationCompleted = false;
+  runtime.hydrationBackfillAttempts = 0;
+  runtime.pendingHydrationChunks.length = 0;
+  runtime.pendingHydrationBytes = 0;
+  clearRuntimeHydrationTimers(runtime);
+  discardScheduledFrameWrites(runtime);
+  startHydration(runtime);
+}
+
+function syncRuntimePtyDataStreaming(runtime: CachedRuntime, wasReceiving: boolean): void {
+  const isReceiving = shouldRuntimeReceivePtyData(runtime);
+  if (wasReceiving && !isReceiving) {
+    pauseRuntimePtyStream(runtime);
+  } else if (!wasReceiving && isReceiving) {
+    resumeRuntimePtyStream(runtime);
+  }
+  updatePtyDataSubscriptions();
+}
+
 function setRuntimeVisibilityState(runtime: CachedRuntime, visible: boolean) {
+  const wasReceiving = shouldRuntimeReceivePtyData(runtime);
   runtime.visible = visible;
+  syncRuntimePtyDataStreaming(runtime, wasReceiving);
 }
 
 function writePtyInput(runtime: CachedRuntime, data: string) {
@@ -1046,6 +1122,10 @@ function shouldDeliverPtyEvent(runtime: CachedRuntime, projectRoot: string | und
 
 function handleRuntimePtyData(runtime: CachedRuntime, ev: PtyDataEvent) {
   if (!shouldDeliverPtyEvent(runtime, ev.projectRoot)) return;
+  if (!shouldRuntimeReceivePtyData(runtime)) {
+    pauseRuntimePtyStream(runtime);
+    return;
+  }
   updateTerminalMouseTrackingModes(runtime, ev.data);
 
   if (!runtime.hydrationCompleted) {
@@ -1099,6 +1179,7 @@ function subscribeRuntimePtyData(runtime: CachedRuntime): () => void {
     ptyDataRuntimesByPtyId.set(runtime.ptyId, runtimes);
   }
   runtimes.add(runtime);
+  updatePtyDataSubscriptions();
   if (!sharedPtyDataUnsub) {
     sharedPtyDataUnsub = window.ade.pty.onData((ev) => {
       const targets = ptyDataRuntimesByPtyId.get(ev.ptyId);
@@ -1108,7 +1189,9 @@ function subscribeRuntimePtyData(runtime: CachedRuntime): () => void {
   }
   return () => {
     removeRuntimePtySubscription(ptyDataRuntimesByPtyId, runtime);
+    updatePtyDataSubscriptions();
     if (ptyDataRuntimesByPtyId.size === 0 && sharedPtyDataUnsub) {
+      ptyDataSubscriptionSignature = null;
       sharedPtyDataUnsub();
       sharedPtyDataUnsub = null;
     }
@@ -1602,6 +1685,7 @@ function createRuntime(args: {
     pendingHydrationBytes: 0,
     frameWriteChunks: [],
     frameWriteBytes: 0,
+    liveStreamPaused: false,
     flushRafId: null,
     flushTimer: null,
     disposeTimer: null,
@@ -1797,6 +1881,7 @@ export function __resetTerminalRuntimesForTests(): void {
     teardownRuntime(runtime);
   }
   runtimeCache.clear();
+  ptyDataSubscriptionSignature = null;
 }
 
 export function TerminalView({
@@ -1868,7 +1953,9 @@ export function TerminalView({
       preferences: mountConfig.preferences,
     });
     runtimeRef.current = runtime;
+    const wasReceivingBeforeRef = shouldRuntimeReceivePtyData(runtime);
     runtime.refs += 1;
+    syncRuntimePtyDataStreaming(runtime, wasReceivingBeforeRef);
     clearDisposeTimer(runtime);
     setRuntimeInteractionState(runtime, mountConfig.isActive);
     setRuntimeVisibilityState(runtime, mountConfig.isVisible);
@@ -2057,7 +2144,10 @@ export function TerminalView({
         parkRuntime(runtime);
       }
 
+      const wasReceivingBeforeUnref = shouldRuntimeReceivePtyData(runtime);
+      setRuntimeVisibilityState(runtime, false);
       runtime.refs = Math.max(0, runtime.refs - 1);
+      syncRuntimePtyDataStreaming(runtime, wasReceivingBeforeUnref);
       // Keep live runtimes parked until the PTY exits so switching away from a
       // running terminal does not discard in-memory TUI state.
       if (runtime.refs === 0 && runtime.exitCode != null) {

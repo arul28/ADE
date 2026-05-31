@@ -8,7 +8,7 @@ import { buildAdeGitignore, resolveAdeLayout } from "../../../shared/adeLayout";
 import { createAdeProjectService, initializeOrRepairAdeProject } from "./adeProjectService";
 import { browseProjectDirectories } from "./projectBrowserService";
 import { __internal, getProjectDetail } from "./projectDetailService";
-import { inspectRecentProject, toRecentProjectSummary } from "./recentProjectSummary";
+import { inspectRecentProject, toRecentProjectSummary, toShallowRecentProjectSummary } from "./recentProjectSummary";
 import { openKvDb } from "../state/kvDb";
 import { createProjectConfigService } from "../config/projectConfigService";
 
@@ -516,6 +516,25 @@ describe("getProjectDetail", () => {
 // ---------------------------------------------------------------------------
 
 describe("toRecentProjectSummary", () => {
+  it("keeps shallow recent-project rows free of lane scans", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-recent-project-shallow-"));
+    tempDirs.push(projectRoot);
+    fs.mkdirSync(path.join(projectRoot, ".git", "worktrees", "lane-a"), { recursive: true });
+
+    const summary = toShallowRecentProjectSummary({
+      rootPath: projectRoot,
+      displayName: "demo",
+      lastOpenedAt: "2026-04-02T12:00:00.000Z",
+    });
+
+    expect(summary).toEqual({
+      rootPath: projectRoot,
+      displayName: "demo",
+      lastOpenedAt: "2026-04-02T12:00:00.000Z",
+      exists: true,
+    });
+  });
+
   it("prefers active ADE lanes over raw git worktree metadata", async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-recent-project-summary-"));
     tempDirs.push(projectRoot);

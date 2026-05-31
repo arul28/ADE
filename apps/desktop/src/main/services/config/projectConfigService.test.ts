@@ -663,6 +663,37 @@ describe("projectConfigService - linear sync", () => {
   });
 });
 
+describe("projectConfigService - project UI", () => {
+  it("persists and merges the Linear batch launch default prompt", () => {
+    const { root, adeDir } = makeProjectFixture("ade-project-config-ui-");
+    const service = createProjectConfigService({
+      projectRoot: root,
+      adeDir,
+      projectId: "project-ui",
+      db: makeDb(),
+      logger: makeLogger(),
+    });
+
+    service.save({
+      shared: {
+        ui: {
+          linearBatchLaunchDefaultPrompt: "Shared prompt",
+        },
+      },
+      local: {
+        ui: {
+          linearBatchLaunchDefaultPrompt: "Local prompt",
+        },
+      },
+    });
+
+    const snapshot = service.get();
+    expect(snapshot.shared.ui?.linearBatchLaunchDefaultPrompt).toBe("Shared prompt");
+    expect(snapshot.local.ui?.linearBatchLaunchDefaultPrompt).toBe("Local prompt");
+    expect(snapshot.effective.ui?.linearBatchLaunchDefaultPrompt).toBe("Local prompt");
+  });
+});
+
 describe("projectConfigService - automation execution", () => {
   it("preserves lane creation fields from config", () => {
     const { root, adeDir } = makeProjectFixture("ade-project-config-automation-execution-");

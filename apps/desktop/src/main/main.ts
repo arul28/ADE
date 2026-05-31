@@ -1,4 +1,4 @@
-import { app, BrowserWindow, desktopCapturer, dialog, Menu, nativeImage, protocol, safeStorage, shell } from "electron";
+import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, nativeImage, protocol, safeStorage, shell } from "electron";
 import { AsyncLocalStorage } from "node:async_hooks";
 import os from "node:os";
 import path from "node:path";
@@ -42,6 +42,11 @@ import { createSessionService } from "./services/sessions/sessionService";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
 import { createPtyService } from "./services/pty/ptyService";
 import { createSupervisedPtyLoader } from "./services/pty/supervisedPtyHost";
+import {
+  normalizePtyDataSubscriptions,
+  setPtyDataSubscriptionsForSender,
+  shouldSendPtyDataToWebContents,
+} from "./services/pty/ptyDataSubscriptions";
 import {
   createProcessRegistryService,
   DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS,
@@ -91,6 +96,7 @@ import type {
   PortLease,
   PrEventPayload,
   ProjectInfo,
+  PtyDataEvent,
   SyncMobileProjectSummary,
   SyncProjectConnectionPayload,
   SyncProjectSwitchRequestPayload,
@@ -114,7 +120,12 @@ import {
 } from "../../../ade-cli/src/jsonrpc";
 import { resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
-import { ElectronSafeStorageCredentialStore } from "../../../ade-cli/src/services/credentials/credentialStore";
+import {
+  ElectronSafeStorageCredentialStore,
+  EncryptedFileCredentialStore,
+  isElectronSafeStorageCredentialFile,
+  type SyncCredentialStore,
+} from "../../../ade-cli/src/services/credentials/credentialStore";
 import { createKeybindingsService } from "./services/keybindings/keybindingsService";
 import { createAgentToolsService } from "./services/agentTools/agentToolsService";
 import { createAdeCliService } from "./services/cli/adeCliService";
@@ -367,6 +378,50 @@ function getRendererUrl(): string {
     return "http://localhost:5173";
   }
   return pathToFileURL(path.join(__dirname, "../renderer/index.html")).toString();
+}
+
+function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
+  const legacyStore = new EncryptedFileCredentialStore({ secretsDir });
+  const safeCredentialsPath = path.join(secretsDir, "credentials.safe.enc");
+  const legacyCredentialsPath = path.join(secretsDir, "credentials.json.enc");
+  try {
+    if (safeStorage.isEncryptionAvailable()) {
+      return new ElectronSafeStorageCredentialStore({
+        secretsDir,
+        safeStorage,
+        legacyStore,
+      });
+    }
+  } catch {
+    // Fall through to the file store when Electron cannot reach the OS keychain.
+  }
+  if (
+    isElectronSafeStorageCredentialFile(safeCredentialsPath)
+    || isElectronSafeStorageCredentialFile(legacyCredentialsPath)
+  ) {
+    const message = "Electron safeStorage is unavailable; unlock the OS credential store to read ADE credentials.";
+    return {
+      get: async () => {
+        throw new Error(message);
+      },
+      set: async () => {
+        throw new Error(message);
+      },
+      delete: async () => {
+        throw new Error(message);
+      },
+      getSync: () => {
+        throw new Error(message);
+      },
+      setSync: () => {
+        throw new Error(message);
+      },
+      deleteSync: () => {
+        throw new Error(message);
+      },
+    };
+  }
+  return legacyStore;
 }
 
 function isAllowedAdeBrowserWebviewSource(rawSrc: string): boolean {
@@ -964,11 +1019,6 @@ app.whenReady().then(async () => {
     );
 
   const machineAdeLayout = resolveMachineAdeLayout();
-  const createDesktopCredentialStore = (args: { secretsDir?: string } = {}) =>
-    new ElectronSafeStorageCredentialStore({
-      safeStorage,
-      ...args,
-    });
   const startupState = normalizeStartupProjectState({
     saved,
     additionalRecentProjects: readMachineRegistryRecentProjects(machineAdeLayout),
@@ -1017,6 +1067,24 @@ app.whenReady().then(async () => {
         win.webContents.send(channel, payload);
       } catch {
         // ignore
+      }
+    }
+  };
+
+  ipcMain.handle(IPC.ptyDataSubscriptions, (event, arg: { ptyIds?: unknown } | undefined) => {
+    setPtyDataSubscriptionsForSender(
+      event.sender,
+      normalizePtyDataSubscriptions(arg?.ptyIds),
+    );
+  });
+
+  const broadcastPtyData = (payload: PtyDataEvent) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!shouldSendPtyDataToWebContents(win.webContents, payload.ptyId)) continue;
+      try {
+        win.webContents.send(IPC.ptyData, payload);
+      } catch {
+        // ignore stale window sends
       }
     }
   };
@@ -1704,9 +1772,7 @@ app.whenReady().then(async () => {
     const adePaths = ensureAdeDirs(projectRoot);
     const { initApiKeyStore } = await import("./services/ai/apiKeyStore");
     initApiKeyStore(projectRoot, {
-      credentialStore: createDesktopCredentialStore({
-        secretsDir: machineAdeLayout.secretsDir,
-      }),
+      credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
     });
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
     const packagedFirstOpenStabilityMode =
@@ -2175,9 +2241,7 @@ app.whenReady().then(async () => {
       logger,
       projectRoot,
       appDataDir: app.getPath("userData"),
-      credentialStore: createDesktopCredentialStore({
-        secretsDir: machineAdeLayout.secretsDir,
-      }),
+      credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
     });
 
     const projectScaffoldService = createProjectScaffoldService({
@@ -2611,7 +2675,7 @@ app.whenReady().then(async () => {
       getAdeCliAgentEnv: adeCliService.agentEnv,
       logger,
       broadcastData: (ev) => {
-        broadcast(IPC.ptyData, ev);
+        broadcastPtyData(ev);
         const { projectRoot: _projectRoot, ...syncEvent } = ev;
         syncServiceRef?.handlePtyData(syncEvent);
       },
@@ -2751,9 +2815,7 @@ app.whenReady().then(async () => {
     const linearCredentialService = createLinearCredentialService({
       adeDir: adePaths.adeDir,
       logger,
-      credentialStore: createDesktopCredentialStore({
-        secretsDir: path.join(adePaths.adeDir, "secrets"),
-      }),
+      credentialStore: createDesktopCredentialStore(path.join(adePaths.adeDir, "secrets")),
     });
     const linearClient = createLinearClient({
       credentials: linearCredentialService,
@@ -4288,9 +4350,7 @@ app.whenReady().then(async () => {
       logger,
       projectRoot: normalizedRoot,
       appDataDir: app.getPath("userData"),
-      credentialStore: createDesktopCredentialStore({
-        secretsDir: machineAdeLayout.secretsDir,
-      }),
+      credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
     });
     const dormantProjectScaffoldService = createProjectScaffoldService({
       logger,

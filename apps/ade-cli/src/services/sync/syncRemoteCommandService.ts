@@ -1949,21 +1949,19 @@ async function buildLaneDetailPayload(args: SyncRemoteCommandServiceArgs, laneId
   };
 }
 
-export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArgs) {
-  const registry = new Map<SyncRemoteCommandAction, RegisteredRemoteCommand>();
+type RemoteCommandRegistrar = (
+  action: SyncRemoteCommandAction,
+  policy: SyncRemoteCommandPolicy,
+  handler: (payload: Record<string, unknown>) => Promise<unknown>,
+  scope?: SyncRemoteCommandDescriptor["scope"],
+) => void;
 
-  const register = (
-    action: SyncRemoteCommandAction,
-    policy: SyncRemoteCommandPolicy,
-    handler: (payload: Record<string, unknown>) => Promise<unknown>,
-    scope: SyncRemoteCommandDescriptor["scope"] = "project",
-  ) => {
-    registry.set(action, {
-      descriptor: { action, scope, policy },
-      handler,
-    });
-  };
+type RemoteCommandRegistrationDeps = {
+  args: SyncRemoteCommandServiceArgs;
+  register: RemoteCommandRegistrar;
+};
 
+function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("lanes.list", { viewerAllowed: true }, async (payload) => args.laneService.list(parseListLanesArgs(payload)));
   register("lanes.refreshSnapshots", { viewerAllowed: true }, async (payload) => {
     const refreshed = await args.laneService.refreshSnapshots(parseListLanesArgs(payload));
@@ -2082,7 +2080,9 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     const mergedEnvInitConfig = mergeLaneEnvInitConfig(context.envInitConfig, templateEnvInit) ?? templateEnvInit;
     return await laneEnvironmentService.initLaneEnvironment(context.lane, mergedEnvInitConfig, mergedOverrides);
   });
+}
 
+function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("work.listSessions", { viewerAllowed: true }, async (payload) => listRemoteWorkSessions(args, parseListSessionsArgs(payload)));
   register("work.updateSessionMeta", { viewerAllowed: true, queueable: true }, async (payload) => {
     args.sessionService.updateMeta(parseUpdateSessionMetaArgs(payload));
@@ -2185,6 +2185,9 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     }
     return { ok: true };
   });
+}
+
+function registerProcessRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("processes.listDefinitions", { viewerAllowed: true }, async () =>
     requireService(args.processService, "Process service not available.").listDefinitions());
   register("processes.listRuntime", { viewerAllowed: true }, async (payload) =>
@@ -2203,7 +2206,9 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     requireService(args.processService, "Process service not available.").kill(
       parseProcessActionArgs(payload, "processes.kill"),
     ));
+}
 
+function registerChatRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("chat.listSessions", { viewerAllowed: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const parsed = parseAgentChatListArgs(payload);
@@ -2295,6 +2300,9 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   register("chat.modelCatalog", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getModelCatalog(parseChatModelCatalogArgs(payload)));
 
+}
+
+function registerModelPickerRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   // Cross-surface ModelPicker favorites + recents — see modelPickerStore.ts.
   // Mirrors the direct JSON-RPC `modelPicker.*` methods on adeRpcServer so iOS
   // (which routes through the WebSocket sync command envelope) shares the
@@ -2304,6 +2312,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   // having to thread the accessor explicitly.
   const requireModelPickerStore = (): ModelPickerStore =>
     args.getModelPickerStore?.() ?? getSharedModelPickerStore();
+
   register("modelPicker.getFavorites", { viewerAllowed: true }, async () => ({
     favorites: requireModelPickerStore().getFavorites(),
   }), "runtime");
@@ -2329,7 +2338,9 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       : "";
     return { recents: requireModelPickerStore().pushRecent(modelId) };
   }, "runtime");
+}
 
+function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("cto.getRoster", { viewerAllowed: true }, async () => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const workerAgentService = requireService(args.workerAgentService, "Worker agent service not available.");
@@ -2655,7 +2666,9 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     await workerRevisionService.rollbackAgentRevision(agentId, revisionId, "user");
     return {};
   });
+}
 
+function registerGitAndFileRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("git.getChanges", { viewerAllowed: true }, async (payload) =>
     requireService(args.diffService, "Diff service not available.").getChanges(parseGetDiffChangesArgs(payload).laneId));
   register("git.getFile", { viewerAllowed: true }, async (payload) => {
@@ -2742,14 +2755,18 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     requireService(args.gitService, "Git service not available.").listBranches(parseGitListBranchesArgs(payload)));
   register("git.checkoutBranch", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").checkoutBranch(parseGitCheckoutBranchArgs(payload)));
+}
 
+function registerConflictRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("conflicts.getLaneStatus", { viewerAllowed: true }, async (payload) =>
     requireService(args.conflictService, "Conflict service not available.").getLaneStatus(parseConflictLaneArgs(payload, "conflicts.getLaneStatus")));
   register("conflicts.listOverlaps", { viewerAllowed: true }, async (payload) =>
     requireService(args.conflictService, "Conflict service not available.").listOverlaps(parseConflictLaneArgs(payload, "conflicts.listOverlaps")));
   register("conflicts.getBatchAssessment", { viewerAllowed: true }, async () =>
     requireService(args.conflictService, "Conflict service not available.").getBatchAssessment());
+}
 
+function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("prs.list", { viewerAllowed: true }, async () => args.prService.listAll());
   register("prs.refresh", { viewerAllowed: true }, async (payload) => {
     const prId = asTrimmedString(payload.prId);
@@ -3005,7 +3022,32 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     return args.pathToMergeOrchestrator.stopPathToMerge({ prId, reason });
   });
   register("prs.getMobileSnapshot", { viewerAllowed: true }, async () => args.prService.getMobileSnapshot());
+}
 
+export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArgs) {
+  const registry = new Map<SyncRemoteCommandAction, RegisteredRemoteCommand>();
+
+  const register = (
+    action: SyncRemoteCommandAction,
+    policy: SyncRemoteCommandPolicy,
+    handler: (payload: Record<string, unknown>) => Promise<unknown>,
+    scope: SyncRemoteCommandDescriptor["scope"] = "project",
+  ) => {
+    registry.set(action, {
+      descriptor: { action, scope, policy },
+      handler,
+    });
+  };
+
+  registerLaneRemoteCommands({ args, register });
+  registerWorkRemoteCommands({ args, register });
+  registerProcessRemoteCommands({ args, register });
+  registerChatRemoteCommands({ args, register });
+  registerModelPickerRemoteCommands({ args, register });
+  registerCtoRemoteCommands({ args, register });
+  registerGitAndFileRemoteCommands({ args, register });
+  registerConflictRemoteCommands({ args, register });
+  registerPrAndDeeplinkRemoteCommands({ args, register });
   return {
     getSupportedActions(): SyncRemoteCommandAction[] {
       return [...registry.keys()];

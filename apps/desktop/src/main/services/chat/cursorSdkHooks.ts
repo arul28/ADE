@@ -282,6 +282,12 @@ export function writeCursorSdkHookShellCommandScript(args: {
 }): void {
   ensureDir(path.dirname(args.commandPath));
   const source = `#!/bin/sh
+drain_stdin() {
+  if [ ! -t 0 ]; then
+    cat >/dev/null 2>/dev/null || true
+  fi
+}
+
 has_socket_arg=0
 for arg in "$@"; do
   case "$arg" in
@@ -290,6 +296,7 @@ for arg in "$@"; do
 done
 
 if [ "$has_socket_arg" -eq 0 ] && [ -z "\${ADE_CURSOR_SDK_SOCKET:-}" ] && [ -z "\${ADE_CURSOR_SDK_SESSION_ID:-}" ] && [ -z "\${ADE_CURSOR_SDK_LANE_ROOT:-}" ]; then
+  drain_stdin
   printf '%s' '{"permission":"allow"}'
   exit 0
 fi
@@ -314,6 +321,7 @@ if [ -n "$configured_electron" ] && [ -x "$configured_electron" ]; then
   ELECTRON_RUN_AS_NODE=1 exec "$configured_electron" "$script_path" "$@"
 fi
 
+drain_stdin
 printf '%s' '{"permission":"deny","user_message":"ADE Cursor policy gate requires Node.js for ADE-managed Cursor sessions.","agent_message":"ADE Cursor policy gate requires Node.js for ADE-managed Cursor sessions."}'
 `;
   fs.writeFileSync(args.commandPath, source, { mode: 0o755 });
