@@ -3092,26 +3092,30 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         bodyClassName: "overflow-hidden",
         dataTour: "lanes.workPane",
         hideHeaderWhenExpanded: true,
-        children: (
-          <DeferredLanePane cacheKey={`work:${laneId ?? "none"}`} label="work">
-            <LaneWorkPane
-              laneId={laneId}
-              initialLinearIssueContext={pendingLinearIssueContext?.issue ?? null}
-              onInitialLinearIssueContextConsumed={
-                pendingLinearIssueContext
-                  ? () => {
-                    setLinearIssueChatContextRequest((current) => (
-                      current?.laneId === pendingLinearIssueContext.laneId
-                      && current.requestedAt === pendingLinearIssueContext.requestedAt
-                        ? null
-                        : current
-                    ));
-                  }
-                  : undefined
-              }
-            />
-          </DeferredLanePane>
-        )
+        children: null,
+        renderChildren: ({ minimized }: { minimized: boolean }) => {
+          const mountWorkPane = !minimized && !(surface === "inline" && laneId != null && expandedLaneId === laneId);
+          return mountWorkPane ? (
+            <DeferredLanePane cacheKey={`work:${laneId ?? "none"}`} label="work">
+              <LaneWorkPane
+                laneId={laneId}
+                initialLinearIssueContext={pendingLinearIssueContext?.issue ?? null}
+                onInitialLinearIssueContextConsumed={
+                  pendingLinearIssueContext
+                    ? () => {
+                      setLinearIssueChatContextRequest((current) => (
+                        current?.laneId === pendingLinearIssueContext.laneId
+                        && current.requestedAt === pendingLinearIssueContext.requestedAt
+                          ? null
+                          : current
+                      ));
+                    }
+                    : undefined
+                }
+              />
+            </DeferredLanePane>
+          ) : null;
+        },
       },
     };
   }, [
@@ -3119,6 +3123,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     laneSnapshotByLaneId,
     linearIssueChatContextRequest,
     expandedGitActionsLaneId,
+    expandedLaneId,
     visibleLaneIds,
     autoRebaseEnabled,
     openAutoRebaseSettings,
