@@ -1457,6 +1457,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   const publishLanDiscovery = (port: number, options?: { force?: boolean }): void => {
     if (disposed) return;
+    // Loopback-bound hosts are intentionally not advertised on the LAN; remote reachability is handled by explicit/tailnet paths.
     if (SYNC_HOST_BIND_HOST !== "0.0.0.0" && SYNC_HOST_BIND_HOST !== "::") {
       unpublishLanDiscovery();
       return;
