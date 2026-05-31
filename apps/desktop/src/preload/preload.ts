@@ -3134,6 +3134,8 @@ contextBridge.exposeInMainWorld("ade", {
         throw new Error("Project root path is required.");
       }
       const previousBinding = currentProjectBinding;
+      const nextBinding = localProjectBindingForRoot(normalizedRootPath);
+      rememberProjectBinding(nextBinding);
       try {
         const project = await clearAround(
           () => {
@@ -3144,7 +3146,9 @@ contextBridge.exposeInMainWorld("ade", {
           ),
         );
         rememberProjectBinding(
-          localProjectBindingForRoot(project?.rootPath ?? normalizedRootPath),
+          project?.rootPath === nextBinding.rootPath
+            ? nextBinding
+            : localProjectBindingForRoot(project?.rootPath ?? normalizedRootPath),
         );
         return project;
       } catch (error) {

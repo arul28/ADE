@@ -314,6 +314,63 @@ describe("registerRuntimeBridge", () => {
     expect(localRuntimeConnectionPool.subscribeEventsForRoot).not.toHaveBeenCalled();
   });
 
+  it("authorizes a pending local runtime root while a project switch is binding", async () => {
+    const localRuntimeConnectionPool = {
+      callActionForRoot: vi.fn(async () => ({
+        ok: true,
+        domain: "lane",
+        action: "list",
+        result: [],
+        statusHints: {},
+      })),
+      subscribeEventsForRoot: vi.fn(async () => vi.fn()),
+    };
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+      localRuntimeConnectionPool: localRuntimeConnectionPool as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/old-repo", displayName: "Old", baseRef: "main" },
+        binding: localBinding("/old-repo"),
+        openProjectTabs: [
+          { rootPath: "/old-repo", displayName: "Old", baseRef: "main" },
+        ],
+        pendingLocalProjectRoots: ["/new-repo"],
+      }),
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.localRuntimeCallAction)?.(
+        eventForSender(sender(101)),
+        {
+          rootPath: "/new-repo",
+          request: { domain: "lane", action: "list", args: {} },
+        },
+      ),
+    ).resolves.toMatchObject({ result: [] });
+    await expect(
+      ipcHandlers.get(IPC.localRuntimeStreamEvents)?.(
+        eventForSender(sender(102)),
+        {
+          rootPath: "/new-repo",
+          request: { cursor: 3, limit: 10 },
+        },
+      ),
+    ).resolves.toEqual({ events: [], nextCursor: 3, hasMore: false });
+
+    expect(localRuntimeConnectionPool.callActionForRoot).toHaveBeenCalledWith(
+      "/new-repo",
+      expect.objectContaining({ domain: "lane", action: "list" }),
+    );
+    expect(localRuntimeConnectionPool.subscribeEventsForRoot).toHaveBeenCalledWith(
+      "/new-repo",
+      expect.objectContaining({ cursor: 3, limit: 10 }),
+      expect.any(Function),
+      expect.any(Function),
+    );
+  });
+
   it("forwards local action registry listing through the authorized local runtime root", async () => {
     const registry = [
       { domain: "chat", actions: [{ name: "codexOpenInCli" }] },

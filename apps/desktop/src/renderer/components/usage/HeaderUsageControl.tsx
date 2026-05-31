@@ -45,8 +45,6 @@ function windowPercentFor(
   return clampPercent(window.percentUsed);
 }
 
-const HEADER_USAGE_REFRESH_INTERVAL_MS = 120_000;
-const HEADER_USAGE_FOCUS_REFRESH_STALE_MS = 60_000;
 const HEADER_USAGE_PROVIDER_STATUS_REFRESH_MS = 300_000;
 
 type HeaderUsageWindowSummary = {
@@ -77,6 +75,23 @@ function percentStyle(percent: number | null): React.CSSProperties {
 
 function formatUsageTitle(usage: HeaderUsageWindowSummary): string {
   return `${usage.planLabel} ${percentLabel(usage.planPercent)}, 5h ${percentLabel(usage.fiveHourPercent)}`;
+}
+
+function snapshotLastPolledMs(snapshot: UsageSnapshot | null): number | null {
+  if (!snapshot) return null;
+  const timestamp = Date.parse(snapshot.lastPolledAt);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function shouldApplyCachedSnapshot(
+  nextSnapshot: UsageSnapshot | null,
+  currentSnapshot: UsageSnapshot | null,
+): boolean {
+  if (!currentSnapshot) return true;
+  if (!nextSnapshot) return false;
+  const nextTimestamp = snapshotLastPolledMs(nextSnapshot);
+  const currentTimestamp = snapshotLastPolledMs(currentSnapshot);
+  return nextTimestamp == null || currentTimestamp == null || nextTimestamp >= currentTimestamp;
 }
 
 function HeaderProviderUsageChip({
@@ -138,12 +153,9 @@ export function HeaderUsageControl({
     if (!window.ade?.usage) return;
     const usageBridge = window.ade.usage;
     let cancelled = false;
-    let requestSerial = 0;
-    const readSnapshot = async (force: boolean) => {
+    const readSnapshot = async () => {
       try {
-        const nextSnapshot = force
-          ? await usageBridge.refresh()
-          : await usageBridge.getSnapshot();
+        const nextSnapshot = await usageBridge.getSnapshot();
         return { failed: false, snapshot: nextSnapshot };
       } catch {
         return { failed: true, snapshot: null };
@@ -152,41 +164,21 @@ export function HeaderUsageControl({
     const unsubscribe = usageBridge.onUpdate?.((nextSnapshot) => {
       if (!cancelled) applySnapshot(nextSnapshot);
     });
-    const refreshIfMounted = (force: boolean) => {
+    const readCachedSnapshot = () => {
       if (cancelled) return;
-      const currentRequest = ++requestSerial;
-      void readSnapshot(force).then(({ failed, snapshot: nextSnapshot }) => {
+      void readSnapshot().then(({ failed, snapshot: nextSnapshot }) => {
         if (cancelled) return;
-        if (failed && snapshotRef.current) return;
-        const isLatestRequest = currentRequest === requestSerial;
-        const isInitialCachedSnapshot = !force && snapshotRef.current == null;
-        if (isLatestRequest || isInitialCachedSnapshot) applySnapshot(nextSnapshot);
+        const currentSnapshot = snapshotRef.current;
+        if (failed && currentSnapshot) return;
+        if (!shouldApplyCachedSnapshot(nextSnapshot, currentSnapshot)) return;
+        applySnapshot(nextSnapshot);
       });
     };
 
-    // Get any cached value onto the button immediately, then force a poll so a
-    // cold app launch does not wait for the drawer to be opened.
-    refreshIfMounted(false);
-    refreshIfMounted(true);
-
-    const interval = window.setInterval(() => {
-      refreshIfMounted(true);
-    }, HEADER_USAGE_REFRESH_INTERVAL_MS);
-
-    const refreshOnFocus = () => {
-      if (cancelled) return;
-      const latestSnapshot = snapshotRef.current;
-      const lastPolledAt = latestSnapshot?.lastPolledAt ? new Date(latestSnapshot.lastPolledAt).getTime() : 0;
-      if (!lastPolledAt || Date.now() - lastPolledAt >= HEADER_USAGE_FOCUS_REFRESH_STALE_MS) {
-        refreshIfMounted(true);
-      }
-    };
-    window.addEventListener("focus", refreshOnFocus);
+    readCachedSnapshot();
 
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
-      window.removeEventListener("focus", refreshOnFocus);
       unsubscribe?.();
     };
   }, [applySnapshot]);

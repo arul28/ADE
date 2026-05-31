@@ -330,7 +330,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   const [lanesRoute, setLanesRoute] = React.useState(() => isLanesRoute ? route : "/lanes");
   const routeProps = { active } as { active?: boolean };
   const shouldRenderWork = workMounted || isWorkRoute;
-  const shouldRenderLanes = isLanesRoute;
+  const shouldRenderLanes = active && isLanesRoute;
   const visibleWorkRoute = isWorkRoute ? route : workRoute;
   const visibleLanesRoute = isLanesRoute ? route : lanesRoute;
 
@@ -417,7 +417,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
     <div className="relative h-full min-h-0 w-full">
       {workSurface}
       {lanesSurface}
-      {!isWorkRoute && !isLanesRoute ? (
+      {active && !isWorkRoute && !isLanesRoute ? (
         <Routes location={route}>
           <Route path="/" element={<Navigate to="/work" replace />} />
           <Route path="/project" element={<PageErrorBoundary><RunPage /></PageErrorBoundary>} />

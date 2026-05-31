@@ -357,6 +357,24 @@ describe("App Work route keep-alive", () => {
     expect(lanesLifecycle.unmounts).toBe(0);
   });
 
+  it("does not render inactive project Lanes surfaces against the active runtime", async () => {
+    appStoreState.project = { rootPath: "/fake/project" };
+    appStoreState.openProjectTabRoots = ["/fake/project", "/other/project"];
+    appStoreState.projectInfoByRoot = {
+      "/fake/project": { rootPath: "/fake/project", displayName: "Fake" },
+      "/other/project": { rootPath: "/other/project", displayName: "Other" },
+    };
+    window.localStorage.setItem("ade:project-route:/other/project", "/lanes");
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    await screen.findByTestId("work-page");
+    expect(screen.queryByTestId("lanes-page")).toBeNull();
+    expect(lanesLifecycle.mounts).toBe(0);
+    expect(lanesLifecycle.unmounts).toBe(0);
+  });
+
   it("converts legacy hash app routes into BrowserRouter paths", async () => {
     window.history.replaceState({}, "", "/work#/lanes");
     const { App } = await import("./App");

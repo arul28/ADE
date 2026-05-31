@@ -14,11 +14,22 @@ describe("ipcInvokeTimeoutMs", () => {
     }])).toBe(4 * 60_000);
   });
 
-  it("keeps ordinary runtime actions on the default timeout", () => {
+  it("gives ordinary local runtime calls enough time to bind a cold project", () => {
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "lane", action: "list" },
+    }])).toBe(150_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction)).toBe(150_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallSync)).toBe(150_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeListActionRegistry)).toBe(150_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeStreamEvents)).toBe(150_000);
+  });
+
+  it("keeps ordinary remote runtime actions on the default timeout", () => {
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "lane", action: "list" },
     }])).toBe(30_000);
-    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction)).toBe(30_000);
   });
 
   it("keeps iOS launch timeout separate from macOS VM provisioning", () => {

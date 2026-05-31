@@ -46,6 +46,7 @@ type RuntimeBridgeArgs = {
     project: ProjectInfo | null;
     binding: OpenProjectBinding | null;
     openProjectTabs?: ProjectInfo[];
+    pendingLocalProjectRoots?: string[];
   };
   bindRemoteProject?: (
     windowId: number | null,
@@ -153,6 +154,9 @@ function collectAuthorizedLocalRuntimeRoots(
   addRoot(session?.project?.rootPath);
   for (const project of session?.openProjectTabs ?? []) {
     addRoot(project.rootPath);
+  }
+  for (const rootPath of session?.pendingLocalProjectRoots ?? []) {
+    addRoot(rootPath);
   }
 
   return roots;

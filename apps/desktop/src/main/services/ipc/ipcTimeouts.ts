@@ -28,6 +28,8 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   },
 };
 
+const LOCAL_RUNTIME_PROJECT_SETUP_TIMEOUT_MS = 150_000;
+
 function runtimeActionTimeoutMs(args: readonly unknown[]): number | null {
   const payload = args[0];
   const request = isRecord(payload) && isRecord(payload.request) ? payload.request : null;
@@ -37,7 +39,15 @@ function runtimeActionTimeoutMs(args: readonly unknown[]): number | null {
 }
 
 export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = []): number {
-  if (channel === IPC.localRuntimeCallAction || channel === IPC.remoteRuntimeCallAction) {
+  if (channel === IPC.localRuntimeCallAction) {
+    const actionTimeoutMs = runtimeActionTimeoutMs(args);
+    if (actionTimeoutMs != null) return actionTimeoutMs;
+    return LOCAL_RUNTIME_PROJECT_SETUP_TIMEOUT_MS;
+  }
+  if (channel === IPC.localRuntimeCallSync || channel === IPC.localRuntimeListActionRegistry || channel === IPC.localRuntimeStreamEvents) {
+    return LOCAL_RUNTIME_PROJECT_SETUP_TIMEOUT_MS;
+  }
+  if (channel === IPC.remoteRuntimeCallAction) {
     const actionTimeoutMs = runtimeActionTimeoutMs(args);
     if (actionTimeoutMs != null) return actionTimeoutMs;
     return 30_000;

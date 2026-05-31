@@ -1064,6 +1064,7 @@ app.whenReady().then(async () => {
   const closeContextPromises = new Map<string, Promise<void>>();
   const windowProjectRoots = new Map<number, string | null>();
   const windowProjectTabRoots = new Map<number, Set<string>>();
+  const windowPendingProjectRoots = new Map<number, Map<string, number>>();
   const windowProjectBindings = new Map<number, RemoteOpenProjectBinding>();
   const ipcWindowScope = new AsyncLocalStorage<number | null>();
   const rpcSocketCleanupByRoot = new Map<string, () => void>();
@@ -1132,6 +1133,35 @@ app.whenReady().then(async () => {
       if (project) projects.push(project);
     }
     return projects;
+  };
+
+  const pendingProjectRootsForWindow = (windowId: number | null): string[] => {
+    if (windowId == null) return [];
+    return Array.from(windowPendingProjectRoots.get(windowId)?.keys() ?? []);
+  };
+
+  const authorizePendingWindowProjectRoot = (
+    windowId: number | null,
+    rootPath: string | null | undefined,
+  ): (() => void) => {
+    if (windowId == null) return () => {};
+    const trimmed = typeof rootPath === "string" ? rootPath.trim() : "";
+    if (!trimmed) return () => {};
+    const normalizedRoot = normalizeProjectRoot(trimmed);
+    const roots = windowPendingProjectRoots.get(windowId) ?? new Map<string, number>();
+    roots.set(normalizedRoot, (roots.get(normalizedRoot) ?? 0) + 1);
+    windowPendingProjectRoots.set(windowId, roots);
+    return () => {
+      const current = windowPendingProjectRoots.get(windowId);
+      if (!current) return;
+      const count = current.get(normalizedRoot) ?? 0;
+      if (count > 1) {
+        current.set(normalizedRoot, count - 1);
+      } else {
+        current.delete(normalizedRoot);
+      }
+      if (current.size === 0) windowPendingProjectRoots.delete(windowId);
+    };
   };
 
   const rememberWindowProjectTabs = (
@@ -4898,11 +4928,17 @@ app.whenReady().then(async () => {
     selectedPath: string,
   ): Promise<ProjectInfo> => {
     const startedAt = Date.now();
+    const windowId = currentIpcWindowId();
     let repoRoot: string | null = null;
+    const pendingSelectedRootCleanup = authorizePendingWindowProjectRoot(windowId, selectedPath);
+    let pendingRepoRootCleanup: (() => void) | null = null;
     projectOpenLogger.info("project.open.begin", { selectedPath });
     try {
       const resolveStartedAt = Date.now();
       repoRoot = normalizeProjectRoot(await resolveRepoRoot(selectedPath)); // require a real git repo for onboarding.
+      if (repoRoot !== normalizeProjectRoot(selectedPath)) {
+        pendingRepoRootCleanup = authorizePendingWindowProjectRoot(windowId, repoRoot);
+      }
       // Kick off base-ref detection IN PARALLEL with the existing-context
       // check and any recent-project bookkeeping. For a cold open this shaves
       // 200-600ms off (git symbolic-ref + rev-parse run during work we'd be
@@ -4944,7 +4980,7 @@ app.whenReady().then(async () => {
           recordLastProject: false,
           preserveRecentOrder: isKnownRecentProject,
         });
-        bindWindowToProject(currentIpcWindowId(), repoRoot, { emit: true, foreground: true });
+        bindWindowToProject(windowId, repoRoot, { emit: true, foreground: true });
         scheduleProjectContextRebalance();
         // Drop the unused base-ref promise so it doesn't leak as an unhandled
         // rejection if detectDefaultBaseRef threw between the .catch above
@@ -5002,7 +5038,7 @@ app.whenReady().then(async () => {
         recordRecent: true,
         preserveRecentOrder: isKnownRecentProject,
       });
-      bindWindowToProject(currentIpcWindowId(), repoRoot, { emit: true, foreground: true });
+      bindWindowToProject(windowId, repoRoot, { emit: true, foreground: true });
       scheduleProjectContextRebalance();
       projectOpenLogger.info("project.open.done", {
         selectedPath,
@@ -5020,6 +5056,9 @@ app.whenReady().then(async () => {
         stack: error instanceof Error ? error.stack : undefined,
       });
       throw error;
+    } finally {
+      pendingRepoRootCleanup?.();
+      pendingSelectedRootCleanup();
     }
   };
 
@@ -5566,6 +5605,7 @@ app.whenReady().then(async () => {
       const previousRoot = windowProjectRoots.get(win.id) ?? null;
       windowProjectRoots.delete(win.id);
       windowProjectTabRoots.delete(win.id);
+      windowPendingProjectRoots.delete(win.id);
       windowProjectBindings.delete(win.id);
       if (activeProjectRoot === previousRoot) {
         setForegroundProject(firstOpenWindowProjectRoot());
@@ -5574,7 +5614,7 @@ app.whenReady().then(async () => {
     });
   };
 
-  const getWindowSession = (windowId: number | null): { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs: ProjectInfo[] } => {
+  const getWindowSession = (windowId: number | null): { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs: ProjectInfo[]; pendingLocalProjectRoots: string[] } => {
     if (windowId == null) {
       const project = projectForRoot(activeProjectRoot);
       return {
@@ -5582,16 +5622,24 @@ app.whenReady().then(async () => {
         project,
         binding: bindingForLocalProject(project),
         openProjectTabs: project ? [project] : [],
+        pendingLocalProjectRoots: [],
       };
     }
     const remoteBinding = windowProjectBindings.get(windowId) ?? null;
-    if (remoteBinding) return { windowId, project: null, binding: remoteBinding, openProjectTabs: projectsForWindowTabs(windowId) };
+    if (remoteBinding) return {
+      windowId,
+      project: null,
+      binding: remoteBinding,
+      openProjectTabs: projectsForWindowTabs(windowId),
+      pendingLocalProjectRoots: pendingProjectRootsForWindow(windowId),
+    };
     const project = projectForRoot(windowProjectRoots.get(windowId) ?? null);
     return {
       windowId,
       project,
       binding: bindingForLocalProject(project),
       openProjectTabs: projectsForWindowTabs(windowId),
+      pendingLocalProjectRoots: pendingProjectRootsForWindow(windowId),
     };
   };
 
