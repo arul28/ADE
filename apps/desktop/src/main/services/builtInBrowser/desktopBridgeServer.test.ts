@@ -58,7 +58,10 @@ describe("startBuiltInBrowserDesktopBridgeServer", () => {
       }
       return previous;
     };
-    const socketPath = path.join(tempDir, "sock", "desktop-bridge.sock");
+    const socketDir = path.join(tempDir, "sock");
+    fs.mkdirSync(socketDir, { mode: 0o755 });
+    fs.chmodSync(socketDir, 0o755);
+    const socketPath = path.join(socketDir, "desktop-bridge.sock");
     let server: ReturnType<typeof startBuiltInBrowserDesktopBridgeServer> | null = null;
     try {
       server = startBuiltInBrowserDesktopBridgeServer({
@@ -72,7 +75,7 @@ describe("startBuiltInBrowserDesktopBridgeServer", () => {
 
       expect(umaskCalls).toEqual([0o177, 0o000]);
       expect(currentUmask).toBe(0o000);
-      expect(fs.statSync(path.dirname(socketPath)).mode & 0o777).toBe(0o700);
+      expect(fs.statSync(socketDir).mode & 0o777).toBe(0o700);
       expect(fs.statSync(socketPath).mode & 0o777).toBe(0o600);
     } finally {
       server?.dispose();

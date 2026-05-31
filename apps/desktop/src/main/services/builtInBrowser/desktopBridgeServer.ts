@@ -59,8 +59,10 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
   const isNamedPipe = socketPath.startsWith("\\\\");
 
   if (!isNamedPipe) {
+    const socketDir = path.dirname(socketPath);
     try {
-      fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
+      fs.mkdirSync(socketDir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(socketDir, 0o700);
     } catch (error) {
       logger.warn("built_in_browser_bridge.sockdir_create_failed", {
         socketPath,
