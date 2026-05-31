@@ -134,7 +134,7 @@
     "@types/path-browserify": "^1.0.3",
     "@types/react": "^18.2.74",
     "@types/react-dom": "^18.2.24",
-    "@types/sql.js": "^1.4.9",
+    "@types/sql.js": "^1.4.11",
     "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^6.21.0",
     "@typescript-eslint/parser": "^6.21.0",
