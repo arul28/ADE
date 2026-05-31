@@ -43,6 +43,11 @@ async function raceWithTimeout<T>(
   }
 }
 
+function isClosedSocketError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /(?:socket (?:is )?closed|socket hang up|EPIPE|ECONNRESET|ERR_STREAM_DESTROYED)/i.test(message);
+}
+
 export function createBuiltInBrowserDesktopBridgeClient(args: {
   socketPath: string;
   logger: Logger;
@@ -113,7 +118,7 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
     }
   }
 
-  async function callBridge(method: string, params?: unknown): Promise<unknown> {
+  async function callBridge(method: string, params?: unknown, retried = false): Promise<unknown> {
     const c = await ensureClient();
     try {
       return await raceWithTimeout(
@@ -124,6 +129,9 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
     } catch (error) {
       // Drop the connection on any error so the next call reconnects.
       drop(error);
+      if (!retried && isClosedSocketError(error)) {
+        return await callBridge(method, params, true);
+      }
       throw error;
     }
   }

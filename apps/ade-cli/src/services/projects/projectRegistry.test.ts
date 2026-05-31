@@ -190,4 +190,32 @@ describe("ProjectRegistry", () => {
     expect(spawnSyncMock).not.toHaveBeenCalled();
     expect(updated.gitOriginUrl).toBe("git@github.com:arul28/ADE.git");
   });
+
+  it("backfills git origin on re-add when the existing record is missing it", () => {
+    const homeDir = makeTempRoot("ade-project-registry-readd-null-");
+    const projectRoot = path.join(homeDir, "ADE");
+    const registryDir = path.join(homeDir, ".ade-runtime");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const registry = new ProjectRegistry({
+      adeDir: registryDir,
+      projectsPath: path.join(registryDir, "projects.json"),
+      secretsDir: path.join(registryDir, "secrets"),
+      sockDir: path.join(registryDir, "sock"),
+      socketPath: path.join(registryDir, "sock", "ade.sock"),
+      desktopBridgeSocketPath: path.join(registryDir, "sock", "desktop-bridge.sock"),
+      binDir: path.join(registryDir, "bin"),
+      runtimeDir: path.join(registryDir, "runtime"),
+    });
+    registry.add(projectRoot);
+    spawnSyncMock.mockClear();
+    spawnSyncMock.mockReturnValueOnce({
+      status: 0,
+      stdout: "git@github.com:arul28/ADE.git\n",
+    });
+
+    const updated = registry.add(projectRoot);
+
+    expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+    expect(updated.gitOriginUrl).toBe("git@github.com:arul28/ADE.git");
+  });
 });

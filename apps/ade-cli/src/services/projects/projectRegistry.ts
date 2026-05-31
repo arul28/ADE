@@ -155,7 +155,7 @@ export class ProjectRegistry {
       displayName: existing?.displayName ?? path.basename(normalized),
       addedAt: existing?.addedAt ?? now,
       lastOpenedAt: now,
-      gitOriginUrl: existing ? existing.gitOriginUrl : readGitOriginUrl(normalized),
+      gitOriginUrl: existing?.gitOriginUrl ?? readGitOriginUrl(normalized),
     };
     if (existingIndex >= 0) {
       file.projects[existingIndex] = next;

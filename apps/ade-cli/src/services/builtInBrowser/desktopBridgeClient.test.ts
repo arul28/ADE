@@ -193,7 +193,6 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     await expect(client.getStatus()).resolves.toEqual({ generation: 1 });
     await server.close();
     server = null;
-    await new Promise((resolve) => setTimeout(resolve, 0));
 
     generation = 2;
     server = await startBridgeServer(async () => ({ generation }), socketPath);
