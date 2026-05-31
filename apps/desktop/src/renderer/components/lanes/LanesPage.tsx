@@ -141,6 +141,7 @@ type RebasePushReviewState = {
 
 const ADOPT_HINT_DISMISSED_KEY = "ade.lanes.adoptHintDismissed.v1";
 const LANE_DELETE_REFRESH_DEBOUNCE_MS = 160;
+const EMPTY_LANE_IDS: string[] = [];
 
 function normalizeLaneRuntimePlacement(value: unknown): LaneRuntimePlacement {
   return value === "macos-vm" ? "macos-vm" : "local";
@@ -702,8 +703,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const stackGraphLanes = useMemo(() => sortLanesForStackGraph(filteredLanes), [filteredLanes]);
 
   const filteredLaneIds = useMemo(() => filteredLanes.map((lane) => lane.id), [filteredLanes]);
-  // Per-lane agent rosters (ADE chat + CLI agents) for the inline dashboards.
-  const agentsByLaneId = useLaneAgents(filteredLaneIds);
+  const stackGraphAgentLaneIds = stackGraphHeaderOpen ? filteredLaneIds : EMPTY_LANE_IDS;
+  // Per-lane agent rosters are only shown inside Stack Graph; keep the closed route cheap.
+  const agentsByLaneId = useLaneAgents(stackGraphAgentLaneIds);
   const selectableFilteredLaneIds = useMemo(
     () => filteredLaneIds.filter((laneId) => !deletingLaneIds.has(laneId)),
     [filteredLaneIds, deletingLaneIds],
