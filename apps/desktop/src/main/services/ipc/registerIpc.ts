@@ -25,7 +25,7 @@ import {
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { runGit } from "../git/git";
 import type { AdeCleanupResult, AdeProjectSnapshot, IosSimulatorWindowState } from "../../../shared/types";
-import { toRecentProjectSummary } from "../projects/recentProjectSummary";
+import { toShallowRecentProjectSummary } from "../projects/recentProjectSummary";
 import type {
   ApplyConflictProposalArgs,
   BatchAssessmentResult,
@@ -3574,7 +3574,7 @@ export function registerIpc({
     ) {
       return recentProjectSummaryCache.rows;
     }
-    const rows = entries.map(toRecentProjectSummary);
+    const rows = entries.map(toShallowRecentProjectSummary);
     recentProjectSummaryCache = {
       signature,
       rows,

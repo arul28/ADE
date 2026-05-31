@@ -35,7 +35,6 @@ import { discoverLanRuntimes } from "../remoteRuntime/runtimeDiscovery";
 import { RemoteTargetRegistry } from "../remoteRuntime/remoteTargetRegistry";
 import { runGit } from "../git/git";
 import { getProjectWorkSummary } from "../projects/projectDetailService";
-import { toRecentProjectSummary } from "../projects/recentProjectSummary";
 import { readGlobalState } from "../state/globalState";
 
 type RuntimeBridgeArgs = {
@@ -963,7 +962,7 @@ export function registerRuntimeBridge({
         .slice(0, 100)
         .map((entry) => ({
           rootPath: entry.rootPath,
-          displayName: toRecentProjectSummary(entry).displayName,
+          displayName: entry.displayName,
         }));
       const localRuntimeProjects = localRuntimeConnectionPool
         ? await localRuntimeConnectionPool

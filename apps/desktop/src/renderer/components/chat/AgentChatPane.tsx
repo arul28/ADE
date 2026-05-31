@@ -4694,6 +4694,7 @@ export function AgentChatPane({
   }, []);
 
   useEffect(() => {
+    if (!isTileVisible) return undefined;
     const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
       const optimistic = optimisticOutgoingMessageRef.current;
       if (

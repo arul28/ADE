@@ -1553,7 +1553,7 @@ describe("WorkViewArea", () => {
     expect(chatPaneLifecycle.unmounts.get("chat-1")).toBeUndefined();
   });
 
-  it("keeps open chat tabs mounted while switching the active tab", () => {
+  it("parks hidden chat tabs while switching the active tab", () => {
     vi.mocked(isChatToolType).mockImplementation((toolType) => toolType === "codex-chat");
     const first = makeChatSession("chat-1");
     const second = makeChatSession("chat-2");
@@ -1597,9 +1597,13 @@ describe("WorkViewArea", () => {
       />,
     );
 
-    expect(within(view.container).getAllByTestId("agent-chat-pane")).toHaveLength(2);
+    let panes = within(view.container).getAllByTestId("agent-chat-pane");
+    expect(panes).toHaveLength(1);
+    expect(panes[0]?.getAttribute("data-session-id")).toBe("chat-1");
+    expect(panes[0]?.getAttribute("data-tile-active")).toBe("true");
+    expect(panes[0]?.getAttribute("data-tile-visible")).toBe("true");
     expect(chatPaneLifecycle.mounts.get("chat-1")).toBe(1);
-    expect(chatPaneLifecycle.mounts.get("chat-2")).toBe(1);
+    expect(chatPaneLifecycle.mounts.get("chat-2")).toBeUndefined();
 
     view.rerender(
       <WorkViewArea
@@ -1640,9 +1644,14 @@ describe("WorkViewArea", () => {
       />,
     );
 
+    panes = within(view.container).getAllByTestId("agent-chat-pane");
+    expect(panes).toHaveLength(1);
+    expect(panes[0]?.getAttribute("data-session-id")).toBe("chat-2");
+    expect(panes[0]?.getAttribute("data-tile-active")).toBe("true");
+    expect(panes[0]?.getAttribute("data-tile-visible")).toBe("true");
     expect(chatPaneLifecycle.mounts.get("chat-1")).toBe(1);
     expect(chatPaneLifecycle.mounts.get("chat-2")).toBe(1);
-    expect(chatPaneLifecycle.unmounts.get("chat-1")).toBeUndefined();
+    expect(chatPaneLifecycle.unmounts.get("chat-1")).toBe(1);
     expect(chatPaneLifecycle.unmounts.get("chat-2")).toBeUndefined();
   });
 
@@ -1702,7 +1711,7 @@ describe("WorkViewArea", () => {
     expect(chatPaneLifecycle.unmounts.get("chat-1")).toBeUndefined();
   });
 
-  it("keeps every running terminal tile mounted in tabs mode while switching active tab", () => {
+  it("parks hidden terminal tiles in tabs mode while switching active tab", () => {
     const first = makeRunningSession("session-1", "pty-1");
     const second = makeRunningSession("session-2", "pty-2");
 
@@ -1745,14 +1754,9 @@ describe("WorkViewArea", () => {
       />,
     );
 
-    const terminals = within(view.container).getAllByTestId("terminal-view");
-    expect(terminals).toHaveLength(2);
-    const firstTerminal = terminals.find((el) => el.getAttribute("data-session-id") === "session-1");
-    const secondTerminal = terminals.find((el) => el.getAttribute("data-session-id") === "session-2");
-    expect(firstTerminal?.getAttribute("data-active")).toBe("true");
-    expect(secondTerminal?.getAttribute("data-active")).toBe("false");
-    expect(firstTerminal?.closest("[hidden]")).toBeNull();
-    expect(secondTerminal?.closest("[hidden]")).not.toBeNull();
+    let terminal = within(view.container).getByTestId("terminal-view");
+    expect(terminal.getAttribute("data-session-id")).toBe("session-1");
+    expect(terminal.getAttribute("data-active")).toBe("true");
 
     view.rerender(
       <WorkViewArea
@@ -1793,14 +1797,9 @@ describe("WorkViewArea", () => {
       />,
     );
 
-    const terminalsAfter = within(view.container).getAllByTestId("terminal-view");
-    expect(terminalsAfter).toHaveLength(2);
-    const firstAfter = terminalsAfter.find((el) => el.getAttribute("data-session-id") === "session-1");
-    const secondAfter = terminalsAfter.find((el) => el.getAttribute("data-session-id") === "session-2");
-    expect(firstAfter?.getAttribute("data-active")).toBe("false");
-    expect(secondAfter?.getAttribute("data-active")).toBe("true");
-    expect(firstAfter?.closest("[hidden]")).not.toBeNull();
-    expect(secondAfter?.closest("[hidden]")).toBeNull();
+    terminal = within(view.container).getByTestId("terminal-view");
+    expect(terminal.getAttribute("data-session-id")).toBe("session-2");
+    expect(terminal.getAttribute("data-active")).toBe("true");
   });
 
   it("preserves unusual session ids when building the grid tiling tree", () => {

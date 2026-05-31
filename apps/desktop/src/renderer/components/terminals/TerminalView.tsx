@@ -1046,7 +1046,9 @@ function shouldDeliverPtyEvent(runtime: CachedRuntime, projectRoot: string | und
 
 function handleRuntimePtyData(runtime: CachedRuntime, ev: PtyDataEvent) {
   if (!shouldDeliverPtyEvent(runtime, ev.projectRoot)) return;
-  updateTerminalMouseTrackingModes(runtime, ev.data);
+  if (runtime.visible && runtime.refs > 0) {
+    updateTerminalMouseTrackingModes(runtime, ev.data);
+  }
 
   if (!runtime.hydrationCompleted) {
     runtime.pendingHydrationChunks.push(ev.data);
