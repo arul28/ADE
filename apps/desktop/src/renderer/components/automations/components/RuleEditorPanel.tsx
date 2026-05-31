@@ -569,6 +569,7 @@ export function RuleEditorPanel({
   lanes,
   suites,
   issues,
+  simulationNotes,
   requiredConfirmations,
   acceptedConfirmations,
   onToggleConfirmation,
@@ -582,6 +583,7 @@ export function RuleEditorPanel({
   lanes: Array<{ id: string; name: string }>;
   suites: TestSuiteDefinition[];
   issues: AutomationDraftIssue[];
+  simulationNotes?: string[];
   requiredConfirmations: AutomationDraftConfirmationRequirement[];
   acceptedConfirmations: Set<string>;
   onToggleConfirmation: (key: string, checked: boolean) => void;
@@ -737,6 +739,7 @@ export function RuleEditorPanel({
           <div className="flex flex-col gap-4">
             {errors.length ? <IssueList title="Errors" issues={errors} tone="error" /> : null}
             {warnings.length ? <IssueList title="Notes" issues={warnings} tone="warning" /> : null}
+            <SimulationNotes notes={simulationNotes ?? []} />
             <ConfirmationsChecklist
               required={requiredConfirmations}
               accepted={acceptedConfirmations}
@@ -1438,6 +1441,20 @@ function IssueList({
           <li key={`${issue.path}-${index}`}>
             <span className="font-mono text-[10px] text-fg/80">{issue.path}</span>: {issue.message}
           </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function SimulationNotes({ notes }: { notes: string[] }) {
+  if (!notes.length) return null;
+  return (
+    <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-[11px] text-emerald-100">
+      <div className="font-semibold">Simulation complete</div>
+      <ul className="mt-1 space-y-0.5">
+        {notes.map((note, index) => (
+          <li key={`${note}-${index}`}>{note}</li>
         ))}
       </ul>
     </div>

@@ -378,6 +378,8 @@ function GraphInner({ active = true }: { active?: boolean }) {
     message: string;
     undoAction: () => Promise<void>;
   } | null>(null);
+  const [undoToastBusy, setUndoToastBusy] = React.useState(false);
+  const undoToastPendingRef = React.useRef(false);
   const [activityScoreByLaneId, setActivityScoreByLaneId] = React.useState<Record<string, number>>({});
   const [activeSessionsByLaneId, setActiveSessionsByLaneId] = React.useState<Record<string, number>>({});
   const activeGraphSessionsRef = React.useRef(0);
@@ -2216,7 +2218,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
         const result = await window.ade.lanes.reparent({ laneId, newParentLaneId: target.id });
         completed.push({ laneId, previousParentLaneId: result.previousParentLaneId });
       } catch (error) {
-        for (const rollback of completed.reverse()) {
+        for (const rollback of [...completed].reverse()) {
           if (!rollback.previousParentLaneId) continue;
           try {
             await window.ade.lanes.reparent({ laneId: rollback.laneId, newParentLaneId: rollback.previousParentLaneId });
@@ -2231,10 +2233,12 @@ function GraphInner({ active = true }: { active?: boolean }) {
       }
     }
 
+    undoToastPendingRef.current = false;
+    setUndoToastBusy(false);
     setUndoToast({
       message: `Reparented ${orderedLaneIds.length === 1 ? `'${laneById.get(orderedLaneIds[0]!)?.name ?? orderedLaneIds[0]}'` : `${orderedLaneIds.length} lanes`} under '${target.name}'`,
       undoAction: async () => {
-        for (const rollback of completed.reverse()) {
+        for (const rollback of [...completed].reverse()) {
           if (!rollback.previousParentLaneId) continue;
           await window.ade.lanes.reparent({ laneId: rollback.laneId, newParentLaneId: rollback.previousParentLaneId });
         }
@@ -4411,21 +4415,35 @@ function GraphInner({ active = true }: { active?: boolean }) {
         <div className="absolute bottom-3 right-3 z-[90] rounded bg-white/[0.03] backdrop-blur-xl px-3 py-2 text-xs shadow-float">
           <div className="mb-1">{undoToast.message}</div>
           <div className="flex justify-end gap-2">
-            <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => setUndoToast(null)}>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 px-2 text-[11px]"
+              disabled={undoToastBusy}
+              onClick={() => setUndoToast(null)}
+            >
               Close
             </Button>
             <Button
               size="sm"
               variant="primary"
               className="h-6 px-2 text-[11px]"
+              disabled={undoToastBusy}
               onClick={() => {
+                if (undoToastPendingRef.current) return;
+                undoToastPendingRef.current = true;
+                setUndoToastBusy(true);
                 void undoToast
                   .undoAction()
                   .catch((error) => setErrorBanner(error instanceof Error ? error.message : String(error)))
-                  .finally(() => setUndoToast(null));
+                  .finally(() => {
+                    undoToastPendingRef.current = false;
+                    setUndoToastBusy(false);
+                    setUndoToast(null);
+                  });
               }}
             >
-              Undo
+              {undoToastBusy ? "Undoing..." : "Undo"}
             </Button>
           </div>
         </div>

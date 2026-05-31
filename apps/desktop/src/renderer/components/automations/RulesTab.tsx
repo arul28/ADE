@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   ArrowClockwise,
   BookOpen,
@@ -308,6 +309,7 @@ export function RulesTab({
   onDraftConsumed: () => void;
   onOpenTemplates: () => void;
 }) {
+  const navigate = useNavigate();
   const [detailView, setDetailView] = useState<DetailView>("editor");
   const [rules, setRules] = useState<AutomationRuleSummary[]>([]);
   const [lanes, setLanes] = useState<LaneSummary[]>([]);
@@ -315,6 +317,7 @@ export function RulesTab({
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
   const [draft, setDraft] = useState<AutomationRuleDraft | null>(null);
   const [issues, setIssues] = useState<AutomationDraftIssue[]>([]);
+  const [simulationNotes, setSimulationNotes] = useState<string[]>([]);
   const [requiredConfirmations, setRequiredConfirmations] = useState<AutomationDraftConfirmationRequirement[]>([]);
   const [acceptedConfirmations, setAcceptedConfirmations] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
@@ -346,6 +349,7 @@ export function RulesTab({
       try {
         setDraft(JSON.parse(savedSnapshotRef.current) as AutomationRuleDraft);
         setIssues([]);
+        setSimulationNotes([]);
       } catch {
         // Snapshot was malformed — leave the draft as-is rather than crashing.
       }
@@ -404,6 +408,7 @@ export function RulesTab({
     // isDirty stays false until the user edits.
     savedSnapshotRef.current = JSON.stringify(pendingDraft);
     setIssues([]);
+    setSimulationNotes([]);
     setRequiredConfirmations([]);
     setAcceptedConfirmations(new Set());
     onDraftConsumed();
@@ -417,9 +422,15 @@ export function RulesTab({
     setDraft(nextDraft);
     savedSnapshotRef.current = JSON.stringify(nextDraft);
     setIssues([]);
+    setSimulationNotes([]);
     setRequiredConfirmations([]);
     setAcceptedConfirmations(new Set());
   }, [rules, selectedRuleId]);
+
+  const updateDraft = useCallback((nextDraft: AutomationRuleDraft) => {
+    setSimulationNotes([]);
+    setDraft(nextDraft);
+  }, []);
 
   const filteredRules = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -452,6 +463,7 @@ export function RulesTab({
     setError(null);
     try {
       const validation = await validateDraft(draft);
+      setSimulationNotes([]);
       if (!validation.ok) return;
       const saved = await window.ade.automations.saveDraft({
         draft,
@@ -464,6 +476,7 @@ export function RulesTab({
       setDraft(nextDraft);
       savedSnapshotRef.current = JSON.stringify(nextDraft);
       setIssues([]);
+      setSimulationNotes([]);
     } catch (err) {
       setError(extractError(err));
     } finally {
@@ -475,17 +488,15 @@ export function RulesTab({
     if (!draft) return;
     setSimulating(true);
     setError(null);
+    setSimulationNotes([]);
     try {
       const result = await window.ade.automations.simulate({ draft });
+      const notes = result.notes.map((note) => note.trim()).filter(Boolean);
       setIssues(result.issues);
       if (!result.issues.length) {
-        setIssues([
-          {
-            level: "warning",
-            path: "simulate",
-            message: result.notes.join(" · ") || "Simulation completed with no blocking issues.",
-          },
-        ]);
+        setSimulationNotes(notes.length ? notes : ["Simulation completed with no blocking issues."]);
+      } else {
+        setSimulationNotes([]);
       }
     } catch (err) {
       setError(extractError(err));
@@ -501,6 +512,7 @@ export function RulesTab({
     setDraft(blank);
     savedSnapshotRef.current = JSON.stringify(blank);
     setIssues([]);
+    setSimulationNotes([]);
     setRequiredConfirmations([]);
     setAcceptedConfirmations(new Set());
     setDetailView("editor");
@@ -670,10 +682,11 @@ export function RulesTab({
           ) : draft ? (
             <RuleEditorPanel
               draft={draft}
-              setDraft={setDraft}
+              setDraft={updateDraft}
               lanes={lanes.map((lane) => ({ id: lane.id, name: lane.name }))}
               suites={suites}
               issues={issues}
+              simulationNotes={simulationNotes}
               requiredConfirmations={requiredConfirmations}
               acceptedConfirmations={acceptedConfirmations}
               onToggleConfirmation={(key, checked) => {
@@ -729,6 +742,7 @@ export function RulesTab({
               <select
                 className={inputCls}
                 value={manualRunLaneId}
+                disabled={!lanes.length}
                 onChange={(event) => setManualRunLaneId(event.target.value)}
               >
                 {lanes.map((lane) => (
@@ -740,7 +754,35 @@ export function RulesTab({
             </label>
             {!lanes.length ? (
               <div className="mt-3 rounded-md border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">
-                No active lanes are available for this automation run.
+                <div>No active lanes are available for this automation run.</div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={() => {
+                      setManualRunRule(null);
+                      setManualRunLaneId("");
+                      navigate("/lanes?action=create");
+                    }}
+                  >
+                    <Plus size={12} weight="regular" />
+                    Create lane
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      if (!confirmDiscardIfDirty()) return;
+                      setSelectedRuleId(manualRunRule.id);
+                      setDetailView("editor");
+                      setManualRunRule(null);
+                      setManualRunLaneId("");
+                    }}
+                  >
+                    <PencilSimple size={12} weight="regular" />
+                    Change lane mode
+                  </Button>
+                </div>
               </div>
             ) : null}
             <div className="mt-4 flex justify-end gap-2">
