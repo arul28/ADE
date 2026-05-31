@@ -1,3 +1,5 @@
+import { parseLinearGraphQLInput } from "../../../desktop/src/main/services/cto/linearGraphQLInput";
+
 export type LinearToolRequest =
   | {
       kind: "tool";
@@ -308,11 +310,19 @@ export function buildLinearToolRequest(input: string): LinearToolRequest {
         `${variables.message}\nUsage: /linear graphql --query 'query { viewer { id name } }' [--variables-json '{\"id\":\"...\"}']`,
       );
     }
-    return action("Linear GraphQL", "linear_issue_tracker", "graphql", {
-      query,
-      variables: variables.variables,
-      operationName: optionString(options, "operationName", "operation") ?? undefined,
-    });
+    try {
+      return action("Linear GraphQL", "linear_issue_tracker", "graphql", parseLinearGraphQLInput({
+        query,
+        variables: variables.variables,
+        operationName: optionString(options, "operationName", "operation") ?? undefined,
+        maxRetries: options.maxRetries,
+      }));
+    } catch (error) {
+      return usage(
+        "Linear GraphQL",
+        `${error instanceof Error ? error.message : String(error)}\nUsage: /linear graphql --query 'query { viewer { id name } }' [--variables-json '{\"id\":\"...\"}']`,
+      );
+    }
   }
 
   if (group === "create-from" || group === "create-from-linear" || group === "create-lane-from") {

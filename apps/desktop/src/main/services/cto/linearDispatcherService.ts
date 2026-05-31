@@ -23,7 +23,6 @@ import type {
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
 import { nowIso, safeJsonParse } from "../shared/utils";
-import type { createAgentChatService } from "../chat/agentChatService";
 import type { createLaneService } from "../lanes/laneService";
 import type { createPrService } from "../prs/prService";
 import type { createWorkerHeartbeatService } from "./workerHeartbeatService";
@@ -109,6 +108,35 @@ type StepRow = {
   started_at: string | null;
   completed_at: string | null;
   payload_json: string | null;
+};
+
+type LinearDispatcherAgentChatSummary = {
+  sessionId: string;
+  laneId: string;
+  identityKey?: string;
+  status: string;
+  lastActivityAt: string;
+};
+
+type LinearDispatcherAgentChatSession = {
+  id: string;
+  laneId: string;
+  identityKey?: string;
+  status: string;
+  lastActivityAt: string;
+};
+
+type LinearDispatcherAgentChatService = {
+  listSessions(): Promise<LinearDispatcherAgentChatSummary[]>;
+  ensureIdentitySession(args: {
+    identityKey: AgentChatIdentityKey;
+    laneId: string;
+    modelId?: string | null;
+    reasoningEffort?: string | null;
+    reuseExisting?: boolean;
+    permissionMode?: string;
+  }): Promise<LinearDispatcherAgentChatSession>;
+  sendMessage(args: { sessionId: string; text: string }): Promise<void>;
 };
 
 type EventRow = {
@@ -227,7 +255,7 @@ export function createLinearDispatcherService(args: {
   issueTracker: IssueTracker;
   workerAgentService: WorkerAgentService;
   workerHeartbeatService: ReturnType<typeof createWorkerHeartbeatService>;
-  agentChatService: ReturnType<typeof createAgentChatService>;
+  agentChatService: LinearDispatcherAgentChatService;
   laneService: ReturnType<typeof createLaneService>;
   templateService: LinearTemplateService;
   closeoutService: LinearCloseoutService;

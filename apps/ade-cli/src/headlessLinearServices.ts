@@ -13,6 +13,7 @@ import type { createFileService } from "../../desktop/src/main/services/files/fi
 import type { createProcessService } from "../../desktop/src/main/services/processes/processService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
 import type { createLinearClient } from "../../desktop/src/main/services/cto/linearClient";
+import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
 import type { createLinearIssueTracker } from "../../desktop/src/main/services/cto/linearIssueTracker";
 import type { createLinearTemplateService } from "../../desktop/src/main/services/cto/linearTemplateService";
 import type { createLinearWorkflowFileService } from "../../desktop/src/main/services/cto/linearWorkflowFileService";
@@ -38,6 +39,19 @@ import {
   getGitHubTokenAccessState,
   parseGitHubScopeHeaders,
 } from "../../desktop/src/shared/githubScopes";
+import type {
+  GitHubStatus,
+  WorkerAgentRun,
+  WorkerAgentWakeupReason,
+} from "../../desktop/src/shared/types";
+import type {
+  GithubService,
+  GitHubIssue,
+  GitHubIssueComment,
+  GitHubLabel,
+  GitHubPullRequest,
+  GitHubPullRequestReview,
+} from "../../desktop/src/main/services/github/githubService";
 import type { AdeRuntimePaths } from "./bootstrap";
 import { createLinearClient as createLinearClientImpl } from "../../desktop/src/main/services/cto/linearClient";
 import { createLinearIssueTracker as createLinearIssueTrackerImpl } from "../../desktop/src/main/services/cto/linearIssueTracker";
@@ -72,129 +86,9 @@ import {
 const BUNDLED_LINEAR_OAUTH_CLIENT_ID =
   process.env.ADE_LINEAR_CLIENT_ID?.trim() || "432fb2ddb16f939ae5d5270e2c86571f";
 
-type HeadlessLinearCredentialService = {
-  getStatus: () => {
-    tokenStored: boolean;
-    tokenDecryptionFailed: boolean;
-    storageScope: "app";
-    repo: { owner: string; name: string } | null;
-    userLogin: string | null;
-    scopes: string[];
-    checkedAt: string | null;
-    authMode?: "manual" | "oauth" | null;
-    tokenExpiresAt?: string | null;
-    refreshTokenStored?: boolean;
-    oauthConfigured?: boolean;
-  };
-  getTokenOrThrow: () => string;
-  setToken: (token: string) => void;
-  setOAuthToken: (args: {
-    accessToken: string;
-    refreshToken?: string | null;
-    expiresAt?: string | null;
-  }) => void;
-  clearToken: () => void;
-  setOAuthClientCredentials: (args: {
-    clientId: string;
-    clientSecret?: string | null;
-  }) => void;
-  clearOAuthClientCredentials: () => void;
-  getOAuthClientCredentials: () => {
-    clientId: string;
-    clientSecret: string | null;
-  } | null;
-  ensureFreshToken: (opts?: { force?: boolean }) => Promise<void>;
-};
-
-type HeadlessGitHubStatus = {
-  tokenStored: boolean;
-  patTokenStored: boolean;
-  tokenDecryptionFailed: boolean;
-  storageScope: "app";
-  authSource: "pat" | "environment" | "gh" | "none";
-  tokenType?: "classic" | "fine-grained" | "oauth" | "unknown";
-  repo: { owner: string; name: string } | null;
-  hasOrigin: boolean;
-  userLogin: string | null;
-  scopes: string[];
-  ghCliPath: string | null;
-  ghAuthError: string | null;
-  checkedAt: string | null;
-  repoAccessOk: boolean | null;
-  repoAccessError: string | null;
-  connected: boolean;
-};
-
-export type HeadlessGitHubService = {
-  getStatus: (opts?: {
-    forceRefresh?: boolean;
-  }) => Promise<HeadlessGitHubStatus>;
-  getRemoteStatus: () => Promise<{
-    repo: { owner: string; name: string } | null;
-    hasOrigin: boolean;
-  }>;
-  detectRepo: () => Promise<{ owner: string; name: string } | null>;
-  getRepoOrThrow: () => Promise<{ owner: string; name: string }>;
-  getTokenOrThrow: () => string;
-  parseGitHubRepoFromRemoteUrl: typeof parseGitHubRepoFromRemoteUrl;
-  apiRequest: <T>(args: {
-    method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
-    path: string;
-    query?: Record<string, string | number | boolean | undefined | null>;
-    body?: unknown;
-    token?: string;
-  }) => Promise<{ data: T; response: Response | null }>;
-  setToken: (token: string) => void;
-  clearToken: () => void;
-  listRepoAutolinks: (owner: string, name: string) => Promise<unknown[]>;
-  createRepoAutolink: (
-    owner: string,
-    name: string,
-    args: { keyPrefix: string; urlTemplate: string; isAlphanumeric?: boolean },
-  ) => Promise<unknown>;
-  listRepoLabels: (owner: string, name: string) => Promise<unknown[]>;
-  listRepoCollaborators: (owner: string, name: string) => Promise<unknown[]>;
-  publishCurrentProject: (args: {
-    name: string;
-    description?: string;
-    isPrivate: boolean;
-  }) => Promise<{ state: "pushed" | "remote_added"; htmlUrl: string }>;
-  addIssueComment: (
-    owner: string,
-    name: string,
-    number: number,
-    body: string,
-  ) => Promise<unknown>;
-  setIssueLabels: (
-    owner: string,
-    name: string,
-    number: number,
-    labels: string[],
-  ) => Promise<unknown>;
-  closeIssue: (
-    owner: string,
-    name: string,
-    number: number,
-    reason?: "completed" | "not_planned",
-  ) => Promise<unknown>;
-  reopenIssue: (
-    owner: string,
-    name: string,
-    number: number,
-  ) => Promise<unknown>;
-  assignIssue: (
-    owner: string,
-    name: string,
-    number: number,
-    assignees: string[],
-  ) => Promise<unknown>;
-  setIssueTitle: (
-    owner: string,
-    name: string,
-    number: number,
-    title: string,
-  ) => Promise<unknown>;
-};
+type HeadlessLinearCredentialService = ReturnType<typeof createLinearCredentialService>;
+type HeadlessGitHubStatus = GitHubStatus;
+export type HeadlessGitHubService = GithubService;
 
 type HeadlessAgentChatSession = {
   id: string;
@@ -260,7 +154,7 @@ type HeadlessLinearServices = {
   processService: ReturnType<typeof createProcessService>;
   prService: ReturnType<typeof createPrService>;
   agentChatService: {
-    listSessions: () => Promise<Array<Record<string, unknown>>>;
+    listSessions: () => Promise<HeadlessAgentChatSession[]>;
     getSessionSummary: (
       sessionId: string,
     ) => Promise<Record<string, unknown> | null>;
@@ -618,7 +512,13 @@ export function createHeadlessGitHubService(
     }
   };
 
-  const apiRequest: HeadlessGitHubService["apiRequest"] = async (args) => {
+  const apiRequest = async <T>(args: {
+    method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
+    path: string;
+    query?: Record<string, string | number | boolean | undefined | null>;
+    body?: unknown;
+    token?: string;
+  }): Promise<{ data: T; response: Response | null; linkHeader?: string | null }> => {
     const token = (args.token ?? getToken()).trim();
     if (!token) {
       throw new Error(
@@ -657,7 +557,7 @@ export function createHeadlessGitHubService(
           : `GitHub API request failed (HTTP ${response.status})`;
       throw new Error(message);
     }
-    return { data: data as never, response };
+    return { data: data as T, response };
   };
 
   const apiRequestAllPages = async <T>(args: {
@@ -693,6 +593,90 @@ export function createHeadlessGitHubService(
       urlTemplate: asString(record.url_template) || asString(record.urlTemplate),
       isAlphanumeric: Boolean(record.is_alphanumeric ?? record.isAlphanumeric),
     };
+  };
+
+  const listRepoIssues: HeadlessGitHubService["listRepoIssues"] = async (
+    owner,
+    name,
+    opts = {},
+  ): Promise<GitHubIssue[]> => {
+    const data = await apiRequestAllPages<GitHubIssue>({
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues`,
+      query: {
+        state: opts.state ?? "all",
+        sort: opts.sort ?? "updated",
+        per_page: opts.perPage ?? 50,
+        ...(opts.since ? { since: opts.since } : {}),
+      },
+    });
+    return Array.isArray(data) ? data : [];
+  };
+
+  const getIssue: HeadlessGitHubService["getIssue"] = async (
+    owner,
+    name,
+    number,
+  ): Promise<GitHubIssue | null> => {
+    try {
+      const { data } = await apiRequest<GitHubIssue>({
+        method: "GET",
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}`,
+      });
+      return data ?? null;
+    } catch (error) {
+      logger.warn("github.get_issue_failed", {
+        owner,
+        name,
+        number,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+
+  const listIssueComments: HeadlessGitHubService["listIssueComments"] = async (
+    owner,
+    name,
+    number,
+    opts = {},
+  ): Promise<GitHubIssueComment[]> => {
+    const data = await apiRequestAllPages<GitHubIssueComment>({
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}/comments`,
+      query: {
+        per_page: 100,
+        ...(opts.since ? { since: opts.since } : {}),
+      },
+    });
+    return Array.isArray(data) ? data : [];
+  };
+
+  const listRepoPulls: HeadlessGitHubService["listRepoPulls"] = async (
+    owner,
+    name,
+    opts = {},
+  ): Promise<GitHubPullRequest[]> => {
+    const data = await apiRequestAllPages<GitHubPullRequest>({
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls`,
+      query: {
+        state: opts.state ?? "all",
+        sort: opts.sort ?? "updated",
+        direction: "desc",
+        per_page: opts.perPage ?? 50,
+      },
+    });
+    return Array.isArray(data) ? data : [];
+  };
+
+  const listPullRequestReviews: HeadlessGitHubService["listPullRequestReviews"] = async (
+    owner,
+    name,
+    number,
+  ): Promise<GitHubPullRequestReview[]> => {
+    const data = await apiRequestAllPages<GitHubPullRequestReview>({
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}/reviews`,
+      query: { per_page: 100 },
+    });
+    return Array.isArray(data) ? data : [];
   };
 
   const createRepository = async (args: {
@@ -926,6 +910,7 @@ export function createHeadlessGitHubService(
       return token;
     },
     parseGitHubRepoFromRemoteUrl,
+    parseNextLink: parseNextGitHubLink,
     setToken(nextToken: string) {
       const clean = nextToken.trim();
       tokenOverride = clean || null;
@@ -948,6 +933,8 @@ export function createHeadlessGitHubService(
       emitStatusChanged();
     },
     apiRequest,
+    createRepository,
+    getRepository,
     async listRepoLabels(owner, name) {
       return apiRequestAllPages({
         path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/labels`,
@@ -979,6 +966,11 @@ export function createHeadlessGitHubService(
         query: { per_page: 100 },
       });
     },
+    listRepoIssues,
+    getIssue,
+    listIssueComments,
+    listRepoPulls,
+    listPullRequestReviews,
     async publishCurrentProject(args) {
       const token = getToken();
       if (!token) {
@@ -1087,25 +1079,24 @@ export function createHeadlessGitHubService(
     },
     async addIssueComment(owner, name, number, body) {
       return (
-        await apiRequest({
+        await apiRequest<GitHubIssueComment>({
           method: "POST",
           path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}/comments`,
           body: { body },
         })
-      ).data;
+      ).data ?? null;
     },
     async setIssueLabels(owner, name, number, labels) {
-      return (
-        await apiRequest({
+      const { data } = await apiRequest<GitHubLabel[]>({
           method: "PUT",
           path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}/labels`,
           body: { labels },
-        })
-      ).data;
+      });
+      return Array.isArray(data) ? data : [];
     },
     async closeIssue(owner, name, number, reason) {
       return (
-        await apiRequest({
+        await apiRequest<GitHubIssue>({
           method: "PATCH",
           path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}`,
           body: {
@@ -1113,34 +1104,34 @@ export function createHeadlessGitHubService(
             ...(reason ? { state_reason: reason } : {}),
           },
         })
-      ).data;
+      ).data ?? null;
     },
     async reopenIssue(owner, name, number) {
       return (
-        await apiRequest({
+        await apiRequest<GitHubIssue>({
           method: "PATCH",
           path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}`,
           body: { state: "open" },
         })
-      ).data;
+      ).data ?? null;
     },
     async assignIssue(owner, name, number, assignees) {
       return (
-        await apiRequest({
+        await apiRequest<GitHubIssue>({
           method: "POST",
           path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}/assignees`,
           body: { assignees },
         })
-      ).data;
+      ).data ?? null;
     },
     async setIssueTitle(owner, name, number, title) {
       return (
-        await apiRequest({
+        await apiRequest<GitHubIssue>({
           method: "PATCH",
           path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}`,
           body: { title },
         })
-      ).data;
+      ).data ?? null;
     },
   };
   return service;
@@ -1319,6 +1310,10 @@ function createHeadlessLinearCredentialService(args: {
   };
 
   return {
+    getToken() {
+      const { token } = readToken();
+      return token.trim() || null;
+    },
     getStatus() {
       const { token, source } = readToken();
       const authMode =
@@ -1662,30 +1657,45 @@ function createHeadlessAgentChatService(
 function createHeadlessWorkerHeartbeatService(): ReturnType<
   typeof createWorkerHeartbeatService
 > {
-  const runs: Array<{
-    id: string;
-    agentId: string;
-    status: "failed";
-    wakeupReason: string;
-    taskKey: string | null;
-    issueKey: string | null;
-    context: Record<string, unknown>;
-    errorMessage: string;
-    startedAt: string;
-    finishedAt: string;
-    createdAt: string;
-    updatedAt: string;
-  }> = [];
+  const runs: WorkerAgentRun[] = [];
+  const wakeupReasons = new Set<WorkerAgentWakeupReason>([
+    "timer",
+    "manual",
+    "user_message",
+    "assignment",
+    "api",
+    "deferred_promotion",
+    "startup_recovery",
+  ]);
+  const normalizeWakeupReason = (value: unknown): WorkerAgentWakeupReason => {
+    const reason = typeof value === "string" ? value.trim() : "";
+    return wakeupReasons.has(reason as WorkerAgentWakeupReason)
+      ? reason as WorkerAgentWakeupReason
+      : "api";
+  };
 
-  return {
-    listRuns({ limit }: { limit?: number } = {}) {
+  const service = {
+    syncFromConfig() {
+      return;
+    },
+    listRuns({ agentId, limit, statuses }: { agentId?: string; limit?: number; statuses?: WorkerAgentRun["status"][] } = {}) {
       const safeLimit = Math.max(1, Math.min(200, Math.floor(limit ?? 50)));
-      return runs.slice(0, safeLimit).map((run) => ({
+      return runs
+        .filter((run) => !agentId || run.agentId === agentId)
+        .filter((run) => !statuses?.length || statuses.includes(run.status))
+        .slice(0, safeLimit)
+        .map((run) => ({
         ...run,
         executionRunId: null,
         executionLockedAt: null,
         result: null,
       }));
+    },
+    listAgentSessionLogs() {
+      return [];
+    },
+    async reapOrphansOnStartup() {
+      return;
     },
     async triggerWakeup(args: {
       agentId: string;
@@ -1700,7 +1710,7 @@ function createHeadlessWorkerHeartbeatService(): ReturnType<
         id: runId,
         agentId: args.agentId,
         status: "failed",
-        wakeupReason: args.reason ?? "api",
+        wakeupReason: normalizeWakeupReason(args.reason),
         taskKey: args.taskKey ?? null,
         issueKey: args.issueKey ?? null,
         context: args.context ?? {},
@@ -1713,16 +1723,14 @@ function createHeadlessWorkerHeartbeatService(): ReturnType<
       });
       return { runId, status: "failed" };
     },
-    dispose() {
+    async dispose() {
       runs.length = 0;
     },
     start() {
       return;
     },
-    stop() {
-      return;
-    },
-  } as unknown as ReturnType<typeof createWorkerHeartbeatService>;
+  } satisfies ReturnType<typeof createWorkerHeartbeatService>;
+  return service;
 }
 
 export function createHeadlessLinearServices(
@@ -1736,14 +1744,14 @@ export function createHeadlessLinearServices(
     createHeadlessLinearCredentialService({
       adeDir: args.adeDir,
       logger: args.logger,
-    }) as any;
+    });
   const githubService = createHeadlessGitHubService(
     args.projectRoot,
     args.logger,
     { onStatusChanged: args.onGitHubStatusChanged },
   );
   const linearClient = createLinearClientImpl({
-    credentials: linearCredentialService as any,
+    credentials: linearCredentialService,
     logger: args.logger,
   });
   const issueTracker = createLinearIssueTrackerImpl({ client: linearClient });
@@ -1781,7 +1789,7 @@ export function createHeadlessLinearServices(
   });
   const sessionService = {
     get: () => null,
-  } as any;
+  };
   const ptyService = {
     create: async () => {
       throw new Error(
@@ -1791,7 +1799,7 @@ export function createHeadlessLinearServices(
     dispose: () => {},
     onData: () => () => {},
     onExit: () => () => {},
-  } as any;
+  };
   const processService = createProcessServiceImpl({
     db: args.db,
     projectId: args.projectId,
@@ -1809,25 +1817,17 @@ export function createHeadlessLinearServices(
     projectRoot: args.projectRoot,
     laneService: args.laneService,
     operationService: args.operationService,
-    githubService: githubService as any,
+    githubService,
     projectConfigService: args.projectConfigService,
     conflictService: args.conflictService,
     openExternal: args.openExternal ?? (async () => {}),
-  } as any);
+  });
   const workerTaskSessionService = createWorkerTaskSessionServiceImpl({
     db: args.db,
     projectId: args.projectId,
   });
   const workerHeartbeatService = createHeadlessWorkerHeartbeatService();
   const agentChatService = createHeadlessAgentChatService(args.projectRoot);
-  if (
-    typeof (prService as { setAgentChatService?: (svc: unknown) => void })
-      .setAgentChatService === "function"
-  ) {
-    (
-      prService as { setAgentChatService: (svc: unknown) => void }
-    ).setAgentChatService(agentChatService as never);
-  }
   const closeoutService = createLinearCloseoutServiceImpl({
     issueTracker,
     outboundService,
@@ -1840,7 +1840,7 @@ export function createHeadlessLinearServices(
     issueTracker,
     workerAgentService: args.workerAgentService,
     workerHeartbeatService,
-    agentChatService: agentChatService as never,
+    agentChatService,
     laneService: args.laneService,
     templateService,
     closeoutService,
