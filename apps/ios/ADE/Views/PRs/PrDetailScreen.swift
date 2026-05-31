@@ -119,6 +119,20 @@ struct PrDetailView: View {
     return "this pull request"
   }
 
+  private var displayedPrNumber: Int? {
+    if let pr { return pr.githubPrNumber }
+    if let githubItem { return githubItem.githubPrNumber }
+    if let routedPrNumber { return routedPrNumber }
+    return nil
+  }
+
+  private var detailHeaderAccessibilityLabel: String {
+    if let displayedPrNumber {
+      return "Pull request \(displayedPrNumber), \(currentPr.title)"
+    }
+    return "Pull request, \(currentPr.title)"
+  }
+
   private var currentPr: PullRequestListItem {
     if let pr { return pr }
     let detail = snapshot?.detail
@@ -289,7 +303,7 @@ struct PrDetailView: View {
           icon: "exclamationmark.triangle.fill",
           tint: ADEColor.danger,
           actionTitle: "Retry",
-          action: { Task { await reload(refreshRemote: true) } }
+          action: { Task { await retryPrDetailLoad() } }
         )
         .prListRow()
       }
@@ -306,7 +320,7 @@ struct PrDetailView: View {
           icon: "arrow.triangle.merge",
           tint: ADEColor.warning,
           actionTitle: "Retry",
-          action: { Task { await reload(refreshRemote: true) } }
+          action: { Task { await retryPrDetailLoad() } }
         )
         .prListRow()
       } else {
@@ -590,9 +604,11 @@ struct PrDetailView: View {
       .accessibilityLabel("Back to PRs")
 
       VStack(alignment: .leading, spacing: 2) {
-        Text("#\(currentPr.githubPrNumber)")
-          .font(.system(size: 11, weight: .bold, design: .monospaced))
-          .foregroundStyle(prStateTint(currentPr.state))
+        if let displayedPrNumber {
+          Text("#\(displayedPrNumber)")
+            .font(.system(size: 11, weight: .bold, design: .monospaced))
+            .foregroundStyle(prStateTint(currentPr.state))
+        }
         Text(currentPr.title)
           .font(.headline.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
@@ -600,7 +616,7 @@ struct PrDetailView: View {
           .truncationMode(.tail)
       }
       .accessibilityElement(children: .combine)
-      .accessibilityLabel("Pull request \(currentPr.githubPrNumber), \(currentPr.title)")
+      .accessibilityLabel(detailHeaderAccessibilityLabel)
 
       Spacer(minLength: 0)
 
@@ -1009,13 +1025,17 @@ struct PrDetailView: View {
         }
       }
       let listItems = try await syncService.fetchPullRequestListItems()
-
-      pr = listItems.first { item in
-        if let requestedPrNumber {
-          return item.githubPrNumber == requestedPrNumber
-        }
-        return item.id == prId
+      var fallbackGitHubItem: GitHubPrListItem?
+      if shouldFetchLiveSidecars && requestedPrNumber != nil {
+        fallbackGitHubItem = await fetchGitHubFallbackItem(requestedPrNumber: requestedPrNumber)
       }
+
+      pr = prDetailRouteListItem(
+        from: listItems,
+        prId: prId,
+        requestedPrNumber: requestedPrNumber,
+        githubItem: fallbackGitHubItem
+      )
       let snapshotPrId = pr?.id ?? (requestedPrNumber == nil ? prId : nil)
       if let snapshotPrId {
         snapshot = try await syncService.fetchPullRequestSnapshot(prId: snapshotPrId)
@@ -1027,14 +1047,10 @@ struct PrDetailView: View {
       // "Pull request / @unknown" placeholders without resurrecting legacy
       // cross-repo snapshot items.
       if pr == nil && shouldFetchLiveSidecars {
-        if let github = try? await syncService.fetchGitHubPullRequestSnapshot() {
-          githubItem = repoScopedGitHubPullRequests(from: github)
-            .first {
-              $0.linkedPrId == prId ||
-                $0.id == prId ||
-                (requestedPrNumber != nil && $0.githubPrNumber == requestedPrNumber)
-            }
+        if fallbackGitHubItem == nil {
+          fallbackGitHubItem = await fetchGitHubFallbackItem(requestedPrNumber: requestedPrNumber)
         }
+        githubItem = fallbackGitHubItem
       } else if pr != nil {
         githubItem = nil
       }
@@ -1092,6 +1108,24 @@ struct PrDetailView: View {
       hasLoadedLiveSidecars = true
     }
     hasAttemptedInitialLoad = true
+  }
+
+  @MainActor
+  private func retryPrDetailLoad() async {
+    hasAttemptedInitialLoad = false
+    errorMessage = nil
+    await reload(refreshRemote: true)
+  }
+
+  @MainActor
+  private func fetchGitHubFallbackItem(requestedPrNumber: Int?) async -> GitHubPrListItem? {
+    guard let github = try? await syncService.fetchGitHubPullRequestSnapshot() else { return nil }
+    return repoScopedGitHubPullRequests(from: github)
+      .first {
+        $0.linkedPrId == prId ||
+          $0.id == prId ||
+          (requestedPrNumber != nil && $0.githubPrNumber == requestedPrNumber)
+      }
   }
 
   @MainActor

@@ -7652,7 +7652,34 @@ extension SyncService {
       }
       return .dispatched
     } catch {
-      return .dropped(error.localizedDescription)
+      return .dropped(remoteCommandDroppedMessage(for: kind, error: error))
+    }
+  }
+
+  private func remoteCommandDroppedMessage(for kind: RemoteCommandKind, error: Error) -> String {
+    if error is CancellationError {
+      return "This command was canceled."
+    }
+
+    let nsError = error as NSError
+    if isRemoteCommandApplicationError(error) {
+      let message = nsError.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+      return message.isEmpty ? "This command could not be sent." : message
+    }
+
+    if connectionState.isHostUnreachable || nsError.domain == NSURLErrorDomain {
+      return "Reconnect to your Mac and try again."
+    }
+
+    if nsError.domain == "ADE", nsError.code == 15 {
+      return "Reconnect to your Mac and try again."
+    }
+
+    switch kind {
+    case .openDeeplink:
+      return "This ADE link could not be sent. Try again."
+    default:
+      return "This command could not be sent. Try again."
     }
   }
 

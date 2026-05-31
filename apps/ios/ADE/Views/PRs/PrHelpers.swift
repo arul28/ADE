@@ -258,6 +258,42 @@ func repoScopedGitHubPullRequests(from snapshot: GitHubPrSnapshot?) -> [GitHubPr
   snapshot?.repoPullRequests ?? []
 }
 
+func prDetailRouteListItem(
+  from items: [PullRequestListItem],
+  prId: String,
+  requestedPrNumber: Int?,
+  githubItem: GitHubPrListItem?
+) -> PullRequestListItem? {
+  guard let requestedPrNumber else {
+    return items.first { $0.id == prId }
+  }
+
+  let candidates = items.filter { $0.githubPrNumber == requestedPrNumber }
+  guard !candidates.isEmpty else { return nil }
+
+  if let linkedPrId = githubItem?.linkedPrId,
+     let match = candidates.first(where: { $0.id == linkedPrId }) {
+    return match
+  }
+
+  if let linkedLaneId = githubItem?.linkedLaneId,
+     let match = candidates.first(where: { $0.laneId == linkedLaneId }) {
+    return match
+  }
+
+  if let githubItem {
+    let repoMatches = candidates.filter {
+      $0.repoOwner.caseInsensitiveCompare(githubItem.repoOwner) == .orderedSame
+        && $0.repoName.caseInsensitiveCompare(githubItem.repoName) == .orderedSame
+    }
+    if repoMatches.count == 1 {
+      return repoMatches[0]
+    }
+  }
+
+  return candidates.count == 1 ? candidates[0] : nil
+}
+
 func matchesPullRequestListItemStatus(_ item: PullRequestListItem, state: PrGitHubStatusFilter) -> Bool {
   switch state {
   case .all:
