@@ -224,14 +224,16 @@ export async function acquireCursorSdkConnection(args: {
   }
 
   const pooled = await init;
-  if (!initOwner) {
-    const live = pools.get(args.poolKey);
-    if (live?.pooled === pooled) {
-      live.ref += 1;
-    }
-  }
   const entry = pools.get(args.poolKey);
-  return { pooled, generation: entry?.generation ?? 0 };
+  const live = entry?.pooled === pooled
+    && pooled.process.exitCode == null
+    && !pooled.process.killed;
+  if (!entry || !live) {
+    if (!initOwner) return acquireCursorSdkConnection(args);
+    throw new Error("Cursor SDK worker was disposed during initialization.");
+  }
+  if (!initOwner) entry.ref += 1;
+  return { pooled: entry.pooled, generation: entry.generation };
 }
 
 async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSdkConnection>[0]): Promise<CursorSdkPooled> {

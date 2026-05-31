@@ -87,12 +87,16 @@ export async function acquireDroidSdkConnection(args: {
   }
 
   const pooled = await init;
-  if (!initOwner) {
-    const live = pools.get(args.poolKey);
-    if (live?.pooled === pooled) live.ref += 1;
-  }
   const entry = pools.get(args.poolKey);
-  return { pooled, generation: entry?.generation ?? 0 };
+  const live = entry?.pooled === pooled
+    && pooled.process.exitCode == null
+    && !pooled.process.killed;
+  if (!entry || !live) {
+    if (!initOwner) return acquireDroidSdkConnection(args);
+    throw new Error("Droid SDK worker was disposed during initialization.");
+  }
+  if (!initOwner) entry.ref += 1;
+  return { pooled: entry.pooled, generation: entry.generation };
 }
 
 async function createDroidSdkConnection(args: Parameters<typeof acquireDroidSdkConnection>[0]): Promise<DroidSdkPooled> {
