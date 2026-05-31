@@ -78,6 +78,7 @@ import {
 import { inspectRecentProject, type RecentProjectInspection } from "./services/projects/recentProjectSummary";
 import { resolveProjectIcon } from "./services/projects/projectIconResolver";
 import { normalizeStartupProjectState, resolveStartupProject } from "./services/projects/startupProjectResolver";
+import { collectRootsBoundToWindows } from "./services/projects/projectContextRoots";
 import { createAdeProjectService } from "./services/projects/adeProjectService";
 import { createConfigReloadService } from "./services/projects/configReloadService";
 import { IPC } from "../shared/ipc";
@@ -1191,16 +1192,13 @@ app.whenReady().then(async () => {
       }
       : null;
 
-  const rootsBoundToWindows = (): Set<string> => {
-    const roots = new Set<string>();
-    for (const root of windowProjectRoots.values()) {
-      if (root) roots.add(root);
-    }
-    for (const tabRoots of windowProjectTabRoots.values()) {
-      for (const root of tabRoots) roots.add(root);
-    }
-    return roots;
-  };
+  const rootsBoundToWindows = (): Set<string> =>
+    collectRootsBoundToWindows({
+      windowProjectRoots: windowProjectRoots.values(),
+      windowProjectTabRoots: windowProjectTabRoots.values(),
+      windowPendingProjectRoots: windowPendingProjectRoots.values(),
+      projectInitPromises: projectInitPromises.keys(),
+    });
 
   const emitProjectChangedToWindow = (
     windowId: number | null,
