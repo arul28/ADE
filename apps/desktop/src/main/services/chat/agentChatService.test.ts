@@ -1142,6 +1142,9 @@ function createMockSessionService() {
       if (typeof opts?.status === "string") {
         rows = rows.filter((row) => row.status === opts.status);
       }
+      if (Array.isArray(opts?.toolTypes) && opts.toolTypes.length > 0) {
+        rows = rows.filter((row) => opts.toolTypes.includes(row.toolType));
+      }
       rows = rows.sort((a, b) => String(b.startedAt ?? "").localeCompare(String(a.startedAt ?? "")));
       if (opts?.limit === null) return rows;
       const limit = typeof opts?.limit === "number" ? opts.limit : 200;
@@ -3695,6 +3698,34 @@ describe("createAgentChatService", () => {
       const sessions = await service.listSessions();
       expect(sessions.length).toBe(1);
       expect(sessions[0]!.provider).toBe("opencode");
+    });
+
+    it("lists chat sessions even when newer shell sessions exceed the terminal list cap", async () => {
+      const { service, sessionService } = createService();
+
+      const chat = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5-codex",
+      });
+
+      for (let i = 0; i < 505; i++) {
+        sessionService.create({
+          sessionId: `shell-session-${i}`,
+          laneId: "lane-1",
+          toolType: "shell",
+          title: `Shell ${i}`,
+          startedAt: new Date(Date.UTC(2026, 2, 17, 0, 10, i)).toISOString(),
+        });
+      }
+
+      const sessions = await service.listSessions("lane-1");
+      expect(sessions.map((session) => session.sessionId)).toContain(chat.id);
+      expect(sessionService.list).toHaveBeenLastCalledWith(expect.objectContaining({
+        laneId: "lane-1",
+        limit: 500,
+        toolTypes: expect.arrayContaining(["codex-chat", "claude-chat", "opencode-chat", "cursor", "droid-chat"]),
+      }));
     });
 
     it("excludes identity sessions by default", async () => {

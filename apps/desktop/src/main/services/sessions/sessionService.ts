@@ -287,6 +287,16 @@ export function createSessionService({ db }: { db: AdeDb }) {
     return toolType;
   };
 
+  const normalizeToolTypes = (raw: unknown): TerminalToolType[] => {
+    if (!Array.isArray(raw)) return [];
+    const seen = new Set<TerminalToolType>();
+    for (const value of raw) {
+      const normalized = normalizeToolType(value);
+      if (normalized) seen.add(normalized);
+    }
+    return Array.from(seen);
+  };
+
   const mapRow = (row: SessionRow) => {
     const toolType = inferToolTypeFromResumeCommand(
       normalizeToolType(row.toolType),
@@ -329,7 +339,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
     updatedAt: row.updatedAt,
   });
 
-  const list =({ laneId, status, limit }: ListSessionsArgs = {}) => {
+  const list =({ laneId, status, limit, toolTypes }: ListSessionsArgs = {}) => {
     const where: string[] = [];
     const params: (string | number | null)[] = [];
 
@@ -340,6 +350,40 @@ export function createSessionService({ db }: { db: AdeDb }) {
     if (status) {
       where.push("s.status = ?");
       params.push(status);
+    }
+    const normalizedToolTypes = normalizeToolTypes(toolTypes);
+    if (normalizedToolTypes.length > 0) {
+      const directPlaceholders = normalizedToolTypes.map(() => "?").join(", ");
+      const toolTypeClauses = [`s.tool_type in (${directPlaceholders})`];
+      const toolTypeParams: (string | number | null)[] = [...normalizedToolTypes];
+      const legacyChatClauses: string[] = [];
+
+      for (const toolType of normalizedToolTypes) {
+        if (toolType === "codex-chat") {
+          legacyChatClauses.push(
+            "(s.tool_type = 'other' and (lower(coalesce(s.resume_command, '')) = ? or lower(coalesce(s.resume_command, '')) like ?))",
+          );
+          toolTypeParams.push("chat:codex", "chat:codex:%");
+        } else if (toolType === "claude-chat") {
+          legacyChatClauses.push("(s.tool_type = 'other' and lower(coalesce(s.resume_command, '')) like ?)");
+          toolTypeParams.push("chat:claude:%");
+        } else if (toolType === "opencode-chat") {
+          legacyChatClauses.push("(s.tool_type = 'other' and lower(coalesce(s.resume_command, '')) like ?)");
+          toolTypeParams.push("chat:unified:%");
+        } else if (toolType === "cursor") {
+          legacyChatClauses.push("(s.tool_type = 'other' and lower(coalesce(s.resume_command, '')) like ?)");
+          toolTypeParams.push("chat:cursor:%");
+        } else if (toolType === "droid-chat") {
+          legacyChatClauses.push("(s.tool_type = 'other' and lower(coalesce(s.resume_command, '')) like ?)");
+          toolTypeParams.push("chat:droid:%");
+        }
+      }
+
+      if (legacyChatClauses.length > 0) {
+        toolTypeClauses.push(`(${legacyChatClauses.join(" or ")})`);
+      }
+      where.push(`(${toolTypeClauses.join(" or ")})`);
+      params.push(...toolTypeParams);
     }
 
     const whereSql = where.length ? `where ${where.join(" and ")}` : "";

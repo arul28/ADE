@@ -348,6 +348,7 @@ export function useLaneWorkSessions(laneId: string | null) {
     const unsubscribe = window.ade.agentChat.onEvent((payload) => {
       if (!laneId) return;
       if (!shouldRefreshSessionListForChatEvent(payload)) return;
+      invalidateSessionListCache();
       scheduleBackgroundRefresh(180);
     });
     return unsubscribe;

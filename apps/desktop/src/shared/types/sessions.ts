@@ -333,6 +333,7 @@ export type ListSessionsArgs = {
   laneId?: string;
   status?: TerminalSessionStatus;
   limit?: number | null;
+  toolTypes?: TerminalToolType[];
 };
 
 export type DeleteSessionArgs = {

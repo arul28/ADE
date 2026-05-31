@@ -18,6 +18,12 @@ function normalizeArgs(args?: ListSessionsArgs): ListSessionsArgs {
   if (typeof args.laneId === "string" && args.laneId.trim().length > 0) normalized.laneId = args.laneId.trim();
   if (typeof args.status === "string" && args.status.trim().length > 0) normalized.status = args.status;
   if (typeof args.limit === "number" && Number.isFinite(args.limit) && args.limit > 0) normalized.limit = Math.floor(args.limit);
+  if (Array.isArray(args.toolTypes)) {
+    const toolTypes = Array.from(
+      new Set(args.toolTypes.filter((toolType) => typeof toolType === "string" && toolType.trim().length > 0)),
+    ).sort();
+    if (toolTypes.length > 0) normalized.toolTypes = toolTypes;
+  }
   return normalized;
 }
 
@@ -27,6 +33,7 @@ function cacheKey(args?: ListSessionsArgs): string {
     projectRoot: useAppStore.getState().project?.rootPath?.trim() || null,
     laneId: normalized.laneId ?? null,
     status: normalized.status ?? null,
+    toolTypes: normalized.toolTypes ?? null,
   });
 }
 
@@ -54,11 +61,15 @@ export async function listSessionsCached(
 ): Promise<TerminalSessionSummary[]> {
   const key = options?.projectRoot == null
     ? cacheKey(args)
-    : JSON.stringify({
+    : (() => {
+      const normalized = normalizeArgs(args);
+      return JSON.stringify({
         projectRoot: options.projectRoot?.trim() || null,
-        laneId: normalizeArgs(args).laneId ?? null,
-        status: normalizeArgs(args).status ?? null,
+        laneId: normalized.laneId ?? null,
+        status: normalized.status ?? null,
+        toolTypes: normalized.toolTypes ?? null,
       });
+    })();
   const ttlMs = options?.ttlMs ?? DEFAULT_SESSION_LIST_TTL_MS;
   const limit = requestedLimit(args);
   const now = Date.now();
