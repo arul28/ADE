@@ -149,7 +149,7 @@ final class DeepLinkRouter {
     }
     if kind == "pr" {
       let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
-      if let prId = resolvePrId(from: identifier) {
+      if let prId = resolvePrId(from: trimmed) {
         SyncService.shared?.requestedPrNavigation = PrNavigationRequest(prId: prId, prNumber: Int(trimmed))
       } else if let prNumber = Int(trimmed), prNumber > 0 {
         SyncService.shared?.requestedPrNavigation = PrNavigationRequest(prNumber: prNumber)

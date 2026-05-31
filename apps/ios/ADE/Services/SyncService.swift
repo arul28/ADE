@@ -818,9 +818,8 @@ enum SyncRemoteCommandDelivery: Equatable {
   case queued
   case dropped(String)
 
-  init(commandResult: Any) {
-    if let dict = commandResult as? [String: Any],
-       dict["queued"] as? Bool == true {
+  init(commandResult: [String: Any]) {
+    if commandResult["queued"] as? Bool == true {
       self = .queued
     } else {
       self = .dispatched
@@ -7648,7 +7647,10 @@ extension SyncService {
     // may still ignore the result, while interactive surfaces can render it.
     do {
       let result = try await performCommandRequestSafe(action: action, args: args)
-      return SyncRemoteCommandDelivery(commandResult: result)
+      if let result = result as? [String: Any] {
+        return SyncRemoteCommandDelivery(commandResult: result)
+      }
+      return .dispatched
     } catch {
       return .dropped(error.localizedDescription)
     }
