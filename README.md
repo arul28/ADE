@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://www.ade-app.dev">
+  <a href="https://ade-app.dev">
     <img src="assets/logo.png" alt="ADE" width="260" />
   </a>
 </p>
@@ -10,13 +10,13 @@
 </p>
 
 <p align="center">
-  <a href="https://www.ade-app.dev"><strong>Website</strong></a>
+  <a href="https://ade-app.dev"><strong>Website</strong></a>
   &nbsp;·&nbsp;
-  <a href="https://www.ade-app.dev/docs"><strong>Docs</strong></a>
+  <a href="https://ade-app.dev/docs"><strong>Docs</strong></a>
   &nbsp;·&nbsp;
   <a href="https://github.com/arul28/ADE/releases/latest"><strong>Download</strong></a>
   &nbsp;·&nbsp;
-  <a href="https://www.ade-app.dev/docs/changelog/v1.1.0"><strong>Changelog</strong></a>
+  <a href="https://ade-app.dev/docs/changelog/v1.1.12"><strong>Changelog</strong></a>
 </p>
 
 <p align="center">
@@ -225,7 +225,7 @@ Validate with `npm --prefix apps/desktop run typecheck` and `npm run test:deskto
 
 ## Links
 
-[Quickstart](https://www.ade-app.dev/docs/quickstart) · [Key concepts](https://www.ade-app.dev/docs/key-concepts) · [Worktrees](https://www.ade-app.dev/docs/lanes/overview) · [Computer use](https://www.ade-app.dev/docs/computer-use/overview) · [Changelog](https://www.ade-app.dev/docs/changelog/v1.1.0) · [Contributing](CONTRIBUTING.md)
+[Quickstart](https://ade-app.dev/docs/quickstart) · [Key concepts](https://ade-app.dev/docs/key-concepts) · [Worktrees](https://ade-app.dev/docs/lanes/overview) · [Computer use](https://ade-app.dev/docs/computer-use/overview) · [Changelog](https://ade-app.dev/docs/changelog/v1.1.12) · [Contributing](CONTRIBUTING.md)
 
 ## License
 

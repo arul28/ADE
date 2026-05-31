@@ -1,6 +1,7 @@
 import { motion, useReducedMotion } from "framer-motion";
 import { ArrowUpRight, Download, Github, BookOpen } from "lucide-react";
 import { LINKS } from "../../lib/links";
+import { EDITORIAL_ISSUE } from "./issue";
 
 /**
  * Left column of the fold — eyebrow, serif display headline,
@@ -133,7 +134,7 @@ export function Lede() {
         className="mt-6 flex items-center gap-3 text-[10.5px] uppercase tracking-[0.22em] text-[color:var(--color-cream-faint)]"
       >
         <span className="inline-block h-px w-10 bg-[color:var(--color-hairline-strong)]" />
-        By ADE &middot; Published Apr 2026
+        By ADE &middot; Published {EDITORIAL_ISSUE.monthYear}
       </motion.div>
     </motion.div>
   );

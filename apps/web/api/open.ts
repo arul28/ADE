@@ -118,22 +118,22 @@ function describe(target: OpenTarget): { title: string; description: string } {
   switch (target.kind) {
     case "lane":
       return {
-        title: "Open lane in ADE",
-        description: `Open this ADE lane (${target.laneId.slice(0, 8)}…) on your desktop.`,
+        title: "Open worktree in ADE",
+        description: `Open this ADE worktree (${target.laneId.slice(0, 8)}…) on your desktop.`,
       };
     case "session":
       return {
         title: "Open work session in ADE",
         description: target.laneId
-          ? `Open this ADE work session in lane ${target.laneId.slice(0, 8)}…`
+          ? `Open this ADE work session in worktree ${target.laneId.slice(0, 8)}…`
           : "Open this ADE work session on your desktop.",
       };
     case "branch":
       return {
         title: `${target.repo} · ${target.branch} — Open in ADE`,
         description: target.pr
-          ? `Branch ${target.branch} (PR #${target.pr}) shared via ADE. One click to spin up a lane.`
-          : `Branch ${target.branch} shared via ADE. One click to spin up a lane.`,
+          ? `Branch ${target.branch} (PR #${target.pr}) shared via ADE. One click to open its worktree.`
+          : `Branch ${target.branch} shared via ADE. One click to open its worktree.`,
       };
     case "pr":
       return {

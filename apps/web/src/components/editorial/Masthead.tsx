@@ -1,4 +1,5 @@
 import { LINKS } from "../../lib/links";
+import { EDITORIAL_ISSUE } from "./issue";
 
 /**
  * Magazine masthead — top bar on the dark cover.
@@ -19,7 +20,7 @@ export function Masthead() {
 
         <div className="hidden flex-1 text-center md:block">
           <span className="text-[11px] uppercase tracking-[0.22em] text-[color:var(--color-cream-muted)]">
-            Vol. 1 &middot; v1.1.0 &middot; Apr 2026
+            {EDITORIAL_ISSUE.volume} &middot; {EDITORIAL_ISSUE.version} &middot; {EDITORIAL_ISSUE.monthYear}
           </span>
         </div>
 
