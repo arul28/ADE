@@ -24,7 +24,7 @@ The Workspace Graph is ADE's spatial view of your project — every Lane, PR, br
 
 ## Opening the Graph
 
-Press `Cmd+G` from anywhere in ADE, or click the **Graph** icon (sixth icon) in the left sidebar. The graph opens as a full-screen tab in the main panel.
+Click the **Graph** icon in the left sidebar. The graph opens as a full-screen tab in the main panel.
 
 <Tip>
 The graph updates live. If an agent commits code or a PR changes review status while the graph is open, the relevant node refreshes automatically — no manual reload needed.
@@ -131,7 +131,7 @@ The merge simulation feature predicts what would happen if each lane's branch we
 
 <Steps>
   <Step title="Click 'Simulate Merges'">
-    Click the **Simulate Merges** button in the graph toolbar (or press `Cmd+Shift+M`). ADE queues merge simulation jobs for all visible lanes.
+    Click the **Simulate Merges** button in the graph toolbar. ADE queues merge simulation jobs for all visible lanes.
   </Step>
   <Step title="Wait for results">
     The simulation runs in the background. Individual edge annotations appear as each lane's simulation completes — you do not need to wait for all lanes. Typically 2-5 seconds per lane depending on diff size.
@@ -192,7 +192,6 @@ Select multiple nodes to perform bulk operations across lanes.
 **Selecting multiple nodes:**
 - **Shift+click**: Add individual nodes to the selection
 - **Drag-select**: Click and drag on empty canvas space to draw a selection rectangle
-- **Cmd+A**: Select all visible nodes
 
 Once nodes are selected, the batch operations toolbar appears at the bottom of the screen:
 
@@ -209,7 +208,7 @@ Once nodes are selected, the batch operations toolbar appears at the bottom of t
 
 <CardGroup cols={2}>
   <Card title="Zoom" icon="magnifying-glass">
-    Scroll (trackpad pinch or mouse wheel) to zoom in and out. `Cmd+0` fits all nodes into view. `Cmd++` and `Cmd+-` zoom in/out in steps.
+    Scroll (trackpad pinch or mouse wheel) to zoom in and out. Use the graph zoom controls to zoom in, zoom out, or fit the graph.
   </Card>
   <Card title="Pan" icon="hand">
     Click and drag on empty canvas space to pan. On a trackpad, two-finger scroll pans the canvas without zooming.
@@ -249,13 +248,10 @@ ELK layout runs automatically when new lanes are added or when lanes are archive
 
 | Shortcut | Action |
 |----------|--------|
-| `Cmd+G` | Open the Workspace Graph |
-| `Cmd+A` | Select all nodes |
-| `Cmd+0` | Fit all nodes into view |
-| `Cmd+Shift+M` | Run merge simulation |
-| `Shift+Click` | Add node to selection |
-| `Escape` | Deselect all / cancel drag |
-| `Delete` | Archive selected lane(s) (shows confirmation dialog) |
+| `Shift+Enter` | Open the context menu for the selected lane |
+| `Arrow Up` / `Arrow Left` | Move selection to the selected lane's parent |
+| `Arrow Down` / `Arrow Right` | Move selection to the selected lane's first child |
+| `Escape` | Close open menus or panels |
 | `Cmd++` / `Cmd+-` | Zoom in / zoom out |
 
 ---
@@ -275,7 +271,7 @@ ELK layout runs automatically when new lanes are added or when lanes are archive
     `git merge-tree` works best on linear histories. On branches with merge commits, ADE uses the branch tip as the simulation target. The simulation may report false negatives (fewer conflicts than will actually occur) in complex octopus-merge scenarios.
   </Accordion>
   <Accordion title="Graph not updating" icon="rotate">
-    If the graph appears stale, press `Cmd+R` to force a full refresh from the database. This is rare — the graph subscribes to live IPC events from the main process. If the issue persists, check that the ADE main process is running and the IPC bridge is healthy (visible in `Settings → Diagnostics`).
+    The graph subscribes to live IPC events from the main process. If it appears stale, use the visible refresh controls in the graph surface. If the issue persists, check that the ADE main process is running and the IPC bridge is healthy (visible in `Settings → Diagnostics`).
   </Accordion>
 </AccordionGroup>
 
