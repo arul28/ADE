@@ -1,11 +1,55 @@
+import { EventEmitter } from "node:events";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  acquireCursorSdkConnection,
   buildCursorSdkPaths,
   buildCursorSdkWorkerEnv,
+  releaseCursorSdkConnection,
   resolveCursorSdkUserHome,
 } from "./cursorSdkPool";
+
+const forkMock = vi.hoisted(() => vi.fn());
+
+vi.mock("node:child_process", () => ({
+  fork: (...args: unknown[]) => forkMock(...args),
+}));
+
+class FakeSdkChild extends EventEmitter {
+  stdout = new EventEmitter();
+  stderr = new EventEmitter();
+  exitCode: number | null = null;
+  killed = false;
+  disposeCount = 0;
+
+  send(message: { type?: string; requestId?: string }): boolean {
+    if (message.type === "init" && message.requestId) {
+      queueMicrotask(() => {
+        this.emit("message", {
+          type: "response",
+          requestId: message.requestId,
+          ok: true,
+          result: { agentId: "agent-1" },
+        });
+      });
+    }
+    if (message.type === "dispose") {
+      this.disposeCount += 1;
+    }
+    return true;
+  }
+
+  kill(signal?: NodeJS.Signals): boolean {
+    this.killed = true;
+    this.emit("exit", null, signal ?? "SIGTERM");
+    return true;
+  }
+}
+
+afterEach(() => {
+  forkMock.mockReset();
+});
 
 describe("Cursor SDK pool paths", () => {
   it("uses the real user home while keeping ADE runtime state under the project cache", () => {
@@ -60,5 +104,40 @@ describe("Cursor SDK pool paths", () => {
       USERPROFILE: "C:\\Users\\admin",
     });
     expect(resolved).toBe(process.platform === "win32" ? "C:\\Users\\admin" : "/posix-home");
+  });
+
+  it("retains a ref for each concurrent waiter on a shared initialization", async () => {
+    const child = new FakeSdkChild();
+    forkMock.mockReturnValue(child);
+    const poolKey = `test:${Date.now()}:${Math.random()}`;
+    const args = {
+      poolKey,
+      projectRoot: path.join(os.tmpdir(), "ade-project"),
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      modelSdkId: "cursor-model",
+      sessionId: "session-1",
+      policy: {
+        chatMode: "agent" as const,
+        approvalPolicy: "on-request" as const,
+        sandbox: "ade" as const,
+        force: false,
+        hardGuards: true,
+      },
+    };
+
+    const [first, second] = await Promise.all([
+      acquireCursorSdkConnection(args),
+      acquireCursorSdkConnection(args),
+    ]);
+
+    expect(forkMock).toHaveBeenCalledTimes(1);
+    expect(second.pooled).toBe(first.pooled);
+    expect(second.generation).toBe(first.generation);
+
+    releaseCursorSdkConnection(poolKey, first.generation);
+    expect(child.disposeCount).toBe(0);
+
+    releaseCursorSdkConnection(poolKey, second.generation);
+    expect(child.disposeCount).toBe(1);
   });
 });

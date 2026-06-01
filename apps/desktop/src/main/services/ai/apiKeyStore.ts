@@ -93,7 +93,7 @@ function isMacosKeychainAvailable(): boolean {
 
 function isPersistentSecureStorageAvailable(): boolean {
   if (credentialStore) return true;
-  return isMacosKeychainAvailable() || isSecureStorageAvailable();
+  return isSecureStorageAvailable();
 }
 
 function normalizeProvider(provider: string): string {
@@ -177,30 +177,6 @@ function readMacosKeychainSecret(account: string): string | null {
     rememberKeychainError("read", result);
   }
   return null;
-}
-
-function writeMacosKeychainSecret(account: string, value: string): void {
-  if (!isMacosKeychainAvailable()) {
-    throw new Error("macOS Keychain is unavailable. Cannot persist API keys.");
-  }
-  // `/usr/bin/security add-generic-password` does not support a non-interactive
-  // stdin password sentinel: `-w -` stores a literal dash. Keep this path
-  // synchronous and tightly scoped until we replace it with a native binding.
-  const result = runSecurity([
-    "add-generic-password",
-    "-a",
-    account,
-    "-s",
-    MACOS_KEYCHAIN_SERVICE,
-    "-w",
-    value,
-    "-U",
-  ]);
-  if (!result.ok) {
-    rememberKeychainError("write", result);
-    throw new Error(macosKeychainError ?? "macOS Keychain write failed.");
-  }
-  clearKeychainError();
 }
 
 function deleteMacosKeychainSecret(account: string): void {
@@ -402,22 +378,6 @@ function readMacosKeychainProviderIndex(): { exists: boolean; providers: string[
   }
 }
 
-function writeMacosKeychainProviderIndex(providers: Iterable<string>): void {
-  writeMacosKeychainSecret(
-    MACOS_KEYCHAIN_PROVIDER_INDEX_ACCOUNT,
-    JSON.stringify(normalizeProviderList(Array.from(providers))),
-  );
-}
-
-function tryWriteMacosKeychainProviderIndex(providers: Iterable<string>): void {
-  try {
-    writeMacosKeychainProviderIndex(providers);
-  } catch {
-    // The provider index only powers discovery/listing. Keep the just-written
-    // secret usable in this process even if the secondary index write fails.
-  }
-}
-
 function readMacosKeychainStore(providerCandidates: Iterable<string>): StoredKeys {
   const out: StoredKeys = {};
   if (!isMacosKeychainAvailable()) return out;
@@ -427,6 +387,10 @@ function readMacosKeychainStore(providerCandidates: Iterable<string>): StoredKey
     if (value) out[provider] = value;
   }
   return out;
+}
+
+function canPersistEncryptedStore(): boolean {
+  return Boolean(storePath) && isSecureStorageAvailable();
 }
 
 function loadEncryptedStore(): StoredKeys {
@@ -457,29 +421,29 @@ function loadEncryptedStore(): StoredKeys {
   }
 }
 
-function migrateEncryptedStoreToMacosKeychain(encryptedStore: StoredKeys): void {
-  if (!isMacosKeychainAvailable()) return;
-  const providers = Object.keys(encryptedStore);
-  if (!providers.length) return;
-
-  const existingIndex = readMacosKeychainProviderIndex();
-  const nextProviders = new Set<string>(existingIndex.providers);
-  let changed = false;
-
-  for (const provider of providers) {
-    const value = encryptedStore[provider]?.trim();
-    if (!value) continue;
-    const existingValue = readMacosKeychainSecret(provider);
-    if (!existingValue) {
-      writeMacosKeychainSecret(provider, value);
-    }
-    nextProviders.add(provider);
-    changed = true;
+function deleteMacosKeychainSecretBestEffort(account: string): void {
+  try {
+    deleteMacosKeychainSecret(account);
+  } catch {
+    // Legacy Keychain cleanup should not block writes to the active encrypted
+    // store. A stale Keychain copy is still superseded by the encrypted value.
   }
+}
 
-  if (changed) {
-    writeMacosKeychainProviderIndex(nextProviders);
-  }
+function migrateLegacyMacosKeychainIntoEncryptedStore(encryptedStore: StoredKeys): StoredKeys {
+  if (!canPersistEncryptedStore() || !isMacosKeychainAvailable()) return encryptedStore;
+
+  const index = readMacosKeychainProviderIndex();
+  const providerCandidates = index.exists ? index.providers : Object.keys(encryptedStore);
+  if (providerCandidates.length === 0) return encryptedStore;
+
+  const keychainStore = readMacosKeychainStore(providerCandidates);
+  if (Object.keys(keychainStore).length === 0) return encryptedStore;
+
+  const nextStore = { ...keychainStore, ...encryptedStore };
+  persistEncryptedStore(nextStore);
+  decryptionFailed = false;
+  return nextStore;
 }
 
 function ensureStore(): StoredKeys {
@@ -495,26 +459,13 @@ function ensureStore(): StoredKeys {
 
   const encryptedStore = loadEncryptedStore();
   if (isMacosKeychainAvailable()) {
-    const indexBeforeMigration = readMacosKeychainProviderIndex();
-    if (!indexBeforeMigration.exists) {
-      try {
-        migrateEncryptedStoreToMacosKeychain(encryptedStore);
-      } catch {
-        // If Keychain migration is blocked, keep the decryptable encrypted
-        // store as the active fallback instead of dropping existing keys.
-      }
-    }
-
-    const index = readMacosKeychainProviderIndex();
-    if (index.exists) {
-      cache = readMacosKeychainStore(index.providers);
+    if (canPersistEncryptedStore()) {
+      cache = migrateLegacyMacosKeychainIntoEncryptedStore(encryptedStore);
       return cache;
     }
 
-    // Without an index, avoid probing every known provider synchronously on the
-    // Electron main thread. The old encrypted store remains the migration
-    // source of truth; direct Keychain reads happen on-demand by provider.
-    cache = encryptedStore;
+    const index = readMacosKeychainProviderIndex();
+    cache = index.exists ? readMacosKeychainStore(index.providers) : encryptedStore;
     return cache;
   }
 
@@ -590,16 +541,10 @@ export function storeApiKey(provider: string, key: string): void {
     writeCredentialProviderIndex(new Set([...index.providers, normalizedProvider]));
     return;
   }
-  if (isMacosKeychainAvailable()) {
-    writeMacosKeychainSecret(normalizedProvider, normalizedKey);
-    store[normalizedProvider] = normalizedKey;
-    missingMacosKeychainProviders.delete(normalizedProvider);
-    const index = readMacosKeychainProviderIndex();
-    tryWriteMacosKeychainProviderIndex(new Set([...index.providers, normalizedProvider]));
-    return;
-  }
   const nextStore = { ...store, [normalizedProvider]: normalizedKey };
   persistEncryptedStore(nextStore);
+  deleteMacosKeychainSecretBestEffort(normalizedProvider);
+  missingMacosKeychainProviders.add(normalizedProvider);
   cache = nextStore;
 }
 
@@ -625,8 +570,13 @@ export function getApiKey(provider: string): string | null {
     const keychainValue = readMacosKeychainSecret(normalizedProvider);
     if (keychainValue) {
       store[normalizedProvider] = keychainValue;
-      const index = readMacosKeychainProviderIndex();
-      tryWriteMacosKeychainProviderIndex(new Set([...index.providers, normalizedProvider]));
+      if (credentialStore) {
+        writeCredentialSecret(credentialProviderKey(normalizedProvider), keychainValue);
+        const index = readCredentialProviderIndex();
+        writeCredentialProviderIndex(new Set([...index.providers, normalizedProvider]));
+      } else if (canPersistEncryptedStore()) {
+        persistEncryptedStore(store);
+      }
       return keychainValue;
     }
     missingMacosKeychainProviders.add(normalizedProvider);
@@ -651,17 +601,13 @@ export function deleteApiKey(provider: string): void {
     writeCredentialProviderIndex(index.providers.filter((entry) => entry !== normalizedProvider));
     return;
   }
-  if (isMacosKeychainAvailable()) {
-    deleteMacosKeychainSecret(normalizedProvider);
-    delete store[normalizedProvider];
-    missingMacosKeychainProviders.add(normalizedProvider);
-    const index = readMacosKeychainProviderIndex();
-    tryWriteMacosKeychainProviderIndex(index.providers.filter((entry) => entry !== normalizedProvider));
-    return;
-  }
   const nextStore = { ...store };
   delete nextStore[normalizedProvider];
-  persistEncryptedStore(nextStore);
+  if (canPersistEncryptedStore()) {
+    persistEncryptedStore(nextStore);
+  }
+  deleteMacosKeychainSecretBestEffort(normalizedProvider);
+  missingMacosKeychainProviders.add(normalizedProvider);
   cache = nextStore;
 }
 

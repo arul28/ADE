@@ -82,6 +82,7 @@ const pools = new Map<string, {
   cleanupStateRoot: boolean;
 }>();
 const pendingInits = new Map<string, Promise<CursorSdkPooled>>();
+const STALE_INIT_RETRY_LIMIT = 2;
 
 function hashKey(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
@@ -203,35 +204,44 @@ export async function acquireCursorSdkConnection(args: {
   cleanupStateRoot?: boolean;
   logger?: Logger;
 }): Promise<{ pooled: CursorSdkPooled; generation: number }> {
-  const existing = pools.get(args.poolKey);
-  if (existing && existing.pooled.process.exitCode == null && !existing.pooled.process.killed) {
-    existing.ref += 1;
-    return { pooled: existing.pooled, generation: existing.generation };
-  }
-  if (existing) {
-    pools.delete(args.poolKey);
-    cleanupCursorSdkRuntimePaths(existing);
-  }
-
-  let initOwner = false;
-  let init = pendingInits.get(args.poolKey);
-  if (!init) {
-    initOwner = true;
-    init = createCursorSdkConnection(args).finally(() => {
-      pendingInits.delete(args.poolKey);
-    });
-    pendingInits.set(args.poolKey, init);
-  }
-
-  const pooled = await init;
-  if (!initOwner) {
-    const live = pools.get(args.poolKey);
-    if (live?.pooled === pooled) {
-      live.ref += 1;
+  for (let staleInitRetries = 0; ; staleInitRetries += 1) {
+    const existing = pools.get(args.poolKey);
+    if (existing && existing.pooled.process.exitCode == null && !existing.pooled.process.killed) {
+      existing.ref += 1;
+      return { pooled: existing.pooled, generation: existing.generation };
     }
+    if (existing) {
+      pools.delete(args.poolKey);
+      cleanupCursorSdkRuntimePaths(existing);
+    }
+
+    let initOwner = false;
+    let init = pendingInits.get(args.poolKey);
+    if (!init) {
+      initOwner = true;
+      init = createCursorSdkConnection(args).finally(() => {
+        pendingInits.delete(args.poolKey);
+      });
+      pendingInits.set(args.poolKey, init);
+    }
+
+    const pooled = await init;
+    const entry = pools.get(args.poolKey);
+    const live = entry?.pooled === pooled
+      && pooled.process.exitCode == null
+      && !pooled.process.killed;
+    if (!entry || !live) {
+      if (initOwner) {
+        throw new Error("Cursor SDK worker was disposed during initialization.");
+      }
+      if (staleInitRetries >= STALE_INIT_RETRY_LIMIT) {
+        throw new Error("Cursor SDK worker initialization did not settle after retries.");
+      }
+      continue;
+    }
+    if (!initOwner) entry.ref += 1;
+    return { pooled: entry.pooled, generation: entry.generation };
   }
-  const entry = pools.get(args.poolKey);
-  return { pooled, generation: entry?.generation ?? 0 };
 }
 
 async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSdkConnection>[0]): Promise<CursorSdkPooled> {

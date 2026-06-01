@@ -51,6 +51,12 @@ function securityAccountsFor(command: string): string[] {
     .map((args) => securityArg(args, "-a"));
 }
 
+function securityCommandCalls(command: string): string[][] {
+  return spawnSyncMock.mock.calls
+    .map((call) => (call[1] as string[]).map(String))
+    .filter((args) => args[0] === command);
+}
+
 function installSecurityMock(
   keychain: Map<string, string>,
   options: { failProviderIndexWrites?: boolean } = {},
@@ -159,7 +165,9 @@ describe("apiKeyStore", () => {
     vi.resetModules();
   });
 
-  it("stores Cursor keys in macOS Keychain without creating a safeStorage blob", async () => {
+  it("stores Cursor keys in safeStorage without writing secrets to macOS Keychain argv", async () => {
+    safeStorageState.available = true;
+    safeStorageState.decrypted = "{}";
     const store = await loadStoreModule();
     store.initApiKeyStore(tempRoot);
 
@@ -167,44 +175,46 @@ describe("apiKeyStore", () => {
 
     expect(store.getApiKey("cursor")).toBe("crsr_test_key");
     expect(store.listStoredProviders()).toContain("cursor");
-    expect(keychain.get("cursor")).toBe("crsr_test_key");
-    expect(keychain.get("__ade_provider_index__")).toContain("cursor");
-    expect(fs.existsSync(path.join(tempRoot, ".ade", "secrets", "api-keys.v1.bin"))).toBe(false);
+    expect(keychain.has("cursor")).toBe(false);
+    expect(securityCommandCalls("add-generic-password")).toEqual([]);
+    expect(fs.existsSync(path.join(tempRoot, ".ade", "secrets", "api-keys.v1.bin"))).toBe(true);
   });
 
-  it("keeps a stored Keychain key usable when the provider index write fails", async () => {
-    installSecurityMock(keychain, { failProviderIndexWrites: true });
+  it("migrates legacy Keychain keys into safeStorage without writing back to Keychain", async () => {
+    safeStorageState.available = true;
+    safeStorageState.decrypted = "{}";
+    keychain.set("__ade_provider_index__", JSON.stringify(["cursor"]));
+    keychain.set("cursor", "crsr_keychain_key");
     const store = await loadStoreModule();
     store.initApiKeyStore(tempRoot);
 
-    store.storeApiKey("cursor", "crsr_test_key");
-
-    expect(store.getApiKey("cursor")).toBe("crsr_test_key");
+    expect(store.getApiKey("cursor")).toBe("crsr_keychain_key");
     expect(store.listStoredProviders()).toContain("cursor");
-    expect(keychain.get("cursor")).toBe("crsr_test_key");
-    expect(keychain.has("__ade_provider_index__")).toBe(false);
-    expect(store.getApiKeyStoreStatus().macosKeychainError).toContain("provider index write failed");
+    expect(securityCommandCalls("add-generic-password")).toEqual([]);
+    expect(fs.existsSync(path.join(tempRoot, ".ade", "secrets", "api-keys.v1.bin"))).toBe(true);
   });
 
-  it("clears provider index write errors after a later successful Keychain write", async () => {
-    installSecurityMock(keychain, { failProviderIndexWrites: true });
+  it("updates safeStorage and deletes any stale legacy Keychain copy", async () => {
+    safeStorageState.available = true;
+    safeStorageState.decrypted = "{}";
+    keychain.set("__ade_provider_index__", JSON.stringify(["cursor"]));
+    keychain.set("cursor", "crsr_old_key");
     const store = await loadStoreModule();
     store.initApiKeyStore(tempRoot);
 
-    store.storeApiKey("cursor", "crsr_test_key");
-    expect(store.getApiKeyStoreStatus().macosKeychainError).toContain("provider index write failed");
+    store.storeApiKey("cursor", "crsr_new_key");
 
-    installSecurityMock(keychain);
-    store.storeApiKey("openai", "openai_test_key");
-
-    expect(store.getApiKey("openai")).toBe("openai_test_key");
+    expect(store.getApiKey("cursor")).toBe("crsr_new_key");
+    expect(keychain.has("cursor")).toBe(false);
+    expect(securityCommandCalls("add-generic-password")).toEqual([]);
     expect(store.getApiKeyStoreStatus().macosKeychainError).toBeNull();
   });
 
-  it("removes a deleted Keychain key from memory when the provider index write fails", async () => {
+  it("removes a deleted legacy Keychain key from memory and the active encrypted store", async () => {
+    safeStorageState.available = true;
+    safeStorageState.decrypted = "{}";
     keychain.set("__ade_provider_index__", JSON.stringify(["cursor"]));
     keychain.set("cursor", "crsr_test_key");
-    installSecurityMock(keychain, { failProviderIndexWrites: true });
     const store = await loadStoreModule();
     store.initApiKeyStore(tempRoot);
 
@@ -215,11 +225,10 @@ describe("apiKeyStore", () => {
     expect(store.getApiKey("cursor")).toBeNull();
     expect(store.listStoredProviders()).not.toContain("cursor");
     expect(keychain.has("cursor")).toBe(false);
-    expect(keychain.get("__ade_provider_index__")).toContain("cursor");
-    expect(store.getApiKeyStoreStatus().macosKeychainError).toContain("provider index write failed");
+    expect(securityCommandCalls("add-generic-password")).toEqual([]);
   });
 
-  it("migrates a decryptable legacy safeStorage blob into macOS Keychain", async () => {
+  it("keeps a decryptable legacy safeStorage blob as the active store", async () => {
     const secretsDir = path.join(tempRoot, ".ade", "secrets");
     fs.mkdirSync(secretsDir, { recursive: true });
     fs.writeFileSync(path.join(secretsDir, "api-keys.v1.bin"), Buffer.from("old-encrypted"));
@@ -234,23 +243,25 @@ describe("apiKeyStore", () => {
 
     expect(store.getApiKey("cursor")).toBe("crsr_old_key");
     expect(store.getApiKey("openai")).toBe("openai_old_key");
-    expect(keychain.get("cursor")).toBe("crsr_old_key");
-    expect(keychain.get("openai")).toBe("openai_old_key");
+    expect(keychain.has("cursor")).toBe(false);
+    expect(keychain.has("openai")).toBe(false);
+    expect(securityCommandCalls("add-generic-password")).toEqual([]);
   });
 
-  it("prefers an existing Keychain value over an older encrypted blob during migration", async () => {
-    keychain.set("cursor", "crsr_current_key");
+  it("preserves an existing encrypted-store value over a stale Keychain migration fallback", async () => {
+    keychain.set("cursor", "crsr_stale_key");
     const secretsDir = path.join(tempRoot, ".ade", "secrets");
     fs.mkdirSync(secretsDir, { recursive: true });
     fs.writeFileSync(path.join(secretsDir, "api-keys.v1.bin"), Buffer.from("old-encrypted"));
     safeStorageState.available = true;
-    safeStorageState.decrypted = JSON.stringify({ cursor: "crsr_stale_key" });
+    safeStorageState.decrypted = JSON.stringify({ cursor: "crsr_current_key" });
 
     const store = await loadStoreModule();
     store.initApiKeyStore(tempRoot);
 
     expect(store.getApiKey("cursor")).toBe("crsr_current_key");
-    expect(keychain.get("cursor")).toBe("crsr_current_key");
+    expect(keychain.get("cursor")).toBe("crsr_stale_key");
+    expect(securityCommandCalls("add-generic-password")).toEqual([]);
   });
 
   it("keeps Keychain keys usable when the old encrypted blob cannot be decrypted", async () => {
@@ -266,7 +277,7 @@ describe("apiKeyStore", () => {
 
     expect(store.getApiKey("cursor")).toBe("crsr_keychain_key");
     expect(store.getApiKeyStoreStatus()).toMatchObject({
-      secureStorageAvailable: true,
+      secureStorageAvailable: false,
       macosKeychainAvailable: true,
       decryptionFailed: true,
     });
@@ -283,7 +294,6 @@ describe("apiKeyStore", () => {
     expect(store.listStoredProviders()).toEqual(["cursor"]);
     expect(securityAccountsFor("find-generic-password")).toEqual([
       "__ade_provider_index__",
-      "__ade_provider_index__",
       "cursor",
     ]);
   });
@@ -298,11 +308,9 @@ describe("apiKeyStore", () => {
     expect(store.listStoredProviders()).toEqual(["cursor"]);
     expect(securityAccountsFor("find-generic-password")).toEqual([
       "__ade_provider_index__",
-      "__ade_provider_index__",
       "cursor",
-      "__ade_provider_index__",
     ]);
-    expect(securityAccountsFor("add-generic-password")).toContain("__ade_provider_index__");
+    expect(securityCommandCalls("add-generic-password")).toEqual([]);
   });
 
   it("migrates legacy safeStorage API keys into a provided credential store once", async () => {
@@ -405,6 +413,21 @@ describe("apiKeyStore", () => {
 
     expect(store.listStoredProviders()).toEqual(["openai"]);
     expect(JSON.parse(credentialStore.values.get("ai.api_key.index.v1") ?? "[]")).toEqual(["openai"]);
+  });
+
+  it("deletes from memory without throwing when persistent secure storage is unavailable", async () => {
+    safeStorageState.available = true;
+    safeStorageState.decrypted = "{}";
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot);
+    store.storeApiKey("cursor", "crsr_test_key");
+
+    safeStorageState.available = false;
+    process.env.ADE_API_KEY_STORE_DISABLE_KEYCHAIN = "1";
+
+    expect(() => store.deleteApiKey("cursor")).not.toThrow();
+    expect(store.getApiKey("cursor")).toBeNull();
+    expect(store.listStoredProviders()).toEqual([]);
   });
 
   it("can use the ADE CLI encrypted credential store without persisting the raw key", async () => {

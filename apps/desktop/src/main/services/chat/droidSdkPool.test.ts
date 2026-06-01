@@ -1,0 +1,87 @@
+import { EventEmitter } from "node:events";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  acquireDroidSdkConnection,
+  releaseDroidSdkConnection,
+} from "./droidSdkPool";
+
+const forkMock = vi.hoisted(() => vi.fn());
+
+vi.mock("node:child_process", () => ({
+  fork: (...args: unknown[]) => forkMock(...args),
+}));
+
+class FakeSdkChild extends EventEmitter {
+  stdout = new EventEmitter();
+  stderr = new EventEmitter();
+  exitCode: number | null = null;
+  killed = false;
+  disposeCount = 0;
+
+  send(message: { type?: string; requestId?: string }): boolean {
+    if (message.type === "init" && message.requestId) {
+      queueMicrotask(() => {
+        this.emit("message", {
+          type: "response",
+          requestId: message.requestId,
+          ok: true,
+          result: {
+            sessionId: "sdk-session-1",
+            currentModelId: "droid-model",
+            availableModels: [{ id: "droid-model" }],
+          },
+        });
+      });
+    }
+    if (message.type === "dispose") {
+      this.disposeCount += 1;
+    }
+    return true;
+  }
+
+  kill(signal?: NodeJS.Signals): boolean {
+    this.killed = true;
+    this.emit("exit", null, signal ?? "SIGTERM");
+    return true;
+  }
+}
+
+afterEach(() => {
+  forkMock.mockReset();
+});
+
+describe("Droid SDK pool", () => {
+  it("retains a ref for each concurrent waiter on a shared initialization", async () => {
+    const child = new FakeSdkChild();
+    forkMock.mockReturnValue(child);
+    const poolKey = `test:${Date.now()}:${Math.random()}`;
+    const args = {
+      poolKey,
+      droidPath: "/usr/local/bin/droid",
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      sessionId: "session-1",
+      settings: {
+        modelId: "droid-model",
+        autonomyLevel: "medium" as const,
+        interactionMode: "auto" as const,
+      },
+    };
+
+    const [first, second] = await Promise.all([
+      acquireDroidSdkConnection(args),
+      acquireDroidSdkConnection(args),
+    ]);
+
+    expect(forkMock).toHaveBeenCalledTimes(1);
+    expect(second.pooled).toBe(first.pooled);
+    expect(second.generation).toBe(first.generation);
+
+    releaseDroidSdkConnection(poolKey, first.generation);
+    expect(child.disposeCount).toBe(0);
+
+    releaseDroidSdkConnection(poolKey, second.generation);
+    expect(child.disposeCount).toBe(1);
+  });
+});

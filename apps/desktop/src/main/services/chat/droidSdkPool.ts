@@ -45,6 +45,7 @@ export type DroidSdkPooled = {
 let droidSdkGenCounter = 0;
 const pools = new Map<string, { ref: number; generation: number; pooled: DroidSdkPooled }>();
 const pendingInits = new Map<string, Promise<DroidSdkPooled>>();
+const STALE_INIT_RETRY_LIMIT = 2;
 
 function resolveWorkerPath(): string {
   const candidates = [
@@ -71,28 +72,39 @@ export async function acquireDroidSdkConnection(args: {
   mcpServers?: unknown[];
   logger?: Logger;
 }): Promise<{ pooled: DroidSdkPooled; generation: number }> {
-  const existing = pools.get(args.poolKey);
-  if (existing && existing.pooled.process.exitCode == null && !existing.pooled.process.killed) {
-    existing.ref += 1;
-    return { pooled: existing.pooled, generation: existing.generation };
-  }
-  if (existing) pools.delete(args.poolKey);
+  for (let staleInitRetries = 0; ; staleInitRetries += 1) {
+    const existing = pools.get(args.poolKey);
+    if (existing && existing.pooled.process.exitCode == null && !existing.pooled.process.killed) {
+      existing.ref += 1;
+      return { pooled: existing.pooled, generation: existing.generation };
+    }
+    if (existing) pools.delete(args.poolKey);
 
-  let initOwner = false;
-  let init = pendingInits.get(args.poolKey);
-  if (!init) {
-    initOwner = true;
-    init = createDroidSdkConnection(args).finally(() => pendingInits.delete(args.poolKey));
-    pendingInits.set(args.poolKey, init);
-  }
+    let initOwner = false;
+    let init = pendingInits.get(args.poolKey);
+    if (!init) {
+      initOwner = true;
+      init = createDroidSdkConnection(args).finally(() => pendingInits.delete(args.poolKey));
+      pendingInits.set(args.poolKey, init);
+    }
 
-  const pooled = await init;
-  if (!initOwner) {
-    const live = pools.get(args.poolKey);
-    if (live?.pooled === pooled) live.ref += 1;
+    const pooled = await init;
+    const entry = pools.get(args.poolKey);
+    const live = entry?.pooled === pooled
+      && pooled.process.exitCode == null
+      && !pooled.process.killed;
+    if (!entry || !live) {
+      if (initOwner) {
+        throw new Error("Droid SDK worker was disposed during initialization.");
+      }
+      if (staleInitRetries >= STALE_INIT_RETRY_LIMIT) {
+        throw new Error("Droid SDK worker initialization did not settle after retries.");
+      }
+      continue;
+    }
+    if (!initOwner) entry.ref += 1;
+    return { pooled: entry.pooled, generation: entry.generation };
   }
-  const entry = pools.get(args.poolKey);
-  return { pooled, generation: entry?.generation ?? 0 };
 }
 
 async function createDroidSdkConnection(args: Parameters<typeof acquireDroidSdkConnection>[0]): Promise<DroidSdkPooled> {
