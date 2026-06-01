@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createAdeRpcRequestHandler,
   _resetGlobalAskUserRateLimit,
@@ -11,6 +11,17 @@ import { JsonRpcError, JsonRpcErrorCode } from "./jsonrpc";
 
 type RuntimeFixture = ReturnType<typeof createRuntime>;
 const originalPlatform = process.platform;
+const ADE_ENV_KEYS = [
+  "ADE_DEFAULT_ROLE",
+  "ADE_CHAT_SESSION_ID",
+  "ADE_RUN_ID",
+  "ADE_STEP_ID",
+  "ADE_ATTEMPT_ID",
+  "ADE_OWNER_ID",
+] as const;
+const originalAdeEnv = new Map<string, string | undefined>(
+  ADE_ENV_KEYS.map((key) => [key, process.env[key]]),
+);
 
 function setPlatform(value: NodeJS.Platform): void {
   Object.defineProperty(process, "platform", {
@@ -19,8 +30,19 @@ function setPlatform(value: NodeJS.Platform): void {
   });
 }
 
+beforeEach(() => {
+  for (const key of ADE_ENV_KEYS) {
+    delete process.env[key];
+  }
+});
+
 afterEach(() => {
   setPlatform(originalPlatform);
+  for (const key of ADE_ENV_KEYS) {
+    const value = originalAdeEnv.get(key);
+    if (value == null) delete process.env[key];
+    else process.env[key] = value;
+  }
 });
 
 function createRuntime() {

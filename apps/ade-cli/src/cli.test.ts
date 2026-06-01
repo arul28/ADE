@@ -207,8 +207,9 @@ describe("ADE CLI", () => {
   });
 
   it("allows explicit runtime socket overrides across build hashes", () => {
+    const currentVersion = process.env.ADE_CLI_VERSION?.trim() || "0.0.0";
     const runtimeInfo = {
-      version: "0.0.0",
+      version: currentVersion,
       buildHash: "other-build",
       defaultRole: "agent",
       packageChannel: null,
