@@ -168,6 +168,7 @@ import type {
   GetAdeUsageStatsArgs,
   UsageSnapshot,
   BudgetCheckResult,
+  BudgetCheckArgs,
   BudgetCapScope,
   BudgetCapProvider,
   BudgetCapConfig,
@@ -1033,11 +1034,7 @@ declare global {
         getAdeStats: (args?: GetAdeUsageStatsArgs) => Promise<AdeUsageStats | null>;
         getSnapshot: () => Promise<UsageSnapshot | null>;
         refresh: () => Promise<UsageSnapshot | null>;
-        checkBudget: (args: {
-          scope: BudgetCapScope;
-          scopeId?: string;
-          provider: BudgetCapProvider;
-        }) => Promise<BudgetCheckResult>;
+        checkBudget: (args: BudgetCheckArgs) => Promise<BudgetCheckResult>;
         getCumulativeUsage: (args: {
           scope: BudgetCapScope;
           scopeId?: string;

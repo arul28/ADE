@@ -1749,6 +1749,7 @@ app.whenReady().then(async () => {
     currentVersion: app.getVersion(),
     globalStatePath,
     updaterCacheDir: app.isPackaged ? resolveAutoUpdaterCacheDir() : undefined,
+    autoCheckEnabled: app.isPackaged,
   });
 
   const initContextForProjectRoot = async ({

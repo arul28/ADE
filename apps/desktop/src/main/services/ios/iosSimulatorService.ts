@@ -47,6 +47,8 @@ import type {
 import { IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE } from "../../../shared/types/iosSimulator";
 import { commandExists } from "../ai/utils";
 import type { Logger } from "../logging/logger";
+import { pngDimensions } from "../shared/imageDimensions";
+import { isRecord } from "../shared/utils";
 
 const execFile = promisify(execFileCallback);
 
@@ -1081,15 +1083,6 @@ async function waitForTcpPort(host: string, port: number, timeoutMs: number): Pr
   throw new Error(`Timed out waiting for ${host}:${port}.`);
 }
 
-function pngDimensions(buffer: Buffer): { width: number | null; height: number | null } {
-  if (buffer.length < 24) return { width: null, height: null };
-  if (buffer.toString("ascii", 1, 4) !== "PNG") return { width: null, height: null };
-  return {
-    width: buffer.readUInt32BE(16),
-    height: buffer.readUInt32BE(20),
-  };
-}
-
 function normalizeLaunchMode(mode: unknown): "snapshot" | "live" {
   if (mode == null) return "snapshot";
   if (mode === "snapshot" || mode === "live") return mode;
@@ -1142,10 +1135,6 @@ function normalizeFrame(value: Partial<IosInspectableElement["frame"]> | undefin
   const height = Number(value.height);
   if (![x, y, width, height].every(Number.isFinite)) return null;
   return { x, y, width, height };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function readString(record: Record<string, unknown>, keys: string[]): string | null {
@@ -2536,7 +2525,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         };
       }
       const buffer = await fs.promises.readFile(previewSnapshotPath);
-      const dimensions = pngDimensions(buffer);
+      const dimensions = pngDimensions(buffer) ?? { width: null, height: null };
       return {
         ok: true,
         target,
@@ -2931,7 +2920,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     try {
       await run("xcrun", ["simctl", "io", device.udid, "screenshot", "--type=png", tmpPath], { timeoutMs: 30_000 });
       const buffer = await fs.promises.readFile(tmpPath);
-      const dimensions = pngDimensions(buffer);
+      const dimensions = pngDimensions(buffer) ?? { width: null, height: null };
       return {
         deviceUdid: device.udid,
         dataUrl: `data:image/png;base64,${buffer.toString("base64")}`,

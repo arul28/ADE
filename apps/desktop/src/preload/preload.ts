@@ -542,6 +542,7 @@ import type {
   GetAdeUsageStatsArgs,
   UsageSnapshot,
   BudgetCheckResult,
+  BudgetCheckArgs,
   BudgetCapScope,
   BudgetCapProvider,
   BudgetCapConfig,
@@ -4069,11 +4070,7 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("usage", "forceRefresh", {}, () =>
         ipcRenderer.invoke(IPC.usageRefresh),
       ),
-    checkBudget: async (args: {
-      scope: BudgetCapScope;
-      scopeId?: string;
-      provider: BudgetCapProvider;
-    }): Promise<BudgetCheckResult> =>
+    checkBudget: async (args: BudgetCheckArgs): Promise<BudgetCheckResult> =>
       callProjectRuntimeActionOr("budget", "checkBudget", { args }, () =>
         ipcRenderer.invoke(IPC.usageCheckBudget, args),
       ),

@@ -40,7 +40,7 @@ desktops see live lanes / chats / processes.
 Main process:
 
 - `apps/desktop/src/main/services/onboarding/onboardingService.ts` —
-  status, stack detection, suggested config, existing lane detection,
+  status, stack detection, existing lane detection,
   and tour progress tracking. `OnboardingTourProgress` carries the
   legacy flat per-tour map (`tours: Record<string, OnboardingTourEntry>`)
   plus a new variant-aware `tourVariants: Record<string,
@@ -51,6 +51,9 @@ Main process:
   `ctxSnapshot`). Glossary terms seen are tracked in
   `glossaryTermsSeen[]`. Persisted to `kvDb` under
   `onboarding:tourProgress`.
+- `apps/desktop/src/main/services/onboarding/onboardingSuggestedConfig.ts` —
+  pure GitHub Actions workflow parsing and suggested process/test/stack
+  config generation for `.ade/ade.yaml`.
 - `apps/desktop/src/main/services/config/projectConfigService.ts` —
   YAML config read/merge/save, AI mode migration, lane env init,
   Linear sync resolver. ~2,870 lines, the largest service.
@@ -273,7 +276,9 @@ Auto-update (top-bar control, not a settings tab):
   comparator that handles `v` prefixes, missing patch, and
   prerelease ordering) so a same-or-older `update-available` while a
   newer build is already staged is logged and ignored instead of
-  clobbering the staged installer; if the new build is strictly
+  clobbering the staged installer; packaged builds schedule startup and
+  periodic update checks, while dev/source launches leave those timers off
+  to avoid surfacing missing-updater-config errors; if the new build is strictly
   newer, the cached installer dir is wiped and the snapshot
   transitions back through `downloading`. `quitAndInstall()` is
   asynchronous: it gates on the current snapshot being `ready`,

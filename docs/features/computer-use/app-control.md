@@ -18,7 +18,9 @@ App Control runs on the runtime that owns the project. The launch terminal, CDP 
   - input: `click`, `typeText`, `scroll`, `dispatchKey`
   - launch terminal passthrough: `readTerminal`, `writeTerminal`, `signalTerminal`
   - screencast frames stream out via the `onEvent` channel (`type: "frame"`)
+- `appControlLaunchCommand.ts` — pure shell-command helpers for detecting direct Electron launches, detecting package-manager script launches, rewriting package scripts to inject App Control debug flags, and preserving the `{ADE_APP_CONTROL_DEBUG_FLAGS}` opt-in path.
 - `appControlService.test.ts` — service tests.
+- `appControlLaunchCommand.test.ts` — launch-command rewrite coverage.
 
 ### Shared types
 
@@ -131,7 +133,7 @@ Routine capture and input paths do not raise or normalize the external Electron 
 
 ## Input
 
-- `click({ x, y, scale, coordinateSpace })` sends CDP `Input.dispatchMouseEvent` at viewport coordinates. The default coordinate space is `"screenshot"` for backwards-compatible CLI/API calls, and the renderer panel sends `"viewport"` so live-frame clicks land on the actual element under the pointer without any scale conversion. Screenshot-space coordinates are normalized to viewport space using independent x and y scale factors derived from the most recent `Page.screencastFrame` metadata (`deviceWidth` / image-width for x, `deviceHeight` / image-height for y), so non-uniform scaling (e.g. a resized window) does not skew click targets. `imageDimensions` extracts width/height from both PNG and JPEG screenshot buffers (JPEG parsing scans SOF markers). For hidden renderers, App Control tries `dispatchDomClick` first as a synthetic in-page fallback.
+- `click({ x, y, scale, coordinateSpace })` sends CDP `Input.dispatchMouseEvent` at viewport coordinates. The default coordinate space is `"screenshot"` for backwards-compatible CLI/API calls, and the renderer panel sends `"viewport"` so live-frame clicks land on the actual element under the pointer without any scale conversion. Screenshot-space coordinates are normalized to viewport space using independent x and y scale factors derived from the most recent `Page.screencastFrame` metadata (`deviceWidth` / image-width for x, `deviceHeight` / image-height for y), so non-uniform scaling (e.g. a resized window) does not skew click targets. Shared `services/shared/imageDimensions.ts` extracts width/height from both PNG and JPEG screenshot buffers (JPEG parsing scans SOF markers). For hidden renderers, App Control tries `dispatchDomClick` first as a synthetic in-page fallback.
 - `typeText({ text })` calls `Input.insertText`. `dispatchKey({ type, key, code, text, modifiers })` is the lower-level escape hatch for shortcuts and special keys.
 - `scroll({ x, y, deltaX, deltaY, coordinateSpace })` is `Input.dispatchMouseEvent` with `type: "mouseWheel"`.
 - All input calls go through a single shared `CdpClient` (`withCdp`) so the WebSocket isn't reopened per click; this measurably reduces input latency.

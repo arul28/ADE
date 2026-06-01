@@ -65,6 +65,17 @@ import {
   type BootstrapRunner,
   type RuntimeBootstrapPhase,
 } from "./runtimeBootstrap";
+import {
+  generateVncPassword,
+  readGlobalLeaseFile,
+  readStoreFile,
+  readVncCredentialStore,
+  vncCredentialKey,
+  writeGlobalLeaseFile,
+  writeStoreFile,
+  writeVncCredentialStore,
+} from "./macosVmStores";
+import { isRecord } from "../shared/utils";
 
 const APPLE_VIRTUALIZATION_DOCS = "https://developer.apple.com/documentation/virtualization";
 const APPLE_SHARED_DIRECTORIES_DOCS = "https://developer.apple.com/documentation/virtualization/vzvirtiofilesystemdeviceconfiguration";
@@ -192,26 +203,6 @@ type CreateMacosVmServiceArgs = {
     | null;
 };
 
-type VmStoreFile = {
-  version: 1;
-  records: MacosVmRecord[];
-};
-
-type VmGlobalLeaseFile = {
-  version: 1;
-  lease: MacosVmGlobalLease | null;
-};
-
-type VncCredentialStoreFile = {
-  version: 1;
-  credentials: Record<string, {
-    laneId: string;
-    vmName: string;
-    password: string;
-    updatedAt: string;
-  }>;
-};
-
 type ExternalVmInfo = {
   name: string;
   state: MacosVmLifecycleState;
@@ -228,10 +219,6 @@ function nowIso(): string {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function normalizeLifecycleState(value: unknown): MacosVmLifecycleState {
@@ -620,90 +607,6 @@ function guestReadinessForRecord(
     detail: "ADE could not determine guest readiness from the provider state.",
     nextAction: "Refresh VM status or capture a frame from the VM tab.",
   };
-}
-
-function readStoreFile(storePath: string): VmStoreFile {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(storePath, "utf8")) as Partial<VmStoreFile>;
-    const records = Array.isArray(parsed.records)
-      ? parsed.records.filter((record): record is MacosVmRecord => isRecord(record) && typeof record.id === "string")
-      : [];
-    return { version: 1, records };
-  } catch {
-    return { version: 1, records: [] };
-  }
-}
-
-function writeStoreFile(storePath: string, store: VmStoreFile): void {
-  fs.mkdirSync(path.dirname(storePath), { recursive: true });
-  const tmpPath = `${storePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmpPath, `${JSON.stringify(store, null, 2)}\n`, "utf8");
-  fs.renameSync(tmpPath, storePath);
-}
-
-function parseGlobalLease(value: unknown): MacosVmGlobalLease | null {
-  if (!isRecord(value)) return null;
-  const projectRoot = asString(value.projectRoot);
-  const laneId = asString(value.laneId);
-  const vmId = asString(value.vmId);
-  const vmName = asString(value.vmName);
-  if (!projectRoot || !laneId || !vmId || !vmName) return null;
-  return {
-    projectRoot,
-    laneId,
-    laneName: asString(value.laneName) ?? laneId,
-    vmId,
-    vmName,
-    updatedAt: asString(value.updatedAt) ?? nowIso(),
-  };
-}
-
-function readGlobalLeaseFile(storePath: string): VmGlobalLeaseFile {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(storePath, "utf8")) as Partial<VmGlobalLeaseFile>;
-    return { version: 1, lease: parseGlobalLease(parsed.lease) };
-  } catch {
-    return { version: 1, lease: null };
-  }
-}
-
-function writeGlobalLeaseFile(storePath: string, store: VmGlobalLeaseFile): void {
-  fs.mkdirSync(path.dirname(storePath), { recursive: true });
-  const tmpPath = `${storePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmpPath, `${JSON.stringify(store, null, 2)}\n`, "utf8");
-  fs.renameSync(tmpPath, storePath);
-}
-
-function readVncCredentialStore(storePath: string): VncCredentialStoreFile {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(storePath, "utf8")) as Partial<VncCredentialStoreFile>;
-    return {
-      version: 1,
-      credentials: isRecord(parsed.credentials) ? parsed.credentials as VncCredentialStoreFile["credentials"] : {},
-    };
-  } catch {
-    return { version: 1, credentials: {} };
-  }
-}
-
-function writeVncCredentialStore(storePath: string, store: VncCredentialStoreFile): void {
-  fs.mkdirSync(path.dirname(storePath), { recursive: true, mode: 0o700 });
-  const tmpPath = `${storePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmpPath, `${JSON.stringify(store, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  fs.renameSync(tmpPath, storePath);
-  try {
-    fs.chmodSync(storePath, 0o600);
-  } catch {
-    // Best effort. The file lives under .ade/secrets and is excluded from VM shares.
-  }
-}
-
-function vncCredentialKey(laneId: string, vmName: string): string {
-  return `${laneId}:${vmName}`;
-}
-
-function generateVncPassword(): string {
-  return randomBytes(6).toString("base64url").slice(0, 8);
 }
 
 function parseDisplaySize(display: string | null | undefined): { width: number; height: number } {

@@ -150,10 +150,12 @@ tap, and refuses to attach a persistent black frame as review context.
 Main process — `apps/desktop/src/main/services/macosVm/`:
 
 - `macosVmService.ts` — lifecycle owner. Lume `pull`/`create`/`run`/`stop`/`delete`
-  drivers, VM state file (`records.json`) and global single-VM lease
-  (`lease.json`) under `.ade/cache/macos-vms`, sanitized rsync mirror builder,
+  drivers, sanitized rsync mirror builder,
   noVNC display proxy with idle/max timeouts, RFB framebuffer wake heuristics,
   and the `ade.macosVm.event` push channel.
+- `macosVmStores.ts` — atomic JSON store helpers for VM records
+  (`records.json`), the global single-VM lease (`lease.json`), and
+  VNC credentials under `.ade/secrets`.
 - `rfbDirectClient.ts` — minimal direct-VNC client used for headless capture
   and input. Negotiates RFB, waits through transient black framebuffer updates,
   wakes the display with a pointer move + Shift tap, encodes the framebuffer

@@ -2,12 +2,10 @@ import { beforeAll, describe, expect, it } from "vitest";
 import path from "node:path";
 import { createRequire } from "node:module";
 import initSqlJs from "sql.js";
-import type { Database, SqlJsStatic } from "sql.js";
+import type { SqlJsStatic } from "sql.js";
 import { createBudgetCapService } from "./budgetCapService";
 import type {
   BudgetCapConfig,
-  BudgetCapScope,
-  BudgetCapProvider,
   UsageSnapshot
 } from "../../../shared/types/usage";
 
@@ -280,7 +278,7 @@ describe("budgetCapService", () => {
       expect(result.warnings[0]).toContain("exceeds cap of 90%");
     });
 
-    it("blocks when usd-per-run cap is exceeded", () => {
+    it("does not count previous rule usage against a new usd-per-run cap check", () => {
       const { db } = createInMemoryDb();
       const svc = createBudgetCapService({
         db,
@@ -297,6 +295,26 @@ describe("budgetCapService", () => {
       svc.recordUsage("automation-rule", "rule-1", { tokensUsed: 50000, costUsd: 0.50, provider: "claude" });
 
       const result = svc.checkBudget("automation-rule", "rule-1", "any");
+      expect(result.allowed).toBe(true);
+      expect(result.remainingUsd).toBeCloseTo(1.0);
+    });
+
+    it("blocks when the active run's usd-per-run cap is exceeded", () => {
+      const { db } = createInMemoryDb();
+      const svc = createBudgetCapService({
+        db,
+        logger: createLogger(),
+        projectConfigService: createMockConfigService({
+          budgetCaps: [
+            { scope: "automation-rule", capType: "usd-per-run", provider: "any", limit: 1.0, action: "block" }
+          ]
+        })
+      });
+
+      svc.recordUsage("automation-rule", "run-1", { tokensUsed: 50000, costUsd: 0.60, provider: "claude" });
+      svc.recordUsage("automation-rule", "run-1", { tokensUsed: 50000, costUsd: 0.50, provider: "claude" });
+
+      const result = svc.checkBudget("automation-rule", "rule-1", "any", { runScopeId: "run-1" });
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain("exceeds cap of $1.00");
       expect(result.remainingUsd).toBe(0);
@@ -314,9 +332,9 @@ describe("budgetCapService", () => {
         })
       });
 
-      svc.recordUsage("automation-rule", "rule-1", { tokensUsed: 10000, costUsd: 0.50, provider: "claude" });
+      svc.recordUsage("automation-rule", "run-1", { tokensUsed: 10000, costUsd: 0.50, provider: "claude" });
 
-      const result = svc.checkBudget("automation-rule", "rule-1", "any");
+      const result = svc.checkBudget("automation-rule", "rule-1", "any", { runScopeId: "run-1" });
       expect(result.allowed).toBe(true);
       expect(result.remainingUsd).toBeCloseTo(4.5);
     });
@@ -449,14 +467,14 @@ describe("budgetCapService", () => {
         })
       });
 
-      svc.recordUsage("automation-rule", "rule-X", { tokensUsed: 100000, costUsd: 5.0, provider: "claude" });
+      svc.recordUsage("automation-rule", "run-X", { tokensUsed: 100000, costUsd: 5.0, provider: "claude" });
 
       // rule-X should be blocked
-      const blockedResult = svc.checkBudget("automation-rule", "rule-X", "any");
+      const blockedResult = svc.checkBudget("automation-rule", "rule-X", "any", { runScopeId: "run-X" });
       expect(blockedResult.allowed).toBe(false);
 
       // rule-Y should pass (different scopeId)
-      const passResult = svc.checkBudget("automation-rule", "rule-Y", "any");
+      const passResult = svc.checkBudget("automation-rule", "rule-Y", "any", { runScopeId: "run-X" });
       expect(passResult.allowed).toBe(true);
     });
   });

@@ -332,6 +332,18 @@ export type BudgetCheckResult = {
   warnings: string[];
 };
 
+export type BudgetCheckContext = {
+  /** Usage records for `usd-per-run` are keyed to the active run, not the rule. */
+  runScopeId?: string | null;
+};
+
+export type BudgetCheckArgs = {
+  scope: BudgetCapScope;
+  scopeId?: string;
+  provider: BudgetCapProvider;
+  runScopeId?: string | null;
+};
+
 export type BudgetUsageRecord = {
   id: string;
   scope: BudgetCapScope;

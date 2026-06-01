@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createOnboardingService } from "./onboardingService";
+import { buildSuggestedConfig } from "./onboardingSuggestedConfig";
 import type { AdeDb } from "../state/kvDb";
 import type { ProjectConfigFile } from "../../../shared/types";
 
@@ -88,6 +89,22 @@ describe("onboardingService integration", () => {
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
+  });
+
+  it("preserves quoted CI command arguments in suggested tests", () => {
+    const suggested = buildSuggestedConfig({
+      projectRoot: "/tmp/ade-onboarding-ci",
+      indicators: [],
+      suggestedWorkflowCommands: ["npm test -- --grep \"a b\""],
+    });
+
+    expect(suggested.testSuites?.find((suite) => suite.id === "ci-1")?.command).toEqual([
+      "npm",
+      "test",
+      "--",
+      "--grep",
+      "a b",
+    ]);
   });
 });
 

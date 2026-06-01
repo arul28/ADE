@@ -2097,15 +2097,6 @@ export function createAutomationService({
 
     const { modelId, modelDescriptor, providerGroup, budgetProvider } = resolveAutomationModelDescriptor(args.rule);
     const resolvedChat = resolveChatProviderForDescriptor(modelDescriptor);
-    const budgetCheck = budgetCapServiceRef?.checkBudget(
-      AUTOMATION_SCOPE as Parameters<NonNullable<typeof budgetCapServiceRef>["checkBudget"]>[0],
-      args.rule.id,
-      budgetProvider,
-    );
-    if (budgetCheck && !budgetCheck.allowed) {
-      throw new Error(budgetCheck.reason ?? "Budget cap blocked automation run.");
-    }
-
     const confidence = computeConfidence(args.rule);
     const existingRunRow = args.existingRunId ? loadRunRow(args.existingRunId) : null;
     const run = existingRunRow
@@ -2118,6 +2109,20 @@ export function createAutomationService({
           summary: args.rule.prompt?.trim() || `${args.rule.name} agent session dispatched`,
           ingressEventId: args.trigger.ingressEventId ?? null,
         });
+    // New runs start at zero; the `usd-per-run` preflight catches resumed runs
+    // with existing usage while in-flight enforcement uses records for this run id.
+    const budgetCheck = budgetCapServiceRef?.checkBudget(
+      AUTOMATION_SCOPE as Parameters<NonNullable<typeof budgetCapServiceRef>["checkBudget"]>[0],
+      args.rule.id,
+      budgetProvider,
+      { runScopeId: run.id },
+    );
+    if (budgetCheck && !budgetCheck.allowed) {
+      const message = budgetCheck.reason ?? "Budget cap blocked automation run.";
+      updateRun(run.id, { ended_at: nowIso(), status: "failed", error_message: message });
+      emit({ type: "runs-updated", automationId: args.rule.id, runId: run.id });
+      throw new Error(message);
+    }
 
     let laneId: string | null;
     try {
