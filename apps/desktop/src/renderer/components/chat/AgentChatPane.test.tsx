@@ -3620,6 +3620,38 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("ignores duplicate auto-create submits for the same draft while lane naming is pending", async () => {
+    const { suggestLaneName } = installAdeMocks({ sessions: [] });
+    suggestLaneName.mockImplementation(() => new Promise<string>(() => {
+      // Keep the first launch in-flight so duplicate clicks race the same snapshot.
+    }));
+
+    renderAutoCreateDraftPane();
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Launch once even if clicked twice." } });
+    const launchButton = await screen.findByRole("button", { name: "Auto-create in background" });
+    await act(async () => {
+      launchButton.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      launchButton.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+
+    await waitFor(() => {
+      expect(suggestLaneName).toHaveBeenCalledTimes(1);
+      expect(screen.getAllByText(/Creating lane for chat/i)).toHaveLength(1);
+    });
+  });
+
   it("keeps every in-flight background draft launch visible past the completed-notice cap", async () => {
     const { suggestLaneName } = installAdeMocks({ sessions: [] });
     suggestLaneName.mockImplementation(() => new Promise<string>(() => {

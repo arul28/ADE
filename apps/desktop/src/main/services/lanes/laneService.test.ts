@@ -2785,6 +2785,13 @@ describe("laneService delete teardown + cancellation + streaming", () => {
         calls.push("stop_processes");
       }),
     };
+    const agentChatService = {
+      countActiveForLane: vi.fn(() => 0),
+      disposeForLane: vi.fn(async () => {
+        calls.push("stop_chats");
+        return 0;
+      }),
+    };
     const ptyService = {
       countActiveForLane: vi.fn(() => 2),
       disposeForLane: vi.fn(() => {
@@ -2809,7 +2816,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
         // already counted by cancel_auto_rebase step; do not duplicate
       }),
     };
-    return { calls, processService, ptyService, fileWatcherService, autoRebaseService, rebaseSuggestionService };
+    return { calls, processService, agentChatService, ptyService, fileWatcherService, autoRebaseService, rebaseSuggestionService };
   }
 
   async function setupWithLane(opts: { teardown: ReturnType<typeof makeFakeServices>; events: any[]; createWorktree?: boolean }) {
@@ -2829,6 +2836,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
       onDeleteEvent: (event) => opts.events.push(event),
       teardownDeps: {
         processService: opts.teardown.processService,
+        agentChatService: opts.teardown.agentChatService,
         ptyService: opts.teardown.ptyService,
         fileWatcherService: opts.teardown.fileWatcherService,
         autoRebaseService: opts.teardown.autoRebaseService,
@@ -2842,6 +2850,11 @@ describe("laneService delete teardown + cancellation + streaming", () => {
   it("runs teardown steps before git_worktree_remove and broadcasts per-step progress", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();
+    fake.agentChatService.countActiveForLane.mockReturnValue(1);
+    fake.agentChatService.disposeForLane.mockImplementation(async () => {
+      fake.calls.push("stop_chats");
+      return 1;
+    });
     const { service } = await setupWithLane({ teardown: fake, events });
     // git status: clean. git_worktree_remove: succeeds. branch ref check: not found (skip branch delete).
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
@@ -2864,6 +2877,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     // Teardown happens before the git destructive step.
     const wtIdx = fake.calls.indexOf("git_worktree_remove");
     expect(fake.calls.indexOf("stop_processes")).toBeLessThan(wtIdx);
+    expect(fake.calls.indexOf("stop_chats")).toBeLessThan(wtIdx);
     expect(fake.calls.indexOf("stop_ptys")).toBeLessThan(wtIdx);
     expect(fake.calls.indexOf("stop_watchers")).toBeLessThan(wtIdx);
     expect(fake.calls.indexOf("cancel_auto_rebase")).toBeLessThan(wtIdx);
@@ -3303,6 +3317,31 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     );
     db.run(
       `
+        insert into claude_sessions(session_id, lane_id, chat_session_id, title, tags_json, created_at, updated_at)
+        values (?, ?, ?, ?, ?, ?, ?)
+      `,
+      ["chat-child", "lane-child", null, "Child chat", null, now, now],
+    );
+    db.run(
+      `
+        insert into session_linear_issues(
+          id, project_id, session_id, lane_id, issue_id, issue_json, role, source,
+          include_in_pr, close_on_merge, evidence_json, created_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      ["session-link-terminal", projectId, "session-child", "lane-child", "issue-child", JSON.stringify(makeLinearIssue()), "worked", "chat_attach", 1, 0, null, now, now],
+    );
+    db.run(
+      `
+        insert into session_linear_issues(
+          id, project_id, session_id, lane_id, issue_id, issue_json, role, source,
+          include_in_pr, close_on_merge, evidence_json, created_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      ["session-link-chat", projectId, "chat-child", "lane-child", "issue-child", JSON.stringify(makeLinearIssue()), "worked", "chat_attach", 1, 0, null, now, now],
+    );
+    db.run(
+      `
         insert into session_deltas(
           session_id, project_id, lane_id, started_at, files_changed, insertions, deletions,
           touched_files_json, failure_lines_json, computed_at
@@ -3433,6 +3472,8 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(count("review_runs", "id = ?", ["review-run-child"])).toBe(0);
     expect(count("review_reviewer_runs", "id = ?", ["reviewer-run-child"])).toBe(0);
     expect(count("review_candidate_findings", "id = ?", ["candidate-child"])).toBe(0);
+    expect(count("claude_sessions", "lane_id = ?", ["lane-child"])).toBe(0);
+    expect(count("session_linear_issues", "lane_id = ? or session_id in (?, ?)", ["lane-child", "session-child", "chat-child"])).toBe(0);
     expect(count("terminal_sessions", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(count("session_deltas", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(count("checkpoints", "lane_id = ?", ["lane-child"])).toBe(0);
@@ -3444,6 +3485,23 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(count("rebase_deferred", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(count("rebase_dismissed", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(count("lane_worktree_locks", "lane_id = ?", ["lane-child"])).toBe(0);
+  });
+
+  it("keeps the lane intact when active chat teardown fails", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    fake.agentChatService.countActiveForLane.mockReturnValue(1);
+    fake.agentChatService.disposeForLane.mockRejectedValue(new Error("chat refused to close"));
+    const { service, db } = await setupWithLane({ teardown: fake, events, createWorktree: false });
+    vi.mocked(runGit).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
+    vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
+
+    await expect(service.delete({ laneId: "lane-child", deleteBranch: false })).rejects.toThrow("chat refused to close");
+
+    expect(db.get<{ id: string }>("select id from lanes where id = ?", ["lane-child"])?.id).toBe("lane-child");
+    const last = events[events.length - 1];
+    expect(last.progress.overallStatus).toBe("failed");
+    expect(last.progress.steps.find((s: any) => s.name === "stop_chats")?.status).toBe("failed");
   });
 
   it("does not cancel a lane delete after it starts", async () => {
@@ -3471,9 +3529,10 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(last.progress.steps.find((step: any) => step.name === "git_worktree_remove")?.status).toBe("completed");
   });
 
-  it("getDeleteRisk reports running processes, ptys, watchers, and unpushed commits", async () => {
+  it("getDeleteRisk reports running processes, chats, ptys, watchers, and unpushed commits", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();
+    fake.agentChatService.countActiveForLane.mockReturnValue(1);
     const { service } = await setupWithLane({ teardown: fake, events });
     // 3 unpushed commits + remote branch exists.
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
@@ -3487,6 +3546,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
 
     const risk = await service.getDeleteRisk("lane-child");
     expect(risk.runningProcessCount).toBe(1);
+    expect(risk.activeChatCount).toBe(1);
     expect(risk.activePtyCount).toBe(2);
     expect(risk.activeWatcherCount).toBe(1);
     expect(risk.hasUnpushedCommits).toBe(true);

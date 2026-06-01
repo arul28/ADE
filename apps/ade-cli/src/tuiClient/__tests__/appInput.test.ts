@@ -737,6 +737,7 @@ describe("formatLaneDeleteRisk", () => {
     unpushedCommitCount: 0,
     remoteBranchExists: false,
     runningProcessCount: 0,
+    activeChatCount: 0,
     activePtyCount: 0,
     activeWatcherCount: 0,
     envInitialized: false,
@@ -749,6 +750,7 @@ describe("formatLaneDeleteRisk", () => {
       hasUnpushedCommits: true,
       unpushedCommitCount: 1,
       runningProcessCount: 2,
+      activeChatCount: 1,
       activePtyCount: 1,
       remoteBranchExists: true,
     });
@@ -756,6 +758,7 @@ describe("formatLaneDeleteRisk", () => {
     expect(summary).toContain("1 unpushed commit");
     expect(summary).not.toContain("1 unpushed commits");
     expect(summary).toContain("2 running processes");
+    expect(summary).toContain("1 chat session");
     expect(summary).toContain("1 terminal");
     expect(summary).toContain("remote branch exists");
     expect(summary.startsWith("⚠")).toBe(true);

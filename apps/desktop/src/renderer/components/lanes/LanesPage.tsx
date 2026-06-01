@@ -337,6 +337,7 @@ const LANE_DELETE_STEP_LABELS: Record<string, string> = {
   git_status: "dirty-state check",
   cancel_auto_rebase: "auto-rebase cancellation",
   stop_processes: "process shutdown",
+  stop_chats: "chat shutdown",
   stop_ptys: "terminal shutdown",
   stop_watchers: "file watcher shutdown",
   cleanup_env: "environment cleanup",

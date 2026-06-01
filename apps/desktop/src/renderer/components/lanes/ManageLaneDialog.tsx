@@ -7,6 +7,7 @@ import {
   CircleNotch,
   Palette,
   Terminal,
+  ChatCircle,
   Cpu,
   Eye,
   Cube,
@@ -37,6 +38,7 @@ const STEP_LABELS: Record<LaneDeleteStepName, string> = {
   git_status: "Checking dirty state",
   cancel_auto_rebase: "Cancelling auto-rebase",
   stop_processes: "Stopping processes",
+  stop_chats: "Closing chat sessions",
   stop_ptys: "Closing terminal sessions",
   stop_watchers: "Stopping file watchers",
   cleanup_env: "Cleaning environment",
@@ -614,6 +616,12 @@ function PreflightPanel({
     willStop.push({
       icon: <Cpu size={12} className="text-accent" />,
       label: `${risk.runningProcessCount} running ${risk.runningProcessCount === 1 ? "process" : "processes"}`
+    });
+  }
+  if (risk && risk.activeChatCount > 0) {
+    willStop.push({
+      icon: <ChatCircle size={12} className="text-accent" />,
+      label: `${risk.activeChatCount} chat ${risk.activeChatCount === 1 ? "session" : "sessions"}`
     });
   }
   if (risk && risk.activePtyCount > 0) {

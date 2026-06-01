@@ -21829,6 +21829,47 @@ export function createAgentChatService(args: {
     return false;
   };
 
+  const managedSessionBelongsToLane = (managed: ManagedChatSession, laneId: string): boolean => {
+    const normalizedLaneId = laneId.trim();
+    if (!normalizedLaneId) return false;
+    return [
+      trimLine(managed.session.laneId),
+      trimLine(managed.selectedExecutionLaneId),
+      trimLine(managed.preferredExecutionLaneId),
+    ].some((candidate) => candidate === normalizedLaneId);
+  };
+
+  const countActiveForLane = (laneId: string): number => {
+    let count = 0;
+    for (const managed of managedSessions.values()) {
+      if (managed.closed || managed.deleted) continue;
+      if (managedSessionBelongsToLane(managed, laneId)) count += 1;
+    }
+    return count;
+  };
+
+  const disposeForLane = async (laneId: string): Promise<number> => {
+    const sessionIds = Array.from(new Set(
+      [...managedSessions.values()]
+        .filter((managed) => !managed.closed && !managed.deleted && managedSessionBelongsToLane(managed, laneId))
+        .map((managed) => managed.session.id),
+    ));
+    let disposed = 0;
+    const errors: string[] = [];
+    for (const sessionId of sessionIds) {
+      try {
+        await dispose({ sessionId });
+        disposed += 1;
+      } catch (error) {
+        errors.push(`${sessionId}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (errors.length > 0) {
+      throw new Error(`Failed to close ${errors.length} chat session${errors.length === 1 ? "" : "s"}: ${errors.join("; ")}`);
+    }
+    return disposed;
+  };
+
   const ensureIdentitySession = async (args: {
     identityKey: AgentChatIdentityKey;
     laneId: string;
@@ -25294,6 +25335,8 @@ export function createAgentChatService(args: {
     getSessionSummary,
     hasActiveWorkloads,
     hasRetainableSessions,
+    countActiveForLane,
+    disposeForLane,
     getChatTranscript,
     getCodexResumeContext,
     getChatEventHistory,

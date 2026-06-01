@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LaneDeleteRisk, LaneSummary } from "../../../shared/types";
 import { ManageLaneDialog } from "./ManageLaneDialog";
@@ -15,6 +15,7 @@ const deleteRisk: LaneDeleteRisk = {
   unpushedCommitCount: 0,
   remoteBranchExists: true,
   runningProcessCount: 0,
+  activeChatCount: 0,
   activePtyCount: 0,
   activeWatcherCount: 0,
   envInitialized: true,
@@ -142,5 +143,20 @@ describe("ManageLaneDialog tabs", () => {
     );
 
     expect(selectedTabLabel()).toBe("Archive");
+  });
+
+  it("shows active chat sessions in the delete preflight", async () => {
+    (window as any).ade.lanes.getDeleteRisk.mockResolvedValueOnce({
+      ...deleteRisk,
+      activeChatCount: 1,
+    });
+
+    render(<ManageLaneDialog {...makeProps()} />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Delete" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("1 chat session")).toBeTruthy();
+    });
   });
 });

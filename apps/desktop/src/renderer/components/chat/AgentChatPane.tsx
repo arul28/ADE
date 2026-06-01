@@ -331,6 +331,20 @@ function pruneDraftLaunchJobs(jobs: DraftLaunchJob[]): DraftLaunchJob[] {
   ];
 }
 
+function draftLaunchRequestKey(args: {
+  kind: DraftLaunchKind;
+  mode: DraftLaunchMode;
+  autoCreate: boolean;
+  snapshot: DraftLaunchSnapshot;
+}): string {
+  return JSON.stringify({
+    kind: args.kind,
+    mode: args.mode,
+    autoCreate: args.autoCreate,
+    snapshot: args.snapshot,
+  });
+}
+
 function createTemporaryAutoLaneName(date = new Date()): string {
   const pad = (value: number) => String(value).padStart(2, "0");
   return [
@@ -2586,6 +2600,7 @@ export function AgentChatPane({
   const pendingSelectedSessionIdRef = useRef<string | null>(null);
   const submitInFlightRef = useRef(false);
   const latestForegroundDraftLaunchJobIdRef = useRef<string | null>(null);
+  const draftLaunchInFlightKeysRef = useRef<Set<string>>(new Set());
   const createSessionPromiseRef = useRef<Promise<string | null> | null>(null);
   const pendingNativeControlUpdateRef = useRef<{
     sessionId: string;
@@ -5943,6 +5958,16 @@ export function AgentChatPane({
         : "Add a message before sending.");
       return;
     }
+    const requestKey = draftLaunchRequestKey({
+      kind,
+      mode,
+      autoCreate: draftLaunchTargetIsAutoCreate,
+      snapshot,
+    });
+    if (draftLaunchInFlightKeysRef.current.has(requestKey)) {
+      return;
+    }
+    draftLaunchInFlightKeysRef.current.add(requestKey);
 
     const jobId = createDraftLaunchJobId();
     if (mode === "foreground") {
@@ -6032,6 +6057,8 @@ export function AgentChatPane({
         autoOpen: false,
       });
       setError(message);
+    } finally {
+      draftLaunchInFlightKeysRef.current.delete(requestKey);
     }
   }, [
     buildDraftLaunchSnapshotForCurrentState,

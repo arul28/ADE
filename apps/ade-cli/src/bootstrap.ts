@@ -12,7 +12,7 @@ import {
 } from "../../desktop/src/main/services/projects/adeProjectService";
 import { createConfigReloadService } from "../../desktop/src/main/services/projects/configReloadService";
 import { createOperationService } from "../../desktop/src/main/services/history/operationService";
-import { createLaneService } from "../../desktop/src/main/services/lanes/laneService";
+import { createLaneService, type LaneDeleteTeardownDeps } from "../../desktop/src/main/services/lanes/laneService";
 import {
   createSessionService,
   STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS,
@@ -440,6 +440,7 @@ export async function createAdeRuntime(args: {
     getIssueTracker: () => linearIssueTrackerRef,
     log: (event, fields) => logger.warn(event, fields),
   });
+  const laneTeardownDeps: LaneDeleteTeardownDeps = {};
 
   const laneService = createLaneService({
     db,
@@ -498,6 +499,7 @@ export async function createAdeRuntime(args: {
         });
     },
     onLinearIssueSessionLinked: publishLinearChatLink,
+    teardownDeps: laneTeardownDeps,
     logger,
   });
   await laneService.ensurePrimaryLane();
@@ -752,6 +754,20 @@ export async function createAdeRuntime(args: {
     getLaneRuntimeEnv: getHeadlessLaneRuntimeEnv,
     broadcastEvent: (event) => pushEvent("runtime", event as unknown as Record<string, unknown>),
   });
+  laneTeardownDeps.processService = {
+    listRuntime: (laneId) => processService.listRuntime(laneId),
+    stopAll: (args) => processService.stopAll(args),
+  };
+  laneTeardownDeps.ptyService = {
+    countActiveForLane: (laneId) => ptyService.countActiveForLane(laneId),
+    disposeForLane: (laneId) => ptyService.disposeForLane(laneId),
+  };
+  laneTeardownDeps.autoRebaseService = {
+    cancelForLane: (laneId) => autoRebaseService.cancelForLane(laneId),
+  };
+  laneTeardownDeps.rebaseSuggestionService = {
+    dismiss: (args) => rebaseSuggestionService.dismiss(args),
+  };
 
   const ctoStateService = createCtoStateService({
     db,
@@ -894,6 +910,10 @@ export async function createAdeRuntime(args: {
   });
   linearIssueTrackerRef = headlessLinearServices.linearIssueTracker;
   githubServiceRef = headlessLinearServices.githubService as ReturnType<typeof createGithubService>;
+  laneTeardownDeps.fileWatcherService = {
+    countActiveForWorkspace: (id) => headlessLinearServices.fileService.countActiveWatchersForWorkspace(id),
+    stopAllForWorkspace: (id) => headlessLinearServices.fileService.stopAllWatchersForWorkspace(id),
+  };
   const linearOAuthService = createLinearOAuthService({
     credentials: headlessLinearServices.linearCredentialService,
     logger,
@@ -956,6 +976,12 @@ export async function createAdeRuntime(args: {
     }
   }
   agentChatServiceHolder.current = agentChatService;
+  if (agentChatService) {
+    laneTeardownDeps.agentChatService = {
+      countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
+      disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
+    };
+  }
   if (resolvedArgs.chatRuntime === "agent" && !agentChatService) {
     throw new Error("Agent chat runtime was requested but the agent chat service was not initialized.");
   }

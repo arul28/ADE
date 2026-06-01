@@ -886,6 +886,10 @@ export type LaneDeleteTeardownDeps = {
     listRuntime: (laneId: string) => ProcessRuntime[];
     stopAll: (args: { laneId: string }) => Promise<void>;
   };
+  agentChatService?: {
+    countActiveForLane: (laneId: string) => number;
+    disposeForLane: (laneId: string) => Promise<number>;
+  };
   ptyService?: {
     countActiveForLane: (laneId: string) => number;
     disposeForLane: (laneId: string) => number;
@@ -2583,6 +2587,19 @@ export function createLaneService({
     db.run("delete from conflict_predictions where project_id = ? and (lane_a_id = ? or lane_b_id = ?)", [projectId, laneId, laneId]);
     db.run("delete from checkpoints where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("delete from session_deltas where lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run(
+      `
+        delete from session_linear_issues
+        where project_id = ?
+          and (
+            lane_id = ?
+            or session_id in (select id from terminal_sessions where lane_id = ?)
+            or session_id in (select session_id from claude_sessions where lane_id = ?)
+          )
+      `,
+      [projectId, laneId, laneId, laneId],
+    );
+    db.run("delete from claude_sessions where lane_id = ?", [laneId]);
     db.run("delete from terminal_sessions where lane_id = ?", [laneId]);
     db.run("delete from operations where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("delete from packs_index where lane_id = ? and project_id = ?", [laneId, projectId]);
@@ -4578,7 +4595,7 @@ export function createLaneService({
         (fs.existsSync(row.worktree_path) || worktreeRegistered);
       const stepNames: LaneDeleteStepName[] = [];
       if (hasWorktree) stepNames.push("git_status");
-      stepNames.push("cancel_auto_rebase", "stop_processes", "stop_ptys", "stop_watchers", "cleanup_env");
+      stepNames.push("cancel_auto_rebase", "stop_processes", "stop_chats", "stop_ptys", "stop_watchers", "cleanup_env");
       if (hasWorktree) stepNames.push("git_worktree_remove");
       if (deleteBranch && row.branch_ref) stepNames.push("git_branch_delete");
       if (deleteRemoteBranch && row.branch_ref) stepNames.push("git_remote_branch_delete");
@@ -4681,6 +4698,15 @@ export function createLaneService({
             logger.warn("lane.delete.stop_processes_failed", { laneId, error: err instanceof Error ? err.message : String(err) });
           }
           return { detail: `stopped ${active.length} ${active.length === 1 ? "process" : "processes"}` };
+        });
+
+        await runStep("stop_chats", async () => {
+          const svc = teardownDeps?.agentChatService;
+          if (!svc) return { detail: "no service" };
+          const before = svc.countActiveForLane(laneId);
+          if (before === 0) return { detail: "none active" };
+          const disposed = await svc.disposeForLane(laneId);
+          return { detail: `closed ${disposed} ${disposed === 1 ? "chat" : "chats"}` };
         });
 
         await runStep("stop_ptys", async () => {
@@ -4891,6 +4917,7 @@ export function createLaneService({
       const runningProcessCount = teardownDeps?.processService
         ? teardownDeps.processService.listRuntime(laneId).filter(isActiveProcess).length
         : 0;
+      const activeChatCount = teardownDeps?.agentChatService?.countActiveForLane(laneId) ?? 0;
       const activePtyCount = teardownDeps?.ptyService?.countActiveForLane(laneId) ?? 0;
       const activeWatcherCount = teardownDeps?.fileWatcherService?.countActiveForWorkspace(laneId) ?? 0;
       return {
@@ -4901,6 +4928,7 @@ export function createLaneService({
         unpushedCommitCount,
         remoteBranchExists,
         runningProcessCount,
+        activeChatCount,
         activePtyCount,
         activeWatcherCount,
         envInitialized: false
