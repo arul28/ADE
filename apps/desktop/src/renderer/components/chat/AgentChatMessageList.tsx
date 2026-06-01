@@ -4111,8 +4111,10 @@ function AgentChatMessageListMain({
   const [scrollTop, setScrollTop] = useState(0);
   const [containerHeight, setContainerHeight] = useState(0);
   const [measurementTick, setMeasurementTick] = useState(0);
-  // Map of row index → measured height (filled in lazily as rows render)
-  const measuredHeights = useRef<Map<number, number>>(new Map());
+  // Map of row key → measured height (filled in lazily as rows render).
+  // Keeping this keyed by row identity prevents stale measurements from a
+  // previous row at the same index from creating phantom scroll space.
+  const measuredHeights = useRef<Map<string, number>>(new Map());
   // Track previous events identity to clear stale measurements on session switch
   const prevEventsRef = useRef<AgentChatEventEnvelope[]>(events);
   if (prevEventsRef.current !== events && events.length > 0 && (events[0] !== prevEventsRef.current[0])) {
@@ -4135,6 +4137,15 @@ function AgentChatMessageListMain({
     return nextRows;
   }, [events]);
   const groupedRows = useMemo(() => groupConsecutiveWorkLogRows(rows), [rows]);
+  const groupedRowKeys = useMemo(() => groupedRows.map((row) => row.key), [groupedRows]);
+  const prevGroupedRowKeysRef = useRef<readonly string[] | null>(null);
+  if (prevGroupedRowKeysRef.current !== groupedRowKeys) {
+    const liveKeys = new Set(groupedRowKeys);
+    for (const key of measuredHeights.current.keys()) {
+      if (!liveKeys.has(key)) measuredHeights.current.delete(key);
+    }
+    prevGroupedRowKeysRef.current = groupedRowKeys;
+  }
   const latestActivity = useMemo(() => (showStreamingIndicator ? deriveLatestActivity(events) : null), [events, showStreamingIndicator]);
   const activeTurnId = useMemo(() => (showStreamingIndicator ? deriveActiveTurnId(events) : null), [events, showStreamingIndicator]);
 
@@ -4334,8 +4345,9 @@ function AgentChatMessageListMain({
 
   /** Returns the best-known height for a given row index. */
   const rowHeight = useCallback((index: number) => {
-    return measuredHeights.current.get(index) ?? ESTIMATED_ROW_HEIGHT;
-  }, []);
+    const key = groupedRowKeys[index];
+    return key ? (measuredHeights.current.get(key) ?? ESTIMATED_ROW_HEIGHT) : ESTIMATED_ROW_HEIGHT;
+  }, [groupedRowKeys]);
 
   /** Callback from MeasuredEventRow when it measures its real DOM height. */
   const measureFlushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -4346,9 +4358,11 @@ function AgentChatMessageListMain({
     }
   }, []);
   const handleMeasure = useCallback((index: number, height: number) => {
-    const prev = measuredHeights.current.get(index);
+    const key = groupedRowKeys[index];
+    if (!key) return;
+    const prev = measuredHeights.current.get(key);
     if (prev !== height) {
-      measuredHeights.current.set(index, height);
+      measuredHeights.current.set(key, height);
       const scrollEl = scrollRef.current;
       if (scrollEl && shouldVirtualize && !stickToBottomRef.current) {
         const adjustedScrollTop = reconcileMeasuredScrollTop({
@@ -4378,7 +4392,7 @@ function AgentChatMessageListMain({
         if (isFollowingBottom) scrollToBottomSoon(2);
       }, isFollowingBottom ? 16 : 80);
     }
-  }, [rowHeight, scrollToBottomSoon, shouldVirtualize, timelineRowGapPx]);
+  }, [groupedRowKeys, rowHeight, scrollToBottomSoon, shouldVirtualize, timelineRowGapPx]);
 
   // Compute the visible window of rows when virtualization is active.
   // measurementTick forces recomputation when row heights are measured so

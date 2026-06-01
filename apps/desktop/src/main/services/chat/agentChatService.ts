@@ -2358,6 +2358,30 @@ function normalizeCodexGoalObjectiveText(value: string | null | undefined): stri
   return String(value ?? "").replace(/\s+/g, " ").trim();
 }
 
+type CodexGoalVisibleState = {
+  objective: string;
+  status: CodexThreadGoal["status"] | null;
+  tokenBudget: number | null;
+};
+
+function codexGoalVisibleState(goal: CodexThreadGoal | null): CodexGoalVisibleState | null {
+  const normalized = normalizeAdeCodexGoal(goal);
+  if (!normalized) return null;
+  return {
+    objective: normalizeCodexGoalObjectiveText(normalized.objective),
+    status: normalized.status ?? null,
+    tokenBudget: normalized.tokenBudget ?? null,
+  };
+}
+
+function codexGoalVisibleStatesEqual(left: CodexGoalVisibleState | null, right: CodexGoalVisibleState | null): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  return left.objective === right.objective
+    && left.status === right.status
+    && left.tokenBudget === right.tokenBudget;
+}
+
 function validateCodexGoalObjectiveText(value: string | null | undefined): string {
   const objective = normalizeCodexGoalObjectiveText(value);
   if (!objective) {
@@ -3620,7 +3644,8 @@ export function buildComputerUseDirective(
       "When the user asks for proof, capture visual proof first. Console logs and text files are supporting diagnostics only; do not use them as the only proof unless the user explicitly asks for logs or visual capture fails and you say so.",
       "ADE will automatically capture screenshots and other visual artifacts from your computer-use tool calls into the proof drawer — you do not need to manually call ingest_computer_use_artifacts for normal captures.",
       "",
-      "Call `get_computer_use_backend_status` to check available backends before attempting computer use.",
+      "If `get_computer_use_backend_status` is exposed in your current tool list, call it to check available backends before attempting computer use. If it is not exposed, do not stall; use the available computer-use, browser, app-control, or ADE CLI status tools and clearly report any missing backend-status visibility.",
+      "Respect the backend the user requested. If that backend is unavailable or hangs, stop and report the block instead of silently switching to a different backend.",
       "When the user asks you to send proof, register the resulting artifact with ADE via `ade proof ...` or `ingest_computer_use_artifacts` so it appears in the active proof drawer.",
     ].join("\n"),
   );
@@ -8652,6 +8677,29 @@ export function createAgentChatService(args: {
     commitChatEventWithCanonical(managed, normalizedEvent);
   };
 
+  const setCodexGoalAndMaybeEmitUpdate = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    goal: CodexThreadGoal | null,
+    updateKind: CodexThreadGoalUpdateKind = "sync",
+    turnId?: string,
+  ): CodexThreadGoal | null => {
+    const previousVisible = codexGoalVisibleState(managed.session.codexGoal ?? null);
+    const sanitizedGoal = normalizeAdeCodexGoal(goal);
+    managed.session.codexGoal = sanitizedGoal;
+    const nextVisible = codexGoalVisibleState(sanitizedGoal);
+    if (nextVisible && !codexGoalVisibleStatesEqual(previousVisible, nextVisible)) {
+      const resolvedTurnId = turnId ?? runtime.activeTurnId ?? undefined;
+      emitChatEvent(managed, {
+        type: "codex_goal_updated",
+        goal: sanitizedGoal,
+        updateKind,
+        ...(resolvedTurnId ? { turnId: resolvedTurnId } : {}),
+      });
+    }
+    return sanitizedGoal;
+  };
+
   const maybeClearCodexGoalBudget = (
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -8684,13 +8732,7 @@ export function createAgentChatService(args: {
             tokenBudget: null,
             ...(goal.status === "budget_limited" ? { status: "active" as const } : {}),
           };
-        managed.session.codexGoal = updatedGoal;
-        emitChatEvent(managed, {
-          type: "codex_goal_updated",
-          goal: updatedGoal,
-          updateKind: "budget",
-          ...(turnId ? { turnId } : {}),
-        });
+        setCodexGoalAndMaybeEmitUpdate(managed, runtime, updatedGoal, "budget", turnId);
         emitChatEvent(managed, {
           type: "system_notice",
           noticeKind: "info",
@@ -8728,15 +8770,25 @@ export function createAgentChatService(args: {
   ): CodexThreadGoal | null => {
     const reportedBudgetLimit = codexGoalPayloadRequiresBudgetClear(value);
     const goal = normalizeCodexGoalPayload(value);
-    managed.session.codexGoal = goal;
-    emitChatEvent(managed, {
-      type: "codex_goal_updated",
-      goal,
-      updateKind,
-      ...(turnId ? { turnId } : {}),
-    });
+    setCodexGoalAndMaybeEmitUpdate(managed, runtime, goal, updateKind, turnId);
     maybeClearCodexGoalBudget(managed, runtime, goal, turnId, reportedBudgetLimit);
     return goal;
+  };
+
+  const clearKnownCodexGoal = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    turnId?: string,
+  ): boolean => {
+    const hadGoal = managed.session.codexGoal != null;
+    managed.session.codexGoal = null;
+    if (!hadGoal) return false;
+    const resolvedTurnId = turnId ?? runtime.activeTurnId ?? undefined;
+    emitChatEvent(managed, {
+      type: "codex_goal_cleared",
+      ...(resolvedTurnId ? { turnId: resolvedTurnId } : {}),
+    });
+    return true;
   };
 
   const emitPendingInputRequest = (
@@ -9790,14 +9842,7 @@ export function createAgentChatService(args: {
         return applyCodexGoalUpdate(managed, runtime, value, undefined, updateKind);
       }
       const sanitizedFallback = normalizeAdeCodexGoal(fallback);
-      managed.session.codexGoal = sanitizedFallback;
-      emitChatEvent(managed, {
-        type: "codex_goal_updated",
-        goal: sanitizedFallback,
-        updateKind,
-        ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
-      });
-      return sanitizedFallback;
+      return setCodexGoalAndMaybeEmitUpdate(managed, runtime, sanitizedFallback, updateKind);
     };
     const setCodexGoalObjective = async (objective: string): Promise<CodexThreadGoal | null> => {
       const normalizedObjective = validateCodexGoalObjectiveText(objective);
@@ -9829,11 +9874,7 @@ export function createAgentChatService(args: {
         threadId: managed.session.threadId,
       }, "Goal update failed");
       if (!response) return false;
-      managed.session.codexGoal = null;
-      emitChatEvent(managed, {
-        type: "codex_goal_cleared",
-        ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
-      });
+      clearKnownCodexGoal(managed, runtime);
       return true;
     };
     const startCodexGoalObjectiveTurn = async (objective: string, dispatched?: () => void): Promise<void> => {
@@ -14967,11 +15008,7 @@ export function createAgentChatService(args: {
     }
 
     if (method === "thread/goal/cleared") {
-      managed.session.codexGoal = null;
-      emitChatEvent(managed, {
-        type: "codex_goal_cleared",
-        turnId: turnIdFromParams ?? runtime.activeTurnId ?? undefined,
-      });
+      clearKnownCodexGoal(managed, runtime, turnIdFromParams ?? runtime.activeTurnId ?? undefined);
       persistChatState(managed);
       return;
     }
@@ -25152,14 +25189,7 @@ export function createAgentChatService(args: {
       return applyCodexGoalUpdate(managed, runtime, value, runtime.activeTurnId ?? undefined, updateKind);
     }
     const sanitizedFallback = normalizeAdeCodexGoal(fallback);
-    managed.session.codexGoal = sanitizedFallback;
-    emitChatEvent(managed, {
-      type: "codex_goal_updated",
-      goal: sanitizedFallback,
-      updateKind,
-      ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
-    });
-    return sanitizedFallback;
+    return setCodexGoalAndMaybeEmitUpdate(managed, runtime, sanitizedFallback, updateKind);
   };
 
   const getCodexGoal = async ({
@@ -25235,11 +25265,7 @@ export function createAgentChatService(args: {
         timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS,
       });
     }
-    managed.session.codexGoal = null;
-    emitChatEvent(managed, {
-      type: "codex_goal_cleared",
-      ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
-    });
+    clearKnownCodexGoal(managed, runtime);
     persistChatState(managed);
     return null;
   };

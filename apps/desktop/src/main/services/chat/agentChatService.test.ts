@@ -1582,6 +1582,8 @@ describe("buildComputerUseDirective", () => {
     expect(result).not.toBeNull();
     expect(result).toContain("Computer Use");
     expect(result).toContain("get_computer_use_backend_status");
+    expect(result).toContain("If it is not exposed, do not stall");
+    expect(result).toContain("Respect the backend the user requested");
   });
 
   it("includes Ghost OS section when Ghost OS backend is available", () => {
@@ -11873,6 +11875,191 @@ describe("createAgentChatService", () => {
       expect(mockState.codexRequestPayloads.find((payload) => payload.method === "thread/goal/clear")?.params).toMatchObject({
         threadId: "thread-1",
       });
+      expect((await service.getSessionSummary(session.id))?.codexGoal).toBeNull();
+    });
+
+    it("does not emit a visible Codex goal-clear event when no goal was known", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start a normal turn.",
+      }, { awaitDispatch: true });
+      events.length = 0;
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "thread/goal/cleared",
+        params: { threadId: "thread-1" },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(events.some((event) => event.event.type === "codex_goal_cleared")).toBe(false);
+      expect((await service.getSessionSummary(session.id))?.codexGoal).toBeNull();
+    });
+
+    it("emits a Codex goal-clear event when a known goal is cleared by app-server", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+      await service.setCodexGoal({
+        sessionId: session.id,
+        objective: "Ship CLI parity",
+      });
+      events.length = 0;
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "thread/goal/cleared",
+        params: { threadId: "thread-1" },
+      });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "codex_goal_cleared",
+      );
+      expect((await service.getSessionSummary(session.id))?.codexGoal).toBeNull();
+    });
+
+    it("deduplicates repeated Codex goal updates while retaining latest usage state", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start working.",
+      }, { awaitDispatch: true });
+      events.length = 0;
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "thread/goal/updated",
+        params: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          goal: {
+            objective: "Ship CLI parity",
+            status: "active",
+            tokenBudget: null,
+            tokensUsed: 25,
+            updatedAt: 1_760_000_001,
+          },
+        },
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "codex_goal_updated"
+          && event.event.goal?.objective === "Ship CLI parity",
+      );
+      events.length = 0;
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "thread/goal/updated",
+        params: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          goal: {
+            objective: "Ship CLI parity",
+            status: "active",
+            tokenBudget: null,
+            tokensUsed: 50,
+            timeUsedSeconds: 12,
+            updatedAt: 1_760_000_002,
+          },
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(events.some((event) => event.event.type === "codex_goal_updated")).toBe(false);
+      expect((await service.getSessionSummary(session.id))?.codexGoal).toMatchObject({
+        objective: "Ship CLI parity",
+        status: "active",
+        tokenBudget: null,
+        tokensUsed: 50,
+        timeUsedSeconds: 12,
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "thread/goal/updated",
+        params: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          goal: {
+            objective: "Ship CLI parity",
+            status: "paused",
+            tokenBudget: null,
+            tokensUsed: 51,
+            updatedAt: 1_760_000_003,
+          },
+        },
+      });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "codex_goal_updated"
+          && event.event.goal?.status === "paused",
+      );
+    });
+
+    it("refreshes a missing Codex goal without emitting a misleading goal-update chip", async () => {
+      mockState.codexResponseOverrides.set("thread/goal/set", (payload) => {
+        const params = payload.params as Record<string, unknown>;
+        return {
+          goal: {
+            objective: params.objective,
+            status: "active",
+            tokenBudget: null,
+          },
+        };
+      });
+      mockState.codexResponseOverrides.set("thread/goal/get", () => ({
+        goal: null,
+      }));
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+      await service.setCodexGoal({
+        sessionId: session.id,
+        objective: "Ship CLI parity",
+      });
+      events.length = 0;
+
+      await expect(service.getCodexGoal({ sessionId: session.id })).resolves.toBeNull();
+
+      expect(events.some((event) => event.event.type === "codex_goal_updated")).toBe(false);
+      expect(events.some((event) => event.event.type === "codex_goal_cleared")).toBe(false);
       expect((await service.getSessionSummary(session.id))?.codexGoal).toBeNull();
     });
 

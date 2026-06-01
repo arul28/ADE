@@ -536,6 +536,57 @@ describe("local runtime connection pool", () => {
     expect(staleClient.close).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps ownership when reconnecting to an app-owned runtime kept alive after timeout", async () => {
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never, { disableSync: true });
+    const child = {
+      pid: 1234,
+      kill: vi.fn(),
+      once: vi.fn(),
+    };
+    const client = { call: vi.fn(), close: vi.fn(), isClosed: vi.fn(() => false) };
+    (pool as unknown as { ownedRuntimeChild: unknown }).ownedRuntimeChild = child;
+    (pool as unknown as { preserveOwnedRuntimeChildOnNextConnect: boolean }).preserveOwnedRuntimeChildOnNextConnect = true;
+    (pool as unknown as { connectClient: (socketPath: string) => Promise<unknown> }).connectClient = vi.fn(async () => client);
+
+    const entry = await (pool as unknown as {
+      tryConnect: (socketPath: string) => Promise<{ client: unknown; child: unknown; socketPath: string } | null>;
+    }).tryConnect("/tmp/ade.sock");
+
+    expect(entry?.client).toBe(client);
+    expect(entry?.child).toBe(child);
+    expect((pool as unknown as { ownedRuntimeChild: unknown }).ownedRuntimeChild).toBe(child);
+  });
+
+  it("does not attach a stale owned child when connecting to an external runtime", async () => {
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never, { disableSync: true });
+    const child = {
+      pid: 1234,
+      kill: vi.fn(),
+      once: vi.fn(),
+    };
+    const client = { call: vi.fn(), close: vi.fn(), isClosed: vi.fn(() => false) };
+    (pool as unknown as { ownedRuntimeChild: unknown }).ownedRuntimeChild = child;
+    (pool as unknown as { connectClient: (socketPath: string) => Promise<unknown> }).connectClient = vi.fn(async () => client);
+
+    const entry = await (pool as unknown as {
+      tryConnect: (socketPath: string) => Promise<{ client: unknown; child: unknown; socketPath: string } | null>;
+    }).tryConnect("/tmp/ade.sock");
+
+    expect(entry?.client).toBe(client);
+    expect(entry?.child).toBeNull();
+    expect((pool as unknown as { ownedRuntimeChild: unknown }).ownedRuntimeChild).toBeNull();
+  });
+
   it("normalizes local action registry entries from runtime action names", async () => {
     const pool = new LocalRuntimeConnectionPool("1.2.3", {
       debug: vi.fn(),
@@ -1511,7 +1562,7 @@ describe("local runtime connection pool", () => {
     );
   });
 
-  it("bounds non-file action calls and drops a timed-out runtime connection", async () => {
+  it("bounds non-file action calls and drops a timed-out client without killing the runtime", async () => {
     const timeout = new Error("Remote ADE service timed out waiting for method ade/actions/call (30000ms).");
     const call = vi.fn().mockRejectedValue(timeout);
     const close = vi.fn();
@@ -1520,12 +1571,13 @@ describe("local runtime connection pool", () => {
       kill: vi.fn(),
       once: vi.fn(),
     };
-    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+    const logger = {
       debug: vi.fn(),
       info: vi.fn(),
       warn: vi.fn(),
       error: vi.fn(),
-    } as never);
+    };
+    const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never);
     const rootPath = path.resolve("/repo");
     (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.set(rootPath, {
       projectId: "project-1",
@@ -1566,9 +1618,14 @@ describe("local runtime connection pool", () => {
       { timeoutMs: 30_000 },
     );
     expect(close).toHaveBeenCalled();
-    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(child.kill).not.toHaveBeenCalled();
     expect((pool as unknown as { connection: unknown }).connection).toBeNull();
-    expect((pool as unknown as { ownedRuntimeChild: unknown }).ownedRuntimeChild).toBeNull();
+    expect((pool as unknown as { ownedRuntimeChild: unknown }).ownedRuntimeChild).toBe(child);
+    expect(logger.warn).toHaveBeenCalledWith("local_runtime.action_timeout_drop_client", expect.objectContaining({
+      domain: "chat",
+      action: "deleteSession",
+      socketPath: "/tmp/ade.sock",
+    }));
   });
 
   it("routes local sync calls through the project-scoped runtime RPC", async () => {

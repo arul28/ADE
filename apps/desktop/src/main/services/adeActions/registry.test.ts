@@ -207,8 +207,9 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(actions).toContain("getDelta");
   });
 
-  it("exposes computer_use_artifacts.readArtifactPreview for runtime-backed proof previews", () => {
+  it("exposes computer-use backend status and artifact preview reads for runtime-backed proof flows", () => {
     const actions = ADE_ACTION_ALLOWLIST.computer_use_artifacts ?? [];
+    expect(actions).toContain("getBackendStatus");
     expect(actions).toContain("readArtifactPreview");
   });
 
@@ -687,9 +688,13 @@ describe("runtime session actions", () => {
 });
 
 describe("runtime computer-use artifact actions", () => {
-  it("exposes artifact preview reads from the broker", async () => {
+  it("exposes backend status and artifact preview reads from the broker", async () => {
+    const backendStatus = {
+      backends: [],
+      localFallback: { available: true, detail: "available", supportedKinds: ["screenshot"] },
+    };
     const broker = {
-      getBackendStatus: vi.fn(),
+      getBackendStatus: vi.fn(() => backendStatus),
       ingest: vi.fn(),
       listArtifacts: vi.fn(),
       readArtifactPreview: vi.fn(async () => "data:image/png;base64,AAAA"),
@@ -700,11 +705,15 @@ describe("runtime computer-use artifact actions", () => {
       computerUseArtifactBrokerService: broker,
     } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
     const artifactService = getAdeActionDomainServices(runtime).computer_use_artifacts as {
+      getBackendStatus: () => unknown;
       readArtifactPreview: (args: { uri: string }) => Promise<string | null>;
     } & Record<string, unknown>;
 
+    expect(listAllowedAdeActionNames("computer_use_artifacts", artifactService)).toContain("getBackendStatus");
     expect(listAllowedAdeActionNames("computer_use_artifacts", artifactService)).toContain("readArtifactPreview");
+    expect(artifactService.getBackendStatus()).toBe(backendStatus);
     await expect(artifactService.readArtifactPreview({ uri: ".ade/artifacts/a.png" })).resolves.toBe("data:image/png;base64,AAAA");
+    expect(broker.getBackendStatus).toHaveBeenCalledTimes(1);
     expect(broker.readArtifactPreview).toHaveBeenCalledWith({ uri: ".ade/artifacts/a.png" });
   });
 });
