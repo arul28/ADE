@@ -2305,8 +2305,8 @@ struct AgentChatModelCatalog: Codable, Equatable {
 /// Response envelopes for the cross-surface ModelPicker favorites/recents
 /// RPC. Each method returns its own keyed wrapper (`{ favorites: [...] }` for
 /// favorites methods, `{ recents: [...] }` for recents methods, plus
-/// `toggleFavorite` adds an `isFavorite` boolean). Persistence lives at
-/// `~/.ade/modelPicker.json` on the ade-cli host; `MAX_RECENTS = 10`.
+/// `toggleFavorite` adds an `isFavorite` boolean). Persistence lives in the
+/// per-project cr-sqlite DB on the ade-cli host; `MAX_RECENTS = 10`.
 struct ModelPickerFavorites: Codable, Equatable {
   var favorites: [String]
 

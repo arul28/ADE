@@ -535,7 +535,6 @@ describe("RightPane setup panes", () => {
           surface: "chat",
           query: "",
           searchMode: false,
-          showAll: false,
           selection: { kind: "provider", provider: "claude" },
           providerTabKey: null,
           focusedIndex: 0,

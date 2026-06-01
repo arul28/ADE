@@ -47,6 +47,66 @@ describe("buildModelPickerLayout", () => {
     expect(layout.entries.every((entry) => entry.family === "codex")).toBe(true);
   });
 
+  it("shows static Anthropic rows immediately before the runtime catalog warms", () => {
+    const layout = buildModelPickerLayout({
+      models: [modelInfo({ id: "openai/gpt-5", displayName: "GPT-5" })],
+      favorites: [],
+      recents: [],
+      activeModelId: null,
+      query: "",
+      selection: { kind: "provider", provider: "claude" },
+      focusedIndex: 0,
+      searchMode: false,
+    });
+    expect(layout.entries.length).toBeGreaterThan(0);
+    expect(layout.entries.every((entry) => entry.family === "claude")).toBe(true);
+    expect(layout.entries.some((entry) => entry.displayName.includes("Claude"))).toBe(true);
+  });
+
+  it("normalizes catalog provider aliases like anthropic into the Anthropic rail", () => {
+    const catalog: AgentChatModelCatalog = {
+      fetchedAt: "2026-05-29T00:00:00.000Z",
+      groups: [{
+        key: "anthropic",
+        displayName: "Anthropic",
+        providers: [{
+          key: "anthropic",
+          displayName: "Anthropic",
+          badgeColor: "#D97757",
+          modelCount: 1,
+          subsections: [{
+            key: "default",
+            label: "Anthropic",
+            models: [{
+              id: "anthropic/claude-sonnet-4-6",
+              runtimeModelId: "claude-sonnet-4-6",
+              provider: "anthropic",
+              providerKey: "anthropic",
+              groupKey: "anthropic",
+              displayName: "Claude Sonnet 4.6",
+              isDefault: true,
+              isAvailable: true,
+            }],
+          }],
+        }],
+      }],
+    };
+
+    const layout = buildModelPickerLayout({
+      models: [],
+      catalog,
+      favorites: [],
+      recents: [],
+      activeModelId: null,
+      query: "",
+      selection: { kind: "provider", provider: "claude" },
+      focusedIndex: 0,
+      searchMode: false,
+    });
+    expect(layout.entries.some((entry) => entry.modelId === "anthropic/claude-sonnet-4-6")).toBe(true);
+    expect(layout.entries.every((entry) => entry.family === "claude")).toBe(true);
+  });
+
   it("orders recents by insertion order", () => {
     const layout = buildModelPickerLayout({
       models,

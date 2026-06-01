@@ -17,11 +17,19 @@ export type HitRect = { x: number; y: number; w: number; h: number };
 // and the app.tsx hit-test useEffect calls `modelPickerGeometry()` to derive
 // rects from the same math.
 
-/** Width (cols) of the vertical icon rail on the left of the model region. */
-export const RAIL_WIDTH = 4;
+/** Width (cols) of the vertical rail on the left of the model region. */
+export const RAIL_WIDTH = 16;
 
-/** Fixed number of visible model rows; the list windows/scrolls inside this. */
-export const MODEL_LIST_ROWS = 9;
+/** Fixed number of visible model entries; the list windows/scrolls inside this. */
+export const MODEL_LIST_ROWS = 5;
+export const PROVIDER_MODEL_LIST_ROWS = 8;
+
+/** Each model entry paints a title line plus a provider subtitle line. */
+export const MODEL_ENTRY_HEIGHT = 2;
+export const PROVIDER_MODEL_ENTRY_HEIGHT = 1;
+
+/** Total terminal lines occupied by the fixed-height model list. */
+export const MODEL_LIST_BODY_LINES = MODEL_LIST_ROWS * MODEL_ENTRY_HEIGHT;
 
 /**
  * Columns between the rail and the model name, inside the bordered list box:
@@ -54,9 +62,7 @@ export function rowWindow(
 /** Number of fixed header lines above the search row (variable by state). */
 export function headerLineCount(state: ModelPickerState): number {
   let lines = 1; // "N models …" is always present.
-  if (state.activeModelId && state.entries.some((e) => e.modelId === state.activeModelId)) {
-    lines += 1; // "● now …" line.
-  }
+  // (The "● now" line was removed — the cursor arrow is the source of truth.)
   if (state.activeProviderAuthStatus === "unavailable" && state.activeProviderSignInHint) {
     lines += 1; // "Sign in: …" line.
   }
@@ -71,6 +77,23 @@ export function isSearching(state: ModelPickerState): boolean {
 /** Whether the sub-provider selector row is rendered (only with >1 tab). */
 export function hasSubProviderSelector(state: ModelPickerState): boolean {
   return !isSearching(state) && state.providerTabs.length > 1;
+}
+
+export function usesCompactProviderRows(state: ModelPickerState): boolean {
+  if (isSearching(state)) return false;
+  return state.railEntries[state.railIndex]?.kind === "provider";
+}
+
+export function modelEntryHeightForState(state: ModelPickerState): number {
+  return usesCompactProviderRows(state) ? PROVIDER_MODEL_ENTRY_HEIGHT : MODEL_ENTRY_HEIGHT;
+}
+
+export function modelListRowsForState(state: ModelPickerState): number {
+  return usesCompactProviderRows(state) ? PROVIDER_MODEL_LIST_ROWS : MODEL_LIST_ROWS;
+}
+
+export function modelListBodyLinesForState(state: ModelPickerState): number {
+  return modelEntryHeightForState(state) * modelListRowsForState(state);
 }
 
 // Settings chip cell width — mirrors SettingsFooter's render EXACTLY so the
@@ -92,8 +115,6 @@ export type ModelPickerGeometry = {
   window: { start: number; end: number };
   /** Search input row. */
   search: HitRect;
-  /** Show-all toggle row (kept for parity with existing target). */
-  showAll: HitRect;
   /** One rect per rail entry (empty while searching — rail is hidden). */
   rail: GeometryRect[];
   /** One rect per visible (windowed) model entry. */
@@ -149,15 +170,13 @@ export function modelPickerGeometry(input: GeometryInput): ModelPickerGeometry {
     ? paneWidth
     : Math.max(8, paneWidth - RAIL_WIDTH - RAIL_TO_LIST_GAP);
 
-  const window = rowWindow(state.entries.length, state.focusedIndex, MODEL_LIST_ROWS);
+  const entryHeight = modelEntryHeightForState(state);
+  const visibleRowCount = modelListRowsForState(state);
+  const listBodyLines = modelListBodyLinesForState(state);
+  const window = rowWindow(state.entries.length, state.focusedIndex, visibleRowCount);
 
   // Search row spans the full body width.
   const search: HitRect = { x: paneLeft, y: searchY, w: paneWidth, h: 1 };
-
-  // Show-all toggle. Render does not draw a dedicated row for this anymore, but
-  // the keyboard/legacy target is harmless; pin it to the search row so it can
-  // never overlap a model row (zIndex keeps search on top where they coincide).
-  const showAll: HitRect = { x: paneLeft, y: searchY, w: paneWidth, h: 1 };
 
   // Rail: leftmost RAIL_WIDTH cols, one 1-line row per rail entry, starting at
   // the model region top. Hidden entirely while searching.
@@ -171,32 +190,34 @@ export function modelPickerGeometry(input: GeometryInput): ModelPickerGeometry {
     });
   }
 
-  // Model entries: each is EXACTLY 1 line (matches ModelListRow), windowed.
+  // Model entries: each is EXACTLY entryHeight lines (matches ModelListRow),
+  // windowed.
   const entries: ModelPickerGeometry["entries"] = [];
   const favorites: ModelPickerGeometry["favorites"] = [];
   state.entries.slice(window.start, window.end).forEach((entry, sliceIndex) => {
     const index = window.start + sliceIndex;
-    const y = listTop + sliceIndex;
+    const y = listTop + (sliceIndex * entryHeight);
     entries.push({
       id: `right:model-picker:entry:${entry.modelId}`,
       index,
       modelId: entry.modelId,
-      rect: { x: listLeft, y, w: listWidth, h: 1 },
+      rect: { x: listLeft, y, w: listWidth, h: entryHeight },
     });
-    // Star hotspot is the first glyph cell(s) of the row.
+    // Star hotspot is the first glyph cell(s) on the title line.
     favorites.push({
       modelId: entry.modelId,
       rect: { x: listLeft, y, w: 2, h: 1 },
     });
   });
 
-  // Footer: after the fixed list block (always MODEL_LIST_ROWS tall) plus the
-  // optional "↑ n / ↓ n more" line, a marginTop (1) precedes the divider.
-  const hiddenBefore = window.start;
-  const hiddenAfter = state.entries.length - window.end;
-  const moreLine = hiddenBefore > 0 || hiddenAfter > 0 ? 1 : 0;
+  // Footer: after the fixed list block. The old "↑ n / ↓ n more" bookkeeping
+  // row was intentionally removed from the render because it read like another
+  // provider/status row; scrolling is still available through the cursor.
   // footerTop is the divider row; the marginTop pushes it down by 1.
-  let footerTop = listTop + MODEL_LIST_ROWS + moreLine + 1;
+  const modelRegionLines = searching
+    ? selectorLines + listBodyLines
+    : Math.max(state.railEntries.length, selectorLines + listBodyLines);
+  let footerTop = modelRegionTop + modelRegionLines + 1;
   // Keep the footer on-screen if the pane is short.
   footerTop = Math.min(Math.max(footerTop, listTop + 1), Math.max(1, rows - 1));
 
@@ -206,45 +227,30 @@ export function modelPickerGeometry(input: GeometryInput): ModelPickerGeometry {
   const settingRows = visibleRows.filter((row) => row.kind !== "apply");
   const applyRow = visibleRows.find((row) => row.kind === "apply") ?? null;
 
-  // The chips Box has its OWN marginTop (1) below the divider (the divider sits
-  // at footerTop), so chips paint at footerTop+2. (footerTop already accounts
-  // for the footer Box's outer marginTop.)
+  // The settings list has its OWN marginTop (1) below the divider (the divider
+  // sits at footerTop), so rows paint at footerTop+2. The render is vertical,
+  // one setting per line.
   const chipsY = footerTop + 2;
-  // SIMULATE SettingsFooter's `flexWrap="wrap"` row: lay each natural-width chip
-  // left-to-right from paneLeft, wrapping to the next row when the next chip
-  // would overrun the pane. One rect per chip, keyed by kind, with the rendered
-  // cell width — so the painted chips and the click rects share one source.
   const settings: GeometryRect[] = [];
-  const paneRight = paneLeft + paneWidth;
-  let chipX = paneLeft;
-  let chipRowY = chipsY;
-  for (const row of settingRows) {
+  settingRows.forEach((row, index) => {
     const w = settingsChipWidth(row.label, row.value);
-    // Wrap before placing (unless this chip is the first on its row).
-    if (chipX > paneLeft && chipX + w > paneRight) {
-      chipRowY += 1;
-      chipX = paneLeft;
-    }
     settings.push({
       id: `right:model-picker:setting:${row.kind}`,
-      rect: { x: chipX, y: chipRowY, w, h: 1 },
+      rect: { x: paneLeft, y: chipsY + index, w: Math.min(paneWidth, Math.max(8, w)), h: 1 },
     });
-    chipX += w;
-  }
+  });
 
-  // Apply button: its own marginTop (1) below the LAST (possibly wrapped) chip
-  // row — i.e. one blank row below it — or below the divider when there are no
-  // chips. Rendered as "[ Apply ]".
+  // Apply button: its own marginTop (1) below the last setting row, or directly
+  // below the divider when there are no settings. Rendered as "[ Apply ]".
   let apply: HitRect | null = null;
   if (applyRow) {
-    const applyY = settingRows.length ? chipRowY + 2 : footerTop + 2;
+    const applyY = settingRows.length ? chipsY + settingRows.length + 1 : footerTop + 2;
     apply = { x: paneLeft, y: applyY, w: Math.max(8, Math.min(paneWidth, 24)), h: 1 };
   }
 
   return {
     window,
     search,
-    showAll,
     rail,
     entries,
     favorites,

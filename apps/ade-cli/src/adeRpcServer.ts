@@ -66,9 +66,11 @@ import { normalizeAdeRuntimeRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 
 // Cross-surface (desktop + TUI + iOS) model picker favorites & recents.
-// Backed by a process-wide singleton (see services/modelPickerStore.ts) so the
-// JSON-RPC server and the sync host share the same in-memory state.
-// Persistence path is ~/.ade/modelPicker.json — see modelPickerStore.ts for schema.
+// Backed by the per-project cr-sqlite CRR DB (runtime.db) so the three surfaces
+// converge for a given project via sync. The store is a per-db singleton (see
+// services/modelPickerStore.ts) shared by the JSON-RPC server and the sync
+// host. A one-time best-effort import of the legacy ~/.ade/modelPicker.json
+// runs on first DB-backed init — see modelPickerStore.ts for schema + migration.
 
 type ToolSpec = {
   name: string;
@@ -5456,7 +5458,9 @@ export function createAdeRpcRequestHandler(args: {
     }
 
     if (method.startsWith("modelPicker.")) {
-      const store = getSharedModelPickerStore();
+      // Backed by the per-project cr-sqlite DB (runtime.db) so favorites +
+      // recents converge across desktop/TUI/iOS for a project via CRR sync.
+      const store = getSharedModelPickerStore(runtime.db);
       if (method === "modelPicker.getFavorites") {
         return { favorites: store.getFavorites() };
       }

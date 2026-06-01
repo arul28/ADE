@@ -141,10 +141,11 @@ type SyncServiceArgs = {
   };
   remoteCommandExecutor?: Pick<SyncRemoteCommandService, "execute">;
   /**
-   * Lazy accessor for the process-wide model picker store. iOS uses the
-   * `modelPicker.*` sync commands to share favorites + recents with desktop
-   * and the TUI; the store is a process singleton so all surfaces see the
-   * same in-memory state and persist to `~/.ade/modelPicker.json`.
+   * Lazy accessor for the model picker store. iOS uses the `modelPicker.*`
+   * sync commands to share favorites + recents with desktop and the TUI; the
+   * store is backed by the per-project cr-sqlite DB (`db`) so all surfaces
+   * converge for a project via CRR replication. Optional — the remote command
+   * service falls back to the per-db shared store built from `db` when unset.
    */
   getModelPickerStore?: () => ModelPickerStore | null;
   /**
@@ -541,6 +542,7 @@ export function createSyncService(args: SyncServiceArgs) {
   });
 
   const remoteCommandService = createSyncRemoteCommandService({
+    db: args.db,
     laneService: args.laneService,
     prService: args.prService,
     issueInventoryService: args.issueInventoryService,

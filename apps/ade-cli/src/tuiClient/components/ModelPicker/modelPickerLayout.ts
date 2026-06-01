@@ -4,9 +4,12 @@ import type { AgentChatModelCatalog, AgentChatModelInfo } from "../../../../../d
 import type { AiSettingsStatus, AiRuntimeConnectionStatus } from "../../../../../desktop/src/shared/types/config";
 import {
   getModelById,
+  getRuntimeModelRefForDescriptor,
+  listModelDescriptorsForProvider,
   resolveProviderGroupForModel,
   type ModelDescriptor,
   type ProviderFamily,
+  type ModelProviderGroup,
 } from "../../../../../desktop/src/shared/modelRegistry";
 import type { AdeCodeProvider } from "../../types";
 import type {
@@ -27,8 +30,40 @@ const PROVIDER_LABELS: Record<AdeCodeProvider, string> = {
   lmstudio: "LM Studio",
 };
 
+const PROVIDER_ORDER: readonly AdeCodeProvider[] = [
+  "claude",
+  "codex",
+  "droid",
+  "cursor",
+  "opencode",
+  "ollama",
+  "lmstudio",
+];
+
+const RAIL_PROVIDER_ORDER: readonly AdeCodeProvider[] = PROVIDER_ORDER;
+const STATIC_REGISTRY_FALLBACK_PROVIDERS: readonly ModelProviderGroup[] = ["claude", "codex"];
+
 function providerLabel(provider: AdeCodeProvider): string {
   return PROVIDER_LABELS[provider] ?? provider;
+}
+
+function openCodeProviderLabel(providerId: string): string {
+  const normalized = providerId.trim().toLowerCase();
+  const labels: Record<string, string> = {
+    anthropic: "Anthropic",
+    claude: "Anthropic",
+    openai: "OpenAI",
+    google: "Google",
+    deepseek: "DeepSeek",
+    mistral: "Mistral",
+    xai: "xAI",
+    groq: "Groq",
+    together: "Together",
+    openrouter: "OpenRouter",
+    ollama: "Ollama",
+    lmstudio: "LM Studio",
+  };
+  return labels[normalized] ?? providerId.trim().replace(/\b\w/g, (ch) => ch.toUpperCase());
 }
 
 function providerSignInHint(provider: AdeCodeProvider): string {
@@ -111,11 +146,16 @@ function normalizeProvider(value: ProviderFamily | string | undefined): AdeCodeP
 }
 
 function providerFromCatalogGroup(groupKey: string, fallbackFamily?: string): AdeCodeProvider {
-  if (groupKey === "claude" || groupKey === "codex" || groupKey === "opencode" || groupKey === "cursor" || groupKey === "droid") {
-    return groupKey;
+  const normalized = groupKey.trim().toLowerCase();
+  if (normalized === "claude" || normalized === "codex" || normalized === "opencode" || normalized === "cursor" || normalized === "droid") {
+    return normalized;
   }
-  if (groupKey === "ollama" || groupKey === "lmstudio") return groupKey;
-  return normalizeProvider(fallbackFamily);
+  if (normalized === "ollama" || normalized === "lmstudio") return normalized;
+  return normalizeProvider(fallbackFamily ?? normalized);
+}
+
+function modelAvailability(authStatus: ModelPickerAuthStatus, intrinsicAvailable = true): boolean {
+  return intrinsicAvailable && authStatus !== "unavailable";
 }
 
 function descriptorFor(modelInfo: AgentChatModelInfo): ModelDescriptor | undefined {
@@ -138,16 +178,21 @@ function entriesFromCatalog(
           if (seen.has(model.id)) continue;
           seen.add(model.id);
           const family = providerFromCatalogGroup(String(model.groupKey || group.key), model.family);
+          const authStatus = modelPickerProviderAuthStatus(aiStatus, family);
           entries.push({
             modelId: model.id,
             runtimeModelId: model.runtimeModelId || model.id,
             displayName: model.displayName,
             family,
-            subProvider: model.providerName || provider.displayName || subsection.label || undefined,
-            subProviderKey: model.providerId || provider.key || subsection.key || undefined,
+            subProvider: family === "cursor" || family === "droid"
+              ? subsection.label || model.providerName || provider.displayName || undefined
+              : model.providerName || provider.displayName || subsection.label || undefined,
+            subProviderKey: family === "cursor" || family === "droid"
+              ? subsection.key || model.providerId || provider.key || undefined
+              : model.providerId || provider.key || subsection.key || undefined,
             isFavorite: favoritesSet.has(model.id),
-            isAvailable: model.isAvailable,
-            authStatus: modelPickerProviderAuthStatus(aiStatus, family),
+            isAvailable: modelAvailability(authStatus, model.isAvailable),
+            authStatus,
             reasoningLabel: activeReasoningEffort ? `think ${activeReasoningEffort}` : null,
             ...(model.serviceTiers?.length ? { serviceTiers: [...model.serviceTiers] } : {}),
             ...(model.cursorAvailability ? { cursorAvailability: { ...model.cursorAvailability } } : {}),
@@ -159,6 +204,43 @@ function entriesFromCatalog(
   return entries;
 }
 
+function entryFromDescriptor(
+  descriptor: ModelDescriptor,
+  favoritesSet: Set<string>,
+  aiStatus?: AiSettingsStatus | null,
+  activeReasoningEffort?: string | null,
+): ModelPickerEntry {
+  const registryProvider = resolveProviderGroupForModel(descriptor);
+  const provider = normalizeProvider(registryProvider);
+  const authStatus = modelPickerProviderAuthStatus(aiStatus, provider);
+  return {
+    modelId: descriptor.id,
+    runtimeModelId: getRuntimeModelRefForDescriptor(descriptor, registryProvider),
+    displayName: descriptor.displayName,
+    family: provider,
+    subProvider: providerLabel(provider),
+    subProviderKey: provider,
+    isFavorite: favoritesSet.has(descriptor.id),
+    isAvailable: modelAvailability(authStatus),
+    authStatus,
+    reasoningLabel: activeReasoningEffort ? `think ${activeReasoningEffort}` : null,
+    ...(descriptor.serviceTiers?.length ? { serviceTiers: [...descriptor.serviceTiers] } : {}),
+    ...(descriptor.cursorAvailability ? { cursorAvailability: { ...descriptor.cursorAvailability } } : {}),
+  };
+}
+
+function staticRegistryFallbackEntries(
+  favoritesSet: Set<string>,
+  aiStatus?: AiSettingsStatus | null,
+  activeReasoningEffort?: string | null,
+): ModelPickerEntry[] {
+  return STATIC_REGISTRY_FALLBACK_PROVIDERS.flatMap((provider) =>
+    listModelDescriptorsForProvider(provider).map((descriptor) =>
+      entryFromDescriptor(descriptor, favoritesSet, aiStatus, activeReasoningEffort)
+    )
+  );
+}
+
 function entryFromModelInfo(
   modelInfo: AgentChatModelInfo,
   favoritesSet: Set<string>,
@@ -167,22 +249,29 @@ function entryFromModelInfo(
 ): ModelPickerEntry {
   const modelId = modelInfo.modelId ?? modelInfo.id;
   const descriptor = descriptorFor(modelInfo);
-  const provider: AdeCodeProvider = descriptor
-    ? normalizeProvider(resolveProviderGroupForModel(descriptor))
+  const registryProvider = descriptor ? resolveProviderGroupForModel(descriptor) : null;
+  const provider: AdeCodeProvider = registryProvider
+    ? normalizeProvider(registryProvider)
     : normalizeProvider(modelInfo.family);
-  const runtimeModelId = descriptor?.providerModelId ?? descriptor?.shortId ?? modelInfo.id;
+  const runtimeModelId = descriptor && registryProvider
+    ? getRuntimeModelRefForDescriptor(descriptor, registryProvider)
+    : modelInfo.id;
   const cursorAvailability = modelInfo.cursorAvailability ?? descriptor?.cursorAvailability;
+  const authStatus = modelPickerProviderAuthStatus(aiStatus, provider);
   return {
     modelId,
     runtimeModelId,
     displayName: modelInfo.displayName,
     family: provider,
     ...(descriptor?.openCodeProviderId
-      ? { subProvider: `${descriptor.openCodeProviderId} via OpenCode` }
+      ? {
+          subProvider: openCodeProviderLabel(descriptor.openCodeProviderId),
+          subProviderKey: descriptor.openCodeProviderId,
+        }
       : {}),
     isFavorite: favoritesSet.has(modelId),
-    isAvailable: true,
-    authStatus: modelPickerProviderAuthStatus(aiStatus, provider),
+    isAvailable: modelAvailability(authStatus),
+    authStatus,
     reasoningLabel: activeReasoningEffort ? `think ${activeReasoningEffort}` : null,
     ...(modelInfo.serviceTiers?.length ? { serviceTiers: [...modelInfo.serviceTiers] } : {}),
     ...(cursorAvailability ? { cursorAvailability: { ...cursorAvailability } } : {}),
@@ -197,7 +286,6 @@ export type BuildLayoutInput = {
   activeModelId: string | null;
   activeReasoningEffort?: string | null;
   aiStatus?: AiSettingsStatus | null;
-  showAll?: boolean;
   settingsRows?: SetupPaneRow[];
   footerFocus?: SetupPaneRowKind | null;
   laneLabel?: string | null;
@@ -210,15 +298,31 @@ export type BuildLayoutInput = {
 
 export function buildModelPickerLayout(input: BuildLayoutInput): ModelPickerState {
   const favoritesSet = new Set(input.favorites);
-  const allEntries = input.catalog
+  const runtimeEntries = input.catalog
     ? entriesFromCatalog(input.catalog, favoritesSet, input.aiStatus, input.activeReasoningEffort)
     : input.models.map((m) => entryFromModelInfo(m, favoritesSet, input.aiStatus, input.activeReasoningEffort));
-  const visibleEntries = input.showAll ? allEntries : allEntries.filter((entry) => entry.isAvailable);
+  const entriesById = new Map<string, ModelPickerEntry>();
+  for (const entry of staticRegistryFallbackEntries(favoritesSet, input.aiStatus, input.activeReasoningEffort)) {
+    entriesById.set(entry.modelId, entry);
+  }
+  for (const entry of runtimeEntries) {
+    entriesById.set(entry.modelId, entry);
+  }
+  const allEntries = [...entriesById.values()];
+  // The TUI picker always shows the full provider catalog. Availability is
+  // represented on each row (dimmed/SIGN IN), matching desktop, instead of
+  // hiding models behind a separate "show all" switch.
+  const visibleEntries = allEntries;
 
-  // Providers actually present in the registry-filtered model list.
-  const providersPresent = Array.from(
-    new Set(allEntries.map((entry) => entry.family)),
-  );
+  // Keep the family rail stable so Cursor/Droid/etc. do not disappear while a
+  // runtime is signed out, loading, or temporarily has no discovered models.
+  const providerSet = new Set<AdeCodeProvider>([
+    ...RAIL_PROVIDER_ORDER,
+    ...allEntries.map((entry) => entry.family),
+  ]);
+  const providersPresent = RAIL_PROVIDER_ORDER
+    .filter((provider) => providerSet.has(provider))
+    .concat(Array.from(providerSet).filter((provider) => !RAIL_PROVIDER_ORDER.includes(provider)));
   const railEntries: ModelPickerRailEntry[] = [
     { kind: "favorites", label: "Favorites" },
     { kind: "recents", label: "Recents" },
@@ -355,7 +459,6 @@ export function buildModelPickerLayout(input: BuildLayoutInput): ModelPickerStat
   return {
     query: input.query,
     searchMode: input.searchMode,
-    showAll: input.showAll === true,
     railEntries,
     railIndex,
     entries,

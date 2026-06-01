@@ -104,7 +104,6 @@ export type SetupPaneRowKind =
   | "codex-fast"
   | "output-style"
   | "refresh-status"
-  | "open-settings"
   | "apply";
 
 export type SetupPaneRow = {
@@ -143,10 +142,16 @@ export type ModelPickerRightPaneContent = {
   surface: "chat" | "new-chat";
   query: string;
   searchMode: boolean;
-  showAll: boolean;
   selection: ModelPickerRightPaneSelection;
   providerTabKey?: string | null;
   focusedIndex: number;
+  /**
+   * Two-column focus within the selection area: `true` = the left category
+   * rail (favorites/recents/providers), `false` = the model list. ←/→ move
+   * focus between the two; ↑/↓ navigate within the focused column. Ignored
+   * while `footerFocus` is set (focus is then in the settings rows).
+   */
+  railFocused?: boolean;
   footerFocus?: SetupPaneRowKind | null;
   settingsRows?: SetupPaneRow[];
   laneId?: string | null;

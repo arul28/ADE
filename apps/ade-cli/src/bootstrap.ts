@@ -1117,7 +1117,7 @@ export async function createAdeRuntime(args: {
       forceHostRole: resolvedArgs.syncRuntime.forceHostRole ?? true,
       projectCatalogProvider: resolvedArgs.syncRuntime.projectCatalogProvider,
       remoteCommandExecutor: resolvedArgs.syncRuntime.remoteCommandExecutor,
-      getModelPickerStore: () => getSharedModelPickerStore(),
+      getModelPickerStore: () => getSharedModelPickerStore(db),
       onStatusChanged: (snapshot) => pushEvent("runtime", { type: "sync-status", snapshot }),
     });
   }

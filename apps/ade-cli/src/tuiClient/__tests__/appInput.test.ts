@@ -46,6 +46,10 @@ import {
   promptDisplayRows,
   promptDisplayRowsWithCursor,
   promptHitLine,
+  modelPickerPaneContentOrigin,
+  modelPickerProviderSwitchBlocked,
+  mergeNewChatModelPickerContext,
+  normalizeCatalogProvider,
   resolveContextDefault,
   resolveDrawerPaneWidth,
   resolveModelPickerEscape,
@@ -371,6 +375,88 @@ describe("right pane context defaults", () => {
       laneId: "lane-1",
       laneLabel: "Lane one",
       selection: { kind: "provider", provider: "claude" },
+      // Two-stage nav: the picker opens in the model list (Stage 1), NOT focused
+      // on the Confirm button — Enter is the gate into the settings.
+      footerFocus: null,
+      focusedIndex: 0,
+    });
+  });
+});
+
+describe("modelPickerPaneContentOrigin", () => {
+  it("offsets past RightPane's border + MODEL title + paddingX so hit-rects match the paint", () => {
+    // Outer pane top-left is (paneLeft, paneTop); ModelPickerPane's first painted
+    // cell is 2 rows down (border + title) and 2 cols right (border + paddingX),
+    // with 4 fewer usable columns.
+    expect(modelPickerPaneContentOrigin({ paneTop: 5, paneLeft: 100, paneWidth: 38 }))
+      .toEqual({ paneTop: 7, paneLeft: 102, paneWidth: 34 });
+  });
+
+  it("clamps the content width to a floor for very narrow panes", () => {
+    expect(modelPickerPaneContentOrigin({ paneTop: 0, paneLeft: 0, paneWidth: 6 }).paneWidth).toBe(8);
+  });
+});
+
+describe("model picker provider normalization and locking", () => {
+  it("normalizes catalog provider aliases before committing a model", () => {
+    expect(normalizeCatalogProvider("anthropic")).toBe("claude");
+    expect(normalizeCatalogProvider("openai")).toBe("codex");
+    expect(normalizeCatalogProvider("factory")).toBe("droid");
+  });
+
+  it("blocks provider switches only for locked existing chats", () => {
+    expect(modelPickerProviderSwitchBlocked({
+      providerLocked: true,
+      surface: "chat",
+      currentProvider: "codex",
+      nextProvider: "claude",
+    })).toBe(true);
+    expect(modelPickerProviderSwitchBlocked({
+      providerLocked: true,
+      surface: "chat",
+      currentProvider: "codex",
+      nextProvider: "codex",
+    })).toBe(false);
+    expect(modelPickerProviderSwitchBlocked({
+      providerLocked: true,
+      surface: "new-chat",
+      currentProvider: "codex",
+      nextProvider: "claude",
+    })).toBe(false);
+  });
+
+  it("preserves in-progress new-chat picker focus when context refreshes lane/settings rows", () => {
+    const prev = {
+      kind: "model-picker" as const,
+      surface: "new-chat" as const,
+      query: "sonnet",
+      searchMode: true,
+      selection: { kind: "provider" as const, provider: "claude" as const },
+      focusedIndex: 4,
+      railFocused: false,
+      footerFocus: "reasoning" as const,
+      settingsRows: [{ kind: "reasoning" as const, label: "Reasoning", value: "high" }],
+      laneId: "lane-old",
+      laneLabel: "Old lane",
+    };
+    const next = {
+      ...prev,
+      query: "",
+      searchMode: false,
+      selection: { kind: "provider" as const, provider: "codex" as const },
+      focusedIndex: 0,
+      railFocused: true,
+      footerFocus: null,
+      settingsRows: [{ kind: "permission" as const, label: "Permissions", value: "auto" }],
+      laneId: "lane-new",
+      laneLabel: "New lane",
+    };
+
+    expect(mergeNewChatModelPickerContext(prev, next)).toEqual({
+      ...prev,
+      laneId: "lane-new",
+      laneLabel: "New lane",
+      settingsRows: [{ kind: "permission", label: "Permissions", value: "auto" }],
     });
   });
 });
@@ -686,7 +772,6 @@ describe("model picker escape handling", () => {
     surface: "chat" as const,
     query: "",
     searchMode: false,
-    showAll: false,
     selection: { kind: "favorites" as const },
     focusedIndex: 3,
   };

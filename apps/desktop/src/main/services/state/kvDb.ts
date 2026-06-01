@@ -523,6 +523,8 @@ const PHONE_CRITICAL_CRR_TABLES = [
   "terminal_sessions",
   "pull_requests",
   "pull_request_snapshots",
+  "model_picker_favorites",
+  "model_picker_recents",
 ] as const;
 
 function countTableRows(db: DatabaseSyncType, tableName: string): number {
@@ -2944,6 +2946,29 @@ function migrate(db: MigrationDb) {
   db.run("create index if not exists idx_lane_worktree_locks_lane on lane_worktree_locks(lane_id)");
   db.run("create index if not exists idx_lane_worktree_locks_session on lane_worktree_locks(owner_session_id)");
   db.run("create index if not exists idx_lane_worktree_locks_expires on lane_worktree_locks(expires_at)");
+
+  // Model-picker favorites + recents. Per-project (the DB instance is the
+  // scope, so no project_id column is needed) and CRR-replicated so desktop,
+  // TUI, and iOS converge on the same set for a project. PK-only by design:
+  // CRR-converted tables cannot carry any UNIQUE index besides the primary key
+  // (`crsql_as_crr` rejects them with "Table … has unique indices besides the
+  // primary key. This is not allowed for CRRs"), so the model_id PK is the
+  // only uniqueness constraint and the recents cap is enforced in app code
+  // (see modelPickerStore.ts). `ensureCrrTables` auto-discovers these via
+  // `listEligibleCrrTables` (PK present, not excluded) and runs
+  // `crsql_as_crr` on each, so no explicit conversion call is needed here.
+  db.run(`
+    create table if not exists model_picker_favorites (
+      model_id text primary key,
+      created_at text not null
+    )
+  `);
+  db.run(`
+    create table if not exists model_picker_recents (
+      model_id text primary key,
+      used_at text not null
+    )
+  `);
 }
 
 function loadCrsqlite(db: DatabaseSyncType, extensionPath: string): void {
