@@ -417,6 +417,7 @@ export function LinearIssueBrowser({
   actionBusyIssueId,
   actionDisabled = false,
   showBranchPreview = true,
+  singleSelect = false,
   refreshKey = 0,
   requestedIssueIdentifier,
   requestedIssueRequestKey,
@@ -436,6 +437,7 @@ export function LinearIssueBrowser({
   actionBusyIssueId?: string | null;
   actionDisabled?: boolean;
   showBranchPreview?: boolean;
+  singleSelect?: boolean;
   refreshKey?: number;
   requestedIssueIdentifier?: string | null;
   requestedIssueRequestKey?: string | number | null;
@@ -474,7 +476,8 @@ export function LinearIssueBrowser({
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(featuredIssue?.id ?? null);
   const [selectedIssueIds, setSelectedIssueIds] = useState<Set<string>>(() => safeLoadSelection(projectRoot));
   const [lastCheckedId, setLastCheckedId] = useState<string | null>(null);
-  const anyChecked = selectedIssueIds.size > 0;
+  const multiSelectEnabled = !singleSelect;
+  const anyChecked = multiSelectEnabled && selectedIssueIds.size > 0;
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
   const quickViewRequestIdRef = useRef(0);
@@ -502,8 +505,9 @@ export function LinearIssueBrowser({
   // the launch modal → back). Cleared automatically when the selection empties
   // (safeSaveSelection removes the key) and when filters change (effect below).
   useEffect(() => {
+    if (!multiSelectEnabled) return;
     safeSaveSelection(projectRoot, selectedIssueIds);
-  }, [projectRoot, selectedIssueIds]);
+  }, [multiSelectEnabled, projectRoot, selectedIssueIds]);
 
   useEffect(() => {
     const nextFilters = safeLoadFilters(projectRoot);
@@ -983,7 +987,7 @@ export function LinearIssueBrowser({
             </div>
           </div>
 
-          {displayIssues.length > 0 && (
+          {multiSelectEnabled && displayIssues.length > 0 && (
             <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.05] px-3 py-1.5">
               <span
                 role="checkbox"
@@ -1052,6 +1056,7 @@ export function LinearIssueBrowser({
                           busy={busyIssueId === issue.id}
                           checked={selectedIssueIds.has(issue.id)}
                           anyChecked={anyChecked}
+                          showCheckbox={multiSelectEnabled}
                           conflict={conflicts?.get(issue.id) ?? null}
                           onToggleCheck={(e) => handleToggleCheck(issue.id, e)}
                           onClick={() => setSelectedIssueId(issue.id)}
@@ -1080,7 +1085,7 @@ export function LinearIssueBrowser({
           </div>
         </section>
 
-        {selectedIssueIds.size > 1 && onBatchLaunch ? (
+        {multiSelectEnabled && selectedIssueIds.size > 1 && onBatchLaunch ? (
           <BatchActionView
             selectedIssues={resolvedSelectedIssues}
             onClearSelection={() => setSelectedIssueIds(new Set())}
@@ -1188,6 +1193,7 @@ function LinearBrowserIssueRow({
   busy,
   checked,
   anyChecked: anyRowChecked,
+  showCheckbox,
   conflict,
   onToggleCheck,
   onClick,
@@ -1198,6 +1204,7 @@ function LinearBrowserIssueRow({
   busy?: boolean;
   checked: boolean;
   anyChecked: boolean;
+  showCheckbox: boolean;
   conflict?: IssueConflict | null;
   onToggleCheck: (event: React.MouseEvent) => void;
   onClick: () => void;
@@ -1236,27 +1243,29 @@ function LinearBrowserIssueRow({
         "bounce" when the row toggles. stopPropagation keeps the toggle from
         also triggering the row's preview-select.
       */}
-      <button
-        type="button"
-        role="checkbox"
-        aria-checked={checked}
-        aria-label={checked ? `Deselect ${issue.identifier}` : `Select ${issue.identifier}`}
-        onClick={(e) => { e.stopPropagation(); onToggleCheck(e); }}
-        className="-ml-1 grid h-6 w-6 shrink-0 cursor-pointer place-items-center rounded-md outline-none focus-visible:bg-white/[0.06]"
-      >
-        <span
-          className={cn(
-            "flex h-[14px] w-[14px] items-center justify-center rounded-[3px] border transition-colors",
-            checked
-              ? "border-[color:var(--color-accent,#A78BFA)] bg-[color:var(--color-accent,#A78BFA)]"
-              : anyRowChecked
-                ? "border-white/[0.18] bg-transparent group-hover/row:border-white/35"
-                : "border-white/[0.12] bg-transparent group-hover/row:border-white/35",
-          )}
+      {showCheckbox ? (
+        <button
+          type="button"
+          role="checkbox"
+          aria-checked={checked}
+          aria-label={checked ? `Deselect ${issue.identifier}` : `Select ${issue.identifier}`}
+          onClick={(e) => { e.stopPropagation(); onToggleCheck(e); }}
+          className="-ml-1 grid h-6 w-6 shrink-0 cursor-pointer place-items-center rounded-md outline-none focus-visible:bg-white/[0.06]"
         >
-          {checked ? <Check size={10} weight="bold" className="text-[#0F0D14]" /> : null}
-        </span>
-      </button>
+          <span
+            className={cn(
+              "flex h-[14px] w-[14px] items-center justify-center rounded-[3px] border transition-colors",
+              checked
+                ? "border-[color:var(--color-accent,#A78BFA)] bg-[color:var(--color-accent,#A78BFA)]"
+                : anyRowChecked
+                  ? "border-white/[0.18] bg-transparent group-hover/row:border-white/35"
+                  : "border-white/[0.12] bg-transparent group-hover/row:border-white/35",
+            )}
+          >
+            {checked ? <Check size={10} weight="bold" className="text-[#0F0D14]" /> : null}
+          </span>
+        </button>
+      ) : null}
       <span className="w-[54px] shrink-0 truncate font-mono text-[11px] text-muted-fg/50">
         {issue.identifier}
       </span>

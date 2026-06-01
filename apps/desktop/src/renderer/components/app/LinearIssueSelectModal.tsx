@@ -63,6 +63,7 @@ export function LinearIssueSelectModal({
         actionIcon={<Check size={14} />}
         actionDisabled={actionDisabled}
         showBranchPreview={showBranchPreview}
+        singleSelect
         refreshKey={refreshKey}
         onOpenLinearSettings={openLinearSettings}
         onQuickViewChange={setQuickView}

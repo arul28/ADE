@@ -3755,13 +3755,30 @@ export function createPtyService({
 
       if (requestedInitialInput.length > 0) {
         const normalizedInitialInput = requestedInitialInput.replace(/\r\n?/g, "\n");
+        const requestedInitialInputReadyTimeoutMs = args.initialInputReadyTimeoutMs;
+        const parsedInitialInputReadyTimeoutMs = Math.floor(
+          Number(requestedInitialInputReadyTimeoutMs ?? AGENT_CLI_READY_TIMEOUT_MS) || 0,
+        );
         const initialInputReadyTimeoutMs = Math.max(
           AGENT_CLI_READY_TIMEOUT_MS,
           Math.min(
             300_000,
-            Math.floor(Number(args.initialInputReadyTimeoutMs ?? AGENT_CLI_READY_TIMEOUT_MS) || 0),
+            parsedInitialInputReadyTimeoutMs,
           ),
         );
+        if (
+          requestedInitialInputReadyTimeoutMs != null
+          && parsedInitialInputReadyTimeoutMs !== initialInputReadyTimeoutMs
+        ) {
+          logger.warn("pty.initial_input_ready_timeout_clamped", {
+            ptyId,
+            sessionId,
+            requestedTimeoutMs: requestedInitialInputReadyTimeoutMs,
+            effectiveTimeoutMs: initialInputReadyTimeoutMs,
+            minTimeoutMs: AGENT_CLI_READY_TIMEOUT_MS,
+            maxTimeoutMs: 300_000,
+          });
+        }
         const writeInitialInput = async (): Promise<void> => {
           entry.initialInputTimer = null;
           if (entry.disposed) throw new Error("Terminal session closed before initial input could be sent.");

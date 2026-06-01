@@ -2873,17 +2873,19 @@ export function AgentChatComposer({
     document.body,
   ) : null;
 
+  const selectedLinearContextIssue = contextAttachments.find(
+    (attachment): attachment is Extract<AgentChatContextAttachment, { type: "linear_issue" }> => (
+      attachment.type === "linear_issue"
+    ),
+  )?.issue ?? null;
+
   return (
     <>
       {issueContextMenu}
       <LinearIssueSelectModal
         open={linearIssuePickerOpen}
         ariaLabel="Attach Linear issue"
-        selectedIssue={
-          contextAttachments[0]?.type === "linear_issue"
-            ? contextAttachments[0].issue
-            : null
-        }
+        selectedIssue={selectedLinearContextIssue}
         pinnedIssue={pinnedLinearIssue}
         pinnedIssueLabel={pinnedLinearIssue ? "Linked to this lane" : "Attached to chat"}
         actionLabel="Attach issue"
@@ -2896,7 +2898,6 @@ export function AgentChatComposer({
             laneIssue,
             pinnedLinearIssue?.id === laneIssue.id ? "lane_link" : "manual",
           ));
-          setLinearIssuePickerOpen(false);
         }}
         onOpenLinearSettings={onOpenLinearSettings}
       />
