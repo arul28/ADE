@@ -1,4 +1,6 @@
 import dns from "node:dns/promises";
+import http from "node:http";
+import https from "node:https";
 import net from "node:net";
 import { executableTool as tool } from "./executableTool";
 import { z } from "zod";
@@ -6,6 +8,14 @@ import { z } from "zod";
 const MAX_REDIRECTS = 5;
 
 type AddressResolver = (hostname: string) => Promise<string[]>;
+
+export type SafeWebFetchTarget = {
+  url: URL;
+  hostname: string;
+  resolvedAddress: string;
+  hostHeader: string;
+  servername: string | undefined;
+};
 
 export const webFetchTool = tool({
   description:
@@ -73,21 +83,17 @@ async function fetchWithSafeRedirects(
   onUrl: (url: string) => void,
 ): Promise<Response> {
   let current = await assertSafeWebFetchUrl(startUrl);
-  onUrl(current.toString());
+  onUrl(current.url.toString());
   for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
-    const response = await fetch(current, {
-      signal,
-      redirect: "manual",
-      headers: { "User-Agent": "ADE-Agent/1.0" },
-    });
+    const response = await requestPinnedTarget(current, signal);
     if (response.status < 300 || response.status >= 400) return response;
     const location = response.headers.get("location");
     if (!location) return response;
     if (redirects === MAX_REDIRECTS) {
       throw new Error(`Too many redirects (>${MAX_REDIRECTS})`);
     }
-    current = await assertSafeWebFetchUrl(new URL(location, current).toString());
-    onUrl(current.toString());
+    current = await assertSafeWebFetchUrl(new URL(location, current.url).toString());
+    onUrl(current.url.toString());
   }
   throw new Error(`Too many redirects (>${MAX_REDIRECTS})`);
 }
@@ -95,7 +101,7 @@ async function fetchWithSafeRedirects(
 export async function assertSafeWebFetchUrl(
   rawUrl: string,
   resolveAddresses: AddressResolver = defaultResolveAddresses,
-): Promise<URL> {
+): Promise<SafeWebFetchTarget> {
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
@@ -121,7 +127,70 @@ export async function assertSafeWebFetchUrl(
   if (blocked) {
     throw new Error(`URL resolves to a non-public address (${blocked})`);
   }
-  return parsed;
+  const resolvedAddress = addresses[0]!;
+  return {
+    url: parsed,
+    hostname,
+    resolvedAddress,
+    hostHeader: parsed.host,
+    servername: parsed.protocol === "https:" && net.isIP(hostname) === 0 ? hostname : undefined,
+  };
+}
+
+function requestPinnedTarget(target: SafeWebFetchTarget, signal: AbortSignal): Promise<Response> {
+  const isHttps = target.url.protocol === "https:";
+  const transport = isHttps ? https : http;
+  const requestOptions: http.RequestOptions | https.RequestOptions = {
+    protocol: target.url.protocol,
+    hostname: target.resolvedAddress,
+    port: target.url.port ? Number.parseInt(target.url.port, 10) : undefined,
+    path: `${target.url.pathname}${target.url.search}`,
+    method: "GET",
+    headers: {
+      Host: target.hostHeader,
+      "User-Agent": "ADE-Agent/1.0",
+    },
+    signal,
+  };
+  if (isHttps && target.servername) {
+    (requestOptions as https.RequestOptions).servername = target.servername;
+  }
+
+  return new Promise((resolve, reject) => {
+    const request = transport.request(requestOptions, (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+      response.on("error", reject);
+      response.on("end", () => {
+        const status = response.statusCode && response.statusCode >= 200 && response.statusCode <= 599
+          ? response.statusCode
+          : 500;
+        resolve(
+          new Response(Buffer.concat(chunks), {
+            status,
+            statusText: response.statusMessage ?? "",
+            headers: toFetchHeaders(response.headers),
+          }),
+        );
+      });
+    });
+    request.on("error", reject);
+    request.end();
+  });
+}
+
+function toFetchHeaders(headers: http.IncomingHttpHeaders): Headers {
+  const out = new Headers();
+  for (const [name, value] of Object.entries(headers)) {
+    if (Array.isArray(value)) {
+      for (const item of value) out.append(name, item);
+    } else if (value !== undefined) {
+      out.set(name, String(value));
+    }
+  }
+  return out;
 }
 
 async function defaultResolveAddresses(hostname: string): Promise<string[]> {
@@ -141,7 +210,7 @@ function isBlockedIpv4(address: string): boolean {
   if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
     return true;
   }
-  const [a, b] = parts as [number, number, number, number];
+  const [a, b, c] = parts as [number, number, number, number];
   return (
     a === 0 ||
     a === 10 ||
@@ -150,8 +219,11 @@ function isBlockedIpv4(address: string): boolean {
     (a === 100 && b >= 64 && b <= 127) ||
     (a === 169 && b === 254) ||
     (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 0) ||
     (a === 192 && b === 168) ||
     (a === 198 && (b === 18 || b === 19)) ||
+    (a === 198 && b === 51 && c === 100) ||
+    (a === 203 && b === 0 && c === 113) ||
     (a === 255 && b === 255)
   );
 }

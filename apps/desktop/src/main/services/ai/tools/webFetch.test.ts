@@ -31,6 +31,17 @@ describe("webFetch SSRF guard", () => {
     ).rejects.toThrow(/non-public/);
   });
 
+  it.each([
+    ["IETF protocol assignment", "192.0.0.1"],
+    ["TEST-NET-1", "192.0.2.1"],
+    ["TEST-NET-2", "198.51.100.5"],
+    ["TEST-NET-3", "203.0.113.10"],
+  ])("rejects reserved IPv4 range %s", async (_label, address) => {
+    await expect(
+      assertSafeWebFetchUrl("https://example.com/docs", () => resolver([address])),
+    ).rejects.toThrow(/non-public/);
+  });
+
   it("rejects hostnames with no resolved addresses", async () => {
     await expect(
       assertSafeWebFetchUrl("https://empty.example/docs", () => resolver([])),
@@ -40,6 +51,23 @@ describe("webFetch SSRF guard", () => {
   it("allows http and https URLs that resolve only to public addresses", async () => {
     await expect(
       assertSafeWebFetchUrl("https://example.com/docs", () => resolver(["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"])),
-    ).resolves.toMatchObject({ protocol: "https:" });
+    ).resolves.toMatchObject({
+      url: expect.objectContaining({ protocol: "https:" }),
+    });
+  });
+
+  it("returns the pinned address and original host metadata for the network request", async () => {
+    await expect(
+      assertSafeWebFetchUrl("https://example.com:8443/docs?q=1", () => resolver(["93.184.216.34"])),
+    ).resolves.toMatchObject({
+      resolvedAddress: "93.184.216.34",
+      hostHeader: "example.com:8443",
+      servername: "example.com",
+      url: expect.objectContaining({
+        hostname: "example.com",
+        pathname: "/docs",
+        search: "?q=1",
+      }),
+    });
   });
 });
