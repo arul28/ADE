@@ -24,6 +24,8 @@ export type VncCredentialStoreFile = {
   }>;
 };
 
+type VncCredential = VncCredentialStoreFile["credentials"][string];
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -89,9 +91,17 @@ export function writeGlobalLeaseFile(storePath: string, store: VmGlobalLeaseFile
 export function readVncCredentialStore(storePath: string): VncCredentialStoreFile {
   try {
     const parsed = JSON.parse(fs.readFileSync(storePath, "utf8")) as Partial<VncCredentialStoreFile>;
+    const credentials: VncCredentialStoreFile["credentials"] = {};
+    if (isRecord(parsed.credentials)) {
+      for (const value of Object.values(parsed.credentials)) {
+        const credential = parseVncCredential(value);
+        if (!credential) continue;
+        credentials[vncCredentialKey(credential.laneId, credential.vmName)] = credential;
+      }
+    }
     return {
       version: 1,
-      credentials: isRecord(parsed.credentials) ? parsed.credentials as VncCredentialStoreFile["credentials"] : {},
+      credentials,
     };
   } catch {
     return { version: 1, credentials: {} };
@@ -111,9 +121,19 @@ export function writeVncCredentialStore(storePath: string, store: VncCredentialS
 }
 
 export function vncCredentialKey(laneId: string, vmName: string): string {
-  return `${laneId}:${vmName}`;
+  return JSON.stringify([laneId, vmName]);
 }
 
 export function generateVncPassword(): string {
   return randomBytes(6).toString("base64url").slice(0, 8);
+}
+
+function parseVncCredential(value: unknown): VncCredential | null {
+  if (!isRecord(value)) return null;
+  const laneId = asString(value.laneId);
+  const vmName = asString(value.vmName);
+  const password = asString(value.password);
+  const updatedAt = asString(value.updatedAt);
+  if (!laneId || !vmName || !password || !updatedAt) return null;
+  return { laneId, vmName, password, updatedAt };
 }

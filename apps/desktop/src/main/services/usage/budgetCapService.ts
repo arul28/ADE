@@ -7,6 +7,7 @@ import type {
   BudgetCapAction,
   BudgetCapType,
   BudgetCheckResult,
+  BudgetCheckContext,
   BudgetCapConfig,
   BudgetPreset,
   UsageSnapshot
@@ -81,11 +82,6 @@ type CapConfigRaw = {
   provider: BudgetCapProvider;
   limit: number;
   action: BudgetCapAction;
-};
-
-type BudgetCheckContext = {
-  /** Usage records for `usd-per-run` are keyed to the active run, not the rule. */
-  runScopeId?: string | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -225,9 +221,15 @@ export function createBudgetCapService({
       const runScopeId = typeof context.runScopeId === "string" && context.runScopeId.trim().length > 0
         ? context.runScopeId.trim()
         : null;
-      const cumulative = runScopeId
-        ? getCumulativeUsage(scope, runScopeId, provider, weekKey)
-        : EMPTY_CUMULATIVE;
+      if (!runScopeId) {
+        logger.warn("budgetCap.runScopeMissing", { scope, scopeId, provider });
+        return {
+          exceeded: false,
+          message: "Run cost unavailable without an active run scope",
+          remainingUsd: limit,
+        };
+      }
+      const cumulative = getCumulativeUsage(scope, runScopeId, provider, weekKey);
       const remaining = Math.max(0, limit - cumulative.total_cost);
 
       if (cumulative.total_cost >= limit) {

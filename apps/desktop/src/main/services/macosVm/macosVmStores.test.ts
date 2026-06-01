@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { MacosVmRecord } from "../../../shared/types";
 import {
+  generateVncPassword,
   parseGlobalLease,
   readGlobalLeaseFile,
   readStoreFile,
@@ -74,8 +75,50 @@ describe("macosVmStores", () => {
       });
 
       expect(readVncCredentialStore(storePath).credentials[key]?.password).toBe("secret");
+
+      const validKey = vncCredentialKey("lane-2", "vm-2");
+      fs.writeFileSync(storePath, JSON.stringify({
+        version: 1,
+        credentials: {
+          "malformed-1": { laneId: "lane-2" },
+          [validKey]: {
+            laneId: "lane-2",
+            vmName: "vm-2",
+            password: "valid",
+            updatedAt: "2026-05-31T00:00:00.000Z",
+          },
+        },
+      }));
+
+      const filtered = readVncCredentialStore(storePath);
+      expect(filtered.credentials["malformed-1"]).toBeUndefined();
+      expect(filtered.credentials[validKey]?.password).toBe("valid");
+
+      fs.writeFileSync(storePath, JSON.stringify({
+        version: 1,
+        credentials: {
+          "lane-3:vm-3": {
+            laneId: "lane-3",
+            vmName: "vm-3",
+            password: "legacy",
+            updatedAt: "2026-05-31T00:00:00.000Z",
+          },
+        },
+      }));
+      expect(readVncCredentialStore(storePath).credentials[vncCredentialKey("lane-3", "vm-3")]?.password).toBe("legacy");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("uses collision-free VNC credential keys", () => {
+    expect(vncCredentialKey("foo:bar", "baz")).not.toBe(vncCredentialKey("foo", "bar:baz"));
+  });
+
+  it("generates 8-character base64url passwords", () => {
+    const password = generateVncPassword();
+
+    expect(password).toHaveLength(8);
+    expect(password).toMatch(/^[A-Za-z0-9_-]+$/);
   });
 });

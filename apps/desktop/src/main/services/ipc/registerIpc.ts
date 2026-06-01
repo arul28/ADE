@@ -500,6 +500,7 @@ import type {
   GetAdeUsageStatsArgs,
   UsageSnapshot,
   BudgetCheckResult,
+  BudgetCheckArgs,
   BudgetCapScope,
   BudgetCapProvider,
   BudgetCapConfig,
@@ -4581,13 +4582,15 @@ export function registerIpc({
     IPC.usageCheckBudget,
     async (
       _event,
-      arg: { scope: BudgetCapScope; scopeId?: string; provider: BudgetCapProvider }
+      arg: BudgetCheckArgs
     ): Promise<BudgetCheckResult> => {
       const ctx = getCtx();
       if (!ctx.budgetCapService) {
         return { allowed: true, warnings: [] };
       }
-      return ctx.budgetCapService.checkBudget(arg.scope, arg.scopeId ?? "all", arg.provider);
+      return ctx.budgetCapService.checkBudget(arg.scope, arg.scopeId ?? "all", arg.provider, {
+        runScopeId: arg.runScopeId,
+      });
     }
   );
 

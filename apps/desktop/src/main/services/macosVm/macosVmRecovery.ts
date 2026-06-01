@@ -66,17 +66,22 @@ function writeRecords(storePath: string, records: MacosVmRecord[]): void {
   writeJsonFile(storePath, { version: 1, records });
 }
 
-function vncCredentialKey(laneId: string, vmName: string): string {
-  return `${laneId}:${vmName}`;
+function vncCredentialKeys(laneId: string, vmName: string): string[] {
+  return [JSON.stringify([laneId, vmName]), `${laneId}:${vmName}`];
 }
 
 function clearVncCredential(vncStorePath: string, record: MacosVmRecord): void {
   const parsed = readJsonFile(vncStorePath);
   if (!isRecord(parsed) || !isRecord(parsed.credentials)) return;
-  const key = vncCredentialKey(record.laneId, record.name);
-  if (!Object.prototype.hasOwnProperty.call(parsed.credentials, key)) return;
-  delete parsed.credentials[key];
-  writeJsonFile(vncStorePath, { ...parsed, version: 1, credentials: parsed.credentials }, 0o600);
+  const credentials = parsed.credentials;
+  const keys = vncCredentialKeys(record.laneId, record.name);
+  const removed = keys.some((key) => {
+    if (!Object.prototype.hasOwnProperty.call(credentials, key)) return false;
+    delete credentials[key];
+    return true;
+  });
+  if (!removed) return;
+  writeJsonFile(vncStorePath, { ...parsed, version: 1, credentials }, 0o600);
 }
 
 function clearGlobalLease(leasePath: string, args: MacosVmDeleteArgs, record: MacosVmRecord | null): boolean {

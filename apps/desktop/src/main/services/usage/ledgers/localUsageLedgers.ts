@@ -24,6 +24,7 @@ type UsageSqliteDatabase = {
   close: () => void;
 };
 type UsageSqliteConstructor = new (dbPath: string, options?: { readOnly?: boolean }) => UsageSqliteDatabase;
+type RecentFileCandidate = { path: string; mtimeMs: number };
 
 const requireForUsageSqlite = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
 let usageSqliteConstructor: UsageSqliteConstructor | null | undefined;
@@ -90,6 +91,13 @@ function timestampMsFromUnixish(value: unknown): number {
 function estimateTokensFromText(value: string): number {
   if (!value) return 0;
   return Math.ceil(value.length / CURSOR_CHARS_PER_TOKEN);
+}
+
+function newestCandidatePaths(files: RecentFileCandidate[]): string[] {
+  return files
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .slice(0, LOCAL_COST_SCAN_MAX_FILES)
+    .map((file) => file.path);
 }
 
 function textFromSqliteValue(value: unknown): string {
@@ -813,13 +821,15 @@ async function discoverCopilotTranscriptFiles(
   sessionStateDir = defaultCopilotSessionStateDir(),
   workspaceStorageDirs = defaultVSCodeWorkspaceStorageDirs(),
 ): Promise<string[]> {
-  const files: string[] = [];
+  const files: RecentFileCandidate[] = [];
   try {
     const sessionDirs = await fs.promises.readdir(sessionStateDir);
     await Promise.all(sessionDirs.map(async (sessionId) => {
       const eventsPath = path.join(sessionStateDir, sessionId, "events.jsonl");
       const stat = await fs.promises.stat(eventsPath).catch(() => null);
-      if (stat?.isFile() && stat.size <= LOCAL_COST_SCAN_MAX_FILE_BYTES) files.push(eventsPath);
+      if (stat?.isFile() && stat.size <= LOCAL_COST_SCAN_MAX_FILE_BYTES) {
+        files.push({ path: eventsPath, mtimeMs: stat.mtimeMs });
+      }
     }));
   } catch {
     // Missing Copilot legacy state is expected for users who never used it.
@@ -845,12 +855,14 @@ async function discoverCopilotTranscriptFiles(
         .map(async (file) => {
           const filePath = path.join(transcriptsDir, file);
           const stat = await fs.promises.stat(filePath).catch(() => null);
-          if (stat?.isFile() && stat.size <= LOCAL_COST_SCAN_MAX_FILE_BYTES) files.push(filePath);
+          if (stat?.isFile() && stat.size <= LOCAL_COST_SCAN_MAX_FILE_BYTES) {
+            files.push({ path: filePath, mtimeMs: stat.mtimeMs });
+          }
         }));
     }));
   }));
 
-  return files.slice(0, LOCAL_COST_SCAN_MAX_FILES);
+  return newestCandidatePaths(files);
 }
 
 export async function scanCopilotLogs(
@@ -946,12 +958,12 @@ export function parseGeminiEntries(raw: string, sourcePath: string): TokenEntry[
 }
 
 async function discoverGeminiSessionFiles(tmpDir = defaultGeminiTmpDir()): Promise<string[]> {
-  const files: string[] = [];
+  const files: RecentFileCandidate[] = [];
   let projectDirs: fs.Dirent[];
   try {
     projectDirs = await fs.promises.readdir(tmpDir, { withFileTypes: true });
   } catch {
-    return files;
+    return [];
   }
 
   await Promise.all(projectDirs
@@ -969,11 +981,13 @@ async function discoverGeminiSessionFiles(tmpDir = defaultGeminiTmpDir()): Promi
         .map(async (file) => {
           const filePath = path.join(chatsDir, file);
           const stat = await fs.promises.stat(filePath).catch(() => null);
-          if (stat?.isFile() && stat.size <= LOCAL_COST_SCAN_MAX_FILE_BYTES) files.push(filePath);
+          if (stat?.isFile() && stat.size <= LOCAL_COST_SCAN_MAX_FILE_BYTES) {
+            files.push({ path: filePath, mtimeMs: stat.mtimeMs });
+          }
         }));
     }));
 
-  return files.slice(0, LOCAL_COST_SCAN_MAX_FILES);
+  return newestCandidatePaths(files);
 }
 
 export async function scanGeminiLogs(tmpDir = defaultGeminiTmpDir()): Promise<TokenEntry[]> {
@@ -1396,9 +1410,7 @@ async function findClaudeJsonlFilesInProjectDirs(projectDirs: string[], maxAgeDa
       .map((entry) => addJsonlFilesInDir(path.join(projectPath, entry.name, "subagents"))));
   }
 
-  return Array.from(files.values())
-    .slice(0, LOCAL_COST_SCAN_MAX_FILES)
-    .map((file) => file.path);
+  return newestCandidatePaths(Array.from(files.values()));
 }
 
 async function* readJsonlLines(filePath: string): AsyncGenerator<string> {

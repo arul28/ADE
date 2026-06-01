@@ -1189,6 +1189,9 @@ describe("automationService integration", () => {
       getLaneWorktreePath: () => projectRoot,
       getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
     } as any;
+    const budgetCapService = {
+      checkBudget: vi.fn(() => ({ allowed: false, reason: "Budget exceeded" })),
+    };
 
     const service = createAutomationService({
       db: db as any,
@@ -1200,13 +1203,17 @@ describe("automationService integration", () => {
       agentChatService: {
         createSession,
       } as any,
-      budgetCapService: {
-        checkBudget: vi.fn(() => ({ allowed: false, reason: "Budget exceeded" })),
-      } as any,
+      budgetCapService: budgetCapService as any,
     });
 
     try {
       await expect(service.triggerManually({ id: "agent-budget" })).rejects.toThrow("Budget exceeded");
+      expect(budgetCapService.checkBudget).toHaveBeenCalledWith(
+        "automation-rule",
+        "agent-budget",
+        expect.any(String),
+        { runScopeId: expect.any(String) },
+      );
       expect(createSession).not.toHaveBeenCalled();
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });

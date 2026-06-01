@@ -5,7 +5,8 @@ export type ImageDimensions = {
 
 export function pngDimensions(buffer: Buffer): ImageDimensions | null {
   if (buffer.length < 24) return null;
-  if (buffer.toString("ascii", 1, 4) !== "PNG") return null;
+  const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  if (!buffer.subarray(0, pngSignature.length).equals(pngSignature)) return null;
   return {
     width: buffer.readUInt32BE(16),
     height: buffer.readUInt32BE(20),

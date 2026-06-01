@@ -3,7 +3,7 @@ export function normalizeBrowserUrl(rawUrl: string): string {
   if (!trimmed) throw new Error("Browser URL is required.");
 
   const localhostLike = /^(localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::|\/|$)/i.test(trimmed);
-  const hasScheme = /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(trimmed);
+  const hasScheme = /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(trimmed) || /^about:/i.test(trimmed);
   let candidate: string;
   if (localhostLike) {
     candidate = `http://${trimmed}`;

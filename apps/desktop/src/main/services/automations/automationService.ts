@@ -2109,6 +2109,8 @@ export function createAutomationService({
           summary: args.rule.prompt?.trim() || `${args.rule.name} agent session dispatched`,
           ingressEventId: args.trigger.ingressEventId ?? null,
         });
+    // New runs start at zero; the `usd-per-run` preflight catches resumed runs
+    // with existing usage while in-flight enforcement uses records for this run id.
     const budgetCheck = budgetCapServiceRef?.checkBudget(
       AUTOMATION_SCOPE as Parameters<NonNullable<typeof budgetCapServiceRef>["checkBudget"]>[0],
       args.rule.id,

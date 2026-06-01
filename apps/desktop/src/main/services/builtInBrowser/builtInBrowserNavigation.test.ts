@@ -4,6 +4,7 @@ import { isAllowedNavigationUrl, normalizeBrowserUrl } from "./builtInBrowserNav
 describe("builtInBrowserNavigation", () => {
   it("normalizes plain domains to https URLs", () => {
     expect(normalizeBrowserUrl("example.com/path")).toBe("https://example.com/path");
+    expect(normalizeBrowserUrl("example.com:3000/path")).toBe("https://example.com:3000/path");
   });
 
   it("normalizes localhost-like URLs to http", () => {

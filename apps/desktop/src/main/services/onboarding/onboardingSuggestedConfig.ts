@@ -50,6 +50,49 @@ function guessNodePackageManager(projectRoot: string): "npm" | "yarn" | "pnpm" {
   return "npm";
 }
 
+export function splitShellCommand(command: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: "\"" | "'" | null = null;
+  let escaped = false;
+
+  for (const char of command.trim()) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (char === "\"" || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+
+  if (escaped) current += "\\";
+  if (current) tokens.push(current);
+  return tokens.length > 0 ? tokens : [command.trim()];
+}
+
 export function buildSuggestedConfig(args: {
   projectRoot: string;
   indicators: OnboardingDetectionIndicator[];
@@ -127,7 +170,7 @@ export function buildSuggestedConfig(args: {
     .slice(0, 6);
   for (const [idx, cmd] of ciCandidates.entries()) {
     const id = `ci-${idx + 1}`;
-    addTest(id, `CI: ${cmd}`, cmd.split(/\s+/), ".", ["custom"]);
+    addTest(id, `CI: ${cmd}`, splitShellCommand(cmd), ".", ["custom"]);
   }
 
   out.processes = uniqueById(out.processes ?? []);

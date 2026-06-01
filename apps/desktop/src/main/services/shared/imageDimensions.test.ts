@@ -30,6 +30,13 @@ describe("imageDimensions", () => {
     expect(imageDimensions(buffer)).toEqual({ width: 1200, height: 800 });
   });
 
+  it("rejects incomplete PNG signatures", () => {
+    const buffer = makePng(1200, 800);
+    buffer[0] = 0x00;
+
+    expect(pngDimensions(buffer)).toBeNull();
+  });
+
   it("reads JPEG dimensions", () => {
     const buffer = makeJpeg(640, 480);
 
