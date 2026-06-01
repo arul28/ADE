@@ -813,6 +813,8 @@ export function AgentChatComposer({
   onDispatchSteerInterrupt,
   onOpenAiSettings,
   onOpenLinearSettings,
+  launchPromptClipboardEnabled = false,
+  onOpenLaunchPromptClipboardSettings,
   onStartOrchestratorChat,
   onStopOrchestratorChat,
   orchestratorModeActive = false,
@@ -962,6 +964,8 @@ export function AgentChatComposer({
   onDispatchSteerInterrupt?: (steerId: string) => void;
   onOpenAiSettings?: () => void;
   onOpenLinearSettings?: () => void;
+  launchPromptClipboardEnabled?: boolean;
+  onOpenLaunchPromptClipboardSettings?: () => void;
   /**
    * Open the "New orchestrator chat" flow from the visible composer mode
    * button (see `goal.md` §10.1). Hosts that don't want the entry simply
@@ -1015,6 +1019,8 @@ export function AgentChatComposer({
 }) {
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
   const [attachmentQuery, setAttachmentQuery] = useState("");
+  const [composerFocused, setComposerFocused] = useState(false);
+  const composerFocusRegionRef = useRef<HTMLDivElement | null>(null);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [attachmentResults, setAttachmentResults] = useState<AgentChatFileRef[]>([]);
   const [attachmentCursor, setAttachmentCursor] = useState(0);
@@ -1091,6 +1097,11 @@ export function AgentChatComposer({
   const canAttachIssueContext = !composerInputLocked && typeof onAddContextAttachment === "function";
   const showOrchestratorModeButton = Boolean(onStartOrchestratorChat && !sessionId && !parallelChatMode);
   const orchestratorModeButtonDisabled = composerInputLocked || busy || turnActive;
+  const showLaunchClipboardHelper =
+    launchPromptClipboardEnabled
+    && composerFocused
+    && !composerInputLocked
+    && draft.trim().length > 0;
 
   const resizeTextarea = useCallback(() => {
     if (useRichComposer) return;
@@ -3901,7 +3912,16 @@ export function AgentChatComposer({
           </div>
         ) : null}
 
-        <div className="relative">
+        <div
+          ref={composerFocusRegionRef}
+          className="relative"
+          onFocusCapture={() => setComposerFocused(true)}
+          onBlurCapture={(event) => {
+            const nextTarget = event.relatedTarget as Node | null;
+            if (nextTarget && composerFocusRegionRef.current?.contains(nextTarget)) return;
+            setComposerFocused(false);
+          }}
+        >
           {/* Ghost suggestion overlay */}
           {promptSuggestion && !draft.length && !turnActive ? (
             <div
@@ -4081,6 +4101,18 @@ export function AgentChatComposer({
               onPaste={handlePaste}
             />
           )}
+          {showLaunchClipboardHelper ? (
+            <div className="px-4 pb-2 font-sans text-[10.5px] leading-snug text-muted-fg/55">
+              Prompt will be copied to clipboard after Send.{" "}
+              <button
+                type="button"
+                className="text-fg/70 underline decoration-white/20 underline-offset-2 transition-colors hover:text-fg"
+                onClick={onOpenLaunchPromptClipboardSettings}
+              >
+                Setting
+              </button>
+            </div>
+          ) : null}
         </div>
       </div>
       </ChatComposerShell>

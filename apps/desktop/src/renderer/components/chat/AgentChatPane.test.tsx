@@ -464,10 +464,14 @@ function installAdeMocks(options?: {
   const archive = vi.fn().mockResolvedValue(undefined);
   const unarchive = vi.fn().mockResolvedValue(undefined);
   const deleteLane = vi.fn().mockResolvedValue(undefined);
+  const writeClipboardText = vi.fn().mockResolvedValue(undefined);
   const chatEventListeners = new Set<(event: AgentChatEventEnvelope) => void>();
   const sessionChangeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
 
   globalThis.window.ade = {
+    app: {
+      writeClipboardText,
+    },
     projectConfig: {
       get: vi.fn().mockResolvedValue({
         effective: {
@@ -617,6 +621,7 @@ function installAdeMocks(options?: {
     parallelLaunchStateGet,
     parallelLaunchStateSet,
     handoff,
+    writeClipboardText,
     emitChatEvent: (event: AgentChatEventEnvelope) => {
       for (const listener of chatEventListeners) {
         listener(event);
@@ -639,6 +644,7 @@ function resetChatTestStore() {
     focusedSessionId: null,
     projectTransition: null,
     laneInspectorTabs: {},
+    launchPromptClipboardEnabled: true,
     workViewByProject: {},
     laneWorkViewByScope: {},
   });
@@ -2951,7 +2957,7 @@ describe("AgentChatPane submit recovery", () => {
 
   it("does not wait for onSessionCreated before sending the first message in a new chat", async () => {
     const onSessionCreated = vi.fn().mockImplementation(() => new Promise<void>(() => {}));
-    const { send, create } = installAdeMocks({ sessions: [] });
+    const { send, create, writeClipboardText } = installAdeMocks({ sessions: [] });
 
     render(
       <MemoryRouter>
@@ -2983,7 +2989,72 @@ describe("AgentChatPane submit recovery", () => {
         text: "Ship the instant route fix.",
         displayText: "Ship the instant route fix.",
       }));
+      expect(writeClipboardText).toHaveBeenCalledWith("Ship the instant route fix.");
     });
+  });
+
+  it("copies a new chat prompt before session creation failures can lose it", async () => {
+    const { writeClipboardText } = installAdeMocks({
+      sessions: [],
+      createError: new Error("create exploded"),
+    });
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId="lane-1"
+          forceNewSession
+        />
+      </MemoryRouter>,
+    );
+
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Recover this prompt if launch fails." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(writeClipboardText).toHaveBeenCalledWith("Recover this prompt if launch fails.");
+      expect(screen.getByText("create exploded")).toBeTruthy();
+    });
+  });
+
+  it("does not copy submitted prompts when the launch clipboard setting is disabled", async () => {
+    useAppStore.setState({ launchPromptClipboardEnabled: false });
+    const { send, writeClipboardText } = installAdeMocks({ sessions: [] });
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId="lane-1"
+          forceNewSession
+        />
+      </MemoryRouter>,
+    );
+
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Do not copy this prompt." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        text: "Do not copy this prompt.",
+      }));
+    });
+    expect(writeClipboardText).not.toHaveBeenCalled();
   });
 
   it("logs synchronous session-created callback failures without blocking the first send", async () => {
@@ -3033,7 +3104,7 @@ describe("AgentChatPane submit recovery", () => {
 
   it("foreground auto-create opens the new chat in Work instead of routing to Lanes", async () => {
     const onSessionCreated = vi.fn();
-    const { send, create, createLane, suggestLaneName } = installAdeMocks({ sessions: [] });
+    const { send, create, createLane, suggestLaneName, writeClipboardText } = installAdeMocks({ sessions: [] });
     suggestLaneName.mockResolvedValue("fix-auto-create-flow");
     createLane.mockResolvedValue({
       id: "lane-created",
@@ -3076,6 +3147,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: "created-session",
         text: "Fix auto create lane routing.",
       }));
+      expect(writeClipboardText).toHaveBeenCalledWith("Fix auto create lane routing.");
       expect(onSessionCreated).toHaveBeenCalledWith(
         expect.objectContaining({ id: "created-session", laneId: "lane-created" }),
         { activate: false, source: "draft-launch" },
@@ -4047,7 +4119,7 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   it("auto-creates a lane for a foreground CLI session draft", async () => {
-    const { send, create, createLane, suggestLaneName } = installAdeMocks({ sessions: [] });
+    const { send, create, createLane, suggestLaneName, writeClipboardText } = installAdeMocks({ sessions: [] });
     const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-created", ptyId: "pty-created" });
     suggestLaneName.mockResolvedValue("cli-auto-lane");
     createLane.mockResolvedValue({
@@ -4093,6 +4165,7 @@ describe("AgentChatPane submit recovery", () => {
         tracked: true,
         disposition: "foreground",
       }));
+      expect(writeClipboardText).toHaveBeenCalledWith("Launch a CLI agent on a new lane.");
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
     expect(launchArgs.startupCommand).not.toContain("Launch a CLI agent on a new lane.");
@@ -4639,7 +4712,7 @@ describe("AgentChatPane submit recovery", () => {
 
   it("launches one child lane per parallel model and opens work-focus tiling", async () => {
     const createdLanes: Array<Record<string, unknown>> = [];
-    const { send, suggestLaneName, parallelLaunchStateSet } = installAdeMocks({ sessions: [], includeClaudeModel: true });
+    const { send, suggestLaneName, parallelLaunchStateSet, writeClipboardText } = installAdeMocks({ sessions: [], includeClaudeModel: true });
     const createChild = vi.fn().mockImplementation(async ({ name, parentLaneId }: { name: string; parentLaneId: string }) => {
       const lane = {
         id: `lane-child-${createdLanes.length + 1}`,
@@ -4721,6 +4794,8 @@ describe("AgentChatPane submit recovery", () => {
       expect(create).toHaveBeenCalledTimes(2);
       expect(send).toHaveBeenCalledTimes(2);
     });
+    expect(writeClipboardText).toHaveBeenCalledTimes(1);
+    expect(writeClipboardText).toHaveBeenCalledWith("Fix the login bug");
     expect(create).toHaveBeenNthCalledWith(1, expect.objectContaining({
       laneId: "lane-child-1",
       provider: "codex",

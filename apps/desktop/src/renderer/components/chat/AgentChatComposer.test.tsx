@@ -1367,6 +1367,45 @@ describe("AgentChatComposer", () => {
     })).toBeTruthy();
   });
 
+  it("shows the launch clipboard helper only while typing in the prompt", () => {
+    const onOpenLaunchPromptClipboardSettings = vi.fn();
+    renderComposer({
+      draft: "Recoverable launch prompt",
+      turnActive: false,
+      launchPromptClipboardEnabled: true,
+      onOpenLaunchPromptClipboardSettings,
+    });
+
+    expect(screen.queryByText(/Prompt will be copied to clipboard after Send\./)).toBeNull();
+
+    const textarea = screen.getByRole("textbox");
+    fireEvent.focus(textarea);
+
+    expect(screen.getByText(/Prompt will be copied to clipboard after Send\./)).toBeTruthy();
+    const settingButton = screen.getByRole("button", { name: "Setting" });
+    fireEvent.blur(textarea, { relatedTarget: settingButton });
+    fireEvent.focus(settingButton);
+    expect(screen.getByText(/Prompt will be copied to clipboard after Send\./)).toBeTruthy();
+
+    fireEvent.click(settingButton);
+    expect(onOpenLaunchPromptClipboardSettings).toHaveBeenCalledTimes(1);
+
+    fireEvent.blur(settingButton);
+    expect(screen.queryByText(/Prompt will be copied to clipboard after Send\./)).toBeNull();
+  });
+
+  it("hides the launch clipboard helper when the setting is disabled", () => {
+    renderComposer({
+      draft: "No helper",
+      turnActive: false,
+      launchPromptClipboardEnabled: false,
+    });
+
+    fireEvent.focus(screen.getByRole("textbox"));
+
+    expect(screen.queryByText(/Prompt will be copied to clipboard after Send\./)).toBeNull();
+  });
+
   it("focuses the grid composer when the tile becomes active", () => {
     const props = buildComposerProps({
       layoutVariant: "grid-tile",

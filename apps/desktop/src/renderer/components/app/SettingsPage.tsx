@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect } from "react";
-import { useSearchParams, useLocation } from "react-router-dom";
+import { useSearchParams, useLocation, useNavigate } from "react-router-dom";
 import { Brain, ChartLineUp, GearSix, Stack, Plugs, Palette, DeviceMobile, Robot } from "@phosphor-icons/react";
 import { GeneralSection } from "../settings/GeneralSection";
 import { AppearanceSection } from "../settings/AppearanceSection";
@@ -46,6 +46,11 @@ const TAB_ALIASES: Record<string, SectionId> = {
   "ade-usage": "ade-usage",
 };
 
+const HASH_TARGET_SECTIONS: Partial<Record<string, SectionId>> = {
+  "ai-providers": "ai",
+  "chat-launch-clipboard": "appearance",
+};
+
 function padIndex(i: number): string {
   return String(i + 1).padStart(2, "0");
 }
@@ -54,6 +59,7 @@ function padIndex(i: number): string {
 
 export function SettingsPage({ active = true }: { active?: boolean } = {}) {
   const location = useLocation();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const tabParam = searchParams.get("tab");
   const canonicalTab = tabParam && SECTIONS.some((s) => s.id === tabParam)
@@ -85,14 +91,22 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
     setSection(next);
     const nextParams = new URLSearchParams(searchParams);
     nextParams.set("tab", next);
-    setSearchParams(nextParams, { replace: true });
-  }, [searchParams, setSearchParams]);
+    navigate({ pathname: location.pathname, search: `?${nextParams.toString()}`, hash: "" }, { replace: true });
+  }, [location.pathname, navigate, searchParams]);
 
   useEffect(() => {
     if (!active) return;
-    if (section !== "ai" || location.hash !== "#ai-providers") return;
+    if (!location.hash) return;
+    let targetId = location.hash.slice(1);
+    try {
+      targetId = decodeURIComponent(targetId);
+    } catch {
+      // A malformed hash should not break the settings page.
+    }
+    if (!targetId) return;
+    if (HASH_TARGET_SECTIONS[targetId] !== section) return;
     const id = window.requestAnimationFrame(() => {
-      document.getElementById("ai-providers")?.scrollIntoView({ block: "start", behavior: "smooth" });
+      document.getElementById(targetId)?.scrollIntoView({ block: "start", behavior: "smooth" });
     });
     return () => window.cancelAnimationFrame(id);
   }, [active, section, location.hash]);
