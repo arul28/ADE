@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { isRecord } from "../shared/utils";
 
 export type TokenPrice = {
   input: number;
@@ -187,10 +188,6 @@ let sortedDynamicPricingKeys: string[] | null = null;
 let sortedStaticPricingKeys: string[] | null = null;
 let refreshInFlight: Promise<number> | null = null;
 let disableDiskCacheForTest = false;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
 
 function normalizeModelVersion(model: string): string {
   return model.trim().replace(/@.*$/, "").replace(/-\d{8}$/, "");

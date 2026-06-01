@@ -27,6 +27,7 @@ type CreateAutoUpdateServiceArgs = {
   startupDelayMs?: number;
   periodicCheckMs?: number;
   updaterCacheDir?: string;
+  autoCheckEnabled?: boolean;
 };
 
 type UpdateCheckResultLike = {
@@ -253,6 +254,7 @@ export function createAutoUpdateService({
   startupDelayMs = 5_000,
   periodicCheckMs = 30 * 60 * 1_000,
   updaterCacheDir,
+  autoCheckEnabled = true,
 }: CreateAutoUpdateServiceArgs) {
   updater.logger = null;
   updater.autoDownload = true;
@@ -564,8 +566,8 @@ export function createAutoUpdateService({
     });
   }
 
-  const startupTimer = setTimeout(checkForUpdates, startupDelayMs);
-  const periodicTimer = setInterval(checkForUpdates, periodicCheckMs);
+  const startupTimer = autoCheckEnabled ? setTimeout(checkForUpdates, startupDelayMs) : null;
+  const periodicTimer = autoCheckEnabled ? setInterval(checkForUpdates, periodicCheckMs) : null;
 
   return {
     checkForUpdates,
@@ -636,8 +638,8 @@ export function createAutoUpdateService({
       return quitAndInstallPromise;
     },
     dispose() {
-      clearTimeout(startupTimer);
-      clearInterval(periodicTimer);
+      if (startupTimer) clearTimeout(startupTimer);
+      if (periodicTimer) clearInterval(periodicTimer);
       listeners.clear();
       updater.removeListener("checking-for-update", onCheckingForUpdate);
       updater.removeListener("update-available", onUpdateAvailable);

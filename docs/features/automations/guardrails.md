@@ -143,7 +143,7 @@ Automations also support rule-level caps:
 
 - `guardrails.maxDurationMin` — duration cap.
 - Billing codes (`billingCode`) flag spend so operators can slice usage by rule.
-- `budgetCapService` enforces hard caps at the project level; breaches pause runs with an intervention.
+- `budgetCapService` enforces hard caps at the project level; `usd-per-run` caps match the automation rule but evaluate usage records keyed to the active run id, so a prior run's spend does not block the next one. Breaches pause runs with an intervention.
 
 ## Audit trail
 

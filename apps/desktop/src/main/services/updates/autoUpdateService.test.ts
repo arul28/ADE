@@ -54,7 +54,27 @@ function expectCacheEmpty(updaterCacheDir: string): void {
 
 describe("createAutoUpdateService", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it("does not schedule startup or periodic update checks when automatic checks are disabled", () => {
+    vi.useFakeTimers();
+    const updater = new FakeAutoUpdater();
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      startupDelayMs: 5_000,
+      periodicCheckMs: 30 * 60_000,
+      autoCheckEnabled: false,
+      updater,
+    });
+
+    vi.advanceTimersByTime(60 * 60_000);
+
+    expect(updater.checkForUpdates).not.toHaveBeenCalled();
+    service.dispose();
   });
 
   it("converts a pending install into a post-install notice on matching relaunch", () => {

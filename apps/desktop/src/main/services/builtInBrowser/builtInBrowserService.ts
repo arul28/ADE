@@ -19,24 +19,19 @@ import type {
   BuiltInBrowserTabArgs,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
+import { isRecord } from "../shared/utils";
 import { BUILT_IN_BROWSER_PARTITION } from "./builtInBrowserConstants";
+import { isAllowedNavigationUrl, normalizeBrowserUrl } from "./builtInBrowserNavigation";
+import {
+  shouldAllowGoogleAuthPermissionCheck,
+  shouldAllowGoogleAuthPermissionRequest,
+} from "./builtInBrowserPermissions";
 
 const BROWSER_PARTITION = BUILT_IN_BROWSER_PARTITION;
 const SCREENSHOT_TIMEOUT_MS = 3_000;
 const ELEMENT_SCREENSHOT_TIMEOUT_MS = 2_000;
 const DEBUGGER_TIMEOUT_MS = 3_000;
 const MAX_BROWSER_TABS = 10;
-const GOOGLE_AUTH_PERMISSION_CHECK_ALLOWLIST = new Set([
-  "hid",
-  "serial",
-  "storage-access",
-  "top-level-storage-access",
-  "usb",
-]);
-const GOOGLE_AUTH_PERMISSION_REQUEST_ALLOWLIST = new Set([
-  "storage-access",
-  "top-level-storage-access",
-]);
 
 type DebuggerMessageListener = (
   event: Electron.Event,
@@ -1292,50 +1287,9 @@ function createBuiltInBrowserWindowService(args: {
 
 export type BuiltInBrowserService = ReturnType<typeof createBuiltInBrowserService>;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 function emptyToNull(value: string): string | null {
   const trimmed = value.trim();
   return trimmed.length ? trimmed : null;
-}
-
-function shouldAllowGoogleAuthPermissionCheck(
-  permission: string,
-  requestingOrigin: string,
-  details: Electron.PermissionCheckHandlerHandlerDetails,
-): boolean {
-  if (!GOOGLE_AUTH_PERMISSION_CHECK_ALLOWLIST.has(permission)) return false;
-  return (
-    isGoogleAccountsSurface(requestingOrigin)
-    || isGoogleAccountsSurface(details.requestingUrl)
-    || isGoogleAccountsSurface(details.embeddingOrigin)
-    || isGoogleAccountsSurface(details.securityOrigin)
-  );
-}
-
-function shouldAllowGoogleAuthPermissionRequest(permission: string, details: unknown): boolean {
-  if (!GOOGLE_AUTH_PERMISSION_REQUEST_ALLOWLIST.has(permission)) return false;
-  if (!isRecord(details)) return false;
-  return (
-    isGoogleAccountsSurface(details.requestingUrl)
-    || isGoogleAccountsSurface(details.requestingOrigin)
-  );
-}
-
-function isGoogleAccountsSurface(value: unknown): boolean {
-  const text = stringOrNull(value);
-  if (!text) return false;
-  try {
-    const parsed = new URL(text);
-    return parsed.protocol === "https:" && (
-      parsed.hostname === "accounts.google.com"
-      || parsed.hostname.endsWith(".accounts.google.com")
-    );
-  } catch {
-    return false;
-  }
 }
 
 function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
@@ -1353,42 +1307,6 @@ function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
 function normalizeDimension(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.round(value));
-}
-
-function normalizeBrowserUrl(rawUrl: string): string {
-  const trimmed = rawUrl.trim();
-  if (!trimmed) throw new Error("Browser URL is required.");
-
-  const localhostLike = /^(localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::|\/|$)/i.test(trimmed);
-  const hasScheme = /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(trimmed);
-  let candidate: string;
-  if (localhostLike) {
-    candidate = `http://${trimmed}`;
-  } else if (hasScheme) {
-    candidate = trimmed;
-  } else {
-    candidate = `https://${trimmed}`;
-  }
-
-  const parsed = new URL(candidate);
-  if (parsed.protocol === "about:") {
-    if (parsed.href === "about:blank") return parsed.href;
-    throw new Error("Only about:blank browser navigation is supported.");
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new Error(`Unsupported browser URL protocol: ${parsed.protocol}`);
-  }
-  return parsed.href;
-}
-
-function isAllowedNavigationUrl(rawUrl: string): boolean {
-  try {
-    const parsed = new URL(rawUrl);
-    if (parsed.protocol === "about:") return parsed.href.startsWith("about:blank");
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
-  } catch {
-    return false;
-  }
 }
 
 function toElectronRect(frame: BuiltInBrowserFrame): Electron.Rectangle {

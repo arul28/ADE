@@ -83,6 +83,11 @@ type CapConfigRaw = {
   action: BudgetCapAction;
 };
 
+type BudgetCheckContext = {
+  /** Usage records for `usd-per-run` are keyed to the active run, not the rule. */
+  runScopeId?: string | null;
+};
+
 // ---------------------------------------------------------------------------
 // Service types
 // ---------------------------------------------------------------------------
@@ -192,7 +197,8 @@ export function createBudgetCapService({
     cap: CapConfigRaw,
     weekKey: string,
     scope: BudgetCapScope,
-    scopeId: string
+    scopeId: string,
+    context: BudgetCheckContext = {}
   ): { exceeded: boolean; message: string; remainingPercent?: number; remainingUsd?: number } {
     const { capType, limit, provider } = cap;
 
@@ -216,7 +222,12 @@ export function createBudgetCapService({
     }
 
     if (capType === "usd-per-run") {
-      const cumulative = getCumulativeUsage(scope, scopeId, provider, weekKey);
+      const runScopeId = typeof context.runScopeId === "string" && context.runScopeId.trim().length > 0
+        ? context.runScopeId.trim()
+        : null;
+      const cumulative = runScopeId
+        ? getCumulativeUsage(scope, runScopeId, provider, weekKey)
+        : EMPTY_CUMULATIVE;
       const remaining = Math.max(0, limit - cumulative.total_cost);
 
       if (cumulative.total_cost >= limit) {
@@ -264,7 +275,8 @@ export function createBudgetCapService({
     checkBudget(
       scope: BudgetCapScope,
       scopeId: string,
-      provider: BudgetCapProvider
+      provider: BudgetCapProvider,
+      context: BudgetCheckContext = {}
     ): BudgetCheckResult {
       const config = readConfig();
       const weekKey = currentWeekKey();
@@ -310,7 +322,7 @@ export function createBudgetCapService({
         const providerMatch = cap.provider === "any" || cap.provider === provider || provider === "any";
         if (!providerMatch) continue;
 
-        const result = evaluateCap(cap, weekKey, scope, scopeId);
+        const result = evaluateCap(cap, weekKey, scope, scopeId, context);
 
         if (result.remainingPercent != null) {
           minRemainingPercent =

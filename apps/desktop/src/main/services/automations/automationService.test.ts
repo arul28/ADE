@@ -1502,7 +1502,9 @@ describe("automationService integration", () => {
 
     try {
       await expect(service.triggerManually({ id: "agent-budget-provider" })).rejects.toThrow("Budget exceeded");
-      expect(checkBudget).toHaveBeenCalledWith("automation-rule", "agent-budget-provider", "codex");
+      expect(checkBudget).toHaveBeenCalledWith("automation-rule", "agent-budget-provider", "codex", {
+        runScopeId: expect.any(String),
+      });
       expect(createSession).not.toHaveBeenCalled();
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
