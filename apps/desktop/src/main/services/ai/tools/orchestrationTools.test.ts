@@ -13,6 +13,7 @@ import {
   type OrchestrationSessionContext,
   type OrchestrationToolSetOptions,
 } from "./orchestrationTools";
+import { DEFAULT_WORKER_SANDBOX_CONFIG } from "./workerSandboxDefaults";
 
 const VALID_BRIEF = `
 ## TASK
@@ -246,10 +247,18 @@ describe("createOrchestrationToolSet", () => {
       },
       setup.bundlePath,
     );
-    const tools = makeToolSet(setup, "worker", "S-worker");
+    const tools = makeToolSet(setup, "worker", "S-worker", {
+      universal: {
+        permissionMode: "full-auto",
+        sandboxConfig: {
+          ...DEFAULT_WORKER_SANDBOX_CONFIG,
+          safeCommands: [...DEFAULT_WORKER_SANDBOX_CONFIG.safeCommands, "^sleep\\b"],
+        },
+      },
+    });
     const bash = tools.bash!;
     const run = bash.execute({
-      command: "node -e \"setTimeout(() => {}, 30000)\"",
+      command: "sleep 30",
       timeout: 30_000,
     }) as Promise<{ stdout: string; stderr: string; exitCode: number }>;
 

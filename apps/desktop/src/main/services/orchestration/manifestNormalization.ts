@@ -278,10 +278,31 @@ export function validateManifestShape(manifest: OrchestrationManifest): string |
   if (!isPhaseId(manifest.currentPhase)) {
     return `manifest.currentPhase must be one of ${[...ORCHESTRATION_PHASE_IDS].join(", ")}`;
   }
+  const agentError = validateAgents(manifest.agents);
+  if (agentError) return agentError;
   const taskError = validateTasks(manifest.tasks);
   if (taskError) return taskError;
   const vsError = validateValidationStrategy(manifest.validationStrategy);
   if (vsError) return vsError;
+  return null;
+}
+
+function validateAgents(agents: OrchestrationManifest["agents"]): string | null {
+  if (!Array.isArray(agents) || agents.length === 0) {
+    return "manifest.agents must include at least one agent";
+  }
+  const seenSessionIds = new Set<string>();
+  for (const agent of agents) {
+    if (!agent || typeof agent !== "object") return "manifest.agents entries must be objects";
+    if (typeof agent.sessionId !== "string" || !agent.sessionId.trim()) {
+      return "manifest.agents entries must include a non-empty sessionId";
+    }
+    const sessionId = agent.sessionId.trim();
+    if (seenSessionIds.has(sessionId)) {
+      return `manifest.agents contains duplicate sessionId ${sessionId}`;
+    }
+    seenSessionIds.add(sessionId);
+  }
   return null;
 }
 

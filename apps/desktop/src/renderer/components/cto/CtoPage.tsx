@@ -439,29 +439,35 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     setRevisions(next);
   }, [loadAgents, loadBudgetSnapshot, selectedAgentId]);
 
-  const wakeSelectedWorker = useCallback(async () => {
-    if (!window.ade?.cto || !selectedAgentId) return;
+  const wakeWorker = useCallback(async (workerId: string) => {
+    if (!window.ade?.cto || !workerId) return;
     setWakingWorker(true); setWorkerWakeError(null);
     try {
-      const wake = await window.ade.cto.triggerAgentWakeup({ agentId: selectedAgentId, reason: "manual", context: { source: "cto_ui" } });
+      const wake = await window.ade.cto.triggerAgentWakeup({ agentId: workerId, reason: "manual", context: { source: "cto_ui" } });
       setWorkerWakeStatus(`Wake: ${wake.status}`);
-      const nextRuns = await window.ade.cto.listAgentRuns({ agentId: selectedAgentId, limit: 20 });
+      const nextRuns = await window.ade.cto.listAgentRuns({ agentId: workerId, limit: 20 });
       setWorkerRuns(nextRuns);
     } catch (err) {
       setWorkerWakeError(err instanceof Error ? err.message : "Failed to wake worker.");
     } finally {
       setWakingWorker(false);
     }
-  }, [selectedAgentId]);
+  }, []);
+
+  const wakeSelectedWorker = useCallback(async () => {
+    if (!selectedAgentId) return;
+    await wakeWorker(selectedAgentId);
+  }, [selectedAgentId, wakeWorker]);
 
   const handleHireWorker = useCallback(() => {
     setShowWorkerWizard(true);
     setActiveTab("team");
   }, []);
 
-  const handleEditWorker = useCallback(() => {
-    if (!selectedWorker) return;
-    setWorkerDraft(workerDraftFromAgent(selectedWorker));
+  const handleEditWorker = useCallback((worker: AgentIdentity | null = selectedWorker) => {
+    if (!worker) return;
+    setSelectedAgentId(worker.id);
+    setWorkerDraft(workerDraftFromAgent(worker));
     setWorkerError(null);
     setEditorOpen(true);
   }, [selectedWorker]);
@@ -777,10 +783,17 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
                           const workerBudget = budgetSnapshot?.workers.find((w) => w.agentId === agent.id);
                           const modelId = (agent.adapterConfig as { model?: string } | null)?.model;
                           return (
-                            <button
+                            <div
                               key={agent.id}
-                              type="button"
+                              role="button"
+                              tabIndex={0}
                               onClick={() => { setSelectedAgentId(agent.id); }}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter" || event.key === " ") {
+                                  event.preventDefault();
+                                  setSelectedAgentId(agent.id);
+                                }
+                              }}
                               className="text-left rounded-xl border border-white/[0.07] bg-[linear-gradient(180deg,rgba(26,24,48,0.6),rgba(18,16,34,0.7))] p-4 shadow-card backdrop-blur-[16px] transition-all duration-150 hover:border-accent/25 hover:shadow-card-hover"
                             >
                               <div className="flex items-center gap-2 mb-2">
@@ -800,7 +813,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
                                     variant="ghost"
                                     size="sm"
                                     className="!h-5 !px-1.5 !text-[10px]"
-                                    onClick={(e) => { e.stopPropagation(); void wakeSelectedWorker(); setSelectedAgentId(agent.id); }}
+                                    onClick={(e) => { e.stopPropagation(); setSelectedAgentId(agent.id); void wakeWorker(agent.id); }}
                                   >
                                     Wake
                                   </Button>
@@ -808,13 +821,13 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
                                     variant="ghost"
                                     size="sm"
                                     className="!h-5 !px-1.5 !text-[10px]"
-                                    onClick={(e) => { e.stopPropagation(); setSelectedAgentId(agent.id); handleEditWorker(); }}
+                                    onClick={(e) => { e.stopPropagation(); handleEditWorker(agent); }}
                                   >
                                     Edit
                                   </Button>
                                 </div>
                               </div>
-                            </button>
+                            </div>
                           );
                         })}
                       </div>
@@ -839,7 +852,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
                       waking={wakingWorker}
                       onWakeNow={() => void wakeSelectedWorker()}
                       onSetStatus={(status) => void setSelectedWorkerStatus(status)}
-                      onEdit={handleEditWorker}
+                      onEdit={() => handleEditWorker()}
                       onRemove={() => void removeWorker(selectedWorker.id)}
                       onRollbackRevision={(id) => void rollbackRevision(id)}
                     />

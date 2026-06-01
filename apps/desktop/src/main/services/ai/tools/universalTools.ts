@@ -1257,6 +1257,13 @@ export function checkWorkerSandbox(
   const safeMatch = compiled.safe.some((re) => re.test(command));
   const commandMutates = bashCommandLikelyMutates(command, projectRoot, powerShellInspection);
 
+  if (config.blockByDefault && commandUsesInterpreterPayload(command)) {
+    return {
+      allowed: false,
+      reason: "Interpreter payload commands are not safe-listable when blockByDefault is enabled",
+    };
+  }
+
   // 2. Validate file paths against allowedPaths (absolute + relative)
   const rootResolved = canonicalizePathForContainment(projectRoot, pathApi);
   const pathRefs = collectPathReferences(command, projectRoot, pathApi, powerShellInspection);

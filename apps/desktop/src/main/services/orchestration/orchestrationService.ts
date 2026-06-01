@@ -72,6 +72,7 @@ class OrchestrationPersistConflictError extends Error {
 const MANIFEST_FILE = "manifest.json";
 const PLAN_FILE = "plan.md";
 const GEN_FILE = ".gen";
+const HEARTBEATS_FILE = "heartbeats.json";
 const INDEX_FILE = "index.json";
 const HISTORY_RING_LIMIT = 50;
 const SELF_WRITE_WINDOW_MS = 1_000;
@@ -184,6 +185,37 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
   ): Promise<void> {
     const genPath = path.join(bundlePath, GEN_FILE);
     await atomicWrite(genPath, `${gen}\n`);
+  }
+
+  async function readHeartbeatLiveness(bundlePath: string): Promise<Record<string, string>> {
+    try {
+      const raw = await fsp.readFile(path.join(bundlePath, HEARTBEATS_FILE), "utf-8");
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const out: Record<string, string> = {};
+      for (const [sessionId, value] of Object.entries(parsed)) {
+        if (typeof value === "string" && value.trim()) out[sessionId] = value;
+      }
+      return out;
+    } catch {
+      return {};
+    }
+  }
+
+  async function writeHeartbeatLiveness(bundlePath: string, heartbeats: Record<string, string>): Promise<void> {
+    await atomicWrite(path.join(bundlePath, HEARTBEATS_FILE), `${JSON.stringify(heartbeats, null, 2)}\n`);
+  }
+
+  function applyHeartbeatLiveness(
+    manifest: OrchestrationManifest,
+    heartbeats: Record<string, string>,
+  ): OrchestrationManifest {
+    if (!Object.keys(heartbeats).length) return manifest;
+    const next = structuredClone(manifest) as OrchestrationManifest;
+    for (const agent of next.agents) {
+      const lastHeartbeatAt = heartbeats[agent.sessionId];
+      if (lastHeartbeatAt) agent.lastHeartbeatAt = lastHeartbeatAt;
+    }
+    return next;
   }
 
   async function atomicWrite(
@@ -500,7 +532,10 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         runtime.planMd = null;
         return;
       }
-      runtime.manifest = normalizeManifestShape(manifest);
+      runtime.manifest = applyHeartbeatLiveness(
+        normalizeManifestShape(manifest),
+        await readHeartbeatLiveness(runtime.bundlePath),
+      );
     } catch (err) {
       const e = err as NodeJS.ErrnoException;
       if (e && e.code === "ENOENT") {
@@ -617,7 +652,10 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       const planPath = path.join(runtime.bundlePath, PLAN_FILE);
       if (kind === "manifest") {
         const raw = await fsp.readFile(manifestPath, "utf-8");
-        const next = normalizeManifestShape(JSON.parse(raw) as OrchestrationManifest);
+        const next = applyHeartbeatLiveness(
+          normalizeManifestShape(JSON.parse(raw) as OrchestrationManifest),
+          await readHeartbeatLiveness(runtime.bundlePath),
+        );
         // Resilience: if runId mismatches (e.g. branch checkout swapped the
         // file), do not blindly etag-bump; mark suspended and ignore.
         if (next.runId !== runtime.runId) {
@@ -1448,34 +1486,25 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       }
       const next = structuredClone(manifest) as OrchestrationManifest;
       const agent = next.agents.find((entry) => entry.sessionId === req.sessionId);
-      if (agent) agent.lastHeartbeatAt = nowIso();
-      // Heartbeats are liveness metadata. They must not invalidate the optimistic
-      // concurrency etag that agents use for the next manifest mutation.
+      const lastHeartbeatAt = nowIso();
+      if (agent) agent.lastHeartbeatAt = lastHeartbeatAt;
+      runtime.manifest = next;
+      const heartbeats = await readHeartbeatLiveness(runtime.bundlePath);
+      heartbeats[req.sessionId] = lastHeartbeatAt;
+      // Heartbeats are liveness metadata. Keep them out of manifest.json/.gen so
+      // they do not rewrite the optimistic-concurrency document or re-emit the
+      // same etag as a manifest mutation.
       try {
-        await persistManifest(runtime, next);
+        await writeHeartbeatLiveness(runtime.bundlePath, heartbeats);
       } catch (err) {
-        if (err instanceof OrchestrationRunSuspendedError) {
-          return { ok: false, reason: RUN_SUSPENDED_MESSAGE };
-        }
-        if (err instanceof OrchestrationPersistConflictError) {
-          return {
-            ok: false,
-            reason: "etag_conflict",
-            etag: err.onDisk.etag,
-          };
-        }
         throw err;
       }
       emit({
         runId: req.runId,
-        kind: "manifest",
+        kind: "heartbeat",
         etag: next.etag,
-        manifest: next,
-        patch: [{
-          op: "add",
-          path: `/agents/{sessionId:${req.sessionId}}/lastHeartbeatAt`,
-          value: agent?.lastHeartbeatAt,
-        }],
+        sessionId: req.sessionId,
+        lastHeartbeatAt,
       });
       return { ok: true, etag: next.etag };
     });
@@ -1589,6 +1618,10 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     assertRunWritable(runtime);
     if (!runtime.manifest) throw new Error("manifest not loaded");
     const next = normalizeManifestShape(applyPatches(runtime.manifest, patches));
+    const shapeError = validateManifestShape(next);
+    if (shapeError) {
+      throw new Error(shapeError);
+    }
     const updatedAt = nowIso();
     const serverGeneration = runtime.manifest.serverGeneration + 1;
     const etag = makeEtag(runtime, serverGeneration);
