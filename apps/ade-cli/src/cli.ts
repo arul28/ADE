@@ -10643,6 +10643,11 @@ function formatDiagnosticError(error: unknown): string {
 }
 
 function installRuntimeProcessErrorBoundary(label: string): () => void {
+  const rejectionWindowMs = 60_000;
+  const rejectionLogLimit = 5;
+  let rejectionWindowStart = 0;
+  let rejectionCount = 0;
+  let suppressedRejectionCount = 0;
   const write = (kind: string, error: unknown): void => {
     try {
       process.stderr.write(`${label} contained ${kind}: ${formatDiagnosticError(error)}\n`);
@@ -10651,8 +10656,28 @@ function installRuntimeProcessErrorBoundary(label: string): () => void {
     }
   };
   const onUnhandledRejection = (reason: unknown): void => {
-    write("fatal unhandled rejection", reason);
-    process.exit(1);
+    const now = Date.now();
+    if (now - rejectionWindowStart > rejectionWindowMs) {
+      if (suppressedRejectionCount > 0) {
+        write("unhandled rejection summary", `${suppressedRejectionCount} additional rejection(s) suppressed`);
+      }
+      rejectionWindowStart = now;
+      rejectionCount = 0;
+      suppressedRejectionCount = 0;
+    }
+    rejectionCount += 1;
+    // A single late async rejection must not tear down the project runtime:
+    // this process owns active Work chats, PTYs, and managed processes.
+    // JSON-RPC dispatch already returns per-request errors; anything that
+    // still reaches here is logged for diagnosis while the runtime stays up.
+    if (rejectionCount <= rejectionLogLimit) {
+      write("unhandled rejection", reason);
+      return;
+    }
+    suppressedRejectionCount += 1;
+    if (rejectionCount === rejectionLogLimit + 1) {
+      write("unhandled rejection rate limit", `suppressing additional rejections for ${rejectionWindowMs}ms`);
+    }
   };
   const onUncaughtException = (error: Error): void => {
     write("fatal uncaught exception", error);

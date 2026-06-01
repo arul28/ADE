@@ -1247,6 +1247,79 @@ describe("AgentChatMessageList transcript rendering", () => {
     }
   });
 
+  it("does not reuse virtualized row heights after row identities change", async () => {
+    const originalResizeObserver = globalThis.ResizeObserver;
+    const originalOffsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+    class ResizeObserverStub {
+      observe() {}
+      disconnect() {}
+    }
+    Object.defineProperty(globalThis, "ResizeObserver", {
+      configurable: true,
+      value: ResizeObserverStub,
+    });
+    Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+      configurable: true,
+      get() {
+        if (!(this instanceof HTMLElement) || this.dataset.chatVirtualizedRow !== "true") return 0;
+        return (this.textContent ?? "").includes("Tall message") ? 220 : 40;
+      },
+    });
+
+    const makeEvents = (prefix: string): AgentChatEventEnvelope[] => (
+      Array.from({ length: 65 }, (_, index): AgentChatEventEnvelope => ({
+        sessionId: "session-1",
+        timestamp: `2026-03-17T10:${String(index).padStart(2, "0")}:00.000Z`,
+        event: {
+          type: "user_message",
+          text: `${prefix} message ${index}`,
+          messageId: `${prefix.toLowerCase()}-${index}`,
+          turnId: `turn-${index}`,
+        },
+      }))
+    );
+    const virtualSizerHeight = (container: HTMLElement): number => {
+      const virtualSizer = Array.from(container.querySelectorAll("div"))
+        .find((el) => el.style.position === "relative" && el.style.height);
+      return Number.parseFloat(virtualSizer?.style.height ?? "0");
+    };
+
+    try {
+      const rendered = renderMessageList(makeEvents("Tall"));
+
+      let tallHeight = 0;
+      await waitFor(() => {
+        tallHeight = virtualSizerHeight(rendered.container);
+        expect(tallHeight).toBeGreaterThan(0);
+      });
+
+      rendered.rerender(
+        <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+          <AgentChatMessageList events={makeEvents("Short")} />
+          <LocationProbe />
+        </MemoryRouter>,
+      );
+
+      await waitFor(() => {
+        expect(virtualSizerHeight(rendered.container)).toBeLessThan(tallHeight);
+      });
+    } finally {
+      if (originalOffsetHeight) {
+        Object.defineProperty(HTMLElement.prototype, "offsetHeight", originalOffsetHeight);
+      } else {
+        delete (HTMLElement.prototype as any).offsetHeight;
+      }
+      if (originalResizeObserver === undefined) {
+        delete (globalThis as any).ResizeObserver;
+      } else {
+        Object.defineProperty(globalThis, "ResizeObserver", {
+          configurable: true,
+          value: originalResizeObserver,
+        });
+      }
+    }
+  });
+
   it("keeps the current viewport anchored when rows above it grow", () => {
     const adjusted = reconcileMeasuredScrollTop({
       index: 2,

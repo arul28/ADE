@@ -495,6 +495,7 @@ export class LocalRuntimeConnectionPool {
   private activeConnection: LocalRuntimeConnection | null = null;
   private activeClient: RuntimeRpcClient | null = null;
   private ownedRuntimeChild: ChildProcess | null = null;
+  private preserveOwnedRuntimeChildOnNextConnect = false;
   private readonly coalescedActionCalls = new Map<string, Promise<RemoteRuntimeActionResult>>();
   private readonly projectsByRoot = new Map<string, RemoteRuntimeProjectRecord>();
   private serviceInstallStatus: LocalRuntimeStatus["serviceInstall"] = {
@@ -841,7 +842,7 @@ export class LocalRuntimeConnectionPool {
           });
         }
         if (callError && isRuntimeActionCallTimeout(callError)) {
-          this.logger.warn("local_runtime.action_timeout_reset_connection", {
+          this.logger.warn("local_runtime.action_timeout_drop_client", {
             domain: request.domain,
             action: request.action,
             socketPath: entry.socketPath,
@@ -998,6 +999,7 @@ export class LocalRuntimeConnectionPool {
     this.activeConnection = null;
     this.activeClient = null;
     this.ownedRuntimeChild = null;
+    this.preserveOwnedRuntimeChildOnNextConnect = false;
     this.projectsByRoot.clear();
     void pending?.then((entry) => {
       try { entry.client.close(); } catch {}
@@ -1039,11 +1041,11 @@ export class LocalRuntimeConnectionPool {
 
   private resetConnectionAfterActionTimeout(entry: LocalRuntimeConnection): void {
     this.clearConnectionIfCurrent(entry);
-    if (entry.child && this.ownedRuntimeChild === entry.child) {
-      this.ownedRuntimeChild = null;
-    }
+    this.preserveOwnedRuntimeChildOnNextConnect = entry.child != null && this.ownedRuntimeChild === entry.child;
+    // An action timeout proves that this client request waited too long; it
+    // does not prove the runtime process is dead. Killing the owned runtime
+    // here tears down every project-scoped PTY and agent chat hosted by it.
     closeRuntimeClient(entry.client);
-    disposeOwnedRuntimeChild(entry.child, entry.socketPath, { unlinkSocket: true });
   }
 
   // Drop a stale/closed cached connection so the next connect() reconnects.
@@ -1074,10 +1076,16 @@ export class LocalRuntimeConnectionPool {
   }
 
   private async tryConnect(socketPath: string): Promise<LocalRuntimeConnection | null> {
+    const shouldPreserveOwnedChild = this.preserveOwnedRuntimeChildOnNextConnect;
+    this.preserveOwnedRuntimeChildOnNextConnect = false;
     try {
       const client = await this.connectClient(socketPath);
-      this.ownedRuntimeChild = null;
-      return { client, child: null, socketPath };
+      const child = shouldPreserveOwnedChild ? this.ownedRuntimeChild : null;
+      if (!child) this.ownedRuntimeChild = null;
+      // If we deliberately kept an app-owned runtime alive after a timed-out
+      // action, reconnecting to its socket must not drop ownership; shutdown
+      // still needs to dispose that child.
+      return { client, child, socketPath };
     } catch (error) {
       if (error instanceof LocalRuntimeCompatibilityError) {
         return await this.startIsolatedRuntime(socketPath, error);

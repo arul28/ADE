@@ -677,7 +677,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   layout: ["get", "set"],
   tiling_tree: ["get", "set"],
   graph_state: ["get", "set"],
-  computer_use_artifacts: ["getOwnerSnapshot", "ingest", "listArtifacts", "readArtifactPreview", "routeArtifact", "updateArtifactReview"],
+  computer_use_artifacts: ["getOwnerSnapshot", "getBackendStatus", "ingest", "listArtifacts", "readArtifactPreview", "routeArtifact", "updateArtifactReview"],
   ios_simulator: ["getStatus", "claim", "listDevices", "listLaunchTargets", "launch", "attachToChatSession", "shutdown", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint", "getPreviewCapability", "listPreviewTargets", "renderPreview", "openPreviewWorkspace", "startStream", "stopStream", "getStreamStatus", "tap", "typeText", "drag", "swipe", "selectPoint"],
   app_control: ["getStatus", "claim", "launch", "launchInTerminal", "connect", "stop", "focusWindow", "minimizeWindow", "screenshot", "getSnapshot", "inspectPoint", "selectPoint", "click", "typeText", "scroll", "dispatchKey", "listTargets", "attachToTarget", "readTerminal", "writeTerminal", "signalTerminal"],
   built_in_browser: [...BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS],
