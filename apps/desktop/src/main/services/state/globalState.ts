@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import type { OpenProjectBinding, RecentlyInstalledUpdate } from "../../../shared/types";
 
 export type RecentProject = {
@@ -36,10 +37,37 @@ export function readGlobalState(filePath: string): GlobalState {
 }
 
 export function writeGlobalState(filePath: string, state: GlobalState): void {
+  let tempPath: string | null = null;
+  let fd: number | null = null;
   try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, JSON.stringify(state, null, 2), "utf8");
+    const dir = path.dirname(filePath);
+    fs.mkdirSync(dir, { recursive: true });
+    tempPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
+    const serialized = `${JSON.stringify(state, null, 2)}\n`;
+    fd = fs.openSync(tempPath, "w");
+    fs.writeFileSync(fd, serialized, "utf8");
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = null;
+    fs.renameSync(tempPath, filePath);
+    tempPath = null;
+    try {
+      const dirFd = fs.openSync(dir, "r");
+      try {
+        fs.fsyncSync(dirFd);
+      } finally {
+        fs.closeSync(dirFd);
+      }
+    } catch {
+      // Directory fsync is best effort across filesystems/platforms.
+    }
   } catch {
+    if (fd != null) {
+      try { fs.closeSync(fd); } catch {}
+    }
+    if (tempPath) {
+      try { fs.unlinkSync(tempPath); } catch {}
+    }
     // Non-fatal; global state is a convenience.
   }
 }

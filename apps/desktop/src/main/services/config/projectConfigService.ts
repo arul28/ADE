@@ -3,6 +3,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import YAML from "yaml";
 import cron from "node-cron";
+import { z } from "zod";
 import type {
   AiConfig,
   AiFeatureKey,
@@ -91,6 +92,27 @@ const AUTOMATION_ACTION_TYPE_SET = new Set<string>([
   "run-command",
   "ade-action",
 ]);
+const OPTIONAL_STRING_SCHEMA = z.string().optional().catch(undefined);
+const OPTIONAL_NUMBER_SCHEMA = z.number().finite().optional().catch(undefined);
+const OPTIONAL_BOOL_SCHEMA = z.boolean().optional().catch(undefined);
+const STRING_ARRAY_SCHEMA = z.array(z.unknown())
+  .transform((values) => values
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim())
+    .filter(Boolean))
+  .optional()
+  .catch(() => undefined);
+const STRING_MAP_SCHEMA = z.record(z.string(), z.unknown())
+  .transform((value) => {
+    const out: Record<string, string> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      if (typeof entry === "string") out[key] = entry;
+    }
+    return out;
+  })
+  .optional()
+  .catch(() => undefined);
+const COMPUTE_BACKEND_SCHEMA = z.enum(["local", "vps", "daytona"]).optional().catch(undefined);
 
 function isPathWithinProjectRoot(projectRoot: string, candidate: string, opts: { allowMissing?: boolean } = {}): boolean {
   try {
@@ -102,12 +124,11 @@ function isPathWithinProjectRoot(projectRoot: string, candidate: string, opts: {
 }
 
 function asString(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
+  return OPTIONAL_STRING_SCHEMA.parse(value);
 }
 
 function asStringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  return value.filter((v): v is string => typeof v === "string").map((v) => v.trim()).filter(Boolean);
+  return STRING_ARRAY_SCHEMA.parse(value);
 }
 
 function asLaneTypeArray(value: unknown): LaneType[] | undefined {
@@ -120,15 +141,15 @@ function asLaneTypeArray(value: unknown): LaneType[] | undefined {
 }
 
 function asNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  return OPTIONAL_NUMBER_SCHEMA.parse(value);
 }
 
 function asBool(value: unknown): boolean | undefined {
-  return typeof value === "boolean" ? value : undefined;
+  return OPTIONAL_BOOL_SCHEMA.parse(value);
 }
 
 function asComputeBackend(value: unknown): "local" | "vps" | "daytona" | undefined {
-  return value === "local" || value === "vps" || value === "daytona" ? value : undefined;
+  return COMPUTE_BACKEND_SCHEMA.parse(value);
 }
 
 function coerceOrchestratorHookConfig(value: unknown): { command: string; timeoutMs?: number } | null {
@@ -147,12 +168,7 @@ function coerceOrchestratorHookConfig(value: unknown): { command: string; timeou
 }
 
 function asStringMap(value: unknown): Record<string, string> | undefined {
-  if (!isRecord(value)) return undefined;
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(value)) {
-    if (typeof v === "string") out[k] = v;
-  }
-  return out;
+  return STRING_MAP_SCHEMA.parse(value);
 }
 
 function normalizeConfigPath(value: string): string {

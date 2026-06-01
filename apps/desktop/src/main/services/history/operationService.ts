@@ -8,6 +8,19 @@ type OperationStatus = "running" | "succeeded" | "failed" | "canceled";
 type OperationMetadata = Record<string, unknown>;
 type HeadChangeOperationRecord = OperationRecord & { preHeadSha: string; postHeadSha: string };
 
+const OPERATION_COLUMNS = `
+  o.id as id,
+  o.lane_id as laneId,
+  l.name as laneName,
+  o.kind as kind,
+  o.started_at as startedAt,
+  o.ended_at as endedAt,
+  o.status as status,
+  o.pre_head_sha as preHeadSha,
+  o.post_head_sha as postHeadSha,
+  o.metadata_json as metadataJson
+`;
+
 function safeParseMetadata(raw: string | null | undefined): OperationMetadata {
   const parsed = safeJsonParse(raw, null);
   return isRecord(parsed) ? parsed : {};
@@ -96,17 +109,7 @@ export function createOperationService({
       if (!operationId.trim()) return null;
       const row = db.get<OperationRecord>(
         `
-          select
-            o.id as id,
-            o.lane_id as laneId,
-            l.name as laneName,
-            o.kind as kind,
-            o.started_at as startedAt,
-            o.ended_at as endedAt,
-            o.status as status,
-            o.pre_head_sha as preHeadSha,
-            o.post_head_sha as postHeadSha,
-            o.metadata_json as metadataJson
+          select ${OPERATION_COLUMNS}
           from operations o
           left join lanes l on l.id = o.lane_id
           where o.project_id = ? and o.id = ?
@@ -144,17 +147,7 @@ export function createOperationService({
       const limit = typeof args.limit === "number" ? Math.max(1, Math.min(1000, Math.floor(args.limit))) : 100;
       return db.all<HeadChangeOperationRecord>(
         `
-          select
-            o.id as id,
-            o.lane_id as laneId,
-            l.name as laneName,
-            o.kind as kind,
-            o.started_at as startedAt,
-            o.ended_at as endedAt,
-            o.status as status,
-            o.pre_head_sha as preHeadSha,
-            o.post_head_sha as postHeadSha,
-            o.metadata_json as metadataJson
+          select ${OPERATION_COLUMNS}
           from operations o
           left join lanes l on l.id = o.lane_id
           where o.project_id = ?
@@ -197,17 +190,7 @@ export function createOperationService({
 
       const rows = db.all<OperationRecord>(
         `
-          select
-            o.id as id,
-            o.lane_id as laneId,
-            l.name as laneName,
-            o.kind as kind,
-            o.started_at as startedAt,
-            o.ended_at as endedAt,
-            o.status as status,
-            o.pre_head_sha as preHeadSha,
-            o.post_head_sha as postHeadSha,
-            o.metadata_json as metadataJson
+          select ${OPERATION_COLUMNS}
           from operations o
           left join lanes l on l.id = o.lane_id
           where ${where.join(" and ")}
