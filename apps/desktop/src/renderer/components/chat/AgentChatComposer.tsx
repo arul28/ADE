@@ -21,7 +21,6 @@ import {
   type AgentChatSlashCommand,
   type CodexThreadTokenUsage,
   type ComputerUseOwnerSnapshot,
-  type CtoLinearQuickView,
   type ChatSurfaceMode,
   type AppControlContextItem,
   type BuiltInBrowserContextItem,
@@ -54,8 +53,7 @@ import {
   type ChatAttachmentPendingImage,
 } from "./ChatAttachmentTray";
 import { ChatComposerShell } from "./ChatComposerShell";
-import { LinearIssueBrowser, linearBrowserIssueToLaneIssue } from "../app/LinearIssueBrowser";
-import { LinearPaneModal } from "../app/LinearPaneModal";
+import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { getPendingInputQuestionCount, hasPendingInputOptions } from "./pendingInput";
 import { CURSOR_MODE_LABELS } from "../../../shared/cursorModes";
@@ -726,68 +724,6 @@ function PendingSteerItem({
         </div>
       ) : null}
     </div>
-  );
-}
-
-function LinearIssueContextDialog({
-  open,
-  selectedIssue,
-  pinnedIssue,
-  busy,
-  onOpenChange,
-  onAttach,
-  onOpenLinearSettings,
-}: {
-  open: boolean;
-  selectedIssue: LaneLinearIssue | null;
-  pinnedIssue?: LaneLinearIssue | null;
-  busy?: boolean;
-  onOpenChange: (open: boolean) => void;
-  onAttach: (attachment: AgentChatContextAttachment) => void;
-  onOpenLinearSettings?: () => void;
-}) {
-  const featuredIssue = pinnedIssue ?? selectedIssue;
-  const [quickView, setQuickView] = useState<CtoLinearQuickView | null>(null);
-  const [browserLoading, setBrowserLoading] = useState(false);
-  const [refreshKey, setRefreshKey] = useState(0);
-
-  const close = useCallback(() => onOpenChange(false), [onOpenChange]);
-  const openLinearSettings = useCallback(() => {
-    onOpenChange(false);
-    onOpenLinearSettings?.();
-  }, [onOpenChange, onOpenLinearSettings]);
-
-  return (
-    <LinearPaneModal
-      open={open}
-      ariaLabel="Attach Linear issue"
-      quickView={quickView}
-      loading={browserLoading}
-      onRefresh={() => setRefreshKey((key) => key + 1)}
-      onClose={close}
-    >
-      <LinearIssueBrowser
-        featuredIssue={featuredIssue}
-        featuredIssueLabel={pinnedIssue ? "Linked to this lane" : "Attached to chat"}
-        actionLabel="Attach issue"
-        actionBusyLabel="Attaching issue"
-        actionIcon={<Check size={14} />}
-        actionDisabled={busy}
-        showBranchPreview={false}
-        refreshKey={refreshKey}
-        onOpenLinearSettings={openLinearSettings}
-        onQuickViewChange={setQuickView}
-        onLoadingChange={setBrowserLoading}
-        onIssueAction={(issue) => {
-          const laneIssue = linearBrowserIssueToLaneIssue(issue);
-          onAttach(makeLinearIssueContextAttachment(
-            laneIssue,
-            pinnedIssue?.id === laneIssue.id ? "lane_link" : "manual",
-          ));
-          onOpenChange(false);
-        }}
-      />
-    </LinearPaneModal>
   );
 }
 
@@ -2940,18 +2876,26 @@ export function AgentChatComposer({
   return (
     <>
       {issueContextMenu}
-      <LinearIssueContextDialog
+      <LinearIssueSelectModal
         open={linearIssuePickerOpen}
+        ariaLabel="Attach Linear issue"
         selectedIssue={
           contextAttachments[0]?.type === "linear_issue"
             ? contextAttachments[0].issue
             : null
         }
         pinnedIssue={pinnedLinearIssue}
-        busy={busy || parallelLaunchBusy}
+        pinnedIssueLabel={pinnedLinearIssue ? "Linked to this lane" : "Attached to chat"}
+        actionLabel="Attach issue"
+        actionBusyLabel="Attaching issue"
+        actionDisabled={busy || parallelLaunchBusy}
+        showBranchPreview={false}
         onOpenChange={setLinearIssuePickerOpen}
-        onAttach={(attachment) => {
-          onAddContextAttachment?.(attachment);
+        onSelectIssue={(laneIssue) => {
+          onAddContextAttachment?.(makeLinearIssueContextAttachment(
+            laneIssue,
+            pinnedLinearIssue?.id === laneIssue.id ? "lane_link" : "manual",
+          ));
           setLinearIssuePickerOpen(false);
         }}
         onOpenLinearSettings={onOpenLinearSettings}

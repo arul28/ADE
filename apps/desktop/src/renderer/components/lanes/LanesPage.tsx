@@ -4292,6 +4292,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           // longer the canonical destination for opening a lane.
           navigate("/project");
         }}
+        projectRoot={project?.rootPath ?? null}
         createBranches={createBranches}
         lanes={lanes}
         onSubmit={handleCreateSubmit}
@@ -4312,6 +4313,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         currentGitUserName={createGitUserName}
         loadingBranches={createBranchesLoading}
         loadingBranchPullRequests={createBranchPullRequestsLoading}
+        onOpenLinearSettings={() => navigate("/settings?tab=integrations&integration=linear")}
         onNavigateToTemplates={() => navigate("/settings?tab=lane-templates")}
         importBranchWarning={
           createMode === "existing" && createImportBranch && primaryLane?.status.dirty

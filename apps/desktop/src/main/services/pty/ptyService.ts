@@ -2964,8 +2964,12 @@ export function createPtyService({
     return false;
   };
 
-  const waitForAgentCliInputReady = async (sessionId: string, provider: TerminalResumeProvider): Promise<boolean> => {
-    const deadline = Date.now() + AGENT_CLI_READY_TIMEOUT_MS;
+  const waitForAgentCliInputReady = async (
+    sessionId: string,
+    provider: TerminalResumeProvider,
+    timeoutMs = AGENT_CLI_READY_TIMEOUT_MS,
+  ): Promise<boolean> => {
+    const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const live = liveEntryBySessionId(sessionId);
       if (!live) return false;
@@ -2985,7 +2989,7 @@ export function createPtyService({
       }
       await delay(AGENT_CLI_READY_POLL_MS);
     }
-    logger.warn("pty.agent_cli_ready_wait_timeout", { sessionId, provider });
+    logger.warn("pty.agent_cli_ready_wait_timeout", { sessionId, provider, timeoutMs });
     return false;
   };
 
@@ -3751,13 +3755,20 @@ export function createPtyService({
 
       if (requestedInitialInput.length > 0) {
         const normalizedInitialInput = requestedInitialInput.replace(/\r\n?/g, "\n");
+        const initialInputReadyTimeoutMs = Math.max(
+          AGENT_CLI_READY_TIMEOUT_MS,
+          Math.min(
+            300_000,
+            Math.floor(Number(args.initialInputReadyTimeoutMs ?? AGENT_CLI_READY_TIMEOUT_MS) || 0),
+          ),
+        );
         const writeInitialInput = async (): Promise<void> => {
           entry.initialInputTimer = null;
           if (entry.disposed) throw new Error("Terminal session closed before initial input could be sent.");
           const provider = providerFromTool(toolTypeHint);
           try {
             if (provider) {
-              const ready = await waitForAgentCliInputReady(sessionId, provider);
+              const ready = await waitForAgentCliInputReady(sessionId, provider, initialInputReadyTimeoutMs);
               if (!ready) {
                 logger.warn("pty.initial_input_skipped_not_ready", {
                   ptyId,

@@ -34,13 +34,13 @@ import {
   issueUpdatedLabel,
   linearPriorityLabel,
   toLaneLinearIssue,
-} from "../lanes/LinearIssuePicker";
+} from "../lanes/linearIssueDisplay";
 import { LinearPriorityIcon, LinearStateIcon } from "../lanes/linearBrand";
 import { LinearProjectIcon } from "../lanes/linearProjectIcon";
 import { LinearIssueOpenLink } from "./LinearIssueResolveModals";
 import type { IssueConflict } from "../../lib/linearBatchLaunch";
 
-type BrowserIssue = NormalizedLinearIssue | LaneLinearIssue;
+export type BrowserIssue = NormalizedLinearIssue | LaneLinearIssue;
 type IssueSort = "updated_desc" | "created_desc" | "priority" | "due_soon" | "identifier_asc";
 
 /**

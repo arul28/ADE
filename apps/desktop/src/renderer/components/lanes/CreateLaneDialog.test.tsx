@@ -1,9 +1,25 @@
 /* @vitest-environment jsdom */
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LaneRuntimePlacement, LaneSummary } from "../../../shared/types";
 import { CreateLaneDialog } from "./CreateLaneDialog";
+
+beforeEach(() => {
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  });
+});
 
 afterEach(cleanup);
 
@@ -151,5 +167,34 @@ describe("CreateLaneDialog VM-lane gate", () => {
     const vmRadio = screen.getByTestId("create-lane-vm-radio") as HTMLButtonElement;
     expect(vmRadio.disabled).toBe(false);
     expect(screen.queryByTestId("create-lane-vm-gate")).toBeNull();
+  });
+
+  it("opens the shared Linear issue browser as its own modal", async () => {
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        cto: {
+          getLinearIssuePickerData: vi.fn(async () => ({
+            projects: [],
+            users: [],
+            states: [],
+          })),
+          searchLinearIssues: vi.fn(async () => ({
+            issues: [],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          })),
+        },
+      },
+    });
+
+    render(<CreateLaneDialog {...makeProps()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /connect a linear issue/i }));
+
+    expect(await screen.findByRole("dialog", { name: "Connect Linear issue" })).toBeTruthy();
+    expect(screen.queryByText("Lane name")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Connect Linear issue backdrop" }));
+    expect(await screen.findByText("Lane name")).toBeTruthy();
   });
 });
