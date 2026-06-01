@@ -38,8 +38,9 @@ function requestedLimit(args?: ListSessionsArgs): number | null {
 }
 
 function canSatisfyLimit(availableLimit: number | null, nextLimit: number | null): boolean {
-  if (nextLimit == null) return availableLimit == null;
-  return availableLimit != null && availableLimit >= nextLimit;
+  if (availableLimit == null) return true;
+  if (nextLimit == null) return false;
+  return availableLimit >= nextLimit;
 }
 
 function sliceRows(rows: TerminalSessionSummary[], limit: number | null): TerminalSessionSummary[] {
@@ -63,10 +64,12 @@ export async function listSessionsCached(
   const now = Date.now();
   const existing = cache.get(key);
 
-  if (!options?.force && existing?.value && now - existing.timestamp < ttlMs && canSatisfyLimit(existing.fetchedLimit, limit)) {
+  const force = options?.force === true;
+
+  if (!force && existing?.value && now - existing.timestamp < ttlMs && canSatisfyLimit(existing.fetchedLimit, limit)) {
     return sliceRows(existing.value, limit);
   }
-  if (!options?.force && existing?.inFlight && canSatisfyLimit(existing.inFlightLimit, limit)) {
+  if (existing?.inFlight && canSatisfyLimit(existing.inFlightLimit, limit)) {
     return existing.inFlight.then((rows) => sliceRows(rows, limit));
   }
 
@@ -109,5 +112,17 @@ export async function listSessionsCached(
 }
 
 export function invalidateSessionListCache(): void {
-  cache.clear();
+  for (const [key, entry] of [...cache.entries()]) {
+    if (!entry.inFlight) {
+      cache.delete(key);
+      continue;
+    }
+    cache.set(key, {
+      value: null,
+      timestamp: 0,
+      fetchedLimit: null,
+      inFlight: entry.inFlight,
+      inFlightLimit: entry.inFlightLimit,
+    });
+  }
 }

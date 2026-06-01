@@ -11358,6 +11358,12 @@ function machineRuntimeMismatchReason(
   return null;
 }
 
+export function shouldEnforceMachineRuntimeBuildCompatibility(
+  socketPathOverride?: string | null,
+): boolean {
+  return !socketPathOverride?.trim();
+}
+
 function computeRuntimeBuildHash(filePath: string): string | null {
   try {
     return createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
@@ -11469,8 +11475,8 @@ async function connectMachineRuntimeDaemon(
   const label = "ADE runtime daemon socket";
   const allowSpawn = connectOptions.allowSpawn ?? !options.requireSocket;
   const isTcpSocket = socketPath.startsWith("tcp://");
-  const hasExplicitSocketOverride = Boolean(socketPathOverride?.trim());
-  const enforceBuildCompatibility = !hasExplicitSocketOverride;
+  const enforceBuildCompatibility =
+    shouldEnforceMachineRuntimeBuildCompatibility(socketPathOverride);
   const expectedBuildHash = isTcpSocket || !enforceBuildCompatibility
     ? null
     : await resolveExpectedMachineRuntimeBuildHash();
@@ -11779,9 +11785,12 @@ async function runNativeRpcStdio(options: GlobalOptions): Promise<void> {
         done = true;
         resolve();
       };
-      client?.onClose(finish);
-      process.stdin.once("end", finish);
-      process.stdin.once("close", finish);
+      const finishAfterActiveDispatches = () => {
+        void (stop?.waitForIdle() ?? Promise.resolve()).finally(finish);
+      };
+      client?.onClose(finishAfterActiveDispatches);
+      process.stdin.once("end", finishAfterActiveDispatches);
+      process.stdin.once("close", finishAfterActiveDispatches);
     });
   } finally {
     unsubscribeNotifications?.();

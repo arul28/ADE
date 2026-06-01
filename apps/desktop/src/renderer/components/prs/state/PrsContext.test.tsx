@@ -251,7 +251,7 @@ describe("PrsContext refresh", () => {
     expect(window.ade.rebase.scanNeeds).not.toHaveBeenCalled();
     expect(window.ade.lanes.listAutoRebaseStatuses).not.toHaveBeenCalled();
     expect(window.ade.lanes.list).toHaveBeenCalledWith({ includeStatus: false });
-    expect(window.ade.prs.refresh).not.toHaveBeenCalled();
+    expect(window.ade.prs.refresh).toHaveBeenCalledWith({});
   });
 
   it("bounds automatic retries after persistent refresh failures", async () => {
@@ -365,7 +365,7 @@ describe("PrsContext refresh", () => {
     await waitFor(() => {
       expect(screen.getByTestId("loading").textContent).toBe("idle");
     });
-    expect(window.ade.prs.refresh).not.toHaveBeenCalled();
+    vi.mocked(window.ade.prs.refresh).mockClear();
 
     await user.click(screen.getByRole("button", { name: "refresh" }));
 
@@ -386,7 +386,7 @@ describe("PrsContext refresh", () => {
     await waitFor(() => {
       expect(screen.getByTestId("loading").textContent).toBe("idle");
     });
-    expect(window.ade.prs.refresh).not.toHaveBeenCalled();
+    vi.mocked(window.ade.prs.refresh).mockClear();
 
     await user.click(screen.getByRole("button", { name: "refresh pr-1" }));
 
@@ -398,9 +398,6 @@ describe("PrsContext refresh", () => {
   it("preserves targeted refresh args queued behind an in-flight refresh", async () => {
     const user = userEvent.setup();
     let resolveFirstRefresh!: () => void;
-    vi.mocked(window.ade.prs.refresh).mockImplementationOnce(() => new Promise<PrSummary[]>((resolve) => {
-      resolveFirstRefresh = () => resolve([]);
-    }));
 
     render(
       <PrsProvider>
@@ -411,6 +408,10 @@ describe("PrsContext refresh", () => {
     await waitFor(() => {
       expect(screen.getByTestId("loading").textContent).toBe("idle");
     });
+    vi.mocked(window.ade.prs.refresh).mockClear();
+    vi.mocked(window.ade.prs.refresh).mockImplementationOnce(() => new Promise<PrSummary[]>((resolve) => {
+      resolveFirstRefresh = () => resolve([]);
+    }));
 
     await user.click(screen.getByRole("button", { name: "refresh all" }));
     await waitFor(() => {
@@ -442,7 +443,7 @@ describe("PrsContext refresh", () => {
     await waitFor(() => {
       expect(screen.getByTestId("loading").textContent).toBe("idle");
     });
-    expect(window.ade.prs.refresh).not.toHaveBeenCalled();
+    vi.mocked(window.ade.prs.refresh).mockClear();
 
     await user.click(screen.getByRole("button", { name: "queue" }));
 

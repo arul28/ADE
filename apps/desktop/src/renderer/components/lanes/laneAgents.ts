@@ -4,6 +4,8 @@ import type {
   TerminalSessionSummary,
   TerminalToolType,
 } from "../../../shared/types";
+import { listSessionsCached } from "../../lib/sessionListCache";
+import { useAppStore } from "../../state/appStore";
 
 /** Unified live state for an agent row, glanceable at a list level. */
 export type LaneAgentActivity = "working" | "awaiting-input" | "idle" | "ended";
@@ -132,26 +134,57 @@ export function buildLaneAgents(
  */
 export function useLaneAgents(laneIds: string[]): Map<string, LaneAgent[]> {
   const [byLane, setByLane] = useState<Map<string, LaneAgent[]>>(new Map());
+  const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
   const laneKey = useMemo(() => [...laneIds].sort().join(","), [laneIds]);
   const refreshTimerRef = useRef<number | null>(null);
+  const refreshInFlightRef = useRef(false);
+  const refreshQueuedRef = useRef(false);
 
   const refresh = useCallback(async () => {
-    const ids = laneKey ? laneKey.split(",") : [];
-    if (!ids.length) {
-      setByLane(new Map());
+    if (refreshInFlightRef.current) {
+      refreshQueuedRef.current = true;
       return;
     }
-    const entries = await Promise.all(
-      ids.map(async (laneId) => {
+    refreshInFlightRef.current = true;
+    try {
+      do {
+        refreshQueuedRef.current = false;
+        if (document.visibilityState !== "visible") return;
+
+        const ids = laneKey ? laneKey.split(",") : [];
+        if (!ids.length) {
+          setByLane(new Map());
+          return;
+        }
         const [chat, cli] = await Promise.all([
-          window.ade.agentChat.list({ laneId }).catch(() => []),
-          window.ade.sessions.list({ laneId }).catch(() => []),
+          window.ade.agentChat.list({}).catch(() => []),
+          listSessionsCached({ limit: 500 }, { projectRoot }).catch(() => []),
         ]);
-        return [laneId, buildLaneAgents(chat, cli)] as const;
-      }),
-    );
-    setByLane(new Map(entries));
-  }, [laneKey]);
+        const requestedLaneIds = new Set(ids);
+        const chatByLane = new Map<string, AgentChatSessionSummary[]>();
+        for (const session of chat) {
+          if (!requestedLaneIds.has(session.laneId)) continue;
+          const rows = chatByLane.get(session.laneId) ?? [];
+          rows.push(session);
+          chatByLane.set(session.laneId, rows);
+        }
+        const cliByLane = new Map<string, TerminalSessionSummary[]>();
+        for (const session of cli) {
+          if (!requestedLaneIds.has(session.laneId)) continue;
+          const rows = cliByLane.get(session.laneId) ?? [];
+          rows.push(session);
+          cliByLane.set(session.laneId, rows);
+        }
+        const entries = ids.map((laneId) => [
+          laneId,
+          buildLaneAgents(chatByLane.get(laneId) ?? [], cliByLane.get(laneId) ?? []),
+        ] as const);
+        setByLane(new Map(entries));
+      } while (refreshQueuedRef.current);
+    } finally {
+      refreshInFlightRef.current = false;
+    }
+  }, [laneKey, projectRoot]);
 
   useEffect(() => {
     void refresh();

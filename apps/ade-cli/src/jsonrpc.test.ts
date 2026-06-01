@@ -53,6 +53,16 @@ function jsonlResponses(transport: MemoryTransport): unknown[] {
     .map((line) => JSON.parse(line) as unknown);
 }
 
+function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("startJsonRpcServer", () => {
   it("waits for more data instead of re-entering drain on partial frames", async () => {
     const transport = new MemoryTransport();
@@ -80,6 +90,88 @@ describe("startJsonRpcServer", () => {
         jsonrpc: "2.0",
         id: 1,
         result: { ok: true, method: "ping" },
+      },
+    ]);
+
+    stop();
+  });
+
+  it("dispatches complete requests concurrently on one connection", async () => {
+    const transport = new MemoryTransport();
+    const slow = deferred<void>();
+    const calls: string[] = [];
+    const handler: JsonRpcHandler = vi.fn(async (request) => {
+      calls.push(request.method ?? "");
+      if (request.method === "slow") {
+        await slow.promise;
+      }
+      return { ok: true, method: request.method };
+    });
+
+    const stop = startJsonRpcServer(handler, transport, { nonFatal: true });
+
+    transport.push({ jsonrpc: "2.0", id: 1, method: "slow" });
+    transport.push({ jsonrpc: "2.0", id: 2, method: "fast" });
+    await waitForDrain();
+
+    expect(calls).toEqual(["slow", "fast"]);
+    expect(jsonlResponses(transport)).toEqual([
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        result: { ok: true, method: "fast" },
+      },
+    ]);
+
+    slow.resolve(undefined);
+    await waitForDrain();
+
+    expect(jsonlResponses(transport)).toEqual([
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        result: { ok: true, method: "fast" },
+      },
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        result: { ok: true, method: "slow" },
+      },
+    ]);
+
+    stop();
+  });
+
+  it("waits for active dispatches before reporting idle", async () => {
+    const transport = new MemoryTransport();
+    const slow = deferred<void>();
+    const handler: JsonRpcHandler = vi.fn(async (request) => {
+      if (request.method === "slow") {
+        await slow.promise;
+      }
+      return { ok: true, method: request.method };
+    });
+
+    const stop = startJsonRpcServer(handler, transport, { nonFatal: true });
+    transport.push({ jsonrpc: "2.0", id: 1, method: "slow" });
+    await waitForDrain();
+
+    let idle = false;
+    const idlePromise = stop.waitForIdle().then(() => {
+      idle = true;
+    });
+    await waitForDrain();
+    expect(idle).toBe(false);
+
+    slow.resolve(undefined);
+    await idlePromise;
+
+    expect(idle).toBe(true);
+    expect(jsonlResponses(transport)).toEqual([
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        result: { ok: true, method: "slow" },
       },
     ]);
 

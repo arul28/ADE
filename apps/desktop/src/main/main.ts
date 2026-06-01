@@ -4984,6 +4984,53 @@ app.whenReady().then(async () => {
     let repoRoot: string | null = null;
     const pendingSelectedRootCleanup = authorizePendingWindowProjectRoot(windowId, selectedPath);
     let pendingRepoRootCleanup: (() => void) | null = null;
+    const logOpenStep = (
+      step: string,
+      stepStartedAt: number,
+      extra: Record<string, unknown> = {},
+    ): void => {
+      projectOpenLogger.info("project.open.step", {
+        selectedPath,
+        repoRoot,
+        step,
+        durationMs: Date.now() - stepStartedAt,
+        totalMs: Date.now() - startedAt,
+        ...extra,
+      });
+    };
+    const scheduleOpenRecentPersist = (
+      project: ProjectInfo,
+      options: { recordLastProject?: boolean; recordRecent?: boolean; preserveRecentOrder?: boolean },
+      step: string,
+    ): void => {
+      const scheduledAt = Date.now();
+      const timer = setTimeout(() => {
+        const writeStartedAt = Date.now();
+        try {
+          persistRecentProject(project, options);
+          projectOpenLogger.info("project.open.deferred_step", {
+            selectedPath,
+            repoRoot,
+            step,
+            scheduledDelayMs: writeStartedAt - scheduledAt,
+            durationMs: Date.now() - writeStartedAt,
+            totalMs: Date.now() - startedAt,
+          });
+        } catch (error) {
+          projectOpenLogger.warn("project.open.deferred_step_failed", {
+            selectedPath,
+            repoRoot,
+            step,
+            scheduledDelayMs: writeStartedAt - scheduledAt,
+            durationMs: Date.now() - writeStartedAt,
+            totalMs: Date.now() - startedAt,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }, 0);
+      timer.unref?.();
+      logOpenStep(`schedule_${step}`, scheduledAt);
+    };
     projectOpenLogger.info("project.open.begin", { selectedPath });
     try {
       const resolveStartedAt = Date.now();
@@ -5028,12 +5075,16 @@ app.whenReady().then(async () => {
       const existing = projectContexts.get(repoRoot);
       if (existing) {
         existing.hasUserSelectedProject = true;
-        persistRecentProject(existing.project, {
+        scheduleOpenRecentPersist(existing.project, {
           recordLastProject: false,
           preserveRecentOrder: isKnownRecentProject,
-        });
+        }, "persist_recent_reused");
+        const bindStartedAt = Date.now();
         bindWindowToProject(windowId, repoRoot, { emit: true, foreground: true });
+        logOpenStep("bind_window_reused", bindStartedAt);
+        const rebalanceStartedAt = Date.now();
         scheduleProjectContextRebalance();
+        logOpenStep("schedule_rebalance_reused", rebalanceStartedAt);
         // Drop the unused base-ref promise so it doesn't leak as an unhandled
         // rejection if detectDefaultBaseRef threw between the .catch above
         // and this point (already neutralized by .catch, but keep tidy).
@@ -5074,6 +5125,11 @@ app.whenReady().then(async () => {
             durationMs: Date.now() - initStartedAt,
           });
           projectContexts.set(repoRoot!, ctx);
+          projectOpenLogger.info("project.open.context_registered", {
+            selectedPath,
+            repoRoot,
+            durationMs: Date.now() - initStartedAt,
+          });
           return ctx;
         })().finally(() => {
           if (repoRoot) {
@@ -5083,15 +5139,21 @@ app.whenReady().then(async () => {
         projectInitPromises.set(repoRoot, initPromise);
       }
 
+      const initAwaitStartedAt = Date.now();
       const ctx = await initPromise;
+      logOpenStep("await_init_promise", initAwaitStartedAt);
       ctx.hasUserSelectedProject = true;
-      persistRecentProject(ctx.project, {
+      scheduleOpenRecentPersist(ctx.project, {
         recordLastProject: false,
         recordRecent: true,
         preserveRecentOrder: isKnownRecentProject,
-      });
+      }, "persist_recent_new");
+      const bindStartedAt = Date.now();
       bindWindowToProject(windowId, repoRoot, { emit: true, foreground: true });
+      logOpenStep("bind_window_new", bindStartedAt);
+      const rebalanceStartedAt = Date.now();
       scheduleProjectContextRebalance();
+      logOpenStep("schedule_rebalance_new", rebalanceStartedAt);
       projectOpenLogger.info("project.open.done", {
         selectedPath,
         repoRoot,

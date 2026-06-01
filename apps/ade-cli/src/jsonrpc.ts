@@ -358,6 +358,7 @@ const MAX_BATCH_SIZE = 100;
 
 export type JsonRpcServerHandle = (() => void) & {
   notify: (method: string, params?: unknown) => void;
+  waitForIdle: () => Promise<void>;
 };
 
 export interface JsonRpcServerOptions {
@@ -368,11 +369,24 @@ export interface JsonRpcServerOptions {
 }
 
 export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTransport, options?: JsonRpcServerOptions): JsonRpcServerHandle {
-  const writeFn = transport.write.bind(transport);
   let buffer: Buffer = Buffer.alloc(0);
   let stopped = false;
   let draining = false;
   let responseTransport: TransportMode | null = null;
+  const activeDispatches = new Set<Promise<void>>();
+  const idleWaiters = new Set<() => void>();
+  const writeFn = (data: string): void => {
+    if (stopped) return;
+    transport.write(data);
+  };
+
+  const resolveIdleWaiters = (): void => {
+    if (activeDispatches.size > 0) return;
+    for (const resolve of idleWaiters) {
+      resolve();
+    }
+    idleWaiters.clear();
+  };
 
   const reportError = (error: unknown, context: JsonRpcServerErrorContext): void => {
     try {
@@ -389,6 +403,28 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
     } catch (error) {
       reportError(error, "write");
     }
+  };
+
+  const dispatch = (args: {
+    payloadText: string;
+    transport: TransportMode;
+  }): void => {
+    const dispatchPromise = dispatchPayload({
+      payloadText: args.payloadText,
+      handler,
+      transport: args.transport,
+      writeFn,
+      onError: reportError,
+    })
+      .catch((error) => {
+        reportError(error, "dispatch");
+        closeTransport();
+      })
+      .finally(() => {
+        activeDispatches.delete(dispatchPromise);
+        resolveIdleWaiters();
+      });
+    activeDispatches.add(dispatchPromise);
   };
 
   const drain = async (): Promise<void> => {
@@ -409,12 +445,9 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
           continue;
         }
 
-        await dispatchPayload({
+        dispatch({
           payloadText: parsed.payloadText,
-          handler,
           transport: responseTransport ?? "framed",
-          writeFn,
-          onError: reportError,
         });
       }
     } catch (error) {
@@ -457,6 +490,8 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
   transport.onData(onData);
 
   const stop = (() => {
+    activeDispatches.clear();
+    resolveIdleWaiters();
     closeTransport();
   }) as JsonRpcServerHandle;
 
@@ -472,6 +507,13 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
       reportError(error, "write");
       closeTransport();
     }
+  };
+
+  stop.waitForIdle = (): Promise<void> => {
+    if (activeDispatches.size === 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      idleWaiters.add(resolve);
+    });
   };
 
   return stop;

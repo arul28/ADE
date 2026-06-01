@@ -576,6 +576,7 @@ describe("prService.getGithubSnapshot", () => {
     expect(githubService.getStatus).toHaveBeenCalledTimes(1);
     expect(githubService.apiRequest).toHaveBeenCalledWith(expect.objectContaining({
       path: `/repos/${REPO.owner}/${REPO.name}/pulls`,
+      query: expect.objectContaining({ state: "open" }),
     }));
   });
 
@@ -808,7 +809,7 @@ describe("prService.getGithubSnapshot", () => {
     );
   });
 
-  it("reuses an in-flight repo snapshot when closed-history is requested", async () => {
+  it("starts a full-history snapshot when an open-only in-flight snapshot cannot satisfy the request", async () => {
     let resolveOpenRepo!: (value: unknown) => void;
     const openRepoRequest = new Promise<unknown>((resolve) => {
       resolveOpenRepo = resolve;
@@ -840,10 +841,16 @@ describe("prService.getGithubSnapshot", () => {
       repoPullRequests: [expect.objectContaining({ title: "Repo PR" })],
       externalPullRequests: [],
     }));
-    expect(repoCalls).toBe(1);
+    expect(repoCalls).toBe(2);
+    expect(githubService.apiRequest).toHaveBeenCalledWith(expect.objectContaining({
+      query: expect.objectContaining({ state: "open" }),
+    }));
+    expect(githubService.apiRequest).toHaveBeenCalledWith(expect.objectContaining({
+      query: expect.objectContaining({ state: "all" }),
+    }));
   });
 
-  it("serves closed-history requests from a fresh repo snapshot cache", async () => {
+  it("does not serve closed-history requests from a fresh open-only repo snapshot cache", async () => {
     const githubService = makeGithubService({
       getStatus: vi.fn(async () => makeGithubStatus()),
       apiRequest: vi.fn(async (args: { path: string }) => {
@@ -862,7 +869,10 @@ describe("prService.getGithubSnapshot", () => {
     const closedHistory = await service.getGithubSnapshot({ includeExternalClosed: true });
     expect(closedHistory.repoPullRequests[0]?.title).toBe("Cached repo PR");
     expect(closedHistory.externalPullRequests).toEqual([]);
-    expect(githubService.apiRequest).toHaveBeenCalledTimes(apiCallsAfterCache);
+    expect(githubService.apiRequest).toHaveBeenCalledTimes(apiCallsAfterCache + 1);
+    expect(githubService.apiRequest).toHaveBeenLastCalledWith(expect.objectContaining({
+      query: expect.objectContaining({ state: "all" }),
+    }));
   });
 
   it("does not let a superseded open-only snapshot overwrite a fresher cache", async () => {
@@ -1095,6 +1105,94 @@ describe("prService.getGithubSnapshot", () => {
       expect.stringContaining("insert into pull_requests("),
       expect.arrayContaining([LANE_ID, REPO.owner, REPO.name, 222, "Missed branch PR", "closed", "main", "feature/missed"]),
     );
+  });
+
+  it("skips targeted same-repo lane branch lookups when a local row already covers the branch", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async (args: { path: string; query?: Record<string, unknown> }) => {
+        if (args.path !== `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          throw new Error(`Unexpected GitHub API path: ${args.path}`);
+        }
+        if (args.query?.head) {
+          throw new Error(`Unexpected targeted lookup: ${String(args.query.head)}`);
+        }
+        return { data: [] };
+      }),
+    });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [
+      makePrRow({
+        lane_id: LANE_ID,
+        state: "merged",
+        head_branch: "feature/cached",
+      }),
+    ]);
+    const lane = makeFakeLane({ branchRef: "refs/heads/feature/cached" });
+    const { service } = buildService({ db, githubService, laneService: makeLaneService([lane]) });
+
+    await service.getGithubSnapshot({ force: true });
+
+    expect(githubService.apiRequest).toHaveBeenCalledTimes(1);
+    expect(githubService.apiRequest).toHaveBeenCalledWith(expect.objectContaining({
+      query: expect.objectContaining({ state: "open" }),
+    }));
+  });
+
+  it("keeps targeted local-row branch lookups for full-history snapshots", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async (args: { path: string; query?: Record<string, unknown> }) => {
+        if (args.path !== `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          throw new Error(`Unexpected GitHub API path: ${args.path}`);
+        }
+        if (args.query?.head === `${REPO.owner}:feature/cached`) {
+          return {
+            data: [
+              makeGitHubPull({
+                number: 90,
+                title: "Merged cached branch PR",
+                state: "closed",
+                merged_at: "2026-05-01T00:00:00Z",
+                head: {
+                  ref: "feature/cached",
+                  user: { login: REPO.owner },
+                  repo: { owner: { login: REPO.owner }, name: REPO.name },
+                },
+              }),
+            ],
+          };
+        }
+        return { data: [] };
+      }),
+    });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [
+      makePrRow({
+        github_pr_number: 90,
+        lane_id: LANE_ID,
+        state: "merged",
+        head_branch: "feature/cached",
+      }),
+    ]);
+    const lane = makeFakeLane({ branchRef: "refs/heads/feature/cached" });
+    const { service } = buildService({ db, githubService, laneService: makeLaneService([lane]) });
+
+    const snapshot = await service.getGithubSnapshot({ force: true, includeExternalClosed: true });
+
+    expect(githubService.apiRequest).toHaveBeenCalledWith(expect.objectContaining({
+      query: expect.objectContaining({ state: "all" }),
+    }));
+    expect(githubService.apiRequest).toHaveBeenCalledWith(expect.objectContaining({
+      query: expect.objectContaining({ head: `${REPO.owner}:feature/cached` }),
+    }));
+    expect(snapshot.repoPullRequests).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        githubPrNumber: 90,
+        title: "Merged cached branch PR",
+        state: "merged",
+      }),
+    ]));
   });
 
   it("continues targeted lane branch PR lookups after one branch lookup fails", async () => {
@@ -1558,6 +1656,50 @@ describe("prService.refresh", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("does not wait for mergeability on terminal PR refreshes", async () => {
+    const row = makePrRow({ id: "pr-merged", github_pr_number: 90, merge_conflicts: 0 });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    let pullFetches = 0;
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === "/repos/test-owner/test-repo/pulls/90") {
+          pullFetches += 1;
+          return {
+            data: makeGitHubPull({
+              number: 90,
+              html_url: row.github_url,
+              title: row.title,
+              state: "closed",
+              merged_at: "2026-01-03T00:00:00Z",
+              mergeable: null,
+              mergeable_state: "unknown",
+              head: { ref: "my-feature", sha: "head-sha" },
+            }),
+          };
+        }
+        if (args.path === "/repos/test-owner/test-repo/commits/head-sha/status") {
+          return { data: { state: "success", statuses: [] } };
+        }
+        if (args.path === "/repos/test-owner/test-repo/commits/head-sha/check-runs") {
+          return { data: { check_runs: [] } };
+        }
+        if (args.path === "/repos/test-owner/test-repo/pulls/90/reviews") {
+          return { data: [] };
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+    const { service, logger } = buildService({ db, githubService });
+
+    const refreshed = await service.refresh({ prId: "pr-merged" });
+
+    expect(pullFetches).toBe(1);
+    expect(githubService.apiRequest).toHaveBeenCalledTimes(1);
+    expect(refreshed[0]).toEqual(expect.objectContaining({ id: "pr-merged", state: "merged" }));
+    expect(logger.warn).not.toHaveBeenCalledWith("prs.mergeability_poll_exhausted", expect.anything());
   });
 
   it("keeps successful explicit PR refreshes when a sibling fails", async () => {

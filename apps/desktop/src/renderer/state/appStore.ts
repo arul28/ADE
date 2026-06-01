@@ -7,6 +7,7 @@ import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry
 import { extractError } from "../lib/format";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../lib/aiDiscoveryCache";
 import { hasConfiguredAiProvider } from "../lib/aiProviderStatus";
+import { getKeybindingsCoalesced, listLaneSnapshotsCoalesced, listLanesCoalesced } from "../lib/laneReadCache";
 import { getProjectConfigCached, invalidateProjectConfigCache } from "../lib/projectConfigCache";
 
 export type ThemeId = "dark" | "light";
@@ -1193,14 +1194,15 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const token = ++laneRefreshVersion;
       const previousLanesById = new Map(get().lanes.map((lane) => [lane.id, lane] as const));
       const previousSnapshotsById = new Map(get().laneSnapshots.map((snapshot) => [snapshot.lane.id, snapshot] as const));
+      const snapshotArgs = {
+        includeArchived: false,
+        includeStatus: currentRequest.includeStatus,
+        includeConflictStatus: currentRequest.includeConflictStatus,
+        includeRebaseSuggestions: currentRequest.includeRebaseSuggestions,
+        includeAutoRebaseStatus: currentRequest.includeAutoRebaseStatus,
+      };
       const rawLaneSnapshots = currentRequest.includeSnapshots
-        ? await window.ade.lanes.listSnapshots({
-          includeArchived: false,
-          includeStatus: currentRequest.includeStatus,
-          includeConflictStatus: currentRequest.includeConflictStatus,
-          includeRebaseSuggestions: currentRequest.includeRebaseSuggestions,
-          includeAutoRebaseStatus: currentRequest.includeAutoRebaseStatus,
-        })
+        ? await listLaneSnapshotsCoalesced(snapshotArgs, { projectRoot: requestedProjectKey })
         : null;
       const laneSnapshots = rawLaneSnapshots?.map((snapshot) => {
         if (currentRequest.includeStatus) return snapshot;
@@ -1209,10 +1211,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       }) ?? null;
       const rawLanes = laneSnapshots != null
         ? laneSnapshots.map((snapshot) => snapshot.lane)
-        : await window.ade.lanes.list({
+        : await listLanesCoalesced({
             includeArchived: false,
             includeStatus: currentRequest.includeStatus,
-          });
+          }, { projectRoot: requestedProjectKey });
       const lanes = laneSnapshots != null || currentRequest.includeStatus
         ? rawLanes
         : rawLanes.map((lane) => withPreservedLaneStatus(lane, previousLanesById, previousSnapshotsById));
@@ -1339,7 +1341,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   },
 
   refreshKeybindings: async () => {
-    const keybindings = await window.ade.keybindings.get();
+    const keybindings = await getKeybindingsCoalesced({
+      projectRoot: get().project?.rootPath ?? null,
+    });
     set({ keybindings });
   },
 

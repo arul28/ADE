@@ -79,6 +79,10 @@ function estimateCodexCostCents(inputTokens: number, outputTokens: number): numb
   return Math.max(0, Math.round(usd * 100));
 }
 
+const CODEX_BUDGET_USAGE_SCAN_MAX_DAYS = 45;
+const CODEX_BUDGET_USAGE_SCAN_MAX_FILES = 500;
+const CODEX_BUDGET_USAGE_SCAN_MAX_FILE_BYTES = 32 * 1024 * 1024;
+
 function readCodexUsageCostCents(args: {
   fromMs: number;
   toMs: number;
@@ -91,8 +95,11 @@ function readCodexUsageCostCents(args: {
     : path.join(os.homedir(), ".codex", "sessions");
   if (!fs.existsSync(root)) return 0;
 
-  const files: string[] = [];
-  const minMtimeMs = args.fromMs - (24 * 60 * 60 * 1000);
+  const files: Array<{ path: string; mtimeMs: number }> = [];
+  const minMtimeMs = Math.max(
+    args.fromMs - (24 * 60 * 60 * 1000),
+    Date.now() - (CODEX_BUDGET_USAGE_SCAN_MAX_DAYS * 24 * 60 * 60 * 1000),
+  );
   const stack = [root];
   while (stack.length > 0) {
     const dir = stack.pop()!;
@@ -112,10 +119,11 @@ function readCodexUsageCostCents(args: {
       try {
         const stat = fs.statSync(abs);
         if (stat.mtimeMs < minMtimeMs) continue;
+        if (stat.size > CODEX_BUDGET_USAGE_SCAN_MAX_FILE_BYTES) continue;
+        files.push({ path: abs, mtimeMs: stat.mtimeMs });
       } catch {
         continue;
       }
-      files.push(abs);
     }
   }
 
@@ -124,7 +132,12 @@ function readCodexUsageCostCents(args: {
     : null;
   let totalCents = 0;
 
-  for (const filePath of files) {
+  const boundedFiles = files
+    .sort((left, right) => right.mtimeMs - left.mtimeMs)
+    .slice(0, CODEX_BUDGET_USAGE_SCAN_MAX_FILES)
+    .map((file) => file.path);
+
+  for (const filePath of boundedFiles) {
     let sessionIdInFile = "";
     let previousTotals: { input: number; output: number; cached: number; reasoning: number } | null = null;
     let lastEventKey = "";

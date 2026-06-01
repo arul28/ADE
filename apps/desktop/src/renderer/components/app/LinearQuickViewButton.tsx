@@ -37,9 +37,58 @@ import {
 } from "../../lib/launchedLanesHighlight";
 
 const INITIAL_VISIBILITY_CHECK_DELAY_MS = 2_000;
+const VISIBILITY_RETRY_INTERVAL_MS = 3_000;
+const VISIBILITY_CONNECTED_CACHE_TTL_MS = 60_000;
+const VISIBILITY_DISCONNECTED_CACHE_TTL_MS = 1_500;
 
 const HEADER_STATUS_MENU_ROW_CLASS =
   "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] font-medium text-muted-fg/80 transition-colors duration-150 hover:bg-white/[0.06] hover:text-fg/90";
+
+type LinearVisibilityCacheEntry = {
+  reader: unknown;
+  value: boolean;
+  checkedAtMs: number;
+  inFlight: Promise<boolean> | null;
+};
+
+const linearVisibilityCacheByProject = new Map<string, LinearVisibilityCacheEntry>();
+
+function readLinearVisibilityCached({
+  projectRoot,
+  reader,
+  force = false,
+}: {
+  projectRoot: string | null | undefined;
+  reader: (() => Promise<{ connected?: boolean }>) | undefined;
+  force?: boolean;
+}): Promise<boolean> {
+  if (!projectRoot || !reader) return Promise.resolve(false);
+  const now = Date.now();
+  const existing = linearVisibilityCacheByProject.get(projectRoot);
+  const entry =
+    existing && existing.reader === reader
+      ? existing
+      : { reader, value: false, checkedAtMs: 0, inFlight: null };
+  linearVisibilityCacheByProject.set(projectRoot, entry);
+
+  if (entry.inFlight) return entry.inFlight;
+  const ttl = entry.value ? VISIBILITY_CONNECTED_CACHE_TTL_MS : VISIBILITY_DISCONNECTED_CACHE_TTL_MS;
+  if (!force && now - entry.checkedAtMs < ttl) {
+    return Promise.resolve(entry.value);
+  }
+
+  entry.inFlight = reader()
+    .then((status) => {
+      const nextValue = status.connected === true;
+      entry.value = nextValue;
+      entry.checkedAtMs = Date.now();
+      return nextValue;
+    })
+    .finally(() => {
+      entry.inFlight = null;
+    });
+  return entry.inFlight;
+}
 
 function openProjectPickerRoute(): void {
   window.location.hash = "#/project";
@@ -73,12 +122,12 @@ export function LinearQuickViewButton({
   // Remembers each issue's chosen config so "Retry failed" reuses the same model.
   const batchConfigByIssueRef = useRef<Map<string, BatchLaunchIssueConfig>>(new Map());
 
-  const loadVisibility = useCallback(async (): Promise<boolean> => {
-    if (!project?.rootPath || !window.ade.cto?.getLinearConnectionStatus) {
-      return false;
-    }
-    const status = await window.ade.cto.getLinearConnectionStatus();
-    return status.connected === true;
+  const loadVisibility = useCallback(async (options?: { force?: boolean }): Promise<boolean> => {
+    return readLinearVisibilityCached({
+      projectRoot: project?.rootPath,
+      reader: window.ade.cto?.getLinearConnectionStatus,
+      force: options?.force === true,
+    });
   }, [project?.rootPath]);
 
   const openLinearSettings = useCallback(() => {
@@ -115,6 +164,7 @@ export function LinearQuickViewButton({
   }, [handleQuickViewRequest, variant]);
 
   useEffect(() => {
+    if (variant !== "icon") return;
     let cancelled = false;
     setVisible(false);
     setOpen(false);
@@ -132,27 +182,43 @@ export function LinearQuickViewButton({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [loadVisibility, project?.rootPath]);
+  }, [loadVisibility, project?.rootPath, variant]);
 
   useEffect(() => {
+    if (variant !== "icon") return;
+    let timer: number | null = null;
+    let cancelled = false;
     const onBridge = () => {
-      void loadVisibility()
-        .then(setVisible)
-        .catch(() => setVisible(false));
+      if (timer != null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = null;
+        void loadVisibility()
+          .then((nextVisible) => {
+            if (!cancelled) setVisible(nextVisible);
+          })
+          .catch(() => {
+            if (!cancelled) setVisible(false);
+          });
+      }, INITIAL_VISIBILITY_CHECK_DELAY_MS);
     };
-    // If bridge already fired before this effect registered, check now
+    // If bridge already fired before this effect registered, queue the same low-priority check.
     if ((window as any).__adeRuntimeBridge) {
       onBridge();
     }
     window.addEventListener("ade:runtime-bridge-ready", onBridge);
-    return () => window.removeEventListener("ade:runtime-bridge-ready", onBridge);
-  }, [loadVisibility]);
+    return () => {
+      cancelled = true;
+      if (timer != null) window.clearTimeout(timer);
+      window.removeEventListener("ade:runtime-bridge-ready", onBridge);
+    };
+  }, [loadVisibility, variant]);
 
   useEffect(() => {
+    if (variant !== "icon") return;
     if (!project?.rootPath) return;
     let cancelled = false;
     const refresh = () => {
-      void loadVisibility()
+      void loadVisibility({ force: true })
         .then((nextVisible) => {
           if (!cancelled) setVisible(nextVisible);
         })
@@ -165,9 +231,10 @@ export function LinearQuickViewButton({
       cancelled = true;
       window.removeEventListener("focus", refresh);
     };
-  }, [loadVisibility, project?.rootPath]);
+  }, [loadVisibility, project?.rootPath, variant]);
 
   useEffect(() => {
+    if (variant !== "icon") return;
     if (visible) return;
     if (!project?.rootPath) return;
     let cancelled = false;
@@ -178,12 +245,12 @@ export function LinearQuickViewButton({
           window.clearInterval(interval);
         }
       }).catch(() => {});
-    }, 3_000);
+    }, VISIBILITY_RETRY_INTERVAL_MS);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [loadVisibility, visible, project?.rootPath]);
+  }, [loadVisibility, visible, project?.rootPath, variant]);
 
   const openQuickView = useCallback(() => {
     if (cachedQuickViewRef.current) {

@@ -11,6 +11,9 @@ const LOCAL_COST_SCAN_MAX_FILES = 5_000;
 const LOCAL_COST_SCAN_MAX_FILE_BYTES = 768 * 1024 * 1024;
 const LOCAL_COST_SCAN_MAX_ENTRIES = 1_000_000;
 const LOCAL_COST_SCAN_ALL_DAYS = 3650;
+const CODEX_COST_SCAN_MAX_FILES = 250;
+const CODEX_COST_SCAN_MAX_FILE_BYTES = 32 * 1024 * 1024;
+const CODEX_COST_SCAN_MAX_DAYS = 14;
 const LOCAL_SQLITE_SCAN_MAX_ROWS = 250_000;
 const LOCAL_CURSOR_SQLITE_RECENT_ROWS = 250_000;
 const CURSOR_CHARS_PER_TOKEN = 4;
@@ -347,7 +350,10 @@ export async function scanCodexLogs(): Promise<TokenEntry[]> {
     return entries;
   }
 
-  const jsonlFiles = await findJsonlFiles(sessionsDir, LOCAL_COST_SCAN_ALL_DAYS);
+  const jsonlFiles = await findJsonlFiles(sessionsDir, CODEX_COST_SCAN_MAX_DAYS, {
+    maxFiles: CODEX_COST_SCAN_MAX_FILES,
+    maxFileBytes: CODEX_COST_SCAN_MAX_FILE_BYTES,
+  });
 
   for (const filePath of jsonlFiles) {
     try {
@@ -1325,8 +1331,15 @@ async function isSupportedCodexUsageSession(filePath: string): Promise<boolean> 
   }
 }
 
-export async function findRecentFiles(dir: string, maxAgeDays: number, suffixes: string[]): Promise<string[]> {
+export async function findRecentFiles(
+  dir: string,
+  maxAgeDays: number,
+  suffixes: string[],
+  options: { maxFiles?: number; maxFileBytes?: number } = {},
+): Promise<string[]> {
   const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+  const maxFiles = Math.max(1, Math.floor(options.maxFiles ?? LOCAL_COST_SCAN_MAX_FILES));
+  const maxFileBytes = Math.max(1, Math.floor(options.maxFileBytes ?? LOCAL_COST_SCAN_MAX_FILE_BYTES));
   const files: Array<{ path: string; mtimeMs: number }> = [];
 
   async function walk(current: string, depth: number) {
@@ -1342,7 +1355,7 @@ export async function findRecentFiles(dir: string, maxAgeDays: number, suffixes:
         } else if (suffixes.some((suffix) => entry.name.endsWith(suffix))) {
           fileStatPromises.push(
             fs.promises.stat(fullPath).then((stat) => {
-              if (stat.mtimeMs >= cutoff && stat.size <= LOCAL_COST_SCAN_MAX_FILE_BYTES) {
+              if (stat.mtimeMs >= cutoff && stat.size <= maxFileBytes) {
                 files.push({ path: fullPath, mtimeMs: stat.mtimeMs });
               }
             }).catch(() => {
@@ -1360,12 +1373,16 @@ export async function findRecentFiles(dir: string, maxAgeDays: number, suffixes:
   await walk(dir, 0);
   return files
     .sort((a, b) => b.mtimeMs - a.mtimeMs)
-    .slice(0, LOCAL_COST_SCAN_MAX_FILES)
+    .slice(0, maxFiles)
     .map((file) => file.path);
 }
 
-export async function findJsonlFiles(dir: string, maxAgeDays: number): Promise<string[]> {
-  return findRecentFiles(dir, maxAgeDays, [".jsonl"]);
+export async function findJsonlFiles(
+  dir: string,
+  maxAgeDays: number,
+  options: { maxFiles?: number; maxFileBytes?: number } = {},
+): Promise<string[]> {
+  return findRecentFiles(dir, maxAgeDays, [".jsonl"], options);
 }
 
 async function findClaudeJsonlFilesInProjectDirs(projectDirs: string[], maxAgeDays: number): Promise<string[]> {

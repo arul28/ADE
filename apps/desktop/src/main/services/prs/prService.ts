@@ -623,6 +623,7 @@ function rowToSummary(row: PullRequestRow): PrSummary {
 
 const BACKGROUND_REFRESH_MAX_PRS = 4;
 const REFRESH_CONCURRENCY = 4;
+const TARGETED_LANE_PR_BRANCH_LOOKUP_CONCURRENCY = 4;
 const BACKGROUND_REFRESH_MIN_STALE_MS = 2 * 60_000;
 const BACKGROUND_REFRESH_CLOSED_STALE_MS = 15 * 60_000;
 const MERGEABILITY_POLL_DELAYS_MS = [500, 1_000, 2_000] as const;
@@ -639,6 +640,11 @@ function isMergeabilityPending(pr: any): boolean {
   if (!hasMergeabilityFields(pr)) return false;
   const mergeableState = asString(pr?.mergeable_state).trim().toLowerCase();
   return mergeableState === "unknown" || (!mergeableState && pr?.mergeable == null);
+}
+
+function isTerminalGithubPull(pr: any): boolean {
+  const state = asString(pr?.state).trim().toLowerCase();
+  return state === "closed" || Boolean(asString(pr?.merged_at).trim());
 }
 
 function mergeConflictsFromPull(pr: any): boolean | null {
@@ -1257,6 +1263,7 @@ export function createPrService({
   const invalidateGithubSnapshotCache = (): void => {
     cachedGithubSnapshot = null;
     cachedGithubSnapshotAt = 0;
+    cachedGithubSnapshotIncludesClosed = false;
     githubSnapshotCacheEpoch += 1;
   };
 
@@ -1931,6 +1938,8 @@ export function createPrService({
     rawPulls: any[],
     repo: GitHubRepoRef,
     lanes: LaneSummary[],
+    pullRequestRows: PullRequestRow[],
+    options: { skipBranchesWithLocalRows?: boolean } = {},
   ): Promise<any[]> => {
     const branchHasSameRepoPr = new Set<string>();
     const seenRepoPrNumbers = new Set<number>();
@@ -1941,12 +1950,23 @@ export function createPrService({
       if (branch && rawPullHasSameRepoHead(rawPr, repo)) branchHasSameRepoPr.add(branch);
     }
 
+    const branchHasLocalRow = options.skipBranchesWithLocalRows === false
+      ? new Set<string>()
+      : new Set(
+          pullRequestRows
+            .filter((row) =>
+              row.repo_owner.toLowerCase() === repo.owner.toLowerCase()
+              && row.repo_name.toLowerCase() === repo.name.toLowerCase()
+            )
+            .map((row) => normalizeBranchName(row.head_branch))
+            .filter(Boolean),
+        );
     const candidateBranches: string[] = [];
     const seenBranches = new Set<string>();
     for (const lane of lanes) {
       if (lane.archivedAt || lane.laneType === "primary") continue;
       const branch = normalizeBranchName(branchNameFromRef(lane.branchRef));
-      if (!branch || seenBranches.has(branch) || branchHasSameRepoPr.has(branch)) continue;
+      if (!branch || seenBranches.has(branch) || branchHasSameRepoPr.has(branch) || branchHasLocalRow.has(branch)) continue;
       seenBranches.add(branch);
       candidateBranches.push(branch);
     }
@@ -1956,28 +1976,34 @@ export function createPrService({
     if (targetedBranches.length === 0) return rawPulls;
 
     const extras: any[] = [];
-    for (const branch of targetedBranches) {
-      let branchPulls: any[];
-      try {
-        branchPulls = await fetchAllPages<any>({
-          path: `/repos/${repo.owner}/${repo.name}/pulls`,
-          query: {
-            state: "all",
-            head: `${repo.owner}:${branch}`,
-            sort: "updated",
-            direction: "desc",
-          },
-          maxPages: 1,
-        });
-      } catch (error) {
-        logger.warn("prs.github_snapshot_targeted_lane_pull_lookup_failed", {
-          owner: repo.owner,
-          repo: repo.name,
-          branch,
-          error: getErrorMessage(error),
-        });
-        continue;
-      }
+    const branchPullGroups = await mapConcurrent(
+      targetedBranches,
+      TARGETED_LANE_PR_BRANCH_LOOKUP_CONCURRENCY,
+      async (branch) => {
+        try {
+          return await fetchAllPages<any>({
+            path: `/repos/${repo.owner}/${repo.name}/pulls`,
+            query: {
+              state: "all",
+              head: `${repo.owner}:${branch}`,
+              sort: "updated",
+              direction: "desc",
+            },
+            maxPages: 1,
+          });
+        } catch (error) {
+          logger.warn("prs.github_snapshot_targeted_lane_pull_lookup_failed", {
+            owner: repo.owner,
+            repo: repo.name,
+            branch,
+            error: getErrorMessage(error),
+          });
+          return [];
+        }
+      },
+    );
+    for (const branchPulls of branchPullGroups) {
+      if (!branchPulls) continue;
       for (const rawPr of branchPulls) {
         const prNumber = asNumber(rawPr?.number);
         if (!prNumber || seenRepoPrNumbers.has(prNumber)) continue;
@@ -2185,7 +2211,7 @@ export function createPrService({
       method: "GET",
       path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}`
     });
-    if (!options.waitForKnownMergeability || !isMergeabilityPending(data)) {
+    if (!options.waitForKnownMergeability || isTerminalGithubPull(data) || !isMergeabilityPending(data)) {
       return data;
     }
     let latest = data;
@@ -2986,15 +3012,28 @@ export function createPrService({
     const pr = await fetchPr(repo, Number(row.github_pr_number), { waitForKnownMergeability: true });
     const headSha = asString(pr?.head?.sha);
     const baseSha = asString(pr?.base?.sha);
-    const mergeConflicts = mergeConflictsFromPull(pr);
+    const state = toPrState({
+      state: asString(pr?.state) || "open",
+      draft: Boolean(pr?.draft),
+      mergedAt: asString(pr?.merged_at) || null
+    });
+    const shouldFetchLiveStatus = isActivePrState(state);
+    const mergeConflicts = shouldFetchLiveStatus ? mergeConflictsFromPull(pr) : null;
     const requestedReviewers = Array.isArray(pr?.requested_reviewers) ? pr.requested_reviewers.map((u: any) => asString(u?.login)).filter(Boolean) : [];
 
-    const [combinedStatus, checkRuns, reviews, compare] = await Promise.all([
-      headSha ? fetchCombinedStatus(repo, headSha) : Promise.resolve({ state: "", statuses: [] }),
-      headSha ? bestEffort("refreshOne.fetchCheckRuns", fetchCheckRuns(repo, headSha), [] as any[]) : Promise.resolve([]),
-      bestEffort("refreshOne.fetchReviews", fetchReviews(repo, Number(row.github_pr_number)), []),
-      baseSha && headSha ? bestEffort("refreshOne.fetchCompare", fetchCompare(repo, baseSha, headSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null })
-    ]);
+    const [combinedStatus, checkRuns, reviews, compare] = shouldFetchLiveStatus
+      ? await Promise.all([
+          headSha ? fetchCombinedStatus(repo, headSha) : Promise.resolve({ state: "", statuses: [] }),
+          headSha ? bestEffort("refreshOne.fetchCheckRuns", fetchCheckRuns(repo, headSha), [] as any[]) : Promise.resolve([]),
+          bestEffort("refreshOne.fetchReviews", fetchReviews(repo, Number(row.github_pr_number)), []),
+          baseSha && headSha ? bestEffort("refreshOne.fetchCompare", fetchCompare(repo, baseSha, headSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null })
+        ])
+      : [
+          { state: "", statuses: [] },
+          [] as any[],
+          [] as Awaited<ReturnType<typeof fetchReviews>>,
+          { behindBy: null as number | null },
+        ];
     const reviewStatesByUser = new Map<string, string>();
     for (const review of reviews) {
       // Only treat these as gating states.
@@ -3002,14 +3041,12 @@ export function createPrService({
       if (review.state === "changes_requested") reviewStatesByUser.set(review.reviewer, "CHANGES_REQUESTED");
     }
 
-    const state = toPrState({
-      state: asString(pr?.state) || "open",
-      draft: Boolean(pr?.draft),
-      mergedAt: asString(pr?.merged_at) || null
-    });
-
-    const checksStatus = toChecksStatusFromCheckRuns(checkRuns) ?? toChecksStatus(combinedStatus.state);
-    const reviewStatus = computeReviewStatus({ requestedReviewers, reviewStatesByUser });
+    const checksStatus = shouldFetchLiveStatus
+      ? toChecksStatusFromCheckRuns(checkRuns) ?? toChecksStatus(combinedStatus.state)
+      : (row.checks_status as PrChecksStatus | null) ?? "none";
+    const reviewStatus = shouldFetchLiveStatus
+      ? computeReviewStatus({ requestedReviewers, reviewStatesByUser })
+      : (row.review_status as PrReviewStatus | null) ?? "none";
     const additions = Number(pr?.additions ?? 0);
     const deletions = Number(pr?.deletions ?? 0);
     const baseBranch = asString(pr?.base?.ref) || row.base_branch;
@@ -5963,15 +6000,18 @@ export function createPrService({
   const GITHUB_SNAPSHOT_TTL_MS = 120_000;
   let cachedGithubSnapshot: GitHubPrSnapshot | null = null;
   let cachedGithubSnapshotAt = 0;
+  let cachedGithubSnapshotIncludesClosed = false;
   let githubSnapshotCacheEpoch = 0;
-  let githubSnapshotInFlight: { request: Promise<GitHubPrSnapshot> } | null = null;
+  let githubSnapshotInFlight: { request: Promise<GitHubPrSnapshot>; includeExternalClosed: boolean } | null = null;
 
   const publishGithubSnapshot = (
     snapshot: GitHubPrSnapshot,
     capturedAt = Date.now(),
+    includeExternalClosed = false,
   ): void => {
     cachedGithubSnapshot = snapshot;
     cachedGithubSnapshotAt = capturedAt;
+    cachedGithubSnapshotIncludesClosed = includeExternalClosed;
   };
 
   const clearGithubSnapshotAuthCache = (): void => {
@@ -6061,6 +6101,7 @@ export function createPrService({
 
   const getGithubSnapshotUncached = async (
     precheckedGithubStatus?: GitHubStatus,
+    options: GithubSnapshotOptions = {},
   ): Promise<GitHubPrSnapshot> => {
     const githubStatus = precheckedGithubStatus ?? await requireGithubSnapshotAuth();
 
@@ -6133,9 +6174,19 @@ export function createPrService({
 
     let repoPullRequestsRaw = await fetchAllPages<any>({
       path: `/repos/${repo.owner}/${repo.name}/pulls`,
-      query: { state: "all", sort: "updated", direction: "desc" },
+      query: {
+        state: options.includeExternalClosed === true ? "all" : "open",
+        sort: "updated",
+        direction: "desc",
+      },
     });
-    repoPullRequestsRaw = await fetchMissingSameRepoLanePulls(repoPullRequestsRaw, repo, metadata.lanes);
+    repoPullRequestsRaw = await fetchMissingSameRepoLanePulls(
+      repoPullRequestsRaw,
+      repo,
+      metadata.lanes,
+      metadata.pullRequestRows,
+      { skipBranchesWithLocalRows: options.includeExternalClosed !== true },
+    );
     if (backfillLanePrRowsFromGithubPulls(repoPullRequestsRaw, repo, metadata.lanes) > 0) {
       metadata = await loadGithubSnapshotMetadata();
     }
@@ -6160,17 +6211,19 @@ export function createPrService({
 
     const startSnapshotRequest = (
       precheckedGithubStatus: GitHubStatus,
+      requestOptions: GithubSnapshotOptions,
     ): Promise<GitHubPrSnapshot> => {
       const requestEpoch = githubSnapshotCacheEpoch;
-      let inFlight!: { request: Promise<GitHubPrSnapshot> };
-      const request = getGithubSnapshotUncached(precheckedGithubStatus)
+      const includeExternalClosed = requestOptions.includeExternalClosed === true;
+      let inFlight!: { request: Promise<GitHubPrSnapshot>; includeExternalClosed: boolean };
+      const request = getGithubSnapshotUncached(precheckedGithubStatus, requestOptions)
         .then((snapshot) => {
           const capturedAt = Date.now();
           const canPublishSnapshot =
             githubSnapshotInFlight === inFlight
             && requestEpoch === githubSnapshotCacheEpoch;
           if (canPublishSnapshot) {
-            publishGithubSnapshot(snapshot, capturedAt);
+            publishGithubSnapshot(snapshot, capturedAt, includeExternalClosed);
           }
           return snapshot;
         })
@@ -6179,19 +6232,27 @@ export function createPrService({
             githubSnapshotInFlight = null;
           }
         });
-      inFlight = { request };
+      inFlight = { request, includeExternalClosed };
       githubSnapshotInFlight = inFlight;
       return request;
     };
 
-    if (!force && cachedGithubSnapshot) {
-      const cachedSnapshot = cachedGithubSnapshot;
+    const needsClosedHistory = options.includeExternalClosed === true;
+    const cachedSnapshotSatisfiesRequest =
+      cachedGithubSnapshot !== null
+      && (!needsClosedHistory || cachedGithubSnapshotIncludesClosed);
+    if (!force && cachedSnapshotSatisfiesRequest) {
+      const cachedSnapshot = cachedGithubSnapshot!;
       const ageMs = Date.now() - cachedGithubSnapshotAt;
       if (ageMs < GITHUB_SNAPSHOT_TTL_MS) {
         return cachedSnapshot;
       }
       if (!githubSnapshotInFlight) {
-        void startSnapshotRequest(githubStatus).catch((error) => {
+        const revalidationOptions =
+          cachedGithubSnapshotIncludesClosed && options.includeExternalClosed !== true
+            ? { ...options, includeExternalClosed: true }
+            : options;
+        void startSnapshotRequest(githubStatus, revalidationOptions).catch((error) => {
           logger.warn("prs.github_snapshot_revalidation_failed", {
             error: error instanceof Error ? error.message : String(error),
           });
@@ -6199,11 +6260,11 @@ export function createPrService({
       }
       return cachedSnapshot;
     }
-    if (!force && githubSnapshotInFlight) {
+    if (!force && githubSnapshotInFlight && (!needsClosedHistory || githubSnapshotInFlight.includeExternalClosed)) {
       return githubSnapshotInFlight.request;
     }
 
-    return startSnapshotRequest(githubStatus);
+    return startSnapshotRequest(githubStatus, options);
   };
 
   const landQueueNext = async (args: LandQueueNextArgs): Promise<LandResult> => {

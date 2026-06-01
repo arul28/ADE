@@ -17,6 +17,7 @@ import {
   renderLaneGraph,
   resolveRoots,
   shouldAutoRegisterProjectForPlan,
+  shouldEnforceMachineRuntimeBuildCompatibility,
   shouldAttemptDesktopSocketConnection,
   summarizeExecution,
   unwrapToolResult,
@@ -223,6 +224,15 @@ describe("ADE CLI", () => {
         enforceBuildCompatibility: false,
       }),
     ).toBeNull();
+  });
+
+  it("only disables machine runtime build checks for explicit socket overrides", () => {
+    expect(
+      shouldEnforceMachineRuntimeBuildCompatibility(null),
+    ).toBe(true);
+    expect(
+      shouldEnforceMachineRuntimeBuildCompatibility("/tmp/ade.sock"),
+    ).toBe(false);
   });
 
   it("marks failed service manager results as CLI failures", () => {

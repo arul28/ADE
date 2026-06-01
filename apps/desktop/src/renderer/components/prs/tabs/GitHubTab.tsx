@@ -27,6 +27,7 @@ import { usePrs } from "../state/PrsContext";
 import type { PrDetailRouteTab } from "../prsRouteState";
 import { GitHubRepoSyncBar } from "../shared/GitHubRepoSyncBar";
 import { GitHubPrSearchInput } from "../shared/GitHubPrSearchInput";
+import { getGitHubSnapshotCoalesced } from "../../../lib/prReadCache";
 
 const VIRTUALIZE_AT = 50;
 const LINKED_HYDRATION_LIMIT = 8;
@@ -863,10 +864,13 @@ export function GitHubTab({
       inFlightSnapshotRef.current?.request === pending
       && inFlightSnapshotRef.current.includeExternalClosed === includeExternalClosed;
     pending = (async () => {
-      return window.ade.prs.getGitHubSnapshot({
-        force: options?.force === true,
-        ...(includeExternalClosed ? { includeExternalClosed: true } : {}),
-      });
+      return getGitHubSnapshotCoalesced(
+        {
+          force: options?.force === true,
+          ...(includeExternalClosed ? { includeExternalClosed: true } : {}),
+        },
+        { projectRoot: requestProjectRoot },
+      );
     })()
       .then((next) => {
         if (!next) return next;

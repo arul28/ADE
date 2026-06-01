@@ -47,6 +47,7 @@ import {
   resolveLaneIdsDeepLinkSelection,
   resolveVisibleLaneIds,
   runLaneDeleteBatchWithConcurrency,
+  selectLanePrTag,
   selectLaneTabPrTag,
   shouldApplyLaneIdsDeepLink,
   sortLaneListRows,
@@ -72,6 +73,7 @@ import {
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
+import { getGitHubSnapshotCoalesced, listPrsCoalesced, refreshPrsCoalesced, warmPrSurfaceCoalesced } from "../../lib/prReadCache";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { linearIssueBranchName, linearIssueLaneName } from "../../../shared/linearIssueBranch";
 import type {
@@ -603,6 +605,10 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     });
     return sortLanesForTabs(deduped);
   }, [lanes]);
+  const sortedLanesRef = useRef(sortedLanes);
+  useEffect(() => {
+    sortedLanesRef.current = sortedLanes;
+  }, [sortedLanes]);
   const lanePrBranchSignature = useMemo(
     () => sortedLanes
       .map((lane) => `${lane.id}:${lane.laneType}:${lane.branchRef ?? ""}:${lane.baseRef ?? ""}`)
@@ -872,17 +878,34 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     }
   }, []);
 
-  const refreshLanePrTags = useCallback(async () => {
+  const refreshLanePrTags = useCallback(async (options?: { refreshMapped?: boolean }) => {
     const requestId = ++lanePrTagsRequestRef.current;
     const startedRoot = appStore.getState().project?.rootPath ?? null;
+    const stillCurrent = () =>
+      requestId === lanePrTagsRequestRef.current
+      && (appStore.getState().project?.rootPath ?? null) === startedRoot;
     try {
-      const prs = await window.ade.prs.listAll();
-      if (requestId !== lanePrTagsRequestRef.current) return;
-      if ((appStore.getState().project?.rootPath ?? null) !== startedRoot) return;
+      const prs = await listPrsCoalesced({ projectRoot: startedRoot });
+      if (!stillCurrent()) return;
       setLanePrTags(prs);
+      if (options?.refreshMapped !== true) return;
+
+      const matchedPrIds = sortedLanesRef.current
+        .map((lane) => selectLanePrTag(lane, prs)?.id ?? null)
+        .filter((prId): prId is string => Boolean(prId));
+      if (matchedPrIds.length === 0) return;
+
+      try {
+        const refreshed = await refreshPrsCoalesced({ prIds: matchedPrIds }, { projectRoot: startedRoot });
+        if (!stillCurrent()) return;
+        const refreshedById = new Map(refreshed.map((pr) => [pr.id, pr] as const));
+        setLanePrTags(prs.map((pr) => refreshedById.get(pr.id) ?? pr));
+      } catch {
+        // Keep the immediate local rows visible; the full GitHub snapshot below
+        // still has a chance to provide terminal state for branch-matched PRs.
+      }
     } catch {
-      if (requestId !== lanePrTagsRequestRef.current) return;
-      if ((appStore.getState().project?.rootPath ?? null) !== startedRoot) return;
+      if (!stillCurrent()) return;
       setLanePrTags([]);
     }
   }, [appStore]);
@@ -891,7 +914,10 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     const requestId = ++laneGithubPrTagsRequestRef.current;
     const startedRoot = appStore.getState().project?.rootPath ?? null;
     try {
-      const snapshot = await window.ade.prs.getGitHubSnapshot({ force: options?.force === true });
+      const snapshot = await getGitHubSnapshotCoalesced(
+        { force: options?.force === true },
+        { projectRoot: startedRoot },
+      );
       if (requestId !== laneGithubPrTagsRequestRef.current) return;
       if ((appStore.getState().project?.rootPath ?? null) !== startedRoot) return;
       setLaneGithubPrTags(snapshot.repoPullRequests);
@@ -1053,14 +1079,15 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     if (!active || !project?.rootPath) {
       return;
     }
-    const timer = window.setTimeout(() => {
-      void refreshLanePrTags();
-      void refreshLaneGithubPrTags({ force: true });
-    }, 160);
+    void refreshLanePrTags({ refreshMapped: true });
+    void refreshLaneGithubPrTags({ force: true });
+    void warmPrSurfaceCoalesced({
+      projectRoot: project.rootPath,
+      includeGithubSnapshot: false,
+    });
     return () => {
       lanePrTagsRequestRef.current += 1;
       laneGithubPrTagsRequestRef.current += 1;
-      window.clearTimeout(timer);
     };
   }, [active, refreshLanePrTags, refreshLaneGithubPrTags, project?.rootPath, lanePrBranchSignature]);
 
@@ -1073,7 +1100,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         // This event already carries ADE rows; use the cached repo snapshot unless a PR notification asks for a forced refresh.
         void refreshLaneGithubPrTags();
       } else if (event.type === "pr-notification") {
-        void refreshLanePrTags();
+        void refreshLanePrTags({ refreshMapped: true });
         void refreshLaneGithubPrTags({ force: true });
       }
     });

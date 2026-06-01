@@ -37,6 +37,7 @@ import { getModelById, resolveProviderGroupForModel, type ModelProviderGroup } f
 import { parsePrsRouteState, resolvePrsActiveTab } from "../prsRouteState";
 import { resolveRouteRebaseSelection } from "../shared/rebaseNeedUtils";
 import { useAppStore } from "../../../state/appStore";
+import { refreshPrsCoalesced } from "../../../lib/prReadCache";
 
 type PrTab = "normal" | "queue" | "integration" | "rebase";
 
@@ -885,7 +886,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
         activeTabRef.current !== "normal" || selectedPrIdRef.current !== null || currentRouteRequestsPrDiagnostics();
       void applyLocalPrState({ forceRebaseDiagnostics: shouldLoadWorkflowDiagnostics })
         .then(() => options.githubRefreshMode === "background"
-          ? window.ade.prs.refresh(options.githubRefreshArgs).catch(() => null)
+          ? refreshPrsCoalesced(options.githubRefreshArgs ?? {}, { projectRoot }).catch(() => null)
           : null)
         .then(() => {
           if (options.githubRefreshMode === "background") {
@@ -918,7 +919,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       warmCacheHydratedAtRef.current = Date.now();
       setRefreshErrorRetryCount(0);
       if (options.githubRefreshMode === "background") {
-        void window.ade.prs.refresh(options.githubRefreshArgs)
+        void refreshPrsCoalesced(options.githubRefreshArgs ?? {}, { projectRoot })
           .then(() => applyLocalPrState({ forceRebaseDiagnostics: shouldLoadWorkflowDiagnostics }))
           .then(() => {
             warmCacheHydratedAtRef.current = Date.now();
@@ -942,16 +943,14 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
         void refreshCore(pendingRefresh);
       }
     }
-  }, [active, applyLocalPrState]);
+  }, [active, applyLocalPrState, projectRoot]);
 
   // Initial load
   useEffect(() => {
     if (!active) return;
-    const shouldRefreshFromGithub =
-      activeTabRef.current !== "normal" || selectedPrIdRef.current !== null;
     void refreshCore({
       skipFreshWarmCache: true,
-      githubRefreshMode: shouldRefreshFromGithub ? "background" : undefined,
+      githubRefreshMode: "background",
     });
   }, [active, refreshCore]);
 

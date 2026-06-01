@@ -59,6 +59,17 @@ describe("sessionListCache", () => {
     expect(listMock).toHaveBeenCalledTimes(1);
   });
 
+  it("reuses an unbounded cached result for limited callers", async () => {
+    listMock.mockResolvedValueOnce(makeRows(10));
+
+    const full = await listSessionsCached();
+    const partial = await listSessionsCached({ limit: 5 });
+
+    expect(full).toHaveLength(10);
+    expect(partial).toHaveLength(5);
+    expect(listMock).toHaveBeenCalledTimes(1);
+  });
+
   it("refetches when a later caller needs a larger limit", async () => {
     listMock
       .mockResolvedValueOnce(makeRows(5))
@@ -91,5 +102,38 @@ describe("sessionListCache", () => {
     expect(projectBRows).toHaveLength(4);
     expect(projectARowsAgain).toHaveLength(3);
     expect(listMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("shares an in-flight request with forced callers", async () => {
+    let resolveRows!: (rows: ReturnType<typeof makeRows>) => void;
+    listMock.mockImplementationOnce(() => new Promise<ReturnType<typeof makeRows>>((resolve) => {
+      resolveRows = resolve;
+    }));
+
+    const first = listSessionsCached({ limit: 10 });
+    const forced = listSessionsCached({ limit: 5 }, { force: true });
+
+    expect(listMock).toHaveBeenCalledTimes(1);
+    resolveRows(makeRows(10));
+
+    await expect(first).resolves.toHaveLength(10);
+    await expect(forced).resolves.toHaveLength(5);
+  });
+
+  it("keeps in-flight requests coalesced after invalidation", async () => {
+    let resolveRows!: (rows: ReturnType<typeof makeRows>) => void;
+    listMock.mockImplementationOnce(() => new Promise<ReturnType<typeof makeRows>>((resolve) => {
+      resolveRows = resolve;
+    }));
+
+    const first = listSessionsCached({ limit: 10 });
+    invalidateSessionListCache();
+    const second = listSessionsCached({ limit: 5 });
+
+    expect(listMock).toHaveBeenCalledTimes(1);
+    resolveRows(makeRows(10));
+
+    await expect(first).resolves.toHaveLength(10);
+    await expect(second).resolves.toHaveLength(5);
   });
 });

@@ -19,6 +19,7 @@ type StoredSuggestionState = {
 
 const KEY_PREFIX = "rebase:suggestion:";
 const SUGGESTION_CACHE_TTL_MS = 10_000;
+const SUGGESTION_SCAN_CONCURRENCY = 4;
 
 type ListSuggestionsOptions = {
   force?: boolean;
@@ -60,6 +61,24 @@ function isSuppressed(args: { nowMs: number; state: StoredSuggestionState; curre
     if (Number.isFinite(untilMs) && args.nowMs < untilMs) return true;
   }
   return false;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  work: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await work(items[index] as T, index);
+    }
+  }));
+  return results;
 }
 
 export function createRebaseSuggestionService(args: {
@@ -172,8 +191,14 @@ export function createRebaseSuggestionService(args: {
     lane: LaneSummary,
     laneById: Map<string, LaneSummary>,
     primaryParentHeadByBranch: Map<string, string | null>,
-    options: { refreshRemoteTracking?: boolean } = {},
+    options: {
+      refreshRemoteTracking?: boolean;
+      readRefHeadSha?: (ref: string) => Promise<string | null>;
+      getWorktreeHeadSha?: (worktreePath: string) => Promise<string | null>;
+    } = {},
   ): Promise<{ parentLaneId: string; parentHeadSha: string; baseLabel: string | null; groupContext: string | null } | null> => {
+    const readRef = options.readRefHeadSha ?? readRefHeadSha;
+    const readWorktreeHead = options.getWorktreeHeadSha ?? getHeadSha;
     const queueOverride = await resolveQueueRebaseOverride({
       db,
       projectId,
@@ -181,7 +206,7 @@ export function createRebaseSuggestionService(args: {
       laneId: lane.id,
     });
     if (queueOverride) {
-      const parentHeadSha = await readRefHeadSha(queueOverride.comparisonRef);
+      const parentHeadSha = await readRef(queueOverride.comparisonRef);
       if (!parentHeadSha) return null;
       return {
         parentLaneId: `queue:${queueOverride.queueGroupId}`,
@@ -207,14 +232,14 @@ export function createRebaseSuggestionService(args: {
                 targetBranch: parentBranch,
               }).catch(() => {});
             }
-            parentHeadSha = await readRefHeadSha(`origin/${parentBranch}`);
+            parentHeadSha = await readRef(`origin/${parentBranch}`);
             if (!parentHeadSha) {
-              parentHeadSha = await getHeadSha(parent.worktreePath);
+              parentHeadSha = await readWorktreeHead(parent.worktreePath);
             }
             primaryParentHeadByBranch.set(parentBranch, parentHeadSha);
           }
         } else {
-          parentHeadSha = await getHeadSha(parent.worktreePath);
+          parentHeadSha = await readWorktreeHead(parent.worktreePath);
         }
         if (!parentHeadSha) return null;
         return {
@@ -236,8 +261,8 @@ export function createRebaseSuggestionService(args: {
     }
     const comparisonRef = baseRef.startsWith("origin/") ? baseRef : `origin/${fetchTargetName}`;
     const baseHeadSha =
-      (await readRefHeadSha(comparisonRef))
-      ?? (await readRefHeadSha(fetchTargetName));
+      (await readRef(comparisonRef))
+      ?? (await readRef(fetchTargetName));
     if (!baseHeadSha) return null;
     return {
       parentLaneId: `base:${baseRef}`,
@@ -248,6 +273,7 @@ export function createRebaseSuggestionService(args: {
   };
 
   const computeSuggestions = async (options: ListSuggestionsOptions = {}): Promise<RebaseSuggestion[]> => {
+    const startedAt = Date.now();
     if (options.refreshRemoteTracking) {
       await fetchQueueTargetTrackingBranches({
         db,
@@ -259,25 +285,53 @@ export function createRebaseSuggestionService(args: {
     const lanes = options.lanes ?? await laneService.list({ includeArchived: false });
     const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
     const primaryParentHeadByBranch = new Map<string, string | null>();
+    const refHeadShaByRef = new Map<string, Promise<string | null>>();
+    const worktreeHeadShaByPath = new Map<string, Promise<string | null>>();
     const prLaneIds = getPrLaneIds();
 
-    const out: RebaseSuggestion[] = [];
     const nowMs = Date.now();
+    const readRefHeadShaCached = (ref: string): Promise<string | null> => {
+      const existing = refHeadShaByRef.get(ref);
+      if (existing) return existing;
+      const next = readRefHeadSha(ref);
+      refHeadShaByRef.set(ref, next);
+      return next;
+    };
+    const getWorktreeHeadShaCached = (worktreePath: string): Promise<string | null> => {
+      const existing = worktreeHeadShaByPath.get(worktreePath);
+      if (existing) return existing;
+      const next = getHeadSha(worktreePath);
+      worktreeHeadShaByPath.set(worktreePath, next);
+      return next;
+    };
+    const computeLaneSuggestion = async (lane: LaneSummary): Promise<RebaseSuggestion | null> => {
+      const laneStartedAt = Date.now();
+      const phases: Array<{ phase: string; durationMs: number }> = [];
+      const timePhase = async <T>(phase: string, work: () => Promise<T> | T): Promise<T> => {
+        const phaseStartedAt = Date.now();
+        try {
+          return await work();
+        } finally {
+          phases.push({ phase, durationMs: Date.now() - phaseStartedAt });
+        }
+      };
 
-    for (const lane of lanes) {
-      const base = await resolveSuggestionBase(lane, laneById, primaryParentHeadByBranch, {
-        refreshRemoteTracking: options.refreshRemoteTracking === true,
-      });
-      if (!base) continue;
-      const laneHeadSha = await getHeadSha(lane.worktreePath);
-      if (!laneHeadSha) continue;
-      const behindCount = await readBehindCount({
+      const base = await timePhase("resolve_base", () =>
+        resolveSuggestionBase(lane, laneById, primaryParentHeadByBranch, {
+          refreshRemoteTracking: options.refreshRemoteTracking === true,
+          readRefHeadSha: readRefHeadShaCached,
+          getWorktreeHeadSha: getWorktreeHeadShaCached,
+        }));
+      if (!base) return null;
+      const laneHeadSha = await timePhase("read_lane_head", () => getWorktreeHeadShaCached(lane.worktreePath));
+      if (!laneHeadSha) return null;
+      const behindCount = await timePhase("read_behind_count", () => readBehindCount({
         laneHeadSha,
         baseHeadSha: base.parentHeadSha,
-      });
-      if (behindCount <= 0) continue;
+      }));
+      if (behindCount <= 0) return null;
 
-      const existing = loadState(lane.id);
+      const existing = await timePhase("load_state", () => loadState(lane.id));
 
       const nextState: StoredSuggestionState = existing && existing.parentLaneId === base.parentLaneId
         ? (() => {
@@ -315,17 +369,17 @@ export function createRebaseSuggestionService(args: {
         existing.deferredUntil !== nextState.deferredUntil ||
         existing.dismissedAt !== nextState.dismissedAt
       ) {
-        saveState(nextState);
+        await timePhase("save_state", () => saveState(nextState));
       }
 
-      if (isSuppressed({ nowMs, state: nextState, currentParentHeadSha: base.parentHeadSha })) continue;
+      if (isSuppressed({ nowMs, state: nextState, currentParentHeadSha: base.parentHeadSha })) return null;
 
       let targetCommits: RebaseTargetCommit[] = [];
       try {
-        targetCommits = await readBehindCommits({
+        targetCommits = await timePhase("read_target_commits", () => readBehindCommits({
           laneHeadSha,
           baseHeadSha: base.parentHeadSha,
-        });
+        }));
       } catch (err) {
         logger.warn("rebaseSuggestions.read_target_commits_failed", {
           laneId: lane.id,
@@ -333,7 +387,18 @@ export function createRebaseSuggestionService(args: {
         });
       }
 
-      out.push({
+      const durationMs = Date.now() - laneStartedAt;
+      if (durationMs >= 250) {
+        logger.info("rebaseSuggestions.lane_slow", {
+          laneId: lane.id,
+          durationMs,
+          phases: phases
+            .filter((phase) => phase.durationMs >= 10)
+            .sort((left, right) => right.durationMs - left.durationMs),
+        });
+      }
+
+      return {
         laneId: lane.id,
         parentLaneId: base.parentLaneId,
         parentHeadSha: base.parentHeadSha,
@@ -345,9 +410,21 @@ export function createRebaseSuggestionService(args: {
         dismissedAt: nextState.dismissedAt,
         hasPr: prLaneIds.has(lane.id),
         targetCommits
+      };
+    };
+
+    const out = (await mapWithConcurrency(lanes, SUGGESTION_SCAN_CONCURRENCY, computeLaneSuggestion))
+      .filter((entry): entry is RebaseSuggestion => entry !== null);
+    const durationMs = Date.now() - startedAt;
+    if (durationMs >= 120) {
+      logger.info("rebaseSuggestions.list_summary", {
+        durationMs,
+        laneCount: lanes.length,
+        suggestionCount: out.length,
+        providedLanes: Boolean(options.lanes),
+        refreshRemoteTracking: options.refreshRemoteTracking === true,
       });
     }
-
     return out.sort((a, b) => {
       const behindDelta = b.behindCount - a.behindCount;
       if (behindDelta !== 0) return behindDelta;

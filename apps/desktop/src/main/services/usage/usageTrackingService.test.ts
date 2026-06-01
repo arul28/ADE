@@ -927,6 +927,33 @@ describe("createUsageTrackingService", () => {
     service.dispose();
   });
 
+  it("does not scan local provider ledgers during automatic startup polls", async () => {
+    const logger = createLogger();
+    const dependencies = createFastDependencies();
+    const service = createUsageTrackingService({
+      logger,
+      dependencies,
+    });
+
+    service.start();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(dependencies.pollClaudeUsage).toHaveBeenCalledTimes(1);
+    expect(dependencies.pollCodexUsage).toHaveBeenCalledTimes(1);
+    expect(dependencies.scanClaudeLogs).not.toHaveBeenCalled();
+    expect(dependencies.scanCodexLogs).not.toHaveBeenCalled();
+    expect(dependencies.scanCursorLogs).not.toHaveBeenCalled();
+    expect(dependencies.scanCursorAgentLogs).not.toHaveBeenCalled();
+    expect(dependencies.scanOpenClawLogs).not.toHaveBeenCalled();
+    expect(dependencies.scanOpenCodeLogs).not.toHaveBeenCalled();
+    expect(dependencies.scanDroidLogs).not.toHaveBeenCalled();
+    expect(dependencies.scanCopilotLogs).not.toHaveBeenCalled();
+    expect(dependencies.scanGeminiLogs).not.toHaveBeenCalled();
+
+    service.dispose();
+  });
+
   it("calculates pacing separately for Claude and Codex windows", async () => {
     const now = Date.now();
     const weeklyResetMs = 3.5 * 24 * 60 * 60 * 1000;
@@ -959,6 +986,35 @@ describe("createUsageTrackingService", () => {
     expect(dependencies.scanDroidLogs).toHaveBeenCalledTimes(1);
     expect(dependencies.scanCopilotLogs).toHaveBeenCalledTimes(1);
     expect(dependencies.scanGeminiLogs).toHaveBeenCalledTimes(1);
+
+    service.dispose();
+  });
+
+  it("waits for a startup no-cost poll before running an explicit cost refresh", async () => {
+    const logger = createLogger();
+    const dependencies = createFastDependencies();
+    let resolveStartupPoll!: (value: { windows: never[]; extraUsage: null; errors: never[] }) => void;
+    dependencies.pollClaudeUsage
+      .mockReturnValueOnce(new Promise((resolve) => {
+        resolveStartupPoll = resolve;
+      }))
+      .mockResolvedValue({ windows: [] as never[], extraUsage: null, errors: [] as never[] });
+    const service = createUsageTrackingService({ logger, dependencies });
+
+    service.start();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(dependencies.pollClaudeUsage).toHaveBeenCalledTimes(1);
+
+    const refresh = service.forceRefresh();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(dependencies.scanClaudeLogs).not.toHaveBeenCalled();
+
+    resolveStartupPoll({ windows: [] as never[], extraUsage: null, errors: [] as never[] });
+    await expect(refresh).resolves.toBeDefined();
+
+    expect(dependencies.pollClaudeUsage).toHaveBeenCalledTimes(2);
+    expect(dependencies.scanClaudeLogs).toHaveBeenCalledTimes(1);
+    expect(dependencies.scanCodexLogs).toHaveBeenCalledTimes(1);
 
     service.dispose();
   });
@@ -1333,6 +1389,49 @@ describe("scanCodexLogs", () => {
 
       expect(entries).toHaveLength(2);
       expect(entries.map((entry) => entry.originator).sort()).toEqual(["Codex Desktop", "codex_cli_rs"]);
+    } finally {
+      if (originalCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = originalCodexHome;
+      }
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips oversized Codex session files during local usage scans", async () => {
+    const tmpDir = makeTmpDir();
+    const originalCodexHome = process.env.CODEX_HOME;
+    try {
+      process.env.CODEX_HOME = tmpDir;
+      const sessionDir = path.join(tmpDir, "sessions", "2026", "05", "29");
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const filePath = path.join(sessionDir, "rollout-2026-05-29T12-00-00-huge.jsonl");
+      fs.writeFileSync(
+        filePath,
+        [
+          JSON.stringify({
+            timestamp: "2026-05-29T12:00:00.000Z",
+            type: "session_meta",
+            payload: { id: "session-huge", originator: "codex_cli_rs", cwd: "/repo", model: "gpt-5.5" },
+          }),
+          JSON.stringify({
+            timestamp: "2026-05-29T12:00:01.000Z",
+            type: "event_msg",
+            payload: {
+              type: "token_count",
+              info: {
+                total_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+                last_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+              },
+            },
+          }),
+          "",
+        ].join("\n"),
+      );
+      fs.truncateSync(filePath, 40 * 1024 * 1024);
+
+      await expect(scanCodexLogs()).resolves.toEqual([]);
     } finally {
       if (originalCodexHome === undefined) {
         delete process.env.CODEX_HOME;

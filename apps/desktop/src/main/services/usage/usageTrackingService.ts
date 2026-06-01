@@ -1655,6 +1655,10 @@ type UsageTrackingDependencies = {
   scanGitHubStats?: (range: ResolvedAdeUsageRange) => Promise<GitHubActivityStats>;
 };
 
+type PollOptions = {
+  includeCosts?: boolean;
+};
+
 export function createUsageTrackingService({
   logger,
   pollIntervalMs: configuredInterval,
@@ -1674,14 +1678,16 @@ export function createUsageTrackingService({
   );
 
   let lastSnapshot: UsageSnapshot | null = readCachedUsageSnapshot(logger);
-  let costCacheTimestamp = 0;
-  let cachedCosts: CostSnapshot[] = [];
-  let cachedAdeCosts: CostSnapshot[] = [];
-  let cachedDaily7d: Partial<Record<UsageProvider, number[]>> = {};
+  const cachedSnapshotMs = lastSnapshot ? Date.parse(lastSnapshot.lastPolledAt) : Number.NaN;
+  let costCacheTimestamp = Number.isFinite(cachedSnapshotMs) ? cachedSnapshotMs : 0;
+  let cachedCosts: CostSnapshot[] = lastSnapshot?.costs ?? [];
+  let cachedAdeCosts: CostSnapshot[] = lastSnapshot?.adeCosts ?? [];
+  let cachedDaily7d: Partial<Record<UsageProvider, number[]>> = lastSnapshot?.dailyUsage7d ?? {};
   const githubStatsCache = new Map<string, { fetchedAtMs: number; stats: GitHubActivityStats }>();
   const githubStatsInFlight = new Map<string, Promise<GitHubActivityStats>>();
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let inFlightPoll: Promise<UsageSnapshot> | null = null;
+  let inFlightPollIncludesCosts = false;
   const runClaudeUsagePoll = dependencies?.pollClaudeUsage ?? (() => pollClaudeUsage(logger));
   const runCodexUsagePoll = dependencies?.pollCodexUsage ?? (() => pollCodexUsage(logger));
   const scanClaudeCostLogs = dependencies?.scanClaudeLogs ?? scanClaudeLogs;
@@ -1707,12 +1713,17 @@ export function createUsageTrackingService({
     errors: [],
   });
 
+  function cachedCostResult(): { costs: CostSnapshot[]; adeCosts: CostSnapshot[] } {
+    return { costs: cachedCosts, adeCosts: cachedAdeCosts };
+  }
+
   async function pollCosts(): Promise<{ costs: CostSnapshot[]; adeCosts: CostSnapshot[] }> {
     const now = Date.now();
     if (now - costCacheTimestamp < COST_CACHE_TTL_MS && cachedCosts.length > 0) {
-      return { costs: cachedCosts, adeCosts: cachedAdeCosts };
+      return cachedCostResult();
     }
 
+    const startedAt = Date.now();
     if (process.env.VITEST !== "true") {
       await refreshDynamicTokenPricing(logger).catch((error) => {
         logger.debug("usage.pricing_refresh_failed", { error: getErrorMessage(error) });
@@ -1788,15 +1799,37 @@ export function createUsageTrackingService({
     cachedAdeCosts = [];
     cachedDaily7d = daily7d;
     costCacheTimestamp = now;
+    const durationMs = Date.now() - startedAt;
+    if (durationMs > 500) {
+      logger.warn("usage.cost_scan_slow", {
+        durationMs,
+        providerCount: costs.length,
+        claudeEntries: claudeEntries.length,
+        codexEntries: codexEntries.length,
+        cursorEntries: cursorEntries.length,
+        cursorAgentEntries: cursorAgentEntries.length,
+        openClawEntries: openClawEntries.length,
+        openCodeEntries: openCodeEntries.length,
+        droidEntries: droidEntries.length,
+        copilotEntries: copilotEntries.length,
+        geminiEntries: geminiEntries.length,
+      });
+    }
     return { costs, adeCosts: [] };
   }
 
-  async function poll(): Promise<UsageSnapshot> {
-    if (inFlightPoll) {
-      return await inFlightPoll;
+  async function poll(options: PollOptions = {}): Promise<UsageSnapshot> {
+    const includeCosts = options.includeCosts !== false;
+    while (inFlightPoll) {
+      if (!includeCosts || inFlightPollIncludesCosts) {
+        return await inFlightPoll;
+      }
+      await inFlightPoll.catch(() => null);
     }
 
-    inFlightPoll = (async () => {
+    let currentPoll!: Promise<UsageSnapshot>;
+    inFlightPollIncludesCosts = includeCosts;
+    currentPoll = Promise.resolve().then(async () => {
       const errors: string[] = [];
       let allWindows: UsageWindow[] = [];
 
@@ -1812,7 +1845,7 @@ export function createUsageTrackingService({
             logger.warn("usage.poll.codex_failed", { error: msg });
             return { windows: [] as UsageWindow[], errors: [msg] };
           }),
-          pollCosts(),
+          includeCosts ? pollCosts() : Promise.resolve(cachedCostResult()),
         ]);
 
         allWindows = [...claudeResult.windows, ...codexResult.windows];
@@ -1862,19 +1895,25 @@ export function createUsageTrackingService({
 
         return { ...emptySnapshot(), errors };
       } finally {
-        inFlightPoll = null;
+        if (inFlightPoll === currentPoll) {
+          inFlightPoll = null;
+          inFlightPollIncludesCosts = false;
+        }
       }
-    })();
+    });
+    inFlightPoll = currentPoll;
 
-    return await inFlightPoll;
+    return await currentPoll;
   }
 
   function start() {
     if (pollTimer) return;
-    // Fire immediately, then on interval
-    void poll().catch(() => {});
+    // Automatic provider polling should not walk local agent ledgers. On
+    // machines with multi-GB Codex/Claude logs that scan can block project open
+    // and the runtime action queue; explicit refresh still performs it.
+    void poll({ includeCosts: false }).catch(() => {});
     pollTimer = setInterval(() => {
-      void poll().catch(() => {});
+      void poll({ includeCosts: false }).catch(() => {});
     }, pollIntervalMs);
   }
 
@@ -1903,7 +1942,7 @@ export function createUsageTrackingService({
       }, FORCE_REFRESH_RESPONSE_TIMEOUT_MS).unref?.();
     });
     try {
-      return await Promise.race([poll(), timeoutSnapshot]);
+      return await Promise.race([poll({ includeCosts: true }), timeoutSnapshot]);
     } finally {
       if (timeout) clearTimeout(timeout);
     }
@@ -1914,12 +1953,11 @@ export function createUsageTrackingService({
     if (inFlightPoll) {
       snapshot = await inFlightPoll.catch(() => lastSnapshot ?? emptySnapshot());
     }
-    const lastPolledMs = snapshot ? Date.parse(snapshot.lastPolledAt) : Number.NaN;
-    const staleSnapshot = snapshot
-      ? !Number.isFinite(lastPolledMs) || Date.now() - lastPolledMs > COST_CACHE_TTL_MS
-      : false;
-    if (!snapshot || snapshot.costs.length === 0 || staleSnapshot) {
-      snapshot = await poll().catch(() => lastSnapshot ?? emptySnapshot());
+    const staleCosts =
+      costCacheTimestamp === 0 ||
+      Date.now() - costCacheTimestamp > COST_CACHE_TTL_MS;
+    if (!snapshot || snapshot.costs.length === 0 || staleCosts) {
+      snapshot = await poll({ includeCosts: true }).catch(() => lastSnapshot ?? emptySnapshot());
     }
     const range = resolveAdeUsageRange(args, Date.now());
     const githubStats = await getGithubStatsForRange(range);

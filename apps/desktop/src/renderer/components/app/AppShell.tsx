@@ -621,10 +621,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const refreshStaleCliNotice = async () => {
       if (document.visibilityState !== "visible") return;
       try {
-        const sessions = await listSessionsCached(
-          { status: "running", limit: 500 },
-          { force: true },
-        );
+        const sessions = await listSessionsCached({ status: "running", limit: 500 });
         if (cancelled) return;
         const nowMs = Date.now();
         const stale = sessions
