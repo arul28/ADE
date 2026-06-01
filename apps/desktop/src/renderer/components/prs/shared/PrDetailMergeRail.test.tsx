@@ -109,4 +109,25 @@ describe("PrDetailMergeRail", () => {
     expect(onDeleteBranch).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId("pr-merge-merged-banner")).toBeTruthy();
   });
+
+  it("requires confirmation before closing an open PR", () => {
+    const onClose = vi.fn();
+    render(
+      <PrDetailMergeRail
+        pr={makePr({ state: "open" })}
+        status={makeStatus()}
+        checks={[]}
+        reviews={[]}
+        mergeMethod="squash"
+        actionBusy={false}
+        onMerge={() => {}}
+        onClose={onClose}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Close pull request/i }));
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /Click again to close PR/i }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });

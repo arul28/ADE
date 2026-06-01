@@ -581,6 +581,45 @@ describe("githubService issue-domain helpers", () => {
     expect(mockFetch.mock.calls[3]?.[0]).toContain("page=2");
   });
 
+  it("does not evict an ETag cache entry while its conditional request is in flight", async () => {
+    const service = makeService();
+    let protectedCalls = 0;
+    let resolveProtected304: ((response: Response) => void) | null = null;
+    mockFetch.mockImplementation((rawUrl: string) => {
+      const url = new URL(rawUrl);
+      if (url.pathname === "/protected") {
+        protectedCalls += 1;
+        if (protectedCalls === 1) {
+          return Promise.resolve(jsonResponse(200, { value: "cached" }, { etag: '"protected"' }));
+        }
+        return new Promise<Response>((resolve) => {
+          resolveProtected304 = resolve;
+        });
+      }
+      return Promise.resolve(jsonResponse(200, { value: url.pathname }, { etag: `"${url.pathname}"` }));
+    });
+
+    await service.apiRequest({ method: "GET", path: "/protected", token: "ghp_test123" });
+    const conditional = service.apiRequest<{ value: string }>({
+      method: "GET",
+      path: "/protected",
+      token: "ghp_test123",
+    });
+    await Promise.resolve();
+
+    for (let i = 0; i < 205; i += 1) {
+      await service.apiRequest({ method: "GET", path: `/repos/acme/repo/issues/${i}`, token: "ghp_test123" });
+    }
+
+    const protected304Resolver = resolveProtected304 as ((response: Response) => void) | null;
+    if (!protected304Resolver) {
+      throw new Error("Expected protected conditional request to be in flight");
+    }
+    protected304Resolver(jsonResponse(304, {}));
+
+    await expect(conditional).resolves.toMatchObject({ data: { value: "cached" } });
+  });
+
   it("URL-encodes owner/name so special characters don't break the path", async () => {
     mockFetch.mockResolvedValueOnce(jsonResponse(200, []));
     const service = makeService();

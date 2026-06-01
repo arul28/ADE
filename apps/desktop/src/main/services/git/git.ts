@@ -98,7 +98,7 @@ export type GitMergeTreeResult = GitRunResult & {
 };
 
 const DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
-const STALE_GIT_INDEX_LOCK_MIN_AGE_MS = 15_000;
+const STALE_GIT_INDEX_LOCK_MIN_AGE_MS = 2 * 60_000;
 let mergeTreeMergeBaseSupportPromise: Promise<boolean> | null = null;
 const activeGitPids = new Set<number>();
 
@@ -109,16 +109,31 @@ function extractIndexLockPath(message: string): string | null {
   return doubleQuoteMatch?.[1] ?? null;
 }
 
+function isIndexLockHeldByProcess(lockPath: string): boolean {
+  if (activeGitPids.size > 0) return true;
+  if (process.platform === "win32") return false;
+  try {
+    const out = execFileSync("lsof", [lockPath], {
+      encoding: "utf8",
+      timeout: 2_000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return out.trim().split(/\r?\n/).length > 1;
+  } catch {
+    return false;
+  }
+}
+
 function recoverStaleIndexLock(lockPath: string): boolean {
   try {
     const normalizedPath = path.normalize(lockPath);
     if (path.basename(normalizedPath) !== "index.lock") return false;
     if (!normalizedPath.includes(`${path.sep}.git${path.sep}`)) return false;
-    if (activeGitPids.size > 0) return false;
     if (!fs.existsSync(lockPath)) return false;
     const stat = fs.statSync(lockPath);
     if (!stat.isFile()) return false;
     if (Date.now() - stat.mtimeMs < STALE_GIT_INDEX_LOCK_MIN_AGE_MS) return false;
+    if (isIndexLockHeldByProcess(lockPath)) return false;
     fs.renameSync(lockPath, `${lockPath}.stale-${Date.now()}`);
     return true;
   } catch (error) {

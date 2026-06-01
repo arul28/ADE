@@ -11,6 +11,7 @@ import {
   graphWaitState,
   isEphemeralRuntimeSocketPath,
   isFailedServiceManagerResult,
+  machineRuntimeMismatchReason,
   parseCliArgs,
   readRuntimeIdleExitMs,
   renderLaneGraph,
@@ -32,6 +33,7 @@ function baseResolveOpts(): Omit<
     role: "external",
     headless: true,
     requireSocket: false,
+    socketPath: null,
     pretty: false,
     text: false,
     timeoutMs: 15_000,
@@ -73,6 +75,38 @@ describe("ADE CLI", () => {
       if (previousRole === undefined) delete process.env.ADE_DEFAULT_ROLE;
       else process.env.ADE_DEFAULT_ROLE = previousRole;
     }
+  });
+
+  it("parses socket mode with an optional socket path override", () => {
+    const spaced = parseCliArgs([
+      "--socket",
+      "/tmp/ade-runtime.sock",
+      "--project-root",
+      "/tmp/project",
+      "linear",
+      "graphql",
+      "--query",
+      "query { viewer { id } }",
+    ]);
+    expect(spaced.options.requireSocket).toBe(true);
+    expect(spaced.options.headless).toBe(false);
+    expect(spaced.options.socketPath).toBe("/tmp/ade-runtime.sock");
+    expect(spaced.command.slice(0, 2)).toEqual(["linear", "graphql"]);
+
+    const joined = parseCliArgs([
+      "--socket=tcp://127.0.0.1:8787",
+      "linear",
+      "issue",
+      "ADE-69",
+    ]);
+    expect(joined.options.requireSocket).toBe(true);
+    expect(joined.options.socketPath).toBe("tcp://127.0.0.1:8787");
+    expect(joined.command).toEqual(["linear", "issue", "ADE-69"]);
+
+    const flagOnly = parseCliArgs(["--socket", "linear", "issue", "ADE-69"]);
+    expect(flagOnly.options.requireSocket).toBe(true);
+    expect(flagOnly.options.socketPath).toBeNull();
+    expect(flagOnly.command).toEqual(["linear", "issue", "ADE-69"]);
   });
 
   it("maps ade code to the terminal Work chat launcher", () => {
@@ -169,6 +203,26 @@ describe("ADE CLI", () => {
     expect(readRuntimeIdleExitMs({ ADE_RUNTIME_IDLE_EXIT_MS: "30000" } as NodeJS.ProcessEnv)).toBe(30_000);
     expect(readRuntimeIdleExitMs({ ADE_RUNTIME_IDLE_EXIT_MS: "100" } as NodeJS.ProcessEnv)).toBe(5_000);
     expect(readRuntimeIdleExitMs({ ADE_RUNTIME_IDLE_EXIT_MS: "nope" } as NodeJS.ProcessEnv)).toBeNull();
+  });
+
+  it("allows explicit runtime socket overrides across build hashes", () => {
+    const runtimeInfo = {
+      version: "0.0.0",
+      buildHash: "other-build",
+      defaultRole: "agent",
+      packageChannel: null,
+      projectRoot: null,
+      pid: 123,
+    };
+
+    expect(
+      machineRuntimeMismatchReason(runtimeInfo, "expected-build", "agent"),
+    ).toBe("build hash changed");
+    expect(
+      machineRuntimeMismatchReason(runtimeInfo, "expected-build", "agent", {
+        enforceBuildCompatibility: false,
+      }),
+    ).toBeNull();
   });
 
   it("marks failed service manager results as CLI failures", () => {
@@ -980,6 +1034,7 @@ describe("ADE CLI", () => {
         role: "agent",
         headless: false,
         requireSocket: false,
+        socketPath: null,
         pretty: true,
         text: true,
         timeoutMs: 1000,
@@ -1058,6 +1113,48 @@ describe("ADE CLI", () => {
     expect(graph).toContain("\\- main (id: main) [main]");
     expect(graph).toContain("|- child (id: child) [feature]");
     expect(graph).toContain("\\- sibling (id: sibling) [feature-2]");
+  });
+
+  it("renders linked Linear issue identifiers in lane graph and detail text", () => {
+    const lane = {
+      id: "lane-linear",
+      name: "ADE-69 Fix linked lane",
+      branchRef: "ade-69-fix-linked-lane",
+      linearIssue: {
+        id: "issue-69",
+        identifier: "ADE-69",
+        title: "Fix linked lane",
+      },
+      linearIssueLinks: [
+        {
+          id: "link-70",
+          issue: { id: "issue-70", identifier: "ADE-70", title: "Follow-up" },
+        },
+      ],
+    };
+
+    expect(renderLaneGraph({ lanes: [lane] })).toContain(
+      "\\- ADE-69 Fix linked lane (id: lane-linear) [ade-69-fix-linked-lane] {ADE-69, ADE-70}",
+    );
+
+    const detail = formatOutput(
+      { lane },
+      {
+        projectRoot: null,
+        workspaceRoot: null,
+        role: "agent",
+        headless: false,
+        requireSocket: false,
+        socketPath: null,
+        pretty: false,
+        text: true,
+        timeoutMs: 1000,
+      },
+      "lane-detail",
+    );
+    expect(detail).toContain("linear issue");
+    expect(detail).toContain("ADE-69: Fix linked lane");
+    expect(detail).toContain("ADE-70: Follow-up");
   });
 
   it("accepts --option=value syntax equivalently to --option value", () => {
@@ -2539,7 +2636,7 @@ describe("ADE CLI", () => {
     ).toThrow(/missing both "id" and "identifier"/);
   });
 
-  it("maps Linear quick view to the typed RPC tool", () => {
+  it("maps Linear quick view through the runtime-owned issue tracker action", () => {
     const plan = buildCliPlan(["linear", "quick-view", "--text"]);
 
     expect(plan.kind).toBe("execute");
@@ -2547,24 +2644,32 @@ describe("ADE CLI", () => {
     expect(plan.label).toBe("Linear quick view");
     expect(plan.formatter).toBe("linear-quick-view");
     expect(plan.steps[0]?.params).toEqual({
-      name: "getLinearQuickView",
-      arguments: {},
+      name: "run_ade_action",
+      arguments: {
+        domain: "linear_issue_tracker",
+        action: "getQuickView",
+        args: {},
+      },
     });
   });
 
-  it("maps Linear picker data to the typed RPC tool", () => {
+  it("maps Linear picker data through the runtime-owned issue tracker action", () => {
     const plan = buildCliPlan(["linear", "picker-data", "--text"]);
 
     expect(plan.kind).toBe("execute");
     if (plan.kind !== "execute") return;
     expect(plan.label).toBe("Linear picker data");
     expect(plan.steps[0]?.params).toEqual({
-      name: "getLinearIssuePickerData",
-      arguments: {},
+      name: "run_ade_action",
+      arguments: {
+        domain: "linear_issue_tracker",
+        action: "getIssuePickerData",
+        args: {},
+      },
     });
   });
 
-  it("maps Linear search-issues filters to the typed RPC tool", () => {
+  it("maps Linear search-issues filters through the runtime-owned issue tracker action", () => {
     const plan = buildCliPlan([
       "linear",
       "search-issues",
@@ -2583,13 +2688,32 @@ describe("ADE CLI", () => {
     if (plan.kind !== "execute") return;
     expect(plan.label).toBe("Linear search issues");
     expect(plan.steps[0]?.params).toEqual({
-      name: "searchLinearIssues",
+      name: "run_ade_action",
       arguments: {
-        projectId: "proj-1",
-        stateTypes: ["started", "unstarted"],
-        query: "auth",
-        first: 25,
-        includeArchived: true,
+        domain: "linear_issue_tracker",
+        action: "searchIssues",
+        args: {
+          projectId: "proj-1",
+          stateTypes: ["started", "unstarted"],
+          query: "auth",
+          first: 25,
+          includeArchived: true,
+        },
+      },
+    });
+  });
+
+  it("maps Linear issue comments to the scalar issue tracker action", () => {
+    const plan = buildCliPlan(["linear", "issue-comments", "ADE-69"]);
+
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "linear_issue_tracker",
+        action: "fetchIssueComments",
+        arg: "ADE-69",
       },
     });
   });

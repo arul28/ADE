@@ -60,7 +60,7 @@ export type PrStatus = {
   reviewStatus: PrReviewStatus;
   isMergeable: boolean;
   mergeConflicts: boolean;
-  behindBaseBy: number;
+  behindBaseBy: number | null;
 };
 
 export type PrCheck = {

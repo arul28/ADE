@@ -333,7 +333,7 @@ function buildFallbackInventoryItems(args: {
       source,
       type: "review_thread",
       externalId: `review-thread:${thread.id}`,
-      state: thread.isResolved || thread.isOutdated ? "fixed" : "new",
+      state: thread.isResolved ? "fixed" : "new",
       round: 0,
       filePath: thread.path,
       line: thread.line,

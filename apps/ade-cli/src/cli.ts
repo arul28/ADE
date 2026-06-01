@@ -59,6 +59,7 @@ type GlobalOptions = {
   role: "cto" | "orchestrator" | "agent" | "external" | "evaluator";
   headless: boolean;
   requireSocket: boolean;
+  socketPath: string | null;
   pretty: boolean;
   text: boolean;
   timeoutMs: number;
@@ -2335,6 +2336,7 @@ function parseCliArgs(argv: string[]): ParsedCli {
     role: resolveAdeDefaultRole(process.env.ADE_DEFAULT_ROLE, "agent"),
     headless: parseBooleanEnv(process.env.ADE_CLI_HEADLESS),
     requireSocket: false,
+    socketPath: null,
     pretty: true,
     text: false,
     timeoutMs: 10 * 60 * 1000,
@@ -2394,6 +2396,17 @@ function parseCliArgs(argv: string[]): ParsedCli {
     if (inGlobalPrefix && token === "--socket") {
       options.requireSocket = true;
       options.headless = false;
+      const maybeSocketPath = argv[index + 1] ?? "";
+      if (looksLikeSocketPathOverride(maybeSocketPath)) {
+        options.socketPath = maybeSocketPath;
+        index += 1;
+      }
+      continue;
+    }
+    if (inGlobalPrefix && token.startsWith("--socket=")) {
+      options.requireSocket = true;
+      options.headless = false;
+      options.socketPath = requireValue(token.slice("--socket=".length), "--socket");
       continue;
     }
     if (token === "--compact") {
@@ -2443,6 +2456,19 @@ function parseCliArgs(argv: string[]): ParsedCli {
   }
 
   return { options, command };
+}
+
+function looksLikeSocketPathOverride(value: string): boolean {
+  if (!value || value.startsWith("-")) return false;
+  return (
+    value.startsWith("tcp://") ||
+    value.startsWith("/") ||
+    value.startsWith("./") ||
+    value.startsWith("../") ||
+    value.startsWith("~") ||
+    isAdeRuntimeNamedPipePath(value) ||
+    value.endsWith(".sock")
+  );
 }
 
 function parseRole(value: string): GlobalOptions["role"] {
@@ -8855,9 +8881,10 @@ function buildLinearPlan(args: string[]): CliPlan {
       label: "Linear quick view",
       formatter: "linear-quick-view",
       steps: [
-        actionCallStep(
+        actionStep(
           "result",
-          "getLinearQuickView",
+          "linear_issue_tracker",
+          "getQuickView",
           collectGenericObjectArgs(args),
         ),
       ],
@@ -8868,9 +8895,10 @@ function buildLinearPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "Linear picker data",
       steps: [
-        actionCallStep(
+        actionStep(
           "result",
-          "getLinearIssuePickerData",
+          "linear_issue_tracker",
+          "getIssuePickerData",
           collectGenericObjectArgs(args),
         ),
       ],
@@ -8913,9 +8941,10 @@ function buildLinearPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "Linear search issues",
       steps: [
-        actionCallStep(
+        actionStep(
           "result",
-          "searchLinearIssues",
+          "linear_issue_tracker",
+          "searchIssues",
           collectGenericObjectArgs(args, input),
         ),
       ],
@@ -8928,10 +8957,11 @@ function buildLinearPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "Linear issue comments",
       steps: [
-        actionCallStep(
+        actionScalarStep(
           "result",
-          "getLinearIssueComments",
-          collectGenericObjectArgs(args, { issueId }),
+          "linear_issue_tracker",
+          "fetchIssueComments",
+          issueId,
         ),
       ],
     };
@@ -9750,8 +9780,9 @@ function commandExists(command: string): boolean {
   return result.status === 0 && result.stdout.trim().length > 0;
 }
 
-function resolveAdeCodeSocketPath(projectRoot: string): string {
+function resolveAdeCodeSocketPath(projectRoot: string, socketPathOverride?: string | null): string {
   return (
+    socketPathOverride?.trim() ||
     process.env.ADE_RPC_URL?.trim() ||
     process.env.ADE_RPC_SOCKET_PATH?.trim() ||
     process.env.ADE_RUNTIME_SOCKET_PATH?.trim() ||
@@ -9771,7 +9802,7 @@ function buildAdeCodeArgs(rest: string[], options: GlobalOptions): string[] {
     ...(options.requireSocket
       ? [
           "--socket",
-          resolveAdeCodeSocketPath(roots.projectRoot),
+          resolveAdeCodeSocketPath(roots.projectRoot, options.socketPath),
           "--require-socket",
         ]
       : []),
@@ -10981,7 +11012,9 @@ async function createConnection(
   const { resolveAdeLayout } =
     await import("../../desktop/src/shared/adeLayout");
   const layout = resolveAdeLayout(roots.projectRoot);
+  const socketPathOverride = options.socketPath?.trim() || null;
   const legacySocketPath =
+    socketPathOverride ||
     process.env.ADE_RPC_URL?.trim() ||
     process.env.ADE_RPC_SOCKET_PATH?.trim() ||
     layout.socketPath;
@@ -10990,8 +11023,8 @@ async function createConnection(
   if (!options.headless) {
     let socketClient: SocketJsonRpcClient | null = null;
     try {
-      const machineSocketPath = await resolveMachineRuntimeSocketPath();
-      socketClient = await connectMachineRuntimeDaemon(options);
+      const machineSocketPath = await resolveMachineRuntimeSocketPath(socketPathOverride);
+      socketClient = await connectMachineRuntimeDaemon(options, socketPathOverride);
       let activeProjectId: string | null = null;
       const connection: CliConnection = {
         mode: "runtime-socket",
@@ -11290,29 +11323,34 @@ function machineRuntimeMismatchReason(
   runtimeInfo: MachineRuntimeInfo,
   expectedBuildHash: string | null,
   expectedDefaultRole: GlobalOptions["role"],
+  options: { enforceBuildCompatibility?: boolean } = {},
 ): string | null {
-  const runtimeVersion = runtimeInfo.version;
-  const sourceCliTalkingToReleasedRuntime =
-    VERSION === PLACEHOLDER_VERSION &&
-    Boolean(runtimeVersion) &&
-    runtimeVersion !== PLACEHOLDER_VERSION;
-  if (VERSION !== PLACEHOLDER_VERSION) {
-    const versionMatches = runtimeVersion === VERSION;
-    const placeholderBuildMatches =
-      runtimeVersion === PLACEHOLDER_VERSION &&
-      expectedBuildHash != null &&
-      runtimeInfo.buildHash === expectedBuildHash;
-    if (!versionMatches && !placeholderBuildMatches) {
-      return `version ${runtimeVersion ?? "missing"} does not match CLI version ${VERSION}`;
+  const enforceBuildCompatibility =
+    options.enforceBuildCompatibility ?? true;
+  if (enforceBuildCompatibility) {
+    const runtimeVersion = runtimeInfo.version;
+    const sourceCliTalkingToReleasedRuntime =
+      VERSION === PLACEHOLDER_VERSION &&
+      Boolean(runtimeVersion) &&
+      runtimeVersion !== PLACEHOLDER_VERSION;
+    if (VERSION !== PLACEHOLDER_VERSION) {
+      const versionMatches = runtimeVersion === VERSION;
+      const placeholderBuildMatches =
+        runtimeVersion === PLACEHOLDER_VERSION &&
+        expectedBuildHash != null &&
+        runtimeInfo.buildHash === expectedBuildHash;
+      if (!versionMatches && !placeholderBuildMatches) {
+        return `version ${runtimeVersion ?? "missing"} does not match CLI version ${VERSION}`;
+      }
     }
-  }
 
-  if (
-    !sourceCliTalkingToReleasedRuntime &&
-    expectedBuildHash &&
-    runtimeInfo.buildHash !== expectedBuildHash
-  ) {
-    return runtimeInfo.buildHash ? "build hash changed" : "build hash missing";
+    if (
+      !sourceCliTalkingToReleasedRuntime &&
+      expectedBuildHash &&
+      runtimeInfo.buildHash !== expectedBuildHash
+    ) {
+      return runtimeInfo.buildHash ? "build hash changed" : "build hash missing";
+    }
   }
   if (!canRuntimeDefaultRoleServe(runtimeInfo.defaultRole, expectedDefaultRole)) {
     return `default role ${runtimeInfo.defaultRole ?? "missing"} cannot serve CLI role ${expectedDefaultRole}`;
@@ -11431,7 +11469,9 @@ async function connectMachineRuntimeDaemon(
   const label = "ADE runtime daemon socket";
   const allowSpawn = connectOptions.allowSpawn ?? !options.requireSocket;
   const isTcpSocket = socketPath.startsWith("tcp://");
-  const expectedBuildHash = isTcpSocket
+  const hasExplicitSocketOverride = Boolean(socketPathOverride?.trim());
+  const enforceBuildCompatibility = !hasExplicitSocketOverride;
+  const expectedBuildHash = isTcpSocket || !enforceBuildCompatibility
     ? null
     : await resolveExpectedMachineRuntimeBuildHash();
   try {
@@ -11448,6 +11488,7 @@ async function connectMachineRuntimeDaemon(
       runtimeInfo,
       expectedBuildHash,
       options.role,
+      { enforceBuildCompatibility },
     );
     if (mismatch) {
       if (!allowSpawn || isTcpSocket) {
@@ -11476,6 +11517,7 @@ async function connectMachineRuntimeDaemon(
         restartedInfo,
         expectedBuildHash,
         options.role,
+        { enforceBuildCompatibility },
       );
       if (restartedMismatch) {
         await shutdownMachineRuntimeDaemon(restarted);
@@ -11504,6 +11546,7 @@ async function connectMachineRuntimeDaemon(
         runtimeInfo,
         expectedBuildHash,
         options.role,
+        { enforceBuildCompatibility },
       );
       if (mismatch) {
         await shutdownMachineRuntimeDaemon(client);
@@ -12294,8 +12337,10 @@ function renderLaneGraph(result: unknown): string {
     const archived = asString(lane.archivedAt) ? " archived" : "";
     const id = asString(lane.id);
     const idSuffix = id ? ` (id: ${id})` : "";
+    const linearIdentifiers = linearIssueIdentifiers(lane);
+    const linearSuffix = linearIdentifiers.length ? ` {${linearIdentifiers.join(", ")}}` : "";
     lines.push(
-      `${prefix}${isLast ? "\\- " : "|- "}${name}${idSuffix}${branch ? ` [${branch}]` : ""}${status ? ` ${status}` : ""}${archived}`,
+      `${prefix}${isLast ? "\\- " : "|- "}${name}${idSuffix}${branch ? ` [${branch}]` : ""}${linearSuffix}${status ? ` ${status}` : ""}${archived}`,
     );
     const children = id ? (byParent.get(id) ?? []) : [];
     children.forEach((child, index) =>
@@ -12309,6 +12354,45 @@ function renderLaneGraph(result: unknown): string {
   const roots = byParent.get("") ?? [];
   roots.forEach((lane, index) => visit(lane, "", index === roots.length - 1));
   return lines.join("\n");
+}
+
+function linearIssueIdentifiers(lane: JsonObject): string[] {
+  const identifiers: string[] = [];
+  const seen = new Set<string>();
+  const add = (issue: unknown): void => {
+    if (!isRecord(issue)) return;
+    const identifier = asString(issue.identifier) ?? asString(issue.id);
+    if (!identifier || seen.has(identifier)) return;
+    seen.add(identifier);
+    identifiers.push(identifier);
+  };
+  add(lane.linearIssue);
+  const links = Array.isArray(lane.linearIssueLinks) ? lane.linearIssueLinks : [];
+  for (const link of links) {
+    if (!isRecord(link)) continue;
+    add(link.issue);
+  }
+  return identifiers;
+}
+
+function linearIssueLabels(lane: JsonObject): string[] {
+  const labels: string[] = [];
+  const seen = new Set<string>();
+  const add = (issue: unknown): void => {
+    if (!isRecord(issue)) return;
+    const identifier = asString(issue.identifier) ?? asString(issue.id);
+    if (!identifier || seen.has(identifier)) return;
+    seen.add(identifier);
+    const title = asString(issue.title);
+    labels.push(title ? `${identifier}: ${title}` : identifier);
+  };
+  add(lane.linearIssue);
+  const links = Array.isArray(lane.linearIssueLinks) ? lane.linearIssueLinks : [];
+  for (const link of links) {
+    if (!isRecord(link)) continue;
+    add(link.issue);
+  }
+  return labels;
 }
 
 function truncateCell(value: string, width = 42): string {
@@ -12562,11 +12646,14 @@ function formatActionsList(value: unknown): string {
 function formatLaneDetail(value: unknown): string {
   const root = isRecord(value) ? value : {};
   const lane = firstRecord(value, ["lane"]) ?? (isRecord(value) ? value : {});
+  const linearLabels = linearIssueLabels(lane);
   return renderKeyValues("ADE lane", [
     ["id", lane.id],
     ["name", lane.name],
     ["branch", lane.branchRef ?? lane.branch],
     ["base", lane.baseBranch ?? lane.baseRef],
+    ["linear issue", linearLabels[0] ?? null],
+    ["linear links", linearLabels.length > 1 ? linearLabels.slice(1).join(", ") : null],
     ["status", lane.status ?? root.rebaseStatus],
     ["worktree", lane.worktreePath],
   ]);
@@ -14143,6 +14230,16 @@ async function runCli(
   }
 }
 
+async function writeProcessOutput(
+  stream: NodeJS.WriteStream,
+  output: string,
+): Promise<void> {
+  if (!output.length) return;
+  await new Promise<void>((resolve) => {
+    stream.write(output, () => resolve());
+  });
+}
+
 async function main(): Promise<void> {
   const writeDiagnostic = (...args: unknown[]) => {
     process.stderr.write(
@@ -14154,36 +14251,46 @@ async function main(): Promise<void> {
   console.warn = writeDiagnostic;
   try {
     const result = await runCli(process.argv.slice(2));
-    process.stdout.write(result.output);
+    await writeProcessOutput(process.stdout, result.output);
     process.exitCode = result.exitCode;
   } catch (error) {
     const fallback = maybeRunBuiltCliFallback(error, process.argv.slice(2));
     if (fallback) {
-      if (fallback.stderr.length) process.stderr.write(fallback.stderr);
-      if (fallback.stdout.length) process.stdout.write(fallback.stdout);
+      await writeProcessOutput(process.stderr, fallback.stderr);
+      await writeProcessOutput(process.stdout, fallback.stdout);
       process.exitCode = fallback.exitCode;
       return;
     }
     if (error instanceof CliUsageError) {
-      process.stderr.write(`ade: ${error.message}\nRun 'ade help'.\n`);
+      await writeProcessOutput(
+        process.stderr,
+        `ade: ${error.message}\nRun 'ade help'.\n`,
+      );
       process.exitCode = 2;
       return;
     }
     if (error instanceof CliToolError) {
-      process.stderr.write(`ade: ${error.message}\n`);
+      await writeProcessOutput(process.stderr, `ade: ${error.message}\n`);
       if (error.details !== undefined) {
-        process.stderr.write(`${JSON.stringify(error.details, null, 2)}\n`);
+        await writeProcessOutput(
+          process.stderr,
+          `${JSON.stringify(error.details, null, 2)}\n`,
+        );
       }
       process.exitCode = 1;
       return;
     }
     if (error instanceof CliExecutionError) {
-      process.stderr.write(`ade: ${error.message}\n`);
-      process.stderr.write(`${JSON.stringify(error.details, null, 2)}\n`);
+      await writeProcessOutput(process.stderr, `ade: ${error.message}\n`);
+      await writeProcessOutput(
+        process.stderr,
+        `${JSON.stringify(error.details, null, 2)}\n`,
+      );
       process.exitCode = 1;
       return;
     }
-    process.stderr.write(
+    await writeProcessOutput(
+      process.stderr,
       `ade: ${error instanceof Error ? error.stack || error.message : String(error)}\n`,
     );
     process.exitCode = 1;
@@ -14191,7 +14298,9 @@ async function main(): Promise<void> {
 }
 
 if (/(^|[/\\])cli\.(?:ts|js|cjs)$/.test(process.argv[1] ?? "")) {
-  void main();
+  void main().finally(() => {
+    process.exit(typeof process.exitCode === "number" ? process.exitCode : 0);
+  });
 }
 
 export {
@@ -14203,6 +14312,7 @@ export {
   graphWaitState,
   isEphemeralRuntimeSocketPath,
   isFailedServiceManagerResult,
+  machineRuntimeMismatchReason,
   parseCliArgs,
   readRuntimeIdleExitMs,
   renderLaneGraph,

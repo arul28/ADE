@@ -6,6 +6,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
 import { getHeadSha, runGit, runGitOrThrow } from "../git/git";
+import { deletePullRequestRowsByIds, deletePullRequestRowsForLane } from "../prs/pullRequestRowCleanup";
 import { isWithinDir, normalizeBranchName } from "../shared/utils";
 import { fetchRemoteTrackingBranch, resolveQueueRebaseOverride, type QueueRebaseOverride } from "../shared/queueRebase";
 import { detectConflictKind } from "../git/gitConflictState";
@@ -2561,14 +2562,7 @@ export function createLaneService({
     db.run("update integration_proposals set integration_lane_id = null where integration_lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("update integration_proposals set preferred_integration_lane_id = null where preferred_integration_lane_id = ? and project_id = ?", [laneId, projectId]);
 
-    db.run("delete from pr_group_members where lane_id = ?", [laneId]);
-    db.run("delete from pr_group_members where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
-    db.run("delete from pull_request_ai_summaries where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
-    db.run("delete from pull_request_snapshots where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
-    db.run("delete from pr_convergence_state where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
-    db.run("delete from pr_pipeline_settings where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
-    db.run("delete from pr_issue_inventory where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
-    db.run("delete from pull_requests where lane_id = ? and project_id = ?", [laneId, projectId]);
+    deletePullRequestRowsForLane(db, projectId, laneId);
     db.run("delete from pr_auto_link_ignores where lane_id = ? and project_id = ?", [laneId, projectId]);
 
     db.run("delete from review_run_publications where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
@@ -3708,21 +3702,8 @@ export function createLaneService({
           [row.id, projectId, targetBranchRef],
         );
         if (stalePrRows.length > 0) {
-          const placeholders = stalePrRows.map(() => "?").join(", ");
           const stalePrIds = stalePrRows.map((r) => r.id);
-          db.run(`delete from pr_convergence_state where pr_id in (${placeholders})`, stalePrIds);
-          db.run(`delete from pr_pipeline_settings where pr_id in (${placeholders})`, stalePrIds);
-          db.run(`delete from pr_issue_inventory where pr_id in (${placeholders})`, stalePrIds);
-          db.run(`delete from pr_group_members where pr_id in (${placeholders})`, stalePrIds);
-          db.run(
-            `
-              delete from pull_requests
-              where lane_id = ?
-                and project_id = ?
-                and head_branch <> ?
-            `,
-            [row.id, projectId, targetBranchRef],
-          );
+          deletePullRequestRowsByIds(db, projectId, stalePrIds);
         }
         db.run("commit");
       } catch (err) {

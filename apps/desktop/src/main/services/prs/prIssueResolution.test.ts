@@ -433,6 +433,32 @@ describe("issueInventoryService", () => {
       expect(insertCalls.length).toBe(0);
     });
 
+    it("does not mark unresolved outdated tracked threads as fixed", () => {
+      const db = makeMockDb();
+      const existing = makeFakeRow({
+        id: "existing-outdated-thread",
+        external_id: "thread:thread-1",
+        state: "sent_to_agent",
+        round: 1,
+      });
+      db.get.mockReturnValue(existing);
+      db.all.mockReturnValue([existing]);
+
+      const service = createIssueInventoryService({ db });
+      service.syncFromPrData(
+        PR_ID,
+        [],
+        [makeReviewThread({ isResolved: false, isOutdated: true })],
+        [],
+      );
+
+      const updateCalls = db.run.mock.calls.filter(
+        (call: unknown[]) => typeof call[0] === "string" && (call[0] as string).includes("update pr_issue_inventory"),
+      );
+      expect(updateCalls.some((call: unknown[]) => (call[1] as unknown[])[8] === "fixed")).toBe(false);
+      expect(updateCalls.some((call: unknown[]) => (call[1] as unknown[])[8] === "sent_to_agent")).toBe(true);
+    });
+
     it("marks previously tracked resolved threads as fixed", () => {
       const db = makeMockDb();
       db.get.mockReturnValue(makeFakeRow({

@@ -67,7 +67,7 @@ describe("runGitOrThrow", () => {
     const gitDir = git(worktreeRoot, ["rev-parse", "--absolute-git-dir"]);
     const lockPath = path.join(gitDir, "index.lock");
     fs.writeFileSync(lockPath, "", "utf8");
-    const staleDate = new Date(Date.now() - 60_000);
+    const staleDate = new Date(Date.now() - 5 * 60_000);
     fs.utimesSync(lockPath, staleDate, staleDate);
 
     await runGitOrThrow(["add", "-A", "--", "."], { cwd: worktreeRoot, timeoutMs: 15_000 });
@@ -109,5 +109,26 @@ describe("runGit", () => {
 
     expect(result.exitCode).toBe(0);
     expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it("does not rename a recent index.lock", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-git-lock-fresh-"));
+    git(repoRoot, ["init", "-b", "main"]);
+    git(repoRoot, ["config", "user.email", "ade@test.local"]);
+    git(repoRoot, ["config", "user.name", "ADE Test"]);
+    fs.writeFileSync(path.join(repoRoot, "file.txt"), "hello\n", "utf8");
+    git(repoRoot, ["add", "."]);
+    git(repoRoot, ["commit", "-m", "init"]);
+
+    const gitDir = git(repoRoot, ["rev-parse", "--absolute-git-dir"]);
+    const lockPath = path.join(gitDir, "index.lock");
+    fs.writeFileSync(lockPath, "", "utf8");
+    fs.writeFileSync(path.join(repoRoot, "file.txt"), "updated\n", "utf8");
+
+    const result = await runGit(["add", "-A", "--", "."], { cwd: repoRoot, timeoutMs: 8_000 });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(fs.existsSync(lockPath)).toBe(true);
+    expect(fs.readdirSync(gitDir).some((entry) => entry.startsWith("index.lock.stale-"))).toBe(false);
   });
 });

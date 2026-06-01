@@ -127,6 +127,7 @@ function insertPrediction(args: {
   laneASha: string;
   overlaps: string[];
   status?: "clean" | "conflict" | "unknown";
+  predictedAt?: string;
 }) {
   args.db.run(
     `
@@ -145,7 +146,7 @@ function insertPrediction(args: {
       JSON.stringify(args.overlaps),
       args.laneASha,
       args.laneBSha ?? null,
-      "2026-02-15T18:50:00.000Z",
+      args.predictedAt ?? "2026-02-15T18:50:00.000Z",
       "2026-02-15T20:00:00.000Z"
     ]
   );
@@ -193,6 +194,48 @@ async function setupAdditionalInstructionsResolver(prefix: string, projectId: st
 }
 
 describe("conflictService conflict context integrity", () => {
+  it("marks risk matrix predictions stale when the lane HEAD SHA changed", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-stale-sha-"));
+    const { laneHeadSha } = seedRepoWithLaneWork(repoRoot);
+    const baseHeadSha = git(repoRoot, ["rev-parse", "main"]);
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const projectId = "proj-stale-sha";
+    try {
+      await seedProjectAndLane(db, projectId, repoRoot);
+      insertPrediction({
+        db,
+        projectId,
+        laneAId: "lane-1",
+        laneASha: "old-lane-head",
+        laneBSha: baseHeadSha,
+        overlaps: ["src/a.ts"],
+        predictedAt: new Date().toISOString(),
+      });
+      const laneSummary = createLaneSummary(repoRoot);
+      const service = createConflictService({
+        db,
+        logger: createLogger(),
+        projectId,
+        projectRoot: repoRoot,
+        laneService: {
+          list: async () => [laneSummary],
+          getLaneBaseAndBranch: () => ({ worktreePath: repoRoot, baseRef: "main", branchRef: "feature/lane-1" }),
+        } as any,
+        projectConfigService: {
+          get: () => ({ effective: { providerMode: "subscription" } }),
+        } as any,
+      });
+
+      const matrix = await service.getRiskMatrix();
+
+      expect(laneHeadSha).not.toBe("old-lane-head");
+      expect(matrix.find((entry) => entry.laneAId === "lane-1" && entry.laneBId === "lane-1")?.stale).toBe(true);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   it("passes relevant file contexts into subscription conflict proposal jobs", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-ctx-"));
     const { laneHeadSha } = seedRepoWithLaneWork(repoRoot);

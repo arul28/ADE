@@ -3261,6 +3261,87 @@ describe("adeRpcServer", () => {
     expect(fixture.runtime.conflictService.getLaneStatus).toHaveBeenCalledWith({ laneId: "lane-1" });
   });
 
+  it("projects projectless Linear lane issues and link rows instead of dropping them", async () => {
+    const fixture = createRuntime();
+    const projectlessIssue = {
+      id: "issue-69",
+      identifier: "ADE-69",
+      title: "Projectless issue linked to a lane",
+      description: null,
+      url: "https://linear.app/ade-linear/issue/ADE-69/projectless",
+      projectId: "",
+      projectSlug: "",
+      projectName: null,
+      teamId: "team-ade",
+      teamKey: "ADE",
+      teamName: "ADE",
+      stateId: "state-backlog",
+      stateName: "Backlog",
+      stateType: "backlog",
+      priority: 2,
+      priorityLabel: "high",
+      labels: ["bug"],
+      assigneeId: null,
+      assigneeName: null,
+      creatorId: null,
+      creatorName: null,
+      dueDate: null,
+      estimate: null,
+      branchName: "ade-69-projectless",
+      createdAt: "2026-05-31T08:32:17.115Z",
+      updatedAt: "2026-05-31T08:32:17.115Z",
+    };
+    (fixture.runtime.laneService.list as any).mockResolvedValueOnce([
+      {
+        id: "lane-1",
+        name: "ADE-69 Projectless issue linked to a lane",
+        laneType: "worktree",
+        parentLaneId: null,
+        baseRef: "main",
+        branchRef: "ade-69-projectless",
+        worktreePath: "/tmp/project/.ade/worktrees/ade-69",
+        archivedAt: null,
+        stackDepth: 0,
+        linearIssue: projectlessIssue,
+        linearIssueLinks: [
+          {
+            id: "link-69",
+            laneId: "lane-1",
+            issue: projectlessIssue,
+            role: "primary",
+            source: "lane_create",
+            includeInPr: true,
+            closeOnMerge: false,
+            evidence: null,
+            createdAt: "2026-05-31T08:32:17.115Z",
+            updatedAt: "2026-05-31T08:32:17.115Z",
+          },
+        ],
+        status: { dirty: false, ahead: 0, behind: 0 },
+      },
+    ]);
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler);
+    const response = await callTool(handler, "get_lane_status", { laneId: "lane-1" });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.lane.linearIssue).toMatchObject({
+      id: "issue-69",
+      identifier: "ADE-69",
+      projectId: "",
+      projectSlug: "",
+    });
+    expect(response.structuredContent.lane.linearIssueLinks).toEqual([
+      expect.objectContaining({
+        id: "link-69",
+        role: "primary",
+        source: "lane_create",
+        issue: expect.objectContaining({ identifier: "ADE-69", projectId: "" }),
+      }),
+    ]);
+  });
+
   it("routes check_conflicts with a single laneId", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -3347,6 +3428,54 @@ describe("adeRpcServer", () => {
       })
     );
     expect((fixture.runtime.laneService.create as any).mock.calls[0][0].linearIssue).not.toHaveProperty("secretToken");
+  });
+
+  it("accepts projectless Linear issue data when creating a linked lane", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
+    const response = await callTool(handler, "create_lane", {
+      name: "projectless-linear-lane",
+      linearIssue: {
+        id: "issue-projectless",
+        identifier: "ADE-69",
+        title: "Projectless Linear issue",
+        description: null,
+        url: null,
+        projectId: "",
+        projectSlug: "",
+        projectName: null,
+        teamId: "team-ade",
+        teamKey: "ADE",
+        teamName: "ADE",
+        stateId: "state-backlog",
+        stateName: "Backlog",
+        stateType: "backlog",
+        priority: 2,
+        priorityLabel: "high",
+        labels: [],
+        assigneeId: null,
+        assigneeName: null,
+        creatorId: null,
+        creatorName: null,
+        dueDate: null,
+        estimate: null,
+        createdAt: "2026-05-31T08:32:17.115Z",
+        updatedAt: "2026-05-31T08:32:17.115Z",
+      },
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.laneService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        linearIssue: expect.objectContaining({
+          identifier: "ADE-69",
+          projectId: "",
+          projectSlug: "",
+        }),
+      }),
+    );
   });
 
   it("routes simulate_integration as a read-only dry-merge", async () => {

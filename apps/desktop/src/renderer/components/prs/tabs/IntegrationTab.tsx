@@ -1649,13 +1649,20 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         {/* ---- Rebase banners for source lanes ---- */}
         {mergeSourcesResolved.map((s) => (
           <div key={s.laneId} style={{ marginBottom: 12 }}>
-            <PrRebaseBanner laneId={s.laneId} rebaseNeeds={rebaseNeeds} autoRebaseStatuses={autoRebaseStatuses} onTabChange={(tab) => {
-              if (tab === "rebase") {
-                const need = findLaneBaseNeed(rebaseNeeds, s.laneId);
-                setSelectedRebaseItemId(need ? rebaseNeedItemKey(need) : null);
-              }
-              setActiveTab(tab as "normal" | "queue" | "integration" | "rebase");
-            }} />
+            <PrRebaseBanner
+              laneId={s.laneId}
+              rebaseNeeds={rebaseNeeds}
+              autoRebaseStatuses={autoRebaseStatuses}
+              onRefresh={onRefresh}
+              onRebaseDone={onRefresh}
+              onTabChange={(tab) => {
+                if (tab === "rebase") {
+                  const need = findLaneBaseNeed(rebaseNeeds, s.laneId);
+                  setSelectedRebaseItemId(need ? rebaseNeedItemKey(need) : null);
+                }
+                setActiveTab(tab as "normal" | "queue" | "integration" | "rebase");
+              }}
+            />
           </div>
         ))}
 

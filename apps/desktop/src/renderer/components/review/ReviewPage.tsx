@@ -1627,7 +1627,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
           </div>
           {runs.length === 0 ? (
             <div className="rounded-xl border border-white/[0.06] bg-[var(--color-muted)]/40 p-3 text-xs text-[#94A3B8]">
-              No review runs yet in this workspace. Use Launch new review above to start one.
+              No review runs yet in this workspace. Start a new review from the toolbar.
             </div>
           ) : runs.map((run) => {
             const active = run.id === selectedRunId;

@@ -145,6 +145,7 @@ import { publishLinearPrCard } from "../cto/linearLaneCardService";
 import { spawn } from "node:child_process";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 import { shouldAttemptAdminMergeForRestError } from "./pathToMergeOrchestrator";
+import { deletePullRequestRowsByIds } from "./pullRequestRowCleanup";
 import { extractFirstJsonObject } from "../ai/utils";
 import { buildIntegrationPreflight } from "./integrationPlanning";
 import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationValidation";
@@ -2968,6 +2969,15 @@ export function createPrService({
     };
   };
 
+  const bestEffort = async <T>(label: string, task: Promise<T>, fallback: T): Promise<T> => {
+    try {
+      return await task;
+    } catch (error) {
+      logger.warn("prs.best_effort_failed", { label, error: getErrorMessage(error) });
+      return fallback;
+    }
+  };
+
   const refreshOne = async (prId: string): Promise<PrSummary> => {
     const row = getRow(prId);
     if (!row) throw new Error(`PR not found: ${prId}`);
@@ -2981,9 +2991,9 @@ export function createPrService({
 
     const [combinedStatus, checkRuns, reviews, compare] = await Promise.all([
       headSha ? fetchCombinedStatus(repo, headSha) : Promise.resolve({ state: "", statuses: [] }),
-      headSha ? fetchCheckRuns(repo, headSha).catch((err) => { console.warn("[prService] fetchCheckRuns failed in refreshOne:", err?.message ?? err); return []; }) : Promise.resolve([]),
-      fetchReviews(repo, Number(row.github_pr_number)).catch(() => []),
-      baseSha && headSha ? fetchCompare(repo, baseSha, headSha).catch(() => ({ behindBy: null as number | null })) : Promise.resolve({ behindBy: null as number | null })
+      headSha ? bestEffort("refreshOne.fetchCheckRuns", fetchCheckRuns(repo, headSha), [] as any[]) : Promise.resolve([]),
+      bestEffort("refreshOne.fetchReviews", fetchReviews(repo, Number(row.github_pr_number)), []),
+      baseSha && headSha ? bestEffort("refreshOne.fetchCompare", fetchCompare(repo, baseSha, headSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null })
     ]);
     const reviewStatesByUser = new Map<string, string>();
     for (const review of reviews) {
@@ -3105,9 +3115,9 @@ export function createPrService({
 
     const [combinedStatus, checkRuns, reviews, compare] = await Promise.all([
       headSha ? fetchCombinedStatus(repo, headSha) : Promise.resolve({ state: "", statuses: [] }),
-      headSha ? fetchCheckRuns(repo, headSha).catch((err) => { console.warn("[prService] fetchCheckRuns failed in computeStatus:", err?.message ?? err); return []; }) : Promise.resolve([]),
-      fetchReviews(repo, summary.githubPrNumber).catch(() => []),
-      baseSha && headSha ? fetchCompare(repo, baseSha, headSha).catch(() => ({ behindBy: 0 })) : Promise.resolve({ behindBy: 0 })
+      headSha ? bestEffort("computeStatus.fetchCheckRuns", fetchCheckRuns(repo, headSha), [] as any[]) : Promise.resolve([]),
+      bestEffort("computeStatus.fetchReviews", fetchReviews(repo, summary.githubPrNumber), []),
+      baseSha && headSha ? bestEffort("computeStatus.fetchCompare", fetchCompare(repo, baseSha, headSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null })
     ]);
 
     const requestedReviewers = Array.isArray(pr?.requested_reviewers) ? pr.requested_reviewers.map((u: any) => asString(u?.login)).filter(Boolean) : [];
@@ -3160,8 +3170,8 @@ export function createPrService({
     const headSha = asString(pr?.head?.sha);
     if (!headSha) return [];
     const [combinedStatus, checkRuns] = await Promise.all([
-      fetchCombinedStatus(repo, headSha).catch((err) => { console.warn("[prService] fetchCombinedStatus failed in getChecks:", err?.message ?? err); return { state: "", statuses: [] }; }),
-      fetchCheckRuns(repo, headSha).catch((err) => { console.warn("[prService] fetchCheckRuns failed in getChecks:", err?.message ?? err); return []; })
+      bestEffort("getChecks.fetchCombinedStatus", fetchCombinedStatus(repo, headSha), { state: "", statuses: [] }),
+      bestEffort("getChecks.fetchCheckRuns", fetchCheckRuns(repo, headSha), [] as any[]),
     ]);
 
     const out: PrCheck[] = [];
@@ -3542,30 +3552,9 @@ export function createPrService({
       rememberAutoLinkIgnore(row);
     }
 
-    db.run("delete from pr_group_members where pr_id = ?", [row.id]);
-    db.run(
-      `
-        delete from pr_groups
-        where project_id = ?
-          and id in (
-            select g.id
-            from pr_groups g
-            left join pr_group_members m on m.group_id = g.id
-            where g.project_id = ?
-            group by g.id
-            having count(m.id) = 0
-          )
-      `,
-      [projectId, projectId]
-    );
     // Explicitly delete child rows that rely on FK cascade — CRR conversion can
     // strip checked foreign keys, leaving orphaned rows if we only rely on CASCADE.
-    db.run("delete from pr_convergence_state where pr_id = ?", [row.id]);
-    db.run("delete from pr_pipeline_settings where pr_id = ?", [row.id]);
-    db.run("delete from pr_issue_inventory where pr_id = ?", [row.id]);
-    db.run("delete from pull_request_ai_summaries where pr_id = ?", [row.id]);
-    db.run("delete from pull_request_snapshots where pr_id = ?", [row.id]);
-    db.run("delete from pull_requests where id = ? and project_id = ?", [row.id, projectId]);
+    deletePullRequestRowsByIds(db, projectId, [row.id]);
 
     let laneArchived = false;
     let laneArchiveError: string | null = null;
@@ -4394,6 +4383,26 @@ export function createPrService({
       }
       return rawMsg;
     };
+
+    try {
+      const latestPull = await fetchPr(repo, Number(row.github_pr_number), { waitForKnownMergeability: true });
+      const latestState = toPrState({
+        state: asString(latestPull?.state) || row.state || "open",
+        draft: Boolean(latestPull?.draft),
+        mergedAt: asString(latestPull?.merged_at) || null,
+      });
+      if (latestState === "draft") {
+        return finishFailure("PR is draft", "PR is still a draft. Mark it ready for review before merging.");
+      }
+      if (latestState !== "open") {
+        return finishFailure(`PR is ${latestState}`, `PR is ${latestState}; only open PRs can be merged.`);
+      }
+      if (mergeConflictsFromPull(latestPull) === true) {
+        return finishFailure("PR has merge conflicts", "PR has merge conflicts. Rebase or resolve conflicts before merging.");
+      }
+    } catch (error) {
+      return finishFailure(getErrorMessage(error), `Unable to verify mergeability before merging: ${getErrorMessage(error)}`);
+    }
 
     try {
       const merge = await githubService.apiRequest<any>({

@@ -38,6 +38,7 @@ import {
   type ComputerUseBackendStyle,
   type ComputerUseArtifactOwner,
   type LaneLinearIssue,
+  type LaneLinearIssueLink,
   type MergeMethod,
   type AppNavigationRequest,
 } from "../../desktop/src/shared/types";
@@ -1934,8 +1935,8 @@ function parseLaneLinearIssue(value: unknown, field = "linearIssue"): LaneLinear
     title: assertNonEmptyString(issue.title, `${field}.title`),
     description: assertOptionalStringOrNull(issue.description, `${field}.description`),
     url: assertOptionalStringOrNull(issue.url, `${field}.url`),
-    projectId: assertNonEmptyString(issue.projectId, `${field}.projectId`),
-    projectSlug: assertNonEmptyString(issue.projectSlug, `${field}.projectSlug`),
+    projectId: asTrimmedString(issue.projectId),
+    projectSlug: asTrimmedString(issue.projectSlug),
     projectName: assertOptionalStringOrNull(issue.projectName, `${field}.projectName`),
     teamId: assertNonEmptyString(issue.teamId, `${field}.teamId`),
     teamKey: assertNonEmptyString(issue.teamKey, `${field}.teamKey`),
@@ -1965,6 +1966,46 @@ function projectLaneLinearIssue(value: unknown): LaneLinearIssue | null {
   } catch {
     return null;
   }
+}
+
+function projectLaneLinearIssueLink(value: unknown): LaneLinearIssueLink | null {
+  const link = safeObject(value);
+  if (Object.keys(link).length === 0) return null;
+  const issue = projectLaneLinearIssue(link.issue);
+  if (!issue) return null;
+  const role = asOptionalTrimmedString(link.role);
+  const source = asOptionalTrimmedString(link.source);
+  const laneId = asOptionalTrimmedString(link.laneId);
+  const evidenceRecord = safeObject(link.evidence);
+  const evidence = Object.keys(evidenceRecord).length
+    ? {
+        chatSessionId: asOptionalTrimmedString(evidenceRecord.chatSessionId),
+        commitSha: asOptionalTrimmedString(evidenceRecord.commitSha),
+        prId: asOptionalTrimmedString(evidenceRecord.prId),
+      }
+    : null;
+  return {
+    id: asOptionalTrimmedString(link.id) ?? "",
+    laneId: laneId ?? "",
+    issue,
+    role: role === "primary" || role === "worked" || role === "referenced" || role === "inferred"
+      ? role
+      : "worked",
+    source: source === "lane_create"
+      || source === "lane_link"
+      || source === "chat_attach"
+      || source === "linear_open_issue"
+      || source === "commit"
+      || source === "pr_body"
+      || source === "manual"
+      ? source
+      : "manual",
+    includeInPr: link.includeInPr !== false,
+    closeOnMerge: link.closeOnMerge === true,
+    evidence,
+    createdAt: asOptionalTrimmedString(link.createdAt) ?? "",
+    updatedAt: asOptionalTrimmedString(link.updatedAt) ?? "",
+  };
 }
 
 function assertNonEmptyString(value: unknown, field: string): string {
@@ -2786,6 +2827,11 @@ function resolveSpawnContextFile(args: {
 }
 
 function mapLaneSummary(lane: Record<string, unknown>): Record<string, unknown> {
+  const linearIssueLinks = Array.isArray(lane.linearIssueLinks)
+    ? lane.linearIssueLinks
+        .map(projectLaneLinearIssueLink)
+        .filter((link): link is LaneLinearIssueLink => Boolean(link))
+    : [];
   return {
     id: lane.id,
     name: lane.name,
@@ -2797,6 +2843,7 @@ function mapLaneSummary(lane: Record<string, unknown>): Record<string, unknown> 
     archivedAt: lane.archivedAt,
     stackDepth: lane.stackDepth,
     linearIssue: projectLaneLinearIssue(lane.linearIssue),
+    linearIssueLinks,
     status: lane.status
   };
 }

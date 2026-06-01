@@ -2197,10 +2197,13 @@ export function PrDetailPane({
           borderBottom: `1px solid ${actionResult.success ? "color-mix(in srgb, var(--color-success) 20%, transparent)" : "color-mix(in srgb, var(--color-error) 20%, transparent)"}`,
           fontFamily: SANS_FONT, fontSize: 12,
           color: actionResult.success ? COLORS.success : COLORS.danger,
-          display: "flex", alignItems: "center", gap: 8,
+          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
         }}>
-          {actionResult.success ? <CheckCircle size={14} weight="fill" /> : <XCircle size={14} weight="fill" />}
-          {actionResult.success ? `Merged PR #${actionResult.prNumber}` : `Failed: ${actionResult.error ?? "unknown"}`}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {actionResult.success ? <CheckCircle size={14} weight="fill" /> : <XCircle size={14} weight="fill" />}
+            <span>{actionResult.success ? `Merged PR #${actionResult.prNumber}` : `Failed: ${actionResult.error ?? "unknown"}`}</span>
+          </div>
+          <button type="button" onClick={() => setActionResult(null)} style={{ background: "none", border: "none", cursor: "pointer", color: actionResult.success ? COLORS.success : COLORS.danger, padding: 4 }} aria-label="Dismiss merge result"><X size={14} /></button>
         </div>
       )}
 
@@ -2743,4 +2746,3 @@ function ChecksTab({
     </div>
   );
 }
-

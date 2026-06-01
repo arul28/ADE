@@ -627,6 +627,66 @@ describe("githubPollingService — cursor format", () => {
     expect(githubService.listIssueComments.mock.calls[0]?.[3]?.since).toBe("2026-04-23T10:15:00Z");
   });
 
+  it("emits first-seen issue comments after downtime using the durable repo cursor", async () => {
+    const { service, dispatchCalls, githubService } = makeHarness({
+      initialCursor: "acme/ade=2026-04-23T10:00:00Z",
+      issuesByCall: [[{
+        number: 10,
+        updatedAt: "2026-04-23T10:30:00Z",
+        createdAt: "2026-04-22T09:00:00Z",
+        comments: 1,
+      }]],
+      pullsByCall: [[]],
+      commentsByCall: [[{ id: 101, body: "comment during downtime", createdAt: "2026-04-23T10:20:00Z" }]],
+    });
+
+    await service.pollNow();
+
+    expect(githubService.listIssueComments.mock.calls[0]?.[3]?.since).toBe("2026-04-23T10:00:00Z");
+    expect(dispatchCalls.filter((call) => call.triggerType === "github.issue_commented")).toHaveLength(1);
+  });
+
+  it("emits first-seen PR comments after downtime using the durable repo cursor", async () => {
+    const { service, dispatchCalls, githubService } = makeHarness({
+      initialCursor: "acme/ade=2026-04-23T10:00:00Z",
+      issuesByCall: [[]],
+      pullsByCall: [[{
+        number: 42,
+        updatedAt: "2026-04-23T10:30:00Z",
+        createdAt: "2026-04-22T09:00:00Z",
+        comments: 1,
+      }]],
+      commentsByCall: [[{ id: 201, body: "pr comment during downtime", createdAt: "2026-04-23T10:20:00Z" }]],
+    });
+
+    await service.pollNow();
+
+    expect(githubService.listIssueComments.mock.calls[0]?.[3]?.since).toBe("2026-04-23T10:00:00Z");
+    expect(dispatchCalls.filter((call) => call.triggerType === "github.pr_commented")).toHaveLength(1);
+  });
+
+  it("emits only first-seen PR reviews newer than the durable repo cursor", async () => {
+    const { service, dispatchCalls } = makeHarness({
+      initialCursor: "acme/ade=2026-04-23T10:00:00Z",
+      issuesByCall: [[]],
+      pullsByCall: [[{
+        number: 42,
+        updatedAt: "2026-04-23T10:30:00Z",
+        createdAt: "2026-04-22T09:00:00Z",
+      }]],
+      reviewsByCall: [[
+        { id: 1, body: "old review", submittedAt: "2026-04-23T09:50:00Z" },
+        { id: 2, body: "new review", submittedAt: "2026-04-23T10:20:00Z" },
+      ]],
+    });
+
+    await service.pollNow();
+
+    const reviews = dispatchCalls.filter((call) => call.triggerType === "github.pr_review_submitted");
+    expect(reviews).toHaveLength(1);
+    expect(reviews[0]?.rawPayload).toMatchObject({ reviewId: 2 });
+  });
+
   it("does not skip comments that share the same created_at timestamp", async () => {
     const { service, dispatchCalls } = makeHarness({
       issuesByCall: [
