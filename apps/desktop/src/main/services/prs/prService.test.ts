@@ -1403,6 +1403,53 @@ describe("prService.getStatus", () => {
       vi.useRealTimers();
     }
   });
+
+  it("keeps behindBaseBy unknown when GitHub compare fails", async () => {
+    const row = makePrRow({ id: "pr-status-compare-failed", github_pr_number: 91 });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === "/repos/test-owner/test-repo/pulls/91") {
+          return {
+            data: makeGitHubPull({
+              number: 91,
+              html_url: row.github_url,
+              title: row.title,
+              mergeable: true,
+              mergeable_state: "clean",
+              head: { ref: "my-feature", sha: "head-sha" },
+              base: { ref: "main", sha: "base-sha" },
+            }),
+          };
+        }
+        if (args.path === "/repos/test-owner/test-repo/commits/head-sha/status") {
+          return { data: { state: "success", statuses: [] } };
+        }
+        if (args.path === "/repos/test-owner/test-repo/commits/head-sha/check-runs") {
+          return { data: { check_runs: [] } };
+        }
+        if (args.path === "/repos/test-owner/test-repo/pulls/91/reviews") {
+          return { data: [] };
+        }
+        if (args.path === "/repos/test-owner/test-repo/compare/base-sha...head-sha") {
+          throw new Error("compare unavailable");
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+
+    const status = await service.getStatus("pr-status-compare-failed");
+
+    expect(status.behindBaseBy).toBeNull();
+    const updateCall = db.run.mock.calls.find(([sql]: [unknown]) =>
+      String(sql).includes("update pull_requests")
+      && String(sql).includes("behind_base_by")
+    );
+    const updateParams = updateCall?.[1] as unknown[] | undefined;
+    expect(updateParams?.slice(-4, -2)).toEqual([1, null]);
+  });
 });
 
 describe("prService.refresh", () => {
@@ -2310,6 +2357,70 @@ describe("prService.delete", () => {
     expect(prDeleteIndex).toBeGreaterThanOrEqual(0);
     expect(summaryDeleteIndex).toBeLessThan(prDeleteIndex);
     expect(snapshotDeleteIndex).toBeLessThan(prDeleteIndex);
+  });
+});
+
+describe("prService.land", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("does not send a merge request for draft PRs", async () => {
+    const row = makePrRow({ id: "pr-draft", github_pr_number: 92, state: "draft" });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { method: string; path: string }) => {
+        if (args.method === "GET" && args.path === "/repos/test-owner/test-repo/pulls/92") {
+          return {
+            data: makeGitHubPull({
+              number: 92,
+              draft: true,
+              state: "open",
+              mergeable: true,
+              mergeable_state: "clean",
+            }),
+          };
+        }
+        throw new Error(`Unexpected GitHub API call: ${args.method} ${args.path}`);
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+
+    const result = await service.land({ prId: "pr-draft", method: "squash" });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/draft/i);
+    expect(githubService.apiRequest).not.toHaveBeenCalledWith(expect.objectContaining({ method: "PUT" }));
+  });
+
+  it("short-circuits dirty mergeability before calling GitHub merge", async () => {
+    const row = makePrRow({ id: "pr-conflict", github_pr_number: 93 });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { method: string; path: string }) => {
+        if (args.method === "GET" && args.path === "/repos/test-owner/test-repo/pulls/93") {
+          return {
+            data: makeGitHubPull({
+              number: 93,
+              draft: false,
+              state: "open",
+              mergeable: false,
+              mergeable_state: "dirty",
+            }),
+          };
+        }
+        throw new Error(`Unexpected GitHub API call: ${args.method} ${args.path}`);
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+
+    const result = await service.land({ prId: "pr-conflict", method: "merge" });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/merge conflicts/i);
+    expect(githubService.apiRequest).not.toHaveBeenCalledWith(expect.objectContaining({ method: "PUT" }));
   });
 });
 

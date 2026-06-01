@@ -574,6 +574,15 @@ export function createGithubService({
   // don't count against GitHub's rate limit, so this dramatically reduces API usage.
   const etagCache = new Map<string, { etag: string; data: unknown; linkHeader: string | null }>();
   const ETAG_CACHE_MAX_SIZE = 200;
+  const inFlightConditionalGetKeys = new Set<string>();
+
+  const evictOldestEtagCacheEntry = (protectedKeys: ReadonlySet<string>): void => {
+    for (const key of etagCache.keys()) {
+      if (protectedKeys.has(key)) continue;
+      etagCache.delete(key);
+      return;
+    }
+  };
 
   const apiRequest = async <T>(args: {
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
@@ -604,18 +613,28 @@ export function createGithubService({
 
     // For GET requests, send If-None-Match with cached ETag if available.
     // GitHub returns 304 Not Modified for free (no rate limit cost).
+    let sentConditionalGet = false;
     if (args.method === "GET") {
       const cached = etagCache.get(urlKey);
       if (cached) {
         headers["if-none-match"] = cached.etag;
+        sentConditionalGet = true;
+        inFlightConditionalGetKeys.add(urlKey);
       }
     }
 
-    const response = await fetchGitHub(url.toString(), {
-      method: args.method,
-      headers,
-      body: args.body != null ? JSON.stringify(args.body) : undefined
-    });
+    let response: Response;
+    try {
+      response = await fetchGitHub(url.toString(), {
+        method: args.method,
+        headers,
+        body: args.body != null ? JSON.stringify(args.body) : undefined
+      });
+    } finally {
+      if (sentConditionalGet) {
+        inFlightConditionalGetKeys.delete(urlKey);
+      }
+    }
 
     // 304 Not Modified — return cached data (free, no rate limit cost)
     if (response.status === 304) {
@@ -665,9 +684,10 @@ export function createGithubService({
       const etag = response.headers.get("etag");
       if (etag) {
         // Evict oldest entries if cache is full
-        if (etagCache.size >= ETAG_CACHE_MAX_SIZE) {
-          const firstKey = etagCache.keys().next().value;
-          if (firstKey) etagCache.delete(firstKey);
+        while (etagCache.size >= ETAG_CACHE_MAX_SIZE && !etagCache.has(urlKey)) {
+          const before = etagCache.size;
+          evictOldestEtagCacheEntry(inFlightConditionalGetKeys);
+          if (etagCache.size === before) break;
         }
         etagCache.set(urlKey, { etag, data, linkHeader });
       }

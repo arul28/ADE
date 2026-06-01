@@ -1365,22 +1365,22 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
     // round-trip when the PR is already at base — otherwise every wake fires
     // a redundant `git fetch` + `git push --force-with-lease` that no-ops on
     // the remote but pollutes the audit log and wastes round-trips.
-    let behindBaseBy = 0;
+    let behindBaseBy: number | null = null;
     try {
       const status = await prService.getStatus(prId);
-      behindBaseBy = status.behindBaseBy ?? 0;
+      behindBaseBy = status.behindBaseBy ?? null;
     } catch (err) {
       logger.debug("ptm.status_fetch_failed", { prId, error: getErrorMessage(err) });
       // Fall through; treat as "unknown" → safest is to run the base sync.
-      behindBaseBy = 1;
+      behindBaseBy = null;
     }
     if (!isAutoConvergeStillEnabled(prId)) {
       clearTimer(prId);
       return;
     }
 
-    // ---- Step 1: base-advance conflict check (only when actually behind) ----
-    if (behindBaseBy > 0) {
+    // ---- Step 1: base-advance conflict check (when behind, or when compare is unknown) ----
+    if (behindBaseBy == null || behindBaseBy > 0) {
       const baseSync = await applyConflictStrategy(fresh, "base_advance");
       if (!isAutoConvergeStillEnabled(prId)) {
         clearTimer(prId);

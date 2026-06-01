@@ -498,22 +498,24 @@ export function RebaseTab({
 
   const handleDismiss = async () => {
     if (!selectedNeed) return;
+    setRebaseError(null);
     try {
       await window.ade.rebase.dismiss(selectedNeed.laneId);
       await onRefresh();
-    } catch {
-      /* swallow */
+    } catch (err: unknown) {
+      setRebaseError(err instanceof Error ? err.message : String(err));
     }
   };
 
   const handleDefer = async () => {
     if (!selectedNeed) return;
     const until = new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString();
+    setRebaseError(null);
     try {
       await window.ade.rebase.defer(selectedNeed.laneId, until);
       await onRefresh();
-    } catch {
-      /* swallow */
+    } catch (err: unknown) {
+      setRebaseError(err instanceof Error ? err.message : String(err));
     }
   };
 

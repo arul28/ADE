@@ -67,10 +67,11 @@ export function deriveMergeBlockers(args: {
   if (status?.mergeConflicts) {
     blockers.push({ id: "conflicts", label: "This branch has conflicts that must be resolved." });
   }
-  if (status && status.behindBaseBy > 0) {
+  const behindBaseBy = status?.behindBaseBy ?? 0;
+  if (behindBaseBy > 0) {
     blockers.push({
       id: "behind",
-      label: `The head branch is ${status.behindBaseBy} commit${status.behindBaseBy === 1 ? "" : "s"} behind the base branch.`,
+      label: `The head branch is ${behindBaseBy} commit${behindBaseBy === 1 ? "" : "s"} behind the base branch.`,
     });
   }
 
@@ -160,7 +161,7 @@ export function canAttemptMerge(args: {
   status: PrStatus | null;
   bypassRules: boolean;
 }): boolean {
-  if (args.pr.state !== "open" && args.pr.state !== "draft") return false;
+  if (args.pr.state !== "open") return false;
   if (args.status?.mergeConflicts) return false;
   if (args.bypassRules) return Boolean(args.status);
   return Boolean(args.status?.isMergeable);

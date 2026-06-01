@@ -94,6 +94,14 @@ describe("prMergeRailUtils", () => {
     })).toBe(true);
   });
 
+  it("does not allow draft PR merge attempts even with bypass enabled", () => {
+    expect(canAttemptMerge({
+      pr: makePr({ state: "draft" }),
+      status: makeStatus({ state: "draft", isMergeable: true }),
+      bypassRules: true,
+    })).toBe(false);
+  });
+
   it("builds gh merge instructions with optional admin bypass", () => {
     expect(buildMergeCommandLineInstructions({
       repoOwner: "acme",

@@ -4065,6 +4065,8 @@ describe("laneService - branchSwitch", () => {
             "stale", "open", "main", "feature/a", 0, 0, BSW_NOW, BSW_NOW,
           ],
         );
+        db.run("insert into pull_request_ai_summaries(pr_id, head_sha, summary_json, generated_at) values (?, ?, ?, ?)", ["pr-stale", "abc123", "{}", BSW_NOW]);
+        db.run("insert into pull_request_snapshots(pr_id, updated_at) values (?, ?)", ["pr-stale", BSW_NOW]);
 
         vi.mocked(runGitOrThrow).mockImplementation(async () => ({ exitCode: 0, stdout: "", stderr: "" } as any));
         vi.mocked(runGit).mockImplementation(makeRunGitResponder((args) => {
@@ -4088,6 +4090,8 @@ describe("laneService - branchSwitch", () => {
           ["pr-stale"],
         );
         expect(stale).toBeNull();
+        expect(db.get<{ count: number }>("select count(1) as count from pull_request_ai_summaries where pr_id = ?", ["pr-stale"])?.count).toBe(0);
+        expect(db.get<{ count: number }>("select count(1) as count from pull_request_snapshots where pr_id = ?", ["pr-stale"])?.count).toBe(0);
       } finally {
         db.close();
         fs.rmSync(repoRoot, { recursive: true, force: true });

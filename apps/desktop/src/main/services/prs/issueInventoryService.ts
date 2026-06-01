@@ -986,7 +986,7 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
         const latestReplyLooksResolved = (source === "human" || source === "unknown")
           && looksLikeResolutionAck(body);
 
-        if (thread.isResolved || thread.isOutdated || latestReplyLooksResolved) {
+        if (thread.isResolved || latestReplyLooksResolved) {
           if (!existing) continue;
           upsertItem(prId, externalId, threadData, {
             state: "fixed",
@@ -994,6 +994,9 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
             dismissReason: null,
             agentSessionId: existing.agent_session_id,
           });
+          continue;
+        }
+        if (thread.isOutdated && !existing) {
           continue;
         }
 

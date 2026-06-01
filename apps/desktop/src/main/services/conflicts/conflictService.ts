@@ -1495,6 +1495,28 @@ export function createConflictService({
     overlaps: BatchOverlapEntry[];
   }> => {
     const latest = getLatestRows();
+    const currentHeadShaByLaneId = new Map<string, string | null>();
+    const currentBaseShaByLaneId = new Map<string, string | null>();
+    await Promise.all(lanes.map(async (lane) => {
+      const [headSha, baseSha] = await Promise.all([
+        readHeadSha(lane.worktreePath, "HEAD").catch(() => null),
+        readHeadSha(projectRoot, lane.baseRef).catch(() => null),
+      ]);
+      currentHeadShaByLaneId.set(lane.id, headSha);
+      currentBaseShaByLaneId.set(lane.id, baseSha);
+    }));
+    const predictionIsStale = (row: ConflictPredictionRow | undefined): boolean => {
+      if (!row) return true;
+      if (isStalePrediction(row.predicted_at)) return true;
+      const laneASha = currentHeadShaByLaneId.get(row.lane_a_id) ?? null;
+      if (!row.lane_a_sha || !laneASha || row.lane_a_sha !== laneASha) return true;
+      if (row.lane_b_id == null) {
+        const baseSha = currentBaseShaByLaneId.get(row.lane_a_id) ?? null;
+        return !row.lane_b_sha || !baseSha || row.lane_b_sha !== baseSha;
+      }
+      const laneBSha = currentHeadShaByLaneId.get(row.lane_b_id) ?? null;
+      return !row.lane_b_sha || !laneBSha || row.lane_b_sha !== laneBSha;
+    };
     const matrix: RiskMatrixEntry[] = [];
     const overlapEntries: BatchOverlapEntry[] = [];
 
@@ -1509,7 +1531,7 @@ export function createConflictService({
         overlapCount: overlapFiles.length,
         hasConflict: (row?.status ?? "unknown") === "conflict" || conflicting.length > 0,
         computedAt: row?.predicted_at ?? null,
-        stale: isStalePrediction(row?.predicted_at)
+        stale: predictionIsStale(row)
       });
       overlapEntries.push({
         laneAId: lane.id,
@@ -1533,7 +1555,7 @@ export function createConflictService({
           overlapCount: overlapFiles.length,
           hasConflict: (row?.status ?? "unknown") === "conflict" || conflicting.length > 0,
           computedAt: row?.predicted_at ?? null,
-          stale: isStalePrediction(row?.predicted_at)
+          stale: predictionIsStale(row)
         });
         overlapEntries.push({
           laneAId: laneA.id,

@@ -327,8 +327,8 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
             summary: `Issue #${issue.number} opened: ${issue.title}`,
           });
         }
-        if (since === undefined && (issue.comments ?? 0) > 0) {
-          await pollComments(repo, issue.number, since, ctx, /* isPr */ false, /* emit */ false);
+        if ((issue.comments ?? 0) > 0) {
+          await pollComments(repo, issue.number, since, ctx, /* isPr */ false, /* emit */ since !== undefined);
         }
         snapshotByRepo.set(issue.number, {
           labels: currentLabels,
@@ -422,14 +422,10 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
             summary: `PR #${pr.number} opened: ${pr.title}`,
           });
         }
-        if (since === undefined) {
-          if ((pr.comments ?? 0) > 0) {
-            await pollComments(repo, pr.number, since, ctx, /* isPr */ true, /* emit */ false);
-          }
-          await pollReviews(repo, pr.number, ctx, /* emit */ false);
-        } else {
-          await pollReviews(repo, pr.number, ctx);
+        if ((pr.comments ?? 0) > 0) {
+          await pollComments(repo, pr.number, since, ctx, /* isPr */ true, /* emit */ since !== undefined);
         }
+        await pollReviews(repo, pr.number, ctx, /* emit */ since !== undefined, since);
         snapshotByRepo.set(pr.number, currentSnapshot);
         continue;
       }
@@ -509,6 +505,7 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
     prNumber: number,
     ctx: AutomationTriggerPrContext,
     emit = true,
+    since?: string,
   ) => {
     const key = `${repoSlug(repo)}:${prNumber}`;
     const cursor = reviewCursors.get(key);
@@ -517,6 +514,7 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
       const submittedAt = review.submitted_at ?? "";
       if (!submittedAt) continue;
       if (cursor && submittedAt <= cursor) continue;
+      if (!cursor && since && submittedAt <= since) continue;
       if (emit) {
         await dispatch(repo, "github.pr_review_submitted", `${repoSlug(repo)}#${prNumber}:review:${review.id}`, {
           pr: { ...ctx, body: review.body ?? undefined },

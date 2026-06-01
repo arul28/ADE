@@ -55,8 +55,10 @@ export const PrDetailMergeRail = memo(function PrDetailMergeRail({
   const [menuOpen, setMenuOpen] = useState(false);
   const [showCliInstructions, setShowCliInstructions] = useState(false);
   const [deleteBranchArmed, setDeleteBranchArmed] = useState(false);
+  const [closePrArmed, setClosePrArmed] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const deleteBranchArmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closePrArmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleDeleteBranchClick = useCallback(() => {
     if (!onDeleteBranch) return;
@@ -71,9 +73,27 @@ export const PrDetailMergeRail = memo(function PrDetailMergeRail({
     deleteBranchArmTimer.current = setTimeout(() => setDeleteBranchArmed(false), 4000);
   }, [deleteBranchArmed, onDeleteBranch]);
 
+  const handleClosePrClick = useCallback(() => {
+    if (!onClose) return;
+    if (closePrArmed) {
+      if (closePrArmTimer.current) clearTimeout(closePrArmTimer.current);
+      setClosePrArmed(false);
+      onClose();
+      return;
+    }
+    setClosePrArmed(true);
+    if (closePrArmTimer.current) clearTimeout(closePrArmTimer.current);
+    closePrArmTimer.current = setTimeout(() => setClosePrArmed(false), 4000);
+  }, [closePrArmed, onClose]);
+
   useEffect(() => () => {
     if (deleteBranchArmTimer.current) clearTimeout(deleteBranchArmTimer.current);
+    if (closePrArmTimer.current) clearTimeout(closePrArmTimer.current);
   }, []);
+
+  useEffect(() => {
+    setClosePrArmed(false);
+  }, [pr.id]);
 
   useEffect(() => {
     setLocalMergeMethod(mergeMethod);
@@ -360,7 +380,7 @@ export const PrDetailMergeRail = memo(function PrDetailMergeRail({
               <button
                 type="button"
                 disabled={actionBusy}
-                onClick={onClose}
+                onClick={handleClosePrClick}
                 className="mt-3 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md text-[11px] font-medium"
                 style={{
                   color: COLORS.danger,
@@ -371,7 +391,7 @@ export const PrDetailMergeRail = memo(function PrDetailMergeRail({
                 }}
               >
                 <XCircle size={12} />
-                Close pull request
+                {closePrArmed ? "Click again to close PR" : "Close pull request"}
               </button>
             ) : null}
 
