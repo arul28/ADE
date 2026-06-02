@@ -433,7 +433,7 @@ export function createGitOperationsService({
 
   function isMissingWorktreeError(error: unknown): boolean {
     const message = error instanceof Error ? error.message : String(error);
-    return /git working directory not found:/i.test(message);
+    return /git working directory not found:|Lane worktree is missing\./i.test(message);
   }
 
   function laneWorktreeMissingError(lane: LaneInfo): Error {
@@ -457,8 +457,7 @@ export function createGitOperationsService({
         throw laneWorktreeMissingError(lane);
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.includes("Lane worktree is missing.")) throw error;
+      if (isMissingWorktreeError(error)) throw error;
       throw laneWorktreeMissingError(lane);
     }
   }
@@ -786,6 +785,7 @@ export function createGitOperationsService({
     async generateCommitMessage(args: GitGenerateCommitMessageArgs): Promise<GitGenerateCommitMessageResult> {
       const model = await assertCommitMessageGenerationEnabled();
       const lane = laneService.getLaneBaseAndBranch(args.laneId);
+      await assertLaneWorktreeRoot(lane);
       const promptContext = await loadCommitMessagePromptContext(lane);
       if (!promptContext.hasStagedChanges && !args.amend) {
         throw new Error("Stage changes before generating a commit message.");
@@ -1042,6 +1042,7 @@ export function createGitOperationsService({
       const laneId = args.laneId.trim();
       return readLaneCached(`sync-status:${laneId}:default`, 2_000, async () => {
         const lane = laneService.getLaneBaseAndBranch(laneId);
+        await assertLaneWorktreeRoot(lane);
         const readConfiguredUpstream = async (): Promise<string | null> => {
           const branchName = localBranchNameForConfig(lane.branchRef);
           if (!branchName) return null;
@@ -1150,6 +1151,7 @@ export function createGitOperationsService({
 
     async listCommitFiles(args: GitListCommitFilesArgs): Promise<string[]> {
       const lane = laneService.getLaneBaseAndBranch(args.laneId);
+      await assertLaneWorktreeRoot(lane);
       const sha = args.commitSha.trim();
       if (!sha.length) throw new Error("commitSha is required");
       const res = await runGitOrThrow(["show", "--pretty=format:", "--name-only", sha], {
@@ -1164,6 +1166,7 @@ export function createGitOperationsService({
 
     async getCommitMessage(args: GitGetCommitMessageArgs): Promise<string> {
       const lane = laneService.getLaneBaseAndBranch(args.laneId);
+      await assertLaneWorktreeRoot(lane);
       const sha = args.commitSha.trim();
       if (!sha.length) throw new Error("commitSha is required");
       const res = await runGitOrThrow(["show", "-s", "--format=%B", sha], {
@@ -1277,6 +1280,7 @@ export function createGitOperationsService({
       const laneId = args.laneId.trim();
       return readLaneCached(`stashes:${laneId}:default`, 1_500, async () => {
         const lane = laneService.getLaneBaseAndBranch(laneId);
+        await assertLaneWorktreeRoot(lane);
         return (await listBranchStashes(lane)).map(toPublicStash);
       });
     },
@@ -1511,6 +1515,7 @@ export function createGitOperationsService({
       if (!laneId) throw new Error("laneId is required");
       return readLaneCached(`conflict-state:${laneId}:default`, 1_500, async () => {
         const lane = laneService.getLaneBaseAndBranch(laneId);
+        await assertLaneWorktreeRoot(lane);
         const gitDir = await getAbsoluteGitDir(lane.worktreePath);
         const kind = gitDir ? detectConflictKind(gitDir) : null;
 
@@ -1588,6 +1593,7 @@ export function createGitOperationsService({
 
     async listBranches(args: { laneId: string }): Promise<GitBranchSummary[]> {
       const lane = laneService.getLaneBaseAndBranch(args.laneId);
+      await assertLaneWorktreeRoot(lane);
       // Subject goes last so a tab inside a commit subject doesn't desync the
       // parser — anything after index 7 is rejoined.
       const FORMAT = [
@@ -1687,6 +1693,7 @@ export function createGitOperationsService({
 
     async getUserIdentity(args: { laneId: string }): Promise<GitUserIdentity> {
       const lane = laneService.getLaneBaseAndBranch(args.laneId);
+      await assertLaneWorktreeRoot(lane);
       const readConfig = async (key: string): Promise<string> => {
         const result = await runGit(["config", "--get", key], {
           cwd: lane.worktreePath,
@@ -1703,6 +1710,7 @@ export function createGitOperationsService({
       const laneId = args.laneId.trim();
       if (!laneId) return fallback;
       const lane = laneService.getLaneBaseAndBranch(laneId);
+      await assertLaneWorktreeRoot(lane);
       const [remoteRes, branchRes] = await Promise.all([
         runGit(["remote", "get-url", "origin"], { cwd: lane.worktreePath, timeoutMs: 8_000 }).catch(() => null),
         lane.branchRef?.trim()
@@ -1737,6 +1745,7 @@ export function createGitOperationsService({
       const laneId = args.laneId.trim();
       if (!laneId) return fallback;
       const lane = laneService.getLaneBaseAndBranch(laneId);
+      await assertLaneWorktreeRoot(lane);
       const branch = args.branch?.trim() || lane.branchRef?.trim() || "";
       if (!branch) return fallback;
 

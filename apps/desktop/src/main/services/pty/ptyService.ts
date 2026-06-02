@@ -3116,24 +3116,23 @@ export function createPtyService({
         `${displayName} exited before ADE could capture a concrete resume target. Start a new ${displayName} session.`,
       );
     };
+    const resumeTargetIdFor = (candidate: TerminalSessionSummary): string | null => {
+      const parsedResumeCommand = parseTrackedCliResumeCommand(candidate.resumeCommand, candidate.toolType);
+      return sanitizeResumeTargetId(candidate.resumeMetadata?.targetId ?? null)
+        ?? (parsedResumeCommand?.provider === provider
+          ? sanitizeResumeTargetId(parsedResumeCommand.targetId ?? null)
+          : null);
+    };
 
     let resolvedSession = session;
-    let parsedResumeCommand = parseTrackedCliResumeCommand(resolvedSession.resumeCommand, resolvedSession.toolType);
-    let storedResumeTargetId = sanitizeResumeTargetId(resolvedSession.resumeMetadata?.targetId ?? null)
-      ?? (parsedResumeCommand?.provider === provider
-        ? sanitizeResumeTargetId(parsedResumeCommand.targetId ?? null)
-        : null);
+    let storedResumeTargetId = resumeTargetIdFor(resolvedSession);
     if (!storedResumeTargetId && provider !== "cursor" && isTrackedCliToolType(resolvedSession.toolType)) {
       const cwd = inferSessionCwdFromTranscriptPath(resolvedSession.transcriptPath);
       const backfilled = await tryBackfillResumeTarget(sessionId, resolvedSession.toolType, "resume-launch", cwd);
       const updatedSession = backfilled ? sessionService.get(sessionId) : null;
       if (updatedSession) {
         resolvedSession = updatedSession;
-        parsedResumeCommand = parseTrackedCliResumeCommand(resolvedSession.resumeCommand, resolvedSession.toolType);
-        storedResumeTargetId = sanitizeResumeTargetId(resolvedSession.resumeMetadata?.targetId ?? null)
-          ?? (parsedResumeCommand?.provider === provider
-            ? sanitizeResumeTargetId(parsedResumeCommand.targetId ?? null)
-            : null);
+        storedResumeTargetId = resumeTargetIdFor(resolvedSession);
       }
     }
     if (

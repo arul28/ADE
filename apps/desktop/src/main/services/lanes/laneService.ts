@@ -257,6 +257,8 @@ function normAbs(p: string): string {
   return path.resolve(p);
 }
 
+const STALE_WORKTREE_ROOT_MESSAGE = "Lane worktree is missing or no longer points at its Git worktree root.";
+
 async function isExpectedGitWorktreeRoot(worktreePath: string): Promise<boolean> {
   if (!worktreePath) return false;
   try {
@@ -275,6 +277,12 @@ async function isExpectedGitWorktreeRoot(worktreePath: string): Promise<boolean>
     // returns a GitRunResult for normal git failures, so keep those tests on
     // their existing path without weakening production validation.
     return /^Unexpected git call:/i.test(message);
+  }
+}
+
+async function assertExpectedGitWorktreeRoot(worktreePath: string): Promise<void> {
+  if (!(await isExpectedGitWorktreeRoot(worktreePath))) {
+    throw new Error(STALE_WORKTREE_ROOT_MESSAGE);
   }
 }
 
@@ -802,9 +810,7 @@ type WorktreeChangeState = {
 };
 
 async function inspectWorktreeChanges(worktreePath: string): Promise<WorktreeChangeState> {
-  if (!(await isExpectedGitWorktreeRoot(worktreePath))) {
-    throw new Error("Lane worktree is missing or no longer points at its Git worktree root.");
-  }
+  await assertExpectedGitWorktreeRoot(worktreePath);
 
   const statusRes = await runGit(["status", "--porcelain=v1"], { cwd: worktreePath, timeoutMs: 8_000 });
   if (statusRes.exitCode !== 0) {
@@ -835,9 +841,7 @@ type GitStashEntry = {
 };
 
 async function listGitStashes(worktreePath: string): Promise<GitStashEntry[]> {
-  if (!(await isExpectedGitWorktreeRoot(worktreePath))) {
-    throw new Error("Lane worktree is missing or no longer points at its Git worktree root.");
-  }
+  await assertExpectedGitWorktreeRoot(worktreePath);
 
   const stashRes = await runGit(["stash", "list", "--format=%gd%x1f%gs"], {
     cwd: worktreePath,

@@ -1362,6 +1362,33 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("maps lane delete flags to the shared lane action", () => {
+    const plan = buildCliPlan([
+      "lanes",
+      "delete",
+      "lane-old",
+      "--force",
+      "--delete-branch",
+      "--delete-remote-branch",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") throw new Error(`expected execute plan, got ${plan.kind}`);
+    expect(plan.label).toBe("lane delete");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "lane",
+        action: "delete",
+        args: {
+          laneId: "lane-old",
+          force: true,
+          deleteBranch: true,
+          deleteRemoteBranch: true,
+        },
+      },
+    });
+  });
+
   it("forwards PR GitHub snapshot full-history flag to the runtime action", () => {
     const snapshot = buildCliPlan([
       "prs",

@@ -592,9 +592,11 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
    when the user sends text to an ended agent CLI session and the PTY
    service opens the transcript in append mode. When the runtime is still
    live, it submits to that PTY directly. When the PTY is gone, it rebuilds
-   the provider resume command, creates a new PTY bound to the same durable
-   session id, and includes the new prompt in that launch command when
-   resume metadata is available. If another send arrives while the resume
+   the provider resume command, backfills a missing resume target on
+   demand when possible (including Codex rollout storage during an active
+   resume launch), creates a new PTY bound to the same durable session id,
+   and includes the new prompt in that launch command when resume metadata
+   is available. If another send arrives while the resume
    flight is already in progress, that later text is serialized and
    written after the PTY is attached. This keeps identity, lane
    association, and transcript history intact without killing the resumed
@@ -668,8 +670,8 @@ PTY:
 | Channel | Purpose |
 |---|---|
 | `ade.pty.create` | create or reattach; returns `{ ptyId, sessionId, pid }`. Accepts an optional `chatSessionId` to mark the terminal as chat-owned. |
-| `ade.pty.resumeSession` | prompt-free tracked CLI relaunch. Args: `{ sessionId, cols?, rows?, model?, reasoningEffort?, permissionMode? }`. Reuses a live PTY when attached; otherwise validates the row, rebuilds the provider resume command, and spawns a continuation PTY in the same `terminal_sessions` row without writing a prompt. Returns `PtyResumeSessionResult` (`{ ptyId, sessionId, pid, session, resumed, reusedExistingRuntime }`). |
-| `ade.pty.sendToSession` | send-or-continue. Args: `{ sessionId, text, cols?, rows?, model?, reasoningEffort?, permissionMode? }`. Submits text into the live PTY when one is attached; otherwise validates that the row is a tracked agent CLI session, rebuilds the resume command via `buildTrackedCliResumeCommand` (honouring runtime overrides), spawns the continuation PTY in the same `terminal_sessions` row, and includes the user's text in the launch command when resume metadata is available. Later sends that land after a resume flight has started are serialized through the agent CLI input protocol: line clear, bracketed paste envelope, chunked 64-byte writes with 5 ms inter-chunk delay, then carriage return with a provider-specific submit delay. Returns `PtySendToSessionResult` (`{ ptyId, sessionId, pid, session, resumed, reusedExistingRuntime }`). |
+| `ade.pty.resumeSession` | prompt-free tracked CLI relaunch. Args: `{ sessionId, cols?, rows?, model?, reasoningEffort?, permissionMode? }`. Reuses a live PTY when attached; otherwise validates the row, backfills a missing resume target when possible, rebuilds the provider resume command, and spawns a continuation PTY in the same `terminal_sessions` row without writing a prompt. Returns `PtyResumeSessionResult` (`{ ptyId, sessionId, pid, session, resumed, reusedExistingRuntime }`). |
+| `ade.pty.sendToSession` | send-or-continue. Args: `{ sessionId, text, cols?, rows?, model?, reasoningEffort?, permissionMode? }`. Submits text into the live PTY when one is attached; otherwise validates that the row is a tracked agent CLI session, backfills a missing resume target when possible, rebuilds the resume command via `buildTrackedCliResumeCommand` (honouring runtime overrides), spawns the continuation PTY in the same `terminal_sessions` row, and includes the user's text in the launch command when resume metadata is available. Later sends that land after a resume flight has started are serialized through the agent CLI input protocol: line clear, bracketed paste envelope, chunked 64-byte writes with 5 ms inter-chunk delay, then carriage return with a provider-specific submit delay. Returns `PtySendToSessionResult` (`{ ptyId, sessionId, pid, session, resumed, reusedExistingRuntime }`). |
 | `ade.pty.write` | write bytes to PTY |
 | `ade.pty.resize` | cols/rows resize |
 | `ade.pty.dispose` | close PTY; optional `sessionId` used for logging |

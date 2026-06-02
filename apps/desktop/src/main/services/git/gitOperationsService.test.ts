@@ -223,6 +223,9 @@ describe("gitOperationsService.getSyncStatus", () => {
 
   it("marks a configured upstream as missing when the remote branch was deleted", async () => {
     mockGit.runGit.mockImplementation(async (args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+        return { exitCode: 0, stdout: "/tmp/ade-lane\n", stderr: "" };
+      }
       if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") {
         return { exitCode: 128, stdout: "", stderr: "upstream gone" };
       }
@@ -985,11 +988,65 @@ describe("gitOperationsService.generateCommitMessage", () => {
     vi.clearAllMocks();
   });
 
+  it("does not read main diffs when a stale lane path resolves to the main worktree", async () => {
+    const generateCommitMessage = vi.fn();
+    mockGit.runGit.mockImplementation(async (args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+        return { exitCode: 0, stdout: "/tmp/main\n", stderr: "" };
+      }
+      return { exitCode: 1, stdout: "", stderr: `unexpected git command: ${args.join(" ")}` };
+    });
+
+    const service = createGitOperationsService({
+      laneService: {
+        getLaneBaseAndBranch: () => ({
+          baseRef: "main",
+          branchRef: "feature/stale",
+          worktreePath: "/tmp/main/.ade/worktrees/feature-stale-12345678",
+          laneType: "worktree",
+        }),
+      } as any,
+      operationService: {
+        start: vi.fn(),
+        finish: vi.fn(),
+      } as any,
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              featureModelOverrides: {
+                commit_messages: "anthropic/claude-haiku-4-5",
+              },
+            },
+          },
+        }),
+      } as any,
+      aiIntegrationService: {
+        getFeatureFlag: () => true,
+        getStatus: vi.fn(async () => ({
+          availableModelIds: ["anthropic/claude-haiku-4-5"],
+        })),
+        generateCommitMessage,
+      } as any,
+      logger: makeStubLogger(),
+    });
+
+    await expect(service.generateCommitMessage({ laneId: "lane-1" })).rejects.toThrow(
+      "Lane worktree is missing. Restore or recreate the lane worktree at /tmp/main/.ade/worktrees/feature-stale-12345678 before viewing history.",
+    );
+
+    expect(mockGit.runGit).toHaveBeenCalledTimes(1);
+    expect(generateCommitMessage).not.toHaveBeenCalled();
+  });
+
   it("uses the configured model and sends a lightweight changed-files prompt", async () => {
     let capturedPrompt = "";
     let capturedModel = "";
 
     mockGit.runGit.mockImplementation(async (args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+        return { exitCode: 0, stdout: "/tmp/ade-lane\n", stderr: "" };
+      }
       if (args[0] === "diff") {
         return {
           exitCode: 0,
@@ -1079,6 +1136,7 @@ describe("gitOperationsService.generateCommitMessage", () => {
     expect(capturedPrompt).not.toContain("Branch:");
     expect(capturedPrompt).toContain("Diff:");
     expect(mockGit.runGit.mock.calls.map((call) => call[0])).toEqual([
+      ["rev-parse", "--path-format=absolute", "--show-toplevel"],
       ["diff", "--cached", "--name-status", "--find-renames"],
       ["show", "--name-status", "--format=", "--find-renames", "HEAD"],
       ["diff", "--cached", "--no-color", "-U2", "--find-renames"],
@@ -1087,6 +1145,9 @@ describe("gitOperationsService.generateCommitMessage", () => {
 
   it("prefixes generated commit messages with a Linear reference for linked lanes", async () => {
     mockGit.runGit.mockImplementation(async (args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+        return { exitCode: 0, stdout: "/tmp/ade-lane\n", stderr: "" };
+      }
       if (args[0] === "diff") {
         return {
           exitCode: 0,
@@ -1190,6 +1251,9 @@ describe("gitOperationsService cached lane reads", () => {
     });
 
     mockGit.runGit.mockImplementation(async (args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+        return { exitCode: 0, stdout: "/tmp/ade-lane\n", stderr: "" };
+      }
       if (args[0] === "rev-parse") {
         await upstreamLookupGate;
         return { exitCode: 0, stdout: "origin/main\n", stderr: "" };
@@ -1214,14 +1278,19 @@ describe("gitOperationsService cached lane reads", () => {
     const [firstResult, secondResult] = await Promise.all([first, second]);
 
     expect(firstResult).toEqual(secondResult);
-    expect(mockGit.runGit).toHaveBeenCalledTimes(2);
+    expect(mockGit.runGit).toHaveBeenCalledTimes(3);
     expect(mockGit.runGit).toHaveBeenNthCalledWith(
       1,
-      ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+      ["rev-parse", "--path-format=absolute", "--show-toplevel"],
       expect.objectContaining({ cwd: "/tmp/ade-lane" }),
     );
     expect(mockGit.runGit).toHaveBeenNthCalledWith(
       2,
+      ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+      expect.objectContaining({ cwd: "/tmp/ade-lane" }),
+    );
+    expect(mockGit.runGit).toHaveBeenNthCalledWith(
+      3,
       ["rev-list", "--left-right", "--count", "origin/main...HEAD"],
       expect.objectContaining({ cwd: "/tmp/ade-lane" }),
     );

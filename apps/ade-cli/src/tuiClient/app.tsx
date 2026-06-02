@@ -1009,14 +1009,56 @@ function formatGoalBannerLine(goal: CodexThreadGoal | null): string | null {
 import { subagentSnapshotsFromEvents } from "../../../desktop/src/shared/chatSubagents";
 export { subagentSnapshotsFromEvents };
 
-function isLaneWorktreeAvailable(lane: LaneSummary | null | undefined): boolean {
+const LANE_WORKTREE_AVAILABILITY_CACHE_TTL_MS = 2_000;
+const laneWorktreeAvailabilityCache = new Map<string, { checkedAt: number; mtimeMs: number; available: boolean }>();
+
+function cacheLaneWorktreeAvailability(root: string, stat: fs.Stats, checkedAt: number, available: boolean): boolean {
+  laneWorktreeAvailabilityCache.set(root, { checkedAt, mtimeMs: stat.mtimeMs, available });
+  return available;
+}
+
+function normalizeWorktreePath(root: string): string {
+  const resolved = path.resolve(root);
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+export function isLaneWorktreeAvailable(lane: LaneSummary | null | undefined): boolean {
   const root = lane?.worktreePath?.trim();
   if (!root) return false;
+  const resolvedRoot = normalizeWorktreePath(root);
+  let stat: fs.Stats;
   try {
-    return fs.statSync(root).isDirectory();
+    stat = fs.statSync(resolvedRoot);
+    if (!stat.isDirectory()) return false;
   } catch {
     return false;
   }
+  const cached = laneWorktreeAvailabilityCache.get(resolvedRoot);
+  const now = Date.now();
+  if (cached && cached.mtimeMs === stat.mtimeMs && now - cached.checkedAt < LANE_WORKTREE_AVAILABILITY_CACHE_TTL_MS) {
+    return cached.available;
+  }
+  const markerExists = fs.existsSync(path.join(resolvedRoot, ".git"));
+  if (!markerExists) {
+    return cacheLaneWorktreeAvailability(resolvedRoot, stat, now, false);
+  }
+  const probe = spawnSync("git", ["rev-parse", "--path-format=absolute", "--show-toplevel"], {
+    cwd: resolvedRoot,
+    encoding: "utf8",
+    timeout: 8_000,
+  });
+  let available: boolean;
+  if (probe.status === 0) {
+    const topLevel = probe.stdout.trim();
+    available = topLevel ? normalizeWorktreePath(topLevel) === resolvedRoot : true;
+  } else {
+    available = false;
+  }
+  return cacheLaneWorktreeAvailability(resolvedRoot, stat, now, available);
 }
 
 function laneWorktreeUnavailableMessage(lane: LaneSummary | null | undefined): string | null {

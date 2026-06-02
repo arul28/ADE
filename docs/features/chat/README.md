@@ -117,7 +117,11 @@ render them, but neither one *runs* them.
   `acpEventMapper.ts` for terminal lifecycle parity.
 - **Lane-scoped.** Every session carries `laneId`; lane context (branch,
   worktree path) is injected into the system prompt, and working-directory
-  resolution runs through `resolveLaneLaunchContext`.
+  resolution runs through `resolveLaneLaunchContext`. The injected ADE
+  workspace directive treats the lane worktree as the boundary for
+  writes and mutations: read-only inspection outside the worktree is
+  allowed when needed, but file edits and mutating commands must stay
+  inside the launched lane unless ADE relaunches the session elsewhere.
 - **Event stream first.** All transcript content is a JSON-lines stream of
   `AgentChatEventEnvelope` values. Renderer components derive UI state
   entirely from this stream.

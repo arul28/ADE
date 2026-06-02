@@ -278,6 +278,12 @@ task. `buildAdeCliAgentGuidance()` and `buildAdeCliInlineGuidance()`
 currently share the same compact guidance body so system prompts,
 worker launches, and inline Work-tab preambles stay aligned.
 
+Lane launch directives pair this ADE CLI guidance with worktree write
+boundaries. Agents may inspect files outside the launched lane when they
+need read-only context, but edits and mutating shell commands are only
+allowed inside the lane worktree unless ADE relaunches the session in a
+different lane.
+
 ## Fragile and tricky wiring
 
 - **Identity must come from env or trusted CLI flags.** A rogue client
