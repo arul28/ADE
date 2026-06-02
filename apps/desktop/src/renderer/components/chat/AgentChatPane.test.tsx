@@ -3856,6 +3856,64 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("ignores late failures from hidden stale draft launch rows", async () => {
+    const { suggestLaneName } = installAdeMocks({ sessions: [] });
+    let rejectSuggestedName!: (error: Error) => void;
+    suggestLaneName.mockImplementation(() => new Promise<string>((_resolve, reject) => {
+      rejectSuggestedName = reject;
+    }));
+
+    renderAutoCreateDraftPane();
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Launch in the background, then leave it hidden." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
+
+    await waitFor(() => {
+      expect(suggestLaneName).toHaveBeenCalledTimes(1);
+      expect(screen.getByText(/Choosing a branch name/i)).toBeTruthy();
+    });
+
+    const scopeKey = draftLaunchJobsScopeKeyForTest({
+      projectRoot: "/tmp/project-under-test",
+      laneId: "lane-1",
+    });
+    const draftLaunchJobsByScope = useAppStore.getState().draftLaunchJobsByScope;
+    act(() => {
+      useAppStore.setState({
+        draftLaunchJobsByScope: {
+          ...draftLaunchJobsByScope,
+          [scopeKey]: (draftLaunchJobsByScope[scopeKey] ?? []).map((job) => ({
+            ...job,
+            createdAtMs: 0,
+          })),
+        },
+      });
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Hide stale launch status" }));
+    await waitFor(() => {
+      expect(screen.queryByTestId("draft-launch-job")).toBeNull();
+    });
+
+    await act(async () => {
+      rejectSuggestedName(new Error("hidden stale launch failed"));
+    });
+
+    expect(screen.queryByText(/hidden stale launch failed/i)).toBeNull();
+    expect(screen.queryByTestId("draft-launch-job")).toBeNull();
+  });
+
   it("keeps an auto-create failure visible when the launch fails after remount", async () => {
     const { send, suggestLaneName } = installAdeMocks({ sessions: [] });
     let rejectSend!: (error: Error) => void;

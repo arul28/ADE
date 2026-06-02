@@ -5802,6 +5802,11 @@ export function AgentChatPane({
     ))));
   }, [setDraftLaunchJobs]);
 
+  const draftLaunchJobExists = useCallback((jobId: string) => {
+    return (useAppStore.getState().draftLaunchJobsByScope[draftLaunchJobsScopeKey] ?? EMPTY_DRAFT_LAUNCH_JOBS)
+      .some((job) => job.id === jobId);
+  }, [draftLaunchJobsScopeKey]);
+
   const dismissDraftLaunchJob = useCallback((jobId: string) => {
     setDraftLaunchJobs((current) => current.filter((job) => job.id !== jobId));
   }, [setDraftLaunchJobs]);
@@ -6120,6 +6125,7 @@ export function AgentChatPane({
         draftKind: launched.draftKind,
       };
       const shouldAutoOpen = mode === "foreground" && latestForegroundDraftLaunchJobIdRef.current === jobId;
+      const jobStillVisible = draftLaunchJobExists(jobId);
       patchDraftLaunchJob(jobId, {
         status: "ready",
         laneId: launch.laneId,
@@ -6128,6 +6134,9 @@ export function AgentChatPane({
         draftKind: launch.draftKind,
         autoOpen: false,
       });
+      if (!jobStillVisible) {
+        return;
+      }
       if (shouldAutoOpen && paneMountedRef.current) {
         openLaunchedDraftSession({ ...launch, jobId });
       } else if (mode === "background" && paneMountedRef.current) {
@@ -6141,6 +6150,7 @@ export function AgentChatPane({
         await refreshLanesStore().catch(() => undefined);
       }
       const message = launchError instanceof Error ? launchError.message : String(launchError);
+      const jobStillVisible = draftLaunchJobExists(jobId);
       patchDraftLaunchJob(jobId, {
         status: "failed",
         laneId: targetLane?.laneId ?? null,
@@ -6148,7 +6158,7 @@ export function AgentChatPane({
         error: message,
         autoOpen: false,
       });
-      if (paneMountedRef.current) {
+      if (jobStillVisible && paneMountedRef.current) {
         setError(message);
       }
     } finally {
@@ -6157,6 +6167,7 @@ export function AgentChatPane({
   }, [
     buildDraftLaunchSnapshotForCurrentState,
     clearDraftLaunchComposer,
+    draftLaunchJobExists,
     draftLaunchTargetIsAutoCreate,
     isWorkCliLaunchDraft,
     laneId,
