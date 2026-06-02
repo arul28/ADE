@@ -21,6 +21,8 @@ import type { BuiltInBrowserTab } from "../../../shared/types/builtInBrowser";
 import { consumePendingBuiltInBrowserNavigation } from "../../lib/openExternal";
 import { useAppStore } from "../../state/appStore";
 import {
+  ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
+  ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT,
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
@@ -634,6 +636,7 @@ export function ChatBuiltInBrowserPanel({
   const selectedItemRef = useRef<BuiltInBrowserContextItem | null>(null);
   const captureModeRef = useRef(false);
   const browserInputSuppressedRef = useRef(false);
+  const browserViewSuppressionCountRef = useRef(0);
   const autoAttachedContextIdsRef = useRef(new Set<string>());
   const editingUrlRef = useRef(false);
   const apiAvailable = Boolean(getBrowserApi());
@@ -815,11 +818,14 @@ export function ChatBuiltInBrowserPanel({
     };
     const suppressInput = () => {
       cancelRestoreFrame();
+      browserViewSuppressionCountRef.current += 1;
       browserInputSuppressedRef.current = true;
       setBrowserInputSuppressed(true);
       reportBounds(false);
     };
     const restoreInput = () => {
+      browserViewSuppressionCountRef.current = Math.max(0, browserViewSuppressionCountRef.current - 1);
+      if (browserViewSuppressionCountRef.current > 0) return;
       browserInputSuppressedRef.current = false;
       setBrowserInputSuppressed(false);
       cancelRestoreFrame();
@@ -830,9 +836,13 @@ export function ChatBuiltInBrowserPanel({
     };
     window.addEventListener(ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT, suppressInput);
     window.addEventListener(ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT, restoreInput);
+    window.addEventListener(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT, suppressInput);
+    window.addEventListener(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT, restoreInput);
     return () => {
       window.removeEventListener(ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT, suppressInput);
       window.removeEventListener(ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT, restoreInput);
+      window.removeEventListener(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT, suppressInput);
+      window.removeEventListener(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT, restoreInput);
       cancelRestoreFrame();
     };
   }, [reportBounds]);

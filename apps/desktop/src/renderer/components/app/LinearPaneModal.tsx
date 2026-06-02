@@ -3,6 +3,10 @@ import { createPortal } from "react-dom";
 import { CircleNotch, X } from "@phosphor-icons/react";
 
 import type { CtoLinearQuickView } from "../../../shared/types";
+import {
+  ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
+  ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
+} from "../../lib/workSidebarBrowserResize";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 
 /**
@@ -33,6 +37,14 @@ export function LinearPaneModal({
   children: React.ReactNode;
 }) {
   const popoverRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open || typeof window === "undefined") return undefined;
+    window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT));
+    return () => {
+      window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT));
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -73,7 +85,7 @@ export function LinearPaneModal({
         role="dialog"
         aria-modal="true"
         aria-label={ariaLabel}
-        className="fixed left-1/2 top-1/2 z-[9999] flex h-[min(900px,calc(100dvh-28px))] w-[min(1380px,calc(100vw-28px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border bg-[color:var(--ade-shell-surface,#121019)] text-fg shadow-2xl shadow-black/50"
+        className="fixed left-1/2 top-1/2 z-[9999] flex h-[min(940px,calc(100dvh-28px))] w-[min(1760px,calc(100vw-28px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border bg-[color:var(--ade-shell-surface,#121019)] text-fg shadow-2xl shadow-black/50"
         style={{
           borderColor: "rgba(123, 138, 240, 0.55)",
           boxShadow: "0 24px 70px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(123, 138, 240, 0.18)",
