@@ -329,12 +329,19 @@ describe("runBatchLaunch", () => {
       ["b", createDeferred()],
       ["c", createDeferred()],
     ]);
+    let resolveAllLaunchesStarted!: () => void;
+    const allLaunchesStarted = new Promise<void>((resolve) => {
+      resolveAllLaunchesStarted = resolve;
+    });
     const createLane = vi.fn(async (args: { linearIssue: { id: string } }) => ({ id: `lane-${args.linearIssue.id}` }));
     const launch = vi.fn(async () => ({ id: "chat-sess" }));
     const launchCli = vi.fn(async (args: LaunchCliArgs) => {
       const issueId = args.linearIssues[0]?.id;
       const deferred = issueId ? deferredByIssue.get(issueId) : null;
       if (!deferred) throw new Error(`missing deferred for ${issueId ?? "unknown issue"}`);
+      if (launchCli.mock.calls.length === deferredByIssue.size) {
+        resolveAllLaunchesStarted();
+      }
       return deferred.promise;
     });
     const onItem = vi.fn();
@@ -348,9 +355,7 @@ describe("runBatchLaunch", () => {
       { createLane, launch, launchCli },
       { onItem, concurrency: 3 },
     );
-    for (let i = 0; i < 5 && launchCli.mock.calls.length < 3; i += 1) {
-      await Promise.resolve();
-    }
+    await allLaunchesStarted;
     expect(launchCli).toHaveBeenCalledTimes(3);
 
     deferredByIssue.get("b")?.resolve({ sessionId: "cli-b" });

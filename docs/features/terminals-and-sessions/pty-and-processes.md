@@ -240,7 +240,10 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
     was disposed in the meantime. When `awaitInitialInput` is false, a
     readiness/write failure is logged and the PTY is preserved; ADE no
     longer kills or ends the session just because the first input could
-    not be delivered. Returns `{ ptyId, sessionId, pid }`.
+    not be delivered. When a caller explicitly sets `awaitInitialInput`,
+    readiness/write failure is treated as startup failure: the process
+    tree is terminated and the session is ended as `failed`. Returns
+    `{ ptyId, sessionId, pid }`.
 
 The launch env is built layer by layer: `process.env`, the lane
 runtime env (from `getLaneRuntimeEnv`), the caller's `args.env`, then
