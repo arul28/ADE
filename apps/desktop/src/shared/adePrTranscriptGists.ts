@@ -23,12 +23,15 @@ export function renderAdePrTranscriptGistLinks(links: AdePrTranscriptGistLink[])
     `<!-- ade:transcript-gists v=1 count=${normalized.length} -->`,
     "## ADE chat transcripts",
     "",
-    ...normalized.map((link) => {
+    ...normalized.map((link, index) => {
+      const linkTitle = normalized.length === 1
+        ? "ADE chat transcripts"
+        : `ADE chat transcript ${index + 1}`;
       const details = [
         link.provider,
         link.entryCount != null ? `${link.entryCount} message${link.entryCount === 1 ? "" : "s"}` : null,
       ].filter((value): value is string => Boolean(value));
-      return `- [${escapeMarkdownLinkText(link.title)}](${escapeMarkdownUrl(link.url)})${details.length ? ` - ${details.map(escapeMarkdownInlineText).join(" | ")}` : ""}`;
+      return `- [${escapeMarkdownLinkText(linkTitle)}](${escapeMarkdownUrl(link.url)})${details.length ? ` - ${details.map(escapeMarkdownInlineText).join(" | ")}` : ""}`;
     }),
     MARKER_CLOSE,
   ];

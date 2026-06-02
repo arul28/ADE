@@ -197,7 +197,7 @@ export function GitHubSection() {
       });
       setProjectConfig(next);
       setTranscriptGistsEnabled(next.effective.github?.prTranscriptGists?.enabled === true);
-      setSaveNotice(enabled ? "PR transcript gists enabled." : "PR transcript gists disabled.");
+      setSaveNotice(enabled ? "PR chat transcripts enabled." : "PR chat transcripts disabled.");
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -478,11 +478,11 @@ export function GitHubSection() {
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <ShieldCheck size={18} color={transcriptGistsEnabled ? COLORS.success : COLORS.textMuted} weight="fill" />
             <span style={{ fontSize: 13, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-              PR transcript gists
+              PR chat transcripts
             </span>
           </div>
           <span style={inlineBadge(transcriptGistsEnabled ? COLORS.success : COLORS.textMuted)}>
-            {transcriptGistsEnabled ? "Secret gists" : "Off"}
+            {transcriptGistsEnabled ? "On" : "Off"}
           </span>
         </div>
         <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: configBusy ? "default" : "pointer" }}>
@@ -497,10 +497,10 @@ export function GitHubSection() {
           />
           <span style={{ display: "grid", gap: 6 }}>
             <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-              Attach secret gist links for ADE chat transcripts when creating or linking PRs.
+              Attach ADE chat transcript links when creating or linking PRs.
             </span>
             <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary, lineHeight: "18px" }}>
-              Secret gists are link-accessible. ADE publishes only structured chat turns, not raw terminal logs.
+              Transcripts are published as secret gists, which are link-accessible. ADE publishes only structured chat turns, not raw terminal logs.
             </span>
           </span>
         </label>

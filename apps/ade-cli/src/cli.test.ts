@@ -491,7 +491,7 @@ describe("ADE CLI", () => {
     const enable = buildCliPlan(["settings", "pr-transcript-gists", "enable"]);
     expect(enable.kind).toBe("execute");
     if (enable.kind !== "execute") return;
-    expect(enable.label).toBe("enable PR transcript gists");
+    expect(enable.label).toBe("enable PR chat transcripts");
     expect(enable.steps).toEqual([
       {
         key: "result",

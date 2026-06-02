@@ -408,7 +408,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Run ADE's singleton Apple silicon macOS VM
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade usage snapshot | refresh | budget         Read provider quota usage and edit automation guardrails
-    $ ade settings pr-transcript-gists enable      Attach secret chat transcript gists to new PRs
+    $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade actions list | run | status | wait        Escape hatch for every ADE service action
@@ -8563,7 +8563,7 @@ function buildSettingsPlan(args: string[]): CliPlan {
     if (mode === "status") {
       return {
         kind: "execute",
-        label: "settings pr transcript gists",
+        label: "settings PR chat transcripts",
         steps: [
           actionStep("result", "project_config", "get"),
         ],
@@ -8572,7 +8572,7 @@ function buildSettingsPlan(args: string[]): CliPlan {
     if (mode === "enable" || mode === "on" || mode === "true") {
       return {
         kind: "execute",
-        label: "enable PR transcript gists",
+        label: "enable PR chat transcripts",
         steps: [
           actionStep("result", "project_config", "setPrTranscriptGists", { enabled: true }),
         ],
@@ -8581,7 +8581,7 @@ function buildSettingsPlan(args: string[]): CliPlan {
     if (mode === "disable" || mode === "off" || mode === "false") {
       return {
         kind: "execute",
-        label: "disable PR transcript gists",
+        label: "disable PR chat transcripts",
         steps: [
           actionStep("result", "project_config", "setPrTranscriptGists", { enabled: false }),
         ],
