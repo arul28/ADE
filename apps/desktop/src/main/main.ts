@@ -2992,6 +2992,13 @@ app.whenReady().then(async () => {
       disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
     };
     autoRebaseActivityReady = true;
+    void autoRebaseService
+      ?.refreshActiveRebaseNeeds("activity_services_ready")
+      .catch((error) => {
+        logger.warn("autoRebase.activity_ready_refresh_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
     setImmediate(() => {
       void Promise.resolve()
         .then(() => agentChatService.cleanupStaleAttachments())

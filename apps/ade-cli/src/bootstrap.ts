@@ -996,6 +996,13 @@ export async function createAdeRuntime(args: {
     };
   }
   autoRebaseActivityReady = true;
+  void autoRebaseService
+    .refreshActiveRebaseNeeds("activity_services_ready")
+    .catch((error) => {
+      logger.warn("autoRebase.activity_ready_refresh_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   if (resolvedArgs.chatRuntime === "agent" && !agentChatService) {
     throw new Error("Agent chat runtime was requested but the agent chat service was not initialized.");
   }
