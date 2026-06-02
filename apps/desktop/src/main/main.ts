@@ -6055,6 +6055,11 @@ app.whenReady().then(async () => {
       }
       return ctx;
     },
+    getResourceUsageContexts: () => {
+      const contexts = new Set<AppContext>(projectContexts.values());
+      contexts.add(getActiveContext());
+      return Array.from(contexts);
+    },
     getSyncService: () => {
       return getMobileSyncService();
     },

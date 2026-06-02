@@ -104,6 +104,16 @@ describe("sessionListCache", () => {
     expect(listMock).toHaveBeenCalledTimes(2);
   });
 
+  it("normalizes tool types before fetching and cache keying", async () => {
+    listMock.mockResolvedValueOnce(makeRows(2));
+
+    await listSessionsCached({ toolTypes: [" codex-chat ", "", "codex-chat"] as any });
+    await listSessionsCached({ toolTypes: ["codex-chat"] });
+
+    expect(listMock).toHaveBeenCalledTimes(1);
+    expect(listMock).toHaveBeenCalledWith({ toolTypes: ["codex-chat"] });
+  });
+
   it("shares an in-flight request with forced callers", async () => {
     let resolveRows!: (rows: ReturnType<typeof makeRows>) => void;
     listMock.mockImplementationOnce(() => new Promise<ReturnType<typeof makeRows>>((resolve) => {
@@ -135,5 +145,52 @@ describe("sessionListCache", () => {
 
     await expect(first).resolves.toHaveLength(10);
     await expect(second).resolves.toHaveLength(5);
+  });
+
+  it("invalidates only the matching project and lane when scoped", async () => {
+    listMock
+      .mockResolvedValueOnce(makeRows(2))
+      .mockResolvedValueOnce(makeRows(3))
+      .mockResolvedValueOnce(makeRows(4));
+
+    await listSessionsCached({ laneId: "lane-1", limit: 2 });
+    await listSessionsCached({ laneId: "lane-2", limit: 3 });
+    useAppStore.setState({
+      project: { rootPath: "/project/b" } as any,
+    });
+    await listSessionsCached({ laneId: "lane-1", limit: 4 });
+
+    invalidateSessionListCache({ projectRoot: "/project/a", laneId: "lane-1" });
+
+    listMock.mockResolvedValueOnce(makeRows(5));
+    useAppStore.setState({
+      project: { rootPath: "/project/a" } as any,
+    });
+    const invalidated = await listSessionsCached({ laneId: "lane-1", limit: 2 });
+    const sameProjectOtherLane = await listSessionsCached({ laneId: "lane-2", limit: 3 });
+    useAppStore.setState({
+      project: { rootPath: "/project/b" } as any,
+    });
+    const sameLaneOtherProject = await listSessionsCached({ laneId: "lane-1", limit: 4 });
+
+    expect(invalidated).toHaveLength(2);
+    expect(sameProjectOtherLane).toHaveLength(3);
+    expect(sameLaneOtherProject).toHaveLength(4);
+    expect(listMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("ignores projectRoot-like cache options that the sessions IPC cannot honor", async () => {
+    listMock
+      .mockResolvedValueOnce(makeRows(2))
+      .mockResolvedValueOnce(makeRows(4));
+
+    await listSessionsCached({ limit: 2 }, { projectRoot: "/project/b" } as any);
+    useAppStore.setState({
+      project: { rootPath: "/project/b" } as any,
+    });
+    const projectBRows = await listSessionsCached({ limit: 4 });
+
+    expect(projectBRows).toHaveLength(4);
+    expect(listMock).toHaveBeenCalledTimes(2);
   });
 });

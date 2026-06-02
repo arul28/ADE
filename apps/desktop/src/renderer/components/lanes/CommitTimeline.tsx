@@ -42,6 +42,7 @@ type CommitMeta = {
 
 export function CommitTimeline({
   laneId,
+  active = true,
   selectedSha,
   onSelectCommit,
   refreshTrigger,
@@ -49,6 +50,7 @@ export function CommitTimeline({
   remoteMissing
 }: {
   laneId: string | null;
+  active?: boolean;
   selectedSha: string | null;
   onSelectCommit: (commit: GitCommitSummary) => void;
   refreshTrigger?: number;
@@ -68,7 +70,7 @@ export function CommitTimeline({
   const didInitialScrollRef = React.useRef(false);
 
   const load = React.useCallback(async () => {
-    if (!laneId) return;
+    if (!active || !laneId) return;
     setLoading(true);
     setError(null);
     try {
@@ -80,7 +82,7 @@ export function CommitTimeline({
     } finally {
       setLoading(false);
     }
-  }, [laneId, limit]);
+  }, [active, laneId, limit]);
 
   React.useEffect(() => {
     metaByShaRef.current = new Map();

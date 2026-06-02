@@ -756,9 +756,8 @@ function GraphInner({ active = true }: { active?: boolean }) {
         return;
       }
       const includeOperations = options?.includeOperations ?? true;
-      const projectRoot = project?.rootPath ?? null;
       const [sessions, operations] = await Promise.all([
-        listSessionsCached({ limit: GRAPH_ACTIVITY_SESSION_LIMIT }, { projectRoot }).then((rows) =>
+        listSessionsCached({ limit: GRAPH_ACTIVITY_SESSION_LIMIT }).then((rows) =>
           rows.filter((session) => !isRunOwnedSession(session)),
         ),
         includeOperations

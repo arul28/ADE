@@ -2548,16 +2548,19 @@ function describeCodexModel(value: string): string | null {
   return null;
 }
 
+const CHAT_SESSION_TOOL_TYPES = [
+  "codex-chat",
+  "claude-chat",
+  "opencode-chat",
+  "cursor",
+  "droid-chat",
+] satisfies TerminalToolType[];
+type ChatSessionToolType = (typeof CHAT_SESSION_TOOL_TYPES)[number];
+
 function isChatToolType(
   toolType: TerminalToolType | null | undefined,
-): toolType is "codex-chat" | "claude-chat" | "opencode-chat" | "cursor" | "droid-chat" {
-  return (
-    toolType === "codex-chat"
-    || toolType === "claude-chat"
-    || toolType === "opencode-chat"
-    || toolType === "cursor"
-    || toolType === "droid-chat"
-  );
+): toolType is ChatSessionToolType {
+  return toolType != null && CHAT_SESSION_TOOL_TYPES.includes(toolType as ChatSessionToolType);
 }
 
 function providerFromToolType(toolType: TerminalToolType | null | undefined): AgentChatProvider {
@@ -21785,7 +21788,11 @@ export function createAgentChatService(args: {
     laneId?: string,
     options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeArchived?: boolean },
   ): Promise<AgentChatSessionSummary[]> => {
-    const rows = sessionService.list({ ...(laneId ? { laneId } : {}), limit: 500 });
+    const rows = sessionService.list({
+      ...(laneId ? { laneId } : {}),
+      limit: 500,
+      toolTypes: CHAT_SESSION_TOOL_TYPES,
+    });
     const chatRows = rows.filter((row) => isChatToolType(row.toolType));
     const includeIdentity = options?.includeIdentity === true;
     const includeAutomation = options?.includeAutomation === true;

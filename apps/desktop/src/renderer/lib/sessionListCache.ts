@@ -1,6 +1,8 @@
 import type { ListSessionsArgs, TerminalSessionSummary } from "../../shared/types";
 import { useAppStore } from "../state/appStore";
 
+type SessionToolType = NonNullable<ListSessionsArgs["toolTypes"]>[number];
+
 type CacheEntry = {
   value: TerminalSessionSummary[] | null;
   timestamp: number;
@@ -11,6 +13,10 @@ type CacheEntry = {
 
 const DEFAULT_SESSION_LIST_TTL_MS = 1_500;
 const cache = new Map<string, CacheEntry>();
+type SessionListCacheScope = {
+  projectRoot?: string | null;
+  laneId?: string | null;
+};
 
 function normalizeArgs(args?: ListSessionsArgs): ListSessionsArgs {
   if (!args) return {};
@@ -18,6 +24,16 @@ function normalizeArgs(args?: ListSessionsArgs): ListSessionsArgs {
   if (typeof args.laneId === "string" && args.laneId.trim().length > 0) normalized.laneId = args.laneId.trim();
   if (typeof args.status === "string" && args.status.trim().length > 0) normalized.status = args.status;
   if (typeof args.limit === "number" && Number.isFinite(args.limit) && args.limit > 0) normalized.limit = Math.floor(args.limit);
+  if (Array.isArray(args.toolTypes)) {
+    const toolTypes = Array.from(
+      new Set(
+        args.toolTypes
+          .map((toolType) => toolType.trim())
+          .filter((toolType): toolType is SessionToolType => toolType.length > 0),
+      ),
+    ).sort();
+    if (toolTypes.length > 0) normalized.toolTypes = toolTypes;
+  }
   return normalized;
 }
 
@@ -27,6 +43,7 @@ function cacheKey(args?: ListSessionsArgs): string {
     projectRoot: useAppStore.getState().project?.rootPath?.trim() || null,
     laneId: normalized.laneId ?? null,
     status: normalized.status ?? null,
+    toolTypes: normalized.toolTypes ?? null,
   });
 }
 
@@ -50,15 +67,9 @@ function sliceRows(rows: TerminalSessionSummary[], limit: number | null): Termin
 
 export async function listSessionsCached(
   args?: ListSessionsArgs,
-  options?: { force?: boolean; ttlMs?: number; projectRoot?: string | null },
+  options?: { force?: boolean; ttlMs?: number },
 ): Promise<TerminalSessionSummary[]> {
-  const key = options?.projectRoot == null
-    ? cacheKey(args)
-    : JSON.stringify({
-        projectRoot: options.projectRoot?.trim() || null,
-        laneId: normalizeArgs(args).laneId ?? null,
-        status: normalizeArgs(args).status ?? null,
-      });
+  const key = cacheKey(args);
   const ttlMs = options?.ttlMs ?? DEFAULT_SESSION_LIST_TTL_MS;
   const limit = requestedLimit(args);
   const now = Date.now();
@@ -111,8 +122,26 @@ export async function listSessionsCached(
   return request.then((rows) => sliceRows(rows, limit));
 }
 
-export function invalidateSessionListCache(): void {
+export function invalidateSessionListCache(scope?: SessionListCacheScope): void {
+  const projectRootFilter = scope
+    ? scope.projectRoot === undefined ? undefined : scope.projectRoot?.trim() || null
+    : undefined;
+  const laneIdFilter = scope
+    ? scope.laneId === undefined ? undefined : scope.laneId?.trim() || null
+    : undefined;
+
   for (const [key, entry] of [...cache.entries()]) {
+    let parsed: { projectRoot?: string | null; laneId?: string | null };
+    try {
+      parsed = JSON.parse(key) as { projectRoot?: string | null; laneId?: string | null };
+    } catch {
+      cache.delete(key);
+      continue;
+    }
+
+    if (projectRootFilter !== undefined && parsed.projectRoot !== projectRootFilter) continue;
+    if (laneIdFilter !== undefined && parsed.laneId !== laneIdFilter) continue;
+
     if (!entry.inFlight) {
       cache.delete(key);
       continue;

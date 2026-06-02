@@ -78,6 +78,8 @@ vi.mock("../../state/appStore", () => ({
 // Import the hook under test (after mocks are declared)
 // ---------------------------------------------------------------------------
 import { __clearLaneWorkSessionCacheForTests, useLaneWorkSessions } from "./useLaneWorkSessions";
+import { invalidateSessionListCache } from "../../lib/sessionListCache";
+import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 
 // ---------------------------------------------------------------------------
 // window.ade stubs
@@ -124,6 +126,13 @@ function makeSession(id: string, laneId: string, title = id) {
   };
 }
 
+function setDocumentVisibility(value: DocumentVisibilityState) {
+  Object.defineProperty(document, "visibilityState", {
+    configurable: true,
+    value,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -135,10 +144,13 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     installWindowAde();
     // Default: instant resolve for mount-time refresh calls
     listSessionsCachedMock.mockResolvedValue([]);
+    vi.mocked(shouldRefreshSessionListForChatEvent).mockReturnValue(false);
     fakeProjectRoot = "/fake/project";
+    setDocumentVisibility("visible");
   });
 
   afterEach(() => {
+    setDocumentVisibility("visible");
     delete (window as any).ade;
   });
 
@@ -197,6 +209,163 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     });
 
     expect(second.result.current.sessions.map((session) => session.id)).toEqual(["session-refreshed"]);
+  });
+
+  it("defers hidden session-list changes and refreshes the lane work pane on reveal", async () => {
+    let onChangedHandler: (() => void) | null = null;
+    (window as any).ade.sessions.onChanged.mockImplementation((cb: () => void) => {
+      onChangedHandler = cb;
+      return () => {
+        onChangedHandler = null;
+      };
+    });
+
+    renderHook(() => useLaneWorkSessions("lane-1"));
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    listSessionsCachedMock.mockClear();
+    vi.mocked(invalidateSessionListCache).mockClear();
+    listSessionsCachedMock.mockResolvedValue([makeSession("session-revealed", "lane-1")]);
+
+    setDocumentVisibility("hidden");
+    await act(async () => {
+      onChangedHandler?.();
+      await new Promise((r) => setTimeout(r, 120));
+    });
+
+    expect(invalidateSessionListCache).toHaveBeenCalled();
+    expect(listSessionsCachedMock).not.toHaveBeenCalled();
+
+    setDocumentVisibility("visible");
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      await new Promise((r) => setTimeout(r, 80));
+    });
+
+    expect(listSessionsCachedMock).toHaveBeenCalledWith(
+      { laneId: "lane-1", limit: 200 },
+      { force: false },
+    );
+  });
+
+  it("ignores pty exits for sessions outside the current lane", async () => {
+    let onExitHandler: ((event: any) => void) | null = null;
+    (window as any).ade.pty.onExit.mockImplementation((cb: (event: any) => void) => {
+      onExitHandler = cb;
+      return () => {
+        onExitHandler = null;
+      };
+    });
+    listSessionsCachedMock.mockResolvedValue([makeSession("session-current", "lane-1")]);
+
+    renderHook(() => useLaneWorkSessions("lane-1"));
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    listSessionsCachedMock.mockClear();
+    vi.mocked(invalidateSessionListCache).mockClear();
+
+    await act(async () => {
+      onExitHandler?.({ sessionId: "session-other", ptyId: "pty-other", projectRoot: "/fake/project", exitCode: 0 });
+      await new Promise((r) => setTimeout(r, 160));
+    });
+
+    expect(invalidateSessionListCache).not.toHaveBeenCalled();
+    expect(listSessionsCachedMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      onExitHandler?.({ sessionId: "session-current", ptyId: "pty-current", projectRoot: "/fake/project", exitCode: 0 });
+      await new Promise((r) => setTimeout(r, 160));
+    });
+
+    expect(invalidateSessionListCache).toHaveBeenCalledWith({ projectRoot: "/fake/project", laneId: "lane-1" });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith(
+      { laneId: "lane-1", limit: 200 },
+      { force: false },
+    );
+  });
+
+  it("ignores chat activity provenanced to another lane", async () => {
+    let chatEventHandler: ((event: any) => void) | null = null;
+    (window as any).ade.agentChat.onEvent.mockImplementation((cb: (event: any) => void) => {
+      chatEventHandler = cb;
+      return () => {
+        chatEventHandler = null;
+      };
+    });
+    vi.mocked(shouldRefreshSessionListForChatEvent).mockReturnValue(true);
+
+    renderHook(() => useLaneWorkSessions("lane-1"));
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    listSessionsCachedMock.mockClear();
+    vi.mocked(invalidateSessionListCache).mockClear();
+
+    await act(async () => {
+      chatEventHandler?.({ sessionId: "session-other", event: { type: "done" }, provenance: { laneId: "lane-2" } });
+      await new Promise((r) => setTimeout(r, 240));
+    });
+
+    expect(invalidateSessionListCache).not.toHaveBeenCalled();
+    expect(listSessionsCachedMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      chatEventHandler?.({ sessionId: "session-current", event: { type: "done" }, provenance: { laneId: "lane-1" } });
+      await new Promise((r) => setTimeout(r, 240));
+    });
+
+    expect(invalidateSessionListCache).toHaveBeenCalledWith({ projectRoot: "/fake/project", laneId: "lane-1" });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith(
+      { laneId: "lane-1", limit: 200 },
+      { force: false },
+    );
+  });
+
+  it("ignores metadata changes for sessions outside the current lane", async () => {
+    let onChangedHandler: ((event: any) => void) | null = null;
+    (window as any).ade.sessions.onChanged.mockImplementation((cb: (event: any) => void) => {
+      onChangedHandler = cb;
+      return () => {
+        onChangedHandler = null;
+      };
+    });
+    listSessionsCachedMock.mockResolvedValue([makeSession("session-current", "lane-1")]);
+
+    renderHook(() => useLaneWorkSessions("lane-1"));
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    listSessionsCachedMock.mockClear();
+    vi.mocked(invalidateSessionListCache).mockClear();
+
+    await act(async () => {
+      onChangedHandler?.({ sessionId: "session-other", reason: "meta-updated" });
+      await new Promise((r) => setTimeout(r, 120));
+    });
+
+    expect(invalidateSessionListCache).not.toHaveBeenCalled();
+    expect(listSessionsCachedMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      onChangedHandler?.({ sessionId: "session-new", reason: "created" });
+      await new Promise((r) => setTimeout(r, 120));
+    });
+
+    expect(invalidateSessionListCache).toHaveBeenCalledWith({ projectRoot: "/fake/project", laneId: "lane-1" });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith(
+      { laneId: "lane-1", limit: 200 },
+      { force: false },
+    );
   });
 
   // -----------------------------------------------------------------------
@@ -433,18 +602,18 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
   });
 
   it("replays a queued refresh against the latest project after switching projects mid-refresh", async () => {
-    const fetchedProjectRoots: Array<string | null | undefined> = [];
+    const fetchOptions: Array<{ force?: boolean }> = [];
     let firstRefreshResolve: ((rows: unknown[]) => void) | null = null;
     let secondRefreshResolve: ((rows: unknown[]) => void) | null = null;
 
-    listSessionsCachedMock.mockImplementation((_args: { laneId: string }, options?: { projectRoot?: string | null }) => {
-      fetchedProjectRoots.push(options?.projectRoot);
-      if (fetchedProjectRoots.length === 1) {
+    listSessionsCachedMock.mockImplementation((_args: { laneId: string }, options?: { force?: boolean }) => {
+      fetchOptions.push(options ?? {});
+      if (fetchOptions.length === 1) {
         return new Promise((resolve) => {
           firstRefreshResolve = resolve;
         });
       }
-      if (fetchedProjectRoots.length === 2) {
+      if (fetchOptions.length === 2) {
         return new Promise((resolve) => {
           secondRefreshResolve = resolve;
         });
@@ -457,7 +626,7 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     await act(async () => {
       await new Promise((r) => setTimeout(r, 0));
     });
-    expect(fetchedProjectRoots).toEqual(["/fake/project"]);
+    expect(fetchOptions).toEqual([{ force: true }]);
 
     fakeProjectRoot = "/other/project";
     act(() => {
@@ -467,14 +636,14 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     await act(async () => {
       await new Promise((r) => setTimeout(r, 0));
     });
-    expect(fetchedProjectRoots).toEqual(["/fake/project"]);
+    expect(fetchOptions).toEqual([{ force: true }]);
 
     await act(async () => {
       expect(firstRefreshResolve).not.toBeNull();
       firstRefreshResolve!([makeSession("session-old", "lane-1")]);
       await new Promise((r) => setTimeout(r, 0));
     });
-    expect(fetchedProjectRoots).toEqual(["/fake/project", "/other/project"]);
+    expect(fetchOptions).toEqual([{ force: true }, { force: true }]);
 
     await act(async () => {
       expect(secondRefreshResolve).not.toBeNull();

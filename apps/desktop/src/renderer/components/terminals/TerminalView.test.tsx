@@ -473,6 +473,27 @@ describe("TerminalView", () => {
     expect(setDataSubscriptions).toHaveBeenLastCalledWith({ ptyIds: [] });
   });
 
+  it("keeps parked terminal runtimes out of the interactive tree", async () => {
+    const view = render(<TerminalView ptyId="pty-parked" sessionId="session-parked" isActive />);
+    await flushAnimationFrame();
+
+    view.unmount();
+
+    const parking = document.querySelector<HTMLElement>("[data-ade-terminal-parking='true']");
+    expect(parking).toBeTruthy();
+    expect(parking?.getAttribute("aria-hidden")).toBe("true");
+    expect(parking?.hasAttribute("inert")).toBe(true);
+    expect(parking?.tabIndex).toBe(-1);
+    expect(parking?.style.visibility).toBe("hidden");
+    expect(parking?.style.contain).toBe("strict");
+
+    const parkedHost = parking?.firstElementChild as HTMLElement | null;
+    expect(parkedHost).toBeTruthy();
+    expect(parkedHost?.getAttribute("aria-hidden")).toBe("true");
+    expect(parkedHost?.hasAttribute("inert")).toBe(true);
+    expect(parkedHost?.tabIndex).toBe(-1);
+  });
+
   it("uses the DOM renderer on Linux when localStorage is unavailable", async () => {
     vi.useRealTimers();
     const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");

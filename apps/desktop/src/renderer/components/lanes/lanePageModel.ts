@@ -24,6 +24,11 @@ export type LaneTabPrTag = {
   state: PrSummary["state"];
 };
 
+export const VISIBLE_LANE_PR_REFRESH_LIMIT = 4;
+export const VISIBLE_LANE_PR_REFRESH_STALE_MS = 15_000;
+export const DEFERRED_LANE_PANE_STEP_MS = 220;
+export const DEFERRED_LANE_PANE_MAX_MS = 3_300;
+
 export function resolveCreateLaneRequest(args: {
   name: string;
   createMode: CreateLaneMode;
@@ -320,6 +325,61 @@ export function selectLaneTabPrTag(
     return toLaneTabPrTagFromPrSummary(mappedPr);
   }
   return githubPr ? toLaneTabPrTagFromGithubItem(githubPr, lane.id) : null;
+}
+
+function isPrRefreshStale(pr: Pick<PrSummary, "lastSyncedAt">, nowMs: number, staleMs: number): boolean {
+  const lastSyncedMs = Date.parse(pr.lastSyncedAt ?? "");
+  return Number.isNaN(lastSyncedMs) || nowMs - lastSyncedMs >= staleMs;
+}
+
+export function selectVisibleLanePrRefreshIds(args: {
+  visibleLaneIds: string[];
+  lanePrByLaneId: ReadonlyMap<string, LaneTabPrTag>;
+  prs: PrSummary[];
+  recentlyRequestedAtByPrId?: ReadonlyMap<string, number>;
+  nowMs?: number;
+  staleMs?: number;
+  limit?: number;
+}): string[] {
+  const nowMs = args.nowMs ?? Date.now();
+  const staleMs = args.staleMs ?? VISIBLE_LANE_PR_REFRESH_STALE_MS;
+  const limit = args.limit ?? VISIBLE_LANE_PR_REFRESH_LIMIT;
+  if (limit <= 0) return [];
+
+  const prById = new Map(args.prs.map((pr) => [pr.id, pr] as const));
+  const selected: string[] = [];
+  const seen = new Set<string>();
+
+  for (const laneId of args.visibleLaneIds) {
+    const prId = args.lanePrByLaneId.get(laneId)?.linkedPrId;
+    if (!prId || seen.has(prId)) continue;
+    seen.add(prId);
+
+    const pr = prById.get(prId);
+    if (!pr || !isPrRefreshStale(pr, nowMs, staleMs)) continue;
+
+    const requestedAt = args.recentlyRequestedAtByPrId?.get(prId);
+    if (requestedAt != null && nowMs - requestedAt < staleMs) continue;
+
+    selected.push(prId);
+    if (selected.length >= limit) break;
+  }
+
+  return selected;
+}
+
+export function getDeferredLanePaneDelayMs(args: {
+  laneId: string | null;
+  visibleLaneIds: readonly string[];
+  stepMs?: number;
+  maxMs?: number;
+}): number {
+  if (!args.laneId) return 0;
+  const index = args.visibleLaneIds.indexOf(args.laneId);
+  if (index <= 0) return 0;
+  const stepMs = args.stepMs ?? DEFERRED_LANE_PANE_STEP_MS;
+  const maxMs = args.maxMs ?? DEFERRED_LANE_PANE_MAX_MS;
+  return Math.min(index * stepMs, maxMs);
 }
 
 type LaneRuntimeBucket = LaneListSnapshot["runtime"]["bucket"];

@@ -39,6 +39,7 @@ import { useOnboardingStore } from "../../state/onboardingStore";
 import { useDialogBus } from "../../lib/useDialogBus";
 import {
   buildLaneActionClearedSearch,
+  getDeferredLanePaneDelayMs,
   parseLaneIdsParam,
   laneHasAncestor,
   planLaneDeleteBatches,
@@ -48,6 +49,7 @@ import {
   resolveVisibleLaneIds,
   runLaneDeleteBatchWithConcurrency,
   selectLanePrTag,
+  selectVisibleLanePrRefreshIds,
   selectLaneTabPrTag,
   shouldApplyLaneIdsDeepLink,
   sortLaneListRows,
@@ -75,6 +77,7 @@ import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { getGitHubSnapshotCoalesced, listPrsCoalesced, refreshPrsCoalesced, warmPrSurfaceCoalesced } from "../../lib/prReadCache";
 import { logRendererDebugEvent } from "../../lib/debugLog";
+import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import { linearIssueBranchName, linearIssueLaneName } from "../../../shared/linearIssueBranch";
 import type {
   BranchPullRequest,
@@ -141,6 +144,10 @@ type RebasePushReviewState = {
 
 const ADOPT_HINT_DISMISSED_KEY = "ade.lanes.adoptHintDismissed.v1";
 const LANE_DELETE_REFRESH_DEBOUNCE_MS = 160;
+const LANE_VISIBLE_PR_REFRESH_DEBOUNCE_MS = 260;
+const LANE_RUNTIME_LIFECYCLE_REFRESH_DEBOUNCE_MS = 300;
+const LANE_RUNTIME_DATA_REFRESH_DEBOUNCE_MS = 5_000;
+const EMPTY_LANE_IDS: string[] = [];
 
 function normalizeLaneRuntimePlacement(value: unknown): LaneRuntimePlacement {
   return value === "macos-vm" ? "macos-vm" : "local";
@@ -180,13 +187,35 @@ function getDevicePresenceTitle(devicesOpen: LaneSummary["devicesOpen"]): string
 }
 
 function DeferredLanePane({
+  cacheKey,
   children,
+  delayMs = 0,
 }: {
   cacheKey: string;
   label: string;
   children: React.ReactNode;
+  delayMs?: number;
 }) {
-  return <>{children}</>;
+  const [ready, setReady] = useState(delayMs <= 0);
+  const initializedCacheKeysRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const initializedCacheKeys = initializedCacheKeysRef.current;
+    if (initializedCacheKeys.has(cacheKey)) {
+      setReady(true);
+      return;
+    }
+    initializedCacheKeys.add(cacheKey);
+    if (delayMs <= 0) {
+      setReady(true);
+      return;
+    }
+    setReady(false);
+    const timer = window.setTimeout(() => setReady(true), delayMs);
+    return () => window.clearTimeout(timer);
+  }, [cacheKey, delayMs]);
+
+  return ready ? <>{children}</> : null;
 }
 
 function lanePrTagColor(state: PrSummary["state"]): string {
@@ -194,6 +223,20 @@ function lanePrTagColor(state: PrSummary["state"]): string {
   if (state === "closed") return COLORS.danger;
   if (state === "draft") return COLORS.warning;
   return COLORS.accent;
+}
+
+function mergePrSummariesById(current: PrSummary[], refreshed: PrSummary[]): PrSummary[] {
+  if (refreshed.length === 0) return current;
+  const refreshedById = new Map(refreshed.map((pr) => [pr.id, pr] as const));
+  const seen = new Set<string>();
+  const next = current.map((pr) => {
+    seen.add(pr.id);
+    return refreshedById.get(pr.id) ?? pr;
+  });
+  for (const pr of refreshed) {
+    if (!seen.has(pr.id)) next.push(pr);
+  }
+  return next;
 }
 
 function isTrustedGitHubUrl(rawUrl: string): boolean {
@@ -503,6 +546,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const [managedLaneIds, setManagedLaneIds] = useState<string[]>([]);
   const lanePrTagsRequestRef = useRef(0);
   const laneGithubPrTagsRequestRef = useRef(0);
+  const laneVisiblePrRefreshRequestedAtRef = useRef<Map<string, number>>(new Map());
+  const laneVisiblePrRefreshProjectRootRef = useRef<string | null>(null);
+  const [laneVisiblePrRefreshVisibilityToken, setLaneVisiblePrRefreshVisibilityToken] = useState(0);
   const hasActiveLaneRuntimeRef = useRef(false);
   const [autoRebaseEnabled, setAutoRebaseEnabled] = useState(false);
   const [rebaseSuggestionError, setRebaseSuggestionError] = useState<string | null>(null);
@@ -702,8 +748,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const stackGraphLanes = useMemo(() => sortLanesForStackGraph(filteredLanes), [filteredLanes]);
 
   const filteredLaneIds = useMemo(() => filteredLanes.map((lane) => lane.id), [filteredLanes]);
-  // Per-lane agent rosters (ADE chat + CLI agents) for the inline dashboards.
-  const agentsByLaneId = useLaneAgents(filteredLaneIds);
+  const stackGraphAgentLaneIds = stackGraphHeaderOpen ? filteredLaneIds : EMPTY_LANE_IDS;
+  // Per-lane agent rosters are only shown inside Stack Graph; keep the closed route cheap.
+  const agentsByLaneId = useLaneAgents(stackGraphAgentLaneIds);
   const selectableFilteredLaneIds = useMemo(
     () => filteredLaneIds.filter((laneId) => !deletingLaneIds.has(laneId)),
     [filteredLaneIds, deletingLaneIds],
@@ -1108,8 +1155,65 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   }, [active, refreshLanePrTags, refreshLaneGithubPrTags]);
 
   useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        setLaneVisiblePrRefreshVisibilityToken((value) => value + 1);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
+
+  useEffect(() => {
+    const projectRoot = project?.rootPath ?? null;
+    if (laneVisiblePrRefreshProjectRootRef.current !== projectRoot) {
+      laneVisiblePrRefreshProjectRootRef.current = projectRoot;
+      laneVisiblePrRefreshRequestedAtRef.current.clear();
+    }
+    if (!active || !projectRoot || document.visibilityState !== "visible") return;
+
+    const nowMs = Date.now();
+    const prIds = selectVisibleLanePrRefreshIds({
+      visibleLaneIds,
+      lanePrByLaneId,
+      prs: lanePrTags,
+      recentlyRequestedAtByPrId: laneVisiblePrRefreshRequestedAtRef.current,
+      nowMs,
+    });
+    if (prIds.length === 0) return;
+
+    for (const prId of prIds) {
+      laneVisiblePrRefreshRequestedAtRef.current.set(prId, nowMs);
+    }
+
+    const startedRoot = projectRoot;
+    const timer = window.setTimeout(() => {
+      void window.ade.prs.refresh({ prIds })
+        .then((refreshed) => {
+          if ((appStore.getState().project?.rootPath ?? null) !== startedRoot) return;
+          if (refreshed.length === 0) return;
+          setLanePrTags((current) => mergePrSummariesById(current, refreshed));
+        })
+        .catch(() => {
+          // Background PR refresh is opportunistic; the normal PR poller remains the fallback.
+        });
+    }, LANE_VISIBLE_PR_REFRESH_DEBOUNCE_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    active,
+    appStore,
+    project?.rootPath,
+    visibleLaneIds,
+    lanePrByLaneId,
+    lanePrTags,
+    laneVisiblePrRefreshVisibilityToken,
+  ]);
+
+  useEffect(() => {
     if (!active) return;
-    let timer: ReturnType<typeof setTimeout> | null = null;
+    let lifecycleTimer: ReturnType<typeof setTimeout> | null = null;
+    let dataTimer: ReturnType<typeof setTimeout> | null = null;
     const refreshRuntimeOnly = () =>
       refreshLanes({
         includeStatus: false,
@@ -1118,31 +1222,43 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         includeRebaseSuggestions: false,
         includeAutoRebaseStatus: false,
       });
-    const scheduleRefresh = () => {
+    const scheduleRefresh = (kind: "lifecycle" | "data") => {
       if (document.visibilityState !== "visible") return;
-      if (timer) return; // already scheduled
-      timer = setTimeout(() => {
-        timer = null;
+      const delayMs =
+        kind === "data"
+          ? LANE_RUNTIME_DATA_REFRESH_DEBOUNCE_MS
+          : LANE_RUNTIME_LIFECYCLE_REFRESH_DEBOUNCE_MS;
+      const getTimer = () => (kind === "data" ? dataTimer : lifecycleTimer);
+      const setTimer = (timer: ReturnType<typeof setTimeout> | null) => {
+        if (kind === "data") dataTimer = timer;
+        else lifecycleTimer = timer;
+      };
+      if (getTimer()) return; // already scheduled
+      setTimer(setTimeout(() => {
+        setTimer(null);
         void refreshRuntimeOnly().catch(() => {});
-      }, 300);
+      }, delayMs));
     };
     const currentProjectRoot = project?.rootPath ?? null;
     const isCurrentProjectEvent = (event: { projectRoot?: string | null }) =>
       !event.projectRoot || event.projectRoot === currentProjectRoot;
     const unsubPtyData = window.ade.pty.onData((event) => {
-      if (isCurrentProjectEvent(event)) scheduleRefresh();
+      if (isCurrentProjectEvent(event)) scheduleRefresh("data");
     });
     const unsubPtyExit = window.ade.pty.onExit((event) => {
-      if (isCurrentProjectEvent(event)) scheduleRefresh();
+      if (isCurrentProjectEvent(event)) scheduleRefresh("lifecycle");
     });
-    const unsubChat = window.ade.agentChat.onEvent(scheduleRefresh);
+    const unsubChat = window.ade.agentChat.onEvent((event) => {
+      if (shouldRefreshSessionListForChatEvent(event)) scheduleRefresh("lifecycle");
+    });
     const intervalId = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       if (!hasActiveLaneRuntimeRef.current) return;
       void refreshRuntimeOnly().catch(() => {});
     }, 15_000);
     return () => {
-      if (timer) clearTimeout(timer);
+      if (lifecycleTimer) clearTimeout(lifecycleTimer);
+      if (dataTimer) clearTimeout(dataTimer);
       try {
         unsubPtyData();
       } catch {
@@ -2956,6 +3072,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       expandedGitActionsLaneId,
       surface,
     });
+    const gitActionsDelayMs = surface === "inline"
+      ? getDeferredLanePaneDelayMs({ laneId, visibleLaneIds })
+      : 0;
     return {
       "git-actions": {
         title: "Git Actions",
@@ -2984,10 +3103,12 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           </>
         ),
         bodyClassName: "overflow-hidden",
-        children: mountGitActionsPane ? (
-          <DeferredLanePane cacheKey={`git:${laneId ?? "none"}`} label="git actions">
+        children: null,
+        renderChildren: ({ minimized }: { minimized: boolean }) => mountGitActionsPane ? (
+          <DeferredLanePane cacheKey={`git:${laneId ?? "none"}`} label="git actions" delayMs={gitActionsDelayMs}>
             <LaneGitActionsPane
               laneId={laneId}
+              active={!minimized}
               autoRebaseEnabled={autoRebaseEnabled}
               autoRebaseStatusSnapshot={laneSnapshot?.autoRebaseStatus}
               onOpenSettings={openAutoRebaseSettings}
@@ -3012,26 +3133,30 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         bodyClassName: "overflow-hidden",
         dataTour: "lanes.workPane",
         hideHeaderWhenExpanded: true,
-        children: (
-          <DeferredLanePane cacheKey={`work:${laneId ?? "none"}`} label="work">
-            <LaneWorkPane
-              laneId={laneId}
-              initialLinearIssueContext={pendingLinearIssueContext?.issue ?? null}
-              onInitialLinearIssueContextConsumed={
-                pendingLinearIssueContext
-                  ? () => {
-                    setLinearIssueChatContextRequest((current) => (
-                      current?.laneId === pendingLinearIssueContext.laneId
-                      && current.requestedAt === pendingLinearIssueContext.requestedAt
-                        ? null
-                        : current
-                    ));
-                  }
-                  : undefined
-              }
-            />
-          </DeferredLanePane>
-        )
+        children: null,
+        renderChildren: ({ minimized }: { minimized: boolean }) => {
+          const mountWorkPane = !minimized && !(surface === "inline" && laneId != null && expandedLaneId === laneId);
+          return mountWorkPane ? (
+            <DeferredLanePane cacheKey={`work:${laneId ?? "none"}`} label="work">
+              <LaneWorkPane
+                laneId={laneId}
+                initialLinearIssueContext={pendingLinearIssueContext?.issue ?? null}
+                onInitialLinearIssueContextConsumed={
+                  pendingLinearIssueContext
+                    ? () => {
+                      setLinearIssueChatContextRequest((current) => (
+                        current?.laneId === pendingLinearIssueContext.laneId
+                        && current.requestedAt === pendingLinearIssueContext.requestedAt
+                          ? null
+                          : current
+                      ));
+                    }
+                    : undefined
+                }
+              />
+            </DeferredLanePane>
+          ) : null;
+        },
       },
     };
   }, [
@@ -3039,6 +3164,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     laneSnapshotByLaneId,
     linearIssueChatContextRequest,
     expandedGitActionsLaneId,
+    expandedLaneId,
+    visibleLaneIds,
     autoRebaseEnabled,
     openAutoRebaseSettings,
     runRebaseFlow,

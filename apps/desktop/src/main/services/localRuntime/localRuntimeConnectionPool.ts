@@ -494,6 +494,7 @@ export class LocalRuntimeConnectionPool {
   private connection: Promise<LocalRuntimeConnection> | null = null;
   private activeConnection: LocalRuntimeConnection | null = null;
   private activeClient: RuntimeRpcClient | null = null;
+  private activeRuntimePid: number | null = null;
   private ownedRuntimeChild: ChildProcess | null = null;
   private preserveOwnedRuntimeChildOnNextConnect = false;
   private readonly coalescedActionCalls = new Map<string, Promise<RemoteRuntimeActionResult>>();
@@ -537,6 +538,17 @@ export class LocalRuntimeConnectionPool {
       serviceInstall: { ...this.serviceInstallStatus },
       serviceHealth: { ...this.serviceHealthStatus },
     };
+  }
+
+  getRuntimeProcessIds(): number[] {
+    const pids = [
+      this.activeRuntimePid,
+      this.activeConnection?.child?.pid,
+      this.ownedRuntimeChild?.pid,
+    ].filter((pid): pid is number => (
+      typeof pid === "number" && Number.isFinite(pid) && pid > 0 && pid !== process.pid
+    ));
+    return Array.from(new Set(pids));
   }
 
   noteServiceInstallSkipped(message: string): void {
@@ -998,6 +1010,7 @@ export class LocalRuntimeConnectionPool {
     this.connection = null;
     this.activeConnection = null;
     this.activeClient = null;
+    this.activeRuntimePid = null;
     this.ownedRuntimeChild = null;
     this.preserveOwnedRuntimeChildOnNextConnect = false;
     this.projectsByRoot.clear();
@@ -1019,6 +1032,7 @@ export class LocalRuntimeConnectionPool {
         this.connection = null;
         this.activeConnection = null;
         this.activeClient = null;
+        this.activeRuntimePid = null;
       }
       throw error;
     });
@@ -1035,6 +1049,7 @@ export class LocalRuntimeConnectionPool {
     this.connection = null;
     this.activeConnection = null;
     this.activeClient = null;
+    this.activeRuntimePid = null;
     this.projectsByRoot.clear();
     return true;
   }
@@ -1207,6 +1222,7 @@ export class LocalRuntimeConnectionPool {
       );
     }
     this.activeClient = client;
+    this.activeRuntimePid = runtimeInfo.pid;
     client.onDisconnect((error) => {
       if (this.activeClient !== client && this.activeConnection?.client !== client) return;
       this.logger.warn("local_runtime.disconnected", {
@@ -1216,6 +1232,7 @@ export class LocalRuntimeConnectionPool {
       this.connection = null;
       this.activeConnection = null;
       this.activeClient = null;
+      this.activeRuntimePid = null;
       this.projectsByRoot.clear();
     });
     return client;
@@ -1258,6 +1275,7 @@ export class LocalRuntimeConnectionPool {
       this.connection = null;
       this.activeConnection = null;
       this.activeClient = null;
+      this.activeRuntimePid = null;
       this.projectsByRoot.clear();
       if (client) closeRuntimeClient(client);
     };

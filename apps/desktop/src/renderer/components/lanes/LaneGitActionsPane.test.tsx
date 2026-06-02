@@ -8,8 +8,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DiffChanges, GitConflictState, GitStashSummary, GitUpstreamSyncStatus, LaneSummary } from "../../../shared/types";
 import { __resetLaneGitActionRuntimeForTests, LaneGitActionsPane } from "./LaneGitActionsPane";
 
+const commitTimelineMock = vi.hoisted(() => vi.fn((props: Record<string, unknown>) => null));
+
 vi.mock("./CommitTimeline", () => ({
-  CommitTimeline: () => null,
+  CommitTimeline: (props: Record<string, unknown>) => commitTimelineMock(props),
 }));
 
 vi.mock("./LaneDiffPane", () => ({
@@ -148,6 +150,7 @@ describe("LaneGitActionsPane rescue action", () => {
     };
     mockAutoRebaseStatuses = [];
     failDiffRefresh = false;
+    commitTimelineMock.mockClear();
 
     globalThis.window.ade = {
       diff: {
@@ -205,7 +208,7 @@ describe("LaneGitActionsPane rescue action", () => {
   });
 
   function renderPane(overrides?: Partial<React.ComponentProps<typeof LaneGitActionsPane>>) {
-    render(
+    return render(
       <MemoryRouter>
         <LaneGitActionsPane
           laneId="lane-1"
@@ -222,6 +225,48 @@ describe("LaneGitActionsPane rescue action", () => {
       </MemoryRouter>,
     );
   }
+
+  it("does not start Git Actions effects while inactive", async () => {
+    renderPane({ active: false });
+
+    expect(window.ade.diff.getChanges).not.toHaveBeenCalled();
+    expect(window.ade.git.stashList).not.toHaveBeenCalled();
+    expect(window.ade.git.getSyncStatus).not.toHaveBeenCalled();
+    expect(window.ade.git.getConflictState).not.toHaveBeenCalled();
+    expect(window.ade.lanes.onAutoRebaseEvent).not.toHaveBeenCalled();
+    expect(commitTimelineMock).toHaveBeenCalledWith(expect.objectContaining({ active: false }));
+  });
+
+  it("loads Git Actions once when an inactive pane becomes active", async () => {
+    const view = renderPane({ active: false });
+    expect(window.ade.diff.getChanges).not.toHaveBeenCalled();
+
+    view.rerender(
+      <MemoryRouter>
+        <LaneGitActionsPane
+          laneId="lane-1"
+          active
+          autoRebaseEnabled={false}
+          onOpenSettings={vi.fn()}
+          onSelectFile={vi.fn()}
+          onSelectCommit={vi.fn()}
+          selectedPath={null}
+          selectedMode={null}
+          selectedCommit={null}
+          selectedCommitSha={null}
+        />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole("button", { name: "SYNC" });
+
+    expect(window.ade.diff.getChanges).toHaveBeenCalledTimes(1);
+    expect(window.ade.git.stashList).toHaveBeenCalledTimes(1);
+    expect(window.ade.git.getSyncStatus).toHaveBeenCalledTimes(1);
+    expect(window.ade.git.getConflictState).toHaveBeenCalledTimes(1);
+    expect(window.ade.lanes.onAutoRebaseEvent).toHaveBeenCalledTimes(1);
+    expect(commitTimelineMock).toHaveBeenLastCalledWith(expect.objectContaining({ active: true }));
+  });
 
   it("does not refresh the global lane store on initial mount", async () => {
     renderPane();

@@ -35,4 +35,52 @@ describe("CommitTimeline", () => {
     });
     expect(screen.getByText(/Restore or recreate the lane worktree at \/tmp\/missing before viewing history\./)).toBeTruthy();
   });
+
+  it("does not load commits while inactive", () => {
+    const listRecentCommits = vi.fn(async () => []);
+    (window as any).ade = {
+      git: { listRecentCommits },
+    };
+
+    render(
+      <CommitTimeline
+        laneId="lane-1"
+        active={false}
+        selectedSha={null}
+        onSelectCommit={vi.fn()}
+      />,
+    );
+
+    expect(listRecentCommits).not.toHaveBeenCalled();
+  });
+
+  it("loads commits when an inactive timeline becomes active", async () => {
+    const listRecentCommits = vi.fn(async () => []);
+    (window as any).ade = {
+      git: { listRecentCommits },
+    };
+
+    const view = render(
+      <CommitTimeline
+        laneId="lane-1"
+        active={false}
+        selectedSha={null}
+        onSelectCommit={vi.fn()}
+      />,
+    );
+    expect(listRecentCommits).not.toHaveBeenCalled();
+
+    view.rerender(
+      <CommitTimeline
+        laneId="lane-1"
+        active
+        selectedSha={null}
+        onSelectCommit={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(listRecentCommits).toHaveBeenCalledWith({ laneId: "lane-1", limit: 40 });
+    });
+  });
 });

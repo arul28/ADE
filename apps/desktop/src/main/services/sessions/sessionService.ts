@@ -287,6 +287,16 @@ export function createSessionService({ db }: { db: AdeDb }) {
     return toolType;
   };
 
+  const normalizeToolTypes = (raw: unknown): TerminalToolType[] => {
+    if (!Array.isArray(raw)) return [];
+    const seen = new Set<TerminalToolType>();
+    for (const value of raw) {
+      const normalized = normalizeToolType(value);
+      if (normalized) seen.add(normalized);
+    }
+    return Array.from(seen);
+  };
+
   const mapRow = (row: SessionRow) => {
     const toolType = inferToolTypeFromResumeCommand(
       normalizeToolType(row.toolType),
@@ -329,9 +339,10 @@ export function createSessionService({ db }: { db: AdeDb }) {
     updatedAt: row.updatedAt,
   });
 
-  const list =({ laneId, status, limit }: ListSessionsArgs = {}) => {
+  const list =({ laneId, status, limit, toolTypes }: ListSessionsArgs = {}) => {
     const where: string[] = [];
     const params: (string | number | null)[] = [];
+    const effectiveLimit = limit === null ? null : typeof limit === "number" ? limit : 200;
 
     if (laneId) {
       where.push("s.lane_id = ?");
@@ -341,22 +352,74 @@ export function createSessionService({ db }: { db: AdeDb }) {
       where.push("s.status = ?");
       params.push(status);
     }
+    const normalizedToolTypes = normalizeToolTypes(toolTypes);
+    const fetchRows = (
+      extraWhere: string[] = [],
+      extraParams: (string | number | null)[] = [],
+    ): SessionRow[] => {
+      const queryWhere = [...where, ...extraWhere];
+      const queryParams: (string | number | null)[] = [...params, ...extraParams];
+      const whereSql = queryWhere.length ? `where ${queryWhere.join(" and ")}` : "";
+      const limitSql = effectiveLimit === null ? "" : "limit ?";
+      if (effectiveLimit !== null) queryParams.push(effectiveLimit);
 
-    const whereSql = where.length ? `where ${where.join(" and ")}` : "";
-    const limitSql = limit === null ? "" : "limit ?";
-    if (limit !== null) params.push(typeof limit === "number" ? limit : 200);
+      return db.all<SessionRow>(
+        `
+          select ${SESSION_COLUMNS}
+          from terminal_sessions s
+          join lanes l on l.id = s.lane_id
+          ${whereSql}
+          order by s.started_at desc
+          ${limitSql}
+        `,
+        queryParams
+      );
+    };
 
-    const rows = db.all<SessionRow>(
-      `
-        select ${SESSION_COLUMNS}
-        from terminal_sessions s
-        join lanes l on l.id = s.lane_id
-        ${whereSql}
-        order by s.started_at desc
-        ${limitSql}
-      `,
-      params
-    );
+    if (normalizedToolTypes.length > 0) {
+      const legacyChatClauses: string[] = [];
+      const legacyChatParams: (string | number | null)[] = [];
+
+      for (const toolType of normalizedToolTypes) {
+        if (toolType === "codex-chat") {
+          legacyChatClauses.push(
+            "(lower(coalesce(s.resume_command, '')) = ? or lower(coalesce(s.resume_command, '')) like ?)",
+          );
+          legacyChatParams.push("chat:codex", "chat:codex:%");
+        } else if (toolType === "claude-chat") {
+          legacyChatClauses.push("lower(coalesce(s.resume_command, '')) like ?");
+          legacyChatParams.push("chat:claude:%");
+        } else if (toolType === "opencode-chat") {
+          legacyChatClauses.push("lower(coalesce(s.resume_command, '')) like ?");
+          legacyChatParams.push("chat:unified:%");
+        } else if (toolType === "cursor") {
+          legacyChatClauses.push("lower(coalesce(s.resume_command, '')) like ?");
+          legacyChatParams.push("chat:cursor:%");
+        } else if (toolType === "droid-chat") {
+          legacyChatClauses.push("lower(coalesce(s.resume_command, '')) like ?");
+          legacyChatParams.push("chat:droid:%");
+        }
+      }
+
+      const rowsById = new Map<string, SessionRow>();
+      for (const toolType of normalizedToolTypes) {
+        for (const row of fetchRows(["s.tool_type = ?"], [toolType])) {
+          rowsById.set(row.id, row);
+        }
+      }
+      if (legacyChatClauses.length > 0) {
+        for (const row of fetchRows(["s.tool_type = 'other'", `(${legacyChatClauses.join(" or ")})`], legacyChatParams)) {
+          rowsById.set(row.id, row);
+        }
+      }
+
+      const rows = Array.from(rowsById.values())
+        .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt));
+      const limitedRows = effectiveLimit === null ? rows : rows.slice(0, effectiveLimit);
+      return limitedRows.map(mapRow) as TerminalSessionSummary[];
+    }
+
+    const rows = fetchRows();
 
     return rows.map(mapRow) as TerminalSessionSummary[];
   };

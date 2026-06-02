@@ -420,18 +420,40 @@ function serializeSnapshotVisibleRows(snapshot: TerminalSerializedSnapshot): str
   return parts.join("");
 }
 
+function configureParkedRoot(root: HTMLDivElement): void {
+  root.setAttribute("data-ade-terminal-parking", "true");
+  root.setAttribute("aria-hidden", "true");
+  root.setAttribute("inert", "");
+  root.tabIndex = -1;
+  root.style.position = "fixed";
+  root.style.width = "0";
+  root.style.height = "0";
+  root.style.overflow = "hidden";
+  root.style.opacity = "0";
+  root.style.pointerEvents = "none";
+  root.style.left = "0";
+  root.style.top = "0";
+  root.style.visibility = "hidden";
+  root.style.contain = "strict";
+}
+
 function ensureParkedRoot(): HTMLDivElement {
-  if (parkedRoot && parkedRoot.isConnected) return parkedRoot;
+  const existing = parkedRoot && parkedRoot.isConnected
+    ? parkedRoot
+    : document.querySelector<HTMLDivElement>("[data-ade-terminal-parking='true']");
+  if (existing) {
+    for (const duplicate of document.querySelectorAll<HTMLDivElement>("[data-ade-terminal-parking='true']")) {
+      if (duplicate === existing) continue;
+      while (duplicate.firstChild) existing.appendChild(duplicate.firstChild);
+      duplicate.remove();
+    }
+    configureParkedRoot(existing);
+    parkedRoot = existing;
+    return existing;
+  }
+
   const next = document.createElement("div");
-  next.setAttribute("data-ade-terminal-parking", "true");
-  next.style.position = "fixed";
-  next.style.width = "0";
-  next.style.height = "0";
-  next.style.overflow = "hidden";
-  next.style.opacity = "0";
-  next.style.pointerEvents = "none";
-  next.style.left = "0";
-  next.style.top = "0";
+  configureParkedRoot(next);
   document.body.appendChild(next);
   parkedRoot = next;
   return next;
@@ -594,6 +616,7 @@ function clearDisposeTimer(runtime: CachedRuntime) {
 }
 
 function parkRuntime(runtime: CachedRuntime) {
+  setRuntimeInteractionState(runtime, false);
   const parking = ensureParkedRoot();
   if (runtime.host.parentElement !== parking) {
     parking.appendChild(runtime.host);
@@ -632,12 +655,20 @@ function setRuntimeInteractionState(runtime: CachedRuntime, active: boolean) {
     // ignore
   }
   try {
-    runtime.host.toggleAttribute("aria-hidden", !active);
+    if (active) {
+      runtime.host.removeAttribute("aria-hidden");
+    } else {
+      runtime.host.setAttribute("aria-hidden", "true");
+    }
   } catch {
     // ignore
   }
   try {
-    runtime.host.toggleAttribute("inert", !active);
+    if (active) {
+      runtime.host.removeAttribute("inert");
+    } else {
+      runtime.host.setAttribute("inert", "");
+    }
   } catch {
     // ignore
   }
@@ -2273,6 +2304,9 @@ export function TerminalView({
   return (
     <div
       ref={wrapperRef}
+      data-ade-terminal-visible={isVisible ? "true" : "false"}
+      data-ade-terminal-active={isActive ? "true" : "false"}
+      data-ade-terminal-session-id={sessionId}
       className={cn(
         "relative h-full min-h-0 min-w-0 w-full overflow-hidden rounded-xl bg-surface-recessed",
         exited == null && "ade-terminal-active-glow shadow-[0_0_12px_-4px_rgba(34,197,94,0.2)]",

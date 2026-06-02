@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildLaneActionClearedSearch,
+  getDeferredLanePaneDelayMs,
   githubPrMatchesCurrentBranch,
   laneHasAncestor,
   lanePrMatchesCurrentBranch,
@@ -13,6 +14,7 @@ import {
   selectGithubLanePrTag,
   selectLaneTabPrTag,
   selectLanePrTag,
+  selectVisibleLanePrRefreshIds,
   shouldApplyLaneIdsDeepLink,
   sortLaneListRows,
 } from "./lanePageModel";
@@ -321,6 +323,31 @@ describe("resolveVisibleLaneIds", () => {
   });
 });
 
+describe("getDeferredLanePaneDelayMs", () => {
+  it("keeps the first visible lane eager and staggers later lanes", () => {
+    const visibleLaneIds = ["lane-a", "lane-b", "lane-c"];
+
+    expect(getDeferredLanePaneDelayMs({ laneId: "lane-a", visibleLaneIds, stepMs: 100 })).toBe(0);
+    expect(getDeferredLanePaneDelayMs({ laneId: "lane-b", visibleLaneIds, stepMs: 100 })).toBe(100);
+    expect(getDeferredLanePaneDelayMs({ laneId: "lane-c", visibleLaneIds, stepMs: 100 })).toBe(200);
+  });
+
+  it("does not defer unknown lanes and caps long queues", () => {
+    expect(getDeferredLanePaneDelayMs({
+      laneId: "lane-z",
+      visibleLaneIds: ["lane-a", "lane-b"],
+      stepMs: 100,
+      maxMs: 150,
+    })).toBe(0);
+    expect(getDeferredLanePaneDelayMs({
+      laneId: "lane-d",
+      visibleLaneIds: ["lane-a", "lane-b", "lane-c", "lane-d"],
+      stepMs: 100,
+      maxMs: 150,
+    })).toBe(150);
+  });
+});
+
 describe("buildLaneSplitColumnsKey", () => {
   it("does not depend on the current split lane ids", () => {
     const beforeDelete = buildLaneSplitColumnsKey({
@@ -606,6 +633,68 @@ describe("selectLaneTabPrTag", () => {
         makeGitHubPr({ headBranch: "main" }),
       ),
     ).toBe(false);
+  });
+});
+
+describe("selectVisibleLanePrRefreshIds", () => {
+  it("selects stale linked PRs for visible lanes in visible order", () => {
+    const lanePrByLaneId = new Map([
+      ["lane-2", { ...selectLaneTabPrTag(makeLane({ id: "lane-2", branchRef: "ade/two" }), [makePr({ id: "pr-2", laneId: "lane-2", headBranch: "ade/two" })], [])!, linkedPrId: "pr-2" }],
+      ["lane-1", { ...selectLaneTabPrTag(makeLane(), [makePr()], [])!, linkedPrId: "pr-1" }],
+    ]);
+
+    expect(selectVisibleLanePrRefreshIds({
+      visibleLaneIds: ["lane-1", "lane-2"],
+      lanePrByLaneId,
+      prs: [
+        makePr({ id: "pr-1", lastSyncedAt: "2026-05-01T00:00:00.000Z" }),
+        makePr({ id: "pr-2", laneId: "lane-2", headBranch: "ade/two", lastSyncedAt: "2026-05-01T00:00:01.000Z" }),
+      ],
+      nowMs: Date.parse("2026-05-01T00:01:00.000Z"),
+      limit: 4,
+    })).toEqual(["pr-1", "pr-2"]);
+  });
+
+  it("skips fresh, recently requested, and GitHub-only PR tags", () => {
+    const nowMs = Date.parse("2026-05-01T00:01:00.000Z");
+    const lanePrByLaneId = new Map([
+      ["fresh", { ...selectLaneTabPrTag(makeLane({ id: "fresh", branchRef: "ade/fresh" }), [makePr({ id: "fresh-pr", laneId: "fresh", headBranch: "ade/fresh" })], [])!, linkedPrId: "fresh-pr" }],
+      ["recent", { ...selectLaneTabPrTag(makeLane({ id: "recent", branchRef: "ade/recent" }), [makePr({ id: "recent-pr", laneId: "recent", headBranch: "ade/recent" })], [])!, linkedPrId: "recent-pr" }],
+      ["github", { ...selectLaneTabPrTag(makeLane({ id: "github", branchRef: "ade/github" }), [], [makeGitHubPr({ headBranch: "ade/github", linkedPrId: null })])!, linkedPrId: null }],
+      ["stale", { ...selectLaneTabPrTag(makeLane({ id: "stale", branchRef: "ade/stale" }), [makePr({ id: "stale-pr", laneId: "stale", headBranch: "ade/stale" })], [])!, linkedPrId: "stale-pr" }],
+    ]);
+
+    expect(selectVisibleLanePrRefreshIds({
+      visibleLaneIds: ["fresh", "recent", "github", "stale"],
+      lanePrByLaneId,
+      prs: [
+        makePr({ id: "fresh-pr", laneId: "fresh", headBranch: "ade/fresh", lastSyncedAt: "2026-05-01T00:00:55.000Z" }),
+        makePr({ id: "recent-pr", laneId: "recent", headBranch: "ade/recent", lastSyncedAt: "2026-05-01T00:00:00.000Z" }),
+        makePr({ id: "stale-pr", laneId: "stale", headBranch: "ade/stale", lastSyncedAt: null }),
+      ],
+      recentlyRequestedAtByPrId: new Map([["recent-pr", nowMs - 5_000]]),
+      nowMs,
+      staleMs: 15_000,
+      limit: 4,
+    })).toEqual(["stale-pr"]);
+  });
+
+  it("dedupes and caps linked PR refreshes", () => {
+    const lanePrByLaneId = new Map([
+      ["lane-1", { ...selectLaneTabPrTag(makeLane(), [makePr({ id: "shared-pr" })], [])!, linkedPrId: "shared-pr" }],
+      ["lane-2", { ...selectLaneTabPrTag(makeLane({ id: "lane-2", branchRef: "ade/two" }), [makePr({ id: "shared-pr", laneId: "lane-2", headBranch: "ade/two" })], [])!, linkedPrId: "shared-pr" }],
+      ["lane-3", { ...selectLaneTabPrTag(makeLane({ id: "lane-3", branchRef: "ade/three" }), [makePr({ id: "pr-3", laneId: "lane-3", headBranch: "ade/three" })], [])!, linkedPrId: "pr-3" }],
+    ]);
+
+    expect(selectVisibleLanePrRefreshIds({
+      visibleLaneIds: ["lane-1", "lane-2", "lane-3"],
+      lanePrByLaneId,
+      prs: [
+        makePr({ id: "shared-pr", lastSyncedAt: null }),
+        makePr({ id: "pr-3", laneId: "lane-3", headBranch: "ade/three", lastSyncedAt: null }),
+      ],
+      limit: 1,
+    })).toEqual(["shared-pr"]);
   });
 });
 

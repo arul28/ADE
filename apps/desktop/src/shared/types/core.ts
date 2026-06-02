@@ -60,6 +60,26 @@ export type AppInfo = {
   localRuntime: LocalRuntimeStatus | null;
 };
 
+export type PtyProcessResourceUsageSnapshot = {
+  activePtyCount: number;
+  ptyProcessCount: number;
+  ptyCpuPercent: number | null;
+  ptyMemoryMB: number | null;
+};
+
+export type AppResourceUsageSnapshot = PtyProcessResourceUsageSnapshot & {
+  sampledAt: string;
+  processCount: number;
+  cpuPercent: number | null;
+  mainCpuPercent: number | null;
+  rendererCpuPercent: number | null;
+  memoryMB: number | null;
+  mainMemoryMB: number | null;
+  rendererMemoryMB: number | null;
+  freeMemoryMB: number | null;
+  totalMemoryMB: number | null;
+};
+
 export type LatestReleaseInfo = {
   version: string;
   htmlUrl: string | null;

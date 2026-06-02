@@ -157,11 +157,30 @@ async function advancePhoneSyncStartupDelay() {
   });
 }
 
+const resourceUsageMock = vi.fn();
+
 describe("TopBar", () => {
   const originalAde = globalThis.window.ade;
 
   beforeEach(() => {
     resetStore();
+    resourceUsageMock.mockReset();
+    resourceUsageMock.mockResolvedValue({
+      sampledAt: "2026-04-22T00:00:00.000Z",
+      processCount: 2,
+      cpuPercent: 1,
+      mainCpuPercent: 0.5,
+      rendererCpuPercent: 0.5,
+      memoryMB: 240,
+      mainMemoryMB: 80,
+      rendererMemoryMB: 160,
+      activePtyCount: 0,
+      ptyProcessCount: 0,
+      ptyCpuPercent: 0,
+      ptyMemoryMB: 0,
+      freeMemoryMB: 12_000,
+      totalMemoryMB: 16_000,
+    });
     globalThis.window.ade = {
       app: {
         getWindowSession: vi.fn(async () => ({ windowId: 1, project: useAppStore.getState().project, openProjectTabs: [] })),
@@ -172,6 +191,7 @@ describe("TopBar", () => {
           project: { rootPath, name: rootPath.split("/").pop() ?? rootPath },
         })),
         closeWindow: vi.fn(async () => ({ closed: true })),
+        getResourceUsage: resourceUsageMock,
       },
       project: {
         listRecent: vi.fn(async () => [
@@ -336,6 +356,34 @@ describe("TopBar", () => {
       expect(globalThis.window.ade.github.getRemoteStatus).toHaveBeenCalled();
     });
     expect(globalThis.window.ade.github.getStatus).not.toHaveBeenCalled();
+  });
+
+  it("shows a header warning when ADE-spawned terminals create resource pressure", async () => {
+    useAppStore.setState({ projectHydrated: true, showWelcome: false } as any);
+    resourceUsageMock.mockResolvedValue({
+      sampledAt: "2026-04-22T00:00:00.000Z",
+      processCount: 24,
+      cpuPercent: 92,
+      mainCpuPercent: 8,
+      rendererCpuPercent: 14,
+      memoryMB: 5_800,
+      mainMemoryMB: 320,
+      rendererMemoryMB: 640,
+      activePtyCount: 12,
+      ptyProcessCount: 19,
+      ptyCpuPercent: 91,
+      ptyMemoryMB: 4_900,
+      freeMemoryMB: 900,
+      totalMemoryMB: 16_000,
+    });
+
+    render(<TopBar />);
+
+    const indicator = await screen.findByLabelText("ADE resource pressure level 4");
+    expect(indicator.getAttribute("data-ade-resource-pressure-active-ptys")).toBe("12");
+    expect(indicator.getAttribute("data-ade-resource-pressure-pty-cpu")).toBe("91");
+    expect(indicator.getAttribute("title")).toContain("Background live refreshes are slowed");
+    expect(indicator.getAttribute("title")).toContain("selected chats and terminals stay full speed");
   });
 
   it("consolidates a cross-window project tab dropped onto the same project", async () => {

@@ -129,12 +129,14 @@ export function useLaneWorkSessions(laneId: string | null) {
   const refreshInFlightRef = useRef(false);
   const refreshQueuedRef = useRef<QueuedRefresh | null>(null);
   const backgroundRefreshTimerRef = useRef<number | null>(null);
+  const pendingHiddenSessionRefreshRef = useRef(false);
   const hasActiveSessionsRef = useRef(false);
   const hasLoadedOnceRef = useRef(false);
   const hasFetchedOnceRef = useRef(false);
   const laneIdRef = useRef<string | null>(laneId);
   const projectRootRef = useRef<string | null>(projectRoot);
   const scopeKeyRef = useRef("");
+  const sessionIdsRef = useRef<Set<string>>(new Set());
   const pendingOptimisticSessionsRef = useRef<Map<string, PendingOptimisticSession>>(new Map());
 
   const currentLane = useMemo(
@@ -181,7 +183,6 @@ export function useLaneWorkSessions(laneId: string | null) {
   const refresh = useCallback(
     async (options: { showLoading?: boolean; force?: boolean } = {}) => {
       const targetLaneId = laneIdRef.current;
-      const targetProjectRoot = projectRootRef.current;
       if (!targetLaneId) {
         setSessions([]);
         hasLoadedOnceRef.current = true;
@@ -214,7 +215,7 @@ export function useLaneWorkSessions(laneId: string | null) {
         const rows = (
           await listSessionsCached(
             { laneId: targetLaneId, limit: 200 },
-            { force: Boolean(options.force), projectRoot: targetProjectRoot },
+            { force: Boolean(options.force) },
           )
         ).filter((session) => !isRunOwnedSession(session));
         if (scopeKeyRef.current !== requestedScopeKey) return;
@@ -273,9 +274,24 @@ export function useLaneWorkSessions(laneId: string | null) {
     if (backgroundRefreshTimerRef.current != null) return;
     backgroundRefreshTimerRef.current = window.setTimeout(() => {
       backgroundRefreshTimerRef.current = null;
+      if (document.visibilityState !== "visible") {
+        pendingHiddenSessionRefreshRef.current = true;
+        return;
+      }
       void refresh({ showLoading: false });
     }, delayMs);
   }, [refresh]);
+
+  const markSessionListDirtyOrRefresh = useCallback((delayMs: number) => {
+    const targetLaneId = laneIdRef.current;
+    if (!targetLaneId) return;
+    invalidateSessionListCache({ projectRoot: projectRootRef.current, laneId: targetLaneId });
+    if (document.visibilityState !== "visible") {
+      pendingHiddenSessionRefreshRef.current = true;
+      return;
+    }
+    scheduleBackgroundRefresh(delayMs);
+  }, [scheduleBackgroundRefresh]);
 
   const upsertOptimisticChatSession = useCallback((session: AgentChatSession) => {
     if (!laneId || session.laneId !== laneId) return;
@@ -299,6 +315,10 @@ export function useLaneWorkSessions(laneId: string | null) {
     });
   }, [currentLane?.name, laneId, lanes, scopeKey]);
 
+  useEffect(() => {
+    sessionIdsRef.current = new Set(sessions.map((session) => session.id));
+  }, [sessions]);
+
   const upsertSessionSnapshot = useCallback((session: TerminalSessionSummary) => {
     if (!laneId || session.laneId !== laneId) return;
     hasLoadedOnceRef.current = true;
@@ -316,6 +336,7 @@ export function useLaneWorkSessions(laneId: string | null) {
     setSessions(cachedSessions ?? []);
     hasLoadedOnceRef.current = Boolean(cachedSessions);
     hasFetchedOnceRef.current = false;
+    pendingHiddenSessionRefreshRef.current = false;
     if (!laneId) return;
     void refresh({ showLoading: !cachedSessions, force: !cachedSessions });
   }, [laneId, refresh, scopeKey]);
@@ -333,7 +354,8 @@ export function useLaneWorkSessions(laneId: string | null) {
     const unsubscribe = window.ade.pty.onExit((event) => {
       if (!laneId) return;
       if (event.projectRoot && event.projectRoot !== projectRoot) return;
-      scheduleBackgroundRefresh(120);
+      if (event.sessionId && !sessionIdsRef.current.has(event.sessionId)) return;
+      markSessionListDirtyOrRefresh(120);
     });
     return () => {
       try {
@@ -342,25 +364,46 @@ export function useLaneWorkSessions(laneId: string | null) {
         // ignore
       }
     };
-  }, [laneId, projectRoot, scheduleBackgroundRefresh]);
+  }, [laneId, projectRoot, markSessionListDirtyOrRefresh]);
 
   useEffect(() => {
     const unsubscribe = window.ade.agentChat.onEvent((payload) => {
       if (!laneId) return;
+      if (payload.provenance?.laneId && payload.provenance.laneId !== laneId) return;
       if (!shouldRefreshSessionListForChatEvent(payload)) return;
-      scheduleBackgroundRefresh(180);
+      markSessionListDirtyOrRefresh(180);
     });
     return unsubscribe;
-  }, [laneId, scheduleBackgroundRefresh]);
+  }, [laneId, markSessionListDirtyOrRefresh]);
 
   useEffect(() => {
-    const unsubscribe = window.ade.sessions.onChanged(() => {
+    const unsubscribe = window.ade.sessions.onChanged((event) => {
       if (!laneId) return;
-      if (document.visibilityState !== "visible") return;
-      invalidateSessionListCache();
-      scheduleBackgroundRefresh(80);
+      if (!event) {
+        markSessionListDirtyOrRefresh(80);
+        return;
+      }
+      if (event.reason !== "created" && !sessionIdsRef.current.has(event.sessionId)) return;
+      markSessionListDirtyOrRefresh(80);
     });
     return unsubscribe;
+  }, [laneId, markSessionListDirtyOrRefresh]);
+
+  useEffect(() => {
+    if (!laneId) return;
+    const refreshVisibleLaneWork = () => {
+      if (document.visibilityState !== "visible") return;
+      if (!pendingHiddenSessionRefreshRef.current) return;
+      pendingHiddenSessionRefreshRef.current = false;
+      invalidateSessionListCache({ projectRoot: projectRootRef.current, laneId: laneIdRef.current });
+      scheduleBackgroundRefresh(40);
+    };
+    window.addEventListener("focus", refreshVisibleLaneWork);
+    document.addEventListener("visibilitychange", refreshVisibleLaneWork);
+    return () => {
+      window.removeEventListener("focus", refreshVisibleLaneWork);
+      document.removeEventListener("visibilitychange", refreshVisibleLaneWork);
+    };
   }, [laneId, scheduleBackgroundRefresh]);
 
   const activeSessions = useMemo(

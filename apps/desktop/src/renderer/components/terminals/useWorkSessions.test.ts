@@ -172,6 +172,13 @@ function makeSession(id: string, laneId: string, overrides: Record<string, unkno
   };
 }
 
+function setDocumentVisibility(value: DocumentVisibilityState) {
+  Object.defineProperty(document, "visibilityState", {
+    configurable: true,
+    value,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -183,9 +190,11 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     installWindowAde();
     listSessionsCachedMock.mockResolvedValue([]);
     useSearchParamsMock.mockReturnValue([new URLSearchParams(), vi.fn()]);
+    setDocumentVisibility("visible");
   });
 
   afterEach(() => {
+    setDocumentVisibility("visible");
     delete (window as any).ade;
   });
 
@@ -406,7 +415,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       });
     });
 
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true, projectRoot: "/fake/project" });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true });
     expect(result.current.sessions).toEqual([
       expect.objectContaining({
         id: "new-pty-session",
@@ -694,7 +703,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     await waitFor(() => {
       expect(listSessionsCachedMock).toHaveBeenCalled();
     });
-    expect(listSessionsCachedMock).toHaveBeenLastCalledWith({ limit: 500 }, { projectRoot: "/fake/project" });
+    expect(listSessionsCachedMock).toHaveBeenLastCalledWith({ limit: 500 }, undefined);
   });
 
   it("setActiveItemId leaves the selected lane alone in grid mode", async () => {
@@ -1416,8 +1425,45 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       await new Promise((r) => setTimeout(r, 120));
     });
 
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { projectRoot: "/fake/project" });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
     expect(invalidateSessionListCache).toHaveBeenCalled();
+  });
+
+  it("defers hidden session-list changes and refreshes Work on reveal", async () => {
+    let onChangedHandler: (() => void) | null = null;
+    (window as any).ade.sessions.onChanged.mockImplementation((cb: () => void) => {
+      onChangedHandler = cb;
+      return () => {
+        onChangedHandler = null;
+      };
+    });
+
+    renderHook(() => useWorkSessions());
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    listSessionsCachedMock.mockClear();
+    vi.mocked(invalidateSessionListCache).mockClear();
+    listSessionsCachedMock.mockResolvedValue([makeSession("session-revealed", "lane-1")]);
+
+    setDocumentVisibility("hidden");
+    await act(async () => {
+      onChangedHandler?.();
+      await new Promise((r) => setTimeout(r, 120));
+    });
+
+    expect(invalidateSessionListCache).toHaveBeenCalled();
+    expect(listSessionsCachedMock).not.toHaveBeenCalled();
+
+    setDocumentVisibility("visible");
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      await new Promise((r) => setTimeout(r, 60));
+    });
+
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
   });
 
   it("refetches visible Work when the window regains focus", async () => {
@@ -1436,7 +1482,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     });
 
     expect(invalidateSessionListCache).toHaveBeenCalled();
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { projectRoot: "/fake/project" });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
   });
 
   it("does not subscribe or refresh while the kept-alive Work surface is inactive", async () => {
@@ -1485,7 +1531,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     });
 
     expect(invalidateSessionListCache).toHaveBeenCalled();
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { projectRoot: "/fake/project" });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
   });
 });
 

@@ -426,6 +426,44 @@ describe("sessionService resume metadata", () => {
     activeDisposers.push(async () => db.close());
   });
 
+  it("applies tool type filters before the session list limit", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "chat-session",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Older chat",
+      startedAt: "2026-03-17T00:00:00.000Z",
+      transcriptPath: path.join(projectRoot, "chat-session.chat.jsonl"),
+      toolType: "codex-chat",
+    });
+
+    for (let i = 0; i < 505; i++) {
+      service.create({
+        sessionId: `shell-session-${i}`,
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: `Shell ${i}`,
+        startedAt: new Date(Date.UTC(2026, 2, 17, 0, 10, i)).toISOString(),
+        transcriptPath: `/tmp/shell-session-${i}.log`,
+        toolType: "shell",
+      });
+    }
+
+    const listed = service.list({ laneId: "lane-1", limit: 10, toolTypes: ["codex-chat"] });
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.id).toBe("chat-session");
+
+    activeDisposers.push(async () => db.close());
+  });
+
   it("repairs legacy droid chat rows from their resume command", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
@@ -454,6 +492,18 @@ describe("sessionService resume metadata", () => {
     const session = service.get("session-legacy");
     expect(session?.toolType).toBe("droid-chat");
     expect(session?.resumeCommand).toBe("chat:droid:session-legacy");
+    service.create({
+      sessionId: "session-shell",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Shell",
+      startedAt: "2026-03-17T00:11:00.000Z",
+      transcriptPath: path.join(projectRoot, "session-shell.log"),
+      toolType: "shell",
+    });
+    const listed = service.list({ laneId: "lane-1", toolTypes: ["droid-chat"] });
+    expect(listed.map((row) => row.id)).toEqual(["session-legacy"]);
 
     activeDisposers.push(async () => db.close());
   });
