@@ -17,6 +17,7 @@ import type {
 } from "../../shared/types";
 
 export const MAX_DRAFT_LAUNCH_JOBS = 8;
+export const DRAFT_LAUNCH_JOB_STALE_AFTER_MS = 2 * 60 * 1000;
 
 export type NativeControlState = {
   interactionMode: AgentChatInteractionMode;
@@ -85,6 +86,11 @@ export type DraftLaunchJob = {
 
 export function isDraftLaunchJobTerminal(status: DraftLaunchJobStatus): boolean {
   return status === "ready" || status === "failed";
+}
+
+export function isDraftLaunchJobStale(job: DraftLaunchJob, nowMs: number): boolean {
+  return !isDraftLaunchJobTerminal(job.status)
+    && nowMs - job.createdAtMs >= DRAFT_LAUNCH_JOB_STALE_AFTER_MS;
 }
 
 export function pruneDraftLaunchJobs(jobs: DraftLaunchJob[]): DraftLaunchJob[] {

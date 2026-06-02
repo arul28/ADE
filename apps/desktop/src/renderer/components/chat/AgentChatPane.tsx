@@ -139,6 +139,7 @@ import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { getAgentChatModelsCached, getAiStatusCached, invalidateAiDiscoveryCache, peekAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import {
+  isDraftLaunchJobStale,
   isDraftLaunchJobTerminal,
   pruneDraftLaunchJobs,
   type BackgroundLaunchNotice,
@@ -354,6 +355,10 @@ function draftLaunchJobMessage(job: DraftLaunchJob): string {
   return job.mode === "background"
     ? `Launched ${draftLaunchKindLabel(job.draftKind)}${laneSuffix}.`
     : `Ready to open ${draftLaunchKindLabel(job.draftKind)}${laneSuffix}.`;
+}
+
+function staleDraftLaunchJobMessage(job: DraftLaunchJob): string {
+  return `${draftLaunchJobMessage(job)} Still working. You can hide this status while ADE continues in the background.`;
 }
 
 type AiStatusSnapshot = AiSettingsStatus & {
@@ -2395,6 +2400,19 @@ export function AgentChatPane({
   ) => {
     setDraftLaunchJobsInStore(draftLaunchJobsScopeKey, next);
   }, [draftLaunchJobsScopeKey, setDraftLaunchJobsInStore]);
+  const hasActiveDraftLaunchJobs = useMemo(
+    () => draftLaunchJobs.some((job) => !isDraftLaunchJobTerminal(job.status)),
+    [draftLaunchJobs],
+  );
+  const [draftLaunchJobNowMs, setDraftLaunchJobNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!hasActiveDraftLaunchJobs) return;
+    setDraftLaunchJobNowMs(Date.now());
+    const intervalId = window.setInterval(() => {
+      setDraftLaunchJobNowMs(Date.now());
+    }, 15 * 1000);
+    return () => window.clearInterval(intervalId);
+  }, [hasActiveDraftLaunchJobs]);
   const initialCompanionStateKey = lockSessionId ?? initialSessionId ?? (laneId ? `draft:${laneId}` : "draft");
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   const [archivedSessions, setArchivedSessions] = useState<AgentChatSessionSummary[]>([]);
@@ -8516,6 +8534,7 @@ export function AgentChatPane({
         const isFailed = job.status === "failed";
         const isReady = job.status === "ready";
         const isActiveJob = !isDraftLaunchJobTerminal(job.status);
+        const isStaleActiveJob = isDraftLaunchJobStale(job, draftLaunchJobNowMs);
         const canOpen = isReady && Boolean(job.laneId && job.laneName && job.sessionId);
         return (
           <div
@@ -8547,7 +8566,12 @@ export function AgentChatPane({
                   </span>
                   <span className="min-w-0 truncate font-medium">{job.title}</span>
                 </div>
-                <div className="min-w-0 truncate text-[10px] leading-4 opacity-75">{draftLaunchJobMessage(job)}</div>
+                <div className={cn(
+                  "min-w-0 text-[10px] leading-4 opacity-75",
+                  !isStaleActiveJob && "truncate",
+                )}>
+                  {isStaleActiveJob ? staleDraftLaunchJobMessage(job) : draftLaunchJobMessage(job)}
+                </div>
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1">
@@ -8578,15 +8602,17 @@ export function AgentChatPane({
                   Open
                 </button>
               ) : null}
-              {!isActiveJob ? (
+              {(!isActiveJob || isStaleActiveJob) ? (
                 <button
                   type="button"
-                  aria-label={isFailed ? "Dismiss failed launch" : "Dismiss launch status"}
+                  aria-label={isFailed ? "Dismiss failed launch" : isStaleActiveJob ? "Hide stale launch status" : "Dismiss launch status"}
                   className={cn(
                     "grid h-5 w-5 place-items-center rounded-md transition-colors",
                     isFailed
                       ? "text-rose-50/70 hover:bg-rose-300/[0.12] hover:text-rose-50"
-                      : "text-fg/55 hover:bg-white/10 hover:text-fg/80",
+                      : isStaleActiveJob
+                        ? "text-fg/45 hover:bg-white/10 hover:text-fg/75"
+                        : "text-fg/55 hover:bg-white/10 hover:text-fg/80",
                   )}
                   onClick={() => dismissDraftLaunchJob(job.id)}
                 >

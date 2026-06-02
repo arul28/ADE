@@ -11,8 +11,8 @@ stream plus session metadata.
 
 | Path | Role |
 |---|---|
-| `AgentChatPane.tsx` | Top-level pane; IPC wiring, session state, presentation profile resolution, lane navigation, parallel launch orchestration, mounting of sub-panels and composer. Visible Work grid tiles flush user/lifecycle/live events immediately and poll-recover active transcripts so inactive-but-visible tiles stay current. Draft chats preserve user-touched model/reasoning/permission controls across late lane-session hydration, and composer text is keyed by session id or lane draft key so switching draft lanes does not reuse another draft's text. Accepts an optional `draftContextTargetId` prop so the Work sidebar can target an unsaved draft composer for context insertions (attachments, iOS/App Control/browser selections, draft text) even before a chat session exists; window event handlers match on either `sessionId` or `draftTargetId`. When auto-creating a lane the draft resolves the primary lane for the `onLaneChange` callback so the sidebar lane context stays in sync. Composer draft state (text, model, reasoning, attachments, context items) is persisted to `localStorage` under the `ade.chat.composerDraft.v1` key family and restored on scope change through `ComposerDraftStorageSnapshot`. Draft launches are tracked through store-backed `DraftLaunchJob` state machines with multi-step progress (`naming-lane` -> `creating-lane` -> `starting-session` -> `sending-prompt` -> `ready` / `failed`); the composer is cleared optimistically at job start and the `DraftLaunchSnapshot` captures the full control state so the async launch uses frozen settings. |
-| `apps/desktop/src/renderer/lib/draftLaunchJobs.ts` | Pure helper for Work draft-launch job DTOs, terminal-state detection, and pruning. The list keeps active rows ahead of terminal rows, fills remaining retained slots with terminal rows, and keeps at least one terminal row alongside active jobs. |
+| `AgentChatPane.tsx` | Top-level pane; IPC wiring, session state, presentation profile resolution, lane navigation, parallel launch orchestration, mounting of sub-panels and composer. Visible Work grid tiles flush user/lifecycle/live events immediately and poll-recover active transcripts so inactive-but-visible tiles stay current. Draft chats preserve user-touched model/reasoning/permission controls across late lane-session hydration, and composer text is keyed by session id or lane draft key so switching draft lanes does not reuse another draft's text. Accepts an optional `draftContextTargetId` prop so the Work sidebar can target an unsaved draft composer for context insertions (attachments, iOS/App Control/browser selections, draft text) even before a chat session exists; window event handlers match on either `sessionId` or `draftTargetId`. When auto-creating a lane the draft resolves the primary lane for the `onLaneChange` callback so the sidebar lane context stays in sync. Composer draft state (text, model, reasoning, attachments, context items) is persisted to `localStorage` under the `ade.chat.composerDraft.v1` key family and restored on scope change through `ComposerDraftStorageSnapshot`. Draft launches are tracked through store-backed `DraftLaunchJob` state machines with multi-step progress (`naming-lane` -> `creating-lane` -> `starting-session` -> `sending-prompt` -> `ready` / `failed`); the composer is cleared optimistically at job start, stale active rows gain a hide-status escape hatch, and the `DraftLaunchSnapshot` captures the full control state so the async launch uses frozen settings. |
+| `apps/desktop/src/renderer/lib/draftLaunchJobs.ts` | Pure helper for Work draft-launch job DTOs, terminal/stale-state detection, and pruning. The list keeps active rows ahead of terminal rows, fills remaining retained slots with terminal rows, and keeps at least one terminal row alongside active jobs. |
 | `AgentChatMessageList.tsx` | Virtualized message list (`@tanstack/react-virtual`). Renders transcript rows and turn dividers, and keeps sticky-bottom sessions pinned across streamed row growth and late virtual-height measurements. Plan-approval rows with non-empty body text render a scrollable markdown block (capped at `360px`) beneath the header so the user can review plan content inline. Codex goal lifecycle rows use user-facing text such as `Goal set`, `Goal paused`, and `Goal cleared`. |
 | `AgentChatComposer.tsx` | Text input, attachments, model selector, permission controls, slash commands, pending-input answering, and parallel model-slot controls. Launch-prompt clipboard reminder text is controlled by `launchPromptClipboardNoticeEnabled`, separate from the `launchPromptClipboardEnabled` copy behavior. |
 | `ChatSurfaceShell.tsx` | Floating chat header, body, footer layout. Backdrop-blur glass-morphism styling. |
@@ -235,8 +235,9 @@ and a footer that contains the composer.
   `latestForegroundDraftLaunchJobIdRef`); background launches keep the
   current Work focus and render a job strip with an Open action once
   ready. Failed jobs offer a Restore button that merges the snapshot
-  back into the composer. Active jobs remain visible; terminal rows are
-  pruned per scope.
+  back into the composer. Active jobs remain visible, and stale active
+  jobs can be hidden if the backing async never settles; terminal rows
+  are pruned per scope.
 
 - **Border beam.** On standard (non-grid-tile) layout the composer
   shell is wrapped in `BorderBeam` (`colorVariant="colorful"` at rest,
@@ -562,6 +563,8 @@ These modules are pure and unit-testable:
   the launch fails, the Restore action merges the snapshot back via
   `restoreDraftLaunchSnapshot`, which appends rather than replaces
   existing draft text and merges context items by id.
+  `isDraftLaunchJobStale` makes an active row hideable after the stale
+  threshold so a hung IPC call cannot leave a permanent status strip.
   `latestForegroundDraftLaunchJobIdRef` prevents stale foreground jobs
   from auto-opening when a newer foreground launch superseded them. The
   `DraftLaunchSnapshot` captures the full composer control state

@@ -17,6 +17,7 @@ import type {
 } from "../../../shared/types";
 import { createDynamicCursorCliModelDescriptor, getModelById } from "../../../shared/modelRegistry";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
+import { DRAFT_LAUNCH_JOB_STALE_AFTER_MS } from "../../lib/draftLaunchJobs";
 import { useAppStore } from "../../state/appStore";
 import {
   rememberRuntimeCatalog,
@@ -926,6 +927,20 @@ function composerDraftStorageKeyForTest(args: {
     "ade.chat.composerDraft.v1",
     args.projectRoot,
     args.companionStateKey,
+    "standard",
+    args.workDraftKind ?? "work-start",
+  ].map(encodeURIComponent).join(":");
+}
+
+function draftLaunchJobsScopeKeyForTest(args: {
+  projectRoot: string;
+  laneId: string;
+  workDraftKind?: "work-start" | "chat-orchestrator";
+}) {
+  return [
+    "draft-launch-jobs",
+    args.projectRoot,
+    args.laneId,
     "standard",
     args.workDraftKind ?? "work-start",
   ].map(encodeURIComponent).join(":");
@@ -3775,6 +3790,59 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(screen.getByText(/Launched chat in remounted-lane/i)).toBeTruthy();
       expect(screen.getByRole("button", { name: "Dismiss launch status" })).toBeTruthy();
+    });
+  });
+
+  it("allows stale active draft launch rows to be hidden", async () => {
+    installAdeMocks({ sessions: [] });
+    const scopeKey = draftLaunchJobsScopeKeyForTest({
+      projectRoot: "/tmp/project-under-test",
+      laneId: "lane-1",
+    });
+    useAppStore.setState({
+      draftLaunchJobsByScope: {
+        [scopeKey]: [{
+          id: "stale-draft-launch",
+          mode: "background",
+          draftKind: "chat",
+          status: "naming-lane",
+          title: "Stale background launch",
+          laneId: null,
+          laneName: null,
+          sessionId: null,
+          error: null,
+          autoOpen: false,
+          createdAtMs: Date.now() - DRAFT_LAUNCH_JOB_STALE_AFTER_MS - 1,
+          snapshot: {
+            text: "Recover from a stuck launch.",
+            draft: "Recover from a stuck launch.",
+            modelId: "openai/gpt-5.4",
+            reasoningEffort: null,
+            codexFastMode: false,
+            executionMode: "focused",
+            interactionMode: "native",
+            nativeControls: {},
+            attachments: [],
+            contextAttachments: [],
+            iosContextItems: [],
+            appControlContextItems: [],
+            builtInBrowserContextItems: [],
+            macosVmContextItems: [],
+            visualContextPrefix: "",
+            visualContextDisplayChips: "",
+            isLiteralSlashCommand: false,
+          },
+        } as any],
+      },
+    });
+
+    renderAutoCreateDraftPane();
+
+    expect(await screen.findByText(/Still working\. You can hide this status/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Hide stale launch status" }));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("draft-launch-job")).toBeNull();
     });
   });
 
