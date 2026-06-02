@@ -309,6 +309,9 @@ export function formatLaneDeleteRisk(risk: LaneDeleteRisk): string {
   if (risk.runningProcessCount > 0) {
     parts.push(`${risk.runningProcessCount} running process${risk.runningProcessCount === 1 ? "" : "es"}`);
   }
+  if (risk.activeChatCount > 0) {
+    parts.push(`${risk.activeChatCount} chat session${risk.activeChatCount === 1 ? "" : "s"}`);
+  }
   if (risk.activePtyCount > 0) parts.push(`${risk.activePtyCount} terminal${risk.activePtyCount === 1 ? "" : "s"}`);
   if (risk.remoteBranchExists) parts.push("remote branch exists");
   return parts.length ? `⚠ ${parts.join(" · ")}` : "Clean — no unpushed work or running processes.";

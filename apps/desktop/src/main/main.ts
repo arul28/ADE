@@ -2932,6 +2932,10 @@ app.whenReady().then(async () => {
       },
     });
     agentChatServiceRef = agentChatService;
+    laneTeardownDeps.agentChatService = {
+      countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
+      disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
+    };
     setImmediate(() => {
       void Promise.resolve()
         .then(() => agentChatService.cleanupStaleAttachments())

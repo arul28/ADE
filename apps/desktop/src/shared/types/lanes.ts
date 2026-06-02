@@ -347,6 +347,7 @@ export type DeleteLaneArgs = {
 
 export type LaneDeleteStepName =
   | "stop_processes"
+  | "stop_chats"
   | "stop_ptys"
   | "stop_watchers"
   | "cancel_auto_rebase"
@@ -400,6 +401,7 @@ export type LaneDeleteRisk = {
   unpushedCommitCount: number;
   remoteBranchExists: boolean;
   runningProcessCount: number;
+  activeChatCount: number;
   activePtyCount: number;
   activeWatcherCount: number;
   envInitialized: boolean;
