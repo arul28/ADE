@@ -492,7 +492,18 @@ describe("sessionService resume metadata", () => {
     const session = service.get("session-legacy");
     expect(session?.toolType).toBe("droid-chat");
     expect(session?.resumeCommand).toBe("chat:droid:session-legacy");
-    expect(service.list({ laneId: "lane-1", toolTypes: ["droid-chat"] })[0]?.id).toBe("session-legacy");
+    service.create({
+      sessionId: "session-shell",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Shell",
+      startedAt: "2026-03-17T00:11:00.000Z",
+      transcriptPath: path.join(projectRoot, "session-shell.log"),
+      toolType: "shell",
+    });
+    const listed = service.list({ laneId: "lane-1", toolTypes: ["droid-chat"] });
+    expect(listed.map((row) => row.id)).toEqual(["session-legacy"]);
 
     activeDisposers.push(async () => db.close());
   });

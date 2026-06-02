@@ -197,8 +197,15 @@ function DeferredLanePane({
   delayMs?: number;
 }) {
   const [ready, setReady] = useState(delayMs <= 0);
+  const initializedCacheKeysRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
+    const initializedCacheKeys = initializedCacheKeysRef.current;
+    if (initializedCacheKeys.has(cacheKey)) {
+      setReady(true);
+      return;
+    }
+    initializedCacheKeys.add(cacheKey);
     if (delayMs <= 0) {
       setReady(true);
       return;
@@ -541,6 +548,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const laneGithubPrTagsRequestRef = useRef(0);
   const laneVisiblePrRefreshRequestedAtRef = useRef<Map<string, number>>(new Map());
   const laneVisiblePrRefreshProjectRootRef = useRef<string | null>(null);
+  const [laneVisiblePrRefreshVisibilityToken, setLaneVisiblePrRefreshVisibilityToken] = useState(0);
   const hasActiveLaneRuntimeRef = useRef(false);
   const [autoRebaseEnabled, setAutoRebaseEnabled] = useState(false);
   const [rebaseSuggestionError, setRebaseSuggestionError] = useState<string | null>(null);
@@ -1147,6 +1155,16 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   }, [active, refreshLanePrTags, refreshLaneGithubPrTags]);
 
   useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        setLaneVisiblePrRefreshVisibilityToken((value) => value + 1);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
+
+  useEffect(() => {
     const projectRoot = project?.rootPath ?? null;
     if (laneVisiblePrRefreshProjectRootRef.current !== projectRoot) {
       laneVisiblePrRefreshProjectRootRef.current = projectRoot;
@@ -1182,7 +1200,15 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     }, LANE_VISIBLE_PR_REFRESH_DEBOUNCE_MS);
 
     return () => window.clearTimeout(timer);
-  }, [active, appStore, project?.rootPath, visibleLaneIds, lanePrByLaneId, lanePrTags]);
+  }, [
+    active,
+    appStore,
+    project?.rootPath,
+    visibleLaneIds,
+    lanePrByLaneId,
+    lanePrTags,
+    laneVisiblePrRefreshVisibilityToken,
+  ]);
 
   useEffect(() => {
     if (!active) return;

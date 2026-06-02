@@ -73,7 +73,7 @@ function formatMemory(value: number | null | undefined): string | null {
 }
 
 function formatSystemMemory(usage: AppResourceUsageSnapshot | null): string | null {
-  if (usage?.freeMemoryMB == null || !usage.totalMemoryMB || usage.totalMemoryMB <= 0) return null;
+  if (usage?.freeMemoryMB == null || usage.totalMemoryMB == null || usage.totalMemoryMB <= 0) return null;
   const usedRatio = 1 - (usage.freeMemoryMB / usage.totalMemoryMB);
   if (!Number.isFinite(usedRatio)) return null;
   return `${Math.round(usedRatio * 100)}% system memory used`;

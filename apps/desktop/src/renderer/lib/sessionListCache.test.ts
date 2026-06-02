@@ -104,6 +104,16 @@ describe("sessionListCache", () => {
     expect(listMock).toHaveBeenCalledTimes(2);
   });
 
+  it("normalizes tool types before fetching and cache keying", async () => {
+    listMock.mockResolvedValueOnce(makeRows(2));
+
+    await listSessionsCached({ toolTypes: [" codex-chat ", "", "codex-chat"] as any });
+    await listSessionsCached({ toolTypes: ["codex-chat"] });
+
+    expect(listMock).toHaveBeenCalledTimes(1);
+    expect(listMock).toHaveBeenCalledWith({ toolTypes: ["codex-chat"] });
+  });
+
   it("shares an in-flight request with forced callers", async () => {
     let resolveRows!: (rows: ReturnType<typeof makeRows>) => void;
     listMock.mockImplementationOnce(() => new Promise<ReturnType<typeof makeRows>>((resolve) => {

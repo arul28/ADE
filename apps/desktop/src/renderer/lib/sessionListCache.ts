@@ -1,6 +1,8 @@
 import type { ListSessionsArgs, TerminalSessionSummary } from "../../shared/types";
 import { useAppStore } from "../state/appStore";
 
+type SessionToolType = NonNullable<ListSessionsArgs["toolTypes"]>[number];
+
 type CacheEntry = {
   value: TerminalSessionSummary[] | null;
   timestamp: number;
@@ -24,7 +26,11 @@ function normalizeArgs(args?: ListSessionsArgs): ListSessionsArgs {
   if (typeof args.limit === "number" && Number.isFinite(args.limit) && args.limit > 0) normalized.limit = Math.floor(args.limit);
   if (Array.isArray(args.toolTypes)) {
     const toolTypes = Array.from(
-      new Set(args.toolTypes.filter((toolType) => typeof toolType === "string" && toolType.trim().length > 0)),
+      new Set(
+        args.toolTypes
+          .map((toolType) => toolType.trim())
+          .filter((toolType): toolType is SessionToolType => toolType.length > 0),
+      ),
     ).sort();
     if (toolTypes.length > 0) normalized.toolTypes = toolTypes;
   }
