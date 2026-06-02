@@ -2993,7 +2993,7 @@ app.whenReady().then(async () => {
     };
     autoRebaseActivityReady = true;
     void autoRebaseService
-      ?.refreshActiveRebaseNeeds("activity_services_ready")
+      .refreshActiveRebaseNeeds("activity_services_ready")
       .catch((error) => {
         logger.warn("autoRebase.activity_ready_refresh_failed", {
           error: error instanceof Error ? error.message : String(error),
