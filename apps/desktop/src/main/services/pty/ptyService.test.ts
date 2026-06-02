@@ -2152,7 +2152,7 @@ describe("ptyService", () => {
         exitCode: 0,
         status: "completed",
       });
-      sessionService.readTranscriptTail.mockResolvedValueOnce([
+      sessionService.readTranscriptTail.mockResolvedValue([
         "Update available! 0.130.0 -> 0.134.0\n",
         "Update ran successfully! Please restart Codex.\n",
       ].join(""));
@@ -2163,6 +2163,73 @@ describe("ptyService", () => {
         text: "continue",
       })).rejects.toThrow(/before ADE could create a resumable thread/i);
       expect(loadPty).not.toHaveBeenCalled();
+    });
+
+    it("sendToSession backfills a Codex storage target before launching resume", async () => {
+      vi.useFakeTimers();
+      try {
+        const fakeNow = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(fakeNow);
+
+        const homedir = os.homedir();
+        const sessionsBase = path.join(homedir, ".codex", "sessions");
+        const dirPath = path.join(sessionsBase, "2026", "04", "15");
+        const filePath = path.join(dirPath, "rollout-2026-04-15T21-30-00-thread-storage.jsonl");
+        const startedAt = "2026-04-15T21:30:00.000Z";
+        const firstLine = JSON.stringify({
+          timestamp: startedAt,
+          type: "session_meta",
+          payload: {
+            id: "thread-storage",
+            timestamp: startedAt,
+            cwd: "/tmp/worktree",
+          },
+        });
+
+        mocks.existsSyncResults.set(sessionsBase, true);
+        mocks.existsSyncResults.set(dirPath, true);
+        mocks.dirEntries.set(dirPath, [path.basename(filePath)]);
+        mocks.fileContents.set(filePath, `${firstLine}\n`);
+        mocks.fileStats.set(filePath, { size: firstLine.length, mtimeMs: fakeNow.getTime() - 30_000, isDirectory: false });
+
+        const { service, sessionService, loadPty } = createHarness();
+        sessionService.readTranscriptTail.mockResolvedValue("OpenAI Codex\nmodel: gpt-5\n› ");
+        sessionService.create({
+          sessionId: "session-codex-storage-send",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Codex CLI",
+          startedAt,
+          transcriptPath: "/tmp/worktree/.ade/transcripts/session-codex-storage-send.log",
+          toolType: "codex",
+          resumeCommand: "codex --no-alt-screen resume",
+        });
+        sessionService.end({
+          sessionId: "session-codex-storage-send",
+          endedAt: "2026-04-15T21:45:00.000Z",
+          exitCode: 0,
+          status: "completed",
+        });
+
+        await service.sendToSession({
+          sessionId: "session-codex-storage-send",
+          text: "continue",
+        });
+
+        expect(sessionService.setResumeCommand).toHaveBeenCalledWith(
+          "session-codex-storage-send",
+          "codex resume thread-storage",
+        );
+        const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+        expect(spawn).toHaveBeenCalledWith(
+          "/bin/bash",
+          ["--noprofile", "--norc", "-lc", "codex --no-alt-screen resume thread-storage continue"],
+          expect.any(Object),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("sendToSession resumes an ended tracked CLI session with the message in the launch command", async () => {
@@ -2791,6 +2858,9 @@ describe("ptyService", () => {
         service.sendToSession({ sessionId: "session-concurrent-send", text: "first" }),
         service.sendToSession({ sessionId: "session-concurrent-send", text: "second" }),
       ]);
+      for (let i = 0; i < 10 && loadPty.mock.calls.length === 0; i += 1) {
+        await Promise.resolve();
+      }
       await Promise.resolve();
       mockPty._emitter.emit("data", "OpenAI Codex\n› ");
       const [first, second] = await pending;

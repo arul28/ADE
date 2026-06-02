@@ -84,8 +84,10 @@ auto-clean it.
 the directory first:
 
 1. Fetch the row; reject if `is_edit_protected = 1` (primary).
-2. Check worktree dirtiness when a managed worktree exists; dirty
-   lanes require the caller's force acknowledgement.
+2. Check worktree dirtiness only when the saved path still resolves to
+   that exact Git worktree root. If the directory is missing, or a stale
+   path under the repo now resolves to the primary checkout, ADE treats
+   the lane as stale instead of reading the primary worktree's status.
 3. Cancel auto-rebase and dismiss rebase suggestions for the lane.
 4. Stop ADE-managed processes, PTYs, and file watchers for the lane,
    then run any lane-environment cleanup supplied by the runtime.
@@ -93,7 +95,12 @@ the directory first:
    run `git worktree remove --force <path>`. If Git reports success
    but residual files remain, ADE removes the directory with
    `fs.promises.rm` and runs `git worktree prune` before continuing.
-   If attached: skip.
+   If Git already considers the path unregistered, ADE still prunes the
+   worktree registry and attempts manual residual cleanup. If the path
+   is no longer registered and manual cleanup or prune fails, the lane
+   delete can complete with warnings so the stale row and lane-owned
+   metadata are still removed; the warning tells the user what residual
+   directory or registry cleanup remains manual. If attached: skip.
 6. If caller requested `deleteBranch`: `git branch -D <branch>`.
    Optional remote branch cleanup uses `git push <remote> --delete
    <branch>` and is non-fatal.
@@ -111,6 +118,12 @@ unrelated process, PTY, watcher, or environment cleanup.
 
 A worktree that has been manually removed from disk but still has a
 row is repaired by `laneService.removeStaleWorktrees()` at startup.
+Status/read paths also verify the saved `worktree_path` with
+`git rev-parse --path-format=absolute --show-toplevel` before running
+lane-local Git reads. When the top-level is missing or differs from
+the saved path, ADE returns the default clean lane status and avoids
+probing `git status`, branch detection, stashes, or change inspection
+from the wrong checkout.
 
 ## Per-lane state directories
 
@@ -139,6 +152,13 @@ present. This matters because:
 
 - Stashes, rebases, merges, and cherry-picks are worktree-local —
   nothing bleeds into other lanes.
+- Before mutating a lane or reading history/diff metadata for a lane,
+  `gitOperationsService` validates that `worktree_path` is still the
+  Git top-level for that lane. A stale path that now resolves to the
+  primary repo checkout is treated as a missing lane worktree, so ADE
+  does not stage, commit, generate commit messages, list commits,
+  inspect branches/stashes/conflicts, or compute sync state from the
+  wrong worktree.
 - `git worktree` detects in-progress merge/rebase state via files in
   the worktree's gitdir (`rebase-apply/`, `rebase-merge/`,
   `MERGE_HEAD`). `detectConflictKind` in

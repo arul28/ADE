@@ -1,3 +1,7 @@
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   CLAUDE_TERMINAL_SUBMIT_CONFIRM_DELAY_MS,
@@ -21,6 +25,7 @@ import {
   isPromptLineBackspace,
   isPromptWordBackspace,
   isTerminalSessionFastPollActive,
+  isLaneWorktreeAvailable,
   isTerminalSessionWorking,
   isTerminalSessionResumable,
   shouldToggleLatestFailedLineOnBlankEnter,
@@ -307,6 +312,48 @@ describe("lane delete form helpers", () => {
     expect(formFieldUsesPromptInput("lane-delete", "force")).toBe(false);
     expect(formFieldUsesPromptInput("lane-delete", "confirm")).toBe(true);
     expect(formFieldUsesPromptInput("feedback", "body")).toBe(true);
+  });
+});
+
+describe("lane worktree availability", () => {
+  function laneAt(worktreePath: string): LaneSummary {
+    return {
+      id: "lane-1",
+      name: "Lane one",
+      laneType: "worktree",
+      baseRef: "main",
+      branchRef: "feature/lane-one",
+      worktreePath,
+      parentLaneId: null,
+      childCount: 0,
+      stackDepth: 0,
+      parentStatus: null,
+      isEditProtected: false,
+      status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+      color: null,
+      icon: null,
+      tags: [],
+      createdAt: "2026-05-20T00:00:00.000Z",
+    };
+  }
+
+  it("rejects an existing stale directory that resolves to another git root", () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-tui-stale-lane-"));
+    try {
+      const init = spawnSync("git", ["init"], { cwd: repoRoot, encoding: "utf8" });
+      const staleLanePath = path.join(repoRoot, ".ade", "worktrees", "stale-lane");
+      fs.mkdirSync(staleLanePath, { recursive: true });
+
+      if (init.status === 0) {
+        expect(isLaneWorktreeAvailable(laneAt(repoRoot))).toBe(true);
+      } else {
+        fs.mkdirSync(path.join(repoRoot, ".git"), { recursive: true });
+        expect(isLaneWorktreeAvailable(laneAt(repoRoot))).toBe(true);
+      }
+      expect(isLaneWorktreeAvailable(laneAt(staleLanePath))).toBe(false);
+    } finally {
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
   });
 });
 

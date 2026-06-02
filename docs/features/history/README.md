@@ -48,7 +48,7 @@ Main process / runtime services:
 |---|---|
 | `apps/desktop/src/main/services/history/operationService.ts` | CRUD for `operations` rows; the canonical entry point for `record`, `start`, `finish`, `list`, `get`, and `listHeadChanges`. Same source backs the runtime daemon and the desktop fallback path. |
 | `apps/desktop/src/main/services/state/kvDb.ts` | Schema for `operations`, `checkpoints`, `pack_events`, `pack_versions`, `pack_heads`, `terminal_sessions`, and orchestration-related tables. |
-| `apps/desktop/src/main/services/git/gitOperationsService.ts` | Brackets every git operation with `operationService.start` / `finish`, captures pre/post HEAD SHAs, and owns the per-lane undo/redo head-change pipeline (`undoLastHeadChange`, `redoLastHeadChange`, `createTag`, `resetToCommit`, `pull` with `ff-only` / `rebase` / `merge` modes). Undo selection is branch-aware: it ignores checkout/undo rows, requires the recorded operation's `metadata.branchRef` to match the lane's current branch, and rechecks the branch before running `reset --hard`. |
+| `apps/desktop/src/main/services/git/gitOperationsService.ts` | Brackets every git operation with `operationService.start` / `finish`, captures pre/post HEAD SHAs, and owns the per-lane undo/redo head-change pipeline (`undoLastHeadChange`, `redoLastHeadChange`, `createTag`, `resetToCommit`, `pull` with `ff-only` / `rebase` / `merge` modes). Before lane git mutations or lane git reads, it verifies that the saved `worktreePath` is still the Git top-level for that lane; stale paths that resolve to the primary checkout are rejected as missing lane worktrees so History and Git Actions do not read or mutate the wrong branch. Undo selection is branch-aware: it ignores checkout/undo rows, requires the recorded operation's `metadata.branchRef` to match the lane's current branch, and rechecks the branch before running `reset --hard`. |
 | `apps/desktop/src/main/services/lanes/laneService.ts` | Lane CRUD now accepts `CreateLaneArgs.startPoint`, used by the Commits view's "Create lane here" affordance to fork a new lane from a specific commit. |
 | `apps/desktop/src/main/services/prs/prService.ts` | Records PR creation as an operation. |
 | `apps/desktop/src/main/services/conflicts/conflictService.ts` | Records rebase operations. |
@@ -323,6 +323,12 @@ Defined in `apps/desktop/src/shared/ipc.ts`, handled in
 | `ade.git.pull` | `GitPullArgs` (`{ laneId, mode?: "ff-only" \| "rebase" \| "merge" }`) | Default `ff-only`. Records `git_pull` with `metadata.mode`. |
 | `ade.git.undoLastHeadChange` | `GitHeadChangeActionArgs` (`{ laneId }`) | Resets HEAD to the previous successful head-changing op's `preHeadSha`. Fails if HEAD has moved since. Records `git_undo_head_change`. |
 | `ade.git.redoLastHeadChange` | `GitHeadChangeActionArgs` (`{ laneId }`) | Restores HEAD to the most recent undo's `redoHeadSha`. Fails if HEAD has moved since the undo. Records `git_redo_head_change`. |
+
+All lane-scoped `ade.git.*` reads and mutations validate the lane
+worktree root before running provider Git commands. A missing or stale
+worktree path throws the same "restore or recreate the lane worktree"
+error for history reads, commit-message generation, branch/stash/sync
+metadata, and mutating Git actions.
 
 The conflict-resume channels (`gitRebaseContinue`, `gitRebaseAbort`,
 `gitMergeContinue`, `gitMergeAbort`) accept either a bare `string`

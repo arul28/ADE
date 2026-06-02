@@ -2768,6 +2768,53 @@ describe("laneService updateAppearance color uniqueness", () => {
   });
 });
 
+describe("laneService stale worktree status", () => {
+  beforeEach(() => {
+    vi.mocked(getHeadSha).mockReset();
+    vi.mocked(runGit).mockReset();
+    vi.mocked(runGitOrThrow).mockReset();
+  });
+
+  it("does not report main checkout status for a stale lane directory inside the repo", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-stale-status-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-stale-status", repoRoot });
+    const childPath = path.join(repoRoot, "child");
+    fs.mkdirSync(childPath, { recursive: true });
+
+    vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+        expect(opts?.cwd).toBe(childPath);
+        return { exitCode: 0, stdout: `${repoRoot}\n`, stderr: "" } as any;
+      }
+      if (args[0] === "status") return { exitCode: 0, stdout: " M main-only-file\n", stderr: "" } as any;
+      if (args[0] === "rev-list") return { exitCode: 0, stdout: "0\t5\n", stderr: "" } as any;
+      return { exitCode: 1, stdout: "", stderr: "" } as any;
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-stale-status",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    const lanes = await service.list({ includeStatus: true });
+    const child = lanes.find((lane) => lane.id === "lane-child");
+    expect(child?.status).toEqual({
+      dirty: false,
+      ahead: 0,
+      behind: 0,
+      remoteBehind: -1,
+      rebaseInProgress: false,
+    });
+    expect(vi.mocked(runGit).mock.calls.some(([args, opts]) =>
+      args[0] === "status" && (opts as { cwd?: string } | undefined)?.cwd === childPath
+    )).toBe(false);
+  });
+});
+
 describe("laneService delete teardown + cancellation + streaming", () => {
   beforeEach(() => {
     vi.mocked(getHeadSha).mockReset();
@@ -2915,7 +2962,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
 
     expect(fs.existsSync(childPath)).toBe(false);
     expect(db.get<{ id: string }>("select id from lanes where id = ?", ["lane-child"])).toBeNull();
-    expect(vi.mocked(runGitOrThrow).mock.calls.some(([args]) => args[0] === "worktree" && args[1] === "prune")).toBe(true);
+    expect(vi.mocked(runGit).mock.calls.some(([args]) => args[0] === "worktree" && args[1] === "prune")).toBe(true);
     const last = events[events.length - 1];
     expect(last.progress.steps.find((s: any) => s.name === "git_worktree_remove")?.detail).toContain("removed residual files");
   });
@@ -2954,6 +3001,62 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     const last = events[events.length - 1];
     expect(last.progress.overallStatus).toBe("completed");
     expect(last.progress.steps.find((s: any) => s.name === "git_worktree_remove")?.detail).toContain("recovered from stale state");
+  });
+
+  it("deletes the lane row with a warning when only unregistered residual files remain", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { service, db, repoRoot } = await setupWithLane({ teardown: fake, events });
+    const childPath = path.join(repoRoot, "child");
+    fs.writeFileSync(path.join(childPath, "residual.log"), "left behind by git\n", "utf8");
+    const realRm = fs.promises.rm.bind(fs.promises);
+    const rmSpy = vi.spyOn(fs.promises, "rm").mockImplementation(async (target: fs.PathLike, options?: Parameters<typeof fs.promises.rm>[1]) => {
+      if (path.resolve(String(target)) === childPath) {
+        const error = new Error(`ENOTEMPTY: directory not empty, rmdir '${childPath}'`) as NodeJS.ErrnoException;
+        error.code = "ENOTEMPTY";
+        throw error;
+      }
+      return realRm(target, options);
+    });
+
+    vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+        return { exitCode: 0, stdout: `${repoRoot}\n`, stderr: "" } as any;
+      }
+      if (args[0] === "worktree" && args[1] === "remove") {
+        expect(opts?.cwd).toBe(repoRoot);
+        return {
+          exitCode: 128,
+          stdout: "",
+          stderr: `fatal: '${childPath}' is not a working tree`,
+        } as any;
+      }
+      if (args[0] === "worktree" && args[1] === "prune") {
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      if (args[0] === "show-ref") return { exitCode: 1, stdout: "", stderr: "" } as any;
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+      if (args[0] === "worktree" && args[1] === "list") return "";
+      return "";
+    });
+
+    try {
+      await service.delete({ laneId: "lane-child", deleteBranch: false, force: true });
+    } finally {
+      rmSpy.mockRestore();
+    }
+
+    expect(db.get<{ id: string }>("select id from lanes where id = ?", ["lane-child"])).toBeNull();
+    expect(fs.existsSync(childPath)).toBe(true);
+    const last = events[events.length - 1];
+    expect(last.progress.overallStatus).toBe("completed_with_warnings");
+    const wtStep = last.progress.steps.find((s: any) => s.name === "git_worktree_remove");
+    expect(wtStep?.status).toBe("completed");
+    expect(wtStep?.detail).toContain("manual cleanup failed");
   });
 
   it("keeps recent delete progress queryable for remounted renderers", async () => {

@@ -257,6 +257,35 @@ function normAbs(p: string): string {
   return path.resolve(p);
 }
 
+const STALE_WORKTREE_ROOT_MESSAGE = "Lane worktree is missing or no longer points at its Git worktree root.";
+
+async function isExpectedGitWorktreeRoot(worktreePath: string): Promise<boolean> {
+  if (!worktreePath) return false;
+  try {
+    const topLevelRes = await runGit(
+      ["rev-parse", "--path-format=absolute", "--show-toplevel"],
+      { cwd: worktreePath, timeoutMs: 8_000 },
+    );
+    if (!topLevelRes || typeof topLevelRes.exitCode !== "number") return true;
+    if (topLevelRes.exitCode !== 0) return false;
+    const topLevel = topLevelRes.stdout.trim();
+    if (!topLevel) return true;
+    return normAbs(topLevel) === normAbs(worktreePath);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // Test mocks can throw for unhandled git probes. The real runGit helper
+    // returns a GitRunResult for normal git failures, so keep those tests on
+    // their existing path without weakening production validation.
+    return /^Unexpected git call:/i.test(message);
+  }
+}
+
+async function assertExpectedGitWorktreeRoot(worktreePath: string): Promise<void> {
+  if (!(await isExpectedGitWorktreeRoot(worktreePath))) {
+    throw new Error(STALE_WORKTREE_ROOT_MESSAGE);
+  }
+}
+
 type GitWorktreeInfo = UnregisteredLaneCandidate & {
   isBare: boolean;
 };
@@ -500,6 +529,7 @@ function toLaneSummary(args: {
 }
 
 async function detectBranchRef(worktreePath: string, fallback: string): Promise<string> {
+  if (!(await isExpectedGitWorktreeRoot(worktreePath))) return fallback;
   const branchRes = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: worktreePath, timeoutMs: 8_000 });
   if (branchRes.exitCode === 0) {
     const value = branchRes.stdout.trim();
@@ -509,6 +539,10 @@ async function detectBranchRef(worktreePath: string, fallback: string): Promise<
 }
 
 async function computeLaneStatus(worktreePath: string, baseRef: string, branchRef: string): Promise<LaneStatus> {
+  if (!(await isExpectedGitWorktreeRoot(worktreePath))) {
+    return cloneLaneStatus(DEFAULT_LANE_STATUS);
+  }
+
   const dirtyRes = await runGit(["status", "--porcelain=v1"], { cwd: worktreePath, timeoutMs: 8_000 });
   const dirty = dirtyRes.exitCode === 0 && dirtyRes.stdout.trim().length > 0;
 
@@ -776,6 +810,8 @@ type WorktreeChangeState = {
 };
 
 async function inspectWorktreeChanges(worktreePath: string): Promise<WorktreeChangeState> {
+  await assertExpectedGitWorktreeRoot(worktreePath);
+
   const statusRes = await runGit(["status", "--porcelain=v1"], { cwd: worktreePath, timeoutMs: 8_000 });
   if (statusRes.exitCode !== 0) {
     throw new Error("Unable to inspect lane worktree state.");
@@ -805,6 +841,8 @@ type GitStashEntry = {
 };
 
 async function listGitStashes(worktreePath: string): Promise<GitStashEntry[]> {
+  await assertExpectedGitWorktreeRoot(worktreePath);
+
   const stashRes = await runGit(["stash", "list", "--format=%gd%x1f%gs"], {
     cwd: worktreePath,
     timeoutMs: 15_000,
@@ -4612,6 +4650,10 @@ export function createLaneService({
         progress.steps.find((s) => s.name === name);
 
       const nonFatalFailures: Array<{ step: LaneDeleteStepName; message: string }> = [];
+      const recordNonFatalFailure = (step: LaneDeleteStepName, message: string): void => {
+        nonFatalFailures.push({ step, message });
+        logger.warn("lane.delete.non_fatal_step_failed", { laneId, step, error: message });
+      };
 
       const runStep = async (
         name: LaneDeleteStepName,
@@ -4637,8 +4679,7 @@ export function createLaneService({
           step.completedAt = new Date().toISOString();
           step.durationMs = Date.now() - t0;
           if (!fatal) {
-            nonFatalFailures.push({ step: name, message: errorMessage });
-            logger.warn("lane.delete.non_fatal_step_failed", { laneId, step: name, error: errorMessage });
+            recordNonFatalFailure(name, errorMessage);
           }
           broadcastDeleteEvent(progress);
           if (fatal) throw error;
@@ -4669,6 +4710,9 @@ export function createLaneService({
       try {
         if (hasWorktree) {
           await runStep("git_status", async () => {
+            if (!(await isExpectedGitWorktreeRoot(row.worktree_path))) {
+              return { detail: fs.existsSync(row.worktree_path) ? "stale worktree directory" : "missing worktree directory" };
+            }
             const dirtyRes = await runGit(["status", "--porcelain=v1"], { cwd: row.worktree_path, timeoutMs: 8_000 });
             const dirty = dirtyRes.exitCode === 0 && dirtyRes.stdout.trim().length > 0;
             if (dirty && !force) {
@@ -4748,17 +4792,46 @@ export function createLaneService({
               const removeArgs = ["worktree", "remove"];
               if (force) removeArgs.push("--force");
               removeArgs.push(row.worktree_path);
+              const isStillRegisteredWorktree = async (): Promise<boolean> => {
+                try {
+                  const worktrees = await listGitWorktrees();
+                  const target = normAbs(row.worktree_path);
+                  return worktrees.some((wt) => wt.path === target);
+                } catch {
+                  return fs.existsSync(worktreeMetadataPath);
+                }
+              };
+              const pruneWorktreesBestEffort = async (): Promise<string | null> => {
+                const pruneRes = await runGit(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
+                if (pruneRes.exitCode === 0) return null;
+                return (pruneRes.stderr || pruneRes.stdout || "git worktree prune failed").trim();
+              };
               const removeResidualDirectory = async (detail: string, failurePrefix?: string) => {
                 try {
                   await removeWorktreeDirectoryWithRecovery(row.worktree_path);
                 } catch (rmError) {
-                  throw new Error(
-                    `${failurePrefix ? `${failurePrefix}; ` : ""}manual cleanup failed: ${
-                      rmError instanceof Error ? rmError.message : String(rmError)
-                    }`
-                  );
+                  const cleanupMessage = `${failurePrefix ? `${failurePrefix}; ` : ""}manual cleanup failed: ${
+                    rmError instanceof Error ? rmError.message : String(rmError)
+                  }`;
+                  const pruneFailure = await pruneWorktreesBestEffort();
+                  const fullMessage = pruneFailure
+                    ? `${cleanupMessage}; git worktree prune failed: ${pruneFailure}`
+                    : cleanupMessage;
+                  if (await isStillRegisteredWorktree()) {
+                    throw new Error(fullMessage);
+                  }
+                  recordNonFatalFailure("git_worktree_remove", fullMessage);
+                  return { detail: `${detail}; warning: ${fullMessage}` };
                 }
-                await runGitOrThrow(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
+                const pruneFailure = await pruneWorktreesBestEffort();
+                if (pruneFailure) {
+                  const message = `git worktree prune failed: ${pruneFailure}`;
+                  if (await isStillRegisteredWorktree()) {
+                    throw new Error(message);
+                  }
+                  recordNonFatalFailure("git_worktree_remove", message);
+                  return { detail: `${detail}; warning: ${message}` };
+                }
                 return { detail };
               };
               // 60s — large worktrees (e.g. with node_modules) can take longer than 15s
@@ -4886,8 +4959,9 @@ export function createLaneService({
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
       const worktreeExists = Boolean(row.worktree_path) && fs.existsSync(row.worktree_path);
+      const worktreeUsable = worktreeExists && await isExpectedGitWorktreeRoot(row.worktree_path);
       let dirty = false;
-      if (worktreeExists) {
+      if (worktreeUsable) {
         const dirtyRes = await runGit(["status", "--porcelain=v1"], { cwd: row.worktree_path, timeoutMs: 6_000 });
         dirty = dirtyRes.exitCode === 0 && dirtyRes.stdout.trim().length > 0;
       }
@@ -4899,7 +4973,7 @@ export function createLaneService({
       // ref like "origin/feature" must probe "feature").
       const riskBranchName = row.branch_ref ? branchNameForDelete(row.branch_ref, "origin") : "";
       if (riskBranchName) {
-        const cwd = worktreeExists ? row.worktree_path : projectRoot;
+        const cwd = worktreeUsable ? row.worktree_path : projectRoot;
         const unpushed = await runGit(
           ["rev-list", "--count", riskBranchName, "--not", "--remotes"],
           { cwd, timeoutMs: 8_000 }

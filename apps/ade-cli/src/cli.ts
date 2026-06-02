@@ -937,6 +937,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade lanes import --branch <branch>            Register an existing branch/worktree
     $ ade lanes archive <lane>                      Archive a lane in ADE
     $ ade lanes unarchive <lane>                    Restore an archived lane
+    $ ade lanes delete <lane> --force               Delete a lane and clean up its worktree
     $ ade lanes attach --path <worktree> --name <n> Attach an external worktree
     $ ade lanes reparent <lane> --parent <parent>   Move lane onto a new parent (runs git rebase)
     $ ade lanes reparent <lane> --parent <parent> --stack-base-branch <branch>

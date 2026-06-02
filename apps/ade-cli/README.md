@@ -230,6 +230,7 @@ ade lanes list --text
 ade lanes create "fix-checkout-flow" --parent main
 ade lanes create "lin-123" --linear-issue-json '{"id":"...","identifier":"LIN-123","title":"...","projectId":"...","projectSlug":"...","teamId":"...","teamKey":"...","stateId":"...","stateName":"Todo","stateType":"unstarted","priority":2,"priorityLabel":"high","labels":[],"assigneeId":null,"assigneeName":null,"createdAt":"...","updatedAt":"..."}'
 ade lanes reparent lane-child --parent lane-parent --stack-base-branch main
+ade lanes delete lane-id --force --delete-branch
 ade lanes create-from-linear --issue-id ENG-431 --start-chat --provider codex --model <model>
 ade lanes batch-create-from-linear --linear-issues-json '[{"id":"...","identifier":"ENG-431"},{"id":"...","identifier":"ENG-440"}]'
 ade chat attach-linear-issue <session> --issue-id ENG-431

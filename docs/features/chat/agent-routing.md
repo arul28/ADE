@@ -174,6 +174,13 @@ over a stale persisted pair. Turns use the Codex-native `effort` key
 (`turn/start({ threadId, input, effort?, serviceTier? })`) instead of
 the lifecycle `reasoningEffort` name.
 
+For Codex and the other coding-agent paths, ADE's worktree guidance is
+write-scoped rather than read-scoped: the launched lane worktree is the
+only place the agent should edit files or run mutating commands, while
+read-only inspection outside that path is allowed when it needs context.
+This wording appears in both the system prompt and the first-turn launch
+directive so resumed/continued sessions keep the same boundary.
+
 #### Provider service tiers (Fast Mode)
 
 `ModelDescriptor.serviceTiers?: string[]` advertises the optional

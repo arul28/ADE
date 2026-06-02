@@ -5,6 +5,8 @@ describe("buildCodingAgentSystemPrompt", () => {
   it("returns a prompt containing the cwd", () => {
     const result = buildCodingAgentSystemPrompt({ cwd: "/my/project" });
     expect(result).toContain("/my/project");
+    expect(result).toContain("Read-only inspection outside this path is allowed");
+    expect(result).toContain("mutating commands only inside this path");
   });
 
   it("defaults to coding mode and edit permission mode", () => {

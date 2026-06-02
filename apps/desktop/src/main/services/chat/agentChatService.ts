@@ -3532,7 +3532,7 @@ function buildLaneWorktreeDirective(args: { laneId: string; laneWorktreePath: st
   return [
     "[ADE launch directive]",
     `ADE launched this session in lane '${laneId}' at worktree '${laneWorktreePath}'.`,
-    "Read, edit, and run commands only inside that worktree. Do not switch to project root, another lane, or another repo unless ADE explicitly relaunches you there.",
+    "Read-only inspection outside that worktree is allowed when needed. Edit files and run mutating commands only inside that worktree unless ADE explicitly relaunches you elsewhere.",
   ].join("\n");
 }
 
@@ -11928,7 +11928,7 @@ export function createAgentChatService(args: {
       "",
       "## ADE Workspace",
       `ADE launched this session in lane worktree: ${managed.laneWorktreePath}.`,
-      "Read, edit, and run commands only inside that worktree. Do not switch to project root, another lane, or another repo unless ADE explicitly relaunches you there.",
+      "Read-only inspection outside that worktree is allowed when needed. Edit files and run mutating commands only inside that worktree unless ADE explicitly relaunches you elsewhere.",
       "",
       ...slashCommandsSection,
       "",
@@ -15933,7 +15933,7 @@ export function createAgentChatService(args: {
           "",
           "## ADE Workspace",
           `ADE launched this session in lane worktree: ${managed.laneWorktreePath}.`,
-          "Read, edit, and run commands only inside that worktree. Do not switch to project root, another lane, or another repo unless ADE explicitly relaunches you there.",
+          "Read-only inspection outside that worktree is allowed when needed. Edit files and run mutating commands only inside that worktree unless ADE explicitly relaunches you elsewhere.",
           "",
           ...(linearDirective ? [linearDirective, ""] : []),
           ...slashCommandsSection,

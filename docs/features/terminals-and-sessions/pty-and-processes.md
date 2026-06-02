@@ -395,7 +395,11 @@ write paths into one call:
 2. Otherwise require a tracked agent CLI row (Claude, Codex, Cursor,
    OpenCode, Droid; chats and shells are rejected with a clear error).
    Resolve the provider from `resumeMetadata.provider`, fall back to
-   `providerFromTool(toolType)`.
+   `providerFromTool(toolType)`. If a Claude/Codex/Droid/OpenCode row
+   has no concrete target yet, the service runs the same on-demand
+   resume-target backfill used by `ensureResumeTargets`; Codex can scan
+   rollout storage during this resume-launch path before ADE reports a
+   missing target.
 3. Rebuild the resume command via
    `buildTrackedCliResumeCommand(metadata, overrides)` — runtime
    `model` / `reasoningEffort` / `permissionMode` overrides flow into
@@ -567,9 +571,9 @@ resolved. Strategies, in order:
    drift window. The recovered id becomes `opencode --session <id>`.
 
 The Droid storage scan and the OpenCode `session list` invocation only
-fire on the `close` / `dispose` reasons (and on demand), not on
-`session-list` or `resume-launch`, so renderer list refreshes don't
-spawn a `spawnSync` or hit external storage on every render.
+fire on the `close` / `dispose` reasons and explicit on-demand
+continuation paths, not on `session-list`, so renderer list refreshes
+don't spawn a `spawnSync` or hit external storage on every render.
 
 Any found ID updates the row's `resumeMetadata.targetId` through
 `sessionService.updateMeta`. A resume command is always written even
@@ -583,15 +587,16 @@ single `pty.resume_target_backfill_failed` warn per failing ID; it
 never throws.
 
 The Codex storage scan is gated by the `reason` argument that the
-backfill runs under: `"close"` and `"dispose"` (the regular end-of-
-session paths) consult `~/.codex/sessions` with the 10-minute drift
-window; `"session-list"` and `"resume-launch"` skip the storage
-lookup entirely. Lazy hydration over `sessions.list` therefore relies
-only on transcript regex matches, which keeps the list-render hot path
-off the disk and prevents one renderer's idle list refresh from
-adopting another lane's Codex rollout. Live Codex sessions still get
-their resume target through the live capture path, which uses the
-strict `requiredText: "ADE session guidance"` gate.
+backfill runs under: `"close"` and `"dispose"` consult
+`~/.codex/sessions` with the 10-minute drift window; `"session-list"`
+skips the storage lookup entirely; `"resume-launch"` is allowed to use
+the storage lookup because the user is actively trying to continue that
+specific session. Lazy hydration over `sessions.list` therefore relies
+only on transcript regex matches, keeping the list-render hot path off
+the disk and preventing one renderer's idle refresh from adopting
+another lane's Codex rollout. Live Codex sessions still get their
+resume target through the live capture path, which uses the strict
+`requiredText: "ADE session guidance"` gate.
 
 ### Live Codex session-id capture
 

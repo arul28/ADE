@@ -219,7 +219,7 @@ export function buildCodingAgentSystemPrompt(args: {
 
   return [
     `You are ADE's software engineering agent working in ${args.cwd}.`,
-    "This session is bound to that worktree. Read, edit, and run commands only inside this path unless ADE explicitly relaunches you in a different lane.",
+    "This session is bound to that worktree for writes and mutations. Read-only inspection outside this path is allowed when needed, but edit files and run mutating commands only inside this path unless ADE explicitly relaunches you in a different lane.",
     ...(orchestrationDirective ? [orchestrationDirective] : []),
     ...(runtime
       ? [
