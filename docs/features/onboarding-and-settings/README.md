@@ -190,6 +190,12 @@ Renderer — settings:
   project health / repair surface. Setup status comes from
   `ade.onboarding.getStatus`; runtime daemon health lives in the
   `AboutSection`, and AI provider controls live in AI Connections.
+- `apps/desktop/src/renderer/components/settings/AppearanceSection.tsx`
+  — theme and chat appearance preferences. Renders `ChatAppearancePreview`
+  and writes local user preferences through `appStore`, including
+  `launchPromptClipboardEnabled` (whether Work draft launches copy the
+  submitted prompt) and `launchPromptClipboardNoticeEnabled` (whether the
+  focused-composer reminder is shown before the copy).
 - `apps/desktop/src/renderer/components/settings/ProjectSection.tsx`
   — project `.ade` structure snapshot, shared/local/secret config paths,
   health warnings, structure repair, and integrity-check controls.
@@ -413,7 +419,7 @@ changing rather than which service backs it:
 | Tab | Section file | What lives here |
 |---|---|---|
 | General | `GeneralSection.tsx` (embeds `AdeCliSection` in compact form) | AI mode, task routing, terminal preferences (font size, line height, scrollback), keybindings link, and the `ade` CLI install / status surface. The CLI card reports whether the bundled `ade-<platform-arch>` binary is on `PATH`, the resolved install target, and exposes one-click Install / Repair backed by the platform install-path helper. Receives the legacy `?tab=onboarding`, `?tab=help`, `?tab=tours`, and `?tab=keybindings` deep links via `TAB_ALIASES`. |
-| Appearance | `AppearanceSection.tsx` (renders `ChatAppearancePreview`) | Theme, code-block copy-button position, agent-turn completion sound + volume + quiet-when-focused, chat font size (`chatFontSizePx`), chat transcript density (`chatTranscriptDensity` — `compact` / `comfortable` / `spacious`), chat chrome tint (`chatChromeTint` — `colored` default vs `neutral` for monochrome chrome; the legacy `chatLaneAccentEmphasis` preset slug is still read so older user-pref blobs migrate cleanly), chat shell geometry (`chatShellGeometry` — `soft` / `default` / `sharp` corners), and the user-message minimap toggle (`chatUserMinimapEnabled` — drives the inline `ChatUserMinimap`). Persisted to `localStorage` under `ade.userPreferences.v1`. |
+| Appearance | `AppearanceSection.tsx` (renders `ChatAppearancePreview`) | Theme, code-block copy-button position, agent-turn completion sound + volume + quiet-when-focused, chat font size (`chatFontSizePx`), chat transcript density (`chatTranscriptDensity` — `compact` / `comfortable` / `spacious`), chat chrome tint (`chatChromeTint` — `colored` default vs `neutral` for monochrome chrome; the legacy `chatLaneAccentEmphasis` preset slug is still read so older user-pref blobs migrate cleanly), chat shell geometry (`chatShellGeometry` — `soft` / `default` / `sharp` corners), the user-message minimap toggle (`chatUserMinimapEnabled` — drives the inline `ChatUserMinimap`), and the Work launch-prompt clipboard preferences (`launchPromptClipboardEnabled` for copying submitted prompts, `launchPromptClipboardNoticeEnabled` for the composer reminder). Persisted to `localStorage` under `ade.userPreferences.v1`. |
 | Workspace | `WorkspaceSettingsSection.tsx`, `ProjectSection.tsx` | Project identity, paths, skill files. (`SyncDevicesSection.tsx` — multi-device sync, host transfer, peer status, pairing PIN, Tailscale discovery — is mounted from the top bar's Sync popover, not as a Settings tab.) |
 | AI | `AiSettingsSection.tsx`, `AiFeaturesSection.tsx`, `ProvidersSection.tsx` | Provider CLIs, models, API-key status, provider readiness, OpenCode runtime diagnostics, and AI feature flags. The same status surface is exposed through ADE actions for `ade code` model setup. |
 | Mobile Push | `MobilePushPanel.tsx` | APNs registration, paired-device push tokens, per-category preferences |
