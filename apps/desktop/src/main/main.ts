@@ -1334,7 +1334,7 @@ app.whenReady().then(async () => {
   ): void => {
     const win = windowId == null ? null : BrowserWindow.fromId(windowId);
     if (!win || win.isDestroyed()) return;
-    setWindowTitle(win, projectWindowTitle(project));
+    setWindowTitle(win, projectWindowTitle(project, bindingForLocalProject(project)));
     try {
       win.webContents.send(IPC.appProjectChanged, project);
     } catch {
