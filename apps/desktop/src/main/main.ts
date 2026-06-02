@@ -1996,6 +1996,7 @@ app.whenReady().then(async () => {
     };
 
     const laneTeardownDeps: LaneDeleteTeardownDeps = {};
+    let autoRebaseActivityReady = false;
     let macosVmLaunchProviderForProject: MacosVmLaunchProvider | null = null;
     const laneService = createLaneService({
       db,
@@ -2337,6 +2338,17 @@ app.whenReady().then(async () => {
       laneService,
       conflictService,
       projectConfigService,
+      getLaneActivity: (laneId) => {
+        if (!autoRebaseActivityReady) {
+          throw new Error("Session activity services are not ready.");
+        }
+        return {
+          activeChatCount:
+            laneTeardownDeps.agentChatService?.countActiveForLane(laneId) ?? 0,
+          activePtyCount:
+            laneTeardownDeps.ptyService?.countActiveForLane(laneId) ?? 0,
+        };
+      },
       onEvent: (event) =>
         emitProjectEvent(projectRoot, IPC.lanesAutoRebaseEvent, event),
     });
@@ -2979,6 +2991,7 @@ app.whenReady().then(async () => {
       countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
       disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
     };
+    autoRebaseActivityReady = true;
     setImmediate(() => {
       void Promise.resolve()
         .then(() => agentChatService.cleanupStaleAttachments())

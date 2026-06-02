@@ -30,6 +30,10 @@ type AttentionStatusInput = {
   message?: string | null;
   source?: "auto" | "manual";
 };
+type LaneActivity = {
+  activeChatCount?: number | null;
+  activePtyCount?: number | null;
+};
 
 export type AutoRebaseService = {
   listStatuses: (options?: ListStatusesOptions) => Promise<AutoRebaseLaneStatus[]>;
@@ -110,11 +114,23 @@ function byCreatedAtAsc(a: LaneSummary, b: LaneSummary): number {
   return a.name.localeCompare(b.name);
 }
 
+function normalizeActivityCount(value: unknown): number {
+  const numeric = Number(value ?? 0);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+  return Math.floor(numeric);
+}
+
 function blockedMessage(
   laneId: string | null,
-  reason: "conflict" | "manual" | "lookup" | "failed" | "unavailable" | null,
+  reason: "conflict" | "manual" | "lookup" | "failed" | "unavailable" | "active_session" | "activity_lookup" | null,
 ): string {
   if (!laneId) return "Pending: auto-rebase stopped at an earlier lane. Open the Rebase/Merge tab to continue.";
+  if (reason === "active_session") {
+    return `Pending: ancestor lane '${laneId}' has active sessions. Finish, stop, or resume those sessions before rebasing descendants.`;
+  }
+  if (reason === "activity_lookup") {
+    return `Pending: ADE could not verify whether ancestor lane '${laneId}' has active sessions. Open the Rebase/Merge tab to retry manually.`;
+  }
   if (reason === "manual") {
     return `Pending: ancestor lane '${laneId}' has a fixed PR base. Rebase that lane manually from the Rebase/Merge tab before descendants can continue.`;
   }
@@ -158,6 +174,7 @@ export function createAutoRebaseService(args: {
   laneService: ReturnType<typeof createLaneService>;
   conflictService: ReturnType<typeof createConflictService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
+  getLaneActivity?: (laneId: string) => LaneActivity | Promise<LaneActivity>;
   onEvent?: (event: AutoRebaseEventPayload) => void;
 }): AutoRebaseService {
   const {
@@ -166,6 +183,7 @@ export function createAutoRebaseService(args: {
     laneService,
     conflictService,
     projectConfigService,
+    getLaneActivity,
     onEvent
   } = args;
 
@@ -225,6 +243,32 @@ export function createAutoRebaseService(args: {
         error: error instanceof Error ? error.message : String(error),
       });
       return null;
+    }
+  };
+
+  const getAutoRebaseActivityBlock = async (laneId: string): Promise<{ reason: "active_session" | "activity_lookup"; message: string } | null> => {
+    if (!getLaneActivity) return null;
+    try {
+      const activity = await getLaneActivity(laneId);
+      const activeChatCount = normalizeActivityCount(activity?.activeChatCount);
+      const activePtyCount = normalizeActivityCount(activity?.activePtyCount);
+      if (activeChatCount <= 0 && activePtyCount <= 0) return null;
+      const parts: string[] = [];
+      if (activeChatCount > 0) parts.push(`${activeChatCount} active ${activeChatCount === 1 ? "chat" : "chats"}`);
+      if (activePtyCount > 0) parts.push(`${activePtyCount} active ${activePtyCount === 1 ? "terminal session" : "terminal sessions"}`);
+      return {
+        reason: "active_session",
+        message: `Auto-rebase paused: ${parts.join(" and ")} in this lane. Rebase manually from the Rebase/Merge tab when those sessions are stopped or safely resumable.`,
+      };
+    } catch (error) {
+      logger.warn("autoRebase.activity_lookup_failed", {
+        laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return {
+        reason: "activity_lookup",
+        message: "Auto-rebase paused: ADE could not verify whether this lane has active sessions. Open the Rebase/Merge tab to retry manually.",
+      };
     }
   };
 
@@ -459,7 +503,7 @@ export function createAutoRebaseService(args: {
 
     let blocked = false;
     let blockedLaneId: string | null = null;
-    let blockedReason: "conflict" | "manual" | "lookup" | "failed" | "unavailable" | null = null;
+    let blockedReason: "conflict" | "manual" | "lookup" | "failed" | "unavailable" | "active_session" | "activity_lookup" | null = null;
     let blockedByLookupFailure = false;
     for (const laneId of cascadeOrder) {
       lanes = await laneService.list({ includeArchived: false });
@@ -567,6 +611,23 @@ export function createAutoRebaseService(args: {
           state: "rebasePending",
           conflictCount: 0,
           message: "PR carries an immutable base — drift detected. Rebase manually from the Rebase/Merge tab when ready."
+        });
+        continue;
+      }
+
+      const activityBlock = await getAutoRebaseActivityBlock(lane.id);
+      if (disposed) return;
+      if (activityBlock) {
+        blocked = true;
+        blockedLaneId = lane.id;
+        blockedReason = activityBlock.reason;
+        setStatus({
+          laneId: lane.id,
+          parentLaneId: parent?.id ?? null,
+          parentHeadSha,
+          state: "rebasePending",
+          conflictCount: 0,
+          message: activityBlock.message
         });
         continue;
       }
