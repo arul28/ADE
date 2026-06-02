@@ -16,7 +16,8 @@ import type {
   MacosVmContextItem,
 } from "../../shared/types";
 
-export const MAX_DRAFT_LAUNCH_JOBS = 8;
+// Active jobs are never capped; this only limits retained terminal rows.
+export const MAX_DRAFT_LAUNCH_TERMINAL_JOBS = 8;
 export const DRAFT_LAUNCH_JOB_STALE_AFTER_MS = 2 * 60 * 1000;
 
 export type NativeControlState = {
@@ -97,8 +98,8 @@ export function pruneDraftLaunchJobs(jobs: DraftLaunchJob[]): DraftLaunchJob[] {
   const active = jobs.filter((job) => !isDraftLaunchJobTerminal(job.status));
   const terminal = jobs.filter((job) => isDraftLaunchJobTerminal(job.status));
   const remainingTerminalSlots = active.length > 0
-    ? Math.max(MAX_DRAFT_LAUNCH_JOBS - active.length, 1)
-    : MAX_DRAFT_LAUNCH_JOBS;
+    ? Math.max(MAX_DRAFT_LAUNCH_TERMINAL_JOBS - active.length, 1)
+    : MAX_DRAFT_LAUNCH_TERMINAL_JOBS;
   return [
     ...active,
     ...terminal.slice(0, remainingTerminalSlots),

@@ -3721,7 +3721,7 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalled();
-      expect(screen.getByText(/Creating lane for chat/i)).toBeTruthy();
+      expect(screen.getByText(/Choosing a branch name/i)).toBeTruthy();
       expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
       expect((screen.getByRole("button", { name: "Auto-create in background" }) as HTMLButtonElement).disabled).toBe(true);
     });
@@ -3743,16 +3743,19 @@ describe("AgentChatPane submit recovery", () => {
   it("keeps a pending auto-create launch visible after the new chat pane remounts", async () => {
     const { createLane, suggestLaneName } = installAdeMocks({ sessions: [] });
     let resolveSuggestedName!: (value: string) => void;
+    let resolveCreateLane!: () => void;
     suggestLaneName.mockImplementation(() => new Promise<string>((resolve) => {
       resolveSuggestedName = resolve;
     }));
-    createLane.mockImplementation(async ({ name }: { name: string; parentLaneId: string }) => ({
-      id: `lane-${name}`,
-      name,
-      laneType: "worktree",
-      branchRef: `refs/heads/${name}`,
-      worktreePath: `/tmp/project-under-test/${name}`,
-      parentLaneId: "lane-primary",
+    createLane.mockImplementation(({ name }: { name: string; parentLaneId: string }) => new Promise((resolve) => {
+      resolveCreateLane = () => resolve({
+        id: `lane-${name}`,
+        name,
+        laneType: "worktree",
+        branchRef: `refs/heads/${name}`,
+        worktreePath: `/tmp/project-under-test/${name}`,
+        parentLaneId: "lane-primary",
+      });
     }));
 
     const rendered = renderAutoCreateDraftPane();
@@ -3773,18 +3776,25 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalledTimes(1);
-      expect(screen.getByText(/Creating lane for chat/i)).toBeTruthy();
+      expect(screen.getByText(/Choosing a branch name/i)).toBeTruthy();
     });
     expect(screen.queryByRole("button", { name: "Dismiss launch status" })).toBeNull();
 
     rendered.unmount();
     renderAutoCreateDraftPane();
 
-    expect(await screen.findByText(/Creating lane for chat/i)).toBeTruthy();
+    expect(await screen.findByText(/Choosing a branch name/i)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Dismiss launch status" })).toBeNull();
 
     await act(async () => {
       resolveSuggestedName("remounted-lane");
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/^Creating lane for chat\.\.\.$/i)).toBeTruthy();
+    });
+
+    await act(async () => {
+      resolveCreateLane();
     });
 
     await waitFor(() => {
@@ -3916,7 +3926,7 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalledTimes(1);
-      expect(screen.getAllByText(/Creating lane for chat/i)).toHaveLength(1);
+      expect(screen.getAllByText(/Choosing a branch name/i)).toHaveLength(1);
     });
   });
 
@@ -3997,9 +4007,9 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalledTimes(1);
-      expect(within(paneOne).getByText(/Creating lane for chat/i)).toBeTruthy();
+      expect(within(paneOne).getByText(/Choosing a branch name/i)).toBeTruthy();
     });
-    expect(within(paneTwo).queryByText(/Creating lane for chat/i)).toBeNull();
+    expect(within(paneTwo).queryByText(/Choosing a branch name/i)).toBeNull();
     expect(within(paneTwo).queryByTestId("draft-launch-job")).toBeNull();
   });
 
@@ -4031,7 +4041,7 @@ describe("AgentChatPane submit recovery", () => {
     }
 
     expect(screen.getAllByTestId("draft-launch-job")).toHaveLength(9);
-    expect(screen.getAllByText(/Creating lane for chat/i)).toHaveLength(9);
+    expect(screen.getAllByText(/Choosing a branch name/i)).toHaveLength(9);
   });
 
   it("allows multiple background auto-create launches to stay pending at the same time", async () => {
@@ -4073,7 +4083,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalledTimes(2);
-      expect(screen.getAllByText(/Creating lane for chat/i)).toHaveLength(2);
+      expect(screen.getAllByText(/Choosing a branch name/i)).toHaveLength(2);
     });
 
     await act(async () => {
