@@ -355,7 +355,15 @@ import { mapStopReasonToTerminalEvents } from "./stopReasonEvents";
 import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { getApiKey } from "../ai/apiKeyStore";
 import type { createOrchestrationService } from "../orchestration/orchestrationService";
-import { applyOrchestrationPermissionProfile } from "../orchestration/runtimeProfile";
+import {
+  ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS,
+  applyOrchestrationPermissionProfile,
+  isOrchestrationInteractionMode,
+  isOrchestrationLeadSession,
+  lockedOrchestrationPermissionMode,
+  orchestrationInteractionModeForRole,
+  orchestrationRoleForInteractionMode,
+} from "../../../shared/orchestrationRuntimePolicy";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 
 const CLAUDE_AGENT_SDK_VERSION = "0.2.139";
@@ -4288,43 +4296,6 @@ function toHarnessPermissionMode(
   return "edit";
 }
 
-function isOrchestrationInteractionMode(
-  mode: AgentChatInteractionMode | null | undefined,
-): mode is OrchestrationInteractionMode {
-  return mode === "orchestrator-lead"
-    || mode === "orchestrator-worker"
-    || mode === "orchestrator-validator";
-}
-
-function orchestrationRoleForMode(
-  mode: OrchestrationInteractionMode,
-): OrchestrationSessionContext["role"] {
-  if (mode === "orchestrator-lead") return "lead";
-  if (mode === "orchestrator-validator") return "validator";
-  return "worker";
-}
-
-function orchestrationInteractionModeForRole(
-  role: OrchestrationSessionContext["role"],
-): OrchestrationInteractionMode {
-  if (role === "lead") return "orchestrator-lead";
-  if (role === "validator") return "orchestrator-validator";
-  return "orchestrator-worker";
-}
-
-function lockedOrchestrationPermissionMode(
-  session: Pick<AgentChatSession, "interactionMode" | "orchestrationRole">,
-): AgentChatSession["permissionMode"] | null {
-  const role = session.orchestrationRole
-    ?? (isOrchestrationInteractionMode(session.interactionMode)
-      ? orchestrationRoleForMode(session.interactionMode)
-      : null);
-  // All orchestration roles use full-auto (bypassPermissions). The lead's
-  // security comes from the tool-set restriction (no write tools), not the
-  // permission mode. Plan mode would block orchestration tools.
-  return role ? "full-auto" : null;
-}
-
 function enforceOrchestrationLockedPermissionMode(
   session: Pick<
     AgentChatSession,
@@ -4423,13 +4394,6 @@ function collectOrchestrationFields(
 
 const ORCHESTRATION_CLAUDE_SERVER_NAME = "ade-orchestration";
 const ORCHESTRATION_CODEX_TOOL_NAMESPACE = "ade_orchestration";
-const ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS = new Set([
-  "Bash",
-  "Edit",
-  "MultiEdit",
-  "Write",
-  "NotebookEdit",
-]);
 
 function stripJsonSchemaMeta(schema: unknown): unknown {
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema;
@@ -5536,12 +5500,14 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
   ): ClaudeSDKOptions["canUseTool"] => async (toolName, input, sdkOptions): Promise<ClaudePermissionResult> => {
     if (
-      managed.session.interactionMode === "orchestrator-lead"
-      && ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS.has(toolName)
+      isOrchestrationLeadSession(managed.session)
+      && ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS.includes(
+        toolName as (typeof ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS)[number],
+      )
     ) {
       return {
         behavior: "deny",
-        message: "Orchestrator lead sessions cannot edit files or run bash directly. Spawn a worker with spawnAgent instead.",
+        message: "Orchestrator lead sessions cannot use Claude's direct coding tools. Use orchestration tools like spawnAgent instead.",
       };
     }
 
@@ -8934,7 +8900,7 @@ export function createAgentChatService(args: {
       sessionContext: {
         sessionId: managed.session.id,
         runId,
-        role: managed.session.orchestrationRole ?? orchestrationRoleForMode(interactionMode),
+        role: managed.session.orchestrationRole ?? orchestrationRoleForInteractionMode(interactionMode),
         bundlePath,
         laneId: managed.session.laneId,
         ...(managed.session.orchestrationParentSessionId
@@ -15851,6 +15817,12 @@ export function createAgentChatService(args: {
         cwd: managed.laneWorktreePath,
       }),
     };
+    if (isOrchestrationLeadSession(managed.session)) {
+      opts.disallowedTools = Array.from(new Set([
+        ...(opts.disallowedTools ?? []),
+        ...ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS,
+      ]));
+    }
     const orchestrationMcpServer = buildClaudeOrchestrationMcpServer(managed);
     if (orchestrationMcpServer) {
       opts.mcpServers = {
@@ -15869,12 +15841,6 @@ export function createAgentChatService(args: {
         allowManagedMcpServersOnly: true,
         strictPluginOnlyCustomization: ["mcp"],
       };
-      if (managed.session.interactionMode === "orchestrator-lead") {
-        opts.disallowedTools = Array.from(new Set([
-          ...(opts.disallowedTools ?? []),
-          ...ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS,
-        ]));
-      }
     }
     logger.debug("agent_chat.claude_executable_resolved", {
       sessionId: managed.session.id,

@@ -2,6 +2,7 @@ import type { LaunchProfile } from "../../../shared/cliLaunch";
 import type { AgentChatPermissionMode } from "../../../shared/types";
 import type { LaneLinearIssue } from "../../../shared/types";
 import type { PtyCreateResult } from "../../../shared/types";
+import type { OrchestrationRole } from "../../../shared/types/orchestration";
 
 export * from "../../../shared/cliLaunch";
 
@@ -12,6 +13,7 @@ export type WorkPtyLaunchArgs = {
   profile: LaunchProfile;
   title?: string;
   permissionMode?: AgentChatPermissionMode;
+  orchestrationRole?: OrchestrationRole | null;
   startupCommand?: string;
   startupDelayMs?: number;
   initialInput?: string;

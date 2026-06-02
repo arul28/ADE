@@ -14,7 +14,9 @@ import { buildAdeCliAgentGuidance, buildAdeCliInlineGuidance } from "./adeCliGui
 import { isProviderSlashCommandInput } from "./chatSlashCommands";
 import { resolveClaudeCliModelAlias } from "./claudeCliModels";
 import { decodeOpenCodeRegistryId } from "./modelRegistry";
+import { effectiveOrchestrationPermissionMode } from "./orchestrationRuntimePolicy";
 import { commandArrayToLine, quoteShellArg } from "./shell";
+import type { OrchestrationRole } from "./types/orchestration";
 
 export type CliProvider = "claude" | "codex" | "cursor" | "droid" | "opencode";
 export type LaunchProfile = CliProvider | "shell";
@@ -279,6 +281,7 @@ function withAdeAgentSkillEnv(
 export function buildTrackedCliStartupCommand(args: {
   provider: CliProvider;
   permissionMode: AgentChatPermissionMode;
+  orchestrationRole?: OrchestrationRole | null;
   /** Pre-assigned session ID for Claude CLI (enables reliable resume). */
   sessionId?: string;
   /** Optional runtime model for fresh launches. Continuation commands intentionally ignore it. */
@@ -296,6 +299,7 @@ export function buildTrackedCliStartupCommand(args: {
 export function buildTrackedCliLaunchCommand(args: {
   provider: CliProvider;
   permissionMode: AgentChatPermissionMode;
+  orchestrationRole?: OrchestrationRole | null;
   /** Pre-assigned session ID for Claude CLI (enables reliable resume). */
   sessionId?: string;
   /** Optional runtime model for fresh launches. Continuation commands intentionally ignore it. */
@@ -307,7 +311,8 @@ export function buildTrackedCliLaunchCommand(args: {
   /** Active lane worktree used to make ADE skill roots lane-aware. */
   laneWorktreePath?: string | null;
 }): TrackedCliLaunchCommand {
-  validateLaunchProfilePermissionMode(args.provider, args.permissionMode);
+  const permissionMode = effectiveOrchestrationPermissionMode(args);
+  validateLaunchProfilePermissionMode(args.provider, permissionMode);
   const initialPrompt = normalizeInitialPrompt(args.initialPrompt);
   const skillRoots = args.laneWorktreePath
     ? getAgentSkillRootCandidates({ cwd: args.laneWorktreePath })
@@ -330,7 +335,7 @@ export function buildTrackedCliLaunchCommand(args: {
     }
     const guidance = buildAdeCliAgentGuidance(skillRoots);
     commandArgs.push("--append-system-prompt", guidance);
-    commandArgs.push(...permissionModeToClaudeFlag(args.permissionMode));
+    commandArgs.push(...permissionModeToClaudeFlag(permissionMode));
     if (initialPrompt) {
       commandArgs.push(initialPrompt);
     }
@@ -355,7 +360,7 @@ export function buildTrackedCliLaunchCommand(args: {
       "--no-alt-screen",
       ...modelToCliFlag(codexModel),
       ...codexReasoningEffortFlags(args.reasoningEffort),
-      ...permissionModeToCodexFlags(args.permissionMode),
+      ...permissionModeToCodexFlags(permissionMode),
     ];
     const usePromptArg = codexModel === "gpt-5.3-codex";
     if (usePromptArg) commandArgs.push(initialInput);
@@ -372,7 +377,7 @@ export function buildTrackedCliLaunchCommand(args: {
     const prompt = workTabCliPrompt(initialPrompt, skillRoots);
     const cursorModel = resolveCursorCliModelForLaunch(args.model);
     const commandArgs = [
-      ...permissionModeToCursorFlags(args.permissionMode),
+      ...permissionModeToCursorFlags(permissionMode),
       ...modelToCliFlag(cursorModel),
       prompt,
     ];
@@ -389,7 +394,7 @@ export function buildTrackedCliLaunchCommand(args: {
     const platform = typeof process !== "undefined" && typeof process.platform === "string" ? process.platform : "";
     if (platform === "win32") {
       const startupCommand = droidPowerShellCommand({
-        permissionMode: args.permissionMode,
+        permissionMode,
         model: args.model,
         reasoningEffort: args.reasoningEffort,
         prompt,
@@ -402,7 +407,7 @@ export function buildTrackedCliLaunchCommand(args: {
       };
     }
     const startupCommand = buildDroidCommandLine({
-      permissionMode: args.permissionMode,
+      permissionMode,
       model: args.model,
       reasoningEffort: args.reasoningEffort,
       prompt,
@@ -416,7 +421,7 @@ export function buildTrackedCliLaunchCommand(args: {
   }
 
   const opencode = buildOpenCodeCommandParts({
-    permissionMode: args.permissionMode,
+    permissionMode,
     model: args.model,
     prompt: workTabCliPrompt(initialPrompt, skillRoots),
   });
@@ -782,6 +787,7 @@ export function resolveTrackedCliResumeCommand(session: Pick<TerminalSessionSumm
 export function resolveLaunchFields<P extends LaunchProfile>(args: {
   profile: P;
   permissionMode?: AgentChatPermissionMode;
+  orchestrationRole?: OrchestrationRole | null;
   startupCommand?: string;
   command?: string;
   args?: string[];
@@ -796,7 +802,8 @@ export function resolveLaunchFields<P extends LaunchProfile>(args: {
   initialInput?: string;
   initialInputDelayMs?: number;
 } {
-  validateLaunchProfilePermissionMode(args.profile, args.permissionMode);
+  const permissionMode = effectiveOrchestrationPermissionMode(args);
+  validateLaunchProfilePermissionMode(args.profile, permissionMode);
 
   const callerHasOverride =
     args.startupCommand !== undefined
@@ -821,7 +828,8 @@ export function resolveLaunchFields<P extends LaunchProfile>(args: {
 
   const defaultLaunch = buildTrackedCliLaunchCommand({
     provider: args.profile,
-    permissionMode: args.permissionMode ?? "default",
+    permissionMode,
+    orchestrationRole: args.orchestrationRole,
   });
   return {
     startupCommand: defaultLaunch.startupCommand,

@@ -125,6 +125,21 @@ describe("launchAgentChatCli worktree-path resolution", () => {
   });
 });
 
+describe("launchAgentChatCli orchestration policy", () => {
+  it("lets an orchestration role override stricter requested CLI permissions", async () => {
+    const deps = makeDeps();
+
+    await launchAgentChatCli(
+      makeArgs({ permissionMode: "plan", orchestrationRole: "worker" }),
+      deps,
+    );
+
+    const createArg = deps.create.mock.calls[0]?.[0] as PtyCreateArgs;
+    expect(createArg.args).toEqual(expect.arrayContaining(["--dangerously-bypass-approvals-and-sandbox"]));
+    expect(createArg.args).not.toEqual(expect.arrayContaining(["--sandbox", "read-only"]));
+  });
+});
+
 describe("launchAgentChatCli attached issue ids", () => {
   it("returns the durable terminal session before delayed kickoff input readiness", async () => {
     const deps = makeDeps();

@@ -2290,10 +2290,82 @@ describe("createAgentChatService", () => {
         expect(opts?.managedSettings?.allowedMcpServers).toEqual(
           expect.arrayContaining([expect.objectContaining({ serverName: "ade-orchestration" })]),
         );
-        expect(opts?.disallowedTools).toEqual(expect.arrayContaining(["Bash", "Edit", "Write"]));
+        expect(opts?.disallowedTools).toEqual(expect.arrayContaining(["Agent", "Bash", "Edit", "Task", "TodoWrite", "Write"]));
       } finally {
         await orchestrationService.dispose();
       }
+    });
+
+    it("keeps Claude lead sessions read-only even before an orchestration bundle is allocated", async () => {
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-orchestrator-draft",
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        modelId: "anthropic/claude-sonnet-4-6",
+        interactionMode: "orchestrator-lead",
+      });
+
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as any;
+      expect(opts?.mcpServers?.["ade-orchestration"]).toBeUndefined();
+      expect(opts?.disallowedTools).toEqual(expect.arrayContaining([
+        "Agent",
+        "Bash",
+        "Edit",
+        "MultiEdit",
+        "NotebookEdit",
+        "Task",
+        "TodoRead",
+        "TodoWrite",
+        "Write",
+      ]));
+    });
+
+    it("keeps Claude role-marked lead sessions read-only even when interaction mode is absent", async () => {
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-role-lead",
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        modelId: "anthropic/claude-sonnet-4-6",
+        orchestrationRole: "lead",
+      });
+
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as any;
+      expect(opts?.disallowedTools).toEqual(expect.arrayContaining([
+        "Agent",
+        "Bash",
+        "Edit",
+        "Task",
+        "TodoWrite",
+        "Write",
+      ]));
     });
 
     it("passes Claude subprocess spawns through the reaper", async () => {
