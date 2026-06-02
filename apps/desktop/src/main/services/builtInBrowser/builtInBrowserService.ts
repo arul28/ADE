@@ -2490,7 +2490,7 @@ function createBuiltInBrowserWindowService(args: {
       OBSERVATION_CACHE_DIR,
       sanitizePathSegment(args.profile.key),
       sanitizePathSegment(tab.id),
-      `${parsed.observationId}.json`,
+      `${sanitizePathSegment(parsed.observationId)}.json`,
     );
     let parsedObservation: unknown;
     try {
@@ -2824,9 +2824,11 @@ function decodeDataUrl(dataUrl: string): { buffer: Buffer; mimeType: string } {
 function parseElementHandle(handle: string): { observationId: string; index: number } | null {
   const match = /^(obs-[^:]+):e:(\d+)$/.exec(handle.trim());
   if (!match) return null;
+  const observationId = match[1] ?? "";
+  if (sanitizePathSegment(observationId) !== observationId) return null;
   const index = Number.parseInt(match[2] ?? "", 10);
   if (!Number.isFinite(index) || index < 1) return null;
-  return { observationId: match[1] ?? "", index };
+  return { observationId, index };
 }
 
 function applyObservationHandles(
@@ -2860,14 +2862,16 @@ async function pruneObservationDirectory(
   let deletedCount = 0;
   for (const jsonName of stale) {
     const base = jsonName.slice(0, -".json".length);
+    let deletedObservation = false;
     for (const filename of [`${base}.json`, `${base}.png`, `${base}.map.png`]) {
       try {
         await fs.rm(path.join(dir, filename), { force: true });
-        deletedCount += 1;
+        deletedObservation = true;
       } catch {
         // best effort cleanup
       }
     }
+    if (deletedObservation) deletedCount += 1;
   }
   return {
     keepCount,

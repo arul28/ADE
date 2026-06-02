@@ -980,6 +980,8 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       expect(fs.existsSync(observation.filePath)).toBe(true);
       expect(observation.relativePath).toMatch(/^\.ade\/cache\/browser-observations\//);
       expect(observation.cleanup.keepCount).toBe(3);
+      expect(observation.cleanup.keptCount).toBe(3);
+      expect(observation.cleanup.deletedCount).toBe(1);
       const observationDir = path.dirname(observation.filePath);
       expect(fs.readdirSync(observationDir).filter((entry) => entry.endsWith(".png"))).toHaveLength(3);
       expect(fs.readdirSync(observationDir).filter((entry) => entry.endsWith(".json"))).toHaveLength(3);
@@ -1126,6 +1128,11 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       const observation = await service.observe({ tabId, maxElements: 5, includeElementMap: true }, browserWin);
       await service.click({ tabId, selector: "button#save", observe: false }, browserWin);
       await service.click({ tabId, handle: observation.dom?.elements[0]?.handle ?? "", observe: false }, browserWin);
+      await expect(service.click({
+        tabId,
+        handle: "obs-x/../../outside:e:1",
+        observe: false,
+      }, browserWin)).rejects.toThrow(/Browser element handle/);
 
       expect(observation.dom?.elements[0]).toMatchObject({
         index: 1,

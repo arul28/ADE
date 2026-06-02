@@ -1129,7 +1129,7 @@ app.whenReady().then(async () => {
       if (targetWindow && selection.activateProjectRoot) {
         bindWindowToProject(targetWindow.id, normalizedRoot, {
           emit: true,
-          foreground: true,
+          foreground: false,
         });
       }
       return targetWindow;
