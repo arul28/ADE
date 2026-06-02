@@ -430,6 +430,7 @@ type PersistedUserPreferences = {
   smartTooltipsEnabled: boolean;
   onboardingEnabled: boolean;
   didYouKnowEnabled: boolean;
+  launchPromptClipboardEnabled: boolean;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
   agentTurnCompletionSound: AgentTurnCompletionSound;
   agentTurnCompletionSoundVolume: number;
@@ -459,6 +460,7 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       smartTooltipsEnabled: parsed.smartTooltipsEnabled !== false,
       onboardingEnabled: parsed.onboardingEnabled !== false,
       didYouKnowEnabled: parsed.didYouKnowEnabled !== false,
+      launchPromptClipboardEnabled: parsed.launchPromptClipboardEnabled !== false,
       codeBlockCopyButtonPosition: normalizeCodeBlockCopyButtonPosition(parsed.codeBlockCopyButtonPosition),
       agentTurnCompletionSound: normalizeAgentTurnCompletionSound(parsed.agentTurnCompletionSound),
       agentTurnCompletionSoundVolume: normalizeAgentTurnCompletionSoundVolume(parsed.agentTurnCompletionSoundVolume),
@@ -500,6 +502,7 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     smartTooltipsEnabled,
     onboardingEnabled: true,
     didYouKnowEnabled: true,
+    launchPromptClipboardEnabled: true,
     codeBlockCopyButtonPosition: "top",
     agentTurnCompletionSound: "off",
     agentTurnCompletionSoundVolume: DEFAULT_AGENT_TURN_COMPLETION_SOUND_VOLUME,
@@ -527,6 +530,7 @@ function persistUserPreferencesFrom(state: {
   smartTooltipsEnabled: boolean;
   onboardingEnabled: boolean;
   didYouKnowEnabled: boolean;
+  launchPromptClipboardEnabled: boolean;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
   agentTurnCompletionSound: AgentTurnCompletionSound;
   agentTurnCompletionSoundVolume: number;
@@ -543,6 +547,7 @@ function persistUserPreferencesFrom(state: {
     smartTooltipsEnabled: state.smartTooltipsEnabled,
     onboardingEnabled: state.onboardingEnabled,
     didYouKnowEnabled: state.didYouKnowEnabled,
+    launchPromptClipboardEnabled: state.launchPromptClipboardEnabled,
     codeBlockCopyButtonPosition: state.codeBlockCopyButtonPosition,
     agentTurnCompletionSound: state.agentTurnCompletionSound,
     agentTurnCompletionSoundVolume: state.agentTurnCompletionSoundVolume,
@@ -649,6 +654,7 @@ export type AppState = {
   smartTooltipsEnabled: boolean;
   onboardingEnabled: boolean;
   didYouKnowEnabled: boolean;
+  launchPromptClipboardEnabled: boolean;
   workViewByProject: Record<string, WorkProjectViewState>;
   laneWorkViewByScope: Record<string, WorkProjectViewState>;
   /**
@@ -721,6 +727,7 @@ export type AppState = {
   setSmartTooltipsEnabled: (enabled: boolean) => void;
   setOnboardingEnabled: (enabled: boolean) => void;
   setDidYouKnowEnabled: (enabled: boolean) => void;
+  setLaunchPromptClipboardEnabled: (enabled: boolean) => void;
   getWorkViewState: (projectRoot: string | null | undefined) => WorkProjectViewState;
   setWorkViewState: (
     projectRoot: string | null | undefined,
@@ -890,6 +897,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   smartTooltipsEnabled: initialUserPreferences.smartTooltipsEnabled,
   onboardingEnabled: initialUserPreferences.onboardingEnabled,
   didYouKnowEnabled: initialUserPreferences.didYouKnowEnabled,
+  launchPromptClipboardEnabled: initialUserPreferences.launchPromptClipboardEnabled,
   workViewByProject: initialPersistedWorkViews.workViewByProject,
   laneWorkViewByScope: initialPersistedWorkViews.laneWorkViewByScope,
   laneSelectionByProject: {},
@@ -1113,6 +1121,11 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     set((prev) => {
       persistUserPreferencesFrom({ ...prev, didYouKnowEnabled: enabled });
       return { didYouKnowEnabled: enabled };
+    }),
+  setLaunchPromptClipboardEnabled: (enabled) =>
+    set((prev) => {
+      persistUserPreferencesFrom({ ...prev, launchPromptClipboardEnabled: enabled });
+      return { launchPromptClipboardEnabled: enabled };
     }),
   openNewTab: () => set({ isNewTabOpen: true, showWelcome: true }),
   cancelNewTab: () => {
@@ -1743,6 +1756,7 @@ export function createProjectAppStore(project: ProjectInfo): AppStoreApi {
     smartTooltipsEnabled: rootState.smartTooltipsEnabled,
     onboardingEnabled: rootState.onboardingEnabled,
     didYouKnowEnabled: rootState.didYouKnowEnabled,
+    launchPromptClipboardEnabled: rootState.launchPromptClipboardEnabled,
     setTheme: rootState.setTheme,
     setTerminalPreferences: rootState.setTerminalPreferences,
     setCodeBlockCopyButtonPosition: rootState.setCodeBlockCopyButtonPosition,
@@ -1758,6 +1772,7 @@ export function createProjectAppStore(project: ProjectInfo): AppStoreApi {
     setSmartTooltipsEnabled: rootState.setSmartTooltipsEnabled,
     setOnboardingEnabled: rootState.setOnboardingEnabled,
     setDidYouKnowEnabled: rootState.setDidYouKnowEnabled,
+    setLaunchPromptClipboardEnabled: rootState.setLaunchPromptClipboardEnabled,
   });
   return store;
 }

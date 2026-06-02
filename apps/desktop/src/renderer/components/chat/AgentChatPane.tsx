@@ -123,6 +123,7 @@ import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { ChatActionsDrawerPanel, type ChatActionsTab } from "./ChatActionsDrawerPanel";
 import { useAppStore } from "../../state/appStore";
 import { buildChatAppearanceRootStyle } from "./chatAppearance";
+import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { LaneCombobox, AUTO_CREATE_LANE_OPTION_ID } from "../terminals/LaneCombobox";
 import {
@@ -2311,6 +2312,7 @@ export function AgentChatPane({
   const chatTranscriptDensity = useAppStore((s) => s.chatTranscriptDensity);
   const chatChromeTint = useAppStore((s) => s.chatChromeTint);
   const chatShellGeometry = useAppStore((s) => s.chatShellGeometry);
+  const launchPromptClipboardEnabled = useAppStore((s) => s.launchPromptClipboardEnabled);
   const chatAppearanceRootStyle = useMemo(
     () => buildChatAppearanceRootStyle({ chatFontSizePx, transcriptDensity: chatTranscriptDensity }),
     [chatFontSizePx, chatTranscriptDensity],
@@ -2323,6 +2325,13 @@ export function AgentChatPane({
   const openLinearSettings = useCallback(() => {
     navigate("/settings?tab=integrations&integration=linear");
   }, [navigate]);
+  const openLaunchPromptClipboardSettings = useCallback(() => {
+    navigate("/settings?tab=appearance#chat-launch-clipboard");
+  }, [navigate]);
+  const copyPromptForLaunch = useCallback(async (promptText: string) => {
+    if (!launchPromptClipboardEnabled) return;
+    await copyLaunchPromptToClipboard(promptText);
+  }, [launchPromptClipboardEnabled]);
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const setLaneWorkViewState = useAppStore((s) => s.setLaneWorkViewState);
   const refreshLanesStore = useAppStore((s) => s.refreshLanes);
@@ -5968,6 +5977,7 @@ export function AgentChatPane({
       return;
     }
     draftLaunchInFlightKeysRef.current.add(requestKey);
+    void copyPromptForLaunch(snapshot.text);
 
     const jobId = createDraftLaunchJobId();
     if (mode === "foreground") {
@@ -6073,6 +6083,7 @@ export function AgentChatPane({
     parallelLaunchBusy,
     prepareDraftLaunchForSend,
     projectTransitionBlocksChat,
+    copyPromptForLaunch,
     refreshLanesStore,
     refreshSessions,
     resolveDraftLaunchLane,
@@ -6282,6 +6293,7 @@ export function AgentChatPane({
           return;
         }
         setPromptSuggestion(null);
+        void copyPromptForLaunch(draftText);
         const resolved = await handleApproval(planReadyGate.itemId, "decline", draftText);
         if (resolved) setDraft("");
         return;
@@ -6334,6 +6346,7 @@ export function AgentChatPane({
         setError(`Parallel launch allows at most ${PARALLEL_CHAT_MAX_ATTACHMENTS} attachments. Remove some files or send in batches.`);
         return;
       }
+      void copyPromptForLaunch(text);
 
       const draftSnapshot = draft;
       const attachmentsSnapshot = [...attachments];
@@ -6585,6 +6598,7 @@ export function AgentChatPane({
         return;
       }
     }
+    void copyPromptForLaunch(text);
     if (
       text === "/context"
       && selectedSessionId
@@ -6873,6 +6887,7 @@ export function AgentChatPane({
     busy,
     codexFastMode,
     constrainedModelSelectionError,
+    copyPromptForLaunch,
     createSession,
     currentNativeControls,
     contextAttachments,
@@ -8060,6 +8075,8 @@ export function AgentChatPane({
             onRemoveMacosVmContext={removeMacosVmContext}
             onOpenAiSettings={openAiProvidersSettings}
             onOpenLinearSettings={openLinearSettings}
+            launchPromptClipboardEnabled={launchPromptClipboardEnabled}
+            onOpenLaunchPromptClipboardSettings={openLaunchPromptClipboardSettings}
             onStartOrchestratorChat={() => {
               // Switch the lane to a fresh orchestrator-lead draft. The
               // submit path will then call `agentChat.create` +
@@ -8296,6 +8313,7 @@ export function AgentChatPane({
               setCursorCloudPaneOpen(true);
             }}
             onSubmitToCloud={async (promptText) => {
+              void copyPromptForLaunch(promptText);
               if (cursorCloudLaunchModeOpen) {
                 const result = await cursorCloudInlineLaunchRef.current?.launchWithPrompt(promptText);
                 return Boolean(result);

@@ -79,6 +79,7 @@ function resetStore() {
     smartTooltipsEnabled: true,
     onboardingEnabled: true,
     didYouKnowEnabled: true,
+    launchPromptClipboardEnabled: true,
     laneInspectorTabs: {},
     workViewByProject: {},
     laneWorkViewByScope: {},
@@ -235,6 +236,18 @@ describe("appStore", () => {
       expect(JSON.parse(latest![1])).toMatchObject({ chatUserMinimapEnabled: false });
       useAppStore.getState().setChatUserMinimapEnabled(true);
       expect(useAppStore.getState().chatUserMinimapEnabled).toBe(true);
+    });
+
+    it("persists the launch prompt clipboard toggle", () => {
+      expect(useAppStore.getState().launchPromptClipboardEnabled).toBe(true);
+      useAppStore.getState().setLaunchPromptClipboardEnabled(false);
+      expect(useAppStore.getState().launchPromptClipboardEnabled).toBe(false);
+      const calls = mockLocalStorage.setItem.mock.calls.filter(
+        ([key]) => key === "ade.userPreferences.v1",
+      );
+      const latest = calls[calls.length - 1];
+      expect(latest).toBeTruthy();
+      expect(JSON.parse(latest![1])).toMatchObject({ launchPromptClipboardEnabled: false });
     });
 
     it("persists transcript density and shell geometry prefs", () => {

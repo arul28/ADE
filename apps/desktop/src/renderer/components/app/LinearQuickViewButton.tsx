@@ -25,6 +25,8 @@ import {
 import { BatchLaunchModal, type BatchLaunchSubmit } from "./BatchLaunchModal";
 import { BatchLaunchStatusToast } from "./BatchLaunchStatusToast";
 import {
+  defaultKickoffIntro,
+  defaultKickoffPrompt,
   findIssueConflicts,
   runBatchLaunch,
   type BatchLaunchIssueConfig,
@@ -35,6 +37,7 @@ import {
   rememberCreatingIssues,
   rememberLaunchedLanes,
 } from "../../lib/launchedLanesHighlight";
+import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
 
 const INITIAL_VISIBILITY_CHECK_DELAY_MS = 2_000;
 const VISIBILITY_RETRY_INTERVAL_MS = 3_000;
@@ -105,6 +108,7 @@ export function LinearQuickViewButton({
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const selectLane = useAppStore((s) => s.selectLane);
+  const launchPromptClipboardEnabled = useAppStore((s) => s.launchPromptClipboardEnabled);
   const [visible, setVisible] = useState(false);
   const [open, setOpen] = useState(false);
   const [quickView, setQuickView] = useState<CtoLinearQuickView | null>(null);
@@ -305,6 +309,14 @@ export function LinearQuickViewButton({
 
   const launchBatch = useCallback(async (entries: BatchLaunchSubmit[]) => {
     if (!entries.length) return;
+    if (launchPromptClipboardEnabled) {
+      const lastLaunchEntry = [...entries].reverse().find(({ config }) => !config.laneOnly);
+      const lastPrompt = lastLaunchEntry
+        ? lastLaunchEntry.config.kickoffPrompt.trim()
+          || (lastLaunchEntry.config.sessionType === "cli" ? defaultKickoffIntro() : defaultKickoffPrompt())
+        : "";
+      void copyLaunchPromptToClipboard(lastPrompt);
+    }
     // Record optimistic "creating lane" placeholders for issues that mint a NEW
     // lane (existing-lane targets already have a lane), keyed by issue id. The
     // Lanes tab renders these as spinner tabs immediately on reroute and clears
@@ -386,7 +398,7 @@ export function LinearQuickViewButton({
         sessionIds: result.createdSessionIds,
       });
     }
-  }, [refreshLanes]);
+  }, [launchPromptClipboardEnabled, refreshLanes]);
 
   const handleBatchLaunch = useCallback((entries: BatchLaunchSubmit[]) => {
     // Close + reroute synchronously; the orchestrator runs detached so the

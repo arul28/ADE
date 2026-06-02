@@ -193,6 +193,7 @@ export function AppearanceSection() {
   const agentSoundSelectId = useId();
   const volumeSliderId = useId();
   const quietToggleId = useId();
+  const launchPromptClipboardToggleId = useId();
   const terminalFieldId = useId();
 
   const theme = useAppStore((s) => s.theme);
@@ -209,6 +210,8 @@ export function AppearanceSection() {
   const setChatShellGeometry = useAppStore((s) => s.setChatShellGeometry);
   const chatUserMinimapEnabled = useAppStore((s) => s.chatUserMinimapEnabled);
   const setChatUserMinimapEnabled = useAppStore((s) => s.setChatUserMinimapEnabled);
+  const launchPromptClipboardEnabled = useAppStore((s) => s.launchPromptClipboardEnabled);
+  const setLaunchPromptClipboardEnabled = useAppStore((s) => s.setLaunchPromptClipboardEnabled);
 
   const codeBlockCopyButtonPosition = useAppStore((s) => s.codeBlockCopyButtonPosition);
   const setCodeBlockCopyButtonPosition = useAppStore((s) => s.setCodeBlockCopyButtonPosition);
@@ -429,6 +432,30 @@ export function AppearanceSection() {
                 );
               })}
             </div>
+          </div>
+
+          <div>
+            <label
+              id="chat-launch-clipboard"
+              htmlFor={launchPromptClipboardToggleId}
+              style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}
+            >
+              <input
+                id={launchPromptClipboardToggleId}
+                type="checkbox"
+                checked={launchPromptClipboardEnabled}
+                onChange={(e) => setLaunchPromptClipboardEnabled(e.target.checked)}
+                style={{ accentColor: COLORS.accent, width: 14, height: 14 }}
+              />
+              <span style={{ display: "flex", flexDirection: "column" }}>
+                <span style={{ fontSize: 11, fontWeight: 600, color: COLORS.textPrimary }}>
+                  Copy launch prompts to clipboard
+                </span>
+                <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+                  Saves chat, CLI, and agent launch prompts before ADE sends them.
+                </span>
+              </span>
+            </label>
           </div>
 
           <div>
