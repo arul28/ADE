@@ -441,6 +441,7 @@ export async function createAdeRuntime(args: {
     log: (event, fields) => logger.warn(event, fields),
   });
   const laneTeardownDeps: LaneDeleteTeardownDeps = {};
+  let autoRebaseActivityReady = false;
 
   const laneService = createLaneService({
     db,
@@ -673,6 +674,17 @@ export async function createAdeRuntime(args: {
     laneService,
     conflictService,
     projectConfigService,
+    getLaneActivity: (laneId) => {
+      if (!autoRebaseActivityReady) {
+        throw new Error("Session activity services are not ready.");
+      }
+      return {
+        activeChatCount:
+          laneTeardownDeps.agentChatService?.countActiveForLane(laneId) ?? 0,
+        activePtyCount:
+          laneTeardownDeps.ptyService?.countActiveForLane(laneId) ?? 0,
+      };
+    },
     onEvent: (event) => pushEvent("runtime", { type: "lane_auto_rebase_event", event }),
   });
   autoRebaseServiceRef = autoRebaseService;
@@ -983,6 +995,14 @@ export async function createAdeRuntime(args: {
       disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
     };
   }
+  autoRebaseActivityReady = true;
+  void autoRebaseService
+    .refreshActiveRebaseNeeds("activity_services_ready")
+    .catch((error) => {
+      logger.warn("autoRebase.activity_ready_refresh_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   if (resolvedArgs.chatRuntime === "agent" && !agentChatService) {
     throw new Error("Agent chat runtime was requested but the agent chat service was not initialized.");
   }

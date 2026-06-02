@@ -1,13 +1,14 @@
 import { afterEach, describe, expect, it, beforeEach, vi } from "vitest";
 import { createAutoRebaseService } from "./autoRebaseService";
 import type { AutoRebaseEventPayload, AutoRebaseLaneStatus, LaneSummary, RebaseNeed } from "../../../shared/types";
+import type * as SharedUtils from "../shared/utils";
 
 vi.mock("../git/git", () => ({
   getHeadSha: vi.fn().mockResolvedValue("abc123"),
 }));
 
 vi.mock("../shared/utils", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../shared/utils")>();
+  const actual = await importOriginal<typeof SharedUtils>();
   return {
     ...actual,
     nowIso: vi.fn(() => "2026-03-25T12:00:00.000Z"),
@@ -104,6 +105,8 @@ describe("autoRebaseService", () => {
   let events: AutoRebaseEventPayload[];
   let laneList: LaneSummary[];
   let rebaseNeedOverrides: Map<string, Partial<RebaseNeed> | null>;
+  let laneActivityById: Map<string, { activeChatCount?: number; activePtyCount?: number }>;
+  let laneActivityFailures: Set<string>;
   let laneService: any;
   let conflictService: any;
   let projectConfigService: any;
@@ -114,6 +117,8 @@ describe("autoRebaseService", () => {
     events = [];
     laneList = [];
     rebaseNeedOverrides = new Map();
+    laneActivityById = new Map();
+    laneActivityFailures = new Set();
 
     const resolveNeed = (laneId: string): RebaseNeed | null => {
       const lane = laneList.find((entry) => entry.id === laneId);
@@ -151,6 +156,10 @@ describe("autoRebaseService", () => {
       laneService,
       conflictService,
       projectConfigService,
+      getLaneActivity: (laneId) => {
+        if (laneActivityFailures.has(laneId)) throw new Error("activity unavailable");
+        return laneActivityById.get(laneId) ?? {};
+      },
       onEvent: (event) => events.push(event),
     });
   }
@@ -1038,6 +1047,132 @@ describe("autoRebaseService", () => {
           reason: "auto_rebase",
         }),
       );
+    });
+
+    it("pauses auto-rebase for a lane with active chat or terminal sessions", async () => {
+      const service = createService();
+      const root = makeLane("root");
+      const child = makeLane("child-1", {
+        parentLaneId: "root",
+        status: { dirty: false, ahead: 0, behind: 1, remoteBehind: 0, rebaseInProgress: false },
+        createdAt: "2026-03-10T01:00:00.000Z",
+      });
+      laneList = [root, child];
+      rebaseNeedOverrides.set("child-1", { behindBy: 4, conflictPredicted: false, conflictingFiles: [] });
+      laneActivityById.set("child-1", { activeChatCount: 1, activePtyCount: 2 });
+
+      await service.onHeadChanged({
+        laneId: "root",
+        preHeadSha: "aaa",
+        postHeadSha: "bbb",
+        reason: "pull_ff_only",
+      });
+
+      await vi.advanceTimersByTimeAsync(1500);
+
+      expect(laneService.rebaseStart).not.toHaveBeenCalled();
+      expect(laneService.rebasePush).not.toHaveBeenCalled();
+      expect(db.getJson("auto_rebase:status:child-1")).toMatchObject({
+        laneId: "child-1",
+        parentLaneId: "root",
+        parentHeadSha: "abc123",
+        state: "rebasePending",
+        conflictCount: 0,
+        message: expect.stringContaining("Auto-rebase paused"),
+      });
+    });
+
+    it("pauses auto-rebase when session activity lookup fails", async () => {
+      const service = createService();
+      const root = makeLane("root");
+      const child = makeLane("child-1", {
+        parentLaneId: "root",
+        status: { dirty: false, ahead: 0, behind: 1, remoteBehind: 0, rebaseInProgress: false },
+        createdAt: "2026-03-10T01:00:00.000Z",
+      });
+      laneList = [root, child];
+      rebaseNeedOverrides.set("child-1", { behindBy: 3, conflictPredicted: false, conflictingFiles: [] });
+      laneActivityFailures.add("child-1");
+
+      await service.onHeadChanged({
+        laneId: "root",
+        preHeadSha: "aaa",
+        postHeadSha: "bbb",
+        reason: "pull_ff_only",
+      });
+
+      await vi.advanceTimersByTimeAsync(1500);
+
+      expect(laneService.rebaseStart).not.toHaveBeenCalled();
+      expect(db.getJson("auto_rebase:status:child-1")).toMatchObject({
+        laneId: "child-1",
+        state: "rebasePending",
+        message: expect.stringContaining("could not verify"),
+      });
+    });
+
+    it("ignores malformed or negative activity counts", async () => {
+      const service = createService();
+      const root = makeLane("root");
+      const child = makeLane("child-1", {
+        parentLaneId: "root",
+        status: { dirty: false, ahead: 0, behind: 1, remoteBehind: 0, rebaseInProgress: false },
+        createdAt: "2026-03-10T01:00:00.000Z",
+      });
+      laneList = [root, child];
+      rebaseNeedOverrides.set("child-1", { behindBy: 3, conflictPredicted: false, conflictingFiles: [] });
+      laneActivityById.set("child-1", { activeChatCount: Number.NaN, activePtyCount: -2 });
+
+      await service.onHeadChanged({
+        laneId: "root",
+        preHeadSha: "aaa",
+        postHeadSha: "bbb",
+        reason: "pull_ff_only",
+      });
+
+      await vi.advanceTimersByTimeAsync(1500);
+
+      expect(laneService.rebaseStart).toHaveBeenCalledWith(
+        expect.objectContaining({
+          laneId: "child-1",
+          reason: "auto_rebase",
+        }),
+      );
+    });
+
+    it("marks descendants pending when an ancestor auto-rebase is paused for active sessions", async () => {
+      const service = createService();
+      const root = makeLane("root");
+      const child = makeLane("child-1", {
+        parentLaneId: "root",
+        status: { dirty: false, ahead: 0, behind: 2, remoteBehind: 0, rebaseInProgress: false },
+        createdAt: "2026-03-10T01:00:00.000Z",
+      });
+      const grandchild = makeLane("grandchild-1", {
+        parentLaneId: "child-1",
+        status: { dirty: false, ahead: 0, behind: 1, remoteBehind: 0, rebaseInProgress: false },
+        createdAt: "2026-03-10T02:00:00.000Z",
+      });
+      laneList = [root, child, grandchild];
+      rebaseNeedOverrides.set("child-1", { behindBy: 2, conflictPredicted: false, conflictingFiles: [] });
+      rebaseNeedOverrides.set("grandchild-1", { behindBy: 1, conflictPredicted: false, conflictingFiles: [] });
+      laneActivityById.set("child-1", { activeChatCount: 1 });
+
+      await service.onHeadChanged({
+        laneId: "root",
+        preHeadSha: "aaa",
+        postHeadSha: "bbb",
+        reason: "sync_rebase",
+      });
+
+      await vi.advanceTimersByTimeAsync(1500);
+
+      expect(laneService.rebaseStart).not.toHaveBeenCalled();
+      expect(db.getJson("auto_rebase:status:grandchild-1")).toMatchObject({
+        laneId: "grandchild-1",
+        state: "rebasePending",
+        message: expect.stringContaining("active sessions"),
+      });
     });
 
     it("skips legacy parent links when the lane baseRef no longer matches the parent branch", async () => {
