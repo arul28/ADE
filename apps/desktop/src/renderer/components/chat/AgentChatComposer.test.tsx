@@ -1434,6 +1434,7 @@ describe("AgentChatComposer", () => {
     fireEvent.focus(screen.getByRole("textbox"));
 
     expect(screen.queryByText(/Prompt will be copied to clipboard after Send\./)).toBeNull();
+    expect(screen.queryByText("After submission your prompt will auto copy to clipboard.")).toBeNull();
   });
 
   it("focuses the grid composer when the tile becomes active", () => {

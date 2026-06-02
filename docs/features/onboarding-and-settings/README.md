@@ -194,8 +194,8 @@ Renderer — settings:
   — theme and chat appearance preferences. Renders `ChatAppearancePreview`
   and writes local user preferences through `appStore`, including
   `launchPromptClipboardEnabled` (whether Work draft launches copy the
-  submitted prompt) and `launchPromptClipboardNoticeEnabled` (whether the
-  focused-composer reminder is shown before the copy).
+  submitted prompt) and `launchPromptClipboardNoticeEnabled` (whether
+  composer reminder text is shown before the copy).
 - `apps/desktop/src/renderer/components/settings/ProjectSection.tsx`
   — project `.ade` structure snapshot, shared/local/secret config paths,
   health warnings, structure repair, and integrity-check controls.
