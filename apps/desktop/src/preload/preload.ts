@@ -17,6 +17,7 @@ import type {
   AdoptAttachedLaneArgs,
   UnregisteredLaneCandidate,
   AppInfo,
+  AppResourceUsageSnapshot,
   LatestReleaseInfo,
   AppNavigationRequest,
   AutoUpdateSnapshot,
@@ -2952,6 +2953,8 @@ contextBridge.exposeInMainWorld("ade", {
   app: {
     ping: async (): Promise<"pong"> => ipcRenderer.invoke(IPC.appPing),
     getInfo: async (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appGetInfo),
+    getResourceUsage: async (): Promise<AppResourceUsageSnapshot> =>
+      ipcRenderer.invoke(IPC.appGetResourceUsage),
     getLatestRelease: async (): Promise<LatestReleaseInfo | null> =>
       ipcRenderer.invoke(IPC.appGetLatestRelease),
     getProject: async (): Promise<ProjectInfo | null> =>

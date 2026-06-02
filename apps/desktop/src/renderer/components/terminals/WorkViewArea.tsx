@@ -24,6 +24,7 @@ import {
 import type {
   AgentChatSession,
   AgentChatSlashCommand,
+  AppResourceUsageSnapshot,
   ChatTerminalPreviewResult,
   LaneLinearIssue,
   LaneSummary,
@@ -53,6 +54,7 @@ import { buildWorkSessionTilingTree, type TilingPreset } from "./workSessionTili
 import { laneSurfaceTint } from "../lanes/laneDesignTokens";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
+import { appResourcePressureLevel, getAppResourceUsageCoalesced } from "../../lib/resourcePressure";
 
 function isSessionAwaitingInput(session: TerminalSessionSummary): boolean {
   return sessionNeedsChatTabHighlight({
@@ -80,6 +82,194 @@ function isAgentCliSession(session: TerminalSessionSummary): boolean {
     && session.toolType !== "run-shell"
     && !isChatToolType(session.toolType),
   );
+}
+
+type GridTerminalPressureLevel = 0 | 1 | 2 | 3 | 4;
+
+type GridTerminalRefreshPolicy = {
+  level: GridTerminalPressureLevel;
+  bucketCount: number;
+  pulseMs: number;
+};
+
+const GRID_TERMINAL_PRESSURE_SAMPLE_MS = 1_000;
+const GRID_TERMINAL_RESOURCE_SAMPLE_MS = 2_000;
+const NORMAL_GRID_TERMINAL_REFRESH_POLICY: GridTerminalRefreshPolicy = {
+  level: 0,
+  bucketCount: 1,
+  pulseMs: 0,
+};
+
+function clampPressureLevel(value: number): GridTerminalPressureLevel {
+  return Math.max(0, Math.min(4, Math.round(value))) as GridTerminalPressureLevel;
+}
+
+function pressureLevelForThresholds(
+  value: number | null | undefined,
+  thresholds: [number, number, number, number],
+): GridTerminalPressureLevel {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  if (value >= thresholds[3]) return 4;
+  if (value >= thresholds[2]) return 3;
+  if (value >= thresholds[1]) return 2;
+  if (value >= thresholds[0]) return 1;
+  return 0;
+}
+
+function readRendererHeapRatio(): number | null {
+  const perf = performance as Performance & {
+    memory?: {
+      usedJSHeapSize?: number;
+      totalJSHeapSize?: number;
+      jsHeapSizeLimit?: number;
+    };
+  };
+  const memory = perf.memory;
+  const used = memory?.usedJSHeapSize;
+  const limit = memory?.jsHeapSizeLimit;
+  if (
+    typeof used !== "number"
+    || !Number.isFinite(used)
+    || typeof limit !== "number"
+    || !Number.isFinite(limit)
+    || limit <= 0
+  ) {
+    return null;
+  }
+  return used / limit;
+}
+
+function pressureLevelForSignals(args: {
+  driftMs: number;
+  rendererHeapRatio: number | null;
+  usage: AppResourceUsageSnapshot | null;
+}): GridTerminalPressureLevel {
+  const driftLevel = pressureLevelForThresholds(args.driftMs, [80, 180, 350, 700]);
+  const heapLevel = pressureLevelForThresholds(args.rendererHeapRatio, [0.55, 0.68, 0.78, 0.88]);
+  const resourceLevel = appResourcePressureLevel(args.usage);
+  return clampPressureLevel(Math.max(driftLevel, heapLevel, resourceLevel));
+}
+
+function stabilizePressureLevel(
+  previous: GridTerminalPressureLevel,
+  sampled: GridTerminalPressureLevel,
+): GridTerminalPressureLevel {
+  if (sampled >= previous) return sampled;
+  return clampPressureLevel(Math.max(sampled, previous - 1));
+}
+
+function gridTerminalRefreshPolicyForPressure(level: GridTerminalPressureLevel): GridTerminalRefreshPolicy {
+  switch (level) {
+    case 1:
+      return { level, bucketCount: 2, pulseMs: 650 };
+    case 2:
+      return { level, bucketCount: 4, pulseMs: 900 };
+    case 3:
+      return { level, bucketCount: 8, pulseMs: 1_200 };
+    case 4:
+      return { level, bucketCount: 16, pulseMs: 1_600 };
+    default:
+      return NORMAL_GRID_TERMINAL_REFRESH_POLICY;
+  }
+}
+
+function stableBucketForSession(sessionId: string, bucketCount: number): number {
+  if (bucketCount <= 1) return 0;
+  let hash = 2166136261;
+  for (let index = 0; index < sessionId.length; index += 1) {
+    hash ^= sessionId.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) % bucketCount;
+}
+
+function shouldStreamGridTerminal(args: {
+  sessionId: string;
+  isActive: boolean;
+  policy: GridTerminalRefreshPolicy;
+  pulse: number;
+}): boolean {
+  if (args.isActive || args.policy.level === 0) return true;
+  const bucket = stableBucketForSession(args.sessionId, args.policy.bucketCount);
+  return bucket === (args.pulse % args.policy.bucketCount);
+}
+
+function useAdaptiveGridTerminalRefresh(enabled: boolean): { policy: GridTerminalRefreshPolicy; pulse: number } {
+  const [policy, setPolicy] = useState<GridTerminalRefreshPolicy>(NORMAL_GRID_TERMINAL_REFRESH_POLICY);
+  const [pulse, setPulse] = useState(0);
+  const latestUsageRef = useRef<AppResourceUsageSnapshot | null>(null);
+
+  useEffect(() => {
+    if (!enabled) {
+      latestUsageRef.current = null;
+      setPolicy(NORMAL_GRID_TERMINAL_REFRESH_POLICY);
+      setPulse(0);
+      return;
+    }
+
+    let disposed = false;
+    let lastTick = performance.now();
+    let lastResourceSampleAt = 0;
+
+    const updatePolicy = (driftMs: number, usage: AppResourceUsageSnapshot | null) => {
+      const sampled = pressureLevelForSignals({
+        driftMs,
+        rendererHeapRatio: readRendererHeapRatio(),
+        usage,
+      });
+      setPolicy((previous) => {
+        const level = stabilizePressureLevel(previous.level, sampled);
+        return level === previous.level ? previous : gridTerminalRefreshPolicyForPressure(level);
+      });
+    };
+
+    const sample = () => {
+      const now = performance.now();
+      if (document.visibilityState !== "visible") {
+        lastTick = now;
+        return;
+      }
+      const driftMs = Math.max(0, now - lastTick - GRID_TERMINAL_PRESSURE_SAMPLE_MS);
+      lastTick = now;
+      updatePolicy(driftMs, latestUsageRef.current);
+
+      if (lastResourceSampleAt > 0 && now - lastResourceSampleAt < GRID_TERMINAL_RESOURCE_SAMPLE_MS) return;
+      lastResourceSampleAt = now;
+      getAppResourceUsageCoalesced()
+        .then((usage) => {
+          if (disposed) return;
+          latestUsageRef.current = usage;
+          updatePolicy(0, usage);
+        })
+        .catch(() => {});
+    };
+
+    sample();
+    const interval = window.setInterval(sample, GRID_TERMINAL_PRESSURE_SAMPLE_MS);
+    const sampleWhenVisible = () => {
+      if (document.visibilityState === "visible") sample();
+    };
+    document.addEventListener("visibilitychange", sampleWhenVisible);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", sampleWhenVisible);
+    };
+  }, [enabled]);
+
+  useEffect(() => {
+    if (!enabled || policy.level === 0) {
+      setPulse(0);
+      return;
+    }
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      setPulse((current) => current + 1);
+    }, policy.pulseMs);
+    return () => window.clearInterval(interval);
+  }, [enabled, policy.level, policy.pulseMs]);
+
+  return { policy, pulse };
 }
 
 function stoppedBySignal(exitCode: number | null | undefined): boolean {
@@ -1335,6 +1525,10 @@ export function WorkViewArea({
     () => buildWorkSessionTilingTree(JSON.parse(gridSessionIdsKey) as string[], tilingPreset),
     [gridSessionIdsKey, tilingPreset],
   );
+  const {
+    policy: gridTerminalRefreshPolicy,
+    pulse: gridTerminalRefreshPulse,
+  } = useAdaptiveGridTerminalRefresh(viewMode === "grid" && pageActive);
   const applyTilingPreset = useCallback(async (preset: TilingPreset) => {
     const ids = JSON.parse(gridSessionIdsKey) as string[];
     const nextTree = buildWorkSessionTilingTree(ids, preset);
@@ -1354,6 +1548,12 @@ export function WorkViewArea({
       const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
       const isCliAgentSession = isAgentCliSession(session);
       const isActive = activeItemId === session.id;
+      const terminalVisible = !isRunningPtySession(session) || shouldStreamGridTerminal({
+        sessionId: session.id,
+        isActive,
+        policy: gridTerminalRefreshPolicy,
+        pulse: gridTerminalRefreshPulse,
+      });
       const rawLaneColor = laneColorById.get(session.laneId) ?? null;
       const laneAccentColor = rawLaneColor?.trim() ? rawLaneColor.trim() : null;
       const openInTabs = () => onOpenSessionInTabsView?.(session.id);
@@ -1418,7 +1618,7 @@ export function WorkViewArea({
               isActive={isActive}
               pageActive={pageActive}
               shouldAutofocus={isActive}
-              terminalVisible
+              terminalVisible={terminalVisible}
               layoutVariant="grid-tile"
               onInfoClick={onInfoClick}
               onContextMenu={onContextMenu}
@@ -1435,6 +1635,8 @@ export function WorkViewArea({
   ), [
     activeItemId,
     closingPtyIds,
+    gridTerminalRefreshPolicy,
+    gridTerminalRefreshPulse,
     handleContextMenu,
     lanes,
     laneColorById,
@@ -1697,7 +1899,12 @@ export function WorkViewArea({
 
   if (viewMode === "grid") {
     return (
-      <div className="flex h-full min-w-0 flex-col">
+      <div
+        className="flex h-full min-w-0 flex-col"
+        data-ade-grid-terminal-pressure={gridTerminalRefreshPolicy.level}
+        data-ade-grid-terminal-buckets={gridTerminalRefreshPolicy.bucketCount}
+        data-ade-grid-terminal-pulse={gridTerminalRefreshPulse}
+      >
         {placeWorkGlassHeader(
           <WorkGlassHeader
             headerAlignClass={headerAlignClass}

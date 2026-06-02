@@ -212,6 +212,19 @@ ADE_DEV_RUNTIME_SOCKET_PATH=/tmp/my-ade-dev.sock npm run dev:runtime
 ADE_DESKTOP_BRIDGE_SOCKET_PATH=/tmp/my-bridge.sock npm run dev:desktop
 ```
 
+When launching ADE desktop dev through ADE App Control from a running Alpha/Beta
+ADE window, use an absolute lane cwd and clear packaged-channel environment
+variables inherited from the host app. Otherwise the dev Electron app can reuse
+the Alpha/Beta profile and lose the single-instance lock instead of opening the
+lane build:
+
+```bash
+ade --socket app-control launch --force \
+  --cwd "/path/to/ADE/.ade/worktrees/<lane>" \
+  --command "sh -lc 'ADE_PACKAGE_CHANNEL= ADE_DESKTOP_APP_NAME= ADE_DESKTOP_BRIDGE_SOCKET_PATH=/tmp/ade-desktop-bridge-<lane>.sock npm run dev:desktop -- --socket /tmp/ade-runtime-<lane>.sock'" \
+  --text
+```
+
 To test auto-runtime creation, use the default dev commands after stopping the dev runtime:
 
 ```bash

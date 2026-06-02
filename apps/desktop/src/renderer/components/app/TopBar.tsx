@@ -19,6 +19,7 @@ import {
   Plugs,
   Trash,
   UploadSimple,
+  WarningCircle,
   X,
 } from "@phosphor-icons/react";
 import * as Dialog from "@radix-ui/react-dialog";
@@ -42,6 +43,7 @@ import type {
   RecentProjectSummary,
   RemoteRuntimeConnectionSnapshot,
   SyncRoleSnapshot,
+  AppResourceUsageSnapshot,
 } from "../../../shared/types";
 import { AutoUpdateControl } from "./AutoUpdateControl";
 import { FeedbackReporterModal } from "./FeedbackReporterModal";
@@ -51,6 +53,7 @@ import { PublishToGitHubDialog } from "../projects/PublishToGitHubDialog";
 import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
 import { SyncDevicesSection } from "../settings/SyncDevicesSection";
 import { HeaderUsageControl } from "../usage/HeaderUsageControl";
+import { appResourcePressureLevel, getAppResourceUsageCoalesced, resourcePressureDescription } from "../../lib/resourcePressure";
 
 const RUNNING_LANE_PROCESS_STATES: ProcessRuntime["status"][] = [
   "starting",
@@ -69,6 +72,7 @@ const PROJECT_ICON_ACCENT_CACHE_MAX = 48;
 const projectIconAccentCache = new Map<string, string | null>();
 const RECENT_PROJECTS_CACHE_TTL_MS = 2_500;
 const PHONE_SYNC_STARTUP_DELAY_MS = 5_000;
+const RESOURCE_PRESSURE_SAMPLE_MS = 2_000;
 let recentProjectsCache:
   | { rows: RecentProjectSummary[]; fetchedAtMs: number }
   | null = null;
@@ -286,6 +290,86 @@ function useHeaderStatusCompactLayout(): boolean {
   }, []);
 
   return compact;
+}
+
+function useResourcePressureUsage(enabled: boolean): AppResourceUsageSnapshot | null {
+  const [usage, setUsage] = useState<AppResourceUsageSnapshot | null>(null);
+
+  useEffect(() => {
+    if (!enabled) {
+      setUsage(null);
+      return;
+    }
+
+    let cancelled = false;
+    let requestVersion = 0;
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      const version = ++requestVersion;
+      void getAppResourceUsageCoalesced()
+        .then((snapshot) => {
+          if (!cancelled && version === requestVersion) setUsage(snapshot);
+        })
+    };
+
+    refresh();
+    const interval = window.setInterval(refresh, RESOURCE_PRESSURE_SAMPLE_MS);
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [enabled]);
+
+  return usage;
+}
+
+function ResourcePressureIndicator({ usage }: { usage: AppResourceUsageSnapshot | null }) {
+  const level = appResourcePressureLevel(usage);
+  if (level === 0) return null;
+  const color =
+    level >= 4 ? "#F87171" : level === 3 ? "#FB7185" : level === 2 ? "#FB923C" : "#FBBF24";
+  const description = resourcePressureDescription(usage);
+  return (
+    <SmartTooltip
+      content={{
+        label: "ADE is under load",
+        description,
+      }}
+      wrapperStyle={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+    >
+      <span
+        role="status"
+        tabIndex={0}
+        aria-label={`ADE resource pressure level ${level}`}
+        title={description}
+        data-ade-resource-pressure-level={level}
+        data-ade-resource-pressure-active-ptys={usage?.activePtyCount ?? 0}
+        data-ade-resource-pressure-pty-processes={usage?.ptyProcessCount ?? 0}
+        data-ade-resource-pressure-pty-cpu={usage?.ptyCpuPercent ?? ""}
+        data-ade-resource-pressure-pty-memory-mb={usage?.ptyMemoryMB ?? ""}
+        className={cn(
+          "ade-shell-control inline-flex h-[24px] w-[24px] shrink-0 items-center justify-center rounded-md",
+          "border transition-[background-color,color,border-color,box-shadow] duration-150",
+        )}
+        style={{
+          color,
+          borderColor: `${color}80`,
+          background: `${color}1f`,
+          boxShadow: `0 0 0 1px ${color}22, 0 0 16px -10px ${color}`,
+          outline: "none",
+        }}
+      >
+        <WarningCircle size={14} weight="fill" />
+      </span>
+    </SmartTooltip>
+  );
 }
 
 const HEADER_STATUS_MENU_ROW_CLASS =
@@ -847,6 +931,7 @@ export function TopBar() {
     isNewTabOpen !== true &&
     Boolean(project?.rootPath) &&
     !remoteBinding;
+  const resourceUsage = useResourcePressureUsage(workspaceProjectOpen);
 
   const projectRootForRemote = workspaceProjectOpen
     ? (project?.rootPath ?? null)
@@ -2102,6 +2187,8 @@ export function TopBar() {
 
       {/* Trailing controls: status · updates · utility cluster */}
       <div className="flex shrink-0 items-center gap-2">
+        <ResourcePressureIndicator usage={resourceUsage} />
+
         <div className="hidden md:flex items-center gap-1.5">
           {renderHeaderStatusControls()}
         </div>

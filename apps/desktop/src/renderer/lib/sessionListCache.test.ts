@@ -136,4 +136,27 @@ describe("sessionListCache", () => {
     await expect(first).resolves.toHaveLength(10);
     await expect(second).resolves.toHaveLength(5);
   });
+
+  it("invalidates only the matching project and lane when scoped", async () => {
+    listMock
+      .mockResolvedValueOnce(makeRows(2))
+      .mockResolvedValueOnce(makeRows(3))
+      .mockResolvedValueOnce(makeRows(4));
+
+    await listSessionsCached({ laneId: "lane-1", limit: 2 }, { projectRoot: "/project/a" });
+    await listSessionsCached({ laneId: "lane-2", limit: 3 }, { projectRoot: "/project/a" });
+    await listSessionsCached({ laneId: "lane-1", limit: 4 }, { projectRoot: "/project/b" });
+
+    invalidateSessionListCache({ projectRoot: "/project/a", laneId: "lane-1" });
+
+    listMock.mockResolvedValueOnce(makeRows(5));
+    const invalidated = await listSessionsCached({ laneId: "lane-1", limit: 2 }, { projectRoot: "/project/a" });
+    const sameProjectOtherLane = await listSessionsCached({ laneId: "lane-2", limit: 3 }, { projectRoot: "/project/a" });
+    const sameLaneOtherProject = await listSessionsCached({ laneId: "lane-1", limit: 4 }, { projectRoot: "/project/b" });
+
+    expect(invalidated).toHaveLength(2);
+    expect(sameProjectOtherLane).toHaveLength(3);
+    expect(sameLaneOtherProject).toHaveLength(4);
+    expect(listMock).toHaveBeenCalledTimes(4);
+  });
 });

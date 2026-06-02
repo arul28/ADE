@@ -77,6 +77,7 @@ import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { getGitHubSnapshotCoalesced, listPrsCoalesced, refreshPrsCoalesced, warmPrSurfaceCoalesced } from "../../lib/prReadCache";
 import { logRendererDebugEvent } from "../../lib/debugLog";
+import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import { linearIssueBranchName, linearIssueLaneName } from "../../../shared/linearIssueBranch";
 import type {
   BranchPullRequest,
@@ -144,6 +145,8 @@ type RebasePushReviewState = {
 const ADOPT_HINT_DISMISSED_KEY = "ade.lanes.adoptHintDismissed.v1";
 const LANE_DELETE_REFRESH_DEBOUNCE_MS = 160;
 const LANE_VISIBLE_PR_REFRESH_DEBOUNCE_MS = 260;
+const LANE_RUNTIME_LIFECYCLE_REFRESH_DEBOUNCE_MS = 300;
+const LANE_RUNTIME_DATA_REFRESH_DEBOUNCE_MS = 5_000;
 const EMPTY_LANE_IDS: string[] = [];
 
 function normalizeLaneRuntimePlacement(value: unknown): LaneRuntimePlacement {
@@ -1171,7 +1174,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         .then((refreshed) => {
           if ((appStore.getState().project?.rootPath ?? null) !== startedRoot) return;
           if (refreshed.length === 0) return;
-          lanePrTagsRequestRef.current += 1;
           setLanePrTags((current) => mergePrSummariesById(current, refreshed));
         })
         .catch(() => {
@@ -1184,7 +1186,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   useEffect(() => {
     if (!active) return;
-    let timer: ReturnType<typeof setTimeout> | null = null;
+    let lifecycleTimer: ReturnType<typeof setTimeout> | null = null;
+    let dataTimer: ReturnType<typeof setTimeout> | null = null;
     const refreshRuntimeOnly = () =>
       refreshLanes({
         includeStatus: false,
@@ -1193,31 +1196,43 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         includeRebaseSuggestions: false,
         includeAutoRebaseStatus: false,
       });
-    const scheduleRefresh = () => {
+    const scheduleRefresh = (kind: "lifecycle" | "data") => {
       if (document.visibilityState !== "visible") return;
-      if (timer) return; // already scheduled
-      timer = setTimeout(() => {
-        timer = null;
+      const delayMs =
+        kind === "data"
+          ? LANE_RUNTIME_DATA_REFRESH_DEBOUNCE_MS
+          : LANE_RUNTIME_LIFECYCLE_REFRESH_DEBOUNCE_MS;
+      const getTimer = () => (kind === "data" ? dataTimer : lifecycleTimer);
+      const setTimer = (timer: ReturnType<typeof setTimeout> | null) => {
+        if (kind === "data") dataTimer = timer;
+        else lifecycleTimer = timer;
+      };
+      if (getTimer()) return; // already scheduled
+      setTimer(setTimeout(() => {
+        setTimer(null);
         void refreshRuntimeOnly().catch(() => {});
-      }, 300);
+      }, delayMs));
     };
     const currentProjectRoot = project?.rootPath ?? null;
     const isCurrentProjectEvent = (event: { projectRoot?: string | null }) =>
       !event.projectRoot || event.projectRoot === currentProjectRoot;
     const unsubPtyData = window.ade.pty.onData((event) => {
-      if (isCurrentProjectEvent(event)) scheduleRefresh();
+      if (isCurrentProjectEvent(event)) scheduleRefresh("data");
     });
     const unsubPtyExit = window.ade.pty.onExit((event) => {
-      if (isCurrentProjectEvent(event)) scheduleRefresh();
+      if (isCurrentProjectEvent(event)) scheduleRefresh("lifecycle");
     });
-    const unsubChat = window.ade.agentChat.onEvent(scheduleRefresh);
+    const unsubChat = window.ade.agentChat.onEvent((event) => {
+      if (shouldRefreshSessionListForChatEvent(event)) scheduleRefresh("lifecycle");
+    });
     const intervalId = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       if (!hasActiveLaneRuntimeRef.current) return;
       void refreshRuntimeOnly().catch(() => {});
     }, 15_000);
     return () => {
-      if (timer) clearTimeout(timer);
+      if (lifecycleTimer) clearTimeout(lifecycleTimer);
+      if (dataTimer) clearTimeout(dataTimer);
       try {
         unsubPtyData();
       } catch {

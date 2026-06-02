@@ -11,6 +11,10 @@ type CacheEntry = {
 
 const DEFAULT_SESSION_LIST_TTL_MS = 1_500;
 const cache = new Map<string, CacheEntry>();
+type SessionListCacheScope = {
+  projectRoot?: string | null;
+  laneId?: string | null;
+};
 
 function normalizeArgs(args?: ListSessionsArgs): ListSessionsArgs {
   if (!args) return {};
@@ -122,8 +126,26 @@ export async function listSessionsCached(
   return request.then((rows) => sliceRows(rows, limit));
 }
 
-export function invalidateSessionListCache(): void {
+export function invalidateSessionListCache(scope?: SessionListCacheScope): void {
+  const projectRootFilter = scope
+    ? scope.projectRoot === undefined ? undefined : scope.projectRoot?.trim() || null
+    : undefined;
+  const laneIdFilter = scope
+    ? scope.laneId === undefined ? undefined : scope.laneId?.trim() || null
+    : undefined;
+
   for (const [key, entry] of [...cache.entries()]) {
+    let parsed: { projectRoot?: string | null; laneId?: string | null };
+    try {
+      parsed = JSON.parse(key) as { projectRoot?: string | null; laneId?: string | null };
+    } catch {
+      cache.delete(key);
+      continue;
+    }
+
+    if (projectRootFilter !== undefined && parsed.projectRoot !== projectRootFilter) continue;
+    if (laneIdFilter !== undefined && parsed.laneId !== laneIdFilter) continue;
+
     if (!entry.inFlight) {
       cache.delete(key);
       continue;

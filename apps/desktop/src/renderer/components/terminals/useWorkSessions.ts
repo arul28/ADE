@@ -365,6 +365,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const pendingOptimisticSessionsRef = useRef<Map<string, PendingOptimisticSession>>(new Map());
   const hasRunningSessionsRef = useRef(false);
   const backgroundRefreshTimerRef = useRef<number | null>(null);
+  const pendingHiddenSessionRefreshRef = useRef(false);
   const appliedQuerySessionIdRef = useRef<string | null>(null);
   const appliedUrlFilterKeyRef = useRef<string | null>(null);
   const partiallyAppliedUrlFilterKeyRef = useRef<string | null>(null);
@@ -845,9 +846,22 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     if (backgroundRefreshTimerRef.current != null) return;
     backgroundRefreshTimerRef.current = window.setTimeout(() => {
       backgroundRefreshTimerRef.current = null;
+      if (document.visibilityState !== "visible") {
+        pendingHiddenSessionRefreshRef.current = true;
+        return;
+      }
       void refresh({ showLoading: false });
     }, delayMs);
   }, [isWorkRoute, refresh]);
+
+  const markSessionListDirtyOrRefresh = useCallback((delayMs: number) => {
+    invalidateSessionListCache();
+    if (document.visibilityState !== "visible") {
+      pendingHiddenSessionRefreshRef.current = true;
+      return;
+    }
+    scheduleBackgroundRefresh(delayMs);
+  }, [scheduleBackgroundRefresh]);
 
   useEffect(() => {
     // Apply the per-project sessions cache immediately so switching back to a
@@ -876,6 +890,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     appliedUrlFilterKeyRef.current = null;
     partiallyAppliedUrlFilterKeyRef.current = null;
     pendingOptimisticSessionsRef.current.clear();
+    pendingHiddenSessionRefreshRef.current = false;
   }, [appStore, projectRoot]);
 
   useLayoutEffect(() => {
@@ -1054,7 +1069,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     const unsubExit = window.ade.pty.onExit((event) => {
       const currentProjectRoot = projectRootRef.current;
       if (event.projectRoot && event.projectRoot !== currentProjectRoot) return;
-      scheduleBackgroundRefresh(120);
+      markSessionListDirtyOrRefresh(120);
     });
     const t = setInterval(() => {
       if (document.visibilityState !== "visible") return;
@@ -1069,28 +1084,24 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       }
       clearInterval(t);
     };
-  }, [isWorkRoute, scheduleBackgroundRefresh]);
+  }, [isWorkRoute, markSessionListDirtyOrRefresh, scheduleBackgroundRefresh]);
 
   useEffect(() => {
     if (!isWorkRoute) return;
     const unsubscribe = window.ade.agentChat.onEvent((payload) => {
-      if (document.visibilityState !== "visible") return;
       if (!shouldRefreshSessionListForChatEvent(payload)) return;
-      invalidateSessionListCache();
-      scheduleBackgroundRefresh(220);
+      markSessionListDirtyOrRefresh(220);
     });
     return unsubscribe;
-  }, [isWorkRoute, scheduleBackgroundRefresh]);
+  }, [isWorkRoute, markSessionListDirtyOrRefresh]);
 
   useEffect(() => {
     if (!isWorkRoute) return;
     const unsubscribe = window.ade.sessions.onChanged(() => {
-      if (document.visibilityState !== "visible") return;
-      invalidateSessionListCache();
-      scheduleBackgroundRefresh(80);
+      markSessionListDirtyOrRefresh(80);
     });
     return unsubscribe;
-  }, [isWorkRoute, scheduleBackgroundRefresh]);
+  }, [isWorkRoute, markSessionListDirtyOrRefresh]);
 
   useEffect(() => {
     return () => {
@@ -1104,8 +1115,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     if (!isWorkRoute) return;
     const refreshVisibleWork = () => {
       if (document.visibilityState !== "visible") return;
+      const hadHiddenChanges = pendingHiddenSessionRefreshRef.current;
+      pendingHiddenSessionRefreshRef.current = false;
       invalidateSessionListCache();
-      scheduleBackgroundRefresh(120);
+      scheduleBackgroundRefresh(hadHiddenChanges ? 20 : 120);
     };
     window.addEventListener("focus", refreshVisibleWork);
     document.addEventListener("visibilitychange", refreshVisibleWork);

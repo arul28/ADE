@@ -56,8 +56,13 @@ vi.mock("@lobehub/icons", () => {
 });
 
 vi.mock("./TerminalView", () => ({
-  TerminalView: ({ sessionId, isActive }: { sessionId: string; isActive: boolean }) => (
-    <div data-testid="terminal-view" data-session-id={sessionId} data-active={String(isActive)} />
+  TerminalView: ({ sessionId, isActive, isVisible = isActive }: { sessionId: string; isActive: boolean; isVisible?: boolean }) => (
+    <div
+      data-testid="terminal-view"
+      data-session-id={sessionId}
+      data-active={String(isActive)}
+      data-visible={String(isVisible)}
+    />
   ),
 }));
 
@@ -153,6 +158,7 @@ const slashCommandsMock = vi.fn();
 const modelsMock = vi.fn();
 const sendToSessionMock = vi.fn();
 const resumeSessionMock = vi.fn();
+const resourceUsageMock = vi.fn();
 const resolvePtyLaunch = async () => ({ sessionId: "test-session", ptyId: "test-pty", pid: null });
 
 beforeEach(() => {
@@ -186,11 +192,29 @@ beforeEach(() => {
   sendToSessionMock.mockResolvedValue({ sessionId: "session-1", ptyId: "pty-1", pid: 123, session: null, resumed: true, reusedExistingRuntime: false });
   resumeSessionMock.mockReset();
   resumeSessionMock.mockResolvedValue({ sessionId: "session-1", ptyId: "pty-1", pid: 123, session: null, resumed: true, reusedExistingRuntime: false });
+  resourceUsageMock.mockReset();
+  resourceUsageMock.mockResolvedValue({
+    sampledAt: "2026-04-06T12:00:00.000Z",
+    processCount: 2,
+    cpuPercent: 1,
+    mainCpuPercent: 0.5,
+    rendererCpuPercent: 0.5,
+    memoryMB: 200,
+    mainMemoryMB: 80,
+    rendererMemoryMB: 120,
+    activePtyCount: 0,
+    ptyProcessCount: 0,
+    ptyCpuPercent: 0,
+    ptyMemoryMB: 0,
+    freeMemoryMB: 12_000,
+    totalMemoryMB: 16_000,
+  });
   Object.defineProperty(window, "ade", {
     configurable: true,
     value: {
       app: {
         writeClipboardText: vi.fn().mockResolvedValue(undefined),
+        getResourceUsage: resourceUsageMock,
       },
       agentChat: {
         models: modelsMock,
@@ -594,6 +618,92 @@ describe("WorkViewArea", () => {
     );
 
     expect(screen.getAllByTestId("terminal-view")).toHaveLength(2);
+    expect(screen.getAllByTestId("terminal-view").map((node) => node.getAttribute("data-visible"))).toEqual(["true", "true"]);
+  });
+
+  it("cools background grid terminal streams under app pressure but keeps the focused terminal live", async () => {
+    resourceUsageMock.mockResolvedValue({
+      sampledAt: "2026-04-06T12:00:00.000Z",
+      processCount: 8,
+      cpuPercent: 96,
+      mainCpuPercent: 12,
+      rendererCpuPercent: 96,
+      memoryMB: 7_000,
+      mainMemoryMB: 400,
+      rendererMemoryMB: 2_200,
+      activePtyCount: 24,
+      ptyProcessCount: 36,
+      ptyCpuPercent: 96,
+      ptyMemoryMB: 4_400,
+      freeMemoryMB: 600,
+      totalMemoryMB: 16_000,
+    });
+    const sessions = Array.from({ length: 24 }, (_unused, index) => (
+      makeRunningSession(`session-${index + 1}`, `pty-${index + 1}`)
+    ));
+    const lane = {
+      id: "lane-1",
+      name: "Lane 1",
+      laneType: "worktree" as const,
+      baseRef: "main",
+      branchRef: "lane-1",
+      worktreePath: "/tmp/lane-1",
+      parentLaneId: null,
+      childCount: 0,
+      stackDepth: 0,
+      parentStatus: null,
+      isEditProtected: false,
+      status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+      color: null,
+      icon: null,
+      tags: [],
+      createdAt: "2026-04-06T12:00:00.000Z",
+    };
+
+    const renderGrid = (activeItemId: string) => (
+      <WorkViewArea
+        gridLayoutId="work:grid:test"
+        lanes={[lane]}
+        sessions={sessions}
+        visibleSessions={sessions}
+        tabGroups={[]}
+        tabVisibleSessionIds={sessions.map((session) => session.id)}
+        activeItemId={activeItemId}
+        viewMode="grid"
+        draftKind="chat"
+        setViewMode={() => {}}
+        onSelectItem={() => {}}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={resolvePtyLaunch}
+        onShowDraftKind={() => {}}
+        onToggleTabGroupCollapsed={() => {}}
+        closingPtyIds={new Set()}
+      />
+    );
+
+    const view = render(renderGrid("session-1"));
+
+    let cooledSessionId: string | null = null;
+    await waitFor(() => {
+      const terminals = within(view.container).getAllByTestId("terminal-view");
+      expect(terminals).toHaveLength(sessions.length);
+      expect(terminals.find((node) => node.getAttribute("data-session-id") === "session-1")?.getAttribute("data-visible")).toBe("true");
+      cooledSessionId = terminals.find((node) => (
+        node.getAttribute("data-session-id") !== "session-1"
+        && node.getAttribute("data-visible") === "false"
+      ))?.getAttribute("data-session-id") ?? null;
+      expect(cooledSessionId).toBeTruthy();
+    });
+
+    view.rerender(renderGrid(cooledSessionId!));
+
+    await waitFor(() => {
+      const focused = within(view.container).getAllByTestId("terminal-view")
+        .find((node) => node.getAttribute("data-session-id") === cooledSessionId);
+      expect(focused?.getAttribute("data-active")).toBe("true");
+      expect(focused?.getAttribute("data-visible")).toBe("true");
+    });
   });
 
   it("adds the CLI session header above agent PTY sessions", () => {
