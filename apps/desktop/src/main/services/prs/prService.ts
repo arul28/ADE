@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
+  AgentChatSessionSummary,
   BranchPullRequest,
   CreateLaneFromPrBranchArgs,
   CreateLaneFromPrBranchBlock,
@@ -161,7 +162,14 @@ import {
   type LinearPrIssueReference,
 } from "../../../shared/linearMagicWords";
 import { ensureAdeDeeplinkFooter } from "../../../shared/adeDeeplinkFooter";
+import { ensureAdePrTranscriptGistLinks, hasAdePrTranscriptGistLinks, type AdePrTranscriptGistLink } from "../../../shared/adePrTranscriptGists";
 import { normalizeEscapedMarkdownNewlines } from "../../../shared/prMarkdownText";
+import {
+  formatPrTranscriptGistMarkdown,
+  MAX_PR_TRANSCRIPT_GIST_SESSIONS,
+  transcriptGistDescription,
+  transcriptGistLinkTitle,
+} from "./prTranscriptGists";
 
 type CreatePrFromLaneInternalArgs = CreatePrFromLaneArgs & {
   skipBranchPush?: boolean;
@@ -942,6 +950,7 @@ export function createPrService({
     github_url, github_node_id, title, state, base_branch, head_branch,
     checks_status, review_status, additions, deletions, last_synced_at,
     created_at, updated_at, creation_strategy, merge_conflicts, behind_base_by`;
+  let agentChatService: ReturnType<typeof createAgentChatService> | null = null;
 
   const acquireLaneMutationLock = (args: {
     lane: LaneSummary;
@@ -1041,6 +1050,113 @@ export function createPrService({
         });
       });
     }
+  };
+
+  const prTranscriptGistsEnabled = (): boolean => {
+    try {
+      return projectConfigService.get().effective.github?.prTranscriptGists?.enabled === true;
+    } catch (error) {
+      logger.warn("prs.transcript_gists_config_read_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+  };
+
+  const createPrTranscriptGistLinks = async (args: {
+    lane: LaneSummary;
+    repo: GitHubRepoRef;
+    prNumber: number;
+    githubUrl: string;
+  }): Promise<AdePrTranscriptGistLink[]> => {
+    if (!agentChatService || !prTranscriptGistsEnabled()) return [];
+    let sessions: AgentChatSessionSummary[] = [];
+    try {
+      sessions = await agentChatService.listSessions(args.lane.id, { includeArchived: false });
+    } catch (error) {
+      logger.warn("prs.transcript_gists_list_sessions_failed", {
+        laneId: args.lane.id,
+        prNumber: args.prNumber,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    }
+
+    const candidates = sessions
+      .filter((session) => !session.identityKey)
+      .sort((a, b) => {
+        const aMs = Date.parse(a.lastActivityAt ?? a.startedAt ?? "");
+        const bMs = Date.parse(b.lastActivityAt ?? b.startedAt ?? "");
+        if (Number.isFinite(aMs) && Number.isFinite(bMs) && aMs !== bMs) return bMs - aMs;
+        return a.sessionId.localeCompare(b.sessionId);
+      })
+      .slice(0, MAX_PR_TRANSCRIPT_GIST_SESSIONS);
+
+    const links: AdePrTranscriptGistLink[] = [];
+    for (const session of candidates) {
+      try {
+        const entries = await agentChatService.readTranscript(session.sessionId);
+        if (!entries.length) continue;
+        const exportedAt = nowIso();
+        const markdown = formatPrTranscriptGistMarkdown({
+          repoOwner: args.repo.owner,
+          repoName: args.repo.name,
+          prNumber: args.prNumber,
+          githubUrl: args.githubUrl,
+          laneId: args.lane.id,
+          laneName: args.lane.name,
+          exportedAt,
+          session,
+          entries,
+        });
+        const gist = await githubService.createSecretGist({
+          description: transcriptGistDescription({
+            repoOwner: args.repo.owner,
+            repoName: args.repo.name,
+            prNumber: args.prNumber,
+            session,
+          }),
+          files: {
+            "README.md": { content: markdown },
+          },
+        });
+        if (!gist.htmlUrl) continue;
+        links.push({
+          title: transcriptGistLinkTitle(session),
+          url: gist.htmlUrl,
+          provider: session.provider,
+          entryCount: entries.length,
+        });
+      } catch (error) {
+        logger.warn("prs.transcript_gist_create_failed", {
+          laneId: args.lane.id,
+          prNumber: args.prNumber,
+          sessionId: session.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return links;
+  };
+
+  const attachPrTranscriptGistLinks = async (args: {
+    lane: LaneSummary;
+    repo: GitHubRepoRef;
+    prNumber: number;
+    githubUrl: string;
+    currentBody: string;
+  }): Promise<string> => {
+    if (hasAdePrTranscriptGistLinks(args.currentBody)) return args.currentBody;
+    const links = await createPrTranscriptGistLinks(args);
+    if (!links.length) return args.currentBody;
+    const nextBody = ensureAdePrTranscriptGistLinks(args.currentBody, links);
+    if (nextBody === args.currentBody) return args.currentBody;
+    await githubService.apiRequest({
+      method: "PATCH",
+      path: `/repos/${args.repo.owner}/${args.repo.name}/pulls/${args.prNumber}`,
+      body: { body: nextBody },
+    });
+    return nextBody;
   };
 
   const getRowById = (prId: string): PullRequestRow | null =>
@@ -3958,6 +4074,22 @@ export function createPrService({
       });
     });
 
+    await attachPrTranscriptGistLinks({
+      lane,
+      repo,
+      prNumber,
+      githubUrl: summary.githubUrl || `https://github.com/${repo.owner}/${repo.name}/pull/${prNumber}`,
+      currentBody: typeof pr?.body === "string" ? pr.body : enrichedBody,
+    }).then((body) => {
+      if (pr) pr.body = body;
+    }).catch((error) => {
+      logger.warn("prs.transcript_gists_attach_failed", {
+        laneId: lane.id,
+        prNumber,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+
     return await refreshOne(prId);
   };
 
@@ -4065,6 +4197,22 @@ export function createPrService({
       linkedAt: createdAt,
     }).catch((error) => {
       logger.warn("prs.linear_pr_cards_publish_failed", {
+        laneId: lane.id,
+        prNumber: locator.number,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+
+    await attachPrTranscriptGistLinks({
+      lane,
+      repo,
+      prNumber: locator.number,
+      githubUrl: summary.githubUrl || `https://github.com/${repo.owner}/${repo.name}/pull/${locator.number}`,
+      currentBody: typeof pr?.body === "string" ? pr.body : patchedBody,
+    }).then((body) => {
+      if (pr) pr.body = body;
+    }).catch((error) => {
+      logger.warn("prs.transcript_gists_attach_failed", {
         laneId: lane.id,
         prNumber: locator.number,
         error: error instanceof Error ? error.message : String(error),
@@ -7430,8 +7578,8 @@ export function createPrService({
       return markResolutionWorkerActive(proposalId, laneId, workerStepId);
     },
 
-    setAgentChatService(_svc: ReturnType<typeof createAgentChatService>): void {
-      // Reserved for future PR<->chat linking.
+    setAgentChatService(svc: ReturnType<typeof createAgentChatService>): void {
+      agentChatService = svc;
     },
 
     async refreshSnapshots(args: { prId?: string } = {}): Promise<{ refreshedCount: number }> {

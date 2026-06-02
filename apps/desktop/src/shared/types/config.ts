@@ -1417,6 +1417,9 @@ export type ProjectConfigFile = {
   environments?: EnvironmentMapping[];
   github?: {
     prPollingIntervalSeconds?: number;
+    prTranscriptGists?: {
+      enabled?: boolean;
+    };
   };
   git?: {
     autoRebaseOnHeadChange?: boolean;
@@ -1454,6 +1457,9 @@ export type EffectiveProjectConfig = {
   environments?: EnvironmentMapping[];
   github?: {
     prPollingIntervalSeconds?: number;
+    prTranscriptGists?: {
+      enabled: boolean;
+    };
   };
   git: {
     autoRebaseOnHeadChange: boolean;

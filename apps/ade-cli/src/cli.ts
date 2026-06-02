@@ -408,6 +408,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Run ADE's singleton Apple silicon macOS VM
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade usage snapshot | refresh | budget         Read provider quota usage and edit automation guardrails
+    $ ade settings pr-transcript-gists enable      Attach secret chat transcript gists to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade actions list | run | status | wait        Escape hatch for every ADE service action
@@ -8557,6 +8558,37 @@ function buildBrowserPlan(args: string[]): CliPlan {
 
 function buildSettingsPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "get";
+  if (sub === "pr-transcript-gists" || sub === "transcript-gists" || sub === "gist-transcripts") {
+    const mode = (firstPositional(args) ?? "status").toLowerCase();
+    if (mode === "status") {
+      return {
+        kind: "execute",
+        label: "settings pr transcript gists",
+        steps: [
+          actionStep("result", "project_config", "get"),
+        ],
+      };
+    }
+    if (mode === "enable" || mode === "on" || mode === "true") {
+      return {
+        kind: "execute",
+        label: "enable PR transcript gists",
+        steps: [
+          actionStep("result", "project_config", "setPrTranscriptGists", { enabled: true }),
+        ],
+      };
+    }
+    if (mode === "disable" || mode === "off" || mode === "false") {
+      return {
+        kind: "execute",
+        label: "disable PR transcript gists",
+        steps: [
+          actionStep("result", "project_config", "setPrTranscriptGists", { enabled: false }),
+        ],
+      };
+    }
+    throw new CliUsageError("settings pr-transcript-gists expects enable, disable, or status.");
+  }
   if (sub === "actions")
     return {
       kind: "execute",

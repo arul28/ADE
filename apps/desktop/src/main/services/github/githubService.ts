@@ -1014,6 +1014,34 @@ export function createGithubService({
     return Array.isArray(data) ? data : [];
   };
 
+  const createSecretGist = async (args: {
+    description?: string | null;
+    files: Record<string, { content: string }>;
+  }): Promise<{ id: string; htmlUrl: string }> => {
+    const files: Record<string, { content: string }> = {};
+    for (const [filename, file] of Object.entries(args.files)) {
+      const normalizedFilename = filename.trim();
+      if (!normalizedFilename || typeof file?.content !== "string") continue;
+      files[normalizedFilename] = { content: file.content };
+    }
+    if (!Object.keys(files).length) {
+      throw new Error("At least one gist file is required.");
+    }
+    const { data } = await apiRequest<Record<string, unknown>>({
+      method: "POST",
+      path: "/gists",
+      body: {
+        description: args.description?.trim() || "ADE PR chat transcript",
+        public: false,
+        files,
+      },
+    });
+    return {
+      id: asString(data.id),
+      htmlUrl: asString(data.html_url),
+    };
+  };
+
   // Issue-domain action helpers (used by the automations `issue` domain).
   const addIssueComment = async (owner: string, name: string, number: number, body: string): Promise<GitHubIssueComment | null> => {
     const { data } = await apiRequest<GitHubIssueComment>({
@@ -1265,6 +1293,7 @@ export function createGithubService({
     listIssueComments,
     listRepoPulls,
     listPullRequestReviews,
+    createSecretGist,
 
     // Issue-domain action helpers (exposed via `issue` domain in the
     // automations action registry).

@@ -935,6 +935,30 @@ export function createHeadlessGitHubService(
     apiRequest,
     createRepository,
     getRepository,
+    async createSecretGist(args) {
+      const files: Record<string, { content: string }> = {};
+      for (const [filename, file] of Object.entries(args.files ?? {})) {
+        const normalizedFilename = filename.trim();
+        if (!normalizedFilename || typeof file?.content !== "string") continue;
+        files[normalizedFilename] = { content: file.content };
+      }
+      if (!Object.keys(files).length) {
+        throw new Error("At least one gist file is required.");
+      }
+      const { data } = await apiRequest<Record<string, unknown>>({
+        method: "POST",
+        path: "/gists",
+        body: {
+          description: args.description?.trim() || "ADE PR chat transcript",
+          public: false,
+          files,
+        },
+      });
+      return {
+        id: asString(data.id),
+        htmlUrl: asString(data.html_url),
+      };
+    },
     async listRepoLabels(owner, name) {
       return apiRequestAllPages({
         path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/labels`,

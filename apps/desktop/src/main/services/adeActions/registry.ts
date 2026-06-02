@@ -548,7 +548,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   session: ["backfillDeltas", "deleteSession", "get", "getDelta", "list", "readTranscriptTail", "updateMeta"],
   operation: ["finish", "get", "list", "start"],
   ade_project: ["clearLocalData", "getSnapshot", "initializeOrRepair", "runIntegrityCheck"],
-  project_config: ["confirmTrust", "diffAgainstDisk", "get", "save", "validate"],
+  project_config: ["confirmTrust", "diffAgainstDisk", "get", "save", "setPrTranscriptGists", "validate"],
   issue_inventory: [
     "deletePipelineSettings",
     "getConvergenceRuntime",

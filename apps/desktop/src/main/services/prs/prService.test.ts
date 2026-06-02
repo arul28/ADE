@@ -175,6 +175,7 @@ function makeGithubService(overrides?: Record<string, unknown>) {
   return {
     getRepoOrThrow: vi.fn(async () => REPO),
     apiRequest: vi.fn(),
+    createSecretGist: vi.fn(),
     getStatus: vi.fn(),
     setToken: vi.fn(),
     clearToken: vi.fn(),
@@ -237,6 +238,7 @@ interface BuildServiceOpts {
   laneService?: any;
   db?: any;
   conflictService?: any;
+  projectConfigService?: any;
 }
 
 function buildService(opts: BuildServiceOpts = {}) {
@@ -278,7 +280,7 @@ function buildService(opts: BuildServiceOpts = {}) {
     operationService: makeOperationService(),
     githubService,
     conflictService: opts.conflictService,
-    projectConfigService: makeProjectConfigService(),
+    projectConfigService: opts.projectConfigService ?? makeProjectConfigService(),
     openExternal: vi.fn(async () => {}),
   });
 
@@ -2729,6 +2731,222 @@ describe("prService.createFromLane", () => {
     expect(result.githubPrNumber).toBe(99);
     expect(result.headBranch).toBe("my-feature");
     expect(result.baseBranch).toBe("main");
+  });
+
+  it("creates secret chat transcript gists and patches PR body when enabled", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db);
+    const createSecretGist = vi.fn(async () => ({
+      id: "gist-1",
+      htmlUrl: "https://gist.github.com/octocat/gist-1",
+    }));
+    const apiRequest = vi.fn(async (args: any) => {
+      if (args.method === "POST" && args.path.endsWith("/pulls")) {
+        return {
+          data: {
+            number: 99,
+            html_url: "https://github.com/test-owner/test-repo/pull/99",
+            node_id: "PR_node1",
+            title: "My PR",
+            state: "open",
+            draft: false,
+            merged_at: null,
+            body: args.body.body,
+            head: { ref: "my-feature" },
+            base: { ref: "main" },
+            additions: 10,
+            deletions: 2,
+          },
+          response: { status: 201, headers: new Headers() },
+        };
+      }
+      if (args.method === "PATCH" && args.path.endsWith("/pulls/99")) {
+        return { data: {}, response: { status: 200, headers: new Headers() } };
+      }
+      if (args.method === "GET" && args.path.endsWith("/pulls/99")) {
+        return {
+          data: {
+            number: 99,
+            html_url: "https://github.com/test-owner/test-repo/pull/99",
+            title: "My PR",
+            state: "open",
+            draft: false,
+            merged_at: null,
+            head: { ref: "my-feature", sha: "abc123" },
+            base: { ref: "main", sha: "base123" },
+            additions: 10,
+            deletions: 2,
+          },
+          response: { status: 200, headers: new Headers() },
+        };
+      }
+      if (args.path.endsWith("/commits/abc123/status")) {
+        return { data: { state: "success", statuses: [] }, response: { status: 200, headers: new Headers() } };
+      }
+      if (args.path.endsWith("/commits/abc123/check-runs")) {
+        return { data: { check_runs: [] }, response: { status: 200, headers: new Headers() } };
+      }
+      if (args.path.endsWith("/pulls/99/reviews")) {
+        return { data: [], response: { status: 200, headers: new Headers() } };
+      }
+      if (args.path.includes("/compare/")) {
+        return { data: { behind_by: 0 }, response: { status: 200, headers: new Headers() } };
+      }
+      return { data: [], response: { status: 200, headers: new Headers() } };
+    });
+    const ghService = makeGithubService({ apiRequest, createSecretGist });
+    const { service } = buildService({
+      db,
+      githubService: ghService,
+      projectConfigService: {
+        get: vi.fn(() => ({ effective: { github: { prTranscriptGists: { enabled: true } } } })),
+      },
+    });
+    service.setAgentChatService({
+      listSessions: vi.fn(async () => [{
+        sessionId: "chat-1",
+        laneId: LANE_ID,
+        provider: "codex",
+        model: "gpt-5-codex",
+        title: "Ship transcript links",
+        startedAt: "2026-06-01T10:00:00.000Z",
+        lastActivityAt: "2026-06-01T11:00:00.000Z",
+      }]),
+      readTranscript: vi.fn(async () => [
+        { role: "user", text: "Please implement transcript gists.", timestamp: "2026-06-01T10:00:00.000Z" },
+        { role: "assistant", text: "Done.", timestamp: "2026-06-01T10:01:00.000Z" },
+      ]),
+    } as any);
+
+    await service.createFromLane({
+      laneId: LANE_ID,
+      title: "My PR",
+      body: "description",
+      draft: false,
+      allowDirtyWorktree: true,
+    });
+
+    expect(createSecretGist).toHaveBeenCalledWith(expect.objectContaining({
+      description: expect.stringContaining("test-owner/test-repo#99"),
+      files: {
+        "README.md": {
+          content: expect.stringContaining("# Ship transcript links"),
+        },
+      },
+    }));
+    const patchedBodies = apiRequest.mock.calls
+      .map(([call]) => call)
+      .filter((call) => call.method === "PATCH" && call.path.endsWith("/pulls/99"))
+      .map((call) => call.body.body);
+    expect(patchedBodies).toEqual(expect.arrayContaining([
+      expect.stringContaining("https://gist.github.com/octocat/gist-1"),
+    ]));
+    expect(patchedBodies.at(-1)).toContain("ADE chat transcripts");
+  });
+
+  it("does not recreate transcript gists when the PR body already has transcript links", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db);
+    const createSecretGist = vi.fn(async () => ({
+      id: "gist-1",
+      htmlUrl: "https://gist.github.com/octocat/gist-1",
+    }));
+    const apiRequest = vi.fn(async (args: any) => {
+      if (args.method === "POST" && args.path.endsWith("/pulls")) {
+        return {
+          data: {
+            number: 99,
+            html_url: "https://github.com/test-owner/test-repo/pull/99",
+            node_id: "PR_node1",
+            title: "My PR",
+            state: "open",
+            draft: false,
+            merged_at: null,
+            body: args.body.body,
+            head: { ref: "my-feature" },
+            base: { ref: "main" },
+            additions: 10,
+            deletions: 2,
+          },
+          response: { status: 201, headers: new Headers() },
+        };
+      }
+      if (args.method === "GET" && args.path.endsWith("/pulls/99")) {
+        return {
+          data: {
+            number: 99,
+            html_url: "https://github.com/test-owner/test-repo/pull/99",
+            title: "My PR",
+            state: "open",
+            draft: false,
+            merged_at: null,
+            head: { ref: "my-feature", sha: "abc123" },
+            base: { ref: "main", sha: "base123" },
+            additions: 10,
+            deletions: 2,
+          },
+          response: { status: 200, headers: new Headers() },
+        };
+      }
+      if (args.path.endsWith("/commits/abc123/status")) {
+        return { data: { state: "success", statuses: [] }, response: { status: 200, headers: new Headers() } };
+      }
+      if (args.path.endsWith("/commits/abc123/check-runs")) {
+        return { data: { check_runs: [] }, response: { status: 200, headers: new Headers() } };
+      }
+      if (args.path.endsWith("/pulls/99/reviews")) {
+        return { data: [], response: { status: 200, headers: new Headers() } };
+      }
+      if (args.path.includes("/compare/")) {
+        return { data: { behind_by: 0 }, response: { status: 200, headers: new Headers() } };
+      }
+      return { data: [], response: { status: 200, headers: new Headers() } };
+    });
+    const ghService = makeGithubService({ apiRequest, createSecretGist });
+    const { service } = buildService({
+      db,
+      githubService: ghService,
+      projectConfigService: {
+        get: vi.fn(() => ({ effective: { github: { prTranscriptGists: { enabled: true } } } })),
+      },
+    });
+    service.setAgentChatService({
+      listSessions: vi.fn(async () => [{
+        sessionId: "chat-1",
+        laneId: LANE_ID,
+        provider: "codex",
+        model: "gpt-5-codex",
+        title: "Ship transcript links",
+        startedAt: "2026-06-01T10:00:00.000Z",
+        lastActivityAt: "2026-06-01T11:00:00.000Z",
+      }]),
+      readTranscript: vi.fn(async () => [
+        { role: "user", text: "Please implement transcript gists.", timestamp: "2026-06-01T10:00:00.000Z" },
+      ]),
+    } as any);
+
+    await service.createFromLane({
+      laneId: LANE_ID,
+      title: "My PR",
+      body: [
+        "description",
+        "",
+        "<!-- ade:transcript-gists v=1 count=1 -->",
+        "## ADE chat transcripts",
+        "",
+        "- [Existing](https://gist.github.com/octocat/existing)",
+        "<!-- /ade:transcript-gists -->",
+      ].join("\n"),
+      draft: false,
+      allowDirtyWorktree: true,
+    });
+
+    expect(createSecretGist).not.toHaveBeenCalled();
+    const patchedBodies = apiRequest.mock.calls
+      .map(([call]) => call)
+      .filter((call) => call.method === "PATCH" && call.path.endsWith("/pulls/99"))
+      .map((call) => call.body.body);
+    expect(patchedBodies.some((body) => body.includes("https://gist.github.com/octocat/gist-1"))).toBe(false);
   });
 
   it("uses the lane baseRef when legacy primary parent metadata disagrees with the current primary branch", async () => {
