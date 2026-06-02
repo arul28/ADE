@@ -1099,12 +1099,12 @@ export function AgentChatComposer({
   const canAttachIssueContext = !composerInputLocked && typeof onAddContextAttachment === "function";
   const showOrchestratorModeButton = Boolean(onStartOrchestratorChat && !sessionId && !parallelChatMode);
   const orchestratorModeButtonDisabled = composerInputLocked || busy || turnActive;
-  const showLaunchClipboardHelper =
+  const showLaunchClipboardNotice =
     launchPromptClipboardEnabled
     && launchPromptClipboardNoticeEnabled
-    && composerFocused
     && !composerInputLocked
     && draft.trim().length > 0;
+  const showLaunchClipboardHelper = showLaunchClipboardNotice && composerFocused;
 
   const resizeTextarea = useCallback(() => {
     if (useRichComposer) return;
@@ -3361,7 +3361,7 @@ export function AgentChatComposer({
       }
       footer={
         <div className="ade-chat-composer-footer flex flex-col gap-2 px-2 py-1 sm:px-2.5">
-          {launchPromptClipboardEnabled && launchPromptClipboardNoticeEnabled && draft.trim().length > 0 && !composerInputLocked ? (
+          {showLaunchClipboardNotice ? (
             <div className="px-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-muted-fg/45">
               After submission your prompt will auto copy to clipboard.
             </div>

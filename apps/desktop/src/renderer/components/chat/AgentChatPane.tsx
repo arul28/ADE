@@ -5789,7 +5789,7 @@ export function AgentChatPane({
 
   const openLaunchedDraftSession = useCallback((launch: BackgroundLaunchNotice & { jobId?: string }) => {
     if (launch.jobId) {
-      setDraftLaunchJobs((current) => current.filter((job) => job.id !== launch.jobId));
+      dismissDraftLaunchJob(launch.jobId);
     }
     if (projectRoot) {
       setWorkViewState(projectRoot, (prev) => ({
@@ -5822,10 +5822,10 @@ export function AgentChatPane({
     }
     navigate(`/lanes?laneId=${encodeURIComponent(launch.laneId)}&sessionId=${encodeURIComponent(launch.sessionId)}&focus=single`);
   }, [
+    dismissDraftLaunchJob,
     embeddedWorkLayout,
     navigate,
     projectRoot,
-    setDraftLaunchJobs,
     setLaneWorkViewState,
     setWorkViewState,
     suppressDraftLaunchNavigation,
@@ -8512,10 +8512,10 @@ export function AgentChatPane({
       className={cn(compactShell ? "min-w-0 w-full" : undefined, "space-y-2")}
     >
       {draftLaunchJobs.map((job) => {
-        const canOpen = job.status === "ready" && job.laneId && job.laneName && job.sessionId;
         const isFailed = job.status === "failed";
         const isReady = job.status === "ready";
         const isActiveJob = !isDraftLaunchJobTerminal(job.status);
+        const canOpen = isReady && Boolean(job.laneId && job.laneName && job.sessionId);
         return (
           <div
             key={job.id}
@@ -8524,12 +8524,12 @@ export function AgentChatPane({
             className={cn(
               "flex items-start justify-between gap-3 rounded-lg border px-3 py-2.5 font-sans text-[11px] shadow-[0_10px_40px_rgba(0,0,0,0.10)]",
               isFailed && "border-rose-300/20 bg-rose-500/[0.08] text-rose-100/90",
-              isReady && !isFailed && "border-emerald-300/20 bg-emerald-500/[0.08] text-emerald-100/90",
-              !isFailed && !isReady && "border-white/10 bg-white/[0.045] text-fg/75",
+              isReady && "border-emerald-300/20 bg-emerald-500/[0.08] text-emerald-100/90",
+              isActiveJob && "border-white/10 bg-white/[0.045] text-fg/75",
             )}
           >
             <div className="flex min-w-0 items-start gap-2">
-              {!isReady && !isFailed ? (
+              {isActiveJob ? (
                 <CircleNotch size={13} weight="bold" className="mt-0.5 shrink-0 animate-spin text-fg/55" aria-hidden />
               ) : null}
               <div className="min-w-0 space-y-0.5 text-left">
