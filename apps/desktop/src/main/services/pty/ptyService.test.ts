@@ -1084,7 +1084,7 @@ describe("ptyService", () => {
     it("rejects awaited initialInput when the agent CLI never becomes ready", async () => {
       vi.useFakeTimers();
       try {
-        const { service, mockPty, logger } = createHarness();
+        const { service, mockPty, logger, sessionService } = createHarness();
 
         const pending = service.create({
           laneId: "lane-1",
@@ -1120,6 +1120,15 @@ describe("ptyService", () => {
           "pty.initial_input_skipped_not_ready",
           expect.objectContaining({ provider: "codex" }),
         );
+        expect(logger.warn).toHaveBeenCalledWith(
+          "pty.initial_input_await_failed_closing",
+          expect.objectContaining({ toolType: "codex" }),
+        );
+        expect(mockPty.kill).toHaveBeenCalledWith("SIGTERM");
+        expect(sessionService.end).toHaveBeenCalledWith(expect.objectContaining({
+          exitCode: 1,
+          status: "failed",
+        }));
       } finally {
         vi.useRealTimers();
       }

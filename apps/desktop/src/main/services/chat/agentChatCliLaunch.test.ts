@@ -126,14 +126,15 @@ describe("launchAgentChatCli worktree-path resolution", () => {
 });
 
 describe("launchAgentChatCli attached issue ids", () => {
-  it("awaits delayed kickoff input so slow CLI readiness cannot silently drop the prompt", async () => {
+  it("returns the durable terminal session before delayed kickoff input readiness", async () => {
     const deps = makeDeps();
-    await launchAgentChatCli(makeArgs(), deps);
+    const result = await launchAgentChatCli(makeArgs(), deps);
 
     const createArg = deps.create.mock.calls[0]?.[0] as PtyCreateArgs;
     expect(createArg.initialInput).toContain("Resolve the attached issue");
-    expect(createArg.awaitInitialInput).toBe(true);
-    expect(createArg.initialInputReadyTimeoutMs).toBe(120_000);
+    expect(createArg).not.toHaveProperty("awaitInitialInput");
+    expect(createArg).not.toHaveProperty("initialInputReadyTimeoutMs");
+    expect(result.sessionId).toBe(createArg.sessionId);
   });
 
   it("returns only well-formed attached issue ids and drops malformed entries", async () => {

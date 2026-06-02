@@ -315,6 +315,58 @@ describe("runBatchLaunch", () => {
     expect(result.createdSessionIds).toEqual(["cli-1"]);
   });
 
+  it("records every concurrent delayed CLI launch by its returned terminal session id", async () => {
+    type LaunchCliArgs = Parameters<NonNullable<BatchLaunchDeps["launchCli"]>>[0];
+    const createDeferred = () => {
+      let resolve!: (value: { sessionId: string }) => void;
+      const promise = new Promise<{ sessionId: string }>((done) => {
+        resolve = done;
+      });
+      return { promise, resolve };
+    };
+    const deferredByIssue = new Map([
+      ["a", createDeferred()],
+      ["b", createDeferred()],
+      ["c", createDeferred()],
+    ]);
+    const createLane = vi.fn(async (args: { linearIssue: { id: string } }) => ({ id: `lane-${args.linearIssue.id}` }));
+    const launch = vi.fn(async () => ({ id: "chat-sess" }));
+    const launchCli = vi.fn(async (args: LaunchCliArgs) => {
+      const issueId = args.linearIssues[0]?.id;
+      const deferred = issueId ? deferredByIssue.get(issueId) : null;
+      if (!deferred) throw new Error(`missing deferred for ${issueId ?? "unknown issue"}`);
+      return deferred.promise;
+    });
+    const onItem = vi.fn();
+    const entries = ["a", "b", "c"].map((id) => ({
+      issue: makeIssue({ id, identifier: `ENG-${id.toUpperCase()}` }),
+      config: makeConfig({ sessionType: "cli" }),
+    }));
+
+    const launched = runBatchLaunch(
+      entries,
+      { createLane, launch, launchCli },
+      { onItem, concurrency: 3 },
+    );
+    for (let i = 0; i < 5 && launchCli.mock.calls.length < 3; i += 1) {
+      await Promise.resolve();
+    }
+    expect(launchCli).toHaveBeenCalledTimes(3);
+
+    deferredByIssue.get("b")?.resolve({ sessionId: "cli-b" });
+    deferredByIssue.get("c")?.resolve({ sessionId: "cli-c" });
+    deferredByIssue.get("a")?.resolve({ sessionId: "cli-a" });
+
+    const result = await launched;
+    expect(launch).not.toHaveBeenCalled();
+    expect(result.failedIssueIds).toHaveLength(0);
+    expect(result.createdSessionIds).toEqual(expect.arrayContaining(["cli-a", "cli-b", "cli-c"]));
+    expect(result.createdSessionIds).toHaveLength(3);
+    expect(onItem).toHaveBeenCalledWith("a", expect.objectContaining({ sessionId: "cli-a", status: "done" }));
+    expect(onItem).toHaveBeenCalledWith("b", expect.objectContaining({ sessionId: "cli-b", status: "done" }));
+    expect(onItem).toHaveBeenCalledWith("c", expect.objectContaining({ sessionId: "cli-c", status: "done" }));
+  });
+
   it("launches into an existing lane without creating or rolling one back", async () => {
     const createLane = vi.fn(async () => ({ id: "lane-new" }));
     const launch = vi.fn(async (args: { laneId: string }) => {

@@ -3857,6 +3857,15 @@ export function createPtyService({
             if (initialInputDelayMs > 0) await delay(initialInputDelayMs);
             await writeInitialInput();
           } catch (err) {
+            logger.warn("pty.initial_input_await_failed_closing", {
+              ptyId,
+              sessionId,
+              cwd,
+              toolType: toolTypeHint,
+              err: String(err),
+            });
+            terminatePtyProcessTree(entry, "SIGTERM", logger);
+            closeEntry(ptyId, 1);
             throw err;
           }
         } else if (initialInputDelayMs > 0) {

@@ -23,8 +23,6 @@ type LoggerForCliLaunch = {
   info: (message: string, meta?: Record<string, unknown>) => void;
 };
 
-const AGENT_CHAT_CLI_KICKOFF_READY_TIMEOUT_MS = 120_000;
-
 export type AgentChatCliLaunchDeps = {
   laneService: LaneServiceForCliLaunch;
   ptyService: PtyServiceForCliLaunch;
@@ -119,12 +117,6 @@ export async function launchAgentChatCli(
       : {}),
     ...(launch.initialInputDelayMs !== undefined
       ? { initialInputDelayMs: launch.initialInputDelayMs }
-      : {}),
-    ...(launch.initialInput !== undefined
-      ? {
-          awaitInitialInput: true,
-          initialInputReadyTimeoutMs: AGENT_CHAT_CLI_KICKOFF_READY_TIMEOUT_MS,
-        }
       : {}),
     ...(launch.env ? { env: launch.env } : {}),
   });
