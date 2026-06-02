@@ -158,6 +158,39 @@ describe("computerUseArtifactBrokerService", () => {
     }
   });
 
+  it("allows ADE cache browser observations to be promoted into proof", () => {
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+    });
+    const observationDir = path.join(projectRoot, ".ade", "cache", "browser-observations", "profile", "tab-1");
+    fs.mkdirSync(observationDir, { recursive: true });
+    const observationPath = path.join(observationDir, "obs.png");
+    fs.writeFileSync(observationPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+    const ingested = broker.ingest({
+      backend: {
+        name: "ade-browser",
+        style: "manual",
+      },
+      inputs: [
+        {
+          kind: "screenshot",
+          title: "Browser proof",
+          path: observationPath,
+        },
+      ],
+    });
+
+    expect(ingested.artifacts[0]).toMatchObject({
+      backendName: "ade-browser",
+      kind: "screenshot",
+      title: "Browser proof",
+    });
+  });
+
   it("persists the declared backend style for ingested artifacts", () => {
     const broker = createComputerUseArtifactBrokerService({
       db,

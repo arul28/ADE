@@ -22,12 +22,13 @@ The primary unit of work inside any project is a **lane**: an isolated git workt
 Layered on top, all owned by the runtime:
 - **Agents** — chat, CTO operator, workers. Multi-provider (Anthropic, OpenAI, Claude Code CLI, Codex, OpenCode, Cursor). Tool-aware. CTO worker adapter types: `claude-local`, `codex-local`, `process`.
 - **Automations** — rule-based background workflows triggered by events, cron, webhooks.
-- **Computer use** — control plane that fans out to Ghost OS, agent-browser, or local fallback for UI automation proofs.
+- **Computer use** — control plane that fans out to Computer Use, agent-browser, or local fallback for UI automation proofs.
+- **ADE browser** — project-scoped built-in browser with persistent project profiles, tab/session ownership, hidden-tab agent actions, diagnostics, traces, and explicit proof promotion.
 - **Linear** — first-class two-way integration owned by the CTO agent.
 - **Multi-device sync** — cr-sqlite CRDT replication, owned by the runtime daemon. The iOS app and any controller desktops connect through the same sync host.
 - **Remote runtime** — the desktop ships per-platform `ade-<platform-arch>` binaries plus native deps under `apps/desktop/resources/runtime/`; `bootstrapRemoteRuntime` uploads them on first SSH connect. Headless installs use `curl … install.sh | sh`.
 
-ADE is the control plane. It does not execute browser automation or computer-use itself — it dispatches to backends and normalizes their artifacts.
+ADE is the control plane. It owns ADE Browser automation for its built-in project browser, while OS-level computer-use still runs through dedicated backends and ADE normalizes their artifacts.
 
 ---
 
@@ -129,7 +130,7 @@ Fragile areas flagged across the docs (read docs before editing):
 
 ## Out of scope (deliberate non-goals)
 
-- ADE does not run browser automation or accessibility-based UI control itself. It is a control plane; executors run elsewhere (Ghost OS, agent-browser CLI).
+- ADE does not run OS-level accessibility UI control itself. It is a control plane for those executors; ADE Browser automation is limited to ADE's built-in project browser.
 - ADE does not host remote git servers. It operates on local worktrees against a GitHub remote.
 - ADE does not multiplex multiple users. Single-user, per-machine.
 - ADE does not ship a server-side web app. The `apps/web/` is marketing/docs-site only.

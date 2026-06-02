@@ -1330,6 +1330,20 @@ describe("AgentChatComposer", () => {
     expect(textarea.getAttribute("spellcheck")).toBe("true");
   });
 
+  it("shows the prompt clipboard hint only while draft text is present", () => {
+    const view = renderComposer({
+      turnActive: false,
+      draft: "Keep a rescue copy.",
+      launchPromptClipboardEnabled: true,
+    });
+
+    expect(screen.getByText("After submission your prompt will auto copy to clipboard.")).toBeTruthy();
+
+    view.rerender(<AgentChatComposer {...buildComposerProps({ turnActive: false, draft: "" })} />);
+
+    expect(screen.queryByText("After submission your prompt will auto copy to clipboard.")).toBeNull();
+  });
+
   it("uses a contextual accessible name for active turn textareas", () => {
     renderComposer({
       draft: "",
@@ -1367,7 +1381,7 @@ describe("AgentChatComposer", () => {
     })).toBeTruthy();
   });
 
-  it("shows the launch clipboard helper only while typing in the prompt", () => {
+  it("shows the launch clipboard helper only while typing and keeps the enabled footer visible", () => {
     const onOpenLaunchPromptClipboardSettings = vi.fn();
     renderComposer({
       draft: "Recoverable launch prompt",
@@ -1377,6 +1391,7 @@ describe("AgentChatComposer", () => {
     });
 
     expect(screen.queryByText(/Prompt will be copied to clipboard after Send\./)).toBeNull();
+    expect(screen.getByText("After submission your prompt will auto copy to clipboard.")).toBeTruthy();
 
     const textarea = screen.getByRole("textbox");
     fireEvent.focus(textarea);
@@ -1392,6 +1407,7 @@ describe("AgentChatComposer", () => {
 
     fireEvent.blur(settingButton);
     expect(screen.queryByText(/Prompt will be copied to clipboard after Send\./)).toBeNull();
+    expect(screen.getByText("After submission your prompt will auto copy to clipboard.")).toBeTruthy();
   });
 
   it("hides the launch clipboard helper when the setting is disabled", () => {
@@ -1404,6 +1420,7 @@ describe("AgentChatComposer", () => {
     fireEvent.focus(screen.getByRole("textbox"));
 
     expect(screen.queryByText(/Prompt will be copied to clipboard after Send\./)).toBeNull();
+    expect(screen.queryByText("After submission your prompt will auto copy to clipboard.")).toBeNull();
   });
 
   it("focuses the grid composer when the tile becomes active", () => {

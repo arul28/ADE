@@ -259,6 +259,8 @@ const appControlContextItem: AppControlContextItem = {
 const defaultBrowserStatus: BuiltInBrowserStatus = {
   attached: false,
   partition: "persist:ade-browser",
+  profileKey: "global",
+  profileProjectRoot: null,
   visible: false,
   bounds: { x: 0, y: 0, width: 0, height: 0 },
   activeTabId: null,
@@ -273,6 +275,7 @@ const defaultBrowserStatus: BuiltInBrowserStatus = {
   ownerLaneId: null,
   ownerChatSessionId: null,
   ownerClaimedAt: null,
+  ownerLeaseExpiresAt: null,
 };
 
 function installAdeMock(options: {
@@ -501,13 +504,14 @@ describe("WorkSidebar context targets", () => {
     expect((screen.getByText("Add Browser attachment") as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("warns from the Browser service claim without blocking context insertion", async () => {
+  it("does not show a view-level Browser warning for another lane's active tab", async () => {
     installAdeMock({
       browserStatus: {
         ...defaultBrowserStatus,
         ownerLaneId: "lane-1",
         ownerChatSessionId: "session-1",
         ownerClaimedAt: "2026-05-13T00:00:00.000Z",
+        ownerLeaseExpiresAt: "2026-05-13T00:10:00.000Z",
       },
     });
 
@@ -519,7 +523,7 @@ describe("WorkSidebar context targets", () => {
       contextTarget: { kind: "pty", sessionId: "term-2", ptyId: "pty-2", toolType: "claude" },
     });
 
-    expect(await screen.findByText(/This Browser view is claimed by Lane 1, not Lane 2/)).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText(/This Browser view is claimed/)).toBeNull());
     expect((screen.getByText("Add Browser context") as HTMLButtonElement).disabled).toBe(false);
   });
 });

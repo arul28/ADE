@@ -50,9 +50,11 @@ function isClosedSocketError(error: unknown): boolean {
 
 export function createBuiltInBrowserDesktopBridgeClient(args: {
   socketPath: string;
+  projectRoot?: string | null;
   logger: Logger;
 }): BuiltInBrowserDesktopBridgeClient {
   const { socketPath, logger } = args;
+  const projectRoot = args.projectRoot?.trim() || null;
   let client: JsonRpcClient | null = null;
   let connecting: Promise<JsonRpcClient> | null = null;
   let disposed = false;
@@ -118,11 +120,20 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
     }
   }
 
+  const withProjectRoot = (params: unknown): unknown => {
+    if (!projectRoot) return params;
+    if (params == null) return { projectRoot };
+    if (typeof params === "object" && !Array.isArray(params)) {
+      return { ...(params as Record<string, unknown>), projectRoot };
+    }
+    return params;
+  };
+
   async function callBridge(method: string, params?: unknown, retried = false): Promise<unknown> {
     const c = await ensureClient();
     try {
       return await raceWithTimeout(
-        c.request(`built_in_browser.${method}`, params),
+        c.request(`built_in_browser.${method}`, withProjectRoot(params)),
         REQUEST_TIMEOUT_MS,
         `Desktop browser bridge call ${method} timed out after ${REQUEST_TIMEOUT_MS}ms.`,
       );

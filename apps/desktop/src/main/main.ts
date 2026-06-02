@@ -181,6 +181,10 @@ import { createComputerUseArtifactBrokerService } from "./services/computerUse/c
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createAppControlService } from "./services/appControl/appControlService";
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
+import {
+  BUILT_IN_BROWSER_PARTITION,
+  BUILT_IN_BROWSER_PROFILE_PREFIX,
+} from "./services/builtInBrowser/builtInBrowserConstants";
 import { startBuiltInBrowserDesktopBridgeServer } from "./services/builtInBrowser/desktopBridgeServer";
 import { createMacosVmService } from "./services/macosVm/macosVmService";
 import { configureBuiltInBrowserWebAuthn } from "./services/builtInBrowser/builtInBrowserWebAuthn";
@@ -202,7 +206,7 @@ import { resolveDesktopUserDataPath, resolveElectronAppDataPath } from "./deskto
 type RemoteOpenProjectBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
 
 const AUTO_UPDATER_CACHE_DIR_NAME = "ade-desktop-updater";
-const ADE_BROWSER_WEBVIEW_PARTITION = "persist:ade-browser";
+const ADE_BROWSER_PROJECT_PROFILE_KEY_PATTERN = /^[a-f0-9]{16}$/;
 
 type AdePackageChannel = "alpha" | "beta";
 
@@ -443,6 +447,21 @@ function isAllowedAdeBrowserWebviewNavigation(rawUrl: string): boolean {
   }
 }
 
+function normalizeAdeBrowserWebviewPartition(value: unknown): string {
+  if (typeof value !== "string") return BUILT_IN_BROWSER_PARTITION;
+  const partition = value.trim();
+  if (
+    partition === BUILT_IN_BROWSER_PARTITION
+    || (
+      partition.startsWith(BUILT_IN_BROWSER_PROFILE_PREFIX)
+      && ADE_BROWSER_PROJECT_PROFILE_KEY_PATTERN.test(partition.slice(BUILT_IN_BROWSER_PROFILE_PREFIX.length))
+    )
+  ) {
+    return partition;
+  }
+  return BUILT_IN_BROWSER_PARTITION;
+}
+
 async function createWindow(args: {
   logger?: Logger;
   onCreated?: (win: BrowserWindow) => void;
@@ -501,7 +520,7 @@ async function createWindow(args: {
     }
     delete webPreferences.preload;
     delete (webPreferences as Record<string, unknown>).preloadURL;
-    webPreferences.partition = ADE_BROWSER_WEBVIEW_PARTITION;
+    webPreferences.partition = normalizeAdeBrowserWebviewPartition(webPreferences.partition);
     webPreferences.nodeIntegration = false;
     webPreferences.contextIsolation = true;
     webPreferences.sandbox = true;
@@ -1091,6 +1110,30 @@ app.whenReady().then(async () => {
 
   const builtInBrowserService = createBuiltInBrowserService({
     getLogger: () => getActiveContext().logger,
+    getProjectRootForWindow: (win) => getWindowSession(win.id).binding?.rootPath ?? null,
+    getWindowForProjectRoot: (projectRoot) => {
+      const normalizedRoot = normalizeProjectRoot(projectRoot);
+      const candidateWindows = BrowserWindow.getAllWindows().filter(
+        (win) => !win.isDestroyed(),
+      );
+      const selection = selectWindowForProjectNavigation(
+        normalizedRoot,
+        candidateWindows.map((win) => ({
+          id: win.id,
+          activeProjectRoot: windowProjectRoots.get(win.id) ?? null,
+          openProjectRoots: windowProjectTabRoots.get(win.id) ?? new Set<string>(),
+        })),
+      );
+      if (!selection) return null;
+      const targetWindow = candidateWindows.find((win) => win.id === selection.windowId) ?? null;
+      if (targetWindow && selection.activateProjectRoot) {
+        bindWindowToProject(targetWindow.id, normalizedRoot, {
+          emit: true,
+          foreground: false,
+        });
+      }
+      return targetWindow;
+    },
     onEvent: (payload, targetWindow) => {
       if (targetWindow && !targetWindow.isDestroyed()) {
         try {

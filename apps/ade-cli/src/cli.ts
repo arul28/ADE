@@ -115,6 +115,9 @@ type FormatterId =
   | "app-control-snapshot"
   | "app-control-selection"
   | "browser-status"
+  | "browser-sessions"
+  | "browser-observation"
+  | "browser-trace"
   | "macos-vm-status"
   | "macos-vm-share-policy"
   | "macos-vm-guide"
@@ -1321,33 +1324,69 @@ const HELP_BY_COMMAND: Record<string, string> = {
   browser: `${ADE_BANNER}
   ADE browser
 
-  Browser commands control ADE's global built-in browser pane. Use desktop
-  socket mode so CLI calls, chat link clicks, terminal localhost links, and the
-  Work sidebar all share the same browser tabs. The browser is global, not
-  lane-scoped, but its visible Work attribution comes from explicit CLI claims.
-  ADE reads ADE_LANE_ID/ADE_CHAT_SESSION_ID for agent CLI calls; use
-  "browser claim --lane <lane-id>" to claim an already-open browser for a lane.
+  Browser commands control ADE's project-scoped built-in browser pane. Use
+  desktop socket mode so CLI calls, chat link clicks, terminal localhost links,
+  and the Work sidebar share the browser for the active project only. Browser
+  tabs, cookies, and storage are isolated between separate projects.
+  The browser is project-scoped, not lane-scoped. Ownership is per tab/session:
+  tab creation, explicit claims, sessions, and page actions read
+  ADE_LANE_ID/ADE_CHAT_SESSION_ID for agent CLI calls. Panel reveal and plain
+  tab switching are passive view operations; use
+  "browser claim --tab <tab-id> --lane <lane-id>" to claim an already-open tab.
+  ADE-launched agents should list tabs first and use only a tab/session owned
+  by their current chat. If no owned tab exists, open a fresh owned tab; plain
+  "browser open <url>" does this automatically for ADE-launched agents unless
+  --active-tab or --tab is passed.
 
   Tabs and navigation:
     $ ade --socket browser status --text           Show active tab and tab list
-    $ ade --socket browser claim --lane <lane-id>  Attribute the Browser panel to a lane
+    $ ade --socket browser claim --lane <lane-id>  Attribute the active browser tab to a lane
     $ ade --socket browser panel --text            Open the Work sidebar Browser panel
     $ ade --socket browser open https://example.com --text
     $ ade --socket browser open localhost:5173 --new-tab --text
+    $ ade --socket browser open localhost:5173 --active-tab --text
     $ ade --socket browser open https://example.com --no-panel
     $ ade --socket browser new-tab --url https://example.com
     $ ade --socket browser switch --tab <tab-id>
     $ ade --socket browser close --tab <tab-id>
     $ ade --socket browser actions --text          List built_in_browser actions
 
+  Agent sessions:
+    $ ade --socket browser session start --tab <tab-id> --text
+    $ ade --socket browser sessions --text
+    $ ade --socket browser observe --browser-session <session-id> --map --text
+    $ ade --socket browser click --browser-session <session-id> --handle obs-...:e:1
+    $ ade --socket browser session click <session-id> --handle obs-...:e:1
+    $ ade --socket browser session wait <session-id> --network-idle
+    $ ade --socket browser session trace <session-id> --text
+    $ ade --socket browser session proof <session-id> --caption "Verified"
+    $ ade --socket browser session end <session-id>
+
   Page controls:
-    $ ade --socket browser reload
-    $ ade --socket browser back
-    $ ade --socket browser forward
-    $ ade --socket browser stop
+    $ ade --socket browser observe --tab <tab-id>  Save scratch screenshot + DOM observation
+    $ ade --socket browser observe --tab <tab-id> --map
+    $ ade --socket browser trace --tab <tab-id> --text
+    $ ade --socket browser click --tab <tab-id> --x 120 --y 420
+    $ ade --socket browser click --tab <tab-id> --selector "button[type=submit]"
+    $ ade --socket browser click --tab <tab-id> --text-match "Sign in"
+    $ ade --socket browser click --tab <tab-id> --handle obs-...:e:1
+    $ ade --socket browser wait --tab <tab-id> --selector ".ready"
+    $ ade --socket browser wait --tab <tab-id> --load-state network-idle --network-idle-ms 750
+    $ ade --socket browser fill --tab <tab-id> --selector "input[name=email]" "me@example.com"
+    $ ade --socket browser fill --tab <tab-id> --handle obs-...:e:2 --value ""
+    $ ade --socket browser clear-field --tab <tab-id> --selector "input[name=q]"
+    $ ade --socket browser press --tab <tab-id> --selector "input[name=q]" Enter
+    $ ade --socket browser type --tab <tab-id> "hello"
+    $ ade --socket browser key --tab <tab-id> Enter
+    $ ade --socket browser scroll --tab <tab-id> --dy 700
+    $ ade --socket browser proof --tab <tab-id> --caption "Verified"
+    $ ade --socket browser reload --tab <tab-id>
+    $ ade --socket browser back --tab <tab-id>
+    $ ade --socket browser forward --tab <tab-id>
+    $ ade --socket browser stop --tab <tab-id>
 
   Capture and context:
-    $ ade --socket browser screenshot --text       Capture the active browser tab
+    $ ade --socket browser screenshot --tab <tab-id> --text
     $ ade --socket browser select --x 120 --y 420  Attach DOM context at a viewport point
     $ ade --socket browser inspect-start           Start DOM inspect mode
     $ ade --socket browser inspect-stop            Stop DOM inspect mode
@@ -1360,9 +1399,38 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --active-tab         Navigate the active tab; aliases: --current-tab, --same-tab.
     --background         Create a new tab without activating it.
     --no-panel           Keep the Work sidebar panel hidden; alias: --hidden.
-    --tab, --tab-id <id> Target tab for switch/close/open.
-    --lane, --lane-id <id> Claim lane for panel/open/new-tab/switch/claim.
-    --chat-session <id>  Claim chat/session for panel/open/new-tab/switch/claim.
+    --tab, --tab-id <id> Target tab for switch/close/open/control/capture/claim.
+    --browser-session <id>
+                         Target the tab bound to a browser agent session.
+    --x, --y <n>         Viewport coordinates for browser click/select/scroll origin.
+    --selector <css>     Click the first matching visible element.
+    --text-match <text>  Click a visible element by accessible text/label.
+    --test-id <id>       Click by data-testid/data-test-id/data-cy.
+    --element <n>        Click an element index from the current DOM observation.
+    --handle <ref>       Click/fill/press/wait via a saved observation element handle.
+    --value <text>       Explicit value for browser fill, including an empty string.
+    --map, --ui-map      Add a numbered visual element map image to observations.
+    --keep <n>           Keep only the latest n scratch observations per tab (default 3).
+    --dom, --no-dom      Include or skip the DOM element list in observations.
+    --diagnostics, --no-diagnostics
+                         Include or skip console/network diagnostics in observations.
+    --max-elements <n>   Cap DOM elements captured per observation (default 80).
+    --limit <n>          Trace entries to show for browser trace (default 20).
+    --include-ended, --all
+                         Include ended browser sessions in browser sessions output.
+    --timeout-ms <n>     Wait timeout for browser wait/fill/click readiness.
+    --network-idle       Alias for browser wait --load-state network-idle.
+    --network-idle-ms <n>
+                         Quiet window required for network-idle wait (default 500).
+    --wait-after-ms <n>  Delay before post-action observation (default 150).
+    --fast               Alias for --wait-after-ms 0 on browser actions.
+    --no-observe         Do not capture the post-action scratch observation.
+    --force              Take over a still-leased tab from another lane.
+    --lease-ttl-ms <n>   Override tab lease TTL for lane-owned actions.
+    --lane, --lane-id <id> Claim lane for open/new-tab/claim/session/actions.
+                         On panel/switch, claims only when passed explicitly.
+    --chat-session <id>  Claim chat/session for open/new-tab/claim/session/actions.
+                         On panel/switch, claims only when passed explicitly.
 `,
   tests: `${ADE_BANNER}
   Tests
@@ -1848,12 +1916,146 @@ function readToolClaimArgs(args: string[]): ToolClaimArgs {
   };
 }
 
+function readExplicitToolClaimArgs(args: string[]): ToolClaimArgs {
+  const laneId = asString(readValue(args, ["--lane", "--lane-id"]));
+  const chatSessionId = asString(
+    readValue(args, [
+      "--chat-session",
+      "--chat-session-id",
+      "--session",
+      "--session-id",
+    ]),
+  );
+  return {
+    ...(laneId ? { laneId } : {}),
+    ...(chatSessionId ? { chatSessionId } : {}),
+  };
+}
+
 function readRequiredToolClaimArgs(args: string[], label: string): ToolClaimArgs {
   const claimArgs = readToolClaimArgs(args);
   if (!claimArgs.laneId) {
     throw new CliUsageError(`${label} claim requires --lane <lane-id> or ADE_LANE_ID.`);
   }
   return claimArgs;
+}
+
+function readBrowserTabTargetArgs(args: string[]): JsonObject {
+  const tabId = readValue(args, ["--tab", "--tab-id"]);
+  const sessionId = readValue(args, ["--browser-session", "--browser-session-id"]);
+  return {
+    ...(tabId ? { tabId } : {}),
+    ...(sessionId ? { sessionId } : {}),
+  };
+}
+
+function readBrowserSessionStartArgs(args: string[]): JsonObject {
+  const leaseTtlMs = readNumberOption(args, ["--lease-ttl-ms", "--lease-ms"]);
+  return {
+    ...readBrowserTabTargetArgs(args),
+    ...readToolClaimArgs(args),
+    force: readFlag(args, ["--force"]) ? true : undefined,
+    ...(leaseTtlMs == null ? {} : { leaseTtlMs }),
+  };
+}
+
+function readBrowserSessionsArgs(args: string[]): JsonObject {
+  return {
+    ...readBrowserTabTargetArgs(args),
+    ...(readFlag(args, ["--include-ended", "--all"]) ? { includeEnded: true } : {}),
+  };
+}
+
+function readBrowserObservationArgs(args: string[]): JsonObject {
+  const keepCount = readNumberOption(args, ["--keep", "--keep-count"]);
+  const includeDom = readFlag(args, ["--dom", "--include-dom", "--elements"]);
+  const skipDom = readFlag(args, ["--no-dom", "--no-elements"]);
+  const includeDiagnostics = readFlag(args, ["--diagnostics", "--include-diagnostics"]);
+  const skipDiagnostics = readFlag(args, ["--no-diagnostics", "--without-diagnostics"]);
+  const includeElementMap = readFlag(args, ["--map", "--ui-map", "--element-map"]);
+  const maxElements = readNumberOption(args, ["--max-elements", "--element-limit"]);
+  return {
+    ...readBrowserTabTargetArgs(args),
+    ...(keepCount == null ? {} : { keepCount }),
+    ...(includeDom ? { includeDom: true } : {}),
+    ...(skipDom ? { includeDom: false } : {}),
+    ...(includeDiagnostics ? { includeDiagnostics: true } : {}),
+    ...(skipDiagnostics ? { includeDiagnostics: false } : {}),
+    ...(includeElementMap ? { includeElementMap: true } : {}),
+    ...(maxElements == null ? {} : { maxElements }),
+  };
+}
+
+function readBrowserTraceArgs(args: string[]): JsonObject {
+  const limit = readNumberOption(args, ["--limit", "--entries"]);
+  return {
+    ...readBrowserTabTargetArgs(args),
+    ...(limit == null ? {} : { limit }),
+  };
+}
+
+function readBrowserAgentActionArgs(args: string[]): JsonObject {
+  const leaseTtlMs = readNumberOption(args, ["--lease-ttl-ms", "--lease-ms"]);
+  const waitAfterMs = readNumberOption(args, ["--wait-after-ms", "--settle-ms"]);
+  const fast = readFlag(args, ["--fast"]);
+  return {
+    ...readBrowserObservationArgs(args),
+    ...readToolClaimArgs(args),
+    observe: readFlag(args, ["--no-observe"]) ? false : undefined,
+    force: readFlag(args, ["--force"]) ? true : undefined,
+    ...(leaseTtlMs == null ? {} : { leaseTtlMs }),
+    ...(waitAfterMs == null ? (fast ? { waitAfterMs: 0 } : {}) : { waitAfterMs }),
+  };
+}
+
+function readBrowserClickTargetArgs(args: string[]): JsonObject {
+  const selector = readValue(args, ["--selector", "--css"]);
+  const text = readValue(args, ["--text-match", "--label", "--name"]);
+  const handle = readValue(args, ["--handle", "--element-handle", "--ref"]);
+  const testId = readValue(args, [
+    "--test-id",
+    "--testid",
+    "--data-testid",
+    "--data-test-id",
+    "--data-cy",
+  ]);
+  const elementIndex = readNumberOption(args, [
+    "--element",
+    "--element-index",
+    "--index",
+  ]);
+  return {
+    ...(selector ? { selector } : {}),
+    ...(text ? { text } : {}),
+    ...(testId ? { testId } : {}),
+    ...(elementIndex == null ? {} : { elementIndex }),
+    ...(handle ? { handle } : {}),
+  };
+}
+
+function hasBrowserClickTargetFlag(args: string[]): boolean {
+  const flags = new Set([
+    "--selector",
+    "--css",
+    "--text-match",
+    "--label",
+    "--name",
+    "--test-id",
+    "--testid",
+    "--data-testid",
+    "--data-test-id",
+    "--data-cy",
+    "--element",
+    "--element-index",
+    "--index",
+    "--handle",
+    "--element-handle",
+    "--ref",
+  ]);
+  return args.some((arg) => {
+    const flag = arg.includes("=") ? arg.slice(0, arg.indexOf("=")) : arg;
+    return flags.has(flag);
+  });
 }
 
 function readPrId(args: string[]): string | null {
@@ -6078,16 +6280,18 @@ function buildFilesPlan(args: string[]): CliPlan {
   };
 }
 
+function readProofOwnerBase(args: string[]): JsonObject {
+  const ownerKind = readValue(args, ["--owner-kind", "--owner"]);
+  const ownerId = readValue(args, ["--owner-id"]);
+  return {
+    ...(ownerKind ? { ownerKind } : {}),
+    ...(ownerId ? { ownerId } : {}),
+  };
+}
+
 function buildProofPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "status";
-  const proofOwnerBase = () => {
-    const ownerKind = readValue(args, ["--owner-kind", "--owner"]);
-    const ownerId = readValue(args, ["--owner-id"]);
-    return {
-      ...(ownerKind ? { ownerKind } : {}),
-      ...(ownerId ? { ownerId } : {}),
-    };
-  };
+  const proofOwnerBase = () => readProofOwnerBase(args);
   const inferAttachedProofKind = (filePath: string): string => {
     const ext = path.extname(filePath).replace(/^\./, "").toLowerCase();
     if (
@@ -7690,6 +7894,44 @@ function buildMacosVmPlan(args: string[]): CliPlan {
   };
 }
 
+const BROWSER_SESSION_ACTION_MODES = new Set([
+  "observe",
+  "snapshot",
+  "click",
+  "type",
+  "type-text",
+  "fill",
+  "clear",
+  "clear-field",
+  "clear-input",
+  "clear-value",
+  "key",
+  "press",
+  "dispatch-key",
+  "scroll",
+  "wheel",
+  "wait",
+  "wait-for",
+  "trace",
+  "action-trace",
+  "timeline",
+  "proof",
+  "promote",
+  "reload",
+  "refresh",
+  "back",
+  "forward",
+  "screenshot",
+  "capture",
+  "select",
+  "select-point",
+  "point",
+]);
+
+function isBrowserSessionActionMode(value: string): boolean {
+  return BROWSER_SESSION_ACTION_MODES.has(value);
+}
+
 function buildBrowserPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "status";
   if (sub === "help") return { kind: "help", text: HELP_BY_COMMAND.browser };
@@ -7713,8 +7955,64 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "session" || sub === "sessions") {
+    const mode = sub === "sessions" ? "list" : firstPositional(args) ?? "list";
+    if (mode === "start" || mode === "begin" || mode === "claim") {
+      return {
+        kind: "execute",
+        label: "browser session start",
+        steps: [
+          actionStep(
+            "result",
+            "built_in_browser",
+            "startSession",
+            collectGenericObjectArgs(args, readBrowserSessionStartArgs(args)),
+          ),
+        ],
+      };
+    }
+    if (mode === "end" || mode === "stop" || mode === "close") {
+      const explicitSessionId = readValue(args, ["--browser-session", "--browser-session-id"]);
+      const genericArgs = collectGenericObjectArgs(args);
+      const genericSessionId = typeof genericArgs.sessionId === "string" ? genericArgs.sessionId : null;
+      return {
+        kind: "execute",
+        label: "browser session end",
+        steps: [
+          actionStep("result", "built_in_browser", "endSession", {
+            sessionId: requireValue(
+              explicitSessionId ?? genericSessionId ?? firstPositional(args),
+              "sessionId",
+            ),
+            ...genericArgs,
+          }),
+        ],
+      };
+    }
+    if (mode === "list" || mode === "ls" || mode === "status") {
+      return {
+        kind: "execute",
+        label: "browser sessions",
+        steps: [
+          actionStep(
+            "result",
+            "built_in_browser",
+            "listSessions",
+            collectGenericObjectArgs(args, readBrowserSessionsArgs(args)),
+          ),
+        ],
+      };
+    }
+    if (isBrowserSessionActionMode(mode)) {
+      const explicitSessionId = readValue(args, ["--browser-session", "--browser-session-id"]);
+      const sessionId = requireValue(explicitSessionId ?? firstPositional(args), "sessionId");
+      return buildBrowserPlan([mode, "--browser-session", sessionId, ...args]);
+    }
+    throw new CliUsageError(`Unknown browser session command: ${mode}`);
+  }
   if (sub === "claim") {
-    const claimArgs = readRequiredToolClaimArgs(args, "browser");
+    const claimArgs: JsonObject = readRequiredToolClaimArgs(args, "browser");
+    Object.assign(claimArgs, readBrowserTabTargetArgs(args));
     return {
       kind: "execute",
       label: "browser claim",
@@ -7735,7 +8033,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
     sub === "reveal"
   ) {
     const panelArgs: JsonObject = {};
-    Object.assign(panelArgs, readToolClaimArgs(args));
+    Object.assign(panelArgs, readExplicitToolClaimArgs(args));
     maybePut(panelArgs, "url", readValue(args, ["--url"]));
     maybePut(panelArgs, "tabId", readValue(args, ["--tab", "--tab-id"]));
     return {
@@ -7767,6 +8065,8 @@ function buildBrowserPlan(args: string[]): CliPlan {
       typeof genericArgs.url === "string" ? genericArgs.url : null;
     const url = explicitUrl ?? genericUrl ?? args.join(" ");
     if (!url.trim()) throw new CliUsageError("browser open requires a URL.");
+    const autoNewOwnedTab =
+      !newTab && !activeTab && !tabId && Boolean(claimArgs.laneId || claimArgs.chatSessionId);
     return {
       kind: "execute",
       label: "browser open",
@@ -7774,7 +8074,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
         actionStep("result", "built_in_browser", "navigate", {
           url,
           tabId,
-          newTab: newTab && !activeTab ? true : undefined,
+          newTab: (newTab || autoNewOwnedTab) && !activeTab ? true : undefined,
           openPanel: !noPanel,
           ...claimArgs,
           ...genericArgs,
@@ -7809,7 +8109,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
   if (sub === "switch" || sub === "activate") {
     const noPanel = readFlag(args, ["--no-panel", "--hidden"]);
     const explicitTabId = readValue(args, ["--tab", "--tab-id"]);
-    const claimArgs = readToolClaimArgs(args);
+    const claimArgs = readExplicitToolClaimArgs(args);
     const genericArgs = collectGenericObjectArgs(args);
     const genericTabId =
       typeof genericArgs.tabId === "string" ? genericArgs.tabId : null;
@@ -7848,6 +8148,256 @@ function buildBrowserPlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "observe" || sub === "snapshot")
+    return {
+      kind: "execute",
+      label: "browser observe",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "observe",
+          collectGenericObjectArgs(args, readBrowserObservationArgs(args)),
+        ),
+      ],
+    };
+  if (sub === "click") {
+    const x = readNumberOption(args, ["--x"]);
+    const y = readNumberOption(args, ["--y"]);
+    const targetArgs = readBrowserClickTargetArgs(args);
+    const hasCoordinates = x != null || y != null;
+    if (hasCoordinates && (x == null || y == null)) {
+      throw new CliUsageError("browser click requires both --x and --y when using coordinates.");
+    }
+    if (!hasCoordinates && Object.keys(targetArgs).length === 0) {
+      throw new CliUsageError("browser click requires --x/--y, --selector, --text-match, --test-id, --element, or --handle.");
+    }
+    return {
+      kind: "execute",
+      label: "browser click",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "click",
+          collectGenericObjectArgs(args, {
+            ...readBrowserAgentActionArgs(args),
+            ...(x == null ? {} : { x }),
+            ...(y == null ? {} : { y }),
+            ...targetArgs,
+            button: readValue(args, ["--button"]),
+            clickCount: readNumberOption(args, ["--click-count", "--count"]),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "type" || sub === "type-text") {
+    const actionArgs = readBrowserAgentActionArgs(args);
+    const text = readValue(args, ["--text"]) ?? args.join(" ");
+    if (!text.trim()) throw new CliUsageError("browser type requires text.");
+    return {
+      kind: "execute",
+      label: "browser type",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "typeText",
+          collectGenericObjectArgs(args, {
+            ...actionArgs,
+            text,
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "fill") {
+    const actionArgs = readBrowserAgentActionArgs(args);
+    const targetArgs = readBrowserClickTargetArgs(args);
+    if (Object.keys(targetArgs).length === 0) {
+      throw new CliUsageError("browser fill requires --selector, --text-match, --test-id, --element, or --handle.");
+    }
+    const explicitValue = readValue(args, ["--value"]);
+    const text = explicitValue ?? args.join(" ");
+    if (explicitValue == null && !text.length) throw new CliUsageError("browser fill requires text.");
+    const fillPayloadKey = typeof targetArgs.text === "string" ? "value" : "text";
+    return {
+      kind: "execute",
+      label: "browser fill",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "fill",
+          collectGenericObjectArgs(args, {
+            ...actionArgs,
+            ...targetArgs,
+            [fillPayloadKey]: text,
+          }),
+        ),
+      ],
+    };
+  }
+  if (
+    sub === "clear-field" ||
+    sub === "clear-input" ||
+    sub === "clear-value" ||
+    (sub === "clear" && hasBrowserClickTargetFlag(args))
+  ) {
+    const actionArgs = readBrowserAgentActionArgs(args);
+    const targetArgs = readBrowserClickTargetArgs(args);
+    if (Object.keys(targetArgs).length === 0) {
+      throw new CliUsageError("browser clear requires --selector, --text-match, --test-id, --element, or --handle.");
+    }
+    return {
+      kind: "execute",
+      label: "browser clear",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "clear",
+          collectGenericObjectArgs(args, {
+            ...actionArgs,
+            ...targetArgs,
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "key" || sub === "press" || sub === "dispatch-key") {
+    const actionArgs = readBrowserAgentActionArgs(args);
+    const targetArgs = readBrowserClickTargetArgs(args);
+    const key = readValue(args, ["--key"]) ?? firstPositional(args);
+    if (!key) throw new CliUsageError("browser key requires a key.");
+    return {
+      kind: "execute",
+      label: "browser key",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "dispatchKey",
+          collectGenericObjectArgs(args, {
+            ...actionArgs,
+            ...targetArgs,
+            key,
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "scroll" || sub === "wheel") {
+    const deltaX = readNumberOption(args, ["--dx", "--delta-x"]) ?? 0;
+    const deltaY = readNumberOption(args, ["--dy", "--delta-y"]) ?? 0;
+    if (deltaX === 0 && deltaY === 0)
+      throw new CliUsageError("browser scroll requires --dy or --dx.");
+    return {
+      kind: "execute",
+      label: "browser scroll",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "scroll",
+          collectGenericObjectArgs(args, {
+            ...readBrowserAgentActionArgs(args),
+            x: readNumberOption(args, ["--x"]),
+            y: readNumberOption(args, ["--y"]),
+            deltaX,
+            deltaY,
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "wait" || sub === "wait-for") {
+    const actionArgs = readBrowserAgentActionArgs(args);
+    const targetArgs = readBrowserClickTargetArgs(args);
+    const url = readValue(args, ["--url"]);
+    const loadState = readValue(args, ["--load-state", "--state"]) ?? (readFlag(args, ["--network-idle"]) ? "network-idle" : null);
+    if (!url && !loadState && Object.keys(targetArgs).length === 0) {
+      throw new CliUsageError("browser wait requires --selector, --text-match, --test-id, --element, --handle, --url, or --load-state.");
+    }
+    return {
+      kind: "execute",
+      label: "browser wait",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "wait",
+          collectGenericObjectArgs(args, {
+            ...actionArgs,
+            ...targetArgs,
+            ...(url ? { url } : {}),
+            ...(loadState ? { loadState } : {}),
+            timeoutMs: readNumberOption(args, ["--timeout-ms", "--timeout"]),
+            networkIdleMs: readNumberOption(args, ["--network-idle-ms", "--idle-ms"]),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "trace" || sub === "action-trace" || sub === "timeline")
+    return {
+      kind: "execute",
+      label: "browser trace",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "getTrace",
+          collectGenericObjectArgs(args, readBrowserTraceArgs(args)),
+        ),
+      ],
+    };
+  if (sub === "proof" || sub === "promote") {
+    const caption = readValue(args, ["--caption", "--description", "--desc"]);
+    const title = readValue(args, ["--title", "--name"]) ?? caption ?? "ADE browser proof";
+    const ownerBase = readProofOwnerBase(args);
+    const observeArgs = collectGenericObjectArgs(args, {
+      ...readBrowserObservationArgs(args),
+      includeDom: false,
+    });
+    return {
+      kind: "execute",
+      label: "browser proof",
+      steps: [
+        actionStep("observation", "built_in_browser", "observe", observeArgs),
+        {
+          key: "result",
+          method: "ade/actions/call",
+          unwrapToolResult: true,
+          params: (values) => {
+            const observation = isRecord(values.observation) ? values.observation : {};
+            const filePath = asString(observation.filePath);
+            if (!filePath) {
+              throw new CliUsageError("Browser proof could not find an observation file path.");
+            }
+            return {
+              name: "ingest_computer_use_artifacts",
+              arguments: {
+                backendStyle: "manual",
+                backendName: "ade-browser",
+                toolName: "browser proof",
+                ...ownerBase,
+                inputs: [
+                  {
+                    kind: "screenshot",
+                    title,
+                    ...(caption ? { description: caption } : {}),
+                    path: filePath,
+                  },
+                ],
+              },
+            };
+          },
+        },
+      ],
+    };
+  }
   if (sub === "reload" || sub === "refresh")
     return {
       kind: "execute",
@@ -7857,7 +8407,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
           "result",
           "built_in_browser",
           "reload",
-          collectGenericObjectArgs(args),
+          collectGenericObjectArgs(args, readBrowserTabTargetArgs(args)),
         ),
       ],
     };
@@ -7870,7 +8420,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
           "result",
           "built_in_browser",
           "goBack",
-          collectGenericObjectArgs(args),
+          collectGenericObjectArgs(args, readBrowserTabTargetArgs(args)),
         ),
       ],
     };
@@ -7883,7 +8433,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
           "result",
           "built_in_browser",
           "goForward",
-          collectGenericObjectArgs(args),
+          collectGenericObjectArgs(args, readBrowserTabTargetArgs(args)),
         ),
       ],
     };
@@ -7896,7 +8446,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
           "result",
           "built_in_browser",
           "stop",
-          collectGenericObjectArgs(args),
+          collectGenericObjectArgs(args, readBrowserTabTargetArgs(args)),
         ),
       ],
     };
@@ -7909,13 +8459,14 @@ function buildBrowserPlan(args: string[]): CliPlan {
           "result",
           "built_in_browser",
           "captureScreenshot",
-          collectGenericObjectArgs(args),
+          collectGenericObjectArgs(args, readBrowserTabTargetArgs(args)),
         ),
       ],
     };
   if (sub === "select" || sub === "select-point" || sub === "point") {
     const x = readNumberOption(args, ["--x"]);
     const y = readNumberOption(args, ["--y"]);
+    const targetArgs = readBrowserTabTargetArgs(args);
     if (x == null || y == null)
       throw new CliUsageError("browser select requires --x and --y.");
     return {
@@ -7927,6 +8478,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
           "built_in_browser",
           "selectPoint",
           collectGenericObjectArgs(args, {
+            ...targetArgs,
             x,
             y,
             includeScreenshot: readFlag(args, ["--no-screenshot"])
@@ -13332,6 +13884,11 @@ function formatBrowserStatus(value: unknown): string {
   const status = isRecord(value) ? value : {};
   const tabs = Array.isArray(status.tabs) ? status.tabs.filter(isRecord) : [];
   const activeTabId = asString(status.activeTabId);
+  const ownerForTab = (tab: Record<string, unknown>): string => {
+    const lane = asString(tab.ownerLaneId);
+    const chat = asString(tab.ownerChatSessionId);
+    return [lane, chat].filter(Boolean).join(" / ");
+  };
   return [
     renderKeyValues("ADE browser", [
       ["visible", status.visible],
@@ -13344,20 +13901,195 @@ function formatBrowserStatus(value: unknown): string {
       ["forward", status.canGoForward],
       ["inspecting", status.isInspecting ?? status.inspecting],
       ["selection", status.hasSelection],
-      ["owner lane", status.ownerLaneId],
-      ["owner chat", status.ownerChatSessionId],
-      ["owner claimed", status.ownerClaimedAt],
+      ["active tab owner lane", status.ownerLaneId],
+      ["active tab owner chat", status.ownerChatSessionId],
+      ["active tab owner claimed", status.ownerClaimedAt],
     ]),
     "",
     renderTable(
-      ["active", "tab", "title", "url"],
+      ["active", "tab", "owner", "title", "url"],
       tabs.map((tab) => [
         asString(tab.id) === activeTabId ? "*" : "",
         tab.id,
+        ownerForTab(tab),
         tab.title,
         tab.url,
       ]),
       "Browser tabs\n(no browser tabs)",
+    ),
+  ].join("\n");
+}
+
+function formatBrowserSessions(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const session = firstRecord(result, ["session"]);
+  const sessions = session
+    ? [session]
+    : firstArray(result, ["sessions"]);
+  const activeSessions = sessions.filter((entry) => !entry.endedAt);
+  return [
+    renderKeyValues(session ? "ADE browser session" : "ADE browser sessions", [
+      ["session", session?.id],
+      ["tab", session?.tabId],
+      ["created", session?.createdAt],
+      ["updated", session?.updatedAt],
+      ["ended", session?.endedAt],
+      ["owner lane", session?.ownerLaneId],
+      ["owner chat", session?.ownerChatSessionId],
+      ["last observation", session?.lastObservationId],
+      ["last trace", session?.lastTraceEntryId],
+      ["active sessions", session ? null : activeSessions.length],
+      ["total sessions", session ? null : sessions.length],
+    ]),
+    "",
+    renderTable(
+      ["active", "session", "tab", "owner", "last observation", "last trace", "updated"],
+      sessions.map((entry) => [
+        entry.endedAt ? "" : "*",
+        entry.id,
+        entry.tabId,
+        [entry.ownerLaneId, entry.ownerChatSessionId].filter(Boolean).join(" / "),
+        entry.lastObservationId,
+        entry.lastTraceEntryId,
+        entry.updatedAt,
+      ]),
+      "Browser sessions\n(no browser sessions)",
+    ),
+  ].join("\n");
+}
+
+function formatBrowserObservation(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const observation = firstRecord(result, ["observation"]) ?? result;
+  const status = firstRecord(result, ["status"]);
+  const trace = firstRecord(result, ["trace"]);
+  const session = firstRecord(result, ["session"]);
+  const cleanup = firstRecord(observation, ["cleanup"]);
+  const dom = firstRecord(observation, ["dom"]);
+  const elementMap = firstRecord(observation, ["elementMap"]);
+  const diagnostics = firstRecord(observation, ["diagnostics"]);
+  const consoleDiagnostics = firstArray(diagnostics ?? {}, ["console"]);
+  const networkDiagnostics = firstArray(diagnostics ?? {}, ["network"]);
+  const elements = firstArray(dom ?? {}, ["elements"]);
+  const header = renderKeyValues("ADE browser observation", [
+    ["ok", result.ok ?? true],
+    ["session", session?.id ?? observation.sessionId ?? trace?.sessionId],
+    ["tab", observation.tabId ?? status?.activeTabId],
+    ["url", observation.url ?? status?.url],
+    ["title", observation.title ?? status?.title],
+    ["image", observation.filePath ?? observation.relativePath],
+    ["element map", elementMap?.filePath ?? elementMap?.relativePath],
+    [
+      "size",
+      observation.width && observation.height
+        ? `${observation.width}x${observation.height}`
+        : null,
+    ],
+    ["captured", observation.capturedAt],
+    ["tab owner lane", observation.ownerLaneId ?? status?.ownerLaneId],
+    ["tab owner chat", observation.ownerChatSessionId ?? status?.ownerChatSessionId],
+    ["trace", trace?.id],
+    ["trace status", trace?.status],
+    ["trace error", trace?.error],
+    ["pending requests", diagnostics?.pendingRequestCount],
+    ["console issues", consoleDiagnostics.length || null],
+    ["network issues", networkDiagnostics.length || null],
+    [
+      "dom elements",
+      dom
+        ? `${elements.length}/${dom.elementCount ?? elements.length}`
+        : null,
+    ],
+    [
+      "scratch kept",
+      cleanup
+        ? `${cleanup.keptCount ?? "?"}/${cleanup.keepCount ?? "?"}`
+        : null,
+    ],
+    ["scratch deleted", cleanup?.deletedCount],
+  ]);
+  const rows = elements.slice(0, 12).map((element) => {
+    const center = firstRecord(element, ["center"]);
+    const x = typeof center?.x === "number" ? Math.round(center.x) : "";
+    const y = typeof center?.y === "number" ? Math.round(center.y) : "";
+    return [
+      element.index,
+      element.handle,
+      element.role ?? element.tagName,
+      element.label ?? element.text ?? element.value,
+      x === "" || y === "" ? "" : `${x},${y}`,
+      element.selector,
+    ];
+  });
+  const sections = [header];
+  if (elements.length) {
+    sections.push(
+      "",
+      renderTable(
+        ["#", "handle", "role/tag", "label", "center", "selector"],
+        rows,
+        "(no DOM elements)",
+      ),
+    );
+  }
+  if (consoleDiagnostics.length) {
+    sections.push(
+      "",
+      renderTable(
+        ["level", "message", "source"],
+        consoleDiagnostics.slice(-6).map((entry) => [
+          entry.level,
+          entry.message,
+          [entry.sourceId, entry.line].filter(Boolean).join(":"),
+        ]),
+        "(no console diagnostics)",
+      ),
+    );
+  }
+  if (networkDiagnostics.length) {
+    sections.push(
+      "",
+      renderTable(
+        ["status", "method", "url", "error"],
+        networkDiagnostics.slice(-6).map((entry) => [
+          entry.statusCode,
+          entry.method,
+          entry.url,
+          entry.error,
+        ]),
+        "(no network diagnostics)",
+      ),
+    );
+  }
+  return sections.join("\n");
+}
+
+function formatBrowserTrace(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const entries = firstArray(result, ["entries"]);
+  return [
+    renderKeyValues("ADE browser trace", [
+      ["session", result.sessionId],
+      ["tab", result.tabId],
+      ["entries", entries.length],
+    ]),
+    "",
+    renderTable(
+      ["status", "action", "ms", "target", "url", "error"],
+      entries.map((entry) => {
+        const target = isRecord(entry.target) ? entry.target : null;
+        const before = firstRecord(entry, ["before"]);
+        const after = firstRecord(entry, ["after"]);
+        return [
+          entry.status,
+          entry.action,
+          entry.durationMs,
+          target ? JSON.stringify(target) : "",
+          after?.url ?? before?.url,
+          entry.error,
+        ];
+      }),
+      "(no browser trace entries)",
     ),
   ].join("\n");
 }
@@ -13775,6 +14507,12 @@ function formatTextOutput(
       return formatAppControlSelection(value);
     case "browser-status":
       return formatBrowserStatus(value);
+    case "browser-sessions":
+      return formatBrowserSessions(value);
+    case "browser-observation":
+      return formatBrowserObservation(value);
+    case "browser-trace":
+      return formatBrowserTrace(value);
     case "macos-vm-status":
       return formatMacosVmStatus(value);
     case "macos-vm-share-policy":
@@ -13880,6 +14618,7 @@ function inferFormatter(
     return "app-control-selection";
   if (
     label === "browser status" ||
+    label === "browser claim" ||
     label === "browser panel" ||
     label === "browser open" ||
     label === "browser new tab" ||
@@ -13887,6 +14626,24 @@ function inferFormatter(
     label === "browser close"
   )
     return "browser-status";
+  if (
+    label === "browser session start" ||
+    label === "browser session end" ||
+    label === "browser sessions"
+  )
+    return "browser-sessions";
+  if (
+    label === "browser observe" ||
+    label === "browser click" ||
+    label === "browser type" ||
+    label === "browser key" ||
+    label === "browser scroll" ||
+    label === "browser fill" ||
+    label === "browser clear" ||
+    label === "browser wait"
+  )
+    return "browser-observation";
+  if (label === "browser trace") return "browser-trace";
   if (
     label === "macos vm status" ||
     label === "macos vm start" ||

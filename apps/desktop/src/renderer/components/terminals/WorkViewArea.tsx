@@ -32,7 +32,7 @@ import type {
   TerminalSnapshotCell,
   TerminalSnapshotRow,
 } from "../../../shared/types";
-import type { WorkDraftKind, WorkViewMode } from "../../state/appStore";
+import { useAppStore, type WorkDraftKind, type WorkViewMode } from "../../state/appStore";
 import { TerminalView } from "./TerminalView";
 import { ToolLogo } from "./ToolLogos";
 import { SessionLaneHeaderLabel } from "./LaneChip";
@@ -52,6 +52,7 @@ import { launchProfileForTerminalSession, type WorkPtyLaunchArgs, type WorkPtyLa
 import { buildWorkSessionTilingTree, type TilingPreset } from "./workSessionTiling";
 import { laneSurfaceTint } from "../lanes/laneDesignTokens";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
+import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
 
 function isSessionAwaitingInput(session: TerminalSessionSummary): boolean {
   return sessionNeedsChatTabHighlight({
@@ -334,6 +335,7 @@ function WorkCliContinuationComposer({
   const [commandMenuAnchor, setCommandMenuAnchor] = useState<CommandMenuAnchor | null>(null);
   const [sending, setSending] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const launchPromptClipboardEnabled = useAppStore((s) => s.launchPromptClipboardEnabled);
 
   useEffect(() => {
     let cancelled = false;
@@ -387,6 +389,9 @@ function WorkCliContinuationComposer({
     setSending(true);
     setSubmitError(null);
     try {
+      if (launchPromptClipboardEnabled) {
+        void copyLaunchPromptToClipboard(text);
+      }
       await onContinue?.(session, text);
       setDraft("");
       setCommandMenuTrigger(null);
@@ -395,7 +400,7 @@ function WorkCliContinuationComposer({
     } finally {
       setSending(false);
     }
-  }, [draft, onContinue, sending, session]);
+  }, [draft, launchPromptClipboardEnabled, onContinue, sending, session]);
 
   return (
     <div className="shrink-0">

@@ -4721,6 +4721,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getStatus: resolved({
         attached: false,
         partition: "persist:ade-browser",
+        profileKey: "global",
+        profileProjectRoot: null,
         visible: false,
         bounds: { x: 0, y: 0, width: 0, height: 0 },
         activeTabId: null,
@@ -4735,6 +4737,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         ownerLaneId: null,
         ownerChatSessionId: null,
         ownerClaimedAt: null,
+        ownerLeaseExpiresAt: null,
       }),
       claim: resolvedArg({} as any),
       showPanel: resolvedArg({} as any),

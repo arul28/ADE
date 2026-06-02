@@ -88,6 +88,7 @@ type BuiltInBrowserScreenshot = {
 
 type BuiltInBrowserStatus = {
   supported: boolean;
+  partition?: string | null;
   visible: boolean;
   activeTabId: string | null;
   tabs: BuiltInBrowserTab[];
@@ -100,6 +101,10 @@ type BuiltInBrowserStatus = {
   selectedItem: BuiltInBrowserContextItem | null;
   lastError?: string | null;
   [key: string]: unknown;
+};
+
+type BrowserTabTargetArgs = {
+  tabId?: string | null;
 };
 
 type BuiltInBrowserEventPayload = {
@@ -128,14 +133,14 @@ type BuiltInBrowserApi = {
   createTab?: (args?: { url?: string | null; activate?: boolean }) => Promise<unknown>;
   switchTab?: (args: { tabId: string }) => Promise<unknown>;
   closeTab?: (args: { tabId: string }) => Promise<unknown>;
-  reload: () => Promise<unknown>;
-  goBack: () => Promise<unknown>;
-  goForward: () => Promise<unknown>;
-  stop: () => Promise<unknown>;
+  reload: (args?: BrowserTabTargetArgs) => Promise<unknown>;
+  goBack: (args?: BrowserTabTargetArgs) => Promise<unknown>;
+  goForward: (args?: BrowserTabTargetArgs) => Promise<unknown>;
+  stop: (args?: BrowserTabTargetArgs) => Promise<unknown>;
   startInspect: () => Promise<void>;
   stopInspect: () => Promise<void>;
-  captureScreenshot: () => Promise<unknown>;
-  selectPoint?: (args: { x: number; y: number; includeScreenshot?: boolean }) => Promise<unknown>;
+  captureScreenshot: (args?: BrowserTabTargetArgs) => Promise<unknown>;
+  selectPoint?: (args: { x: number; y: number; includeScreenshot?: boolean; tabId?: string | null }) => Promise<unknown>;
   selectCurrent: () => Promise<unknown>;
   clearSelection: () => Promise<void>;
   onEvent: (cb: (event: BuiltInBrowserEventPayload) => void) => () => void;
@@ -338,6 +343,10 @@ function normalizeTab(value: unknown): BuiltInBrowserTab | null {
     isLoading: booleanField(value.isLoading, false),
     canGoBack: booleanField(value.canGoBack, false),
     canGoForward: booleanField(value.canGoForward, false),
+    ownerLaneId: stringField(value.ownerLaneId),
+    ownerChatSessionId: stringField(value.ownerChatSessionId),
+    ownerClaimedAt: stringField(value.ownerClaimedAt),
+    ownerLeaseExpiresAt: stringField(value.ownerLeaseExpiresAt),
   };
 }
 
@@ -425,6 +434,18 @@ function frameLabel(frame: BrowserFrame | null): string | null {
 function shortSessionId(sessionId: string | null): string | null {
   if (!sessionId) return null;
   return sessionId.length <= 8 ? sessionId : `${sessionId.slice(0, 4)}…${sessionId.slice(-3)}`;
+}
+
+function shortOwnerId(value: string | null): string | null {
+  if (!value) return null;
+  return value.length <= 10 ? value : `${value.slice(0, 5)}…${value.slice(-4)}`;
+}
+
+function browserTabOwnerLabel(tab: BuiltInBrowserTab): string | null {
+  const lane = shortOwnerId(tab.ownerLaneId);
+  const chat = shortSessionId(tab.ownerChatSessionId);
+  if (lane && chat) return `${lane} · ${chat}`;
+  return lane ?? chat;
 }
 
 function boundsEqual(a: BrowserBounds | null, b: BrowserBounds): boolean {
@@ -960,7 +981,7 @@ export function ChatBuiltInBrowserPanel({
         nextWebview.style.display = "none";
         nextWebview.style.height = "100%";
         nextWebview.style.width = "100%";
-        nextWebview.setAttribute("partition", "persist:ade-browser");
+        nextWebview.setAttribute("partition", statusRef.current?.partition || "persist:ade-browser");
         nextWebview.setAttribute("webpreferences", "contextIsolation=yes,nodeIntegration=no,sandbox=yes");
         browserWebviewsRef.current.set(tab.id, nextWebview);
         webview = nextWebview;
@@ -1489,6 +1510,7 @@ export function ChatBuiltInBrowserPanel({
           {browserTabs.map((tab) => {
             const active = tab.id === activeTabId;
             const label = tab.title ?? tab.url ?? "New tab";
+            const ownerLabel = browserTabOwnerLabel(tab);
             return (
               <div
                 key={tab.id}
@@ -1498,7 +1520,7 @@ export function ChatBuiltInBrowserPanel({
                     ? "z-10 rounded-t-lg bg-[var(--color-bg)] text-fg/90"
                     : "rounded-t-lg text-muted-fg/60 hover:bg-white/[0.04] hover:text-fg/75",
                 )}
-                title={tab.url ?? label}
+                title={[ownerLabel ? `Claimed by ${ownerLabel}` : null, tab.url ?? label].filter(Boolean).join(" · ")}
               >
                 <button
                   type="button"
@@ -1514,6 +1536,11 @@ export function ChatBuiltInBrowserPanel({
                     <span className={cn("h-1 w-1 shrink-0 rounded-full", active ? "bg-[var(--color-accent)]" : "bg-muted-fg/25")} />
                   )}
                   <span className="min-w-0 truncate leading-none">{label}</span>
+                  {ownerLabel ? (
+                    <span className="max-w-[68px] shrink-0 truncate rounded-sm border border-cyan-300/20 bg-cyan-400/10 px-1 leading-[12px] text-cyan-100/70">
+                      {ownerLabel}
+                    </span>
+                  ) : null}
                 </button>
                 <button
                   type="button"

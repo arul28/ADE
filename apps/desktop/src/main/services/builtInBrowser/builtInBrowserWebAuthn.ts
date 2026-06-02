@@ -1,5 +1,5 @@
 import { BrowserWindow, app, dialog, session } from "electron";
-import type { SelectWebauthnAccountDetails, WebAuthnAccount } from "electron";
+import type { SelectWebauthnAccountDetails, Session, WebAuthnAccount } from "electron";
 import type { Logger } from "../logging/logger";
 import {
   BUILT_IN_BROWSER_PARTITION,
@@ -7,10 +7,13 @@ import {
 } from "./builtInBrowserConstants";
 
 let configured = false;
+const configuredSessions = new WeakSet<Session>();
 
-function isTouchIdWebAuthnEnabled(): boolean {
+function shouldConfigureTouchIdWebAuthn(): boolean {
   const value = process.env.ADE_ENABLE_TOUCH_ID_WEBAUTHN?.trim().toLowerCase();
-  return value === "1" || value === "true";
+  if (value === "0" || value === "false") return false;
+  if (value === "1" || value === "true") return true;
+  return app.isPackaged;
 }
 
 export function configureBuiltInBrowserWebAuthn(args: {
@@ -27,7 +30,7 @@ export function configureBuiltInBrowserWebAuthn(args: {
     }
   };
 
-  if (process.platform === "darwin" && isTouchIdWebAuthnEnabled()) {
+  if (process.platform === "darwin" && shouldConfigureTouchIdWebAuthn()) {
     try {
       app.configureWebAuthn({
         touchID: {
@@ -51,6 +54,15 @@ export function configureBuiltInBrowserWebAuthn(args: {
   }
 
   const browserSession = session.fromPartition(BUILT_IN_BROWSER_PARTITION);
+  configureBuiltInBrowserSessionWebAuthn(browserSession, logger);
+}
+
+export function configureBuiltInBrowserSessionWebAuthn(
+  browserSession: Session,
+  logger: () => Logger | null,
+): void {
+  if (configuredSessions.has(browserSession)) return;
+  configuredSessions.add(browserSession);
   browserSession.on("select-webauthn-account", (_event, details, callback) => {
     void selectWebAuthnAccount(details, logger).then(
       (credentialId) => callback(credentialId),

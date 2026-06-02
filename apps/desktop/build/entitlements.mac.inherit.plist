@@ -8,5 +8,9 @@
     <true/>
     <key>com.apple.security.inherit</key>
     <true/>
+    <key>keychain-access-groups</key>
+    <array>
+      <string>VQ372F39G6.com.ade.desktop.webauthn</string>
+    </array>
   </dict>
 </plist>

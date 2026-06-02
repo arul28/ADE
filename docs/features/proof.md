@@ -2,7 +2,7 @@
 
 ## Overview
 
-Proof in ADE is **intentional**, not auto-captured. The agent does computer use however it wants — `claude`'s `computer_use`, the `codex` shell, a scripted browser, whatever. ADE does not wrap, proxy, or observe those tools. When the agent (or the user) decides that a moment deserves evidence, the agent runs the `ade proof` CLI. That single command is the entire interface.
+Proof in ADE is **intentional**, not auto-captured. The agent does computer use however it wants — `claude`'s `computer_use`, the `codex` shell, a scripted browser, whatever. ADE does not wrap, proxy, or observe external tools. When the agent (or the user) decides that a moment deserves evidence, the agent runs the `ade proof` CLI or promotes an ADE Browser scratch observation with `ade browser proof`. Those commands are the intentional proof interface.
 
 The old system sat upstream of the agent and tried to normalize every backend. It carried a readiness model, a policy surface (`off`/`auto`/`enabled`), per-phase coverage requirements, an artifact broker, an auto-observer, and a separate tool-delivery path. All of that is gone. What stays is a tiny CLI, a single SQLite table, and a drawer in the UI.
 
@@ -18,7 +18,7 @@ That means: proof captured during a remote-runtime session lives on the remote h
 
 ## CLI reference
 
-Three subcommands under `ade proof`. Each prints a JSON summary on success and exits non-zero on failure.
+Common subcommands under `ade proof` print a JSON summary on success and exit non-zero on failure. Use `ade help proof` for the complete current flag list.
 
 ### `ade proof capture`
 
@@ -75,6 +75,13 @@ ade proof list [--owner-kind chat|lane] [--owner-id <id>] [--limit <n>]
 
 No args: lists the inferred session. Primarily for agents to see what they have already captured.
 
+### Other proof commands
+
+- `ade proof status --text` shows capture/back-end capabilities.
+- `ade proof record --seconds <n>` records a short video proof where supported.
+- `ade proof launch`, `ade proof interact`, and `ade proof environment` are lower-level computer-use helpers for capture workflows.
+- `ade proof ingest --input-json ...` ingests externally produced artifacts directly through the proof broker.
+
 ---
 
 ## Owner inference
@@ -111,9 +118,11 @@ Images live on disk under the project's `.ade/` scaffold on the runtime host:
 
 (Path will move to `.ade/artifacts/proof/` in a future phase.)
 
-Metadata is a single SQLite row per capture in `computer_use_artifacts`, with ownership links in `computer_use_artifact_links`. The columns relevant to the new system are a small subset of what the table carries today: `id`, `kind` (always `screenshot` for captures; `image` for attaches), `uri`, `mime_type`, `caption`, `created_at`, plus the owner link row.
+Metadata is a single SQLite row per capture in `computer_use_artifacts`, with ownership links in `computer_use_artifact_links`. The columns relevant to the new system are a small subset of what the table carries today: `id`, `kind` (`screenshot` for captures; attached files are normalized to screenshot, video recording, browser trace, or browser verification by extension), `uri`, `mime_type`, `caption`, `created_at`, plus the owner link row.
 
 There is no retention policy — captures persist until the project is cleaned up. Disk is the budget; nothing ages out automatically. For remote-runtime projects, the disk being filled is the remote host's, not the desktop machine's.
+
+ADE browser-agent observations are intentionally not proof. `ade browser observe` and post-action browser observations write scratch PNG/JSON files under `.ade/cache/browser-observations/`, include a bounded DOM element list plus console/network diagnostics by default for agent targeting, can add a numbered visual UI map with `--map`, and prune to the latest 3 observations per tab by default. DOM elements carry short-lived handles such as `obs-...:e:3` so agents can click/fill/press/wait without another hit-test, including same-origin iframe/open-shadow-root targets when the observation captured that context. `ade browser session start --tab <id>` only creates a reusable tab-targeting handle for repeated agent actions; session observations and traces are still scratch state until promoted. `ade browser trace --tab <id>` or `ade browser trace --browser-session <id>` exposes the bounded per-tab action log for debugging but remains scratch state. Promote only reviewer-facing checkpoints into proof through `ade browser proof --tab <id> --caption "..."`, `ade browser proof --browser-session <id> --caption "..."`, the shorthand `ade browser session proof <session-id> --caption "..."`, or the lower-level `ade proof attach` / `ingest` commands. The proof broker allows ADE's cache root as an import source so browser scratch PNGs can be promoted without copying them elsewhere.
 
 ---
 
@@ -140,7 +149,6 @@ A good proof set is three to eight captures with captions a reviewer can read in
 
 ## Not supported
 
-- **Video.** Removed in this rebuild. If the agent produces a video out-of-band, it cannot be attached as proof; attach a representative frame instead.
 - **Cinematic post-processing.** No before/after stitching, no annotated overlays — deferred.
 - **Cross-device sync.** Proof records replicate via cr-sqlite, but the image files do not — proof is viewable only on the device that produced it.
 - **Auto-capture.** The old proof observer is gone. Nothing watches the agent and files screenshots for it.

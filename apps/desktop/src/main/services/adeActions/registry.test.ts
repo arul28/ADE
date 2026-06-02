@@ -257,7 +257,7 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
 
   it("exposes the browser panel and tab control surface", () => {
     const actions = ADE_ACTION_ALLOWLIST.built_in_browser ?? [];
-    for (const name of ["claim", "showPanel", "navigate", "createTab", "switchTab", "closeTab"]) {
+    for (const name of ["claim", "startSession", "listSessions", "endSession", "showPanel", "navigate", "createTab", "switchTab", "closeTab", "observe", "getTrace", "click", "typeText", "dispatchKey", "scroll", "fill", "clear", "wait"]) {
       expect(actions).toContain(name);
     }
   });

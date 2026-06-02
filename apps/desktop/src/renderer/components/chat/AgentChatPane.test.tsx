@@ -918,14 +918,14 @@ function renderAutoCreateDraftPane(args?: {
 function composerDraftStorageKeyForTest(args: {
   projectRoot: string;
   companionStateKey: string;
-  workDraftKind?: "chat" | "cli" | "chat-orchestrator";
+  workDraftKind?: "work-start" | "chat" | "cli" | "chat-orchestrator";
 }) {
   return [
     "ade.chat.composerDraft.v1",
     args.projectRoot,
     args.companionStateKey,
     "standard",
-    args.workDraftKind ?? "chat",
+    args.workDraftKind ?? "work-start",
   ].map(encodeURIComponent).join(":");
 }
 
@@ -1878,6 +1878,7 @@ describe("AgentChatPane submit recovery", () => {
         displayText: "Fix the PR header action.",
         text: "Fix the PR header action.",
       }));
+      expect((window.ade as any).app.writeClipboardText).toHaveBeenCalledWith("Fix the PR header action.");
     });
   });
 
@@ -3848,6 +3849,7 @@ describe("AgentChatPane submit recovery", () => {
         tracked: true,
         disposition: "foreground",
       }));
+      expect((window.ade as any).app.writeClipboardText).toHaveBeenCalledWith("Run the unified CLI launch.");
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
     expect(launchArgs.command).toBe("codex");
@@ -3858,6 +3860,74 @@ describe("AgentChatPane submit recovery", () => {
     expect(launchArgs.initialInput).toContain("Run the unified CLI launch.");
     expect(create).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("preserves typed Work draft text when switching between Chat and CLI start modes", async () => {
+    installAdeMocks({ sessions: [] });
+    const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-1", ptyId: "pty-1" });
+
+    const view = render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId="lane-1"
+          forceDraftMode
+          embeddedWorkLayout
+          workDraftKind="chat"
+          onLaunchCliSession={onLaunchCliSession}
+        />
+      </MemoryRouter>,
+    );
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Keep this draft while I switch modes." } });
+
+    view.rerender(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId="lane-1"
+          forceDraftMode
+          embeddedWorkLayout
+          workDraftKind="cli"
+          onLaunchCliSession={onLaunchCliSession}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Keep this draft while I switch modes.");
+    });
+  });
+
+  it("does not restore a CLI-only Cursor model into a Chat Work draft", async () => {
+    const { cliOnlyId } = seedCursorRuntimeModelCatalog();
+    installAdeMocks({ sessions: [] });
+    window.localStorage.setItem(composerDraftStorageKeyForTest({
+      projectRoot: "/tmp/project-under-test",
+      companionStateKey: "draft:lane-1",
+    }), JSON.stringify({
+      version: 1,
+      text: "Keep the prompt but not the CLI-only model.",
+      modelId: cliOnlyId,
+      reasoningEffort: null,
+      codexFastMode: false,
+      executionMode: "focused",
+      controls: {},
+      attachments: [],
+      contextAttachments: [],
+      iosContextItems: [],
+      appControlContextItems: [],
+      builtInBrowserContextItems: [],
+      macosVmContextItems: [],
+      draftLaunchTargetId: null,
+      updatedAt: "2026-05-27T00:00:00.000Z",
+    }));
+
+    renderAutoCreateDraftPane({ workDraftKind: "chat" });
+
+    expect(await screen.findByDisplayValue("Keep the prompt but not the CLI-only model.")).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: /current: Cursor CLI Only/i })).toBeNull();
+    });
   });
 
   it("uses the selected Codex plan preset when launching a Work draft CLI session", async () => {
