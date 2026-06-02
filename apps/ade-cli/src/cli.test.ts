@@ -4659,6 +4659,285 @@ describe("ADE CLI", () => {
       },
     });
 
+    const screenshotTab = buildCliPlan(["browser", "screenshot", "--tab", "tab-1"]);
+    expect(screenshotTab.kind).toBe("execute");
+    if (screenshotTab.kind !== "execute") return;
+    expect(screenshotTab.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "captureScreenshot",
+        args: { tabId: "tab-1" },
+      },
+    });
+
+    const reloadTab = buildCliPlan(["browser", "reload", "--tab", "tab-1"]);
+    expect(reloadTab.kind).toBe("execute");
+    if (reloadTab.kind !== "execute") return;
+    expect(reloadTab.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "reload",
+        args: { tabId: "tab-1" },
+      },
+    });
+
+    const observeTab = buildCliPlan(["browser", "observe", "--tab", "tab-1", "--keep", "3", "--max-elements", "12", "--map", "--no-diagnostics"]);
+    expect(observeTab.kind).toBe("execute");
+    if (observeTab.kind !== "execute") return;
+    expect(observeTab.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "observe",
+        args: { tabId: "tab-1", keepCount: 3, maxElements: 12, includeElementMap: true, includeDiagnostics: false },
+      },
+    });
+
+    const trace = buildCliPlan(["browser", "trace", "--tab", "tab-1", "--limit", "7"]);
+    expect(trace.kind).toBe("execute");
+    if (trace.kind !== "execute") return;
+    expect(trace.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "getTrace",
+        args: { tabId: "tab-1", limit: 7 },
+      },
+    });
+
+    const sessionStart = buildCliPlan([
+      "browser",
+      "session",
+      "start",
+      "--tab",
+      "tab-1",
+      "--lane",
+      "lane-1",
+    ]);
+    expect(sessionStart.kind).toBe("execute");
+    if (sessionStart.kind !== "execute") return;
+    expect(sessionStart.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "startSession",
+        args: { tabId: "tab-1", laneId: "lane-1" },
+      },
+    });
+
+    const sessions = buildCliPlan(["browser", "sessions", "--include-ended"]);
+    expect(sessions.kind).toBe("execute");
+    if (sessions.kind !== "execute") return;
+    expect(sessions.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "listSessions",
+        args: { includeEnded: true },
+      },
+    });
+
+    const sessionEnd = buildCliPlan(["browser", "session", "end", "bs-1"]);
+    expect(sessionEnd.kind).toBe("execute");
+    if (sessionEnd.kind !== "execute") return;
+    expect(sessionEnd.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "endSession",
+        args: { sessionId: "bs-1" },
+      },
+    });
+
+    const observeSession = buildCliPlan(["browser", "observe", "--browser-session", "bs-1", "--map"]);
+    expect(observeSession.kind).toBe("execute");
+    if (observeSession.kind !== "execute") return;
+    expect(observeSession.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "observe",
+        args: { sessionId: "bs-1", includeElementMap: true },
+      },
+    });
+
+    const clickTab = buildCliPlan(["browser", "click", "--tab", "tab-1", "--x", "12", "--y", "24", "--no-observe"]);
+    expect(clickTab.kind).toBe("execute");
+    if (clickTab.kind !== "execute") return;
+    expect(clickTab.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "click",
+        args: { tabId: "tab-1", x: 12, y: 24, observe: false },
+      },
+    });
+
+    const clickSelector = buildCliPlan([
+      "browser",
+      "click",
+      "--tab",
+      "tab-1",
+      "--selector",
+      "button[type=submit]",
+      "--no-dom",
+    ]);
+    expect(clickSelector.kind).toBe("execute");
+    if (clickSelector.kind !== "execute") return;
+    expect(clickSelector.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "click",
+        args: { tabId: "tab-1", selector: "button[type=submit]", includeDom: false },
+      },
+    });
+
+    const clickText = buildCliPlan(["browser", "click", "--tab", "tab-1", "--text-match", "Sign in"]);
+    expect(clickText.kind).toBe("execute");
+    if (clickText.kind !== "execute") return;
+    expect(clickText.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "click",
+        args: { tabId: "tab-1", text: "Sign in" },
+      },
+    });
+
+    const clickHandle = buildCliPlan(["browser", "click", "--tab", "tab-1", "--handle", "obs-1:e:2", "--fast"]);
+    expect(clickHandle.kind).toBe("execute");
+    if (clickHandle.kind !== "execute") return;
+    expect(clickHandle.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "click",
+        args: { tabId: "tab-1", handle: "obs-1:e:2", waitAfterMs: 0 },
+      },
+    });
+
+    const clickSession = buildCliPlan(["browser", "click", "--browser-session", "bs-1", "--x", "12", "--y", "24"]);
+    expect(clickSession.kind).toBe("execute");
+    if (clickSession.kind !== "execute") return;
+    expect(clickSession.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "click",
+        args: { sessionId: "bs-1", x: 12, y: 24 },
+      },
+    });
+
+    const waitTab = buildCliPlan(["browser", "wait", "--tab", "tab-1", "--selector", ".ready", "--timeout-ms", "2500"]);
+    expect(waitTab.kind).toBe("execute");
+    if (waitTab.kind !== "execute") return;
+    expect(waitTab.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "wait",
+        args: { tabId: "tab-1", selector: ".ready", timeoutMs: 2500 },
+      },
+    });
+
+    const waitNetworkIdle = buildCliPlan(["browser", "wait", "--tab", "tab-1", "--network-idle", "--network-idle-ms", "250"]);
+    expect(waitNetworkIdle.kind).toBe("execute");
+    if (waitNetworkIdle.kind !== "execute") return;
+    expect(waitNetworkIdle.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "wait",
+        args: { tabId: "tab-1", loadState: "network-idle", networkIdleMs: 250 },
+      },
+    });
+
+    const sessionClickAlias = buildCliPlan(["browser", "session", "click", "bs-1", "--x", "12", "--y", "24"]);
+    expect(sessionClickAlias.kind).toBe("execute");
+    if (sessionClickAlias.kind !== "execute") return;
+    expect(sessionClickAlias.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "click",
+        args: { sessionId: "bs-1", x: 12, y: 24 },
+      },
+    });
+
+    const sessionWaitAlias = buildCliPlan(["browser", "session", "wait", "bs-1", "--network-idle", "--network-idle-ms", "250"]);
+    expect(sessionWaitAlias.kind).toBe("execute");
+    if (sessionWaitAlias.kind !== "execute") return;
+    expect(sessionWaitAlias.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "wait",
+        args: { sessionId: "bs-1", loadState: "network-idle", networkIdleMs: 250 },
+      },
+    });
+
+    const fillTab = buildCliPlan(["browser", "fill", "--tab", "tab-1", "--selector", "input[name=email]", "--value", "me@example.com", "--lane", "lane-1", "--lease-ttl-ms", "5000"]);
+    expect(fillTab.kind).toBe("execute");
+    if (fillTab.kind !== "execute") return;
+    expect(fillTab.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "fill",
+        args: {
+          tabId: "tab-1",
+          selector: "input[name=email]",
+          text: "me@example.com",
+          laneId: "lane-1",
+          leaseTtlMs: 5000,
+        },
+      },
+    });
+
+    const fillByText = buildCliPlan(["browser", "fill", "--tab", "tab-1", "--text-match", "Email", "--value", "me@example.com"]);
+    expect(fillByText.kind).toBe("execute");
+    if (fillByText.kind !== "execute") return;
+    expect(fillByText.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "fill",
+        args: {
+          tabId: "tab-1",
+          text: "Email",
+          value: "me@example.com",
+        },
+      },
+    });
+
+    const clearField = buildCliPlan(["browser", "clear-field", "--tab", "tab-1", "--test-id", "search"]);
+    expect(clearField.kind).toBe("execute");
+    if (clearField.kind !== "execute") return;
+    expect(clearField.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "clear",
+        args: { tabId: "tab-1", testId: "search" },
+      },
+    });
+
+    const typeTab = buildCliPlan(["browser", "type", "--tab", "tab-1", "hello"]);
+    expect(typeTab.kind).toBe("execute");
+    if (typeTab.kind !== "execute") return;
+    expect(typeTab.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "typeText",
+        args: { tabId: "tab-1", text: "hello" },
+      },
+    });
+
+    const keyTab = buildCliPlan(["browser", "press", "--tab", "tab-1", "--selector", "input[name=q]", "Enter"]);
+    expect(keyTab.kind).toBe("execute");
+    if (keyTab.kind !== "execute") return;
+    expect(keyTab.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "dispatchKey",
+        args: { tabId: "tab-1", selector: "input[name=q]", key: "Enter" },
+      },
+    });
+
+    const scrollTab = buildCliPlan(["browser", "scroll", "--tab", "tab-1", "--dy", "480"]);
+    expect(scrollTab.kind).toBe("execute");
+    if (scrollTab.kind !== "execute") return;
+    expect(scrollTab.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "scroll",
+        args: { tabId: "tab-1", deltaX: 0, deltaY: 480 },
+      },
+    });
+
     const selectPoint = buildCliPlan([
       "browser",
       "select",
@@ -4666,6 +4945,8 @@ describe("ADE CLI", () => {
       "120",
       "--y",
       "420",
+      "--tab",
+      "tab-1",
       "--no-screenshot",
     ]);
     expect(selectPoint.kind).toBe("execute");
@@ -4674,7 +4955,36 @@ describe("ADE CLI", () => {
       arguments: {
         domain: "built_in_browser",
         action: "selectPoint",
-        args: { x: 120, y: 420, includeScreenshot: false },
+        args: { tabId: "tab-1", x: 120, y: 420, includeScreenshot: false },
+      },
+    });
+
+    const proof = buildCliPlan(["browser", "proof", "--tab", "tab-1", "--caption", "Verified"]);
+    expect(proof.kind).toBe("execute");
+    if (proof.kind !== "execute") return;
+    expect(proof.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "observe",
+        args: { tabId: "tab-1", includeDom: false },
+      },
+    });
+    const proofParams = proof.steps[1]?.params;
+    expect(typeof proofParams).toBe("function");
+    if (typeof proofParams !== "function") return;
+    expect(proofParams({ observation: { filePath: "/tmp/browser-proof.png" } })).toMatchObject({
+      name: "ingest_computer_use_artifacts",
+      arguments: {
+        backendName: "ade-browser",
+        toolName: "browser proof",
+        inputs: [
+          {
+            kind: "screenshot",
+            title: "Verified",
+            description: "Verified",
+            path: "/tmp/browser-proof.png",
+          },
+        ],
       },
     });
   });
@@ -4695,9 +5005,82 @@ describe("ADE CLI", () => {
           action: "navigate",
           args: {
             url: "localhost:5173",
+            newTab: true,
             openPanel: true,
             laneId: "lane-env-1",
             chatSessionId: "chat-env-1",
+          },
+        },
+      });
+
+      const activeOpen = buildCliPlan(["browser", "open", "localhost:5173", "--active-tab"]);
+      expect(activeOpen.kind).toBe("execute");
+      if (activeOpen.kind !== "execute") return;
+      expect(activeOpen.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "built_in_browser",
+          action: "navigate",
+          args: {
+            url: "localhost:5173",
+            openPanel: true,
+            laneId: "lane-env-1",
+            chatSessionId: "chat-env-1",
+          },
+        },
+      });
+      expect((activeOpen.steps[0]?.params as any).arguments.args.newTab).toBeUndefined();
+
+      const panel = buildCliPlan(["browser", "panel"]);
+      expect(panel.kind).toBe("execute");
+      if (panel.kind !== "execute") return;
+      expect((panel.steps[0]?.params as any).arguments.args).toEqual({});
+      expect(panel.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "built_in_browser",
+          action: "showPanel",
+          args: {},
+        },
+      });
+
+      const switchTab = buildCliPlan(["browser", "switch", "--tab", "tab-1"]);
+      expect(switchTab.kind).toBe("execute");
+      if (switchTab.kind !== "execute") return;
+      expect((switchTab.steps[0]?.params as any).arguments.args).toEqual({
+        tabId: "tab-1",
+        openPanel: true,
+      });
+      expect(switchTab.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "built_in_browser",
+          action: "switchTab",
+          args: {
+            tabId: "tab-1",
+            openPanel: true,
+          },
+        },
+      });
+
+      const explicitSwitchClaim = buildCliPlan([
+        "browser",
+        "switch",
+        "--tab",
+        "tab-1",
+        "--lane",
+        "lane-explicit",
+        "--chat-session",
+        "chat-explicit",
+      ]);
+      expect(explicitSwitchClaim.kind).toBe("execute");
+      if (explicitSwitchClaim.kind !== "execute") return;
+      expect(explicitSwitchClaim.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "built_in_browser",
+          action: "switchTab",
+          args: {
+            tabId: "tab-1",
+            openPanel: true,
+            laneId: "lane-explicit",
+            chatSessionId: "chat-explicit",
           },
         },
       });
@@ -4709,6 +5092,8 @@ describe("ADE CLI", () => {
         "lane-explicit",
         "--chat-session",
         "chat-explicit",
+        "--tab",
+        "tab-1",
       ]);
       expect(claim.kind).toBe("execute");
       if (claim.kind !== "execute") return;
@@ -4719,6 +5104,7 @@ describe("ADE CLI", () => {
           args: {
             laneId: "lane-explicit",
             chatSessionId: "chat-explicit",
+            tabId: "tab-1",
           },
         },
       });

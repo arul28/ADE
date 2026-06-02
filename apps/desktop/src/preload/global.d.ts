@@ -601,6 +601,7 @@ import type {
   BuiltInBrowserSelectResult,
   BuiltInBrowserStatus,
   BuiltInBrowserTabArgs,
+  BuiltInBrowserTabTargetArgs,
   MacosVmAgentGuide,
   MacosVmAgentGuideArgs,
   MacosVmCaptureScreenshotArgs,
@@ -1554,13 +1555,15 @@ declare global {
         closeTab: (
           args: BuiltInBrowserTabArgs,
         ) => Promise<BuiltInBrowserStatus>;
-        reload: () => Promise<BuiltInBrowserStatus>;
-        goBack: () => Promise<BuiltInBrowserStatus>;
-        goForward: () => Promise<BuiltInBrowserStatus>;
-        stop: () => Promise<BuiltInBrowserStatus>;
+        reload: (args?: BuiltInBrowserTabTargetArgs) => Promise<BuiltInBrowserStatus>;
+        goBack: (args?: BuiltInBrowserTabTargetArgs) => Promise<BuiltInBrowserStatus>;
+        goForward: (args?: BuiltInBrowserTabTargetArgs) => Promise<BuiltInBrowserStatus>;
+        stop: (args?: BuiltInBrowserTabTargetArgs) => Promise<BuiltInBrowserStatus>;
         startInspect: () => Promise<BuiltInBrowserStatus>;
         stopInspect: () => Promise<BuiltInBrowserStatus>;
-        captureScreenshot: () => Promise<BuiltInBrowserScreenshot>;
+        captureScreenshot: (
+          args?: BuiltInBrowserTabTargetArgs,
+        ) => Promise<BuiltInBrowserScreenshot>;
         selectPoint: (
           args: BuiltInBrowserSelectPointArgs,
         ) => Promise<BuiltInBrowserSelectResult>;

@@ -308,9 +308,6 @@ export function WorkSidebar({
 
   function resolveToolAttributionReason(): string | null {
     if (!laneId) return null;
-    if (tab === "browser" && browserStatus?.ownerLaneId && browserStatus.ownerLaneId !== laneId) {
-      return laneMismatchMessage("Browser", browserStatus.ownerLaneId, laneId, lanes);
-    }
     if (tab === "app-control" && appControlSession?.laneId && appControlSession.laneId !== laneId) {
       return laneMismatchMessage("App Control", appControlSession.laneId, laneId, lanes);
     }

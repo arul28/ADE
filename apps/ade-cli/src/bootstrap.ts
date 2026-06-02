@@ -885,6 +885,7 @@ export async function createAdeRuntime(args: {
         socketPath:
           process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
           || resolveMachineAdeLayout().desktopBridgeSocketPath,
+        projectRoot,
         logger,
       });
 

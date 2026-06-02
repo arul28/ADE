@@ -243,6 +243,7 @@ export function createComputerUseArtifactBrokerService(args: {
   const layout = resolveAdeLayout(projectRoot);
   const allowedImportRoots = Array.from(new Set([
     layout.artifactsDir,
+    layout.cacheDir,
     layout.tmpDir,
     os.tmpdir(),
     path.join(os.homedir(), ".agent-browser"),

@@ -29,6 +29,7 @@ const fakes = vi.hoisted(() => {
     parentWindow,
     app: {
       configureWebAuthn: vi.fn(),
+      isPackaged: false,
     },
     session: {
       fromPartition: vi.fn(() => fakeSession),
@@ -44,6 +45,7 @@ const fakes = vi.hoisted(() => {
       for (const key of Object.keys(handlers)) delete handlers[key];
       fakeSession.on.mockClear();
       fakes.app.configureWebAuthn.mockReset();
+      fakes.app.isPackaged = false;
       fakes.session.fromPartition.mockClear();
       fakes.dialog.showMessageBox.mockReset();
       fakes.dialog.showMessageBox.mockResolvedValue({ response: 0 });
@@ -99,7 +101,7 @@ describe("configureBuiltInBrowserWebAuthn", () => {
     expect(fakes.app.configureWebAuthn).not.toHaveBeenCalled();
   });
 
-  it("configures Touch ID WebAuthn only when explicitly enabled", async () => {
+  it("configures Touch ID WebAuthn when explicitly enabled", async () => {
     process.env.ADE_ENABLE_TOUCH_ID_WEBAUTHN = "1";
     const { configureBuiltInBrowserWebAuthn } = await loadModule();
 
@@ -112,6 +114,31 @@ describe("configureBuiltInBrowserWebAuthn", () => {
     } else {
       expect(fakes.app.configureWebAuthn).not.toHaveBeenCalled();
     }
+  });
+
+  it("configures Touch ID WebAuthn by default in packaged macOS builds", async () => {
+    fakes.app.isPackaged = true;
+    const { configureBuiltInBrowserWebAuthn } = await loadModule();
+
+    configureBuiltInBrowserWebAuthn();
+
+    if (process.platform === "darwin") {
+      expect(fakes.app.configureWebAuthn).toHaveBeenCalledWith({
+        touchID: { keychainAccessGroup: "VQ372F39G6.com.ade.desktop.webauthn" },
+      });
+    } else {
+      expect(fakes.app.configureWebAuthn).not.toHaveBeenCalled();
+    }
+  });
+
+  it("lets packaged builds disable Touch ID WebAuthn with an env override", async () => {
+    fakes.app.isPackaged = true;
+    process.env.ADE_ENABLE_TOUCH_ID_WEBAUTHN = "0";
+    const { configureBuiltInBrowserWebAuthn } = await loadModule();
+
+    configureBuiltInBrowserWebAuthn();
+
+    expect(fakes.app.configureWebAuthn).not.toHaveBeenCalled();
   });
 
   it("selects the only returned passkey without prompting", async () => {

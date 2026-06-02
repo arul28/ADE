@@ -687,11 +687,22 @@ type ParallelModelRowState = NativeControlState & {
   executionMode: AgentChatExecutionMode;
 };
 
+type WorkDraftLaunchKind = "chat" | "cli" | "chat-orchestrator";
+type WorkDraftStorageKind = WorkDraftLaunchKind | "work-start";
+
+function normalizeWorkDraftStorageKind(workDraftKind: WorkDraftLaunchKind): WorkDraftStorageKind {
+  return workDraftKind === "chat" || workDraftKind === "cli" ? "work-start" : workDraftKind;
+}
+
+function resolveWorkDraftStorageKind(workDraftKind: WorkDraftLaunchKind | WorkDraftStorageKind): WorkDraftStorageKind {
+  return workDraftKind === "work-start" ? "work-start" : normalizeWorkDraftStorageKind(workDraftKind);
+}
+
 function launchConfigStorageKey(scope: {
   projectRoot: string | null | undefined;
   laneId: string | null | undefined;
   surfaceProfile: ChatSurfaceProfile;
-  workDraftKind: "chat" | "cli" | "chat-orchestrator";
+  workDraftKind: WorkDraftStorageKind;
 }): string {
   return [
     LAST_LAUNCH_CONFIG_KEY_PREFIX,
@@ -702,11 +713,30 @@ function launchConfigStorageKey(scope: {
   ].map(encodeURIComponent).join(":");
 }
 
+function launchConfigStorageKeys(scope: {
+  projectRoot: string | null | undefined;
+  laneId: string | null | undefined;
+  surfaceProfile: ChatSurfaceProfile;
+  workDraftKind: WorkDraftLaunchKind | WorkDraftStorageKind;
+}): string[] {
+  const sharedKind = resolveWorkDraftStorageKind(scope.workDraftKind);
+  const keys = [
+    launchConfigStorageKey({ ...scope, workDraftKind: sharedKind }),
+  ];
+  if (sharedKind === "work-start") {
+    keys.push(
+      launchConfigStorageKey({ ...scope, workDraftKind: "chat" }),
+      launchConfigStorageKey({ ...scope, workDraftKind: "cli" }),
+    );
+  }
+  return [...new Set(keys)];
+}
+
 function composerDraftStorageKey(scope: {
   projectRoot: string | null | undefined;
   companionStateKey: string;
   surfaceProfile: ChatSurfaceProfile;
-  workDraftKind: "chat" | "cli" | "chat-orchestrator";
+  workDraftKind: WorkDraftStorageKind;
 }): string {
   return [
     COMPOSER_DRAFT_STORAGE_KEY_PREFIX,
@@ -715,6 +745,25 @@ function composerDraftStorageKey(scope: {
     scope.surfaceProfile,
     scope.workDraftKind,
   ].map(encodeURIComponent).join(":");
+}
+
+function composerDraftStorageKeys(scope: {
+  projectRoot: string | null | undefined;
+  companionStateKey: string;
+  surfaceProfile: ChatSurfaceProfile;
+  workDraftKind: WorkDraftLaunchKind | WorkDraftStorageKind;
+}): string[] {
+  const sharedKind = resolveWorkDraftStorageKind(scope.workDraftKind);
+  const keys = [
+    composerDraftStorageKey({ ...scope, workDraftKind: sharedKind }),
+  ];
+  if (sharedKind === "work-start") {
+    keys.push(
+      composerDraftStorageKey({ ...scope, workDraftKind: "chat" }),
+      composerDraftStorageKey({ ...scope, workDraftKind: "cli" }),
+    );
+  }
+  return [...new Set(keys)];
 }
 
 function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState {
@@ -1589,6 +1638,18 @@ function readLastLaunchConfig(storageKey: string, defaults: NativeControlState):
   return null;
 }
 
+function readLatestLastLaunchConfig(storageKeys: string[], defaults: NativeControlState): LastLaunchConfig | null {
+  let latest: LastLaunchConfig | null = null;
+  for (const storageKey of storageKeys) {
+    const candidate = readLastLaunchConfig(storageKey, defaults);
+    if (!candidate) continue;
+    if (!latest || Date.parse(candidate.updatedAt) > Date.parse(latest.updatedAt)) {
+      latest = candidate;
+    }
+  }
+  return latest;
+}
+
 function writeLastLaunchConfig(storageKey: string, config: LastLaunchConfig): void {
   try {
     window.localStorage.setItem(storageKey, JSON.stringify(config));
@@ -1818,6 +1879,21 @@ function readComposerDraftSnapshot(
   } catch {
     return null;
   }
+}
+
+function readLatestComposerDraftSnapshot(
+  storageKeys: string[],
+  defaults: NativeControlState,
+): ComposerDraftStorageSnapshot | null {
+  let latest: ComposerDraftStorageSnapshot | null = null;
+  for (const storageKey of storageKeys) {
+    const candidate = readComposerDraftSnapshot(storageKey, defaults);
+    if (!candidate) continue;
+    if (!latest || Date.parse(candidate.updatedAt) > Date.parse(latest.updatedAt)) {
+      latest = candidate;
+    }
+  }
+  return latest;
 }
 
 function writeComposerDraftSnapshot(storageKey: string, snapshot: ComposerDraftStorageSnapshot): void {
@@ -2350,16 +2426,18 @@ export function AgentChatPane({
   const isPersistentIdentitySurface = surfaceProfile === "persistent_identity";
   const showWorkspaceChrome = !hideWorkspaceChrome;
   const modelSwitchPolicy = presentation?.modelSwitchPolicy ?? "same-family-after-launch";
+  const workDraftStorageKind = normalizeWorkDraftStorageKind(workDraftKind);
   const initialNativeControls = useMemo(() => defaultNativeControls(surfaceProfile), [surfaceProfile]);
-  const lastLaunchConfigStorageKey = useMemo(() => launchConfigStorageKey({
+  const lastLaunchConfigStorageKeys = useMemo(() => launchConfigStorageKeys({
     projectRoot,
     laneId,
     surfaceProfile,
-    workDraftKind,
-  }), [laneId, projectRoot, surfaceProfile, workDraftKind]);
+    workDraftKind: workDraftStorageKind,
+  }), [laneId, projectRoot, surfaceProfile, workDraftStorageKind]);
+  const lastLaunchConfigStorageKey = lastLaunchConfigStorageKeys[0]!;
   const draftLaunchConfigScopeKey = useMemo(
-    () => `${projectRoot ?? "project"}:${laneId ?? "no-lane"}:${surfaceProfile}:${workDraftKind}`,
-    [laneId, projectRoot, surfaceProfile, workDraftKind],
+    () => `${projectRoot ?? "project"}:${laneId ?? "no-lane"}:${surfaceProfile}:${workDraftStorageKind}`,
+    [laneId, projectRoot, surfaceProfile, workDraftStorageKind],
   );
   const initialCompanionStateKey = lockSessionId ?? initialSessionId ?? (laneId ? `draft:${laneId}` : "draft");
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
@@ -2543,12 +2621,13 @@ export function AgentChatPane({
     document.addEventListener("mouseup", onUp);
   }, [rightPaneSplit]);
   const companionStateKey = selectedSessionId ?? (laneId ? `draft:${laneId}` : "draft");
-  const composerDraftStorageKeyValue = useMemo(() => composerDraftStorageKey({
+  const composerDraftStorageKeyValues = useMemo(() => composerDraftStorageKeys({
     projectRoot,
     companionStateKey,
     surfaceProfile,
-    workDraftKind,
-  }), [companionStateKey, projectRoot, surfaceProfile, workDraftKind]);
+    workDraftKind: workDraftStorageKind,
+  }), [companionStateKey, projectRoot, surfaceProfile, workDraftStorageKind]);
+  const composerDraftStorageKeyValue = composerDraftStorageKeyValues[0]!;
   const companionHydrationKeyRef = useRef<string | null>(initialCompanionStateKey);
   const composerDraftHydratingRef = useRef(false);
   const [sessionDelta, setSessionDelta] = useState<{ insertions: number; deletions: number } | null>(null);
@@ -3443,6 +3522,7 @@ export function AgentChatPane({
 
   const applyLaunchConfigToComposer = useCallback((config: LastLaunchConfig) => {
     const desc = resolveModelDescriptorWithRuntimeCatalog(config.modelId) ?? getModelById(config.modelId);
+    if (!cursorModelAllowedForDraftKind(desc, workDraftKind)) return;
     const tiers = desc?.reasoningTiers ?? [];
     setModelId(config.modelId);
     setReasoningEffort(selectReasoningEffort({
@@ -3460,14 +3540,14 @@ export function AgentChatPane({
     setDroidPermissionMode(config.controls.droidPermissionMode);
     setCursorModeId(config.controls.cursorModeId);
     setCursorConfigValues({ ...config.controls.cursorConfigValues });
-  }, []);
+  }, [workDraftKind]);
 
   const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
     if (!session) {
       if (draftLaunchConfigTouchedKeyRef.current === draftLaunchConfigScopeKey) {
         return;
       }
-      const lastLaunchConfig = readLastLaunchConfig(lastLaunchConfigStorageKey, initialNativeControls);
+      const lastLaunchConfig = readLatestLastLaunchConfig(lastLaunchConfigStorageKeys, initialNativeControls);
       if (lastLaunchConfig) {
         applyLaunchConfigToComposer(lastLaunchConfig);
         return;
@@ -3510,7 +3590,7 @@ export function AgentChatPane({
           .flatMap((option) => option.currentValue == null ? [] : [[option.id, option.currentValue]]),
       ),
     );
-  }, [applyLaunchConfigToComposer, draftLaunchConfigScopeKey, initialNativeControls, lastLaunchConfigStorageKey]);
+  }, [applyLaunchConfigToComposer, draftLaunchConfigScopeKey, initialNativeControls, lastLaunchConfigStorageKeys]);
   const executionModeOptions = useMemo(
     () => getExecutionModeOptions(selectedModelDesc),
     [selectedModelDesc],
@@ -4237,7 +4317,7 @@ export function AgentChatPane({
 
     const storageHydrationKey = `${draftKey}:storage`;
     if (draftLaunchConfigHydratedRef.current === storageHydrationKey) return;
-    const storedConfig = readLastLaunchConfig(lastLaunchConfigStorageKey, initialNativeControls);
+    const storedConfig = readLatestLastLaunchConfig(lastLaunchConfigStorageKeys, initialNativeControls);
     if (!storedConfig) return;
     applyLaunchConfigToComposer(storedConfig);
     draftLaunchConfigHydratedRef.current = storageHydrationKey;
@@ -4246,7 +4326,7 @@ export function AgentChatPane({
     initialNativeControls,
     draftLaunchConfigScopeKey,
     laneId,
-    lastLaunchConfigStorageKey,
+    lastLaunchConfigStorageKeys,
     lockSessionId,
     projectRoot,
     selectedSessionId,
@@ -4325,8 +4405,18 @@ export function AgentChatPane({
     if (!modelId) return;
     if (selectableModelIds.includes(modelId)) return;
     if (modelSelectionConstrained) return;
+    const modelDesc = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
+    if (modelDesc?.family === "cursor" && !cursorModelAllowedForDraftKind(modelDesc, workDraftKind)) {
+      if (selectedSessionModelId && effectiveAvailableModelIds.includes(selectedSessionModelId)) {
+        setModelId(selectedSessionModelId);
+        return;
+      }
+      const preferred = readLastUsedModelId();
+      setModelId(preferred && effectiveAvailableModelIds.includes(preferred) ? preferred : effectiveAvailableModelIds[0] ?? "");
+      return;
+    }
     // Runtime catalog can surface Cursor/Droid SDK models before ai status catches up.
-    if (isKnownSelectableChatModelId(modelId) || resolveModelDescriptorWithRuntimeCatalog(modelId)) return;
+    if (isKnownSelectableChatModelId(modelId) || modelDesc) return;
     if (selectedSessionModelId && selectableModelIds.includes(selectedSessionModelId)) {
       setModelId(selectedSessionModelId);
       return;
@@ -4337,7 +4427,7 @@ export function AgentChatPane({
     } else {
       setModelId(selectableModelIds[0]!);
     }
-  }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, selectedSessionModelId]);
+  }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, selectedSessionModelId, workDraftKind]);
 
   useEffect(() => {
     if (!reasoningTiers.length) {
@@ -5254,7 +5344,7 @@ export function AgentChatPane({
       draftsPerSessionRef.current.set(prevDraftKeyRef.current, composerDraftTextRef.current);
     }
     prevDraftKeyRef.current = companionStateKey;
-    const saved = readComposerDraftSnapshot(composerDraftStorageKeyValue, initialNativeControls);
+    const saved = readLatestComposerDraftSnapshot(composerDraftStorageKeyValues, initialNativeControls);
     composerDraftHydratingRef.current = true;
     if (saved) {
       draftsPerSessionRef.current.set(companionStateKey, saved.text);
@@ -5293,7 +5383,7 @@ export function AgentChatPane({
   }, [
     applyLaunchConfigToComposer,
     companionStateKey,
-    composerDraftStorageKeyValue,
+    composerDraftStorageKeyValues,
     draftLaunchConfigScopeKey,
     initialNativeControls,
     selectedSessionId,

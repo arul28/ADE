@@ -613,6 +613,7 @@ import type {
   BuiltInBrowserSelectResult,
   BuiltInBrowserStatus,
   BuiltInBrowserTabArgs,
+  BuiltInBrowserTabTargetArgs,
   MacosVmAgentGuide,
   MacosVmAgentGuideArgs,
   MacosVmCaptureScreenshotArgs,
@@ -5650,25 +5651,33 @@ contextBridge.exposeInMainWorld("ade", {
         () => builtInBrowserStatusCache.clear(),
         () => ipcRenderer.invoke(IPC.builtInBrowserCloseTab, args),
       ),
-    reload: async (): Promise<BuiltInBrowserStatus> =>
+    reload: async (
+      args: BuiltInBrowserTabTargetArgs = {},
+    ): Promise<BuiltInBrowserStatus> =>
       clearAround(
         () => builtInBrowserStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.builtInBrowserReload),
+        () => ipcRenderer.invoke(IPC.builtInBrowserReload, args),
       ),
-    goBack: async (): Promise<BuiltInBrowserStatus> =>
+    goBack: async (
+      args: BuiltInBrowserTabTargetArgs = {},
+    ): Promise<BuiltInBrowserStatus> =>
       clearAround(
         () => builtInBrowserStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.builtInBrowserGoBack),
+        () => ipcRenderer.invoke(IPC.builtInBrowserGoBack, args),
       ),
-    goForward: async (): Promise<BuiltInBrowserStatus> =>
+    goForward: async (
+      args: BuiltInBrowserTabTargetArgs = {},
+    ): Promise<BuiltInBrowserStatus> =>
       clearAround(
         () => builtInBrowserStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.builtInBrowserGoForward),
+        () => ipcRenderer.invoke(IPC.builtInBrowserGoForward, args),
       ),
-    stop: async (): Promise<BuiltInBrowserStatus> =>
+    stop: async (
+      args: BuiltInBrowserTabTargetArgs = {},
+    ): Promise<BuiltInBrowserStatus> =>
       clearAround(
         () => builtInBrowserStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.builtInBrowserStop),
+        () => ipcRenderer.invoke(IPC.builtInBrowserStop, args),
       ),
     startInspect: async (): Promise<BuiltInBrowserStatus> =>
       clearAround(
@@ -5680,8 +5689,10 @@ contextBridge.exposeInMainWorld("ade", {
         () => builtInBrowserStatusCache.clear(),
         () => ipcRenderer.invoke(IPC.builtInBrowserStopInspect),
       ),
-    captureScreenshot: async (): Promise<BuiltInBrowserScreenshot> =>
-      ipcRenderer.invoke(IPC.builtInBrowserCaptureScreenshot),
+    captureScreenshot: async (
+      args: BuiltInBrowserTabTargetArgs = {},
+    ): Promise<BuiltInBrowserScreenshot> =>
+      ipcRenderer.invoke(IPC.builtInBrowserCaptureScreenshot, args),
     selectPoint: async (
       args: BuiltInBrowserSelectPointArgs,
     ): Promise<BuiltInBrowserSelectResult> =>

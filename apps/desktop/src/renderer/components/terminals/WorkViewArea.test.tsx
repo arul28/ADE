@@ -189,6 +189,9 @@ beforeEach(() => {
   Object.defineProperty(window, "ade", {
     configurable: true,
     value: {
+      app: {
+        writeClipboardText: vi.fn().mockResolvedValue(undefined),
+      },
       agentChat: {
         models: modelsMock,
         slashCommands: slashCommandsMock,
@@ -1179,6 +1182,7 @@ describe("WorkViewArea", () => {
     fireEvent.keyDown(textarea, { key: "Enter" });
 
     await waitFor(() => expect(onContinue).toHaveBeenCalledWith(session, "fix the test"));
+    expect((window.ade as any).app.writeClipboardText).toHaveBeenCalledWith("fix the test");
     expect((textarea as HTMLTextAreaElement).value).toBe("");
   });
 

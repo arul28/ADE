@@ -133,6 +133,29 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     client.dispose();
   });
 
+  it("scopes bridge calls to the runtime project root", async () => {
+    const recorded: JsonRpcRequest[] = [];
+    server = await startBridgeServer(async (request) => {
+      recorded.push(request);
+      return { ok: true };
+    });
+    const client = createBuiltInBrowserDesktopBridgeClient({
+      socketPath: server.socketPath,
+      projectRoot: "/Users/ade/project-alpha",
+      logger: silentLogger(),
+    });
+
+    await client.getStatus();
+    await client.navigate({ url: "https://example.com", projectRoot: "/tmp/spoof" });
+
+    expect(recorded[0]?.params).toEqual({ projectRoot: "/Users/ade/project-alpha" });
+    expect(recorded[1]?.params).toEqual({
+      url: "https://example.com",
+      projectRoot: "/Users/ade/project-alpha",
+    });
+    client.dispose();
+  });
+
   it("surfaces a clear error when the bridge socket does not exist", async () => {
     const missingPath = path.join(
       fs.mkdtempSync(path.join(os.tmpdir(), "ade-bridge-test-missing-")),

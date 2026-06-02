@@ -1,37 +1,103 @@
-import { WebContentsView, nativeImage, session, webContents as electronWebContents } from "electron";
+import { WebContentsView, nativeImage, screen, session, webContents as electronWebContents } from "electron";
 import type { BrowserWindow, WebContents } from "electron";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
 import type {
-  BuiltInBrowserBoundsArgs,
+  BuiltInBrowserActionTraceEntry,
+  BuiltInBrowserAgentActionArgs,
+  BuiltInBrowserAgentActionResult,
   BuiltInBrowserAttachWebviewArgs,
+  BuiltInBrowserBoundsArgs,
+  BuiltInBrowserClearArgs,
   BuiltInBrowserClaimArgs,
+  BuiltInBrowserClickArgs,
   BuiltInBrowserContextItem,
   BuiltInBrowserCreateTabArgs,
+  BuiltInBrowserDiagnostics,
+  BuiltInBrowserDispatchKeyArgs,
+  BuiltInBrowserDomSnapshot,
+  BuiltInBrowserElementSnapshot,
+  BuiltInBrowserElementTargetArgs,
+  BuiltInBrowserEndSessionArgs,
   BuiltInBrowserEventPayload,
   BuiltInBrowserFrame,
+  BuiltInBrowserListSessionsArgs,
   BuiltInBrowserNavigateArgs,
+  BuiltInBrowserObservation,
+  BuiltInBrowserObservationArgs,
+  BuiltInBrowserObservationElementMap,
   BuiltInBrowserOpenPanelArgs,
+  BuiltInBrowserProjectScopeArgs,
+  BuiltInBrowserScrollArgs,
   BuiltInBrowserScreenshot,
   BuiltInBrowserSelectPointArgs,
   BuiltInBrowserSelectResult,
+  BuiltInBrowserSession,
+  BuiltInBrowserSessionResult,
+  BuiltInBrowserSessionsResult,
+  BuiltInBrowserStartSessionArgs,
   BuiltInBrowserStatus,
   BuiltInBrowserTab,
   BuiltInBrowserTabArgs,
+  BuiltInBrowserTabTargetArgs,
+  BuiltInBrowserTraceArgs,
+  BuiltInBrowserTraceResult,
+  BuiltInBrowserWaitArgs,
+  BuiltInBrowserFillArgs,
+  BuiltInBrowserTypeTextArgs,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import { isRecord } from "../shared/utils";
-import { BUILT_IN_BROWSER_PARTITION } from "./builtInBrowserConstants";
+import {
+  BUILT_IN_BROWSER_PARTITION,
+  BUILT_IN_BROWSER_PROFILE_PREFIX,
+} from "./builtInBrowserConstants";
 import { isAllowedNavigationUrl, normalizeBrowserUrl } from "./builtInBrowserNavigation";
 import {
   shouldAllowGoogleAuthPermissionCheck,
   shouldAllowGoogleAuthPermissionRequest,
 } from "./builtInBrowserPermissions";
+import { configureBuiltInBrowserSessionWebAuthn } from "./builtInBrowserWebAuthn";
 
 const BROWSER_PARTITION = BUILT_IN_BROWSER_PARTITION;
 const SCREENSHOT_TIMEOUT_MS = 3_000;
 const ELEMENT_SCREENSHOT_TIMEOUT_MS = 2_000;
 const DEBUGGER_TIMEOUT_MS = 3_000;
 const MAX_BROWSER_TABS = 10;
+const DEFAULT_OBSERVATION_KEEP_COUNT = 3;
+const MAX_OBSERVATION_KEEP_COUNT = 20;
+const DEFAULT_OBSERVATION_MAX_ELEMENTS = 80;
+const MAX_OBSERVATION_MAX_ELEMENTS = 200;
+const MAX_ELEMENT_MAP_ELEMENTS = 80;
+const MAX_BROWSER_CONSOLE_DIAGNOSTICS = 40;
+const MAX_BROWSER_NETWORK_DIAGNOSTICS = 80;
+const MAX_BROWSER_TRACE_ENTRIES = 80;
+const DEFAULT_BROWSER_TRACE_LIMIT = 20;
+const MAX_BROWSER_TRACE_LIMIT = 80;
+const MAX_BROWSER_SESSIONS = 80;
+const DEFAULT_ACTION_OBSERVE_DELAY_MS = 150;
+const MAX_ACTION_OBSERVE_DELAY_MS = 5_000;
+const DEFAULT_BROWSER_WAIT_TIMEOUT_MS = 5_000;
+const MAX_BROWSER_WAIT_TIMEOUT_MS = 60_000;
+const DEFAULT_BROWSER_NETWORK_IDLE_MS = 500;
+const MAX_BROWSER_NETWORK_IDLE_MS = 10_000;
+const DEFAULT_TAB_LEASE_TTL_MS = 10 * 60_000;
+const MAX_TAB_LEASE_TTL_MS = 60 * 60_000;
+const DEFAULT_OBSERVATION_MAX_AGE_MS = 30 * 60_000;
+const OBSERVATION_CACHE_DIR = path.join(".ade", "cache", "browser-observations");
+const INSPECT_BINDING_NAME = "__adeBuiltInBrowserInspectSelect";
+
+type BrowserProfile = {
+  key: string;
+  partition: string;
+  projectRoot: string | null;
+};
+
+type BrowserInspectPoint = {
+  x: number;
+  y: number;
+};
 
 type DebuggerMessageListener = (
   event: Electron.Event,
@@ -71,6 +137,8 @@ type CdpCallFunctionResponse = {
   exceptionDetails?: unknown;
 };
 
+type CdpRuntimeEvaluateResponse = CdpCallFunctionResponse;
+
 type CdpScreenshotResponse = {
   data?: string;
 };
@@ -79,54 +147,194 @@ type CdpGetNodeForLocationResponse = {
   backendNodeId?: number;
 };
 
+type CdpRuntimeBindingCalledParams = {
+  name?: string;
+  payload?: string;
+};
+
+type CdpInputMouseButton = "left" | "middle" | "right" | "none";
+
 type BrowserTabState = {
   id: string;
   view: WebContentsView | null;
   webContents: WebContents;
   ownsWebContents: boolean;
+  consoleDiagnostics: BuiltInBrowserDiagnostics["console"];
+  networkDiagnostics: BuiltInBrowserDiagnostics["network"];
+  pendingNetworkRequests: Map<string, BrowserPendingNetworkRequest>;
+  lastNetworkActivityAtMs: number;
+  waiters: Set<() => void>;
+  actionTrace: BuiltInBrowserActionTraceEntry[];
+  ownerLaneId: string | null;
+  ownerChatSessionId: string | null;
+  ownerClaimedAt: string | null;
+  ownerLeaseExpiresAt: string | null;
 };
+
+type BrowserPendingNetworkRequest = {
+  id: string;
+  url: string;
+  method: string | null;
+  resourceType: string | null;
+  startedAt: string;
+  startedAtMs: number;
+};
+
+type BrowserActionTraceDraft = {
+  id: string;
+  action: string;
+  startedAt: string;
+  startedAtMs: number;
+  before: { url: string | null; title: string | null };
+  target: Record<string, unknown> | null;
+};
+
+type BrowserSessionState = {
+  id: string;
+  tabId: string;
+  createdAt: string;
+  updatedAt: string;
+  endedAt: string | null;
+  ownerLaneId: string | null;
+  ownerChatSessionId: string | null;
+  lastObservationId: string | null;
+  lastTraceEntryId: string | null;
+};
+
+type BuiltInBrowserElementTargetInput = BuiltInBrowserObservationArgs & BuiltInBrowserElementTargetArgs;
+
+function normalizedProjectRoot(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : null;
+}
+
+function profileForProjectRoot(projectRoot: string | null | undefined): BrowserProfile {
+  const normalized = normalizedProjectRoot(projectRoot);
+  if (!normalized) {
+    return {
+      key: "global",
+      partition: BROWSER_PARTITION,
+      projectRoot: null,
+    };
+  }
+  const key = createHash("sha256").update(normalized).digest("hex").slice(0, 16);
+  return {
+    key,
+    partition: `${BUILT_IN_BROWSER_PROFILE_PREFIX}${key}`,
+    projectRoot: normalized,
+  };
+}
 
 export function createBuiltInBrowserService(args: {
   getLogger?: () => Logger;
+  getProjectRootForWindow?: (win: BrowserWindow) => string | null | undefined;
+  getWindowForProjectRoot?: (projectRoot: string) => BrowserWindow | null | undefined;
   onEvent?: ((payload: BuiltInBrowserEventPayload, targetWindow?: BrowserWindow | null) => void) | null;
 }) {
   type WindowBrowserService = ReturnType<typeof createBuiltInBrowserWindowService>;
   type WindowBrowserEntry = {
     win: BrowserWindow;
     service: WindowBrowserService;
-    closedListener: () => void;
   };
 
-  const windowServices = new Map<number, WindowBrowserEntry>();
+  const windowServices = new Map<string, WindowBrowserEntry>();
+  const activeServiceKeyByWindow = new Map<number, string>();
+  const windowClosedListeners = new Map<number, { win: BrowserWindow; listener: () => void }>();
   let activeWindowId: number | null = null;
   let fallbackService: WindowBrowserService | null = null;
 
-  const createServiceForWindow = (win: BrowserWindow): WindowBrowserService =>
+  const createServiceForWindow = (win: BrowserWindow, profile: BrowserProfile): WindowBrowserService =>
     createBuiltInBrowserWindowService({
       getLogger: args.getLogger,
       onEvent: (payload) => args.onEvent?.(payload, win),
+      profile,
     });
 
+  const serviceKey = (windowId: number, profile: BrowserProfile): string =>
+    `${windowId}:${profile.partition}`;
+
+  const profileForWindow = (win: BrowserWindow): BrowserProfile =>
+    profileForProjectRoot(args.getProjectRootForWindow?.(win));
+
+  const projectRootForWindow = (win: BrowserWindow): string | null =>
+    normalizedProjectRoot(args.getProjectRootForWindow?.(win));
+
+  const projectRootsMatch = (left: string | null | undefined, right: string | null | undefined): boolean => {
+    const normalizedLeft = normalizedProjectRoot(left);
+    const normalizedRight = normalizedProjectRoot(right);
+    return Boolean(normalizedLeft && normalizedLeft === normalizedRight);
+  };
+
+  const projectRootFromInput = (input: unknown): string | null => {
+    if (!isRecord(input)) return null;
+    const projectRoot = input.projectRoot;
+    return typeof projectRoot === "string" ? normalizedProjectRoot(projectRoot) : null;
+  };
+
+  const liveWindowForProjectRoot = (projectRoot: string): BrowserWindow | null => {
+    const normalized = normalizedProjectRoot(projectRoot);
+    if (!normalized) return null;
+    const resolved = args.getWindowForProjectRoot?.(normalized) ?? null;
+    if (isLiveWindow(resolved) && projectRootsMatch(projectRootForWindow(resolved), normalized)) {
+      return resolved;
+    }
+    for (const { win } of windowClosedListeners.values()) {
+      if (!isLiveWindow(win)) continue;
+      if (projectRootsMatch(projectRootForWindow(win), normalized)) return win;
+    }
+    return null;
+  };
+
+  const detachInactiveWindowServices = (win: BrowserWindow, activeKey: string): void => {
+    for (const [key, entry] of windowServices) {
+      if (entry.win.id !== win.id || key === activeKey) continue;
+      entry.service.detachFromWindow(false);
+    }
+  };
+
+  const disposeWindowServices = (win: BrowserWindow): void => {
+    for (const [key, entry] of windowServices) {
+      if (entry.win.id !== win.id) continue;
+      entry.service.dispose();
+      windowServices.delete(key);
+    }
+    activeServiceKeyByWindow.delete(win.id);
+    if (activeWindowId === win.id) activeWindowId = null;
+  };
+
+  const ensureWindowClosedListener = (win: BrowserWindow): void => {
+    if (windowClosedListeners.has(win.id)) return;
+    const listener = () => {
+      disposeWindowServices(win);
+      windowClosedListeners.delete(win.id);
+    };
+    windowClosedListeners.set(win.id, { win, listener });
+    win.once("closed", listener);
+  };
+
   const serviceForWindow = (win: BrowserWindow): WindowBrowserService => {
-    const existing = windowServices.get(win.id);
+    const profile = profileForWindow(win);
+    const key = serviceKey(win.id, profile);
+    const existing = windowServices.get(key);
+    activeServiceKeyByWindow.set(win.id, key);
+    detachInactiveWindowServices(win, key);
     if (existing) return existing.service;
 
     fallbackService?.dispose();
     fallbackService = null;
-    const service = createServiceForWindow(win);
-    const closedListener = () => {
-      windowServices.delete(win.id);
-      if (activeWindowId === win.id) activeWindowId = null;
-      service.dispose();
-    };
-    windowServices.set(win.id, { win, service, closedListener });
-    win.once("closed", closedListener);
+    ensureWindowClosedListener(win);
+    const service = createServiceForWindow(win, profile);
+    windowServices.set(key, { win, service });
     return service;
   };
 
   const activeService = (): WindowBrowserService => {
     if (activeWindowId != null) {
-      const active = windowServices.get(activeWindowId);
+      const activeWindow = windowClosedListeners.get(activeWindowId)?.win;
+      if (isLiveWindow(activeWindow)) return serviceForWindow(activeWindow);
+      const activeKey = activeServiceKeyByWindow.get(activeWindowId);
+      const active = activeKey ? windowServices.get(activeKey) : null;
       if (active) return active.service;
     }
     const first = windowServices.values().next().value as WindowBrowserEntry | undefined;
@@ -135,96 +343,169 @@ export function createBuiltInBrowserService(args: {
       fallbackService = createBuiltInBrowserWindowService({
         getLogger: args.getLogger,
         onEvent: (payload) => args.onEvent?.(payload, null),
+        profile: profileForProjectRoot(null),
       });
     }
     return fallbackService;
   };
 
-  const isLiveWindow = (value: BrowserWindow | null | undefined): value is BrowserWindow =>
+  const isLiveWindow = (value: unknown): value is BrowserWindow =>
     Boolean(
       value
       && typeof (value as { id?: unknown }).id === "number"
       && typeof (value as { isDestroyed?: unknown }).isDestroyed === "function"
-      && !value.isDestroyed()
+      && !(value as { isDestroyed: () => boolean }).isDestroyed()
     );
 
-  const serviceFor = (win?: BrowserWindow | null): WindowBrowserService =>
-    isLiveWindow(win) ? serviceForWindow(win) : activeService();
+  const serviceForProjectRoot = (projectRoot: string): WindowBrowserService => {
+    const normalized = normalizedProjectRoot(projectRoot);
+    if (!normalized) return activeService();
+    const win = liveWindowForProjectRoot(normalized);
+    if (!win) {
+      throw new Error(`No ADE browser window is open for project: ${normalized}`);
+    }
+    return serviceForWindow(win);
+  };
+
+  const serviceForInput = (
+    input?: BuiltInBrowserProjectScopeArgs | null,
+    sourceWindow?: BrowserWindow | null,
+  ): WindowBrowserService => {
+    if (isLiveWindow(sourceWindow)) return serviceForWindow(sourceWindow);
+    const projectRoot = projectRootFromInput(input);
+    if (projectRoot) return serviceForProjectRoot(projectRoot);
+    return activeService();
+  };
+
+  const serviceForRoutingArg = (
+    inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null,
+  ): WindowBrowserService =>
+    isLiveWindow(inputOrSourceWindow)
+      ? serviceForWindow(inputOrSourceWindow)
+      : serviceForInput(inputOrSourceWindow);
 
   return {
     attachToWindow(nextWin: BrowserWindow): void {
       activeWindowId = nextWin.id;
       serviceForWindow(nextWin).attachToWindow(nextWin);
     },
-    getStatus(sourceWindow?: BrowserWindow | null): BuiltInBrowserStatus {
-      return serviceFor(sourceWindow).getStatus();
+    getStatus(inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null): BuiltInBrowserStatus {
+      return serviceForRoutingArg(inputOrSourceWindow).getStatus();
     },
     claim(input: BuiltInBrowserClaimArgs = {}, sourceWindow?: BrowserWindow | null): BuiltInBrowserStatus {
-      return serviceFor(sourceWindow).claim(input);
+      return serviceForInput(input, sourceWindow).claim(input);
+    },
+    startSession(input: BuiltInBrowserStartSessionArgs = {}, sourceWindow?: BrowserWindow | null): BuiltInBrowserSessionResult {
+      return serviceForInput(input, sourceWindow).startSession(input);
+    },
+    listSessions(inputOrSourceWindow?: BuiltInBrowserListSessionsArgs | BrowserWindow | null, sourceWindow?: BrowserWindow | null): BuiltInBrowserSessionsResult {
+      const input = isLiveWindow(inputOrSourceWindow) ? {} : inputOrSourceWindow ?? {};
+      return serviceForInput(input, sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null)).listSessions(input);
+    },
+    endSession(input: BuiltInBrowserEndSessionArgs, sourceWindow?: BrowserWindow | null): BuiltInBrowserSessionResult {
+      return serviceForInput(input, sourceWindow).endSession(input);
     },
     showPanel(input: BuiltInBrowserOpenPanelArgs = {}, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
-      return serviceFor(sourceWindow).showPanel(input);
+      return serviceForInput(input, sourceWindow).showPanel(input);
     },
     setBounds(nextBounds: BuiltInBrowserBoundsArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
-      return serviceFor(sourceWindow).setBounds(nextBounds);
+      return serviceForInput(nextBounds, sourceWindow).setBounds(nextBounds);
     },
     attachWebview(input: BuiltInBrowserAttachWebviewArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
-      return serviceFor(sourceWindow).attachWebview(input);
+      return serviceForInput(input, sourceWindow).attachWebview(input);
     },
     navigate(input: BuiltInBrowserNavigateArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
-      return serviceFor(sourceWindow).navigate(input);
+      return serviceForInput(input, sourceWindow).navigate(input);
     },
     createTab(input: BuiltInBrowserCreateTabArgs = {}, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
-      return serviceFor(sourceWindow).createTab(input);
+      return serviceForInput(input, sourceWindow).createTab(input);
     },
     switchTab(input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
-      return serviceFor(sourceWindow).switchTab(input);
+      return serviceForInput(input, sourceWindow).switchTab(input);
     },
     closeTab(input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
-      return serviceFor(sourceWindow).closeTab(input);
+      return serviceForInput(input, sourceWindow).closeTab(input);
     },
-    reload(sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
-      return serviceFor(sourceWindow).reload();
+    reload(inputOrSourceWindow?: BuiltInBrowserTabTargetArgs | BrowserWindow | null, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
+      const input = isLiveWindow(inputOrSourceWindow) ? {} : inputOrSourceWindow ?? {};
+      return serviceForInput(input, sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null)).reload(input);
     },
-    goBack(sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
-      return serviceFor(sourceWindow).goBack();
+    goBack(inputOrSourceWindow?: BuiltInBrowserTabTargetArgs | BrowserWindow | null, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
+      const input = isLiveWindow(inputOrSourceWindow) ? {} : inputOrSourceWindow ?? {};
+      return serviceForInput(input, sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null)).goBack(input);
     },
-    goForward(sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
-      return serviceFor(sourceWindow).goForward();
+    goForward(inputOrSourceWindow?: BuiltInBrowserTabTargetArgs | BrowserWindow | null, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
+      const input = isLiveWindow(inputOrSourceWindow) ? {} : inputOrSourceWindow ?? {};
+      return serviceForInput(input, sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null)).goForward(input);
     },
-    stop(sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
-      return serviceFor(sourceWindow).stop();
+    stop(inputOrSourceWindow?: BuiltInBrowserTabTargetArgs | BrowserWindow | null, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
+      const input = isLiveWindow(inputOrSourceWindow) ? {} : inputOrSourceWindow ?? {};
+      return serviceForInput(input, sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null)).stop(input);
     },
-    startInspect(sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
-      return serviceFor(sourceWindow).startInspect();
+    observe(inputOrSourceWindow?: BuiltInBrowserObservationArgs | BrowserWindow | null, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserObservation> {
+      const input = isLiveWindow(inputOrSourceWindow) ? {} : inputOrSourceWindow ?? {};
+      return serviceForInput(input, sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null)).observe(input);
     },
-    stopInspect(sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
-      return serviceFor(sourceWindow).stopInspect();
+    getTrace(inputOrSourceWindow?: BuiltInBrowserTraceArgs | BrowserWindow | null, sourceWindow?: BrowserWindow | null): BuiltInBrowserTraceResult {
+      const input = isLiveWindow(inputOrSourceWindow) ? {} : inputOrSourceWindow ?? {};
+      return serviceForInput(input, sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null)).getTrace(input);
     },
-    captureScreenshot(sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserScreenshot> {
-      return serviceFor(sourceWindow).captureScreenshot();
+    click(input: BuiltInBrowserClickArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserAgentActionResult> {
+      return serviceForInput(input, sourceWindow).click(input);
+    },
+    typeText(input: BuiltInBrowserTypeTextArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserAgentActionResult> {
+      return serviceForInput(input, sourceWindow).typeText(input);
+    },
+    dispatchKey(input: BuiltInBrowserDispatchKeyArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserAgentActionResult> {
+      return serviceForInput(input, sourceWindow).dispatchKey(input);
+    },
+    scroll(input: BuiltInBrowserScrollArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserAgentActionResult> {
+      return serviceForInput(input, sourceWindow).scroll(input);
+    },
+    fill(input: BuiltInBrowserFillArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserAgentActionResult> {
+      return serviceForInput(input, sourceWindow).fill(input);
+    },
+    clear(input: BuiltInBrowserClearArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserAgentActionResult> {
+      return serviceForInput(input, sourceWindow).clear(input);
+    },
+    wait(input: BuiltInBrowserWaitArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserAgentActionResult> {
+      return serviceForInput(input, sourceWindow).wait(input);
+    },
+    startInspect(inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null): Promise<BuiltInBrowserStatus> {
+      return serviceForRoutingArg(inputOrSourceWindow).startInspect();
+    },
+    stopInspect(inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null): Promise<BuiltInBrowserStatus> {
+      return serviceForRoutingArg(inputOrSourceWindow).stopInspect();
+    },
+    captureScreenshot(inputOrSourceWindow?: BuiltInBrowserTabTargetArgs | BrowserWindow | null, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserScreenshot> {
+      const input = isLiveWindow(inputOrSourceWindow) ? {} : inputOrSourceWindow ?? {};
+      return serviceForInput(input, sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null)).captureScreenshot(input);
     },
     selectPoint(input: BuiltInBrowserSelectPointArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserSelectResult> {
-      return serviceFor(sourceWindow).selectPoint(input);
+      return serviceForInput(input, sourceWindow).selectPoint(input);
     },
-    selectCurrent(sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserSelectResult> {
-      return serviceFor(sourceWindow).selectCurrent();
+    selectCurrent(inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null): Promise<BuiltInBrowserSelectResult> {
+      return serviceForRoutingArg(inputOrSourceWindow).selectCurrent();
     },
-    clearSelection(sourceWindow?: BrowserWindow | null): Promise<{ ok: true }> {
-      return serviceFor(sourceWindow).clearSelection();
+    clearSelection(inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null): Promise<{ ok: true }> {
+      return serviceForRoutingArg(inputOrSourceWindow).clearSelection();
     },
     dispose(): void {
-      for (const entry of windowServices.values()) {
-        if (!entry.win.isDestroyed()) {
+      for (const { win, listener } of windowClosedListeners.values()) {
+        if (!win.isDestroyed()) {
           try {
-            entry.win.removeListener("closed", entry.closedListener);
+            win.removeListener("closed", listener);
           } catch {
             // ignore stale window links
           }
         }
+      }
+      windowClosedListeners.clear();
+      for (const entry of windowServices.values()) {
         entry.service.dispose();
       }
       windowServices.clear();
+      activeServiceKeyByWindow.clear();
       fallbackService?.dispose();
       fallbackService = null;
       activeWindowId = null;
@@ -235,10 +516,12 @@ export function createBuiltInBrowserService(args: {
 function createBuiltInBrowserWindowService(args: {
   getLogger?: () => Logger;
   onEvent?: ((payload: BuiltInBrowserEventPayload) => void) | null;
+  profile: BrowserProfile;
 }) {
   let win: BrowserWindow | null = null;
   let winClosedListener: (() => void) | null = null;
   let tabs: BrowserTabState[] = [];
+  let browserSessions: BrowserSessionState[] = [];
   let activeTabId: string | null = null;
   let bounds: BuiltInBrowserFrame = { x: 0, y: 0, width: 0, height: 0 };
   let visible = false;
@@ -251,9 +534,6 @@ function createBuiltInBrowserWindowService(args: {
   let handlingInspectNode = false;
   let browserSessionConfigured = false;
   let lastEmittedStatusKey: string | null = null;
-  let ownerLaneId: string | null = null;
-  let ownerChatSessionId: string | null = null;
-  let ownerClaimedAt: string | null = null;
   const configuredWebContents = new WeakSet<WebContents>();
 
   const logger = (): Logger | null => {
@@ -293,6 +573,21 @@ function createBuiltInBrowserWindowService(args: {
     emit({ type: "error", message, occurredAt: new Date().toISOString() });
   };
 
+  const currentCursorPointInView = (): BrowserInspectPoint | null => {
+    if (!win || win.isDestroyed() || !visible || bounds.width <= 0 || bounds.height <= 0) return null;
+    try {
+      const cursor = screen.getCursorScreenPoint();
+      const contentBounds = win.getContentBounds();
+      const x = cursor.x - contentBounds.x - bounds.x;
+      const y = cursor.y - contentBounds.y - bounds.y;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      if (x < 0 || y < 0 || x > bounds.width || y > bounds.height) return null;
+      return { x: Math.round(x), y: Math.round(y) };
+    } catch {
+      return null;
+    }
+  };
+
   const stopInspectQuietly = async (logKey: string): Promise<void> => {
     try {
       await stopInspect();
@@ -315,11 +610,81 @@ function createBuiltInBrowserWindowService(args: {
     }
   };
 
+  const sessionSnapshot = (entry: BrowserSessionState): BuiltInBrowserSession => ({
+    id: entry.id,
+    tabId: entry.tabId,
+    createdAt: entry.createdAt,
+    updatedAt: entry.updatedAt,
+    endedAt: entry.endedAt,
+    ownerLaneId: entry.ownerLaneId,
+    ownerChatSessionId: entry.ownerChatSessionId,
+    lastObservationId: entry.lastObservationId,
+    lastTraceEntryId: entry.lastTraceEntryId,
+  });
+
+  const activeSessionById = (sessionId: string | null | undefined): BrowserSessionState | null => {
+    const normalized = stringOrNull(sessionId);
+    if (!normalized) return null;
+    return browserSessions.find((entry) => entry.id === normalized && !entry.endedAt) ?? null;
+  };
+
+  const sessionFromInput = (input: BuiltInBrowserTabTargetArgs = {}): BrowserSessionState | null => {
+    const sessionId = stringOrNull(input.sessionId);
+    if (!sessionId) return null;
+    const entry = activeSessionById(sessionId);
+    if (!entry) {
+      const ended = browserSessions.find((sessionEntry) => sessionEntry.id === sessionId) ?? null;
+      if (ended?.endedAt) throw new Error(`Browser session ended: ${sessionId}`);
+      throw new Error(`Browser session not found: ${sessionId}`);
+    }
+    return entry;
+  };
+
+  const touchSession = (
+    entry: BrowserSessionState | null,
+    patch: Partial<Pick<BrowserSessionState, "lastObservationId" | "lastTraceEntryId">> = {},
+  ): void => {
+    if (!entry || entry.endedAt) return;
+    entry.updatedAt = new Date().toISOString();
+    if (patch.lastObservationId !== undefined) entry.lastObservationId = patch.lastObservationId;
+    if (patch.lastTraceEntryId !== undefined) entry.lastTraceEntryId = patch.lastTraceEntryId;
+  };
+
+  const endSessionsForMissingTabs = (liveTabIds: Set<string>, endedAt = new Date().toISOString()): void => {
+    for (const entry of browserSessions) {
+      if (!entry.endedAt && !liveTabIds.has(entry.tabId)) {
+        entry.endedAt = endedAt;
+        entry.updatedAt = endedAt;
+      }
+    }
+  };
+
+  const endSessionsForTab = (tabId: string, endedAt = new Date().toISOString()): void => {
+    for (const entry of browserSessions) {
+      if (!entry.endedAt && entry.tabId === tabId) {
+        entry.endedAt = endedAt;
+        entry.updatedAt = endedAt;
+      }
+    }
+  };
+
+  const pruneBrowserSessions = (): void => {
+    if (browserSessions.length <= MAX_BROWSER_SESSIONS) return;
+    const active = browserSessions.filter((entry) => !entry.endedAt);
+    const ended = browserSessions
+      .filter((entry) => entry.endedAt)
+      .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
+    const remainingEndedCount = Math.max(0, MAX_BROWSER_SESSIONS - active.length);
+    browserSessions = [...active, ...ended.slice(-remainingEndedCount)];
+  };
+
   const pruneDestroyedTabs = (): void => {
     const nextTabs = tabs.filter((tab) => !tab.webContents.isDestroyed());
     if (nextTabs.length !== tabs.length) {
       tabs = nextTabs;
     }
+    endSessionsForMissingTabs(new Set(tabs.map((tab) => tab.id)));
+    pruneBrowserSessions();
     if (activeTabId && !tabs.some((tab) => tab.id === activeTabId)) {
       activeTabId = tabs[0]?.id ?? null;
       clearSelectionInternal();
@@ -335,17 +700,310 @@ function createBuiltInBrowserWindowService(args: {
 
   const currentWebContents = (): WebContents | null => activeTab()?.webContents ?? null;
 
+  const tabById = (tabId: string | null | undefined): BrowserTabState | null => {
+    const normalized = stringOrNull(tabId);
+    if (!normalized) return null;
+    pruneDestroyedTabs();
+    const tab = tabs.find((entry) => entry.id === normalized) ?? null;
+    if (!tab || tab.webContents.isDestroyed()) return null;
+    return tab;
+  };
+
+  const targetTabFromInput = (
+    input: BuiltInBrowserTabTargetArgs = {},
+    emptyMessage: string,
+  ): BrowserTabState => {
+    const sessionEntry = sessionFromInput(input);
+    const tabId = stringOrNull(input.tabId);
+    if (sessionEntry) {
+      if (tabId && tabId !== sessionEntry.tabId) {
+        throw new Error(`Browser session ${sessionEntry.id} belongs to tab ${sessionEntry.tabId}, not ${tabId}.`);
+      }
+      const tab = tabById(sessionEntry.tabId);
+      if (!tab) {
+        endSessionsForTab(sessionEntry.tabId);
+        throw new Error(`Browser session ${sessionEntry.id} tab is no longer available.`);
+      }
+      return tab;
+    }
+    if (tabId) {
+      const tab = tabById(tabId);
+      if (!tab) throw new Error(`Browser tab not found: ${tabId}`);
+      return tab;
+    }
+    const tab = activeTab();
+    if (!tab) throw new Error(emptyMessage);
+    return tab;
+  };
+
+  const tabForWebContents = (wc: WebContents): BrowserTabState | null => {
+    pruneDestroyedTabs();
+    return tabs.find((entry) => entry.webContents.id === wc.id) ?? null;
+  };
+
+  const claimTabOwnerFromInput = (
+    tab: BrowserTabState | null,
+    input: BuiltInBrowserClaimArgs = {},
+  ): boolean => {
+    if (!tab || tab.webContents.isDestroyed()) return false;
+    const laneId = stringOrNull(input.laneId);
+    const chatSessionId = stringOrNull(input.chatSessionId);
+    if (!laneId && !chatSessionId) return false;
+    assertTabLeaseAvailable(tab, input);
+    let changed = false;
+    if (laneId && laneId !== tab.ownerLaneId) {
+      tab.ownerLaneId = laneId;
+      changed = true;
+    }
+    if (chatSessionId && chatSessionId !== tab.ownerChatSessionId) {
+      tab.ownerChatSessionId = chatSessionId;
+      changed = true;
+    }
+    const leaseExpiresAt = new Date(Date.now() + normalizeLeaseTtlMs(input.leaseTtlMs)).toISOString();
+    if (tab.ownerLeaseExpiresAt !== leaseExpiresAt) {
+      tab.ownerLeaseExpiresAt = leaseExpiresAt;
+      changed = true;
+    }
+    if (changed) tab.ownerClaimedAt = new Date().toISOString();
+    return changed;
+  };
+
+  const assertTabLeaseAvailable = (
+    tab: BrowserTabState,
+    input: Pick<BuiltInBrowserClaimArgs, "laneId" | "chatSessionId" | "force"> = {},
+  ): void => {
+    if (input.force) return;
+    const laneId = stringOrNull(input.laneId);
+    const chatSessionId = stringOrNull(input.chatSessionId);
+    if (!laneId && !chatSessionId) return;
+    if (isLeaseExpired(tab.ownerLeaseExpiresAt)) return;
+    if (tab.ownerChatSessionId) {
+      if (chatSessionId && tab.ownerChatSessionId !== chatSessionId) {
+        throw new Error(
+          `Browser tab ${tab.id} is leased by chat ${tab.ownerChatSessionId}${tab.ownerLaneId ? ` in lane ${tab.ownerLaneId}` : ""}. Pass --force to take over the tab.`,
+        );
+      }
+      if (!chatSessionId && laneId && tab.ownerLaneId === laneId) {
+        throw new Error(
+          `Browser tab ${tab.id} is leased by chat ${tab.ownerChatSessionId}${tab.ownerLaneId ? ` in lane ${tab.ownerLaneId}` : ""}. Pass --force to take over the tab.`,
+        );
+      }
+    }
+    if (!laneId || !tab.ownerLaneId || tab.ownerLaneId === laneId) return;
+    throw new Error(
+      `Browser tab ${tab.id} is leased by lane ${tab.ownerLaneId}. Pass --force to take over the tab.`,
+    );
+  };
+
+  const prepareAgentActionTab = <T extends BuiltInBrowserAgentActionArgs>(
+    tab: BrowserTabState,
+    input: T,
+  ): void => {
+    claimTabOwnerFromInput(tab, input);
+  };
+
+  const claimTargetOwnerFromInput = (input: BuiltInBrowserClaimArgs = {}): boolean => {
+    const tabId = stringOrNull(input.tabId);
+    const tab = tabId ? tabById(tabId) : activeTab();
+    if (tabId && !tab) throw new Error(`Browser tab not found: ${tabId}`);
+    return claimTabOwnerFromInput(tab, input);
+  };
+
+  const copyTabOwner = (from: BrowserTabState | null, to: BrowserTabState): void => {
+    if (!from) return;
+    to.ownerLaneId = from.ownerLaneId;
+    to.ownerChatSessionId = from.ownerChatSessionId;
+    to.ownerClaimedAt = from.ownerClaimedAt;
+    to.ownerLeaseExpiresAt = from.ownerLeaseExpiresAt;
+  };
+
   const clearSelectionInternal = (): void => {
     if (!lastSelectedItem) return;
     lastSelectedItem = null;
     emit({ type: "selection-cleared", item: null, clearedAt: new Date().toISOString() });
   };
 
+  const notifyTabActivity = (tab: BrowserTabState | null): void => {
+    if (!tab || tab.webContents.isDestroyed() || tab.waiters.size === 0) return;
+    const waiters = [...tab.waiters];
+    tab.waiters.clear();
+    for (const notify of waiters) notify();
+  };
+
+  const noteNetworkActivity = (tab: BrowserTabState | null, happenedAtMs = Date.now()): void => {
+    if (!tab || tab.webContents.isDestroyed()) return;
+    tab.lastNetworkActivityAtMs = happenedAtMs;
+    notifyTabActivity(tab);
+  };
+
+  const waitForTabActivity = async (tab: BrowserTabState, timeoutMs: number): Promise<void> => {
+    if (timeoutMs <= 0 || tab.webContents.isDestroyed()) return;
+    await new Promise<void>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const done = (): void => {
+        if (timer) clearTimeout(timer);
+        tab.waiters.delete(done);
+        resolve();
+      };
+      timer = setTimeout(done, timeoutMs);
+      tab.waiters.add(done);
+    });
+  };
+
+  const pushConsoleDiagnostic = (
+    tab: BrowserTabState,
+    diagnostic: BuiltInBrowserDiagnostics["console"][number],
+  ): void => {
+    tab.consoleDiagnostics = [...tab.consoleDiagnostics, diagnostic].slice(-MAX_BROWSER_CONSOLE_DIAGNOSTICS);
+    notifyTabActivity(tab);
+  };
+
+  const pushNetworkDiagnostic = (
+    tab: BrowserTabState,
+    diagnostic: BuiltInBrowserDiagnostics["network"][number],
+  ): void => {
+    tab.networkDiagnostics = [...tab.networkDiagnostics, diagnostic].slice(-MAX_BROWSER_NETWORK_DIAGNOSTICS);
+    notifyTabActivity(tab);
+  };
+
+  const tabForWebContentsId = (webContentsId: unknown): BrowserTabState | null => {
+    const id = typeof webContentsId === "number" && Number.isFinite(webContentsId) ? webContentsId : null;
+    if (id == null) return null;
+    pruneDestroyedTabs();
+    return tabs.find((entry) => entry.webContents.id === id) ?? null;
+  };
+
+  const snapshotDiagnostics = (tab: BrowserTabState): BuiltInBrowserDiagnostics => ({
+    capturedAt: new Date().toISOString(),
+    pendingRequestCount: tab.pendingNetworkRequests.size,
+    console: tab.consoleDiagnostics.slice(-MAX_BROWSER_CONSOLE_DIAGNOSTICS),
+    network: tab.networkDiagnostics.slice(-MAX_BROWSER_NETWORK_DIAGNOSTICS),
+  });
+
+  const trackNetworkRequestStart = (details: Record<string, unknown>): void => {
+    const tab = tabForWebContentsId(details.webContentsId);
+    if (!tab) return;
+    const requestId = requestIdFromWebRequestDetails(details) ?? randomUUID();
+    const startedAtMs = Date.now();
+    tab.pendingNetworkRequests.set(requestId, {
+      id: requestId,
+      url: stringOrNull(details.url) ?? "about:blank",
+      method: stringOrNull(details.method),
+      resourceType: stringOrNull(details.resourceType),
+      startedAt: new Date().toISOString(),
+      startedAtMs,
+    });
+    noteNetworkActivity(tab, startedAtMs);
+  };
+
+  const trackNetworkRequestEnd = (details: Record<string, unknown>, error: string | null): void => {
+    const tab = tabForWebContentsId(details.webContentsId);
+    if (!tab) return;
+    const requestId = requestIdFromWebRequestDetails(details);
+    const pending = requestId ? tab.pendingNetworkRequests.get(requestId) ?? null : null;
+    if (requestId) tab.pendingNetworkRequests.delete(requestId);
+    const endedAtMs = Date.now();
+    const statusCode = optionalFiniteNumber(details.statusCode);
+    noteNetworkActivity(tab, endedAtMs);
+    if (!error && statusCode != null && statusCode < 400) return;
+    pushNetworkDiagnostic(tab, {
+      url: stringOrNull(details.url) ?? pending?.url ?? "about:blank",
+      method: stringOrNull(details.method) ?? pending?.method ?? null,
+      resourceType: stringOrNull(details.resourceType) ?? pending?.resourceType ?? null,
+      statusCode,
+      error,
+      startedAt: pending?.startedAt ?? null,
+      endedAt: new Date(endedAtMs).toISOString(),
+      durationMs: pending ? Math.max(0, endedAtMs - pending.startedAtMs) : null,
+    });
+  };
+
+  const beginActionTrace = (
+    tab: BrowserTabState,
+    action: string,
+    input: Record<string, unknown>,
+  ): BrowserActionTraceDraft => ({
+    id: `trace-${Date.now()}-${randomUUID()}`,
+    action,
+    startedAt: new Date().toISOString(),
+    startedAtMs: Date.now(),
+    before: tabSnapshotForTrace(tab),
+    target: actionTargetForTrace(action, input),
+  });
+
+  const finishActionTrace = (
+    tab: BrowserTabState,
+    draft: BrowserActionTraceDraft,
+    status: BuiltInBrowserActionTraceEntry["status"],
+    extra: { sessionId?: string | null; observationId?: string | null; error?: unknown } = {},
+  ): BuiltInBrowserActionTraceEntry => {
+    const endedAtMs = Date.now();
+    const entry: BuiltInBrowserActionTraceEntry = {
+      id: draft.id,
+      tabId: tab.id,
+      sessionId: extra.sessionId ?? null,
+      action: draft.action,
+      status,
+      startedAt: draft.startedAt,
+      endedAt: new Date(endedAtMs).toISOString(),
+      durationMs: Math.max(0, endedAtMs - draft.startedAtMs),
+      before: draft.before,
+      after: tabSnapshotForTrace(tab),
+      target: draft.target,
+      observationId: extra.observationId ?? null,
+      error: extra.error == null ? null : errorMessage(extra.error),
+    };
+    tab.actionTrace = [...tab.actionTrace, entry].slice(-MAX_BROWSER_TRACE_ENTRIES);
+    return entry;
+  };
+
+  const runTracedAgentAction = async (
+    tab: BrowserTabState,
+    action: string,
+    input: BuiltInBrowserAgentActionArgs,
+    fn: () => Promise<BuiltInBrowserAgentActionResult>,
+  ): Promise<BuiltInBrowserAgentActionResult> => {
+    const sessionEntry = sessionFromInput(input);
+    const traceDraft = beginActionTrace(tab, action, input as Record<string, unknown>);
+    try {
+      const result = await fn();
+      const trace = finishActionTrace(tab, traceDraft, "ok", {
+        sessionId: sessionEntry?.id ?? null,
+        observationId: result.observation?.id ?? null,
+      });
+      touchSession(sessionEntry, { lastTraceEntryId: trace.id });
+      return {
+        ...result,
+        trace,
+        session: sessionEntry ? sessionSnapshot(sessionEntry) : result.session,
+      };
+    } catch (error) {
+      const trace = finishActionTrace(tab, traceDraft, "error", {
+        sessionId: sessionEntry?.id ?? null,
+        error,
+      });
+      touchSession(sessionEntry, { lastTraceEntryId: trace.id });
+      throw error;
+    }
+  };
+
   const configureBrowserWebContents = (wc: WebContents): void => {
     if (configuredWebContents.has(wc)) return;
     configuredWebContents.add(wc);
+    wc.on("console-message", (_event, level, message, line, sourceId) => {
+      const tab = tabForWebContents(wc);
+      if (!tab) return;
+      pushConsoleDiagnostic(tab, {
+        level: normalizeConsoleLevel(level),
+        message: String(message ?? "").slice(0, 2_000),
+        sourceId: stringOrNull(sourceId),
+        line: optionalFiniteNumber(line),
+        column: null,
+        timestamp: new Date().toISOString(),
+      });
+    });
     wc.setWindowOpenHandler(({ url }) => {
-      const tab = createPopupTabState(url);
+      const tab = createPopupTabState(url, tabForWebContents(wc) ?? activeTab());
       if (!tab) return { action: "deny" };
       return {
         action: "allow",
@@ -357,26 +1015,52 @@ function createBuiltInBrowserWindowService(args: {
       event.preventDefault();
       emitError(new Error(`Blocked unsupported browser navigation protocol: ${url}`));
     });
-    wc.on("did-start-loading", emitStatus);
-    wc.on("did-stop-loading", emitStatus);
+    wc.on("did-start-loading", () => {
+      noteNetworkActivity(tabForWebContents(wc));
+      emitStatus();
+    });
+    wc.on("did-stop-loading", () => {
+      noteNetworkActivity(tabForWebContents(wc));
+      emitStatus();
+    });
     wc.on("did-navigate", () => {
+      notifyTabActivity(tabForWebContents(wc));
       clearSelectionInternal();
       emitStatus();
     });
     wc.on("did-navigate-in-page", () => {
+      notifyTabActivity(tabForWebContents(wc));
       clearSelectionInternal();
       emitStatus();
     });
-    wc.on("page-title-updated", emitStatus);
+    wc.on("page-title-updated", () => {
+      notifyTabActivity(tabForWebContents(wc));
+      emitStatus();
+    });
     wc.on("render-process-gone", (_event, details) => {
       logger()?.warn("built_in_browser.render_process_gone", {
         reason: details.reason,
         exitCode: details.exitCode,
       });
+      notifyTabActivity(tabForWebContents(wc));
       emitStatus();
     });
     wc.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
       if (!isMainFrame || errorCode === -3) return;
+      const tab = tabForWebContents(wc);
+      if (tab) {
+        noteNetworkActivity(tab);
+        pushNetworkDiagnostic(tab, {
+          url: stringOrNull(validatedURL) ?? emptyToNull(wc.getURL()) ?? "about:blank",
+          method: null,
+          resourceType: "mainFrame",
+          statusCode: null,
+          error: errorDescription || `Browser load failed with code ${errorCode}`,
+          startedAt: null,
+          endedAt: new Date().toISOString(),
+          durationMs: null,
+        });
+      }
       logger()?.warn("built_in_browser.did_fail_load", {
         errorCode,
         errorDescription,
@@ -392,12 +1076,12 @@ function createBuiltInBrowserWindowService(args: {
 
     const nextView = new WebContentsView({
       webPreferences: {
-        partition: BROWSER_PARTITION,
+        partition: args.profile.partition,
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,
         webSecurity: true,
-        backgroundThrottling: true,
+        backgroundThrottling: false,
       },
     });
     nextView.setBackgroundColor("#111827");
@@ -411,10 +1095,20 @@ function createBuiltInBrowserWindowService(args: {
       view: nextView,
       webContents: wc,
       ownsWebContents: true,
+      consoleDiagnostics: [],
+      networkDiagnostics: [],
+      pendingNetworkRequests: new Map(),
+      lastNetworkActivityAtMs: Date.now(),
+      waiters: new Set(),
+      actionTrace: [],
+      ownerLaneId: null,
+      ownerChatSessionId: null,
+      ownerClaimedAt: null,
+      ownerLeaseExpiresAt: null,
     };
   };
 
-  const createPopupTabState = (url: string): BrowserTabState | null => {
+  const createPopupTabState = (url: string, opener: BrowserTabState | null = activeTab()): BrowserTabState | null => {
     const popupUrl = stringOrNull(url) ?? "about:blank";
     if (!isAllowedNavigationUrl(popupUrl)) {
       emitError(new Error(`Blocked unsupported browser popup protocol: ${url}`));
@@ -425,6 +1119,7 @@ function createBuiltInBrowserWindowService(args: {
       return null;
     }
     const tab = createTabState();
+    copyTabOwner(opener, tab);
     tabs = [...tabs, tab];
     activeTabId = tab.id;
     clearSelectionInternal();
@@ -474,9 +1169,27 @@ function createBuiltInBrowserWindowService(args: {
     }
   };
 
+  const browserSessionForProfile = () => session.fromPartition(args.profile.partition);
+
   const configureBrowserSession = (): void => {
     if (browserSessionConfigured) return;
-    const browserSession = session.fromPartition(BROWSER_PARTITION);
+    const browserSession = browserSessionForProfile();
+    configureBuiltInBrowserSessionWebAuthn(browserSession, logger);
+    const webRequest = browserSession.webRequest as unknown as {
+      onBeforeRequest?: (listener: (details: Record<string, unknown>, callback?: (response: { cancel?: boolean }) => void) => void) => void;
+      onCompleted?: (listener: (details: Record<string, unknown>) => void) => void;
+      onErrorOccurred?: (listener: (details: Record<string, unknown>) => void) => void;
+    };
+    webRequest.onBeforeRequest?.((details, callback) => {
+      trackNetworkRequestStart(details);
+      callback?.({});
+    });
+    webRequest.onCompleted?.((details) => {
+      trackNetworkRequestEnd(details, null);
+    });
+    webRequest.onErrorOccurred?.((details) => {
+      trackNetworkRequestEnd(details, stringOrNull(details.error) ?? "request failed");
+    });
     browserSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin, details) => {
       if (shouldAllowGoogleAuthPermissionCheck(permission, requestingOrigin, details)) {
         logger()?.debug("built_in_browser.permission_check_allowed", {
@@ -530,6 +1243,17 @@ function createBuiltInBrowserWindowService(args: {
     emitStatus();
   };
 
+  const detachFromWindow = (shouldEmitStatus = true): void => {
+    if (win && winClosedListener) {
+      win.removeListener("closed", winClosedListener);
+      winClosedListener = null;
+    }
+    removeTabViewsFromWindow();
+    win = null;
+    visible = false;
+    if (shouldEmitStatus) emitStatus();
+  };
+
   function getStatus(): BuiltInBrowserStatus {
     pruneDestroyedTabs();
     const currentTab = activeTab();
@@ -544,7 +1268,9 @@ function createBuiltInBrowserWindowService(args: {
         && currentTab
         && (!currentTab.view || win.contentView.children.includes(currentTab.view))
       ),
-      partition: BROWSER_PARTITION,
+      partition: args.profile.partition,
+      profileKey: args.profile.key,
+      profileProjectRoot: args.profile.projectRoot,
       visible,
       bounds,
       activeTabId: currentTab?.id ?? null,
@@ -556,38 +1282,71 @@ function createBuiltInBrowserWindowService(args: {
       canGoForward: wc?.canGoForward() ?? false,
       isInspecting: inspecting,
       hasSelection: lastSelectedItem !== null,
-      ownerLaneId,
-      ownerChatSessionId,
-      ownerClaimedAt,
+      ownerLaneId: currentTab?.ownerLaneId ?? null,
+      ownerChatSessionId: currentTab?.ownerChatSessionId ?? null,
+      ownerClaimedAt: currentTab?.ownerClaimedAt ?? null,
+      ownerLeaseExpiresAt: currentTab?.ownerLeaseExpiresAt ?? null,
     };
   }
 
-  const claimOwnerFromInput = (input: BuiltInBrowserClaimArgs = {}): boolean => {
-    const laneId = stringOrNull(input.laneId);
-    const chatSessionId = stringOrNull(input.chatSessionId);
-    let changed = false;
-    if (laneId && laneId !== ownerLaneId) {
-      ownerLaneId = laneId;
-      changed = true;
-    }
-    if (chatSessionId && chatSessionId !== ownerChatSessionId) {
-      ownerChatSessionId = chatSessionId;
-      changed = true;
-    }
-    if (changed) ownerClaimedAt = new Date().toISOString();
-    return changed;
-  };
-
   function claim(input: BuiltInBrowserClaimArgs = {}): BuiltInBrowserStatus {
-    claimOwnerFromInput(input);
+    claimTargetOwnerFromInput(input);
     emitStatus();
     return getStatus();
   }
 
+  function startSession(input: BuiltInBrowserStartSessionArgs = {}): BuiltInBrowserSessionResult {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before starting a browser session.");
+    claimTabOwnerFromInput(tab, input);
+    const now = new Date().toISOString();
+    const sessionEntry: BrowserSessionState = {
+      id: `bs-${Date.now()}-${randomUUID()}`,
+      tabId: tab.id,
+      createdAt: now,
+      updatedAt: now,
+      endedAt: null,
+      ownerLaneId: stringOrNull(input.laneId) ?? tab.ownerLaneId,
+      ownerChatSessionId: stringOrNull(input.chatSessionId) ?? tab.ownerChatSessionId,
+      lastObservationId: null,
+      lastTraceEntryId: null,
+    };
+    browserSessions = [...browserSessions, sessionEntry];
+    pruneBrowserSessions();
+    emitStatus();
+    return { session: sessionSnapshot(sessionEntry), status: getStatus() };
+  }
+
+  function listSessions(input: BuiltInBrowserListSessionsArgs = {}): BuiltInBrowserSessionsResult {
+    pruneDestroyedTabs();
+    const tabId = stringOrNull(input.tabId);
+    const sessions = browserSessions
+      .filter((entry) => (input.includeEnded ? true : !entry.endedAt))
+      .filter((entry) => (tabId ? entry.tabId === tabId : true))
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .map(sessionSnapshot);
+    return { sessions };
+  }
+
+  function endSession(input: BuiltInBrowserEndSessionArgs): BuiltInBrowserSessionResult {
+    const sessionId = stringOrNull(input.sessionId);
+    if (!sessionId) throw new Error("Browser session id is required.");
+    const entry = browserSessions.find((sessionEntry) => sessionEntry.id === sessionId) ?? null;
+    if (!entry) throw new Error(`Browser session not found: ${sessionId}`);
+    if (!entry.endedAt) {
+      const now = new Date().toISOString();
+      entry.endedAt = now;
+      entry.updatedAt = now;
+    }
+    pruneBrowserSessions();
+    emitStatus();
+    return { session: sessionSnapshot(entry), status: getStatus() };
+  }
+
   const requestOpenPanel = (input: BuiltInBrowserOpenPanelArgs = {}): BuiltInBrowserStatus => {
     const status = getStatus();
-    const tabId = stringOrNull(input.tabId) ?? status.activeTabId;
-    const url = stringOrNull(input.url) ?? status.url;
+    const requestedTab = tabById(input.tabId) ?? activeTab();
+    const tabId = stringOrNull(input.tabId) ?? requestedTab?.id ?? status.activeTabId;
+    const url = stringOrNull(input.url) ?? (requestedTab && !requestedTab.webContents.isDestroyed() ? emptyToNull(requestedTab.webContents.getURL()) : null) ?? status.url;
     emit({
       type: "open-request",
       status,
@@ -599,14 +1358,26 @@ function createBuiltInBrowserWindowService(args: {
   };
 
   async function showPanel(input: BuiltInBrowserOpenPanelArgs = {}): Promise<BuiltInBrowserStatus> {
-    claimOwnerFromInput(input);
     const tabId = stringOrNull(input.tabId);
     const url = stringOrNull(input.url);
     if (url) {
-      return navigate({ url, tabId, openPanel: true, laneId: input.laneId, chatSessionId: input.chatSessionId });
+      return navigate({
+        projectRoot: input.projectRoot,
+        url,
+        tabId,
+        openPanel: true,
+        laneId: input.laneId,
+        chatSessionId: input.chatSessionId,
+      });
     }
     if (tabId) {
-      return switchTab({ tabId, openPanel: true, laneId: input.laneId, chatSessionId: input.chatSessionId });
+      return switchTab({
+        projectRoot: input.projectRoot,
+        tabId,
+        openPanel: true,
+        laneId: input.laneId,
+        chatSessionId: input.chatSessionId,
+      });
     }
     return requestOpenPanel(input);
   }
@@ -646,6 +1417,9 @@ function createBuiltInBrowserWindowService(args: {
     const nextWebContents = electronWebContents.fromId(input.webContentsId);
     if (!nextWebContents || nextWebContents.isDestroyed()) {
       throw new Error("Browser webview is not available.");
+    }
+    if (nextWebContents.session !== browserSessionForProfile()) {
+      throw new Error("Browser webview partition does not match the current project browser profile.");
     }
 
     configureBrowserSession();
@@ -704,7 +1478,8 @@ function createBuiltInBrowserWindowService(args: {
       existingTab = tabs.find((entry) => entry.id === input.tabId) ?? null;
       if (!existingTab) throw new Error(`Browser tab not found: ${input.tabId}`);
     }
-    claimOwnerFromInput(input);
+    const leaseTarget = input.newTab ? null : existingTab ?? activeTab();
+    if (leaseTarget) assertTabLeaseAvailable(leaseTarget, input);
     const switchingTabs = input.newTab || (input.tabId && input.tabId !== activeTabId);
     await stopInspectQuietly("built_in_browser.navigate_stop_inspect_failed");
     if (switchingTabs) {
@@ -720,6 +1495,7 @@ function createBuiltInBrowserWindowService(args: {
     } else {
       tab = ensureActiveTab();
     }
+    claimTabOwnerFromInput(tab, input);
     const wc = tab.webContents;
     attachViewsToCurrentWindow();
     await wc.loadURL(targetUrl);
@@ -736,13 +1512,13 @@ function createBuiltInBrowserWindowService(args: {
     }
     // Normalize URL up front so we don't leave an orphan tab on invalid input.
     const normalizedUrl = input.url ? normalizeBrowserUrl(input.url) : null;
-    claimOwnerFromInput(input);
     const willActivate = input.activate !== false || !activeTabId;
     if (willActivate) {
       await stopInspectQuietly("built_in_browser.create_tab_stop_inspect_failed");
       clearSelectionInternal();
     }
     const tab = createTabState();
+    claimTabOwnerFromInput(tab, input);
     tabs = [...tabs, tab];
     if (willActivate) activeTabId = tab.id;
     attachViewsToCurrentWindow();
@@ -761,12 +1537,13 @@ function createBuiltInBrowserWindowService(args: {
     if (!tabId) throw new Error("Browser tab id is required.");
     const tab = tabs.find((entry) => entry.id === tabId);
     if (!tab) throw new Error(`Browser tab not found: ${tabId}`);
-    claimOwnerFromInput(input);
+    assertTabLeaseAvailable(tab, input);
     const wasDifferentTab = tab.id !== activeTabId;
     if (wasDifferentTab) {
       await stopInspectQuietly("built_in_browser.switch_tab_stop_inspect_failed");
     }
     activeTabId = tab.id;
+    claimTabOwnerFromInput(tab, input);
     if (wasDifferentTab) {
       clearSelectionInternal();
     }
@@ -783,11 +1560,13 @@ function createBuiltInBrowserWindowService(args: {
     if (!tabId) throw new Error("Browser tab id is required.");
     const index = tabs.findIndex((entry) => entry.id === tabId);
     if (index < 0) throw new Error(`Browser tab not found: ${tabId}`);
+    assertTabLeaseAvailable(tabs[index]!, input);
     if (tabId === activeTabId) {
       await stopInspectQuietly("built_in_browser.close_tab_stop_inspect_failed");
     }
     const [removed] = tabs.splice(index, 1);
     if (removed) {
+      endSessionsForTab(removed.id);
       if (removed.view && win && !win.isDestroyed()) {
         try {
           win.contentView.removeChildView(removed.view);
@@ -807,51 +1586,34 @@ function createBuiltInBrowserWindowService(args: {
       activeTabId = tabs[Math.max(0, index - 1)]?.id ?? tabs[0]?.id ?? null;
       clearSelectionInternal();
     }
-    if (!tabs.length) {
-      ownerLaneId = null;
-      ownerChatSessionId = null;
-      ownerClaimedAt = null;
-    }
     attachViewsToCurrentWindow();
     emitStatus();
     return getStatus();
   }
 
-  async function reload(): Promise<BuiltInBrowserStatus> {
-    const wc = currentWebContents();
-    if (!wc) {
-      throw new Error("No active browser tab. Open a tab before reloading.");
-    }
-    wc.reload();
+  async function reload(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before reloading.");
+    tab.webContents.reload();
     emitStatus();
     return getStatus();
   }
 
-  async function goBack(): Promise<BuiltInBrowserStatus> {
-    const wc = currentWebContents();
-    if (!wc) {
-      throw new Error("No active browser tab. Open a tab before navigating back.");
-    }
+  async function goBack(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
+    const wc = targetTabFromInput(input, "No active browser tab. Open a tab before navigating back.").webContents;
     if (wc.canGoBack()) wc.goBack();
     emitStatus();
     return getStatus();
   }
 
-  async function goForward(): Promise<BuiltInBrowserStatus> {
-    const wc = currentWebContents();
-    if (!wc) {
-      throw new Error("No active browser tab. Open a tab before navigating forward.");
-    }
+  async function goForward(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
+    const wc = targetTabFromInput(input, "No active browser tab. Open a tab before navigating forward.").webContents;
     if (wc.canGoForward()) wc.goForward();
     emitStatus();
     return getStatus();
   }
 
-  async function stop(): Promise<BuiltInBrowserStatus> {
-    const wc = currentWebContents();
-    if (!wc) {
-      throw new Error("No active browser tab. Open a tab before stopping a load.");
-    }
+  async function stop(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
+    const wc = targetTabFromInput(input, "No active browser tab. Open a tab before stopping a load.").webContents;
     if (wc.isLoading()) wc.stop();
     emitStatus();
     return getStatus();
@@ -868,17 +1630,12 @@ function createBuiltInBrowserWindowService(args: {
       await ensureDebuggerAttached(wc, "inspect");
       await sendDebuggerCommand(wc, "DOM.enable");
       await sendDebuggerCommand(wc, "Runtime.enable");
-      await sendDebuggerCommand(wc, "Overlay.enable");
-      await sendDebuggerCommand(wc, "Overlay.setInspectMode", {
-        mode: "searchForNode",
-        highlightConfig: {
-          showInfo: true,
-          showRulers: true,
-          contentColor: { r: 72, g: 151, b: 255, a: 0.22 },
-          borderColor: { r: 72, g: 151, b: 255, a: 0.92 },
-          paddingColor: { r: 120, g: 199, b: 132, a: 0.24 },
-          marginColor: { r: 246, g: 190, b: 93, a: 0.22 },
-        },
+      await ensureInspectBinding(wc);
+      await sendDebuggerCommand(wc, "Runtime.evaluate", {
+        expression: inspectOverlayInstallScript(INSPECT_BINDING_NAME),
+        returnByValue: true,
+        awaitPromise: false,
+        silent: true,
       });
       inspecting = true;
       emitStatus();
@@ -896,14 +1653,22 @@ function createBuiltInBrowserWindowService(args: {
   }
 
   async function stopInspect(): Promise<BuiltInBrowserStatus> {
-    const wc = currentWebContents();
+    const inspectWc = inspectListenerWebContents && !inspectListenerWebContents.isDestroyed()
+      ? inspectListenerWebContents
+      : null;
+    const wc = inspectWc ?? currentWebContents();
     inspecting = false;
     if (wc?.debugger.isAttached()) {
       try {
-        await sendDebuggerCommand(wc, "Overlay.setInspectMode", { mode: "none" });
-        await sendDebuggerCommand(wc, "Overlay.disable");
+        await sendDebuggerCommand(wc, "Runtime.evaluate", {
+          expression: inspectOverlayCleanupScript(),
+          returnByValue: true,
+          awaitPromise: false,
+          silent: true,
+        });
+        await sendDebuggerCommand(wc, "Runtime.removeBinding", { name: INSPECT_BINDING_NAME }).catch(() => {});
       } catch (error) {
-        logger()?.debug("built_in_browser.stop_inspect_overlay_failed", {
+        logger()?.debug("built_in_browser.stop_inspect_cleanup_failed", {
           err: error instanceof Error ? error.message : String(error),
         });
       }
@@ -913,12 +1678,9 @@ function createBuiltInBrowserWindowService(args: {
     return getStatus();
   }
 
-  async function captureScreenshot(): Promise<BuiltInBrowserScreenshot> {
-    const wc = currentWebContents();
-    if (!wc) {
-      throw new Error("No active browser tab. Open a tab before capturing a screenshot.");
-    }
-    attachViewsToCurrentWindow();
+  async function captureScreenshot(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserScreenshot> {
+    const wc = targetTabFromInput(input, "No active browser tab. Open a tab before capturing a screenshot.").webContents;
+    if (!stringOrNull(input.tabId)) attachViewsToCurrentWindow();
     try {
       return await capturePageScreenshot(wc);
     } catch (error) {
@@ -929,11 +1691,177 @@ function createBuiltInBrowserWindowService(args: {
     }
   }
 
+  async function observe(input: BuiltInBrowserObservationArgs = {}): Promise<BuiltInBrowserObservation> {
+    const sessionEntry = sessionFromInput(input);
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before observing.");
+    const screenshot = await captureScreenshot({ tabId: tab.id });
+    const dom = input.includeDom === false
+      ? null
+      : await readDomSnapshot(tab.webContents, input).catch((error) => {
+          logger()?.debug("built_in_browser.observe_dom_failed", {
+            err: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        });
+    const elementMapScreenshot = input.includeElementMap && dom
+      ? await captureElementMapScreenshot(tab.webContents, dom).catch((error) => {
+          logger()?.debug("built_in_browser.observe_element_map_failed", {
+            err: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        })
+      : null;
+    const diagnostics = input.includeDiagnostics === false ? null : snapshotDiagnostics(tab);
+    const observation = await writeObservation(tab, screenshot, input, dom, elementMapScreenshot, diagnostics, sessionEntry?.id ?? null);
+    touchSession(sessionEntry, { lastObservationId: observation.id });
+    return observation;
+  }
+
+  function getTrace(input: BuiltInBrowserTraceArgs = {}): BuiltInBrowserTraceResult {
+    const sessionEntry = sessionFromInput(input);
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before reading browser trace.");
+    const limit = normalizeTraceLimit(input.limit);
+    const entries = sessionEntry
+      ? tab.actionTrace.filter((entry) => entry.sessionId === sessionEntry.id)
+      : tab.actionTrace;
+    return {
+      tabId: tab.id,
+      sessionId: sessionEntry?.id ?? null,
+      entries: entries.slice(-limit),
+    };
+  }
+
+  async function click(input: BuiltInBrowserClickArgs): Promise<BuiltInBrowserAgentActionResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before clicking.");
+    return runTracedAgentAction(tab, "click", input, async () => {
+      prepareAgentActionTab(tab, input);
+      const wc = tab.webContents;
+      const { x, y } = await resolveClickTarget(tab, input);
+      const button = normalizeMouseButton(input.button);
+      const clickCount = normalizeClickCount(input.clickCount);
+      await withTemporaryDebugger(wc, async () => {
+        await sendDebuggerCommand(wc, "Input.dispatchMouseEvent", {
+          type: "mousePressed",
+          x,
+          y,
+          button,
+          clickCount,
+        });
+        await sendDebuggerCommand(wc, "Input.dispatchMouseEvent", {
+          type: "mouseReleased",
+          x,
+          y,
+          button,
+          clickCount,
+        });
+      });
+      emitStatus();
+      return actionResult(tab, input);
+    });
+  }
+
+  async function typeText(input: BuiltInBrowserTypeTextArgs): Promise<BuiltInBrowserAgentActionResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before typing.");
+    return runTracedAgentAction(tab, "typeText", input, async () => {
+      prepareAgentActionTab(tab, input);
+      const text = stringOrNull(input.text);
+      if (!text) throw new Error("Text is required.");
+      await withTemporaryDebugger(tab.webContents, async () => {
+        await sendDebuggerCommand(tab.webContents, "Input.insertText", { text });
+      });
+      emitStatus();
+      return actionResult(tab, input);
+    });
+  }
+
+  async function dispatchKey(input: BuiltInBrowserDispatchKeyArgs): Promise<BuiltInBrowserAgentActionResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before dispatching a key.");
+    return runTracedAgentAction(tab, "dispatchKey", input, async () => {
+      prepareAgentActionTab(tab, input);
+      const key = stringOrNull(input.key);
+      if (!key) throw new Error("Key is required.");
+      if (hasElementTarget(input)) {
+        await focusElementTarget(tab, input, { select: false });
+      }
+      const event = keyEventForInput(key);
+      await withTemporaryDebugger(tab.webContents, async () => {
+        await sendDebuggerCommand(tab.webContents, "Input.dispatchKeyEvent", {
+          type: "keyDown",
+          ...event,
+        });
+        await sendDebuggerCommand(tab.webContents, "Input.dispatchKeyEvent", {
+          type: "keyUp",
+          ...event,
+          text: undefined,
+          unmodifiedText: undefined,
+        });
+      });
+      emitStatus();
+      return actionResult(tab, input);
+    });
+  }
+
+  async function scroll(input: BuiltInBrowserScrollArgs): Promise<BuiltInBrowserAgentActionResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before scrolling.");
+    return runTracedAgentAction(tab, "scroll", input, async () => {
+      prepareAgentActionTab(tab, input);
+      const deltaX = finiteNumber(input.deltaX) ?? 0;
+      const deltaY = finiteNumber(input.deltaY) ?? 0;
+      if (deltaX === 0 && deltaY === 0) throw new Error("Scroll requires deltaX or deltaY.");
+      await withTemporaryDebugger(tab.webContents, async () => {
+        await sendDebuggerCommand(tab.webContents, "Input.dispatchMouseEvent", {
+          type: "mouseWheel",
+          x: normalizeDimension(finiteNumber(input.x)),
+          y: normalizeDimension(finiteNumber(input.y)),
+          deltaX,
+          deltaY,
+          button: "none",
+        });
+      });
+      emitStatus();
+      return actionResult(tab, input);
+    });
+  }
+
+  async function fill(input: BuiltInBrowserFillArgs): Promise<BuiltInBrowserAgentActionResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before filling.");
+    return runTracedAgentAction(tab, "fill", input, async () => {
+      prepareAgentActionTab(tab, input);
+      const text = typeof input.value === "string"
+        ? input.value
+        : (typeof input.text === "string" ? input.text : null);
+      if (text == null) throw new Error("Fill text is required.");
+      await focusElementTarget(tab, input, { select: true, clear: true });
+      await withTemporaryDebugger(tab.webContents, async () => {
+        await sendDebuggerCommand(tab.webContents, "Input.insertText", { text });
+      });
+      emitStatus();
+      return actionResult(tab, input);
+    });
+  }
+
+  async function clear(input: BuiltInBrowserClearArgs): Promise<BuiltInBrowserAgentActionResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before clearing.");
+    return runTracedAgentAction(tab, "clear", input, async () => {
+      prepareAgentActionTab(tab, input);
+      await focusElementTarget(tab, input, { select: true, clear: true });
+      emitStatus();
+      return actionResult(tab, input);
+    });
+  }
+
+  async function wait(input: BuiltInBrowserWaitArgs): Promise<BuiltInBrowserAgentActionResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before waiting.");
+    return runTracedAgentAction(tab, "wait", input, async () => {
+      prepareAgentActionTab(tab, input);
+      await waitForBrowserCondition(tab, input);
+      emitStatus();
+      return actionResult(tab, input);
+    });
+  }
+
   async function selectPoint(input: BuiltInBrowserSelectPointArgs): Promise<BuiltInBrowserSelectResult> {
-    const wc = currentWebContents();
-    if (!wc) {
-      throw new Error("No active browser tab. Open a tab before selecting a point.");
-    }
+    const wc = targetTabFromInput(input, "No active browser tab. Open a tab before selecting a point.").webContents;
     const x = normalizeDimension(input.x);
     const y = normalizeDimension(input.y);
     const attachedHere = await ensureDebuggerAttached(wc, "screenshot");
@@ -949,7 +1877,7 @@ function createBuiltInBrowserWindowService(args: {
       if (!result.backendNodeId) {
         return { item: null };
       }
-      const metadata = await readNodeMetadata(wc, result.backendNodeId);
+      const metadata = await readNodeMetadata(wc, result.backendNodeId, { x, y });
       const screenshotDataUrl = input.includeScreenshot === false
         ? null
         : await captureElementScreenshot(wc, metadata.frame, metadata.viewport).catch((error) => {
@@ -1022,10 +1950,8 @@ function createBuiltInBrowserWindowService(args: {
     }
     win = null;
     tabs = [];
+    browserSessions = [];
     activeTabId = null;
-    ownerLaneId = null;
-    ownerChatSessionId = null;
-    ownerClaimedAt = null;
   }
 
   const attachDebuggerListeners = (wc: WebContents): void => {
@@ -1034,10 +1960,17 @@ function createBuiltInBrowserWindowService(args: {
     }
     if (debuggerMessageListener || debuggerDetachListener) return;
     debuggerMessageListener = (_event, method, params) => {
-      if (method !== "Overlay.inspectNodeRequested") return;
-      const backendNodeId = isRecord(params) ? params.backendNodeId : null;
-      if (typeof backendNodeId !== "number" || !Number.isFinite(backendNodeId)) return;
-      void handleInspectNodeRequested(wc, backendNodeId).catch(emitError);
+      if (method === "Runtime.bindingCalled") {
+        const point = parseInspectBindingPoint(params);
+        if (!point) return;
+        void handleInspectPointRequested(wc, point).catch(emitError);
+        return;
+      }
+      if (method === "Overlay.inspectNodeRequested") {
+        const backendNodeId = isRecord(params) ? params.backendNodeId : null;
+        if (typeof backendNodeId !== "number" || !Number.isFinite(backendNodeId)) return;
+        void handleInspectNodeRequested(wc, backendNodeId).catch(emitError);
+      }
     };
     debuggerDetachListener = (_event, reason) => {
       logger()?.debug("built_in_browser.debugger_detached", { reason });
@@ -1109,6 +2042,37 @@ function createBuiltInBrowserWindowService(args: {
     ) as Promise<T>;
   };
 
+  const ensureInspectBinding = async (wc: WebContents): Promise<void> => {
+    await sendDebuggerCommand(wc, "Runtime.removeBinding", { name: INSPECT_BINDING_NAME }).catch(() => {});
+    await sendDebuggerCommand(wc, "Runtime.addBinding", { name: INSPECT_BINDING_NAME });
+  };
+
+  const handleInspectPointRequested = async (
+    wc: WebContents,
+    point: BrowserInspectPoint,
+  ): Promise<void> => {
+    if (handlingInspectNode) return;
+    handlingInspectNode = true;
+    try {
+      const ownerTab = tabForWebContents(wc);
+      await selectPoint({
+        ...(ownerTab ? { tabId: ownerTab.id } : {}),
+        x: point.x,
+        y: point.y,
+        includeScreenshot: true,
+      });
+    } finally {
+      if (inspecting) {
+        await stopInspect().catch((error) => {
+          logger()?.debug("built_in_browser.inspect_cleanup_failed", {
+            err: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
+      handlingInspectNode = false;
+    }
+  };
+
   const handleInspectNodeRequested = async (
     wc: WebContents,
     backendNodeId: number,
@@ -1116,7 +2080,7 @@ function createBuiltInBrowserWindowService(args: {
     if (handlingInspectNode) return;
     handlingInspectNode = true;
     try {
-      const metadata = await readNodeMetadata(wc, backendNodeId);
+      const metadata = await readNodeMetadata(wc, backendNodeId, currentCursorPointInView());
       const screenshotDataUrl = await captureElementScreenshot(wc, metadata.frame, metadata.viewport).catch((error) => {
         logger()?.debug("built_in_browser.element_screenshot_failed", {
           err: error instanceof Error ? error.message : String(error),
@@ -1142,29 +2106,34 @@ function createBuiltInBrowserWindowService(args: {
     wc: WebContents,
     metadata: NodeMetadata,
     screenshotDataUrl: string | null,
-  ): BuiltInBrowserContextItem => ({
-    kind: "built_in_browser_element",
-    id: `built-in-browser:${randomUUID()}`,
-    provider: "cdp",
-    componentId: buildComponentId(metadata),
-    url: metadata.url ?? emptyToNull(wc.getURL()),
-    title: metadata.title ?? emptyToNull(wc.getTitle()),
-    sourceFile: null,
-    sourceLine: null,
-    frame: metadata.frame,
-    pixelFrame: scaleFrame(metadata.frame, metadata.pixelRatio),
-    metadata: {
-      ...metadata.metadata,
-      ownerLaneId,
-      ownerChatSessionId,
-    },
-    screenshotDataUrl,
-    selectedAt: new Date().toISOString(),
-  });
+  ): BuiltInBrowserContextItem => {
+    const ownerTab = tabForWebContents(wc);
+    return {
+      kind: "built_in_browser_element",
+      id: `built-in-browser:${randomUUID()}`,
+      provider: "cdp",
+      componentId: buildComponentId(metadata),
+      url: metadata.url ?? emptyToNull(wc.getURL()),
+      title: metadata.title ?? emptyToNull(wc.getTitle()),
+      sourceFile: null,
+      sourceLine: null,
+      frame: metadata.frame,
+      pixelFrame: scaleFrame(metadata.frame, metadata.pixelRatio),
+      metadata: {
+        ...metadata.metadata,
+        ownerTabId: ownerTab?.id ?? null,
+        ownerLaneId: ownerTab?.ownerLaneId ?? null,
+        ownerChatSessionId: ownerTab?.ownerChatSessionId ?? null,
+      },
+      screenshotDataUrl,
+      selectedAt: new Date().toISOString(),
+    };
+  };
 
   const readNodeMetadata = async (
     wc: WebContents,
     backendNodeId: number,
+    point: BrowserInspectPoint | null = null,
   ): Promise<NodeMetadata> => {
     const resolved = await sendDebuggerCommand<CdpResolveNodeResponse>(wc, "DOM.resolveNode", {
       backendNodeId,
@@ -1180,6 +2149,7 @@ function createBuiltInBrowserWindowService(args: {
         returnByValue: true,
         silent: true,
         functionDeclaration: NODE_METADATA_FUNCTION,
+        arguments: point ? [{ value: point }] : [],
       });
       if (response.exceptionDetails) {
         throw new Error("Selected browser node metadata evaluation failed.");
@@ -1196,7 +2166,7 @@ function createBuiltInBrowserWindowService(args: {
     timeoutMs = SCREENSHOT_TIMEOUT_MS,
   ): Promise<BuiltInBrowserScreenshot> => {
     const image = await withTimeout(
-      wc.capturePage(rect),
+      wc.capturePage(rect, { stayHidden: true }),
       timeoutMs,
       `capturePage timed out after ${timeoutMs}ms`,
     );
@@ -1260,10 +2230,393 @@ function createBuiltInBrowserWindowService(args: {
     return screenshot.dataUrl;
   };
 
+  const captureElementMapScreenshot = async (
+    wc: WebContents,
+    dom: BuiltInBrowserDomSnapshot,
+  ): Promise<BuiltInBrowserScreenshot | null> => {
+    if (!dom.elements.length) return null;
+    const payload = {
+      elements: dom.elements.slice(0, MAX_ELEMENT_MAP_ELEMENTS),
+    };
+    await evaluateElementMapOverlay(wc, payload);
+    try {
+      return await capturePageScreenshot(wc);
+    } finally {
+      await evaluateElementMapOverlay(wc, { clear: true }).catch((error) => {
+        logger()?.debug("built_in_browser.element_map_cleanup_failed", {
+          err: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+  };
+
+  const withTemporaryDebugger = async <T>(
+    wc: WebContents,
+    fn: () => Promise<T>,
+  ): Promise<T> => {
+    const attachedHere = await ensureDebuggerAttached(wc, "screenshot");
+    try {
+      return await fn();
+    } finally {
+      if (attachedHere && !inspecting) {
+        try {
+          wc.debugger.detach();
+        } catch {
+          // ignore debugger detach races
+        }
+      }
+    }
+  };
+
+  const evaluateBrowserDom = async (
+    wc: WebContents,
+    payload: Record<string, unknown>,
+  ): Promise<unknown> => {
+    const expression = `(${BROWSER_DOM_FUNCTION})(${JSON.stringify(payload)})`;
+    const response = await withTemporaryDebugger(wc, async () => {
+      await sendDebuggerCommand(wc, "Runtime.enable");
+      return sendDebuggerCommand<CdpRuntimeEvaluateResponse>(wc, "Runtime.evaluate", {
+        expression,
+        returnByValue: true,
+        awaitPromise: true,
+        silent: true,
+      });
+    });
+    if (response.exceptionDetails) {
+      throw new Error("Browser DOM evaluation failed.");
+    }
+    return response.result?.value;
+  };
+
+  const evaluateElementMapOverlay = async (
+    wc: WebContents,
+    payload: Record<string, unknown>,
+  ): Promise<void> => {
+    const expression = `(${ELEMENT_MAP_OVERLAY_FUNCTION})(${JSON.stringify(payload)})`;
+    const response = await withTemporaryDebugger(wc, async () => {
+      await sendDebuggerCommand(wc, "Runtime.enable");
+      return sendDebuggerCommand<CdpRuntimeEvaluateResponse>(wc, "Runtime.evaluate", {
+        expression,
+        returnByValue: true,
+        awaitPromise: true,
+        silent: true,
+      });
+    });
+    if (response.exceptionDetails) {
+      throw new Error("Browser element map overlay evaluation failed.");
+    }
+  };
+
+  const readDomSnapshot = async (
+    wc: WebContents,
+    input: BuiltInBrowserObservationArgs,
+  ): Promise<BuiltInBrowserDomSnapshot | null> => {
+    const result = await evaluateBrowserDom(wc, {
+      maxElements: normalizeObservationMaxElements(input.maxElements),
+    });
+    return normalizeDomSnapshot(isRecord(result) ? result.snapshot : null);
+  };
+
+  const resolveClickTarget = async (
+    tab: BrowserTabState,
+    input: BuiltInBrowserClickArgs,
+  ): Promise<{ x: number; y: number; element: BuiltInBrowserElementSnapshot | null }> => {
+    const x = optionalFiniteNumber(input.x);
+    const y = optionalFiniteNumber(input.y);
+    if (x != null || y != null) {
+      if (x == null || y == null) {
+        throw new Error("Browser click requires both x and y when using coordinates.");
+      }
+      return { x: normalizeDimension(x), y: normalizeDimension(y), element: null };
+    }
+
+    if (!hasElementTarget(input)) {
+      throw new Error("Browser click requires x/y, selector, text, testId, elementIndex, or handle.");
+    }
+
+    const result = await evaluateBrowserDom(tab.webContents, {
+      maxElements: normalizeObservationMaxElements(input.maxElements),
+      locate: await elementLocatePayloadForInput(tab, input),
+    });
+    const record = isRecord(result) ? result : {};
+    const error = stringOrNull(record.error);
+    if (error) throw new Error(error);
+    const target = normalizeElementSnapshot(record.target);
+    if (!target) {
+      throw new Error("No matching browser element was found for click.");
+    }
+    if (target.disabled) throw new Error("Matching browser element is disabled.");
+    return {
+      x: normalizeDimension(target.center.x),
+      y: normalizeDimension(target.center.y),
+      element: target,
+    };
+  };
+
+  const focusElementTarget = async (
+    tab: BrowserTabState,
+    input: BuiltInBrowserElementTargetInput,
+    options: { select?: boolean; clear?: boolean } = {},
+  ): Promise<BuiltInBrowserElementSnapshot> => {
+    if (!hasElementTarget(input)) {
+      throw new Error("Browser element target requires selector, text, testId, elementIndex, or handle.");
+    }
+    const result = await evaluateBrowserDom(tab.webContents, {
+      maxElements: normalizeObservationMaxElements(input.maxElements),
+      focus: true,
+      select: options.select === true,
+      clear: options.clear === true,
+      editableRequired: options.clear === true,
+      locate: await elementLocatePayloadForInput(tab, input),
+    });
+    const record = isRecord(result) ? result : {};
+    const error = stringOrNull(record.error);
+    if (error) throw new Error(error);
+    const target = normalizeElementSnapshot(record.target);
+    if (!target) throw new Error("No matching browser element was found.");
+    if (target.disabled) throw new Error("Matching browser element is disabled.");
+    return target;
+  };
+
+  const waitForBrowserCondition = async (
+    tab: BrowserTabState,
+    input: BuiltInBrowserWaitArgs,
+  ): Promise<void> => {
+    const timeoutMs = normalizeBrowserWaitTimeoutMs(input.timeoutMs);
+    const deadline = Date.now() + timeoutMs;
+    let lastError: string | null = null;
+    do {
+      try {
+        const matched = await browserWaitConditionMatched(tab, input);
+        if (matched) return;
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+      }
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) break;
+      await waitForTabActivity(tab, browserWaitWakeTimeoutMs(tab, input, remainingMs));
+    } while (Date.now() < deadline);
+    throw new Error(lastError ?? `Timed out waiting for browser condition after ${timeoutMs}ms.`);
+  };
+
+  const browserWaitWakeTimeoutMs = (
+    tab: BrowserTabState,
+    input: BuiltInBrowserWaitArgs,
+    remainingMs: number,
+  ): number => {
+    const loadState = normalizeLoadState(input.loadState);
+    if (loadState === "network-idle" && !tab.webContents.isLoading() && tab.pendingNetworkRequests.size === 0) {
+      const idleRemainingMs = normalizeBrowserNetworkIdleMs(input.networkIdleMs) - (Date.now() - tab.lastNetworkActivityAtMs);
+      if (idleRemainingMs > 0) return Math.max(1, Math.min(remainingMs, idleRemainingMs));
+    }
+    return Math.min(remainingMs, 1_000);
+  };
+
+  const browserWaitConditionMatched = async (
+    tab: BrowserTabState,
+    input: BuiltInBrowserWaitArgs,
+  ): Promise<boolean> => {
+    const expectedUrl = stringOrNull(input.url);
+    if (expectedUrl && !tab.webContents.getURL().includes(expectedUrl)) return false;
+
+    if (input.loadState != null && !normalizeLoadState(input.loadState)) {
+      throw new Error("Browser wait loadState must be domcontentloaded, load, or network-idle.");
+    }
+    const loadState = normalizeLoadState(input.loadState);
+    if (loadState) {
+      if (loadState === "network-idle") {
+        if (tab.webContents.isLoading()) return false;
+        if (tab.pendingNetworkRequests.size > 0) return false;
+        if (Date.now() - tab.lastNetworkActivityAtMs < normalizeBrowserNetworkIdleMs(input.networkIdleMs)) return false;
+      }
+      const readyState = await readDocumentReadyState(tab.webContents).catch(() => null);
+      if (loadState === "domcontentloaded" && readyState !== "interactive" && readyState !== "complete") return false;
+      if ((loadState === "load" || loadState === "network-idle") && readyState !== "complete") return false;
+    }
+
+    if (hasElementTarget(input)) {
+      const result = await evaluateBrowserDom(tab.webContents, {
+        maxElements: normalizeObservationMaxElements(input.maxElements),
+        locate: await elementLocatePayloadForInput(tab, input),
+      });
+      const record = isRecord(result) ? result : {};
+      const target = normalizeElementSnapshot(record.target);
+      return Boolean(target && !target.disabled);
+    }
+    return true;
+  };
+
+  const readDocumentReadyState = async (wc: WebContents): Promise<string | null> => {
+    const result = await evaluateBrowserDom(wc, { readyState: true, maxElements: 1 });
+    const record = isRecord(result) ? result : {};
+    return stringOrNull(record.readyState);
+  };
+
+  const elementLocatePayloadForInput = async (
+    tab: BrowserTabState,
+    input: BuiltInBrowserElementTargetInput,
+  ): Promise<Record<string, unknown>> => {
+    const direct = elementLocatePayload(input);
+    if (Object.keys(direct).length > 0) return direct;
+
+    const handle = stringOrNull(input.handle);
+    if (!handle) return direct;
+    const element = await readObservationElementHandle(tab, handle);
+    const text = element.label ?? element.text ?? element.value ?? element.placeholder;
+    const context = {
+      ...(element.framePath ? { framePath: element.framePath } : {}),
+      ...(element.shadowPath ? { shadowPath: element.shadowPath } : {}),
+    };
+    if (element.selector) return { ...context, selector: element.selector };
+    if (element.testId) return { ...context, testId: element.testId };
+    if (text) return { ...context, text };
+    return { ...context, elementIndex: element.index };
+  };
+
+  const readObservationElementHandle = async (
+    tab: BrowserTabState,
+    handle: string,
+  ): Promise<BuiltInBrowserElementSnapshot> => {
+    const parsed = parseElementHandle(handle);
+    if (!parsed) {
+      throw new Error("Browser element handle must look like obs-...:e:<index>.");
+    }
+    const projectRoot = args.profile.projectRoot;
+    if (!projectRoot) {
+      throw new Error("Browser element handles require a project-scoped ADE browser profile.");
+    }
+    const jsonPath = path.join(
+      projectRoot,
+      OBSERVATION_CACHE_DIR,
+      sanitizePathSegment(args.profile.key),
+      sanitizePathSegment(tab.id),
+      `${parsed.observationId}.json`,
+    );
+    let parsedObservation: unknown;
+    try {
+      parsedObservation = JSON.parse(await fs.readFile(jsonPath, "utf8"));
+    } catch {
+      throw new Error("Browser element handle expired or was pruned from scratch observations.");
+    }
+    const observation = isRecord(parsedObservation) ? parsedObservation : {};
+    if (stringOrNull(observation.tabId) !== tab.id) {
+      throw new Error("Browser element handle belongs to a different browser tab.");
+    }
+    const dom = isRecord(observation.dom) ? observation.dom : {};
+    const elements = Array.isArray(dom.elements)
+      ? dom.elements
+          .map(normalizeElementSnapshot)
+          .filter((entry): entry is BuiltInBrowserElementSnapshot => Boolean(entry))
+      : [];
+    const element = elements.find((entry) => entry.index === parsed.index) ?? null;
+    if (!element) {
+      throw new Error("Browser element handle no longer points to a saved element.");
+    }
+    return element;
+  };
+
+  const actionResult = async (
+    tab: BrowserTabState,
+    input: BuiltInBrowserAgentActionArgs,
+  ): Promise<BuiltInBrowserAgentActionResult> => {
+    const sessionEntry = sessionFromInput(input);
+    if (input.observe !== false) {
+      const waitMs = normalizeActionObserveDelayMs(input.waitAfterMs);
+      if (waitMs > 0) await delay(waitMs);
+    }
+    return {
+      ok: true,
+      observation: input.observe === false ? null : await observe({ ...input, tabId: tab.id }),
+      status: getStatus(),
+      trace: null,
+      session: sessionEntry ? sessionSnapshot(sessionEntry) : null,
+    };
+  };
+
+  const writeObservation = async (
+    tab: BrowserTabState,
+    screenshot: BuiltInBrowserScreenshot,
+    input: BuiltInBrowserObservationArgs,
+    dom: BuiltInBrowserDomSnapshot | null,
+    elementMapScreenshot: BuiltInBrowserScreenshot | null,
+    diagnostics: BuiltInBrowserDiagnostics | null,
+    sessionId: string | null,
+  ): Promise<BuiltInBrowserObservation> => {
+    const projectRoot = args.profile.projectRoot;
+    if (!projectRoot) {
+      throw new Error("Browser observations require a project-scoped ADE browser profile.");
+    }
+    const keepCount = normalizeObservationKeepCount(input.keepCount);
+    const id = `obs-${Date.now()}-${randomUUID()}`;
+    const dir = path.join(projectRoot, OBSERVATION_CACHE_DIR, sanitizePathSegment(args.profile.key), sanitizePathSegment(tab.id));
+    const filePath = path.join(dir, `${id}.png`);
+    const elementMapPath = path.join(dir, `${id}.map.png`);
+    const jsonPath = path.join(dir, `${id}.json`);
+    const image = decodeDataUrl(screenshot.dataUrl);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(filePath, image.buffer);
+    const relativePath = path.relative(projectRoot, filePath);
+    const domWithHandles = dom ? applyObservationHandles(dom, id) : null;
+    let elementMap: BuiltInBrowserObservationElementMap | null = null;
+    if (elementMapScreenshot) {
+      const elementMapImage = decodeDataUrl(elementMapScreenshot.dataUrl);
+      await fs.writeFile(elementMapPath, elementMapImage.buffer);
+      elementMap = {
+        filePath: elementMapPath,
+        relativePath: path.relative(projectRoot, elementMapPath),
+        width: elementMapScreenshot.width,
+        height: elementMapScreenshot.height,
+        mimeType: elementMapImage.mimeType,
+        elementCount: domWithHandles?.elements.length ?? 0,
+        ...(input.includeDataUrl ? { dataUrl: elementMapScreenshot.dataUrl } : {}),
+      };
+    }
+    const observation: BuiltInBrowserObservation = {
+      id,
+      tabId: tab.id,
+      sessionId,
+      url: tab.webContents.isDestroyed() ? null : emptyToNull(tab.webContents.getURL()),
+      title: tab.webContents.isDestroyed() ? null : emptyToNull(tab.webContents.getTitle()),
+      capturedAt: screenshot.capturedAt,
+      width: screenshot.width,
+      height: screenshot.height,
+      mimeType: image.mimeType,
+      filePath,
+      relativePath,
+      ...(input.includeDataUrl ? { dataUrl: screenshot.dataUrl } : {}),
+      ...(domWithHandles ? { dom: domWithHandles } : {}),
+      ...(elementMap ? { elementMap } : {}),
+      ...(diagnostics ? { diagnostics } : {}),
+      ownerLaneId: tab.ownerLaneId,
+      ownerChatSessionId: tab.ownerChatSessionId,
+      cleanup: {
+        keepCount,
+        keptCount: 1,
+        deletedCount: 0,
+      },
+    };
+    await fs.writeFile(jsonPath, `${JSON.stringify({ ...observation, filePath, relativePath }, null, 2)}\n`, "utf8");
+    observation.cleanup = await pruneObservationDirectory(dir, keepCount);
+    void pruneObservationCacheRoot(
+      path.join(projectRoot, OBSERVATION_CACHE_DIR, sanitizePathSegment(args.profile.key)),
+      DEFAULT_OBSERVATION_MAX_AGE_MS,
+    ).catch((error) => {
+      logger()?.debug("built_in_browser.observation_stale_prune_failed", {
+        err: error instanceof Error ? error.message : String(error),
+      });
+    });
+    await fs.writeFile(jsonPath, `${JSON.stringify(observation, null, 2)}\n`, "utf8");
+    return observation;
+  };
+
   return {
     attachToWindow,
+    detachFromWindow,
     getStatus,
     claim,
+    startSession,
+    listSessions,
+    endSession,
     showPanel,
     setBounds,
     attachWebview,
@@ -1275,6 +2628,15 @@ function createBuiltInBrowserWindowService(args: {
     goBack,
     goForward,
     stop,
+    observe,
+    getTrace,
+    click,
+    typeText,
+    dispatchKey,
+    scroll,
+    fill,
+    clear,
+    wait,
     startInspect,
     stopInspect,
     captureScreenshot,
@@ -1301,12 +2663,16 @@ function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
     isLoading: wc.isDestroyed() ? false : wc.isLoading(),
     canGoBack: wc.isDestroyed() ? false : wc.canGoBack(),
     canGoForward: wc.isDestroyed() ? false : wc.canGoForward(),
+    ownerLaneId: tab.ownerLaneId,
+    ownerChatSessionId: tab.ownerChatSessionId,
+    ownerClaimedAt: tab.ownerClaimedAt,
+    ownerLeaseExpiresAt: tab.ownerLeaseExpiresAt,
   };
 }
 
-function normalizeDimension(value: number): number {
+function normalizeDimension(value: unknown): number {
   if (!Number.isFinite(value)) return 0;
-  return Math.max(0, Math.round(value));
+  return Math.max(0, Math.round(value as number));
 }
 
 function toElectronRect(frame: BuiltInBrowserFrame): Electron.Rectangle {
@@ -1320,6 +2686,253 @@ function toElectronRect(frame: BuiltInBrowserFrame): Electron.Rectangle {
 
 function finiteNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function optionalFiniteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function normalizePositiveInteger(value: unknown): number | null {
+  const raw = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : null;
+  return raw != null && raw > 0 ? raw : null;
+}
+
+function normalizeObservationKeepCount(value: unknown): number {
+  const raw = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : DEFAULT_OBSERVATION_KEEP_COUNT;
+  return Math.max(1, Math.min(MAX_OBSERVATION_KEEP_COUNT, raw));
+}
+
+function normalizeObservationMaxElements(value: unknown): number {
+  const raw = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : DEFAULT_OBSERVATION_MAX_ELEMENTS;
+  return Math.max(1, Math.min(MAX_OBSERVATION_MAX_ELEMENTS, raw));
+}
+
+function normalizeActionObserveDelayMs(value: unknown): number {
+  const raw = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : DEFAULT_ACTION_OBSERVE_DELAY_MS;
+  return Math.max(0, Math.min(MAX_ACTION_OBSERVE_DELAY_MS, raw));
+}
+
+function normalizeBrowserWaitTimeoutMs(value: unknown): number {
+  const raw = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : DEFAULT_BROWSER_WAIT_TIMEOUT_MS;
+  return Math.max(1, Math.min(MAX_BROWSER_WAIT_TIMEOUT_MS, raw));
+}
+
+function normalizeBrowserNetworkIdleMs(value: unknown): number {
+  const raw = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : DEFAULT_BROWSER_NETWORK_IDLE_MS;
+  return Math.max(0, Math.min(MAX_BROWSER_NETWORK_IDLE_MS, raw));
+}
+
+function normalizeTraceLimit(value: unknown): number {
+  const raw = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : DEFAULT_BROWSER_TRACE_LIMIT;
+  return Math.max(1, Math.min(MAX_BROWSER_TRACE_LIMIT, raw));
+}
+
+function normalizeLeaseTtlMs(value: unknown): number {
+  const raw = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : DEFAULT_TAB_LEASE_TTL_MS;
+  return Math.max(1_000, Math.min(MAX_TAB_LEASE_TTL_MS, raw));
+}
+
+function isLeaseExpired(value: string | null): boolean {
+  if (!value) return true;
+  const timestamp = Date.parse(value);
+  return !Number.isFinite(timestamp) || timestamp <= Date.now();
+}
+
+function normalizeLoadState(value: unknown): BuiltInBrowserWaitArgs["loadState"] | null {
+  return value === "domcontentloaded" || value === "load" || value === "network-idle" ? value : null;
+}
+
+function normalizeClickCount(value: unknown): number {
+  const raw = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : 1;
+  return Math.max(1, Math.min(3, raw));
+}
+
+function normalizeMouseButton(value: unknown): CdpInputMouseButton {
+  return value === "middle" || value === "right" ? value : "left";
+}
+
+function normalizeConsoleLevel(value: unknown): BuiltInBrowserDiagnostics["console"][number]["level"] {
+  if (value === "error" || value === 3) return "error";
+  if (value === "warning" || value === "warn" || value === 2) return "warning";
+  if (value === "debug" || value === "verbose" || value === 0) return "debug";
+  return "info";
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function tabSnapshotForTrace(tab: BrowserTabState): { url: string | null; title: string | null } {
+  const wc = tab.webContents;
+  return {
+    url: wc.isDestroyed() ? null : emptyToNull(wc.getURL()),
+    title: wc.isDestroyed() ? null : emptyToNull(wc.getTitle()),
+  };
+}
+
+function actionTargetForTrace(action: string, input: Record<string, unknown>): Record<string, unknown> | null {
+  const target: Record<string, unknown> = {};
+  const copyString = (key: string): void => {
+    const value = stringOrNull(input[key]);
+    if (value) target[key] = value;
+  };
+  const copyNumber = (key: string): void => {
+    const value = optionalFiniteNumber(input[key]);
+    if (value != null) target[key] = value;
+  };
+  for (const key of ["selector", "testId", "handle", "button", "key", "url", "loadState"]) copyString(key);
+  for (const key of ["elementIndex", "x", "y", "deltaX", "deltaY", "clickCount", "timeoutMs", "networkIdleMs"]) copyNumber(key);
+  if (typeof input.text === "string") {
+    if (action === "typeText") {
+      target.textLength = input.text.length;
+    } else if (action === "fill") {
+      target.text = input.text.slice(0, 300);
+    } else {
+      target.text = input.text.slice(0, 300);
+    }
+  }
+  if (action === "fill") {
+    const fillValue = typeof input.value === "string" ? input.value : (typeof input.text === "string" ? input.text : null);
+    if (fillValue != null) target.valueLength = fillValue.length;
+  }
+  return Object.keys(target).length ? target : null;
+}
+
+function requestIdFromWebRequestDetails(details: Record<string, unknown>): string | null {
+  const raw = stringOrNull(details.id) ?? stringOrNull(details.requestId);
+  if (raw) return raw;
+  for (const key of ["id", "requestId"]) {
+    const value = details[key];
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return null;
+}
+
+function sanitizePathSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 160) || "unknown";
+}
+
+function decodeDataUrl(dataUrl: string): { buffer: Buffer; mimeType: string } {
+  const match = /^data:([^;,]+);base64,(.*)$/s.exec(dataUrl);
+  if (!match) throw new Error("Browser observation screenshot is not a base64 data URL.");
+  return {
+    mimeType: match[1] || "image/png",
+    buffer: Buffer.from(match[2] ?? "", "base64"),
+  };
+}
+
+function parseElementHandle(handle: string): { observationId: string; index: number } | null {
+  const match = /^(obs-[^:]+):e:(\d+)$/.exec(handle.trim());
+  if (!match) return null;
+  const index = Number.parseInt(match[2] ?? "", 10);
+  if (!Number.isFinite(index) || index < 1) return null;
+  return { observationId: match[1] ?? "", index };
+}
+
+function applyObservationHandles(
+  dom: BuiltInBrowserDomSnapshot,
+  observationId: string,
+): BuiltInBrowserDomSnapshot {
+  return {
+    ...dom,
+    elements: dom.elements.map((element) => ({
+      ...element,
+      handle: `${observationId}:e:${element.index}`,
+    })),
+  };
+}
+
+async function pruneObservationDirectory(
+  dir: string,
+  keepCount: number,
+): Promise<{ keepCount: number; keptCount: number; deletedCount: number }> {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return { keepCount, keptCount: 0, deletedCount: 0 };
+  }
+  const observations = entries
+    .filter((entry) => entry.endsWith(".json"))
+    .sort()
+    .reverse();
+  const stale = observations.slice(keepCount);
+  let deletedCount = 0;
+  for (const jsonName of stale) {
+    const base = jsonName.slice(0, -".json".length);
+    for (const filename of [`${base}.json`, `${base}.png`, `${base}.map.png`]) {
+      try {
+        await fs.rm(path.join(dir, filename), { force: true });
+        deletedCount += 1;
+      } catch {
+        // best effort cleanup
+      }
+    }
+  }
+  return {
+    keepCount,
+    keptCount: Math.min(observations.length, keepCount),
+    deletedCount,
+  };
+}
+
+async function pruneObservationCacheRoot(
+  profileDir: string,
+  maxAgeMs: number,
+): Promise<void> {
+  let tabDirs: string[];
+  try {
+    tabDirs = await fs.readdir(profileDir);
+  } catch {
+    return;
+  }
+  const cutoff = Date.now() - maxAgeMs;
+  for (const tabDir of tabDirs) {
+    const dir = path.join(profileDir, tabDir);
+    const stat = await fs.stat(dir).catch(() => null);
+    if (!stat) continue;
+    if (!stat.isDirectory()) continue;
+    const entries = await fs.readdir(dir).catch(() => []);
+    for (const entry of entries) {
+      if (!entry.endsWith(".json") && !entry.endsWith(".png")) continue;
+      const filePath = path.join(dir, entry);
+      const fileStat = await fs.stat(filePath).catch(() => null);
+      if (!fileStat || fileStat.mtimeMs >= cutoff) continue;
+      await fs.rm(filePath, { force: true }).catch(() => {});
+    }
+    const remaining = await fs.readdir(dir).catch(() => []);
+    if (remaining.length === 0) {
+      await fs.rmdir(dir).catch(() => {});
+    }
+  }
+}
+
+function keyEventForInput(input: string): Record<string, unknown> {
+  const normalized = input.length === 1 ? input : input.trim();
+  const named: Record<string, { key: string; code: string; windowsVirtualKeyCode: number }> = {
+    Enter: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
+    Return: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
+    Tab: { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
+    Escape: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 },
+    Esc: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 },
+    Backspace: { key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 },
+    Delete: { key: "Delete", code: "Delete", windowsVirtualKeyCode: 46 },
+    ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", windowsVirtualKeyCode: 37 },
+    ArrowUp: { key: "ArrowUp", code: "ArrowUp", windowsVirtualKeyCode: 38 },
+    ArrowRight: { key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39 },
+    ArrowDown: { key: "ArrowDown", code: "ArrowDown", windowsVirtualKeyCode: 40 },
+  };
+  const special = named[normalized];
+  if (special) return special;
+  const char = normalized.slice(0, 1);
+  const upper = char.toUpperCase();
+  return {
+    key: char,
+    code: /^[a-z]$/i.test(char) ? `Key${upper}` : char,
+    windowsVirtualKeyCode: upper.charCodeAt(0),
+    text: char,
+    unmodifiedText: char,
+  };
 }
 
 function normalizeFrame(value: unknown): BuiltInBrowserFrame {
@@ -1364,6 +2977,37 @@ function stringOrNull(value: unknown): string | null {
   return trimmed.length ? trimmed : null;
 }
 
+function hasElementTarget(input: BuiltInBrowserElementTargetArgs): boolean {
+  return Boolean(
+    stringOrNull(input.selector)
+    || stringOrNull(input.text)
+    || stringOrNull(input.testId)
+    || normalizePositiveInteger(input.elementIndex) != null
+    || stringOrNull(input.handle)
+  );
+}
+
+function elementLocatePayload(input: BuiltInBrowserElementTargetArgs): Record<string, unknown> {
+  const selector = stringOrNull(input.selector);
+  const text = stringOrNull(input.text);
+  const testId = stringOrNull(input.testId);
+  const elementIndex = normalizePositiveInteger(input.elementIndex);
+  return {
+    ...(selector ? { selector } : {}),
+    ...(text ? { text } : {}),
+    ...(testId ? { testId } : {}),
+    ...(elementIndex == null ? {} : { elementIndex }),
+  };
+}
+
+function delay(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+  });
+}
+
 function normalizeNodeMetadata(value: unknown): NodeMetadata {
   const record = isRecord(value) ? value : {};
   const frame = normalizeFrame(record.frame);
@@ -1393,11 +3037,98 @@ function normalizeNodeMetadata(value: unknown): NodeMetadata {
   };
 }
 
+function normalizeElementSnapshot(value: unknown): BuiltInBrowserElementSnapshot | null {
+  if (!isRecord(value)) return null;
+  const frame = normalizeFrame(value.frame);
+  const centerRecord = isRecord(value.center) ? value.center : {};
+  const index = normalizePositiveInteger(value.index) ?? 0;
+  const framePath = normalizeNumberArray(value.framePath);
+  const shadowPath = normalizeStringArray(value.shadowPath);
+  if (frame.width <= 0 || frame.height <= 0) return null;
+  return {
+    index,
+    handle: stringOrNull(value.handle),
+    ...(framePath ? { framePath } : {}),
+    ...(shadowPath ? { shadowPath } : {}),
+    tagName: stringOrNull(value.tagName),
+    role: stringOrNull(value.role),
+    label: stringOrNull(value.label),
+    text: stringOrNull(value.text),
+    value: stringOrNull(value.value),
+    placeholder: stringOrNull(value.placeholder),
+    selector: stringOrNull(value.selector),
+    testId: stringOrNull(value.testId),
+    href: stringOrNull(value.href),
+    disabled: typeof value.disabled === "boolean" ? value.disabled : null,
+    frame,
+    center: {
+      x: finiteNumber(centerRecord.x, frame.x + frame.width / 2),
+      y: finiteNumber(centerRecord.y, frame.y + frame.height / 2),
+    },
+  };
+}
+
+function normalizeNumberArray(value: unknown): number[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const entries = value
+    .map((entry) => typeof entry === "number" && Number.isFinite(entry) ? Math.floor(entry) : null)
+    .filter((entry): entry is number => entry != null && entry >= 0);
+  return entries.length ? entries : undefined;
+}
+
+function normalizeStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const entries = value
+    .map((entry) => stringOrNull(entry))
+    .filter((entry): entry is string => Boolean(entry));
+  return entries.length ? entries : undefined;
+}
+
+function normalizeDomSnapshot(value: unknown): BuiltInBrowserDomSnapshot | null {
+  if (!isRecord(value)) return null;
+  const viewport = normalizeFrame(value.viewport);
+  const scrollRecord = isRecord(value.scroll) ? value.scroll : {};
+  const elements = Array.isArray(value.elements)
+    ? value.elements
+        .map(normalizeElementSnapshot)
+        .filter((entry): entry is BuiltInBrowserElementSnapshot => Boolean(entry))
+    : [];
+  return {
+    url: stringOrNull(value.url),
+    title: stringOrNull(value.title),
+    capturedAt: stringOrNull(value.capturedAt) ?? new Date().toISOString(),
+    viewport,
+    scroll: {
+      x: finiteNumber(scrollRecord.x),
+      y: finiteNumber(scrollRecord.y),
+    },
+    elementCount: normalizePositiveInteger(value.elementCount) ?? elements.length,
+    elements,
+  };
+}
+
 function buildComponentId(metadata: NodeMetadata): string {
   if (metadata.testId) return `testid:${metadata.testId}`;
   if (metadata.selector) return metadata.selector;
   if (metadata.tagName) return metadata.tagName;
   return "browser-element";
+}
+
+function parseInspectBindingPoint(params: unknown): BrowserInspectPoint | null {
+  if (!isRecord(params)) return null;
+  const bindingParams = params as CdpRuntimeBindingCalledParams;
+  if (bindingParams.name !== INSPECT_BINDING_NAME || typeof bindingParams.payload !== "string") return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bindingParams.payload);
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed) || parsed.type !== "select") return null;
+  const x = typeof parsed.x === "number" && Number.isFinite(parsed.x) ? Math.round(parsed.x) : null;
+  const y = typeof parsed.y === "number" && Number.isFinite(parsed.y) ? Math.round(parsed.y) : null;
+  if (x === null || y === null) return null;
+  return { x, y };
 }
 
 function withTimeout<T>(
@@ -1415,14 +3146,814 @@ function withTimeout<T>(
   });
 }
 
+function inspectOverlayCleanupScript(): string {
+  return `
+(() => {
+  const current = window.__adeBuiltInBrowserInspector;
+  if (current && typeof current.dispose === "function") {
+    current.dispose();
+  }
+})();
+`;
+}
+
+function inspectOverlayInstallScript(bindingName: string): string {
+  const bindingLiteral = JSON.stringify(bindingName);
+  return `
+(() => {
+  const bindingName = ${bindingLiteral};
+  const existing = window.__adeBuiltInBrowserInspector;
+  if (existing && typeof existing.dispose === "function") {
+    existing.dispose();
+  }
+
+  const host = document.body || document.documentElement;
+  if (!host) return;
+
+  const overlay = document.createElement("div");
+  overlay.setAttribute("data-ade-browser-inspector", "true");
+  Object.assign(overlay.style, {
+    position: "fixed",
+    left: "0px",
+    top: "0px",
+    width: "0px",
+    height: "0px",
+    opacity: "0",
+    pointerEvents: "none",
+    border: "2px solid rgba(168, 85, 247, 0.98)",
+    boxSizing: "border-box",
+    borderRadius: "3px",
+    background: "rgba(168, 85, 247, 0.08)",
+    boxShadow: "0 0 0 1px rgba(168, 85, 247, 0.35), 0 10px 28px rgba(88, 28, 135, 0.22)",
+    transform: "translate3d(0, 0, 0)",
+    transition: "transform 90ms cubic-bezier(0.2, 0.8, 0.2, 1), width 90ms cubic-bezier(0.2, 0.8, 0.2, 1), height 90ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 70ms ease",
+    zIndex: "2147483647"
+  });
+  host.appendChild(overlay);
+
+  const root = document.documentElement;
+  const previousCursor = root ? root.style.cursor : "";
+  if (root) root.style.cursor = "crosshair";
+
+  let disposed = false;
+  let selected = false;
+  const interactiveSelector = "button,a,input,select,textarea,summary,[role='button'],[role='link'],[role='menuitem'],[role='tab'],[role='checkbox'],[role='radio'],[role='switch']";
+  const inlineOrDecorativeTags = new Set(["span", "strong", "em", "small", "b", "i", "svg", "path", "g", "use", "rect", "circle", "line", "polyline", "polygon"]);
+  const svgChildTags = new Set(["path", "g", "use", "rect", "circle", "line", "polyline", "polygon"]);
+
+  const rectContainsPoint = (rect, point) => (
+    rect
+    && rect.width > 0
+    && rect.height > 0
+    && point.x >= rect.left
+    && point.x <= rect.right
+    && point.y >= rect.top
+    && point.y <= rect.bottom
+  );
+
+  const containsPoint = (node, point) => {
+    if (!node || typeof node.getClientRects !== "function") return false;
+    for (const rect of Array.from(node.getClientRects())) {
+      if (rectContainsPoint(rect, point)) return true;
+    }
+    const rect = typeof node.getBoundingClientRect === "function" ? node.getBoundingClientRect() : null;
+    return rectContainsPoint(rect, point);
+  };
+
+  const visibleAtPoint = (node, point) => {
+    if (!node || node === overlay || !containsPoint(node, point)) return false;
+    const style = window.getComputedStyle(node);
+    return style.display !== "none"
+      && style.visibility !== "hidden"
+      && style.pointerEvents !== "none"
+      && Number(style.opacity || "1") > 0.01;
+  };
+
+  const areaFor = (node) => {
+    const rect = node.getBoundingClientRect();
+    return Math.max(1, rect.width * rect.height);
+  };
+
+  const depthFor = (node) => {
+    let depth = 0;
+    let current = node;
+    while (current && current.nodeType === Node.ELEMENT_NODE) {
+      depth += 1;
+      current = current.parentElement;
+    }
+    return depth;
+  };
+
+  const normalizeCandidate = (node, point) => {
+    const tagName = (node.localName || node.tagName || "").toLowerCase();
+    if (inlineOrDecorativeTags.has(tagName)) {
+      const control = node.closest(interactiveSelector);
+      if (control && visibleAtPoint(control, point)) return control;
+      if (svgChildTags.has(tagName)) {
+        const svg = node.closest("svg");
+        if (svg && visibleAtPoint(svg, point)) return svg;
+      }
+    }
+    return node;
+  };
+
+  const qualityFor = (node) => {
+    if (node.matches(interactiveSelector)) return 0;
+    if (node.matches("[data-testid],[data-test-id],[data-cy],[aria-label],[aria-labelledby],[role]")) return 1;
+    const tagName = (node.localName || node.tagName || "").toLowerCase();
+    if (["img", "svg", "canvas", "video", "iframe"].includes(tagName)) return 2;
+    if ((node.innerText || node.textContent || "").replace(/\\s+/g, " ").trim()) return 3;
+    return 4;
+  };
+
+  const smallestElementAtPoint = (fallback, point) => {
+    if (!fallback || !point) return fallback;
+    const candidates = [];
+    const seen = new Set();
+    const addCandidate = (node) => {
+      if (!node || node.nodeType !== Node.ELEMENT_NODE) return;
+      const normalized = normalizeCandidate(node, point);
+      if (!normalized || seen.has(normalized) || !visibleAtPoint(normalized, point)) return;
+      seen.add(normalized);
+      candidates.push({
+        node: normalized,
+        area: areaFor(normalized),
+        depth: depthFor(normalized),
+        quality: qualityFor(normalized)
+      });
+    };
+    const visitRoot = (rootNode) => {
+      const stack = [rootNode];
+      let visited = 0;
+      while (stack.length && visited < 1200) {
+        const node = stack.pop();
+        visited += 1;
+        if (!node || node.nodeType !== Node.ELEMENT_NODE) continue;
+        if (!visibleAtPoint(node, point)) continue;
+        addCandidate(node);
+        const children = Array.from(node.children || []);
+        for (let index = children.length - 1; index >= 0; index -= 1) {
+          stack.push(children[index]);
+        }
+      }
+    };
+    visitRoot(fallback);
+    const hits = typeof document.elementsFromPoint === "function"
+      ? document.elementsFromPoint(point.x, point.y)
+      : [];
+    for (const hit of hits) {
+      if (hit === overlay) continue;
+      addCandidate(hit);
+      visitRoot(hit);
+      let current = hit.parentElement;
+      while (current && current !== document.documentElement) {
+        addCandidate(current);
+        current = current.parentElement;
+      }
+    }
+    if (!candidates.length) return fallback;
+    candidates.sort((a, b) => (
+      a.area - b.area
+      || a.quality - b.quality
+      || b.depth - a.depth
+    ));
+    return candidates[0].node || fallback;
+  };
+
+  const pointFromEvent = (event) => ({
+    x: Math.round(event.clientX),
+    y: Math.round(event.clientY)
+  });
+
+  const moveOutline = (point) => {
+    if (disposed || selected) return;
+    const fallback = document.elementFromPoint(point.x, point.y);
+    const element = smallestElementAtPoint(fallback, point);
+    if (!element || element === overlay) {
+      overlay.style.opacity = "0";
+      return;
+    }
+    const rect = element.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) {
+      overlay.style.opacity = "0";
+      return;
+    }
+    overlay.style.opacity = "1";
+    overlay.style.transform = "translate3d(" + Math.round(rect.left) + "px, " + Math.round(rect.top) + "px, 0)";
+    overlay.style.width = Math.max(1, Math.round(rect.width)) + "px";
+    overlay.style.height = Math.max(1, Math.round(rect.height)) + "px";
+  };
+
+  const onMove = (event) => {
+    moveOutline(pointFromEvent(event));
+  };
+
+  const sendSelection = (point) => {
+    const binding = window[bindingName];
+    if (typeof binding !== "function") return;
+    binding(JSON.stringify({ type: "select", x: point.x, y: point.y }));
+  };
+
+  const onSelect = (event) => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (selected) return;
+    const point = pointFromEvent(event);
+    moveOutline(point);
+    selected = true;
+    sendSelection(point);
+  };
+
+  const swallowAfterSelect = (event) => {
+    if (!selected) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+
+  document.addEventListener("pointermove", onMove, true);
+  document.addEventListener("mousemove", onMove, true);
+  document.addEventListener("pointerdown", onSelect, true);
+  document.addEventListener("mousedown", onSelect, true);
+  document.addEventListener("click", swallowAfterSelect, true);
+
+  window.__adeBuiltInBrowserInspector = {
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      document.removeEventListener("pointermove", onMove, true);
+      document.removeEventListener("mousemove", onMove, true);
+      document.removeEventListener("pointerdown", onSelect, true);
+      document.removeEventListener("mousedown", onSelect, true);
+      document.removeEventListener("click", swallowAfterSelect, true);
+      if (root) root.style.cursor = previousCursor;
+      overlay.remove();
+      if (window.__adeBuiltInBrowserInspector === this) {
+        delete window.__adeBuiltInBrowserInspector;
+      }
+    }
+  };
+})();
+`;
+}
+
+const BROWSER_DOM_FUNCTION = String.raw`
+function(inputArg) {
+  const input = inputArg && typeof inputArg === "object" ? inputArg : {};
+  const maxElements = Math.max(1, Math.min(200, Number(input.maxElements) || 80));
+  const locate = input.locate && typeof input.locate === "object" ? input.locate : null;
+  const shouldFocus = input.focus === true;
+  const shouldSelect = input.select === true;
+  const shouldClear = input.clear === true;
+  const editableRequired = input.editableRequired === true;
+  const interactiveSelector = [
+    "a[href]",
+    "button",
+    "input",
+    "select",
+    "textarea",
+    "summary",
+    "[contenteditable='true']",
+    "[role='button']",
+    "[role='link']",
+    "[role='menuitem']",
+    "[role='tab']",
+    "[role='checkbox']",
+    "[role='radio']",
+    "[role='switch']",
+    "[tabindex]:not([tabindex='-1'])",
+    "[onclick]"
+  ].join(",");
+  const normalizeText = (value) => String(value || "").replace(/\s+/g, " ").trim();
+  const lowerText = (value) => normalizeText(value).toLowerCase();
+  const arrayEquals = (left, right) => {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+    return left.every((entry, index) => entry === right[index]);
+  };
+  const numberPath = (value) => Array.isArray(value)
+    ? value.map((entry) => Number(entry)).filter((entry) => Number.isFinite(entry) && entry >= 0).map((entry) => Math.floor(entry))
+    : null;
+  const stringPath = (value) => Array.isArray(value)
+    ? value.map((entry) => normalizeText(entry)).filter(Boolean)
+    : null;
+  const escapeIdent = (value) => {
+    if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(String(value));
+    return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+  };
+  const quoteAttr = (value) => String(value).replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+  const selectorFor = (node) => {
+    const parts = [];
+    let current = node;
+    while (current && current.nodeType === Node.ELEMENT_NODE && parts.length < 6) {
+      let part = current.localName || current.tagName.toLowerCase();
+      const testId = current.getAttribute("data-testid")
+        || current.getAttribute("data-test-id")
+        || current.getAttribute("data-cy");
+      if (current.id) {
+        part += "#" + escapeIdent(current.id);
+        parts.unshift(part);
+        break;
+      }
+      if (testId) {
+        part += "[data-testid=\"" + quoteAttr(testId) + "\"]";
+        parts.unshift(part);
+        break;
+      }
+      const parent = current.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter((candidate) => candidate.localName === current.localName);
+        if (siblings.length > 1) {
+          part += ":nth-of-type(" + (siblings.indexOf(current) + 1) + ")";
+        }
+      }
+      parts.unshift(part);
+      current = parent;
+    }
+    return parts.join(" > ");
+  };
+  const rectFor = (node, ctx) => {
+    const rect = node && typeof node.getBoundingClientRect === "function" ? node.getBoundingClientRect() : null;
+    if (!rect) return null;
+    return {
+      x: rect.x + ctx.offsetX,
+      y: rect.y + ctx.offsetY,
+      left: rect.left + ctx.offsetX,
+      top: rect.top + ctx.offsetY,
+      right: rect.right + ctx.offsetX,
+      bottom: rect.bottom + ctx.offsetY,
+      width: rect.width,
+      height: rect.height
+    };
+  };
+  const isDisplayed = (node, ctx) => {
+    if (!node || node.nodeType !== Node.ELEMENT_NODE || typeof node.getBoundingClientRect !== "function") return false;
+    const rect = rectFor(node, ctx);
+    if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+    const style = (ctx.win || window).getComputedStyle(node);
+    if (!style || style.display === "none" || style.visibility === "hidden") return false;
+    if (style.pointerEvents === "none") return false;
+    return Number(style.opacity || "1") > 0.01;
+  };
+  const intersectsViewport = (node, ctx) => {
+    const rect = rectFor(node, ctx);
+    if (!rect) return false;
+    return rect.right >= 0 && rect.bottom >= 0 && rect.left <= window.innerWidth && rect.top <= window.innerHeight;
+  };
+  const labelledByText = (node) => {
+    const ids = normalizeText(node.getAttribute("aria-labelledby"));
+    if (!ids) return "";
+    const doc = node.ownerDocument || document;
+    return ids
+      .split(/\s+/)
+      .map((id) => normalizeText(doc.getElementById(id)?.textContent))
+      .filter(Boolean)
+      .join(" ");
+  };
+  const labelFor = (node) => {
+    const id = node.getAttribute("id");
+    const doc = node.ownerDocument || document;
+    const explicitLabel = id
+      ? normalizeText(doc.querySelector("label[for=\"" + quoteAttr(id) + "\"]")?.textContent)
+      : "";
+    const implicitLabel = normalizeText(node.closest("label")?.textContent);
+    return normalizeText(
+      node.getAttribute("aria-label")
+      || labelledByText(node)
+      || explicitLabel
+      || implicitLabel
+      || node.getAttribute("placeholder")
+      || node.getAttribute("title")
+      || node.getAttribute("alt")
+      || node.getAttribute("name")
+      || node.innerText
+      || node.textContent
+    ).slice(0, 300) || null;
+  };
+  const testIdFor = (node) => node.getAttribute("data-testid")
+    || node.getAttribute("data-test-id")
+    || node.getAttribute("data-cy")
+    || null;
+  const valueFor = (node) => {
+    const tag = node && node.tagName ? node.tagName.toLowerCase() : "";
+    if (tag !== "input" && tag !== "textarea" && tag !== "select") return null;
+    if (tag === "input" && String(node.type || "").toLowerCase() === "password") return null;
+    return String(node.value || "").slice(0, 300) || null;
+  };
+  const disabledFor = (node) => "disabled" in node ? Boolean(node.disabled) : null;
+  const describe = (node, index, ctx) => {
+    if (!node || node.nodeType !== Node.ELEMENT_NODE) return null;
+    const rect = rectFor(node, ctx);
+    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+    const text = normalizeText(node.innerText || node.textContent).slice(0, 300) || null;
+    const label = labelFor(node);
+    const tagName = node.tagName ? node.tagName.toLowerCase() : null;
+    return {
+      index,
+      framePath: ctx.framePath.length ? ctx.framePath : undefined,
+      shadowPath: ctx.shadowPath.length ? ctx.shadowPath : undefined,
+      tagName,
+      role: node.getAttribute("role"),
+      label,
+      text,
+      value: valueFor(node),
+      placeholder: normalizeText(node.getAttribute("placeholder")).slice(0, 300) || null,
+      selector: selectorFor(node),
+      testId: testIdFor(node),
+      href: tagName === "a" ? node.href : null,
+      disabled: disabledFor(node),
+      frame: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      center: { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }
+    };
+  };
+  const actionableElement = (node) => {
+    if (!node || node.nodeType !== Node.ELEMENT_NODE) return null;
+    return node.matches(interactiveSelector) ? node : node.closest(interactiveSelector) || node;
+  };
+  const contexts = [];
+  const collectContexts = (root, doc, win, offsetX, offsetY, framePath, shadowPath, depth) => {
+    if (!root || typeof root.querySelectorAll !== "function" || depth > 4) return;
+    const ctx = { root, doc, win, offsetX, offsetY, framePath, shadowPath };
+    contexts.push(ctx);
+    for (const host of Array.from(root.querySelectorAll("*"))) {
+      if (host.shadowRoot) {
+        collectContexts(host.shadowRoot, host.ownerDocument || doc, win, offsetX, offsetY, framePath, shadowPath.concat(selectorFor(host)), depth + 1);
+      }
+    }
+    const frames = Array.from(root.querySelectorAll("iframe,frame"));
+    frames.forEach((frameElement, index) => {
+      let childDocument = null;
+      try {
+        childDocument = frameElement.contentDocument;
+      } catch {
+        childDocument = null;
+      }
+      if (!childDocument || !childDocument.documentElement) return;
+      if (!isDisplayed(frameElement, ctx) || !intersectsViewport(frameElement, ctx)) return;
+      const frameRect = rectFor(frameElement, ctx);
+      if (!frameRect) return;
+      collectContexts(
+        childDocument,
+        childDocument,
+        childDocument.defaultView || win,
+        frameRect.x,
+        frameRect.y,
+        framePath.concat(index),
+        shadowPath,
+        depth + 1
+      );
+    });
+  };
+  collectContexts(document, document, window, 0, 0, [], [], 0);
+  const locateFramePath = locate ? numberPath(locate.framePath) : null;
+  const locateShadowPath = locate ? stringPath(locate.shadowPath) : null;
+  const contextMatches = (ctx) => {
+    if (locateFramePath && !arrayEquals(ctx.framePath, locateFramePath)) return false;
+    if (locateShadowPath && !arrayEquals(ctx.shadowPath, locateShadowPath)) return false;
+    return true;
+  };
+  const stableElements = () => {
+    const seen = new Set();
+    const elements = [];
+    for (const ctx of contexts) {
+      for (const raw of Array.from(ctx.root.querySelectorAll(interactiveSelector))) {
+        const node = actionableElement(raw);
+        if (!node || seen.has(node) || !isDisplayed(node, ctx) || !intersectsViewport(node, ctx)) continue;
+        seen.add(node);
+        elements.push({ node, ctx });
+      }
+    }
+    elements.sort((a, b) => {
+      const ar = rectFor(a.node, a.ctx);
+      const br = rectFor(b.node, b.ctx);
+      if (!ar || !br) return 0;
+      return ar.top - br.top || ar.left - br.left || ar.width * ar.height - br.width * br.height;
+    });
+    return elements;
+  };
+  const stable = stableElements();
+  const elements = stable
+    .slice(0, maxElements)
+    .map((entry, index) => describe(entry.node, index + 1, entry.ctx))
+    .filter(Boolean);
+  const snapshot = {
+    url: location.href,
+    title: document.title,
+    capturedAt: new Date().toISOString(),
+    viewport: { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight },
+    scroll: { x: window.scrollX, y: window.scrollY },
+    elementCount: stable.length,
+    elements
+  };
+
+  const findBySelector = (selector) => {
+    let invalidSelector = false;
+    for (const ctx of contexts) {
+      if (!contextMatches(ctx)) continue;
+      try {
+        const found = ctx.root.querySelector(selector);
+        if (found) return { node: actionableElement(found), ctx };
+      } catch (error) {
+        invalidSelector = true;
+      }
+    }
+    return invalidSelector ? { error: "Invalid browser click selector: " + String(selector) } : null;
+  };
+  const findByTestId = (testId) => {
+    const quoted = quoteAttr(testId);
+    const selector = "[data-testid=\"" + quoted + "\"],[data-test-id=\"" + quoted + "\"],[data-cy=\"" + quoted + "\"]";
+    for (const ctx of contexts) {
+      if (!contextMatches(ctx)) continue;
+      const found = ctx.root.querySelector(selector);
+      if (found) return { node: actionableElement(found), ctx };
+    }
+    return null;
+  };
+  const searchableText = (node) => lowerText([
+    labelFor(node),
+    node.getAttribute("placeholder"),
+    node.getAttribute("title"),
+    node.getAttribute("alt"),
+    node.getAttribute("name"),
+    node.innerText,
+    node.textContent,
+    valueFor(node)
+  ].filter(Boolean).join(" "));
+  const findByText = (text) => {
+    const needle = lowerText(text);
+    if (!needle) return null;
+    const candidates = [];
+    const seen = new Set();
+    for (const ctx of contexts) {
+      if (!contextMatches(ctx)) continue;
+      for (const raw of Array.from(ctx.root.querySelectorAll(interactiveSelector))) {
+        const node = actionableElement(raw);
+        if (!node || seen.has(node) || !isDisplayed(node, ctx)) continue;
+        seen.add(node);
+        candidates.push({ node, ctx });
+      }
+    }
+    const exact = candidates.find((entry) => searchableText(entry.node) === needle);
+    return exact || candidates.find((entry) => searchableText(entry.node).includes(needle)) || null;
+  };
+  const targetFromLocate = () => {
+    if (!locate) return null;
+    if (typeof locate.selector === "string" && locate.selector.trim()) return findBySelector(locate.selector.trim());
+    if (typeof locate.testId === "string" && locate.testId.trim()) return findByTestId(locate.testId.trim());
+    if (typeof locate.text === "string" && locate.text.trim()) return findByText(locate.text.trim());
+    if (Number.isFinite(Number(locate.elementIndex))) {
+      const index = Math.max(1, Math.floor(Number(locate.elementIndex)));
+      const entry = stable[index - 1];
+      if (!entry) return { error: "No browser element exists at index " + index + "." };
+      return entry;
+    }
+    return null;
+  };
+  const rawTarget = targetFromLocate();
+  if (rawTarget && rawTarget.error) return { snapshot, target: null, error: rawTarget.error };
+  let target = rawTarget && rawTarget.node && rawTarget.node.nodeType === Node.ELEMENT_NODE ? rawTarget.node : null;
+  const targetContext = rawTarget && rawTarget.ctx ? rawTarget.ctx : contexts[0];
+  if (target && typeof target.scrollIntoView === "function" && !intersectsViewport(target, targetContext)) {
+    target.scrollIntoView({ block: "center", inline: "center", behavior: "auto" });
+  }
+  if (target && !isDisplayed(target, targetContext)) target = null;
+  if (target && shouldFocus) {
+    const tagName = target.tagName ? target.tagName.toLowerCase() : "";
+    const editable = target.isContentEditable
+      || tagName === "input"
+      || tagName === "textarea"
+      || tagName === "select";
+    const readOnly = "readOnly" in target ? Boolean(target.readOnly) : false;
+    const disabled = "disabled" in target ? Boolean(target.disabled) : false;
+    if (editableRequired && (!editable || readOnly || disabled)) {
+      return { snapshot, target: null, error: "Matching browser element is not editable." };
+    }
+    if (typeof target.focus === "function") target.focus({ preventScroll: true });
+    if (shouldSelect && typeof target.select === "function") target.select();
+    if (shouldClear) {
+      if ("value" in target) {
+        target.value = "";
+        target.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
+        target.dispatchEvent(new Event("change", { bubbles: true }));
+      } else if (target.isContentEditable) {
+        target.textContent = "";
+        target.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
+      }
+    }
+  }
+  const describedTarget = target ? describe(target, 0, targetContext) : null;
+  return {
+    readyState: document.readyState,
+    snapshot,
+    target: describedTarget,
+    error: locate && !describedTarget ? "No matching browser element was found." : null
+  };
+}
+`;
+
+const ELEMENT_MAP_OVERLAY_FUNCTION = String.raw`
+function(inputArg) {
+  const input = inputArg && typeof inputArg === "object" ? inputArg : {};
+  const overlayId = "__ade_browser_element_map_overlay__";
+  const existing = document.getElementById(overlayId);
+  if (existing) existing.remove();
+  if (input.clear === true) return { ok: true, cleared: true };
+  const elements = Array.isArray(input.elements) ? input.elements : [];
+  if (!elements.length || !document.body) return { ok: true, count: 0 };
+  const root = document.createElement("div");
+  root.id = overlayId;
+  root.setAttribute("aria-hidden", "true");
+  Object.assign(root.style, {
+    position: "fixed",
+    inset: "0",
+    zIndex: "2147483647",
+    pointerEvents: "none",
+    font: "12px/1.2 -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+    color: "#f8fafc",
+  });
+  const viewportWidth = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
+  const viewportHeight = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
+  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+  const number = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
+  let count = 0;
+  for (const element of elements) {
+    if (!element || typeof element !== "object") continue;
+    const frame = element.frame && typeof element.frame === "object" ? element.frame : {};
+    const x = clamp(number(frame.x), 0, viewportWidth);
+    const y = clamp(number(frame.y), 0, viewportHeight);
+    const right = clamp(number(frame.x) + number(frame.width), 0, viewportWidth);
+    const bottom = clamp(number(frame.y) + number(frame.height), 0, viewportHeight);
+    const width = Math.max(1, right - x);
+    const height = Math.max(1, bottom - y);
+    if (width <= 1 || height <= 1) continue;
+    const index = String(element.index || count + 1);
+    const box = document.createElement("div");
+    Object.assign(box.style, {
+      position: "fixed",
+      left: x + "px",
+      top: y + "px",
+      width: width + "px",
+      height: height + "px",
+      zIndex: "1",
+      boxSizing: "border-box",
+      border: "2px solid #0ea5e9",
+      background: "rgba(14, 165, 233, 0.12)",
+      boxShadow: "0 0 0 1px rgba(15, 23, 42, 0.88), 0 0 0 4px rgba(14, 165, 233, 0.18)",
+      borderRadius: "4px",
+    });
+    const label = document.createElement("div");
+    label.textContent = index;
+    Object.assign(label.style, {
+      position: "fixed",
+      left: clamp(x, 0, viewportWidth - 28) + "px",
+      top: clamp(y - 18, 0, viewportHeight - 18) + "px",
+      zIndex: "2",
+      minWidth: "18px",
+      height: "18px",
+      padding: "0 5px",
+      boxSizing: "border-box",
+      borderRadius: "9px",
+      background: "#0284c7",
+      color: "white",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontWeight: "700",
+      letterSpacing: "0",
+      boxShadow: "0 1px 5px rgba(15, 23, 42, 0.5)",
+    });
+    root.appendChild(box);
+    root.appendChild(label);
+    count += 1;
+  }
+  document.body.appendChild(root);
+  return { ok: true, count };
+}
+`;
+
 const NODE_METADATA_FUNCTION = String.raw`
-function() {
+function(pointArg) {
   const original = this;
-  const element = original && original.nodeType === Node.ELEMENT_NODE
+  const originalElement = original && original.nodeType === Node.ELEMENT_NODE
     ? original
     : original && original.parentElement
       ? original.parentElement
       : null;
+  const finiteNumber = (value) => typeof value === "number" && Number.isFinite(value) ? value : null;
+  const inspectPoint = pointArg && typeof pointArg === "object"
+    ? { x: finiteNumber(pointArg.x), y: finiteNumber(pointArg.y) }
+    : null;
+  const hasInspectPoint = inspectPoint && inspectPoint.x !== null && inspectPoint.y !== null;
+  const rectContainsPoint = (rect, point) => (
+    rect
+    && rect.width > 0
+    && rect.height > 0
+    && point.x >= rect.left
+    && point.x <= rect.right
+    && point.y >= rect.top
+    && point.y <= rect.bottom
+  );
+  const containsPoint = (node, point) => {
+    if (!node || typeof node.getClientRects !== "function") return false;
+    for (const rect of Array.from(node.getClientRects())) {
+      if (rectContainsPoint(rect, point)) return true;
+    }
+    const rect = typeof node.getBoundingClientRect === "function" ? node.getBoundingClientRect() : null;
+    return rectContainsPoint(rect, point);
+  };
+  const visibleAtPoint = (node, point) => {
+    if (!containsPoint(node, point)) return false;
+    const style = window.getComputedStyle(node);
+    return style.display !== "none" && style.visibility !== "hidden" && style.pointerEvents !== "none" && Number(style.opacity || "1") > 0.01;
+  };
+  const areaFor = (node) => {
+    const rect = node.getBoundingClientRect();
+    return Math.max(1, rect.width * rect.height);
+  };
+  const depthFor = (node) => {
+    let depth = 0;
+    let current = node;
+    while (current && current.nodeType === Node.ELEMENT_NODE) {
+      depth += 1;
+      current = current.parentElement;
+    }
+    return depth;
+  };
+  const interactiveSelector = "button,a,input,select,textarea,summary,[role='button'],[role='link'],[role='menuitem'],[role='tab'],[role='checkbox'],[role='radio'],[role='switch']";
+  const inlineOrDecorativeTags = new Set(["span", "strong", "em", "small", "b", "i", "svg", "path", "g", "use", "rect", "circle", "line", "polyline", "polygon"]);
+  const normalizeCandidate = (node, point) => {
+    const tagName = (node.localName || node.tagName || "").toLowerCase();
+    if (inlineOrDecorativeTags.has(tagName)) {
+      const control = node.closest(interactiveSelector);
+      if (control && visibleAtPoint(control, point)) return control;
+      if (["path", "g", "use", "rect", "circle", "line", "polyline", "polygon"].includes(tagName)) {
+        const svg = node.closest("svg");
+        if (svg && visibleAtPoint(svg, point)) return svg;
+      }
+    }
+    return node;
+  };
+  const qualityFor = (node) => {
+    if (node.matches(interactiveSelector)) return 0;
+    if (node.matches("[data-testid],[data-test-id],[data-cy],[aria-label],[aria-labelledby],[role]")) return 1;
+    const tagName = (node.localName || node.tagName || "").toLowerCase();
+    if (["img", "svg", "canvas", "video", "iframe"].includes(tagName)) return 2;
+    if ((node.innerText || node.textContent || "").replace(/\s+/g, " ").trim()) return 3;
+    return 4;
+  };
+  const smallestElementAtPoint = (fallback, point) => {
+    if (!fallback || !point) return fallback;
+    const candidates = [];
+    const seen = new Set();
+    const addCandidate = (node) => {
+      if (!node || node.nodeType !== Node.ELEMENT_NODE) return;
+      const normalized = normalizeCandidate(node, point);
+      if (!normalized || seen.has(normalized) || !visibleAtPoint(normalized, point)) return;
+      seen.add(normalized);
+      candidates.push({
+        node: normalized,
+        area: areaFor(normalized),
+        depth: depthFor(normalized),
+        quality: qualityFor(normalized)
+      });
+    };
+    const visitRoot = (root) => {
+      const stack = [root];
+      let visited = 0;
+      while (stack.length && visited < 1200) {
+        const node = stack.pop();
+        visited += 1;
+        if (!node || node.nodeType !== Node.ELEMENT_NODE) continue;
+        if (!visibleAtPoint(node, point)) continue;
+        addCandidate(node);
+        const children = Array.from(node.children || []);
+        for (let index = children.length - 1; index >= 0; index -= 1) {
+          stack.push(children[index]);
+        }
+      }
+    };
+    visitRoot(fallback);
+    const hits = typeof document.elementsFromPoint === "function"
+      ? document.elementsFromPoint(point.x, point.y)
+      : [];
+    for (const hit of hits) {
+      addCandidate(hit);
+      visitRoot(hit);
+      let current = hit.parentElement;
+      while (current && current !== document.documentElement) {
+        addCandidate(current);
+        current = current.parentElement;
+      }
+    }
+    if (!candidates.length) return fallback;
+    candidates.sort((a, b) => (
+      a.area - b.area
+      || a.quality - b.quality
+      || b.depth - a.depth
+    ));
+    return candidates[0].node || fallback;
+  };
+  const element = hasInspectPoint
+    ? smallestElementAtPoint(originalElement, inspectPoint)
+    : originalElement;
   if (!element) {
     return {
       tagName: null,
@@ -1436,7 +3967,7 @@ function() {
       pixelRatio: window.devicePixelRatio || 1,
       url: location.href,
       title: document.title,
-      metadata: { nodeType: original ? original.nodeType : null }
+      metadata: { nodeType: original ? original.nodeType : null, hitTest: hasInspectPoint ? { x: inspectPoint.x, y: inspectPoint.y, strategy: "none" } : null }
     };
   }
 
@@ -1534,6 +4065,13 @@ function() {
       inputType: element instanceof HTMLInputElement ? element.type : null,
       disabled: "disabled" in element ? Boolean(element.disabled) : null,
       checked: "checked" in element ? Boolean(element.checked) : null,
+      hitTest: hasInspectPoint ? {
+        x: inspectPoint.x,
+        y: inspectPoint.y,
+        strategy: "smallest-visible-descendant",
+        originalTagName: originalElement && originalElement.tagName ? originalElement.tagName.toLowerCase() : null,
+        selectedTagName: element.tagName ? element.tagName.toLowerCase() : null
+      } : null,
       viewport: { width: window.innerWidth, height: window.innerHeight },
       scroll: { x: window.scrollX, y: window.scrollY }
     }

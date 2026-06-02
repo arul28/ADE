@@ -42,7 +42,7 @@ _    ____  _____
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
     $ ade agent spawn --lane <id> --prompt <text>   Launch an agent session in ADE
     $ ade cto state | chats                         Operate CTO state and Work chats
-    $ ade linear workflows | run | sync             Operate Linear routing and sync workflows
+    $ ade linear graphql | workflows | run | sync   Operate Linear GraphQL, routing, and sync workflows
     $ ade automations list | create | run | runs    Manage automation rules
     $ ade coordinator <tool>                        Call coordinator runtime tools
     $ ade tests list | run | stop | runs | logs     Run configured test suites
@@ -143,7 +143,7 @@ _    ____  _____
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
     $ ade agent spawn --lane <id> --prompt <text>   Launch an agent session in ADE
     $ ade cto state | chats                         Operate CTO state and Work chats
-    $ ade linear workflows | run | sync             Operate Linear routing and sync workflows
+    $ ade linear graphql | workflows | run | sync   Operate Linear GraphQL, routing, and sync workflows
     $ ade automations list | create | run | runs    Manage automation rules
     $ ade coordinator <tool>                        Call coordinator runtime tools
     $ ade tests list | run | stop | runs | logs     Run configured test suites
@@ -244,7 +244,7 @@ _    ____  _____
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
     $ ade agent spawn --lane <id> --prompt <text>   Launch an agent session in ADE
     $ ade cto state | chats                         Operate CTO state and Work chats
-    $ ade linear workflows | run | sync             Operate Linear routing and sync workflows
+    $ ade linear graphql | workflows | run | sync   Operate Linear GraphQL, routing, and sync workflows
     $ ade automations list | create | run | runs    Manage automation rules
     $ ade coordinator <tool>                        Call coordinator runtime tools
     $ ade tests list | run | stop | runs | logs     Run configured test suites
@@ -321,7 +321,13 @@ _    ____  _____
     $ ade lanes create --name <name>                Create a lane from the current project context
     $ ade lanes create --linear-issue-json '{...}'  Create a lane linked to a Linear issue
     $ ade lanes link-linear-issue <lane> --linear-issue-json '{...}'
-                                                    Link an existing lane to a Linear issue
+                                                    Link an existing lane to a Linear issue (alias: attach-linear-issue)
+    $ ade lanes detach-linear-issue <lane> [--issue-id ENG-431]
+                                                    Unlink one issue (or all non-primary links) from a lane
+    $ ade lanes create-from-linear --linear-issue-json '{...}' [--start-chat --provider codex --model <m>]
+                                                    Create a lane from an issue, optionally auto-launching an agent
+    $ ade lanes batch-create-from-linear --linear-issues-json '[{...},{...}]'
+                                                    Create one lane per issue (partial success, no orphans)
     $ ade lanes create --branch-name <branch>       Override the auto-generated branch name
     $ ade lanes child --lane <parent> --name <name> Create a child lane under a parent
     $ ade lanes import --branch <branch>            Register an existing branch/worktree
@@ -514,7 +520,13 @@ _    ____  _____
 
     $ ade chat list --text                          List chat sessions
     $ ade chat create --lane <lane> --provider codex --model <model> [--fast]
+    $ ade chat create --from-linear-issue ENG-431   Start a chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message
+    $ ade chat attach-linear-issue <session> --issue-id ENG-431
+                                                    Attach a Linear issue to a chat/CLI session
+    $ ade chat detach-linear-issue <session> [--issue-id ENG-431]
+                                                    Detach one issue (or all) from a session
+    $ ade chat linear-issues <session> --text       List issues attached to a session
     $ ade chat interrupt <session>                  Stop an active turn
     $ ade chat slash <session> --text               List slash commands for a session
     $ ade agent spawn --lane <lane> --prompt "fix"  Start a new agent work session
@@ -557,6 +569,29 @@ _    ____  _____
 
   Linear workflows
 
+  Daemon bridge (for an agent running inside a tracked ADE CLI session):
+  these commands route over the ADE daemon to the desktop runtime, which holds
+  the Linear credentials — the CLI never needs a Linear token. When ADE launches
+  an agent with an attached issue it injects $ADE_CHAT_SESSION_ID and
+  $ADE_LINEAR_ISSUE_IDS, so the agent can read and write its issue with no ids.
+
+    $ ade linear attach --this-session --issue-id ENG-431
+                                                    Attach an issue to the current CLI session
+    $ ade linear issues --this-session --text       List issues attached to this session
+    $ ade linear issue ENG-431 --text               Read one issue (defaults to the session's attached issue)
+    $ ade linear comment "Pushed a fix, running CI" Comment on the attached issue (or pass an id first)
+    $ ade linear comment ENG-431 "Done"             Comment on a specific issue
+    $ ade linear set-state ENG-431 <state-id>       Move an issue to a workflow state
+    $ ade linear assign ENG-431 <user-id|none>      Assign or clear an issue assignee
+    $ ade linear label ENG-431 "needs-review"       Add a label to an issue
+    $ ade linear graphql --query 'query { viewer { id name } }'
+                                                    Run Linear GraphQL through the project connection
+    $ ade linear graphql --query-file query.graphql --variables-file vars.json
+                                                    Use files for larger GraphQL operations
+    $ ade linear detach --this-session [--issue-id ENG-431]
+                                                    Detach one issue (or all) from this session
+
+  Workspace + automation (typically run with --role cto):
     $ ade --role cto linear quick-view --text      Show connected workspace, projects, and issues
     $ ade --role cto linear picker-data --text     Read projects/users/states for the issue picker
     $ ade --role cto linear search-issues --query "auth" --state-type started,unstarted --first 50
@@ -800,33 +835,69 @@ _    ____  _____
 
   ADE browser
 
-  Browser commands control ADE's global built-in browser pane. Use desktop
-  socket mode so CLI calls, chat link clicks, terminal localhost links, and the
-  Work sidebar all share the same browser tabs. The browser is global, not
-  lane-scoped, but its visible Work attribution comes from explicit CLI claims.
-  ADE reads ADE_LANE_ID/ADE_CHAT_SESSION_ID for agent CLI calls; use
-  "browser claim --lane <lane-id>" to claim an already-open browser for a lane.
+  Browser commands control ADE's project-scoped built-in browser pane. Use
+  desktop socket mode so CLI calls, chat link clicks, terminal localhost links,
+  and the Work sidebar share the browser for the active project only. Browser
+  tabs, cookies, and storage are isolated between separate projects.
+  The browser is project-scoped, not lane-scoped. Ownership is per tab/session:
+  tab creation, explicit claims, sessions, and page actions read
+  ADE_LANE_ID/ADE_CHAT_SESSION_ID for agent CLI calls. Panel reveal and plain
+  tab switching are passive view operations; use
+  "browser claim --tab <tab-id> --lane <lane-id>" to claim an already-open tab.
+  ADE-launched agents should list tabs first and use only a tab/session owned
+  by their current chat. If no owned tab exists, open a fresh owned tab; plain
+  "browser open <url>" does this automatically for ADE-launched agents unless
+  --active-tab or --tab is passed.
 
   Tabs and navigation:
     $ ade --socket browser status --text           Show active tab and tab list
-    $ ade --socket browser claim --lane <lane-id>  Attribute the Browser panel to a lane
+    $ ade --socket browser claim --lane <lane-id>  Attribute the active browser tab to a lane
     $ ade --socket browser panel --text            Open the Work sidebar Browser panel
     $ ade --socket browser open https://example.com --text
     $ ade --socket browser open localhost:5173 --new-tab --text
+    $ ade --socket browser open localhost:5173 --active-tab --text
     $ ade --socket browser open https://example.com --no-panel
     $ ade --socket browser new-tab --url https://example.com
     $ ade --socket browser switch --tab <tab-id>
     $ ade --socket browser close --tab <tab-id>
     $ ade --socket browser actions --text          List built_in_browser actions
 
+  Agent sessions:
+    $ ade --socket browser session start --tab <tab-id> --text
+    $ ade --socket browser sessions --text
+    $ ade --socket browser observe --browser-session <session-id> --map --text
+    $ ade --socket browser click --browser-session <session-id> --handle obs-...:e:1
+    $ ade --socket browser session click <session-id> --handle obs-...:e:1
+    $ ade --socket browser session wait <session-id> --network-idle
+    $ ade --socket browser session trace <session-id> --text
+    $ ade --socket browser session proof <session-id> --caption "Verified"
+    $ ade --socket browser session end <session-id>
+
   Page controls:
-    $ ade --socket browser reload
-    $ ade --socket browser back
-    $ ade --socket browser forward
-    $ ade --socket browser stop
+    $ ade --socket browser observe --tab <tab-id>  Save scratch screenshot + DOM observation
+    $ ade --socket browser observe --tab <tab-id> --map
+    $ ade --socket browser trace --tab <tab-id> --text
+    $ ade --socket browser click --tab <tab-id> --x 120 --y 420
+    $ ade --socket browser click --tab <tab-id> --selector "button[type=submit]"
+    $ ade --socket browser click --tab <tab-id> --text-match "Sign in"
+    $ ade --socket browser click --tab <tab-id> --handle obs-...:e:1
+    $ ade --socket browser wait --tab <tab-id> --selector ".ready"
+    $ ade --socket browser wait --tab <tab-id> --load-state network-idle --network-idle-ms 750
+    $ ade --socket browser fill --tab <tab-id> --selector "input[name=email]" "me@example.com"
+    $ ade --socket browser fill --tab <tab-id> --handle obs-...:e:2 --value ""
+    $ ade --socket browser clear-field --tab <tab-id> --selector "input[name=q]"
+    $ ade --socket browser press --tab <tab-id> --selector "input[name=q]" Enter
+    $ ade --socket browser type --tab <tab-id> "hello"
+    $ ade --socket browser key --tab <tab-id> Enter
+    $ ade --socket browser scroll --tab <tab-id> --dy 700
+    $ ade --socket browser proof --tab <tab-id> --caption "Verified"
+    $ ade --socket browser reload --tab <tab-id>
+    $ ade --socket browser back --tab <tab-id>
+    $ ade --socket browser forward --tab <tab-id>
+    $ ade --socket browser stop --tab <tab-id>
 
   Capture and context:
-    $ ade --socket browser screenshot --text       Capture the active browser tab
+    $ ade --socket browser screenshot --tab <tab-id> --text
     $ ade --socket browser select --x 120 --y 420  Attach DOM context at a viewport point
     $ ade --socket browser inspect-start           Start DOM inspect mode
     $ ade --socket browser inspect-stop            Stop DOM inspect mode
@@ -839,9 +910,38 @@ _    ____  _____
     --active-tab         Navigate the active tab; aliases: --current-tab, --same-tab.
     --background         Create a new tab without activating it.
     --no-panel           Keep the Work sidebar panel hidden; alias: --hidden.
-    --tab, --tab-id <id> Target tab for switch/close/open.
-    --lane, --lane-id <id> Claim lane for panel/open/new-tab/switch/claim.
-    --chat-session <id>  Claim chat/session for panel/open/new-tab/switch/claim.
+    --tab, --tab-id <id> Target tab for switch/close/open/control/capture/claim.
+    --browser-session <id>
+                         Target the tab bound to a browser agent session.
+    --x, --y <n>         Viewport coordinates for browser click/select/scroll origin.
+    --selector <css>     Click the first matching visible element.
+    --text-match <text>  Click a visible element by accessible text/label.
+    --test-id <id>       Click by data-testid/data-test-id/data-cy.
+    --element <n>        Click an element index from the current DOM observation.
+    --handle <ref>       Click/fill/press/wait via a saved observation element handle.
+    --value <text>       Explicit value for browser fill, including an empty string.
+    --map, --ui-map      Add a numbered visual element map image to observations.
+    --keep <n>           Keep only the latest n scratch observations per tab (default 3).
+    --dom, --no-dom      Include or skip the DOM element list in observations.
+    --diagnostics, --no-diagnostics
+                         Include or skip console/network diagnostics in observations.
+    --max-elements <n>   Cap DOM elements captured per observation (default 80).
+    --limit <n>          Trace entries to show for browser trace (default 20).
+    --include-ended, --all
+                         Include ended browser sessions in browser sessions output.
+    --timeout-ms <n>     Wait timeout for browser wait/fill/click readiness.
+    --network-idle       Alias for browser wait --load-state network-idle.
+    --network-idle-ms <n>
+                         Quiet window required for network-idle wait (default 500).
+    --wait-after-ms <n>  Delay before post-action observation (default 150).
+    --fast               Alias for --wait-after-ms 0 on browser actions.
+    --no-observe         Do not capture the post-action scratch observation.
+    --force              Take over a still-leased tab from another lane.
+    --lease-ttl-ms <n>   Override tab lease TTL for lane-owned actions.
+    --lane, --lane-id <id> Claim lane for open/new-tab/claim/session/actions.
+                         On panel/switch, claims only when passed explicitly.
+    --chat-session <id>  Claim chat/session for open/new-tab/claim/session/actions.
+                         On panel/switch, claims only when passed explicitly.
 
 ## ade settings --help
 _    ____  _____
@@ -884,7 +984,7 @@ _    ____  _____
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
     $ ade agent spawn --lane <id> --prompt <text>   Launch an agent session in ADE
     $ ade cto state | chats                         Operate CTO state and Work chats
-    $ ade linear workflows | run | sync             Operate Linear routing and sync workflows
+    $ ade linear graphql | workflows | run | sync   Operate Linear GraphQL, routing, and sync workflows
     $ ade automations list | create | run | runs    Manage automation rules
     $ ade coordinator <tool>                        Call coordinator runtime tools
     $ ade tests list | run | stop | runs | logs     Run configured test suites
