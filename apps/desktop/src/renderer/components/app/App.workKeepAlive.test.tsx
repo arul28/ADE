@@ -22,6 +22,8 @@ const appStoreState = vi.hoisted(() => ({
   project: { rootPath: "/fake/project" },
   projectTransition: null as { kind: "opening" | "switching" | "closing"; rootPath: string | null; startedAtMs: number } | null,
   theme: "dark",
+  launchPromptClipboardEnabled: true,
+  launchPromptClipboardNoticeEnabled: true,
   openProjectTabRoots: [] as string[],
   projectInfoByRoot: {} as Record<string, { rootPath: string; displayName?: string }>,
 }));
@@ -186,6 +188,8 @@ describe("App Work route keep-alive", () => {
     appStoreState.project = { rootPath: "/fake/project" };
     appStoreState.projectTransition = null;
     appStoreState.theme = "dark";
+    appStoreState.launchPromptClipboardEnabled = true;
+    appStoreState.launchPromptClipboardNoticeEnabled = true;
     appStoreState.openProjectTabRoots = [];
     appStoreState.projectInfoByRoot = {};
     window.localStorage.clear();
@@ -226,6 +230,25 @@ describe("App Work route keep-alive", () => {
     });
     expect(workLifecycle.mounts).toBe(1);
     expect(workLifecycle.unmounts).toBe(0);
+  });
+
+  it("hydrates project stores with launch clipboard reminder preferences", async () => {
+    appStoreState.launchPromptClipboardNoticeEnabled = false;
+    const { hydrateProjectAppStore } = await import("../../state/appStore");
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    await screen.findByTestId("work-page");
+    await waitFor(() => {
+      expect(hydrateProjectAppStore).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          launchPromptClipboardEnabled: true,
+          launchPromptClipboardNoticeEnabled: false,
+        }),
+      );
+    });
   });
 
   it("does not mount the Work page when hydration has not found a project yet", async () => {

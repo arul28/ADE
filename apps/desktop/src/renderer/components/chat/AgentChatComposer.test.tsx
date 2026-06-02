@@ -1423,6 +1423,19 @@ describe("AgentChatComposer", () => {
     expect(screen.queryByText("After submission your prompt will auto copy to clipboard.")).toBeNull();
   });
 
+  it("hides the launch clipboard helper when the reminder setting is disabled", () => {
+    renderComposer({
+      draft: "Copy silently",
+      turnActive: false,
+      launchPromptClipboardEnabled: true,
+      launchPromptClipboardNoticeEnabled: false,
+    });
+
+    fireEvent.focus(screen.getByRole("textbox"));
+
+    expect(screen.queryByText(/Prompt will be copied to clipboard after Send\./)).toBeNull();
+  });
+
   it("focuses the grid composer when the tile becomes active", () => {
     const props = buildComposerProps({
       layoutVariant: "grid-tile",

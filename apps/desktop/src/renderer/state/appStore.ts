@@ -9,6 +9,7 @@ import { getAiStatusCached, invalidateAiDiscoveryCache } from "../lib/aiDiscover
 import { hasConfiguredAiProvider } from "../lib/aiProviderStatus";
 import { getKeybindingsCoalesced, listLaneSnapshotsCoalesced, listLanesCoalesced } from "../lib/laneReadCache";
 import { getProjectConfigCached, invalidateProjectConfigCache } from "../lib/projectConfigCache";
+import type { DraftLaunchJob } from "../lib/draftLaunchJobs";
 
 export type ThemeId = "dark" | "light";
 export const THEME_IDS: ThemeId[] = ["dark", "light"];
@@ -431,6 +432,7 @@ type PersistedUserPreferences = {
   onboardingEnabled: boolean;
   didYouKnowEnabled: boolean;
   launchPromptClipboardEnabled: boolean;
+  launchPromptClipboardNoticeEnabled: boolean;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
   agentTurnCompletionSound: AgentTurnCompletionSound;
   agentTurnCompletionSoundVolume: number;
@@ -461,6 +463,7 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       onboardingEnabled: parsed.onboardingEnabled !== false,
       didYouKnowEnabled: parsed.didYouKnowEnabled !== false,
       launchPromptClipboardEnabled: parsed.launchPromptClipboardEnabled !== false,
+      launchPromptClipboardNoticeEnabled: parsed.launchPromptClipboardNoticeEnabled !== false,
       codeBlockCopyButtonPosition: normalizeCodeBlockCopyButtonPosition(parsed.codeBlockCopyButtonPosition),
       agentTurnCompletionSound: normalizeAgentTurnCompletionSound(parsed.agentTurnCompletionSound),
       agentTurnCompletionSoundVolume: normalizeAgentTurnCompletionSoundVolume(parsed.agentTurnCompletionSoundVolume),
@@ -503,6 +506,7 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     onboardingEnabled: true,
     didYouKnowEnabled: true,
     launchPromptClipboardEnabled: true,
+    launchPromptClipboardNoticeEnabled: true,
     codeBlockCopyButtonPosition: "top",
     agentTurnCompletionSound: "off",
     agentTurnCompletionSoundVolume: DEFAULT_AGENT_TURN_COMPLETION_SOUND_VOLUME,
@@ -531,6 +535,7 @@ function persistUserPreferencesFrom(state: {
   onboardingEnabled: boolean;
   didYouKnowEnabled: boolean;
   launchPromptClipboardEnabled: boolean;
+  launchPromptClipboardNoticeEnabled: boolean;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
   agentTurnCompletionSound: AgentTurnCompletionSound;
   agentTurnCompletionSoundVolume: number;
@@ -548,6 +553,7 @@ function persistUserPreferencesFrom(state: {
     onboardingEnabled: state.onboardingEnabled,
     didYouKnowEnabled: state.didYouKnowEnabled,
     launchPromptClipboardEnabled: state.launchPromptClipboardEnabled,
+    launchPromptClipboardNoticeEnabled: state.launchPromptClipboardNoticeEnabled,
     codeBlockCopyButtonPosition: state.codeBlockCopyButtonPosition,
     agentTurnCompletionSound: state.agentTurnCompletionSound,
     agentTurnCompletionSoundVolume: state.agentTurnCompletionSoundVolume,
@@ -655,8 +661,10 @@ export type AppState = {
   onboardingEnabled: boolean;
   didYouKnowEnabled: boolean;
   launchPromptClipboardEnabled: boolean;
+  launchPromptClipboardNoticeEnabled: boolean;
   workViewByProject: Record<string, WorkProjectViewState>;
   laneWorkViewByScope: Record<string, WorkProjectViewState>;
+  draftLaunchJobsByScope: Record<string, DraftLaunchJob[]>;
   /**
    * Per-project lane / chat selection. Switching projects stashes the current
    * selection here keyed by project root so switching BACK restores the same
@@ -728,6 +736,7 @@ export type AppState = {
   setOnboardingEnabled: (enabled: boolean) => void;
   setDidYouKnowEnabled: (enabled: boolean) => void;
   setLaunchPromptClipboardEnabled: (enabled: boolean) => void;
+  setLaunchPromptClipboardNoticeEnabled: (enabled: boolean) => void;
   getWorkViewState: (projectRoot: string | null | undefined) => WorkProjectViewState;
   setWorkViewState: (
     projectRoot: string | null | undefined,
@@ -742,6 +751,12 @@ export type AppState = {
     next:
       | Partial<WorkProjectViewState>
       | ((prev: WorkProjectViewState) => WorkProjectViewState)
+  ) => void;
+  setDraftLaunchJobs: (
+    scopeKey: string | null | undefined,
+    next:
+      | DraftLaunchJob[]
+      | ((prev: DraftLaunchJob[]) => DraftLaunchJob[])
   ) => void;
   refreshProviderMode: () => Promise<void>;
   refreshKeybindings: () => Promise<void>;
@@ -898,8 +913,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   onboardingEnabled: initialUserPreferences.onboardingEnabled,
   didYouKnowEnabled: initialUserPreferences.didYouKnowEnabled,
   launchPromptClipboardEnabled: initialUserPreferences.launchPromptClipboardEnabled,
+  launchPromptClipboardNoticeEnabled: initialUserPreferences.launchPromptClipboardNoticeEnabled,
   workViewByProject: initialPersistedWorkViews.workViewByProject,
   laneWorkViewByScope: initialPersistedWorkViews.laneWorkViewByScope,
+  draftLaunchJobsByScope: {},
   laneSelectionByProject: {},
   laneCacheByProject: {},
   sessionsCacheByProject: {},
@@ -1127,6 +1144,11 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       persistUserPreferencesFrom({ ...prev, launchPromptClipboardEnabled: enabled });
       return { launchPromptClipboardEnabled: enabled };
     }),
+  setLaunchPromptClipboardNoticeEnabled: (enabled) =>
+    set((prev) => {
+      persistUserPreferencesFrom({ ...prev, launchPromptClipboardNoticeEnabled: enabled });
+      return { launchPromptClipboardNoticeEnabled: enabled };
+    }),
   openNewTab: () => set({ isNewTabOpen: true, showWelcome: true }),
   cancelNewTab: () => {
     const hasProject = get().project != null;
@@ -1190,6 +1212,22 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       return {
         laneWorkViewByScope: nextLaneWorkViews,
       };
+    });
+  },
+  setDraftLaunchJobs: (scopeKey, next) => {
+    const key = typeof scopeKey === "string" ? scopeKey.trim() : "";
+    if (!key) return;
+    set((prev) => {
+      const current = prev.draftLaunchJobsByScope[key] ?? [];
+      const updated = typeof next === "function" ? next(current) : next;
+      const nextJobs = Array.isArray(updated) ? updated : [];
+      const nextByScope = { ...prev.draftLaunchJobsByScope };
+      if (nextJobs.length > 0) {
+        nextByScope[key] = nextJobs;
+      } else {
+        delete nextByScope[key];
+      }
+      return { draftLaunchJobsByScope: nextByScope };
     });
   },
 
@@ -1757,6 +1795,7 @@ export function createProjectAppStore(project: ProjectInfo): AppStoreApi {
     onboardingEnabled: rootState.onboardingEnabled,
     didYouKnowEnabled: rootState.didYouKnowEnabled,
     launchPromptClipboardEnabled: rootState.launchPromptClipboardEnabled,
+    launchPromptClipboardNoticeEnabled: rootState.launchPromptClipboardNoticeEnabled,
     setTheme: rootState.setTheme,
     setTerminalPreferences: rootState.setTerminalPreferences,
     setCodeBlockCopyButtonPosition: rootState.setCodeBlockCopyButtonPosition,
@@ -1773,6 +1812,7 @@ export function createProjectAppStore(project: ProjectInfo): AppStoreApi {
     setOnboardingEnabled: rootState.setOnboardingEnabled,
     setDidYouKnowEnabled: rootState.setDidYouKnowEnabled,
     setLaunchPromptClipboardEnabled: rootState.setLaunchPromptClipboardEnabled,
+    setLaunchPromptClipboardNoticeEnabled: rootState.setLaunchPromptClipboardNoticeEnabled,
   });
   return store;
 }

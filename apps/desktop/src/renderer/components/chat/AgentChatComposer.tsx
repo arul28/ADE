@@ -814,6 +814,7 @@ export function AgentChatComposer({
   onOpenAiSettings,
   onOpenLinearSettings,
   launchPromptClipboardEnabled = false,
+  launchPromptClipboardNoticeEnabled = true,
   onOpenLaunchPromptClipboardSettings,
   onStartOrchestratorChat,
   onStopOrchestratorChat,
@@ -965,6 +966,7 @@ export function AgentChatComposer({
   onOpenAiSettings?: () => void;
   onOpenLinearSettings?: () => void;
   launchPromptClipboardEnabled?: boolean;
+  launchPromptClipboardNoticeEnabled?: boolean;
   onOpenLaunchPromptClipboardSettings?: () => void;
   /**
    * Open the "New orchestrator chat" flow from the visible composer mode
@@ -1099,6 +1101,7 @@ export function AgentChatComposer({
   const orchestratorModeButtonDisabled = composerInputLocked || busy || turnActive;
   const showLaunchClipboardHelper =
     launchPromptClipboardEnabled
+    && launchPromptClipboardNoticeEnabled
     && composerFocused
     && !composerInputLocked
     && draft.trim().length > 0;

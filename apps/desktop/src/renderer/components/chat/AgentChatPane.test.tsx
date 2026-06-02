@@ -645,8 +645,10 @@ function resetChatTestStore() {
     projectTransition: null,
     laneInspectorTabs: {},
     launchPromptClipboardEnabled: true,
+    launchPromptClipboardNoticeEnabled: true,
     workViewByProject: {},
     laneWorkViewByScope: {},
+    draftLaunchJobsByScope: {},
   });
 }
 
@@ -3026,6 +3028,36 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("copies submitted prompts when the launch clipboard reminder is disabled", async () => {
+    useAppStore.setState({ launchPromptClipboardNoticeEnabled: false });
+    const { send, writeClipboardText } = installAdeMocks({ sessions: [] });
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId="lane-1"
+          forceNewSession
+        />
+      </MemoryRouter>,
+    );
+
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Copy quietly." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: "Copy quietly." }));
+      expect(writeClipboardText).toHaveBeenCalledWith("Copy quietly.");
+    });
+  });
+
   it("does not copy submitted prompts when the launch clipboard setting is disabled", async () => {
     useAppStore.setState({ launchPromptClipboardEnabled: false });
     const { send, writeClipboardText } = installAdeMocks({ sessions: [] });
@@ -3690,6 +3722,101 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(screen.getByText(/Launched chat in auto-created-lane/i)).toBeTruthy();
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Next thought while it launches.");
+    });
+  });
+
+  it("keeps a pending auto-create launch visible after the new chat pane remounts", async () => {
+    const { createLane, suggestLaneName } = installAdeMocks({ sessions: [] });
+    let resolveSuggestedName!: (value: string) => void;
+    suggestLaneName.mockImplementation(() => new Promise<string>((resolve) => {
+      resolveSuggestedName = resolve;
+    }));
+    createLane.mockImplementation(async ({ name }: { name: string; parentLaneId: string }) => ({
+      id: `lane-${name}`,
+      name,
+      laneType: "worktree",
+      branchRef: `refs/heads/${name}`,
+      worktreePath: `/tmp/project-under-test/${name}`,
+      parentLaneId: "lane-primary",
+    }));
+
+    const rendered = renderAutoCreateDraftPane();
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Keep this launch visible." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
+
+    await waitFor(() => {
+      expect(suggestLaneName).toHaveBeenCalledTimes(1);
+      expect(screen.getByText(/Creating lane for chat/i)).toBeTruthy();
+    });
+    expect(screen.queryByRole("button", { name: "Dismiss launch status" })).toBeNull();
+
+    rendered.unmount();
+    renderAutoCreateDraftPane();
+
+    expect(await screen.findByText(/Creating lane for chat/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Dismiss launch status" })).toBeNull();
+
+    await act(async () => {
+      resolveSuggestedName("remounted-lane");
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Launched chat in remounted-lane/i)).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Dismiss launch status" })).toBeTruthy();
+    });
+  });
+
+  it("keeps an auto-create failure visible when the launch fails after remount", async () => {
+    const { send, suggestLaneName } = installAdeMocks({ sessions: [] });
+    let rejectSend!: (error: Error) => void;
+    suggestLaneName.mockResolvedValue("fails-after-remount");
+    send.mockImplementation(() => new Promise<void>((_resolve, reject) => {
+      rejectSend = reject;
+    }));
+
+    const rendered = renderAutoCreateDraftPane();
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Surface the failure after remount." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled();
+    });
+
+    rendered.unmount();
+    renderAutoCreateDraftPane();
+
+    await act(async () => {
+      rejectSend(new Error("send failed after remount"));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Launch failed: send failed after remount/i)).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Restore" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Dismiss failed launch" })).toBeTruthy();
     });
   });
 
