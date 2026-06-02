@@ -247,7 +247,7 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
 
     expect(listSessionsCachedMock).toHaveBeenCalledWith(
       { laneId: "lane-1", limit: 200 },
-      { force: false, projectRoot: "/fake/project" },
+      { force: false },
     );
   });
 
@@ -286,7 +286,7 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     expect(invalidateSessionListCache).toHaveBeenCalledWith({ projectRoot: "/fake/project", laneId: "lane-1" });
     expect(listSessionsCachedMock).toHaveBeenCalledWith(
       { laneId: "lane-1", limit: 200 },
-      { force: false, projectRoot: "/fake/project" },
+      { force: false },
     );
   });
 
@@ -325,7 +325,7 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     expect(invalidateSessionListCache).toHaveBeenCalledWith({ projectRoot: "/fake/project", laneId: "lane-1" });
     expect(listSessionsCachedMock).toHaveBeenCalledWith(
       { laneId: "lane-1", limit: 200 },
-      { force: false, projectRoot: "/fake/project" },
+      { force: false },
     );
   });
 
@@ -364,7 +364,7 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     expect(invalidateSessionListCache).toHaveBeenCalledWith({ projectRoot: "/fake/project", laneId: "lane-1" });
     expect(listSessionsCachedMock).toHaveBeenCalledWith(
       { laneId: "lane-1", limit: 200 },
-      { force: false, projectRoot: "/fake/project" },
+      { force: false },
     );
   });
 
@@ -602,18 +602,18 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
   });
 
   it("replays a queued refresh against the latest project after switching projects mid-refresh", async () => {
-    const fetchedProjectRoots: Array<string | null | undefined> = [];
+    const fetchOptions: Array<{ force?: boolean }> = [];
     let firstRefreshResolve: ((rows: unknown[]) => void) | null = null;
     let secondRefreshResolve: ((rows: unknown[]) => void) | null = null;
 
-    listSessionsCachedMock.mockImplementation((_args: { laneId: string }, options?: { projectRoot?: string | null }) => {
-      fetchedProjectRoots.push(options?.projectRoot);
-      if (fetchedProjectRoots.length === 1) {
+    listSessionsCachedMock.mockImplementation((_args: { laneId: string }, options?: { force?: boolean }) => {
+      fetchOptions.push(options ?? {});
+      if (fetchOptions.length === 1) {
         return new Promise((resolve) => {
           firstRefreshResolve = resolve;
         });
       }
-      if (fetchedProjectRoots.length === 2) {
+      if (fetchOptions.length === 2) {
         return new Promise((resolve) => {
           secondRefreshResolve = resolve;
         });
@@ -626,7 +626,7 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     await act(async () => {
       await new Promise((r) => setTimeout(r, 0));
     });
-    expect(fetchedProjectRoots).toEqual(["/fake/project"]);
+    expect(fetchOptions).toEqual([{ force: true }]);
 
     fakeProjectRoot = "/other/project";
     act(() => {
@@ -636,14 +636,14 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     await act(async () => {
       await new Promise((r) => setTimeout(r, 0));
     });
-    expect(fetchedProjectRoots).toEqual(["/fake/project"]);
+    expect(fetchOptions).toEqual([{ force: true }]);
 
     await act(async () => {
       expect(firstRefreshResolve).not.toBeNull();
       firstRefreshResolve!([makeSession("session-old", "lane-1")]);
       await new Promise((r) => setTimeout(r, 0));
     });
-    expect(fetchedProjectRoots).toEqual(["/fake/project", "/other/project"]);
+    expect(fetchOptions).toEqual([{ force: true }, { force: true }]);
 
     await act(async () => {
       expect(secondRefreshResolve).not.toBeNull();

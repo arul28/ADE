@@ -415,7 +415,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       });
     });
 
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true, projectRoot: "/fake/project" });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true });
     expect(result.current.sessions).toEqual([
       expect.objectContaining({
         id: "new-pty-session",
@@ -703,7 +703,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     await waitFor(() => {
       expect(listSessionsCachedMock).toHaveBeenCalled();
     });
-    expect(listSessionsCachedMock).toHaveBeenLastCalledWith({ limit: 500 }, { projectRoot: "/fake/project" });
+    expect(listSessionsCachedMock).toHaveBeenLastCalledWith({ limit: 500 }, undefined);
   });
 
   it("setActiveItemId leaves the selected lane alone in grid mode", async () => {
@@ -1425,7 +1425,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       await new Promise((r) => setTimeout(r, 120));
     });
 
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { projectRoot: "/fake/project" });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
     expect(invalidateSessionListCache).toHaveBeenCalled();
   });
 
@@ -1463,10 +1463,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       await new Promise((r) => setTimeout(r, 60));
     });
 
-    expect(listSessionsCachedMock).toHaveBeenCalledWith(
-      { limit: 500 },
-      { projectRoot: "/fake/project" },
-    );
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
   });
 
   it("refetches visible Work when the window regains focus", async () => {
@@ -1485,7 +1482,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     });
 
     expect(invalidateSessionListCache).toHaveBeenCalled();
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { projectRoot: "/fake/project" });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
   });
 
   it("does not subscribe or refresh while the kept-alive Work surface is inactive", async () => {
@@ -1534,7 +1531,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     });
 
     expect(invalidateSessionListCache).toHaveBeenCalled();
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { projectRoot: "/fake/project" });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
   });
 });
 

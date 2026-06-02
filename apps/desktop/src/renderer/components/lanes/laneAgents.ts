@@ -184,11 +184,13 @@ export function useLaneAgents(laneIds: string[]): Map<string, LaneAgent[]> {
     } finally {
       refreshInFlightRef.current = false;
     }
-  }, [laneKey, projectRoot]);
+  }, [laneKey]);
 
   useEffect(() => {
+    // Re-run when the active project changes; listSessionsCached keys by active project.
+    void projectRoot;
     void refresh();
-  }, [refresh]);
+  }, [projectRoot, refresh]);
 
   useEffect(() => {
     const scheduleRefresh = () => {

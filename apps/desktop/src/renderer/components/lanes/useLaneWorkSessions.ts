@@ -183,7 +183,6 @@ export function useLaneWorkSessions(laneId: string | null) {
   const refresh = useCallback(
     async (options: { showLoading?: boolean; force?: boolean } = {}) => {
       const targetLaneId = laneIdRef.current;
-      const targetProjectRoot = projectRootRef.current;
       if (!targetLaneId) {
         setSessions([]);
         hasLoadedOnceRef.current = true;
