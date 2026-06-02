@@ -216,7 +216,7 @@ export function useLaneWorkSessions(laneId: string | null) {
         const rows = (
           await listSessionsCached(
             { laneId: targetLaneId, limit: 200 },
-            { force: Boolean(options.force), projectRoot: targetProjectRoot },
+            { force: Boolean(options.force) },
           )
         ).filter((session) => !isRunOwnedSession(session));
         if (scopeKeyRef.current !== requestedScopeKey) return;

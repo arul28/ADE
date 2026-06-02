@@ -772,8 +772,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         await listSessionsCached(
           { limit: 500 },
           options.force
-            ? { force: true, projectRoot: requestedProjectRoot }
-            : { projectRoot: requestedProjectRoot },
+            ? { force: true }
+            : undefined,
         )
       ).filter((session) => !isRunOwnedSession(session));
       if (projectRootRef.current !== requestedProjectRoot) {

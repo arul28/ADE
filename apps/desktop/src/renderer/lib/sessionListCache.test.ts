@@ -153,20 +153,44 @@ describe("sessionListCache", () => {
       .mockResolvedValueOnce(makeRows(3))
       .mockResolvedValueOnce(makeRows(4));
 
-    await listSessionsCached({ laneId: "lane-1", limit: 2 }, { projectRoot: "/project/a" });
-    await listSessionsCached({ laneId: "lane-2", limit: 3 }, { projectRoot: "/project/a" });
-    await listSessionsCached({ laneId: "lane-1", limit: 4 }, { projectRoot: "/project/b" });
+    await listSessionsCached({ laneId: "lane-1", limit: 2 });
+    await listSessionsCached({ laneId: "lane-2", limit: 3 });
+    useAppStore.setState({
+      project: { rootPath: "/project/b" } as any,
+    });
+    await listSessionsCached({ laneId: "lane-1", limit: 4 });
 
     invalidateSessionListCache({ projectRoot: "/project/a", laneId: "lane-1" });
 
     listMock.mockResolvedValueOnce(makeRows(5));
-    const invalidated = await listSessionsCached({ laneId: "lane-1", limit: 2 }, { projectRoot: "/project/a" });
-    const sameProjectOtherLane = await listSessionsCached({ laneId: "lane-2", limit: 3 }, { projectRoot: "/project/a" });
-    const sameLaneOtherProject = await listSessionsCached({ laneId: "lane-1", limit: 4 }, { projectRoot: "/project/b" });
+    useAppStore.setState({
+      project: { rootPath: "/project/a" } as any,
+    });
+    const invalidated = await listSessionsCached({ laneId: "lane-1", limit: 2 });
+    const sameProjectOtherLane = await listSessionsCached({ laneId: "lane-2", limit: 3 });
+    useAppStore.setState({
+      project: { rootPath: "/project/b" } as any,
+    });
+    const sameLaneOtherProject = await listSessionsCached({ laneId: "lane-1", limit: 4 });
 
     expect(invalidated).toHaveLength(2);
     expect(sameProjectOtherLane).toHaveLength(3);
     expect(sameLaneOtherProject).toHaveLength(4);
     expect(listMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("ignores projectRoot-like cache options that the sessions IPC cannot honor", async () => {
+    listMock
+      .mockResolvedValueOnce(makeRows(2))
+      .mockResolvedValueOnce(makeRows(4));
+
+    await listSessionsCached({ limit: 2 }, { projectRoot: "/project/b" } as any);
+    useAppStore.setState({
+      project: { rootPath: "/project/b" } as any,
+    });
+    const projectBRows = await listSessionsCached({ limit: 4 });
+
+    expect(projectBRows).toHaveLength(4);
+    expect(listMock).toHaveBeenCalledTimes(2);
   });
 });

@@ -664,7 +664,11 @@ function setRuntimeInteractionState(runtime: CachedRuntime, active: boolean) {
     // ignore
   }
   try {
-    runtime.host.toggleAttribute("inert", !active);
+    if (active) {
+      runtime.host.removeAttribute("inert");
+    } else {
+      runtime.host.setAttribute("inert", "");
+    }
   } catch {
     // ignore
   }

@@ -158,7 +158,7 @@ export function useLaneAgents(laneIds: string[]): Map<string, LaneAgent[]> {
         }
         const [chat, cli] = await Promise.all([
           window.ade.agentChat.list({}).catch(() => []),
-          listSessionsCached({ limit: 500 }, { projectRoot }).catch(() => []),
+          listSessionsCached({ limit: 500 }).catch(() => []),
         ]);
         const requestedLaneIds = new Set(ids);
         const chatByLane = new Map<string, AgentChatSessionSummary[]>();
