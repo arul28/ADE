@@ -3200,7 +3200,8 @@ describe("createAgentChatService", () => {
       }));
       expect(firstUserContent).toContain("[ADE launch directive]");
       expect(firstUserContent).toContain(tmpRoot);
-      expect(firstUserContent).toContain("only inside that worktree");
+      expect(firstUserContent).toContain("Read-only inspection outside that worktree is allowed");
+      expect(firstUserContent).toContain("mutating commands only inside that worktree");
       expect(firstUserContent).toContain("only normal reason to skip ADE CLI");
       expect(firstUserContent).toContain("ade actions list --text");
       expect(secondUserContent).not.toContain("[ADE launch directive]");

@@ -3101,10 +3101,10 @@ export function createPtyService({
     }
   };
 
-  const resolveEndedResumeSession = (
+  const resolveEndedResumeSession = async (
     sessionId: string,
     session: TerminalSessionSummary | null,
-  ): { session: TerminalSessionSummary; provider: TerminalResumeProvider } | Promise<{ session: TerminalSessionSummary; provider: TerminalResumeProvider }> => {
+  ): Promise<{ session: TerminalSessionSummary; provider: TerminalResumeProvider }> => {
     if (!session) throw new Error(`Terminal session '${sessionId}' was not found.`);
 
     const provider = session.resumeMetadata?.provider ?? providerFromTool(session.toolType);
@@ -3117,31 +3117,43 @@ export function createPtyService({
       );
     };
 
-    const parsedResumeCommand = parseTrackedCliResumeCommand(session.resumeCommand, session.toolType);
-    const storedResumeTargetId = sanitizeResumeTargetId(session.resumeMetadata?.targetId ?? null)
+    let resolvedSession = session;
+    let parsedResumeCommand = parseTrackedCliResumeCommand(resolvedSession.resumeCommand, resolvedSession.toolType);
+    let storedResumeTargetId = sanitizeResumeTargetId(resolvedSession.resumeMetadata?.targetId ?? null)
       ?? (parsedResumeCommand?.provider === provider
         ? sanitizeResumeTargetId(parsedResumeCommand.targetId ?? null)
         : null);
+    if (!storedResumeTargetId && provider !== "cursor" && isTrackedCliToolType(resolvedSession.toolType)) {
+      const cwd = inferSessionCwdFromTranscriptPath(resolvedSession.transcriptPath);
+      const backfilled = await tryBackfillResumeTarget(sessionId, resolvedSession.toolType, "resume-launch", cwd);
+      const updatedSession = backfilled ? sessionService.get(sessionId) : null;
+      if (updatedSession) {
+        resolvedSession = updatedSession;
+        parsedResumeCommand = parseTrackedCliResumeCommand(resolvedSession.resumeCommand, resolvedSession.toolType);
+        storedResumeTargetId = sanitizeResumeTargetId(resolvedSession.resumeMetadata?.targetId ?? null)
+          ?? (parsedResumeCommand?.provider === provider
+            ? sanitizeResumeTargetId(parsedResumeCommand.targetId ?? null)
+            : null);
+      }
+    }
     if (
       provider === "codex"
-      && isCodexTrackedCliToolType(session.toolType)
+      && isCodexTrackedCliToolType(resolvedSession.toolType)
       && !storedResumeTargetId
     ) {
-      return sessionService.readTranscriptTail(session.transcriptPath, 220_000)
-        .then((transcript) => {
-          if (isCodexCliUpdateTranscript(transcript)) {
-            throw new Error(
-              "Codex updated and exited before ADE could create a resumable thread. Start a new Codex session.",
-            );
-          }
-          return throwMissingResumeTarget();
-        });
+      const transcript = await sessionService.readTranscriptTail(resolvedSession.transcriptPath, 220_000);
+      if (isCodexCliUpdateTranscript(transcript)) {
+        throw new Error(
+          "Codex updated and exited before ADE could create a resumable thread. Start a new Codex session.",
+        );
+      }
+      return throwMissingResumeTarget();
     }
     if (!storedResumeTargetId && provider !== "cursor") {
       throwMissingResumeTarget();
     }
 
-    return { session, provider };
+    return { session: resolvedSession, provider };
   };
 
   const resumeLaunchOverrides = (
@@ -4005,10 +4017,7 @@ export function createPtyService({
         );
       }
 
-      const resolvedResume = resolveEndedResumeSession(sessionId, session);
-      const { session: resumableSession, provider } = resolvedResume instanceof Promise
-        ? await resolvedResume
-        : resolvedResume;
+      const { session: resumableSession, provider } = await resolveEndedResumeSession(sessionId, session);
       const overrides = resumeLaunchOverrides(args);
       const openCodeReplayCommand = provider === "opencode"
         && resumableSession.resumeMetadata?.provider === "opencode"
@@ -4068,10 +4077,7 @@ export function createPtyService({
         );
       }
 
-      const resolvedResume = resolveEndedResumeSession(sessionId, session);
-      const { session: resumableSession, provider } = resolvedResume instanceof Promise
-        ? await resolvedResume
-        : resolvedResume;
+      const { session: resumableSession, provider } = await resolveEndedResumeSession(sessionId, session);
       const { command: resumeCommand } = buildResumeCommandForSession(resumableSession, provider, resumeLaunchOverrides(args));
       if (!resumeCommand) {
         throw new Error(`Terminal session '${sessionId}' does not have a resume command.`);

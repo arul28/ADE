@@ -64,6 +64,10 @@ type CommitMessagePromptContext = {
   diffSnippet: string;
 };
 
+function normAbs(p: string): string {
+  return path.resolve(p);
+}
+
 type CachedReadEntry<T> = {
   expiresAt: number;
   value?: T;
@@ -438,6 +442,27 @@ export function createGitOperationsService({
     );
   }
 
+  async function assertLaneWorktreeRoot(lane: LaneInfo): Promise<void> {
+    try {
+      const topLevelRes = await runGit(
+        ["rev-parse", "--path-format=absolute", "--show-toplevel"],
+        { cwd: lane.worktreePath, timeoutMs: 8_000 },
+      );
+      if (!topLevelRes || typeof topLevelRes.exitCode !== "number") return;
+      if (topLevelRes.exitCode !== 0) {
+        throw laneWorktreeMissingError(lane);
+      }
+      const topLevel = topLevelRes.stdout.trim();
+      if (topLevel && normAbs(topLevel) !== normAbs(lane.worktreePath)) {
+        throw laneWorktreeMissingError(lane);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("Lane worktree is missing.")) throw error;
+      throw laneWorktreeMissingError(lane);
+    }
+  }
+
   const runLaneOperation = async <T>({
     laneId,
     kind,
@@ -453,6 +478,7 @@ export function createGitOperationsService({
   }): Promise<{ result: T; action: GitActionResult }> => {
     invalidateLaneReadCache(laneId);
     const lane = laneService.getLaneBaseAndBranch(laneId);
+    await assertLaneWorktreeRoot(lane);
     const preHeadSha = await getHeadSha(lane.worktreePath);
     const operation = operationService.start({
       laneId,
@@ -787,6 +813,7 @@ export function createGitOperationsService({
       const limit = typeof args.limit === "number" ? Math.max(1, Math.min(500, Math.floor(args.limit))) : 30;
       return readLaneCached(`recent-commits:${laneId}:${limit}`, 2_000, async () => {
         const lane = laneService.getLaneBaseAndBranch(laneId);
+        await assertLaneWorktreeRoot(lane);
         let out: string;
         try {
           out = await runGitOrThrow(
@@ -851,6 +878,7 @@ export function createGitOperationsService({
       const commitSha = normalizeCommitShaArg(args.commitSha);
       return readLaneCached(`commit:${laneId}:${commitSha}`, 2_000, async () => {
         const lane = laneService.getLaneBaseAndBranch(laneId);
+        await assertLaneWorktreeRoot(lane);
         let out: string;
         try {
           out = await runGitOrThrow(
@@ -911,6 +939,7 @@ export function createGitOperationsService({
       const commitSha = normalizeCommitShaArg(args.commitSha);
       return readLaneCached(`commit-in-lane-history:${laneId}:${commitSha}`, 2_000, async () => {
         const lane = laneService.getLaneBaseAndBranch(laneId);
+        await assertLaneWorktreeRoot(lane);
         const result = await runGit(
           ["merge-base", "--is-ancestor", commitSha, "HEAD"],
           { cwd: lane.worktreePath, timeoutMs: 10_000 },
@@ -930,6 +959,7 @@ export function createGitOperationsService({
       const limit = typeof args.limit === "number" ? Math.max(1, Math.min(100, Math.floor(args.limit))) : 20;
       return readLaneCached(`file-history:${laneId}:${relPath}:${limit}`, 2_000, async () => {
         const lane = laneService.getLaneBaseAndBranch(laneId);
+        await assertLaneWorktreeRoot(lane);
         const out = await runGitOrThrow(
           [
             "log",

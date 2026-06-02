@@ -1,10 +1,16 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockGit = vi.hoisted(() => ({
   runGit: vi.fn(),
   runGitOrThrow: vi.fn(),
   getHeadSha: vi.fn(),
 }));
+
+afterEach(() => {
+  mockGit.runGit.mockReset();
+  mockGit.runGitOrThrow.mockReset();
+  mockGit.getHeadSha.mockReset();
+});
 
 vi.mock("./git", () => ({
   runGit: (...args: unknown[]) => mockGit.runGit(...args),
@@ -69,6 +75,36 @@ function createTestGitOperationsService(
     mockLogger,
   };
 }
+
+describe("gitOperationsService lane worktree guard", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    mockGit.runGit.mockReset();
+  });
+
+  it("rejects mutating actions when a stale lane path resolves to the main worktree", async () => {
+    mockGit.runGit.mockImplementation(async (args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+        return { exitCode: 0, stdout: "/tmp/main\n", stderr: "" };
+      }
+      return { exitCode: 1, stdout: "", stderr: `unexpected git command: ${args.join(" ")}` };
+    });
+    const { service, mockStart } = createTestGitOperationsService("feature/stale", {
+      worktreePath: "/tmp/main/.ade/worktrees/feature-stale-12345678",
+    });
+
+    await expect(service.stageAll({ laneId: "lane-1", paths: [".ade/cto/identity.yaml"] })).rejects.toThrow(
+      "Lane worktree is missing. Restore or recreate the lane worktree at /tmp/main/.ade/worktrees/feature-stale-12345678 before viewing history.",
+    );
+
+    expect(mockGit.getHeadSha).not.toHaveBeenCalled();
+    expect(mockGit.runGitOrThrow).not.toHaveBeenCalled();
+    expect(mockStart).not.toHaveBeenCalled();
+  });
+});
 
 describe("gitOperationsService.stashClear", () => {
   beforeEach(() => {
@@ -1195,10 +1231,11 @@ describe("gitOperationsService cached lane reads", () => {
     mockGit.runGitOrThrow.mockResolvedValue(
       "abc123\u001fab\u001fparent123\u001fArul\u001f2026-04-11T21:00:00.000Z\u001fInitial commit",
     );
-    mockGit.runGit.mockResolvedValue({
-      exitCode: 1,
-      stdout: "",
-      stderr: "no upstream",
+    mockGit.runGit.mockImplementation(async (args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+        return { exitCode: 0, stdout: "/tmp/ade-lane\n", stderr: "" };
+      }
+      return { exitCode: 1, stdout: "", stderr: "no upstream" };
     });
 
     const { service } = createTestGitOperationsService();
@@ -1208,11 +1245,13 @@ describe("gitOperationsService cached lane reads", () => {
 
     expect(first).toEqual(second);
     expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(1);
-    expect(mockGit.runGit).toHaveBeenCalledTimes(1);
+    expect(mockGit.runGit).toHaveBeenCalledTimes(2);
   });
 
   it("checks whether a commit is reachable from the lane head", async () => {
-    mockGit.runGit.mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" });
+    mockGit.runGit
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "/tmp/ade-lane\n", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" });
     const { service } = createTestGitOperationsService();
 
     await expect(
@@ -1226,7 +1265,9 @@ describe("gitOperationsService cached lane reads", () => {
   });
 
   it("reports commits outside the lane head history as not reachable", async () => {
-    mockGit.runGit.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "" });
+    mockGit.runGit
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "/tmp/ade-lane\n", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "" });
     const { service } = createTestGitOperationsService();
 
     await expect(
@@ -1246,7 +1287,28 @@ describe("gitOperationsService cached lane reads", () => {
     await expect(service.listRecentCommits({ laneId: "lane-1", limit: 20 })).rejects.toThrow(
       "Lane worktree is missing. Restore or recreate the lane worktree at /tmp/missing-lane before viewing history.",
     );
-    expect(mockGit.runGit).not.toHaveBeenCalled();
+    expect(mockGit.runGit).toHaveBeenCalledWith(
+      ["rev-parse", "--path-format=absolute", "--show-toplevel"],
+      { cwd: "/tmp/missing-lane", timeoutMs: 8_000 },
+    );
+  });
+
+  it("does not read main history when a stale lane path resolves to the main worktree", async () => {
+    mockGit.runGit.mockImplementation(async (args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+        return { exitCode: 0, stdout: "/tmp/main\n", stderr: "" };
+      }
+      return { exitCode: 1, stdout: "", stderr: `unexpected git command: ${args.join(" ")}` };
+    });
+
+    const { service } = createTestGitOperationsService("feature/stale", {
+      worktreePath: "/tmp/main/.ade/worktrees/feature-stale-12345678",
+    });
+
+    await expect(service.listRecentCommits({ laneId: "lane-1", limit: 20 })).rejects.toThrow(
+      "Lane worktree is missing. Restore or recreate the lane worktree at /tmp/main/.ade/worktrees/feature-stale-12345678 before viewing history.",
+    );
+    expect(mockGit.runGitOrThrow).not.toHaveBeenCalled();
   });
 
   it("parses file history entries for modified and renamed files", async () => {
