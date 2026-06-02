@@ -56,7 +56,9 @@ force shutdown is requested.
    `simulator-window-capture`; there is no separate ADE-managed streaming
    backend. The service records running status and opens Simulator.app with
    `open -g -a Simulator`. The renderer asks IPC for capturable Simulator window
-   sources and attaches a desktop-capture stream to a `<video>`.
+   sources, passing the bound local project root so Electron-only window capture
+   uses the same project context as the runtime stream state, then attaches a
+   desktop-capture stream to a `<video>`.
 
 5. **Window parking.** `prepareSimulatorWindowForCapture()` opens Simulator.app,
    unhides/unminimizes its windows, sizes the simulator window, and places it

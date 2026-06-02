@@ -838,6 +838,114 @@ describe("registerIpc sync bridge", () => {
     vi.useRealTimers();
   });
 
+  it("uses the sender window's bound local project for iOS Simulator window sources", async () => {
+    const repoGetStatus = vi.fn(async () => ({ supported: false }));
+    const otherGetStatus = vi.fn(async () => ({ supported: false }));
+    const contexts = new Map<string, any>([
+      ["/repo", {
+        project: { rootPath: "/repo" },
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+        iosSimulatorService: { getStatus: repoGetStatus },
+      }],
+      ["/other", {
+        project: { rootPath: "/other" },
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+        iosSimulatorService: { getStatus: otherGetStatus },
+      }],
+    ]);
+    const getProjectContext = vi.fn((root: string) => contexts.get(root) ?? null);
+    registerIpc({
+      getCtx: () => ({
+        project: { rootPath: "/fallback" },
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+        iosSimulatorService: { getStatus: vi.fn(async () => ({ supported: false })) },
+      }) as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo" } as any,
+        binding: localBinding("/repo"),
+      }),
+      getProjectContext,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.iosSimulatorListWindowSources)?.(
+        eventForSender(),
+        { projectRoot: "/repo" },
+      ),
+    ).resolves.toEqual([]);
+
+    expect(getProjectContext).toHaveBeenCalledWith("/repo");
+    expect(repoGetStatus).toHaveBeenCalledTimes(1);
+    expect(otherGetStatus).not.toHaveBeenCalled();
+  });
+
+  it("rejects iOS Simulator window-source requests for an unbound project root", async () => {
+    const getProjectContext = vi.fn(() => ({
+      project: { rootPath: "/other" },
+      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+      iosSimulatorService: { getStatus: vi.fn(async () => ({ supported: false })) },
+    }) as any);
+    registerIpc({
+      getCtx: () => ({
+        project: { rootPath: "/fallback" },
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+      }) as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo" } as any,
+        binding: localBinding("/repo"),
+      }),
+      getProjectContext,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.iosSimulatorListWindowSources)?.(
+        eventForSender(),
+        { projectRoot: "/other" },
+      ),
+    ).rejects.toThrow("bound local project");
+
+    expect(getProjectContext).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the active context for matching iOS Simulator roots when no project context lookup is registered", async () => {
+    const getStatus = vi.fn(async () => ({ supported: false }));
+    registerIpc({
+      getCtx: () => ({
+        project: { rootPath: "/repo" },
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+        iosSimulatorService: { getStatus },
+      }) as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo" } as any,
+        binding: localBinding("/repo"),
+      }),
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.iosSimulatorListWindowSources)?.(
+        eventForSender(),
+        { projectRoot: "/repo" },
+      ),
+    ).resolves.toEqual([]);
+
+    expect(getStatus).toHaveBeenCalledTimes(1);
+  });
+
   it("surfaces missing sync service for active lane presence when no runtime pool is bound", async () => {
     const resolveSyncService = vi.fn(async () => null);
     registerIpc({
