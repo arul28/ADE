@@ -8,7 +8,7 @@ type Entry = {
 };
 
 /**
- * Per-FilesPage cache of Monaco text models keyed by workspace-relative path.
+ * Per-workbench cache of Monaco text models keyed by workspace-relative path.
  *
  * A model is created once per file and reused across tab switches, so switching
  * tabs is `editor.setModel(existing)` instead of dispose → recreate → re-tokenize.

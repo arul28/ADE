@@ -192,7 +192,7 @@ matches.
 
 ## External change sync
 
-The renderer's `FilesPage.tsx` subscribes to `ade.files.change` and
+The renderer's `FilesWorkbench.tsx` subscribes to `ade.files.change` and
 handles events like this:
 
 1. **Lookup open tabs by path.** Each open Monaco editor tracks its

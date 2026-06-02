@@ -54,9 +54,9 @@ const readCachedWorkspaces = (projectRoot: string): FilesWorkspace[] => workspac
 const rootTreeCacheKey = (projectRoot: string, workspaceId: string): string => `${projectRoot}::${workspaceId}`;
 
 /**
- * v2 Files workbench: the VSCode-like shell rendered behind the
- * FILES_WORKBENCH_V2 flag. Reuses the proven IPC + FilesExplorer + Monaco model
- * registry, the new streaming/decoration backend, and the editor-groups store.
+ * Files workbench: the VS Code-like shell for the main Files route and the
+ * embedded Work sidebar. Reuses the proven IPC + FilesExplorer + Monaco model
+ * registry, the streaming/decoration backend, and the editor-groups store.
  */
 export function FilesWorkbench({
   preferredLaneId,

@@ -27,7 +27,7 @@ export type ViewerHostProps = {
 
 /**
  * Resolve the active tab's viewer from its kind and render it with the loaded
- * file content. Replaces FilesPage's hardcoded if/else preview surface.
+ * file content for the active workbench tab.
  */
 export function ViewerHost(props: ViewerHostProps) {
   const { workspaceId, tab, reloadToken = 0 } = props;

@@ -439,7 +439,9 @@ const LINEAR_MARKDOWN_COMPONENTS: Components = buildChatMarkdownComponents("neut
       href={href}
       onClick={(event) => {
         event.preventDefault();
-        openUrlInAdeBrowser(href);
+        if (typeof href === "string" && href.trim() !== "") {
+          openUrlInAdeBrowser(href);
+        }
       }}
       className="font-medium text-[color:var(--color-accent,#A78BFA)] underline underline-offset-2 transition-opacity hover:opacity-80"
     >
@@ -1184,10 +1186,11 @@ export function LinearIssueBrowser({
                 ) : pageInfo.hasNextPage && (!canAutoLoadIssues || issues.length >= AUTO_LOAD_MAX_ISSUES) ? (
                   <button
                     type="button"
+                    disabled={loadingIssues}
                     className="flex w-full items-center justify-center gap-2 px-3 py-2.5 text-[12px] text-muted-fg/70 transition-colors hover:bg-white/[0.04] hover:text-fg"
                     onClick={() => searchIssues(true)}
                   >
-                    Load more issues
+                    Load more
                   </button>
                 ) : null}
               </>

@@ -117,23 +117,6 @@ vi.mock("../terminals/TerminalsPage", async () => {
   };
 });
 
-vi.mock("../files/FilesPage", async () => {
-  const Router = await vi.importActual("react-router-dom") as typeof RouterNamespace;
-
-  return {
-    FilesPage: () => {
-      const navigate = Router.useNavigate();
-      return (
-        <div data-testid="files-page">
-          <button type="button" onClick={() => navigate("/work")}>
-            Open work
-          </button>
-        </div>
-      );
-    },
-  };
-});
-
 vi.mock("../files/FilesTab", async () => {
   const Router = await vi.importActual("react-router-dom") as typeof RouterNamespace;
 
