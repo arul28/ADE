@@ -288,6 +288,9 @@
       ],
       "icon": "build/icon.icns",
       "category": "public.app-category.developer-tools",
+      "extendInfo": {
+        "NSAppleEventsUsageDescription": "ADE launches agent terminals that can use local app automation through Codex Computer Use."
+      },
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",

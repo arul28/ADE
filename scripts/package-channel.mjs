@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const currentRepoRoot = path.resolve(scriptDir, "..");
+const APPLE_EVENTS_USAGE_DESCRIPTION =
+  "ADE launches agent terminals that can use local app automation through Codex Computer Use.";
 
 const CHANNELS = {
   alpha: {
@@ -343,6 +345,7 @@ function buildChannel(repoRoot, channel, options) {
     `-c.mac.extendInfo.LSEnvironment.ADE_DESKTOP_APP_NAME=${config.productName}`,
     `-c.mac.extendInfo.LSEnvironment.ADE_HOME=${config.adeHome}`,
     "-c.mac.extendInfo.LSEnvironment.ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1",
+    `-c.mac.extendInfo.NSAppleEventsUsageDescription=${APPLE_EVENTS_USAGE_DESCRIPTION}`,
   ], { cwd: desktopRoot, env, dryRun: options.dryRun });
 
   if (options.dryRun) return;
