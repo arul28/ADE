@@ -1981,28 +1981,38 @@ export function registerIpc({
     return typeof value === "string" && value.trim() ? value.trim() : null;
   };
   const getIosSimulatorContextForEvent = (event: IpcMainInvokeEvent, arg?: unknown): AppContext | null => {
-    const explicitRoot = readProjectRootArg(arg);
-    if (explicitRoot) return getProjectContext?.(explicitRoot) ?? null;
     const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
     const session = getWindowSession?.(windowId) ?? null;
-    const sessionRoot = session?.binding?.kind === "local"
+    const boundLocalRoot = session?.binding?.kind === "local"
       ? session.binding.rootPath
-      : session?.project?.rootPath ?? null;
-    if (sessionRoot) return getProjectContext?.(sessionRoot) ?? null;
+      : null;
+    const explicitRoot = readProjectRootArg(arg);
+    const resolveProjectContext = (projectRoot: string) =>
+      getProjectContext ? getProjectContext(projectRoot) ?? null : getCtx();
+    if (explicitRoot) {
+      if (!boundLocalRoot || explicitRoot !== boundLocalRoot) {
+        throw new Error("iOS Simulator access is only allowed for the window's bound local project.");
+      }
+      return resolveProjectContext(explicitRoot);
+    }
+    const sessionRoot = boundLocalRoot ?? session?.project?.rootPath ?? null;
+    if (sessionRoot) return resolveProjectContext(sessionRoot);
     return getCtx();
   };
   const ensureIosSimulatorForEvent = (
     event: IpcMainInvokeEvent,
     arg?: unknown,
+    channel = IPC.iosSimulatorListWindowSources,
   ): NonNullable<AppContext["iosSimulatorService"]> => {
     const ctx = getIosSimulatorContextForEvent(event, arg);
     const service = ctx?.iosSimulatorService;
     if (!service) {
-      const projectRoot = readProjectRootArg(arg) ?? ctx?.project?.rootPath ?? null;
+      const requestedProjectRoot = readProjectRootArg(arg);
+      const projectRoot = requestedProjectRoot ?? ctx?.project?.rootPath ?? null;
       const logger = ctx?.logger ?? getCtx().logger;
       logger.warn("ios_simulator.service_unavailable", {
-        channel: IPC.iosSimulatorListWindowSources,
-        requestedProjectRoot: readProjectRootArg(arg),
+        channel,
+        requestedProjectRoot,
         contextProjectRoot: ctx?.project?.rootPath ?? null,
         hasUserSelectedProject: ctx?.hasUserSelectedProject ?? false,
       });
@@ -7054,7 +7064,7 @@ export function registerIpc({
   ipcMain.handle(IPC.iosSimulatorGetWindowState, async () => getSimulatorWindowState());
 
   ipcMain.handle(IPC.iosSimulatorListWindowSources, async (event, arg = {}) => {
-    const status = await ensureIosSimulatorForEvent(event, arg).getStatus();
+    const status = await ensureIosSimulatorForEvent(event, arg, IPC.iosSimulatorListWindowSources).getStatus();
     if (!status.supported) return [];
     const readSources = async () => desktopCapturer.getSources({
       types: ["window"],
