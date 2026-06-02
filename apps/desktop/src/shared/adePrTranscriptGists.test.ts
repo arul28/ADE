@@ -11,7 +11,7 @@ describe("renderAdePrTranscriptGistLinks", () => {
     const block = renderAdePrTranscriptGistLinks([
       {
         title: "Chat [review]",
-        url: "https://gist.github.com/octo/gist 1)",
+        url: "https://gist.github.com/octo/gist (1)",
         provider: "codex[cli]",
         entryCount: 2,
       },
@@ -19,7 +19,7 @@ describe("renderAdePrTranscriptGistLinks", () => {
 
     expect(block).toContain("<!-- ade:transcript-gists v=1 count=1 -->");
     expect(block).toContain("## ADE chat transcripts");
-    expect(block).toContain("[ADE chat transcripts](https://gist.github.com/octo/gist%201%29)");
+    expect(block).toContain("[ADE chat transcripts](https://gist.github.com/octo/gist%20%281%29)");
     expect(block).toContain("codex\\[cli\\] | 2 messages");
     expect(block).toContain("<!-- /ade:transcript-gists -->");
   });

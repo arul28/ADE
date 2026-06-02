@@ -89,7 +89,7 @@ function escapeMarkdownLinkText(value: string): string {
 }
 
 function escapeMarkdownUrl(value: string): string {
-  return value.replace(/\)/g, "%29").replace(/\s/g, "%20");
+  return value.replace(/\(/g, "%28").replace(/\)/g, "%29").replace(/\s/g, "%20");
 }
 
 function escapeMarkdownInlineText(value: string): string {

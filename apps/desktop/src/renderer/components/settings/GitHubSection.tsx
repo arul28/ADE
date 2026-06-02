@@ -184,7 +184,7 @@ export function GitHubSection() {
     setActionError(null);
     setSaveNotice(null);
     try {
-      const snapshot = projectConfig ?? await window.ade.projectConfig.get();
+      const snapshot = await window.ade.projectConfig.get();
       const next = await window.ade.projectConfig.save({
         shared: snapshot.shared,
         local: {
