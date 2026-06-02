@@ -897,6 +897,49 @@ describe("githubService.createRepository", () => {
   });
 });
 
+describe("githubService.createSecretGist", () => {
+  beforeEach(() => {
+    resetMocks();
+    process.env.GITHUB_TOKEN = "ghp_env_token";
+  });
+
+  function lastFetchCall() {
+    const calls = mockFetch.mock.calls;
+    return calls[calls.length - 1] as [string, RequestInit];
+  }
+
+  it("POSTs a secret gist with markdown files", async () => {
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(201, {
+        id: "gist-1",
+        html_url: "https://gist.github.com/alice/gist-1",
+      }),
+    );
+
+    const result = await makeService().createSecretGist({
+      description: "ADE transcript",
+      files: {
+        "README.md": { content: "# Transcript\n" },
+      },
+    });
+
+    const [url, init] = lastFetchCall();
+    expect(url).toContain("/gists");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({
+      description: "ADE transcript",
+      public: false,
+      files: {
+        "README.md": { content: "# Transcript\n" },
+      },
+    });
+    expect(result).toEqual({
+      id: "gist-1",
+      htmlUrl: "https://gist.github.com/alice/gist-1",
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // publishCurrentProject — orchestrates createRepo + remote add + push
 // ---------------------------------------------------------------------------

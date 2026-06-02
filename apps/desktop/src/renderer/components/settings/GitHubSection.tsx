@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties } from "react";
-import type { GitHubStatus } from "../../../shared/types";
+import type { GitHubStatus, ProjectConfigSnapshot } from "../../../shared/types";
 import {
   GithubLogo,
   CheckCircle,
@@ -22,7 +22,10 @@ type TokenType = "classic" | "fine-grained" | "unknown";
 
 const GH_AUTH_LOGIN_COMMAND = "gh auth login -h github.com -s repo -s workflow";
 const GH_AUTH_REFRESH_COMMAND = "gh auth refresh -h github.com -s repo -s workflow";
+const GH_AUTH_LOGIN_WITH_GIST_COMMAND = "gh auth login -h github.com -s repo -s workflow -s gist";
+const GH_AUTH_REFRESH_WITH_GIST_COMMAND = "gh auth refresh -h github.com -s repo -s workflow -s gist";
 const GITHUB_CLASSIC_TOKEN_NEW_URL = "https://github.com/settings/tokens/new?description=ADE%20desktop%20PR%20workflows&scopes=repo,workflow";
+const GITHUB_CLASSIC_TOKEN_WITH_GIST_NEW_URL = "https://github.com/settings/tokens/new?description=ADE%20desktop%20PR%20workflows&scopes=repo,workflow,gist";
 const GITHUB_CLASSIC_TOKENS_URL = "https://github.com/settings/tokens";
 const GITHUB_FINE_GRAINED_TOKEN_NEW_URL = "https://github.com/settings/personal-access-tokens/new?name=ADE&description=ADE%20desktop%20PR%20workflows&contents=write&pull_requests=write&metadata=read&actions=write&workflows=write";
 const GITHUB_FINE_GRAINED_TOKENS_URL = "https://github.com/settings/personal-access-tokens";
@@ -86,8 +89,11 @@ export function GitHubSection() {
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
   const [githubTokenDraft, setGithubTokenDraft] = useState("");
   const [githubBusy, setGithubBusy] = useState(false);
+  const [configBusy, setConfigBusy] = useState(false);
   const [tokenFocused, setTokenFocused] = useState(false);
   const [showPatSetup, setShowPatSetup] = useState(false);
+  const [projectConfig, setProjectConfig] = useState<ProjectConfigSnapshot | null>(null);
+  const [transcriptGistsEnabled, setTranscriptGistsEnabled] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -96,6 +102,14 @@ export function GitHubSection() {
       .getStatus()
       .then((status) => {
         if (!cancelled) setGithubStatus(status);
+      })
+      .catch(() => {});
+    window.ade.projectConfig
+      .get()
+      .then((snapshot) => {
+        if (cancelled) return;
+        setProjectConfig(snapshot);
+        setTranscriptGistsEnabled(snapshot.effective.github?.prTranscriptGists?.enabled === true);
       })
       .catch(() => {});
 
@@ -165,6 +179,32 @@ export function GitHubSection() {
       .finally(() => setGithubBusy(false));
   };
 
+  const handleToggleTranscriptGists = async (enabled: boolean) => {
+    setConfigBusy(true);
+    setActionError(null);
+    setSaveNotice(null);
+    try {
+      const snapshot = await window.ade.projectConfig.get();
+      const next = await window.ade.projectConfig.save({
+        shared: snapshot.shared,
+        local: {
+          ...snapshot.local,
+          github: {
+            ...(snapshot.local.github ?? {}),
+            prTranscriptGists: { enabled },
+          },
+        },
+      });
+      setProjectConfig(next);
+      setTranscriptGistsEnabled(next.effective.github?.prTranscriptGists?.enabled === true);
+      setSaveNotice(enabled ? "PR chat transcripts enabled." : "PR chat transcripts disabled.");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setConfigBusy(false);
+    }
+  };
+
   const tokenAuthenticated = Boolean(githubStatus?.tokenStored && githubStatus?.userLogin);
   const isConnected = Boolean(githubStatus?.connected);
   const isFineGrainedToken = githubStatus?.tokenType === "fine-grained";
@@ -184,7 +224,10 @@ export function GitHubSection() {
     statusColor = COLORS.textMuted;
     statusLabel = "Not connected";
   }
-  const ghCommand = tokenAuthenticated && githubStatus?.authSource === "gh" ? GH_AUTH_REFRESH_COMMAND : GH_AUTH_LOGIN_COMMAND;
+  const ghCommand = transcriptGistsEnabled
+    ? tokenAuthenticated && githubStatus?.authSource === "gh" ? GH_AUTH_REFRESH_WITH_GIST_COMMAND : GH_AUTH_LOGIN_WITH_GIST_COMMAND
+    : tokenAuthenticated && githubStatus?.authSource === "gh" ? GH_AUTH_REFRESH_COMMAND : GH_AUTH_LOGIN_COMMAND;
+  const classicTokenUrl = transcriptGistsEnabled ? GITHUB_CLASSIC_TOKEN_WITH_GIST_NEW_URL : GITHUB_CLASSIC_TOKEN_NEW_URL;
   const openExternal = (url: string) => {
     void window.ade.app.openExternal(url);
   };
@@ -430,6 +473,44 @@ export function GitHubSection() {
         </div>
       </div>
 
+      <div style={cardStyle()}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <ShieldCheck size={18} color={transcriptGistsEnabled ? COLORS.success : COLORS.textMuted} weight="fill" />
+            <span style={{ fontSize: 13, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+              PR chat transcripts
+            </span>
+          </div>
+          <span style={inlineBadge(transcriptGistsEnabled ? COLORS.success : COLORS.textMuted)}>
+            {transcriptGistsEnabled ? "On" : "Off"}
+          </span>
+        </div>
+        <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: configBusy ? "default" : "pointer" }}>
+          <input
+            type="checkbox"
+            checked={transcriptGistsEnabled}
+            disabled={configBusy}
+            onChange={(event) => {
+              void handleToggleTranscriptGists(event.currentTarget.checked);
+            }}
+            style={{ marginTop: 2 }}
+          />
+          <span style={{ display: "grid", gap: 6 }}>
+            <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+              Attach ADE chat transcript links when creating or linking PRs.
+            </span>
+            <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary, lineHeight: "18px" }}>
+              Transcripts are published as secret gists, which are link-accessible. ADE publishes only structured chat turns, not raw terminal logs.
+            </span>
+          </span>
+        </label>
+        {transcriptGistsEnabled ? (
+          <div style={{ ...infoBoxStyle, marginTop: 12 }}>
+            GitHub CLI auth needs the gist scope. Classic PATs need gist, and fine-grained tokens need Gists read/write permission.
+          </div>
+        ) : null}
+      </div>
+
       {showPatSetup ? (
         <div style={cardStyle()}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
@@ -454,7 +535,7 @@ export function GitHubSection() {
                 Generate a classic token with repo and workflow scopes.
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
-                <button type="button" style={linkButtonStyle} onClick={() => openExternal(GITHUB_CLASSIC_TOKEN_NEW_URL)}>
+                <button type="button" style={linkButtonStyle} onClick={() => openExternal(classicTokenUrl)}>
                   <ArrowSquareOut size={12} weight="bold" /> Create classic token
                 </button>
                 <button type="button" style={linkButtonStyle} onClick={() => openExternal(GITHUB_CLASSIC_TOKENS_URL)}>

@@ -577,6 +577,33 @@ describe("projectConfigService - AI mode migration", () => {
   });
 });
 
+describe("projectConfigService - PR transcript gists", () => {
+  it("defaults off and persists the local secret-gist toggle", () => {
+    const { root, adeDir } = makeProjectFixture("ade-project-config-pr-transcript-gists-");
+    const service = createProjectConfigService({
+      projectRoot: root,
+      adeDir,
+      projectId: "project-1",
+      db: makeDb(),
+      logger: makeLogger(),
+    });
+
+    expect(service.get().effective.github?.prTranscriptGists?.enabled).toBeUndefined();
+
+    const enabled = service.setPrTranscriptGists({ enabled: true });
+    expect(enabled.effective.github?.prTranscriptGists?.enabled).toBe(true);
+
+    const localPath = path.join(adeDir, "local.yaml");
+    let persisted = YAML.parse(fs.readFileSync(localPath, "utf8")) as Record<string, any>;
+    expect(persisted.github?.prTranscriptGists?.enabled).toBe(true);
+
+    const disabled = service.setPrTranscriptGists({ enabled: false });
+    expect(disabled.effective.github?.prTranscriptGists?.enabled).toBe(false);
+    persisted = YAML.parse(fs.readFileSync(localPath, "utf8")) as Record<string, any>;
+    expect(persisted.github?.prTranscriptGists?.enabled).toBe(false);
+  });
+});
+
 describe("projectConfigService - linear sync", () => {
   async function createLinearFixture() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-config-linear-"));

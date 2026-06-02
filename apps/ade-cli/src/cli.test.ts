@@ -487,6 +487,53 @@ describe("ADE CLI", () => {
     ]);
   });
 
+  it("builds PR transcript gist settings commands", () => {
+    const enable = buildCliPlan(["settings", "pr-transcript-gists", "enable"]);
+    expect(enable.kind).toBe("execute");
+    if (enable.kind !== "execute") return;
+    expect(enable.label).toBe("enable PR chat transcripts");
+    expect(enable.steps).toEqual([
+      {
+        key: "result",
+        method: "ade/actions/call",
+        params: {
+          name: "run_ade_action",
+          arguments: {
+            domain: "project_config",
+            action: "setPrTranscriptGists",
+            args: { enabled: true },
+          },
+        },
+        unwrapToolResult: true,
+      },
+    ]);
+
+    const disable = buildCliPlan(["config", "gist-transcripts", "off"]);
+    expect(disable.kind).toBe("execute");
+    if (disable.kind !== "execute") return;
+    expect(disable.steps[0]).toEqual(expect.objectContaining({
+      params: expect.objectContaining({
+        arguments: expect.objectContaining({
+          domain: "project_config",
+          action: "setPrTranscriptGists",
+          args: { enabled: false },
+        }),
+      }),
+    }));
+
+    const status = buildCliPlan(["settings", "transcript-gists", "status"]);
+    expect(status.kind).toBe("execute");
+    if (status.kind !== "execute") return;
+    expect(status.steps[0]).toEqual(expect.objectContaining({
+      params: expect.objectContaining({
+        arguments: expect.objectContaining({
+          domain: "project_config",
+          action: "get",
+        }),
+      }),
+    }));
+  });
+
   it("builds a diff patch invocation with an explicit path flag", () => {
     const parsed = parseCliArgs([
       "diff",

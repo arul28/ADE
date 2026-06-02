@@ -1921,6 +1921,40 @@ function coerceProjectUiConfig(value: unknown): ProjectConfigFile["ui"] {
     : undefined;
 }
 
+function coerceGithubConfig(value: unknown): ProjectConfigFile["github"] {
+  if (!isRecord(value)) return undefined;
+  const prPollingIntervalSeconds = asNumber(value.prPollingIntervalSeconds);
+  const rawTranscriptGists = isRecord(value.prTranscriptGists) ? value.prTranscriptGists : null;
+  const prTranscriptGistsEnabled = rawTranscriptGists
+    ? asBool(rawTranscriptGists.enabled)
+    : null;
+  const github: NonNullable<ProjectConfigFile["github"]> = {};
+  if (prPollingIntervalSeconds != null) {
+    github.prPollingIntervalSeconds = prPollingIntervalSeconds;
+  }
+  if (prTranscriptGistsEnabled != null) {
+    github.prTranscriptGists = { enabled: prTranscriptGistsEnabled };
+  }
+  return Object.keys(github).length ? github : undefined;
+}
+
+function mergeGithubConfig(
+  shared?: ProjectConfigFile["github"],
+  local?: ProjectConfigFile["github"],
+): EffectiveProjectConfig["github"] {
+  if (!shared && !local) return undefined;
+  const github: NonNullable<EffectiveProjectConfig["github"]> = {};
+  const prPollingIntervalSeconds = local?.prPollingIntervalSeconds ?? shared?.prPollingIntervalSeconds;
+  if (prPollingIntervalSeconds != null) {
+    github.prPollingIntervalSeconds = prPollingIntervalSeconds;
+  }
+  const prTranscriptGistsEnabled = local?.prTranscriptGists?.enabled ?? shared?.prTranscriptGists?.enabled;
+  if (prTranscriptGistsEnabled != null) {
+    github.prTranscriptGists = { enabled: prTranscriptGistsEnabled };
+  }
+  return Object.keys(github).length ? github : undefined;
+}
+
 function coerceConfigFile(value: unknown): ProjectConfigFile {
   if (!isRecord(value)) {
     return {
@@ -1963,10 +1997,7 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     : undefined;
   const defaultLaneTemplate = typeof value.defaultLaneTemplate === "string" ? value.defaultLaneTemplate.trim() || undefined : undefined;
 
-  const github =
-    isRecord(value.github) && asNumber(value.github.prPollingIntervalSeconds) != null
-      ? { prPollingIntervalSeconds: asNumber(value.github.prPollingIntervalSeconds) }
-      : undefined;
+  const github = coerceGithubConfig(value.github);
 
   const git =
     isRecord(value.git) && asBool(value.git.autoRebaseOnHeadChange) != null
@@ -2410,12 +2441,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     }
     : undefined;
 
-  const mergedGithub = shared.github || local.github
-    ? {
-        ...(shared.github ?? {}),
-        ...(local.github ?? {})
-      }
-    : undefined;
+  const mergedGithub = mergeGithubConfig(shared.github, local.github);
 
   const mergedGit = shared.git || local.git
     ? {
@@ -3256,6 +3282,48 @@ export function createProjectConfigService({
     return snapshot.validation;
   };
 
+  const saveCandidate = (candidate: ProjectConfigCandidate): ProjectConfigSnapshot => {
+    const shared = normalizeConfigFilePaths(coerceConfigFile(candidate.shared), projectRoot);
+    const local = normalizeConfigFilePaths(coerceConfigFile(candidate.local), projectRoot);
+    const validation = validateCandidate(shared, local);
+    if (!validation.ok) {
+      throw invalidConfigError(validation);
+    }
+
+    const sharedYaml = toCanonicalYaml(shared);
+    const localYaml = toCanonicalYaml(local);
+    const shouldWriteShared = fs.existsSync(sharedPath) || hasSharedConfigContent(shared);
+
+    if (shouldWriteShared) {
+      ensureSharedAdeProjectScaffold(projectRoot, { logger });
+    } else {
+      initializeOrRepairAdeProject(projectRoot, { logger });
+    }
+    fs.mkdirSync(path.dirname(sharedPath), { recursive: true });
+    if (shouldWriteShared) {
+      fs.writeFileSync(sharedPath, sharedYaml, "utf8");
+    }
+    fs.writeFileSync(localPath, localYaml, "utf8");
+
+    const sharedHash = hashContent(shouldWriteShared ? sharedYaml : "");
+    if (shouldWriteShared) {
+      setTrustedSharedHash(sharedHash);
+    }
+
+    logger.info("projectConfig.save", {
+      sharedPath,
+      localPath,
+      sharedHash,
+      sharedProcesses: shared.processes?.length ?? 0,
+      localProcesses: local.processes?.length ?? 0
+    });
+
+    const snapshot = readSnapshotFromDisk();
+    lastSeenSharedHash = snapshot.trust.sharedHash;
+    lastSeenLocalHash = snapshot.trust.localHash;
+    return snapshot;
+  };
+
   return {
     get(): ProjectConfigSnapshot {
       const snapshot = readSnapshotFromDisk();
@@ -3271,45 +3339,21 @@ export function createProjectConfigService({
     },
 
     save(candidate: ProjectConfigCandidate): ProjectConfigSnapshot {
-      const shared = normalizeConfigFilePaths(coerceConfigFile(candidate.shared), projectRoot);
-      const local = normalizeConfigFilePaths(coerceConfigFile(candidate.local), projectRoot);
-      const validation = validateCandidate(shared, local);
-      if (!validation.ok) {
-        throw invalidConfigError(validation);
-      }
+      return saveCandidate(candidate);
+    },
 
-      const sharedYaml = toCanonicalYaml(shared);
-      const localYaml = toCanonicalYaml(local);
-      const shouldWriteShared = fs.existsSync(sharedPath) || hasSharedConfigContent(shared);
-
-      if (shouldWriteShared) {
-        ensureSharedAdeProjectScaffold(projectRoot, { logger });
-      } else {
-        initializeOrRepairAdeProject(projectRoot, { logger });
-      }
-      fs.mkdirSync(path.dirname(sharedPath), { recursive: true });
-      if (shouldWriteShared) {
-        fs.writeFileSync(sharedPath, sharedYaml, "utf8");
-      }
-      fs.writeFileSync(localPath, localYaml, "utf8");
-
-      const sharedHash = hashContent(shouldWriteShared ? sharedYaml : "");
-      if (shouldWriteShared) {
-        setTrustedSharedHash(sharedHash);
-      }
-
-      logger.info("projectConfig.save", {
-        sharedPath,
-        localPath,
-        sharedHash,
-        sharedProcesses: shared.processes?.length ?? 0,
-        localProcesses: local.processes?.length ?? 0
-      });
-
+    setPrTranscriptGists(args: { enabled?: boolean }): ProjectConfigSnapshot {
       const snapshot = readSnapshotFromDisk();
-      lastSeenSharedHash = snapshot.trust.sharedHash;
-      lastSeenLocalHash = snapshot.trust.localHash;
-      return snapshot;
+      return saveCandidate({
+        shared: snapshot.shared,
+        local: {
+          ...snapshot.local,
+          github: {
+            ...(snapshot.local.github ?? {}),
+            prTranscriptGists: { enabled: args.enabled === true },
+          },
+        },
+      });
     },
 
     diffAgainstDisk(): ProjectConfigDiff {

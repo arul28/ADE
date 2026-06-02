@@ -207,6 +207,60 @@ describe("headlessLinearServices", () => {
     }
   });
 
+  it("creates secret gists through the headless GitHub service", async () => {
+    const previousAdeHome = process.env.ADE_HOME;
+    const previousFetch = globalThis.fetch;
+    process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-gist-"));
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 201,
+      headers: new Headers(),
+      text: async () => JSON.stringify({
+        id: "gist-1",
+        html_url: "https://gist.github.com/octocat/gist-1",
+      }),
+    })) as unknown as typeof fetch;
+    globalThis.fetch = fetchImpl;
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+    );
+    try {
+      githubService.setToken("ghp_test_token");
+      const result = await githubService.createSecretGist({
+        description: "ADE transcript",
+        files: {
+          "README.md": { content: "# Transcript\n" },
+        },
+      });
+
+      expect(result).toEqual({
+        id: "gist-1",
+        htmlUrl: "https://gist.github.com/octocat/gist-1",
+      });
+      expect(fetchImpl).toHaveBeenCalledWith(
+        expect.objectContaining({ pathname: "/gists" }),
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            description: "ADE transcript",
+            public: false,
+            files: {
+              "README.md": { content: "# Transcript\n" },
+            },
+          }),
+        }),
+      );
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousAdeHome == null) {
+        delete process.env.ADE_HOME;
+      } else {
+        process.env.ADE_HOME = previousAdeHome;
+      }
+    }
+  });
+
   it("reuses identity sessions and exposes desktop-compatible session summaries", async () => {
     const services = createHeadlessLinearServices(createDeps());
 
