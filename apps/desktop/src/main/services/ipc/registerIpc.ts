@@ -553,8 +553,8 @@ import type { createAutoRebaseService } from "../lanes/autoRebaseService";
 import type { LaneWorktreeLockService } from "../lanes/laneWorktreeLockService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { SessionDeltaService } from "../sessions/sessionDeltaService";
-import { sampleProcessTreeResourceUsage } from "../pty/ptyService";
-import type { createPtyService } from "../pty/ptyService";
+import { readProcessMetricRows, sampleProcessTreeResourceUsage } from "../pty/ptyService";
+import type { createPtyService, ProcessMetricRowsProvider } from "../pty/ptyService";
 import {
   type createDiffService,
   MAX_DIFF_SIDE_TEXT_BYTES,
@@ -747,6 +747,7 @@ function getRuntimeOwnedPtyUsage(
   sessionService?: ReturnType<typeof createSessionService> | null,
   localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null,
   processRegistry?: ProcessRegistryService | null,
+  readRows?: ProcessMetricRowsProvider,
 ): PtyProcessResourceUsageSnapshot {
   const isLiveSessionOwner = (session: {
     ownerPid?: number | null;
@@ -772,7 +773,15 @@ function getRuntimeOwnedPtyUsage(
       ...(localRuntimeConnectionPool?.getRuntimeProcessIds?.() ?? []),
     ].filter((pid): pid is number => typeof pid === "number" && Number.isFinite(pid) && pid > 0 && pid !== process.pid),
   ));
-  return sampleProcessTreeResourceUsage(ownerPids, runningSessions.length);
+  return sampleProcessTreeResourceUsage(ownerPids, runningSessions.length, readRows);
+}
+
+function createSharedProcessMetricRowsProvider(): ProcessMetricRowsProvider {
+  let rows: ReturnType<typeof readProcessMetricRows> | undefined;
+  return () => {
+    if (rows === undefined) rows = readProcessMetricRows();
+    return rows;
+  };
 }
 
 function processMetricKind(metric: ElectronProcessMetric): string {
@@ -816,9 +825,10 @@ function getAppResourceUsageSnapshot(
   const metrics = app.getAppMetrics();
   const mainMetrics = metrics.filter(isMainProcessMetric);
   const rendererMetrics = metrics.filter(isRendererProcessMetric);
+  const readRows = createSharedProcessMetricRowsProvider();
   const ptyUsage = combinePtyResourceUsage(
-    ptyService?.getResourceUsageSnapshot?.() ?? emptyPtyResourceUsage(),
-    getRuntimeOwnedPtyUsage(sessionService, localRuntimeConnectionPool, processRegistry),
+    ptyService?.getResourceUsageSnapshot?.(readRows) ?? emptyPtyResourceUsage(),
+    getRuntimeOwnedPtyUsage(sessionService, localRuntimeConnectionPool, processRegistry, readRows),
   );
   const electronCpuPercent = sumMetricCpu(metrics);
   const electronMemoryMB = sumMetricMemoryMB(metrics);

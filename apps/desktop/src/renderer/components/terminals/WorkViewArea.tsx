@@ -54,7 +54,13 @@ import { buildWorkSessionTilingTree, type TilingPreset } from "./workSessionTili
 import { laneSurfaceTint } from "../lanes/laneDesignTokens";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
-import { appResourcePressureLevel, getAppResourceUsageCoalesced } from "../../lib/resourcePressure";
+import {
+  appResourcePressureLevel,
+  clampPressureLevel,
+  getAppResourceUsageCoalesced,
+  pressureLevelForThresholds,
+  type ResourcePressureLevel,
+} from "../../lib/resourcePressure";
 
 function isSessionAwaitingInput(session: TerminalSessionSummary): boolean {
   return sessionNeedsChatTabHighlight({
@@ -84,7 +90,7 @@ function isAgentCliSession(session: TerminalSessionSummary): boolean {
   );
 }
 
-type GridTerminalPressureLevel = 0 | 1 | 2 | 3 | 4;
+type GridTerminalPressureLevel = ResourcePressureLevel;
 
 type GridTerminalRefreshPolicy = {
   level: GridTerminalPressureLevel;
@@ -99,22 +105,6 @@ const NORMAL_GRID_TERMINAL_REFRESH_POLICY: GridTerminalRefreshPolicy = {
   bucketCount: 1,
   pulseMs: 0,
 };
-
-function clampPressureLevel(value: number): GridTerminalPressureLevel {
-  return Math.max(0, Math.min(4, Math.round(value))) as GridTerminalPressureLevel;
-}
-
-function pressureLevelForThresholds(
-  value: number | null | undefined,
-  thresholds: [number, number, number, number],
-): GridTerminalPressureLevel {
-  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
-  if (value >= thresholds[3]) return 4;
-  if (value >= thresholds[2]) return 3;
-  if (value >= thresholds[1]) return 2;
-  if (value >= thresholds[0]) return 1;
-  return 0;
-}
 
 function readRendererHeapRatio(): number | null {
   const perf = performance as Performance & {

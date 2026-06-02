@@ -413,6 +413,52 @@ describe("ptyService", () => {
     mocks.spawnSync.mockReturnValue({ status: 1, stdout: "", stderr: "" });
   });
 
+  describe("resource usage snapshots", () => {
+    it("uses supplied process metric rows for active PTYs", async () => {
+      const { service } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Tracked shell",
+        cols: 80,
+        rows: 24,
+      });
+      mocks.spawnSync.mockClear();
+
+      const readRows = vi.fn(() => [
+        { pid: 12345, ppid: 1, cpuPercent: 10, rssKB: 1024 },
+        { pid: 23456, ppid: 12345, cpuPercent: 2.5, rssKB: 2048 },
+        { pid: 34567, ppid: 1, cpuPercent: 80, rssKB: 4096 },
+      ]);
+
+      const usage = service.getResourceUsageSnapshot(readRows);
+
+      expect(readRows).toHaveBeenCalledTimes(1);
+      expect(mocks.spawnSync).not.toHaveBeenCalled();
+      expect(usage).toEqual({
+        activePtyCount: 1,
+        ptyProcessCount: 2,
+        ptyCpuPercent: 12.5,
+        ptyMemoryMB: 3,
+      });
+    });
+
+    it("does not sample process metrics when no PTYs are active", () => {
+      const { service } = createHarness();
+      const readRows = vi.fn(() => {
+        throw new Error("should not sample");
+      });
+
+      expect(service.getResourceUsageSnapshot(readRows)).toEqual({
+        activePtyCount: 0,
+        ptyProcessCount: 0,
+        ptyCpuPercent: 0,
+        ptyMemoryMB: 0,
+      });
+      expect(readRows).not.toHaveBeenCalled();
+    });
+  });
+
   describe("ensureNodePtySpawnHelperExecutable", () => {
     it("adds executable bits to the Darwin node-pty spawn helper", () => {
       const packageRoot = "/tmp/node-pty";

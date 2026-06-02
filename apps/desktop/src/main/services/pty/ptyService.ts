@@ -141,12 +141,14 @@ const AGENT_CLI_READY_QUIET_MS = 600;
 const PTY_PROCESS_TREE_KILL_DELAY_MS = 1500;
 const PTY_PROCESS_TREE_MAX_DEPTH = 12;
 
-type ProcessMetricRow = {
+export type ProcessMetricRow = {
   pid: number;
   ppid: number;
   cpuPercent: number;
   rssKB: number;
 };
+
+export type ProcessMetricRowsProvider = () => ProcessMetricRow[] | null;
 
 function roundUsageMetric(value: number | null | undefined, digits = 1): number | null {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
@@ -154,7 +156,7 @@ function roundUsageMetric(value: number | null | undefined, digits = 1): number 
   return Math.round(value * scale) / scale;
 }
 
-function readProcessMetricRows(): ProcessMetricRow[] | null {
+export function readProcessMetricRows(): ProcessMetricRow[] | null {
   try {
     const result = spawnSync("ps", ["-axo", "pid=,ppid=,pcpu=,rss="], {
       encoding: "utf8",
@@ -226,6 +228,7 @@ function collectProcessTreePids(
 export function sampleProcessTreeResourceUsage(
   rootPids: number[],
   activePtyCount = rootPids.length,
+  readRows: ProcessMetricRowsProvider = readProcessMetricRows,
 ): PtyProcessResourceUsageSnapshot {
   if (activePtyCount === 0 && rootPids.length === 0) {
     return {
@@ -236,7 +239,7 @@ export function sampleProcessTreeResourceUsage(
     };
   }
 
-  const rows = readProcessMetricRows();
+  const rows = readRows();
   if (!rows) {
     return {
       activePtyCount,
@@ -1121,13 +1124,13 @@ export function createPtyService({
   const ownerPid = processRegistry?.pid ?? null;
   const ownerProcessStartedAt = processRegistry?.startedAt ?? null;
 
-  const getResourceUsageSnapshot = (): PtyProcessResourceUsageSnapshot => {
+  const getResourceUsageSnapshot = (readRows?: ProcessMetricRowsProvider): PtyProcessResourceUsageSnapshot => {
     const liveEntries = Array.from(ptys.values()).filter((entry) => !entry.disposed);
     const activePtyCount = liveEntries.length;
     const rootPids = liveEntries
       .map((entry) => entry.pty.pid)
       .filter((pid): pid is number => typeof pid === "number" && Number.isFinite(pid) && pid > 0);
-    return sampleProcessTreeResourceUsage(rootPids, activePtyCount);
+    return sampleProcessTreeResourceUsage(rootPids, activePtyCount, readRows);
   };
 
   const isOwnedByLivePeerRuntime = (session: {

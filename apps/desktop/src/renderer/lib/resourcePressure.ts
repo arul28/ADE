@@ -18,13 +18,13 @@ export function getAppResourceUsageCoalesced(): Promise<AppResourceUsageSnapshot
   return request;
 }
 
-function clampPressureLevel(value: number): ResourcePressureLevel {
+export function clampPressureLevel(value: number): ResourcePressureLevel {
   if (!Number.isFinite(value) || value <= 0) return 0;
   if (value >= 4) return 4;
   return Math.trunc(value) as ResourcePressureLevel;
 }
 
-function pressureLevelForThresholds(
+export function pressureLevelForThresholds(
   value: number | null | undefined,
   thresholds: [number, number, number, number],
 ): ResourcePressureLevel {
@@ -73,7 +73,7 @@ function formatMemory(value: number | null | undefined): string | null {
 }
 
 function formatSystemMemory(usage: AppResourceUsageSnapshot | null): string | null {
-  if (!usage?.freeMemoryMB || !usage.totalMemoryMB || usage.totalMemoryMB <= 0) return null;
+  if (usage?.freeMemoryMB == null || !usage.totalMemoryMB || usage.totalMemoryMB <= 0) return null;
   const usedRatio = 1 - (usage.freeMemoryMB / usage.totalMemoryMB);
   if (!Number.isFinite(usedRatio)) return null;
   return `${Math.round(usedRatio * 100)}% system memory used`;
