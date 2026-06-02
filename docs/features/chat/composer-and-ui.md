@@ -227,10 +227,11 @@ and a footer that contains the composer.
   freezes the model, reasoning effort, execution mode, and native
   controls at capture time so the async create/send flow uses the
   settings the user had when they pressed Send. Jobs are stored in
-  `appStore.draftLaunchJobsByScope`, scoped by project, surface
+  `appStore.draftLaunchJobsByScope`, scoped by project, lane, surface
   profile, and Work draft kind, so loading/error strips survive a new
-  chat pane or remount. Foreground launches auto-open the result only if
-  the job is still the latest foreground job (tracked by
+  chat pane or remount without leaking into another lane pane.
+  Foreground launches auto-open the result only if the job is still the
+  latest foreground job (tracked by
   `latestForegroundDraftLaunchJobIdRef`); background launches keep the
   current Work focus and render a job strip with an Open action once
   ready. Failed jobs offer a Restore button that merges the snapshot

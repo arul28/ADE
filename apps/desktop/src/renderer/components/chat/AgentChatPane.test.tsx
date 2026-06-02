@@ -3852,6 +3852,89 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("keeps draft launch rows scoped to the lane pane that launched them", async () => {
+    const { suggestLaneName } = installAdeMocks({ sessions: [] });
+    suggestLaneName.mockImplementation(() => new Promise<string>(() => {
+      // Keep the launch in-flight so the status row remains visible.
+    }));
+    const lanes = [
+      {
+        id: "lane-primary",
+        name: "Primary",
+        laneType: "primary",
+        branchRef: "refs/heads/main",
+        worktreePath: "/tmp/project-under-test",
+      },
+      {
+        id: "lane-1",
+        name: "Lane one",
+        laneType: "worktree",
+        branchRef: "refs/heads/lane-one",
+        worktreePath: "/tmp/project-under-test/lane-one",
+        parentLaneId: "lane-primary",
+      },
+      {
+        id: "lane-2",
+        name: "Lane two",
+        laneType: "worktree",
+        branchRef: "refs/heads/lane-two",
+        worktreePath: "/tmp/project-under-test/lane-two",
+        parentLaneId: "lane-primary",
+      },
+    ] as any[];
+    useAppStore.setState({
+      project: { rootPath: "/tmp/project-under-test" } as any,
+      lanes,
+      selectedLaneId: "lane-1",
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/work"]}>
+        <div data-testid="lane-one-pane">
+          <AgentChatPane
+            laneId="lane-1"
+            forceDraftMode
+            embeddedWorkLayout
+            availableLanes={lanes}
+            onLaneChange={vi.fn()}
+          />
+        </div>
+        <div data-testid="lane-two-pane">
+          <AgentChatPane
+            laneId="lane-2"
+            forceDraftMode
+            embeddedWorkLayout
+            availableLanes={lanes}
+            onLaneChange={vi.fn()}
+          />
+        </div>
+      </MemoryRouter>,
+    );
+
+    const paneOne = screen.getByTestId("lane-one-pane");
+    const paneTwo = screen.getByTestId("lane-two-pane");
+    const modelTrigger = await within(paneOne).findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    fireEvent.click(await within(paneOne).findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+
+    const textbox = await within(paneOne).findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Only lane one should show this launch." } });
+    fireEvent.click(await within(paneOne).findByRole("button", { name: "Auto-create in background" }));
+
+    await waitFor(() => {
+      expect(suggestLaneName).toHaveBeenCalledTimes(1);
+      expect(within(paneOne).getByText(/Creating lane for chat/i)).toBeTruthy();
+    });
+    expect(within(paneTwo).queryByText(/Creating lane for chat/i)).toBeNull();
+    expect(within(paneTwo).queryByTestId("draft-launch-job")).toBeNull();
+  });
+
   it("keeps every in-flight background draft launch visible past the completed-notice cap", async () => {
     const { suggestLaneName } = installAdeMocks({ sessions: [] });
     suggestLaneName.mockImplementation(() => new Promise<string>(() => {

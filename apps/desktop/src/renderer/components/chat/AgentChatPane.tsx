@@ -2382,10 +2382,11 @@ export function AgentChatPane({
     () => [
       "draft-launch-jobs",
       projectRoot?.trim() || "project",
+      laneId ?? "no-lane",
       surfaceProfile,
-      workDraftKind,
+      workDraftStorageKind,
     ].map(encodeURIComponent).join(":"),
-    [projectRoot, surfaceProfile, workDraftKind],
+    [laneId, projectRoot, surfaceProfile, workDraftStorageKind],
   );
   const draftLaunchJobs = useAppStore((s) => s.draftLaunchJobsByScope[draftLaunchJobsScopeKey] ?? EMPTY_DRAFT_LAUNCH_JOBS);
   const setDraftLaunchJobsInStore = useAppStore((s) => s.setDraftLaunchJobs);
