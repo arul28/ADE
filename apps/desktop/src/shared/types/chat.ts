@@ -6,6 +6,7 @@ import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
 import type { LaneLinearIssue, SessionLinearIssueLink } from "./lanes";
+import type { OrchestrationContextItem, OrchestrationRole } from "./orchestration";
 
 export type AgentChatProvider = "codex" | "claude" | "cursor" | "droid" | "opencode" | (string & {});
 
@@ -218,7 +219,7 @@ export type AgentChatLinearIssueContextAttachment = {
  */
 export type AgentChatOrchestrationAnnotationContextAttachment = {
   type: "orchestration_annotation";
-  item: import("./orchestration").OrchestrationContextItem;
+  item: OrchestrationContextItem;
   source?: "manual";
   attachedAt?: string;
 };
@@ -786,7 +787,7 @@ export type AgentChatInteractionMode =
  */
 export type OrchestrationSessionFields = {
   orchestrationRunId?: string;
-  orchestrationRole?: import("./orchestration").OrchestrationRole;
+  orchestrationRole?: OrchestrationRole;
   orchestrationParentSessionId?: string;
   orchestrationTag?: string;
   orchestrationStepId?: string;
@@ -1221,7 +1222,7 @@ export type AgentChatCreateArgs = {
   goal?: string | null;
   // Orchestration-mode fields — set when spawning into an orchestration run.
   orchestrationRunId?: string;
-  orchestrationRole?: import("./orchestration").OrchestrationRole;
+  orchestrationRole?: OrchestrationRole;
   orchestrationParentSessionId?: string;
   orchestrationTag?: string;
   orchestrationStepId?: string;
@@ -1264,6 +1265,8 @@ export type AgentChatLaunchCliArgs = {
   model?: string | null;
   reasoningEffort?: string | null;
   permissionMode?: AgentChatPermissionMode;
+  /** Optional orchestration role; when present, role policy overrides the requested permission mode. */
+  orchestrationRole?: OrchestrationRole | null;
   /** Prompt submitted to the CLI agent once it starts. */
   kickoffPrompt: string;
   /** Linear issues to attach to the new session before spawn. */

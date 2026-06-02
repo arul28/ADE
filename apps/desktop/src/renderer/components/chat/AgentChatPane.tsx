@@ -5580,8 +5580,8 @@ export function AgentChatPane({
       });
       // Follow-up: allocate the orchestration bundle. We do this immediately
       // so the bundle path is persisted alongside the new chat (workers will
-      // pick it up from the manifest). If it fails the chat is still usable;
-      // we surface the error so the user can retry.
+      // pick it up from the manifest). If it fails, stop before sending the
+      // first prompt so a half-created lead chat cannot start working.
       if (workDraftKind === "chat-orchestrator") {
         try {
           const runCreate = await window.ade.orchestration.runCreate({
@@ -5600,9 +5600,14 @@ export function AgentChatPane({
             "[AgentChatPane] orchestration.runCreate failed; lead chat created without bundle",
             runCreateError,
           );
-          setError(runCreateError instanceof Error
+          await window.ade.agentChat.delete({ sessionId: created.id }).catch((cleanupError: unknown) => {
+            console.warn("[AgentChatPane] orchestration lead cleanup failed", cleanupError);
+          });
+          const message = runCreateError instanceof Error
             ? `Orchestration bundle could not be allocated: ${runCreateError.message}`
-            : "Orchestration bundle could not be allocated.");
+            : "Orchestration bundle could not be allocated.";
+          setError(message);
+          throw new Error(message);
         }
       }
       const launchConfig = buildLastLaunchConfig({

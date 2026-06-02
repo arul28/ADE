@@ -1,17 +1,8 @@
 import type {
-  AgentChatClaudePermissionMode,
-  AgentChatCodexApprovalPolicy,
-  AgentChatCodexConfigSource,
-  AgentChatCodexSandbox,
-  AgentChatCreateArgs,
-  AgentChatDroidPermissionMode,
-  AgentChatOpenCodePermissionMode,
-  AgentChatProvider,
-} from "../../../shared/types";
-import type {
   ModelSelection,
   OrchestrationManifest,
 } from "../../../shared/types/orchestration";
+export { applyOrchestrationPermissionProfile } from "../../../shared/orchestrationRuntimePolicy";
 
 export type OrchestrationRoutingResult = ModelSelection & {
   routingKey: "byRoleTag" | "byTag" | "byRole" | "default" | "fallback" | "override";
@@ -39,44 +30,6 @@ export function resolveOrchestrationModel(
     codexFastMode: false,
     routingKey: "fallback",
   };
-}
-
-export function applyOrchestrationPermissionProfile(
-  provider: AgentChatProvider | string,
-): Partial<Pick<
-  AgentChatCreateArgs,
-  | "claudePermissionMode"
-  | "codexApprovalPolicy"
-  | "codexSandbox"
-  | "codexConfigSource"
-  | "cursorModeId"
-  | "droidPermissionMode"
-  | "opencodePermissionMode"
->> {
-  switch (provider) {
-    case "claude":
-      return {
-        claudePermissionMode: "bypassPermissions" satisfies AgentChatClaudePermissionMode,
-      };
-    case "codex":
-      return {
-        codexSandbox: "danger-full-access" satisfies AgentChatCodexSandbox,
-        codexApprovalPolicy: "never" satisfies AgentChatCodexApprovalPolicy,
-        codexConfigSource: "flags" satisfies AgentChatCodexConfigSource,
-      };
-    case "cursor":
-      return { cursorModeId: "full-auto" };
-    case "droid":
-      return {
-        droidPermissionMode: "auto-high" satisfies AgentChatDroidPermissionMode,
-      };
-    case "opencode":
-      return {
-        opencodePermissionMode: "full-auto" satisfies AgentChatOpenCodePermissionMode,
-      };
-    default:
-      return {};
-  }
 }
 
 export function isOrchestrationPlanApproved(

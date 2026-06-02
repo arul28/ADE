@@ -1312,6 +1312,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       const launchFields = resolveLaunchFields({
         profile: args.profile,
         ...(args.permissionMode !== undefined ? { permissionMode: args.permissionMode } : {}),
+        ...(args.orchestrationRole !== undefined ? { orchestrationRole: args.orchestrationRole } : {}),
         ...(args.startupCommand !== undefined ? { startupCommand: args.startupCommand } : {}),
         ...(args.command !== undefined ? { command: args.command } : {}),
         ...(args.args !== undefined ? { args: args.args } : {}),

@@ -3358,6 +3358,43 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("does not send an orchestrator draft prompt when bundle allocation fails", async () => {
+    const { send, create, deleteChat } = installAdeMocks({ sessions: [], includeClaudeModel: true });
+    vi.mocked(window.ade.orchestration.runCreate).mockRejectedValueOnce(new Error("disk full"));
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      renderAutoCreateDraftPane({ workDraftKind: "chat-orchestrator" });
+
+      const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+      const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
+      fireEvent.pointerDown(modelTrigger, { button: 0 });
+      fireEvent.click(modelTrigger);
+      fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
+      await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
+
+      const textbox = await screen.findByRole("textbox");
+      fireEvent.change(textbox, { target: { value: "Coordinate the release checklist." } });
+      fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+      await waitFor(() => {
+        expect(create).toHaveBeenCalledWith(expect.objectContaining({
+          interactionMode: "orchestrator-lead",
+          provider: "claude",
+        }));
+        expect(window.ade.orchestration.runCreate).toHaveBeenCalledWith({
+          laneId: "lane-1",
+          leadSessionId: "created-session",
+        });
+      });
+      expect(send).not.toHaveBeenCalled();
+      expect(deleteChat).toHaveBeenCalledWith({ sessionId: "created-session" });
+      expect(await screen.findByText("Orchestration bundle could not be allocated: disk full")).toBeTruthy();
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it("background auto-create reports the new chat without stealing focus and shows a dismissible notice", async () => {
     const onSessionCreated = vi.fn();
     const { createLane, suggestLaneName } = installAdeMocks({ sessions: [] });

@@ -91,6 +91,7 @@ export async function launchAgentChatCli(
   const launch = buildTrackedCliLaunchCommand({
     provider,
     permissionMode,
+    orchestrationRole: arg.orchestrationRole ?? null,
     ...(provider === "claude" ? { sessionId } : {}),
     model: arg.model ?? null,
     reasoningEffort: arg.reasoningEffort ?? null,

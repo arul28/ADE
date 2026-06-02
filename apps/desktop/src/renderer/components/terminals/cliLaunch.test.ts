@@ -69,6 +69,50 @@ describe("defaultTrackedCliStartupCommand", () => {
   });
 });
 
+describe("orchestration CLI launch policy", () => {
+  it("forces orchestration roles to full-auto for every tracked CLI runtime", () => {
+    const claude = buildTrackedCliLaunchCommand({
+      provider: "claude",
+      permissionMode: "plan",
+      orchestrationRole: "worker",
+    });
+    expect(claude.args).toContain("--dangerously-skip-permissions");
+    expect(claude.args).not.toEqual(expect.arrayContaining(["--permission-mode", "plan"]));
+
+    const codex = buildTrackedCliLaunchCommand({
+      provider: "codex",
+      permissionMode: "plan",
+      orchestrationRole: "worker",
+    });
+    expect(codex.args).toEqual(expect.arrayContaining(["--dangerously-bypass-approvals-and-sandbox"]));
+    expect(codex.args).not.toEqual(expect.arrayContaining(["--sandbox", "read-only"]));
+
+    const cursor = buildTrackedCliLaunchCommand({
+      provider: "cursor",
+      permissionMode: "plan",
+      orchestrationRole: "validator",
+    });
+    expect(cursor.args).toContain("--force");
+    expect(cursor.args).not.toEqual(expect.arrayContaining(["--mode", "plan"]));
+
+    const droid = buildTrackedCliLaunchCommand({
+      provider: "droid",
+      permissionMode: "plan",
+      orchestrationRole: "worker",
+    });
+    expect(droid.startupCommand).toContain('\\"autonomyLevel\\":\\"high\\"');
+    expect(droid.startupCommand).not.toContain('\\"interactionMode\\":\\"spec\\"');
+
+    const opencode = buildTrackedCliLaunchCommand({
+      provider: "opencode",
+      permissionMode: "plan",
+      orchestrationRole: "validator",
+    });
+    expect(opencode.args).not.toEqual(expect.arrayContaining(["--agent", "plan"]));
+    expect(opencode.env?.OPENCODE_CONFIG_CONTENT).toContain('"permission":"allow"');
+  });
+});
+
 describe("resolveCleanShellLaunchFields", () => {
   it("starts zsh without reading user startup files", () => {
     expect(resolveCleanShellLaunchFields({ platform: "darwin", shell: "/bin/zsh" })).toEqual({

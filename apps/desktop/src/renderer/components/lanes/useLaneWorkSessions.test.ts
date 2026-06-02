@@ -840,6 +840,31 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     expect((window as any).ade.pty.create.mock.calls.at(-1)?.[0]).not.toHaveProperty("awaitInitialInput");
   });
 
+  it("launchPtySession applies orchestration role policy in lane work panes", async () => {
+    const { result } = renderHook(() => useLaneWorkSessions("lane-1"));
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    await act(async () => {
+      await result.current.launchPtySession({
+        laneId: "lane-1",
+        profile: "codex",
+        permissionMode: "plan",
+        orchestrationRole: "worker",
+      });
+    });
+
+    expect((window as any).ade.pty.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        laneId: "lane-1",
+        toolType: "codex",
+        startupCommand: expect.stringContaining("--dangerously-bypass-approvals-and-sandbox"),
+      }),
+    );
+  });
+
   it("continues an ended agent CLI session from lane work panes", async () => {
     const closedCliSession = {
       ...makeSession("session-ended", "lane-1", "Ended Codex"),
