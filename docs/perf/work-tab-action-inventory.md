@@ -292,24 +292,24 @@ Coverage states:
 
 | id | action | state | source |
 | --- | --- | --- | --- |
-| work.files.mount | Mount Files tab | measured | `FilesPage.tsx` |
-| work.files.workspace | Change workspace selector | measured | `FilesPage.tsx` |
-| work.files.view-lane | Navigate to lane from Files header/banner | external-skip | `FilesPage.tsx` |
-| work.files.primary-edit | Toggle primary edit allowance | measured | `FilesPage.tsx` |
-| work.files.trust-edit | Trust and edit primary workspace | prompt-only | `FilesPage.tsx` |
-| work.files.theme | Toggle editor light/dark theme | measured | `FilesPage.tsx` |
-| work.files.open-in.menu | Open external app menu | external-skip | `FilesPage.tsx` |
-| work.files.open-in.item | Open file in external app | external-skip | `FilesPage.tsx` |
-| work.files.suggested-lane | Switch to suggested lane workspace | measured | `FilesPage.tsx` |
-| work.files.error.dismiss | Dismiss error banner | measured | `FilesPage.tsx` |
+| work.files.mount | Mount Files tab | measured | `FilesWorkbench.tsx` |
+| work.files.workspace | Change workspace selector | measured | `FilesWorkbench.tsx` |
+| work.files.view-lane | Navigate to lane from Files header/banner | external-skip | `FilesWorkbench.tsx` |
+| work.files.primary-edit | Toggle primary edit allowance | measured | `FilesWorkbench.tsx` |
+| work.files.trust-edit | Trust and edit primary workspace | prompt-only | `FilesWorkbench.tsx` |
+| work.files.theme | Toggle editor light/dark theme | measured | `FilesWorkbench.tsx` |
+| work.files.open-in.menu | Open external app menu | external-skip | `FilesWorkbench.tsx` |
+| work.files.open-in.item | Open file in external app | external-skip | `FilesWorkbench.tsx` |
+| work.files.suggested-lane | Switch to suggested lane workspace | measured | `FilesWorkbench.tsx` |
+| work.files.error.dismiss | Dismiss error banner | measured | `FilesWorkbench.tsx` |
 | work.files.filter | Type path filter | measured | `FilesExplorer.tsx` |
 | work.files.filter.clear | Clear path filter | measured | `FilesExplorer.tsx` |
 | work.files.content.open | Open content search overlay | measured | `FilesExplorer.tsx` |
-| work.files.content.search | Search file contents | measured | `FilesPage.tsx` |
-| work.files.content.result | Open content search result | measured | `FilesPage.tsx` |
+| work.files.content.search | Search file contents | measured | `FilesWorkbench.tsx` |
+| work.files.content.result | Open content search result | measured | `FilesWorkbench.tsx` |
 | work.files.quick.open | Open quick open overlay | measured | `FilesExplorer.tsx` |
-| work.files.quick.search | Search quick open | measured | `FilesPage.tsx` |
-| work.files.quick.result | Open quick open result | measured | `FilesPage.tsx` |
+| work.files.quick.search | Search quick open | measured | `FilesWorkbench.tsx` |
+| work.files.quick.result | Open quick open result | measured | `FilesWorkbench.tsx` |
 | work.files.new-file | New file prompt | measured | `FilesExplorer.tsx` |
 | work.files.new-folder | New folder prompt | measured | `FilesExplorer.tsx` |
 | work.files.tree.expand | Expand directory | measured | `FilesExplorer.tsx` |
@@ -317,31 +317,31 @@ Coverage states:
 | work.files.tree.open | Open file | measured | `FilesExplorer.tsx` |
 | work.files.tree.context | Open file/folder context menu | measured | `FilesExplorer.tsx` |
 | work.files.tree.inline-rename | Inline rename path | measured | `FilesExplorer.tsx` |
-| work.files.tab.switch | Switch open file tab | measured | `FilesPage.tsx` |
-| work.files.tab.close | Close file tab | measured | `FilesPage.tsx` |
-| work.files.mode.code | Switch editor to CODE | measured | `FilesPage.tsx` |
-| work.files.mode.changes | Switch editor to CHANGES | measured | `FilesPage.tsx` |
-| work.files.mode.merge | Switch editor to MERGE | measured | `FilesPage.tsx` |
-| work.files.save | Save edited file | measured | `FilesPage.tsx` |
-| work.files.conflict.ours | Resolve conflict as ours | sandbox-only | `FilesPage.tsx` |
-| work.files.conflict.theirs | Resolve conflict as theirs | sandbox-only | `FilesPage.tsx` |
-| work.files.conflict.both | Resolve conflict as both | sandbox-only | `FilesPage.tsx` |
-| work.files.context.open | Context menu OPEN | measured | `FilesPage.tsx` |
-| work.small.files-context-menu-overflow | Verify Files context menu stays contained near viewport edges | measured | `FilesPage.tsx` |
-| work.small.files-embedded-overflow | Verify embedded Files explorer/editor stay contained in the Work tools pane | measured | `FilesPage.tsx` |
-| work.files.context.open-diff | Context menu OPEN DIFF | measured | `FilesPage.tsx` |
-| work.files.context.stage | Context menu STAGE | measured | `FilesPage.tsx` |
-| work.files.context.unstage | Context menu UNSTAGE | measured | `FilesPage.tsx` |
-| work.files.context.discard | Context menu DISCARD | prompt-only | `FilesPage.tsx` |
-| work.files.context.copy-path | Context menu COPY PATH | measured | `FilesPage.tsx` |
-| work.files.context.reveal | Context menu reveal in Finder | external-skip | `FilesPage.tsx` |
-| work.files.context.new-file | Context menu NEW FILE | measured | `FilesPage.tsx` |
-| work.files.context.new-folder | Context menu NEW FOLDER | measured | `FilesPage.tsx` |
-| work.files.context.rename | Context menu RENAME | measured | `FilesPage.tsx` |
-| work.files.context.delete | Context menu DELETE | prompt-only | `FilesPage.tsx` |
-| work.files.diff.mode-working | Files diff: working tree mode | measured | `FilesPage.tsx` |
-| work.files.diff.mode-staged | Files diff: staged mode | measured | `FilesPage.tsx` |
-| work.files.diff.mode-commit | Files diff: commit mode and compare ref select | measured | `FilesPage.tsx` |
+| work.files.tab.switch | Switch open file tab | measured | `FilesWorkbench.tsx` |
+| work.files.tab.close | Close file tab | measured | `FilesWorkbench.tsx` |
+| work.files.mode.code | Switch editor to CODE | measured | `FilesWorkbench.tsx` |
+| work.files.mode.changes | Switch editor to CHANGES | measured | `FilesWorkbench.tsx` |
+| work.files.mode.merge | Switch editor to MERGE | measured | `FilesWorkbench.tsx` |
+| work.files.save | Save edited file | measured | `FilesWorkbench.tsx` |
+| work.files.conflict.ours | Resolve conflict as ours | sandbox-only | `FilesWorkbench.tsx` |
+| work.files.conflict.theirs | Resolve conflict as theirs | sandbox-only | `FilesWorkbench.tsx` |
+| work.files.conflict.both | Resolve conflict as both | sandbox-only | `FilesWorkbench.tsx` |
+| work.files.context.open | Context menu OPEN | measured | `FilesWorkbench.tsx` |
+| work.small.files-context-menu-overflow | Verify Files context menu stays contained near viewport edges | measured | `FilesWorkbench.tsx` |
+| work.small.files-embedded-overflow | Verify embedded Files explorer/editor stay contained in the Work tools pane | measured | `FilesWorkbench.tsx` |
+| work.files.context.open-diff | Context menu OPEN DIFF | measured | `FilesWorkbench.tsx` |
+| work.files.context.stage | Context menu STAGE | measured | `FilesWorkbench.tsx` |
+| work.files.context.unstage | Context menu UNSTAGE | measured | `FilesWorkbench.tsx` |
+| work.files.context.discard | Context menu DISCARD | prompt-only | `FilesWorkbench.tsx` |
+| work.files.context.copy-path | Context menu COPY PATH | measured | `FilesWorkbench.tsx` |
+| work.files.context.reveal | Context menu reveal in Finder | external-skip | `FilesWorkbench.tsx` |
+| work.files.context.new-file | Context menu NEW FILE | measured | `FilesWorkbench.tsx` |
+| work.files.context.new-folder | Context menu NEW FOLDER | measured | `FilesWorkbench.tsx` |
+| work.files.context.rename | Context menu RENAME | measured | `FilesWorkbench.tsx` |
+| work.files.context.delete | Context menu DELETE | prompt-only | `FilesWorkbench.tsx` |
+| work.files.diff.mode-working | Files diff: working tree mode | measured | `FilesWorkbench.tsx` |
+| work.files.diff.mode-staged | Files diff: staged mode | measured | `FilesWorkbench.tsx` |
+| work.files.diff.mode-commit | Files diff: commit mode and compare ref select | measured | `FilesWorkbench.tsx` |
 
 ## Browser tools
 
@@ -1116,9 +1116,11 @@ Files context-menu UX fix:
 - After clamping to the measured menu size with an `8px` viewport inset, the
   same right-edge probe placed the menu at `x=956.0px`, ending at
   `right=1156.0px` and `bottom=737.0px` in the `1164x745` viewport.
-- Validation: `npm --prefix apps/desktop run test --
-  src/renderer/components/files/FilesPage.test.tsx` passed (`20` tests), and
-  `npm --prefix apps/desktop run typecheck` passed.
+- Validation now covers the permanent workbench with
+  `src/renderer/components/files/v2/editorGroupsStore.test.ts`,
+  `src/renderer/components/files/v2/viewerRegistry.test.ts`, and
+  `src/renderer/components/files/monacoModelRegistry.test.ts`; also run
+  `npm --prefix apps/desktop run typecheck`.
 
 Embedded Files layout UX fix:
 
@@ -1127,12 +1129,11 @@ Embedded Files layout UX fix:
   ended at `right=1170.8px`, the editor was squeezed to `1.8px`, and the
   `CODE` button ended at `right=1256.2px`, overflowing the viewport by
   `92.2px`.
-- After stacking explorer over editor only when `FilesPage` is embedded, the
+- After making the embedded workbench layout responsive, the
   explorer and editor both fit at `right=1151.6px`; the `CODE` button ended at
   `right=953.8px`, with `0px` right overflow.
-- Validation after the embedded layout fix: `npm --prefix apps/desktop run test
-  -- src/renderer/components/files/FilesPage.test.tsx` passed (`20` tests),
-  and `npm --prefix apps/desktop run typecheck` passed.
+- Validation after the embedded layout fix now uses the permanent workbench
+  tests plus `npm --prefix apps/desktop run typecheck`.
 
 Browser coverage:
 
@@ -1514,10 +1515,9 @@ Rows this run left for later focused evidence:
   inserting a chat draft. Later focused iOS panel evidence covers the
   chat-draft-capable callbacks.
 - `work.files.primary-edit`: with `README.md` open in the embedded Work Files
-  pane, the primary edit toggle did not render. The retained evidence is the
-  non-embedded Files chrome fixture below, because the exact `TRUST & EDIT`
-  control belongs to `FilesPage.tsx` but is intentionally hidden when embedded
-  in the Work tools pane.
+  pane, primary-workspace edit controls are intentionally not part of the
+  compact embedded chrome. Keep primary-workspace policy evidence on the
+  standalone Files route or at the service boundary.
 
 Invalid / setup markers:
 
@@ -1702,14 +1702,13 @@ npm --prefix apps/desktop run test -- src/renderer/components/chat/AgentChatComp
 npm --prefix apps/desktop run test -- src/renderer/components/chat/AgentChatComposer.test.tsx -t "edits a queued steer message|removes a queued steer message"
 npm --prefix apps/desktop run test -- src/renderer/components/chat/AgentChatComposer.test.tsx -t "accepts the prompt suggestion with Tab"
 npm --prefix apps/desktop run test -- src/renderer/components/chat/AgentChatComposer.test.tsx
-npm --prefix apps/desktop run test -- src/renderer/components/files/FilesPage.test.tsx -t "toggles editor theme from main Files header and persists"
-npm --prefix apps/desktop run test -- src/renderer/components/files/FilesPage.test.tsx -t "copies a file path from the tree context menu"
-npm --prefix apps/desktop run test -- src/renderer/components/files/FilesPage.test.tsx -t "primary workspace edit allowance"
-npm --prefix apps/desktop run test -- src/renderer/components/files/FilesPage.test.tsx
+npm --prefix apps/desktop run test -- src/renderer/components/files/v2/editorGroupsStore.test.ts
+npm --prefix apps/desktop run test -- src/renderer/components/files/v2/viewerRegistry.test.ts
+npm --prefix apps/desktop run test -- src/renderer/components/files/monacoModelRegistry.test.ts
 ```
 
 Results: passed (`1`, `2`, `1`, full composer file with `41` tests, `1`,
-`1`, `1` focused tests, and full FilesPage file with `22` tests respectively).
+`1`, and `1` Files workbench-focused test files respectively).
 
 Rows promoted to `measured`:
 
@@ -1733,16 +1732,11 @@ Rows promoted to `measured`:
 - `work.chat.dismiss.error`: the full composer test selected an oversized file
   through the hidden upload input, verified the attach error rendered, clicked
   `Dismiss error`, and verified the error cleared.
-- `work.files.theme`: the FilesPage test opened `src/index.ts`, clicked
-  `files-editor-theme-toggle`, verified localStorage and Monaco switched to
-  `vs`, clicked it again, and verified the state returned to `vs-dark`.
-- `work.files.context.copy-path`: the FilesPage context-menu test opened
-  `src/index.ts`, expanded `src`, right-clicked `src/index.ts`, clicked
-  `COPY PATH`, and verified `writeClipboardText("src/index.ts")`.
-- `work.files.primary-edit`: the non-embedded FilesPage test loaded a
-  read-only primary workspace, verified `READ-ONLY`, clicked `TRUST & EDIT`,
-  verified `DISABLE EDITS` plus Monaco `readOnly: false`, then clicked
-  `DISABLE EDITS` and verified the read-only state returned.
+- `work.files.context.copy-path`: keep coverage on the permanent workbench
+  context menu and clipboard path action.
+- `work.files.primary-edit`: keep coverage on service-level read-only policy
+  and the standalone Files route, since the embedded Work pane intentionally
+  keeps primary-workspace edit chrome out of the compact surface.
 
 ### Focused fixture evidence: Work grid and session-list tests
 

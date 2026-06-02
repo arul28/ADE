@@ -13,6 +13,10 @@ import {
   subscribeLinearIssueQuickViewRequests,
   type LinearIssueQuickViewRequest,
 } from "../../lib/linearIssueQuickViewNavigation";
+import {
+  ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
+  ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
+} from "../../lib/workSidebarBrowserResize";
 import { cn } from "../ui/cn";
 import { linearIssueLaneName } from "../../../shared/linearIssueBranch";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
@@ -123,6 +127,7 @@ export function LinearQuickViewButton({
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
   const cachedQuickViewRef = useRef<CtoLinearQuickView | null>(null);
+  const occludesNativeBrowser = open || batchModalOpen;
   // Remembers each issue's chosen config so "Retry failed" reuses the same model.
   const batchConfigByIssueRef = useRef<Map<string, BatchLaunchIssueConfig>>(new Map());
 
@@ -166,6 +171,14 @@ export function LinearQuickViewButton({
     if (pending) handleQuickViewRequest(pending);
     return subscribeLinearIssueQuickViewRequests(handleQuickViewRequest);
   }, [handleQuickViewRequest, variant]);
+
+  useEffect(() => {
+    if (!occludesNativeBrowser || typeof window === "undefined") return undefined;
+    window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT));
+    return () => {
+      window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT));
+    };
+  }, [occludesNativeBrowser]);
 
   useEffect(() => {
     if (variant !== "icon") return;
@@ -627,7 +640,7 @@ export function LinearQuickViewButton({
             role="dialog"
             aria-modal="true"
             aria-label="Linear quick view"
-            className="fixed left-1/2 top-1/2 z-[9999] flex h-[min(900px,calc(100dvh-28px))] w-[min(1380px,calc(100vw-28px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border bg-[color:var(--ade-shell-surface,#121019)] text-fg shadow-2xl shadow-black/50"
+            className="fixed left-1/2 top-1/2 z-[9999] flex h-[min(940px,calc(100dvh-28px))] w-[min(1760px,calc(100vw-28px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border bg-[color:var(--ade-shell-surface,#121019)] text-fg shadow-2xl shadow-black/50"
             style={{
               borderColor: "rgba(123, 138, 240, 0.55)",
               boxShadow: "0 24px 70px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(123, 138, 240, 0.18)",

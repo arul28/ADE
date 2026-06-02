@@ -54,8 +54,8 @@ const preloadLanesPage = lanesRoute.preload;
 const filesRoute = createPreloadableRoute<{ active?: boolean }>(() =>
   import("../files/FilesTab").then((m) => ({ default: m.FilesTab }))
 );
-const FilesPage = filesRoute.Component;
-const preloadFilesPage = filesRoute.preload;
+const FilesTab = filesRoute.Component;
+const preloadFilesTab = filesRoute.preload;
 const workRoute = createPreloadableRoute<{ active?: boolean }>(() =>
   import("../terminals/TerminalsPage").then((m) => ({ default: m.TerminalsPage }))
 );
@@ -425,7 +425,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
           <Route path="/glossary" element={<PageErrorBoundary><GlossaryPage /></PageErrorBoundary>} />
           <Route path="/files" element={
             <PageErrorBoundary>
-              <React.Suspense fallback={LazyFallback}>{React.createElement(FilesPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+              <React.Suspense fallback={LazyFallback}>{React.createElement(FilesTab as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
             </PageErrorBoundary>
           } />
           <Route path="/graph" element={
@@ -614,7 +614,7 @@ function ProjectTabHost() {
     const preload = () => {
       void preloadTerminalsPage().catch(() => undefined);
       void preloadLanesPage().catch(() => undefined);
-      void preloadFilesPage().catch(() => undefined);
+      void preloadFilesTab().catch(() => undefined);
       void preloadCtoPage().catch(() => undefined);
     };
     const idleWindow = window as Window & {

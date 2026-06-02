@@ -4,6 +4,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatBuiltInBrowserPanel } from "./ChatBuiltInBrowserPanel";
 import {
+  ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
+  ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT,
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
@@ -175,6 +177,49 @@ describe("ChatBuiltInBrowserPanel", () => {
     });
 
     window.dispatchEvent(new Event(ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT));
+
+    await waitFor(() => {
+      expect(api.setBounds).toHaveBeenLastCalledWith(expect.objectContaining({
+        width: 640,
+        height: 360,
+        visible: true,
+      }));
+    });
+  });
+
+  it("keeps the native browser hidden while overlay occlusions are active", async () => {
+    const { api } = installBrowserApi();
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+    await waitFor(() => {
+      expect(api.setBounds).toHaveBeenCalledWith(expect.objectContaining({
+        width: 640,
+        height: 360,
+        visible: true,
+      }));
+    });
+
+    window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT));
+
+    await waitFor(() => {
+      expect(api.setBounds).toHaveBeenLastCalledWith(expect.objectContaining({
+        width: 640,
+        height: 360,
+        visible: false,
+      }));
+    });
+
+    window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT));
+    window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT));
+
+    expect(api.setBounds).toHaveBeenLastCalledWith(expect.objectContaining({
+      width: 640,
+      height: 360,
+      visible: false,
+    }));
+
+    window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT));
 
     await waitFor(() => {
       expect(api.setBounds).toHaveBeenLastCalledWith(expect.objectContaining({

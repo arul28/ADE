@@ -10,10 +10,12 @@ import {
   Sparkle,
   Warning,
 } from "@phosphor-icons/react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSanitize from "rehype-sanitize";
 import { BranchIcon } from "../ui/vcsIcons";
+import { buildChatMarkdownComponents } from "../chat/chatMarkdown";
+import { openUrlInAdeBrowser } from "../../lib/openExternal";
 
 import type {
   CtoGetLinearIssuePickerDataResult,
@@ -78,6 +80,14 @@ const SELECTION_STORAGE_PREFIX = "ade.linear.quickView.selection.v1:";
 const SELECTION_STORAGE_MAX = 100;
 const LINEAR_BROWSER_CACHE_STALE_MS = 90_000;
 const LINEAR_BROWSER_CACHE_MAX_SEARCHES = 16;
+// 100 is the Linear API ceiling (linearClient clamps `first` to 100), so it is
+// both the largest first page we can fetch and the chunk size each
+// infinite-scroll page pulls.
+const ISSUE_PAGE_SIZE = 100;
+// Stop auto-loading on scroll once this many issues are in memory; past this the
+// user opts into more via an explicit button, so huge workspaces don't silently
+// load thousands of un-virtualized rows.
+const AUTO_LOAD_MAX_ISSUES = 500;
 
 const DEFAULT_FILTERS: LinearIssueBrowserFilters = {
   projectId: "",
@@ -179,7 +189,7 @@ function buildIssueSearchArgs(
     assigneeId: filters.assigneeId || null,
     priority: filters.priority ? Number(filters.priority) : null,
     query: filters.query.trim() || null,
-    first: 50,
+    first: ISSUE_PAGE_SIZE,
     after,
     includeArchived: false,
   };
@@ -192,7 +202,7 @@ function searchCacheKey(args: CtoSearchLinearIssuesArgs): string {
     assigneeId: args.assigneeId ?? null,
     priority: args.priority ?? null,
     query: args.query ?? null,
-    first: args.first ?? 50,
+    first: args.first ?? ISSUE_PAGE_SIZE,
     after: args.after ?? null,
     includeArchived: args.includeArchived ?? false,
   });
@@ -407,6 +417,62 @@ function isConnectionError(message: string): boolean {
   return /token|oauth|auth|connect|settings|linear/i.test(message);
 }
 
+// Reuse the app's chat markdown stack (Shiki code, scrollable tables, wrapped
+// text) for issue descriptions, but with clean document-style headings instead
+// of the chat surface's mono/uppercase ones, and Linear-accent links that open
+// in the ADE browser.
+const LINEAR_MARKDOWN_COMPONENTS: Components = buildChatMarkdownComponents("neutral", {
+  h1: ({ children }) => (
+    <h1 className="mb-2 mt-4 text-[15px] font-semibold leading-snug text-fg/95 first:mt-0">{children}</h1>
+  ),
+  h2: ({ children }) => (
+    <h2 className="mb-2 mt-4 text-[13.5px] font-semibold leading-snug text-fg/90 first:mt-0">{children}</h2>
+  ),
+  h3: ({ children }) => (
+    <h3 className="mb-1.5 mt-3 text-[12.5px] font-semibold leading-snug text-fg/85 first:mt-0">{children}</h3>
+  ),
+  h4: ({ children }) => (
+    <h4 className="mb-1.5 mt-3 text-[12px] font-semibold leading-snug text-fg/80 first:mt-0">{children}</h4>
+  ),
+  a: ({ href, children }) => (
+    <a
+      href={href}
+      onClick={(event) => {
+        event.preventDefault();
+        if (typeof href === "string" && href.trim() !== "") {
+          openUrlInAdeBrowser(href);
+        }
+      }}
+      className="font-medium text-[color:var(--color-accent,#A78BFA)] underline underline-offset-2 transition-opacity hover:opacity-80"
+    >
+      {children}
+    </a>
+  ),
+  img: (props) => {
+    const { src, alt, title } = props as { src?: string; alt?: string; title?: string };
+    if (!src) return null;
+    return (
+      <img
+        src={src}
+        alt={alt ?? ""}
+        title={title}
+        loading="lazy"
+        className="my-2 max-w-full rounded-md border border-white/10"
+      />
+    );
+  },
+});
+
+function LinearMarkdown({ children }: { children: string }) {
+  return (
+    <div className="text-[12.5px] leading-relaxed text-fg/85 [--chat-font-size:13px] [overflow-wrap:anywhere]">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]} components={LINEAR_MARKDOWN_COMPONENTS}>
+        {children}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
 export function LinearIssueBrowser({
   projectRoot,
   featuredIssue,
@@ -469,9 +535,17 @@ export function LinearIssueBrowser({
   const [issues, setIssues] = useState<NormalizedLinearIssue[]>(() => readCachedSearch(cacheKey, safeLoadFilters(projectRoot))?.issues ?? []);
   const [pageInfo, setPageInfo] = useState<{ hasNextPage: boolean; endCursor: string | null }>(() => readCachedSearch(cacheKey, safeLoadFilters(projectRoot))?.pageInfo ?? emptyPageInfo());
   const pageInfoRef = useRef(pageInfo);
+  const issuesScrollRef = useRef<HTMLDivElement | null>(null);
+  const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
+  // Holds the freshest auto-load closure so the IntersectionObserver (set up
+  // once per list mount) always reads current state without re-subscribing.
+  const autoLoadMoreRef = useRef<() => void>(() => {});
   const [loadingQuickView, setLoadingQuickView] = useState(false);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
   const [loadingIssues, setLoadingIssues] = useState(false);
+  // True only while an infinite-scroll "append" fetch is in flight, so the
+  // bottom-of-list spinner doesn't appear during a filter-change reload.
+  const [appendingMore, setAppendingMore] = useState(false);
   const [localActionIssueId, setLocalActionIssueId] = useState<string | null>(null);
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(featuredIssue?.id ?? null);
   const [selectedIssueIds, setSelectedIssueIds] = useState<Set<string>>(() => safeLoadSelection(projectRoot));
@@ -636,6 +710,8 @@ export function LinearIssueBrowser({
       setPageInfo(cachedResult.pageInfo);
     }
     setLoadingIssues(force || append || !cachedResult);
+    if (append) setAppendingMore(true);
+    else setAppendingMore(false);
     setError(null);
     const promise = cached?.promise ?? cto.searchLinearIssues(args);
     entry.searches.set(key, {
@@ -658,7 +734,10 @@ export function LinearIssueBrowser({
         }
       })
       .finally(() => {
-        if (searchRequestIdRef.current === requestId) setLoadingIssues(false);
+        if (searchRequestIdRef.current === requestId) {
+          setLoadingIssues(false);
+          if (append) setAppendingMore(false);
+        }
       });
   }, [cacheKey, filters]);
 
@@ -699,6 +778,35 @@ export function LinearIssueBrowser({
       ...sorted.filter((issue) => issue.id !== featuredIssue.id),
     ];
   }, [featuredIssue, sorted]);
+  const hasIssues = displayIssues.length > 0;
+  const canAutoLoadIssues = typeof IntersectionObserver !== "undefined";
+
+  // Refreshed every render so the observer below always sees current state.
+  autoLoadMoreRef.current = () => {
+    if (loadingIssues) return;
+    if (!pageInfoRef.current.hasNextPage) return;
+    if (issues.length >= AUTO_LOAD_MAX_ISSUES) return;
+    searchIssues(true);
+  };
+
+  // Infinite scroll: auto-fetch the next page when the sentinel at the end of
+  // the list nears the viewport. Re-subscribes only when the list mounts/empties
+  // (the sentinel and scroll root are otherwise stable), so paging never tears
+  // down the observer.
+  useEffect(() => {
+    if (!canAutoLoadIssues) return;
+    const root = issuesScrollRef.current;
+    const sentinel = loadMoreSentinelRef.current;
+    if (!root || !sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) autoLoadMoreRef.current();
+      },
+      { root, rootMargin: "400px 0px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [canAutoLoadIssues, hasIssues]);
 
   useEffect(() => {
     const normalized = requestedIssueIdentifier?.trim().toUpperCase() ?? "";
@@ -884,7 +992,7 @@ export function LinearIssueBrowser({
         </div>
       ) : null}
 
-      <div className="grid min-h-0 flex-1 overflow-hidden md:grid-cols-[220px_minmax(0,1fr)_360px] lg:grid-cols-[260px_minmax(360px,1fr)_420px]">
+      <div className="grid min-h-0 flex-1 overflow-hidden md:grid-cols-[240px_minmax(0,1fr)_480px] lg:grid-cols-[280px_minmax(420px,1fr)_600px]">
         <aside className="flex min-h-0 flex-col overflow-hidden border-r border-white/10 bg-black/10">
           <div className="shrink-0 border-b border-white/[0.06] px-3 py-2">
             <ScopeNavButton
@@ -1026,7 +1134,11 @@ export function LinearIssueBrowser({
             </div>
           )}
 
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" data-linear-pane="issues">
+          <div
+            ref={issuesScrollRef}
+            className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
+            data-linear-pane="issues"
+          >
             {loadingQuickView && !quickView && displayIssues.length === 0 ? (
               <div className="grid h-44 place-items-center text-[12px] text-muted-fg/55">
                 <CircleNotch size={16} className="animate-spin" />
@@ -1065,14 +1177,19 @@ export function LinearIssueBrowser({
                     </div>
                   );
                 })}
-                {pageInfo.hasNextPage ? (
+                <div ref={loadMoreSentinelRef} aria-hidden className="h-px w-full" />
+                {appendingMore ? (
+                  <div className="flex items-center justify-center gap-2 px-3 py-3 text-[12px] text-muted-fg/55">
+                    <CircleNotch size={13} className="animate-spin" />
+                    Loading more…
+                  </div>
+                ) : pageInfo.hasNextPage && (!canAutoLoadIssues || issues.length >= AUTO_LOAD_MAX_ISSUES) ? (
                   <button
                     type="button"
-                    className="flex w-full items-center justify-center gap-2 px-3 py-2.5 text-[12px] text-muted-fg/70 transition-colors hover:bg-white/[0.04] hover:text-fg"
                     disabled={loadingIssues}
+                    className="flex w-full items-center justify-center gap-2 px-3 py-2.5 text-[12px] text-muted-fg/70 transition-colors hover:bg-white/[0.04] hover:text-fg"
                     onClick={() => searchIssues(true)}
                   >
-                    {loadingIssues ? <CircleNotch size={13} className="animate-spin" /> : null}
                     Load more
                   </button>
                 ) : null}
@@ -1402,87 +1519,36 @@ function IssueDetails({
   const description = issue.description?.trim() ?? "";
   return (
     <aside className="flex min-h-0 flex-col overflow-hidden bg-black/[0.08]">
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4" data-linear-pane="issue-details">
-        <div className="rounded-xl border border-white/[0.07] bg-white/[0.03] p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <LinearPriorityIcon priority={issue.priority} size={12} />
-                <LinearStateIcon stateType={issue.stateType} size={12} />
-                {issue.url ? (
-                  <a
-                    href={issue.url}
-                    onClick={(e) => { e.preventDefault(); window.ade?.app?.openExternal?.(issue.url!); }}
-                    className="cursor-pointer rounded bg-white/[0.07] px-1.5 py-0.5 font-mono text-[10px] text-fg/82 transition-colors hover:bg-white/[0.12]"
-                    title="Open in Linear"
-                  >
-                    {issue.identifier}
-                  </a>
-                ) : (
-                  <span className="rounded bg-white/[0.07] px-1.5 py-0.5 font-mono text-[10px] text-fg/82">
-                    {issue.identifier}
-                  </span>
-                )}
-              </div>
-              <div className="mt-2 text-[15px] font-semibold leading-snug text-fg/95">{issue.title}</div>
-            </div>
-          </div>
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            <span className="rounded-full border border-white/[0.07] bg-white/[0.035] px-2 py-0.5 text-[10.5px] text-muted-fg/75">
-              {issue.stateName}
-            </span>
-            <span className="rounded-full border border-white/[0.07] bg-white/[0.035] px-2 py-0.5 text-[10.5px] text-muted-fg/75">
-              {linearPriorityLabel(issue)}
-            </span>
-            <span className="rounded-full border border-white/[0.07] bg-white/[0.035] px-2 py-0.5 text-[10.5px] text-muted-fg/75">
-              {issue.assigneeName ?? "Unassigned"}
-            </span>
-          </div>
-        </div>
-
-        {showBranchPreview ? (
-          <div className="mt-3 rounded-lg border border-white/[0.06] bg-black/25 px-3 py-2">
-            <div className="text-[10px] font-medium uppercase tracking-[0.10em] text-muted-fg/45">Branch</div>
-            <div className="mt-1 flex min-w-0 items-center gap-1.5 font-mono text-[10.5px] text-fg/82">
-              <BranchIcon size={11} className="shrink-0" />
-              <span className="truncate" title={branchName}>{branchName}</span>
-            </div>
-          </div>
-        ) : null}
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-5" data-linear-pane="issue-details">
+        {issue.url ? (
+          <a
+            href={issue.url}
+            onClick={(e) => { e.preventDefault(); window.ade?.app?.openExternal?.(issue.url!); }}
+            className="cursor-pointer font-mono text-[11px] text-muted-fg/55 transition-colors hover:text-fg/85"
+            title="Open in Linear"
+          >
+            {issue.identifier}
+          </a>
+        ) : (
+          <span className="font-mono text-[11px] text-muted-fg/55">{issue.identifier}</span>
+        )}
+        <div className="mt-1.5 text-[19px] font-semibold leading-tight tracking-[-0.01em] text-fg/95">{issue.title}</div>
 
         {description ? (
-          <div className="mt-3 rounded-xl border border-white/[0.06] bg-white/[0.025] px-3 py-2.5 text-[12px] leading-relaxed text-muted-fg/80">
-            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>
-              {description}
-            </ReactMarkdown>
+          <div className="mt-4">
+            <LinearMarkdown>{description}</LinearMarkdown>
           </div>
-        ) : null}
+        ) : (
+          <p className="mt-4 text-[12.5px] italic text-muted-fg/40">No description.</p>
+        )}
 
         <IssueLabels issue={issue} normalizedIssue={normalizedIssue} />
 
-        <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-muted-fg/65">
-          <InfoRow label="Project" value={issueProjectLabel(issue)} />
-          <InfoRow label="Team" value={issue.teamName ?? issue.teamKey} />
-          {normalizedIssue?.cycleName && (
-            <InfoRow label="Cycle" value={normalizedIssue.cycleName} />
-          )}
-          <InfoRow label="Status" value={issue.stateName} />
-          <InfoRow label="Priority" value={linearPriorityLabel(issue)} />
-          <InfoRow label="Assignee" value={issue.assigneeName ?? "Unassigned"} />
-          <InfoRow label="Creator" value={issue.creatorName ?? "Unknown"} />
-          <InfoRow label="Estimate" value={issue.estimate != null ? String(issue.estimate) : "n/a"} />
-          <InfoRow label="Due" value={formatDate(issue.dueDate)} />
-          <InfoRow label="Created" value={formatDate(issue.createdAt)} />
-          <InfoRow label="Updated" value={issueUpdatedLabel(issue)} />
-          {normalizedIssue ? (
-            <>
-              <InfoRow label="Started" value={formatDate(normalizedIssue.startedAt)} />
-              <InfoRow label="Completed" value={formatDate(normalizedIssue.completedAt)} />
-              <InfoRow label="Canceled" value={formatDate(normalizedIssue.canceledAt)} />
-              <InfoRow label="Open blockers" value={normalizedIssue.hasOpenBlockers ? `${normalizedIssue.blockerIssueIds.length}` : "None"} />
-            </>
-          ) : null}
-        </div>
+        <IssueProperties
+          issue={issue}
+          normalizedIssue={normalizedIssue}
+          branchName={showBranchPreview ? branchName : null}
+        />
 
         {normalizedIssue?.childIssues && normalizedIssue.childIssues.length > 0 ? (
           <SubIssuesList issues={normalizedIssue.childIssues} />
@@ -1578,12 +1644,64 @@ function IssueLabels({ issue, normalizedIssue }: { issue: BrowserIssue; normaliz
   );
 }
 
-function InfoRow({ label, value }: { label: string; value: string }) {
+function PropRow({ label, value, children }: { label: string; value?: string; children?: React.ReactNode }) {
   return (
-    <div className="min-w-0 rounded-lg border border-white/[0.05] bg-white/[0.025] px-2.5 py-2">
-      <div className="text-[9.5px] font-medium uppercase tracking-[0.10em] text-muted-fg/40">{label}</div>
-      <div className="mt-1 truncate text-[11.5px] text-fg/82" title={value}>{value}</div>
+    <div className="grid grid-cols-[92px_minmax(0,1fr)] items-center gap-3 py-[5px]">
+      <dt className="text-[11px] text-muted-fg/45">{label}</dt>
+      <dd className="min-w-0 text-[12px]">
+        {children ?? <span className="block truncate text-fg/85" title={value}>{value}</span>}
+      </dd>
     </div>
+  );
+}
+
+function IssueProperties({
+  issue,
+  normalizedIssue,
+  branchName,
+}: {
+  issue: BrowserIssue;
+  normalizedIssue: NormalizedLinearIssue | null;
+  branchName: string | null;
+}) {
+  return (
+    <dl className="mt-5 border-t border-white/[0.06] pt-4">
+      <PropRow label="Status">
+        <span className="flex min-w-0 items-center gap-1.5">
+          <LinearStateIcon stateType={issue.stateType} size={12} />
+          <span className="truncate text-fg/85">{issue.stateName}</span>
+        </span>
+      </PropRow>
+      <PropRow label="Priority">
+        <span className="flex min-w-0 items-center gap-1.5">
+          <LinearPriorityIcon priority={issue.priority} size={12} />
+          <span className="truncate text-fg/85">{linearPriorityLabel(issue)}</span>
+        </span>
+      </PropRow>
+      <PropRow label="Assignee" value={issue.assigneeName ?? "Unassigned"} />
+      <PropRow label="Project" value={issueProjectLabel(issue)} />
+      <PropRow label="Team" value={issue.teamName ?? issue.teamKey} />
+      {normalizedIssue?.cycleName ? <PropRow label="Cycle" value={normalizedIssue.cycleName} /> : null}
+      <PropRow label="Creator" value={issue.creatorName ?? "Unknown"} />
+      {issue.estimate != null ? <PropRow label="Estimate" value={String(issue.estimate)} /> : null}
+      {issue.dueDate ? <PropRow label="Due" value={formatDate(issue.dueDate)} /> : null}
+      <PropRow label="Created" value={formatDate(issue.createdAt)} />
+      <PropRow label="Updated" value={issueUpdatedLabel(issue)} />
+      {normalizedIssue?.startedAt ? <PropRow label="Started" value={formatDate(normalizedIssue.startedAt)} /> : null}
+      {normalizedIssue?.completedAt ? <PropRow label="Completed" value={formatDate(normalizedIssue.completedAt)} /> : null}
+      {normalizedIssue?.canceledAt ? <PropRow label="Canceled" value={formatDate(normalizedIssue.canceledAt)} /> : null}
+      {normalizedIssue?.hasOpenBlockers ? (
+        <PropRow label="Blockers" value={String(normalizedIssue.blockerIssueIds.length)} />
+      ) : null}
+      {branchName ? (
+        <PropRow label="Branch">
+          <span className="flex min-w-0 items-center gap-1.5 font-mono text-[11px] text-fg/80">
+            <BranchIcon size={11} className="shrink-0" />
+            <span className="truncate" title={branchName}>{branchName}</span>
+          </span>
+        </PropRow>
+      ) : null}
+    </dl>
   );
 }
 

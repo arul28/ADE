@@ -193,7 +193,7 @@ Renderer surfaces:
 - `apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx` —
   right-edge sidebar tied to the active lane (and active Work session
   when present). Tabbed into `git` (lane git actions + selection-driven
-  diff), `files` (mounts `FilesPage` in `embedded` mode with the lane
+  diff), `files` (mounts `FilesTab` in `embedded` mode with the lane
   worktree pre-selected), `ios` (mounts `ChatIosSimulatorPanel` against
   the active lane), `app-control` (mounts `ChatAppControlPanel`), and
   `browser` (mounts `ChatBuiltInBrowserPanel` over the current ADE

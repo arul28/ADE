@@ -307,7 +307,7 @@ Tabs:
 - `git` — `LaneGitActionsPane` on top, `LaneDiffPane` underneath
   whenever a file or commit is selected. The two share the row via
   the same min-height-aware flex layout as the lane detail view.
-- `files` — `FilesPage` mounted with `preferredLaneId={laneId}` and
+- `files` — `FilesTab` mounted with `preferredLaneId={laneId}` and
   `embedded={true}`. The `embedded` prop drops the desktop title block,
   the `View lane` button, the editor theme toggle, the `Open In` menu,
   and the file count, and shrinks the workspace selector so the file

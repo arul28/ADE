@@ -96,17 +96,13 @@ Preload bridge:
 Renderer:
 
 - `apps/desktop/src/renderer/components/files/FilesTab.tsx` — shared
-  route/sidebar entry point. It renders the v2 workbench only when
-  `localStorage["ade.files.workbenchV2"] === "1"`; the default remains
-  the legacy `FilesPage`.
-- `apps/desktop/src/renderer/components/files/FilesPage.tsx` — Files
-  tab shell (~2,840 lines): workspace chrome, tab bar, Monaco edit host,
-  diff and conflict modes, quick open, text search, trust warnings. It
-  composes the virtualized tree below and mounts `AdeDiffViewer` for diff
-  tabs. Accepts optional `preferredLaneId` and `embedded` props so the
-  same component can mount inside the Work right-edge sidebar; in
-  `embedded` mode the header is compact (workspace selector and
-  read-only badge only).
+  route/sidebar entry point. It always renders the workbench.
+- `apps/desktop/src/renderer/components/files/v2/FilesWorkbench.tsx` —
+  Files tab shell: workspace chrome, activity bar, explorer, editor
+  groups, Monaco edit host, diff/conflict surfaces, quick open, text
+  search, trust warnings, and file-type viewers. Accepts optional
+  `preferredLaneId` and `embedded` props so the same component can mount
+  inside the Work right-edge sidebar.
 - `apps/desktop/src/renderer/components/files/FilesExplorer.tsx` —
   virtualized file tree (`@tanstack/react-virtual`), inline rename/create,
   explorer search, and context-menu wiring; git status coloring uses
@@ -115,20 +111,20 @@ Renderer:
   file-type icons and `changeStatus*` helpers shared with the explorer.
 - `apps/desktop/src/renderer/components/files/monacoModelRegistry.ts`
   and `treeHelpers.ts` — reusable Monaco model lifetime tracking and
-  tree/decorations helpers used by both FilesPage and the v2 workbench.
-- `apps/desktop/src/renderer/components/files/v2/` — flagged VS
-  Code-style workbench shell: editor groups, preview/pinned tabs,
-  split/move support, warm empty state, search/create overlays, and
+  tree/decorations helpers used by the workbench.
+- `apps/desktop/src/renderer/components/files/v2/` — VS Code-style
+  workbench shell: editor groups, preview/pinned tabs, split/move
+  support, warm empty state, search/create overlays, and
   viewers for code, markdown, image, CSV/TSV, PDF, large text, binary,
-  and diffs. The workbench is off by default until the parity checklist
-  intentionally flips it.
+  and diffs.
 - `apps/desktop/src/renderer/components/shared/AdeDiffViewer.tsx` —
   shared read-only diff chrome (`@pierre/diffs` `MultiFileDiff` /
   `PatchDiff` with split/unified, wrap, line numbers); editable working-tree
   diffs delegate to `MonacoDiffView`. Also used from `LaneDiffPane`,
   `ChatFileChangesPanel`, and `PrDetailPane`.
-- `apps/desktop/src/renderer/components/files/FilesPage.test.tsx` —
-  renderer tests.
+- `apps/desktop/src/renderer/components/files/v2/*.test.ts` and
+  `apps/desktop/src/renderer/components/files/monacoModelRegistry.test.ts`
+  — renderer workbench state and model-lifetime tests.
 - `apps/ios/ADE/Views/Files/FilesRootScreen.swift` — mobile Files
   root with workspace picker, quick-open and text-search cards, capped
   visible result lists (first 40) with refine-search copy when more

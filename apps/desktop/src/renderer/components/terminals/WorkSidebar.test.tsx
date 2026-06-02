@@ -115,9 +115,9 @@ vi.mock("../chat/ChatBuiltInBrowserPanel", async () => {
   };
 });
 
-vi.mock("../files/FilesPage", async () => {
+vi.mock("../files/FilesTab", async () => {
   const React = await import("react");
-  return { FilesPage: () => React.createElement("div", null, "Files") };
+  return { FilesTab: () => React.createElement("div", null, "Files") };
 });
 
 vi.mock("../lanes/LaneDiffPane", async () => {
