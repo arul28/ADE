@@ -419,6 +419,83 @@ describe("preload OAuth bridge", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.iosSimulatorListWindowSources);
   });
 
+  it("rejects iOS Simulator window sources when no local project is bound", async () => {
+    const invoke = vi.fn(async (channel: string, _payload?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding: null };
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.iosSimulator.listSimulatorWindowSources()).rejects.toThrow(/open local project/i);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.appGetWindowSession);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.iosSimulatorListWindowSources, expect.anything());
+  });
+
+  it("passes the bound local project root when reading iOS Simulator window sources", async () => {
+    const binding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "Project",
+    };
+    const sources = [{ id: "window:1", name: "Simulator", thumbnailDataUrl: null }];
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+      }
+      if (channel === IPC.iosSimulatorListWindowSources) {
+        expect(payload).toEqual({ projectRoot: "/repo" });
+        return sources;
+      }
+      throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(payload)}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.iosSimulator.listSimulatorWindowSources()).resolves.toEqual(sources);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.appGetWindowSession);
+    expect(invoke).toHaveBeenCalledWith(IPC.iosSimulatorListWindowSources, { projectRoot: "/repo" });
+  });
+
   it("routes local macOS VM deletion through direct IPC when a local project runtime is bound", async () => {
     const binding = {
       kind: "local",

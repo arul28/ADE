@@ -6081,6 +6081,8 @@ app.whenReady().then(async () => {
     runWithIpcWindow: (event, fn) =>
       ipcWindowScope.run(BrowserWindow.fromWebContents(event.sender)?.id ?? null, fn),
     getWindowSession,
+    getProjectContext: (projectRoot) =>
+      projectContexts.get(normalizeProjectRoot(projectRoot)) ?? null,
     setWindowProjectTabs: rememberWindowProjectTabs,
     bindRemoteProject: bindWindowToRemoteProject,
     localRuntimeConnectionPool: shouldUseInProcessProjectRuntime()

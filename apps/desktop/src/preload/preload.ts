@@ -1099,6 +1099,18 @@ async function assertLocalProjectHostAction(action: string): Promise<void> {
   throw new Error(`${action} is only available on the local project host.`);
 }
 
+async function requireLocalProjectHostBinding(action: string): Promise<Extract<
+  OpenProjectBinding,
+  { kind: "local" }
+>> {
+  const binding = await getProjectRuntimeBinding({ fresh: true });
+  if (binding?.kind === "local") return binding;
+  if (binding?.kind === "remote") {
+    throw new Error(`${action} is only available on the local project host.`);
+  }
+  throw new Error(`${action} requires an open local project.`);
+}
+
 async function callRemoteProjectActionIfBound<T>(
   domain: string,
   action: string,
@@ -5445,8 +5457,10 @@ contextBridge.exposeInMainWorld("ade", {
     listSimulatorWindowSources: async (): Promise<
       IosSimulatorWindowSource[]
     > => {
-      await assertLocalProjectHostAction("iOS Simulator window sources");
-      return ipcRenderer.invoke(IPC.iosSimulatorListWindowSources);
+      const binding = await requireLocalProjectHostBinding("iOS Simulator window sources");
+      return ipcRenderer.invoke(IPC.iosSimulatorListWindowSources, {
+        projectRoot: binding.rootPath,
+      });
     },
     tap: async (args: {
       deviceUdid?: string | null;
