@@ -4707,7 +4707,7 @@ export function createLaneService({
           if (before === 0) return { detail: "none active" };
           const disposed = await svc.disposeForLane(laneId);
           return { detail: `closed ${disposed} ${disposed === 1 ? "chat" : "chats"}` };
-        });
+        }, { fatal: false });
 
         await runStep("stop_ptys", async () => {
           const svc = teardownDeps?.ptyService;

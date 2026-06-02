@@ -21832,11 +21832,33 @@ export function createAgentChatService(args: {
   const managedSessionBelongsToLane = (managed: ManagedChatSession, laneId: string): boolean => {
     const normalizedLaneId = laneId.trim();
     if (!normalizedLaneId) return false;
+    // Include execution-routing lane ids so a chat homed elsewhere but actively
+    // using this lane cannot keep a runtime pointed at a deleted worktree.
     return [
       trimLine(managed.session.laneId),
       trimLine(managed.selectedExecutionLaneId),
       trimLine(managed.preferredExecutionLaneId),
     ].some((candidate) => candidate === normalizedLaneId);
+  };
+
+  const forceDisposeManagedSession = (managed: ManagedChatSession, reason: string): void => {
+    const sessionId = managed.session.id;
+    rejectActiveSessionTurnCollector(sessionId, reason);
+    clearSubagentSnapshots(sessionId);
+    for (const pending of managed.localPendingInputs.values()) {
+      pending.resolve({ decision: "cancel" });
+    }
+    managed.localPendingInputs.clear();
+    abortActiveBashControllers(managed, reason);
+    managed.closed = true;
+    managed.endedNotified = true;
+    managed.ctoSessionStartedAt = null;
+    teardownRuntime(managed, "ended_session");
+    managed.deleted = true;
+    flushQueuedTranscriptWrite(managed.transcriptPath);
+    flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sessionId}.jsonl`));
+    managedSessions.delete(sessionId);
+    eventHistoryBySession.delete(sessionId);
   };
 
   const countActiveForLane = (laneId: string): number => {
@@ -21861,6 +21883,15 @@ export function createAgentChatService(args: {
         await dispose({ sessionId });
         disposed += 1;
       } catch (error) {
+        const managed = managedSessions.get(sessionId);
+        if (managed) {
+          try {
+            forceDisposeManagedSession(managed, "Session force-closed during lane deletion.");
+            disposed += 1;
+          } catch (forceError) {
+            errors.push(`${sessionId}: force close failed: ${forceError instanceof Error ? forceError.message : String(forceError)}`);
+          }
+        }
         errors.push(`${sessionId}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }

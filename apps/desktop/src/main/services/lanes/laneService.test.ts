@@ -3487,7 +3487,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(count("lane_worktree_locks", "lane_id = ?", ["lane-child"])).toBe(0);
   });
 
-  it("keeps the lane intact when active chat teardown fails", async () => {
+  it("continues lane delete with a warning when active chat teardown fails", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();
     fake.agentChatService.countActiveForLane.mockReturnValue(1);
@@ -3496,12 +3496,12 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     vi.mocked(runGit).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
     vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
 
-    await expect(service.delete({ laneId: "lane-child", deleteBranch: false })).rejects.toThrow("chat refused to close");
+    await service.delete({ laneId: "lane-child", deleteBranch: false });
 
-    expect(db.get<{ id: string }>("select id from lanes where id = ?", ["lane-child"])?.id).toBe("lane-child");
+    expect(db.get<{ id: string }>("select id from lanes where id = ?", ["lane-child"])).toBeNull();
     const last = events[events.length - 1];
-    expect(last.progress.overallStatus).toBe("failed");
-    expect(last.progress.steps.find((s: any) => s.name === "stop_chats")?.status).toBe("failed");
+    expect(last.progress.overallStatus).toBe("completed_with_warnings");
+    expect(last.progress.steps.find((s: any) => s.name === "stop_chats")?.status).toBe("warning");
   });
 
   it("does not cancel a lane delete after it starts", async () => {
