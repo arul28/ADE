@@ -45,6 +45,23 @@ function dispatchWorkSidebarBrowserResizeEvent(type: "start" | "end"): void {
   ));
 }
 
+function browserEventProjectRoot(value: unknown): string | null | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if ("profileProjectRoot" in record) {
+    const root = record.profileProjectRoot;
+    return typeof root === "string" && root.trim().length > 0 ? root : null;
+  }
+  return browserEventProjectRoot(record.status);
+}
+
+function browserEventMatchesProject(event: unknown, projectRoot: string | null): boolean {
+  const root = browserEventProjectRoot(event);
+  if (root === undefined) return projectRoot == null;
+  if (!projectRoot) return root === null;
+  return root === projectRoot;
+}
+
 function isPtyContextInsertableToolType(toolType: TerminalSessionSummary["toolType"]): boolean {
   return toolType === "claude"
     || toolType === "codex"
@@ -86,6 +103,7 @@ async function allSettledWithConcurrency<T>(
 
 export function TerminalsPage({ active = true }: { active?: boolean }) {
   const work = useWorkSessions({ active });
+  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const sortedLanes = useMemo(() => sortLanesForTabs(work.lanes), [work.lanes]);
 
@@ -541,7 +559,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     };
     window.addEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openBrowserSidebar);
     const unsubscribeBrowserEvents = window.ade?.builtInBrowser?.onEvent?.((event) => {
-      if (event.type === "open-request") openBrowserSidebar();
+      if (event.type === "open-request" && browserEventMatchesProject(event, projectRoot)) openBrowserSidebar();
     }) ?? null;
     // The composer's "+" menu fires `ade:work:start-orchestrator-chat` to
     // ask TerminalsPage to switch to the orchestrator-lead draft (parallel
@@ -560,7 +578,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       window.removeEventListener("ade:work:stop-orchestrator-chat", stopOrchestratorChat);
       unsubscribeBrowserEvents?.();
     };
-  }, [active, setViewMode, setWorkSidebarTab, showDraftKind]);
+  }, [active, projectRoot, setViewMode, setWorkSidebarTab, showDraftKind]);
 
   const toggleSessionsPane = useCallback(() => {
     work.setWorkFocusSessionsHidden(!work.workFocusSessionsHidden);

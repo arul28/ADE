@@ -609,6 +609,7 @@ import type {
   BuiltInBrowserEventPayload,
   BuiltInBrowserNavigateArgs,
   BuiltInBrowserOpenPanelArgs,
+  BuiltInBrowserProjectScopeArgs,
   BuiltInBrowserScreenshot,
   BuiltInBrowserSelectPointArgs,
   BuiltInBrowserSelectResult,
@@ -928,8 +929,11 @@ const appControlStatusCache = createShortIpcCache<AppControlStatus>(
   1_000,
 );
 
-const builtInBrowserStatusCache = createShortIpcCache<BuiltInBrowserStatus>(
-  () => ipcRenderer.invoke(IPC.builtInBrowserGetStatus),
+const builtInBrowserStatusCache = createKeyedShortIpcCache<BuiltInBrowserStatus>(
+  (key) => {
+    const args = parseIpcCacheArgs<BuiltInBrowserProjectScopeArgs>(key, {});
+    return ipcRenderer.invoke(IPC.builtInBrowserGetStatus, args);
+  },
   500,
 );
 
@@ -5603,8 +5607,10 @@ contextBridge.exposeInMainWorld("ade", {
     onEvent: subscribeAppControlEvents,
   },
   builtInBrowser: {
-    getStatus: async (): Promise<BuiltInBrowserStatus> =>
-      builtInBrowserStatusCache.get(),
+    getStatus: async (
+      args: BuiltInBrowserProjectScopeArgs = {},
+    ): Promise<BuiltInBrowserStatus> =>
+      builtInBrowserStatusCache.get(serializeIpcCacheArgs(args)),
     showPanel: async (
       args: BuiltInBrowserOpenPanelArgs = {},
     ): Promise<BuiltInBrowserStatus> =>
@@ -5682,15 +5688,19 @@ contextBridge.exposeInMainWorld("ade", {
         () => builtInBrowserStatusCache.clear(),
         () => ipcRenderer.invoke(IPC.builtInBrowserStop, args),
       ),
-    startInspect: async (): Promise<BuiltInBrowserStatus> =>
+    startInspect: async (
+      args: BuiltInBrowserProjectScopeArgs = {},
+    ): Promise<BuiltInBrowserStatus> =>
       clearAround(
         () => builtInBrowserStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.builtInBrowserStartInspect),
+        () => ipcRenderer.invoke(IPC.builtInBrowserStartInspect, args),
       ),
-    stopInspect: async (): Promise<BuiltInBrowserStatus> =>
+    stopInspect: async (
+      args: BuiltInBrowserProjectScopeArgs = {},
+    ): Promise<BuiltInBrowserStatus> =>
       clearAround(
         () => builtInBrowserStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.builtInBrowserStopInspect),
+        () => ipcRenderer.invoke(IPC.builtInBrowserStopInspect, args),
       ),
     captureScreenshot: async (
       args: BuiltInBrowserTabTargetArgs = {},
@@ -5700,12 +5710,16 @@ contextBridge.exposeInMainWorld("ade", {
       args: BuiltInBrowserSelectPointArgs,
     ): Promise<BuiltInBrowserSelectResult> =>
       ipcRenderer.invoke(IPC.builtInBrowserSelectPoint, args),
-    selectCurrent: async (): Promise<BuiltInBrowserSelectResult> =>
-      ipcRenderer.invoke(IPC.builtInBrowserSelectCurrent),
-    clearSelection: async (): Promise<{ ok: true }> =>
+    selectCurrent: async (
+      args: BuiltInBrowserProjectScopeArgs = {},
+    ): Promise<BuiltInBrowserSelectResult> =>
+      ipcRenderer.invoke(IPC.builtInBrowserSelectCurrent, args),
+    clearSelection: async (
+      args: BuiltInBrowserProjectScopeArgs = {},
+    ): Promise<{ ok: true }> =>
       clearAround(
         () => builtInBrowserStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.builtInBrowserClearSelection),
+        () => ipcRenderer.invoke(IPC.builtInBrowserClearSelection, args),
       ),
     onEvent: builtInBrowserEventFanout,
   },

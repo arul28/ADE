@@ -276,7 +276,7 @@ export function createBuiltInBrowserService(args: {
     const normalized = normalizedProjectRoot(projectRoot);
     if (!normalized) return null;
     const resolved = args.getWindowForProjectRoot?.(normalized) ?? null;
-    if (isLiveWindow(resolved) && projectRootsMatch(projectRootForWindow(resolved), normalized)) {
+    if (isLiveWindow(resolved)) {
       return resolved;
     }
     for (const { win } of windowClosedListeners.values()) {
@@ -313,12 +313,17 @@ export function createBuiltInBrowserService(args: {
     win.once("closed", listener);
   };
 
-  const serviceForWindow = (win: BrowserWindow): WindowBrowserService => {
-    const profile = profileForWindow(win);
+  const serviceForWindowProfile = (
+    win: BrowserWindow,
+    profile: BrowserProfile,
+    options: { markActive?: boolean } = {},
+  ): WindowBrowserService => {
     const key = serviceKey(win.id, profile);
     const existing = windowServices.get(key);
-    activeServiceKeyByWindow.set(win.id, key);
-    detachInactiveWindowServices(win, key);
+    if (options.markActive) {
+      activeServiceKeyByWindow.set(win.id, key);
+      detachInactiveWindowServices(win, key);
+    }
     if (existing) return existing.service;
 
     fallbackService?.dispose();
@@ -328,6 +333,9 @@ export function createBuiltInBrowserService(args: {
     windowServices.set(key, { win, service });
     return service;
   };
+
+  const serviceForWindow = (win: BrowserWindow): WindowBrowserService =>
+    serviceForWindowProfile(win, profileForWindow(win), { markActive: true });
 
   const activeService = (): WindowBrowserService => {
     if (activeWindowId != null) {
@@ -364,33 +372,33 @@ export function createBuiltInBrowserService(args: {
     if (!win) {
       throw new Error(`No ADE browser window is open for project: ${normalized}`);
     }
-    return serviceForWindow(win);
+    return serviceForWindowProfile(win, profileForProjectRoot(normalized), {
+      markActive: projectRootsMatch(projectRootForWindow(win), normalized),
+    });
   };
 
   const serviceForInput = (
     input?: BuiltInBrowserProjectScopeArgs | null,
     sourceWindow?: BrowserWindow | null,
   ): WindowBrowserService => {
-    if (isLiveWindow(sourceWindow)) return serviceForWindow(sourceWindow);
     const projectRoot = projectRootFromInput(input);
     if (projectRoot) return serviceForProjectRoot(projectRoot);
+    if (isLiveWindow(sourceWindow)) return serviceForWindow(sourceWindow);
     return activeService();
   };
-
-  const serviceForRoutingArg = (
-    inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null,
-  ): WindowBrowserService =>
-    isLiveWindow(inputOrSourceWindow)
-      ? serviceForWindow(inputOrSourceWindow)
-      : serviceForInput(inputOrSourceWindow);
 
   return {
     attachToWindow(nextWin: BrowserWindow): void {
       activeWindowId = nextWin.id;
       serviceForWindow(nextWin).attachToWindow(nextWin);
     },
-    getStatus(inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null): BuiltInBrowserStatus {
-      return serviceForRoutingArg(inputOrSourceWindow).getStatus();
+    getStatus(
+      inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null,
+      sourceWindow?: BrowserWindow | null,
+    ): BuiltInBrowserStatus {
+      const input = isLiveWindow(inputOrSourceWindow) ? null : inputOrSourceWindow ?? null;
+      const win = sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null);
+      return serviceForInput(input, win).getStatus();
     },
     claim(input: BuiltInBrowserClaimArgs = {}, sourceWindow?: BrowserWindow | null): BuiltInBrowserStatus {
       return serviceForInput(input, sourceWindow).claim(input);
@@ -471,11 +479,21 @@ export function createBuiltInBrowserService(args: {
     wait(input: BuiltInBrowserWaitArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserAgentActionResult> {
       return serviceForInput(input, sourceWindow).wait(input);
     },
-    startInspect(inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null): Promise<BuiltInBrowserStatus> {
-      return serviceForRoutingArg(inputOrSourceWindow).startInspect();
+    startInspect(
+      inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null,
+      sourceWindow?: BrowserWindow | null,
+    ): Promise<BuiltInBrowserStatus> {
+      const input = isLiveWindow(inputOrSourceWindow) ? null : inputOrSourceWindow ?? null;
+      const win = sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null);
+      return serviceForInput(input, win).startInspect();
     },
-    stopInspect(inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null): Promise<BuiltInBrowserStatus> {
-      return serviceForRoutingArg(inputOrSourceWindow).stopInspect();
+    stopInspect(
+      inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null,
+      sourceWindow?: BrowserWindow | null,
+    ): Promise<BuiltInBrowserStatus> {
+      const input = isLiveWindow(inputOrSourceWindow) ? null : inputOrSourceWindow ?? null;
+      const win = sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null);
+      return serviceForInput(input, win).stopInspect();
     },
     captureScreenshot(inputOrSourceWindow?: BuiltInBrowserTabTargetArgs | BrowserWindow | null, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserScreenshot> {
       const input = isLiveWindow(inputOrSourceWindow) ? {} : inputOrSourceWindow ?? {};
@@ -484,11 +502,21 @@ export function createBuiltInBrowserService(args: {
     selectPoint(input: BuiltInBrowserSelectPointArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserSelectResult> {
       return serviceForInput(input, sourceWindow).selectPoint(input);
     },
-    selectCurrent(inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null): Promise<BuiltInBrowserSelectResult> {
-      return serviceForRoutingArg(inputOrSourceWindow).selectCurrent();
+    selectCurrent(
+      inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null,
+      sourceWindow?: BrowserWindow | null,
+    ): Promise<BuiltInBrowserSelectResult> {
+      const input = isLiveWindow(inputOrSourceWindow) ? null : inputOrSourceWindow ?? null;
+      const win = sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null);
+      return serviceForInput(input, win).selectCurrent();
     },
-    clearSelection(inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null): Promise<{ ok: true }> {
-      return serviceForRoutingArg(inputOrSourceWindow).clearSelection();
+    clearSelection(
+      inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null,
+      sourceWindow?: BrowserWindow | null,
+    ): Promise<{ ok: true }> {
+      const input = isLiveWindow(inputOrSourceWindow) ? null : inputOrSourceWindow ?? null;
+      const win = sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null);
+      return serviceForInput(input, win).clearSelection();
     },
     dispose(): void {
       for (const { win, listener } of windowClosedListeners.values()) {

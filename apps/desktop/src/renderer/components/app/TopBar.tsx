@@ -62,6 +62,9 @@ const RUNNING_LANE_PROCESS_STATES: ProcessRuntime["status"][] = [
 ];
 const ADE_PROJECT_TAB_ROOT_MIME = "application/x-ade-project-root";
 const ADE_PROJECT_TAB_WINDOW_MIME = "application/x-ade-window-id";
+const ADE_PROJECT_TAB_DROP_HANDLED_PREFIX =
+  "ade.projectTabDropHandled.v1:";
+const ADE_PROJECT_TAB_DROP_HANDLED_TTL_MS = 5_000;
 
 // Bounded LRU so we don't accumulate icons for every project ever opened in
 // long-lived sessions. 24 entries keeps the working set hot for typical usage
@@ -81,6 +84,46 @@ let recentProjectsCacheSource:
   | (() => Promise<RecentProjectSummary[]>)
   | null = null;
 type RemoteProjectTab = Extract<OpenProjectBinding, { kind: "remote" }>;
+
+function projectTabDropMarkerKey(
+  sourceWindowId: number | null,
+  rootPath: string,
+): string {
+  return `${ADE_PROJECT_TAB_DROP_HANDLED_PREFIX}${sourceWindowId ?? "unknown"}:${encodeURIComponent(rootPath)}`;
+}
+
+function markProjectTabDropHandled(
+  sourceWindowId: number | null,
+  rootPath: string,
+): void {
+  try {
+    window.localStorage.setItem(
+      projectTabDropMarkerKey(sourceWindowId, rootPath),
+      String(Date.now()),
+    );
+  } catch {
+    // localStorage may be unavailable in tests or hardened browser contexts.
+  }
+}
+
+function consumeRecentProjectTabDropHandled(
+  sourceWindowId: number | null,
+  rootPath: string,
+): boolean {
+  const key = projectTabDropMarkerKey(sourceWindowId, rootPath);
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw == null) return false;
+    window.localStorage.removeItem(key);
+    const timestamp = Number(raw);
+    return (
+      Number.isFinite(timestamp) &&
+      Date.now() - timestamp < ADE_PROJECT_TAB_DROP_HANDLED_TTL_MS
+    );
+  } catch {
+    return false;
+  }
+}
 
 function rememberRecentProjects(rows: RecentProjectSummary[]): void {
   recentProjectsCache = { rows, fetchedAtMs: Date.now() };
@@ -1491,6 +1534,8 @@ export function TopBar() {
           : null;
       if (sourceWindowId != null && sourceWindowId === windowId) return;
 
+      markProjectTabDropHandled(sourceWindowId, rootPath);
+
       if (project?.rootPath === rootPath) {
         if (sourceWindowId != null) {
           window.ade.app.closeWindow(sourceWindowId).catch(() => {});
@@ -1519,9 +1564,23 @@ export function TopBar() {
           e.clientY > window.innerHeight);
       const droppedOnAdeTarget =
         e.dataTransfer.dropEffect && e.dataTransfer.dropEffect !== "none";
+      const sourceWindowIdRaw = e.dataTransfer.getData(
+        ADE_PROJECT_TAB_WINDOW_MIME,
+      );
+      const parsedSourceWindowId = sourceWindowIdRaw
+        ? Number(sourceWindowIdRaw)
+        : null;
+      const sourceWindowId =
+        parsedSourceWindowId != null && Number.isFinite(parsedSourceWindowId)
+          ? parsedSourceWindowId
+          : null;
+      const handledByAdeDropTarget =
+        rootPath && droppedOnAdeTarget
+          ? consumeRecentProjectTabDropHandled(sourceWindowId, rootPath)
+          : false;
       setDragIdx(null);
       setDropIdx(null);
-      if (!draggedOutside || droppedOnAdeTarget || !rootPath) return;
+      if (!draggedOutside || handledByAdeDropTarget || !rootPath) return;
 
       void (async () => {
         try {

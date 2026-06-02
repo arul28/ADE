@@ -13,6 +13,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { ADE_WORK_PTY_CONTEXT_INSERTED_EVENT } from "../../lib/workPtyContextEvents";
+import { useAppStore } from "../../state/appStore";
 import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
 
 vi.mock("../chat/ChatIosSimulatorPanel", async () => {
@@ -341,6 +342,7 @@ describe("WorkSidebar context targets", () => {
 
   afterEach(() => {
     cleanup();
+    useAppStore.setState({ project: null } as any);
     delete (window as unknown as { ade?: unknown }).ade;
     vi.restoreAllMocks();
   });
@@ -525,5 +527,44 @@ describe("WorkSidebar context targets", () => {
 
     await waitFor(() => expect(screen.queryByText(/This Browser view is claimed/)).toBeNull());
     expect((screen.getByText("Add Browser context") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("scopes Browser sidebar status to the current project and ignores malformed open events", async () => {
+    installAdeMock({
+      browserStatus: {
+        ...defaultBrowserStatus,
+        profileProjectRoot: "/repo-one",
+      },
+    });
+    useAppStore.setState({
+      project: { rootPath: "/repo-one", name: "Repo One" },
+    } as any);
+    const browserEventListener: {
+      current: ((event: { type?: string; status?: unknown }) => void) | null;
+    } = { current: null };
+    const browser = window.ade.builtInBrowser;
+    vi.mocked(browser.onEvent).mockImplementation((listener) => {
+      browserEventListener.current = (event) => listener(event as Parameters<typeof listener>[0]);
+      return () => {};
+    });
+
+    renderSidebar({
+      tab: "browser",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+    });
+
+    await waitFor(() => {
+      expect(browser.getStatus).toHaveBeenCalledWith({
+        projectRoot: "/repo-one",
+      });
+    });
+    expect(() => browserEventListener.current?.({ type: "open-request" })).not.toThrow();
+    expect(() => browserEventListener.current?.({
+      type: "status",
+      status: {
+        ...defaultBrowserStatus,
+        profileProjectRoot: "/repo-two",
+      },
+    })).not.toThrow();
   });
 });
