@@ -147,6 +147,7 @@ const workMocks = vi.hoisted(() => {
     foregroundSession: makeChatSession("chat-foreground", "lane-primary"),
     baseWork,
     currentWork: baseWork as any,
+    projectRoot: null as string | null,
     fns,
     makeTerminalSession,
   };
@@ -161,8 +162,13 @@ const sidebarProps = vi.hoisted(() => ({
 }));
 
 vi.mock("../../state/appStore", () => ({
-  useAppStore: <T,>(selector: (state: { selectedLaneId: string }) => T): T =>
-    selector({ selectedLaneId: "lane-primary" }),
+  useAppStore: <T,>(selector: (state: { selectedLaneId: string; project: { rootPath: string } | null }) => T): T =>
+    selector({
+      selectedLaneId: "lane-primary",
+      project: workMocks.projectRoot
+        ? { rootPath: workMocks.projectRoot }
+        : null,
+    }),
 }));
 
 vi.mock("./useWorkSessions", () => ({
@@ -230,6 +236,7 @@ describe("TerminalsPage chat session activation", () => {
   afterEach(() => {
     cleanup();
     workMocks.currentWork = { ...workMocks.baseWork, closingPtyIds: new Set<string>() };
+    workMocks.projectRoot = null;
     sidebarProps.latest = null;
     vi.clearAllMocks();
   });
@@ -269,6 +276,42 @@ describe("TerminalsPage chat session activation", () => {
       expect(workMocks.fns.focusSession).toHaveBeenCalledWith("chat-foreground");
       expect(workMocks.fns.openSessionTab).toHaveBeenCalledWith("chat-foreground");
     });
+  });
+
+  it("opens the Browser sidebar only for matching project open requests", async () => {
+    workMocks.projectRoot = "/repo-one";
+    const browserEventListener: {
+      current: ((event: { type?: string; status?: unknown }) => void) | null;
+    } = { current: null };
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        builtInBrowser: {
+          onEvent: vi.fn((listener) => {
+            browserEventListener.current = listener;
+            return vi.fn();
+          }),
+        },
+      },
+    });
+
+    render(<TerminalsPage />);
+
+    await waitFor(() => expect(browserEventListener.current).not.toBeNull());
+    browserEventListener.current?.({ type: "open-request" });
+    browserEventListener.current?.({
+      type: "open-request",
+      status: { profileProjectRoot: "/repo-two" },
+    });
+    expect(workMocks.currentWork.setViewMode).not.toHaveBeenCalled();
+    expect(workMocks.currentWork.setWorkSidebarTab).not.toHaveBeenCalled();
+
+    browserEventListener.current?.({
+      type: "open-request",
+      status: { profileProjectRoot: "/repo-one" },
+    });
+    expect(workMocks.currentWork.setViewMode).toHaveBeenCalledWith("tabs");
+    expect(workMocks.currentWork.setWorkSidebarTab).toHaveBeenCalledWith("browser");
   });
 
   it("targets the visible Work draft when no saved session is active", async () => {

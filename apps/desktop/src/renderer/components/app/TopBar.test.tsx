@@ -7,6 +7,9 @@ import { TopBar } from "./TopBar";
 import { useAppStore } from "../../state/appStore";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 
+const PROJECT_TAB_ROOT_MIME = "application/x-ade-project-root";
+const PROJECT_TAB_WINDOW_MIME = "application/x-ade-window-id";
+
 vi.mock("../settings/SyncDevicesSection", () => ({
   SyncDevicesSection: () => <section data-testid="sync-devices-section">Sync devices panel</section>,
 }));
@@ -133,6 +136,13 @@ function makeDataTransfer(data: Record<string, string>, dropEffect = "move") {
   };
 }
 
+function markHandledProjectTabDrop(rootPath: string, sourceWindowId = "1") {
+  window.localStorage.setItem(
+    `ade.projectTabDropHandled.v1:${sourceWindowId}:${encodeURIComponent(rootPath)}`,
+    String(Date.now()),
+  );
+}
+
 function fireProjectTabDragEnd(
   element: HTMLElement,
   dataTransfer: ReturnType<typeof makeDataTransfer>,
@@ -251,6 +261,7 @@ describe("TopBar", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    globalThis.window.localStorage.clear();
     if (originalAde === undefined) {
       delete (globalThis.window as any).ade;
     } else {
@@ -410,9 +421,38 @@ describe("TopBar", () => {
 
     const tab = await screen.findByTitle("/Users/arul/ADE");
 
-    fireProjectTabDragEnd(tab, makeDataTransfer({}, "move"));
+    markHandledProjectTabDrop("/Users/arul/ADE");
+    fireProjectTabDragEnd(
+      tab,
+      makeDataTransfer(
+        {
+          [PROJECT_TAB_ROOT_MIME]: "/Users/arul/ADE",
+          [PROJECT_TAB_WINDOW_MIME]: "1",
+        },
+        "move",
+      ),
+    );
 
     expect(globalThis.window.ade.app.openProjectInNewWindow).not.toHaveBeenCalled();
+  });
+
+  it("detaches when a project tab is dragged over an ADE window but no ADE tab bar handles it", async () => {
+    render(<TopBar />);
+
+    const tab = await screen.findByTitle("/Users/arul/ADE");
+
+    fireProjectTabDragEnd(
+      tab,
+      makeDataTransfer(
+        {
+          [PROJECT_TAB_ROOT_MIME]: "/Users/arul/ADE",
+          [PROJECT_TAB_WINDOW_MIME]: "1",
+        },
+        "move",
+      ),
+    );
+
+    expect(globalThis.window.ade.app.openProjectInNewWindow).toHaveBeenCalledWith("/Users/arul/ADE");
   });
 
   it("detaches a project tab when it is dragged outside without an ADE drop target", async () => {

@@ -597,6 +597,7 @@ import type {
   BuiltInBrowserEventPayload,
   BuiltInBrowserNavigateArgs,
   BuiltInBrowserOpenPanelArgs,
+  BuiltInBrowserProjectScopeArgs,
   BuiltInBrowserScreenshot,
   BuiltInBrowserSelectPointArgs,
   BuiltInBrowserSelectResult,
@@ -1535,7 +1536,7 @@ declare global {
         onEvent: (cb: (ev: AppControlEventPayload) => void) => () => void;
       };
       builtInBrowser: {
-        getStatus: () => Promise<BuiltInBrowserStatus>;
+        getStatus: (args?: BuiltInBrowserProjectScopeArgs) => Promise<BuiltInBrowserStatus>;
         showPanel: (
           args?: BuiltInBrowserOpenPanelArgs,
         ) => Promise<BuiltInBrowserStatus>;
@@ -1561,16 +1562,16 @@ declare global {
         goBack: (args?: BuiltInBrowserTabTargetArgs) => Promise<BuiltInBrowserStatus>;
         goForward: (args?: BuiltInBrowserTabTargetArgs) => Promise<BuiltInBrowserStatus>;
         stop: (args?: BuiltInBrowserTabTargetArgs) => Promise<BuiltInBrowserStatus>;
-        startInspect: () => Promise<BuiltInBrowserStatus>;
-        stopInspect: () => Promise<BuiltInBrowserStatus>;
+        startInspect: (args?: BuiltInBrowserProjectScopeArgs) => Promise<BuiltInBrowserStatus>;
+        stopInspect: (args?: BuiltInBrowserProjectScopeArgs) => Promise<BuiltInBrowserStatus>;
         captureScreenshot: (
           args?: BuiltInBrowserTabTargetArgs,
         ) => Promise<BuiltInBrowserScreenshot>;
         selectPoint: (
           args: BuiltInBrowserSelectPointArgs,
         ) => Promise<BuiltInBrowserSelectResult>;
-        selectCurrent: () => Promise<BuiltInBrowserSelectResult>;
-        clearSelection: () => Promise<{ ok: true }>;
+        selectCurrent: (args?: BuiltInBrowserProjectScopeArgs) => Promise<BuiltInBrowserSelectResult>;
+        clearSelection: (args?: BuiltInBrowserProjectScopeArgs) => Promise<{ ok: true }>;
         onEvent: (cb: (ev: BuiltInBrowserEventPayload) => void) => () => void;
       };
       macosVm: {

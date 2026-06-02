@@ -19,6 +19,7 @@ import type { AgentChatFileRef } from "../../../shared/types";
 import { inferAttachmentType } from "../../../shared/types";
 import type { BuiltInBrowserTab } from "../../../shared/types/builtInBrowser";
 import { consumePendingBuiltInBrowserNavigation } from "../../lib/openExternal";
+import { useAppStore } from "../../state/appStore";
 import {
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT,
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT,
@@ -104,7 +105,12 @@ type BuiltInBrowserStatus = {
 };
 
 type BrowserTabTargetArgs = {
+  projectRoot?: string | null;
   tabId?: string | null;
+};
+
+type BrowserProjectScopeArgs = {
+  projectRoot?: string | null;
 };
 
 type BuiltInBrowserEventPayload = {
@@ -126,23 +132,23 @@ type BuiltInBrowserEventPayload = {
 };
 
 type BuiltInBrowserApi = {
-  getStatus: () => Promise<unknown>;
-  setBounds: (bounds: BrowserBounds) => Promise<void>;
-  attachWebview?: (args: { tabId: string; webContentsId: number }) => Promise<unknown>;
-  navigate: (args: { url: string; tabId?: string | null; newTab?: boolean }) => Promise<unknown>;
-  createTab?: (args?: { url?: string | null; activate?: boolean }) => Promise<unknown>;
-  switchTab?: (args: { tabId: string }) => Promise<unknown>;
-  closeTab?: (args: { tabId: string }) => Promise<unknown>;
+  getStatus: (args?: BrowserProjectScopeArgs) => Promise<unknown>;
+  setBounds: (bounds: BrowserBounds & BrowserProjectScopeArgs) => Promise<void>;
+  attachWebview?: (args: { tabId: string; webContentsId: number } & BrowserProjectScopeArgs) => Promise<unknown>;
+  navigate: (args: { url: string; tabId?: string | null; newTab?: boolean } & BrowserProjectScopeArgs) => Promise<unknown>;
+  createTab?: (args?: { url?: string | null; activate?: boolean } & BrowserProjectScopeArgs) => Promise<unknown>;
+  switchTab?: (args: { tabId: string } & BrowserProjectScopeArgs) => Promise<unknown>;
+  closeTab?: (args: { tabId: string } & BrowserProjectScopeArgs) => Promise<unknown>;
   reload: (args?: BrowserTabTargetArgs) => Promise<unknown>;
   goBack: (args?: BrowserTabTargetArgs) => Promise<unknown>;
   goForward: (args?: BrowserTabTargetArgs) => Promise<unknown>;
   stop: (args?: BrowserTabTargetArgs) => Promise<unknown>;
-  startInspect: () => Promise<void>;
-  stopInspect: () => Promise<void>;
+  startInspect: (args?: BrowserProjectScopeArgs) => Promise<void>;
+  stopInspect: (args?: BrowserProjectScopeArgs) => Promise<void>;
   captureScreenshot: (args?: BrowserTabTargetArgs) => Promise<unknown>;
-  selectPoint?: (args: { x: number; y: number; includeScreenshot?: boolean; tabId?: string | null }) => Promise<unknown>;
-  selectCurrent: () => Promise<unknown>;
-  clearSelection: () => Promise<void>;
+  selectPoint?: (args: { x: number; y: number; includeScreenshot?: boolean; tabId?: string | null } & BrowserProjectScopeArgs) => Promise<unknown>;
+  selectCurrent: (args?: BrowserProjectScopeArgs) => Promise<unknown>;
+  clearSelection: (args?: BrowserProjectScopeArgs) => Promise<void>;
   onEvent: (cb: (event: BuiltInBrowserEventPayload) => void) => () => void;
 };
 
@@ -391,6 +397,26 @@ function normalizeStatus(value: unknown, previous: BuiltInBrowserStatus | null):
   };
 }
 
+function eventProjectRoot(value: unknown): string | null | undefined {
+  if (!isRecord(value)) return undefined;
+  if ("profileProjectRoot" in value) {
+    const root = value.profileProjectRoot;
+    return typeof root === "string" && root.trim().length > 0 ? root : null;
+  }
+  if (isRecord(value.status)) return eventProjectRoot(value.status);
+  return undefined;
+}
+
+function browserEventMatchesProject(
+  event: BuiltInBrowserEventPayload,
+  projectRoot: string | null,
+): boolean {
+  const root = eventProjectRoot(event);
+  if (root === undefined) return true;
+  if (!projectRoot) return root === null;
+  return root === projectRoot;
+}
+
 function buildStatusInfo(apiAvailable: boolean, status: BuiltInBrowserStatus | null): StatusInfo {
   if (!apiAvailable) {
     return { label: "Unavailable", detail: "The built-in browser API is not exposed on window.ade.", tone: "error" };
@@ -595,6 +621,7 @@ export function ChatBuiltInBrowserPanel({
   onAddAttachment,
   onInsertDraft,
 }: ChatBuiltInBrowserPanelProps) {
+  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
   const browserSurfaceRef = useRef<HTMLDivElement | null>(null);
   const browserWebviewsRef = useRef<Map<string, BrowserWebviewElement>>(new Map());
   const browserWebviewAttachCleanupRef = useRef<Map<string, () => void>>(new Map());
@@ -622,6 +649,13 @@ export function ChatBuiltInBrowserPanel({
   const [captureSelection, setCaptureSelection] = useState<BrowserCaptureSelection | null>(null);
   const [browserInputSuppressed, setBrowserInputSuppressed] = useState(false);
   const [webviewNavigationNonce, setWebviewNavigationNonce] = useState(0);
+  const browserScope = useMemo<BrowserProjectScopeArgs>(
+    () => (projectRoot ? { projectRoot } : {}),
+    [projectRoot],
+  );
+  const withBrowserScope = useCallback(<T extends Record<string, unknown>>(args: T): T & BrowserProjectScopeArgs => (
+    (projectRoot ? { ...args, projectRoot } : args) as T & BrowserProjectScopeArgs
+  ), [projectRoot]);
 
   const statusInfo = useMemo(() => buildStatusInfo(apiAvailable, status), [apiAvailable, status]);
   const browserTabs = useMemo(() => status?.tabs ?? [], [status?.tabs]);
@@ -675,9 +709,9 @@ export function ChatBuiltInBrowserPanel({
 
   const refreshStatus = useCallback(async () => {
     const api = requireBrowserApi();
-    const nextStatus = await api.getStatus();
+    const nextStatus = await api.getStatus(browserScope);
     applyStatus(nextStatus);
-  }, [applyStatus]);
+  }, [applyStatus, browserScope]);
 
   const attachBrowserContextItem = useCallback(async (
     item: BuiltInBrowserContextItem,
@@ -739,7 +773,7 @@ export function ChatBuiltInBrowserPanel({
       const hidden: BrowserBounds = { x: 0, y: 0, width: 0, height: 0, visible: false };
       if (boundsEqual(latestBoundsRef.current, hidden)) return;
       latestBoundsRef.current = hidden;
-      api.setBounds(hidden).catch((error: unknown) => {
+      api.setBounds(withBrowserScope(hidden)).catch((error: unknown) => {
         setMessage({ tone: "error", text: `Could not hide browser fallback: ${errorMessage(error)}` });
       });
       return;
@@ -751,10 +785,10 @@ export function ChatBuiltInBrowserPanel({
     };
     if (boundsEqual(latestBoundsRef.current, next)) return;
     latestBoundsRef.current = next;
-    api.setBounds(next).catch((error: unknown) => {
+    api.setBounds(withBrowserScope(next)).catch((error: unknown) => {
       setMessage({ tone: "error", text: `Could not position browser: ${errorMessage(error)}` });
     });
-  }, []);
+  }, [withBrowserScope]);
 
   const hideNativeBrowserView = useCallback(async () => {
     const api = getBrowserApi();
@@ -768,9 +802,9 @@ export function ChatBuiltInBrowserPanel({
       visible: false,
     };
     latestBoundsRef.current = hidden;
-    await api.stopInspect().catch(() => {});
-    await api.setBounds(hidden).catch(() => {});
-  }, []);
+    await api.stopInspect(browserScope).catch(() => {});
+    await api.setBounds(withBrowserScope(hidden)).catch(() => {});
+  }, [browserScope, withBrowserScope]);
 
   useEffect(() => {
     let restoreFrame: number | null = null;
@@ -851,12 +885,12 @@ export function ChatBuiltInBrowserPanel({
       const last = latestBoundsRef.current;
       const api = getBrowserApi();
       if (api && last) {
-        api.stopInspect().catch(() => {});
+        api.stopInspect(browserScope).catch(() => {});
         latestBoundsRef.current = { ...last, visible: false };
-        api.setBounds({ ...last, visible: false }).catch(() => {});
+        api.setBounds(withBrowserScope({ ...last, visible: false })).catch(() => {});
       }
     };
-  }, [reportBounds]);
+  }, [browserScope, reportBounds, withBrowserScope]);
 
   useEffect(() => {
     const api = getBrowserApi();
@@ -865,7 +899,7 @@ export function ChatBuiltInBrowserPanel({
       return undefined;
     }
     let cancelled = false;
-    api.getStatus()
+    api.getStatus(browserScope)
       .then((nextStatus) => {
         if (!cancelled) applyStatus(nextStatus);
       })
@@ -873,6 +907,7 @@ export function ChatBuiltInBrowserPanel({
         if (!cancelled) setMessage({ tone: "error", text: errorMessage(error) });
       });
     const unsubscribe = api.onEvent((event) => {
+      if (!browserEventMatchesProject(event, projectRoot)) return;
       const eventType = typeof event.type === "string" ? event.type : "";
       if (event.status) {
         applyStatus(event.status);
@@ -924,7 +959,7 @@ export function ChatBuiltInBrowserPanel({
       cancelled = true;
       unsubscribe();
     };
-  }, [applyStatus, attachBrowserContextItem, onAddContext]);
+  }, [applyStatus, attachBrowserContextItem, browserScope, onAddContext, projectRoot]);
 
   useEffect(() => () => {
     for (const cleanup of browserWebviewAttachCleanupRef.current.values()) cleanup();
@@ -963,7 +998,7 @@ export function ChatBuiltInBrowserPanel({
       const attachKey = `${tabId}:${webContentsId}`;
       if (browserWebviewAttachKeysRef.current.get(tabId) === attachKey) return;
       browserWebviewAttachKeysRef.current.set(tabId, attachKey);
-      void api.attachWebview?.({ tabId, webContentsId })
+      void api.attachWebview?.(withBrowserScope({ tabId, webContentsId }))
         .then((nextStatus) => applyStatus(nextStatus))
         .catch((error: unknown) => {
           browserWebviewAttachKeysRef.current.delete(tabId);
@@ -1013,7 +1048,7 @@ export function ChatBuiltInBrowserPanel({
       webview.style.pointerEvents = isActive && !captureBase && !browserInputSuppressed ? "auto" : "none";
       webview.setAttribute("aria-hidden", isActive ? "false" : "true");
     }
-  }, [activeTabId, applyStatus, browserInputSuppressed, browserTabs, tabIdsSignature, captureBase, webviewNavigationNonce]);
+  }, [activeTabId, applyStatus, browserInputSuppressed, browserTabs, tabIdsSignature, captureBase, webviewNavigationNonce, withBrowserScope]);
 
   const runBusy = useCallback(async (label: string, action: () => Promise<void>) => {
     setBusy(label);
@@ -1063,11 +1098,11 @@ export function ChatBuiltInBrowserPanel({
     const attachKey = `${activeTabId}:${webContentsId}`;
     if (browserWebviewAttachKeysRef.current.get(activeTabId) !== attachKey) {
       browserWebviewAttachKeysRef.current.set(activeTabId, attachKey);
-      const nextStatus = await api.attachWebview({ tabId: activeTabId, webContentsId });
+      const nextStatus = await api.attachWebview(withBrowserScope({ tabId: activeTabId, webContentsId }));
       applyStatus(nextStatus);
     }
     return true;
-  }, [activeTabId, applyStatus]);
+  }, [activeTabId, applyStatus, withBrowserScope]);
 
   const captureActiveRendererWebview = useCallback(async (): Promise<BuiltInBrowserScreenshot | null> => {
     if (!activeTabId) return null;
@@ -1117,7 +1152,7 @@ export function ChatBuiltInBrowserPanel({
     void (async () => {
       try {
         if (shouldUseRendererBrowserWebviews(api) && api.createTab) {
-          const nextStatus = normalizeStatus(await api.createTab({ activate: true }), statusRef.current);
+          const nextStatus = normalizeStatus(await api.createTab(withBrowserScope({ activate: true })), statusRef.current);
           applyStatus(nextStatus);
           const tabId = nextStatus.activeTabId;
           if (!tabId) throw new Error("ADE browser could not create a tab.");
@@ -1126,8 +1161,8 @@ export function ChatBuiltInBrowserPanel({
           return;
         }
         const nextStatus = api.createTab
-          ? await api.createTab({ url: DEFAULT_BROWSER_URL, activate: true })
-          : await api.navigate({ url: DEFAULT_BROWSER_URL, newTab: true });
+          ? await api.createTab(withBrowserScope({ url: DEFAULT_BROWSER_URL, activate: true }))
+          : await api.navigate(withBrowserScope({ url: DEFAULT_BROWSER_URL, newTab: true }));
         applyStatus(nextStatus);
         setUrlInput(DEFAULT_BROWSER_URL);
       } catch (error) {
@@ -1135,7 +1170,7 @@ export function ChatBuiltInBrowserPanel({
         setMessage({ tone: "error", text: errorMessage(error) });
       }
     })();
-  }, [apiAvailable, applyStatus, browserTabs.length, navigateRendererWebview, hasStatus]);
+  }, [apiAvailable, applyStatus, browserTabs.length, navigateRendererWebview, hasStatus, withBrowserScope]);
 
   const handleNavigate = useCallback(
     (event?: FormEvent<HTMLFormElement>) => {
@@ -1154,7 +1189,7 @@ export function ChatBuiltInBrowserPanel({
           let tabId: string | null = activeTabId;
           if (!tabId) {
             if (!api.createTab) throw new Error("This ADE build does not support browser tab creation.");
-            const nextStatus = normalizeStatus(await api.createTab({ activate: true }), statusRef.current);
+            const nextStatus = normalizeStatus(await api.createTab(withBrowserScope({ activate: true })), statusRef.current);
             applyStatus(nextStatus);
             tabId = nextStatus.activeTabId;
           }
@@ -1163,12 +1198,12 @@ export function ChatBuiltInBrowserPanel({
           setUrlInput(nextUrl);
           return;
         }
-        await api.navigate({ url: nextUrl });
+        await api.navigate(withBrowserScope({ url: nextUrl }));
         setUrlInput(nextUrl);
         await refreshStatus();
       });
     },
-    [activeTabId, applyStatus, navigateRendererWebview, refreshStatus, restoreLiveBrowserView, runBusy, urlInput],
+    [activeTabId, applyStatus, navigateRendererWebview, refreshStatus, restoreLiveBrowserView, runBusy, urlInput, withBrowserScope],
   );
 
   const handleNewTab = useCallback(() => {
@@ -1176,7 +1211,7 @@ export function ChatBuiltInBrowserPanel({
       if (captureModeRef.current) restoreLiveBrowserView();
       const api = requireBrowserApi();
       if (shouldUseRendererBrowserWebviews(api) && api.createTab) {
-        const nextStatus = normalizeStatus(await api.createTab({ activate: true }), statusRef.current);
+        const nextStatus = normalizeStatus(await api.createTab(withBrowserScope({ activate: true })), statusRef.current);
         applyStatus(nextStatus);
         const tabId = nextStatus.activeTabId;
         if (!tabId) throw new Error("ADE browser could not create a tab.");
@@ -1185,101 +1220,101 @@ export function ChatBuiltInBrowserPanel({
         return;
       }
       if (api.createTab) {
-        const nextStatus = await api.createTab({ url: DEFAULT_BROWSER_URL, activate: true });
+        const nextStatus = await api.createTab(withBrowserScope({ url: DEFAULT_BROWSER_URL, activate: true }));
         applyStatus(nextStatus);
       } else {
-        const nextStatus = await api.navigate({ url: DEFAULT_BROWSER_URL, newTab: true });
+        const nextStatus = await api.navigate(withBrowserScope({ url: DEFAULT_BROWSER_URL, newTab: true }));
         applyStatus(nextStatus);
       }
       setUrlInput(DEFAULT_BROWSER_URL);
     });
-  }, [applyStatus, navigateRendererWebview, restoreLiveBrowserView, runBusy]);
+  }, [applyStatus, navigateRendererWebview, restoreLiveBrowserView, runBusy, withBrowserScope]);
 
   const handleSwitchTab = useCallback((tabId: string) => {
     void runBusy("switch-tab", async () => {
       if (captureModeRef.current) restoreLiveBrowserView();
       const api = requireBrowserApi();
       if (api.switchTab) {
-        await api.switchTab({ tabId });
+        await api.switchTab(withBrowserScope({ tabId }));
       } else {
         throw new Error("This ADE build does not support browser tab switching.");
       }
       await refreshStatus();
     });
-  }, [refreshStatus, restoreLiveBrowserView, runBusy]);
+  }, [refreshStatus, restoreLiveBrowserView, runBusy, withBrowserScope]);
 
   const handleCloseTab = useCallback((tabId: string) => {
     void runBusy("close-tab", async () => {
       if (captureModeRef.current) restoreLiveBrowserView();
       const api = requireBrowserApi();
       if (api.closeTab) {
-        await api.closeTab({ tabId });
+        await api.closeTab(withBrowserScope({ tabId }));
       } else {
         throw new Error("This ADE build does not support closing browser tabs.");
       }
       await refreshStatus();
     });
-  }, [refreshStatus, restoreLiveBrowserView, runBusy]);
+  }, [refreshStatus, restoreLiveBrowserView, runBusy, withBrowserScope]);
 
   const handleBack = useCallback(() => {
     void runBusy("back", async () => {
       const api = requireBrowserApi();
-      await api.goBack();
+      await api.goBack(browserScope);
       await refreshStatus();
     });
-  }, [refreshStatus, runBusy]);
+  }, [browserScope, refreshStatus, runBusy]);
 
   const handleForward = useCallback(() => {
     void runBusy("forward", async () => {
       const api = requireBrowserApi();
-      await api.goForward();
+      await api.goForward(browserScope);
       await refreshStatus();
     });
-  }, [refreshStatus, runBusy]);
+  }, [browserScope, refreshStatus, runBusy]);
 
   const handleReload = useCallback(() => {
     void runBusy("reload", async () => {
       const api = requireBrowserApi();
-      await api.reload();
+      await api.reload(browserScope);
       await refreshStatus();
     });
-  }, [refreshStatus, runBusy]);
+  }, [browserScope, refreshStatus, runBusy]);
 
   const handleStop = useCallback(() => {
     void runBusy("stop", async () => {
       const api = requireBrowserApi();
-      await api.stop();
+      await api.stop(browserScope);
       await refreshStatus();
     });
-  }, [refreshStatus, runBusy]);
+  }, [browserScope, refreshStatus, runBusy]);
 
   const handleInspectToggle = useCallback(() => {
     void runBusy(inspecting ? "inspect-off" : "inspect-on", async () => {
       const api = requireBrowserApi();
       if (inspecting) {
-        await api.stopInspect();
+        await api.stopInspect(browserScope);
       } else {
-        await api.startInspect();
+        await api.startInspect(browserScope);
       }
       await refreshStatus();
     });
-  }, [inspecting, refreshStatus, runBusy]);
+  }, [browserScope, inspecting, refreshStatus, runBusy]);
 
   const handleClearSelection = useCallback(() => {
     void runBusy("clear-selection", async () => {
       const api = requireBrowserApi();
-      await api.clearSelection();
+      await api.clearSelection(browserScope);
       selectedItemRef.current = null;
       setSelectedItem(null);
       setStatus((current) => current ? { ...current, selectedItem: null } : current);
       setAttachmentAck(null);
     });
-  }, [runBusy]);
+  }, [browserScope, runBusy]);
 
   const handleAttachSelection = useCallback(() => {
     void runBusy("select", async () => {
       const api = requireBrowserApi();
-      const result = await api.selectCurrent();
+      const result = await api.selectCurrent(browserScope);
       const item =
         normalizeSelectionResult(result, statusRef.current)
         ?? selectedItemRef.current
@@ -1288,7 +1323,7 @@ export function ChatBuiltInBrowserPanel({
       if (!item) throw new Error("Select an element in Inspect mode first.");
       await attachBrowserContextItem(item, { force: true, label: "Browser context attached." });
     });
-  }, [attachBrowserContextItem, runBusy]);
+  }, [attachBrowserContextItem, browserScope, runBusy]);
 
   const handleAttachScreenshot = useCallback(() => {
     void runBusy("screenshot", async () => {
@@ -1302,7 +1337,7 @@ export function ChatBuiltInBrowserPanel({
       await attachActiveRendererWebview();
       let screenshot: BuiltInBrowserScreenshot | null = null;
       try {
-        const result = await api.captureScreenshot();
+        const result = await api.captureScreenshot(browserScope);
         screenshot = normalizeScreenshot(result, statusRef.current);
       } catch (error) {
         screenshot = await captureActiveRendererWebview();
@@ -1319,7 +1354,7 @@ export function ChatBuiltInBrowserPanel({
       await hideNativeBrowserView();
       setMessage({ tone: "info", text: "Drag a browser region to attach the screenshot crop and nearby page context." });
     });
-  }, [attachActiveRendererWebview, captureActiveRendererWebview, hideNativeBrowserView, onAddContext, restoreLiveBrowserView, runBusy]);
+  }, [attachActiveRendererWebview, browserScope, captureActiveRendererWebview, hideNativeBrowserView, onAddContext, restoreLiveBrowserView, runBusy]);
 
   const addBrowserCaptureContext = useCallback(async (frame: BrowserFrame) => {
     if (!captureBase) return;
@@ -1350,7 +1385,7 @@ export function ChatBuiltInBrowserPanel({
     let domItem: BuiltInBrowserContextItem | null = null;
     if (api?.selectPoint) {
       try {
-        const pointResult = await api.selectPoint({ x: domPoint.x, y: domPoint.y, includeScreenshot: false });
+        const pointResult = await api.selectPoint(withBrowserScope({ x: domPoint.x, y: domPoint.y, includeScreenshot: false }));
         domItem = normalizeSelectionResult(pointResult, statusRef.current);
       } catch (error) {
         setMessage({ tone: "error", text: `Captured region, but DOM point context failed: ${errorMessage(error)}` });
@@ -1420,7 +1455,7 @@ export function ChatBuiltInBrowserPanel({
       label: domItem ? "Browser capture + DOM attached." : "Browser capture attached.",
     });
     restoreLiveBrowserView();
-  }, [attachBrowserContextItem, captureBase, onAddAttachment, onAddContext, restoreLiveBrowserView, sessionId]);
+  }, [attachBrowserContextItem, captureBase, onAddAttachment, onAddContext, restoreLiveBrowserView, sessionId, withBrowserScope]);
 
   const handleBrowserCapturePointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
     if (!captureImageDataUrl || !captureBase?.width || !captureBase.height) return;

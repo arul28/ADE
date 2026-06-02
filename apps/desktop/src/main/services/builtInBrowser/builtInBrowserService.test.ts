@@ -670,6 +670,39 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(service.getStatus(browserWin).url).toBe("https://beta.example.test/");
   });
 
+  it("routes project-scoped calls to an inactive project tab without activating the window project", async () => {
+    const projectRootByWindow = new Map<number, string>();
+    const windowsByProjectRoot = new Map<string, ReturnType<typeof fakeBrowserWindow>>();
+    const service = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
+      getWindowForProjectRoot: (projectRoot) =>
+        (
+          windowsByProjectRoot.get(projectRoot) as unknown as
+            Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0] | undefined
+        ) ?? null,
+    });
+    const win = fakeBrowserWindow();
+    projectRootByWindow.set(win.id, "/Users/ade/project-beta");
+    windowsByProjectRoot.set("/Users/ade/project-alpha", win);
+    windowsByProjectRoot.set("/Users/ade/project-beta", win);
+    const browserWin = win as unknown as Parameters<typeof service.attachToWindow>[0];
+
+    service.attachToWindow(browserWin);
+    await service.createTab({ url: "https://beta.example.test", activate: true }, browserWin);
+    await service.navigate({
+      projectRoot: "/Users/ade/project-alpha",
+      url: "https://alpha.example.test",
+      newTab: true,
+    });
+
+    expect(projectRootByWindow.get(win.id)).toBe("/Users/ade/project-beta");
+    expect(service.getStatus(browserWin).profileProjectRoot).toBe("/Users/ade/project-beta");
+    expect(service.getStatus(browserWin).url).toBe("https://beta.example.test/");
+    expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }).profileProjectRoot).toBe("/Users/ade/project-alpha");
+    expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }).url).toBe("https://alpha.example.test/");
+  });
+
   it("re-resolves the active window profile for bridge-style calls after project switches", async () => {
     const projectRootByWindow = new Map<number, string>();
     const service = createBuiltInBrowserService({

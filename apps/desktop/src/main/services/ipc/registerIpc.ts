@@ -69,6 +69,7 @@ import type {
   BuiltInBrowserCreateTabArgs,
   BuiltInBrowserNavigateArgs,
   BuiltInBrowserOpenPanelArgs,
+  BuiltInBrowserProjectScopeArgs,
   BuiltInBrowserSelectPointArgs,
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
@@ -2210,6 +2211,7 @@ export function registerIpc({
     const visibleValue = record.visible;
     if (typeof visibleValue !== "boolean") invalidBuiltInBrowserArg(channel, "visible must be a boolean");
     return {
+      ...parseBuiltInBrowserProjectScopeArgs(record, channel),
       x: builtInBrowserNumber(record, "x", channel, { min: 0, max: 100_000 }),
       y: builtInBrowserNumber(record, "y", channel, { min: 0, max: 100_000 }),
       width: builtInBrowserNumber(record, "width", channel, { min: 0, max: 100_000 }),
@@ -2223,7 +2225,7 @@ export function registerIpc({
     const webContentsId = builtInBrowserNumber(record, "webContentsId", channel, { min: 1, max: Number.MAX_SAFE_INTEGER });
     const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
     if (!tabId) return invalidBuiltInBrowserArg(channel, "tabId must be a non-empty string");
-    return { tabId, webContentsId };
+    return { ...parseBuiltInBrowserProjectScopeArgs(record, channel), tabId, webContentsId };
   };
 
   const parseBuiltInBrowserNavigateArgs = (value: unknown, channel: string): BuiltInBrowserNavigateArgs => {
@@ -2263,11 +2265,28 @@ export function registerIpc({
     return undefined;
   }
 
+  const parseBuiltInBrowserProjectScopeArgs = (
+    record: Record<string, unknown>,
+    channel: string,
+  ): BuiltInBrowserProjectScopeArgs => {
+    const projectRoot = optionalBuiltInBrowserString(record, "projectRoot", channel, 4096);
+    return {
+      ...(projectRoot ? { projectRoot } : {}),
+    };
+  };
+
+  const parseBuiltInBrowserProjectScopeInput = (
+    value: unknown,
+    channel: string,
+  ): BuiltInBrowserProjectScopeArgs =>
+    parseBuiltInBrowserProjectScopeArgs(builtInBrowserRecord(value, channel, false), channel);
+
   const parseBuiltInBrowserClaimArgs = (record: Record<string, unknown>, channel: string): BuiltInBrowserClaimArgs => {
     const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
     const laneId = optionalBuiltInBrowserString(record, "laneId", channel, 128);
     const chatSessionId = optionalBuiltInBrowserString(record, "chatSessionId", channel, 128);
     return {
+      ...parseBuiltInBrowserProjectScopeArgs(record, channel),
       ...(tabId ? { tabId } : {}),
       ...(laneId ? { laneId } : {}),
       ...(chatSessionId ? { chatSessionId } : {}),
@@ -2279,6 +2298,7 @@ export function registerIpc({
     const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
     const sessionId = optionalBuiltInBrowserString(record, "sessionId", channel, 128);
     return {
+      ...parseBuiltInBrowserProjectScopeArgs(record, channel),
       ...(tabId ? { tabId } : {}),
       ...(sessionId ? { sessionId } : {}),
     };
@@ -2313,6 +2333,7 @@ export function registerIpc({
     const sessionId = optionalBuiltInBrowserString(record, "sessionId", channel, 128);
     const includeScreenshot = record.includeScreenshot === false ? false : undefined;
     return {
+      ...parseBuiltInBrowserProjectScopeArgs(record, channel),
       ...(tabId ? { tabId } : {}),
       ...(sessionId ? { sessionId } : {}),
       x: builtInBrowserNumber(record, "x", channel, { min: 0, max: 100_000 }),
@@ -7158,9 +7179,9 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.builtInBrowserGetStatus, async (event) => {
+  ipcMain.handle(IPC.builtInBrowserGetStatus, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserGetStatus, { windowMs: 10_000, max: 120 });
-    return ensureBuiltInBrowser().getStatus(win);
+    return ensureBuiltInBrowser().getStatus(parseBuiltInBrowserProjectScopeInput(arg, IPC.builtInBrowserGetStatus), win);
   });
 
   ipcMain.handle(IPC.builtInBrowserShowPanel, async (event, arg) => {
@@ -7218,14 +7239,14 @@ export function registerIpc({
     return ensureBuiltInBrowser().stop(parseBuiltInBrowserTabTargetArgs(arg, IPC.builtInBrowserStop), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserStartInspect, async (event) => {
+  ipcMain.handle(IPC.builtInBrowserStartInspect, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStartInspect, { windowMs: 10_000, max: 40 });
-    return ensureBuiltInBrowser().startInspect(win);
+    return ensureBuiltInBrowser().startInspect(parseBuiltInBrowserProjectScopeInput(arg, IPC.builtInBrowserStartInspect), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserStopInspect, async (event) => {
+  ipcMain.handle(IPC.builtInBrowserStopInspect, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStopInspect, { windowMs: 10_000, max: 80 });
-    return ensureBuiltInBrowser().stopInspect(win);
+    return ensureBuiltInBrowser().stopInspect(parseBuiltInBrowserProjectScopeInput(arg, IPC.builtInBrowserStopInspect), win);
   });
 
   ipcMain.handle(IPC.builtInBrowserCaptureScreenshot, async (event, arg) => {
@@ -7238,14 +7259,14 @@ export function registerIpc({
     return ensureBuiltInBrowser().selectPoint(parseBuiltInBrowserSelectPointArgs(arg, IPC.builtInBrowserSelectPoint), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserSelectCurrent, async (event) => {
+  ipcMain.handle(IPC.builtInBrowserSelectCurrent, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSelectCurrent, { windowMs: 10_000, max: 80 });
-    return ensureBuiltInBrowser().selectCurrent(win);
+    return ensureBuiltInBrowser().selectCurrent(parseBuiltInBrowserProjectScopeInput(arg, IPC.builtInBrowserSelectCurrent), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserClearSelection, async (event) => {
+  ipcMain.handle(IPC.builtInBrowserClearSelection, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserClearSelection, { windowMs: 10_000, max: 80 });
-    return ensureBuiltInBrowser().clearSelection(win);
+    return ensureBuiltInBrowser().clearSelection(parseBuiltInBrowserProjectScopeInput(arg, IPC.builtInBrowserClearSelection), win);
   });
 
   ipcMain.handle(IPC.macosVmGetStatus, async (event, arg = {}): Promise<MacosVmStatus> => {

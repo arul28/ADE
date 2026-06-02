@@ -1126,12 +1126,6 @@ app.whenReady().then(async () => {
       );
       if (!selection) return null;
       const targetWindow = candidateWindows.find((win) => win.id === selection.windowId) ?? null;
-      if (targetWindow && selection.activateProjectRoot) {
-        bindWindowToProject(targetWindow.id, normalizedRoot, {
-          emit: true,
-          foreground: false,
-        });
-      }
       return targetWindow;
     },
     onEvent: (payload, targetWindow) => {
@@ -1240,6 +1234,22 @@ app.whenReady().then(async () => {
     return projectContexts.get(projectRoot)?.project ?? null;
   };
 
+  const projectWindowTitle = (project: ProjectInfo | null, binding?: OpenProjectBinding | null): string => {
+    const label =
+      binding?.displayName
+      ?? project?.displayName
+      ?? (project?.rootPath ? path.basename(project.rootPath) : null);
+    return label ? `${label} - ADE` : "ADE";
+  };
+
+  const setWindowTitle = (win: BrowserWindow, title: string): void => {
+    try {
+      win.setTitle(title);
+    } catch {
+      // ignore stale window/title races
+    }
+  };
+
   const projectsForWindowTabs = (windowId: number | null): ProjectInfo[] => {
     if (windowId == null) return [];
     const roots = windowProjectTabRoots.get(windowId) ?? new Set<string>();
@@ -1324,6 +1334,7 @@ app.whenReady().then(async () => {
   ): void => {
     const win = windowId == null ? null : BrowserWindow.fromId(windowId);
     if (!win || win.isDestroyed()) return;
+    setWindowTitle(win, projectWindowTitle(project));
     try {
       win.webContents.send(IPC.appProjectChanged, project);
     } catch {
@@ -1337,6 +1348,9 @@ app.whenReady().then(async () => {
   ): void => {
     const win = windowId == null ? null : BrowserWindow.fromId(windowId);
     if (!win || win.isDestroyed()) return;
+    if (binding?.kind === "remote") {
+      setWindowTitle(win, projectWindowTitle(null, binding));
+    }
     try {
       win.webContents.send(IPC.appProjectBindingChanged, binding);
     } catch {
