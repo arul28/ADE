@@ -80,6 +80,7 @@ function resetStore() {
     onboardingEnabled: true,
     didYouKnowEnabled: true,
     launchPromptClipboardEnabled: true,
+    launchPromptClipboardNoticeEnabled: true,
     laneInspectorTabs: {},
     workViewByProject: {},
     laneWorkViewByScope: {},
@@ -238,16 +239,22 @@ describe("appStore", () => {
       expect(useAppStore.getState().chatUserMinimapEnabled).toBe(true);
     });
 
-    it("persists the launch prompt clipboard toggle", () => {
+    it("persists the launch prompt clipboard toggles", () => {
       expect(useAppStore.getState().launchPromptClipboardEnabled).toBe(true);
+      expect(useAppStore.getState().launchPromptClipboardNoticeEnabled).toBe(true);
       useAppStore.getState().setLaunchPromptClipboardEnabled(false);
+      useAppStore.getState().setLaunchPromptClipboardNoticeEnabled(false);
       expect(useAppStore.getState().launchPromptClipboardEnabled).toBe(false);
+      expect(useAppStore.getState().launchPromptClipboardNoticeEnabled).toBe(false);
       const calls = mockLocalStorage.setItem.mock.calls.filter(
         ([key]) => key === "ade.userPreferences.v1",
       );
       const latest = calls[calls.length - 1];
       expect(latest).toBeTruthy();
-      expect(JSON.parse(latest![1])).toMatchObject({ launchPromptClipboardEnabled: false });
+      expect(JSON.parse(latest![1])).toMatchObject({
+        launchPromptClipboardEnabled: false,
+        launchPromptClipboardNoticeEnabled: false,
+      });
     });
 
     it("persists transcript density and shell geometry prefs", () => {

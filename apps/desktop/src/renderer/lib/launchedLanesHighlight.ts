@@ -21,10 +21,15 @@ function isExpired(highlight: LaunchedLanesHighlight): boolean {
 }
 
 export function rememberLaunchedLanes(args: { laneIds: string[]; sessionIds: string[] }): void {
-  if (!args.laneIds.length && !args.sessionIds.length) return;
+  const sessionIds = [...args.sessionIds];
+  // Lane ids drive the Lanes tab's "creating" overlay while a launched agent
+  // session materializes. Lane-only creates have no session to wait for, so do
+  // not publish their lane ids into that loading path.
+  const laneIds = sessionIds.length > 0 ? [...args.laneIds] : [];
+  if (!laneIds.length && !sessionIds.length) return;
   pending = {
-    laneIds: [...args.laneIds],
-    sessionIds: [...args.sessionIds],
+    laneIds,
+    sessionIds,
     requestedAt: Date.now(),
   };
   for (const listener of listeners) listener(pending);

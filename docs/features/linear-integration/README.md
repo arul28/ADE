@@ -356,7 +356,9 @@ Renderer wiring:
   one-shot signal (`rememberLaunchedLanes` / `consumeLaunchedLanesHighlight`
   / `subscribeLaunchedLanesHighlight`, 30s TTL) so after a batch launch
   reroutes from the quick view, the Lanes tab opens its stack drawer and
-  pulses the newly launched agents.
+  pulses the newly launched agents. Lane ids are published only when the
+  launch also produced session ids, so lane-only batch creates do not trigger
+  the Lanes tab's agent-loading overlay.
 - `apps/desktop/src/renderer/components/chat/AgentChatComposer.tsx`
   — the composer's Linear attach affordance opens a
   `LinearIssueContextDialog` that hosts the same
@@ -586,7 +588,8 @@ On submit the orchestrator in `linearBatchLaunch.ts` runs `runBatchLaunch`:
 `creating-lane` → `launching-agent` → `done` / `failed`) with retry and
 jump-to-lane affordances. After the run, `rememberLaunchedLanes`
 (`launchedLanesHighlight.ts`) signals the Lanes tab to open its stack drawer
-and pulse the newly launched agents (one-shot, 30s TTL).
+and pulse the newly launched agents (one-shot, 30s TTL). Lane-only creates
+intentionally skip this signal because there is no agent session to wait for.
 
 ## Session-scoped issue attachment and CLI context injection
 

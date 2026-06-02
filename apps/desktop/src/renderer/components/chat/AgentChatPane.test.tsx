@@ -17,6 +17,7 @@ import type {
 } from "../../../shared/types";
 import { createDynamicCursorCliModelDescriptor, getModelById } from "../../../shared/modelRegistry";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
+import { DRAFT_LAUNCH_JOB_STALE_AFTER_MS } from "../../lib/draftLaunchJobs";
 import { useAppStore } from "../../state/appStore";
 import {
   rememberRuntimeCatalog,
@@ -645,8 +646,10 @@ function resetChatTestStore() {
     projectTransition: null,
     laneInspectorTabs: {},
     launchPromptClipboardEnabled: true,
+    launchPromptClipboardNoticeEnabled: true,
     workViewByProject: {},
     laneWorkViewByScope: {},
+    draftLaunchJobsByScope: {},
   });
 }
 
@@ -924,6 +927,20 @@ function composerDraftStorageKeyForTest(args: {
     "ade.chat.composerDraft.v1",
     args.projectRoot,
     args.companionStateKey,
+    "standard",
+    args.workDraftKind ?? "work-start",
+  ].map(encodeURIComponent).join(":");
+}
+
+function draftLaunchJobsScopeKeyForTest(args: {
+  projectRoot: string;
+  laneId: string;
+  workDraftKind?: "work-start" | "chat-orchestrator";
+}) {
+  return [
+    "draft-launch-jobs",
+    args.projectRoot,
+    args.laneId,
     "standard",
     args.workDraftKind ?? "work-start",
   ].map(encodeURIComponent).join(":");
@@ -3026,6 +3043,36 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("copies submitted prompts when the launch clipboard reminder is disabled", async () => {
+    useAppStore.setState({ launchPromptClipboardNoticeEnabled: false });
+    const { send, writeClipboardText } = installAdeMocks({ sessions: [] });
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId="lane-1"
+          forceNewSession
+        />
+      </MemoryRouter>,
+    );
+
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Copy quietly." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: "Copy quietly." }));
+      expect(writeClipboardText).toHaveBeenCalledWith("Copy quietly.");
+    });
+  });
+
   it("does not copy submitted prompts when the launch clipboard setting is disabled", async () => {
     useAppStore.setState({ launchPromptClipboardEnabled: false });
     const { send, writeClipboardText } = installAdeMocks({ sessions: [] });
@@ -3674,7 +3721,7 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalled();
-      expect(screen.getByText(/Creating lane for chat/i)).toBeTruthy();
+      expect(screen.getByText(/Choosing a branch name/i)).toBeTruthy();
       expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
       expect((screen.getByRole("button", { name: "Auto-create in background" }) as HTMLButtonElement).disabled).toBe(true);
     });
@@ -3690,6 +3737,222 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(screen.getByText(/Launched chat in auto-created-lane/i)).toBeTruthy();
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Next thought while it launches.");
+    });
+  });
+
+  it("keeps a pending auto-create launch visible after the new chat pane remounts", async () => {
+    const { createLane, suggestLaneName } = installAdeMocks({ sessions: [] });
+    let resolveSuggestedName!: (value: string) => void;
+    let resolveCreateLane!: () => void;
+    suggestLaneName.mockImplementation(() => new Promise<string>((resolve) => {
+      resolveSuggestedName = resolve;
+    }));
+    createLane.mockImplementation(({ name }: { name: string; parentLaneId: string }) => new Promise((resolve) => {
+      resolveCreateLane = () => resolve({
+        id: `lane-${name}`,
+        name,
+        laneType: "worktree",
+        branchRef: `refs/heads/${name}`,
+        worktreePath: `/tmp/project-under-test/${name}`,
+        parentLaneId: "lane-primary",
+      });
+    }));
+
+    const rendered = renderAutoCreateDraftPane();
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Keep this launch visible." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
+
+    await waitFor(() => {
+      expect(suggestLaneName).toHaveBeenCalledTimes(1);
+      expect(screen.getByText(/Choosing a branch name/i)).toBeTruthy();
+    });
+    expect(screen.queryByRole("button", { name: "Dismiss launch status" })).toBeNull();
+
+    rendered.unmount();
+    renderAutoCreateDraftPane();
+
+    expect(await screen.findByText(/Choosing a branch name/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Dismiss launch status" })).toBeNull();
+
+    await act(async () => {
+      resolveSuggestedName("remounted-lane");
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/^Creating lane for chat\.\.\.$/i)).toBeTruthy();
+    });
+
+    await act(async () => {
+      resolveCreateLane();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Launched chat in remounted-lane/i)).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Dismiss launch status" })).toBeTruthy();
+    });
+  });
+
+  it("allows stale active draft launch rows to be hidden", async () => {
+    installAdeMocks({ sessions: [] });
+    const scopeKey = draftLaunchJobsScopeKeyForTest({
+      projectRoot: "/tmp/project-under-test",
+      laneId: "lane-1",
+    });
+    useAppStore.setState({
+      draftLaunchJobsByScope: {
+        [scopeKey]: [{
+          id: "stale-draft-launch",
+          mode: "background",
+          draftKind: "chat",
+          status: "naming-lane",
+          title: "Stale background launch",
+          laneId: null,
+          laneName: null,
+          sessionId: null,
+          error: null,
+          autoOpen: false,
+          createdAtMs: Date.now() - DRAFT_LAUNCH_JOB_STALE_AFTER_MS - 1,
+          snapshot: {
+            text: "Recover from a stuck launch.",
+            draft: "Recover from a stuck launch.",
+            modelId: "openai/gpt-5.4",
+            reasoningEffort: null,
+            codexFastMode: false,
+            executionMode: "focused",
+            interactionMode: "native",
+            nativeControls: {},
+            attachments: [],
+            contextAttachments: [],
+            iosContextItems: [],
+            appControlContextItems: [],
+            builtInBrowserContextItems: [],
+            macosVmContextItems: [],
+            visualContextPrefix: "",
+            visualContextDisplayChips: "",
+            isLiteralSlashCommand: false,
+          },
+        } as any],
+      },
+    });
+
+    renderAutoCreateDraftPane();
+
+    expect(await screen.findByText(/Still working\. You can hide this status/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Hide stale launch status" }));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("draft-launch-job")).toBeNull();
+    });
+  });
+
+  it("ignores late failures from hidden stale draft launch rows", async () => {
+    const { suggestLaneName } = installAdeMocks({ sessions: [] });
+    let rejectSuggestedName!: (error: Error) => void;
+    suggestLaneName.mockImplementation(() => new Promise<string>((_resolve, reject) => {
+      rejectSuggestedName = reject;
+    }));
+
+    renderAutoCreateDraftPane();
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Launch in the background, then leave it hidden." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
+
+    await waitFor(() => {
+      expect(suggestLaneName).toHaveBeenCalledTimes(1);
+      expect(screen.getByText(/Choosing a branch name/i)).toBeTruthy();
+    });
+
+    const scopeKey = draftLaunchJobsScopeKeyForTest({
+      projectRoot: "/tmp/project-under-test",
+      laneId: "lane-1",
+    });
+    const draftLaunchJobsByScope = useAppStore.getState().draftLaunchJobsByScope;
+    act(() => {
+      useAppStore.setState({
+        draftLaunchJobsByScope: {
+          ...draftLaunchJobsByScope,
+          [scopeKey]: (draftLaunchJobsByScope[scopeKey] ?? []).map((job) => ({
+            ...job,
+            createdAtMs: 0,
+          })),
+        },
+      });
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Hide stale launch status" }));
+    await waitFor(() => {
+      expect(screen.queryByTestId("draft-launch-job")).toBeNull();
+    });
+
+    await act(async () => {
+      rejectSuggestedName(new Error("hidden stale launch failed"));
+    });
+
+    expect(screen.queryByText(/hidden stale launch failed/i)).toBeNull();
+    expect(screen.queryByTestId("draft-launch-job")).toBeNull();
+  });
+
+  it("keeps an auto-create failure visible when the launch fails after remount", async () => {
+    const { send, suggestLaneName } = installAdeMocks({ sessions: [] });
+    let rejectSend!: (error: Error) => void;
+    suggestLaneName.mockResolvedValue("fails-after-remount");
+    send.mockImplementation(() => new Promise<void>((_resolve, reject) => {
+      rejectSend = reject;
+    }));
+
+    const rendered = renderAutoCreateDraftPane();
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Surface the failure after remount." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled();
+    });
+
+    rendered.unmount();
+    renderAutoCreateDraftPane();
+
+    await act(async () => {
+      rejectSend(new Error("send failed after remount"));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Launch failed: send failed after remount/i)).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Restore" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Dismiss failed launch" })).toBeTruthy();
     });
   });
 
@@ -3721,8 +3984,91 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalledTimes(1);
-      expect(screen.getAllByText(/Creating lane for chat/i)).toHaveLength(1);
+      expect(screen.getAllByText(/Choosing a branch name/i)).toHaveLength(1);
     });
+  });
+
+  it("keeps draft launch rows scoped to the lane pane that launched them", async () => {
+    const { suggestLaneName } = installAdeMocks({ sessions: [] });
+    suggestLaneName.mockImplementation(() => new Promise<string>(() => {
+      // Keep the launch in-flight so the status row remains visible.
+    }));
+    const lanes = [
+      {
+        id: "lane-primary",
+        name: "Primary",
+        laneType: "primary",
+        branchRef: "refs/heads/main",
+        worktreePath: "/tmp/project-under-test",
+      },
+      {
+        id: "lane-1",
+        name: "Lane one",
+        laneType: "worktree",
+        branchRef: "refs/heads/lane-one",
+        worktreePath: "/tmp/project-under-test/lane-one",
+        parentLaneId: "lane-primary",
+      },
+      {
+        id: "lane-2",
+        name: "Lane two",
+        laneType: "worktree",
+        branchRef: "refs/heads/lane-two",
+        worktreePath: "/tmp/project-under-test/lane-two",
+        parentLaneId: "lane-primary",
+      },
+    ] as any[];
+    useAppStore.setState({
+      project: { rootPath: "/tmp/project-under-test" } as any,
+      lanes,
+      selectedLaneId: "lane-1",
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/work"]}>
+        <div data-testid="lane-one-pane">
+          <AgentChatPane
+            laneId="lane-1"
+            forceDraftMode
+            embeddedWorkLayout
+            availableLanes={lanes}
+            onLaneChange={vi.fn()}
+          />
+        </div>
+        <div data-testid="lane-two-pane">
+          <AgentChatPane
+            laneId="lane-2"
+            forceDraftMode
+            embeddedWorkLayout
+            availableLanes={lanes}
+            onLaneChange={vi.fn()}
+          />
+        </div>
+      </MemoryRouter>,
+    );
+
+    const paneOne = screen.getByTestId("lane-one-pane");
+    const paneTwo = screen.getByTestId("lane-two-pane");
+    const modelTrigger = await within(paneOne).findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    fireEvent.click(await within(paneOne).findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+
+    const textbox = await within(paneOne).findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Only lane one should show this launch." } });
+    fireEvent.click(await within(paneOne).findByRole("button", { name: "Auto-create in background" }));
+
+    await waitFor(() => {
+      expect(suggestLaneName).toHaveBeenCalledTimes(1);
+      expect(within(paneOne).getByText(/Choosing a branch name/i)).toBeTruthy();
+    });
+    expect(within(paneTwo).queryByText(/Choosing a branch name/i)).toBeNull();
+    expect(within(paneTwo).queryByTestId("draft-launch-job")).toBeNull();
   });
 
   it("keeps every in-flight background draft launch visible past the completed-notice cap", async () => {
@@ -3753,7 +4099,7 @@ describe("AgentChatPane submit recovery", () => {
     }
 
     expect(screen.getAllByTestId("draft-launch-job")).toHaveLength(9);
-    expect(screen.getAllByText(/Creating lane for chat/i)).toHaveLength(9);
+    expect(screen.getAllByText(/Choosing a branch name/i)).toHaveLength(9);
   });
 
   it("allows multiple background auto-create launches to stay pending at the same time", async () => {
@@ -3795,7 +4141,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalledTimes(2);
-      expect(screen.getAllByText(/Creating lane for chat/i)).toHaveLength(2);
+      expect(screen.getAllByText(/Choosing a branch name/i)).toHaveLength(2);
     });
 
     await act(async () => {

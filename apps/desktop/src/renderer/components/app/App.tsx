@@ -589,6 +589,7 @@ function ProjectTabHost() {
     onboardingEnabled: s.onboardingEnabled,
     didYouKnowEnabled: s.didYouKnowEnabled,
     launchPromptClipboardEnabled: s.launchPromptClipboardEnabled,
+    launchPromptClipboardNoticeEnabled: s.launchPromptClipboardNoticeEnabled,
   })));
   const storesRef = React.useRef(new Map<string, AppStoreApi>());
   const lruRef = React.useRef<string[]>([]);

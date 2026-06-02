@@ -814,6 +814,7 @@ export function AgentChatComposer({
   onOpenAiSettings,
   onOpenLinearSettings,
   launchPromptClipboardEnabled = false,
+  launchPromptClipboardNoticeEnabled = true,
   onOpenLaunchPromptClipboardSettings,
   onStartOrchestratorChat,
   onStopOrchestratorChat,
@@ -965,6 +966,7 @@ export function AgentChatComposer({
   onOpenAiSettings?: () => void;
   onOpenLinearSettings?: () => void;
   launchPromptClipboardEnabled?: boolean;
+  launchPromptClipboardNoticeEnabled?: boolean;
   onOpenLaunchPromptClipboardSettings?: () => void;
   /**
    * Open the "New orchestrator chat" flow from the visible composer mode
@@ -1097,11 +1099,12 @@ export function AgentChatComposer({
   const canAttachIssueContext = !composerInputLocked && typeof onAddContextAttachment === "function";
   const showOrchestratorModeButton = Boolean(onStartOrchestratorChat && !sessionId && !parallelChatMode);
   const orchestratorModeButtonDisabled = composerInputLocked || busy || turnActive;
-  const showLaunchClipboardHelper =
+  const showLaunchClipboardNotice =
     launchPromptClipboardEnabled
-    && composerFocused
+    && launchPromptClipboardNoticeEnabled
     && !composerInputLocked
     && draft.trim().length > 0;
+  const showLaunchClipboardHelper = showLaunchClipboardNotice && composerFocused;
 
   const resizeTextarea = useCallback(() => {
     if (useRichComposer) return;
@@ -3358,7 +3361,7 @@ export function AgentChatComposer({
       }
       footer={
         <div className="ade-chat-composer-footer flex flex-col gap-2 px-2 py-1 sm:px-2.5">
-          {launchPromptClipboardEnabled && draft.trim().length > 0 && !composerInputLocked ? (
+          {showLaunchClipboardNotice ? (
             <div className="px-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-muted-fg/45">
               After submission your prompt will auto copy to clipboard.
             </div>

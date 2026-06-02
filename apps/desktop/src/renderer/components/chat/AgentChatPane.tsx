@@ -139,6 +139,18 @@ import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { getAgentChatModelsCached, getAiStatusCached, invalidateAiDiscoveryCache, peekAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import {
+  isDraftLaunchJobStale,
+  isDraftLaunchJobTerminal,
+  pruneDraftLaunchJobs,
+  type BackgroundLaunchNotice,
+  type DraftLaunchJob,
+  type DraftLaunchKind,
+  type DraftLaunchMode,
+  type DraftLaunchSnapshot,
+  type NativeControlState,
+  type PreparedDraftLaunch,
+} from "../../lib/draftLaunchJobs";
+import {
   buildAutomaticMacosVmContextForPrompt,
   createAppControlContextInstanceId,
   createBuiltInBrowserContextInstanceId,
@@ -249,60 +261,7 @@ const CHAT_HISTORY_READ_MAX_BYTES = 2_000_000;
 const MAX_RETAINED_CHAT_SESSION_HISTORIES = 6;
 const MAX_SELECTED_CHAT_SESSION_EVENTS = 20_000;
 const MAX_BACKGROUND_CHAT_SESSION_EVENTS = 1_000;
-const MAX_DRAFT_LAUNCH_JOBS = 8;
-
-type DraftLaunchSnapshot = {
-  text: string;
-  draft: string;
-  modelId: string;
-  reasoningEffort: string | null;
-  codexFastMode: boolean;
-  executionMode: AgentChatExecutionMode;
-  interactionMode: AgentChatInteractionMode;
-  nativeControls: NativeControlState;
-  attachments: AgentChatFileRef[];
-  contextAttachments: AgentChatContextAttachment[];
-  iosContextItems: IosElementContextItem[];
-  appControlContextItems: AppControlContextItem[];
-  builtInBrowserContextItems: BuiltInBrowserContextItem[];
-  macosVmContextItems: MacosVmContextItem[];
-  visualContextPrefix: string;
-  visualContextDisplayChips: string;
-  isLiteralSlashCommand: boolean;
-};
-
-type PreparedDraftLaunch = DraftLaunchSnapshot & {
-  finalText: string;
-  finalDisplayText: string;
-  selectedAttachments: AgentChatFileRef[];
-  selectedContextAttachments: AgentChatContextAttachment[];
-};
-
-type BackgroundLaunchNotice = {
-  laneId: string;
-  laneName: string;
-  sessionId: string;
-  draftKind: "chat" | "cli";
-};
-
-type DraftLaunchMode = "foreground" | "background";
-type DraftLaunchKind = BackgroundLaunchNotice["draftKind"];
-type DraftLaunchJobStatus = "creating-lane" | "starting-session" | "sending-prompt" | "ready" | "failed";
-
-type DraftLaunchJob = {
-  id: string;
-  mode: DraftLaunchMode;
-  draftKind: DraftLaunchKind;
-  status: DraftLaunchJobStatus;
-  title: string;
-  laneId: string | null;
-  laneName: string | null;
-  sessionId: string | null;
-  error: string | null;
-  autoOpen: boolean;
-  createdAtMs: number;
-  snapshot: DraftLaunchSnapshot;
-};
+const EMPTY_DRAFT_LAUNCH_JOBS: DraftLaunchJob[] = [];
 
 type DraftLaunchLaneTarget = {
   laneId: string;
@@ -315,22 +274,6 @@ type StartedDraftLaunch = {
   sessionId: string;
   draftKind: DraftLaunchKind;
 };
-
-function isDraftLaunchJobTerminal(status: DraftLaunchJobStatus): boolean {
-  return status === "ready" || status === "failed";
-}
-
-function pruneDraftLaunchJobs(jobs: DraftLaunchJob[]): DraftLaunchJob[] {
-  const active = jobs.filter((job) => !isDraftLaunchJobTerminal(job.status));
-  const terminal = jobs.filter((job) => isDraftLaunchJobTerminal(job.status));
-  const remainingTerminalSlots = active.length > 0
-    ? Math.max(MAX_DRAFT_LAUNCH_JOBS - active.length, 1)
-    : MAX_DRAFT_LAUNCH_JOBS;
-  return [
-    ...active,
-    ...terminal.slice(0, remainingTerminalSlots),
-  ];
-}
 
 function draftLaunchRequestKey(args: {
   kind: DraftLaunchKind;
@@ -395,15 +338,27 @@ function draftLaunchKindLabel(kind: DraftLaunchKind): string {
   return kind === "cli" ? "CLI session" : "chat";
 }
 
+function draftLaunchJobLabel(job: DraftLaunchJob): string {
+  if (job.status === "naming-lane" || job.status === "creating-lane") return "Auto-create lane";
+  if (job.status === "failed") return "Launch failed";
+  if (job.status === "ready") return job.mode === "background" ? "Background launch" : "Ready";
+  return job.draftKind === "cli" ? "CLI launch" : "Chat launch";
+}
+
 function draftLaunchJobMessage(job: DraftLaunchJob): string {
   const laneSuffix = job.laneName ? ` in ${job.laneName}` : "";
+  if (job.status === "naming-lane") return `Creating lane for ${draftLaunchKindLabel(job.draftKind)}... Choosing a branch name.`;
   if (job.status === "creating-lane") return `Creating lane for ${draftLaunchKindLabel(job.draftKind)}...`;
   if (job.status === "starting-session") return `Starting ${draftLaunchKindLabel(job.draftKind)}${laneSuffix}...`;
   if (job.status === "sending-prompt") return `Sending prompt to ${draftLaunchKindLabel(job.draftKind)}${laneSuffix}...`;
   if (job.status === "failed") return job.error ? `Launch failed: ${job.error}` : "Launch failed.";
   return job.mode === "background"
     ? `Launched ${draftLaunchKindLabel(job.draftKind)}${laneSuffix}.`
-    : `Opened ${draftLaunchKindLabel(job.draftKind)}${laneSuffix}.`;
+    : `Ready to open ${draftLaunchKindLabel(job.draftKind)}${laneSuffix}.`;
+}
+
+function staleDraftLaunchJobMessage(job: DraftLaunchJob): string {
+  return `${draftLaunchJobMessage(job)} Still working. You can hide this status while ADE continues in the background.`;
 }
 
 type AiStatusSnapshot = AiSettingsStatus & {
@@ -639,18 +594,6 @@ function deleteAgentChatSessionViewCache(sessionId: string): void {
   if (!AGENT_CHAT_VIEW_CACHE_ENABLED) return;
   agentChatSessionViewCacheBySessionId.delete(sessionId);
 }
-
-type NativeControlState = {
-  interactionMode: AgentChatInteractionMode;
-  claudePermissionMode: AgentChatClaudePermissionMode;
-  codexApprovalPolicy: AgentChatCodexApprovalPolicy;
-  codexSandbox: AgentChatCodexSandbox;
-  codexConfigSource: AgentChatCodexConfigSource;
-  opencodePermissionMode: AgentChatOpenCodePermissionMode;
-  droidPermissionMode: AgentChatDroidPermissionMode;
-  cursorModeId: string | null;
-  cursorConfigValues: Record<string, AgentChatCursorConfigValue>;
-};
 
 type LastLaunchConfig = {
   version: 1;
@@ -2389,6 +2332,7 @@ export function AgentChatPane({
   const chatChromeTint = useAppStore((s) => s.chatChromeTint);
   const chatShellGeometry = useAppStore((s) => s.chatShellGeometry);
   const launchPromptClipboardEnabled = useAppStore((s) => s.launchPromptClipboardEnabled);
+  const launchPromptClipboardNoticeEnabled = useAppStore((s) => s.launchPromptClipboardNoticeEnabled);
   const chatAppearanceRootStyle = useMemo(
     () => buildChatAppearanceRootStyle({ chatFontSizePx, transcriptDensity: chatTranscriptDensity }),
     [chatFontSizePx, chatTranscriptDensity],
@@ -2439,12 +2383,41 @@ export function AgentChatPane({
     () => `${projectRoot ?? "project"}:${laneId ?? "no-lane"}:${surfaceProfile}:${workDraftStorageKind}`,
     [laneId, projectRoot, surfaceProfile, workDraftStorageKind],
   );
+  const draftLaunchJobsScopeKey = useMemo(
+    () => [
+      "draft-launch-jobs",
+      projectRoot?.trim() || "project",
+      laneId ?? "no-lane",
+      surfaceProfile,
+      workDraftStorageKind,
+    ].map(encodeURIComponent).join(":"),
+    [laneId, projectRoot, surfaceProfile, workDraftStorageKind],
+  );
+  const draftLaunchJobs = useAppStore((s) => s.draftLaunchJobsByScope[draftLaunchJobsScopeKey] ?? EMPTY_DRAFT_LAUNCH_JOBS);
+  const setDraftLaunchJobsInStore = useAppStore((s) => s.setDraftLaunchJobs);
+  const setDraftLaunchJobs = useCallback((
+    next: DraftLaunchJob[] | ((prev: DraftLaunchJob[]) => DraftLaunchJob[]),
+  ) => {
+    setDraftLaunchJobsInStore(draftLaunchJobsScopeKey, next);
+  }, [draftLaunchJobsScopeKey, setDraftLaunchJobsInStore]);
+  const hasActiveDraftLaunchJobs = useMemo(
+    () => draftLaunchJobs.some((job) => !isDraftLaunchJobTerminal(job.status)),
+    [draftLaunchJobs],
+  );
+  const [draftLaunchJobNowMs, setDraftLaunchJobNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!hasActiveDraftLaunchJobs) return;
+    setDraftLaunchJobNowMs(Date.now());
+    const intervalId = window.setInterval(() => {
+      setDraftLaunchJobNowMs(Date.now());
+    }, 15 * 1000);
+    return () => window.clearInterval(intervalId);
+  }, [hasActiveDraftLaunchJobs]);
   const initialCompanionStateKey = lockSessionId ?? initialSessionId ?? (laneId ? `draft:${laneId}` : "draft");
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   const [archivedSessions, setArchivedSessions] = useState<AgentChatSessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(lockSessionId ?? initialSessionId ?? null);
   const [draftLaunchTargetId, setDraftLaunchTargetId] = useState<string | null>(null);
-  const [draftLaunchJobs, setDraftLaunchJobs] = useState<DraftLaunchJob[]>([]);
   const isWorkCliLaunchDraft =
     !lockSessionId
     && !initialSessionId
@@ -2713,6 +2686,7 @@ export function AgentChatPane({
   const draftLaunchConfigHydratedRef = useRef<string | null>(null);
   const draftLaunchConfigTouchedKeyRef = useRef<string | null>(null);
   const recoveredParallelLaunchKeyRef = useRef<string | null>(null);
+  const paneMountedRef = useRef(true);
   const selectedSession = useMemo(
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
@@ -3420,6 +3394,10 @@ export function AgentChatPane({
   useEffect(() => {
     sessionsRef.current = sessions;
   }, [sessions]);
+
+  useEffect(() => () => {
+    paneMountedRef.current = false;
+  }, []);
 
   const modelSelectionDiffersFromSession = Boolean(selectedSession && selectedSessionModelId && selectedSessionModelId !== modelId);
 
@@ -5822,15 +5800,20 @@ export function AgentChatPane({
     setDraftLaunchJobs((current) => pruneDraftLaunchJobs(current.map((job) => (
       job.id === jobId ? { ...job, ...patch } : job
     ))));
-  }, []);
+  }, [setDraftLaunchJobs]);
+
+  const draftLaunchJobExists = useCallback((jobId: string) => {
+    return (useAppStore.getState().draftLaunchJobsByScope[draftLaunchJobsScopeKey] ?? EMPTY_DRAFT_LAUNCH_JOBS)
+      .some((job) => job.id === jobId);
+  }, [draftLaunchJobsScopeKey]);
 
   const dismissDraftLaunchJob = useCallback((jobId: string) => {
     setDraftLaunchJobs((current) => current.filter((job) => job.id !== jobId));
-  }, []);
+  }, [setDraftLaunchJobs]);
 
   const openLaunchedDraftSession = useCallback((launch: BackgroundLaunchNotice & { jobId?: string }) => {
     if (launch.jobId) {
-      setDraftLaunchJobs((current) => current.filter((job) => job.id !== launch.jobId));
+      dismissDraftLaunchJob(launch.jobId);
     }
     if (projectRoot) {
       setWorkViewState(projectRoot, (prev) => ({
@@ -5862,9 +5845,20 @@ export function AgentChatPane({
       return;
     }
     navigate(`/lanes?laneId=${encodeURIComponent(launch.laneId)}&sessionId=${encodeURIComponent(launch.sessionId)}&focus=single`);
-  }, [embeddedWorkLayout, navigate, projectRoot, setLaneWorkViewState, setWorkViewState, suppressDraftLaunchNavigation]);
+  }, [
+    dismissDraftLaunchJob,
+    embeddedWorkLayout,
+    navigate,
+    projectRoot,
+    setLaneWorkViewState,
+    setWorkViewState,
+    suppressDraftLaunchNavigation,
+  ]);
 
-  const resolveDraftLaunchLane = useCallback(async (snapshot: DraftLaunchSnapshot): Promise<DraftLaunchLaneTarget> => {
+  const resolveDraftLaunchLane = useCallback(async (
+    snapshot: DraftLaunchSnapshot,
+    onAutoCreateNameResolved?: () => void,
+  ): Promise<DraftLaunchLaneTarget> => {
     if (draftLaunchTargetIsAutoCreate) {
       if (!laneId) throw new Error("Select a lane before auto-creating a new lane.");
       const primaryLane = availableLanes?.find((candidate) => candidate.laneType === "primary")
@@ -5877,6 +5871,7 @@ export function AgentChatPane({
         modelId: snapshot.modelId,
         fallbackName: createTemporaryAutoLaneName(),
       });
+      onAutoCreateNameResolved?.();
       const createdLane = await window.ade.lanes.create({ name: laneName, parentLaneId: primaryLane.id });
       await refreshLanesStore().catch((refreshError: unknown) => {
         console.warn("draft launch lane refresh failed", refreshError);
@@ -6077,7 +6072,7 @@ export function AgentChatPane({
       id: jobId,
       mode,
       draftKind: kind,
-      status: draftLaunchTargetIsAutoCreate ? "creating-lane" : "starting-session",
+      status: draftLaunchTargetIsAutoCreate ? "naming-lane" : "starting-session",
       title: buildDraftLaunchJobTitle(kind, snapshot),
       laneId: null,
       laneName: null,
@@ -6102,7 +6097,9 @@ export function AgentChatPane({
     let targetLane: DraftLaunchLaneTarget | null = null;
 
     try {
-      targetLane = await resolveDraftLaunchLane(snapshot);
+      targetLane = await resolveDraftLaunchLane(snapshot, () => {
+        patchDraftLaunchJob(jobId, { status: "creating-lane" });
+      });
       patchDraftLaunchJob(jobId, {
         status: "starting-session",
         laneId: targetLane.laneId,
@@ -6128,6 +6125,7 @@ export function AgentChatPane({
         draftKind: launched.draftKind,
       };
       const shouldAutoOpen = mode === "foreground" && latestForegroundDraftLaunchJobIdRef.current === jobId;
+      const jobStillVisible = draftLaunchJobExists(jobId);
       patchDraftLaunchJob(jobId, {
         status: "ready",
         laneId: launch.laneId,
@@ -6136,9 +6134,12 @@ export function AgentChatPane({
         draftKind: launch.draftKind,
         autoOpen: false,
       });
-      if (shouldAutoOpen) {
+      if (!jobStillVisible) {
+        return;
+      }
+      if (shouldAutoOpen && paneMountedRef.current) {
         openLaunchedDraftSession({ ...launch, jobId });
-      } else if (mode === "background") {
+      } else if (mode === "background" && paneMountedRef.current) {
         setSelectedSessionId(null);
       }
     } catch (launchError) {
@@ -6149,6 +6150,7 @@ export function AgentChatPane({
         await refreshLanesStore().catch(() => undefined);
       }
       const message = launchError instanceof Error ? launchError.message : String(launchError);
+      const jobStillVisible = draftLaunchJobExists(jobId);
       patchDraftLaunchJob(jobId, {
         status: "failed",
         laneId: targetLane?.laneId ?? null,
@@ -6156,13 +6158,16 @@ export function AgentChatPane({
         error: message,
         autoOpen: false,
       });
-      setError(message);
+      if (jobStillVisible && paneMountedRef.current) {
+        setError(message);
+      }
     } finally {
       draftLaunchInFlightKeysRef.current.delete(requestKey);
     }
   }, [
     buildDraftLaunchSnapshotForCurrentState,
     clearDraftLaunchComposer,
+    draftLaunchJobExists,
     draftLaunchTargetIsAutoCreate,
     isWorkCliLaunchDraft,
     laneId,
@@ -6178,6 +6183,7 @@ export function AgentChatPane({
     refreshSessions,
     resolveDraftLaunchLane,
     selectedSessionId,
+    setDraftLaunchJobs,
     startDraftChatLaunch,
     startDraftCliLaunch,
     workDraftKind,
@@ -8166,6 +8172,7 @@ export function AgentChatPane({
             onOpenAiSettings={openAiProvidersSettings}
             onOpenLinearSettings={openLinearSettings}
             launchPromptClipboardEnabled={launchPromptClipboardEnabled}
+            launchPromptClipboardNoticeEnabled={launchPromptClipboardNoticeEnabled}
             onOpenLaunchPromptClipboardSettings={openLaunchPromptClipboardSettings}
             onStartOrchestratorChat={() => {
               // Switch the lane to a fresh orchestrator-lead draft. The
@@ -8535,27 +8542,47 @@ export function AgentChatPane({
       className={cn(compactShell ? "min-w-0 w-full" : undefined, "space-y-2")}
     >
       {draftLaunchJobs.map((job) => {
-        const canOpen = job.status === "ready" && job.laneId && job.laneName && job.sessionId;
         const isFailed = job.status === "failed";
         const isReady = job.status === "ready";
+        const isActiveJob = !isDraftLaunchJobTerminal(job.status);
+        const isStaleActiveJob = isDraftLaunchJobStale(job, draftLaunchJobNowMs);
+        const canOpen = isReady && Boolean(job.laneId && job.laneName && job.sessionId);
         return (
           <div
             key={job.id}
             data-testid="draft-launch-job"
+            aria-live={isActiveJob ? "polite" : undefined}
             className={cn(
-              "flex items-center justify-between gap-3 rounded-lg border px-3 py-2 font-sans text-[11px]",
+              "flex items-start justify-between gap-3 rounded-lg border px-3 py-2.5 font-sans text-[11px] shadow-[0_10px_40px_rgba(0,0,0,0.10)]",
               isFailed && "border-rose-300/20 bg-rose-500/[0.08] text-rose-100/90",
-              isReady && !isFailed && "border-emerald-300/20 bg-emerald-500/[0.08] text-emerald-100/90",
-              !isFailed && !isReady && "border-white/10 bg-white/[0.045] text-fg/75",
+              isReady && "border-emerald-300/20 bg-emerald-500/[0.08] text-emerald-100/90",
+              isActiveJob && "border-white/10 bg-white/[0.045] text-fg/75",
             )}
           >
-            <div className="flex min-w-0 items-center gap-2">
-              {!isReady && !isFailed ? (
-                <CircleNotch size={13} weight="bold" className="shrink-0 animate-spin text-fg/55" aria-hidden />
+            <div className="flex min-w-0 items-start gap-2">
+              {isActiveJob ? (
+                <CircleNotch size={13} weight="bold" className="mt-0.5 shrink-0 animate-spin text-fg/55" aria-hidden />
               ) : null}
-              <div className="min-w-0">
-                <div className="truncate font-medium">{job.title}</div>
-                <div className="truncate text-[10px] opacity-75">{draftLaunchJobMessage(job)}</div>
+              <div className="min-w-0 space-y-0.5 text-left">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className={cn(
+                    "shrink-0 rounded-full border px-1.5 py-px text-[9px] font-medium tracking-normal",
+                    isFailed
+                      ? "border-rose-200/20 bg-rose-200/[0.08] text-rose-50/75"
+                      : isReady
+                        ? "border-emerald-200/20 bg-emerald-200/[0.08] text-emerald-50/75"
+                        : "border-white/10 bg-white/[0.06] text-fg/55",
+                  )}>
+                    {draftLaunchJobLabel(job)}
+                  </span>
+                  <span className="min-w-0 truncate font-medium">{job.title}</span>
+                </div>
+                <div className={cn(
+                  "min-w-0 text-[10px] leading-4 opacity-75",
+                  !isStaleActiveJob && "truncate",
+                )}>
+                  {isStaleActiveJob ? staleDraftLaunchJobMessage(job) : draftLaunchJobMessage(job)}
+                </div>
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1">
@@ -8586,19 +8613,23 @@ export function AgentChatPane({
                   Open
                 </button>
               ) : null}
-              <button
-                type="button"
-                aria-label={isFailed ? "Dismiss failed launch" : "Dismiss launch status"}
-                className={cn(
-                  "grid h-5 w-5 place-items-center rounded-md transition-colors",
-                  isFailed
-                    ? "text-rose-50/70 hover:bg-rose-300/[0.12] hover:text-rose-50"
-                    : "text-fg/55 hover:bg-white/10 hover:text-fg/80",
-                )}
-                onClick={() => dismissDraftLaunchJob(job.id)}
-              >
-                <X size={12} weight="bold" aria-hidden />
-              </button>
+              {(!isActiveJob || isStaleActiveJob) ? (
+                <button
+                  type="button"
+                  aria-label={isFailed ? "Dismiss failed launch" : isStaleActiveJob ? "Hide stale launch status" : "Dismiss launch status"}
+                  className={cn(
+                    "grid h-5 w-5 place-items-center rounded-md transition-colors",
+                    isFailed
+                      ? "text-rose-50/70 hover:bg-rose-300/[0.12] hover:text-rose-50"
+                      : isStaleActiveJob
+                        ? "text-fg/45 hover:bg-white/10 hover:text-fg/75"
+                        : "text-fg/55 hover:bg-white/10 hover:text-fg/80",
+                  )}
+                  onClick={() => dismissDraftLaunchJob(job.id)}
+                >
+                  <X size={12} weight="bold" aria-hidden />
+                </button>
+              ) : null}
             </div>
           </div>
         );
