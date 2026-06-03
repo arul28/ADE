@@ -5150,7 +5150,16 @@ export function createAgentChatService(args: {
   // have reached fs.appendFile yet.
   const CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION = 4_000;
   const CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION = 20_000;
+  const CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES = 2_000_000;
+  const CHAT_EVENT_HISTORY_TRANSCRIPT_CACHE_MAX_SESSIONS = 32;
   const eventHistoryBySession = new Map<string, AgentChatEventEnvelope[]>();
+  const transcriptHistoryCacheBySession = new Map<string, {
+    transcriptPath: string;
+    size: number;
+    mtimeMs: number;
+    truncated: boolean;
+    envelopes: AgentChatEventEnvelope[];
+  }>();
 
   const recordChatEventInHistory = (envelope: AgentChatEventEnvelope): void => {
     const current = eventHistoryBySession.get(envelope.sessionId) ?? [];
@@ -5159,6 +5168,25 @@ export function createAgentChatService(args: {
       current.splice(0, current.length - CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION);
     }
     eventHistoryBySession.set(envelope.sessionId, current);
+  };
+
+  const rememberTranscriptHistoryCache = (
+    sessionId: string,
+    entry: {
+      transcriptPath: string;
+      size: number;
+      mtimeMs: number;
+      truncated: boolean;
+      envelopes: AgentChatEventEnvelope[];
+    },
+  ): void => {
+    transcriptHistoryCacheBySession.delete(sessionId);
+    transcriptHistoryCacheBySession.set(sessionId, entry);
+    while (transcriptHistoryCacheBySession.size > CHAT_EVENT_HISTORY_TRANSCRIPT_CACHE_MAX_SESSIONS) {
+      const oldestSessionId = transcriptHistoryCacheBySession.keys().next().value;
+      if (typeof oldestSessionId !== "string") break;
+      transcriptHistoryCacheBySession.delete(oldestSessionId);
+    }
   };
 
   let computerUseArtifactBrokerRef = computerUseArtifactBrokerService ?? null;
@@ -6355,20 +6383,77 @@ export function createAgentChatService(args: {
     return null;
   };
 
-  // Read the full on-disk transcript for a session without requiring an active
-  // ManagedChatSession. Used by getChatEventHistory to hydrate the in-memory
-  // ring buffer on first read, even for sessions that haven't been resumed yet
-  // (e.g. a chat whose runtime was torn down by idle_ttl / budget_eviction).
-  const readTranscriptEnvelopesForSessionId = (sessionId: string): AgentChatEventEnvelope[] => {
+  const readTranscriptTailForHistory = (
+    transcriptPath: string,
+    stat: fs.Stats,
+  ): { raw: string; truncated: boolean } => {
+    const size = stat.size;
+    const start = Math.max(0, size - CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES);
+    const length = size - start;
+    if (length <= 0) return { raw: "", truncated: false };
+    const fd = fs.openSync(transcriptPath, "r");
+    try {
+      const out = Buffer.allocUnsafe(length);
+      const bytesRead = fs.readSync(fd, out, 0, out.length, start);
+      let slice = bytesRead === out.length ? out : out.subarray(0, bytesRead);
+      const truncated = start > 0;
+      if (truncated && slice.length > 0) {
+        const nextNewline = slice.indexOf(0x0a);
+        if (nextNewline >= 0 && nextNewline + 1 < slice.length) {
+          slice = slice.subarray(nextNewline + 1);
+        } else {
+          slice = Buffer.alloc(0);
+        }
+      }
+      return { raw: slice.toString("utf8"), truncated };
+    } finally {
+      fs.closeSync(fd);
+    }
+  };
+
+  const parseTranscriptHistoryTail = (
+    sessionId: string,
+    transcriptPath: string,
+  ): { envelopes: AgentChatEventEnvelope[]; truncated: boolean } => {
+    const stat = fs.statSync(transcriptPath);
+    const cached = transcriptHistoryCacheBySession.get(sessionId);
+    if (
+      cached
+      && cached.transcriptPath === transcriptPath
+      && cached.size === stat.size
+      && cached.mtimeMs === stat.mtimeMs
+    ) {
+      rememberTranscriptHistoryCache(sessionId, cached);
+      return { envelopes: cached.envelopes.slice(), truncated: cached.truncated };
+    }
+
+    const { raw, truncated } = readTranscriptTailForHistory(transcriptPath, stat);
+    const envelopes = parseAgentChatTranscript(raw)
+      .filter((entry) => entry.sessionId === sessionId);
+    rememberTranscriptHistoryCache(sessionId, {
+      transcriptPath,
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+      truncated,
+      envelopes,
+    });
+    return { envelopes: envelopes.slice(), truncated };
+  };
+
+  // Read a bounded on-disk transcript tail for a session without requiring an
+  // active ManagedChatSession. Used by getChatEventHistory to hydrate the
+  // in-memory ring buffer without allocating huge historical transcripts.
+  const readTranscriptEnvelopesForSessionId = (
+    sessionId: string,
+  ): { envelopes: AgentChatEventEnvelope[]; truncated: boolean } => {
     const managed = managedSessions.get(sessionId);
     if (managed?.transcriptPath) {
       try {
         const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
-        if (!transcriptPath) return [];
-        return parseAgentChatTranscript(fs.readFileSync(transcriptPath, "utf8"))
-          .filter((entry) => entry.sessionId === sessionId);
+        if (!transcriptPath) return { envelopes: [], truncated: false };
+        return parseTranscriptHistoryTail(sessionId, transcriptPath);
       } catch {
-        return [];
+        return { envelopes: [], truncated: false };
       }
     }
     // Fall back to the known transcript layout so sessions that were never
@@ -6382,8 +6467,36 @@ export function createAgentChatService(args: {
       try {
         const transcriptPath = resolveReadableChatPath(candidatePath, "agent_chat.transcript_read_skipped_path_outside_ade");
         if (!transcriptPath) continue;
-        const raw = fs.readFileSync(transcriptPath, "utf8");
-        return parseAgentChatTranscript(raw).filter((entry) => entry.sessionId === sessionId);
+        return parseTranscriptHistoryTail(sessionId, transcriptPath);
+      } catch {
+        // try next candidate
+      }
+    }
+    return { envelopes: [], truncated: false };
+  };
+
+  const readFullTranscriptEnvelopesForSessionId = (sessionId: string): AgentChatEventEnvelope[] => {
+    const managed = managedSessions.get(sessionId);
+    if (managed?.transcriptPath) {
+      try {
+        const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
+        if (!transcriptPath) return [];
+        return parseAgentChatTranscript(fs.readFileSync(transcriptPath, "utf8"))
+          .filter((entry) => entry.sessionId === sessionId);
+      } catch {
+        return [];
+      }
+    }
+    const candidates = [
+      path.join(transcriptsDir, `${sessionId}.chat.jsonl`),
+      path.join(chatTranscriptsDir, `${sessionId}.jsonl`),
+    ];
+    for (const candidatePath of candidates) {
+      try {
+        const transcriptPath = resolveReadableChatPath(candidatePath, "agent_chat.transcript_read_skipped_path_outside_ade");
+        if (!transcriptPath) continue;
+        return parseAgentChatTranscript(fs.readFileSync(transcriptPath, "utf8"))
+          .filter((entry) => entry.sessionId === sessionId);
       } catch {
         // try next candidate
       }
@@ -6397,7 +6510,7 @@ export function createAgentChatService(args: {
     // restart per run), and Claude streaming emits multiple text/reasoning
     // fragments within the same millisecond + type — timestamp+type alone
     // would wrongly collapse those into one. JSON.stringify is fine at our
-    // scale (≤2000 events, events typically <1KB).
+    // bounded snapshot scale.
     return `${entry.timestamp}#${entry.event.type}#${JSON.stringify(entry.event)}`;
   };
 
@@ -6428,16 +6541,16 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Return the complete, ordered event history for a chat session.
+   * Return the recent, ordered event history for a chat session.
    *
-   * On first call (or any call that can tolerate a larger read), we merge the
-   * on-disk transcript with the in-memory ring buffer so that:
+   * Each snapshot merges a bounded on-disk transcript tail with the in-memory
+   * ring buffer so that:
    *   - events that were emitted while the renderer was on a different project
    *     (and therefore dropped by emitProjectEvent) are still recovered;
    *   - events that are still in fs.appendFile flight but already recorded in
    *     the buffer are still delivered;
-   *   - truncating the persistent transcript for size does not lose recent
-   *     events that the buffer still has.
+   *   - oversized transcripts do not have to be fully read and inflated into
+   *     JS objects just to hydrate the Work chat pane.
    *
    * This is the canonical snapshot path for renderer resubscribe / remount.
    */
@@ -6454,7 +6567,14 @@ export function createAgentChatService(args: {
     // filesystem paths from `trimmedId` downstream.
     const row = sessionService.get(trimmedId);
     if (!row || !isChatToolType(row.toolType)) {
-      return { sessionId: trimmedId, events: [], truncated: false, sessionFound: false };
+      return {
+        sessionId: trimmedId,
+        events: [],
+        truncated: false,
+        transcriptTruncated: false,
+        windowTruncated: false,
+        sessionFound: false,
+      };
     }
     const maxEvents = Math.max(
       1,
@@ -6464,20 +6584,32 @@ export function createAgentChatService(args: {
       ),
     );
 
-    // Re-read disk on every snapshot. A long-running background chat can age
-    // older entries out of the live ring buffer; the persisted transcript is
-    // the durable source for project/tab switch recovery, while the buffer
-    // contributes events that fs.appendFile may not have flushed yet.
+    // Stat the transcript on every snapshot; actual I/O is skipped when the
+    // file size and mtime are unchanged (cached). A long-running background
+    // chat can age older entries out of the live ring buffer; the persisted
+    // transcript is the durable source for project/tab switch recovery, while
+    // the buffer contributes events that fs.appendFile may not have flushed yet.
     const bufferExisting = eventHistoryBySession.get(trimmedId) ?? [];
-    let merged = mergeEnvelopeStreams(readTranscriptEnvelopesForSessionId(trimmedId), bufferExisting);
+    const transcriptHistory = readTranscriptEnvelopesForSessionId(trimmedId);
+    let merged = mergeEnvelopeStreams(transcriptHistory.envelopes, bufferExisting);
+    const mergedLength = merged.length;
     if (merged.length > CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION) {
       merged = merged.slice(-CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION);
     }
     eventHistoryBySession.set(trimmedId, merged.slice(-CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION));
 
-    const truncated = merged.length > maxEvents;
-    const windowed = truncated ? merged.slice(-maxEvents) : merged;
-    return { sessionId: trimmedId, events: windowed, truncated, sessionFound: true };
+    const transcriptTruncated = transcriptHistory.truncated;
+    const windowTruncated = mergedLength > maxEvents;
+    const truncated = transcriptTruncated || windowTruncated;
+    const windowed = windowTruncated ? merged.slice(-maxEvents) : merged;
+    return {
+      sessionId: trimmedId,
+      events: windowed,
+      truncated,
+      transcriptTruncated,
+      windowTruncated,
+      sessionFound: true,
+    };
   };
 
   const deriveTranscriptTurnActive = (entries: AgentChatEventEnvelope[]): boolean => {
@@ -21832,6 +21964,7 @@ export function createAgentChatService(args: {
     flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sessionId}.jsonl`));
     managedSessions.delete(sessionId);
     eventHistoryBySession.delete(sessionId);
+    transcriptHistoryCacheBySession.delete(sessionId);
   };
 
   const countActiveForLane = (laneId: string): number => {
@@ -23020,6 +23153,7 @@ export function createAgentChatService(args: {
       clearSubagentSnapshots(trimmedSessionId);
     }
     eventHistoryBySession.delete(trimmedSessionId);
+    transcriptHistoryCacheBySession.delete(trimmedSessionId);
 
     const persistedMetadataPath = metadataPathFor(trimmedSessionId);
     const dedicatedTranscriptPath = path.join(chatTranscriptsDir, `${trimmedSessionId}.jsonl`);
@@ -25022,7 +25156,7 @@ export function createAgentChatService(args: {
     const managed = managedSessions.get(sessionId);
     const entries = managed
       ? readTranscriptEntries(managed)
-      : transcriptEntriesFromEnvelopes(sessionId, readTranscriptEnvelopesForSessionId(sessionId));
+      : transcriptEntriesFromEnvelopes(sessionId, readFullTranscriptEnvelopesForSessionId(sessionId));
     let filtered = entries;
     if (typeof since === "string" && since.trim().length) {
       filtered = filtered.filter((entry) => entry.timestamp >= since);
