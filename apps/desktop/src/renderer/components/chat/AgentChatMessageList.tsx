@@ -3553,6 +3553,8 @@ const VIRTUALIZATION_THRESHOLD = 60;
  * auto-follow rather than being snapped back.
  */
 const STICK_THRESHOLD_PX = 160;
+const STICK_RESUME_THRESHOLD_PX = 24;
+const TOUCH_SCROLL_DEADBAND_PX = 2;
 
 export function shouldAbsorbProgrammaticScrollEvent({
   scrollTop,
@@ -3562,6 +3564,18 @@ export function shouldAbsorbProgrammaticScrollEvent({
   programmaticTarget: number | null;
 }): boolean {
   return programmaticTarget != null && Math.abs(scrollTop - programmaticTarget) < 1;
+}
+
+export function shouldStickToBottomAfterScroll({
+  distanceFromBottom,
+  wasStuckToBottom,
+}: {
+  distanceFromBottom: number;
+  wasStuckToBottom: boolean;
+}): boolean {
+  return wasStuckToBottom
+    ? distanceFromBottom < STICK_THRESHOLD_PX
+    : distanceFromBottom <= STICK_RESUME_THRESHOLD_PX;
 }
 
 export function calculateVirtualWindow({
@@ -4091,6 +4105,7 @@ function AgentChatMessageListMain({
   // into at most one scrollTop assignment per frame.
   const scrollRafRef = useRef<number | null>(null);
   const scrollFollowFramesRef = useRef(0);
+  const lastTouchYRef = useRef<number | null>(null);
   // Programmatic scroll writes can be coalesced by the browser. Track the
   // latest ADE-authored scrollTop target instead of using a counter, so a real
   // user scroll never gets swallowed by stale "programmatic" credits.
@@ -4279,6 +4294,19 @@ function AgentChatMessageListMain({
     scrollRafRef.current = requestAnimationFrame(run);
   }, []);
 
+  const releaseBottomStickinessForUserScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el || el.scrollHeight <= el.clientHeight + 1 || !stickToBottomRef.current) return;
+    stickToBottomRef.current = false;
+    setStickToBottom(false);
+    scrollFollowFramesRef.current = 0;
+    programmaticScrollTargetRef.current = null;
+    if (scrollRafRef.current !== null) {
+      cancelAnimationFrame(scrollRafRef.current);
+      scrollRafRef.current = null;
+    }
+  }, []);
+
   useEffect(() => () => {
     if (scrollRafRef.current !== null) {
       cancelAnimationFrame(scrollRafRef.current);
@@ -4436,12 +4464,38 @@ function AgentChatMessageListMain({
     // Wider threshold (~1 row of assistant text) so a small wheel nudge
     // while the turn is streaming actually breaks free instead of snapping
     // straight back to the bottom.
-    const nextStick = distanceFromBottom < STICK_THRESHOLD_PX;
+    const nextStick = shouldStickToBottomAfterScroll({
+      distanceFromBottom,
+      wasStuckToBottom: stickToBottomRef.current,
+    });
     if (nextStick !== stickToBottomRef.current) {
       stickToBottomRef.current = nextStick;
       setStickToBottom(nextStick);
     }
     setScrollTop(target.scrollTop);
+  }, []);
+
+  const handleWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
+    if (event.deltaY < 0) {
+      releaseBottomStickinessForUserScroll();
+    }
+  }, [releaseBottomStickinessForUserScroll]);
+
+  const handleTouchStart = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
+    lastTouchYRef.current = event.touches[0]?.clientY ?? null;
+  }, []);
+
+  const handleTouchMove = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
+    const nextY = event.touches[0]?.clientY ?? null;
+    const previousY = lastTouchYRef.current;
+    if (nextY != null && previousY != null && nextY - previousY > TOUCH_SCROLL_DEADBAND_PX) {
+      releaseBottomStickinessForUserScroll();
+    }
+    lastTouchYRef.current = nextY;
+  }, [releaseBottomStickinessForUserScroll]);
+
+  const handleTouchEnd = useCallback(() => {
+    lastTouchYRef.current = null;
   }, []);
 
   const jumpToLatest = useCallback(() => {
@@ -4642,6 +4696,11 @@ function AgentChatMessageListMain({
         ref={scrollRef}
         className="ade-chat-timeline-pane h-full min-h-0 min-w-0 overflow-x-hidden overflow-y-auto pl-[length:var(--chat-timeline-pad-x)] pr-[length:var(--chat-timeline-pad-x)] pt-[length:var(--chat-timeline-pad-top)] pb-[length:var(--chat-timeline-pad-bottom)]"
         onScroll={handleScroll}
+        onWheel={handleWheel}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onTouchCancel={handleTouchEnd}
       >
         <div ref={contentWrapperRef} className="min-w-0 max-w-full overflow-visible">
           {rows.length === 0 && !streamingIndicator ? (

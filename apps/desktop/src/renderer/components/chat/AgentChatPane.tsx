@@ -1269,7 +1269,17 @@ export function mergeChatHistorySnapshot(
   if (!existing.length) return parsed;
   if (!parsed.length) return existing;
 
-  const parsedKeys = new Set(parsed.map(chatEventDedupKey));
+  const existingByKey = new Map<string, AgentChatEventEnvelope>();
+  for (const entry of existing) {
+    const key = chatEventDedupKey(entry);
+    if (!existingByKey.has(key)) existingByKey.set(key, entry);
+  }
+  const parsedKeys = new Set<string>();
+  const normalizedParsed = parsed.map((entry) => {
+    const key = chatEventDedupKey(entry);
+    parsedKeys.add(key);
+    return existingByKey.get(key) ?? entry;
+  });
   const lastParsedKey = chatEventDedupKey(parsed[parsed.length - 1]!);
   let overlapIndex = -1;
   for (let index = existing.length - 1; index >= 0; index -= 1) {
@@ -1290,7 +1300,11 @@ export function mergeChatHistorySnapshot(
         return entry.timestamp > parsed[parsed.length - 1]!.timestamp;
       });
   const tail = tailCandidates.filter((entry) => !parsedKeys.has(chatEventDedupKey(entry)));
-  return tail.length ? [...parsed, ...tail] : parsed;
+  const merged = tail.length ? [...normalizedParsed, ...tail] : normalizedParsed;
+  if (merged.length === existing.length && merged.every((entry, index) => entry === existing[index])) {
+    return existing;
+  }
+  return merged;
 }
 
 function pruneSessionRecord<T>(record: Record<string, T>, keepIds: ReadonlySet<string>): Record<string, T> {

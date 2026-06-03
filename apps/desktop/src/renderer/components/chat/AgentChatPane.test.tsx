@@ -5526,6 +5526,31 @@ describe("mergeChatHistorySnapshot", () => {
       "same millisecond tail",
     ]);
   });
+
+  it("preserves existing event object identity when a recovery snapshot is unchanged", () => {
+    const first = envelope("2026-04-30T23:14:47.751Z", 1003, "first");
+    const second = envelope("2026-04-30T23:19:57.083Z", 1004, "second");
+    const parsedFirst = envelope("2026-04-30T23:14:47.751Z", 1003, "first");
+    const parsedSecond = envelope("2026-04-30T23:19:57.083Z", 1004, "second");
+
+    const existing = [first, second];
+    const merged = mergeChatHistorySnapshot([parsedFirst, parsedSecond], existing);
+
+    expect(merged).toBe(existing);
+    expect(merged[0]).toBe(first);
+    expect(merged[1]).toBe(second);
+  });
+
+  it("reuses existing snapshot entries while appending newly recovered events", () => {
+    const first = envelope("2026-04-30T23:14:47.751Z", 1003, "first");
+    const parsedFirst = envelope("2026-04-30T23:14:47.751Z", 1003, "first");
+    const parsedSecond = envelope("2026-04-30T23:19:57.083Z", 1004, "second");
+
+    const merged = mergeChatHistorySnapshot([parsedFirst, parsedSecond], [first]);
+
+    expect(merged[0]).toBe(first);
+    expect(merged[1]).toBe(parsedSecond);
+  });
 });
 
 describe("subagent auto-open storage", () => {
