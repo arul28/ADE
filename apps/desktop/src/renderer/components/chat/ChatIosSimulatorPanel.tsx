@@ -2225,10 +2225,11 @@ export function ChatIosSimulatorPanel({
     }
   }, [armWindowCaptureRecoveryAfterInput, liveInputBlocked, liveInputBlockedMessage, projectRoot, selectedDeviceUdid]);
 
+  const snapshotElementCount = snapshot?.elements.length ?? 0;
   const providerSummary = snapshot
-    ? snapshot.elements.length > 0
-      ? `Snapshot ready with ${snapshot.elements.length} selectable item${snapshot.elements.length === 1 ? "" : "s"}.`
-      : "Snapshot ready."
+    ? snapshotElementCount > 0
+      ? `Snapshot ready with ${snapshotElementCount} selectable item${snapshotElementCount === 1 ? "" : "s"}.`
+      : "Snapshot ready with no selectable elements. Click a point or use Screenshot to attach visual context."
     : null;
   const hoverSource = hoveredElement?.source ?? null;
   let previewModeHint: string | null = null;
@@ -2262,6 +2263,8 @@ export function ChatIosSimulatorPanel({
       ? "Drag a region on the simulator snapshot to attach a screenshot crop and screen context."
       : selectedElement
       ? `Selected element: ${elementLabel(selectedElement)}. Click another outline to swap, or Alt-click to select a parent.`
+      : snapshot && snapshotElementCount === 0
+      ? "No inspectable elements found. Click a point to attach coordinate context, or use Screenshot to capture a region."
       : "Click a UI element outline to insert it as context. Alt-click to select a larger container.";
   }
   const simulatorWindowWarning = mode === "interact"
