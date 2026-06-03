@@ -9,7 +9,7 @@ import {
   Warning,
 } from "@phosphor-icons/react";
 import type { ElementType } from "react";
-import type { ModelConfig, TestSuiteDefinition } from "../../../shared/types";
+import type { TestSuiteDefinition } from "../../../shared/types";
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { cn } from "../ui/cn";
 import { ActionRow, type ActionRowKind, type ActionRowValue } from "./ActionRow";
@@ -98,18 +98,12 @@ export function ActionList({
   actions,
   lanes,
   suites,
-  fallbackModel,
-  executionLaneMode,
   onChange,
-  onOpenAiSettings,
 }: {
   actions: ActionRowValue[];
   lanes: Array<{ id: string; name: string }>;
   suites: TestSuiteDefinition[];
-  fallbackModel: ModelConfig;
-  executionLaneMode?: string | null;
   onChange: (next: ActionRowValue[]) => void;
-  onOpenAiSettings?: () => void;
 }) {
   // Stable per-row keys that survive reorders so React preserves focus/DOM
   // identity when the user clicks up/down arrows. Keys are regenerated only
@@ -164,12 +158,9 @@ export function ActionList({
               value={action}
               lanes={lanes}
               suites={suites}
-              fallbackModel={fallbackModel}
-              executionLaneMode={executionLaneMode}
               onChange={(next) => updateAction(index, next)}
               onRemove={() => removeAction(index)}
               onMove={(direction) => moveAction(index, direction)}
-              onOpenAiSettings={onOpenAiSettings}
             />
           ))}
         </div>
@@ -201,7 +192,7 @@ function AddStepBar({ onAdd }: { onAdd: (kind: ActionRowKind) => void }) {
           "group flex w-full items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-[12px] font-semibold transition-colors",
           open
             ? "border-[#5FA0E0]/50 bg-[#13263A] text-[#F5FAFF]"
-            : "border-white/[0.08] bg-black/15 text-[#D8E3F2] hover:border-[#5FA0E0]/40 hover:bg-[#13263A]/60",
+            : "border-white/[0.12] bg-[#162235] text-[#E6EEF8] hover:border-[#5FA0E0]/40 hover:bg-[#1B2A40]",
         )}
       >
         <span className="flex items-center gap-2">
@@ -217,7 +208,7 @@ function AddStepBar({ onAdd }: { onAdd: (kind: ActionRowKind) => void }) {
 
       {open ? (
         <div
-          className="absolute left-0 right-0 z-30 mt-1.5 grid gap-1 rounded-xl border border-white/[0.1] bg-[#0B121A] p-1.5 shadow-2xl"
+          className="mt-1.5 grid gap-1 rounded-xl border border-white/[0.12] bg-[#162235] p-1.5 shadow-2xl"
           role="menu"
         >
           {ADD_OPTIONS.map((option) => {
@@ -237,7 +228,7 @@ function AddStepBar({ onAdd }: { onAdd: (kind: ActionRowKind) => void }) {
                   "flex items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors",
                   option.disabled
                     ? "cursor-not-allowed opacity-50"
-                    : "hover:bg-white/[0.05]",
+                    : "hover:bg-[#1E2D42]",
                 )}
               >
                 <span
@@ -259,7 +250,7 @@ function AddStepBar({ onAdd }: { onAdd: (kind: ActionRowKind) => void }) {
                       </span>
                     ) : null}
                   </span>
-                  <span className="mt-0.5 block text-[10.5px] leading-snug text-[#93A4B8]">
+                  <span className="mt-0.5 block text-[10.5px] leading-snug text-[#AFC0D4]">
                     {option.description}
                   </span>
                 </span>
@@ -274,7 +265,7 @@ function AddStepBar({ onAdd }: { onAdd: (kind: ActionRowKind) => void }) {
 
 function EmptyPicker({ onAdd }: { onAdd: (kind: ActionRowKind) => void }) {
   return (
-    <div className="rounded-xl border border-dashed border-white/[0.1] bg-black/15 p-4">
+    <div className="rounded-xl border border-dashed border-white/[0.14] bg-[#162235] p-4">
       <div className="text-[11px] font-semibold uppercase tracking-[1px] text-[#8FA1B8]">
         Pick a starting step
       </div>
@@ -286,7 +277,7 @@ function EmptyPicker({ onAdd }: { onAdd: (kind: ActionRowKind) => void }) {
               key={option.kind}
               type="button"
               onClick={() => onAdd(option.kind)}
-              className="group flex items-start gap-2.5 rounded-lg border border-white/[0.06] bg-black/20 px-3 py-2.5 text-left transition-colors hover:border-white/[0.16] hover:bg-black/30"
+              className="group flex items-start gap-2.5 rounded-lg border border-white/[0.12] bg-[#111C2B] px-3 py-2.5 text-left transition-colors hover:border-white/[0.20] hover:bg-[#1B2A40]"
             >
               <span
                 className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg"
@@ -300,7 +291,7 @@ function EmptyPicker({ onAdd }: { onAdd: (kind: ActionRowKind) => void }) {
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block text-[12px] font-semibold text-[#F5FAFF]">{option.label}</span>
-                <span className="mt-0.5 block text-[10.5px] leading-snug text-[#93A4B8]">
+                <span className="mt-0.5 block text-[10.5px] leading-snug text-[#AFC0D4]">
                   {option.description}
                 </span>
               </span>

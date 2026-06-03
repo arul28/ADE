@@ -4811,6 +4811,16 @@ export function registerIpc({
     return ctx.automationService.getIngressStatus();
   });
 
+  ipcMain.handle(IPC.automationsRefreshWebhookGatewayStatus, async (): Promise<AutomationIngressStatus["webhookGateway"]> => {
+    const ctx = ensureAutomationContext();
+    return await ctx.automationService.refreshWebhookGatewayStatus();
+  });
+
+  ipcMain.handle(IPC.automationsSetWebhookGatewayPublicUrl, async (_event, arg: { publicUrl?: string | null } | undefined): Promise<AutomationIngressStatus["webhookGateway"]> => {
+    const ctx = ensureAutomationContext();
+    return await ctx.automationService.setWebhookGatewayPublicUrl(arg ?? {});
+  });
+
   ipcMain.handle(IPC.automationsListIngressEvents, async (_event, arg: { limit?: number } | undefined): Promise<AutomationIngressEventRecord[]> => {
     const ctx = ensureAutomationContext();
     return ctx.automationService.listIngressEvents(arg?.limit);

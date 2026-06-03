@@ -9,6 +9,7 @@ import {
 } from "@phosphor-icons/react";
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { cn } from "../ui/cn";
+import { textareaCls } from "./designTokens";
 import { INPUT_CLS, INPUT_STYLE } from "./shared";
 import {
   ADE_ACTION_SCHEMAS,
@@ -109,7 +110,7 @@ export function AdeActionEditor({
           onToggleJson={() => setShowJson((current) => !current)}
         />
       ) : (
-        <div className="rounded-lg border border-white/[0.06] bg-black/15 px-3 py-3 text-[11px] text-[#93A4B8]">
+        <div className="rounded-lg border border-white/[0.12] bg-[#111C2B] px-3 py-3 text-[11px] text-[#AFC0D4]">
           Pick a domain and action to fill in its parameters.
         </div>
       )}
@@ -187,12 +188,12 @@ function ActionPicker({
     <span className="flex items-center gap-2 truncate">
       <Code size={12} weight="bold" className="text-[#A78BFA]" />
       <span className="truncate text-[12px] font-semibold text-[#F5FAFF]">{currentLabel}</span>
-      <span className="truncate text-[11px] text-[#93A4B8]">
+      <span className="truncate text-[11px] text-[#AFC0D4]">
         {value.domain}.{value.action}
       </span>
     </span>
   ) : (
-    <span className="flex items-center gap-2 text-[12px] text-[#93A4B8]">
+    <span className="flex items-center gap-2 text-[12px] text-[#AFC0D4]">
       <MagnifyingGlass size={12} weight="bold" />
       Search ADE actions…
     </span>
@@ -206,8 +207,8 @@ function ActionPicker({
         className={cn(
           "flex w-full items-center justify-between gap-2 rounded-lg border px-3 py-2 transition-colors",
           open
-            ? "border-[#A78BFA]/40 bg-[#1a1830]"
-            : "border-white/[0.08] bg-black/20 hover:border-white/[0.16]",
+            ? "border-[#A78BFA]/45 bg-[#1B2A40]"
+            : "border-white/[0.12] bg-[#111C2B] hover:border-white/[0.20] hover:bg-[#152235]",
         )}
       >
         {summary}
@@ -219,15 +220,15 @@ function ActionPicker({
       </button>
 
       {open ? (
-        <div className="absolute left-0 right-0 z-30 mt-1.5 max-h-[420px] overflow-hidden rounded-xl border border-white/[0.1] bg-[#0B121A] shadow-2xl">
-          <div className="flex items-center gap-2 border-b border-white/[0.06] bg-[#101926] px-2.5 py-2">
+        <div className="absolute left-0 right-0 z-30 mt-1.5 max-h-[420px] overflow-hidden rounded-xl border border-white/[0.12] bg-[#162235] shadow-2xl">
+          <div className="flex items-center gap-2 border-b border-white/[0.10] bg-[#1B2A40] px-2.5 py-2">
             <MagnifyingGlass size={11} weight="bold" className="text-[#8FA1B8]" />
             <input
               autoFocus
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="Search by domain, action, or description"
-              className="flex-1 bg-transparent text-[12px] text-[#F5FAFF] placeholder:text-[#7E8A9A] focus:outline-none"
+              className="flex-1 bg-transparent text-[12px] text-[#F5FAFF] placeholder:text-[#94A3B8] focus:outline-none"
             />
             {search ? (
               <button
@@ -241,7 +242,7 @@ function ActionPicker({
           </div>
           <div className="max-h-[360px] overflow-y-auto p-1">
             {grouped.length === 0 ? (
-              <div className="px-3 py-4 text-center text-[11px] text-[#7E8A9A]">
+              <div className="px-3 py-4 text-center text-[11px] text-[#AFC0D4]">
                 No actions match "{search}".
               </div>
             ) : (
@@ -263,17 +264,17 @@ function ActionPicker({
                         }}
                         className={cn(
                           "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left",
-                          active ? "bg-[#A78BFA]/15" : "hover:bg-white/[0.04]",
+                          active ? "bg-[#A78BFA]/15" : "hover:bg-[#1E2D42]",
                         )}
                       >
                         <span className="mt-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[#A78BFA]" />
                         <span className="min-w-0 flex-1">
                           <span className="flex items-center gap-1.5">
                             <span className="text-[12px] font-medium text-[#F5FAFF]">{item.label}</span>
-                            <span className="text-[10px] text-[#7E8A9A]">{item.action}</span>
+                            <span className="text-[10px] text-[#AFC0D4]">{item.action}</span>
                           </span>
                           {item.description ? (
-                            <span className="mt-0.5 block text-[10.5px] leading-snug text-[#93A4B8]">
+                            <span className="mt-0.5 block text-[10.5px] leading-snug text-[#AFC0D4]">
                               {item.description}
                             </span>
                           ) : null}
@@ -352,11 +353,11 @@ function ActionParamsEditor({
           </div>
         </>
       ) : (
-        <div className="rounded-lg border border-white/[0.06] bg-black/15 px-3 py-2.5 text-[11px] text-[#93A4B8]">
+        <div className="rounded-lg border border-white/[0.12] bg-[#111C2B] px-3 py-2.5 text-[11px] text-[#AFC0D4]">
           <span className="block text-[#D8E3F2]">
             {schema?.description ?? "No structured form for this action yet."}
           </span>
-          <span className="mt-1 block text-[#7E8A9A]">Pass arguments as JSON below.</span>
+          <span className="mt-1 block text-[#AFC0D4]">Pass arguments as JSON below.</span>
         </div>
       )}
 
@@ -367,7 +368,7 @@ function ActionParamsEditor({
       ) : null}
 
       {schema ? (
-        <div className="flex items-center gap-1.5 text-[10px] text-[#7E8A9A]">
+        <div className="flex items-center gap-1.5 text-[10px] text-[#AFC0D4]">
           <ArrowSquareOut size={10} weight="bold" />
           Maps to <span className="font-mono text-[#9FB2C7]">ade {value.domain} {value.action}</span>
         </div>
@@ -392,7 +393,7 @@ function ParamField({
         {param.required ? <span className="ml-0.5 text-[#F472B6]">*</span> : null}
       </span>
       {param.description ? (
-        <span className="ml-2 truncate text-[10px] text-[#7E8A9A]" title={param.description}>
+        <span className="ml-2 truncate text-[10px] text-[#AFC0D4]" title={param.description}>
           {param.description}
         </span>
       ) : null}
@@ -402,14 +403,14 @@ function ParamField({
   if (param.type === "boolean") {
     const checked = value === true;
     return (
-      <label className="flex cursor-pointer items-center justify-between rounded-md border border-white/[0.06] bg-black/15 px-3 py-2 text-[11px] text-[#D8E3F2] hover:border-white/[0.12]">
+      <label className="flex cursor-pointer items-center justify-between rounded-md border border-white/[0.12] bg-[#111C2B] px-3 py-2 text-[11px] text-[#D8E3F2] hover:border-white/[0.20]">
         <span className="min-w-0 flex-1">
           <span className="block text-[10.5px] font-semibold text-[#D8E3F2]">
             {param.name}
             {param.required ? <span className="ml-0.5 text-[#F472B6]">*</span> : null}
           </span>
           {param.description ? (
-            <span className="mt-0.5 block text-[10px] text-[#7E8A9A]">{param.description}</span>
+            <span className="mt-0.5 block text-[10px] text-[#AFC0D4]">{param.description}</span>
           ) : null}
         </span>
         <input
@@ -502,8 +503,7 @@ function ParamField({
       <label className="block space-y-1">
         {labelEl}
         <textarea
-          className="min-h-[60px] w-full rounded-md px-3 py-2 font-mono text-[11px] text-[#F5F7FA] placeholder:text-[#7E8A9A]"
-          style={INPUT_STYLE}
+          className={cn(textareaCls, "min-h-[60px] font-mono text-[11px]")}
           value={current}
           placeholder={param.placeholder ?? '{ "key": "value" }'}
           onChange={(event) => {
@@ -548,7 +548,7 @@ function PlaceholderRow() {
     }
   };
   return (
-    <details className="rounded-md border border-white/[0.06] bg-black/15 px-2.5 py-1.5 text-[10px]">
+    <details className="rounded-md border border-white/[0.12] bg-[#111C2B] px-2.5 py-1.5 text-[10px]">
       <summary className="cursor-pointer text-[10px] uppercase tracking-[1px] text-[#8FA1B8] hover:text-[#D8E3F2]">
         Trigger variables — click to copy
       </summary>
@@ -624,8 +624,7 @@ function JsonArgsEditor({
         ) : null}
       </div>
       <textarea
-        className="min-h-[80px] w-full rounded-md px-3 py-2 font-mono text-[11px] text-[#F5F7FA] placeholder:text-[#7E8A9A]"
-        style={INPUT_STYLE}
+        className={cn(textareaCls, "min-h-[80px] font-mono text-[11px]")}
         value={text}
         onChange={(event) => commit(event.target.value)}
         placeholder='{ "labels": ["triage"] }'

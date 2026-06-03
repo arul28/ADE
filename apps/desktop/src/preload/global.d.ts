@@ -22,6 +22,7 @@ import type {
   AutomationDeleteRuleRequest,
   AutomationIngressEventRecord,
   AutomationIngressStatus,
+  AutomationWebhookGatewayStatus,
   ConflictProposal,
   ConflictExternalResolverRunSummary,
   ConflictProposalPreview,
@@ -995,6 +996,10 @@ declare global {
         listRuns: (args?: AutomationRunListArgs) => Promise<AutomationRun[]>;
         getRunDetail: (runId: string) => Promise<AutomationRunDetail | null>;
         getIngressStatus: () => Promise<AutomationIngressStatus>;
+        refreshWebhookGatewayStatus: () => Promise<AutomationWebhookGatewayStatus>;
+        setWebhookGatewayPublicUrl: (args: {
+          publicUrl?: string | null;
+        }) => Promise<AutomationWebhookGatewayStatus>;
         listIngressEvents: (args?: {
           limit?: number;
         }) => Promise<AutomationIngressEventRecord[]>;

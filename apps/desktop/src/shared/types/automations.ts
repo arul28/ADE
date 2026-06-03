@@ -120,6 +120,49 @@ export type AutomationIngressSource =
   | "linear-relay"
   | "local-webhook";
 
+export const WEBHOOK_GATEWAY_TRIGGER_TYPES = [
+  "github.pr_opened",
+  "github.pr_updated",
+  "github.pr_merged",
+  "github.pr_closed",
+  "github.pr_commented",
+  "github.pr_review_submitted",
+  "github.issue_opened",
+  "github.issue_edited",
+  "github.issue_closed",
+  "github.issue_labeled",
+  "github.issue_commented",
+  "linear.issue_created",
+  "linear.issue_updated",
+  "linear.issue_assigned",
+  "linear.issue_status_changed",
+  "linear.issue_labeled",
+  "github-webhook",
+  "webhook",
+] as const satisfies readonly AutomationTriggerType[];
+
+export type WebhookGatewayTriggerType = (typeof WEBHOOK_GATEWAY_TRIGGER_TYPES)[number];
+
+export function isWebhookGatewayTriggerType(type: AutomationTriggerType | string | null | undefined): type is WebhookGatewayTriggerType {
+  return WEBHOOK_GATEWAY_TRIGGER_TYPES.includes(type as WebhookGatewayTriggerType);
+}
+
+export type AutomationWebhookGatewayStatus = {
+  enabled: boolean;
+  ready: boolean;
+  status: "disabled" | "starting" | "online" | "needs-public-url" | "needs-tailscale" | "pending-approval" | "error";
+  publicUrl: string | null;
+  localUrl: string | null;
+  provider: "tailscale" | "custom" | "unknown" | null;
+  tailscale: {
+    available: boolean;
+    hostname: string | null;
+    message: string | null;
+  };
+  lastCheckedAt: string | null;
+  lastError: string | null;
+};
+
 export type AutomationTriggerIssueContext = {
   number: number;
   title: string;
@@ -149,6 +192,7 @@ export type AutomationTriggerLinearIssueContext = {
 };
 
 export type AutomationIngressStatus = {
+  webhookGateway: AutomationWebhookGatewayStatus;
   githubRelay: {
     configured: boolean;
     healthy: boolean;
@@ -165,6 +209,7 @@ export type AutomationIngressStatus = {
     listening: boolean;
     status: "disabled" | "ready" | "listening" | "error";
     url: string | null;
+    githubUrl: string | null;
     port: number | null;
     lastDeliveryAt: string | null;
     lastError: string | null;

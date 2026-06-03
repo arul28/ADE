@@ -365,6 +365,116 @@ describe("linearIngressService (file group)", () => {
       db.close();
     });
 
+    it("can read relay configuration from runtime environment variables", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-ingress-"));
+      const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+      const previousApiBase = process.env.ADE_LINEAR_RELAY_API_BASE_URL;
+      const previousProject = process.env.ADE_LINEAR_RELAY_REMOTE_PROJECT_ID;
+      const previousToken = process.env.ADE_LINEAR_RELAY_ACCESS_TOKEN;
+
+      process.env.ADE_LINEAR_RELAY_API_BASE_URL = "https://relay-env.example.com";
+      process.env.ADE_LINEAR_RELAY_REMOTE_PROJECT_ID = "remote-project-env";
+      process.env.ADE_LINEAR_RELAY_ACCESS_TOKEN = "token-env";
+
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          endpointId: "endpoint-env",
+          webhookUrl: "https://relay-env.example.com/linear/webhooks/endpoint-env",
+          signingSecret: "relay-secret-env",
+          lastDeliveredAt: null,
+        }),
+      } as Response);
+      fetchMock.mockImplementationOnce(async (_url: string, init?: RequestInit) => {
+        const signal = init?.signal as AbortSignal | undefined;
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        throw new Error("aborted");
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      try {
+        const service = createLinearIngressService({
+          db,
+          projectId: "project-1",
+          linearClient: {
+            listWebhooks: vi.fn(async () => []),
+            createWebhook: vi.fn(async () => ({ id: "webhook-env" })),
+          } as any,
+          secretService: {
+            getSecret: () => null,
+          } as any,
+        });
+
+        await service.ensureRelayWebhook(true);
+
+        expect(service.getStatus().relay.status).toBe("ready");
+        expect(fetchMock.mock.calls[0]?.[0]).toContain("relay-env.example.com");
+
+        service.dispose();
+      } finally {
+        if (previousApiBase === undefined) delete process.env.ADE_LINEAR_RELAY_API_BASE_URL;
+        else process.env.ADE_LINEAR_RELAY_API_BASE_URL = previousApiBase;
+        if (previousProject === undefined) delete process.env.ADE_LINEAR_RELAY_REMOTE_PROJECT_ID;
+        else process.env.ADE_LINEAR_RELAY_REMOTE_PROJECT_ID = previousProject;
+        if (previousToken === undefined) delete process.env.ADE_LINEAR_RELAY_ACCESS_TOKEN;
+        else process.env.ADE_LINEAR_RELAY_ACCESS_TOKEN = previousToken;
+        db.close();
+      }
+    });
+
+    it("reports an error when Linear webhook registration fails", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-ingress-"));
+      const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          endpointId: "endpoint-1",
+          webhookUrl: "https://relay.example.com/linear/webhooks/endpoint-1",
+          signingSecret: "relay-secret",
+          lastDeliveredAt: null,
+        }),
+      } as Response);
+      vi.stubGlobal("fetch", fetchMock);
+
+      const service = createLinearIngressService({
+        db,
+        projectId: "project-1",
+        linearClient: {
+          listWebhooks: vi.fn(async () => {
+            throw new Error("Invalid role: admin required");
+          }),
+          createWebhook: vi.fn(async () => ({ id: "webhook-1" })),
+        } as any,
+        secretService: {
+          getSecret: (key: string) =>
+            key === "linearRelay.apiBaseUrl"
+              ? "https://relay.example.com"
+              : key === "linearRelay.remoteProjectId"
+                ? "remote-project-1"
+                : key === "linearRelay.accessToken"
+                  ? "token-1"
+                  : null,
+        } as any,
+      });
+
+      await expect(service.ensureRelayWebhook(true)).rejects.toThrow("Linear webhook registration failed");
+      const status = service.getStatus();
+
+      expect(status.relay.status).toBe("error");
+      expect(status.relay.healthy).toBe(false);
+      expect(status.relay.lastError).toContain("admin required");
+
+      service.dispose();
+      db.close();
+    });
+
     it("accepts local webhook deliveries signed with the relay secret", async () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-ingress-"));
       const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);

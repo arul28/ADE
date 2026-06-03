@@ -3934,6 +3934,21 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             ],
       ),
       getIngressStatus: resolved({
+        webhookGateway: {
+          enabled: true,
+          ready: true,
+          status: "online",
+          publicUrl: "https://ade-mock.tailnet.ts.net/ade-webhooks",
+          localUrl: "http://127.0.0.1:4319/automations/webhook",
+          provider: "tailscale",
+          tailscale: {
+            available: true,
+            hostname: "ade-mock.tailnet.ts.net",
+            message: "Tailscale is available on ade-mock.tailnet.ts.net.",
+          },
+          lastCheckedAt: now,
+          lastError: null,
+        },
         githubRelay: {
           configured: true,
           healthy: true,
@@ -3950,10 +3965,41 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           listening: true,
           status: "listening",
           url: "http://127.0.0.1:4319/automations/webhook",
+          githubUrl: "http://127.0.0.1:4319/github-webhooks",
           port: 4319,
           lastDeliveryAt: now,
           lastError: null,
         },
+      }),
+      refreshWebhookGatewayStatus: resolved({
+        enabled: true,
+        ready: true,
+        status: "online",
+        publicUrl: "https://ade-mock.tailnet.ts.net/ade-webhooks",
+        localUrl: "http://127.0.0.1:4319/automations/webhook",
+        provider: "tailscale",
+        tailscale: {
+          available: true,
+          hostname: "ade-mock.tailnet.ts.net",
+          message: "Tailscale is available on ade-mock.tailnet.ts.net.",
+        },
+        lastCheckedAt: now,
+        lastError: null,
+      }),
+      setWebhookGatewayPublicUrl: resolvedArg({
+        enabled: true,
+        ready: true,
+        status: "online",
+        publicUrl: "https://ade-mock.tailnet.ts.net/ade-webhooks",
+        localUrl: "http://127.0.0.1:4319/automations/webhook",
+        provider: "tailscale",
+        tailscale: {
+          available: true,
+          hostname: "ade-mock.tailnet.ts.net",
+          message: "Tailscale is available on ade-mock.tailnet.ts.net.",
+        },
+        lastCheckedAt: now,
+        lastError: null,
       }),
       listIngressEvents: resolvedArg(
         USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_AUTOMATIONS?.ingressEvents)

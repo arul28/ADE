@@ -9,6 +9,11 @@ function createPlannerForTests(args: {
   suites: Array<{ id: string; name: string }>;
   projectRoot?: string;
   laneWorktrees?: Record<string, string>;
+  automationService?: {
+    list: () => { id: string }[];
+    syncFromConfig: () => void;
+    assertWebhookGatewayReadyForRule?: (rule: any) => void;
+  };
 }) {
   const logger = {
     debug: () => {},
@@ -53,7 +58,7 @@ function createPlannerForTests(args: {
   const laneService = {
     getLaneWorktreePath: (laneId: string) => args.laneWorktrees?.[laneId] ?? projectRoot,
   } as any;
-  const automationService = { list: () => [], syncFromConfig: () => {} } as any;
+  const automationService = args.automationService ?? { list: () => [], syncFromConfig: () => {} };
 
   return {
     planner: createAutomationPlannerService({
@@ -71,6 +76,11 @@ function getPlanner(args: {
   suites: Array<{ id: string; name: string }>;
   projectRoot?: string;
   laneWorktrees?: Record<string, string>;
+  automationService?: {
+    list: () => { id: string }[];
+    syncFromConfig: () => void;
+    assertWebhookGatewayReadyForRule?: (rule: any) => void;
+  };
 }) {
   const harness = createPlannerForTests(args);
   return harness;
@@ -255,6 +265,30 @@ describe("automationPlannerService.validateDraft", () => {
     });
     expect(saved.rule.includeProjectContext).toBe(false);
     expect(getSnapshot().local.automations[0]?.includeProjectContext).toBe(false);
+  });
+
+  it("checks the webhook gateway before saving enabled external event automations", () => {
+    const calls: any[] = [];
+    const { planner } = getPlanner({
+      suites: [],
+      automationService: {
+        list: () => [],
+        syncFromConfig: () => {},
+        assertWebhookGatewayReadyForRule: (rule: any) => {
+          calls.push(rule);
+          throw new Error("Gateway missing");
+        },
+      },
+    } as any);
+    const draft = createDraft({
+      name: "Linear label",
+      triggers: [{ type: "linear.issue_labeled" }],
+      trigger: { type: "linear.issue_labeled" },
+      prompt: "Run a smoke triage.",
+    });
+
+    expect(() => planner.saveDraft({ draft, confirmations: [] })).toThrow(/Gateway missing/);
+    expect(calls[0]?.name).toBe("Linear label");
   });
 
   it("normalizes issue-to-lane pipelines with per-step agent settings", () => {

@@ -7,6 +7,10 @@ import type * as NodePty from "node-pty";
 type NodePtyType = typeof NodePty;
 import { isAdeRuntimeNamedPipePath } from "../shared/adeRuntimeIpc";
 import {
+  areAutomationsEnabledForPackagedState,
+  isMacosVmEnabledForPackagedState,
+} from "../shared/automationAvailability";
+import {
   handleDeeplinkUrl,
   registerAdeProtocolHandler,
 } from "./services/deeplinks/protocolHandler";
@@ -1905,6 +1909,8 @@ app.whenReady().then(async () => {
     });
 
     const operationService = createOperationService({ db, projectId });
+    const automationsEnabled = areAutomationsEnabledForPackagedState(app.isPackaged);
+    const macosVmEnabled = isMacosVmEnabledForPackagedState(app.isPackaged);
 
     let jobEngine: ReturnType<typeof createJobEngine> | null = null;
     let automationService: ReturnType<typeof createAutomationService> | null =
@@ -3074,19 +3080,21 @@ app.whenReady().then(async () => {
     testServiceRef = testService;
     gitServiceRef = gitService;
 
-    automationService = createAutomationService({
-      db,
-      logger,
-      projectId,
-      projectRoot,
-      laneService,
-      projectConfigService,
-      conflictService,
-      testService,
-      agentChatService,
-      onEvent: (event) =>
-        emitProjectEvent(projectRoot, IPC.automationsEvent, event),
-    });
+    if (automationsEnabled) {
+      automationService = createAutomationService({
+        db,
+        logger,
+        projectId,
+        projectRoot,
+        laneService,
+        projectConfigService,
+        conflictService,
+        testService,
+        agentChatService,
+        onEvent: (event) =>
+          emitProjectEvent(projectRoot, IPC.automationsEvent, event),
+      });
+    }
     const reviewService = createReviewService({
       db,
       logger,
@@ -3103,18 +3111,22 @@ app.whenReady().then(async () => {
       prService,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.reviewEvent, event),
     });
-    const automationIngressService = createAutomationIngressService({
-      logger,
-      automationService,
-      secretService: automationSecretService,
-      listRules: () => projectConfigService.get().effective.automations ?? [],
-    });
+    const automationIngressService = automationService
+      ? createAutomationIngressService({
+          logger,
+          automationService,
+          secretService: automationSecretService,
+          listRules: () => projectConfigService.get().effective.automations ?? [],
+        })
+      : null;
 
-    const githubPollingService = createGithubPollingService({
-      logger,
-      githubService,
-      automationService,
-    });
+    const githubPollingService = automationService
+      ? createGithubPollingService({
+          logger,
+          githubService,
+          automationService,
+        })
+      : null;
 
     const deferredProjectStartCancels = new Set<() => void>();
     const scheduleDeferredProjectStart = (
@@ -3358,99 +3370,103 @@ app.whenReady().then(async () => {
       onEvent: (payload) =>
         emitProjectEvent(projectRoot, IPC.appControlEvent, payload),
     });
-    const macosVmService = createMacosVmService({
-      projectRoot,
-      logger,
-      resolveLanes: async () => laneService.list({ includeArchived: false }),
-      onEvent: (payload) => {
-        syncMacosVmLaunchCacheFromEvent(payload, (event, fields) => {
-          logger.warn(event, fields);
-        }, {
+    const macosVmService = macosVmEnabled
+      ? createMacosVmService({
           projectRoot,
-          provider: macosVmLaunchProviderForProject,
-        });
-        emitProjectEvent(projectRoot, IPC.macosVmEvent, payload);
-      },
-      captureWindowSources: async () => {
-        const sources = await desktopCapturer.getSources({
-          types: ["window"],
-          thumbnailSize: { width: 1280, height: 1280 },
-        });
-        return sources.map((source) => ({
-          id: source.id,
-          name: source.name,
-          thumbnailDataUrl: source.thumbnail.isEmpty() ? null : source.thumbnail.toDataURL(),
-        }));
-      },
-      // TODO: once the in-guest ade-runtime install lands, route this to
-      // RemoteConnectionPool.registerMacosVmTarget so chat exec can RPC into
-      // the VM. The pool currently lives inside registerRuntimeBridge; this
-      // wire-up needs the pool/registry to be lifted into a shared scope.
-      onRuntimeReady: ({ vmName, ipAddress, username }) => {
-        logger.info("macos_vm.runtime_ready", { vmName, ipAddress, username });
-        const vmLane = laneService.findExistingVmLane();
-        if (!vmLane) return;
-        invalidateVmLaneLaunchCache(vmLane.id, projectRoot);
-        void refreshVmLaneLaunchCache({
-          laneId: vmLane.id,
-          projectRoot,
-          provider: macosVmLaunchProviderForProject,
-        }).catch((error) => {
-          logger.warn("macos_vm.runtime_ready_cache_refresh_failed", {
-            laneId: vmLane.id,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-      },
-    });
+          logger,
+          resolveLanes: async () => laneService.list({ includeArchived: false }),
+          onEvent: (payload) => {
+            syncMacosVmLaunchCacheFromEvent(payload, (event, fields) => {
+              logger.warn(event, fields);
+            }, {
+              projectRoot,
+              provider: macosVmLaunchProviderForProject,
+            });
+            emitProjectEvent(projectRoot, IPC.macosVmEvent, payload);
+          },
+          captureWindowSources: async () => {
+            const sources = await desktopCapturer.getSources({
+              types: ["window"],
+              thumbnailSize: { width: 1280, height: 1280 },
+            });
+            return sources.map((source) => ({
+              id: source.id,
+              name: source.name,
+              thumbnailDataUrl: source.thumbnail.isEmpty() ? null : source.thumbnail.toDataURL(),
+            }));
+          },
+          // TODO: once the in-guest ade-runtime install lands, route this to
+          // RemoteConnectionPool.registerMacosVmTarget so chat exec can RPC into
+          // the VM. The pool currently lives inside registerRuntimeBridge; this
+          // wire-up needs the pool/registry to be lifted into a shared scope.
+          onRuntimeReady: ({ vmName, ipAddress, username }) => {
+            logger.info("macos_vm.runtime_ready", { vmName, ipAddress, username });
+            const vmLane = laneService.findExistingVmLane();
+            if (!vmLane) return;
+            invalidateVmLaneLaunchCache(vmLane.id, projectRoot);
+            void refreshVmLaneLaunchCache({
+              laneId: vmLane.id,
+              projectRoot,
+              provider: macosVmLaunchProviderForProject,
+            }).catch((error) => {
+              logger.warn("macos_vm.runtime_ready_cache_refresh_failed", {
+                laneId: vmLane.id,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            });
+          },
+        })
+      : null;
     // Wire macosVmService into laneService now that both exist. The hooks let
     // detachVmLane / attachLaneToVm trigger share-stale + mirror-sync teardown
     // without laneService importing the macosVm barrel.
-    const macosVmSvcAny = macosVmService as unknown as {
-      markShareStale?: (args: { laneId: string }) => Promise<void> | void;
-      stopMirrorSyncForLane?: (args: { laneId: string }) => Promise<void> | void;
-      startMirrorSyncForLane?: (args: { laneId: string }) => Promise<void> | void;
-      linkLaneToCurrentVm?: (args: { laneId: string }) => Promise<void> | void;
-      getStatus?: typeof macosVmService.getStatus;
-      getCredentials?: (args: { vmName: string }) => Promise<{
-        vmName: string;
-        username: string | null;
-        hasPassword: boolean;
-      }>;
-    };
-    if (typeof laneService.setMacosVmHooks === "function" && typeof macosVmSvcAny.getStatus === "function") {
-      laneService.setMacosVmHooks({
-        getStatus: macosVmSvcAny.getStatus.bind(macosVmService),
-        markShareStale: async ({ laneId }) => {
-          if (typeof macosVmSvcAny.markShareStale === "function") {
-            await macosVmSvcAny.markShareStale({ laneId });
-          }
-        },
-        stopMirrorSyncForLane: async ({ laneId }) => {
-          if (typeof macosVmSvcAny.stopMirrorSyncForLane === "function") {
-            await macosVmSvcAny.stopMirrorSyncForLane({ laneId });
-          }
-        },
-        startMirrorSyncForLane: async ({ laneId }) => {
-          if (typeof macosVmSvcAny.startMirrorSyncForLane === "function") {
-            await macosVmSvcAny.startMirrorSyncForLane({ laneId });
-          }
-        },
-        linkLaneToCurrentVm: async ({ laneId }) => {
-          if (typeof macosVmSvcAny.linkLaneToCurrentVm === "function") {
-            await macosVmSvcAny.linkLaneToCurrentVm({ laneId });
-          }
-        },
-      });
-    }
-    // Register the launch-context provider so resolveLaneLaunchContext can
-    // synthesize an SSH launch context for VM lanes.
-    if (typeof macosVmSvcAny.getStatus === "function" && typeof macosVmSvcAny.getCredentials === "function") {
-      macosVmLaunchProviderForProject = {
-        getStatus: macosVmSvcAny.getStatus.bind(macosVmService),
-        getCredentials: macosVmSvcAny.getCredentials.bind(macosVmService),
+    if (macosVmService) {
+      const macosVmSvcAny = macosVmService as unknown as {
+        markShareStale?: (args: { laneId: string }) => Promise<void> | void;
+        stopMirrorSyncForLane?: (args: { laneId: string }) => Promise<void> | void;
+        startMirrorSyncForLane?: (args: { laneId: string }) => Promise<void> | void;
+        linkLaneToCurrentVm?: (args: { laneId: string }) => Promise<void> | void;
+        getStatus?: ReturnType<typeof createMacosVmService>["getStatus"];
+        getCredentials?: (args: { vmName: string }) => Promise<{
+          vmName: string;
+          username: string | null;
+          hasPassword: boolean;
+        }>;
       };
-      setMacosVmLaunchProvider(macosVmLaunchProviderForProject);
+      if (typeof laneService.setMacosVmHooks === "function" && typeof macosVmSvcAny.getStatus === "function") {
+        laneService.setMacosVmHooks({
+          getStatus: macosVmSvcAny.getStatus.bind(macosVmService),
+          markShareStale: async ({ laneId }) => {
+            if (typeof macosVmSvcAny.markShareStale === "function") {
+              await macosVmSvcAny.markShareStale({ laneId });
+            }
+          },
+          stopMirrorSyncForLane: async ({ laneId }) => {
+            if (typeof macosVmSvcAny.stopMirrorSyncForLane === "function") {
+              await macosVmSvcAny.stopMirrorSyncForLane({ laneId });
+            }
+          },
+          startMirrorSyncForLane: async ({ laneId }) => {
+            if (typeof macosVmSvcAny.startMirrorSyncForLane === "function") {
+              await macosVmSvcAny.startMirrorSyncForLane({ laneId });
+            }
+          },
+          linkLaneToCurrentVm: async ({ laneId }) => {
+            if (typeof macosVmSvcAny.linkLaneToCurrentVm === "function") {
+              await macosVmSvcAny.linkLaneToCurrentVm({ laneId });
+            }
+          },
+        });
+      }
+      // Register the launch-context provider so resolveLaneLaunchContext can
+      // synthesize an SSH launch context for VM lanes.
+      if (typeof macosVmSvcAny.getStatus === "function" && typeof macosVmSvcAny.getCredentials === "function") {
+        macosVmLaunchProviderForProject = {
+          getStatus: macosVmSvcAny.getStatus.bind(macosVmService),
+          getCredentials: macosVmSvcAny.getCredentials.bind(macosVmService),
+        };
+        setMacosVmLaunchProvider(macosVmLaunchProviderForProject);
+      }
     }
     // Phone sync is owned by the per-machine ADE service. The desktop
     // keeps a non-host sync service for legacy viewer state and explicit
@@ -3641,74 +3657,81 @@ app.whenReady().then(async () => {
       projectRoot,
       stage: "linear_ingress_init",
     });
-    const linearIngressService = createLinearIngressService({
-      db,
-      logger,
-      projectId,
-      linearClient,
-      secretService: automationSecretService,
-      onEvent: async (event) => {
-        emitProjectEvent(projectRoot, IPC.ctoLinearWorkflowEvent, {
-          type: "linear-workflow-ingress",
+    const linearIngressService = automationsEnabled && automationService
+      ? createLinearIngressService({
+          db,
+          logger,
           projectId,
-          source: event.source,
-          issueId: event.issueId,
-          issueIdentifier: event.issueIdentifier,
-          summary: event.summary,
-          createdAt: event.createdAt,
-        });
-        if (event.issueId) {
-          const isCreatedIssueEvent =
-            event.entityType?.trim().toLowerCase() === "issue"
-            && /^(create|created)$/i.test(event.action?.trim() ?? "");
-          await linearSyncService.processIssueUpdate(event.issueId, {
-            adeIssueLinkCause: isCreatedIssueEvent ? "linear_issue_created" : "linear_issue_ingress",
-          });
-          try {
-            for (const dispatched of buildLinearAutomationDispatches(event)) {
-              await automationService.dispatchIngressTrigger(dispatched);
-            }
-          } catch (error) {
-            logger.warn("linear.automation_dispatch_failed", {
+          linearClient,
+          secretService: automationSecretService,
+          projectConfigService,
+          onEvent: async (event) => {
+            emitProjectEvent(projectRoot, IPC.ctoLinearWorkflowEvent, {
+              type: "linear-workflow-ingress",
+              projectId,
+              source: event.source,
               issueId: event.issueId,
-              eventId: event.eventId,
-              error: error instanceof Error ? error.message : String(error),
+              issueIdentifier: event.issueIdentifier,
+              summary: event.summary,
+              createdAt: event.createdAt,
             });
-          }
-        }
-      },
-    });
+            if (event.issueId) {
+              const isCreatedIssueEvent =
+                event.entityType?.trim().toLowerCase() === "issue"
+                && /^(create|created)$/i.test(event.action?.trim() ?? "");
+              await linearSyncService.processIssueUpdate(event.issueId, {
+                adeIssueLinkCause: isCreatedIssueEvent ? "linear_issue_created" : "linear_issue_ingress",
+              });
+              try {
+                for (const dispatched of buildLinearAutomationDispatches(event)) {
+                  await automationService.dispatchIngressTrigger(dispatched);
+                }
+              } catch (error) {
+                logger.warn("linear.automation_dispatch_failed", {
+                  issueId: event.issueId,
+                  eventId: event.eventId,
+                  error: error instanceof Error ? error.message : String(error),
+                });
+              }
+            }
+          },
+        })
+      : null;
     linearIngressServiceRef = linearIngressService;
-    scheduleBackgroundProjectTask(
-      "linear.ingress_start",
-      () => {
-        if (!linearIngressService.canAutoStart()) {
-          logger.info("project.startup_task_skipped", {
-            projectRoot,
-            task: "linear.ingress_start",
-            reason: "not_configured",
-            enableFlag: "ADE_ENABLE_LINEAR_INGRESS",
+    if (linearIngressService) {
+      scheduleBackgroundProjectTask(
+        "linear.ingress_start",
+        () => {
+          if (!linearIngressService.canAutoStart()) {
+            logger.info("project.startup_task_skipped", {
+              projectRoot,
+              task: "linear.ingress_start",
+              reason: "not_configured",
+              enableFlag: "ADE_ENABLE_LINEAR_INGRESS",
+            });
+            return;
+          }
+          return linearIngressService.start();
+        },
+        (error) => {
+          logger.warn("linear.ingress_start_failed", {
+            error: error instanceof Error ? error.message : String(error),
           });
-          return;
-        }
-        return linearIngressService.start();
-      },
-      (error) => {
-        logger.warn("linear.ingress_start_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      },
-      0,
-      "ADE_ENABLE_LINEAR_INGRESS",
-    );
+        },
+        0,
+        "ADE_ENABLE_LINEAR_INGRESS",
+      );
+    }
 
-    const automationPlannerService = createAutomationPlannerService({
-      logger,
-      projectRoot,
-      projectConfigService,
-      laneService,
-      automationService,
-    });
+    const automationPlannerService = automationService
+      ? createAutomationPlannerService({
+          logger,
+          projectRoot,
+          projectConfigService,
+          laneService,
+          automationService,
+        })
+      : null;
 
     const usageTrackingService = createUsageTrackingService({
       logger,
@@ -3736,29 +3759,33 @@ app.whenReady().then(async () => {
       projectConfigService,
       usageTrackingService,
     });
-    scheduleBackgroundProjectTask(
-      "automations.ingress_start",
-      () => automationIngressService.start(),
-      (error) => {
-        logger.warn("automations.ingress_start_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      },
-      0,
-      "ADE_ENABLE_AUTOMATION_INGRESS",
-    );
+    if (automationIngressService) {
+      scheduleBackgroundProjectTask(
+        "automations.ingress_start",
+        () => automationIngressService.start(),
+        (error) => {
+          logger.warn("automations.ingress_start_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        },
+        0,
+        "ADE_ENABLE_AUTOMATION_INGRESS",
+      );
+    }
 
-    scheduleBackgroundProjectTask(
-      "automations.github_polling_start",
-      () => githubPollingService.start(),
-      (error) => {
-        logger.warn("automations.github_polling_start_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      },
-      0,
-      "ADE_ENABLE_AUTOMATION_INGRESS",
-    );
+    if (githubPollingService) {
+      scheduleBackgroundProjectTask(
+        "automations.github_polling_start",
+        () => githubPollingService.start(),
+        (error) => {
+          logger.warn("automations.github_polling_start_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        },
+        0,
+        "ADE_ENABLE_AUTOMATION_INGRESS",
+      );
+    }
 
     const configReloadService = createConfigReloadService({
       paths: {
@@ -4205,6 +4232,7 @@ app.whenReady().then(async () => {
         usageTrackingService,
         budgetCapService,
         autoUpdateService,
+        isPackaged: app.isPackaged,
       } as unknown as AdeRuntime;
     }
 
@@ -4308,83 +4336,87 @@ app.whenReady().then(async () => {
     const runtimeProject = await localRuntimePool.ensureProject(projectRoot);
     const shellContext = createDormantProjectContext(projectRoot);
     let macosVmLaunchProviderForProject: MacosVmLaunchProvider | null = null;
-    const macosVmService = createMacosVmService({
-      projectRoot,
-      logger,
-      resolveLanes: async () => {
-        const response = await localRuntimePool.callActionForRoot(projectRoot, {
-          domain: "lane",
-          action: "list",
-          args: { includeArchived: false, includeStatus: false },
-        });
-        const lanes = Array.isArray(response.result) ? response.result as LaneSummary[] : [];
-        return lanes.map((lane) => ({
-          id: lane.id,
-          name: lane.name,
-          worktreePath: lane.worktreePath,
-        }));
-      },
-      onEvent: (payload) => {
-        syncMacosVmLaunchCacheFromEvent(payload, (event, fields) => {
-          logger.warn(event, fields);
-        }, {
+    const macosVmService = isMacosVmEnabledForPackagedState(app.isPackaged)
+      ? createMacosVmService({
           projectRoot,
-          provider: macosVmLaunchProviderForProject,
-        });
-        emitProjectEvent(projectRoot, IPC.macosVmEvent, payload);
-      },
-      captureWindowSources: async () => {
-        const sources = await desktopCapturer.getSources({
-          types: ["window"],
-          thumbnailSize: { width: 1280, height: 1280 },
-        });
-        return sources.map((source) => ({
-          id: source.id,
-          name: source.name,
-          thumbnailDataUrl: source.thumbnail.isEmpty() ? null : source.thumbnail.toDataURL(),
-        }));
-      },
-      // TODO: route to RemoteConnectionPool.registerMacosVmTarget once the
-      // in-guest ade-runtime bootstrap installs the binary (today the
-      // bootstrap script only writes a marker file).
-      onRuntimeReady: ({ vmName, ipAddress, username }) => {
-        logger.info("macos_vm.runtime_ready", { vmName, ipAddress, username });
-        void (async () => {
-          const response = await localRuntimePool.callActionForRoot(projectRoot, {
-            domain: "lane",
-            action: "list",
-            args: { includeArchived: false, includeStatus: false },
-          });
-          const lanes = Array.isArray(response.result) ? response.result as LaneSummary[] : [];
-          const vmLane = lanes.find((lane) => lane.runtimePlacement === "macos-vm") ?? null;
-          if (!vmLane) return;
-          invalidateVmLaneLaunchCache(vmLane.id, projectRoot);
-          await refreshVmLaneLaunchCache({
-            laneId: vmLane.id,
-            projectRoot,
-            provider: macosVmLaunchProviderForProject,
-          });
-        })().catch((error) => {
-          logger.warn("macos_vm.runtime_ready_cache_refresh_failed", {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-      },
-    });
-    const macosVmSvcAny = macosVmService as unknown as {
-      getStatus?: typeof macosVmService.getStatus;
-      getCredentials?: (args: { vmName: string }) => Promise<{
-        vmName: string;
-        username: string | null;
-        hasPassword: boolean;
-      }>;
-    };
-    if (typeof macosVmSvcAny.getStatus === "function" && typeof macosVmSvcAny.getCredentials === "function") {
-      macosVmLaunchProviderForProject = {
-        getStatus: macosVmSvcAny.getStatus.bind(macosVmService),
-        getCredentials: macosVmSvcAny.getCredentials.bind(macosVmService),
+          logger,
+          resolveLanes: async () => {
+            const response = await localRuntimePool.callActionForRoot(projectRoot, {
+              domain: "lane",
+              action: "list",
+              args: { includeArchived: false, includeStatus: false },
+            });
+            const lanes = Array.isArray(response.result) ? response.result as LaneSummary[] : [];
+            return lanes.map((lane) => ({
+              id: lane.id,
+              name: lane.name,
+              worktreePath: lane.worktreePath,
+            }));
+          },
+          onEvent: (payload) => {
+            syncMacosVmLaunchCacheFromEvent(payload, (event, fields) => {
+              logger.warn(event, fields);
+            }, {
+              projectRoot,
+              provider: macosVmLaunchProviderForProject,
+            });
+            emitProjectEvent(projectRoot, IPC.macosVmEvent, payload);
+          },
+          captureWindowSources: async () => {
+            const sources = await desktopCapturer.getSources({
+              types: ["window"],
+              thumbnailSize: { width: 1280, height: 1280 },
+            });
+            return sources.map((source) => ({
+              id: source.id,
+              name: source.name,
+              thumbnailDataUrl: source.thumbnail.isEmpty() ? null : source.thumbnail.toDataURL(),
+            }));
+          },
+          // TODO: route to RemoteConnectionPool.registerMacosVmTarget once the
+          // in-guest ade-runtime bootstrap installs the binary (today the
+          // bootstrap script only writes a marker file).
+          onRuntimeReady: ({ vmName, ipAddress, username }) => {
+            logger.info("macos_vm.runtime_ready", { vmName, ipAddress, username });
+            void (async () => {
+              const response = await localRuntimePool.callActionForRoot(projectRoot, {
+                domain: "lane",
+                action: "list",
+                args: { includeArchived: false, includeStatus: false },
+              });
+              const lanes = Array.isArray(response.result) ? response.result as LaneSummary[] : [];
+              const vmLane = lanes.find((lane) => lane.runtimePlacement === "macos-vm") ?? null;
+              if (!vmLane) return;
+              invalidateVmLaneLaunchCache(vmLane.id, projectRoot);
+              await refreshVmLaneLaunchCache({
+                laneId: vmLane.id,
+                projectRoot,
+                provider: macosVmLaunchProviderForProject,
+              });
+            })().catch((error) => {
+              logger.warn("macos_vm.runtime_ready_cache_refresh_failed", {
+                error: error instanceof Error ? error.message : String(error),
+              });
+            });
+          },
+        })
+      : null;
+    if (macosVmService) {
+      const macosVmSvcAny = macosVmService as unknown as {
+        getStatus?: ReturnType<typeof createMacosVmService>["getStatus"];
+        getCredentials?: (args: { vmName: string }) => Promise<{
+          vmName: string;
+          username: string | null;
+          hasPassword: boolean;
+        }>;
       };
-      setMacosVmLaunchProvider(macosVmLaunchProviderForProject);
+      if (typeof macosVmSvcAny.getStatus === "function" && typeof macosVmSvcAny.getCredentials === "function") {
+        macosVmLaunchProviderForProject = {
+          getStatus: macosVmSvcAny.getStatus.bind(macosVmService),
+          getCredentials: macosVmSvcAny.getCredentials.bind(macosVmService),
+        };
+        setMacosVmLaunchProvider(macosVmLaunchProviderForProject);
+      }
     }
     const usageTrackingService = createUsageTrackingService({
       logger,

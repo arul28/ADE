@@ -1916,9 +1916,11 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
 function coerceProjectUiConfig(value: unknown): ProjectConfigFile["ui"] {
   if (!isRecord(value)) return undefined;
   const linearBatchLaunchDefaultPrompt = asString(value.linearBatchLaunchDefaultPrompt)?.trim();
-  return linearBatchLaunchDefaultPrompt
-    ? { linearBatchLaunchDefaultPrompt }
-    : undefined;
+  const webhookGatewayPublicUrl = asString(value.webhookGatewayPublicUrl)?.trim();
+  const out: NonNullable<ProjectConfigFile["ui"]> = {};
+  if (linearBatchLaunchDefaultPrompt) out.linearBatchLaunchDefaultPrompt = linearBatchLaunchDefaultPrompt;
+  if (webhookGatewayPublicUrl) out.webhookGatewayPublicUrl = webhookGatewayPublicUrl;
+  return Object.keys(out).length ? out : undefined;
 }
 
 function coerceGithubConfig(value: unknown): ProjectConfigFile["github"] {

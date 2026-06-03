@@ -1,7 +1,7 @@
 /** Shared utilities for the automations UI. */
 
 import type React from "react";
-import { inputCls } from "../cto/shared/designTokens";
+import { inputCls } from "./designTokens";
 
 /**
  * Legacy aliases. Existing automation call sites use these names; they now

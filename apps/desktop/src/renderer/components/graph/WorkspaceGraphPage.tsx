@@ -378,6 +378,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
     message: string;
     undoAction: () => Promise<void>;
   } | null>(null);
+  const [undoToastPending, setUndoToastPending] = React.useState(false);
   const [activityScoreByLaneId, setActivityScoreByLaneId] = React.useState<Record<string, number>>({});
   const [activeSessionsByLaneId, setActiveSessionsByLaneId] = React.useState<Record<string, number>>({});
   const activeGraphSessionsRef = React.useRef(0);
@@ -1003,9 +1004,10 @@ function GraphInner({ active = true }: { active?: boolean }) {
 
   React.useEffect(() => {
     if (!undoToast) return;
+    if (undoToastPending) return;
     const timer = window.setTimeout(() => setUndoToast(null), 10_000);
     return () => window.clearTimeout(timer);
-  }, [undoToast]);
+  }, [undoToast, undoToastPending]);
 
   React.useEffect(() => {
     const timers = Object.entries(mergeDisappearingAtByLaneId).map(([laneId, startedAt]) =>
@@ -2215,7 +2217,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
         const result = await window.ade.lanes.reparent({ laneId, newParentLaneId: target.id });
         completed.push({ laneId, previousParentLaneId: result.previousParentLaneId });
       } catch (error) {
-        for (const rollback of completed.reverse()) {
+        for (const rollback of [...completed].reverse()) {
           if (!rollback.previousParentLaneId) continue;
           try {
             await window.ade.lanes.reparent({ laneId: rollback.laneId, newParentLaneId: rollback.previousParentLaneId });
@@ -2230,10 +2232,11 @@ function GraphInner({ active = true }: { active?: boolean }) {
       }
     }
 
+    setUndoToastPending(false);
     setUndoToast({
       message: `Reparented ${orderedLaneIds.length === 1 ? `'${laneById.get(orderedLaneIds[0]!)?.name ?? orderedLaneIds[0]}'` : `${orderedLaneIds.length} lanes`} under '${target.name}'`,
       undoAction: async () => {
-        for (const rollback of completed.reverse()) {
+        for (const rollback of [...completed].reverse()) {
           if (!rollback.previousParentLaneId) continue;
           await window.ade.lanes.reparent({ laneId: rollback.laneId, newParentLaneId: rollback.previousParentLaneId });
         }
@@ -4417,14 +4420,20 @@ function GraphInner({ active = true }: { active?: boolean }) {
               size="sm"
               variant="primary"
               className="h-6 px-2 text-[11px]"
+              disabled={undoToastPending}
               onClick={() => {
+                if (undoToastPending) return;
+                setUndoToastPending(true);
                 void undoToast
                   .undoAction()
                   .catch((error) => setErrorBanner(error instanceof Error ? error.message : String(error)))
-                  .finally(() => setUndoToast(null));
+                  .finally(() => {
+                    setUndoToastPending(false);
+                    setUndoToast(null);
+                  });
               }}
             >
-              Undo
+              {undoToastPending ? "Undoing" : "Undo"}
             </Button>
           </div>
         </div>

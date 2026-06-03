@@ -1,10 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useRef } from "react";
 import {
-  Brain,
   Calendar,
-  Clock,
-  CloudArrowUp,
+  CheckCircle,
   Cpu,
   FileText,
   Flag,
@@ -12,7 +9,6 @@ import {
   Flask,
   GitBranch,
   GithubLogo,
-  Hourglass,
   Lightning,
   ListChecks,
   Sparkle,
@@ -22,37 +18,27 @@ import {
   WebhooksLogo,
 } from "@phosphor-icons/react";
 import type { ElementType } from "react";
-import { getDefaultModelDescriptor } from "../../../../shared/modelRegistry";
 import type {
   AutomationAction,
   AutomationDraftConfirmationRequirement,
   AutomationDraftIssue,
+  AutomationIngressStatus,
   AutomationLaneMode,
   AutomationLaneNamePreset,
-  AutomationMode,
-  AutomationOutputDisposition,
-  AutomationReviewProfile,
   AutomationRuleDraft,
-  AutomationToolFamily,
   AutomationTrigger,
   TestSuiteDefinition,
 } from "../../../../shared/types";
-import { ModelSelector } from "../../shared/ModelSelector";
+import { isWebhookGatewayTriggerType } from "../../../../shared/types";
 import { Button } from "../../ui/Button";
 import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
-import { permissionControlsForModel, patchPermissionConfig } from "../permissionControls";
-import { cardCls, inputCls, labelCls, selectCls } from "../designTokens";
+import { cardCls, inputCls, labelCls, selectCls, textareaCls } from "../designTokens";
 import { GitHubTriggerFilters } from "../GitHubTriggerFilters";
 import { LinearTriggerFilters } from "../LinearTriggerFilters";
 import { ActionList } from "../ActionList";
 import type { ActionRowValue } from "../ActionRow";
-import { CARD_STYLE, INPUT_CLS, INPUT_STYLE } from "../shared";
-
-const DEFAULT_MODEL_ID =
-  getDefaultModelDescriptor("opencode")?.id
-  ?? getDefaultModelDescriptor("claude")?.id
-  ?? "anthropic/claude-sonnet-4-6";
+import { INPUT_CLS, INPUT_STYLE } from "../shared";
 
 type TriggerFamily =
   | "manual"
@@ -79,7 +65,7 @@ const TRIGGER_FAMILIES: Array<{
   { value: "file-change", label: "File change", icon: FileText, accent: "#34D399", hint: "Watches paths in the repo" },
   { value: "lane", label: "Lane", icon: TreeStructure, accent: "#7DD3FC", hint: "Lane lifecycle events" },
   { value: "session", label: "Session", icon: Cpu, accent: "#94A3B8", hint: "Agent session ends" },
-  { value: "webhook", label: "Webhook", icon: WebhooksLogo, accent: "#F472B6", hint: "External relay" },
+  { value: "webhook", label: "Webhook", icon: WebhooksLogo, accent: "#F472B6", hint: "External events" },
   { value: "manual", label: "Manual", icon: Lightning, accent: "#FACC15", hint: "Run on click only" },
 ];
 
@@ -116,7 +102,7 @@ const TRIGGER_OPTIONS: Record<TriggerFamily, Array<{ value: AutomationTrigger["t
   ],
   session: [{ value: "session-end", label: "Session ended" }],
   webhook: [
-    { value: "github-webhook", label: "GitHub relay webhook" },
+    { value: "github-webhook", label: "GitHub event" },
     { value: "webhook", label: "Custom webhook" },
   ],
   manual: [{ value: "manual", label: "Run on click only" }],
@@ -127,38 +113,6 @@ const SCHEDULE_PRESETS: Array<{ label: string; cron: string }> = [
   { label: "Every day at 9 AM", cron: "0 9 * * *" },
   { label: "Every day at 2 AM", cron: "0 2 * * *" },
   { label: "Fridays at 4 PM", cron: "0 16 * * 5" },
-];
-
-const REVIEW_PROFILES: Array<{ value: AutomationReviewProfile; label: string }> = [
-  { value: "quick", label: "Quick" },
-  { value: "incremental", label: "Incremental" },
-  { value: "full", label: "Full" },
-  { value: "security", label: "Security" },
-  { value: "release-risk", label: "Release risk" },
-  { value: "cross-repo-contract", label: "Cross-repo contract" },
-];
-
-const RULE_MODES: Array<{ value: AutomationMode; label: string }> = [
-  { value: "review", label: "Review" },
-  { value: "fix", label: "Fix" },
-  { value: "monitor", label: "Monitor" },
-];
-
-const TOOL_FAMILIES: Array<{ value: AutomationToolFamily; label: string }> = [
-  { value: "repo", label: "Repo" },
-  { value: "git", label: "Git" },
-  { value: "tests", label: "Tests" },
-  { value: "github", label: "GitHub" },
-  { value: "linear", label: "Linear" },
-  { value: "browser", label: "Browser" },
-];
-
-const OUTPUT_DISPOSITIONS: Array<{ value: AutomationOutputDisposition; label: string }> = [
-  { value: "comment-only", label: "Comment only" },
-  { value: "open-task", label: "Open task" },
-  { value: "open-lane", label: "Open lane" },
-  { value: "prepare-patch", label: "Prepare patch" },
-  { value: "open-pr-draft", label: "Open PR draft" },
 ];
 
 const LANE_NAME_PRESETS: Array<{
@@ -313,12 +267,6 @@ function triggerLabel(trigger: AutomationTrigger): string {
   if (trigger.branch?.trim()) return `${trigger.type} · ${trigger.branch.trim()}`;
   if (trigger.team?.trim()) return `${trigger.type} · ${trigger.team.trim()}`;
   return trigger.type;
-}
-
-function computeIncludeProjectContext(draft: AutomationRuleDraft): boolean {
-  if (typeof draft.includeProjectContext === "boolean") return draft.includeProjectContext;
-  if ((draft.contextSources ?? []).length > 0) return true;
-  return false;
 }
 
 // --- draft <-> ActionRow[] bridge ---
@@ -568,7 +516,9 @@ export function RuleEditorPanel({
   setDraft,
   lanes,
   suites,
+  ingressStatus,
   issues,
+  simulationNotes,
   requiredConfirmations,
   acceptedConfirmations,
   onToggleConfirmation,
@@ -581,7 +531,9 @@ export function RuleEditorPanel({
   setDraft: (draft: AutomationRuleDraft) => void;
   lanes: Array<{ id: string; name: string }>;
   suites: TestSuiteDefinition[];
+  ingressStatus: AutomationIngressStatus | null;
   issues: AutomationDraftIssue[];
+  simulationNotes?: string[];
   requiredConfirmations: AutomationDraftConfirmationRequirement[];
   acceptedConfirmations: Set<string>;
   onToggleConfirmation: (key: string, checked: boolean) => void;
@@ -590,27 +542,16 @@ export function RuleEditorPanel({
   saving: boolean;
   simulating?: boolean;
 }) {
-  const navigate = useNavigate();
-  const openAiSettings = useCallback(() => navigate("/settings?tab=ai#ai-providers"), [navigate]);
-
   const primaryTrigger = ensurePrimaryTrigger(draft);
   const triggerFamily = triggerFamilyForType(primaryTrigger.type);
+  const needsWebhookGateway = isWebhookGatewayTriggerType(primaryTrigger.type);
+  const webhookGateway = ingressStatus?.webhookGateway ?? null;
+  const webhookGatewayReady = webhookGateway?.ready === true;
   const triggerOptions = TRIGGER_OPTIONS[triggerFamily];
   const triggerMeta =
     TRIGGER_FAMILIES.find((family) => family.value === triggerFamily) ?? TRIGGER_FAMILIES[0]!;
 
   const actionRows = useMemo(() => draftToActionRows(draft), [draft]);
-  const includeProjectContext = computeIncludeProjectContext(draft);
-  const modelValue = draft.modelConfig ?? { modelId: DEFAULT_MODEL_ID, thinkingLevel: "medium" as const };
-  const outputs = draft.outputs ?? { disposition: "comment-only" as const, createArtifact: true };
-  const verification = draft.verification ?? { verifyBeforePublish: false, mode: "intervention" as const };
-  const toolPalette: AutomationToolFamily[] = draft.toolPalette ?? ["repo"];
-  const permissionMeta = permissionControlsForModel(modelValue.modelId);
-  const currentPermission = permissionMeta
-    ? draft.permissionConfig?.providers?.[permissionMeta.key] ?? ""
-    : "";
-  const ruleFastModeActive = draft.execution?.kind === "agent-session"
-    && draft.execution.session?.codexFastMode === true;
 
   // laneMode resolution: missing → "reuse" (server-side migration handles
   // legacy create-lane-as-first-action collapse).
@@ -659,21 +600,6 @@ export function RuleEditorPanel({
     const nextDraft = { ...draft, execution: next };
     setDraft(isRequireLaneAtRunTimeMode(next.laneMode) ? stripActionTargetLaneIdsFromDraft(nextDraft) : nextDraft);
   };
-  const setRuleCodexFastMode = (enabled: boolean) => {
-    const current = draft.execution ?? { kind: "agent-session" as const };
-    if (current.kind !== "agent-session") return;
-    setDraft({
-      ...draft,
-      execution: {
-        ...current,
-        session: {
-          ...(current.session ?? {}),
-          codexFastMode: enabled,
-        },
-      },
-    });
-  };
-
   // Smart defaults: when the trigger event changes and the user hasn't yet
   // manually adjusted lane mode/preset, snap to a sensible default. We key on
   // the trigger type so switching from "Issue opened" to "Issue closed"
@@ -694,11 +620,12 @@ export function RuleEditorPanel({
 
   const errors = issues.filter((i) => i.level === "error");
   const warnings = issues.filter((i) => i.level === "warning");
+  const successNotes = simulationNotes ?? [];
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* Sticky top bar */}
-      <div className="shrink-0 border-b border-white/[0.06] bg-[#0B121A]/80 px-5 py-3 backdrop-blur">
+      <div className="shrink-0 border-b border-white/[0.10] bg-[#111C2B]/92 px-5 py-3 backdrop-blur">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-[15px] font-semibold text-[#F5FAFF]">
@@ -730,13 +657,12 @@ export function RuleEditorPanel({
         </div>
       </div>
 
-      {/* Body — full width 2-column layout */}
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="grid h-full min-h-0 grid-cols-1 gap-4 p-5 xl:grid-cols-[minmax(320px,400px)_1fr]">
-          {/* Left column — settings */}
-          <div className="flex flex-col gap-4">
+      {/* Body — one readable setup flow, not competing scroll columns. */}
+      <div className="min-h-0 flex-1 overflow-y-auto bg-[#101826]">
+        <div className="mx-auto flex w-full max-w-[1120px] flex-col gap-4 px-5 py-5">
             {errors.length ? <IssueList title="Errors" issues={errors} tone="error" /> : null}
             {warnings.length ? <IssueList title="Notes" issues={warnings} tone="warning" /> : null}
+            {successNotes.length ? <SuccessNotice notes={successNotes} /> : null}
             <ConfirmationsChecklist
               required={requiredConfirmations}
               accepted={acceptedConfirmations}
@@ -754,8 +680,7 @@ export function RuleEditorPanel({
                   placeholder="e.g. Triage new GitHub issues"
                 />
                 <textarea
-                  className="min-h-[60px] w-full rounded-md px-3 py-2 text-[12px] text-[#F5F7FA] placeholder:text-[#7E8A9A]"
-                  style={INPUT_STYLE}
+                  className={cn(textareaCls, "min-h-[76px] text-[12px] leading-relaxed")}
                   value={draft.description ?? ""}
                   onChange={(event) => setDraft({ ...draft, description: event.target.value })}
                   placeholder="What this rule is for"
@@ -766,20 +691,6 @@ export function RuleEditorPanel({
                   checked={draft.enabled}
                   onChange={(next) => setDraft({ ...draft, enabled: next })}
                 />
-                <label className="block space-y-1.5">
-                  <SmallLabel>Mode</SmallLabel>
-                  <select
-                    className={selectCls}
-                    value={draft.mode}
-                    onChange={(event) => setDraft({ ...draft, mode: event.target.value as AutomationMode })}
-                  >
-                    {RULE_MODES.map((mode) => (
-                      <option key={mode.value} value={mode.value}>
-                        {mode.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
               </div>
             </Section>
 
@@ -796,10 +707,10 @@ export function RuleEditorPanel({
                         type="button"
                         onClick={() => setTriggerFamily(family.value)}
                         className={cn(
-                          "flex flex-col items-center gap-1 rounded-lg border px-2 py-2 text-[10px] font-medium transition-colors",
+                          "flex flex-col items-center gap-1 rounded-lg border px-2 py-2 text-[10px] font-semibold transition-colors",
                           active
                             ? "text-[#F5FAFF]"
-                            : "border-white/[0.06] bg-black/15 text-[#93A4B8] hover:border-white/[0.14] hover:text-[#F5FAFF]",
+                            : "border-white/[0.12] bg-[#152235] text-[#B9C7DA] hover:border-white/[0.20] hover:text-[#F8FAFC]",
                         )}
                         style={
                           active
@@ -838,7 +749,9 @@ export function RuleEditorPanel({
                   </label>
                 ) : null}
 
-                <div className="rounded-lg border border-white/[0.08] bg-black/20 p-2.5">
+                {needsWebhookGateway ? <WebhookGatewayCallout ready={webhookGatewayReady} status={webhookGateway} /> : null}
+
+                <div className="rounded-lg border border-white/[0.12] bg-[#111C2B] p-2.5">
                   {primaryTrigger.type === "schedule" ? (
                     <ScheduleFields trigger={primaryTrigger} onPatch={patchTrigger} />
                   ) : triggerFamily === "github" ? (
@@ -852,11 +765,11 @@ export function RuleEditorPanel({
                   ) : triggerFamily === "lane" ? (
                     <LaneFields trigger={primaryTrigger} onPatch={patchTrigger} />
                   ) : triggerFamily === "session" ? (
-                    <div className="text-[11px] text-[#93A4B8]">Runs after any agent session ends.</div>
+                    <div className="text-[11px] text-[#B9C7DA]">Runs after any agent session ends.</div>
                   ) : triggerFamily === "webhook" ? (
                     <WebhookFields trigger={primaryTrigger} onPatch={patchTrigger} />
                   ) : (
-                    <div className="text-[11px] text-[#93A4B8]">Runs only when you click Run now.</div>
+                    <div className="text-[11px] text-[#B9C7DA]">Runs only when you click Run now.</div>
                   )}
                 </div>
               </div>
@@ -888,283 +801,20 @@ export function RuleEditorPanel({
               </div>
             </Section>
 
-            {/* Context + Model */}
-            <Section icon={Brain} accent="#A78BFA" title="Brains" hint="Model and project context">
-              <div className="space-y-3">
-                <Toggle
-                  label="Include project context"
-                  hint="Linked docs and project paths"
-                  checked={includeProjectContext}
-                  onChange={(next) => {
-                    setDraft({
-                      ...draft,
-                      includeProjectContext: next,
-                      contextSources: next ? (draft.contextSources?.length ? draft.contextSources : []) : [],
-                    });
-                  }}
-                />
-                <div className="space-y-1.5">
-                  <SmallLabel>Review profile</SmallLabel>
-                  <select
-                    className={selectCls}
-                    value={draft.reviewProfile}
-                    onChange={(event) =>
-                      setDraft({ ...draft, reviewProfile: event.target.value as AutomationReviewProfile })
-                    }
-                  >
-                    {REVIEW_PROFILES.map((profile) => (
-                      <option key={profile.value} value={profile.value}>
-                        {profile.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1.5">
-                  <SmallLabel>Tool palette</SmallLabel>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    {TOOL_FAMILIES.map((tool) => {
-                      const checked = toolPalette.includes(tool.value);
-                      const wouldEmptyPalette = checked && toolPalette.length === 1;
-                      return (
-                        <label
-                          key={tool.value}
-                          className={cn(
-                            "flex items-center gap-2 rounded-md border border-white/[0.08] bg-black/15 px-2 py-1.5 text-[11px] text-[#D8E3F2]",
-                            wouldEmptyPalette && "opacity-60",
-                          )}
-                          title={wouldEmptyPalette ? "At least one tool family is required." : undefined}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            disabled={wouldEmptyPalette}
-                            onChange={(event) => {
-                              const next = event.target.checked
-                                ? [...new Set([...toolPalette, tool.value])]
-                                : toolPalette.filter((entry) => entry !== tool.value);
-                              setDraft({ ...draft, toolPalette: next });
-                            }}
-                            className="accent-[#7DD3FC]"
-                          />
-                          {tool.label}
-                        </label>
-                      );
-                    })}
-                  </div>
-                </div>
-                <div className="space-y-1.5">
-                  <SmallLabel>Model</SmallLabel>
-                  <ModelSelector
-                    value={modelValue}
-                    onChange={(next) =>
-                      setDraft({
-                        ...draft,
-                        modelConfig: next,
-                      })
-                    }
-                    onOpenAiSettings={openAiSettings}
-                    fastModeActive={ruleFastModeActive}
-                    onFastModeToggle={draft.execution?.kind === "agent-session" ? setRuleCodexFastMode : undefined}
-                  />
-                </div>
-                {permissionMeta ? (
-                  <label className="block space-y-1.5">
-                    <SmallLabel>Permissions</SmallLabel>
-                    <select
-                      className={selectCls}
-                      value={currentPermission}
-                      onChange={(event) =>
-                        setDraft({
-                          ...draft,
-                          permissionConfig: patchPermissionConfig(
-                            draft.permissionConfig,
-                            modelValue.modelId,
-                            event.target.value,
-                          ),
-                        })
-                      }
-                    >
-                      <option value="">Default</option>
-                      {permissionMeta.options.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                ) : null}
-              </div>
-            </Section>
-
-            {/* Limits */}
-            <Section icon={Hourglass} accent="#F59E0B" title="Limits" hint="Caps and active hours">
-              <div className="space-y-3">
-                <LabeledNumber
-                  label="Max duration (minutes)"
-                  value={draft.guardrails.maxDurationMin ?? null}
-                  onChange={(n) =>
-                    setDraft({
-                      ...draft,
-                      guardrails: { ...draft.guardrails, maxDurationMin: n ?? undefined },
-                    })
-                  }
-                  placeholder="20"
-                  icon={Clock}
-                />
-                <div className="grid gap-2 md:grid-cols-2">
-                  <label className="block space-y-1">
-                    <SmallLabel>Confidence threshold</SmallLabel>
-                    <input
-                      className={inputCls}
-                      type="number"
-                      min={0}
-                      max={1}
-                      step={0.05}
-                      value={draft.guardrails.confidenceThreshold ?? ""}
-                      onChange={(event) => {
-                        const raw = event.target.value.trim();
-                        const parsed = Number(raw);
-                        setDraft({
-                          ...draft,
-                          guardrails: {
-                            ...draft.guardrails,
-                            confidenceThreshold: raw && Number.isFinite(parsed)
-                              ? Math.max(0, Math.min(1, parsed))
-                              : undefined,
-                          },
-                        });
-                      }}
-                      placeholder="Default"
-                    />
-                  </label>
-                  <LabeledNumber
-                    label="Max findings"
-                    value={draft.guardrails.maxFindings ?? null}
-                    onChange={(n) =>
-                      setDraft({
-                        ...draft,
-                        guardrails: {
-                          ...draft.guardrails,
-                          maxFindings: n == null ? undefined : Math.max(1, Math.floor(n)),
-                        },
-                      })
-                    }
-                    placeholder="Default"
-                  />
-                </div>
-                <ActiveHoursFields
-                  hours={primaryTrigger.activeHours ?? null}
-                  onChange={(next) => patchTrigger({ activeHours: next ?? undefined })}
-                />
-                <div className="rounded-md border border-[#35506B]/40 bg-[#0F1B2A]/60 px-2.5 py-2 text-[10px] leading-relaxed text-[#9FB2C7]">
-                  <CloudArrowUp size={10} weight="regular" className="mr-1 inline-block align-text-bottom" />
-                  Budget caps live in the <span className="text-[#D8E3F2]">header Usage popup → Automation guardrails</span> and apply to every rule.
-                </div>
-              </div>
-            </Section>
-
-            {/* Output */}
-            <Section icon={Flag} accent="#34D399" title="Output" hint="Artifacts and publish gates">
-              <div className="space-y-3">
-                <label className="block space-y-1.5">
-                  <SmallLabel>Disposition</SmallLabel>
-                  <select
-                    className={selectCls}
-                    value={outputs.disposition}
-                    onChange={(event) =>
-                      setDraft({
-                        ...draft,
-                        outputs: { ...outputs, disposition: event.target.value as AutomationOutputDisposition },
-                      })
-                    }
-                  >
-                    {OUTPUT_DISPOSITIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <Toggle
-                  label="Create artifact"
-                  hint={outputs.createArtifact === false ? "Run stores history only" : "Run stores an artifact"}
-                  checked={outputs.createArtifact !== false}
-                  onChange={(next) => setDraft({ ...draft, outputs: { ...outputs, createArtifact: next } })}
-                />
-                <label className="block space-y-1.5">
-                  <SmallLabel>Notification channel</SmallLabel>
-                  <input
-                    className={inputCls}
-                    value={outputs.notificationChannel ?? ""}
-                    onChange={(event) =>
-                      setDraft({
-                        ...draft,
-                        outputs: {
-                          ...outputs,
-                          notificationChannel: event.target.value.trim() || null,
-                        },
-                      })
-                    }
-                    placeholder="Optional"
-                  />
-                </label>
-                <div className="grid gap-2 md:grid-cols-2">
-                  <label className="block space-y-1.5">
-                    <SmallLabel>Verification mode</SmallLabel>
-                    <select
-                      className={selectCls}
-                      value={verification.mode ?? "intervention"}
-                      onChange={(event) =>
-                        setDraft({
-                          ...draft,
-                          verification: {
-                            ...verification,
-                            mode: event.target.value as "intervention" | "dry-run",
-                          },
-                        })
-                      }
-                    >
-                      <option value="intervention">Intervention</option>
-                      <option value="dry-run">Dry run</option>
-                    </select>
-                  </label>
-                  <Toggle
-                    label="Verify before publish"
-                    hint={verification.verifyBeforePublish ? "Publish waits for review" : "Publish can complete automatically"}
-                    checked={verification.verifyBeforePublish}
-                    onChange={(next) =>
-                      setDraft({
-                        ...draft,
-                        verification: { ...verification, verifyBeforePublish: next },
-                      })
-                    }
-                  />
-                </div>
-              </div>
-            </Section>
-          </div>
-
-          {/* Right column — workflow steps */}
-          <div className="flex min-h-0 flex-col">
-            <Section
-              icon={ListChecks}
-              accent="#22D3EE"
-              title="Workflow steps"
-              hint={`${actionRows.length} step${actionRows.length === 1 ? "" : "s"} — runs top to bottom`}
-              dense
-              fill
-            >
-              <ActionList
-                actions={actionRows}
-                lanes={lanes}
-                suites={suites}
-                fallbackModel={modelValue}
-                executionLaneMode={laneMode}
-                onChange={setActionRows}
-                onOpenAiSettings={openAiSettings}
-              />
-            </Section>
-          </div>
+          <Section
+            icon={ListChecks}
+            accent="#22D3EE"
+            title="Workflow steps"
+            hint={`${actionRows.length} step${actionRows.length === 1 ? "" : "s"} — runs top to bottom`}
+            dense
+          >
+            <ActionList
+              actions={actionRows}
+              lanes={lanes}
+              suites={suites}
+              onChange={setActionRows}
+            />
+          </Section>
         </div>
       </div>
     </div>
@@ -1270,8 +920,8 @@ function LaneCreatePanel({
     && triggerKind !== "any";
 
   return (
-    <div className="mt-3 space-y-3 rounded-lg border border-accent/15 bg-accent/[0.03] p-3">
-      <div className="flex items-center gap-2 text-[11px] text-accent">
+    <div className="mt-3 space-y-3 rounded-lg border border-[#2DD4BF]/25 bg-[#111C2B] p-3">
+      <div className="flex items-center gap-2 text-[11px] text-[#9BE7D8]">
         <Sparkle size={12} weight="fill" />
         <span className="font-medium">A fresh lane is created for every run.</span>
       </div>
@@ -1303,14 +953,14 @@ function LaneCreatePanel({
         ) : null}
       </div>
 
-      <div className="rounded-md border border-white/[0.05] bg-[rgba(12,10,22,0.6)] px-3 py-2">
-        <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.08em] text-muted-fg/50">
+      <div className="rounded-md border border-white/[0.12] bg-[#152235] px-3 py-2">
+        <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.08em] text-[#AFC0D4]">
           <GitBranch size={10} weight="regular" />
           <span>Preview</span>
         </div>
-        <div className="mt-1 break-all font-mono text-[11px] text-fg/80">
+        <div className="mt-1 break-all font-mono text-[11px] text-[#F8FAFC]">
           {preview.resolved.trim() || (
-            <span className="text-muted-fg/40">(empty — pick a preset or enter a template)</span>
+            <span className="text-[#94A3B8]">(empty — pick a preset or enter a template)</span>
           )}
         </div>
       </div>
@@ -1324,9 +974,44 @@ function LaneCreatePanel({
         </div>
       ) : null}
 
-      <p className="text-[11px] leading-relaxed text-muted-fg/60">
+      <p className="text-[11px] leading-relaxed text-[#AFC0D4]">
         Lane names auto-disambiguate by appending the issue / PR number if a duplicate exists.
       </p>
+    </div>
+  );
+}
+
+function WebhookGatewayCallout({
+  ready,
+  status,
+}: {
+  ready: boolean;
+  status: AutomationIngressStatus["webhookGateway"] | null;
+}) {
+  const label = ready ? "Webhook gateway online" : "Webhook gateway required";
+  const detail = ready
+    ? status?.publicUrl
+      ? `Events will arrive through ${status.publicUrl}.`
+      : "Events can reach this ADE runtime."
+    : status?.tailscale.available
+      ? "Internal builds can start ingress from the ADE CLI before enabling this trigger."
+      : "Internal builds need Tailscale available before ADE CLI ingress can expose this runtime.";
+  return (
+    <div
+      className={cn(
+        "flex items-start justify-between gap-3 rounded-lg border px-3 py-2.5",
+        ready
+          ? "border-emerald-300/25 bg-emerald-300/10 text-emerald-100"
+          : "border-amber-300/25 bg-amber-300/10 text-amber-100",
+      )}
+    >
+      <div className="min-w-0">
+        <div className="flex items-center gap-2 text-[12px] font-semibold">
+          {ready ? <CheckCircle size={13} weight="fill" /> : <Warning size={13} weight="regular" />}
+          {label}
+        </div>
+        <div className="mt-1 break-words text-[11px] leading-relaxed opacity-90">{detail}</div>
+      </div>
     </div>
   );
 }
@@ -1350,19 +1035,21 @@ function Section({
 }) {
   return (
     <section
-      className={cn("rounded-2xl", fill ? "flex min-h-0 flex-1 flex-col" : "")}
-      style={CARD_STYLE}
+      className={cn(
+        "overflow-hidden rounded-xl border border-white/[0.12] bg-[#162235] shadow-[0_18px_45px_rgba(0,0,0,0.18)]",
+        fill ? "flex min-h-0 flex-1 flex-col" : "",
+      )}
     >
-      <div className="flex items-center gap-2 border-b border-white/[0.06] px-4 py-3">
+      <div className="flex items-center gap-2 border-b border-white/[0.10] bg-[#1B2A40] px-4 py-3">
         <div
-          className="flex h-7 w-7 items-center justify-center rounded-lg"
+          className="flex h-7 w-7 items-center justify-center rounded-md"
           style={{ background: `${accent}1f`, color: accent, boxShadow: `inset 0 0 0 1px ${accent}33` }}
         >
           <Icon size={14} weight="fill" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-[12px] font-semibold text-[#F5FAFF]">{title}</div>
-          {hint ? <div className="text-[10px] text-[#93A4B8]">{hint}</div> : null}
+          <div className="text-[13px] font-semibold text-[#F8FAFC]">{title}</div>
+          {hint ? <div className="text-[11px] text-[#AFC0D4]">{hint}</div> : null}
         </div>
       </div>
       <div className={cn(dense ? "p-3" : "p-4", fill && "min-h-0 flex-1 overflow-visible")}>
@@ -1387,6 +1074,22 @@ function AccentBadge({ accent, children }: { accent: string; children: React.Rea
   );
 }
 
+function SuccessNotice({ notes }: { notes: string[] }) {
+  return (
+    <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-[11px] text-emerald-100">
+      <div className="flex items-center gap-1.5 font-semibold">
+        <CheckCircle size={13} weight="fill" />
+        Simulation ready
+      </div>
+      <ul className="mt-1 space-y-0.5">
+        {notes.map((note, index) => (
+          <li key={`${note}-${index}`}>{note}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function Toggle({
   label,
   hint,
@@ -1399,10 +1102,10 @@ function Toggle({
   onChange: (next: boolean) => void;
 }) {
   return (
-    <label className="flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-white/[0.06] bg-black/15 px-3 py-2 text-[12px] text-[#D8E3F2] hover:border-white/[0.12]">
+    <label className="flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-white/[0.12] bg-[#152235] px-3 py-2 text-[12px] text-[#E6EEF8] hover:border-white/[0.20]">
       <span className="min-w-0 flex-1">
         <span className="block">{label}</span>
-        {hint ? <span className="block text-[10px] text-[#7E8A9A]">{hint}</span> : null}
+        {hint ? <span className="block text-[10px] text-[#AFC0D4]">{hint}</span> : null}
       </span>
       <input
         type="checkbox"
@@ -1612,87 +1315,6 @@ function WebhookFields({
           placeholder="github-webhook"
         />
       </label>
-    </div>
-  );
-}
-
-function LabeledNumber({
-  label,
-  value,
-  placeholder,
-  onChange,
-  icon: Icon,
-}: {
-  label: string;
-  value: number | null;
-  placeholder?: string;
-  onChange: (next: number | null) => void;
-  icon?: ElementType;
-}) {
-  return (
-    <label className="block space-y-1">
-      <SmallLabel>
-        {Icon ? <Icon size={10} weight="regular" className="mr-1 inline-block align-text-bottom" /> : null}
-        {label}
-      </SmallLabel>
-      <input
-        className={inputCls}
-        type="number"
-        min={0}
-        value={value ?? ""}
-        onChange={(event) => {
-          const raw = event.target.value.trim();
-          if (!raw) {
-            onChange(null);
-            return;
-          }
-          const parsed = Number(raw);
-          onChange(Number.isFinite(parsed) ? parsed : null);
-        }}
-        placeholder={placeholder}
-      />
-    </label>
-  );
-}
-
-function ActiveHoursFields({
-  hours,
-  onChange,
-}: {
-  hours: { start: string; end: string; timezone: string } | null;
-  onChange: (next: { start: string; end: string; timezone: string } | null) => void;
-}) {
-  const enabled = !!hours;
-  return (
-    <div className="space-y-2">
-      <Toggle
-        label="Active hours"
-        hint={enabled && hours ? `${hours.start} – ${hours.end} (${hours.timezone})` : "Always on"}
-        checked={enabled}
-        onChange={(next) =>
-          onChange(
-            next
-              ? hours ?? { start: "09:00", end: "18:00", timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }
-              : null,
-          )
-        }
-      />
-      {enabled && hours ? (
-        <div className="grid grid-cols-2 gap-2">
-          <input
-            className={inputCls}
-            value={hours.start}
-            onChange={(event) => onChange({ ...hours, start: event.target.value })}
-            placeholder="09:00"
-          />
-          <input
-            className={inputCls}
-            value={hours.end}
-            onChange={(event) => onChange({ ...hours, end: event.target.value })}
-            placeholder="18:00"
-          />
-        </div>
-      ) : null}
     </div>
   );
 }

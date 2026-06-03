@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { promisify } from "node:util";
 import cron from "node-cron";
 import chokidar, { type FSWatcher } from "chokidar";
 import type {
@@ -13,6 +14,7 @@ import type {
   AutomationIngressEventRecord,
   AutomationIngressSource,
   AutomationIngressStatus,
+  AutomationWebhookGatewayStatus,
   AutomationManualTriggerRequest,
   AutomationRule,
   AutomationRuleSummary,
@@ -28,6 +30,7 @@ import type {
   PrSummary,
   RunAdeActionConfig,
 } from "../../../shared/types";
+import { isWebhookGatewayTriggerType } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb, SqlValue } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
@@ -43,10 +46,96 @@ import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService
 import { isRecord, matchesGlob, normalizeSet, nowIso, resolvePathWithinRoot, safeJsonParse } from "../shared/utils";
 import { terminateProcessTree } from "../shared/processExecution";
 import { getDefaultModelDescriptor, getModelById, modelSupportsFastMode, resolveChatProviderForDescriptor, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
+import { resolveTailscaleCliPath } from "../sync/resolveTailscaleCliPath";
+
+const execFileAsync = promisify(execFile);
 
 type CronTask = {
   stop: () => void;
 };
+
+function firstEnvValue(keys: readonly string[]): string | null {
+  for (const key of keys) {
+    const value = process.env[key]?.trim();
+    if (value) return value;
+  }
+  return null;
+}
+
+function normalizePublicWebhookUrl(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== "https:") return null;
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return null;
+  }
+}
+
+function buildWebhookGatewayPublicUrl(): string | null {
+  return normalizePublicWebhookUrl(firstEnvValue([
+    "ADE_WEBHOOK_GATEWAY_PUBLIC_URL",
+    "ADE_PUBLIC_WEBHOOK_URL",
+    "ADE_AUTOMATION_WEBHOOK_PUBLIC_URL",
+  ]));
+}
+
+function inferWebhookGatewayProvider(publicUrl: string | null, tailscaleAvailable = false): AutomationWebhookGatewayStatus["provider"] {
+  if (publicUrl?.includes(".ts.net")) return "tailscale";
+  if (publicUrl) return "custom";
+  return tailscaleAvailable ? "tailscale" : null;
+}
+
+function defaultWebhookGatewayStatus(localUrl: string | null = null, configuredPublicUrl?: string | null): AutomationWebhookGatewayStatus {
+  const publicUrl = configuredPublicUrl ?? buildWebhookGatewayPublicUrl();
+  const forcedReady = firstEnvValue(["ADE_WEBHOOK_GATEWAY_READY", "ADE_AUTOMATION_WEBHOOK_READY"]) === "1";
+  const provider = inferWebhookGatewayProvider(publicUrl);
+  const ready = forcedReady || Boolean(publicUrl && provider === "custom");
+  return {
+    enabled: ready || Boolean(publicUrl),
+    ready,
+    status: ready ? "online" : publicUrl && provider === "tailscale" ? "pending-approval" : "needs-public-url",
+    publicUrl,
+    localUrl,
+    provider,
+    tailscale: {
+      available: false,
+      hostname: null,
+      message: null,
+    },
+    lastCheckedAt: null,
+    lastError: null,
+  };
+}
+
+function extractTailscaleHostname(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const self = (payload as { Self?: unknown }).Self;
+  if (!self || typeof self !== "object") return null;
+  const dnsName = typeof (self as { DNSName?: unknown }).DNSName === "string"
+    ? (self as { DNSName: string }).DNSName.trim().replace(/\.$/, "")
+    : "";
+  if (dnsName) return dnsName;
+  const hostName = typeof (self as { HostName?: unknown }).HostName === "string"
+    ? (self as { HostName: string }).HostName.trim()
+    : "";
+  return hostName || null;
+}
+
+function hasTailscaleFunnelConfig(payload: unknown): boolean {
+  return isRecord(payload) && Object.keys(payload).length > 0;
+}
+
+function ruleNeedsWebhookGateway(rule: Pick<AutomationRule, "triggers" | "trigger">): boolean {
+  const triggers = Array.isArray(rule.triggers) && rule.triggers.length > 0
+    ? rule.triggers
+    : rule.trigger
+      ? [rule.trigger]
+      : [];
+  return triggers.some((trigger) => isWebhookGatewayTriggerType(trigger.type));
+}
 
 /**
  * Contract for the shared ADE-action registry. Implementations bridge to the
@@ -863,6 +952,7 @@ export function createAutomationService({
   }) => void;
 }) {
   type AutomationIngressStatusPatch = {
+    webhookGateway?: Partial<AutomationIngressStatus["webhookGateway"]>;
     githubRelay?: Partial<AutomationIngressStatus["githubRelay"]>;
     localWebhook?: Partial<AutomationIngressStatus["localWebhook"]>;
   };
@@ -870,7 +960,16 @@ export function createAutomationService({
   let budgetCapServiceRef = budgetCapService;
   let workerHeartbeatServiceRef: ReturnType<typeof createWorkerHeartbeatService> | null = null;
   let adeActionRegistryRef: AutomationAdeActionRegistry | null = adeActionRegistry ?? null;
+  const readWebhookGatewayPublicUrl = (): string | null => {
+    try {
+      return normalizePublicWebhookUrl(projectConfigService.get().effective.ui?.webhookGatewayPublicUrl ?? null)
+        ?? buildWebhookGatewayPublicUrl();
+    } catch {
+      return buildWebhookGatewayPublicUrl();
+    }
+  };
   let ingressStatusRef: AutomationIngressStatus = {
+    webhookGateway: defaultWebhookGatewayStatus(null, readWebhookGatewayPublicUrl()),
     githubRelay: {
       configured: false,
       healthy: false,
@@ -887,6 +986,7 @@ export function createAutomationService({
       listening: false,
       status: "disabled",
       url: null,
+      githubUrl: null,
       port: null,
       lastDeliveryAt: null,
       lastError: null,
@@ -1070,11 +1170,102 @@ export function createAutomationService({
   const findRule = (automationId: string): AutomationRule | null => listRules().find((rule) => rule.id === automationId) ?? null;
 
   const updateIngressStatus = (patch: AutomationIngressStatusPatch) => {
+    const localWebhook = { ...ingressStatusRef.localWebhook, ...(patch.localWebhook ?? {}) };
+    const gatewayPatch = patch.webhookGateway ?? {};
+    const publicUrl = (gatewayPatch.publicUrl !== undefined
+      ? gatewayPatch.publicUrl
+      : ingressStatusRef.webhookGateway.publicUrl) ?? null;
+    const gatewayReady = gatewayPatch.ready !== undefined
+      ? gatewayPatch.ready
+      : ingressStatusRef.webhookGateway.ready;
     ingressStatusRef = {
+      webhookGateway: {
+        ...ingressStatusRef.webhookGateway,
+        localUrl: localWebhook.url ?? ingressStatusRef.webhookGateway.localUrl,
+        ...(patch.webhookGateway ?? {}),
+        publicUrl,
+        ready: gatewayReady,
+        enabled: gatewayReady || Boolean(publicUrl),
+      },
       githubRelay: { ...ingressStatusRef.githubRelay, ...(patch.githubRelay ?? {}) },
-      localWebhook: { ...ingressStatusRef.localWebhook, ...(patch.localWebhook ?? {}) },
+      localWebhook,
     };
     emit({ type: "ingress-updated" });
+  };
+
+  const refreshWebhookGatewayStatus = async (): Promise<AutomationWebhookGatewayStatus> => {
+    const publicUrl = readWebhookGatewayPublicUrl();
+    const localUrl = ingressStatusRef.localWebhook.url ?? ingressStatusRef.webhookGateway.localUrl;
+    const forcedReady = firstEnvValue(["ADE_WEBHOOK_GATEWAY_READY", "ADE_AUTOMATION_WEBHOOK_READY"]) === "1";
+    let tailscaleAvailable = false;
+    let tailscaleHostname: string | null = null;
+    let tailscaleMessage: string | null = null;
+    let tailscaleFunnelConfigured = false;
+    let lastError: string | null = null;
+    try {
+      const { stdout } = await execFileAsync(resolveTailscaleCliPath(), ["status", "--json"], { timeout: 4_000 });
+      const payload = JSON.parse(stdout) as unknown;
+      tailscaleAvailable = true;
+      tailscaleHostname = extractTailscaleHostname(payload);
+      tailscaleMessage = tailscaleHostname
+        ? `Tailscale is available on ${tailscaleHostname}.`
+        : "Tailscale is available.";
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException | null | undefined)?.code ?? null;
+      const message = error instanceof Error ? error.message : String(error);
+      tailscaleMessage = code === "ENOENT" ? "Tailscale CLI was not found." : message;
+      lastError = publicUrl || forcedReady ? null : tailscaleMessage;
+    }
+    const provider = inferWebhookGatewayProvider(publicUrl, tailscaleAvailable);
+    if (publicUrl && provider === "tailscale" && tailscaleAvailable) {
+      try {
+        const { stdout } = await execFileAsync(resolveTailscaleCliPath(), ["funnel", "status", "--json"], { timeout: 4_000 });
+        tailscaleFunnelConfigured = hasTailscaleFunnelConfig(JSON.parse(stdout) as unknown);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        tailscaleMessage = message;
+      }
+    }
+    const ready = forcedReady || Boolean(publicUrl && (provider === "custom" || tailscaleFunnelConfigured));
+    const status: AutomationWebhookGatewayStatus["status"] = ready
+      ? "online"
+      : publicUrl && provider === "tailscale"
+        ? "pending-approval"
+      : tailscaleAvailable
+        ? "needs-public-url"
+        : "needs-tailscale";
+    if (!ready && publicUrl && provider === "tailscale") {
+      lastError = tailscaleAvailable
+        ? "Tailscale Funnel is not enabled for this machine. Enable Funnel, then refresh Webhooks."
+        : tailscaleMessage;
+      tailscaleMessage = tailscaleAvailable
+        ? "Tailscale is available, but Funnel is not exposing the ADE webhook gateway yet."
+        : tailscaleMessage;
+    }
+    const next: AutomationWebhookGatewayStatus = {
+      enabled: ready || Boolean(publicUrl),
+      ready,
+      status,
+      publicUrl,
+      localUrl,
+      provider,
+      tailscale: {
+        available: tailscaleAvailable,
+        hostname: tailscaleHostname,
+        message: tailscaleMessage,
+      },
+      lastCheckedAt: nowIso(),
+      lastError,
+    };
+    updateIngressStatus({ webhookGateway: next });
+    return next;
+  };
+
+  const assertWebhookGatewayReadyForRule = (rule: Pick<AutomationRule, "name" | "triggers" | "trigger">): void => {
+    if (!ruleNeedsWebhookGateway(rule)) return;
+    if (ingressStatusRef.webhookGateway.ready) return;
+    const ruleName = rule.name?.trim() || "This automation";
+    throw new Error(`${ruleName} needs ADE Webhook Gateway before it can be enabled.`);
   };
 
   const getNextNightShiftPosition = (): number => {
@@ -2525,6 +2716,14 @@ export function createAutomationService({
     const desired = new Set<string>();
     for (const rule of rules) {
       if (!rule.enabled) continue;
+      if (ruleNeedsWebhookGateway(rule) && !ingressStatusRef.webhookGateway.ready) {
+        logger.warn("automations.external_trigger_waiting_for_gateway", {
+          automationId: rule.id,
+          publicUrl: ingressStatusRef.webhookGateway.publicUrl,
+          status: ingressStatusRef.webhookGateway.status,
+        });
+        continue;
+      }
       rule.triggers.forEach((trigger, index) => {
         if (trigger.type !== "schedule") return;
         const cronExpr = (trigger.cron ?? "").trim();
@@ -2785,6 +2984,11 @@ export function createAutomationService({
   };
 
   syncFromConfig();
+  void refreshWebhookGatewayStatus().catch((error) => {
+    logger.warn("automations.webhook_gateway_status_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 
   return {
     syncFromConfig,
@@ -2861,6 +3065,10 @@ export function createAutomationService({
     toggle(args: { id: string; enabled: boolean }): AutomationRuleSummary[] {
       const id = args.id.trim();
       if (!id) return this.list();
+      if (args.enabled) {
+        const existingRule = findRule(id);
+        if (existingRule) assertWebhookGatewayReadyForRule(existingRule);
+      }
       const snapshot = projectConfigService.get();
       const local = { ...(snapshot.local ?? {}) };
       const automations = Array.isArray(local.automations) ? [...local.automations] : [];
@@ -2995,6 +3203,31 @@ export function createAutomationService({
     },
 
     getIngressStatus(): AutomationIngressStatus {
+      const publicUrl = readWebhookGatewayPublicUrl();
+      const forcedReady = firstEnvValue(["ADE_WEBHOOK_GATEWAY_READY", "ADE_AUTOMATION_WEBHOOK_READY"]) === "1";
+      const provider = inferWebhookGatewayProvider(publicUrl, ingressStatusRef.webhookGateway.tailscale.available);
+      const ready = forcedReady || Boolean(publicUrl && provider === "custom") || (
+        Boolean(publicUrl)
+        && publicUrl === ingressStatusRef.webhookGateway.publicUrl
+        && ingressStatusRef.webhookGateway.ready
+      );
+      ingressStatusRef = {
+        ...ingressStatusRef,
+        webhookGateway: {
+          ...ingressStatusRef.webhookGateway,
+          publicUrl,
+          ready,
+          enabled: ready || Boolean(publicUrl),
+          provider,
+          status: ready
+            ? "online"
+            : publicUrl && provider === "tailscale"
+              ? "pending-approval"
+            : ingressStatusRef.webhookGateway.status === "online"
+              ? "needs-public-url"
+              : ingressStatusRef.webhookGateway.status,
+        },
+      };
       return {
         ...ingressStatusRef,
       };
@@ -3005,6 +3238,29 @@ export function createAutomationService({
     },
 
     updateIngressStatus,
+
+    async refreshWebhookGatewayStatus(): Promise<AutomationWebhookGatewayStatus> {
+      return await refreshWebhookGatewayStatus();
+    },
+
+    async setWebhookGatewayPublicUrl(args: { publicUrl?: string | null } = {}): Promise<AutomationWebhookGatewayStatus> {
+      const raw = args.publicUrl?.trim() ?? "";
+      const publicUrl = normalizePublicWebhookUrl(raw);
+      if (raw && !publicUrl) {
+        throw new Error("Webhook gateway URL must be a public HTTPS URL.");
+      }
+      const snapshot = projectConfigService.get();
+      const local = { ...(snapshot.local ?? {}) };
+      local.ui = { ...(local.ui ?? {}) };
+      if (publicUrl) local.ui.webhookGatewayPublicUrl = publicUrl;
+      else delete local.ui.webhookGatewayPublicUrl;
+      projectConfigService.save({ shared: snapshot.shared, local });
+      return await refreshWebhookGatewayStatus();
+    },
+
+    assertWebhookGatewayReadyForRule(rule: Pick<AutomationRule, "name" | "triggers" | "trigger">): void {
+      assertWebhookGatewayReadyForRule(rule);
+    },
 
     getIngressCursor(source: AutomationIngressSource): string | null {
       return getIngressCursor(source);

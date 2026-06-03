@@ -14,11 +14,13 @@ import type {
   AutomationAction,
   AutomationDraftConfirmationRequirement,
   AutomationDraftIssue,
+  AutomationIngressStatus,
   AutomationRuleDraft,
   AutomationRuleSummary,
   LaneSummary,
   TestSuiteDefinition,
 } from "../../../shared/types";
+import { isWebhookGatewayTriggerType } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
@@ -174,8 +176,14 @@ function modeSummary(rule: AutomationRuleSummary): string {
   return [rule.mode, rule.reviewProfile, rule.modelConfig?.modelId ?? null].filter(Boolean).join(" · ");
 }
 
+function ruleNeedsWebhookGateway(rule: Pick<AutomationRuleSummary, "triggers" | "trigger">): boolean {
+  const triggers = rule.triggers.length ? rule.triggers : rule.trigger ? [rule.trigger] : [];
+  return triggers.some((trigger) => isWebhookGatewayTriggerType(trigger.type));
+}
+
 function RuleListRow({
   rule,
+  webhookGatewayReady,
   selected,
   onSelect,
   onToggle,
@@ -184,6 +192,7 @@ function RuleListRow({
   onDelete,
 }: {
   rule: AutomationRuleSummary;
+  webhookGatewayReady: boolean;
   selected: boolean;
   onSelect: () => void;
   onToggle: (enabled: boolean) => void;
@@ -191,6 +200,7 @@ function RuleListRow({
   onRunNow: () => void;
   onDelete: () => void;
 }) {
+  const waitingForGateway = rule.enabled && ruleNeedsWebhookGateway(rule) && !webhookGatewayReady;
   return (
     <div
       role="button"
@@ -205,8 +215,8 @@ function RuleListRow({
       className={cn(
         "group w-full cursor-pointer rounded-xl border px-3 py-3 text-left transition-colors focus:outline-none focus:ring-1 focus:ring-[#7DD3FC]/45",
         selected
-          ? "border-[#7DD3FC]/35 bg-[#13263A]"
-          : "border-white/[0.08] bg-black/15 hover:border-white/[0.14]",
+          ? "border-[#7DD3FC]/45 bg-[#17304A]"
+          : "border-white/[0.12] bg-[#162235] hover:border-white/[0.20] hover:bg-[#1B2A40]",
       )}
     >
       <div className="flex items-start justify-between gap-3">
@@ -216,6 +226,11 @@ function RuleListRow({
             <Chip className={cn("text-[9px]", statusTone(rule.running ? "running" : rule.lastRunStatus))}>
               {rule.running ? "running" : rule.lastRunStatus ?? "idle"}
             </Chip>
+            {waitingForGateway ? (
+              <Chip className="border-amber-300/25 bg-amber-300/10 text-[9px] text-amber-100">
+                needs gateway
+              </Chip>
+            ) : null}
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <Chip className="text-[9px]">{primaryTriggerLabel(rule)}</Chip>
@@ -234,8 +249,8 @@ function RuleListRow({
               </button>
             ) : null}
           </div>
-          <div className="mt-2 text-[11px] text-muted-fg/70">{modeSummary(rule)}</div>
-          <div className="mt-1 text-[11px] text-muted-fg/50">
+          <div className="mt-2 text-[11px] text-[#AFC0D4]">{modeSummary(rule)}</div>
+          <div className="mt-1 text-[11px] text-[#94A3B8]">
             Next {formatDate(rule.nextRunAt, "on demand")} · Last {formatDate(rule.lastRunAt, "never")}
           </div>
         </div>
@@ -297,6 +312,17 @@ function RuleListRow({
 
 type DetailView = "editor" | "history";
 
+function draftWithCreateLaneMode(source: AutomationRuleDraft): AutomationRuleDraft {
+  const execution = source.execution ?? { kind: "agent-session" as const, session: {} };
+  const nextExecution = {
+    ...execution,
+    laneMode: "create" as const,
+    laneNamePreset: execution.laneNamePreset ?? ("issue-title" as const),
+  };
+  delete (nextExecution as { targetLaneId?: string | null }).targetLaneId;
+  return { ...source, execution: nextExecution };
+}
+
 export function RulesTab({
   active = true,
   pendingDraft,
@@ -312,9 +338,11 @@ export function RulesTab({
   const [rules, setRules] = useState<AutomationRuleSummary[]>([]);
   const [lanes, setLanes] = useState<LaneSummary[]>([]);
   const [suites, setSuites] = useState<TestSuiteDefinition[]>([]);
+  const [ingressStatus, setIngressStatus] = useState<AutomationIngressStatus | null>(null);
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
   const [draft, setDraft] = useState<AutomationRuleDraft | null>(null);
   const [issues, setIssues] = useState<AutomationDraftIssue[]>([]);
+  const [simulationNotes, setSimulationNotes] = useState<string[]>([]);
   const [requiredConfirmations, setRequiredConfirmations] = useState<AutomationDraftConfirmationRequirement[]>([]);
   const [acceptedConfirmations, setAcceptedConfirmations] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
@@ -346,6 +374,7 @@ export function RulesTab({
       try {
         setDraft(JSON.parse(savedSnapshotRef.current) as AutomationRuleDraft);
         setIssues([]);
+        setSimulationNotes([]);
       } catch {
         // Snapshot was malformed — leave the draft as-is rather than crashing.
       }
@@ -357,15 +386,17 @@ export function RulesTab({
     setLoading(true);
     setError(null);
     try {
-      const [nextRules, nextSuites, nextLanes, snapshot] = await Promise.all([
+      const [nextRules, nextSuites, nextLanes, nextIngressStatus, snapshot] = await Promise.all([
         window.ade.automations.list(),
         window.ade.tests.listSuites(),
         window.ade.lanes.list({ includeArchived: false, includeStatus: false }),
+        window.ade.automations.getIngressStatus(),
         window.ade.projectConfig.get(),
       ]);
       setRules(nextRules);
       setSuites(nextSuites);
       setLanes(nextLanes);
+      setIngressStatus(nextIngressStatus);
       setConfigTrustRequired(Boolean(snapshot.trust.requiresSharedTrust));
       setSelectedRuleId((current) => {
         if (current && nextRules.some((rule) => rule.id === current)) return current;
@@ -404,6 +435,7 @@ export function RulesTab({
     // isDirty stays false until the user edits.
     savedSnapshotRef.current = JSON.stringify(pendingDraft);
     setIssues([]);
+    setSimulationNotes([]);
     setRequiredConfirmations([]);
     setAcceptedConfirmations(new Set());
     onDraftConsumed();
@@ -417,6 +449,7 @@ export function RulesTab({
     setDraft(nextDraft);
     savedSnapshotRef.current = JSON.stringify(nextDraft);
     setIssues([]);
+    setSimulationNotes([]);
     setRequiredConfirmations([]);
     setAcceptedConfirmations(new Set());
   }, [rules, selectedRuleId]);
@@ -442,6 +475,7 @@ export function RulesTab({
       confirmations: [...acceptedConfirmations],
     });
     setIssues(result.issues);
+    setSimulationNotes([]);
     setRequiredConfirmations(result.requiredConfirmations);
     return result;
   }, [acceptedConfirmations]);
@@ -464,6 +498,7 @@ export function RulesTab({
       setDraft(nextDraft);
       savedSnapshotRef.current = JSON.stringify(nextDraft);
       setIssues([]);
+      setSimulationNotes([]);
     } catch (err) {
       setError(extractError(err));
     } finally {
@@ -478,15 +513,13 @@ export function RulesTab({
     try {
       const result = await window.ade.automations.simulate({ draft });
       setIssues(result.issues);
-      if (!result.issues.length) {
-        setIssues([
-          {
-            level: "warning",
-            path: "simulate",
-            message: result.notes.join(" · ") || "Simulation completed with no blocking issues.",
-          },
-        ]);
-      }
+      setSimulationNotes(
+        result.issues.length
+          ? []
+          : result.notes.length
+            ? result.notes
+            : ["Simulation completed with no blocking issues."],
+      );
     } catch (err) {
       setError(extractError(err));
     } finally {
@@ -501,6 +534,7 @@ export function RulesTab({
     setDraft(blank);
     savedSnapshotRef.current = JSON.stringify(blank);
     setIssues([]);
+    setSimulationNotes([]);
     setRequiredConfirmations([]);
     setAcceptedConfirmations(new Set());
     setDetailView("editor");
@@ -556,12 +590,12 @@ export function RulesTab({
       transition={{ duration: 0.18 }}
       className="flex h-full min-h-0"
     >
-      <div className="flex min-h-0 w-[360px] shrink-0 flex-col border-r border-white/[0.06] bg-black/10">
-        <div className="shrink-0 border-b border-white/[0.06] px-4 py-4">
+      <div className="flex min-h-0 w-[360px] shrink-0 flex-col border-r border-white/[0.10] bg-[#101826]">
+        <div className="shrink-0 border-b border-white/[0.10] px-4 py-4">
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="text-[15px] font-semibold text-[#F5FAFF]">Rules</div>
-              <div className="mt-1 text-sm text-[#93A4B8]">
+              <div className="mt-1 text-sm text-[#AFC0D4]">
                 Build time-based or action-based automations. This screen only covers rules, execution, and history.
               </div>
             </div>
@@ -618,6 +652,7 @@ export function RulesTab({
                 <RuleListRow
                   key={rule.id}
                   rule={rule}
+                  webhookGatewayReady={ingressStatus?.webhookGateway.ready === true}
                   selected={rule.id === selectedRuleId}
                   onSelect={() => {
                     if (rule.id !== selectedRuleId && !confirmDiscardIfDirty()) return;
@@ -644,7 +679,7 @@ export function RulesTab({
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {selectedRule ? (
           <div
-            className="shrink-0 flex items-center gap-0 border-b border-white/[0.06] bg-white/[0.02] px-3"
+            className="shrink-0 flex items-center gap-0 border-b border-white/[0.10] bg-[#111C2B] px-3"
             style={{ minHeight: 36 }}
           >
             <DetailTab
@@ -673,7 +708,9 @@ export function RulesTab({
               setDraft={setDraft}
               lanes={lanes.map((lane) => ({ id: lane.id, name: lane.name }))}
               suites={suites}
+              ingressStatus={ingressStatus}
               issues={issues}
+              simulationNotes={simulationNotes}
               requiredConfirmations={requiredConfirmations}
               acceptedConfirmations={acceptedConfirmations}
               onToggleConfirmation={(key, checked) => {
@@ -693,7 +730,7 @@ export function RulesTab({
             <div className="flex h-full items-center justify-center px-6">
               <div className={cn(cardCls, "max-w-md text-center")}>
                 <div className="text-[17px] font-semibold text-fg">Create an automation</div>
-                <div className="mt-2 text-sm leading-relaxed text-muted-fg/70">
+                <div className="mt-2 text-sm leading-relaxed text-[#AFC0D4]">
                   Start with a schedule or a product event, then tell ADE whether it should run a built-in task or send a prompt to an automation chat thread.
                 </div>
                 <div className="mt-4 flex justify-center gap-2">
@@ -719,9 +756,9 @@ export function RulesTab({
       </div>
       {manualRunRule ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 px-4">
-          <div className="w-full max-w-md rounded-xl border border-white/[0.12] bg-[#0B121A] p-4 shadow-2xl">
+          <div className="w-full max-w-md rounded-xl border border-white/[0.12] bg-[#162235] p-4 shadow-2xl">
             <div className="text-sm font-semibold text-[#F5FAFF]">Select lane for this run</div>
-            <div className="mt-1 text-xs leading-relaxed text-[#93A4B8]">
+            <div className="mt-1 text-xs leading-relaxed text-[#AFC0D4]">
               {manualRunRule.name} requires a lane when triggered.
             </div>
             <label className="mt-4 block space-y-1.5">
@@ -739,8 +776,44 @@ export function RulesTab({
               </select>
             </label>
             {!lanes.length ? (
-              <div className="mt-3 rounded-md border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">
-                No active lanes are available for this automation run.
+              <div className="mt-3 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                <div className="font-semibold">No active lanes are available for this run.</div>
+                <div className="mt-1 leading-relaxed text-amber-100/80">
+                  Switch the rule to create a lane for each run, or create a lane from the Work tab and run again.
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={() => {
+                      const nextDraft = draftWithCreateLaneMode(toDraftFromRule(manualRunRule));
+                      setSelectedRuleId(manualRunRule.id);
+                      setDraft(nextDraft);
+                      savedSnapshotRef.current = JSON.stringify(toDraftFromRule(manualRunRule));
+                      setIssues([]);
+                      setSimulationNotes([]);
+                      setRequiredConfirmations([]);
+                      setAcceptedConfirmations(new Set());
+                      setDetailView("editor");
+                      setManualRunRule(null);
+                      setManualRunLaneId("");
+                    }}
+                  >
+                    Create lanes for runs
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setSelectedRuleId(manualRunRule.id);
+                      setDetailView("editor");
+                      setManualRunRule(null);
+                      setManualRunLaneId("");
+                    }}
+                  >
+                    Edit lane mode
+                  </Button>
+                </div>
               </div>
             ) : null}
             <div className="mt-4 flex justify-end gap-2">

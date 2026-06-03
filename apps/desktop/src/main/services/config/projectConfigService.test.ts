@@ -705,19 +705,24 @@ describe("projectConfigService - project UI", () => {
       shared: {
         ui: {
           linearBatchLaunchDefaultPrompt: "Shared prompt",
+          webhookGatewayPublicUrl: "https://shared.example.com/ade-webhooks",
         },
       },
       local: {
         ui: {
           linearBatchLaunchDefaultPrompt: "Local prompt",
+          webhookGatewayPublicUrl: "https://local.example.com/ade-webhooks",
         },
       },
     });
 
     const snapshot = service.get();
     expect(snapshot.shared.ui?.linearBatchLaunchDefaultPrompt).toBe("Shared prompt");
+    expect(snapshot.shared.ui?.webhookGatewayPublicUrl).toBe("https://shared.example.com/ade-webhooks");
     expect(snapshot.local.ui?.linearBatchLaunchDefaultPrompt).toBe("Local prompt");
+    expect(snapshot.local.ui?.webhookGatewayPublicUrl).toBe("https://local.example.com/ade-webhooks");
     expect(snapshot.effective.ui?.linearBatchLaunchDefaultPrompt).toBe("Local prompt");
+    expect(snapshot.effective.ui?.webhookGatewayPublicUrl).toBe("https://local.example.com/ade-webhooks");
   });
 });
 

@@ -18,6 +18,11 @@ import type { LinearClient } from "./linearClient";
 const RELAY_API_BASE_REF = "linearRelay.apiBaseUrl";
 const RELAY_PROJECT_REF = "linearRelay.remoteProjectId";
 const RELAY_TOKEN_REF = "linearRelay.accessToken";
+const RELAY_API_BASE_ENV_KEYS = ["ADE_LINEAR_RELAY_API_BASE_URL", "LINEAR_RELAY_API_BASE_URL"] as const;
+const RELAY_PROJECT_ENV_KEYS = ["ADE_LINEAR_RELAY_REMOTE_PROJECT_ID", "LINEAR_RELAY_REMOTE_PROJECT_ID"] as const;
+const RELAY_TOKEN_ENV_KEYS = ["ADE_LINEAR_RELAY_ACCESS_TOKEN", "LINEAR_RELAY_ACCESS_TOKEN"] as const;
+const DIRECT_WEBHOOK_SECRET_REF = "linearWebhook.signingSecret";
+const DIRECT_WEBHOOK_SECRET_ENV_KEYS = ["ADE_LINEAR_WEBHOOK_SIGNING_SECRET", "LINEAR_WEBHOOK_SIGNING_SECRET"] as const;
 
 type LinearIngressServiceArgs = {
   db: AdeDb;
@@ -25,6 +30,9 @@ type LinearIngressServiceArgs = {
   logger?: Logger | null;
   linearClient: LinearClient;
   secretService: AutomationSecretService;
+  projectConfigService?: {
+    get: () => { effective?: { ui?: { webhookGatewayPublicUrl?: string | null } } };
+  } | null;
   onEvent?: (event: LinearIngressEventRecord) => Promise<void> | void;
   reconciliationIntervalSec?: number;
 };
@@ -41,6 +49,12 @@ type RelayEnsureWebhookResponse = {
   webhookUrl: string;
   signingSecret: string;
   lastDeliveredAt: string | null;
+};
+
+type DirectWebhookConfig = {
+  webhookUrl: string | null;
+  signingSecret: string | null;
+  configured: boolean;
 };
 
 type RelayEventResponse = {
@@ -64,6 +78,29 @@ function normalizeHeader(headers: Record<string, string | string[] | undefined>,
 
 function createSecret(): string {
   return randomBytes(32).toString("hex");
+}
+
+function normalizePublicWebhookUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== "https:") return null;
+    url.hash = "";
+    url.search = "";
+    return url.toString().replace(/\/+$/, "");
+  } catch {
+    return null;
+  }
+}
+
+function appendWebhookPath(baseUrl: string, routePath: string): string {
+  const normalizedBase = baseUrl.replace(/\/+$/, "");
+  const normalizedRoute = routePath.startsWith("/") ? routePath : `/${routePath}`;
+  return normalizedBase.endsWith(normalizedRoute)
+    ? normalizedBase
+    : `${normalizedBase}${normalizedRoute}`;
 }
 
 function safeCompare(expected: string, actual: string): boolean {
@@ -91,6 +128,14 @@ function readIssueDetails(payload: Record<string, unknown>): {
   const action = typeof payload.action === "string" ? payload.action.trim() : null;
   const summary = [entityType, action, issueIdentifier, title].filter(Boolean).join(" · ") || "Linear webhook received";
   return { issueId, issueIdentifier, summary };
+}
+
+function firstEnvValue(keys: readonly string[]): string | null {
+  for (const key of keys) {
+    const value = process.env[key]?.trim();
+    if (value) return value;
+  }
+  return null;
 }
 
 export function createLinearIngressService(args: LinearIngressServiceArgs) {
@@ -270,14 +315,28 @@ export function createLinearIngressService(args: LinearIngressServiceArgs) {
   };
 
   const buildRelayConfig = (): RelayConfig => {
-    const apiBaseUrl = args.secretService.getSecret(RELAY_API_BASE_REF)?.trim() ?? null;
-    const remoteProjectId = args.secretService.getSecret(RELAY_PROJECT_REF)?.trim() ?? null;
-    const accessToken = args.secretService.getSecret(RELAY_TOKEN_REF)?.trim() ?? null;
+    const apiBaseUrl = args.secretService.getSecret(RELAY_API_BASE_REF)?.trim() || firstEnvValue(RELAY_API_BASE_ENV_KEYS);
+    const remoteProjectId = args.secretService.getSecret(RELAY_PROJECT_REF)?.trim() || firstEnvValue(RELAY_PROJECT_ENV_KEYS);
+    const accessToken = args.secretService.getSecret(RELAY_TOKEN_REF)?.trim() || firstEnvValue(RELAY_TOKEN_ENV_KEYS);
     return {
       apiBaseUrl,
       remoteProjectId,
       accessToken,
       configured: Boolean(apiBaseUrl && remoteProjectId && accessToken),
+    };
+  };
+
+  const buildDirectWebhookConfig = (): DirectWebhookConfig => {
+    const publicUrl = normalizePublicWebhookUrl(
+      args.projectConfigService?.get().effective?.ui?.webhookGatewayPublicUrl ?? null,
+    );
+    const signingSecret =
+      args.secretService.getSecret(DIRECT_WEBHOOK_SECRET_REF)?.trim()
+      || firstEnvValue(DIRECT_WEBHOOK_SECRET_ENV_KEYS);
+    return {
+      webhookUrl: publicUrl ? appendWebhookPath(publicUrl, "/linear-webhooks") : null,
+      signingSecret: signingSecret || null,
+      configured: Boolean(publicUrl && signingSecret),
     };
   };
 
@@ -291,16 +350,68 @@ export function createLinearIngressService(args: LinearIngressServiceArgs) {
   const ensureRelayEndpoint = async (force = false): Promise<RelayEnsureWebhookResponse | null> => {
     const config = buildRelayConfig();
     if (!config.configured) {
-      updateStatus({
-        relay: {
-          configured: false,
-          healthy: false,
-          status: "disabled",
-          webhookUrl: null,
-          endpointId: null,
-        },
-      });
-      return null;
+      const direct = buildDirectWebhookConfig();
+      if (!direct.configured) {
+        updateStatus({
+          relay: {
+            configured: false,
+            healthy: false,
+            status: "disabled",
+            webhookUrl: direct.webhookUrl,
+            endpointId: null,
+            lastError: direct.webhookUrl
+              ? `Missing ${DIRECT_WEBHOOK_SECRET_REF}.`
+              : "Missing webhook gateway public URL.",
+          },
+        });
+        return null;
+      }
+      try {
+        localSigningSecret = direct.signingSecret!;
+        const existing = await args.linearClient.listWebhooks();
+        if (!existing.some((entry) => entry.url === direct.webhookUrl)) {
+          await args.linearClient.createWebhook({
+            url: direct.webhookUrl!,
+            secret: direct.signingSecret!,
+            label: `ADE ${args.projectId} workflow ingress`,
+            resourceTypes: ["Issue", "IssueLabel"],
+            allPublicTeams: true,
+          });
+        }
+        const payload: RelayEnsureWebhookResponse = {
+          endpointId: "direct",
+          webhookUrl: direct.webhookUrl!,
+          signingSecret: direct.signingSecret!,
+          lastDeliveredAt: null,
+        };
+        relayWebhook = payload;
+        updateStatus({
+          relay: {
+            configured: true,
+            healthy: true,
+            status: "ready",
+            webhookUrl: payload.webhookUrl,
+            endpointId: payload.endpointId,
+            lastDeliveryAt: null,
+            lastError: null,
+          },
+        });
+        return payload;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        args.logger?.warn("linear_ingress.ensure_direct_webhook_failed", { error: message });
+        updateStatus({
+          relay: {
+            configured: true,
+            healthy: false,
+            status: "error",
+            webhookUrl: direct.webhookUrl,
+            endpointId: "direct",
+            lastError: `Linear direct webhook registration failed: ${message}`,
+          },
+        });
+        throw new Error(`Linear direct webhook registration failed: ${message}`);
+      }
     }
 
     if (relayWebhook && !force) return relayWebhook;
@@ -334,9 +445,20 @@ export function createLinearIngressService(args: LinearIngressServiceArgs) {
         });
       }
     } catch (error) {
-      args.logger?.warn("linear_ingress.ensure_linear_webhook_failed", {
-        error: error instanceof Error ? error.message : String(error),
+      const message = error instanceof Error ? error.message : String(error);
+      args.logger?.warn("linear_ingress.ensure_linear_webhook_failed", { error: message });
+      updateStatus({
+        relay: {
+          configured: true,
+          healthy: false,
+          status: "error",
+          webhookUrl: payload.webhookUrl,
+          endpointId: payload.endpointId,
+          lastDeliveryAt: payload.lastDeliveredAt,
+          lastError: `Linear webhook registration failed: ${message}`,
+        },
       });
+      throw new Error(`Linear webhook registration failed: ${message}`);
     }
 
     updateStatus({
@@ -465,6 +587,10 @@ export function createLinearIngressService(args: LinearIngressServiceArgs) {
 
   const startLocalWebhook = async (): Promise<void> => {
     if (localServer) return;
+    const direct = buildDirectWebhookConfig();
+    if (direct.signingSecret) {
+      localSigningSecret = direct.signingSecret;
+    }
     updateStatus({
       localWebhook: {
         configured: true,
@@ -473,7 +599,11 @@ export function createLinearIngressService(args: LinearIngressServiceArgs) {
       },
     });
     localServer = http.createServer((request, response) => {
-      if (request.method !== "POST" || request.url !== "/linear-webhooks") {
+      const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      const pathname = url.pathname.startsWith("/ade-webhooks/")
+        ? url.pathname.slice("/ade-webhooks".length)
+        : url.pathname;
+      if (request.method !== "POST" || pathname !== "/linear-webhooks") {
         response.writeHead(404).end("not found");
         return;
       }
@@ -565,12 +695,18 @@ export function createLinearIngressService(args: LinearIngressServiceArgs) {
       await ensureRealtimeIngressStarted();
     },
 
-    async ensureRelayWebhook(force = false): Promise<void> {
+    async ensureRelayWebhook(force = false): Promise<LinearIngressStatus> {
       await ensureRelayEndpoint(force);
       await startLocalWebhook();
       if (hasRelayConfiguration() && !relayAbortController) {
         void startRelayLoop();
       }
+      return loadStatus();
+    },
+
+    async startLocalWebhook(): Promise<LinearIngressStatus> {
+      await startLocalWebhook();
+      return loadStatus();
     },
 
     getStatus(): LinearIngressStatus {
