@@ -10777,13 +10777,15 @@ describe("createAgentChatService", () => {
       const history = service.getChatEventHistory("unknown-session");
       expect(history.events).toEqual([]);
       expect(history.truncated).toBe(false);
+      expect(history.transcriptTruncated).toBe(false);
+      expect(history.windowTruncated).toBe(false);
       expect(history.sessionFound).toBe(false);
     });
 
     it("hydrates history from the on-disk transcript on first read", async () => {
       // This is the core contract that fixes chat-history-loss on project
       // switch / tab switch: a late subscriber that missed the live broadcast
-      // still sees the full history, because getChatEventHistory hydrates
+      // still sees persisted recent history, because getChatEventHistory hydrates
       // itself from the transcript the first time the session is queried.
       const { service } = createService();
       const session = await service.createSession({
@@ -10818,6 +10820,144 @@ describe("createAgentChatService", () => {
       expect(history.events.map((envelope) =>
         envelope.event.type === "text" ? envelope.event.text : "",
       )).toEqual(["persisted-1", "persisted-2"]);
+    });
+
+    it("bounds oversized transcript hydration before parsing", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const oldEnvelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-04-23T09:59:00.000Z",
+        event: { type: "text", text: "old-head" },
+        sequence: 1,
+      };
+      const recentEnvelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-04-23T10:01:00.000Z",
+        event: { type: "text", text: "recent-tail" },
+        sequence: 2,
+      };
+
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      const hugeMiddleEnvelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-04-23T10:00:00.000Z",
+        event: { type: "text", text: "x".repeat(2_100_000) },
+        sequence: 2,
+      };
+      fs.writeFileSync(
+        transcriptFile,
+        [
+          JSON.stringify(oldEnvelope),
+          JSON.stringify(hugeMiddleEnvelope),
+          JSON.stringify(recentEnvelope),
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      vi.mocked(parseAgentChatTranscript).mockImplementation((raw) => {
+        expect(raw.length).toBeLessThan(50_000);
+        expect(raw).toContain("recent-tail");
+        expect(raw).not.toContain("old-head");
+        return [recentEnvelope];
+      });
+
+      const history = service.getChatEventHistory(session.id);
+
+      expect(history.truncated).toBe(true);
+      expect(history.transcriptTruncated).toBe(true);
+      expect(history.windowTruncated).toBe(false);
+      expect(history.events.map((envelope) =>
+        envelope.event.type === "text" ? envelope.event.text : "",
+      )).toEqual(["recent-tail"]);
+    });
+
+    it("separates max-event window truncation from transcript-tail truncation", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const envelopes: AgentChatEventEnvelope[] = Array.from({ length: 5 }, (_, index) => ({
+        sessionId: session.id,
+        timestamp: `2026-04-23T10:0${index}:00.000Z`,
+        event: { type: "text", text: `event-${index}` },
+        sequence: index + 1,
+      }));
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, `${envelopes.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue(envelopes);
+
+      const history = service.getChatEventHistory(session.id, { maxEvents: 3 });
+
+      expect(history.truncated).toBe(true);
+      expect(history.transcriptTruncated).toBe(false);
+      expect(history.windowTruncated).toBe(true);
+      expect(history.events.map((envelope) =>
+        envelope.event.type === "text" ? envelope.event.text : "",
+      )).toEqual(["event-2", "event-3", "event-4"]);
+    });
+
+    it("marks window truncation when the service response cap removes events", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const envelopes: AgentChatEventEnvelope[] = Array.from({ length: 20_001 }, (_, index) => ({
+        sessionId: session.id,
+        timestamp: new Date(Date.UTC(2026, 3, 23, 10, 0, index)).toISOString(),
+        event: { type: "text", text: `event-${index}` },
+        sequence: index + 1,
+      }));
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, "ignored\n", "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue(envelopes);
+
+      const history = service.getChatEventHistory(session.id);
+
+      expect(history.events).toHaveLength(20_000);
+      expect(history.truncated).toBe(true);
+      expect(history.transcriptTruncated).toBe(false);
+      expect(history.windowTruncated).toBe(true);
+      expect(history.events[0]?.event).toMatchObject({ type: "text", text: "event-1" });
+    });
+
+    it("reuses an unchanged parsed transcript tail across repeated history snapshots", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const envelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-04-23T10:00:00.000Z",
+        event: { type: "text", text: "persisted-once" },
+        sequence: 1,
+      };
+
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope)}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockClear();
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope]);
+
+      const firstHistory = service.getChatEventHistory(session.id);
+      const secondHistory = service.getChatEventHistory(session.id);
+
+      expect(firstHistory.events).toHaveLength(1);
+      expect(secondHistory.events).toHaveLength(1);
+      expect(parseAgentChatTranscript).toHaveBeenCalledTimes(1);
     });
 
     it("re-reads the on-disk transcript on repeated history snapshots", async () => {

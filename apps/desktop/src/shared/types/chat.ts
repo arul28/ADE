@@ -764,7 +764,13 @@ export type AgentChatEventEnvelope = {
 export type AgentChatEventHistorySnapshot = {
   sessionId: string;
   events: AgentChatEventEnvelope[];
+  /**
+   * True when any history was omitted from this snapshot, either because the
+   * transcript tail was bounded or because maxEvents windowed the result.
+   */
   truncated: boolean;
+  transcriptTruncated?: boolean;
+  windowTruncated?: boolean;
   /**
    * Explicitly false means the session id did not resolve in this project
    * runtime. Optional for compatibility with older desktop/runtime pairs.

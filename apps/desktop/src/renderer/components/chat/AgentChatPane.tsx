@@ -4139,8 +4139,8 @@ export function AgentChatPane({
       // ring buffer with the on-disk transcript. This recovers events that
       // were emitted while the user was on a different project (IPC dropped),
       // events that were still in fs.appendFile flight when a previous load
-      // ran, and the full history even when the transcript has been truncated
-      // for size. Fall back to the disk-only readTranscriptTail path if the
+      // ran, and recent transcript history even when the transcript has been
+      // truncated for size. Fall back to the disk-only readTranscriptTail path if the
       // snapshot call fails or the desktop app is running against an older
       // main-process build that lacks the handler.
       let parsed: AgentChatEventEnvelope[] = [];
