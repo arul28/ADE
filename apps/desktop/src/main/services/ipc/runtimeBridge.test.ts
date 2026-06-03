@@ -839,8 +839,20 @@ describe("registerIpc sync bridge", () => {
   });
 
   it("uses the sender window's bound local project for iOS Simulator window sources", async () => {
-    const repoGetStatus = vi.fn(async () => ({ supported: false }));
-    const otherGetStatus = vi.fn(async () => ({ supported: false }));
+    const repoGetStatus = vi.fn(async () => ({
+      platform: "darwin",
+      supported: false,
+      tools: [],
+      activeDevice: null,
+      activeSession: null,
+    }));
+    const otherGetStatus = vi.fn(async () => ({
+      platform: "darwin",
+      supported: false,
+      tools: [],
+      activeDevice: null,
+      activeSession: null,
+    }));
     const contexts = new Map<string, any>([
       ["/repo", {
         project: { rootPath: "/repo" },
@@ -884,6 +896,132 @@ describe("registerIpc sync bridge", () => {
     expect(otherGetStatus).not.toHaveBeenCalled();
   });
 
+  it("uses the bound local runtime for iOS Simulator window sources when no in-process project context is loaded", async () => {
+    const getProjectContext = vi.fn(() => null);
+    const localRuntimeConnectionPool = {
+      callActionForRoot: vi.fn(async () => ({
+        domain: "ios_simulator",
+        action: "getStatus",
+        result: {
+          platform: "darwin",
+          supported: false,
+          tools: [],
+          activeDevice: null,
+          activeSession: null,
+        },
+        statusHints: {},
+      })),
+    };
+    registerIpc({
+      getCtx: () => ({
+        project: { rootPath: "/fallback" },
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+      }) as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo" } as any,
+        binding: localBinding("/repo"),
+      }),
+      getProjectContext,
+      localRuntimeConnectionPool: localRuntimeConnectionPool as any,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.iosSimulatorListWindowSources)?.(
+        eventForSender(),
+        { projectRoot: "/repo" },
+      ),
+    ).resolves.toEqual([]);
+
+    expect(getProjectContext).toHaveBeenCalledWith("/repo");
+    expect(localRuntimeConnectionPool.callActionForRoot).toHaveBeenCalledWith(
+      "/repo",
+      {
+        domain: "ios_simulator",
+        action: "getStatus",
+        args: {},
+      },
+    );
+  });
+
+  it("rejects malformed local-runtime iOS Simulator status for window sources", async () => {
+    const getProjectContext = vi.fn(() => null);
+    const localRuntimeConnectionPool = {
+      callActionForRoot: vi.fn(async () => ({
+        domain: "ios_simulator",
+        action: "getStatus",
+        result: {
+          platform: "darwin",
+          supported: true,
+        },
+        statusHints: {},
+      })),
+    };
+    registerIpc({
+      getCtx: () => ({
+        project: { rootPath: "/fallback" },
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+      }) as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo" } as any,
+        binding: localBinding("/repo"),
+      }),
+      getProjectContext,
+      localRuntimeConnectionPool: localRuntimeConnectionPool as any,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.iosSimulatorListWindowSources)?.(
+        eventForSender(),
+        { projectRoot: "/repo" },
+      ),
+    ).rejects.toThrow("iOS Simulator service is not available for /repo.");
+  });
+
+  it("does not fall back to the active project for unbound iOS Simulator window-source requests", async () => {
+    const getStatus = vi.fn(async () => ({
+      platform: "darwin",
+      supported: false,
+      tools: [],
+      activeDevice: null,
+      activeSession: null,
+    }));
+    registerIpc({
+      getCtx: () => ({
+        project: { rootPath: "/fallback" },
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+        iosSimulatorService: { getStatus },
+      }) as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: null,
+        binding: null,
+      }),
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.iosSimulatorListWindowSources)?.(
+        eventForSender(),
+        {},
+      ),
+    ).rejects.toThrow("no local project is bound");
+
+    expect(getStatus).not.toHaveBeenCalled();
+  });
+
   it("rejects iOS Simulator window-source requests for an unbound project root", async () => {
     const getProjectContext = vi.fn(() => ({
       project: { rootPath: "/other" },
@@ -918,7 +1056,13 @@ describe("registerIpc sync bridge", () => {
   });
 
   it("falls back to the active context for matching iOS Simulator roots when no project context lookup is registered", async () => {
-    const getStatus = vi.fn(async () => ({ supported: false }));
+    const getStatus = vi.fn(async () => ({
+      platform: "darwin",
+      supported: false,
+      tools: [],
+      activeDevice: null,
+      activeSession: null,
+    }));
     registerIpc({
       getCtx: () => ({
         project: { rootPath: "/repo" },
