@@ -443,6 +443,8 @@ export const IPC = {
   automationsListRuns: "ade.automations.listRuns",
   automationsGetRunDetail: "ade.automations.getRunDetail",
   automationsGetIngressStatus: "ade.automations.getIngressStatus",
+  automationsRefreshWebhookGatewayStatus: "ade.automations.refreshWebhookGatewayStatus",
+  automationsSetWebhookGatewayPublicUrl: "ade.automations.setWebhookGatewayPublicUrl",
   automationsListIngressEvents: "ade.automations.listIngressEvents",
   automationsParseNaturalLanguage: "ade.automations.parseNaturalLanguage",
   automationsValidateDraft: "ade.automations.validateDraft",

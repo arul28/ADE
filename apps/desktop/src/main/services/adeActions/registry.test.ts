@@ -9,6 +9,30 @@ import {
   type AdeActionDomain,
 } from "./registry";
 
+function withEnv<T>(updates: Record<string, string | undefined>, run: () => T): T {
+  const previous = new Map<string, string | undefined>();
+  for (const key of Object.keys(updates)) {
+    previous.set(key, process.env[key]);
+    const value = updates[key];
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+  try {
+    return run();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
 describe("isAllowedAdeAction", () => {
   it("accepts a canonical action from the allowlist", () => {
     expect(isAllowedAdeAction("git", "commit")).toBe(true);
@@ -68,6 +92,57 @@ describe("isAllowedAdeAction", () => {
         expect(isAllowedAdeAction(domain, action)).toBe(true);
       }
     }
+  });
+});
+
+describe("getAdeActionDomainServices feature gates", () => {
+  it("hides Automations, Linear ingress, and macOS VM domains in packaged builds", () => {
+    withEnv(
+      {
+        ADE_ENABLE_AUTOMATIONS: undefined,
+        ADE_DISABLE_AUTOMATIONS: undefined,
+        ADE_ENABLE_MACOS_VM: undefined,
+        ADE_DISABLE_MACOS_VM: undefined,
+      },
+      () => {
+        const services = getAdeActionDomainServices({
+          isPackaged: true,
+          automationService: {},
+          automationPlannerService: {},
+          automationIngressService: {},
+          linearIngressService: {},
+          macosVmService: {},
+        } as never);
+
+        expect(services.automation_planner).toBeNull();
+        expect(services.automations).toBeNull();
+        expect(services.linear_ingress).toBeNull();
+        expect(services.macos_vm).toBeNull();
+      },
+    );
+  });
+
+  it("keeps internal domains available in dev builds", () => {
+    withEnv(
+      {
+        ADE_ENABLE_AUTOMATIONS: undefined,
+        ADE_DISABLE_AUTOMATIONS: undefined,
+        ADE_ENABLE_MACOS_VM: undefined,
+        ADE_DISABLE_MACOS_VM: undefined,
+      },
+      () => {
+        const services = getAdeActionDomainServices({
+          isPackaged: false,
+          automationPlannerService: { parseNaturalLanguage: () => undefined },
+          linearIngressService: { getStatus: () => undefined },
+          macosVmService: { getStatus: () => undefined },
+        } as never);
+
+        expect(services.automation_planner).not.toBeNull();
+        expect(services.linear_ingress).not.toBeNull();
+        expect(services.macos_vm).not.toBeNull();
+      },
+    );
   });
 });
 
@@ -163,9 +238,15 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
       "triggerManually",
       "listRuns",
       "getRunDetail",
+      "getIngressStatus",
+      "startIngress",
+      "refreshWebhookGatewayStatus",
+      "setWebhookGatewayPublicUrl",
     ]) {
       expect(actions).toContain(name);
     }
+    expect(isCtoOnlyAdeAction("automations", "setWebhookGatewayPublicUrl")).toBe(true);
+    expect(isCtoOnlyAdeAction("automations", "refreshWebhookGatewayStatus")).toBe(false);
   });
 
   it("exposes the issue domain with GitHub issue mutation helpers", () => {

@@ -28,6 +28,8 @@ import type { createLinearIngressService } from "../../desktop/src/main/services
 import type { createWorkerTaskSessionService } from "../../desktop/src/main/services/cto/workerTaskSessionService";
 import type { createWorkerHeartbeatService } from "../../desktop/src/main/services/cto/workerHeartbeatService";
 import type { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
+import type { createAutomationService } from "../../desktop/src/main/services/automations/automationService";
+import { buildLinearAutomationDispatches } from "../../desktop/src/main/services/automations/linearAutomationDispatch";
 import type { ComputerUseArtifactBrokerService } from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import type { LinearWorkflowEventPayload } from "../../desktop/src/shared/types/linearSync";
 import {
@@ -41,6 +43,7 @@ import {
 } from "../../desktop/src/shared/githubScopes";
 import type {
   GitHubStatus,
+  LinearIngressEventRecord,
   WorkerAgentRun,
   WorkerAgentWakeupReason,
 } from "../../desktop/src/shared/types";
@@ -133,6 +136,7 @@ type HeadlessLinearDeps = {
   openExternal?: (url: string) => Promise<void>;
   onGitHubStatusChanged?: (status: HeadlessGitHubStatus) => void;
   onLinearWorkflowEvent?: (event: LinearWorkflowEventPayload) => void;
+  getAutomationService?: () => ReturnType<typeof createAutomationService> | null;
 };
 
 type HeadlessLinearServices = {
@@ -1885,11 +1889,23 @@ export function createHeadlessLinearServices(
     autoStart: false,
     hasCredentials: () => linearCredentialService.getStatus().tokenStored,
   });
-  const handleIngressEvent = async (event: { issueId?: string | null }) => {
+  const handleIngressEvent = async (event: LinearIngressEventRecord) => {
     const issueId =
       typeof event.issueId === "string" ? event.issueId.trim() : "";
     if (!issueId) return;
     await syncService.processIssueUpdate(issueId);
+    const automationService = args.getAutomationService?.() ?? null;
+    if (!automationService) return;
+    try {
+      for (const dispatched of buildLinearAutomationDispatches(event)) {
+        await automationService.dispatchIngressTrigger(dispatched);
+      }
+    } catch (error) {
+      args.logger.warn("linear.headless_automation_dispatch_failed", {
+        issueId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   };
   const ingressService = createLinearIngressServiceImpl({
     db: args.db,
@@ -1899,6 +1915,7 @@ export function createHeadlessLinearServices(
     secretService: automationSecretService as ReturnType<
       typeof createAutomationSecretService
     >,
+    projectConfigService: args.projectConfigService,
     onEvent: handleIngressEvent,
   });
 

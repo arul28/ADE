@@ -74,7 +74,8 @@ import { initApiKeyStore } from "../../desktop/src/main/services/ai/apiKeyStore"
 import type { createSyncService } from "./services/sync/syncService";
 import type { createSyncHostService, SyncRuntimeKind } from "./services/sync/syncHostService";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
-import type { createAutomationIngressService } from "../../desktop/src/main/services/automations/automationIngressService";
+import { createAutomationIngressService } from "../../desktop/src/main/services/automations/automationIngressService";
+import { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
 import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
 import { createFeedbackReporterService } from "../../desktop/src/main/services/feedback/feedbackReporterService";
 import {
@@ -129,6 +130,10 @@ import { createLaneWorktreeLockService, type LaneWorktreeLockService } from "../
 import { createHeadlessLinearServices } from "./headlessLinearServices";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import { createEventBuffer, type BufferedEvent, type EventBuffer } from "./eventBuffer";
+import {
+  readAutomationsEnvOverride,
+  readMacosVmEnvOverride,
+} from "../../desktop/src/shared/automationAvailability";
 
 export { createEventBuffer, type BufferedEvent, type EventBuffer };
 
@@ -242,6 +247,7 @@ export type AdeRuntime = {
     navigate(args: AppNavigationRequest): Promise<AppNavigationResult>;
   } | null;
   eventBuffer: EventBuffer;
+  isPackaged?: boolean;
   dispose: () => void;
 };
 
@@ -263,6 +269,22 @@ export function ensureAdePaths(projectRoot: string): AdeRuntimePaths {
     chatTranscriptsDir: paths.chatTranscriptsDir,
     orchestratorCacheDir: paths.orchestratorCacheDir,
   };
+}
+
+function isSourceCheckoutRuntimeModule(modulePath: string): boolean {
+  return /[/\\]apps[/\\]ade-cli[/\\](?:src|dist)[/\\]bootstrap\.(?:ts|js|cjs)$/i.test(modulePath);
+}
+
+function automationsEnabledForHeadlessRuntime(): boolean {
+  const override = readAutomationsEnvOverride(process.env);
+  if (override !== null) return override;
+  return isSourceCheckoutRuntimeModule(__filename);
+}
+
+function macosVmEnabledForHeadlessRuntime(): boolean {
+  const override = readMacosVmEnvOverride(process.env);
+  if (override !== null) return override;
+  return isSourceCheckoutRuntimeModule(__filename);
 }
 
 function resolveCurrentAdeCliEntry(): string | null {
@@ -861,7 +883,8 @@ export async function createAdeRuntime(args: {
           return matchingLane?.id ?? lanes[0]?.id ?? null;
         },
       });
-  const macosVmService = chatOnlyRuntime
+  const macosVmFeatureEnabled = macosVmEnabledForHeadlessRuntime();
+  const macosVmService = chatOnlyRuntime || !macosVmFeatureEnabled
     ? null
     : createMacosVmService({
         projectRoot,
@@ -920,6 +943,7 @@ export async function createAdeRuntime(args: {
       pushEvent("runtime", { type: "github_status_changed", event: status }),
     onLinearWorkflowEvent: (event) =>
       pushEvent("runtime", { type: "linear_workflow_event", event }),
+    getAutomationService: () => automationServiceRef,
   });
   linearIssueTrackerRef = headlessLinearServices.linearIssueTracker;
   githubServiceRef = headlessLinearServices.githubService as ReturnType<typeof createGithubService>;
@@ -1037,19 +1061,36 @@ export async function createAdeRuntime(args: {
     defaultModelId: null,
     defaultReasoningEffort: null,
   });
-  const automationService = createAutomationService({
-    db,
-    logger,
-    projectId,
-    projectRoot,
-    laneService,
-    projectConfigService,
-    conflictService,
-    testService,
-    agentChatService: agentChatService ?? undefined,
-    onEvent: (event) => pushEvent("runtime", { ...event, source: "automations" }),
-  });
+  const automationFeatureEnabled = automationsEnabledForHeadlessRuntime();
+  const automationService = automationFeatureEnabled
+    ? createAutomationService({
+        db,
+        logger,
+        projectId,
+        projectRoot,
+        laneService,
+        projectConfigService,
+        conflictService,
+        testService,
+        agentChatService: agentChatService ?? undefined,
+        onEvent: (event) => pushEvent("runtime", { ...event, source: "automations" }),
+      })
+    : null;
   automationServiceRef = automationService;
+  const automationSecretService = automationFeatureEnabled
+    ? createAutomationSecretService({
+        adeDir: paths.adeDir,
+        logger,
+      })
+    : null;
+  const automationIngressService = automationFeatureEnabled && automationService && automationSecretService
+    ? createAutomationIngressService({
+        logger,
+        automationService,
+        secretService: automationSecretService,
+        listRules: () => projectConfigService.get().effective.automations ?? [],
+      })
+    : null;
   const configReloadService = createConfigReloadService({
     paths: {
       sharedPath: adeProjectService.paths.sharedConfigPath,
@@ -1067,13 +1108,15 @@ export async function createAdeRuntime(args: {
       error: error instanceof Error ? error.message : String(error),
     });
   });
-  const automationPlannerService = createAutomationPlannerService({
-    logger,
-    projectRoot,
-    projectConfigService,
-    laneService,
-    automationService,
-  });
+  const automationPlannerService = automationFeatureEnabled && automationService
+    ? createAutomationPlannerService({
+        logger,
+        projectRoot,
+        projectConfigService,
+        laneService,
+        automationService,
+      })
+    : null;
   const usageTrackingService = createUsageTrackingService({
     logger,
     pollIntervalMs: 120_000,
@@ -1247,6 +1290,7 @@ export async function createAdeRuntime(args: {
     usageTrackingService,
     budgetCapService,
     automationService,
+    automationIngressService,
     automationPlannerService,
     computerUseArtifactBrokerService,
     iosSimulatorService,
@@ -1254,13 +1298,15 @@ export async function createAdeRuntime(args: {
     builtInBrowserService: builtInBrowserBridge,
     macosVmService,
     eventBuffer,
+    isPackaged: !isSourceCheckoutRuntimeModule(__filename),
     dispose: () => {
       const swallow = (fn: () => void) => { try { fn(); } catch { /* ignore */ } };
       if (staleSessionReconcileTimer) {
         clearTimeout(staleSessionReconcileTimer);
       }
       void configReloadService.dispose().catch(() => {});
-      swallow(() => automationService.dispose());
+      swallow(() => automationIngressService?.dispose());
+      swallow(() => automationService?.dispose());
       swallow(() => usageTrackingService.dispose());
       swallow(() => apnsService.dispose());
       swallow(() => syncService?.dispose());
@@ -1302,7 +1348,7 @@ export async function createAdeRuntime(args: {
       return [...(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? [])];
     },
   };
-  automationService.bindAdeActionRegistry(adeActionLookup);
+  automationService?.bindAdeActionRegistry(adeActionLookup);
 
   usageTrackingService.start();
   runtimeCreated = true;

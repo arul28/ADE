@@ -188,9 +188,9 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
                 )}
               />
             ) : null}
-            {it.to === "/vm" && isPackaged ? (
+            {(it.to === "/vm" || it.to === "/automations") && isPackaged ? (
               <span
-                title="Mac VM is coming soon in production builds"
+                title={`${it.label} is coming soon in production builds`}
                 className="absolute -right-2 -top-1 rounded border border-emerald-300/40 bg-emerald-400 px-1 font-mono text-[7px] font-bold uppercase leading-[10px] text-[#07110B]"
               >
                 Soon

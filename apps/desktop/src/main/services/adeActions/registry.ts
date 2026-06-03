@@ -28,6 +28,10 @@ import type {
   AgentChatTurnFileDiff,
 } from "../../../shared/types/chat";
 import type { AutomationRule } from "../../../shared/types/config";
+import {
+  areAutomationsEnabledForPackagedState,
+  isMacosVmEnabledForPackagedState,
+} from "../../../shared/automationAvailability";
 import { buildPrAiResolutionContextKey } from "../../../shared/types";
 import type {
   AiConfig,
@@ -165,6 +169,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   flow_policy: ["savePolicy", "rollbackRevision"],
   linear_sync: ["runSyncNow", "resolveQueueItem"],
   linear_ingress: ["ensureRelayWebhook"],
+  automations: ["setWebhookGatewayPublicUrl"],
   ai: ["updateConfig", "storeApiKey", "deleteApiKey"],
   budget: ["updateConfig"],
   feedback: ["submitPreparedDraft"],
@@ -617,7 +622,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "updateIssueState",
   ],
   linear_sync: ["getDashboard", "getRunDetail", "listQueue", "resolveQueueItem", "runSyncNow"],
-  linear_ingress: ["ensureRelayWebhook", "getStatus", "listRecentEvents"],
+  linear_ingress: ["ensureRelayWebhook", "getStatus", "listRecentEvents", "startLocalWebhook"],
   linear_routing: ["simulateRoute"],
   github: [
     "clearToken",
@@ -703,6 +708,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listRuns",
     "getRunDetail",
     "getIngressStatus",
+    "startIngress",
+    "refreshWebhookGatewayStatus",
+    "setWebhookGatewayPublicUrl",
     "listIngressEvents",
   ],
   review: [
@@ -745,6 +753,9 @@ type AutomationsDomainService = {
   listRuns(args?: AutomationRunListArgs): AutomationRun[];
   getRunDetail(args: { runId: string }): Promise<AutomationRunDetail | null>;
   getIngressStatus(): AutomationIngressStatus;
+  startIngress(): Promise<AutomationIngressStatus>;
+  refreshWebhookGatewayStatus(): Promise<AutomationIngressStatus["webhookGateway"]>;
+  setWebhookGatewayPublicUrl(args?: { publicUrl?: string | null }): Promise<AutomationIngressStatus["webhookGateway"]>;
   listIngressEvents(args?: { limit?: number }): AutomationIngressEventRecord[];
 };
 
@@ -768,6 +779,13 @@ function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainSe
     listRuns: (args = {}) => automationService.listRuns(args),
     getRunDetail: ({ runId }) => automationService.getRunDetail({ runId }),
     getIngressStatus: () => automationService.getIngressStatus(),
+    startIngress: async () => {
+      if (!runtime.automationIngressService) throw new Error("Automation ingress service is not available.");
+      await runtime.automationIngressService.start();
+      return automationService.getIngressStatus();
+    },
+    refreshWebhookGatewayStatus: () => automationService.refreshWebhookGatewayStatus(),
+    setWebhookGatewayPublicUrl: (args = {}) => automationService.setWebhookGatewayPublicUrl(args),
     listIngressEvents: (args = {}) => automationService.listIngressEvents(args.limit),
   };
 }
@@ -2806,6 +2824,8 @@ function buildTerminalDomainService(runtime: AdeRuntime): TerminalDomainService 
 export function getAdeActionDomainServices(
   runtime: AdeRuntime,
 ): Partial<Record<AdeActionDomain, OpaqueService | null | undefined>> {
+  const automationsEnabled = areAutomationsEnabledForPackagedState(Boolean(runtime.isPackaged));
+  const macosVmEnabled = isMacosVmEnabledForPackagedState(Boolean(runtime.isPackaged));
   return {
     lane: toService(buildLaneDomainService(runtime)),
     git: toService(runtime.gitService),
@@ -2817,7 +2837,7 @@ export function getAdeActionDomainServices(
     keybindings: toService(runtime.keybindingsService),
     ai: toService(buildAiDomainService(runtime)),
     onboarding: toService(runtime.onboardingService),
-    automation_planner: toService(runtime.automationPlannerService),
+    automation_planner: automationsEnabled ? toService(runtime.automationPlannerService) : null,
     cto_state: toService(buildCtoStateDomainService(runtime)),
     worker_agent: toService(buildWorkerAgentDomainService(runtime)),
     session: toService(buildSessionDomainService(runtime)),
@@ -2832,7 +2852,7 @@ export function getAdeActionDomainServices(
     linear_dispatcher: toService(runtime.linearDispatcherService),
     linear_issue_tracker: toService(buildLinearIssueTrackerDomainService(runtime)),
     linear_sync: toService(runtime.linearSyncService),
-    linear_ingress: toService(runtime.linearIngressService),
+    linear_ingress: automationsEnabled ? toService(runtime.linearIngressService) : null,
     linear_routing: toService(buildLinearRoutingDomainService(runtime)),
     github: buildGithubDomainService(runtime),
     feedback: toService(runtime.feedbackReporterService),
@@ -2850,8 +2870,8 @@ export function getAdeActionDomainServices(
     ios_simulator: toService(runtime.iosSimulatorService),
     app_control: toService(runtime.appControlService),
     built_in_browser: toService(runtime.builtInBrowserService),
-    macos_vm: toService(runtime.macosVmService),
-    automations: toService(buildAutomationsDomainService(runtime)),
+    macos_vm: macosVmEnabled ? toService(runtime.macosVmService) : null,
+    automations: automationsEnabled ? toService(buildAutomationsDomainService(runtime)) : null,
     review: toService(runtime.reviewService),
     issue: toService(buildIssueDomainService(runtime)),
     get notifications_apns() {

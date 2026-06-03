@@ -26,6 +26,33 @@ import { EncryptedFileCredentialStore } from "./services/credentials/credentialS
 
 type ResolveRootsOptions = Parameters<typeof resolveRoots>[0];
 
+process.env.ADE_ENABLE_AUTOMATIONS = "1";
+process.env.ADE_ENABLE_MACOS_VM = "1";
+
+function withEnv<T>(updates: Record<string, string | undefined>, run: () => T): T {
+  const previous = new Map<string, string | undefined>();
+  for (const key of Object.keys(updates)) {
+    previous.set(key, process.env[key]);
+    const value = updates[key];
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+  try {
+    return run();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
 function baseResolveOpts(): Omit<
   ResolveRootsOptions,
   "projectRoot" | "workspaceRoot"
@@ -146,6 +173,52 @@ describe("ADE CLI", () => {
   it("keeps global help on the help surface", () => {
     const plan = buildCliPlan(["--help"]);
     expect(plan.kind).toBe("help");
+  });
+
+  it("hides internal Automations and macOS VM commands when disabled", () => {
+    withEnv(
+      {
+        ADE_DISABLE_AUTOMATIONS: "1",
+        ADE_DISABLE_MACOS_VM: "1",
+        ADE_ENABLE_AUTOMATIONS: undefined,
+        ADE_ENABLE_MACOS_VM: undefined,
+      },
+      () => {
+        const plan = buildCliPlan(["--help"]);
+        expect(plan.kind).toBe("help");
+        if (plan.kind !== "help") return;
+        expect(plan.text).not.toContain("ade automations");
+        expect(plan.text).not.toContain("ade macos-vm");
+      },
+    );
+  });
+
+  it("reports internal feature availability instead of planning production-only commands", () => {
+    withEnv(
+      {
+        ADE_DISABLE_AUTOMATIONS: "1",
+        ADE_DISABLE_MACOS_VM: "1",
+        ADE_ENABLE_AUTOMATIONS: undefined,
+        ADE_ENABLE_MACOS_VM: undefined,
+      },
+      () => {
+        expect(() => buildCliPlan(["automations", "list"])).toThrow(/coming soon/);
+        expect(() => buildCliPlan(["linear", "ingress", "status"])).toThrow(/coming soon/);
+        expect(() => buildCliPlan(["macos-vm", "status"])).toThrow(/coming soon/);
+
+        const automationHelp = buildCliPlan(["help", "automations"]);
+        expect(automationHelp.kind).toBe("help");
+        if (automationHelp.kind === "help") {
+          expect(automationHelp.text).toContain("ADE_ENABLE_AUTOMATIONS=1");
+        }
+
+        const vmHelp = buildCliPlan(["help", "macos-vm"]);
+        expect(vmHelp.kind).toBe("help");
+        if (vmHelp.kind === "help") {
+          expect(vmHelp.text).toContain("ADE_ENABLE_MACOS_VM=1");
+        }
+      },
+    );
   });
 
   it("keeps global version on the version surface", () => {
@@ -3503,6 +3576,106 @@ describe("ADE CLI", () => {
     expect(plan.formatter).toBe("automation-run-detail");
   });
 
+  it("automations ingress status, start, and refresh use the webhook gateway runtime actions", () => {
+    const status = buildCliPlan(["automations", "ingress", "status"]);
+    expect(status.kind).toBe("execute");
+    if (status.kind !== "execute") return;
+    expect(status.formatter).toBe("automation-ingress");
+    expect(status.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "automations",
+        action: "getIngressStatus",
+        args: {},
+      },
+    });
+
+    const start = buildCliPlan(["automations", "ingress", "start"]);
+    expect(start.kind).toBe("execute");
+    if (start.kind !== "execute") return;
+    expect(start.formatter).toBe("automation-ingress");
+    expect(start.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "automations",
+        action: "startIngress",
+        args: {},
+      },
+    });
+
+    const refresh = buildCliPlan(["automations", "ingress", "refresh"]);
+    expect(refresh.kind).toBe("execute");
+    if (refresh.kind !== "execute") return;
+    expect(refresh.formatter).toBe("automation-ingress");
+    expect(refresh.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "automations",
+        action: "refreshWebhookGatewayStatus",
+        args: {},
+      },
+    });
+  });
+
+  it("automations ingress set-url and clear-url update the public gateway URL", () => {
+    const set = buildCliPlan([
+      "automations",
+      "ingress",
+      "set-url",
+      "https://ade.example.com/ade-webhooks",
+    ]);
+    expect(set.kind).toBe("execute");
+    if (set.kind !== "execute") return;
+    expect(set.formatter).toBe("automation-ingress");
+    expect(set.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "automations",
+        action: "setWebhookGatewayPublicUrl",
+        args: { publicUrl: "https://ade.example.com/ade-webhooks" },
+      },
+    });
+
+    const clear = buildCliPlan(["automations", "ingress", "clear-url"]);
+    expect(clear.kind).toBe("execute");
+    if (clear.kind !== "execute") return;
+    expect(clear.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "automations",
+        action: "setWebhookGatewayPublicUrl",
+        args: { publicUrl: null },
+      },
+    });
+  });
+
+  it("linear ingress start-local starts the runtime local webhook listener", () => {
+    const plan = buildCliPlan(["linear", "ingress", "start-local"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "linear_ingress",
+        action: "startLocalWebhook",
+        args: {},
+      },
+    });
+  });
+
+  it("linear ingress start ensures the provider webhook and relay loop", () => {
+    const plan = buildCliPlan(["linear", "ingress", "start"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "linear_ingress",
+        action: "ensureRelayWebhook",
+        args: {},
+      },
+    });
+  });
+
   it("automations toggle errors when --enabled is omitted", () => {
     expect(() => buildCliPlan(["automations", "toggle", "rule-42"])).toThrow(
       /--enabled <true\|false>/,
@@ -3624,7 +3797,7 @@ describe("ADE CLI", () => {
 
   it("automations rejects unknown subcommands with a usage error", () => {
     expect(() => buildCliPlan(["automations", "nope"])).toThrow(
-      /list, show, create, update, delete, toggle, run, runs/,
+      /list, show, create, update, delete, toggle, run, ingress, runs/,
     );
   });
 

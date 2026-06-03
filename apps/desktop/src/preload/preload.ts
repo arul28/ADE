@@ -27,6 +27,7 @@ import type {
   AutomationDeleteRuleRequest,
   AutomationIngressEventRecord,
   AutomationIngressStatus,
+  AutomationWebhookGatewayStatus,
   AutomationManualTriggerRequest,
   AutomationRuleSummary,
   AutomationRun,
@@ -3943,6 +3944,19 @@ contextBridge.exposeInMainWorld("ade", {
     getIngressStatus: async (): Promise<AutomationIngressStatus> =>
       callProjectRuntimeActionOr("automations", "getIngressStatus", {}, () =>
         ipcRenderer.invoke(IPC.automationsGetIngressStatus),
+      ),
+    refreshWebhookGatewayStatus: async (): Promise<AutomationWebhookGatewayStatus> =>
+      callProjectRuntimeActionOr("automations", "refreshWebhookGatewayStatus", {}, () =>
+        ipcRenderer.invoke(IPC.automationsRefreshWebhookGatewayStatus),
+      ),
+    setWebhookGatewayPublicUrl: async (args: {
+      publicUrl?: string | null;
+    }): Promise<AutomationWebhookGatewayStatus> =>
+      callProjectRuntimeActionOr(
+        "automations",
+        "setWebhookGatewayPublicUrl",
+        { args },
+        () => ipcRenderer.invoke(IPC.automationsSetWebhookGatewayPublicUrl, args),
       ),
     listIngressEvents: async (args?: {
       limit?: number;

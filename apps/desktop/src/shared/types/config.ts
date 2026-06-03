@@ -1403,6 +1403,11 @@ export type AiIntegrationStatus = {
 
 export type ProjectUiConfig = {
   linearBatchLaunchDefaultPrompt?: string;
+  /**
+   * Public HTTPS base URL for the ADE Webhook Gateway. Stored in local config
+   * so external event automations can be gated without exposing local sockets.
+   */
+  webhookGatewayPublicUrl?: string;
 };
 
 export type ProjectConfigFile = {

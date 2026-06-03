@@ -10,7 +10,6 @@ export const adeBundledAgentSkills = [
   "ade-linear",
   "ade-orchestrator",
   "ade-proof-artifacts",
-  "ade-macos-vm",
   "ade-deeplinks",
 ] as const;
 
@@ -34,6 +33,7 @@ export function buildAdeCliAgentGuidance(skillRoots: readonly string[] = getAdeA
   "- Start with `ade doctor --text` when the ADE environment is unclear. Use `ade help <command>` for exact flags and `ade actions list --text` as the escape hatch for service actions without a typed command.",
   "- If `command -v ade` fails, try `${ADE_CLI_PATH:-}` when set, then `${ADE_CLI_BIN_DIR:-}/ade`, and in an ADE source checkout fall back to `node apps/ade-cli/dist/cli.cjs ...` after confirming it exists. The only normal reason to skip ADE CLI for an ADE action is that it is truly unreachable.",
   "- Use typed commands with `--text` for readable output. Common starts: `ade lanes list --text`, `ade chat list --text`, `ade proof status --text`, and `ade actions list --text`.",
+  "- Automations, Linear webhook ingress, and macOS VM are internal/coming-soon in production builds. Do not use `ade automations`, `ade linear ingress`, or `ade macos-vm` unless the user explicitly asks and the matching internal override env var is set.",
   "- Use `--socket` when the ADE desktop drawer and the CLI must share live state such as App Control, iOS Simulator, Preview Lab, browser tabs, terminal logs, selection/context capture, proof drawer updates, or macOS VM state.",
   "- If any task needs a browser, web page, localhost preview, login-backed site, screenshot, DOM inspection, form fill, click, or navigation, use ADE's built-in browser through `ade --socket browser ...` and the `ade-browser` skill before trying an external browser/tool. Start by listing tabs, then use only a tab/session owned by this chat; otherwise open a fresh owned tab with `ade --socket browser open <url> --new-tab --text` and start a browser session.",
   "- When the user asks you to capture, send, attach, or provide proof, use the relevant capture tool first, then register it with ADE via `ade proof ...` so it appears in the ADE proof drawer for the active chat or lane.",

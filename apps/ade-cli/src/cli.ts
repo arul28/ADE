@@ -18,6 +18,12 @@ import {
   runDeeplinkCommand,
 } from "./commands/deeplinks";
 import { buildDeeplink } from "../../desktop/src/shared/deeplinks";
+import {
+  AUTOMATIONS_COMING_SOON_MESSAGE,
+  MACOS_VM_COMING_SOON_MESSAGE,
+  readAutomationsEnvOverride,
+  readMacosVmEnvOverride,
+} from "../../desktop/src/shared/automationAvailability";
 import { parseLinearGraphQLInput } from "../../desktop/src/main/services/cto/linearGraphQLInput";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import {
@@ -130,7 +136,8 @@ type FormatterId =
   | "history-show"
   | "actions-list"
   | "action-result"
-  | "automation-run-detail";
+  | "automation-run-detail"
+  | "automation-ingress";
 
 type CliPlan =
   | { kind: "help"; text: string }
@@ -236,6 +243,48 @@ function resolveCliPackageRoot(entryPath: string): string {
 
 function isSourceCliEntryPath(modulePath: string): boolean {
   return /[/\\]src[/\\]cli\.ts$/i.test(modulePath);
+}
+
+function isSourceCheckoutCliEntryPath(modulePath: string): boolean {
+  return (
+    isSourceCliEntryPath(modulePath) ||
+    /[/\\]apps[/\\]ade-cli[/\\]dist[/\\]cli\.cjs$/i.test(modulePath)
+  );
+}
+
+function automationsCliEnabled(): boolean {
+  const override = readAutomationsEnvOverride(process.env);
+  if (override !== null) return override;
+  return isSourceCheckoutCliEntryPath(CLI_ENTRY_PATH);
+}
+
+function macosVmCliEnabled(): boolean {
+  const override = readMacosVmEnvOverride(process.env);
+  if (override !== null) return override;
+  return isSourceCheckoutCliEntryPath(CLI_ENTRY_PATH);
+}
+
+function internalFeatureUnavailableHelp(title: string, message: string, enableEnv: string): string {
+  return `${ADE_BANNER}
+  ${title}
+
+  ${message}
+  Internal testing can opt in with ${enableEnv}=1.
+`;
+}
+
+function assertAutomationsCliEnabled(): void {
+  if (automationsCliEnabled()) return;
+  throw new CliUsageError(
+    `${AUTOMATIONS_COMING_SOON_MESSAGE} Internal testing can opt in with ADE_ENABLE_AUTOMATIONS=1.`,
+  );
+}
+
+function assertMacosVmCliEnabled(): void {
+  if (macosVmCliEnabled()) return;
+  throw new CliUsageError(
+    `${MACOS_VM_COMING_SOON_MESSAGE} Internal testing can opt in with ADE_ENABLE_MACOS_VM=1.`,
+  );
 }
 
 function isSourceRuntimeInteropError(value: unknown): boolean {
@@ -407,7 +456,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade macos-vm status | start | restart | wipe | install-runtime | set-credentials | get-credentials | storage | display-session | detach
                                                     Run ADE's singleton Apple silicon macOS VM
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
-    $ ade usage snapshot | refresh | budget         Read provider quota usage and edit automation guardrails
+    $ ade usage snapshot | refresh | budget         Read provider quota usage and budget guardrails
     $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
@@ -458,6 +507,50 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
 
   Start with: ade doctor --text
 `;
+
+function topLevelHelpText(): string {
+  let text = TOP_LEVEL_HELP;
+  if (!automationsCliEnabled()) {
+    text = text.replace(
+      /    \$ ade automations list \| create \| run \| runs    Manage automation rules\n/,
+      "",
+    );
+  }
+  if (!macosVmCliEnabled()) {
+    text = text
+      .replace(
+        /    \$ ade macos-vm status \| start \| restart \| wipe \| install-runtime \| set-credentials \| get-credentials \| storage \| display-session \| detach\n\s+Run ADE's singleton Apple silicon macOS VM\n/,
+        "",
+      )
+      .replace(/    \$ ade macos-vm start --lane <lane> --create --text\n/, "")
+      .replace(/    \$ ade macos-vm guide --lane <lane> --text\n/, "");
+  }
+  return text;
+}
+
+function commandHelpText(key: string): string | undefined {
+  if (key === "automations" && !automationsCliEnabled()) {
+    return internalFeatureUnavailableHelp(
+      "Automations",
+      AUTOMATIONS_COMING_SOON_MESSAGE,
+      "ADE_ENABLE_AUTOMATIONS",
+    );
+  }
+  if (key === "macos-vm" && !macosVmCliEnabled()) {
+    return internalFeatureUnavailableHelp(
+      "macOS VM",
+      MACOS_VM_COMING_SOON_MESSAGE,
+      "ADE_ENABLE_MACOS_VM",
+    );
+  }
+  if (key === "linear" && !automationsCliEnabled()) {
+    return HELP_BY_COMMAND.linear
+      .replace(/    \$ ade linear ingress status --text\s+Show Linear ingress status\n/, "")
+      .replace(/    \$ ade linear ingress start --text\s+Ensure Linear webhook and start relay ingress\n/, "")
+      .replace(/    \$ ade linear ingress start-local --text\s+Start only the local Linear webhook listener\n/, "");
+  }
+  return HELP_BY_COMMAND[key];
+}
 
 const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   status: `${ADE_BANNER}
@@ -1452,8 +1545,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
     $ ade usage snapshot --text                     Cached snapshot (windows, pacing, costs, errors)
     $ ade usage refresh --text                      Force a fresh poll (invalidates cost cache)
-    $ ade usage budget get --text                   Read automation guardrail config
-    $ ade usage budget set --from-file budget.json  Save automation guardrail config
+    $ ade usage budget get --text                   Read budget guardrail config
+    $ ade usage budget set --from-file budget.json  Save budget guardrail config
     $ ade usage budget check --provider claude --scope global
     $ ade usage budget cumulative --scope global    Cumulative spend for the current week
 
@@ -1506,6 +1599,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade linear sync run                           Trigger a sync run
     $ ade linear sync queue --text                  List sync queue items
     $ ade linear sync resolve --queue-item <id> --action approve
+    $ ade linear ingress status --text              Show Linear ingress status
+    $ ade linear ingress start --text               Ensure Linear webhook and start relay ingress
+    $ ade linear ingress start-local --text         Start only the local Linear webhook listener
     $ ade linear route worker --input-json '{"issueId":"LIN-123","workerId":"worker-1"}'
     $ ade linear install                            Register ADE as the "Open in coding tool" target
     $ ade linear install --dry-run                  Preview the ~/.linear/coding-tools.json write
@@ -1560,6 +1656,12 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade automations run <id> [--lane <id>] [--dry-run]
     $ ade automations trigger <id> [--lane <id>]
                                                      Trigger a rule manually
+    $ ade automations ingress status [--text]        Show webhook gateway status
+    $ ade automations ingress start [--text]         Start the local webhook listener
+    $ ade automations ingress refresh [--text]       Re-detect Tailscale/gateway status
+    $ ade --role cto automations ingress set-url <https-url>
+                                                     Save the public gateway URL
+    $ ade --role cto automations ingress clear-url   Clear the public gateway URL
     $ ade automations runs [--rule <id>] [--status <s>] [--limit 50]
     $ ade automations run-show <runId> [--json]     Inspect a run
     $ ade automations example                       Print an example rule (stdout)
@@ -9171,6 +9273,69 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     return { kind: "help", text: automationsExampleText() };
   }
 
+  if (sub === "ingress" || sub === "webhook" || sub === "webhook-gateway") {
+    const mode = firstPositional(args) ?? "status";
+    if (mode === "status" || mode === "show") {
+      return {
+        kind: "execute",
+        label: "automations ingress status",
+        formatter: "automation-ingress",
+        steps: [actionStep("result", "automations", "getIngressStatus")],
+      };
+    }
+    if (mode === "start" || mode === "listen") {
+      return {
+        kind: "execute",
+        label: "automations ingress start",
+        formatter: "automation-ingress",
+        steps: [actionStep("result", "automations", "startIngress")],
+      };
+    }
+    if (mode === "refresh" || mode === "detect") {
+      return {
+        kind: "execute",
+        label: "automations ingress refresh",
+        formatter: "automation-ingress",
+        steps: [actionStep("result", "automations", "refreshWebhookGatewayStatus")],
+      };
+    }
+    if (mode === "set-url" || mode === "set" || mode === "configure") {
+      const publicUrl = requireValue(
+        readValue(args, ["--url", "--public-url", "--webhook-url"]) ?? firstPositional(args),
+        "public webhook gateway URL",
+      );
+      return {
+        kind: "execute",
+        label: "automations ingress set-url",
+        formatter: "automation-ingress",
+        steps: [actionStep("result", "automations", "setWebhookGatewayPublicUrl", { publicUrl })],
+      };
+    }
+    if (mode === "clear-url" || mode === "clear" || mode === "disable") {
+      return {
+        kind: "execute",
+        label: "automations ingress clear-url",
+        formatter: "automation-ingress",
+        steps: [actionStep("result", "automations", "setWebhookGatewayPublicUrl", { publicUrl: null })],
+      };
+    }
+    if (mode === "events") {
+      const limit = readIntOption(args, ["--limit"]);
+      return {
+        kind: "execute",
+        label: "automations ingress events",
+        steps: [
+          actionStep("result", "automations", "listIngressEvents", {
+            ...(typeof limit === "number" ? { limit } : {}),
+          }),
+        ],
+      };
+    }
+    throw new CliUsageError(
+      "automations ingress supports status, start, refresh, set-url, clear-url, or events.",
+    );
+  }
+
   if (sub === "create") {
     const allowLegacy = readFlag(args, ["--allow-legacy"]);
     const raw = parseDraftInput(args);
@@ -9301,7 +9466,7 @@ function buildAutomationsPlan(args: string[]): CliPlan {
   }
 
   throw new CliUsageError(
-    "automations supports list, show, create, update, delete, toggle, run, runs, run-show, or example.",
+    "automations supports list, show, create, update, delete, toggle, run, ingress, runs, run-show, or example.",
   );
 }
 
@@ -9627,16 +9792,31 @@ function buildLinearPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "ingress") {
+    assertAutomationsCliEnabled();
     const mode = firstPositional(args) ?? "status";
     const toolByMode: Record<string, string> = {
       status: "getLinearIngressStatus",
       events: "listLinearIngressEvents",
       webhook: "ensureLinearWebhook",
     };
+    if (mode === "start" || mode === "listen" || mode === "ensure") {
+      return {
+        kind: "execute",
+        label: "Linear ingress start",
+        steps: [actionStep("result", "linear_ingress", "ensureRelayWebhook")],
+      };
+    }
+    if (mode === "start-local" || mode === "local-webhook") {
+      return {
+        kind: "execute",
+        label: "Linear ingress local webhook",
+        steps: [actionStep("result", "linear_ingress", "startLocalWebhook")],
+      };
+    }
     const tool = toolByMode[mode];
     if (!tool)
       throw new CliUsageError(
-        "linear ingress supports status, events, or webhook.",
+        "linear ingress supports status, events, webhook, start, or start-local.",
       );
     return {
       kind: "execute",
@@ -10027,10 +10207,10 @@ function buildCliPlan(command: string[]): CliPlan {
   }
   const primary = firstPositional(args);
   if (!primary) {
-    return { kind: "help", text: TOP_LEVEL_HELP };
+    return { kind: "help", text: topLevelHelpText() };
   }
   if (primary === "-h" || primary === "--help") {
-    return { kind: "help", text: TOP_LEVEL_HELP };
+    return { kind: "help", text: topLevelHelpText() };
   }
   const aliases: Record<string, string> = {
     lane: "lanes",
@@ -10086,7 +10266,7 @@ function buildCliPlan(command: string[]): CliPlan {
     }
     return {
       kind: "help",
-      text: HELP_BY_COMMAND[primaryHelpKey] ?? TOP_LEVEL_HELP,
+      text: commandHelpText(primaryHelpKey) ?? topLevelHelpText(),
     };
   }
   if (primary === "help") {
@@ -10103,7 +10283,7 @@ function buildCliPlan(command: string[]): CliPlan {
     }
     return {
       kind: "help",
-      text: key && HELP_BY_COMMAND[key] ? HELP_BY_COMMAND[key] : TOP_LEVEL_HELP,
+      text: key ? commandHelpText(key) ?? topLevelHelpText() : topLevelHelpText(),
     };
   }
   if (primary === "version" || primary === "--version" || primary === "-v") {
@@ -10211,8 +10391,10 @@ function buildCliPlan(command: string[]): CliPlan {
   if (primary === "agent" || primary === "agents") return buildAgentPlan(args);
   if (primary === "cto") return buildCtoPlan(args);
   if (primary === "linear") return buildLinearPlan(args);
-  if (primary === "automations" || primary === "automation")
+  if (primary === "automations" || primary === "automation") {
+    assertAutomationsCliEnabled();
     return buildAutomationsPlan(args);
+  }
   if (primary === "flow") return buildFlowPlan(args);
   if (primary === "coordinator" || primary === "coord")
     return buildCoordinatorPlan(args);
@@ -10255,8 +10437,10 @@ function buildCliPlan(command: string[]): CliPlan {
     primary === "macos" ||
     primary === "mac-vm" ||
     primary === "macvm"
-  )
+  ) {
+    assertMacosVmCliEnabled();
     return buildMacosVmPlan(args);
+  }
   if (
     primary === "browser" ||
     primary === "ade-browser" ||
@@ -10286,7 +10470,7 @@ function buildCursorPlan(args: string[]): CliPlan {
   // ade cursor <surface> <group> <sub> ... — only "cloud" is wired today.
   const surface = firstPositional(args);
   if (!surface || surface === "help" || hasHelpFlag([surface])) {
-    return { kind: "help", text: HELP_BY_COMMAND.cursor ?? TOP_LEVEL_HELP };
+    return { kind: "help", text: HELP_BY_COMMAND.cursor ?? topLevelHelpText() };
   }
   if (surface !== "cloud") {
     throw new CliUsageError(
@@ -10298,7 +10482,7 @@ function buildCursorPlan(args: string[]): CliPlan {
     if (group && CURSOR_CLOUD_HELP[group]) {
       return { kind: "help", text: `${ADE_BANNER}${CURSOR_CLOUD_HELP[group]}` };
     }
-    return { kind: "help", text: HELP_BY_COMMAND.cursor ?? TOP_LEVEL_HELP };
+    return { kind: "help", text: HELP_BY_COMMAND.cursor ?? topLevelHelpText() };
   }
   return { kind: "cursor-cloud", rest: args };
 }
@@ -13131,6 +13315,45 @@ function formatAutomationRunDetail(value: unknown): string {
   return [header, "", "Actions", table].join("\n");
 }
 
+function formatAutomationIngress(value: unknown): string {
+  const result = unwrapActionEnvelope(value);
+  if (!isRecord(result)) return JSON.stringify(result, null, 2);
+  const gateway = isRecord(result.webhookGateway) ? result.webhookGateway : result;
+  const tailscale = isRecord(gateway.tailscale) ? gateway.tailscale : {};
+  const localWebhook = isRecord(result.localWebhook) ? result.localWebhook : null;
+  const githubRelay = isRecord(result.githubRelay) ? result.githubRelay : null;
+  const gatewayLines = renderKeyValues("ADE automation ingress", [
+    ["gateway", gateway.ready === true ? "online" : asString(gateway.status) ?? "not ready"],
+    ["publicUrl", gateway.publicUrl],
+    ["localUrl", gateway.localUrl],
+    ["provider", gateway.provider],
+    ["tailscale", tailscale.available === true ? "available" : "not available"],
+    ["tailscaleHost", tailscale.hostname],
+    ["lastCheckedAt", gateway.lastCheckedAt],
+    ["error", gateway.lastError],
+  ]);
+  const localLines = localWebhook
+    ? renderKeyValues("Local webhook", [
+        ["status", localWebhook.status],
+        ["url", localWebhook.url],
+        ["githubUrl", localWebhook.githubUrl],
+        ["port", localWebhook.port],
+        ["lastDeliveryAt", localWebhook.lastDeliveryAt],
+        ["error", localWebhook.lastError],
+      ])
+    : "";
+  const relayLines = githubRelay
+    ? renderKeyValues("Legacy GitHub relay", [
+        ["status", githubRelay.status],
+        ["configured", githubRelay.configured],
+        ["healthy", githubRelay.healthy],
+        ["lastDeliveryAt", githubRelay.lastDeliveryAt],
+        ["error", githubRelay.lastError],
+      ])
+    : "";
+  return [gatewayLines, localLines, relayLines].filter(Boolean).join("\n\n");
+}
+
 function renderKeyValues(
   title: string,
   entries: Array<[string, unknown]>,
@@ -14569,6 +14792,8 @@ function formatTextOutput(
       return formatActionsList(value);
     case "automation-run-detail":
       return formatAutomationRunDetail(value);
+    case "automation-ingress":
+      return formatAutomationIngress(value);
     case "action-result":
     default:
       if (isRecord(value))

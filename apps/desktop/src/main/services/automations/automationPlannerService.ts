@@ -1039,7 +1039,11 @@ export function createAutomationPlannerService({
   projectRoot: string;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   laneService: ReturnType<typeof createLaneService>;
-  automationService: { list: () => { id: string }[]; syncFromConfig: () => void };
+  automationService: {
+    list: () => { id: string }[];
+    syncFromConfig: () => void;
+    assertWebhookGatewayReadyForRule?: (rule: Pick<AutomationRule, "name" | "triggers" | "trigger">) => void;
+  };
 }) {
   const readSuites = (): TestSuiteDefinition[] => {
     try {
@@ -1244,6 +1248,13 @@ export function createAutomationPlannerService({
       }
 
       const normalized = validation.normalized;
+      if (normalized.enabled) {
+        automationService.assertWebhookGatewayReadyForRule?.({
+          name: normalized.name,
+          triggers: normalized.triggers,
+          trigger: normalized.triggers[0] ?? { type: "manual" },
+        });
+      }
       const execution = normalized.execution ?? {
         kind: normalized.actions.length ? "built-in" : "agent-session",
         ...(normalized.actions.length ? { builtIn: { actions: normalized.actions } } : { session: {} }),

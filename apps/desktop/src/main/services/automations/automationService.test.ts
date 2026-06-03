@@ -158,6 +158,197 @@ describe("normalizeRuntimeRule", () => {
   });
 });
 
+describe("webhook gateway gating", () => {
+  function makeProjectConfigHarness(rule: any, ui: Record<string, unknown> = {}) {
+    let snapshot: any = {
+      trust: { requiresSharedTrust: false },
+      shared: {},
+      local: { automations: [{ id: rule.id, enabled: rule.enabled }] },
+      effective: { automations: [rule], providerMode: "guest", ui },
+    };
+    return {
+      service: {
+        get: () => snapshot,
+        save: (next: any) => {
+          const nextLocal = next.local ?? snapshot.local;
+          snapshot = {
+            ...snapshot,
+            ...next,
+            effective: {
+              ...snapshot.effective,
+              ui: nextLocal.ui ?? snapshot.effective.ui,
+              automations: nextLocal.automations?.map((entry: any) => ({ ...rule, ...entry })) ?? snapshot.effective.automations,
+            },
+          };
+          return snapshot;
+        },
+      } as any,
+      getSnapshot: () => snapshot,
+    };
+  }
+
+  function createServiceForRule(rule: any, ui: Record<string, unknown> = {}) {
+    const { db } = createInMemoryAdeDb();
+    const logger = createLogger();
+    const projectConfig = makeProjectConfigHarness(rule, ui);
+    const service = createAutomationService({
+      db: db as any,
+      logger,
+      projectId: "proj",
+      projectRoot: "/tmp",
+      laneService: {
+        getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: "/tmp" }),
+        getLaneWorktreePath: () => "/tmp",
+      } as any,
+      projectConfigService: projectConfig.service,
+    });
+    return { service, projectConfig };
+  }
+
+  it("blocks enabling external event automations until the webhook gateway is ready", () => {
+    const rule = normalizeRuntimeRule({
+      id: "linear-label",
+      name: "Linear label",
+      enabled: false,
+      mode: "review",
+      triggers: [{ type: "linear.issue_labeled" }],
+      trigger: { type: "linear.issue_labeled" },
+      execution: { kind: "agent-session", session: {} },
+      executor: { mode: "automation-bot" },
+      prompt: "Smoke test",
+      reviewProfile: "quick",
+      toolPalette: ["linear"],
+      contextSources: [],
+      guardrails: {},
+      outputs: { disposition: "comment-only", createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" },
+      billingCode: "auto:linear-label",
+      actions: [],
+    });
+    const { service } = createServiceForRule(rule);
+
+    expect(() => service.toggle({ id: rule.id, enabled: true })).toThrow(/Webhook Gateway/);
+  });
+
+  it("allows external event automations when a public gateway URL is configured", () => {
+    const rule = normalizeRuntimeRule({
+      id: "github-label",
+      name: "GitHub label",
+      enabled: false,
+      mode: "review",
+      triggers: [{ type: "github.issue_labeled" }],
+      trigger: { type: "github.issue_labeled" },
+      execution: { kind: "agent-session", session: {} },
+      executor: { mode: "automation-bot" },
+      prompt: "Smoke test",
+      reviewProfile: "quick",
+      toolPalette: ["github"],
+      contextSources: [],
+      guardrails: {},
+      outputs: { disposition: "comment-only", createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" },
+      billingCode: "auto:github-label",
+      actions: [],
+    });
+    const { service, projectConfig } = createServiceForRule(rule, {
+      webhookGatewayPublicUrl: "https://ade.example.com/ade-webhooks",
+    });
+
+    expect(() => service.toggle({ id: rule.id, enabled: true })).not.toThrow();
+    expect(projectConfig.getSnapshot().local.automations[0]?.enabled).toBe(true);
+  });
+
+  it("does not treat a saved Tailscale URL as ready before Funnel is verified", () => {
+    const rule = normalizeRuntimeRule({
+      id: "github-label",
+      name: "GitHub label",
+      enabled: false,
+      mode: "review",
+      triggers: [{ type: "github.issue_labeled" }],
+      trigger: { type: "github.issue_labeled" },
+      execution: { kind: "agent-session", session: {} },
+      executor: { mode: "automation-bot" },
+      prompt: "Smoke test",
+      reviewProfile: "quick",
+      toolPalette: ["github"],
+      contextSources: [],
+      guardrails: {},
+      outputs: { disposition: "comment-only", createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" },
+      billingCode: "auto:github-label",
+      actions: [],
+    });
+    const { service } = createServiceForRule(rule, {
+      webhookGatewayPublicUrl: "https://ade-dev.tail000000.ts.net/ade-webhooks",
+    });
+
+    const status = service.getIngressStatus().webhookGateway;
+    expect(status.publicUrl).toBe("https://ade-dev.tail000000.ts.net/ade-webhooks");
+    expect(status.ready).toBe(false);
+    expect(status.status).toBe("pending-approval");
+    expect(() => service.toggle({ id: rule.id, enabled: true })).toThrow(/Webhook Gateway/);
+  });
+
+  it("saves and clears the public gateway URL through the automation runtime", async () => {
+    const rule = normalizeRuntimeRule({
+      id: "manual-smoke",
+      name: "Manual smoke",
+      enabled: true,
+      mode: "review",
+      triggers: [{ type: "manual" }],
+      trigger: { type: "manual" },
+      execution: { kind: "agent-session", session: {} },
+      executor: { mode: "automation-bot" },
+      prompt: "Smoke test",
+      reviewProfile: "quick",
+      toolPalette: ["repo"],
+      contextSources: [],
+      guardrails: {},
+      outputs: { disposition: "comment-only", createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" },
+      billingCode: "auto:manual-smoke",
+      actions: [],
+    });
+    const { service, projectConfig } = createServiceForRule(rule);
+
+    const saved = await service.setWebhookGatewayPublicUrl({
+      publicUrl: "https://ade.example.com/ade-webhooks/",
+    });
+    expect(saved.publicUrl).toBe("https://ade.example.com/ade-webhooks");
+    expect(saved.ready).toBe(true);
+    expect(projectConfig.getSnapshot().local.ui.webhookGatewayPublicUrl).toBe("https://ade.example.com/ade-webhooks");
+
+    const cleared = await service.setWebhookGatewayPublicUrl({ publicUrl: null });
+    expect(cleared.publicUrl).toBeNull();
+    expect(projectConfig.getSnapshot().local.ui.webhookGatewayPublicUrl).toBeUndefined();
+  });
+
+  it("rejects non-HTTPS public gateway URLs", async () => {
+    const rule = normalizeRuntimeRule({
+      id: "manual-smoke",
+      name: "Manual smoke",
+      enabled: true,
+      mode: "review",
+      triggers: [{ type: "manual" }],
+      trigger: { type: "manual" },
+      execution: { kind: "agent-session", session: {} },
+      executor: { mode: "automation-bot" },
+      prompt: "Smoke test",
+      reviewProfile: "quick",
+      toolPalette: ["repo"],
+      contextSources: [],
+      guardrails: {},
+      outputs: { disposition: "comment-only", createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" },
+      billingCode: "auto:manual-smoke",
+      actions: [],
+    });
+    const { service } = createServiceForRule(rule);
+
+    await expect(service.setWebhookGatewayPublicUrl({ publicUrl: "http://localhost:3000" })).rejects.toThrow(/HTTPS/);
+  });
+});
+
 function createInMemoryAdeDb(): { db: AdeDb; raw: Database } {
   const raw = new SQL.Database();
   raw.run(`

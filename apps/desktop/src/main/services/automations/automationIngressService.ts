@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import http from "node:http";
 import { URL } from "node:url";
-import type { AutomationIngressEventRecord, AutomationIngressSource, AutomationRule } from "../../../shared/types";
+import type { AutomationIngressEventRecord, AutomationIngressSource, AutomationRule, AutomationTriggerType } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { createAutomationService } from "./automationService";
 import type { AutomationSecretService } from "./automationSecretService";
@@ -17,6 +17,7 @@ type AutomationIngressServiceArgs = {
 const GITHUB_RELAY_API_BASE_REF = "automations.githubRelay.apiBaseUrl";
 const GITHUB_RELAY_PROJECT_REF = "automations.githubRelay.remoteProjectId";
 const GITHUB_RELAY_TOKEN_REF = "automations.githubRelay.accessToken";
+const GITHUB_WEBHOOK_SECRET_REF = "automations.githubWebhook.secret";
 
 function safeCompareSignature(expected: string, actual: string): boolean {
   const a = Buffer.from(expected, "utf8");
@@ -40,6 +41,188 @@ function normalizeLabels(value: unknown): string[] {
       return "";
     })
     .filter(Boolean);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function normalizeHeader(headers: Record<string, string | string[] | undefined>, key: string): string {
+  const needle = key.toLowerCase();
+  for (const [headerKey, headerValue] of Object.entries(headers)) {
+    if (headerKey.toLowerCase() !== needle) continue;
+    if (Array.isArray(headerValue)) return headerValue[0]?.trim() ?? "";
+    return typeof headerValue === "string" ? headerValue.trim() : "";
+  }
+  return "";
+}
+
+function readString(source: Record<string, unknown> | null | undefined, key: string): string | undefined {
+  const value = source?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function readNumber(source: Record<string, unknown> | null | undefined, key: string): number | undefined {
+  const value = source?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function readNested(source: Record<string, unknown> | null | undefined, key: string): Record<string, unknown> | null {
+  const value = source?.[key];
+  return isRecord(value) ? value : null;
+}
+
+function readRepoName(payload: Record<string, unknown>): string | null {
+  const repo = readNested(payload, "repository");
+  return readString(repo, "full_name") ?? null;
+}
+
+function readUserLogin(source: Record<string, unknown> | null): string | undefined {
+  return readString(readNested(source, "user"), "login");
+}
+
+function readLogin(source: Record<string, unknown> | null): string | undefined {
+  return readString(source, "login") ?? readUserLogin(source);
+}
+
+function readHtmlUrl(source: Record<string, unknown> | null): string | undefined {
+  return readString(source, "html_url");
+}
+
+function buildIssueContext(issue: Record<string, unknown> | null, repo: string | null) {
+  const number = readNumber(issue, "number");
+  const title = readString(issue, "title");
+  if (!number || !title) return null;
+  return {
+    number,
+    title,
+    body: readString(issue, "body"),
+    author: readUserLogin(issue),
+    labels: normalizeLabels(issue?.labels),
+    repo: repo ?? undefined,
+    url: readHtmlUrl(issue),
+  };
+}
+
+function buildPrContext(pr: Record<string, unknown> | null, repo: string | null) {
+  const number = readNumber(pr, "number");
+  const title = readString(pr, "title");
+  if (!number || !title) return null;
+  return {
+    number,
+    title,
+    body: readString(pr, "body"),
+    author: readUserLogin(pr),
+    labels: normalizeLabels(pr?.labels),
+    repo: repo ?? undefined,
+    url: readHtmlUrl(pr),
+    baseBranch: readString(readNested(pr, "base"), "ref"),
+    headBranch: readString(readNested(pr, "head"), "ref"),
+    draft: pr?.draft === true,
+    merged: pr?.merged === true,
+  };
+}
+
+function mapGithubWebhookToTrigger(githubEvent: string, payload: Record<string, unknown>): {
+  triggerType: AutomationTriggerType;
+  summary: string;
+  author?: string;
+  labels?: string[];
+  branch?: string | null;
+  targetBranch?: string | null;
+  draftState?: "draft" | "ready" | "any";
+  issue?: ReturnType<typeof buildIssueContext>;
+  pr?: ReturnType<typeof buildPrContext>;
+} | null {
+  const action = readString(payload, "action") ?? "";
+  const repo = readRepoName(payload);
+  if (githubEvent === "issues") {
+    const issue = buildIssueContext(readNested(payload, "issue"), repo);
+    if (!issue) return null;
+    const labeled = action === "labeled";
+    const triggerType: AutomationTriggerType | null =
+      action === "opened"
+        ? "github.issue_opened"
+        : action === "edited"
+          ? "github.issue_edited"
+          : action === "closed"
+            ? "github.issue_closed"
+            : labeled
+              ? "github.issue_labeled"
+              : null;
+    if (!triggerType) return null;
+    const addedLabel = readString(readNested(payload, "label"), "name");
+    return {
+      triggerType,
+      summary: `GitHub issue #${issue.number} ${action}: ${issue.title}`,
+      author: readLogin(readNested(payload, "sender")),
+      labels: labeled && addedLabel ? [addedLabel] : issue.labels,
+      issue,
+    };
+  }
+
+  if (githubEvent === "issue_comment") {
+    if (action && action !== "created") return null;
+    const rawIssue = readNested(payload, "issue");
+    const comment = readNested(payload, "comment");
+    const issueIsPr = Boolean(readNested(rawIssue, "pull_request"));
+    const issue = buildIssueContext(rawIssue, repo);
+    if (!issue) return null;
+    return {
+      triggerType: issueIsPr ? "github.pr_commented" : "github.issue_commented",
+      summary: `GitHub ${issueIsPr ? "PR" : "issue"} #${issue.number} commented: ${issue.title}`,
+      author: readUserLogin(comment) ?? readLogin(readNested(payload, "sender")),
+      labels: issue.labels,
+      issue: issueIsPr ? null : issue,
+      pr: issueIsPr
+        ? { ...issue, baseBranch: undefined, headBranch: undefined, draft: false, merged: false }
+        : null,
+    };
+  }
+
+  if (githubEvent === "pull_request") {
+    const pr = buildPrContext(readNested(payload, "pull_request"), repo);
+    if (!pr) return null;
+    const triggerType: AutomationTriggerType | null =
+      action === "opened" || action === "reopened"
+        ? "github.pr_opened"
+        : action === "closed" && pr.merged
+          ? "github.pr_merged"
+          : action === "closed"
+            ? "github.pr_closed"
+            : ["edited", "synchronize", "ready_for_review", "converted_to_draft", "labeled", "unlabeled"].includes(action)
+              ? "github.pr_updated"
+              : null;
+    if (!triggerType) return null;
+    return {
+      triggerType,
+      summary: `GitHub PR #${pr.number} ${action}: ${pr.title}`,
+      author: readLogin(readNested(payload, "sender")) ?? pr.author,
+      labels: pr.labels,
+      branch: pr.headBranch ?? null,
+      targetBranch: pr.baseBranch ?? null,
+      draftState: pr.draft ? "draft" : "ready",
+      pr,
+    };
+  }
+
+  if (githubEvent === "pull_request_review") {
+    if (action && action !== "submitted") return null;
+    const pr = buildPrContext(readNested(payload, "pull_request"), repo);
+    if (!pr) return null;
+    return {
+      triggerType: "github.pr_review_submitted",
+      summary: `GitHub PR #${pr.number} review submitted: ${pr.title}`,
+      author: readUserLogin(readNested(payload, "review")) ?? readLogin(readNested(payload, "sender")),
+      labels: pr.labels,
+      branch: pr.headBranch ?? null,
+      targetBranch: pr.baseBranch ?? null,
+      draftState: pr.draft ? "draft" : "ready",
+      pr,
+    };
+  }
+
+  return null;
 }
 
 export function createAutomationIngressService(args: AutomationIngressServiceArgs) {
@@ -69,6 +252,55 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     args.listRules()
       .find((rule) => rule.id === automationId)
       ?.triggers.find((trigger) => trigger.type === type);
+
+  const verifyGithubWebhookSignature = (rawBody: Buffer, signature: string): void => {
+    const secret = args.secretService.getSecret(GITHUB_WEBHOOK_SECRET_REF);
+    if (!secret) {
+      throw new Error(`GitHub webhook secret '${GITHUB_WEBHOOK_SECRET_REF}' could not be resolved.`);
+    }
+    if (!signature.startsWith("sha256=")) {
+      throw new Error("Missing x-hub-signature-256 header.");
+    }
+    const expected = `sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`;
+    if (!safeCompareSignature(expected, signature)) {
+      throw new Error("GitHub webhook signature mismatch.");
+    }
+  };
+
+  const dispatchGithubWebhook = async (
+    githubEvent: string,
+    deliveryId: string,
+    payload: Record<string, unknown>,
+  ): Promise<AutomationIngressEventRecord | null> => {
+    const mapped = mapGithubWebhookToTrigger(githubEvent, payload);
+    if (!mapped) {
+      return await args.automationService.dispatchIngressTrigger({
+        source: "local-webhook",
+        eventKey: `github:${deliveryId || Date.now()}:${githubEvent}:unsupported`,
+        triggerType: "github-webhook",
+        eventName: githubEvent,
+        summary: `GitHub ${githubEvent} webhook received`,
+        rawPayload: payload,
+      });
+    }
+    const repo = mapped.issue?.repo ?? mapped.pr?.repo ?? readRepoName(payload);
+    return await args.automationService.dispatchIngressTrigger({
+      source: "local-webhook",
+      eventKey: `github:${deliveryId || Date.now()}:${mapped.triggerType}`,
+      triggerType: mapped.triggerType,
+      eventName: githubEvent,
+      summary: mapped.summary,
+      author: mapped.author ?? readLogin(readNested(payload, "sender")) ?? null,
+      labels: mapped.labels,
+      branch: mapped.branch,
+      targetBranch: mapped.targetBranch,
+      draftState: mapped.draftState,
+      rawPayload: payload,
+      repo,
+      issue: mapped.issue,
+      pr: mapped.pr,
+    });
+  };
 
   const dispatchLocalWebhook = async (automationId: string, payload: Record<string, unknown>, rawBody: Buffer): Promise<AutomationIngressEventRecord | null> => {
     const trigger = findTrigger(automationId, "webhook");
@@ -113,22 +345,41 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     });
   };
 
+  const normalizeWebhookPath = (pathname: string): string =>
+    pathname.startsWith("/ade-webhooks/")
+      ? pathname.slice("/ade-webhooks".length)
+      : pathname;
+
   const handleWebhookRequest = async (request: http.IncomingMessage, response: http.ServerResponse) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
-    const match = /^\/automation-webhooks\/([^/]+)$/.exec(url.pathname);
-    if (request.method !== "POST" || !match?.[1]) {
+    const pathname = normalizeWebhookPath(url.pathname);
+    const match = /^\/automation-webhooks\/([^/]+)$/.exec(pathname);
+    const isGithubWebhook = pathname === "/github-webhooks";
+    if (request.method !== "POST" || (!match?.[1] && !isGithubWebhook)) {
       response.writeHead(404).end("not found");
       return;
     }
-    const automationId = decodeURIComponent(match[1]);
+    const automationId = match?.[1] ? decodeURIComponent(match[1]) : null;
     const chunks: Buffer[] = [];
     request.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
     request.on("end", async () => {
       const body = Buffer.concat(chunks);
       try {
         const payload = JSON.parse(body.toString("utf8")) as Record<string, unknown>;
-        payload.signatureHeader = request.headers["x-ade-signature"] ?? "";
-        const record = await dispatchLocalWebhook(automationId, payload, body);
+        const record = isGithubWebhook
+          ? await (async () => {
+              verifyGithubWebhookSignature(body, normalizeHeader(request.headers, "x-hub-signature-256"));
+              return await dispatchGithubWebhook(
+                normalizeHeader(request.headers, "x-github-event"),
+                normalizeHeader(request.headers, "x-github-delivery"),
+                payload,
+              );
+            })()
+          : await (async () => {
+              if (!automationId) throw new Error("Automation id is required.");
+              payload.signatureHeader = request.headers["x-ade-signature"] ?? "";
+              return await dispatchLocalWebhook(automationId, payload, body);
+            })();
         updateStatus("local-webhook", {
           healthy: true,
           status: "listening",
@@ -138,7 +389,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         response.writeHead(202, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, eventId: record?.id ?? null }));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        args.logger.warn("automations.local_webhook_failed", { automationId, error: message });
+        args.logger.warn("automations.local_webhook_failed", { automationId, path: url.pathname, error: message });
         updateStatus("local-webhook", {
           healthy: false,
           status: "error",
@@ -235,6 +486,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           status: "listening",
           port,
           url: port ? `http://127.0.0.1:${port}/automation-webhooks/:automationId` : null,
+          githubUrl: port ? `http://127.0.0.1:${port}/github-webhooks` : null,
           lastError: null,
         });
       }
