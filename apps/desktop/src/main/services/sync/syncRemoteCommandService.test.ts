@@ -1158,7 +1158,7 @@ describe("createSyncRemoteCommandService", () => {
       await expect(service.execute(makePayload("prs.requestReviewers", {
         prId: "pr-1",
         reviewers: [],
-      }))).rejects.toThrow("prs.requestReviewers requires at least one reviewer.");
+      }))).rejects.toThrow("prs.requestReviewers requires at least one reviewer or team reviewer.");
     });
 
     it("prs.requestReviewers routes with valid reviewers", async () => {

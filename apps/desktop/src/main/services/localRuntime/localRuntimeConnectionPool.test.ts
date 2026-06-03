@@ -18,6 +18,7 @@ import {
   computeLocalRuntimeBuildHash,
   createLocalRuntimeOutputLogger,
   isLocalRuntimeConnectionDropped,
+  isLocalRuntimeMethodTimeout,
   isRetryableReadAction,
   LocalRuntimeConnectionPool,
   parseRuntimeServiceManagerOutput,
@@ -1882,6 +1883,21 @@ describe("local runtime action retry classification", () => {
     // Must NOT treat unrelated failures as a connection drop (would wrongly retry).
     expect(isLocalRuntimeConnectionDropped(new Error("Remote ADE service timed out waiting for method ade/actions/call (5000ms)."))).toBe(false);
     expect(isLocalRuntimeConnectionDropped(new Error("Local ADE service action failed."))).toBe(false);
+  });
+
+  it("recognizes per-call method timeouts as a transient reconnect trigger", () => {
+    // A per-call timeout tears down the shared client; the pool must treat it as
+    // transient so the next connect() reconnects and an idempotent read retries.
+    expect(
+      isLocalRuntimeMethodTimeout(
+        new Error("Remote ADE service timed out waiting for method ade/actions/call (5000ms)."),
+      ),
+    ).toBe(true);
+    // Must NOT classify a connection drop or unrelated failure as a method
+    // timeout — those are handled by isLocalRuntimeConnectionDropped, and
+    // misclassifying would retry on the wrong condition.
+    expect(isLocalRuntimeMethodTimeout(new Error("Remote ADE service connection closed."))).toBe(false);
+    expect(isLocalRuntimeMethodTimeout(new Error("Local ADE service action failed."))).toBe(false);
   });
 
   it("only retries idempotent read actions, never mutations", () => {
