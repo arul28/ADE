@@ -3554,6 +3554,7 @@ const VIRTUALIZATION_THRESHOLD = 60;
  */
 const STICK_THRESHOLD_PX = 160;
 const STICK_RESUME_THRESHOLD_PX = 24;
+const TOUCH_SCROLL_DEADBAND_PX = 2;
 
 export function shouldAbsorbProgrammaticScrollEvent({
   scrollTop,
@@ -4487,7 +4488,7 @@ function AgentChatMessageListMain({
   const handleTouchMove = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
     const nextY = event.touches[0]?.clientY ?? null;
     const previousY = lastTouchYRef.current;
-    if (nextY != null && previousY != null && nextY - previousY > 2) {
+    if (nextY != null && previousY != null && nextY - previousY > TOUCH_SCROLL_DEADBAND_PX) {
       releaseBottomStickinessForUserScroll();
     }
     lastTouchYRef.current = nextY;
