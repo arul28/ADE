@@ -50,6 +50,7 @@ import {
   deriveTurnModelState,
   reconcileMeasuredScrollTop,
   shouldAbsorbProgrammaticScrollEvent,
+  shouldStickToBottomAfterScroll,
 } from "./AgentChatMessageList";
 
 function findButtonByTextContent(matcher: RegExp): HTMLButtonElement {
@@ -694,6 +695,83 @@ describe("AgentChatMessageList transcript rendering", () => {
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: "Jump to latest message" })).toBeNull();
     });
+  });
+
+  it("does not resume bottom stickiness until the user returns to latest", () => {
+    expect(shouldStickToBottomAfterScroll({
+      distanceFromBottom: 80,
+      wasStuckToBottom: true,
+    })).toBe(true);
+    expect(shouldStickToBottomAfterScroll({
+      distanceFromBottom: 80,
+      wasStuckToBottom: false,
+    })).toBe(false);
+    expect(shouldStickToBottomAfterScroll({
+      distanceFromBottom: 12,
+      wasStuckToBottom: false,
+    })).toBe(true);
+  });
+
+  it("lets upward wheel intent break bottom-follow before streaming output grows", async () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "Start streaming",
+          deliveryState: "delivered",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "text",
+          text: "Streaming chunk",
+          itemId: "text-1",
+          turnId: "turn-1",
+        },
+      },
+    ];
+    const view = renderMessageList(events, { showStreamingIndicator: true });
+
+    const transcript = document.querySelector(".ade-chat-timeline-pane") as HTMLDivElement;
+    Object.defineProperty(transcript, "scrollHeight", { configurable: true, value: 1_000 });
+    Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 200 });
+    transcript.scrollTop = 800;
+
+    fireEvent.wheel(transcript, { deltaY: -80 });
+    transcript.scrollTop = 760;
+    fireEvent.scroll(transcript);
+
+    expect(await screen.findByRole("button", { name: "Jump to latest message" })).toBeTruthy();
+
+    Object.defineProperty(transcript, "scrollHeight", { configurable: true, value: 1_100 });
+    view.rerender(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList
+          events={[
+            ...events,
+            {
+              sessionId: "session-1",
+              timestamp: "2026-03-17T10:00:02.000Z",
+              event: {
+                type: "text",
+                text: "More streaming output",
+                itemId: "text-2",
+                turnId: "turn-1",
+              },
+            },
+          ]}
+          showStreamingIndicator
+        />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    expect(transcript.scrollTop).toBe(760);
   });
 
   it("jumps through the user message minimap", () => {
