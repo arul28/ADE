@@ -12,7 +12,7 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { laneSurfaceTint } from "../lanes/laneDesignTokens";
-import { isChatToolType } from "../../lib/sessions";
+import { canBulkDeleteSession, canBulkStopSession } from "../../lib/sessions";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 
 
@@ -277,8 +277,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     () => allSessions.filter((session) => selectedSessionIds?.has(session.id)),
     [allSessions, selectedSessionIds],
   );
-  const selectedRunningCount = selectedSessions.filter((session) => session.status === "running" && !isChatToolType(session.toolType)).length;
-  const selectedEndedCount = selectedSessions.length - selectedRunningCount;
+  const selectedRunningCount = selectedSessions.filter(canBulkStopSession).length;
+  const selectedDeletableCount = selectedSessions.filter(canBulkDeleteSession).length;
   const laneById = useMemo(() => {
     const map = new Map<string, LaneSummary>();
     for (const lane of lanes) map.set(lane.id, lane);
@@ -702,15 +702,15 @@ export const SessionListPane = React.memo(function SessionListPane({
                 </button>
               </SmartTooltip>
             ) : null}
-            {selectedEndedCount > 0 ? (
-              <SmartTooltip content={{ label: "Delete selected", description: "Permanently delete selected ended sessions." }}>
+            {selectedDeletableCount > 0 ? (
+              <SmartTooltip content={{ label: "Delete selected", description: "Permanently delete selected sessions." }}>
                 <button
                   type="button"
                   className="inline-flex h-6 items-center gap-1 rounded-md border border-red-500/25 bg-red-500/10 px-2 text-[10px] font-medium text-red-200"
                   onClick={onBulkDelete}
                 >
                   <Trash size={10} />
-                  Delete {selectedEndedCount}
+                  Delete {selectedDeletableCount}
                 </button>
               </SmartTooltip>
             ) : null}

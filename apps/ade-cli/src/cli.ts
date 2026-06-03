@@ -1428,15 +1428,17 @@ const HELP_BY_COMMAND: Record<string, string> = {
   tab switching are passive view operations; use
   "browser claim --tab <tab-id> --lane <lane-id>" to claim an already-open tab.
   ADE-launched agents should list tabs first and use only a tab/session owned
-  by their current chat. If no owned tab exists, open a fresh owned tab; plain
-  "browser open <url>" does this automatically for ADE-launched agents unless
-  --active-tab or --tab is passed.
+  by their current chat. Plain "browser open <url>" reuses that owned tab for
+  ADE-launched agents and creates one only when none exists, without revealing
+  the Browser panel unless --panel is passed. Use --new-tab only when the task
+  truly needs another tab; --active-tab and --tab stay explicit.
 
   Tabs and navigation:
     $ ade --socket browser status --text           Show active tab and tab list
     $ ade --socket browser claim --lane <lane-id>  Attribute the active browser tab to a lane
     $ ade --socket browser panel --text            Open the Work sidebar Browser panel
     $ ade --socket browser open https://example.com --text
+    $ ade --socket browser open https://example.com --panel --text
     $ ade --socket browser open localhost:5173 --new-tab --text
     $ ade --socket browser open localhost:5173 --active-tab --text
     $ ade --socket browser open https://example.com --no-panel
@@ -1489,9 +1491,11 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   Flags:
     --url <url>          URL for panel/open/new-tab. Bare localhost gets http://.
-    --new-tab           Open navigation in a new tab instead of active tab.
+    --new-tab           Always open navigation in a new tab.
     --active-tab         Navigate the active tab; aliases: --current-tab, --same-tab.
     --background         Create a new tab without activating it.
+    --panel, --show-panel
+                         Reveal the Work sidebar Browser panel for this command.
     --no-panel           Keep the Work sidebar panel hidden; alias: --hidden.
     --tab, --tab-id <id> Target tab for switch/close/open/control/capture/claim.
     --browser-session <id>
@@ -2079,6 +2083,7 @@ function readBrowserObservationArgs(args: string[]): JsonObject {
   const maxElements = readNumberOption(args, ["--max-elements", "--element-limit"]);
   return {
     ...readBrowserTabTargetArgs(args),
+    ...readToolClaimArgs(args),
     ...(keepCount == null ? {} : { keepCount }),
     ...(includeDom ? { includeDom: true } : {}),
     ...(skipDom ? { includeDom: false } : {}),
@@ -2093,7 +2098,15 @@ function readBrowserTraceArgs(args: string[]): JsonObject {
   const limit = readNumberOption(args, ["--limit", "--entries"]);
   return {
     ...readBrowserTabTargetArgs(args),
+    ...readToolClaimArgs(args),
     ...(limit == null ? {} : { limit }),
+  };
+}
+
+function readBrowserOwnedTabTargetArgs(args: string[]): JsonObject {
+  return {
+    ...readBrowserTabTargetArgs(args),
+    ...readToolClaimArgs(args),
   };
 }
 
@@ -2103,7 +2116,6 @@ function readBrowserAgentActionArgs(args: string[]): JsonObject {
   const fast = readFlag(args, ["--fast"]);
   return {
     ...readBrowserObservationArgs(args),
-    ...readToolClaimArgs(args),
     observe: readFlag(args, ["--no-observe"]) ? false : undefined,
     force: readFlag(args, ["--force"]) ? true : undefined,
     ...(leaseTtlMs == null ? {} : { leaseTtlMs }),
@@ -2163,6 +2175,33 @@ function hasBrowserClickTargetFlag(args: string[]): boolean {
 
 function readPrId(args: string[]): string | null {
   return readValue(args, ["--pr", "--pr-id"]) ?? null;
+}
+
+function parseReviewerRequestValues(args: string[]): {
+  reviewers: string[];
+  teamReviewers: string[];
+} {
+  const reviewers: string[] = [];
+  const teamReviewers: string[] = [];
+  let teamValue: string | null;
+  while ((teamValue = readValue(args, ["--team", "--team-reviewer"])) != null) {
+    for (const part of teamValue.split(",")) {
+      const slug = part.trim();
+      if (slug) teamReviewers.push(slug);
+    }
+  }
+  for (const entry of args.filter((value) => !value.startsWith("-"))) {
+    for (const part of entry.split(",")) {
+      const value = part.trim();
+      if (!value) continue;
+      if (value.toLowerCase().startsWith("team:") || value.includes("/")) {
+        teamReviewers.push(value);
+      } else {
+        reviewers.push(value);
+      }
+    }
+  }
+  return { reviewers, teamReviewers };
 }
 
 function readIntOption(
@@ -4563,6 +4602,7 @@ function buildPrPlan(args: string[]): CliPlan {
     if (mode !== "request")
       throw new CliUsageError("prs reviewers supports request.");
     const id = requireValue(prId ?? firstPositional(args), "prId");
+    const reviewerRequest = parseReviewerRequestValues(args);
     return {
       kind: "execute",
       label: "PR reviewers request",
@@ -4573,7 +4613,8 @@ function buildPrPlan(args: string[]): CliPlan {
           "requestReviewers",
           collectGenericObjectArgs(args, {
             prId: id,
-            reviewers: args.filter((entry) => !entry.startsWith("-")),
+            reviewers: reviewerRequest.reviewers,
+            teamReviewers: reviewerRequest.teamReviewers,
           }),
         ),
       ],
@@ -8161,6 +8202,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
       "--same-tab",
     ]);
     const newTab = readFlag(args, ["--new-tab"]);
+    const showPanel = readFlag(args, ["--panel", "--show-panel", "--reveal-panel"]);
     const noPanel = readFlag(args, ["--no-panel", "--hidden"]);
     const claimArgs = readToolClaimArgs(args);
     const genericArgs = collectGenericObjectArgs(args);
@@ -8168,8 +8210,9 @@ function buildBrowserPlan(args: string[]): CliPlan {
       typeof genericArgs.url === "string" ? genericArgs.url : null;
     const url = explicitUrl ?? genericUrl ?? args.join(" ");
     if (!url.trim()) throw new CliUsageError("browser open requires a URL.");
-    const autoNewOwnedTab =
+    const autoReuseOwnedTab =
       !newTab && !activeTab && !tabId && Boolean(claimArgs.laneId || claimArgs.chatSessionId);
+    const agentOwnedCall = Boolean(claimArgs.laneId || claimArgs.chatSessionId);
     return {
       kind: "execute",
       label: "browser open",
@@ -8177,8 +8220,10 @@ function buildBrowserPlan(args: string[]): CliPlan {
         actionStep("result", "built_in_browser", "navigate", {
           url,
           tabId,
-          newTab: (newTab || autoNewOwnedTab) && !activeTab ? true : undefined,
-          openPanel: !noPanel,
+          newTab: newTab && !activeTab ? true : undefined,
+          activate: agentOwnedCall && !activeTab && !showPanel ? false : undefined,
+          reuseOwnedTab: autoReuseOwnedTab ? true : undefined,
+          openPanel: showPanel || (!noPanel && !agentOwnedCall),
           ...claimArgs,
           ...genericArgs,
         }),
@@ -8187,6 +8232,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
   }
   if (sub === "new-tab" || sub === "tab" || sub === "new") {
     const background = readFlag(args, ["--background"]);
+    const showPanel = readFlag(args, ["--panel", "--show-panel", "--reveal-panel"]);
     const noPanel = readFlag(args, ["--no-panel", "--hidden"]);
     const explicitUrl = readValue(args, ["--url"]);
     const claimArgs = readToolClaimArgs(args);
@@ -8201,8 +8247,8 @@ function buildBrowserPlan(args: string[]): CliPlan {
       steps: [
         actionStep("result", "built_in_browser", "createTab", {
           url,
-          activate: background ? false : undefined,
-          openPanel: !noPanel,
+          activate: background || (Boolean(claimArgs.laneId || claimArgs.chatSessionId) && !showPanel) ? false : undefined,
+          openPanel: showPanel || (!noPanel && !claimArgs.laneId && !claimArgs.chatSessionId),
           ...claimArgs,
           ...genericArgs,
         }),
@@ -8510,7 +8556,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
           "result",
           "built_in_browser",
           "reload",
-          collectGenericObjectArgs(args, readBrowserTabTargetArgs(args)),
+          collectGenericObjectArgs(args, readBrowserOwnedTabTargetArgs(args)),
         ),
       ],
     };
@@ -8523,7 +8569,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
           "result",
           "built_in_browser",
           "goBack",
-          collectGenericObjectArgs(args, readBrowserTabTargetArgs(args)),
+          collectGenericObjectArgs(args, readBrowserOwnedTabTargetArgs(args)),
         ),
       ],
     };
@@ -8536,7 +8582,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
           "result",
           "built_in_browser",
           "goForward",
-          collectGenericObjectArgs(args, readBrowserTabTargetArgs(args)),
+          collectGenericObjectArgs(args, readBrowserOwnedTabTargetArgs(args)),
         ),
       ],
     };
@@ -8549,7 +8595,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
           "result",
           "built_in_browser",
           "stop",
-          collectGenericObjectArgs(args, readBrowserTabTargetArgs(args)),
+          collectGenericObjectArgs(args, readBrowserOwnedTabTargetArgs(args)),
         ),
       ],
     };
@@ -8562,14 +8608,14 @@ function buildBrowserPlan(args: string[]): CliPlan {
           "result",
           "built_in_browser",
           "captureScreenshot",
-          collectGenericObjectArgs(args, readBrowserTabTargetArgs(args)),
+          collectGenericObjectArgs(args, readBrowserOwnedTabTargetArgs(args)),
         ),
       ],
     };
   if (sub === "select" || sub === "select-point" || sub === "point") {
     const x = readNumberOption(args, ["--x"]);
     const y = readNumberOption(args, ["--y"]);
-    const targetArgs = readBrowserTabTargetArgs(args);
+    const targetArgs = readBrowserOwnedTabTargetArgs(args);
     if (x == null || y == null)
       throw new CliUsageError("browser select requires --x and --y.");
     return {
@@ -12725,7 +12771,12 @@ async function runServe(
             };
           }
           try {
-            const scope = await scopeRegistry.switchSyncHost(record.projectId);
+            // Keep the current phone socket alive until project_switch_result is
+            // flushed; completion retires inactive hosts after the phone has the
+            // new project's connection bundle.
+            const scope = await scopeRegistry.switchSyncHost(record.projectId, {
+              deactivatePreviousHost: false,
+            });
             const syncService = scope?.runtime.syncService ?? null;
             if (!scope || !syncService) {
               return {
@@ -12796,6 +12847,11 @@ async function runServe(
             // The mobile handoff already succeeded; a stale registry touch should
             // not fail the sync protocol completion.
           }
+          // Retire by the registry's current active host (defaults to
+          // this.syncHostProjectId) rather than this request's projectId, so an
+          // interleaved later switch is not mistakenly disabled by a stale
+          // completion for an earlier switch.
+          await scopeRegistry.deactivateInactiveSyncHosts();
         },
       },
     },

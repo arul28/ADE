@@ -2077,7 +2077,7 @@ describe("prService.createLaneFromPrBranch", () => {
     );
   });
 
-  it("blocks fork PR branches before trying to import from origin", async () => {
+  it("preflights fork PR branches by fetching the GitHub PR head ref", async () => {
     const githubService = makeBranchPrGithubService({
       apiRequest: vi.fn(async (args: { path: string }) => {
         if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls/404`) {
@@ -2106,18 +2106,39 @@ describe("prService.createLaneFromPrBranch", () => {
     const db = makeMockDb();
     installPullRequestRowStore(db);
     const { service } = buildService({ db, githubService, laneService });
+    mockGit.runGit.mockImplementation(async (args: unknown[]) => {
+      const command = Array.isArray(args) ? args[0] : null;
+      if (command === "fetch" && Array.isArray(args) && args[2] === "+refs/pull/404/head:refs/remotes/ade-pr-404/feature/unmapped") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (command === "rev-parse" && Array.isArray(args) && args[1] === "--verify" && args[2] === "refs/remotes/ade-pr-404/feature/unmapped") {
+        return { exitCode: 0, stdout: "head-sha-unmapped\n", stderr: "" };
+      }
+      if (command === "rev-parse" && Array.isArray(args) && args[1] === "--verify" && args[2] === "refs/heads/feature/unmapped") {
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
+      if (command === "worktree") return { exitCode: 0, stdout: "", stderr: "" };
+      return { exitCode: 0, stdout: "origin/my-feature", stderr: "" };
+    });
 
     const result = await serviceWithPrBranchActions(service).preflightCreateLaneFromPrBranch({
       prUrlOrNumber: prUrl,
     });
 
-    expect(preflightDisposition(result.preflight)).toBe("blocked");
-    expect(preflightConflicts(result.preflight)).toEqual([
-      expect.objectContaining({ code: "fork_unavailable" }),
-    ]);
-    expect(JSON.stringify(preflightConflicts(result.preflight))).toMatch(/fork-owner|fork-repo|cannot be imported/i);
+    expect(preflightDisposition(result.preflight)).toBe("ready");
+    expect(preflightConflicts(result.preflight)).toEqual([]);
+    expect(result.preflight).toEqual(expect.objectContaining({
+      headRepoOwner: "fork-owner",
+      headRepoName: "fork-repo",
+      importBranchRef: "ade-pr-404/feature/unmapped",
+      remoteBranch: "refs/pull/404/head (fork-owner/fork-repo:feature/unmapped)",
+    }));
     expect(result.lane ?? null).toBeNull();
     expect(laneService.importBranch).not.toHaveBeenCalled();
+    expect(mockGit.runGit.mock.calls).toContainEqual([
+      ["fetch", "origin", "+refs/pull/404/head:refs/remotes/ade-pr-404/feature/unmapped"],
+      expect.objectContaining({ cwd: "/tmp/test-project", timeoutMs: 60_000 }),
+    ]);
     expect(mockGit.runGit.mock.calls.some(([args]) => Array.isArray(args) && args[0] === "ls-remote")).toBe(false);
   });
 
@@ -2156,10 +2177,93 @@ describe("prService.createLaneFromPrBranch", () => {
     expect(preflightConflicts(result.preflight)).toEqual([
       expect.objectContaining({ code: "fork_unavailable" }),
     ]);
-    expect(JSON.stringify(preflightConflicts(result.preflight))).toMatch(/test-owner|unknown repository|cannot be imported/i);
+    expect(JSON.stringify(preflightConflicts(result.preflight))).toMatch(/fork|head repository/i);
     expect(result.lane ?? null).toBeNull();
     expect(laneService.importBranch).not.toHaveBeenCalled();
-    expect(mockGit.runGit.mock.calls.some(([args]) => Array.isArray(args) && args[0] === "ls-remote")).toBe(false);
+    expect(mockGit.runGit.mock.calls.some(([args]) => Array.isArray(args) && args[0] === "fetch")).toBe(false);
+  });
+
+  it("creates a lane from a fork PR head ref and maps the PR", async () => {
+    const importedLane = makeFakeLane({
+      id: "lane-fork-imported",
+      name: "Fork branch PR",
+      branchRef: "refs/heads/feature/unmapped",
+      baseRef: "refs/heads/main",
+      worktreePath: "/tmp/test-project/.ade/worktrees/fork-branch",
+      parentLaneId: null,
+    });
+    let branchImported = false;
+    const laneService = {
+      ...makeLaneService(),
+      list: vi.fn(async () => branchImported ? [primaryLane, importedLane] : [primaryLane]),
+      importBranch: vi.fn(async () => {
+        branchImported = true;
+        return importedLane;
+      }),
+    } as any;
+    const githubService = makeBranchPrGithubService({
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls/404`) {
+          return {
+            data: makeUnmappedBranchPull({
+              title: "Fork branch PR",
+              head: {
+                ref: "feature/unmapped",
+                sha: "head-sha-unmapped",
+                user: { login: "fork-owner" },
+                repo: {
+                  owner: { login: "fork-owner" },
+                  name: "fork-repo",
+                },
+              },
+            }),
+            response: { status: 200, headers: new Headers() },
+          };
+        }
+        return { data: [], response: { status: 200, headers: new Headers() } };
+      }),
+    });
+    const db = makeMockDb();
+    installPullRequestRowStore(db);
+    const { service } = buildService({ db, githubService, laneService });
+    mockGit.runGit.mockImplementation(async (args: unknown[]) => {
+      const command = Array.isArray(args) ? args[0] : null;
+      if (command === "fetch" && Array.isArray(args) && args[2] === "+refs/pull/404/head:refs/remotes/ade-pr-404/feature/unmapped") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (command === "rev-parse" && Array.isArray(args) && args[1] === "--verify" && args[2] === "refs/remotes/ade-pr-404/feature/unmapped") {
+        return { exitCode: 0, stdout: "head-sha-unmapped\n", stderr: "" };
+      }
+      if (command === "rev-parse" && Array.isArray(args) && args[1] === "--verify" && args[2] === "refs/heads/feature/unmapped") {
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
+      if (command === "rev-parse" && Array.isArray(args) && args[1] === "HEAD") {
+        return { exitCode: 0, stdout: "head-sha-unmapped\n", stderr: "" };
+      }
+      if (command === "worktree") return { exitCode: 0, stdout: "", stderr: "" };
+      return { exitCode: 0, stdout: "origin/my-feature", stderr: "" };
+    });
+
+    const result = await serviceWithPrBranchActions(service).createLaneFromPrBranch({
+      prUrlOrNumber: prUrl,
+      laneName: "Fork branch PR",
+    });
+
+    expect(laneService.importBranch).toHaveBeenCalledWith(expect.objectContaining({
+      branchRef: "ade-pr-404/feature/unmapped",
+      name: "Fork branch PR",
+      baseBranch: "main",
+    }));
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("insert into pull_requests("),
+      expect.arrayContaining(["lane-fork-imported", REPO.owner, REPO.name, 404, "Fork branch PR", "open", "main", "feature/unmapped"]),
+    );
+    expect(result.preflight).toEqual(expect.objectContaining({
+      importBranchRef: "ade-pr-404/feature/unmapped",
+      headRepoOwner: "fork-owner",
+      headRepoName: "fork-repo",
+    }));
+    expect(result.lane.id).toBe("lane-fork-imported");
   });
 
   it("creates a lane from the PR branch, maps the PR to that lane, and returns lane/pr summaries", async () => {
@@ -2476,6 +2580,52 @@ describe("prService.createLaneFromPrBranch", () => {
     expect(JSON.stringify(preflightConflicts(result.preflight))).toMatch(/branch owner|feature\/unmapped|owned|already/i);
     expect(result.lane ?? null).toBeNull();
     expect(laneService.importBranch).not.toHaveBeenCalled();
+  });
+});
+
+describe("prService.requestReviewers", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("requests user reviewers and team reviewers in one GitHub request", async () => {
+    const apiRequest = vi.fn(async (args: { method?: string; path: string }) => {
+      if (args.method === "POST" && args.path.endsWith("/requested_reviewers")) {
+        return { data: {}, response: { status: 201, headers: new Headers() } };
+      }
+      if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls/90`) {
+        return {
+          data: makeGitHubPull({
+            number: 90,
+            html_url: "https://github.com/test-owner/test-repo/pull/90",
+            title: "Linked PR",
+            base: { ref: "main" },
+            head: { ref: "my-feature" },
+          }),
+          response: { status: 200, headers: new Headers() },
+        };
+      }
+      return { data: [], response: { status: 200, headers: new Headers() } };
+    });
+    const githubService = makeGithubService({ apiRequest });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [makePrRow()]);
+    const { service } = buildService({ db, githubService });
+
+    await service.requestReviewers({
+      prId: "pr-row-1",
+      reviewers: ["@alice", "alice"],
+      teamReviewers: ["team:platform", "acme/qa"],
+    });
+
+    expect(apiRequest).toHaveBeenCalledWith(expect.objectContaining({
+      method: "POST",
+      path: `/repos/${REPO.owner}/${REPO.name}/pulls/90/requested_reviewers`,
+      body: {
+        reviewers: ["alice"],
+        team_reviewers: ["platform", "qa"],
+      },
+    }));
   });
 });
 

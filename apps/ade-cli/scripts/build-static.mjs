@@ -276,6 +276,10 @@ async function main() {
     nativeArchivePath = path.join(args.outDir, `ade-${args.target}.native.tar.gz`);
   }
 
+  if (process.env.ADE_KEEP_STATIC_RUNTIME_STAGING !== "1") {
+    await fs.rm(workDir, { recursive: true, force: true });
+  }
+
   process.stdout.write(`${JSON.stringify({
     target: args.target,
     binaryPath,

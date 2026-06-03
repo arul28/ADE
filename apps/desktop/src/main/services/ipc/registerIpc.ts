@@ -1881,6 +1881,7 @@ export function registerIpc({
         // Perf telemetry is best-effort and must not change IPC behavior.
       }
     }
+    if (!traceIpcInvokes) return;
     const key = `${input.winId ?? "none"}:${input.channel}`;
     const existing = ipcInvokeAggregates.get(key) ?? {
       channel: input.channel,
@@ -1904,7 +1905,7 @@ export function registerIpc({
     }
   };
 
-  if (traceIpcInvokes && !tracedIpcMain.__adeTraceWrapped) {
+  if (!tracedIpcMain.__adeTraceWrapped) {
     const originalHandle = tracedIpcMain.handle.bind(ipcMain);
     tracedIpcMain.__adeOriginalHandle = originalHandle;
     tracedIpcMain.handle = ((channel, listener) =>
@@ -1912,9 +1913,9 @@ export function registerIpc({
         const callId = ++ipcInvokeSeq;
         const startedAt = Date.now();
         const winId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
-        const logger = getTraceLogger();
+        const traceLogger = traceIpcInvokes ? getTraceLogger() : null;
         if (traceEveryIpcInvoke) {
-          logger.info("ipc.invoke.begin", {
+          traceLogger?.info("ipc.invoke.begin", {
             callId,
             channel,
             winId,
@@ -1930,20 +1931,24 @@ export function registerIpc({
         }
         const IPC_TIMEOUT_MS = ipcInvokeTimeoutMs(channel, args);
         let timeoutHandle: NodeJS.Timeout | null = null;
+        let didTimeout = false;
         try {
           const result = await Promise.race([
             listener(event, ...args),
             new Promise<never>((_, reject) => {
               timeoutHandle = setTimeout(
-                () => reject(new Error(`IPC handler for '${channel}' timed out after ${IPC_TIMEOUT_MS}ms (callId=${callId})`)),
+                () => {
+                  didTimeout = true;
+                  reject(new Error(`IPC handler for '${channel}' timed out after ${IPC_TIMEOUT_MS}ms (callId=${callId})`));
+                },
                 IPC_TIMEOUT_MS,
               );
             }),
           ]);
           const durationMs = Date.now() - startedAt;
           recordIpcInvokeAggregate({ channel, winId, durationMs, failed: false });
-          if (traceEveryIpcInvoke || durationMs >= 120) {
-            logger.info("ipc.invoke.done", {
+          if (traceIpcInvokes && (traceEveryIpcInvoke || durationMs >= 120)) {
+            traceLogger?.info("ipc.invoke.done", {
               callId,
               channel,
               winId,
@@ -1955,13 +1960,16 @@ export function registerIpc({
         } catch (error) {
           const durationMs = Date.now() - startedAt;
           recordIpcInvokeAggregate({ channel, winId, durationMs, failed: true });
-          logger.warn("ipc.invoke.failed", {
-            callId,
-            channel,
-            winId,
-            durationMs,
-            err: getErrorMessage(error),
-          });
+          if (traceIpcInvokes || didTimeout) {
+            const logger = traceLogger ?? getTraceLogger();
+            logger.warn("ipc.invoke.failed", {
+              callId,
+              channel,
+              winId,
+              durationMs,
+              err: getErrorMessage(error),
+            });
+          }
           throw error;
         } finally {
           if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -8399,23 +8407,25 @@ export function registerIpc({
   );
 
   ipcMain.handle(
-    IPC.githubPublishCurrentProject,
-    async (_event, arg: PublishProjectInput): Promise<PublishProjectResult> => {
-      const name = typeof arg?.name === "string" ? arg.name.trim() : "";
-      const description = typeof arg?.description === "string" ? arg.description.trim() : undefined;
-      const isPrivate = arg?.isPrivate !== false;
-      if (!name) throw new Error("Repository name is required.");
+	    IPC.githubPublishCurrentProject,
+	    async (_event, arg: PublishProjectInput): Promise<PublishProjectResult> => {
+	      const owner = typeof arg?.owner === "string" ? arg.owner.trim() : undefined;
+	      const name = typeof arg?.name === "string" ? arg.name.trim() : "";
+	      const description = typeof arg?.description === "string" ? arg.description.trim() : undefined;
+	      const isPrivate = arg?.isPrivate !== false;
+	      if (!name) throw new Error("Repository name is required.");
       const ctx = getCtx();
       const projectRoot = ctx.project?.rootPath ?? "";
       if (!projectRoot) {
         throw new Error("No active project to publish.");
       }
-      try {
-        return await ctx.githubService.publishCurrentProject({
-          name,
-          ...(description ? { description } : {}),
-          isPrivate,
-        });
+	      try {
+	        return await ctx.githubService.publishCurrentProject({
+	          ...(owner ? { owner } : {}),
+	          name,
+	          ...(description ? { description } : {}),
+	          isPrivate,
+	        });
       } catch (error) {
         return surfaceCodedError(error);
       }

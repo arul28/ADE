@@ -110,9 +110,10 @@ import type {
   PrActionJob,
   PrActionStep,
   PrActivityEvent,
-  PrLabel,
-  PrUser,
-  PrReviewThread,
+	  PrLabel,
+	  PrUser,
+	  PrTeam,
+	  PrReviewThread,
   PrReviewThreadComment,
   ReplyToPrReviewThreadArgs,
   ResolvePrReviewThreadArgs,
@@ -887,6 +888,14 @@ function toUser(raw: any): PrUser {
   return {
     login: asString(raw?.login) || "",
     avatarUrl: asString(raw?.avatar_url) || null
+  };
+}
+
+function toTeam(raw: any): PrTeam {
+  return {
+    name: asString(raw?.name) || asString(raw?.slug) || "",
+    slug: asString(raw?.slug) || asString(raw?.name) || "",
+    htmlUrl: asString(raw?.html_url) || null,
   };
 }
 
@@ -2432,7 +2441,6 @@ export function createPrService({
   const resolveConfiguredRemoteBranch = async (args: {
     headBranch: string;
     headSha: string | null;
-    sameRepoHead: boolean;
   }): Promise<CreateLaneFromPrBranchBlock | null> => {
     const remoteRef = `origin/${args.headBranch}`;
     const lsRemote = await runGit(["ls-remote", "--heads", "origin", args.headBranch], {
@@ -2457,23 +2465,115 @@ export function createPrService({
 
     if (!remoteSha) {
       return createLaneFromPrBranchBlock(
-        args.sameRepoHead ? "remote_branch_missing" : "fork_unavailable",
-        args.sameRepoHead
-          ? `Remote branch '${remoteRef}' was not found. It may have been deleted.`
-          : `Fork PR branch '${args.headBranch}' is not fetchable from the configured remote.`,
+        "remote_branch_missing",
+        `Remote branch '${remoteRef}' was not found. It may have been deleted.`,
       );
     }
 
     if (args.headSha && remoteSha !== args.headSha) {
       return createLaneFromPrBranchBlock(
-        args.sameRepoHead ? "remote_branch_mismatch" : "fork_unavailable",
-        args.sameRepoHead
-          ? `Remote branch '${remoteRef}' does not match the current PR head. Refresh the branch and try again.`
-          : `Fork PR branch '${args.headBranch}' does not match a branch on the configured remote.`,
+        "remote_branch_mismatch",
+        `Remote branch '${remoteRef}' does not match the current PR head. Refresh the branch and try again.`,
       );
     }
 
     return null;
+  };
+
+  const prHeadImportRef = (githubPrNumber: number, headBranch: string): string =>
+    `ade-pr-${githubPrNumber}/${headBranch}`;
+
+  const fetchPrHeadImportRef = async (args: {
+    repo: GitHubRepoRef;
+    githubPrNumber: number;
+    headBranch: string;
+    headSha: string | null;
+    headRepoOwner: string | null;
+    headRepoName: string | null;
+  }): Promise<CreateLaneFromPrBranchBlock | null> => {
+    if (!args.headRepoOwner || !args.headRepoName) {
+      return createLaneFromPrBranchBlock(
+        "fork_unavailable",
+        `PR #${args.githubPrNumber} is from a fork, but GitHub did not include a fetchable head repository.`,
+      );
+    }
+
+    const localRemoteRef = `refs/remotes/${prHeadImportRef(args.githubPrNumber, args.headBranch)}`;
+    const fetch = await runGit([
+      "fetch",
+      "origin",
+      `+refs/pull/${args.githubPrNumber}/head:${localRemoteRef}`,
+    ], {
+      cwd: projectRoot,
+      timeoutMs: 60_000,
+    });
+    if (fetch.exitCode !== 0) {
+      const detail = (fetch.stderr || fetch.stdout).trim();
+      return createLaneFromPrBranchBlock(
+        "fork_unavailable",
+        `Fork PR branch '${args.headRepoOwner}/${args.headRepoName}:${args.headBranch}' could not be fetched from ${args.repo.owner}/${args.repo.name}${detail ? `: ${detail}` : "."}`,
+      );
+    }
+
+    const fetchedHead = await runGit(["rev-parse", "--verify", localRemoteRef], {
+      cwd: projectRoot,
+      timeoutMs: 8_000,
+    });
+    const fetchedSha = fetchedHead.exitCode === 0 ? fetchedHead.stdout.trim() : "";
+    if (!fetchedSha) {
+      return createLaneFromPrBranchBlock(
+        "fork_unavailable",
+        `Fork PR branch '${args.headRepoOwner}/${args.headRepoName}:${args.headBranch}' was fetched, but ADE could not resolve the local PR head ref.`,
+      );
+    }
+    if (args.headSha && fetchedSha !== args.headSha) {
+      return createLaneFromPrBranchBlock(
+        "fork_unavailable",
+        `Fork PR branch '${args.headRepoOwner}/${args.headRepoName}:${args.headBranch}' fetched ${fetchedSha}, but PR #${args.githubPrNumber} is at ${args.headSha}. Refresh the PR and try again.`,
+      );
+    }
+    return null;
+  };
+
+  const normalizeReviewerLogin = (value: unknown): string => {
+    const login = asString(value).trim();
+    return login.startsWith("@") ? login.slice(1).trim() : login;
+  };
+
+  const normalizeTeamReviewerSlug = (value: unknown): string => {
+    let slug = asString(value).trim();
+    if (slug.toLowerCase().startsWith("team:")) slug = slug.slice("team:".length).trim();
+    if (slug.startsWith("@")) slug = slug.slice(1).trim();
+    if (slug.includes("/")) {
+      const parts = slug.split("/").map((part) => part.trim()).filter(Boolean);
+      slug = parts[parts.length - 1] ?? slug;
+    }
+    return slug;
+  };
+
+  const uniqueNonEmpty = (values: string[]): string[] => {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const value of values) {
+      const key = value.toLowerCase();
+      if (!value || seen.has(key)) continue;
+      seen.add(key);
+      result.push(value);
+    }
+    return result;
+  };
+
+  const buildReviewerRequestBody = (args: {
+    reviewers?: string[] | null;
+    teamReviewers?: string[] | null;
+  }): { reviewers?: string[]; team_reviewers?: string[] } | null => {
+    const reviewers = uniqueNonEmpty((args.reviewers ?? []).map(normalizeReviewerLogin));
+    const teamReviewers = uniqueNonEmpty((args.teamReviewers ?? []).map(normalizeTeamReviewerSlug));
+    if (!reviewers.length && !teamReviewers.length) return null;
+    return {
+      ...(reviewers.length ? { reviewers } : {}),
+      ...(teamReviewers.length ? { team_reviewers: teamReviewers } : {}),
+    };
   };
 
   const buildCreateLaneFromPrBranchPreflight = async (
@@ -2531,7 +2631,15 @@ export function createPrService({
     const baseBranch = asString(pr?.base?.ref) || null;
     const headSha = asString(pr?.head?.sha) || null;
     const targetLaneName = asString(args.laneName).trim() || title || headBranch || `PR #${githubPrNumber}`;
-    const importBranchRef = headBranch ? `origin/${headBranch}` : null;
+    const sameRepoHead = rawPullHasSameRepoHead(pr, repo);
+    const importBranchRef = headBranch
+      ? sameRepoHead ? `origin/${headBranch}` : prHeadImportRef(githubPrNumber, headBranch)
+      : null;
+    const remoteBranch = headBranch
+      ? sameRepoHead
+        ? `origin/${headBranch}`
+        : `refs/pull/${githubPrNumber}/head (${headRepoOwner ?? "unknown"}/${headRepoName ?? "unknown"}:${headBranch})`
+      : null;
 
     const finish = (block: CreateLaneFromPrBranchBlock | null): CreateLaneFromPrBranchPreflight => ({
       repoOwner: repo.owner,
@@ -2543,7 +2651,7 @@ export function createPrService({
       headSha,
       headRepoOwner,
       headRepoName,
-      remoteBranch: importBranchRef,
+      remoteBranch,
       importBranchRef,
       targetLaneName,
       baseBranch,
@@ -2592,14 +2700,16 @@ export function createPrService({
       ));
     }
 
-    const sameRepoHead = rawPullHasSameRepoHead(pr, repo);
-    if (!sameRepoHead) {
-      return finish(createLaneFromPrBranchBlock(
-        "fork_unavailable",
-        `Fork PR branch '${headRepoOwner ?? "unknown"}/${headRepoName ?? "unknown"}:${headBranch}' cannot be imported from the configured origin remote. Fetch the fork branch locally or add fork-remote import support before creating a lane.`,
-      ));
-    }
-    const remoteBlock = await resolveConfiguredRemoteBranch({ headBranch, headSha, sameRepoHead });
+    const remoteBlock = sameRepoHead
+      ? await resolveConfiguredRemoteBranch({ headBranch, headSha })
+      : await fetchPrHeadImportRef({
+          repo,
+          githubPrNumber,
+          headBranch,
+          headSha,
+          headRepoOwner,
+          headRepoName,
+        });
     if (remoteBlock) return finish(remoteBlock);
     const localBranchBlock = await resolveLocalBranchForPrHead({ headBranch, headSha, githubPrNumber });
     if (localBranchBlock) return finish(localBranchBlock);
@@ -2635,16 +2745,19 @@ export function createPrService({
       Boolean(preflight.headRepoOwner && preflight.headRepoName)
       && preflight.headRepoOwner?.toLowerCase() === preflight.repoOwner.toLowerCase()
       && preflight.headRepoName?.toLowerCase() === preflight.repoName.toLowerCase();
-    if (!sameRepoHead) {
-      throw new Error(
-        `Fork PR branch '${preflight.headRepoOwner ?? "unknown"}/${preflight.headRepoName ?? "unknown"}:${preflight.headBranch}' cannot be imported from the configured origin remote. Fetch the fork branch locally or add fork-remote import support before creating a lane.`,
-      );
-    }
-    const remoteBlock = await resolveConfiguredRemoteBranch({
-      headBranch: preflight.headBranch,
-      headSha: preflight.headSha,
-      sameRepoHead,
-    });
+    const remoteBlock = sameRepoHead
+      ? await resolveConfiguredRemoteBranch({
+          headBranch: preflight.headBranch,
+          headSha: preflight.headSha,
+        })
+      : await fetchPrHeadImportRef({
+          repo: { owner: preflight.repoOwner, name: preflight.repoName },
+          githubPrNumber: preflight.githubPrNumber,
+          headBranch: preflight.headBranch,
+          headSha: preflight.headSha,
+          headRepoOwner: preflight.headRepoOwner,
+          headRepoName: preflight.headRepoName,
+        });
     if (remoteBlock) {
       throw new Error(remoteBlock.message);
     }
@@ -3405,6 +3518,7 @@ export function createPrService({
       labels: Array.isArray(data?.labels) ? data.labels.map(toLabel) : [],
       assignees: Array.isArray(data?.assignees) ? data.assignees.map(toUser) : [],
       requestedReviewers: Array.isArray(data?.requested_reviewers) ? data.requested_reviewers.map(toUser) : [],
+      requestedTeams: Array.isArray(data?.requested_teams) ? data.requested_teams.map(toTeam) : [],
       author: toUser(data?.user),
       isDraft: Boolean(data?.draft),
       milestone: asString(data?.milestone?.title) || null,
@@ -4012,11 +4126,12 @@ export function createPrService({
       });
     }
 
-    if (args.reviewers?.length) {
+    const reviewerRequestBody = buildReviewerRequestBody(args);
+    if (reviewerRequestBody) {
       await githubService.apiRequest({
         method: "POST",
         path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}/requested_reviewers`,
-        body: { reviewers: args.reviewers }
+        body: reviewerRequestBody
       }).catch((error) => {
         logger.warn("prs.reviewers_failed", { prNumber, error: error instanceof Error ? error.message : String(error) });
       });
@@ -8171,10 +8286,12 @@ export function createPrService({
     async requestReviewers(args: RequestPrReviewersArgs): Promise<void> {
       const row = requireRow(args.prId);
       const repo = repoFromRow(row);
+      const body = buildReviewerRequestBody(args);
+      if (!body) throw new Error("At least one reviewer or team reviewer is required.");
       await githubService.apiRequest({
         method: "POST",
         path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/requested_reviewers`,
-        body: { reviewers: args.reviewers }
+        body
       });
       markHotRefresh([args.prId]);
       await refreshOne(args.prId);

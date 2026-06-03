@@ -222,18 +222,6 @@ async function seedFromAppBundle(x64AppPath) {
   );
   await copyFromAppBundle(
     x64AppPath,
-    "Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-darwin-x64",
-    "node_modules/@img/sharp-darwin-x64",
-    "sharp x64 package",
-  );
-  await copyFromAppBundle(
-    x64AppPath,
-    "Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-x64",
-    "node_modules/@img/sharp-libvips-darwin-x64",
-    "sharp libvips x64 package",
-  );
-  await copyFromAppBundle(
-    x64AppPath,
     "Contents/Resources/app.asar.unpacked/vendor/crsqlite/darwin-x64",
     "vendor/crsqlite/darwin-x64",
     "crsqlite x64 payload",
@@ -254,18 +242,6 @@ async function seedFromLockfileAndPinnedArtifacts() {
     "node_modules/opencode-darwin-x64",
     "OpenCode x64 package",
   );
-  await seedPackageFromResolvedUrl(
-    packageLock,
-    "node_modules/@img/sharp-darwin-x64",
-    "node_modules/@img/sharp-darwin-x64",
-    "sharp x64 package",
-  );
-  await seedPackageFromResolvedUrl(
-    packageLock,
-    "node_modules/@img/sharp-libvips-darwin-x64",
-    "node_modules/@img/sharp-libvips-darwin-x64",
-    "sharp libvips x64 package",
-  );
   await seedCrsqliteDarwinX64();
 }
 
@@ -278,7 +254,7 @@ async function assertUniversalInputsReady() {
       "codex-darwin-x64",
       "vendor",
       "x86_64-apple-darwin",
-      "codex",
+      "bin",
       "codex",
     ),
     "x64 Codex CLI binary",
@@ -286,14 +262,6 @@ async function assertUniversalInputsReady() {
   await assertPathExists(
     path.join(appDir, "node_modules", "opencode-darwin-x64", "bin", "opencode"),
     "x64 OpenCode CLI binary",
-  );
-  await assertPathExists(
-    path.join(appDir, "node_modules", "@img", "sharp-darwin-x64", "lib", "sharp-darwin-x64.node"),
-    "x64 sharp native module",
-  );
-  await assertPathExists(
-    path.join(appDir, "node_modules", "@img", "sharp-libvips-darwin-x64", "lib", "libvips-cpp.8.17.3.dylib"),
-    "x64 sharp libvips runtime",
   );
   await assertPathExists(
     path.join(appDir, "vendor", "crsqlite", "darwin-x64", "crsqlite.dylib"),

@@ -243,7 +243,14 @@
         "from": "resources/runtime",
         "to": "runtime",
         "filter": [
-          "**/*"
+          "ade-darwin-arm64",
+          "ade-darwin-arm64.native.tar.gz",
+          "ade-darwin-x64",
+          "ade-darwin-x64.native.tar.gz",
+          "ade-linux-arm64",
+          "ade-linux-arm64.native.tar.gz",
+          "ade-linux-x64",
+          "ade-linux-x64.native.tar.gz"
         ]
       },
       {
@@ -297,7 +304,7 @@
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "notarize": true,
       "mergeASARs": false,
-      "x64ArchFiles": "Contents/Resources/app.asar.unpacked/{node_modules,vendor}/**/*"
+      "x64ArchFiles": "Contents/Resources/{app.asar.unpacked/node_modules,app.asar.unpacked/vendor,runtime}/**/*"
     }
   }
 }

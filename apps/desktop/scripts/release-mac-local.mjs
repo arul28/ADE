@@ -9,7 +9,9 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const appDir = path.resolve(scriptDir, "..");
 const repoRoot = path.resolve(appDir, "..", "..");
 const packageJsonPath = path.join(appDir, "package.json");
+const adeCliPackageJsonPath = path.join(repoRoot, "apps", "ade-cli", "package.json");
 const originalPackageJson = await fs.readFile(packageJsonPath, "utf8");
+const originalAdeCliPackageJson = await fs.readFile(adeCliPackageJsonPath, "utf8");
 const packageJson = JSON.parse(originalPackageJson);
 const authorName =
   typeof packageJson.author === "string" ? packageJson.author : packageJson.author?.name ?? null;
@@ -198,21 +200,11 @@ try {
       path.join(
         appDir,
         "node_modules",
-        "@img",
-        "sharp-darwin-x64",
-        "lib",
-        "sharp-darwin-x64.node",
-      ),
-    )) &&
-    (await pathExists(
-      path.join(
-        appDir,
-        "node_modules",
         "@openai",
         "codex-darwin-x64",
         "vendor",
         "x86_64-apple-darwin",
-        "codex",
+        "bin",
         "codex",
       ),
     )) &&
@@ -244,6 +236,7 @@ try {
   failure = error;
 } finally {
   await fs.writeFile(packageJsonPath, originalPackageJson);
+  await fs.writeFile(adeCliPackageJsonPath, originalAdeCliPackageJson);
 
   if (temporaryAppleKeyDir) {
     rmSync(temporaryAppleKeyDir, { recursive: true, force: true });

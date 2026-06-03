@@ -1980,8 +1980,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }, requestId);
       return;
     }
+    let result: SyncProjectSwitchResultPayload | null = null;
     try {
-      const result = await args.projectCatalogProvider.prepareProjectConnection(payload ?? {});
+      result = await args.projectCatalogProvider.prepareProjectConnection(payload ?? {});
       await sendAndWait(peer.ws, "project_switch_result", result, requestId);
       try {
         await args.projectCatalogProvider.completeProjectConnection?.(payload ?? {}, result);
@@ -1993,6 +1994,22 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       args.logger.warn("sync_host.project_switch_failed", { message });
+      // prepareProjectConnection activates the new host but leaves the previous
+      // one running (switchSyncHost is called with deactivatePreviousHost:false).
+      // If preparing succeeded but delivering the result failed (e.g. the phone
+      // disconnected after the new host was activated), still retire inactive
+      // hosts so the previous host is not leaked. Completion is idempotent —
+      // deactivateInactiveSyncHosts only disables hosts other than the active
+      // one — so running it here is safe.
+      if (result) {
+        try {
+          await args.projectCatalogProvider.completeProjectConnection?.(payload ?? {}, result);
+        } catch (completionError) {
+          args.logger.warn("sync_host.project_switch_completion_failed", {
+            message: completionError instanceof Error ? completionError.message : String(completionError),
+          });
+        }
+      }
       sendRequired(peer, "project_switch_result", {
         ok: false,
         message,

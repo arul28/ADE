@@ -824,7 +824,7 @@ describe("GitHubTab", () => {
     });
     expect(await screen.findByRole("dialog", { name: /create lane from pr branch/i })).toBeTruthy();
     expect(screen.getByText(/#200 Unlinked PR/)).toBeTruthy();
-    expect(screen.getByText("origin/feature/open")).toBeTruthy();
+    expect(screen.getAllByText("origin/feature/open").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Unlinked PR").length).toBeGreaterThan(0);
     expect(screen.getAllByText("main").length).toBeGreaterThan(0);
   });
@@ -909,7 +909,7 @@ describe("GitHubTab", () => {
 
     expect(await screen.findByText(/#201 Second PR/)).toBeTruthy();
     expect(screen.queryByText(/#200 First PR/)).toBeNull();
-    expect(screen.getByText("origin/feature/second")).toBeTruthy();
+    expect(screen.getAllByText("origin/feature/second").length).toBeGreaterThan(0);
   });
 
   it("shows blocking preflight conflicts before creating a lane", async () => {

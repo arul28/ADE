@@ -440,8 +440,12 @@ function WelcomeScreen() {
         overflow: "hidden",
       }}
     >
+      {/* Top spacer: pushes the logo title down to ~1/3 of the screen height.
+          Paired with the 2x bottom region below so free space splits 1:2. */}
+      <div aria-hidden style={{ flex: "1 1 0%", minHeight: 32 }} />
+
       {/* Pinned header: logo + add button */}
-      <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center", gap: 32, paddingTop: 48, paddingBottom: 16 }}>
+      <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center", gap: 32, paddingBottom: 16 }}>
         <div style={{ textAlign: "center", maxWidth: 520 }}>
           <div
             style={{
@@ -520,9 +524,9 @@ function WelcomeScreen() {
         ) : null}
       </div>
 
-      {/* Scrollable recent projects list */}
+      {/* Scrollable recent projects list (takes ~2/3 of the free space) */}
       {realProjects.length > 0 ? (
-        <div style={{ flex: 1, minHeight: 0, width: "100%", display: "flex", justifyContent: "center", overflow: "hidden" }}>
+        <div style={{ flex: "2 1 0%", minHeight: 0, width: "100%", display: "flex", justifyContent: "center", overflow: "hidden" }}>
           <div style={{ width: "100%", maxWidth: 440, overflowY: "auto", paddingLeft: 16, paddingRight: 16, paddingBottom: 48 }}>
             <div
               style={{
@@ -668,7 +672,9 @@ function WelcomeScreen() {
             </div>
           </div>
         </div>
-      ) : null}
+      ) : (
+        <div aria-hidden style={{ flex: "2 1 0%" }} />
+      )}
 
       <CommandPalette
         open={projectBrowserOpen}

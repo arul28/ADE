@@ -15,6 +15,8 @@ const remoteRuntimeMock = {
   listDiscoveredMachines: vi.fn(),
   saveTarget: vi.fn(),
   removeTarget: vi.fn(),
+  getSshHostKeyTrust: vi.fn(),
+  trustSshHostKey: vi.fn(),
   connect: vi.fn(),
   listProjects: vi.fn(),
   addProject: vi.fn(),
@@ -31,6 +33,7 @@ const lanesMock = {
 };
 
 function installAdeMock(): void {
+  remoteRuntimeMock.getSshHostKeyTrust.mockResolvedValue({ state: "trusted" });
   Object.defineProperty(window, "ade", {
     configurable: true,
     value: {
@@ -197,6 +200,93 @@ describe("RemoteTargetList", () => {
     expect(screen.getByText(/RPC capabilities are compatible/i)).toBeTruthy();
     expect(screen.queryByText("/remote/ADE")).toBeNull();
     expect(screen.queryByRole("button", { name: "Open" })).toBeNull();
+  });
+
+  it("prompts to trust a new machine identity before connecting", async () => {
+    const target = {
+      id: "target-1",
+      name: "Mac Studio",
+      hostname: "studio.local",
+      sshUser: "ade",
+      port: 22,
+      sshKeyPath: null,
+      lastSeenArch: null,
+      runtimeBinaryVersion: null,
+      lastConnectedAt: null,
+    };
+    remoteRuntimeMock.listTargets.mockResolvedValue([target]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    remoteRuntimeMock.getSshHostKeyTrust.mockResolvedValueOnce({
+      state: "needs_trust",
+      targetId: "target-1",
+      host: "studio.local",
+      port: 22,
+      route: {
+        hostname: "studio.local",
+        port: 22,
+        source: "manual",
+        lastSucceededAt: null,
+      },
+      keyType: "ssh-ed25519",
+      fingerprintSha256: "SHA256:abc123",
+      knownHostsPath: "/Users/test/.ssh/known_hosts",
+    });
+    remoteRuntimeMock.trustSshHostKey.mockResolvedValue({
+      trusted: true,
+      identity: {
+        targetId: "target-1",
+        host: "studio.local",
+        port: 22,
+        route: {
+          hostname: "studio.local",
+          port: 22,
+          source: "manual",
+          lastSucceededAt: null,
+        },
+        keyType: "ssh-ed25519",
+        fingerprintSha256: "SHA256:abc123",
+        knownHostsPath: "/Users/test/.ssh/known_hosts",
+      },
+    });
+    remoteRuntimeMock.connect.mockResolvedValue({
+      target,
+      arch: "darwin-arm64",
+      version: "1.0.0",
+      projects: [],
+    });
+    installAdeMock();
+
+    render(<RemoteTargetList />);
+
+    await waitFor(() =>
+      expect(screen.getAllByText("Mac Studio").length).toBeGreaterThan(0),
+    );
+    const connectButton = screen
+      .getAllByRole("button", { name: "Connect" })
+      .find((button) => !button.hasAttribute("disabled"));
+    fireEvent.click(connectButton!);
+
+    await waitFor(() =>
+      expect(screen.getByText("Trust this machine")).toBeTruthy(),
+    );
+    expect(screen.getByText("SHA256:abc123")).toBeTruthy();
+    expect(remoteRuntimeMock.connect).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Trust & connect" }));
+
+    await waitFor(() =>
+      expect(remoteRuntimeMock.trustSshHostKey).toHaveBeenCalledWith(
+        "target-1",
+        "SHA256:abc123",
+      ),
+    );
+    await waitFor(() =>
+      expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("target-1"),
+    );
+    expect(screen.getByText("Connected")).toBeTruthy();
   });
 
   it("surfaces Tailscale discovery diagnostics separately from empty results", async () => {

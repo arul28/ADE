@@ -6,10 +6,11 @@ import {
   PencilSimple,
   Prohibit,
   Sparkle,
+  UsersThree,
 } from "@phosphor-icons/react";
 
 import type { LaneSummary } from "../../../../shared/types";
-import type { PrDetail, PrReview, PrUser, PrWithConflicts } from "../../../../shared/types/prs";
+import type { PrDetail, PrReview, PrTeam, PrUser, PrWithConflicts } from "../../../../shared/types/prs";
 import { PrRequestAiReviewDialog } from "./PrRequestAiReviewDialog";
 import { PrReviewSubmitModal, type PrReviewEvent } from "./PrReviewSubmitModal";
 import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
@@ -30,10 +31,15 @@ export type PrDetailRightMetadataRailProps = {
   setShowLabelEditor: (value: boolean) => void;
   labelInput: string;
   setLabelInput: (value: string) => void;
-  onRequestReviewers: (reviewers: string[]) => void;
+  onRequestReviewers: (request: ReviewerRequest) => void;
   onSetLabels: (labels: string[]) => void;
   actionBusy: boolean;
   onSubmitReview: (event: PrReviewEvent, body: string) => void;
+};
+
+export type ReviewerRequest = {
+  reviewers: string[];
+  teamReviewers: string[];
 };
 
 function MetadataSection({
@@ -102,6 +108,54 @@ function ReviewerRow({ reviewer, reviews }: { reviewer: PrUser; reviews: PrRevie
   );
 }
 
+function TeamReviewerRow({ team }: { team: PrTeam }) {
+  const label = team.name || team.slug;
+  return (
+    <div className="flex items-center gap-2 py-1">
+      <div
+        className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full"
+        style={{
+          color: COLORS.accent,
+          background: "color-mix(in srgb, var(--color-accent) 10%, transparent)",
+          border: `1px solid ${COLORS.border}`,
+        }}
+      >
+        <UsersThree size={13} weight="bold" />
+      </div>
+      <span className="min-w-0 flex-1 truncate text-[12px] font-medium" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
+        {label}
+      </span>
+      <span className="text-[10px]" style={{ color: COLORS.textDim, fontFamily: SANS_FONT }}>
+        team
+      </span>
+    </div>
+  );
+}
+
+function parseReviewerRequestInput(input: string): ReviewerRequest {
+  const reviewers: string[] = [];
+  const teamReviewers: string[] = [];
+  for (const rawPart of input.split(",")) {
+    let value = rawPart.trim();
+    if (!value) continue;
+    const lower = value.toLowerCase();
+    if (lower.startsWith("team:")) {
+      value = value.slice("team:".length).trim();
+      if (value) teamReviewers.push(value);
+      continue;
+    }
+    if (value.startsWith("@")) value = value.slice(1).trim();
+    if (value.includes("/")) {
+      const parts = value.split("/").map((part) => part.trim()).filter(Boolean);
+      const slug = parts[parts.length - 1];
+      if (slug) teamReviewers.push(slug);
+      continue;
+    }
+    reviewers.push(value);
+  }
+  return { reviewers, teamReviewers };
+}
+
 export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail({
   pr,
   lane,
@@ -127,9 +181,11 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
   const [reviewEvent, setReviewEvent] = useState<PrReviewEvent>("APPROVE");
 
   const requestReviewEnabled = Boolean(pr.laneId && lane && (pr.state === "open" || pr.state === "draft"));
+  const requestedReviewers = detail?.requestedReviewers ?? [];
+  const requestedTeams = detail?.requestedTeams ?? [];
   const requestReviewers = () => {
-    const reviewers = reviewerInput.split(",").map((value) => value.trim()).filter(Boolean);
-    if (reviewers.length) onRequestReviewers(reviewers);
+    const request = parseReviewerRequestInput(reviewerInput);
+    if (request.reviewers.length || request.teamReviewers.length) onRequestReviewers(request);
   };
   const setLabels = () => {
     const labels = labelInput.split(",").map((value) => value.trim()).filter(Boolean);
@@ -228,10 +284,15 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
           </button>
         )}
       >
-        {detail?.requestedReviewers?.length ? (
-          detail.requestedReviewers.map((reviewer) => (
-            <ReviewerRow key={reviewer.login} reviewer={reviewer} reviews={reviews} />
-          ))
+        {requestedReviewers.length || requestedTeams.length ? (
+          <>
+            {requestedReviewers.map((reviewer) => (
+              <ReviewerRow key={reviewer.login} reviewer={reviewer} reviews={reviews} />
+            ))}
+            {requestedTeams.map((team) => (
+              <TeamReviewerRow key={team.slug || team.name} team={team} />
+            ))}
+          </>
         ) : (
           <EmptyValue>None yet</EmptyValue>
         )}
@@ -240,7 +301,7 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
             <input
               value={reviewerInput}
               onChange={(event) => setReviewerInput(event.target.value)}
-              placeholder="username1, username2"
+              placeholder="alice, bob, team:platform"
               onKeyDown={(event) => {
                 if (event.key === "Enter") requestReviewers();
               }}

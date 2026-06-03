@@ -42,6 +42,7 @@ export type PublishToGitHubDialogProps = {
 type PublishError = { code: string; message: string };
 
 type NameValidation = { ok: true } | { ok: false; reason: string };
+type OwnerValidation = { ok: true } | { ok: false; reason: string };
 
 function validateRepoName(rawName: string): NameValidation {
   const name = rawName.trim();
@@ -51,6 +52,16 @@ function validateRepoName(rawName: string): NameValidation {
   if (name.includes("..")) return { ok: false, reason: "Name cannot contain '..'" };
   if (!/^[A-Za-z0-9._-]+$/.test(name)) {
     return { ok: false, reason: "Use letters, numbers, '-', '_' or '.'" };
+  }
+  return { ok: true };
+}
+
+function validateOwner(rawOwner: string): OwnerValidation {
+  const owner = rawOwner.trim();
+  if (owner.length === 0) return { ok: true };
+  if (owner.length > 39) return { ok: false, reason: "Owner must be 39 characters or fewer" };
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(owner)) {
+    return { ok: false, reason: "Use a GitHub user or org slug" };
   }
   return { ok: true };
 }
@@ -98,6 +109,7 @@ export function PublishToGitHubDialog({
   defaultRepoName,
   onPublished,
 }: PublishToGitHubDialogProps) {
+  const [owner, setOwner] = useState("");
   const [name, setName] = useState(defaultRepoName);
   const [description, setDescription] = useState("");
   const [isPrivate, setIsPrivate] = useState(true);
@@ -113,6 +125,8 @@ export function PublishToGitHubDialog({
   // Reset all local state whenever the dialog opens.
   useEffect(() => {
     if (!open) return;
+    let cancelled = false;
+    setOwner("");
     setName(defaultRepoName);
     setDescription("");
     setIsPrivate(true);
@@ -123,18 +137,29 @@ export function PublishToGitHubDialog({
     setTokenDraft("");
     setTokenSaving(false);
     setTokenError(null);
+    void window.ade.github.getStatus({ forceRefresh: false }).then((status) => {
+      if (!cancelled && status.connected && status.userLogin) {
+        setOwner(status.userLogin);
+      }
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, [open, defaultRepoName]);
 
+  const ownerValidation = useMemo(() => validateOwner(owner), [owner]);
   const validation = useMemo(() => validateRepoName(name), [name]);
+  const trimmedOwner = owner.trim();
   const trimmedName = name.trim();
-  const canSubmit = validation.ok && !pending;
+  const canSubmit = ownerValidation.ok && validation.ok && !pending;
 
   const handleSubmit = useCallback(async () => {
-    if (!validation.ok || pending) return;
+    if (!ownerValidation.ok || !validation.ok || pending) return;
     setPending(true);
     setError(null);
     try {
       const result = await window.ade.github.publishCurrentProject({
+        ...(trimmedOwner ? { owner: trimmedOwner } : {}),
         name: trimmedName,
         description: description.trim() || undefined,
         isPrivate,
@@ -158,7 +183,7 @@ export function PublishToGitHubDialog({
     } finally {
       setPending(false);
     }
-  }, [description, isPrivate, pending, trimmedName, validation.ok]);
+  }, [description, isPrivate, ownerValidation.ok, pending, trimmedName, trimmedOwner, validation.ok]);
 
   const handleSaveToken = useCallback(async () => {
     const token = tokenDraft.trim();
@@ -172,6 +197,9 @@ export function PublishToGitHubDialog({
       await window.ade.github.setToken(token);
       setTokenDraft("");
       setConnectMode(false);
+      void window.ade.github.getStatus({ forceRefresh: true }).then((status) => {
+        if (status.connected && status.userLogin) setOwner(status.userLogin);
+      }).catch(() => {});
     } catch (err) {
       setTokenError(extractError(err));
     } finally {
@@ -289,12 +317,15 @@ export function PublishToGitHubDialog({
                     />
                   ) : (
                     <FormBody
+                      owner={owner}
+                      onOwnerChange={setOwner}
                       name={name}
                       onNameChange={setName}
                       description={description}
                       onDescriptionChange={setDescription}
                       isPrivate={isPrivate}
                       onPrivateChange={setIsPrivate}
+                      ownerValidation={ownerValidation}
                       validation={validation}
                       pending={pending}
                       canSubmit={canSubmit}
@@ -314,12 +345,15 @@ export function PublishToGitHubDialog({
 }
 
 function FormBody({
+  owner,
+  onOwnerChange,
   name,
   onNameChange,
   description,
   onDescriptionChange,
   isPrivate,
   onPrivateChange,
+  ownerValidation,
   validation,
   pending,
   canSubmit,
@@ -327,12 +361,15 @@ function FormBody({
   onCancel,
   onSubmit,
 }: {
+  owner: string;
+  onOwnerChange: (value: string) => void;
   name: string;
   onNameChange: (value: string) => void;
   description: string;
   onDescriptionChange: (value: string) => void;
   isPrivate: boolean;
   onPrivateChange: (value: boolean) => void;
+  ownerValidation: OwnerValidation;
   validation: NameValidation;
   pending: boolean;
   canSubmit: boolean;
@@ -340,11 +377,36 @@ function FormBody({
   onCancel: () => void;
   onSubmit: () => void;
 }) {
+  const trimmedOwner = owner.trim();
+  const trimmedName = name.trim();
+  const pathPreview = trimmedName
+    ? `${trimmedOwner || "your-account"}/${trimmedName}`
+    : trimmedOwner || "your-account";
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <Field label="REPOSITORY NAME">
+      <Field label="OWNER">
         <input
           autoFocus
+          type="text"
+          value={owner}
+          placeholder="your-login or org"
+          onChange={(event) => onOwnerChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && canSubmit) {
+              event.preventDefault();
+              onSubmit();
+            }
+          }}
+          style={inputStyle}
+          disabled={pending}
+        />
+        {!ownerValidation.ok ? (
+          <InlineHint tone="danger">{ownerValidation.reason}</InlineHint>
+        ) : null}
+      </Field>
+
+      <Field label="REPOSITORY NAME">
+        <input
           type="text"
           value={name}
           placeholder="my-project"
@@ -362,6 +424,32 @@ function FormBody({
           <InlineHint tone="danger">{validation.reason}</InlineHint>
         ) : null}
       </Field>
+
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          gap: 12,
+          padding: "8px 10px",
+          borderRadius: 8,
+          background: "color-mix(in srgb, var(--color-fg) 3%, transparent)",
+          border: `1px solid ${COLORS.border}`,
+        }}
+      >
+        <span style={{ ...LABEL_STYLE, flexShrink: 0 }}>Repository path</span>
+        <span
+          style={{
+            minWidth: 0,
+            overflowWrap: "anywhere",
+            fontFamily: MONO_FONT,
+            fontSize: 11,
+            color: COLORS.textSecondary,
+            textAlign: "right",
+          }}
+        >
+          {pathPreview}
+        </span>
+      </div>
 
       <Field label="DESCRIPTION (OPTIONAL)">
         <textarea
@@ -560,6 +648,7 @@ function SuccessBody({
   onOpenOnGitHub: () => void;
   onDone: () => void;
 }) {
+  const publishedName = result.fullName || result.htmlUrl;
   const subtitle =
     result.state === "remote_added"
       ? "Remote added — push when you're ready"
@@ -599,9 +688,11 @@ function SuccessBody({
             fontSize: 14,
             fontWeight: 600,
             color: COLORS.textPrimary,
+            maxWidth: 460,
+            overflowWrap: "anywhere",
           }}
         >
-          Published to GitHub
+          Published {publishedName} to GitHub
         </div>
         <div
           style={{

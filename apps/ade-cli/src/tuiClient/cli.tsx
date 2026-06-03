@@ -14,7 +14,15 @@ type CliOptions = {
   socketPath: string | null;
 };
 
-function parseArgs(argv: string[]): CliOptions {
+function readRequiredFlagValue(argv: string[], index: number, flag: string): string {
+  const value = argv[index + 1];
+  if (!value || value.startsWith("-")) {
+    throw new Error(`${flag} requires a value.`);
+  }
+  return value;
+}
+
+export function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = {
     help: false,
     printState: false,
@@ -31,10 +39,21 @@ function parseArgs(argv: string[]): CliOptions {
     else if (arg === "--print-state") options.printState = true;
     else if (arg === "--embedded") options.forceEmbedded = true;
     else if (arg === "--require-socket") options.requireSocket = true;
-    else if (arg === "--project-root") options.projectRoot = argv[++i] ?? null;
-    else if (arg === "--workspace-root") options.workspaceRoot = argv[++i] ?? null;
-    else if (arg === "--lane") options.laneHint = argv[++i] ?? null;
-    else if (arg === "--socket") options.socketPath = argv[++i] ?? null;
+    else if (arg === "--project-root") {
+      options.projectRoot = readRequiredFlagValue(argv, i, arg);
+      i += 1;
+    } else if (arg === "--workspace-root") {
+      options.workspaceRoot = readRequiredFlagValue(argv, i, arg);
+      i += 1;
+    } else if (arg === "--lane") {
+      options.laneHint = readRequiredFlagValue(argv, i, arg);
+      i += 1;
+    } else if (arg === "--socket") {
+      options.socketPath = readRequiredFlagValue(argv, i, arg);
+      i += 1;
+    } else {
+      throw new Error(`Unknown ade code option: ${arg}`);
+    }
   }
   return options;
 }
@@ -143,6 +162,7 @@ export async function runAdeCodeCli(argv: string[] = process.argv.slice(2)): Pro
       requireSocket={options.requireSocket}
       socketPath={options.socketPath}
     />,
+    { exitOnCtrlC: false },
   );
   await instance.waitUntilExit();
   return 0;

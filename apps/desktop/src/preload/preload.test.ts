@@ -2960,8 +2960,14 @@ describe("preload OAuth bridge", () => {
       rootPath: "/remote/project",
       displayName: "Project",
     };
-    const result = { owner: "acme", name: "repo", url: "https://github.com/acme/repo" };
-    const input = { name: "repo", private: true };
+	    const result = {
+	      state: "pushed",
+	      owner: "acme",
+	      name: "repo",
+	      fullName: "acme/repo",
+	      htmlUrl: "https://github.com/acme/repo",
+	    };
+	    const input = { owner: "acme", name: "repo", isPrivate: true };
     const invoke = vi.fn(async (channel: string) => {
       if (channel === IPC.appGetWindowSession) {
         return { windowId: 1, project: null, binding };

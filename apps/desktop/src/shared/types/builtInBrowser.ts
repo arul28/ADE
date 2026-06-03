@@ -32,6 +32,8 @@ export type BuiltInBrowserNavigateArgs = BuiltInBrowserClaimArgs & {
   url: string;
   tabId?: string | null;
   newTab?: boolean;
+  activate?: boolean;
+  reuseOwnedTab?: boolean;
   openPanel?: boolean;
 };
 
@@ -98,6 +100,8 @@ export type BuiltInBrowserTabArgs = BuiltInBrowserClaimArgs & {
 export type BuiltInBrowserTabTargetArgs = BuiltInBrowserProjectScopeArgs & {
   tabId?: string | null;
   sessionId?: string | null;
+  laneId?: string | null;
+  chatSessionId?: string | null;
 };
 
 export type BuiltInBrowserStartSessionArgs = BuiltInBrowserClaimArgs;

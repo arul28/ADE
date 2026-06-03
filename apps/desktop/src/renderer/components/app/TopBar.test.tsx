@@ -6,6 +6,10 @@ import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from "@
 import { TopBar } from "./TopBar";
 import { useAppStore } from "../../state/appStore";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
+import {
+  ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
+  ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
+} from "../../lib/workSidebarBrowserResize";
 
 const PROJECT_TAB_ROOT_MIME = "application/x-ade-project-root";
 const PROJECT_TAB_WINDOW_MIME = "application/x-ade-window-id";
@@ -223,6 +227,19 @@ describe("TopBar", () => {
       sync: {
         getStatus: vi.fn(async () => makeSyncSnapshot()),
         onEvent: vi.fn(() => () => {}),
+      },
+      remoteRuntime: {
+        getConnectionSnapshot: vi.fn(async () => ({
+          connections: [],
+          connectedCount: 0,
+          updatedAt: Date.now(),
+        })),
+        onConnectionSnapshotChanged: vi.fn(() => () => {}),
+        listTargets: vi.fn(async () => []),
+        listDiscoveredMachines: vi.fn(async () => ({
+          machines: [],
+          diagnostics: [],
+        })),
       },
       github: {
         getStatus: vi.fn(async () => ({
@@ -518,6 +535,54 @@ describe("TopBar", () => {
       expect(screen.queryByTestId("sync-devices-section")).toBeNull();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it("occludes the native browser while the remote machines panel is open", async () => {
+    const events: string[] = [];
+    const onStart = () => events.push("start");
+    const onEnd = () => events.push("end");
+    window.addEventListener(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT, onStart);
+    window.addEventListener(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT, onEnd);
+    try {
+      render(<TopBar />);
+
+      fireEvent.click(await screen.findByTitle("Manage remote machines"));
+
+      expect(await screen.findByText("Remote machines")).toBeTruthy();
+      await waitFor(() => expect(events).toEqual(["start"]));
+
+      fireEvent.click(screen.getByTitle("Close remote machines"));
+
+      await waitFor(() => expect(screen.queryByText("Remote machines")).toBeNull());
+      expect(events).toEqual(["start", "end"]);
+    } finally {
+      window.removeEventListener(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT, onStart);
+      window.removeEventListener(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT, onEnd);
+    }
+  });
+
+  it("occludes the native browser while the mobile panel is open", async () => {
+    const events: string[] = [];
+    const onStart = () => events.push("start");
+    const onEnd = () => events.push("end");
+    window.addEventListener(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT, onStart);
+    window.addEventListener(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT, onEnd);
+    try {
+      render(<TopBar />);
+
+      fireEvent.click(await screen.findByTitle("Connect a phone to this machine"));
+
+      expect(await screen.findByText("Connect to the ADE mobile app")).toBeTruthy();
+      await waitFor(() => expect(events).toEqual(["start"]));
+
+      fireEvent.click(screen.getByTitle("Close phone sync"));
+
+      await waitFor(() => expect(screen.queryByText("Connect to the ADE mobile app")).toBeNull());
+      expect(events).toEqual(["start", "end"]);
+    } finally {
+      window.removeEventListener(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT, onStart);
+      window.removeEventListener(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT, onEnd);
     }
   });
 

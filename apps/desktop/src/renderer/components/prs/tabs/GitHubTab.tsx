@@ -194,6 +194,10 @@ function preflightRemoteBranch(preflight: CreateLaneFromPrBranchPreflight | null
   return preflightText(preflight?.remoteBranch) ?? preflightText(preflight?.headBranch) ?? item.headBranch ?? "---";
 }
 
+function preflightImportRef(preflight: CreateLaneFromPrBranchPreflight | null): string | null {
+  return preflightText(preflight?.importBranchRef);
+}
+
 function preflightTargetLaneName(preflight: CreateLaneFromPrBranchPreflight | null, item: GitHubPrListItem): string {
   const remoteBranch = preflightRemoteBranch(preflight, item);
   const fallback = branchNameFromRef(remoteBranch);
@@ -655,9 +659,12 @@ function CreateLaneFromPrBranchDialog({
 }) {
   const blockingConflict = preflightBlockingConflict(preflight);
   const canConfirm = Boolean(preflight?.canCreate) && !loading && !busy;
+  const sourceBranch = preflightRemoteBranch(preflight, item);
+  const importRef = preflightImportRef(preflight);
   const rows = [
     ["PR", `#${preflightPrNumber(preflight, item)} ${preflightTitle(preflight, item)}`],
-    ["Remote branch", preflightRemoteBranch(preflight, item)],
+    ["Source branch", sourceBranch],
+    ...(importRef && importRef !== sourceBranch ? [["Import ref", importRef] as const] : []),
     ["Target lane", preflightTargetLaneName(preflight, item)],
     ["Base branch", preflightBaseBranch(preflight, item)],
   ] as const;
@@ -698,7 +705,7 @@ function CreateLaneFromPrBranchDialog({
         <div style={{ padding: 20, display: "grid", gap: 14 }}>
           {loading ? (
             <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textSecondary }}>
-              Checking branch ownership and remote availability...
+              Checking branch ownership and PR head availability...
             </div>
           ) : (
             <div style={{ display: "grid", gap: 10 }}>

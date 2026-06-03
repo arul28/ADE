@@ -26,6 +26,15 @@ async function assertExists(filePath, label) {
   }
 }
 
+async function pathExists(filePath) {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function run(command, args, options = {}) {
   const result = await execFileAsync(command, args, {
     maxBuffer: 10 * 1024 * 1024,
@@ -46,6 +55,83 @@ async function findDeveloperIdIdentity() {
     if (match?.[1]) return match[1];
   }
   throw new Error("Unable to find a Developer ID Application signing identity.");
+}
+
+async function walkFiles(rootPath, files = []) {
+  const entries = await fs.readdir(rootPath, { withFileTypes: true });
+  for (const entry of entries) {
+    const entryPath = path.join(rootPath, entry.name);
+    if (entry.isDirectory()) {
+      await walkFiles(entryPath, files);
+    } else if (entry.isFile()) {
+      files.push(entryPath);
+    }
+  }
+  return files;
+}
+
+async function isMachO(filePath) {
+  const handle = await fs.open(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(4);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead < 4) return false;
+    return [
+      "feedface",
+      "feedfacf",
+      "cefaedfe",
+      "cffaedfe",
+      "cafebabe",
+      "bebafeca",
+    ].includes(buffer.toString("hex"));
+  } finally {
+    await handle.close();
+  }
+}
+
+async function signBinary(binaryPath, identity) {
+  await run("codesign", [
+    "--force",
+    "--options",
+    "runtime",
+    "--timestamp",
+    "--sign",
+    identity,
+    binaryPath,
+  ]);
+  await run("codesign", ["--verify", "--strict", "--verbose=4", binaryPath]);
+}
+
+async function signNativeArchiveIfPresent(binaryPath, identity) {
+  const archivePath = `${binaryPath}.native.tar.gz`;
+  if (!(await pathExists(archivePath))) {
+    return;
+  }
+
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "ade-runtime-native-sign-"));
+  try {
+    console.log(`[runtime:notarize] Signing Mach-O payloads in ${archivePath}`);
+    await run("tar", ["-xzf", archivePath, "-C", workDir]);
+
+    const files = await walkFiles(workDir);
+    let signed = 0;
+    for (const filePath of files) {
+      if (!(await isMachO(filePath))) continue;
+      await signBinary(filePath, identity);
+      signed += 1;
+    }
+
+    if (signed === 0) {
+      console.log(`[runtime:notarize] No Mach-O payloads found in ${path.basename(archivePath)}`);
+    } else {
+      console.log(`[runtime:notarize] Signed ${signed} Mach-O payload(s) in ${path.basename(archivePath)}`);
+    }
+
+    await fs.rm(archivePath, { force: true });
+    await run("tar", ["-czf", archivePath, "-C", workDir, "."]);
+  } finally {
+    await fs.rm(workDir, { recursive: true, force: true });
+  }
 }
 
 function buildNotarytoolArgs(zipPath) {
@@ -105,16 +191,8 @@ if (process.platform !== "darwin") {
 
 const identity = await findDeveloperIdIdentity();
 console.log(`[runtime:notarize] Signing ${binaryPath} with ${identity}`);
-await run("codesign", [
-  "--force",
-  "--options",
-  "runtime",
-  "--timestamp",
-  "--sign",
-  identity,
-  binaryPath,
-]);
-await run("codesign", ["--verify", "--strict", "--verbose=4", binaryPath]);
+await signBinary(binaryPath, identity);
+await signNativeArchiveIfPresent(binaryPath, identity);
 
 const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "ade-runtime-notary-"));
 const zipPath = path.join(workDir, `${path.basename(binaryPath)}.zip`);

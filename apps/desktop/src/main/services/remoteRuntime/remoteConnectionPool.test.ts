@@ -345,6 +345,51 @@ describe("RemoteConnectionPool", () => {
     expect(secondClient.call).toHaveBeenCalledWith("projects.list", {});
   });
 
+  it("retries idempotent reads once when the RPC client times out", async () => {
+    const firstClient = createClient();
+    const firstSsh = createSsh();
+    firstClient.call.mockRejectedValueOnce(
+      new Error("Remote ADE service timed out waiting for method projects.list (5000ms)."),
+    );
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: firstClient,
+      ssh: firstSsh,
+      result: connectResult("1.0.0"),
+    });
+    const secondClient = createClient();
+    secondClient.call.mockResolvedValueOnce([
+      {
+        projectId: "project-1",
+        rootPath: "/srv/app",
+        displayName: "app",
+        addedAt: 1,
+        lastOpenedAt: 2,
+        gitOriginUrl: null,
+      },
+    ]);
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: secondClient,
+      ssh: createSsh(),
+      result: connectResult("1.0.1"),
+    });
+    const pool = new RemoteConnectionPool({ get: () => null } as unknown as RemoteTargetRegistry, "1.0.0");
+
+    await expect(pool.projectsForTarget(target)).resolves.toEqual([
+      {
+        projectId: "project-1",
+        rootPath: "/srv/app",
+        displayName: "app",
+        addedAt: 1,
+        lastOpenedAt: 2,
+        gitOriginUrl: null,
+      },
+    ]);
+
+    expect(firstSsh.end).toHaveBeenCalledTimes(1);
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
+    expect(secondClient.call).toHaveBeenCalledWith("projects.list", {});
+  });
+
   it("does not replay non-idempotent machine calls after a connection interruption", async () => {
     const firstClient = createClient();
     firstClient.call.mockRejectedValueOnce(

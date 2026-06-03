@@ -291,6 +291,7 @@ enum SyncDirectHostPorts {
 }
 
 struct SyncRouteEndpoint: Equatable {
+  var scheme: String? = nil
   var host: String
   var port: Int?
 }
@@ -303,7 +304,8 @@ func syncParseRouteEndpoint(_ rawValue: String) -> SyncRouteEndpoint? {
      let components = URLComponents(string: trimmed),
      let host = components.host?.trimmingCharacters(in: .whitespacesAndNewlines),
      !host.isEmpty {
-    return SyncRouteEndpoint(host: host, port: syncValidRoutePort(components.port))
+    let scheme = components.scheme?.lowercased() == "wss" ? "wss" : nil
+    return SyncRouteEndpoint(scheme: scheme, host: host, port: syncValidRoutePort(components.port))
   }
 
   let authority = syncRouteAuthority(from: trimmed)
@@ -388,7 +390,7 @@ func syncWebSocketURLString(host rawHost: String, port defaultPort: Int) -> Stri
   let host = endpoint.host.trimmingCharacters(in: .whitespacesAndNewlines)
   guard !host.isEmpty else { return nil }
   let urlHost = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
-  return "ws://\(urlHost):\(port)"
+  return "\(endpoint.scheme ?? "ws")://\(urlHost):\(port)"
 }
 
 func syncIsTailnetDiscoveryHost(_ host: String) -> Bool {
@@ -632,7 +634,7 @@ enum SyncUserFacingError {
   static func message(for error: Error) -> String {
     let nsError = error as NSError
     if nsError.userInfo[syncAmbiguousRouteAuthFailureKey] as? Bool == true {
-      return "Reached an ADE machine over Tailscale, but it did not match this saved machine. ADE kept the pairing and will keep trying other routes."
+      return "Reached a different ADE machine on this route. ADE kept the saved pairing and will keep trying other routes."
     }
     if let code = nsError.userInfo["ADEErrorCode"] as? String, code == "auth_failed" {
       return "This phone is no longer paired with this machine. Pair again from Settings."
@@ -2438,7 +2440,10 @@ final class SyncService: ObservableObject {
       connectAttemptGeneration = beginConnectAttempt()
       resetChatEventState(clearHistory: true)
       let endpoint = syncParseRouteEndpoint(host)
-      let requestedHost = endpoint?.host ?? host.trimmingCharacters(in: .whitespacesAndNewlines)
+      let requestedRoute = endpoint?.scheme == "wss"
+        ? host.trimmingCharacters(in: .whitespacesAndNewlines)
+        : nil
+      let requestedHost = requestedRoute ?? endpoint?.host ?? host.trimmingCharacters(in: .whitespacesAndNewlines)
       let requestedPort = endpoint?.port ?? port
       let normalizedCandidateAddresses = candidateAddresses.compactMap { syncEndpointHost($0) }
       let normalizedTailscaleAddress = tailscaleAddress.flatMap(syncEndpointHost)
@@ -5659,10 +5664,35 @@ final class SyncService: ObservableObject {
     return nsError.userInfo["ADEErrorCode"] as? String == "auth_failed"
   }
 
+  private func isAmbiguousSavedRoute(_ attemptedAddress: String) -> Bool {
+    let host = syncNormalizedRouteHost(attemptedAddress)
+    if host.isEmpty { return false }
+    if syncIsTailnetDiscoveryHost(host) { return true }
+    if host == "localhost" || host.hasSuffix(".localhost") || host.hasSuffix(".local") { return true }
+    if let v4 = IPv4Address(host) {
+      let bytes = v4.rawValue
+      guard bytes.count == 4 else { return false }
+      let a = bytes[0], b = bytes[1]
+      return a == 127
+        || a == 10
+        || (a == 172 && (16...31).contains(b))
+        || (a == 192 && b == 168)
+        || (a == 169 && b == 254)
+    }
+    if let v6 = IPv6Address(host) {
+      let bytes = v6.rawValue
+      guard bytes.count == 16 else { return false }
+      if bytes == Data([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]) { return true }
+      if (bytes[0] & 0xfe) == 0xfc { return true }
+      if bytes[0] == 0xfe && (bytes[1] & 0xc0) == 0x80 { return true }
+    }
+    return false
+  }
+
   private func errorByMarkingAmbiguousRouteAuthFailure(_ error: Error, attemptedAddress: String) -> Error {
     let nsError = error as NSError
     guard nsError.userInfo["ADEErrorCode"] as? String == "auth_failed",
-          syncIsTailnetDiscoveryHost(syncNormalizedRouteHost(attemptedAddress)) else {
+          isAmbiguousSavedRoute(attemptedAddress) else {
       return error
     }
     var userInfo = nsError.userInfo
@@ -5835,8 +5865,18 @@ final class SyncService: ObservableObject {
       guard !matching.isEmpty else { continue }
       let updated = profileByApplyingDiscoveredRoutes(profile, matching: matching)
       guard updated != profile else { continue }
+      let token = storedTokenForSavedProfile(profile)
       profiles.removeValue(forKey: key)
-      profiles[profileStorageKey(updated) ?? key] = updated
+      let updatedKey = profileStorageKey(updated) ?? key
+      profiles[updatedKey] = updated
+      if let token, updatedKey != key {
+        if keychain.loadToken(hostKey: updatedKey) == nil {
+          keychain.saveToken(token, hostKey: updatedKey)
+        }
+        // The profile was re-keyed; drop the token stored under the old key so
+        // it is not orphaned in the keychain indefinitely.
+        keychain.clearToken(hostKey: key)
+      }
       changed = true
     }
     if changed {
@@ -5891,7 +5931,8 @@ final class SyncService: ObservableObject {
       refreshReducedSyncLoad()
     }
 
-    guard let urlString = syncWebSocketURLString(host: socketHost, port: socketPort),
+    let urlHost = endpoint?.scheme == nil ? socketHost : host
+    guard let urlString = syncWebSocketURLString(host: urlHost, port: socketPort),
           let url = URL(string: urlString) else {
       throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid machine address."])
     }
@@ -6002,6 +6043,39 @@ final class SyncService: ObservableObject {
 
   func outboundLocalDbVersionForTesting() -> Int {
     outboundLocalDbVersion
+  }
+
+  func latestRemoteDbVersionForTesting() -> Int {
+    latestRemoteDbVersion
+  }
+
+  func setLatestRemoteDbVersionForTesting(_ dbVersion: Int) {
+    latestRemoteDbVersion = max(0, dbVersion)
+  }
+
+  func currentPeerDbVersionForTesting() -> Int {
+    currentPeerMetadata()["dbVersion"] as? Int ?? -1
+  }
+
+  func shouldInvalidateSavedPairingAfterAuthFailureForTesting(address: String) -> Bool {
+    let error = NSError(
+      domain: "ADE",
+      code: 3,
+      userInfo: [
+        NSLocalizedDescriptionKey: "Authentication failed.",
+        "ADEErrorCode": "auth_failed",
+      ]
+    )
+    return shouldInvalidateSavedPairing(
+      for: errorByMarkingAmbiguousRouteAuthFailure(error, attemptedAddress: address)
+    )
+  }
+
+  func stageNextOutboundChangesetForTesting() -> SyncChangesetBatchPayload? {
+    guard let pending = makeNextOutboundChangeset(sentAt: 0) else { return nil }
+    pendingOutboundChangeset = pending
+    persistPendingOutboundChangesetForActiveProject(pending)
+    return pending.payload
   }
 
   func advanceOutboundCursorForTesting(to dbVersion: Int) {
@@ -6575,14 +6649,26 @@ final class SyncService: ObservableObject {
       }
       return
     }
+    guard let pending = makeNextOutboundChangeset(sentAt: now) else { return }
+    sendOutboundChangeset(pending)
+    if supportsChangesetAck {
+      pendingOutboundChangeset = pending
+      persistPendingOutboundChangesetForActiveProject(pending)
+    } else {
+      advanceOutboundCursorForActiveProject(to: pending.payload.toDbVersion)
+      lastSyncAt = Date()
+    }
+  }
+
+  private func makeNextOutboundChangeset(sentAt: TimeInterval) -> PendingOutboundChangeset? {
     let currentDbVersion = database.currentDbVersion()
-    guard currentDbVersion > outboundLocalDbVersion else { return }
+    guard currentDbVersion > outboundLocalDbVersion else { return nil }
     let localSiteId = database.localSiteId()
     let changes = database.exportChangesSince(version: outboundLocalDbVersion).filter { $0.siteId == localSiteId }
     let previousDbVersion = outboundLocalDbVersion
     guard !changes.isEmpty else {
       advanceOutboundCursorForActiveProject(to: currentDbVersion)
-      return
+      return nil
     }
 
     let payload = SyncChangesetBatchPayload(
@@ -6592,16 +6678,7 @@ final class SyncService: ObservableObject {
       toDbVersion: currentDbVersion,
       changes: changes
     )
-    latestRemoteDbVersion = max(latestRemoteDbVersion, currentDbVersion)
-    let pending = PendingOutboundChangeset(payload: payload, sentAt: now, retryCount: 0)
-    sendOutboundChangeset(pending)
-    if supportsChangesetAck {
-      pendingOutboundChangeset = pending
-      persistPendingOutboundChangesetForActiveProject(pending)
-    } else {
-      advanceOutboundCursorForActiveProject(to: payload.toDbVersion)
-      lastSyncAt = Date()
-    }
+    return PendingOutboundChangeset(payload: payload, sentAt: sentAt, retryCount: 0)
   }
 
   private func failPendingOutboundChangeset(_ message: String) {

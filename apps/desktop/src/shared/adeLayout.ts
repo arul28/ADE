@@ -137,8 +137,6 @@ export function buildAdeGitignore(): string {
     "# Shared ADE project config",
     "!.gitignore",
     "!ade.yaml",
-    "!cto/",
-    "!cto/identity.yaml",
     "",
     "# Shared user-authored ADE assets",
     "!templates/",

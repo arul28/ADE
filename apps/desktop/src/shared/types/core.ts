@@ -296,6 +296,7 @@ export type ListMyGitHubReposResult = {
 };
 
 export type PublishProjectInput = {
+  owner?: string;
   name: string;
   description?: string;
   isPrivate: boolean;
@@ -303,6 +304,9 @@ export type PublishProjectInput = {
 
 export type PublishProjectResult = {
   state: "pushed" | "remote_added";
+  owner: string;
+  name: string;
+  fullName: string;
   htmlUrl: string;
 };
 

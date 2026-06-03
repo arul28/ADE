@@ -2470,7 +2470,11 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
       const description = typeof actionArgs.description === "string"
         ? actionArgs.description
         : undefined;
+      const owner = typeof actionArgs.owner === "string"
+        ? actionArgs.owner.trim()
+        : undefined;
       return githubService.publishCurrentProject({
+        ...(owner ? { owner } : {}),
         name: requireNonEmptyString(actionArgs.name, "name"),
         description,
         isPrivate,

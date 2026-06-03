@@ -362,6 +362,17 @@ export function isLocalRuntimeConnectionDropped(error: Error): boolean {
   return /Remote ADE service connection (closed|failed)/i.test(error.message);
 }
 
+// A per-call RPC timeout now tears down the whole connection
+// (RuntimeRpcClient.failConnection rejects EVERY pending request with this
+// message), so a single slow action can collaterally fail concurrent in-flight
+// idempotent reads on the shared client. Mirror remoteConnectionPool's
+// isRemoteRuntimeConnectionError — which was updated to treat the timeout
+// teardown as a transient connection error — so the next connect() reconnects
+// and the read is retried once instead of surfacing a raw timeout.
+export function isLocalRuntimeMethodTimeout(error: Error): boolean {
+  return /timed out waiting for method/i.test(error.message);
+}
+
 // Conservative mirror of the preload's isReadOnlyRuntimeAction. Only these
 // actions are safe to transparently retry after a connection drop, because a
 // retry of a mutating action could re-run it against the reconnected daemon.
@@ -875,7 +886,10 @@ export class LocalRuntimeConnectionPool {
       }
 
       if (callError) {
-        if (isLocalRuntimeConnectionDropped(callError) && attempt < maxAttempts) {
+        if (
+          (isLocalRuntimeConnectionDropped(callError) || isLocalRuntimeMethodTimeout(callError)) &&
+          attempt < maxAttempts
+        ) {
           lastError = callError;
           continue;
         }
@@ -997,12 +1011,6 @@ export class LocalRuntimeConnectionPool {
       ...params,
       projectId: project.projectId,
     }) as T;
-  }
-
-  async switchSyncHostForRoot(rootPath: string): Promise<void> {
-    const project = await this.ensureProject(rootPath);
-    const entry = await this.connect();
-    await entry.client.call("sync.switchHost", { projectId: project.projectId });
   }
 
   dispose(): void {

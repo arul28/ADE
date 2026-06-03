@@ -104,4 +104,36 @@ describe("createSyncService", () => {
       db.close();
     }
   });
+
+  it("revokes paired phone secrets even when the sync host is stopped", async () => {
+    const projectRoot = makeTempRoot("ade-sync-service-forget-device-");
+    cleanupRoots.push(projectRoot);
+    const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+    const service = createService(db, projectRoot);
+    const pairedDevicesPath = path.join(projectRoot, ".ade", "secrets", "sync", "sync-paired-devices.json");
+    fs.mkdirSync(path.dirname(pairedDevicesPath), { recursive: true });
+    fs.writeFileSync(
+      pairedDevicesPath,
+      `${JSON.stringify({
+        "phone-1": {
+          secretHash: "not-a-real-hash",
+          createdAt: "2026-05-10T00:00:00.000Z",
+          lastUsedAt: null,
+          peerName: "Arul iPhone",
+          peerPlatform: "iOS",
+          peerDeviceType: "phone",
+        },
+      }, null, 2)}\n`,
+    );
+
+    try {
+      await service.forgetDevice("phone-1");
+
+      const records = JSON.parse(fs.readFileSync(pairedDevicesPath, "utf8")) as Record<string, unknown>;
+      expect(records["phone-1"]).toBeUndefined();
+    } finally {
+      await service.dispose();
+      db.close();
+    }
+  });
 });

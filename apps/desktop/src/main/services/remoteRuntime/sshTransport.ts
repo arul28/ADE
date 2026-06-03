@@ -1,10 +1,14 @@
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Client, type ConnectConfig } from "ssh2";
 import type {
+  RemoteRuntimeSshHostKeyIdentity,
+  RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeTarget,
   RemoteRuntimeTargetRoute,
+  RemoteRuntimeTrustSshHostKeyResult,
 } from "../../../shared/types/remoteRuntime";
 import type { RuntimeRpcTransport } from "./runtimeRpcClient";
 import { routeKey } from "./routeUtils";
@@ -22,16 +26,52 @@ type OpenSshHostConfig = {
   user?: string;
   port?: number;
   identityFile?: string;
+  userKnownHostsFile?: string;
 };
 
-type BuildSshConfigOptions = {
+export type BuildSshConfigOptions = {
   env?: NodeJS.ProcessEnv;
   sshConfigPath?: string | null;
+  knownHostsPath?: string | null;
   homeDir?: string;
   usernameOverride?: string;
 };
 
 export type ConnectedSshRoute = RemoteRuntimeTargetRoute;
+
+type KnownHostEntry = {
+  marker: string | null;
+  hosts: string;
+  keyType: string;
+  keyBase64: string;
+};
+
+type ResolvedSshEndpoint = {
+  host: string;
+  port: number;
+  username: string;
+  homeDir: string;
+  knownHostsPath: string | null;
+  hostAliases: string[];
+};
+
+export type ScannedSshHostKey = {
+  targetId: string;
+  host: string;
+  port: number;
+  route: ConnectedSshRoute;
+  key: Buffer;
+  keyType: string;
+  fingerprintSha256: string;
+  knownHostsPath: string | null;
+};
+
+type SshHostKeyTrustOptions = BuildSshConfigOptions & {
+  scanHostKey?: (
+    target: RemoteRuntimeTarget,
+    options: BuildSshConfigOptions,
+  ) => Promise<ScannedSshHostKey>;
+};
 
 const DEFAULT_IDENTITY_FILES = [
   "id_ed25519",
@@ -76,13 +116,14 @@ function hostPatternsMatch(patterns: string, host: string): boolean {
   return matched;
 }
 
-function expandSshPath(value: string, args: { host: string; username: string; port: number }): string {
+function expandSshPath(value: string, args: { host: string; username: string; port: number; homeDir?: string }): string {
   const expanded = value
     .replace(/%h/g, args.host)
     .replace(/%r/g, args.username)
     .replace(/%p/g, String(args.port));
-  if (expanded === "~") return os.homedir();
-  if (expanded.startsWith("~/")) return path.join(os.homedir(), expanded.slice(2));
+  const homeDir = args.homeDir ?? os.homedir();
+  if (expanded === "~") return homeDir;
+  if (expanded.startsWith("~/")) return path.join(homeDir, expanded.slice(2));
   return expanded;
 }
 
@@ -96,6 +137,168 @@ function firstReadableDefaultIdentity(homeDir: string): string | null {
     }
   }
   return null;
+}
+
+function normalizeKnownHostName(value: string): string {
+  const trimmed = value.trim().toLowerCase();
+  if (trimmed.endsWith(".") && !trimmed.includes("]:")) {
+    return trimmed.slice(0, -1);
+  }
+  return trimmed;
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = value?.trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function knownHostCandidates(hostAliases: string[], port: number): string[] {
+  return uniqueStrings(hostAliases.flatMap((hostAlias) => {
+    const host = normalizeKnownHostName(hostAlias);
+    if (!host) return [];
+    const bracketed = host.startsWith("[") ? host : `[${host}]:${port}`;
+    // OpenSSH only writes a bare-host entry for the default port 22; for a
+    // non-standard port it requires a bracketed `[host]:port` match. Do not
+    // fall back to the bare host on non-22 ports, or a key trusted for port 22
+    // would be accepted for a different port on the same host.
+    return port === 22 ? [host, bracketed] : [bracketed];
+  }));
+}
+
+function knownHostWritePattern(host: string, port: number): string | null {
+  const normalized = normalizeKnownHostName(host);
+  if (!normalized) return null;
+  if (port === 22) return normalized;
+  return normalized.startsWith("[") ? normalized : `[${normalized}]:${port}`;
+}
+
+function parseKnownHostLine(line: string): KnownHostEntry | null {
+  const trimmed = stripInlineComment(line);
+  if (!trimmed) return null;
+  const parts = trimmed.split(/\s+/).filter(Boolean);
+  let marker: string | null = null;
+  if (parts[0]?.startsWith("@")) {
+    marker = parts.shift() ?? null;
+  }
+  if (parts.length < 3) return null;
+  return {
+    marker,
+    hosts: parts[0]!,
+    keyType: parts[1]!,
+    keyBase64: parts[2]!,
+  };
+}
+
+function readKnownHostEntries(knownHostsPath: string | null): KnownHostEntry[] {
+  if (!knownHostsPath) return [];
+  try {
+    return fs.readFileSync(knownHostsPath, "utf8")
+      .split(/\r?\n/)
+      .map(parseKnownHostLine)
+      .filter((entry): entry is KnownHostEntry => entry != null);
+  } catch {
+    return [];
+  }
+}
+
+function hashedKnownHostPatternMatches(pattern: string, candidate: string): boolean {
+  const parts = pattern.split("|");
+  if (parts.length !== 4 || parts[1] !== "1") return false;
+  try {
+    const salt = Buffer.from(parts[2]!, "base64");
+    const expected = Buffer.from(parts[3]!, "base64");
+    const actual = createHmac("sha1", salt).update(candidate).digest();
+    return expected.byteLength === actual.byteLength && timingSafeEqual(expected, actual);
+  } catch {
+    return false;
+  }
+}
+
+function knownHostPatternMatches(pattern: string, candidate: string): boolean {
+  if (pattern.startsWith("|1|")) {
+    return hashedKnownHostPatternMatches(pattern, candidate);
+  }
+  return patternToRegExp(normalizeKnownHostName(pattern)).test(candidate);
+}
+
+function knownHostEntryMatchesCandidates(entry: KnownHostEntry, candidates: string[]): boolean {
+  let matched = false;
+  for (const rawPattern of entry.hosts.split(",").filter(Boolean)) {
+    const negated = rawPattern.startsWith("!");
+    const pattern = negated ? rawPattern.slice(1) : rawPattern;
+    if (!pattern) continue;
+    const patternMatched = candidates.some((candidate) =>
+      knownHostPatternMatches(pattern, candidate),
+    );
+    if (!patternMatched) continue;
+    if (negated) return false;
+    matched = true;
+  }
+  return matched;
+}
+
+function knownHostEntryKeyMatches(entry: KnownHostEntry, key: Buffer): boolean {
+  try {
+    return Buffer.from(entry.keyBase64, "base64").equals(key);
+  } catch {
+    return false;
+  }
+}
+
+function knownHostsAllowKey(entries: KnownHostEntry[], candidates: string[], key: Buffer): boolean {
+  let matched = false;
+  for (const entry of entries) {
+    if (!knownHostEntryMatchesCandidates(entry, candidates)) continue;
+    if (entry.marker === "@cert-authority") continue;
+    if (!knownHostEntryKeyMatches(entry, key)) continue;
+    if (entry.marker === "@revoked") return false;
+    matched = true;
+  }
+  return matched;
+}
+
+function knownHostsHaveEntry(entries: KnownHostEntry[], candidates: string[]): boolean {
+  return entries.some(
+    (entry) =>
+      entry.marker !== "@cert-authority" &&
+      entry.marker !== "@revoked" &&
+      knownHostEntryMatchesCandidates(entry, candidates),
+  );
+}
+
+function knownHostsTrustState(
+  entries: KnownHostEntry[],
+  candidates: string[],
+  key: Buffer,
+): "trusted" | "changed" | "unknown" {
+  if (knownHostsAllowKey(entries, candidates, key)) return "trusted";
+  if (knownHostsHaveEntry(entries, candidates)) return "changed";
+  return "unknown";
+}
+
+function sshHostKeyType(key: Buffer): string {
+  if (key.byteLength < 4) return "ssh-unknown";
+  try {
+    const length = key.readUInt32BE(0);
+    if (length <= 0 || length > 128 || 4 + length > key.byteLength) {
+      return "ssh-unknown";
+    }
+    const value = key.subarray(4, 4 + length).toString("utf8");
+    return /^[A-Za-z0-9._@+-]+$/.test(value) ? value : "ssh-unknown";
+  } catch {
+    return "ssh-unknown";
+  }
+}
+
+function sshHostKeyFingerprintSha256(key: Buffer): string {
+  return `SHA256:${createHash("sha256").update(key).digest("base64").replace(/=+$/g, "")}`;
 }
 
 export function parseOpenSshHostConfig(configText: string, hostAlias: string): OpenSshHostConfig {
@@ -119,6 +322,9 @@ export function parseOpenSshHostConfig(configText: string, hostAlias: string): O
       if (Number.isFinite(port) && port > 0) result.port = port;
     } else if (keyword === "identityfile" && !result.identityFile) {
       result.identityFile = value;
+    } else if (keyword === "userknownhostsfile" && !result.userKnownHostsFile) {
+      const knownHostsFile = value.split(/\s+/).filter(Boolean)[0];
+      if (knownHostsFile) result.userKnownHostsFile = knownHostsFile;
     }
   }
   return result;
@@ -126,7 +332,7 @@ export function parseOpenSshHostConfig(configText: string, hostAlias: string): O
 
 function readOpenSshHostConfig(target: RemoteRuntimeTarget, options: BuildSshConfigOptions): OpenSshHostConfig {
   const configPath = options.sshConfigPath === undefined
-    ? path.join(os.homedir(), ".ssh", "config")
+    ? path.join(options.homeDir ?? os.homedir(), ".ssh", "config")
     : options.sshConfigPath;
   if (!configPath) return {};
   try {
@@ -136,26 +342,229 @@ function readOpenSshHostConfig(target: RemoteRuntimeTarget, options: BuildSshCon
   }
 }
 
-export function buildSshConfig(target: RemoteRuntimeTarget, options: BuildSshConfigOptions = {}): ConnectConfig {
+function resolveKnownHostsPath(
+  options: BuildSshConfigOptions,
+  homeDir: string,
+  hostConfig: OpenSshHostConfig,
+  args: { host: string; username: string; port: number },
+): string | null {
+  if (options.knownHostsPath !== undefined) return options.knownHostsPath;
+  if (hostConfig.userKnownHostsFile) {
+    return expandSshPath(hostConfig.userKnownHostsFile, { ...args, homeDir });
+  }
+  return path.join(homeDir, ".ssh", "known_hosts");
+}
+
+function resolveSshEndpoint(target: RemoteRuntimeTarget, options: BuildSshConfigOptions): ResolvedSshEndpoint {
   const hostConfig = readOpenSshHostConfig(target, options);
   const host = hostConfig.hostName ?? target.hostname;
   const port = target.port && target.port > 0 ? target.port : hostConfig.port ?? 22;
   const username = (options.usernameOverride ?? target.sshUser?.trim()) || hostConfig.user || os.userInfo().username;
   const homeDir = options.homeDir ?? os.homedir();
-  const config: ConnectConfig = {
+  return {
     host,
     port,
     username,
+    homeDir,
+    knownHostsPath: resolveKnownHostsPath(options, homeDir, hostConfig, {
+      host,
+      username,
+      port,
+    }),
+    hostAliases: uniqueStrings([target.hostname, host]),
+  };
+}
+
+export function hasKnownSshHostKeyForTarget(
+  target: RemoteRuntimeTarget,
+  options: BuildSshConfigOptions = {},
+): boolean {
+  const endpoint = resolveSshEndpoint(target, options);
+  const entries = readKnownHostEntries(endpoint.knownHostsPath);
+  return knownHostsHaveEntry(
+    entries,
+    knownHostCandidates(endpoint.hostAliases, endpoint.port),
+  );
+}
+
+function remoteHostKeyIdentityFromScan(
+  scan: ScannedSshHostKey,
+): RemoteRuntimeSshHostKeyIdentity {
+  return {
+    targetId: scan.targetId,
+    host: scan.host,
+    port: scan.port,
+    route: scan.route,
+    keyType: scan.keyType,
+    fingerprintSha256: scan.fingerprintSha256,
+    knownHostsPath: scan.knownHostsPath,
+  };
+}
+
+function knownHostWritePatternsForTarget(
+  target: RemoteRuntimeTarget,
+  options: BuildSshConfigOptions = {},
+): string[] {
+  return uniqueStrings(
+    buildSshRouteCandidates(target).flatMap((route) => {
+      const routeTarget = targetForRoute(target, route);
+      const endpoint = resolveSshEndpoint(routeTarget, options);
+      return [
+        knownHostWritePattern(routeTarget.hostname, endpoint.port),
+        knownHostWritePattern(endpoint.host, endpoint.port),
+      ];
+    }),
+  );
+}
+
+function appendKnownSshHostKeyForTarget(
+  target: RemoteRuntimeTarget,
+  scan: ScannedSshHostKey,
+  options: BuildSshConfigOptions = {},
+): void {
+  const knownHostsPath = scan.knownHostsPath;
+  if (!knownHostsPath) {
+    throw new Error("ADE could not resolve an SSH known_hosts file for this machine.");
+  }
+  const entries = readKnownHostEntries(knownHostsPath);
+  const patterns = knownHostWritePatternsForTarget(target, options);
+  const candidates = uniqueStrings([
+    ...patterns,
+    ...knownHostCandidates([target.hostname, scan.host], scan.port),
+  ]);
+  const trustState = knownHostsTrustState(entries, candidates, scan.key);
+  if (trustState === "trusted") return;
+  if (trustState === "changed") {
+    throw new Error(
+      "This machine already has a different SSH host key saved. " +
+        "Remove the old known_hosts entry only if the machine was intentionally replaced.",
+    );
+  }
+
+  if (patterns.length === 0) {
+    throw new Error("ADE could not resolve SSH hostnames to trust for this machine.");
+  }
+
+  fs.mkdirSync(path.dirname(knownHostsPath), { recursive: true, mode: 0o700 });
+  const line = `${patterns.join(",")} ${scan.keyType} ${scan.key.toString("base64")}\n`;
+  fs.appendFileSync(knownHostsPath, line, { mode: 0o600 });
+}
+
+export async function scanSshHostKeyForTarget(
+  target: RemoteRuntimeTarget,
+  options: BuildSshConfigOptions = {},
+): Promise<ScannedSshHostKey> {
+  let lastError: unknown = null;
+  for (const route of buildSshRouteCandidates(target)) {
+    const routeTarget = targetForRoute(target, route);
+    const endpoint = resolveSshEndpoint(routeTarget, options);
+    let scannedKey: Buffer | null = null;
+    const config = buildSshConfig(routeTarget, {
+      ...options,
+      usernameOverride:
+        routeTarget.sshUser?.trim() || endpoint.username || os.userInfo().username,
+    });
+    config.hostVerifier = (key: Buffer) => {
+      scannedKey = Buffer.from(key);
+      return false;
+    };
+
+    try {
+      const client = await connectSshWithConfig(config);
+      try {
+        client.end();
+      } catch {}
+    } catch (error) {
+      lastError = error;
+      if (scannedKey) {
+        return {
+          targetId: target.id,
+          host: endpoint.host,
+          port: endpoint.port,
+          route,
+          key: scannedKey,
+          keyType: sshHostKeyType(scannedKey),
+          fingerprintSha256: sshHostKeyFingerprintSha256(scannedKey),
+          knownHostsPath: endpoint.knownHostsPath,
+        };
+      }
+      continue;
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("ADE could not read the SSH host key for this machine.");
+}
+
+export async function getSshHostKeyTrustForTarget(
+  target: RemoteRuntimeTarget,
+  options: SshHostKeyTrustOptions = {},
+): Promise<RemoteRuntimeSshHostKeyTrustStatus> {
+  const endpoint = resolveSshEndpoint(target, options);
+  const entries = readKnownHostEntries(endpoint.knownHostsPath);
+  const existingCandidates = knownHostCandidates(endpoint.hostAliases, endpoint.port);
+  if (knownHostsHaveEntry(entries, existingCandidates)) {
+    return {
+      state: "trusted",
+      targetId: target.id,
+      knownHostsPath: endpoint.knownHostsPath,
+    };
+  }
+
+  const { scanHostKey, ...buildOptions } = options;
+  const scan = await (scanHostKey ?? scanSshHostKeyForTarget)(target, buildOptions);
+  const scanEntries = readKnownHostEntries(scan.knownHostsPath);
+  const scanCandidates = knownHostCandidates([target.hostname, scan.host], scan.port);
+  const trustState = knownHostsTrustState(scanEntries, scanCandidates, scan.key);
+  return {
+    state: trustState === "trusted" ? "trusted" : trustState === "changed" ? "changed" : "needs_trust",
+    ...remoteHostKeyIdentityFromScan(scan),
+  };
+}
+
+export async function trustSshHostKeyForTarget(
+  target: RemoteRuntimeTarget,
+  expectedFingerprintSha256: string,
+  options: SshHostKeyTrustOptions = {},
+): Promise<RemoteRuntimeTrustSshHostKeyResult> {
+  const { scanHostKey, ...buildOptions } = options;
+  const scan = await (scanHostKey ?? scanSshHostKeyForTarget)(target, buildOptions);
+  if (scan.fingerprintSha256 !== expectedFingerprintSha256) {
+    throw new Error("The SSH host key changed before ADE could trust this machine. Try connecting again.");
+  }
+  appendKnownSshHostKeyForTarget(target, scan, buildOptions);
+  return {
+    trusted: true,
+    identity: remoteHostKeyIdentityFromScan(scan),
+  };
+}
+
+export function buildSshConfig(target: RemoteRuntimeTarget, options: BuildSshConfigOptions = {}): ConnectConfig {
+  const hostConfig = readOpenSshHostConfig(target, options);
+  const endpoint = resolveSshEndpoint(target, options);
+  const config: ConnectConfig = {
+    host: endpoint.host,
+    port: endpoint.port,
+    username: endpoint.username,
     readyTimeout: 20_000,
     keepaliveInterval: 15_000,
     keepaliveCountMax: 3,
   };
   const identityFile = target.sshKeyPath
-    ?? (hostConfig.identityFile ? expandSshPath(hostConfig.identityFile, { host, username, port }) : null)
-    ?? firstReadableDefaultIdentity(homeDir);
+    ?? (hostConfig.identityFile ? expandSshPath(hostConfig.identityFile, {
+      host: endpoint.host,
+      username: endpoint.username,
+      port: endpoint.port,
+      homeDir: endpoint.homeDir,
+    }) : null)
+    ?? firstReadableDefaultIdentity(endpoint.homeDir);
   if (identityFile) {
     config.privateKey = fs.readFileSync(identityFile);
   }
+  const knownHostEntries = readKnownHostEntries(endpoint.knownHostsPath);
+  const candidates = knownHostCandidates(endpoint.hostAliases, endpoint.port);
+  config.hostVerifier = (key: Buffer) => knownHostsAllowKey(knownHostEntries, candidates, key);
   const env = options.env ?? process.env;
   if (env.SSH_AUTH_SOCK) {
     config.agent = env.SSH_AUTH_SOCK;

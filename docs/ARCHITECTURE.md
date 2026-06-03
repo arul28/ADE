@@ -228,7 +228,7 @@ Types for these tables are split into domain modules under `apps/desktop/src/sha
 │   ├── cache/                   # Runtime scratch (ignored)
 │   ├── artifacts/               # Pack exports, history artifacts (ignored)
 │   ├── cto/
-│   │   ├── identity.yaml        # Shared CTO identity (tracked)
+│   │   ├── identity.yaml        # Local CTO identity (ignored)
 │   │   ├── CURRENT.md           # Running status markdown (ignored)
 │   │   └── daily/<YYYY-MM-DD>.md
 │   ├── agents/<slug>/           # Per-worker identity and daily logs (runtime, ignored)
@@ -249,13 +249,13 @@ Types for these tables are split into domain modules under `apps/desktop/src/sha
 
 **Portability buckets** (intentionally distinct):
 
-1. **Git-tracked shared scaffold** — `.ade/.gitignore`, `ade.yaml`, `cto/identity.yaml`, human-authored `templates/**`, `skills/**`, `workflows/linear/**`, `project-icons/**`. This is the only `.ade/` subset that flows through normal clone/pull. The shared `.ade/.gitignore` is now `*` with explicit allowlist entries for those scaffold files (so the next time someone touches `.ade/` from a fresh tool the runtime state stays out of git automatically).
+1. **Git-tracked shared scaffold** — `.ade/.gitignore`, `ade.yaml`, human-authored `templates/**`, `skills/**`, `workflows/linear/**`, `project-icons/**`. This is the only `.ade/` subset that flows through normal clone/pull. The shared `.ade/.gitignore` is now `*` with explicit allowlist entries for those scaffold files (so the next time someone touches `.ade/` from a fresh tool the runtime state stays out of git automatically).
 2. **ADE sync state** — the replicated `ade.db` tables that flow through cr-sqlite over WebSocket when devices join the same host.
 3. **Machine-local runtime** — worktrees, caches, transcripts, artifacts, secrets, sockets, and generated context markdown. Never leaves the device.
 
 **Project scaffold modes.** `initializeOrRepairAdeProject(projectRoot, { mode })` controls whether a project gets the full shared scaffold or stays local-only:
 
-- `mode: "shared"` always materializes the canonical files (`.ade/.gitignore`, `ade.yaml`, `cto/identity.yaml`, the tracked placeholder `.gitkeep`s) and scrubs any leftover `.ade/` ignore lines from `.gitignore` / `.git/info/exclude`. Triggered automatically from `createLocalProject`, every shared-config save, and any helper that calls `ensureSharedAdeProjectScaffold(projectRoot)` (e.g. `setProjectIconOverrideFromSelection`, `linearWorkflowFileService.save`).
+- `mode: "shared"` always materializes the canonical files (`.ade/.gitignore`, `ade.yaml`, the tracked placeholder `.gitkeep`s, plus local-only CTO identity state) and scrubs any leftover `.ade/` ignore lines from `.gitignore` / `.git/info/exclude`. Triggered automatically from `createLocalProject`, every shared-config save, and any helper that calls `ensureSharedAdeProjectScaffold(projectRoot)` (e.g. `setProjectIconOverrideFromSelection`, `linearWorkflowFileService.save`).
 - `mode: "auto"` (the default for `openProject`) keeps the project local-only when no shared scaffold files exist yet — it ensures `.git/info/exclude` has a `.ade/` entry so a brand-new clone or a personal-only setup never accidentally promotes runtime state into git, and only flips to the shared layout when shared scaffold files are already present (or after a save call promotes them).
 - `mode: "local"` is reserved for force-local repair flows.
 

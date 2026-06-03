@@ -265,6 +265,7 @@ export type CreatePrFromLaneArgs = {
   baseBranch?: string;
   labels?: string[];
   reviewers?: string[];
+  teamReviewers?: string[];
   allowDirtyWorktree?: boolean;
   strategy?: PrCreationStrategy;
   closeLinearIssueOnMerge?: boolean;
@@ -1105,6 +1106,7 @@ export type PrDetail = {
   labels: PrLabel[];
   assignees: PrUser[];
   requestedReviewers: PrUser[];
+  requestedTeams?: PrTeam[];
   author: PrUser;
   isDraft: boolean;
   milestone: string | null;
@@ -1120,6 +1122,12 @@ export type PrLabel = {
 export type PrUser = {
   login: string;
   avatarUrl: string | null;
+};
+
+export type PrTeam = {
+  name: string;
+  slug: string;
+  htmlUrl: string | null;
 };
 
 /** A changed file in a PR with patch/diff data. */
@@ -1220,7 +1228,8 @@ export type SetPrLabelsArgs = {
 
 export type RequestPrReviewersArgs = {
   prId: string;
-  reviewers: string[];
+  reviewers?: string[];
+  teamReviewers?: string[];
 };
 
 export type SubmitPrReviewArgs = {

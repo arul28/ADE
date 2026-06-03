@@ -946,6 +946,153 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(status.ownerChatSessionId).toBe("chat-3");
   });
 
+  it("reuses the current chat's owned tab for agent browser opens", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+
+    await service.createTab({
+      url: "https://first.test",
+      activate: true,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+    const firstTabId = service.getStatus().activeTabId;
+
+    await service.createTab({
+      url: "https://second.test",
+      activate: true,
+      laneId: "lane-2",
+      chatSessionId: "chat-2",
+    });
+    const secondTabId = service.getStatus().activeTabId;
+
+    let status = await service.navigate({
+      url: "https://reused.test",
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      reuseOwnedTab: true,
+      openPanel: true,
+    });
+
+    expect(status.tabs).toHaveLength(2);
+    expect(status.activeTabId).toBe(firstTabId);
+    expect(status.url).toBe("https://reused.test/");
+    expect(status.tabs.find((tab) => tab.id === firstTabId)).toMatchObject({
+      url: "https://reused.test/",
+      ownerLaneId: "lane-1",
+      ownerChatSessionId: "chat-1",
+    });
+    expect(status.tabs.find((tab) => tab.id === secondTabId)).toMatchObject({
+      url: "https://second.test/",
+      ownerLaneId: "lane-2",
+      ownerChatSessionId: "chat-2",
+    });
+
+    status = await service.navigate({
+      url: "https://fresh.test",
+      laneId: "lane-3",
+      chatSessionId: "chat-3",
+      reuseOwnedTab: true,
+    });
+
+    expect(status.tabs).toHaveLength(3);
+    expect(status.url).toBe("https://fresh.test/");
+    expect(status.tabs.at(-1)).toMatchObject({
+      url: "https://fresh.test/",
+      ownerLaneId: "lane-3",
+      ownerChatSessionId: "chat-3",
+    });
+  });
+
+  it("does not reuse a same-lane tab owned by another chat when chat identity is missing", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+
+    await service.createTab({
+      url: "https://chat-owned.test",
+      activate: true,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+    const firstTabId = service.getStatus().activeTabId;
+
+    const status = await service.navigate({
+      url: "https://lane-only.test",
+      laneId: "lane-1",
+      reuseOwnedTab: true,
+    });
+
+    expect(status.tabs).toHaveLength(2);
+    expect(status.activeTabId).not.toBe(firstTabId);
+    expect(status.tabs.find((tab) => tab.id === firstTabId)).toMatchObject({
+      url: "https://chat-owned.test/",
+      ownerChatSessionId: "chat-1",
+    });
+    expect(status.tabs.at(-1)).toMatchObject({
+      url: "https://lane-only.test/",
+      ownerLaneId: "lane-1",
+      ownerChatSessionId: null,
+    });
+  });
+
+  it("navigates and drives an owned browser tab in the background", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+
+    await service.createTab({
+      url: "https://owned.test",
+      activate: true,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+    const ownedTabId = service.getStatus().activeTabId;
+
+    await service.createTab({
+      url: "https://visible.test",
+      activate: true,
+      laneId: "lane-2",
+      chatSessionId: "chat-2",
+    });
+    const visibleTabId = service.getStatus().activeTabId;
+
+    let status = await service.navigate({
+      url: "https://background.test",
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      reuseOwnedTab: true,
+      activate: false,
+      openPanel: false,
+    });
+
+    expect(status.tabs).toHaveLength(2);
+    expect(status.activeTabId).toBe(visibleTabId);
+    expect(status.tabs.find((tab) => tab.id === ownedTabId)).toMatchObject({
+      url: "https://background.test/",
+      ownerLaneId: "lane-1",
+      ownerChatSessionId: "chat-1",
+    });
+
+    const clickResult = await service.click({
+      x: 10,
+      y: 20,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      observe: false,
+    });
+    const screenshot = await service.captureScreenshot({
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+
+    status = service.getStatus();
+    expect(status.activeTabId).toBe(visibleTabId);
+    expect(clickResult.trace).toMatchObject({
+      tabId: ownedTabId,
+      status: "ok",
+    });
+    expect(screenshot).toMatchObject({
+      width: 320,
+      height: 180,
+    });
+  });
+
   it("captures a non-active tab by id without switching the visible tab", async () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
 

@@ -159,7 +159,7 @@ describe("initializeOrRepairAdeProject", () => {
     const adeGitignore = fs.readFileSync(path.join(layout.adeDir, ".gitignore"), "utf8");
     expect(adeGitignore).toBe(buildAdeGitignore());
     expect(adeGitignore).toContain("*");
-    expect(adeGitignore).toContain("!cto/identity.yaml");
+    expect(adeGitignore).not.toContain("!cto/identity.yaml");
     expect(adeGitignore).toContain("!workflows/linear/**");
     expect(adeGitignore).toContain("!project-icons/**");
     expect(fs.readFileSync(path.join(layout.adeDir, "ade.yaml"), "utf8")).toContain("version: 1");
@@ -256,7 +256,7 @@ describe("initializeOrRepairAdeProject", () => {
     const status = git(root, ["status", "--porcelain=v1", "--untracked-files=all"]);
     expect(status).toContain("?? .ade/.gitignore");
     expect(status).toContain("?? .ade/ade.yaml");
-    expect(status).toContain("?? .ade/cto/identity.yaml");
+    expect(status).not.toContain(".ade/cto/identity.yaml");
   });
 
   it("promotes local-only ADE state when shared project config is saved", () => {

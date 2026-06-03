@@ -21,6 +21,7 @@ import { PrTimeline, type PrTimelineFilters, type PrTimelineRef } from "../share
 import { PrDetailLeftRail } from "../shared/PrDetailLeftRail";
 import type { PrCommitRailCommit } from "../shared/PrCommitRail";
 import { PrDetailRightRail } from "../shared/PrDetailRightRail";
+import type { ReviewerRequest } from "../shared/PrDetailRightMetadataRail";
 import { PrCommentComposer } from "../shared/PrCommentComposer";
 import { deriveParticipants } from "../shared/prMergeRailUtils";
 import { PrCommandPalettes, type PaletteKind } from "../shared/PrCommandPalettes";
@@ -90,7 +91,7 @@ type Props = {
   labelInput: string;
   setLabelInput: (value: string) => void;
   onMerge: (method: MergeMethod, options?: { bypassRules?: boolean }) => void;
-  onRequestReviewers: (reviewers: string[]) => void;
+  onRequestReviewers: (request: ReviewerRequest) => void;
   onSetLabels: (labels: string[]) => void;
   onDeleteBranch?: () => void;
   deleteBranchBusy?: boolean;

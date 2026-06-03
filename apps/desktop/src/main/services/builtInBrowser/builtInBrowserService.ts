@@ -759,6 +759,8 @@ function createBuiltInBrowserWindowService(args: {
       if (!tab) throw new Error(`Browser tab not found: ${tabId}`);
       return tab;
     }
+    const ownedTab = reusableOwnedTabForInput(input);
+    if (ownedTab) return ownedTab;
     const tab = activeTab();
     if (!tab) throw new Error(emptyMessage);
     return tab;
@@ -843,6 +845,24 @@ function createBuiltInBrowserWindowService(args: {
     to.ownerChatSessionId = from.ownerChatSessionId;
     to.ownerClaimedAt = from.ownerClaimedAt;
     to.ownerLeaseExpiresAt = from.ownerLeaseExpiresAt;
+  };
+
+  const tabMatchesOwnerInput = (
+    tab: BrowserTabState,
+    input: Pick<BuiltInBrowserClaimArgs, "laneId" | "chatSessionId"> = {},
+  ): boolean => {
+    const laneId = stringOrNull(input.laneId);
+    const chatSessionId = stringOrNull(input.chatSessionId);
+    if (chatSessionId) {
+      return tab.ownerChatSessionId === chatSessionId && (!laneId || !tab.ownerLaneId || tab.ownerLaneId === laneId);
+    }
+    if (laneId) return tab.ownerLaneId === laneId && !tab.ownerChatSessionId;
+    return false;
+  };
+
+  const reusableOwnedTabForInput = (input: BuiltInBrowserClaimArgs = {}): BrowserTabState | null => {
+    pruneDestroyedTabs();
+    return tabs.find((entry) => tabMatchesOwnerInput(entry, input)) ?? null;
   };
 
   const clearSelectionInternal = (): void => {
@@ -1496,30 +1516,42 @@ function createBuiltInBrowserWindowService(args: {
 
   async function navigate(input: BuiltInBrowserNavigateArgs): Promise<BuiltInBrowserStatus> {
     const targetUrl = normalizeBrowserUrl(input.url);
-    if (input.newTab && tabs.length >= MAX_BROWSER_TABS) {
+    const explicitNewTab = Boolean(input.newTab);
+    const reuseOwnedTab = Boolean(input.reuseOwnedTab) && !explicitNewTab && !input.tabId;
+    const reusableOwnedTab = reuseOwnedTab ? reusableOwnedTabForInput(input) : null;
+    const createNewTab = explicitNewTab || (reuseOwnedTab && !reusableOwnedTab);
+    const shouldActivate = input.openPanel === true || input.activate !== false || !activeTabId;
+    if (createNewTab && tabs.length >= MAX_BROWSER_TABS) {
       throw new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`);
     }
     // Validate tabId BEFORE any side effects (stopInspect/clearSelection) so an invalid id
     // doesn't leave the service with cleared inspect/selection state.
     let existingTab: BrowserTabState | null = null;
-    if (!input.newTab && input.tabId) {
+    if (!createNewTab && input.tabId) {
       existingTab = tabs.find((entry) => entry.id === input.tabId) ?? null;
       if (!existingTab) throw new Error(`Browser tab not found: ${input.tabId}`);
+    } else if (reusableOwnedTab) {
+      existingTab = reusableOwnedTab;
     }
-    const leaseTarget = input.newTab ? null : existingTab ?? activeTab();
+    const leaseTarget = createNewTab ? null : existingTab ?? activeTab();
     if (leaseTarget) assertTabLeaseAvailable(leaseTarget, input);
-    const switchingTabs = input.newTab || (input.tabId && input.tabId !== activeTabId);
-    await stopInspectQuietly("built_in_browser.navigate_stop_inspect_failed");
+    const targetTabBeforeNavigate = createNewTab ? null : existingTab ?? activeTab();
+    const targetIsInspectTab = Boolean(inspecting && targetTabBeforeNavigate && targetTabBeforeNavigate.id === activeTabId);
+    const nextActiveTabId = shouldActivate ? existingTab?.id ?? null : activeTabId;
+    const switchingTabs = shouldActivate && (createNewTab || (nextActiveTabId ? nextActiveTabId !== activeTabId : input.tabId && input.tabId !== activeTabId));
+    if (switchingTabs || targetIsInspectTab) {
+      await stopInspectQuietly("built_in_browser.navigate_stop_inspect_failed");
+    }
     if (switchingTabs) {
       clearSelectionInternal();
     }
-    let tab = input.newTab ? createTabState() : null;
+    let tab = createNewTab ? createTabState() : null;
     if (tab) {
       tabs = [...tabs, tab];
-      activeTabId = tab.id;
+      if (shouldActivate) activeTabId = tab.id;
     } else if (existingTab) {
       tab = existingTab;
-      activeTabId = tab.id;
+      if (shouldActivate) activeTabId = tab.id;
     } else {
       tab = ensureActiveTab();
     }
@@ -1708,7 +1740,6 @@ function createBuiltInBrowserWindowService(args: {
 
   async function captureScreenshot(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserScreenshot> {
     const wc = targetTabFromInput(input, "No active browser tab. Open a tab before capturing a screenshot.").webContents;
-    if (!stringOrNull(input.tabId)) attachViewsToCurrentWindow();
     try {
       return await capturePageScreenshot(wc);
     } catch (error) {

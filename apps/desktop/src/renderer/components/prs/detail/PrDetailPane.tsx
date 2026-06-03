@@ -42,6 +42,7 @@ import {
   unifiedChecksToPrChecks,
 } from "../shared/prUnifiedChecks";
 import type { PrReviewEvent } from "../shared/PrReviewSubmitModal";
+import type { ReviewerRequest } from "../shared/PrDetailRightMetadataRail";
 
 // ---- Sub-tab type ----
 type DetailTab = PrDetailRouteTab;
@@ -879,8 +880,12 @@ export function PrDetailPane({
     await loadDetail({ forceLive: true });
   });
 
-  const handleRequestReviewers = (reviewers: string[]) => runAction(async () => {
-    await window.ade.prs.requestReviewers({ prId: pr.id, reviewers });
+  const handleRequestReviewers = (request: ReviewerRequest) => runAction(async () => {
+    await window.ade.prs.requestReviewers({
+      prId: pr.id,
+      reviewers: request.reviewers,
+      teamReviewers: request.teamReviewers,
+    });
     setShowReviewerEditor(false);
     await onRefresh();
     await loadDetail({ forceLive: true });

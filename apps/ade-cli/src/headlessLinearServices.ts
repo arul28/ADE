@@ -326,6 +326,38 @@ function parseGitHubRepoFromRemoteUrl(
   }
 }
 
+function repoIdentityFromGitHubResponse(
+  data: Record<string, unknown>,
+  fallbackOwner: string,
+  fallbackName: string,
+): { owner: string; name: string; fullName: string } {
+  const fullName = asString(data.full_name).trim();
+  const fullNameParts = fullName.split("/");
+  const repoFromFullName =
+    fullNameParts.length >= 2
+      ? { owner: fullNameParts[0]!.trim(), name: fullNameParts[1]!.trim() }
+      : null;
+  const repoFromUrl =
+    parseGitHubRepoFromRemoteUrl(asString(data.clone_url)) ??
+    parseGitHubRepoFromRemoteUrl(asString(data.html_url)) ??
+    null;
+  const owner =
+    asString((data.owner as Record<string, unknown> | undefined)?.login).trim() ||
+    repoFromFullName?.owner ||
+    repoFromUrl?.owner ||
+    fallbackOwner;
+  const name =
+    asString(data.name).trim() ||
+    repoFromFullName?.name ||
+    repoFromUrl?.name ||
+    fallbackName;
+  return {
+    owner,
+    name,
+    fullName: fullName || (owner ? `${owner}/${name}` : name),
+  };
+}
+
 function detectGitHubRepo(
   projectRoot: string,
 ): { owner: string; name: string } | null {
@@ -684,10 +716,14 @@ export function createHeadlessGitHubService(
   };
 
   const createRepository = async (args: {
+    owner?: string | null;
     name: string;
     description?: string;
     isPrivate: boolean;
   }): Promise<{
+    owner: string;
+    name: string;
+    fullName: string;
     cloneUrl: string;
     sshUrl: string;
     htmlUrl: string;
@@ -701,12 +737,17 @@ export function createHeadlessGitHubService(
     if (args.description != null && args.description.trim().length > 0) {
       body.description = args.description.trim();
     }
+    const owner = asString(args.owner).trim();
     const { data } = await apiRequest<Record<string, unknown>>({
       method: "POST",
-      path: "/user/repos",
+      path: owner ? `/orgs/${encodeURIComponent(owner)}/repos` : "/user/repos",
       body,
     });
+    const identity = repoIdentityFromGitHubResponse(data, owner, args.name);
     return {
+      owner: identity.owner,
+      name: identity.name,
+      fullName: identity.fullName,
       cloneUrl: asString(data.clone_url),
       sshUrl: asString(data.ssh_url),
       htmlUrl: asString(data.html_url),
@@ -718,6 +759,9 @@ export function createHeadlessGitHubService(
     owner: string,
     name: string,
   ): Promise<{
+    owner: string;
+    name: string;
+    fullName: string;
     cloneUrl: string;
     sshUrl: string;
     htmlUrl: string;
@@ -728,7 +772,11 @@ export function createHeadlessGitHubService(
       method: "GET",
       path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`,
     });
+    const identity = repoIdentityFromGitHubResponse(data, owner, name);
     return {
+      owner: identity.owner,
+      name: identity.name,
+      fullName: identity.fullName,
       cloneUrl: asString(data.clone_url),
       sshUrl: asString(data.ssh_url),
       htmlUrl: asString(data.html_url),
@@ -1026,34 +1074,46 @@ export function createHeadlessGitHubService(
       }
 
       let created: {
+        owner: string;
+        name: string;
+        fullName: string;
         cloneUrl: string;
         sshUrl: string;
         htmlUrl: string;
         defaultBranch: string;
       };
+      const requestedOwner = asString(args.owner).trim() || null;
       try {
-        created = await createRepository(args);
+        created = await createRepository({
+          ...args,
+          owner: requestedOwner,
+        });
       } catch (createErr) {
         const message =
           createErr instanceof Error ? createErr.message : String(createErr);
         const isNameTaken = /already exists/i.test(message);
         if (!isNameTaken) throw createErr;
 
-        const validated = await validateToken(token).catch(() => ({
-          userLogin: null as string | null,
-        }));
-        const owner = validated.userLogin;
+        const validated = requestedOwner
+          ? null
+          : await validateToken(token).catch(() => ({
+              userLogin: null as string | null,
+            }));
+        const owner = requestedOwner || validated?.userLogin;
         if (!owner) throw createErr;
 
         const existing = await getRepository(owner, args.name);
         if (existing.size > 0) {
           const taken = new Error(
-            `A GitHub repo named '${args.name}' already exists on your account and contains commits. Pick a different name.`,
+            `A GitHub repo named '${owner}/${args.name}' already exists and contains commits. Pick a different name.`,
           ) as Error & { code?: string };
           taken.code = "repo_name_taken";
           throw taken;
         }
         created = {
+          owner: existing.owner,
+          name: existing.name,
+          fullName: existing.fullName,
           cloneUrl: existing.cloneUrl,
           sshUrl: existing.sshUrl,
           htmlUrl: existing.htmlUrl,
@@ -1103,7 +1163,13 @@ export function createHeadlessGitHubService(
       cachedStatus = null;
       cachedAt = 0;
 
-      return { state: resultState, htmlUrl: created.htmlUrl };
+      return {
+        state: resultState,
+        owner: created.owner,
+        name: created.name,
+        fullName: created.fullName,
+        htmlUrl: created.htmlUrl,
+      };
     },
     async addIssueComment(owner, name, number, body) {
       return (

@@ -9,7 +9,7 @@ import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover"
 import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/types";
 import { buildDeeplink } from "../../../shared/deeplinks";
 import type { AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
-import { formatToolTypeLabel, isChatToolType } from "../../lib/sessions";
+import { canBulkDeleteSession, canBulkStopSession, formatToolTypeLabel, isChatToolType } from "../../lib/sessions";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import { useAppStore, type WorkDraftKind } from "../../state/appStore";
@@ -327,7 +327,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   );
 
   const handleBulkCloseSelected = useCallback(() => {
-    const running = selectedSessions.filter((session) => session.status === "running" && !isChatToolType(session.toolType));
+    const running = selectedSessions.filter(canBulkStopSession);
     if (!running.length) return;
     const confirmed = window.confirm(
       `Stop ${running.length} running runtime${running.length === 1 ? "" : "s"}?\n\nThis terminates the underlying CLI or shell process for each selected running session. Saved transcripts stay in ADE.`,
@@ -362,17 +362,17 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }, [selectedSessions, work]);
 
   const handleBulkDeleteSelected = useCallback(() => {
-    const ended = selectedSessions.filter((session) => session.status !== "running");
-    if (!ended.length) return;
+    const deletable = selectedSessions.filter(canBulkDeleteSession);
+    if (!deletable.length) return;
     const confirmed = window.confirm(
-      `Delete ${ended.length} ended session${ended.length === 1 ? "" : "s"}?\n\nThis permanently removes the selected saved session history from ADE.`,
+      `Delete ${deletable.length} selected session${deletable.length === 1 ? "" : "s"}?\n\nThis permanently removes the selected saved session history from ADE.`,
     );
     if (!confirmed) return;
 
     setSessionActionError(null);
     setDeletingSessionId("bulk");
     void allSettledWithConcurrency(
-      ended,
+      deletable,
       BULK_SESSION_DELETE_CONCURRENCY,
       async (session) => {
         if (isChatToolType(session.toolType)) {
@@ -384,7 +384,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     )
       .then(async (results) => {
         const failed = results.filter((result) => result.status === "rejected").length;
-        const succeededIds = ended
+        const succeededIds = deletable
           .filter((_, index) => results[index]?.status === "fulfilled")
           .map((session) => session.id);
         for (const sessionId of succeededIds) {

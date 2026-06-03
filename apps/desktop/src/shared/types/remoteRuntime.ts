@@ -80,6 +80,32 @@ export type RemoteRuntimeConnectResult = {
   projects: RemoteRuntimeProjectRecord[];
 };
 
+export type RemoteRuntimeSshHostKeyIdentity = {
+  targetId: string;
+  host: string;
+  port: number;
+  route: RemoteRuntimeTargetRoute;
+  keyType: string;
+  fingerprintSha256: string;
+  knownHostsPath: string | null;
+};
+
+export type RemoteRuntimeSshHostKeyTrustStatus =
+  | ({
+      state: "trusted";
+    } & Partial<RemoteRuntimeSshHostKeyIdentity>)
+  | ({
+      state: "needs_trust";
+    } & RemoteRuntimeSshHostKeyIdentity)
+  | ({
+      state: "changed";
+    } & RemoteRuntimeSshHostKeyIdentity);
+
+export type RemoteRuntimeTrustSshHostKeyResult = {
+  trusted: boolean;
+  identity: RemoteRuntimeSshHostKeyIdentity;
+};
+
 export type RemoteRuntimeConnectionState =
   | "idle"
   | "connecting"

@@ -338,6 +338,7 @@ function renderPane(args: {
   getCommits?: ReturnType<typeof vi.fn>;
   getActivity?: ReturnType<typeof vi.fn>;
   addComment?: ReturnType<typeof vi.fn>;
+  requestReviewers?: ReturnType<typeof vi.fn>;
   getActionRuns?: ReturnType<typeof vi.fn>;
   snapshotHydration?: PrSnapshotHydration | null;
   snapshotHydrationOwnedByContext?: boolean;
@@ -425,6 +426,7 @@ function renderPane(args: {
     };
   });
   const writeClipboardText = vi.fn().mockResolvedValue(undefined);
+  const requestReviewers = args.requestReviewers ?? vi.fn().mockResolvedValue(undefined);
   const land = vi.fn().mockResolvedValue({
     prId: "pr-80",
     prNumber: 80,
@@ -512,6 +514,7 @@ function renderPane(args: {
         getActionRuns,
         getActivity: args.getActivity ?? vi.fn().mockResolvedValue(args.activity ?? []),
         addComment: args.addComment ?? vi.fn().mockResolvedValue(undefined),
+        requestReviewers,
         getReviewThreads,
         issueInventorySync,
         issueInventoryReset,
@@ -605,6 +608,7 @@ function renderPane(args: {
     getActionRuns,
     getActivity: window.ade.prs.getActivity,
     addComment: window.ade.prs.addComment,
+    requestReviewers,
     issueInventorySync,
     issueInventoryReset,
     getChecks,
@@ -1470,6 +1474,31 @@ describe("PrDetailPane", () => {
     await waitFor(() => {
       expect(land).toHaveBeenCalledWith({ prId: "pr-80", method: "squash", bypassRules: false });
       expect(onRefresh).toHaveBeenCalled();
+    });
+  });
+
+  it("requests user and team reviewers from the metadata rail", async () => {
+    const user = userEvent.setup();
+    const requestReviewers = vi.fn().mockResolvedValue(undefined);
+    renderPane({
+      checks: [],
+      reviewThreads: [],
+      requestReviewers,
+    });
+
+    const section = await screen.findByTestId("pr-metadata-section-reviewers");
+    await user.click(within(section).getByRole("button", { name: /^request$/i }));
+    await user.type(
+      within(section).getByPlaceholderText("alice, bob, team:platform"),
+      "alice, team:platform, @acme/qa{enter}",
+    );
+
+    await waitFor(() => {
+      expect(requestReviewers).toHaveBeenCalledWith({
+        prId: "pr-80",
+        reviewers: ["alice"],
+        teamReviewers: ["platform", "qa"],
+      });
     });
   });
 

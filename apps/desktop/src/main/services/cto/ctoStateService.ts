@@ -487,8 +487,8 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
   const logIntegrityService = createLogIntegrityService();
   const ctoDir = path.join(args.adeDir, "cto");
   const identityPath = path.join(ctoDir, "identity.yaml");
-  // Only identity.yaml belongs to the shared Git-tracked ADE scaffold in W3.
-  // The remaining files here are generated local/runtime state.
+  // CTO identity is local runtime state by default; the shared scaffold keeps
+  // the entire cto/ directory ignored unless a user force-adds it.
   const currentContextPath = path.join(ctoDir, "CURRENT.md");
   const sessionsPath = path.join(ctoDir, "sessions.jsonl");
   const subordinateActivityPath = path.join(ctoDir, "subordinate-activity.jsonl");

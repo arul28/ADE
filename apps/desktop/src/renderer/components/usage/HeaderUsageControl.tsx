@@ -8,6 +8,10 @@ import type {
 import { cn } from "../ui/cn";
 import { UsageQuotaPanel } from "./UsageQuotaPanel";
 import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
+import {
+  ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
+  ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
+} from "../../lib/workSidebarBrowserResize";
 
 const TRACKED_PROVIDERS: UsageProvider[] = ["claude", "codex"];
 
@@ -225,6 +229,14 @@ export function HeaderUsageControl({
       panelRef.current?.focus();
     });
     return () => window.cancelAnimationFrame(frame);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || typeof window === "undefined") return undefined;
+    window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT));
+    return () => {
+      window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT));
+    };
   }, [open]);
 
   const providersWithUsage = useMemo(

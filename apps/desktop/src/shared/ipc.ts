@@ -50,6 +50,9 @@ export const IPC = {
     "ade.remoteRuntime.connectionSnapshotChanged",
   remoteRuntimeSaveTarget: "ade.remoteRuntime.saveTarget",
   remoteRuntimeRemoveTarget: "ade.remoteRuntime.removeTarget",
+  remoteRuntimeGetSshHostKeyTrust:
+    "ade.remoteRuntime.getSshHostKeyTrust",
+  remoteRuntimeTrustSshHostKey: "ade.remoteRuntime.trustSshHostKey",
   remoteRuntimeConnect: "ade.remoteRuntime.connect",
   remoteRuntimeListProjects: "ade.remoteRuntime.listProjects",
   remoteRuntimeAddProject: "ade.remoteRuntime.addProject",
