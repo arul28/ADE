@@ -24,7 +24,15 @@ import {
 } from "../projects/projectIconResolver";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { runGit } from "../git/git";
-import type { AdeCleanupResult, AdeProjectSnapshot, IosSimulatorStatus, IosSimulatorWindowState } from "../../../shared/types";
+import type {
+  AdeCleanupResult,
+  AdeProjectSnapshot,
+  IosSimulatorDevice,
+  IosSimulatorSession,
+  IosSimulatorStatus,
+  IosSimulatorToolStatus,
+  IosSimulatorWindowState,
+} from "../../../shared/types";
 import { toShallowRecentProjectSummary } from "../projects/recentProjectSummary";
 import type {
   ApplyConflictProposalArgs,
@@ -1980,10 +1988,65 @@ export function registerIpc({
     const value = (arg as { projectRoot?: unknown }).projectRoot;
     return typeof value === "string" && value.trim() ? value.trim() : null;
   };
-  const isIosSimulatorStatus = (value: unknown): value is IosSimulatorStatus => {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-    const record = value as Partial<IosSimulatorStatus>;
-    return typeof record.platform === "string" && typeof record.supported === "boolean";
+  const isOptionalString = (value: unknown): value is string | null =>
+    value === null || typeof value === "string";
+  const isIosSimulatorToolStatus = (value: unknown): value is IosSimulatorToolStatus =>
+    isRecord(value)
+    && (value.name === "xcrun"
+      || value.name === "xcodebuild"
+      || value.name === "simulator_window"
+      || value.name === "idb"
+      || value.name === "idb_companion")
+    && typeof value.available === "boolean"
+    && typeof value.detail === "string"
+    && typeof value.installHint === "string";
+  const isIosSimulatorDevice = (value: unknown): value is IosSimulatorDevice =>
+    isRecord(value)
+    && typeof value.udid === "string"
+    && typeof value.name === "string"
+    && typeof value.runtime === "string"
+    && typeof value.state === "string"
+    && typeof value.isAvailable === "boolean";
+  const isIosSimulatorSession = (value: unknown): value is IosSimulatorSession =>
+    isRecord(value)
+    && typeof value.id === "string"
+    && typeof value.deviceUdid === "string"
+    && isOptionalString(value.deviceName)
+    && typeof value.bundleId === "string"
+    && isOptionalString(value.appName)
+    && isOptionalString(value.appBundlePath)
+    && isOptionalString(value.targetId)
+    && isOptionalString(value.projectRoot)
+    && isOptionalString(value.laneId)
+    && isOptionalString(value.chatSessionId)
+    && (value.mode === "snapshot" || value.mode === "live")
+    && (value.keepSimulatorInBackground === undefined
+      || value.keepSimulatorInBackground === null
+      || typeof value.keepSimulatorInBackground === "boolean")
+    && isOptionalString(value.bridgeUrl)
+    && typeof value.startedAt === "string"
+    && isOptionalString(value.claimedAt);
+  const normalizeIosSimulatorStatus = (value: unknown): IosSimulatorStatus | null => {
+    if (!isRecord(value)) return null;
+    const activeDevice = value.activeDevice;
+    const activeSession = value.activeSession;
+    if (
+      typeof value.platform !== "string"
+      || typeof value.supported !== "boolean"
+      || !Array.isArray(value.tools)
+      || !value.tools.every(isIosSimulatorToolStatus)
+      || (activeDevice !== null && !isIosSimulatorDevice(activeDevice))
+      || (activeSession !== null && !isIosSimulatorSession(activeSession))
+    ) {
+      return null;
+    }
+    return {
+      platform: value.platform as NodeJS.Platform,
+      supported: value.supported,
+      tools: value.tools,
+      activeDevice,
+      activeSession,
+    };
   };
   const getIosSimulatorContextForEvent = (event: IpcMainInvokeEvent, arg?: unknown): AppContext | null => {
     const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
@@ -2002,7 +2065,7 @@ export function registerIpc({
     }
     const sessionRoot = boundLocalRoot ?? session?.project?.rootPath ?? null;
     if (sessionRoot) return resolveProjectContext(sessionRoot);
-    return getCtx();
+    return getWindowSession ? null : getCtx();
   };
   const throwIosSimulatorUnavailableForEvent = (ctx: AppContext | null, arg?: unknown, channel = IPC.iosSimulatorListWindowSources): never => {
     const requestedProjectRoot = readProjectRootArg(arg);
@@ -2027,17 +2090,18 @@ export function registerIpc({
   ): Promise<IosSimulatorStatus> => {
     const ctx = getIosSimulatorContextForEvent(event, arg);
     const service = ctx?.iosSimulatorService;
-    if (service) return await service.getStatus();
+    if (service) {
+      const status = normalizeIosSimulatorStatus(await service.getStatus());
+      if (status) return status;
+    }
 
-    const requestedProjectRoot = readProjectRootArg(arg);
     const runtimeStatus = await tryLocalRuntimeSync(event, async (pool, rootPath) => {
-      if (requestedProjectRoot && rootPath !== requestedProjectRoot) return null;
       const response = await pool.callActionForRoot(rootPath, {
         domain: "ios_simulator",
         action: "getStatus",
         args: {},
       });
-      return isIosSimulatorStatus(response.result) ? response.result : null;
+      return normalizeIosSimulatorStatus(response.result);
     });
     if (runtimeStatus) return runtimeStatus;
     return throwIosSimulatorUnavailableForEvent(ctx, arg, channel);
