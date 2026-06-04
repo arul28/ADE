@@ -818,7 +818,6 @@ function GraphInner({ active = true }: { active?: boolean }) {
     if (activityRefreshTimerRef.current != null) return;
     activityRefreshTimerRef.current = window.setTimeout(() => {
       activityRefreshTimerRef.current = null;
-      if (document.visibilityState !== "visible") return;
       if (activityRefreshInFlightRef.current) {
         activityRefreshQueuedRef.current = true;
         return;
@@ -873,19 +872,19 @@ function GraphInner({ active = true }: { active?: boolean }) {
     }
 
     riskTimer = window.setTimeout(() => {
-      if (cancelled || document.visibilityState !== "visible") return;
+      if (cancelled) return;
       void refreshRiskBatch();
     }, 1_500);
     activityTimer = window.setTimeout(() => {
-      if (cancelled || document.visibilityState !== "visible") return;
+      if (cancelled) return;
       scheduleRefreshActivity(250, { includeOperations: true });
     }, 800);
     syncTimer = window.setTimeout(() => {
-      if (cancelled || document.visibilityState !== "visible") return;
+      if (cancelled) return;
       void refreshLaneSyncStatuses();
     }, 2_500);
     autoRebaseTimer = window.setTimeout(() => {
-      if (cancelled || document.visibilityState !== "visible") return;
+      if (cancelled) return;
       void refreshAutoRebaseStatuses();
     }, 3_500);
 

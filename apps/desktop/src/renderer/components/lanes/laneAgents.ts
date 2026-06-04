@@ -156,7 +156,6 @@ export function useLaneAgents(laneIds: string[]): Map<string, LaneAgent[]> {
     try {
       do {
         refreshQueuedRef.current = false;
-        if (document.visibilityState !== "visible") return;
 
         const ids = laneKey ? laneKey.split(",") : [];
         if (!ids.length) {
