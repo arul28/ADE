@@ -12,7 +12,7 @@ const browserWindowFromWebContents = vi.hoisted(() => vi.fn());
 const browserWindowFromId = vi.hoisted(() => vi.fn());
 const browserWindowGetAllWindows = vi.hoisted(() => vi.fn(() => []));
 const remoteRegistryGetMock = vi.hoisted(() => vi.fn());
-const remoteRegistryListMock = vi.hoisted(() => vi.fn(() => []));
+const remoteRegistryListMock = vi.hoisted(() => vi.fn<[], RemoteRuntimeTarget[]>(() => []));
 const remoteRegistrySaveMock = vi.hoisted(() => vi.fn());
 const remoteRegistryRemoveMock = vi.hoisted(() => vi.fn());
 const remoteConnectMock = vi.hoisted(() => vi.fn());
@@ -188,6 +188,39 @@ describe("registerRuntimeBridge", () => {
       },
     });
     browserWindowFromWebContents.mockReturnValue({ id: 7 });
+  });
+
+  it("does not start saved remote autoconnect when disabled for dev/test runs", async () => {
+    const previous = process.env.ADE_DISABLE_REMOTE_AUTOCONNECT;
+    process.env.ADE_DISABLE_REMOTE_AUTOCONNECT = "1";
+    vi.useFakeTimers();
+    remoteRegistryListMock.mockReturnValue([
+      { ...target, lastConnectedAt: Date.now() },
+    ]);
+
+    try {
+      registerRuntimeBridge({
+        appVersion: "1.0.0",
+        globalStatePath: "/tmp/ade-state.json",
+        localRuntimeConnectionPool: {} as any,
+        getWindowSession: () => ({
+          windowId: 7,
+          project: null,
+          binding: localBinding("/repo"),
+        }),
+      });
+
+      await vi.runOnlyPendingTimersAsync();
+
+      expect(remoteConnectMock).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.ADE_DISABLE_REMOTE_AUTOCONNECT;
+      } else {
+        process.env.ADE_DISABLE_REMOTE_AUTOCONNECT = previous;
+      }
+      vi.useRealTimers();
+    }
   });
 
   it("forwards local project runtime actions with renderer client metadata for file watches", async () => {

@@ -87,7 +87,7 @@ describe("buildSshConfig", () => {
       host: "remote.example.test",
       port: 22,
       username: "ade",
-      readyTimeout: 20_000,
+      readyTimeout: 10_000,
       keepaliveInterval: 0,
       keepaliveCountMax: 3,
       agent: "/tmp/ade-agent.sock",
@@ -506,6 +506,42 @@ describe("buildSshConfig", () => {
         `SSH server at 127.0.0.1:${address.port} closed the connection before ADE could finish the SSH handshake.`,
       );
     } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("times out SSH sockets that never finish the handshake", async () => {
+    const sockets = new Set<net.Socket>();
+    const server = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.once("close", () => {
+        sockets.delete(socket);
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      server.close();
+      throw new Error("Expected TCP test server to bind an address.");
+    }
+
+    try {
+      await expect(scanSshHostKeyForTarget({
+        ...target,
+        hostname: "127.0.0.1",
+        port: address.port,
+      }, {
+        env: { ADE_REMOTE_SSH_CONNECT_TIMEOUT_MS: "75" } as NodeJS.ProcessEnv,
+        knownHostsPath: null,
+        sshConfigPath: null,
+      })).rejects.toThrow(
+        `Timed out while waiting for the SSH handshake from 127.0.0.1:${address.port}.`,
+      );
+    } finally {
+      for (const socket of sockets) socket.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });

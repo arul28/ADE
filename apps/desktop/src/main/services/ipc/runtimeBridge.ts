@@ -301,10 +301,12 @@ export function registerRuntimeBridge({
       );
     }
   });
-  const autoconnectTimer = setTimeout(() => {
-    remoteConnectionService.startAutoconnect();
-  }, 0);
-  autoconnectTimer.unref?.();
+  if (process.env.ADE_DISABLE_REMOTE_AUTOCONNECT !== "1") {
+    const autoconnectTimer = setTimeout(() => {
+      remoteConnectionService.startAutoconnect();
+    }, 0);
+    autoconnectTimer.unref?.();
+  }
   const probeRemoteConnectionsAfterWake = (): void => {
     remoteConnectionService.probeSavedConnections();
   };

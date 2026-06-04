@@ -85,6 +85,8 @@ const DEFAULT_IDENTITY_FILES = [
   "id_ecdsa_sk",
   "id_rsa",
 ];
+const DEFAULT_SSH_CONNECT_ATTEMPT_TIMEOUT_MS = 10_000;
+const MIN_SSH_CONNECT_ATTEMPT_TIMEOUT_MS = 50;
 
 function stripInlineComment(line: string): string {
   const hashIndex = line.indexOf("#");
@@ -542,11 +544,12 @@ export async function trustSshHostKeyForTarget(
 export function buildSshConfig(target: RemoteRuntimeTarget, options: BuildSshConfigOptions = {}): ConnectConfig {
   const hostConfig = readOpenSshHostConfig(target, options);
   const endpoint = resolveSshEndpoint(target, options);
+  const env = options.env ?? process.env;
   const config: ConnectConfig = {
     host: endpoint.host,
     port: endpoint.port,
     username: endpoint.username,
-    readyTimeout: 20_000,
+    readyTimeout: sshConnectAttemptTimeoutMs(env),
     // Runtime RPC calls and artifact uploads have their own timeouts. SSH-level
     // keepalives can starve behind large channel writes and close otherwise
     // healthy uploads, so keep the transport-level probe disabled.
@@ -567,11 +570,18 @@ export function buildSshConfig(target: RemoteRuntimeTarget, options: BuildSshCon
   const knownHostEntries = readKnownHostEntries(endpoint.knownHostsPath);
   const candidates = knownHostCandidates(endpoint.hostAliases, endpoint.port);
   config.hostVerifier = (key: Buffer) => knownHostsAllowKey(knownHostEntries, candidates, key);
-  const env = options.env ?? process.env;
   if (env.SSH_AUTH_SOCK) {
     config.agent = env.SSH_AUTH_SOCK;
   }
   return config;
+}
+
+function sshConnectAttemptTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const raw = env.ADE_REMOTE_SSH_CONNECT_TIMEOUT_MS;
+  const parsed = raw == null ? NaN : Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= MIN_SSH_CONNECT_ATTEMPT_TIMEOUT_MS
+    ? parsed
+    : DEFAULT_SSH_CONNECT_ATTEMPT_TIMEOUT_MS;
 }
 
 function uniqueUsernames(values: Array<string | null | undefined>): string[] {
@@ -766,14 +776,54 @@ function normalizeSshConnectError(
     );
   }
 
+  if (isLocalPortUnavailableError(source)) {
+    return copySshErrorMetadata(
+      source,
+      new Error(
+        `macOS could not allocate a local TCP port for SSH to ${endpoint}. ` +
+          "Quit apps that are rapidly opening network connections and try again.",
+      ),
+    );
+  }
+
   return source;
+}
+
+function isLocalPortUnavailableError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { code?: unknown; message?: unknown };
+  return candidate.code === "EADDRNOTAVAIL" ||
+    candidate.code === "EADDRINUSE" ||
+    (typeof candidate.message === "string" && /EADDRNOTAVAIL|EADDRINUSE|can't assign requested address|address already in use/i.test(candidate.message));
 }
 
 function connectSshWithConfig(config: ConnectConfig): Promise<Client> {
   return new Promise((resolve, reject) => {
     const client = new Client();
     let settled = false;
+    let connectTimer: NodeJS.Timeout | null = null;
+    const connectTimeoutMs =
+      typeof config.readyTimeout === "number" && Number.isFinite(config.readyTimeout)
+        ? Math.max(MIN_SSH_CONNECT_ATTEMPT_TIMEOUT_MS, config.readyTimeout)
+        : DEFAULT_SSH_CONNECT_ATTEMPT_TIMEOUT_MS;
+    const clearConnectTimer = (): void => {
+      if (!connectTimer) return;
+      clearTimeout(connectTimer);
+      connectTimer = null;
+    };
+    const destroyClient = (): void => {
+      try {
+        client.end();
+      } catch {}
+      try {
+        (client as unknown as { destroy?: () => void }).destroy?.();
+      } catch {}
+      try {
+        (client as unknown as { _sock?: { destroy?: () => void } })._sock?.destroy?.();
+      } catch {}
+    };
     const cleanupConnectListeners = (options: { keepErrorListener?: boolean } = {}): void => {
+      clearConnectTimer();
       client.off("ready", onReady);
       if (!options.keepErrorListener) {
         client.off("error", onError);
@@ -788,7 +838,14 @@ function connectSshWithConfig(config: ConnectConfig): Promise<Client> {
       // connect attempt. Keep onError attached as a sink so the late error is
       // contained after the promise has already rejected.
       cleanupConnectListeners({ keepErrorListener: true });
+      destroyClient();
       reject(normalizeSshConnectError(error, fallback, config));
+    };
+    const onTimeout = (): void => {
+      const timeoutError = new Error(
+        `Timed out while waiting for handshake after ${connectTimeoutMs}ms.`,
+      );
+      fail(timeoutError, "Timed out while waiting for handshake.");
     };
     const onReady = (): void => {
       if (settled) return;
@@ -813,6 +870,8 @@ function connectSshWithConfig(config: ConnectConfig): Promise<Client> {
     client.on("error", onError);
     client.once("close", onClose);
     client.once("end", onEnd);
+    connectTimer = setTimeout(onTimeout, connectTimeoutMs);
+    connectTimer.unref?.();
     try {
       client.connect(config);
     } catch (error) {
