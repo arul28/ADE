@@ -123,6 +123,20 @@ function isTailscaleRoute(hostname: string | null | undefined): boolean {
   return second >= 64 && second <= 127;
 }
 
+function normalizeRouteHost(hostname: string | null | undefined): string {
+  return hostname?.trim().toLowerCase().replace(/\.$/, "") ?? "";
+}
+
+function normalizeRoutePort(port: number | null | undefined): number {
+  return port ?? 22;
+}
+
+function routeIdentity(hostname: string | null | undefined, port: number | null | undefined): string | null {
+  const host = normalizeRouteHost(hostname);
+  if (!host) return null;
+  return `${host}:${normalizeRoutePort(port)}`;
+}
+
 function discoveredRouteSource(
   machine: RemoteRuntimeDiscoveredMachine,
   hostname: string,
@@ -203,6 +217,43 @@ function targetConnectionLabel(target: RemoteRuntimeTarget): string {
   return `${userPrefix}${target.hostname}${portSuffix}${defaultHint}${fallbackHint}`;
 }
 
+function targetRouteIdentities(target: RemoteRuntimeTarget): Set<string> {
+  const identities = new Set<string>();
+  const primary = routeIdentity(target.hostname, target.port);
+  if (primary) identities.add(primary);
+  for (const route of target.routes ?? []) {
+    const identity = routeIdentity(route.hostname, route.port ?? target.port);
+    if (identity) identities.add(identity);
+  }
+  return identities;
+}
+
+function discoveredMachineRouteIdentities(
+  machine: RemoteRuntimeDiscoveredMachine,
+): Set<string> {
+  const identities = new Set<string>();
+  for (const route of discoveredSshRoutes(machine)) {
+    const identity = routeIdentity(route.hostname, route.port ?? machine.port);
+    if (identity) identities.add(identity);
+  }
+  return identities;
+}
+
+function discoveredMachineMatchesSavedTarget(
+  machine: RemoteRuntimeDiscoveredMachine,
+  targets: RemoteRuntimeTarget[],
+): boolean {
+  const discovered = discoveredMachineRouteIdentities(machine);
+  if (discovered.size === 0) return false;
+  return targets.some((target) => {
+    const saved = targetRouteIdentities(target);
+    for (const identity of discovered) {
+      if (saved.has(identity)) return true;
+    }
+    return false;
+  });
+}
+
 function connectionStateLabel(
   connection: RemoteRuntimeConnectionStatus | null,
   connected: RemoteRuntimeConnectResult | null,
@@ -263,6 +314,13 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
     selectedTarget && hostKeyTrust?.targetId === selectedTarget.id
       ? hostKeyTrust
       : null;
+  const visibleDiscoveredMachines = useMemo(
+    () =>
+      discoveredMachines.filter(
+        (machine) => !discoveredMachineMatchesSavedTarget(machine, targets),
+      ),
+    [discoveredMachines, targets],
+  );
 
   const loadTargets = useCallback(async () => {
     setLoading(true);
@@ -741,7 +799,7 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
               >
                 Scanning nearby machines...
               </div>
-            ) : discoveredMachines.length === 0 ? (
+            ) : visibleDiscoveredMachines.length === 0 ? (
               <div
                 style={{
                   color: COLORS.textMuted,
@@ -749,11 +807,13 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
                   fontSize: 13,
                 }}
               >
-                No LAN ADE services or Tailscale peers found.
+                {discoveredMachines.length > 0
+                  ? "Nearby machines are already saved above."
+                  : "No LAN ADE services or Tailscale peers found."}
               </div>
             ) : (
               <div style={{ display: "grid", gap: 8 }}>
-                {discoveredMachines.map((machine) => {
+                {visibleDiscoveredMachines.map((machine) => {
                   const route = discoveredRoute(machine);
                   return (
                     <div

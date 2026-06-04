@@ -289,6 +289,60 @@ describe("RemoteTargetList", () => {
     expect(screen.getByText("Connected")).toBeTruthy();
   });
 
+  it("hides discovered machines that are already saved as SSH targets", async () => {
+    const target = {
+      id: "target-1",
+      name: "Mac Studio",
+      hostname: "aruls-mac-studio.tail7497a6.ts.net",
+      sshUser: null,
+      port: null,
+      sshKeyPath: null,
+      routes: [
+        {
+          hostname: "aruls-mac-studio.tail7497a6.ts.net",
+          port: null,
+          source: "tailscale",
+          lastSucceededAt: null,
+        },
+      ],
+      lastSeenArch: "darwin-arm64",
+      runtimeBinaryVersion: "1.0.0",
+      lastConnectedAt: null,
+    };
+    remoteRuntimeMock.listTargets.mockResolvedValue([target]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [
+        {
+          id: "tailscale::mac-studio",
+          serviceName: "tailscale-ssh",
+          machineName: "Arul's Mac Studio",
+          hostIdentity: "mac-studio",
+          hostName: "aruls-mac-studio.tail7497a6.ts.net",
+          port: 22,
+          addresses: [],
+          primaryRoute: "aruls-mac-studio.tail7497a6.ts.net",
+          tailscaleAddress: "aruls-mac-studio.tail7497a6.ts.net",
+          runtimeKind: "tailscale-peer",
+          runtimeVersion: null,
+          projectIds: [],
+          projectCount: 0,
+          lastSeenAt: 1234,
+        },
+      ],
+      diagnostics: [],
+    });
+    installAdeMock();
+
+    render(<RemoteTargetList />);
+
+    await waitFor(() =>
+      expect(screen.getAllByText("Mac Studio").length).toBeGreaterThan(0),
+    );
+    expect(screen.queryByText("Arul's Mac Studio")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Use host" })).toBeNull();
+    expect(screen.getByText("Nearby machines are already saved above.")).toBeTruthy();
+  });
+
   it("surfaces Tailscale discovery diagnostics separately from empty results", async () => {
     remoteRuntimeMock.listTargets.mockResolvedValue([]);
     remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
