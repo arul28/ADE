@@ -303,6 +303,26 @@ describe("usage components", () => {
       expect(window.ade.usage.refresh).not.toHaveBeenCalled();
     });
 
+    it("defers the cached usage and provider reads until opened", async () => {
+      vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(makeHeaderUsageSnapshot());
+
+      render(<HeaderUsageControl deferInitialRead />);
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(window.ade.usage.getSnapshot).not.toHaveBeenCalled();
+      expect(window.ade.ai.getStatus).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "Usage" }));
+
+      await waitFor(() => {
+        expect(window.ade.usage.getSnapshot).toHaveBeenCalled();
+        expect(window.ade.ai.getStatus).toHaveBeenCalled();
+      });
+    });
+
     it("applies pushed usage updates without forcing a refresh", async () => {
       let onUpdate: ((snapshot: UsageSnapshot) => void) | null = null;
       vi.mocked(window.ade.usage.onUpdate).mockImplementation((cb) => {

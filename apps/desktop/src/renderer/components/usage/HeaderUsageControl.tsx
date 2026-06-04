@@ -122,9 +122,11 @@ function HeaderProviderUsageChip({
 export function HeaderUsageControl({
   variant = "chip",
   onMenuActivate,
+  deferInitialRead = false,
 }: {
   variant?: "chip" | "menu-row";
   onMenuActivate?: () => void;
+  deferInitialRead?: boolean;
 } = {}) {
   const [open, setOpen] = useState(false);
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
@@ -179,18 +181,24 @@ export function HeaderUsageControl({
       });
     };
 
-    readCachedSnapshot();
+    if (!deferInitialRead || open) {
+      readCachedSnapshot();
+    }
 
     return () => {
       cancelled = true;
       unsubscribe?.();
     };
-  }, [applySnapshot]);
+  }, [applySnapshot, deferInitialRead, open]);
 
   // Fetch provider connection status so the header only shows configured
   // Claude/Codex usage meters.
   useEffect(() => {
     if (!window.ade?.ai?.getStatus) return;
+    if (deferInitialRead && !open) {
+      setProviderConnections(undefined);
+      return;
+    }
     const aiBridge = window.ade.ai;
     let cancelled = false;
     const loadProviderStatus = () => {
@@ -208,7 +216,7 @@ export function HeaderUsageControl({
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, []);
+  }, [deferInitialRead, open]);
 
   const detectedProviders = useMemo<UsageProvider[]>(() => {
     const providersWithUsage = TRACKED_PROVIDERS.filter((provider) =>

@@ -1779,7 +1779,11 @@ export function TopBar() {
         return (
           <div className="flex flex-col gap-0.5">
             <LinearQuickViewButton variant="menu-row" onMenuActivate={options?.onActivate} />
-            <HeaderUsageControl variant="menu-row" onMenuActivate={options?.onActivate} />
+            <HeaderUsageControl
+              variant="menu-row"
+              onMenuActivate={options?.onActivate}
+              deferInitialRead={Boolean(remoteBinding)}
+            />
             {remoteChip}
             {mobileChip}
           </div>
@@ -1791,12 +1795,13 @@ export function TopBar() {
           <LinearQuickViewButton />
           {remoteChip}
           {mobileChip}
-          <HeaderUsageControl />
+          <HeaderUsageControl deferInitialRead={Boolean(remoteBinding)} />
         </>
       );
     },
     [
       phoneSyncOpen,
+      remoteBinding,
       remoteConnected,
       remotePanelOpen,
       showSyncControl,
