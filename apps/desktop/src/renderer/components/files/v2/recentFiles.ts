@@ -18,3 +18,10 @@ export function forgetRecentFile(sessionKey: string, path: string): void {
   if (!current) return;
   recentsBySession.set(sessionKey, current.filter((p) => p !== path));
 }
+
+export function pruneMissingRootRecentFiles(sessionKey: string, knownRootPaths: ReadonlySet<string>): string[] {
+  const current = recentsBySession.get(sessionKey) ?? [];
+  const next = current.filter((path) => path.includes("/") || knownRootPaths.has(path));
+  if (next.length !== current.length) recentsBySession.set(sessionKey, next);
+  return next;
+}

@@ -656,6 +656,28 @@ describe("LaneGitActionsPane rescue action", () => {
     });
   });
 
+  it("closes advanced git actions on Escape and Refresh", async () => {
+    const user = userEvent.setup();
+
+    renderPane();
+
+    await user.click(await screen.findByRole("button", { name: /more/i }));
+    expect(screen.getByRole("button", { name: /fetch only/i })).toBeTruthy();
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: /fetch only/i })).toBeNull();
+    });
+
+    await user.click(screen.getByRole("button", { name: /more/i }));
+    expect(screen.getByRole("button", { name: /fetch only/i })).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: /refresh git state/i }));
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: /fetch only/i })).toBeNull();
+    });
+  });
+
   it("updates the stash section even if the broader refresh fails afterward", async () => {
     const user = userEvent.setup();
     mockStashesByLaneId["lane-1"] = [

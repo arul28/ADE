@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { forgetRecentFile, getRecentFiles, recordRecentFile } from "./recentFiles";
+import { forgetRecentFile, getRecentFiles, pruneMissingRootRecentFiles, recordRecentFile } from "./recentFiles";
 
 describe("recentFiles", () => {
   it("removes stale paths without disturbing other recents", () => {
@@ -23,5 +23,18 @@ describe("recentFiles", () => {
     recordRecentFile(sessionKey, "README.md");
 
     expect(getRecentFiles(sessionKey)).toEqual(["README.md", "src/index.ts"]);
+  });
+
+  it("prunes root-level recents missing from the loaded root tree", () => {
+    const sessionKey = "recent-files-test-prune-root";
+
+    recordRecentFile(sessionKey, "README.md");
+    recordRecentFile(sessionKey, "deleted.txt");
+    recordRecentFile(sessionKey, "src/index.ts");
+
+    const visible = pruneMissingRootRecentFiles(sessionKey, new Set(["README.md"]));
+
+    expect(visible).toEqual(["src/index.ts", "README.md"]);
+    expect(getRecentFiles(sessionKey)).toEqual(["src/index.ts", "README.md"]);
   });
 });

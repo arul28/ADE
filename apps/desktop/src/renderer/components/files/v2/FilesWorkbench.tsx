@@ -32,7 +32,7 @@ import {
 } from "./editorGroupsStore";
 import { resolveViewerKind } from "./viewerRegistry";
 import { invalidateFileContent, primeFileContent } from "./useFileContent";
-import { forgetRecentFile, getRecentFiles, recordRecentFile } from "./recentFiles";
+import { forgetRecentFile, getRecentFiles, pruneMissingRootRecentFiles, recordRecentFile } from "./recentFiles";
 import { EditorGroups } from "./EditorGroups";
 import { StatusBar } from "./StatusBar";
 import { WarmEmptyState } from "./WarmEmptyState";
@@ -125,6 +125,21 @@ export function FilesWorkbench({
     () => new Set(Object.values(groupsState.groups).flatMap((g) => g.tabs.map((t) => t.path))).size,
     [groupsState.groups],
   );
+  const knownRootPaths = useMemo(() => new Set(tree.map((node) => node.path)), [tree]);
+  const recentFiles = getRecentFiles(sessionKey);
+  const visibleRecentFiles = useMemo(
+    () => (
+      tree.length > 0
+        ? recentFiles.filter((path) => path.includes("/") || knownRootPaths.has(path))
+        : recentFiles
+    ),
+    [knownRootPaths, recentFiles, tree.length],
+  );
+
+  useEffect(() => {
+    if (tree.length === 0) return;
+    pruneMissingRootRecentFiles(sessionKey, knownRootPaths);
+  }, [knownRootPaths, sessionKey, tree.length]);
 
   /* ---- Workspace resolution ---- */
   useEffect(() => {
@@ -607,7 +622,7 @@ export function FilesWorkbench({
               workspaceName={workspace?.name ?? null}
               branch={branch}
               dirtyCount={dirtyPaths.size}
-              recents={getRecentFiles(sessionKey)}
+              recents={visibleRecentFiles}
               onOpen={(path) => void openFile(path, { preview: false })}
               onSearch={() => setOverlay({ kind: "search", query: "" })}
               modifierKey={modifierKeyLabel}

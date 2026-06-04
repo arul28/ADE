@@ -799,6 +799,21 @@ export function LaneGitActionsPane({
     }
   };
 
+  useEffect(() => {
+    setShowAdvanced(false);
+  }, [laneId]);
+
+  useEffect(() => {
+    if (!showAdvanced) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setShowAdvanced(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [showAdvanced]);
+
   const refreshAutoRebaseStatus = useCallback(async (targetLaneId: string | null = laneId) => {
     if (!targetLaneId) {
       if (isViewingLane(targetLaneId)) {
@@ -2224,6 +2239,7 @@ export function LaneGitActionsPane({
             }}>
               <button
                 type="button"
+                aria-label="Refresh git state"
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -2237,7 +2253,10 @@ export function LaneGitActionsPane({
                   borderRadius: 6,
                   flexShrink: 0,
                 }}
-                onClick={() => refreshAll({ fetchRemote: true }).catch(() => {})}
+                onClick={() => {
+                  setShowAdvanced(false);
+                  refreshAll({ fetchRemote: true }).catch(() => {});
+                }}
               >
                 <ArrowsClockwise size={13} className={cn(loading && "animate-spin")} />
               </button>
