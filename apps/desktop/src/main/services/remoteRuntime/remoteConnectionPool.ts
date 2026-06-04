@@ -207,27 +207,37 @@ function assertMachineProjectCapability(entry: PoolEntry, method: string): void 
 function optionalRemoteActionFallbackResult(
   request: RemoteRuntimeActionRequest,
 ): RemoteRuntimeActionResult | null {
-  if (request.domain !== "file" || request.action !== "refreshGitDecorations") {
-    return null;
+  if (request.domain === "file" && request.action === "refreshGitDecorations") {
+    const args = request.args && typeof request.args === "object" && !Array.isArray(request.args)
+      ? request.args as Record<string, unknown>
+      : {};
+    const workspaceId = typeof args.workspaceId === "string" && args.workspaceId.trim()
+      ? args.workspaceId.trim()
+      : "primary";
+    return {
+      domain: "file",
+      action: "refreshGitDecorations",
+      result: {
+        workspaceId,
+        files: [],
+        directories: [],
+      },
+      statusHints: {
+        optionalActionMissing: true,
+      },
+    };
   }
-  const args = request.args && typeof request.args === "object" && !Array.isArray(request.args)
-    ? request.args as Record<string, unknown>
-    : {};
-  const workspaceId = typeof args.workspaceId === "string" && args.workspaceId.trim()
-    ? args.workspaceId.trim()
-    : "primary";
-  return {
-    domain: "file",
-    action: "refreshGitDecorations",
-    result: {
-      workspaceId,
-      files: [],
-      directories: [],
-    },
-    statusHints: {
-      optionalActionMissing: true,
-    },
-  };
+  if (request.domain === "pr" && request.action === "listQueueStates") {
+    return {
+      domain: "pr",
+      action: "listQueueStates",
+      result: [],
+      statusHints: {
+        optionalActionMissing: true,
+      },
+    };
+  }
+  return null;
 }
 
 function isRemoteActionNotCallableMessage(message: string): boolean {

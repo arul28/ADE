@@ -810,6 +810,57 @@ describe("RemoteConnectionPool", () => {
     }, { timeoutMs: 25_000 });
   });
 
+  it("falls back to empty PR queue states when an older runtime lacks that optional action", async () => {
+    const client = createClient();
+    client.call.mockResolvedValueOnce({
+      ok: false,
+      error: { message: "Action 'pr.listQueueStates' is not callable." },
+    });
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client,
+      ssh: createSsh(),
+      result: connectResult("0.9.0"),
+    });
+    const pool = new RemoteConnectionPool({ get: () => null } as unknown as RemoteTargetRegistry, "1.0.0");
+
+    await expect(
+      pool.callActionForTarget(target, "project-1", {
+        domain: "pr",
+        action: "listQueueStates",
+        args: { includeCompleted: true, limit: 50 },
+      }),
+    ).resolves.toEqual({
+      domain: "pr",
+      action: "listQueueStates",
+      result: [],
+      statusHints: { optionalActionMissing: true },
+    });
+
+    await expect(
+      pool.callActionForTarget(target, "project-1", {
+        domain: "pr",
+        action: "listQueueStates",
+        args: { includeCompleted: true, limit: 50 },
+      }),
+    ).resolves.toEqual({
+      domain: "pr",
+      action: "listQueueStates",
+      result: [],
+      statusHints: { optionalActionMissing: true },
+    });
+
+    expect(client.call).toHaveBeenCalledTimes(1);
+    expect(client.call).toHaveBeenCalledWith("ade/actions/call", {
+      projectId: "project-1",
+      name: "run_ade_action",
+      arguments: {
+        domain: "pr",
+        action: "listQueueStates",
+        args: { includeCompleted: true, limit: 50 },
+      },
+    }, { timeoutMs: 25_000 });
+  });
+
   it("lists remote ADE actions as grouped registry entries", async () => {
     const client = createClient();
     client.call.mockResolvedValueOnce({
