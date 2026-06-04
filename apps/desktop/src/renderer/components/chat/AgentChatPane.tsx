@@ -2342,7 +2342,11 @@ export function AgentChatPane({
   /** Callback when lane selection changes in empty state */
   onLaneChange?: (laneId: string) => void;
 }) {
-  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const projectRoot = useAppStore((s) => (
+    s.projectBinding?.kind === "remote"
+      ? s.projectBinding.rootPath
+      : (s.project?.rootPath ?? null)
+  ));
   const projectTransition = useAppStore((s) => s.projectTransition);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const agentTurnCompletionSound = useAppStore((s) => s.agentTurnCompletionSound);

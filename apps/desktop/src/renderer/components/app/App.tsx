@@ -978,7 +978,11 @@ function BrowserHashRouteBridge() {
 
 export function App() {
   const theme = useAppStore((s) => s.theme);
-  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const projectRoot = useAppStore((s) => (
+    s.projectBinding?.kind === "remote"
+      ? s.projectBinding.rootPath
+      : (s.project?.rootPath ?? null)
+  ));
 
   React.useEffect(() => {
     const w = window as Window & { __ADE_GET_DIRTY_FILE_TEXT__?: (p: string) => string | undefined };

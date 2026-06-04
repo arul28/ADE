@@ -778,6 +778,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     let refreshSerial = 0;
     let lastChatEventRefreshAt = 0;
     let lastKnownHasProvider = hasConfiguredAiProvider(cachedStatus);
+    const chatEventSubscriptionStartedAt = Date.now();
     const refreshAiStatus = (options: { force?: boolean } = {}) => {
       if (document.visibilityState !== "visible") return;
       const serial = ++refreshSerial;
@@ -809,6 +810,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibilityChange);
     const unsubscribeChatEvents = window.ade.agentChat.onEvent((envelope) => {
+      if (isRemoteProject) {
+        const eventTimestamp = Date.parse(envelope.timestamp);
+        if (Number.isFinite(eventTimestamp) && eventTimestamp < chatEventSubscriptionStartedAt - 10_000) {
+          return;
+        }
+      }
       if (lastKnownHasProvider && !shouldRefreshAiStatusForChatEvent(envelope)) return;
       const now = Date.now();
       if (now - lastChatEventRefreshAt < AI_STATUS_CHAT_EVENT_REFRESH_MIN_GAP_MS) return;
@@ -829,7 +836,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       window.removeEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onAiStatusCacheInvalidated);
       unsubscribeChatEvents();
     };
-  }, [currentProjectRoot]);
+  }, [currentProjectRoot, isRemoteProject]);
 
   useEffect(() => {
     let cancelled = false;

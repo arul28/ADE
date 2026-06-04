@@ -127,6 +127,7 @@ describe("AppShell AI provider status", () => {
           get: vi.fn(async () => null),
         },
         lanes: {
+          list: vi.fn(async () => []),
           listSnapshots: vi.fn(async () => []),
         },
         onboarding: {
@@ -292,5 +293,58 @@ describe("AppShell AI provider status", () => {
     });
 
     expect(githubGetStatusMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores stale auth-related chat history while remote AI status is cached", async () => {
+    vi.setSystemTime(new Date("2026-06-04T12:00:00.000Z"));
+    getStatusMock.mockResolvedValue(makeAiStatus(true));
+    const remoteRoot = "/Users/admin/Projects/perf pass";
+    const remoteProject = { rootPath: remoteRoot, displayName: "perf pass", baseRef: "main" } as any;
+    const remoteBinding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      projectId: "project-1",
+      runtimeName: "Mac Studio",
+      displayName: "perf pass",
+      rootPath: remoteRoot,
+    } as any;
+    await getAiStatusCached({ projectRoot: remoteRoot });
+    getStatusMock.mockClear();
+    (window.ade.app.getWindowSession as any).mockResolvedValue({
+      project: remoteProject,
+      binding: remoteBinding,
+    });
+    useAppStore.setState({
+      project: remoteProject,
+      projectBinding: remoteBinding,
+      projectHydrated: true,
+      showWelcome: false,
+    } as any);
+
+    render(
+      <MemoryRouter initialEntries={["/work"]}>
+        <AppShell>
+          <div>Work content</div>
+        </AppShell>
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      chatEventListener?.({
+        sessionId: "session-1",
+        timestamp: "2026-06-04T11:59:00.000Z",
+        event: {
+          type: "error",
+          message: "not authenticated",
+        },
+      });
+      await Promise.resolve();
+    });
+
+    expect(getStatusMock).not.toHaveBeenCalled();
   });
 });

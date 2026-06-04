@@ -18,7 +18,7 @@ import type {
 import { createDynamicCursorCliModelDescriptor, getModelById } from "../../../shared/modelRegistry";
 import { invalidateAgentChatSessionListCache } from "../../lib/agentChatSessionListCache";
 import { invalidateAgentChatSlashCommandsCache } from "../../lib/agentChatSlashCommandsCache";
-import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
+import { getAiStatusCached, invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { DRAFT_LAUNCH_JOB_STALE_AFTER_MS } from "../../lib/draftLaunchJobs";
 import { invalidateProjectConfigCache } from "../../lib/projectConfigCache";
 import { useAppStore } from "../../state/appStore";
@@ -819,6 +819,7 @@ function seedRemoteChatStore() {
     } as any],
     selectedLaneId: "lane-1",
   });
+  return rootPath;
 }
 
 function renderDrawerPane() {
@@ -993,7 +994,37 @@ function sessionTabTitles(expectedTitles: string[]) {
   return tabs.map((button) => button.textContent?.trim());
 }
 
-describe("AgentChatPane remote session delta", () => {
+describe("AgentChatPane remote startup", () => {
+  it("uses the remote binding root for AI status cache lookups", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    installAdeMocks({ sessions: [session] });
+    window.ade.ai.getStatus = vi.fn().mockResolvedValue({
+      mode: "subscription",
+      availableProviders: {
+        claude: {
+          binary: { present: false, source: "missing", path: null },
+          auth: { ready: false, mode: "none", detail: null },
+        },
+        codex: true,
+        cursor: false,
+        droid: false,
+      },
+      models: { claude: [], codex: [], cursor: [], droid: [] },
+      features: [],
+      availableModelIds: ["openai/gpt-5.4"],
+    }) as any;
+    const remoteRoot = seedRemoteChatStore();
+    await getAiStatusCached({ projectRoot: remoteRoot });
+    vi.mocked(window.ade.ai.getStatus).mockClear();
+
+    renderPane(session);
+
+    await screen.findByRole("button", { name: /^Select model/ });
+    await Promise.resolve();
+
+    expect(window.ade.ai.getStatus).not.toHaveBeenCalled();
+  });
+
   it("skips mount-time session delta fetches for remote chats", async () => {
     const session = buildSession("session-1", { status: "idle" });
     installAdeMocks({ sessions: [session] });
