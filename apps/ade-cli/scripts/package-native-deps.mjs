@@ -82,7 +82,7 @@ function platformPackageTarget(packageName) {
   const patterns = [
     /^@openai\/codex-(darwin|linux|win32)-(arm64|x64)$/,
     /^@cursor\/sdk-(darwin|linux|win32)-(arm64|x64)$/,
-    /^@anthropic-ai\/claude-agent-sdk-(darwin|linux)-(arm64|x64)(?:-musl)?$/,
+    /^@anthropic-ai\/claude-agent-sdk-(darwin|linux|win32)-(arm64|x64)(?:-musl)?$/,
     /^opencode-(darwin|linux|windows)-(arm64|x64)$/,
     /^@esbuild\/(darwin|linux|win32)-(arm64|x64)$/,
   ];
