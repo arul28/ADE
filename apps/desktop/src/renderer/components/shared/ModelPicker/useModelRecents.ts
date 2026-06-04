@@ -101,11 +101,23 @@ const useRecentsStore = create<RecentsState>((set, get) => ({
   },
 }));
 
-export function useModelRecents(): {
+type UseModelRecentsOptions = {
+  hydrate?: boolean;
+};
+
+export function __resetModelRecentsForTests(): void {
+  useRecentsStore.setState({
+    recents: typeof window !== "undefined" ? readPersisted() : [],
+    hydrated: false,
+  });
+}
+
+export function useModelRecents(options: UseModelRecentsOptions = {}): {
   recents: string[];
   recordUsage: (modelId: string) => void;
   recordRecent: (modelId: string) => void;
 } {
+  const hydrate = options.hydrate ?? true;
   const { recents, recordUsage, hydrateFromRemote, hydrated } = useRecentsStore(
     useShallow((state) => ({
       recents: state.recents,
@@ -116,9 +128,10 @@ export function useModelRecents(): {
   );
 
   useEffect(() => {
+    if (!hydrate) return;
     if (hydrated) return;
     void hydrateFromRemote();
-  }, [hydrateFromRemote, hydrated]);
+  }, [hydrate, hydrateFromRemote, hydrated]);
 
   return { recents, recordUsage, recordRecent: recordUsage };
 }
