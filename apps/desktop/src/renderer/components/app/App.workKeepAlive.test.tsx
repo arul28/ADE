@@ -83,6 +83,7 @@ vi.mock("../../state/appStore", async () => {
       store.setState(partial);
     }),
     AppStoreProvider: ({ children }: { children: React.ReactNode }) => ReactModule.createElement(ReactModule.Fragment, null, children),
+    selectActiveProjectRoot: (state: typeof appStoreState) => state.project?.rootPath ?? null,
   };
 });
 
@@ -209,6 +210,17 @@ describe("App Work route keep-alive", () => {
     appStoreState.projectInfoByRoot = {};
     window.localStorage.clear();
     (window as Window & { __adeBrowserMock?: boolean }).__adeBrowserMock = true;
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        builtInBrowser: {
+          stopInspect: vi.fn().mockResolvedValue({}),
+          setBounds: vi.fn().mockResolvedValue({}),
+          onEvent: vi.fn(() => () => {}),
+        },
+      },
+    });
     window.history.replaceState({}, "", "/work");
   });
 
@@ -245,6 +257,34 @@ describe("App Work route keep-alive", () => {
     });
     expect(workLifecycle.mounts).toBe(1);
     expect(workLifecycle.unmounts).toBe(0);
+  });
+
+  it("parks the native Work browser view when the Work route is backgrounded", async () => {
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    await screen.findByTestId("work-page");
+    const browser = window.ade.builtInBrowser as unknown as {
+      stopInspect: ReturnType<typeof vi.fn>;
+      setBounds: ReturnType<typeof vi.fn>;
+    };
+    expect(browser.setBounds).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open files" }));
+    await screen.findByTestId("files-page");
+
+    await waitFor(() => {
+      expect(browser.stopInspect).toHaveBeenCalledWith({ projectRoot: "/fake/project" });
+      expect(browser.setBounds).toHaveBeenCalledWith({
+        projectRoot: "/fake/project",
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        visible: false,
+      });
+    });
   });
 
   it("reveals the Work browser pane when an ADE browser URL opens from another tab", async () => {

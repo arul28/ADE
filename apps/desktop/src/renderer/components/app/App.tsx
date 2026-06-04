@@ -333,6 +333,21 @@ function browserEventMatchesProject(event: unknown, projectRoot: string | null):
   return root === projectRoot;
 }
 
+function hideBuiltInBrowserView(projectRoot: string | null): void {
+  const browser = window.ade?.builtInBrowser;
+  if (!browser) return;
+  const scope = projectRoot ? { projectRoot } : {};
+  void browser.stopInspect(scope).catch(() => {});
+  void browser.setBounds({
+    ...scope,
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    visible: false,
+  }).catch(() => {});
+}
+
 function projectNameFromRoot(rootPath: string | null | undefined): string | null {
   if (!rootPath) return null;
   const segments = rootPath.split(/[\\/]/).filter(Boolean);
@@ -385,6 +400,11 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
     if (!isLanesRoute) return;
     setLanesRoute(route);
   }, [isLanesRoute, route]);
+
+  React.useEffect(() => {
+    if (active && isWorkRoute) return;
+    hideBuiltInBrowserView(projectRoot);
+  }, [active, isWorkRoute, projectRoot]);
 
   React.useEffect(() => {
     if (!active || !projectRoot) return;
