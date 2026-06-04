@@ -4,6 +4,7 @@ import type {
   AgentChatFileRef,
   IosElementContextItem,
   IosSimulatorPreviewCapability,
+  IosSimulatorPreviewMatch,
   IosSimulatorPreviewTarget,
   IosSimulatorRenderPreviewResult,
   IosScreenElement,
@@ -37,6 +38,14 @@ type SimulatorMode = "interact" | "inspect" | "preview";
 type SimulatorSurface = "simulator" | "preview";
 type PreviewMode = "control" | "capture";
 type PreviewAgentHelpAction = "open-simulator-in-preview" | "add-realistic-mocks" | "fix-preview";
+type PreviewBridgeAction = "open" | "create" | "find";
+type PreviewAgentPromptContext = {
+  selectedElement?: IosScreenElement | null;
+  previewTarget?: IosSimulatorPreviewTarget | null;
+  previewMatch?: IosSimulatorPreviewMatch | null;
+  previewResult?: IosSimulatorRenderPreviewResult | null;
+  includePreviewAttachment?: boolean;
+};
 
 const PREVIEW_AGENT_HELP_OPTIONS: Array<{
   value: PreviewAgentHelpAction;
@@ -178,15 +187,6 @@ const TOOL_DESCRIPTORS: Record<ToolKey, ToolDescriptor> = {
   },
 };
 
-function makeReactKeysById<T extends { id: string }>(items: T[]): string[] {
-  const seen = new Map<string, number>();
-  return items.map((item, index) => {
-    const collisions = seen.get(item.id) ?? 0;
-    seen.set(item.id, collisions + 1);
-    return collisions === 0 ? item.id : `${item.id}:${index}`;
-  });
-}
-
 function shortChatId(id: string): string {
   if (id.length <= 8) return id;
   return id.slice(0, 4) + "…" + id.slice(-3);
@@ -256,10 +256,65 @@ function elementLabel(element: IosScreenElement | null): string {
   return element.label || element.identifier || element.value || element.componentId || element.elementType || element.role || element.id;
 }
 
-function sourceTone(source: IosScreenElement["source"] | "coordinate"): string {
-  if (source === "ade-inspector") return "border-emerald-300/55 bg-emerald-400/10 text-emerald-50";
-  if (source === "accessibility") return "border-cyan-300/55 bg-cyan-400/10 text-cyan-50";
-  return "border-amber-300/55 bg-amber-400/10 text-amber-50";
+function normalizeSwiftSourcePath(value: string | null | undefined): string | null {
+  const raw = value?.trim().replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!raw) return null;
+  return raw.replace(/^(?:.*\/)?apps\/ios\//u, "");
+}
+
+function swiftSourcePathsMatch(left: string | null | undefined, right: string | null | undefined): boolean {
+  const normalizedLeft = normalizeSwiftSourcePath(left);
+  const normalizedRight = normalizeSwiftSourcePath(right);
+  if (!normalizedLeft || !normalizedRight) return false;
+  if (normalizedLeft === normalizedRight) return true;
+  if (!normalizedLeft.includes("/") || !normalizedRight.includes("/")) {
+    return normalizedLeft.split("/").pop() === normalizedRight.split("/").pop();
+  }
+  return normalizedLeft.endsWith(`/${normalizedRight}`) || normalizedRight.endsWith(`/${normalizedLeft}`);
+}
+
+function previewMatchBelongsToElement(match: IosSimulatorPreviewMatch | null, element: IosScreenElement | null): boolean {
+  if (!match || !element) return false;
+  if (element.sourceFile) {
+    if (!match.selectedSourceFile || !swiftSourcePathsMatch(match.selectedSourceFile, element.sourceFile)) return false;
+  } else if (match.selectedSourceFile) {
+    return false;
+  }
+  if (element.sourceLine && match.selectedSourceLine && Math.abs(match.selectedSourceLine - element.sourceLine) > 3) return false;
+  return true;
+}
+
+function previewBridgeActionForSelection(
+  match: IosSimulatorPreviewMatch | null,
+  element: IosScreenElement | null,
+): PreviewBridgeAction {
+  if (!element) return "create";
+  if (!previewMatchBelongsToElement(match, element)) return "find";
+  if (match?.status === "matched" && match.target) return "open";
+  if (match?.status === "missing-preview" || match?.status === "missing-source" || match?.status === "no-context") return "create";
+  return "find";
+}
+
+function previewBridgeLabel(action: PreviewBridgeAction): string {
+  if (action === "open") return "Open in preview";
+  if (action === "create") return "Create preview";
+  return "Find preview";
+}
+
+function previewBridgeTitle(action: PreviewBridgeAction, element: IosScreenElement | null): string {
+  if (action === "open") return "Render the matching Preview Lab target for this frozen simulator selection";
+  if (action === "create") {
+    return element
+      ? "Draft an agent task to create a Preview Lab target for this frozen simulator selection"
+      : "Draft an agent task to create a Preview Lab target for the current simulator screen";
+  }
+  return "Find a Preview Lab target for this frozen simulator selection";
+}
+
+function previewBridgeTone(action: PreviewBridgeAction): string {
+  if (action === "open") return "border-violet-300/22 bg-black/60 text-violet-50/85 hover:bg-black/72";
+  if (action === "create") return "border-amber-300/24 bg-black/60 text-amber-50/88 hover:bg-black/72";
+  return "border-white/[0.10] bg-black/60 text-fg/80 hover:bg-black/72";
 }
 
 function previewTargetLabel(target: IosSimulatorPreviewTarget | null | undefined): string {
@@ -290,6 +345,26 @@ function previewStatusLabel(capability: IosSimulatorPreviewCapability | null, ta
   return "Preview Lab ready";
 }
 
+function previewMatchLabel(match: IosSimulatorPreviewMatch | null): string {
+  if (!match) return "Match not checked";
+  if (match.status === "matched") {
+    if (match.confidence === "exact") return "Matched selected file";
+    if (match.confidence === "nearby") return "Matched nearby preview";
+    return "Project fallback";
+  }
+  if (match.status === "missing-preview") return "Preview needed";
+  if (match.status === "missing-source") return "Source missing";
+  return "Select simulator source";
+}
+
+function previewMatchTone(match: IosSimulatorPreviewMatch | null): string {
+  if (!match) return "border-white/[0.08] bg-white/[0.03] text-muted-fg/60";
+  if (match.status === "matched" && match.confidence !== "fallback") return "border-emerald-300/20 bg-emerald-400/10 text-emerald-50/82";
+  if (match.status === "matched") return "border-amber-300/20 bg-amber-400/10 text-amber-50/82";
+  if (match.status === "missing-preview") return "border-amber-300/20 bg-amber-400/10 text-amber-50/82";
+  return "border-white/[0.08] bg-white/[0.03] text-muted-fg/60";
+}
+
 function isLaunchTargetErrorMessage(message: string | null): boolean {
   if (!message) return false;
   return message.includes("ade.iosSimulator.listLaunchTargets") || /Project root .* does not exist/u.test(message);
@@ -297,10 +372,6 @@ function isLaunchTargetErrorMessage(message: string | null): boolean {
 
 function frameArea(element: IosScreenElement): number {
   return Math.max(1, element.pixelFrame.width) * Math.max(1, element.pixelFrame.height);
-}
-
-function rectArea(frame: IosScreenElement["pixelFrame"]): number {
-  return Math.max(0, frame.width) * Math.max(0, frame.height);
 }
 
 function rectIntersectionArea(a: IosScreenElement["pixelFrame"], b: IosScreenElement["pixelFrame"]): number {
@@ -388,57 +459,6 @@ function screenContextForSnapshot(snapshot: IosScreenSnapshot): Record<string, u
     screenshotWidth: snapshot.screenshot.width,
     screenshotHeight: snapshot.screenshot.height,
   };
-}
-
-function shouldShowInspectElement(element: IosScreenElement, snapshot: IosScreenSnapshot, selected: IosScreenElement | null, hovered: IosScreenElement | null): boolean {
-  if (selected?.id === element.id || hovered?.id === element.id) return true;
-  const screenshotWidth = snapshot.screenshot.width ?? snapshot.screen.width;
-  const screenshotHeight = snapshot.screenshot.height ?? snapshot.screen.height;
-  if (!screenshotWidth || !screenshotHeight) return true;
-  const frame = clampFrame(element.pixelFrame, screenshotWidth, screenshotHeight);
-  if (frame.width < 4 || frame.height < 4) return false;
-  const screenArea = screenshotWidth * screenshotHeight;
-  const areaRatio = rectArea(frame) / Math.max(1, screenArea);
-  const isNearlyFullscreen = areaRatio > 0.72
-    || (frame.x <= 2 && frame.y <= 2 && frame.width >= screenshotWidth - 4 && frame.height >= screenshotHeight - 4);
-  if (isNearlyFullscreen) return false;
-  if (areaRatio > 0.35 && !element.sourceFile && !element.componentId && !element.identifier && !element.label && !element.value) {
-    return false;
-  }
-  return hasSelectableIdentity(element);
-}
-
-function visibleInspectElements(snapshot: IosScreenSnapshot, selected: IosScreenElement | null, hovered: IosScreenElement | null): IosScreenElement[] {
-  const screenshotWidth = snapshot.screenshot.width ?? snapshot.screen.width;
-  const screenshotHeight = snapshot.screenshot.height ?? snapshot.screen.height;
-  const seen = new Set<string>();
-  return snapshot.elements
-    .filter((element) => shouldShowInspectElement(element, snapshot, selected, hovered))
-    .filter((element) => {
-      const frame = screenshotWidth && screenshotHeight
-        ? clampFrame(element.pixelFrame, screenshotWidth, screenshotHeight)
-        : element.pixelFrame;
-      const signature = [
-        Math.round(frame.x / 2) * 2,
-        Math.round(frame.y / 2) * 2,
-        Math.round(frame.width / 2) * 2,
-        Math.round(frame.height / 2) * 2,
-        element.sourceFile || element.componentId || element.identifier || element.label || element.role || element.id,
-      ].join(":");
-      if (seen.has(signature)) return false;
-      seen.add(signature);
-      return true;
-    })
-    .sort((a, b) => {
-      const selectedA = selected?.id === a.id ? -1 : 0;
-      const selectedB = selected?.id === b.id ? -1 : 0;
-      if (selectedA !== selectedB) return selectedA - selectedB;
-      const hoveredA = hovered?.id === a.id ? -1 : 0;
-      const hoveredB = hovered?.id === b.id ? -1 : 0;
-      if (hoveredA !== hoveredB) return hoveredA - hoveredB;
-      return frameArea(a) - frameArea(b);
-    })
-    .slice(0, 120);
 }
 
 function measureObjectContain(
@@ -738,6 +758,7 @@ export function ChatIosSimulatorPanel({
   const [snapshot, setSnapshot] = useState<IosScreenSnapshot | null>(null);
   const [previewCapability, setPreviewCapability] = useState<IosSimulatorPreviewCapability | null>(null);
   const [previewTargets, setPreviewTargets] = useState<IosSimulatorPreviewTarget[]>([]);
+  const [previewMatch, setPreviewMatch] = useState<IosSimulatorPreviewMatch | null>(null);
   const [selectedPreviewTargetId, setSelectedPreviewTargetId] = useState<string | null>(null);
   const [previewResult, setPreviewResult] = useState<IosSimulatorRenderPreviewResult | null>(null);
   const [previewAgentHelpAction, setPreviewAgentHelpAction] = useState<PreviewAgentHelpAction>("open-simulator-in-preview");
@@ -940,27 +961,34 @@ export function ChatIosSimulatorPanel({
     if (!previewTargets.length) {
       return {
         title: "No #Preview tag found",
-        detail: "The preview lab is connected to Xcode, but it could not find a nearby `#Preview` or `PreviewProvider`. Ask the agent to add one so this screen can render without the simulator.",
+        detail: previewMatch?.suggestedSourceFile
+          ? `The preview lab is connected to Xcode, but it could not find a nearby #Preview. ADE can ask the active agent to add one in ${previewMatch.suggestedSourceFile}.`
+          : "The preview lab is connected to Xcode, but it could not find a nearby #Preview or PreviewProvider.",
       };
     }
     return {
       title: "Ready to render Xcode previews",
-      detail: "Choose a preview target, render it, then use Capture area to drag exact preview context into the active session.",
+      detail: "Choose a preview target, render it, then use Inspect to drag exact preview context into the active session.",
     };
-  }, [previewCapability, previewTargets.length]);
+  }, [previewCapability, previewMatch?.suggestedSourceFile, previewTargets.length]);
   const emptyStateFileLabel = useMemo(() => {
     if (!previewCapability?.supported || previewTargets.length) return null;
-    return selectedElement?.sourceFile ?? null;
-  }, [previewCapability?.supported, previewTargets.length, selectedElement?.sourceFile]);
+    return previewMatch?.selectedSourceFile ?? selectedElement?.sourceFile ?? null;
+  }, [previewCapability?.supported, previewMatch?.selectedSourceFile, previewTargets.length, selectedElement?.sourceFile]);
   const previewReady = Boolean(previewCapability?.supported && selectedPreviewTarget);
   const previewTargetSource = selectedPreviewTarget
     ? `${selectedPreviewTarget.sourceFile}:${selectedPreviewTarget.sourceLine}`
     : null;
-  const previewSuggestionReason = selectedElement?.sourceFile
-    ? `Matched from simulator selection: ${elementLabel(selectedElement)}`
-    : selectedPreviewTarget
-      ? "Selected preview target"
-      : "No preview target selected";
+  const previewSuggestionReason = previewMatch?.reason
+    ?? (selectedElement?.sourceFile
+      ? `Matched from simulator selection: ${elementLabel(selectedElement)}`
+      : selectedPreviewTarget
+        ? "Selected preview target"
+        : "No preview target selected");
+  const inspectBridgeElement = selectedElement;
+  const previewBridgeAction = previewBridgeActionForSelection(previewMatch, inspectBridgeElement);
+  const previewBridgeButtonLabel = previewBridgeLabel(previewBridgeAction);
+  const previewBridgeButtonTitle = previewBridgeTitle(previewBridgeAction, inspectBridgeElement);
 
   const otherChatSessionId = useMemo(() => {
     if (ignoreChatOwnership) return null;
@@ -1064,32 +1092,78 @@ export function ChatIosSimulatorPanel({
 
   const refreshPreviewLab = useCallback(async () => {
     setPreviewRefreshing(true);
+    setPreviewResult(null);
     setMessage("Checking Xcode preview bridge. If Xcode asks for access, click Allow and keep ADE open while this finishes.");
     try {
       const sourceFile = selectedElement?.sourceFile ?? null;
       const sourceLine = selectedElement?.sourceLine ?? null;
-      const [capability, targets] = await Promise.all([
-        window.ade.iosSimulator.getPreviewCapability({ projectRoot, sourceFile, sourceLine }),
+      const selectedLabel = selectedElement ? elementLabel(selectedElement) : null;
+      const selectedComponentId = selectedElement?.componentId ?? null;
+      const [workspace, targets, match] = await Promise.all([
+        window.ade.iosSimulator.ensurePreviewWorkspace({ projectRoot, sourceFile, sourceLine, openIfNeeded: true }),
         window.ade.iosSimulator.listPreviewTargets({ projectRoot, sourceFile, sourceLine }),
+        window.ade.iosSimulator.resolvePreviewMatch({
+          projectRoot,
+          sourceFile,
+          sourceLine,
+          elementLabel: selectedLabel,
+          componentId: selectedComponentId,
+        }),
       ]);
+      const capability = workspace.capability;
       setPreviewCapability(capability);
       setPreviewTargets(targets);
+      setPreviewMatch(match);
+      const matchedTargetId = match.target?.id ?? null;
       setSelectedPreviewTargetId((current) => (
-        current && targets.some((target) => target.id === current)
+        matchedTargetId && targets.some((target) => target.id === matchedTargetId)
+          ? matchedTargetId
+          : current && targets.some((target) => target.id === current)
           ? current
-          : targets[0]?.id ?? null
+          : match.target?.id ?? targets[0]?.id ?? null
       ));
       if (!capability.supported) {
         setMessage(previewStatusLabel(capability, targets));
-      } else if (!targets.length) {
+      } else if (match.status === "missing-preview") {
         setMessage("No #Preview found near the selected source.");
+      } else if (match.status === "matched") {
+        setMessage(match.confidence === "fallback" ? "Using a project preview fallback." : "Preview match ready.");
       }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setPreviewRefreshing(false);
     }
-  }, [projectRoot, selectedElement?.sourceFile, selectedElement?.sourceLine]);
+  }, [projectRoot, selectedElement]);
+
+  useEffect(() => {
+    if (!selectedElement?.sourceFile) return;
+    if (previewMatchBelongsToElement(previewMatch, selectedElement)) return;
+    let cancelled = false;
+    void window.ade.iosSimulator.resolvePreviewMatch({
+      projectRoot,
+      sourceFile: selectedElement.sourceFile,
+      sourceLine: selectedElement.sourceLine ?? null,
+      elementLabel: elementLabel(selectedElement),
+      componentId: selectedElement.componentId ?? null,
+    }).then((match) => {
+      if (cancelled) return;
+      setPreviewMatch(match);
+      const matchedTarget = match.target;
+      if (matchedTarget) {
+        setPreviewTargets((current) => (
+          current.some((target) => target.id === matchedTarget.id)
+            ? current
+            : [matchedTarget, ...current]
+        ));
+      }
+    }).catch(() => {
+      // Preview routing is optional while inspecting the live simulator.
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [previewMatch, projectRoot, selectedElement]);
 
   const stopRendererLiveVisual = useCallback((options: { preserveVisual?: boolean } = {}) => {
     const preserveVisual = options.preserveVisual === true;
@@ -1594,16 +1668,47 @@ export function ChatIosSimulatorPanel({
     }
   }, [projectRoot]);
 
-  const draftPreviewAgentHelpRef = useRef<(() => Promise<void>) | null>(null);
-  const openCurrentPageInPreview = useCallback(() => {
-    const elementSource = selectedElement?.sourceFile ?? null;
-    const matchingTarget = elementSource
-      ? previewTargets.find((target) => target.sourceFile === elementSource || target.sourceFilePath === elementSource)
-        ?? null
-      : null;
-    setMode("preview");
-    setPreviewMode("control");
+  const draftPreviewAgentHelpRef = useRef<((actionOverride?: PreviewAgentHelpAction, context?: PreviewAgentPromptContext) => Promise<void>) | null>(null);
+  const openCurrentPageInPreview = useCallback(async () => {
+    const element = inspectBridgeElement;
+    const elementSource = element?.sourceFile ?? null;
+    const elementSourceLine = element?.sourceLine ?? null;
+    let match = previewMatch;
+    if (!previewMatchBelongsToElement(match, element)) {
+      setPreviewRefreshing(true);
+      setMessage("Finding a Preview Lab target for the frozen simulator frame...");
+      try {
+        match = await window.ade.iosSimulator.resolvePreviewMatch({
+          projectRoot,
+          sourceFile: elementSource,
+          sourceLine: elementSourceLine,
+          elementLabel: element ? elementLabel(element) : null,
+          componentId: element?.componentId ?? null,
+        });
+        setPreviewMatch(match);
+        const matchedTarget = match.target;
+        if (matchedTarget) {
+          setPreviewTargets((current) => (
+            current.some((target) => target.id === matchedTarget.id)
+              ? current
+              : [matchedTarget, ...current]
+          ));
+        }
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : String(error));
+        setPreviewRefreshing(false);
+        return;
+      } finally {
+        setPreviewRefreshing(false);
+      }
+    }
+    const matchingTarget = match?.target
+      ?? (elementSource
+        ? previewTargets.find((target) => target.sourceFile === elementSource || target.sourceFilePath === elementSource) ?? null
+        : null);
     if (matchingTarget) {
+      setMode("preview");
+      setPreviewMode("control");
       setSelectedPreviewTargetId(matchingTarget.id);
       setPreviewResult(null);
       void renderSelectedPreview(matchingTarget);
@@ -1611,10 +1716,16 @@ export function ChatIosSimulatorPanel({
     }
     setPreviewAgentHelpAction("open-simulator-in-preview");
     setMessage(elementSource
-      ? `No #Preview matched ${elementSource}. Drafting an agent prompt to find or wire one...`
-      : "No element is selected. Drafting an agent prompt to find the #Preview for the current screen...");
-    void draftPreviewAgentHelpRef.current?.();
-  }, [previewTargets, renderSelectedPreview, selectedElement?.sourceFile]);
+      ? `No #Preview matched ${elementSource}. Drafting an agent-backed preview task...`
+      : "No element is selected. Drafting an agent prompt to create a preview for the current screen...");
+    void draftPreviewAgentHelpRef.current?.("open-simulator-in-preview", {
+      selectedElement: element,
+      previewTarget: null,
+      previewMatch: match,
+      previewResult: null,
+      includePreviewAttachment: false,
+    });
+  }, [inspectBridgeElement, previewMatch, previewTargets, projectRoot, renderSelectedPreview]);
 
   const sendTypedText = useCallback(async () => {
     const text = typedText;
@@ -1832,14 +1943,16 @@ export function ChatIosSimulatorPanel({
       : "Added simulator screenshot region context.");
   }, [attachSimulatorCapture, onAddContext, snapshot]);
 
-  const buildPreviewAgentPrompt = useCallback((action: PreviewAgentHelpAction, attachmentPaths: { simulator: string | null; preview: string | null }) => {
-    const selected = selectedElement;
-    const target = selectedPreviewTarget;
+  const buildPreviewAgentPrompt = useCallback((action: PreviewAgentHelpAction, attachmentPaths: { simulator: string | null; preview: string | null }, context?: PreviewAgentPromptContext) => {
+    const selected = context && "selectedElement" in context ? context.selectedElement ?? null : selectedElement;
+    const target = context && "previewTarget" in context ? context.previewTarget ?? null : selectedPreviewTarget;
+    const match = context && "previewMatch" in context ? context.previewMatch ?? null : previewMatch;
+    const result = context && "previewResult" in context ? context.previewResult ?? null : previewResult;
     let previewState: string;
-    if (previewResult?.ok) {
+    if (result?.ok) {
       previewState = `Rendered preview ${target?.title ?? "selected preview"} successfully.`;
-    } else if (previewResult?.error) {
-      previewState = `Preview render failed: ${previewResult.error}`;
+    } else if (result?.error) {
+      previewState = `Preview render failed: ${result.error}`;
     } else if (target) {
       previewState = "Preview target exists but has not rendered in the preview lab yet.";
     } else {
@@ -1867,13 +1980,16 @@ export function ChatIosSimulatorPanel({
     const selectedAction = PREVIEW_AGENT_HELP_OPTIONS.find((option) => option.value === action) ?? PREVIEW_AGENT_HELP_OPTIONS[0]!;
     let requestedWork: string[];
     if (action === "open-simulator-in-preview") {
+      const suggestedPreviewLine = match?.suggestedSourceFile
+        ? `- Step 5b: If no matching preview exists, add one in ${match.suggestedSourceFile}${match.suggestedTitle ? ` named ${JSON.stringify(match.suggestedTitle)}` : ""}. Prefer a lightweight harness with bindings, env objects, no-op callbacks, fake state, and no live sync/network dependencies.`
+        : "- Step 5b: If no matching preview exists, add one (prefer a `<Feature>Previews.swift` sidecar; use a lightweight harness with bindings, env objects, no-op callbacks, fake state).";
       requestedWork = [
         "- Step 1: Identify the screen that is currently open in the live iOS Simulator. Start with `ade --socket ios-sim status --text` and `ade --socket ios-sim snapshot --text` so you are using ADE's current simulator session, not a guessed route.",
         "- Step 2: If the simulator is not running, there is no active simulator session, or ADE cannot capture a current screen/snapshot, stop and warn the user with the exact blocker. Do not guess from stale code.",
         "- Step 3: Use the simulator snapshot, attached screenshot, visible labels, navigation title, inspector packets, and SwiftUI file search to find the matching screen in code.",
-        "- Step 4: Check whether that screen already has a `#Preview` or `PreviewProvider`. Run `ade --socket ios-sim previews --source <swift-file> --text` to list nearby preview definitions for the matched file.",
+        "- Step 4: Resolve ADE's current preview match with `ade --socket ios-sim preview-match --source <swift-file> --text`, then check nearby definitions with `ade --socket ios-sim previews --source <swift-file> --text`.",
         "- Step 5a: If a matching preview already exists, use it. Do not add a duplicate preview just because the first search was imperfect.",
-        "- Step 5b: If no matching preview exists, add one (prefer a `<Feature>Previews.swift` sidecar; use a lightweight harness with bindings, env objects, no-op callbacks, fake state).",
+        suggestedPreviewLine,
         "- Step 6: Finish by opening/rendering the chosen preview through ADE CLI with `ade --socket ios-sim preview-render --source <file> --index <previewDefinitionIndexInFile> --text` so the result lands in ADE's Preview surface.",
         "- Report back with the screen you identified, the file:line of the preview that was used or added, and the `ade ios-sim preview-render` result.",
       ];
@@ -1906,6 +2022,9 @@ export function ChatIosSimulatorPanel({
       "",
       "Preview status:",
       `- ${previewState}`,
+      match ? `- Preview match: ${match.status} / ${match.confidence} - ${match.reason}` : "- Preview match: not checked.",
+      match?.suggestedSourceFile ? `- Suggested preview file: ${match.suggestedSourceFile}` : null,
+      match?.suggestedTitle ? `- Suggested preview title: ${match.suggestedTitle}` : null,
       previewCapability?.setupSteps.length ? `- Setup gaps: ${previewCapability.setupSteps.join("; ")}` : "- Xcode preview setup appears ready or was not checked.",
       "",
       "Visual evidence:",
@@ -1923,30 +2042,32 @@ export function ChatIosSimulatorPanel({
       "- If light/dark appearance is relevant to the visual context, add named preview variants with `.preferredColorScheme(.light)` and/or `.preferredColorScheme(.dark)` and avoid hardcoded colors that only work in one scheme.",
       "- If the selected view requires environment objects or bindings, add a small preview harness with no-op callbacks and fake state.",
       "- After edits, run the smallest useful Swift/Xcode check or render the preview if ADE/Xcode tooling is available.",
-    ].join("\n");
-  }, [previewCapability?.setupSteps, previewResult?.error, previewResult?.ok, selectedElement, selectedPreviewTarget]);
+    ].filter((line): line is string => line !== null).join("\n");
+  }, [previewCapability?.setupSteps, previewMatch, previewResult, selectedElement, selectedPreviewTarget]);
 
-  const draftPreviewAgentHelp = useCallback(async () => {
+  const draftPreviewAgentHelp = useCallback(async (actionOverride?: PreviewAgentHelpAction, context?: PreviewAgentPromptContext) => {
+    const action = actionOverride ?? previewAgentHelpAction;
+    const option = PREVIEW_AGENT_HELP_OPTIONS.find((entry) => entry.value === action) ?? PREVIEW_AGENT_HELP_OPTIONS[0]!;
     try {
       const [simulatorAttachment, previewAttachment] = await Promise.all([
         attachSimulatorScreenshot().catch(() => null),
-        attachPreviewSnapshot().catch(() => null),
+        context?.includePreviewAttachment === false ? Promise.resolve(null) : attachPreviewSnapshot().catch(() => null),
       ]);
-      const prompt = buildPreviewAgentPrompt(previewAgentHelpAction, {
+      const prompt = buildPreviewAgentPrompt(action, {
         simulator: simulatorAttachment,
         preview: previewAttachment,
-      });
+      }, context);
       if (onInsertDraft) {
         onInsertDraft(prompt);
-        setMessage(`Prepared "${previewAgentHelpOption.label}" prompt in the composer.`);
+        setMessage(`Prepared "${option.label}" prompt in the composer.`);
       } else {
         await window.ade.app.writeClipboardText(prompt);
-        setMessage(`Copied "${previewAgentHelpOption.label}" prompt.`);
+        setMessage(`Copied "${option.label}" prompt.`);
       }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
-  }, [attachPreviewSnapshot, attachSimulatorScreenshot, buildPreviewAgentPrompt, onInsertDraft, previewAgentHelpAction, previewAgentHelpOption.label]);
+  }, [attachPreviewSnapshot, attachSimulatorScreenshot, buildPreviewAgentPrompt, onInsertDraft, previewAgentHelpAction]);
   useEffect(() => {
     draftPreviewAgentHelpRef.current = draftPreviewAgentHelp;
   }, [draftPreviewAgentHelp]);
@@ -2231,7 +2352,8 @@ export function ChatIosSimulatorPanel({
       ? `Snapshot ready with ${snapshotElementCount} selectable item${snapshotElementCount === 1 ? "" : "s"}.`
       : "Snapshot ready with no selectable elements. Click a point or use Screenshot to attach visual context."
     : null;
-  const hoverSource = hoveredElement?.source ?? null;
+  const activeInspectElement = selectedElement ?? hoveredElement;
+  const activeInspectSource = activeInspectElement?.source ?? null;
   let previewModeHint: string | null = null;
   if (mode === "preview") {
     if (previewResult?.error) {
@@ -2313,14 +2435,14 @@ export function ChatIosSimulatorPanel({
   const canShowSnapshot = mode === "inspect" && Boolean(snapshotImage);
   const hasActiveSession = Boolean(activeSession);
   const interactionDisabled = simulatorMutationBlocked || showSetupChecklist;
-  const inspectOverlayElements = useMemo(
-    () => (snapshot ? visibleInspectElements(snapshot, selectedElement, hoveredElement) : []),
-    [hoveredElement, selectedElement, snapshot],
-  );
-  const inspectOverlayKeys = useMemo(
-    () => makeReactKeysById(inspectOverlayElements),
-    [inspectOverlayElements],
-  );
+  const activeInspectFrame = useMemo(() => {
+    if (!snapshot || !activeInspectElement) return null;
+    return clampFrame(
+      activeInspectElement.pixelFrame,
+      snapshot.screenshot.width ?? snapshot.screen.width,
+      snapshot.screenshot.height ?? snapshot.screen.height,
+    );
+  }, [activeInspectElement, snapshot]);
 
   let projectWindowValue: string;
   if (previewCapability?.error) {
@@ -2567,12 +2689,20 @@ export function ChatIosSimulatorPanel({
                 View in simulator
               </button>
             </div>
-            <div className="flex min-w-0 items-center justify-between gap-3 px-1 font-sans text-[10px] text-muted-fg/55">
-              <div className="min-w-0 truncate" title={previewSuggestionReason}>
-                {previewSuggestionReason}
+            <div className="flex min-w-0 flex-wrap items-center justify-between gap-1.5 px-1 font-sans text-[10px] text-muted-fg/55">
+              <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                <span className={cn(
+                  "inline-flex h-5 shrink-0 items-center rounded border px-1.5 font-medium",
+                  previewMatchTone(previewMatch),
+                )}>
+                  {previewMatchLabel(previewMatch)}
+                </span>
+                <span className="min-w-0 truncate" title={previewSuggestionReason}>
+                  {previewSuggestionReason}
+                </span>
               </div>
               <div className="min-w-0 shrink-0 truncate text-muted-fg/45" title={previewTargetSource ?? undefined}>
-                {previewTargetSource ?? "No #Preview selected"}
+                {previewTargetSource ?? previewMatch?.suggestedSourceFile ?? "No #Preview selected"}
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
@@ -2593,6 +2723,19 @@ export function ChatIosSimulatorPanel({
                 <FileCode size={11} />
                 Open Xcode
               </button>
+              {previewMatch?.status === "matched" && previewMatch.confidence === "fallback" ? (
+                <button
+                  type="button"
+                  className="inline-flex h-7 items-center gap-1 rounded-md border border-amber-300/20 bg-amber-400/10 px-2 font-sans text-[10px] font-medium text-amber-50/82 transition-colors hover:bg-amber-400/15"
+                  onClick={() => {
+                    setPreviewAgentHelpAction("open-simulator-in-preview");
+                    void draftPreviewAgentHelp("open-simulator-in-preview");
+                  }}
+                >
+                  <Lightning size={11} />
+                  Create closer preview
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-2 font-sans text-[10px] font-medium text-muted-fg/60 transition-colors hover:text-fg/85"
@@ -2728,9 +2871,10 @@ export function ChatIosSimulatorPanel({
                   previewMode === "capture" ? "bg-cyan-500/22 text-cyan-100/95" : "text-muted-fg/55 hover:text-fg/85",
                 )}
                 onClick={() => setPreviewMode("capture")}
+                title="Inspect a preview region"
               >
                 <Selection size={11} />
-                Capture area
+                Inspect
               </button>
             </div>
             <div className="pointer-events-auto absolute right-3 top-3 z-10 inline-flex max-w-[calc(100%-1.5rem)] items-center gap-1 rounded-md border border-amber-300/22 bg-black/60 px-1.5 py-1 font-sans text-[10px] text-amber-50/82 shadow-lg backdrop-blur">
@@ -2773,10 +2917,9 @@ export function ChatIosSimulatorPanel({
                     />
                     {previewCaptureActive && previewCaptureSelection && activePreviewCaptureFrame ? (
                       <div
-                        className="pointer-events-none absolute rounded-[3px] border border-cyan-200/75 bg-cyan-300/12 shadow-[0_0_0_9999px_rgba(0,0,0,0.28)]"
+                        className="pointer-events-none absolute left-0 top-0 rounded-[3px] border-2 border-violet-300/95 bg-violet-400/10 shadow-[0_0_0_9999px_rgba(0,0,0,0.28),0_0_0_1px_rgba(168,85,247,0.35),0_10px_28px_rgba(88,28,135,0.22)] transition-[height,transform,width] duration-100 ease-out"
                         style={{
-                          left: previewCaptureSelection.bounds.left + (activePreviewCaptureFrame.x * previewCaptureSelection.bounds.scaleX),
-                          top: previewCaptureSelection.bounds.top + (activePreviewCaptureFrame.y * previewCaptureSelection.bounds.scaleY),
+                          transform: `translate3d(${Math.round(previewCaptureSelection.bounds.left + (activePreviewCaptureFrame.x * previewCaptureSelection.bounds.scaleX))}px, ${Math.round(previewCaptureSelection.bounds.top + (activePreviewCaptureFrame.y * previewCaptureSelection.bounds.scaleY))}px, 0)`,
                           width: Math.max(1, activePreviewCaptureFrame.width * previewCaptureSelection.bounds.scaleX),
                           height: Math.max(1, activePreviewCaptureFrame.height * previewCaptureSelection.bounds.scaleY),
                         }}
@@ -2821,11 +2964,11 @@ export function ChatIosSimulatorPanel({
                       className="inline-flex h-8 items-center gap-1.5 rounded-md border border-amber-300/22 bg-amber-400/12 px-3 font-sans text-[11px] font-medium text-amber-50/88 transition-colors hover:bg-amber-400/18"
                       onClick={() => {
                         setPreviewAgentHelpAction("open-simulator-in-preview");
-                        void draftPreviewAgentHelp();
+                        void draftPreviewAgentHelp("open-simulator-in-preview");
                       }}
                     >
                       <Lightning size={12} />
-                      Ask agent to add a #Preview
+                      Create preview
                     </button>
                   ) : null}
                   {!previewCapability?.supported ? (
@@ -2968,16 +3111,17 @@ export function ChatIosSimulatorPanel({
             </div>
             <button
               type="button"
-              className="pointer-events-auto absolute right-3 top-3 z-10 inline-flex h-7 items-center gap-1.5 rounded-md border border-violet-300/22 bg-black/60 px-2 font-sans text-[10px] font-medium text-violet-50/85 shadow-lg backdrop-blur transition-colors hover:bg-black/72 disabled:cursor-not-allowed disabled:opacity-45"
-              onClick={(event) => { event.stopPropagation(); openCurrentPageInPreview(); }}
+              className={cn(
+                "pointer-events-auto absolute right-3 top-3 z-10 inline-flex h-7 items-center gap-1.5 rounded-md border px-2 font-sans text-[10px] font-medium shadow-lg backdrop-blur transition-colors disabled:cursor-not-allowed disabled:opacity-45",
+                previewBridgeTone(previewBridgeAction),
+              )}
+              onClick={(event) => { event.stopPropagation(); void openCurrentPageInPreview(); }}
               onPointerDown={(event) => event.stopPropagation()}
               onPointerUp={(event) => event.stopPropagation()}
-              title={selectedElement
-                ? "Open the source file for the selected element in Preview Lab"
-                : "Switch to Preview Lab and ask the agent to find a #Preview for the current screen"}
+              title={previewBridgeButtonTitle}
             >
-              <BracketsCurly size={11} />
-              Open in preview
+              {previewBridgeAction === "create" ? <Lightning size={11} /> : <BracketsCurly size={11} />}
+              {previewBridgeButtonLabel}
             </button>
             {liveVisual.sourceId ? (
               <div className={cn("absolute inset-0", mediaZoom > MEDIA_ZOOM_MIN ? "overflow-auto" : "overflow-hidden")}>
@@ -3101,15 +3245,16 @@ export function ChatIosSimulatorPanel({
             </div>
             <button
               type="button"
-              className="pointer-events-auto absolute right-3 top-3 z-10 inline-flex h-7 items-center gap-1.5 rounded-md border border-violet-300/22 bg-black/60 px-2 font-sans text-[10px] font-medium text-violet-50/85 shadow-lg backdrop-blur transition-colors hover:bg-black/72 disabled:cursor-not-allowed disabled:opacity-45"
-              onClick={(event) => { event.stopPropagation(); openCurrentPageInPreview(); }}
+              className={cn(
+                "pointer-events-auto absolute right-3 top-3 z-10 inline-flex h-7 items-center gap-1.5 rounded-md border px-2 font-sans text-[10px] font-medium shadow-lg backdrop-blur transition-colors disabled:cursor-not-allowed disabled:opacity-45",
+                previewBridgeTone(previewBridgeAction),
+              )}
+              onClick={(event) => { event.stopPropagation(); void openCurrentPageInPreview(); }}
               onPointerDown={(event) => event.stopPropagation()}
-              title={selectedElement
-                ? "Open the source file for the selected element in Preview Lab"
-                : "Ask the agent to find the current simulator screen and open its #Preview"}
+              title={previewBridgeButtonTitle}
             >
-              <BracketsCurly size={11} />
-              Open in preview
+              {previewBridgeAction === "create" ? <Lightning size={11} /> : <BracketsCurly size={11} />}
+              {previewBridgeButtonLabel}
             </button>
             <div className={cn("absolute inset-0", mediaZoom > MEDIA_ZOOM_MIN ? "overflow-auto" : "overflow-hidden")}>
               <div className="relative h-full w-full" style={mediaZoomStyle}>
@@ -3121,54 +3266,37 @@ export function ChatIosSimulatorPanel({
                   draggable={false}
                   onLoad={updateInspectBounds}
                 />
-                {mode === "inspect" && bounds && snapshot ? inspectOverlayElements.map((element, index) => {
-                  const frame = clampFrame(
-                    element.pixelFrame,
-                    snapshot.screenshot.width ?? snapshot.screen.width,
-                    snapshot.screenshot.height ?? snapshot.screen.height,
-                  );
-                  const isHovered = hoveredElement?.id === element.id;
-                  const isSelected = selectedElement?.id === element.id;
-                  return (
-                    <div
-                      key={inspectOverlayKeys[index] ?? `${element.id}:${index}`}
-                      className={cn(
-                        "pointer-events-none absolute rounded-[3px] border",
-                        isHovered || isSelected ? sourceTone(element.source) : "border-cyan-200/22 bg-cyan-400/[0.03]",
-                      )}
-                      style={{
-                        left: bounds.left + (frame.x * bounds.scaleX),
-                        top: bounds.top + (frame.y * bounds.scaleY),
-                        width: Math.max(2, frame.width * bounds.scaleX),
-                        height: Math.max(2, frame.height * bounds.scaleY),
-                      }}
-                    />
-                  );
-                }) : null}
+                {mode === "inspect" && bounds && activeInspectFrame ? (
+                  <div
+                    className="pointer-events-none absolute left-0 top-0 rounded-[3px] border-2 border-violet-300/95 bg-violet-400/10 shadow-[0_0_0_1px_rgba(168,85,247,0.35),0_10px_28px_rgba(88,28,135,0.22)] transition-[height,opacity,transform,width] duration-100 ease-out"
+                    style={{
+                      transform: `translate3d(${Math.round(bounds.left + (activeInspectFrame.x * bounds.scaleX))}px, ${Math.round(bounds.top + (activeInspectFrame.y * bounds.scaleY))}px, 0)`,
+                      width: Math.max(2, Math.round(activeInspectFrame.width * bounds.scaleX)),
+                      height: Math.max(2, Math.round(activeInspectFrame.height * bounds.scaleY)),
+                      opacity: activeInspectElement ? 1 : 0,
+                    }}
+                  />
+                ) : null}
                 {mode === "inspect" && simulatorCaptureActive && simulatorCaptureSelection && activeSimulatorCaptureFrame ? (
                   <div
-                    className="pointer-events-none absolute rounded-[3px] border border-amber-200/80 bg-amber-300/12 shadow-[0_0_0_9999px_rgba(0,0,0,0.26)]"
+                    className="pointer-events-none absolute left-0 top-0 rounded-[3px] border-2 border-violet-300/95 bg-violet-400/10 shadow-[0_0_0_9999px_rgba(0,0,0,0.26),0_0_0_1px_rgba(168,85,247,0.35),0_10px_28px_rgba(88,28,135,0.22)] transition-[height,transform,width] duration-100 ease-out"
                     style={{
-                      left: simulatorCaptureSelection.bounds.left + (activeSimulatorCaptureFrame.x * simulatorCaptureSelection.bounds.scaleX),
-                      top: simulatorCaptureSelection.bounds.top + (activeSimulatorCaptureFrame.y * simulatorCaptureSelection.bounds.scaleY),
+                      transform: `translate3d(${Math.round(simulatorCaptureSelection.bounds.left + (activeSimulatorCaptureFrame.x * simulatorCaptureSelection.bounds.scaleX))}px, ${Math.round(simulatorCaptureSelection.bounds.top + (activeSimulatorCaptureFrame.y * simulatorCaptureSelection.bounds.scaleY))}px, 0)`,
                       width: Math.max(1, activeSimulatorCaptureFrame.width * simulatorCaptureSelection.bounds.scaleX),
                       height: Math.max(1, activeSimulatorCaptureFrame.height * simulatorCaptureSelection.bounds.scaleY),
                     }}
                   />
                 ) : null}
-                {mode === "inspect" && bounds && hoveredElement ? (
+                {mode === "inspect" && bounds && activeInspectElement && activeInspectFrame ? (
                   <div
-                    className={cn(
-                      "pointer-events-none absolute max-w-[260px] rounded-md border px-2 py-1 font-sans text-[10px] shadow-lg",
-                      sourceTone(hoveredElement.source),
-                    )}
+                    className="pointer-events-none absolute max-w-[260px] rounded-md border border-violet-300/30 bg-black/72 px-2 py-1 font-sans text-[10px] text-violet-50/90 shadow-lg backdrop-blur"
                     style={{
-                      left: Math.min(bounds.left + bounds.width - 180, bounds.left + (hoveredElement.pixelFrame.x * bounds.scaleX)),
-                      top: Math.max(4, bounds.top + (hoveredElement.pixelFrame.y * bounds.scaleY) - 30),
+                      left: Math.min(bounds.left + bounds.width - 180, bounds.left + (activeInspectFrame.x * bounds.scaleX)),
+                      top: Math.max(4, bounds.top + (activeInspectFrame.y * bounds.scaleY) - 30),
                     }}
                   >
-                    <span className="font-medium">{elementLabel(hoveredElement)}</span>
-                    <span className="ml-1 opacity-65">{hoverSource}</span>
+                    <span className="font-medium">{elementLabel(activeInspectElement)}</span>
+                    <span className="ml-1 opacity-65">{activeInspectSource}</span>
                   </div>
                 ) : null}
               </div>

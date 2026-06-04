@@ -714,6 +714,36 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --source, --file <p>   Swift file to rank nearby previews.
     --line <n>             Optional source line.
 `,
+  "preview-match": `${ADE_BANNER}
+  iOS Simulator: preview-match
+
+  Resolves the best Preview Lab target for the current simulator/source context.
+  Aliases: match-preview, resolve-preview.
+
+    $ ade --socket ios-sim preview-match --source apps/ios/ADE/Views/Home.swift --line 42 --text
+
+  Flags:
+    --project-root <path>  ADE project root.
+    --source, --file <p>   Selected Swift file.
+    --line <n>             Optional source line.
+    --label <text>         Visible element label used for a suggested preview title.
+    --component-id <id>    ADEInspector component id used for a suggested preview.
+`,
+  "preview-ensure": `${ADE_BANNER}
+  iOS Simulator: preview-ensure
+
+  Opens this lane's iOS project in Xcode when needed and waits briefly for
+  Xcode MCP Preview Lab readiness. Aliases: ensure-preview, preview-workspace.
+
+    $ ade --socket ios-sim preview-ensure --text
+
+  Flags:
+    --project-root <path>  ADE project root.
+    --source, --file <p>   Optional Swift file context.
+    --line <n>             Optional source line.
+    --no-open              Check readiness without opening Xcode.
+    --timeout-ms <n>       Wait time for Xcode readiness; default 12000.
+`,
   "preview-render": `${ADE_BANNER}
   iOS Simulator: preview-render
 
@@ -851,6 +881,10 @@ const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
   "preview-doctor": "preview-status",
   "preview-list": "previews",
   "list-previews": "previews",
+  "match-preview": "preview-match",
+  "resolve-preview": "preview-match",
+  "ensure-preview": "preview-ensure",
+  "preview-workspace": "preview-ensure",
   "render-preview": "preview-render",
   preview: "preview-render",
   "open-preview-workspace": "preview-open",
@@ -1283,6 +1317,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade ios-sim inspect --x 120 --y 420 --text   Inspect a point in the simulator
     $ ade ios-sim preview-status --text           Xcode MCP readiness for Preview Lab
     $ ade ios-sim previews --source <file> --text  List nearby #Preview definitions
+    $ ade ios-sim preview-match --source <file>    Resolve best Preview Lab match
+    $ ade ios-sim preview-ensure --text            Open/wait for Xcode Preview Lab
     $ ade ios-sim preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
 
   Live view:
@@ -6811,6 +6847,54 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
             projectRoot: readValue(args, ["--project-root", "--root"]),
             sourceFile: readValue(args, ["--source", "--file"]),
             sourceLine: readNumberOption(args, ["--line"]),
+          }),
+        ),
+      ],
+    };
+  }
+  if (
+    sub === "preview-match" ||
+    sub === "match-preview" ||
+    sub === "resolve-preview"
+  ) {
+    return {
+      kind: "execute",
+      label: "iOS simulator preview match",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "resolvePreviewMatch",
+          collectGenericObjectArgs(args, {
+            projectRoot: readValue(args, ["--project-root", "--root"]),
+            sourceFile: readValue(args, ["--source", "--file"]),
+            sourceLine: readNumberOption(args, ["--line"]),
+            elementLabel: readValue(args, ["--label"]),
+            componentId: readValue(args, ["--component-id", "--component"]),
+          }),
+        ),
+      ],
+    };
+  }
+  if (
+    sub === "preview-ensure" ||
+    sub === "ensure-preview" ||
+    sub === "preview-workspace"
+  ) {
+    return {
+      kind: "execute",
+      label: "iOS simulator preview workspace",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "ensurePreviewWorkspace",
+          collectGenericObjectArgs(args, {
+            projectRoot: readValue(args, ["--project-root", "--root"]),
+            sourceFile: readValue(args, ["--source", "--file"]),
+            sourceLine: readNumberOption(args, ["--line"]),
+            openIfNeeded: readFlag(args, ["--no-open"]) ? false : undefined,
+            timeoutMs: readNumberOption(args, ["--timeout-ms"]),
           }),
         ),
       ],
@@ -13945,6 +14029,28 @@ function formatIosSimPreview(value: unknown): string {
     );
   }
   const record = isRecord(value) ? value : {};
+  if (typeof record.status === "string" && "confidence" in record) {
+    const target = isRecord(record.target) ? record.target : null;
+    return renderKeyValues("ADE iOS Preview match", [
+      ["status", record.status],
+      ["confidence", record.confidence],
+      [
+        "selected",
+        record.selectedSourceFile
+          ? `${record.selectedSourceFile}${record.selectedSourceLine ? `:${record.selectedSourceLine}` : ""}`
+          : null,
+      ],
+      [
+        "target",
+        target
+          ? `${target.title ?? "Preview"} · ${target.sourceFilePath ?? target.sourceFile ?? "unknown"}`
+          : null,
+      ],
+      ["suggested file", record.suggestedSourceFilePath ?? record.suggestedSourceFile],
+      ["suggested title", record.suggestedTitle],
+      ["reason", record.reason],
+    ]);
+  }
   const capability = isRecord(record.capability) ? record.capability : record;
   const steps = Array.isArray(capability.setupSteps)
     ? capability.setupSteps.join("; ")
@@ -14917,6 +15023,8 @@ function inferFormatter(
   if (
     label === "ios simulator preview status" ||
     label === "ios simulator previews" ||
+    label === "ios simulator preview match" ||
+    label === "ios simulator preview workspace" ||
     label === "ios simulator preview render" ||
     label === "ios simulator preview open"
   )
@@ -15418,6 +15526,7 @@ export {
   findProjectRoots,
   formatOutput,
   graphWaitState,
+  inferFormatter,
   isEphemeralRuntimeSocketPath,
   isFailedServiceManagerResult,
   machineRuntimeMismatchReason,

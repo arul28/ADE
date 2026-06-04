@@ -350,13 +350,13 @@ Measured Work run `work-chat-controls-20260512-02`:
   worktrees produce useful fixture evidence but should not be the only proof for
   `refresh-state` or `preview-refresh`. Surface switches, Preview Control /
   Capture mode, and the preview agent-action selector are safe state-only
-  controls; Ask-agent/#Preview prompt buttons need a chat-capable fixture or
+  controls; Create preview prompt buttons need a chat-capable fixture or
   explicit clipboard/draft handling.
 - `ChatIosSimulatorPanel.test.tsx` can cover iOS stream retry/recovery by
   emitting a `stream-error` event and verifying the panel restarts the stream
   for the selected device. It can also cover state-only launch-target select,
-  Preview-target select, setup install-command copy, Preview `Ask agent`, and
-  no-target `Ask agent to add a #Preview` without launching Simulator or Xcode.
+  Preview-target select, setup install-command copy, Preview `Create closer preview`, and
+  no-target `Create preview` without launching Simulator or Xcode.
   The same fixture can cover live simulator Control/Inspect mode switches,
   active-app text-field entry before Send, inspector refresh, and starting
   screenshot capture mode. It can also cover selecting a mocked ADE-inspector
@@ -374,7 +374,7 @@ Measured Work run `work-chat-controls-20260512-02`:
   Preview surface: `Expand preview view` should flip to `Exit expanded preview
   view`, zoom-in should move `100% -> 125%`, zoom-out should move `125% ->
   100%`, and reset should return from a setup zoom-in to `100%`.
-- Preview Lab `Ask agent` buttons are not valid prompt-draft evidence when
+- Preview Lab create-preview buttons are not valid prompt-draft evidence when
   `onInsertDraft` is absent: the panel falls back to copying the prompt and
   leaves the Work composer empty. Keep `preview-ask-agent` /
   `preview-add-preview` fixture-needed until using a chat-draft-capable surface

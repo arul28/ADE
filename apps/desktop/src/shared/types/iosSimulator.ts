@@ -203,10 +203,46 @@ export type IosSimulatorPreviewTarget = {
   proximity: "selected-file" | "feature-file" | "project";
 };
 
+export type IosSimulatorPreviewMatchStatus =
+  | "matched"
+  | "missing-source"
+  | "missing-preview"
+  | "no-context";
+
+export type IosSimulatorPreviewMatch = {
+  status: IosSimulatorPreviewMatchStatus;
+  target: IosSimulatorPreviewTarget | null;
+  confidence: "exact" | "nearby" | "fallback" | "none";
+  reason: string;
+  selectedSourceFile: string | null;
+  selectedSourceLine: number | null;
+  suggestedTitle: string | null;
+  suggestedSourceFile: string | null;
+  suggestedSourceFilePath: string | null;
+};
+
 export type IosSimulatorListPreviewsArgs = {
   projectRoot?: string | null;
   sourceFile?: string | null;
   sourceLine?: number | null;
+  elementLabel?: string | null;
+  componentId?: string | null;
+};
+
+export type IosSimulatorEnsurePreviewWorkspaceArgs = {
+  projectRoot?: string | null;
+  sourceFile?: string | null;
+  sourceLine?: number | null;
+  openIfNeeded?: boolean | null;
+  timeoutMs?: number | null;
+};
+
+export type IosSimulatorEnsurePreviewWorkspaceResult = {
+  ok: boolean;
+  opened: boolean;
+  path: string | null;
+  capability: IosSimulatorPreviewCapability;
+  error: string | null;
 };
 
 export type IosSimulatorRenderPreviewArgs = {
@@ -215,6 +251,7 @@ export type IosSimulatorRenderPreviewArgs = {
   previewDefinitionIndexInFile?: number | null;
   tabIdentifier?: string | null;
   timeoutSec?: number | null;
+  manageXcode?: boolean | null;
 };
 
 export type IosSimulatorRenderPreviewResult = {

@@ -9,6 +9,7 @@ import type {
   IosSimulatorEventPayload,
   IosSimulatorLaunchTarget,
   IosSimulatorPreviewCapability,
+  IosSimulatorPreviewMatch,
   IosSimulatorPreviewTarget,
   IosScreenElement,
   IosSimulatorStatus,
@@ -129,6 +130,18 @@ const secondPreviewTarget: IosSimulatorPreviewTarget = {
   previewDefinitionIndexInFile: 1,
 };
 
+const previewMatch: IosSimulatorPreviewMatch = {
+  status: "matched",
+  target: previewTarget,
+  confidence: "exact",
+  reason: "Matched a preview in the selected source file ContentView.swift.",
+  selectedSourceFile: "ContentView.swift",
+  selectedSourceLine: 12,
+  suggestedTitle: "Continue Preview",
+  suggestedSourceFile: "ContentPreviews.swift",
+  suggestedSourceFilePath: "apps/ios/ContentPreviews.swift",
+};
+
 const inspectElement: IosScreenElement = {
   id: "element-1",
   source: "ade-inspector",
@@ -178,6 +191,7 @@ function installIosSimulatorApi(options: {
   launchTargets?: IosSimulatorLaunchTarget[];
   previewCapability?: IosSimulatorPreviewCapability;
   previewTargets?: IosSimulatorPreviewTarget[];
+  previewMatch?: IosSimulatorPreviewMatch;
   screenElements?: IosScreenElement[];
   hitElement?: IosScreenElement | null;
 } = {}) {
@@ -193,6 +207,20 @@ function installIosSimulatorApi(options: {
     configurable: true,
     value: vi.fn().mockResolvedValue(undefined),
   });
+  const effectivePreviewTargets = options.previewTargets ?? [previewTarget];
+  const effectivePreviewMatch = options.previewMatch ?? (effectivePreviewTargets.length
+    ? previewMatch
+    : {
+        status: "missing-preview" as const,
+        target: null,
+        confidence: "none" as const,
+        reason: "No #Preview or PreviewProvider was found near ContentView.swift.",
+        selectedSourceFile: "ContentView.swift",
+        selectedSourceLine: 12,
+        suggestedTitle: "Continue Preview",
+        suggestedSourceFile: "ContentPreviews.swift",
+        suggestedSourceFilePath: "apps/ios/ContentPreviews.swift",
+      });
   const api = {
     getStatus: vi.fn().mockResolvedValue(options.status ?? activeStatus),
     listDevices: vi.fn().mockResolvedValue([device]),
@@ -254,7 +282,15 @@ function installIosSimulatorApi(options: {
     getInspectorSnapshot: vi.fn(),
     inspectPoint: vi.fn(),
     getPreviewCapability: vi.fn().mockResolvedValue(options.previewCapability ?? previewCapability),
-    listPreviewTargets: vi.fn().mockResolvedValue(options.previewTargets ?? [previewTarget]),
+    listPreviewTargets: vi.fn().mockResolvedValue(effectivePreviewTargets),
+    resolvePreviewMatch: vi.fn().mockResolvedValue(effectivePreviewMatch),
+    ensurePreviewWorkspace: vi.fn().mockResolvedValue({
+      ok: (options.previewCapability ?? previewCapability).supported,
+      opened: false,
+      path: "/tmp/project/apps/ios/Example.xcodeproj",
+      capability: options.previewCapability ?? previewCapability,
+      error: null,
+    }),
     renderPreview: vi.fn().mockResolvedValue({
       ok: true,
       target: {
@@ -406,6 +442,19 @@ describe("ChatIosSimulatorPanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Preview" }));
     await waitFor(() => expect(api.listPreviewTargets).toHaveBeenCalled());
+    expect(api.ensurePreviewWorkspace).toHaveBeenCalledWith({
+      projectRoot: "/tmp/project",
+      sourceFile: null,
+      sourceLine: null,
+      openIfNeeded: true,
+    });
+    expect(api.resolvePreviewMatch).toHaveBeenCalledWith({
+      projectRoot: "/tmp/project",
+      sourceFile: null,
+      sourceLine: null,
+      elementLabel: null,
+      componentId: null,
+    });
 
     const previewTargetSelect = screen.getAllByRole("combobox").find((select) =>
       Array.from((select as HTMLSelectElement).options).some((option) => option.value === secondPreviewTarget.id)
@@ -527,10 +576,11 @@ describe("ChatIosSimulatorPanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Preview" }));
 
-    fireEvent.click(await screen.findByRole("button", { name: "Ask agent to add a #Preview" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Create preview" }));
 
     await waitFor(() => {
       expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("No renderable #Preview was found"));
+      expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("Suggested preview file: ContentPreviews.swift"));
     });
   });
 
@@ -552,6 +602,8 @@ describe("ChatIosSimulatorPanel", () => {
     expect(textInput.value).toBe("hello simulator");
     expect(api.typeText).not.toHaveBeenCalled();
 
+    fireEvent.click(screen.getByRole("button", { name: "Simulator" }));
+    fireEvent.click(screen.getByRole("button", { name: "Simulator" }));
     fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
     expect(await screen.findByAltText("iOS Simulator snapshot")).toBeTruthy();
 
@@ -762,17 +814,238 @@ describe("ChatIosSimulatorPanel", () => {
     }));
     expect(await screen.findByText(/Added selected UI context/)).toBeTruthy();
 
-    fireEvent.click(await screen.findByTitle("Open the source file for the selected element in Preview Lab"));
+    fireEvent.click(await screen.findByRole("button", { name: /Open in preview|Find preview|Create preview/ }));
+
+    expect(await screen.findByText("ContentView.swift:12")).toBeTruthy();
+    expect(api.resolvePreviewMatch).toHaveBeenCalledWith({
+      projectRoot: "/tmp/project",
+      sourceFile: inspectElement.sourceFile,
+      sourceLine: inspectElement.sourceLine,
+      elementLabel: inspectElement.label,
+      componentId: inspectElement.componentId,
+    });
+    expect(api.renderPreview).toHaveBeenCalledWith(expect.objectContaining({
+      projectRoot: "/tmp/project",
+      sourceFilePath: previewTarget.sourceFilePath,
+      previewDefinitionIndexInFile: previewTarget.previewDefinitionIndexInFile,
+    }));
+  });
+
+  it("treats Swift #fileID source paths as the same Preview Lab match", async () => {
+    vi.stubGlobal("PointerEvent", MouseEvent);
+    vi.stubGlobal("Image", class {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_value: string) {
+        queueMicrotask(() => this.onerror?.());
+      }
+    });
+    const fileIdElement: IosScreenElement = {
+      ...inspectElement,
+      sourceFile: "ADE/Views/ContentView.swift",
+    };
+    const repoRelativeTarget: IosSimulatorPreviewTarget = {
+      ...previewTarget,
+      sourceFile: "apps/ios/ADE/Views/ContentView.swift",
+      sourceFilePath: "ADE/Views/ContentView.swift",
+      absoluteSourceFile: "/tmp/project/apps/ios/ADE/Views/ContentView.swift",
+    };
+    const repoRelativeMatch: IosSimulatorPreviewMatch = {
+      ...previewMatch,
+      target: repoRelativeTarget,
+      selectedSourceFile: "apps/ios/ADE/Views/ContentView.swift",
+    };
+    installIosSimulatorApi({
+      screenElements: [fileIdElement],
+      previewTargets: [repoRelativeTarget],
+      previewMatch: repoRelativeMatch,
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(document.querySelector("video")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
+    const image = await screen.findByAltText("iOS Simulator snapshot") as HTMLImageElement;
+    const imageRect = {
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 393,
+      bottom: 852,
+      width: 393,
+      height: 852,
+      toJSON: () => ({}),
+    } as DOMRect;
+    image.getBoundingClientRect = () => imageRect;
+    if (image.parentElement) {
+      image.parentElement.getBoundingClientRect = () => imageRect;
+    }
+
+    fireEvent.pointerDown(image, { clientX: 50, clientY: 40 });
+
+    expect(await screen.findByRole("button", { name: "Open in preview" })).toBeTruthy();
+  });
+
+  it("keeps bridge preview prompts anchored to the selected inspect element", async () => {
+    vi.stubGlobal("PointerEvent", MouseEvent);
+    vi.stubGlobal("Image", class {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_value: string) {
+        queueMicrotask(() => this.onerror?.());
+      }
+    });
+    const settingsElement: IosScreenElement = {
+      ...inspectElement,
+      id: "element-2",
+      label: "Settings",
+      identifier: "settingsButton",
+      componentId: "SettingsView/SettingsButton",
+      sourceFile: "SettingsView.swift",
+      sourceLine: 24,
+      frame: { x: 190, y: 190, width: 60, height: 40 },
+      pixelFrame: { x: 570, y: 570, width: 180, height: 120 },
+    };
+    const settingsMatch: IosSimulatorPreviewMatch = {
+      status: "missing-preview",
+      target: null,
+      confidence: "none",
+      reason: "No #Preview or PreviewProvider was found near SettingsView.swift.",
+      selectedSourceFile: "SettingsView.swift",
+      selectedSourceLine: 24,
+      suggestedTitle: "Settings Preview",
+      suggestedSourceFile: "SettingsPreviews.swift",
+      suggestedSourceFilePath: "apps/ios/SettingsPreviews.swift",
+    };
+    const onInsertDraft = vi.fn();
+    const { api } = installIosSimulatorApi({
+      screenElements: [inspectElement, settingsElement],
+      previewTargets: [],
+    });
+    api.resolvePreviewMatch.mockImplementation(async (args?: { sourceFile?: string | null }) => (
+      args?.sourceFile === "SettingsView.swift"
+        ? settingsMatch
+        : {
+            status: "missing-preview",
+            target: null,
+            confidence: "none",
+            reason: "No #Preview or PreviewProvider was found near ContentView.swift.",
+            selectedSourceFile: "ContentView.swift",
+            selectedSourceLine: 12,
+            suggestedTitle: "Continue Preview",
+            suggestedSourceFile: "ContentPreviews.swift",
+            suggestedSourceFilePath: "apps/ios/ContentPreviews.swift",
+          }
+    ));
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+        onInsertDraft={onInsertDraft}
+      />,
+    );
+
+    await waitFor(() => expect(document.querySelector("video")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
+    const image = await screen.findByAltText("iOS Simulator snapshot") as HTMLImageElement;
+    const imageRect = {
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 393,
+      bottom: 852,
+      width: 393,
+      height: 852,
+      toJSON: () => ({}),
+    } as DOMRect;
+    image.getBoundingClientRect = () => imageRect;
+    if (image.parentElement) {
+      image.parentElement.getBoundingClientRect = () => imageRect;
+    }
+
+    fireEvent.pointerDown(image, { clientX: 50, clientY: 40 });
+    await screen.findByText(/Added selected UI context/);
+    fireEvent.pointerMove(image, { clientX: 210, clientY: 210 });
+    fireEvent.click(await screen.findByRole("button", { name: "Create preview" }));
 
     await waitFor(() => {
-      expect(api.listPreviewTargets).toHaveBeenCalledWith({
+      expect(api.resolvePreviewMatch).toHaveBeenCalledWith({
         projectRoot: "/tmp/project",
         sourceFile: inspectElement.sourceFile,
         sourceLine: inspectElement.sourceLine,
+        elementLabel: inspectElement.label,
+        componentId: inspectElement.componentId,
       });
+      expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("ContentView.swift:12"));
+      expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("Continue Preview"));
+      expect(onInsertDraft).not.toHaveBeenCalledWith(expect.stringContaining("SettingsView.swift:24"));
     });
-    expect(await screen.findByText("ContentView.swift:12")).toBeTruthy();
-    expect(api.renderPreview).not.toHaveBeenCalled();
+  });
+
+  it("drafts a create-preview task from an inspected simulator element when no preview exists", async () => {
+    vi.stubGlobal("PointerEvent", MouseEvent);
+    vi.stubGlobal("Image", class {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_value: string) {
+        queueMicrotask(() => this.onerror?.());
+      }
+    });
+    const onAddContext = vi.fn();
+    const onInsertDraft = vi.fn();
+    const { api } = installIosSimulatorApi({
+      screenElements: [inspectElement],
+      previewTargets: [],
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={onAddContext}
+        onInsertDraft={onInsertDraft}
+      />,
+    );
+
+    await waitFor(() => expect(document.querySelector("video")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
+    const image = await screen.findByAltText("iOS Simulator snapshot") as HTMLImageElement;
+    const imageRect = {
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 393,
+      bottom: 852,
+      width: 393,
+      height: 852,
+      toJSON: () => ({}),
+    } as DOMRect;
+    image.getBoundingClientRect = () => imageRect;
+    if (image.parentElement) {
+      image.parentElement.getBoundingClientRect = () => imageRect;
+    }
+
+    fireEvent.pointerDown(image, { clientX: 50, clientY: 40 });
+
+    await waitFor(() => expect(onAddContext).toHaveBeenCalled());
+    fireEvent.click(await screen.findByRole("button", { name: "Create preview" }));
+
+    await waitFor(() => {
+      expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("No renderable #Preview was found"));
+      expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("ade --socket ios-sim preview-match"));
+      expect(api.renderPreview).not.toHaveBeenCalled();
+    });
   });
 
   it("expands and zooms the live simulator view", async () => {
