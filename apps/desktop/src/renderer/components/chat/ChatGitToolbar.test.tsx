@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
@@ -50,8 +50,26 @@ function installAdeMocks() {
   } as any;
 }
 
-function resetStore() {
+function resetStore(options?: { remote?: boolean }) {
+  const rootPath = options?.remote ? "/Users/admin/Projects/perf pass" : "/tmp/project";
   useAppStore.setState({
+    project: { rootPath, displayName: options?.remote ? "perf pass" : "Project" } as any,
+    projectBinding: options?.remote
+      ? {
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        projectId: "project-1",
+        runtimeName: "Mac Studio",
+        displayName: "perf pass",
+        rootPath,
+      } as any
+      : {
+        kind: "local",
+        key: `local:${rootPath}`,
+        rootPath,
+        displayName: "Project",
+      } as any,
     lanes: [{
       id: "lane-1",
       name: "UI audit lane",
@@ -110,5 +128,41 @@ describe("ChatGitToolbar", () => {
     expect(screen.getByTestId("location").textContent).toBe(
       "/prs?tab=normal&create=1&sourceLaneId=lane-1&target=primary",
     );
+  });
+
+  it("does not load diff or PR state when mounted for a remote project", async () => {
+    resetStore({ remote: true });
+
+    renderToolbar();
+
+    await Promise.resolve();
+
+    expect(window.ade.diff.getChanges).not.toHaveBeenCalled();
+    expect(window.ade.prs.getForLane).not.toHaveBeenCalled();
+  });
+
+  it("resolves the linked PR on first remote PR click before routing", async () => {
+    resetStore({ remote: true });
+    vi.mocked(window.ade.prs.getForLane).mockResolvedValue({
+      id: "pr-1",
+      laneId: "lane-1",
+      title: "Remote linked PR",
+      state: "open",
+      checksStatus: "unknown",
+      githubUrl: "https://github.com/acme/perf-pass/pull/1",
+      additions: 0,
+      deletions: 0,
+      updatedAt: null,
+    } as any);
+
+    renderToolbar();
+
+    fireEvent.click(await screen.findByRole("button", { name: "PR" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toBe("/prs?tab=normal&prId=pr-1");
+    });
+    expect(window.ade.prs.getForLane).toHaveBeenCalledTimes(1);
+    expect(window.ade.diff.getChanges).not.toHaveBeenCalled();
   });
 });

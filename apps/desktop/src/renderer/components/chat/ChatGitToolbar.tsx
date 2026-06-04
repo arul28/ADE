@@ -16,6 +16,7 @@ import { cn } from "../ui/cn";
 import type { DiffChanges, PrSummary, PrCheck } from "../../../shared/types";
 import { useLaneGitActionRuntimeState } from "../lanes/LaneGitActionsPane";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
+import { useAppStore } from "../../state/appStore";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -103,9 +104,12 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
 }: ChatGitToolbarProps) {
   const navigate = useNavigate();
   const runtime = useLaneGitActionRuntimeState(laneId);
+  const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
 
   const [dirtyCount, setDirtyCount] = useState(0);
   const [linkedPr, setLinkedPr] = useState<PrSummary | null>(null);
+  const [prLoaded, setPrLoaded] = useState(false);
+  const [prActionBusy, setPrActionBusy] = useState(false);
   const [prMenuOpen, setPrMenuOpen] = useState(false);
   const [prChecks, setPrChecks] = useState<PrCheck[] | null>(null);
   const [prChecksLoading, setPrChecksLoading] = useState(false);
@@ -128,25 +132,39 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     try {
       const pr = await window.ade.prs.getForLane(laneId);
       setLinkedPr(pr);
+      setPrLoaded(true);
+      return pr;
     } catch {
       setLinkedPr(null);
+      setPrLoaded(true);
+      return null;
     }
   }, [laneId]);
 
   useEffect(() => {
+    setDirtyCount(0);
+    setLinkedPr(null);
+    setPrLoaded(false);
+    setPrMenuOpen(false);
+    setPrChecks(null);
+    if (isRemoteProject) return;
     void refreshStatus();
     void refreshPr();
-  }, [refreshStatus, refreshPr]);
+  }, [isRemoteProject, refreshStatus, refreshPr]);
 
   // Re-poll after the runtime finishes an action (from either pane or toolbar)
   const prevBusy = React.useRef(runtime.busyAction);
   useEffect(() => {
     if (prevBusy.current && !runtime.busyAction) {
+      if (isRemoteProject && !prLoaded) {
+        prevBusy.current = runtime.busyAction;
+        return;
+      }
       void refreshStatus();
       void refreshPr();
     }
     prevBusy.current = runtime.busyAction;
-  }, [runtime.busyAction, refreshStatus, refreshPr]);
+  }, [isRemoteProject, prLoaded, runtime.busyAction, refreshStatus, refreshPr]);
 
   // Subscribe to backend PR events so the linked-PR pill reflects external
   // changes (PR closed, merged, checks finished, etc.) without a manual refresh.
@@ -155,6 +173,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       if (event.type !== "prs-updated") return;
       // Only re-fetch when an update could plausibly touch this lane's PR.
       if (event.prs.some((pr) => pr.laneId === laneId)) {
+        if (isRemoteProject && !prLoaded && !linkedPr) return;
         void refreshPr();
       } else if (linkedPr && !event.prs.some((pr) => pr.id === linkedPr.id)) {
         // The linked PR vanished from the latest snapshot — clear the pill.
@@ -162,21 +181,36 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       }
     });
     return unsubscribe;
-  }, [laneId, linkedPr, refreshPr]);
+  }, [isRemoteProject, laneId, linkedPr, prLoaded, refreshPr]);
 
-  const handlePr = useCallback(() => {
+  const handlePr = useCallback(async () => {
     if (linkedPr) {
       navigate(`/prs?tab=normal&prId=${encodeURIComponent(linkedPr.id)}`);
-    } else {
-      const params = new URLSearchParams({
-        tab: "normal",
-        create: "1",
-        sourceLaneId: laneId,
-        target: "primary",
-      });
-      navigate(`/prs?${params.toString()}`);
+      return;
     }
-  }, [laneId, linkedPr, navigate]);
+
+    if (!prLoaded) {
+      setPrActionBusy(true);
+      const latestPr = await refreshPr().finally(() => setPrActionBusy(false));
+      if (latestPr) {
+        navigate(`/prs?tab=normal&prId=${encodeURIComponent(latestPr.id)}`);
+        return;
+      }
+    }
+
+    const params = new URLSearchParams({
+      tab: "normal",
+      create: "1",
+      sourceLaneId: laneId,
+      target: "primary",
+    });
+    navigate(`/prs?${params.toString()}`);
+  }, [laneId, linkedPr, navigate, prLoaded, refreshPr]);
+
+  const handlePrClick = useCallback(() => {
+    if (prActionBusy) return;
+    void handlePr();
+  }, [handlePr, prActionBusy]);
 
   // Reset menu state when the linked PR identity changes (lane switch, PR
   // unlinked) so stale data from another PR doesn't show.
@@ -240,7 +274,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     }
   }, [linkedPr]);
 
-  const isBusy = Boolean(runtime.busyAction);
+  const isBusy = Boolean(runtime.busyAction) || prActionBusy;
 
   // -----------------------------------------------------------------------
   // PR badge
@@ -393,7 +427,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
           </AnimatePresence>
         </div>
       ) : (
-        <button type="button" className={cn(btnBase)} onClick={handlePr} disabled={isBusy}>
+        <button type="button" className={cn(btnBase)} onClick={handlePrClick} disabled={isBusy}>
           <GitPullRequest size={10} weight="bold" />
           <span>PR</span>
         </button>
