@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { Client, ConnectConfig } from "ssh2";
+import type { Client, ConnectConfig, SFTPWrapper } from "ssh2";
 import type {
   RemoteRuntimeCapabilities,
   RemoteRuntimeConnectResult,
@@ -310,6 +310,116 @@ async function execSshOrThrow(client: Client, command: string, fallback: string)
   throw new Error(result.stderr.trim() || result.stdout.trim() || fallback);
 }
 
+async function resolveRemoteUploadPath(client: Client, remoteFileExpr: string): Promise<string> {
+  const result = await execSsh(client, `printf '%s' ${remoteFileExpr}`);
+  if (result.code !== 0) {
+    throw new Error(result.stderr.trim() || result.stdout.trim() || "Unable to resolve remote ADE service artifact path.");
+  }
+  const remotePath = result.stdout.trim();
+  if (!remotePath) {
+    throw new Error("Remote ADE service artifact path resolved to an empty value.");
+  }
+  return remotePath;
+}
+
+function openSftp(client: Client): Promise<SFTPWrapper> {
+  return new Promise((resolve, reject) => {
+    client.sftp((error, sftp) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(sftp);
+    });
+  });
+}
+
+async function uploadSftpFile(
+  client: Client,
+  localPath: string,
+  remoteFileExpr: string,
+  totalBytes: number,
+): Promise<void> {
+  const remotePath = await resolveRemoteUploadPath(client, remoteFileExpr);
+  const sftp = await openSftp(client);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let transferredBytes = 0;
+      let timeout: NodeJS.Timeout | null = null;
+      let idleTimeout: NodeJS.Timeout | null = null;
+
+      const uploadProgressSuffix = (): string =>
+        transferredBytes > 0 ? ` after ${transferredBytes} transferred bytes` : "";
+
+      const clearTimers = (): void => {
+        if (timeout) {
+          clearTimeout(timeout);
+          timeout = null;
+        }
+        if (idleTimeout) {
+          clearTimeout(idleTimeout);
+          idleTimeout = null;
+        }
+      };
+
+      const closeSftp = (destroy: boolean): void => {
+        try {
+          if (destroy) sftp.destroy();
+          else sftp.end();
+        } catch {}
+      };
+
+      const settle = (error?: Error | null): void => {
+        if (settled) return;
+        settled = true;
+        clearTimers();
+        if (error) {
+          closeSftp(true);
+          reject(error);
+          return;
+        }
+        resolve();
+      };
+
+      const resetIdleTimer = (): void => {
+        if (idleTimeout) clearTimeout(idleTimeout);
+        idleTimeout = setTimeout(() => {
+          settle(new Error(`Timed out uploading ADE service artifact with SFTP: no transfer progress for ${REMOTE_ARTIFACT_UPLOAD_IDLE_TIMEOUT_MS}ms${uploadProgressSuffix()}.`));
+        }, REMOTE_ARTIFACT_UPLOAD_IDLE_TIMEOUT_MS);
+        idleTimeout.unref?.();
+      };
+
+      timeout = setTimeout(() => {
+        settle(new Error(`Timed out uploading ADE service artifact with SFTP after ${REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS}ms${uploadProgressSuffix()}.`));
+      }, REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS);
+      timeout.unref?.();
+      resetIdleTimer();
+
+      sftp.fastPut(localPath, remotePath, {
+        concurrency: 4,
+        chunkSize: 256 * 1024,
+        fileSize: totalBytes,
+        mode: 0o600,
+        step: (total) => {
+          transferredBytes = total;
+          resetIdleTimer();
+        },
+      }, (error) => {
+        if (error) {
+          settle(new Error(`Unable to upload ADE service artifact with SFTP${uploadProgressSuffix()}: ${error.message}`));
+          return;
+        }
+        settle(null);
+      });
+    });
+  } finally {
+    try {
+      sftp.end();
+    } catch {}
+  }
+}
+
 function remoteSha256Expr(fileExpr: string): string {
   return `(command -v shasum >/dev/null 2>&1 && shasum -a 256 ${fileExpr} || sha256sum ${fileExpr}) | awk '{print $1}'`;
 }
@@ -591,20 +701,15 @@ async function uploadSshChunkViaOpenSsh(
   }
 }
 
-async function uploadSshFile(
+async function uploadSshFileInChunks(
   client: Client,
   target: RemoteRuntimeTarget,
   route: ConnectedSshRoute,
   connectedConfig: Pick<ConnectConfig, "host" | "port" | "username"> | null | undefined,
   localPath: string,
   remoteFileExpr: string,
+  totalBytes: number,
 ): Promise<void> {
-  const totalBytes = fileSizeBytes(localPath);
-  await execSshOrThrow(
-    client,
-    `rm -f ${remoteFileExpr} && umask 077 && : > ${remoteFileExpr} && chmod 600 ${remoteFileExpr}`,
-    "Unable to prepare remote ADE service artifact upload.",
-  );
   const readRemoteBytes = async (): Promise<number> => {
     const result = await execSsh(client, `wc -c < ${remoteFileExpr} | tr -d '[:space:]'`);
     if (result.code !== 0) {
@@ -657,6 +762,39 @@ async function uploadSshFile(
     }
   } finally {
     await file.close();
+  }
+}
+
+async function uploadSshFile(
+  client: Client,
+  target: RemoteRuntimeTarget,
+  route: ConnectedSshRoute,
+  connectedConfig: Pick<ConnectConfig, "host" | "port" | "username"> | null | undefined,
+  localPath: string,
+  remoteFileExpr: string,
+): Promise<void> {
+  const totalBytes = fileSizeBytes(localPath);
+  const prepareRemoteFile = async (): Promise<void> => {
+    await execSshOrThrow(
+      client,
+      `rm -f ${remoteFileExpr} && umask 077 && : > ${remoteFileExpr} && chmod 600 ${remoteFileExpr}`,
+      "Unable to prepare remote ADE service artifact upload.",
+    );
+  };
+
+  await prepareRemoteFile();
+  try {
+    await uploadSftpFile(client, localPath, remoteFileExpr, totalBytes);
+    return;
+  } catch (sftpError) {
+    await prepareRemoteFile();
+    try {
+      await uploadSshFileInChunks(client, target, route, connectedConfig, localPath, remoteFileExpr, totalBytes);
+    } catch (streamError) {
+      const sftpMessage = sftpError instanceof Error ? sftpError.message : String(sftpError);
+      const streamMessage = streamError instanceof Error ? streamError.message : String(streamError);
+      throw new Error(`Unable to upload ADE service artifact with SFTP: ${sftpMessage}; SSH stream fallback failed: ${streamMessage}`);
+    }
   }
 }
 

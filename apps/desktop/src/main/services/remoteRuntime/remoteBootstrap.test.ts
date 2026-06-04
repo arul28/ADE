@@ -321,6 +321,11 @@ function ok(stdout = "") {
   return { stdout, stderr: "", code: 0 };
 }
 
+function resolvedRemotePath(command: string): ReturnType<typeof ok> | null {
+  if (!command.startsWith("printf '%s' ")) return null;
+  return ok(command.slice("printf '%s' ".length).replace("$HOME", "/home/ade"));
+}
+
 function createFakeSpawnProcess(options: { closeCode?: number; error?: Error; stderr?: string } = {}) {
   const child = new EventEmitter() as EventEmitter & {
     stdin: EventEmitter & {
@@ -370,7 +375,14 @@ function createTempResources(
   };
 }
 
-function createFakeSsh(options: { execError?: Error; channelError?: Error; closeCode?: number; stderr?: string } = {}) {
+function createFakeSsh(options: {
+  execError?: Error;
+  channelError?: Error;
+  closeCode?: number;
+  stderr?: string;
+  sftpError?: Error;
+  sftpTransferError?: Error;
+} = {}) {
   const exec = vi.fn((command: string, callback: (error: Error | null, channel: PassThrough & { stderr: PassThrough }) => void) => {
     const channel = new PassThrough() as PassThrough & { stderr: PassThrough };
     channel.stderr = new PassThrough();
@@ -392,9 +404,21 @@ function createFakeSsh(options: { execError?: Error; channelError?: Error; close
     });
     callback(null, channel);
   });
+  const sftpWrapper = Object.assign(new EventEmitter(), {
+    fastPut: vi.fn((localPath: string, _remotePath: string, transferOptions: { step?: (total: number, nb: number, fsize: number) => void }, callback: (error?: Error) => void) => {
+      const size = fs.statSync(localPath).size;
+      transferOptions.step?.(size, size, size);
+      setImmediate(() => callback(options.sftpTransferError));
+    }),
+    end: vi.fn(),
+    destroy: vi.fn(),
+  });
+  const sftp = vi.fn((callback: (error: Error | undefined, wrapper: typeof sftpWrapper) => void) => {
+    setImmediate(() => callback(options.sftpError, sftpWrapper));
+  });
   const end = vi.fn();
-  const ssh = Object.assign(new EventEmitter(), { exec, end }) as unknown as Client;
-  return { ssh, exec, end };
+  const ssh = Object.assign(new EventEmitter(), { exec, sftp, end }) as unknown as Client;
+  return { ssh, exec, sftp, sftpWrapper, end };
 }
 
 function createRegistry() {
@@ -496,6 +520,8 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     const commands: string[] = [];
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
       commands.push(command);
+      const remotePath = resolvedRemotePath(command);
+      if (remotePath) return remotePath;
       if (command === "uname -sm") return ok("Linux x86_64\n");
       if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok("");
       if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok("");
@@ -526,10 +552,14 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     });
 
     expect(connectSshWithRouteMock).toHaveBeenCalledWith(targetFromSshConfig);
-    expect(fakeSsh.exec).toHaveBeenCalledWith(
-      expect.stringMatching(guardedUploadCommandPattern(String.raw`\$HOME/\.ade/bin/ade\.upload-.*\.tmp`)),
+    expect(fakeSsh.sftp).toHaveBeenCalledTimes(1);
+    expect(fakeSsh.sftpWrapper.fastPut).toHaveBeenCalledWith(
+      resources.binaryPath,
+      expect.stringMatching(/^\/home\/ade\/\.ade\/bin\/ade\.upload-.*\.tmp$/),
+      expect.objectContaining({ fileSize: fs.statSync(resources.binaryPath).size, mode: 0o600 }),
       expect.any(Function),
     );
+    expect(fakeSsh.exec).not.toHaveBeenCalled();
     expect(spawnMock).not.toHaveBeenCalled();
     expect(commands.slice(0, 4)).toEqual([
       "uname -sm",
@@ -632,6 +662,8 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       route: uploadRoute,
     });
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
+      const remotePath = resolvedRemotePath(command);
+      if (remotePath) return remotePath;
       if (command === "uname -sm") return ok("Linux x86_64\n");
       if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok("");
       if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok("");
@@ -659,10 +691,14 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       appVersion: APP_VERSION,
     })).rejects.toThrow(/uploaded ade service version mismatch/i);
 
-    expect(fakeSsh.exec).toHaveBeenCalledWith(
-      expect.stringMatching(guardedUploadCommandPattern(String.raw`\$HOME/\.ade/bin/ade\.upload-.*\.tmp`)),
+    expect(fakeSsh.sftp).toHaveBeenCalledTimes(1);
+    expect(fakeSsh.sftpWrapper.fastPut).toHaveBeenCalledWith(
+      resources.binaryPath,
+      expect.stringMatching(/^\/home\/ade\/\.ade\/bin\/ade\.upload-.*\.tmp$/),
+      expect.objectContaining({ fileSize: fs.statSync(resources.binaryPath).size, mode: 0o600 }),
       expect.any(Function),
     );
+    expect(fakeSsh.exec).not.toHaveBeenCalled();
     expect(spawnMock).not.toHaveBeenCalled();
     expect(openSshRuntimeTransportMock).not.toHaveBeenCalled();
     expect(initializeMock).not.toHaveBeenCalled();
@@ -673,7 +709,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
   it("falls back to OpenSSH only when the connected SSH upload fails before writing", async () => {
     const resources = createTempResources();
     cleanupResources = resources.cleanup;
-    const fakeSsh = createFakeSsh({ execError: new Error("channel denied") });
+    const fakeSsh = createFakeSsh({ sftpError: new Error("sftp denied"), execError: new Error("channel denied") });
     spawnMock.mockImplementation(() => createFakeSpawnProcess({ error: new Error("pipe broke") }));
     const registry = createRegistry();
     connectSshWithRouteMock.mockResolvedValue({
@@ -683,6 +719,8 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     const commands: string[] = [];
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
       commands.push(command);
+      const remotePath = resolvedRemotePath(command);
+      if (remotePath) return remotePath;
       if (command === "uname -sm") return ok("Linux x86_64\n");
       if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok("");
       if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok("");
@@ -703,8 +741,9 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       registry,
       resourcesPath: resources.resourcesPath,
       appVersion: APP_VERSION,
-    })).rejects.toThrow(/existing SSH session: SSH upload channel failed.*channel denied.*OpenSSH fallback failed: SSH upload process failed.*pipe broke/i);
+    })).rejects.toThrow(/sftp denied.*SSH stream fallback failed.*channel denied.*OpenSSH fallback failed.*pipe broke/i);
 
+    expect(fakeSsh.sftp).toHaveBeenCalledTimes(1);
     expect(fakeSsh.exec).toHaveBeenCalledWith(
       expect.stringMatching(guardedUploadCommandPattern(String.raw`\$HOME/\.ade/bin/ade\.upload-.*\.tmp`)),
       expect.any(Function),
@@ -737,6 +776,8 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       route: uploadRoute,
     });
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
+      const remotePath = resolvedRemotePath(command);
+      if (remotePath) return remotePath;
       if (command === "uname -sm") return ok("Darwin arm64\n");
       if (command === "cat $HOME/.ade-alpha/bin/ade.version 2>/dev/null || true") return ok("");
       if (command === "cat $HOME/.ade-alpha/bin/ade.sha256 2>/dev/null || true") return ok("");
@@ -779,14 +820,21 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       appVersion: APP_VERSION,
     });
 
-    expect(fakeSsh.exec).toHaveBeenCalledWith(
-      expect.stringMatching(guardedUploadCommandPattern(String.raw`\$HOME/\.ade-alpha/bin/ade\.upload-.*\.tmp`)),
+    const nativeDepsPath = path.join(resources.resourcesPath, "runtime", "ade-darwin-arm64.native.tar.gz");
+    expect(fakeSsh.sftp).toHaveBeenCalledTimes(2);
+    expect(fakeSsh.sftpWrapper.fastPut).toHaveBeenCalledWith(
+      resources.binaryPath,
+      expect.stringMatching(/^\/home\/ade\/\.ade-alpha\/bin\/ade\.upload-.*\.tmp$/),
+      expect.objectContaining({ fileSize: fs.statSync(resources.binaryPath).size, mode: 0o600 }),
       expect.any(Function),
     );
-    expect(fakeSsh.exec).toHaveBeenCalledWith(
-      expect.stringMatching(guardedUploadCommandPattern(String.raw`\$HOME/\.ade-alpha/runtime/ade-darwin-arm64\.native\.tar\.gz\.upload-.*\.tmp`)),
+    expect(fakeSsh.sftpWrapper.fastPut).toHaveBeenCalledWith(
+      nativeDepsPath,
+      expect.stringMatching(/^\/home\/ade\/\.ade-alpha\/runtime\/ade-darwin-arm64\.native\.tar\.gz\.upload-.*\.tmp$/),
+      expect.objectContaining({ fileSize: fs.statSync(nativeDepsPath).size, mode: 0o600 }),
       expect.any(Function),
     );
+    expect(fakeSsh.exec).not.toHaveBeenCalled();
     expect(spawnMock).not.toHaveBeenCalled();
     expect(execSshMock).toHaveBeenCalledWith(fakeSsh.ssh, "codesign --force --sign - $HOME/.ade-alpha/bin/ade");
     expect(openSshRuntimeTransportMock).toHaveBeenCalledWith(
