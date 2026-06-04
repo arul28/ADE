@@ -642,6 +642,7 @@ function installAdeMocks(options?: {
 function resetChatTestStore() {
   useAppStore.setState({
     project: null,
+    projectBinding: null,
     laneSnapshots: [],
     lanes: [],
     selectedLaneId: null,
@@ -791,6 +792,30 @@ function seedDrawerStore() {
       branchRef: "refs/heads/drawer-lane",
       laneType: "worktree",
       worktreePath: "/tmp/project-under-test/drawer-lane",
+    } as any],
+    selectedLaneId: "lane-1",
+  });
+}
+
+function seedRemoteChatStore() {
+  const rootPath = "/Users/admin/Projects/perf pass";
+  useAppStore.setState({
+    project: { rootPath, displayName: "perf pass" } as any,
+    projectBinding: {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      projectId: "project-1",
+      runtimeName: "Mac Studio",
+      displayName: "perf pass",
+      rootPath,
+    } as any,
+    lanes: [{
+      id: "lane-1",
+      name: "remote lane",
+      branchRef: "refs/heads/remote-lane",
+      laneType: "worktree",
+      worktreePath: `${rootPath}/.ade/worktrees/remote-lane`,
     } as any],
     selectedLaneId: "lane-1",
   });
@@ -967,6 +992,54 @@ function sessionTabTitles(expectedTitles: string[]) {
     .filter((button) => expectedTitles.includes(button.textContent?.trim() ?? ""));
   return tabs.map((button) => button.textContent?.trim());
 }
+
+describe("AgentChatPane remote session delta", () => {
+  it("skips mount-time session delta fetches for remote chats", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    installAdeMocks({ sessions: [session] });
+    seedRemoteChatStore();
+
+    renderPane(session);
+
+    await screen.findByRole("button", { name: /^Select model/ });
+    await Promise.resolve();
+
+    expect(window.ade.sessions.getDelta).not.toHaveBeenCalled();
+  });
+
+  it("fetches remote session delta after a turn completes", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const mocks = installAdeMocks({ sessions: [session] });
+    vi.mocked(window.ade.sessions.getDelta).mockResolvedValue({ insertions: 4, deletions: 2 } as any);
+    seedRemoteChatStore();
+
+    renderPane(session);
+
+    await screen.findByRole("button", { name: /^Select model/ });
+    expect(window.ade.sessions.getDelta).not.toHaveBeenCalled();
+
+    await act(async () => {
+      mocks.emitChatEvent({
+        sessionId: session.sessionId,
+        timestamp: "2026-06-04T12:00:00.000Z",
+        event: { type: "status", turnStatus: "started", turnId: "turn-1" },
+      } as any);
+    });
+    expect(window.ade.sessions.getDelta).not.toHaveBeenCalled();
+
+    await act(async () => {
+      mocks.emitChatEvent({
+        sessionId: session.sessionId,
+        timestamp: "2026-06-04T12:00:01.000Z",
+        event: { type: "status", turnStatus: "completed", turnId: "turn-1" },
+      } as any);
+    });
+
+    await waitFor(() => {
+      expect(window.ade.sessions.getDelta).toHaveBeenCalledWith(session.sessionId);
+    });
+  });
+});
 
 describe("AgentChatPane companion drawers", () => {
   it("opens and closes the iOS simulator and App Control drawers from chat chrome", async () => {

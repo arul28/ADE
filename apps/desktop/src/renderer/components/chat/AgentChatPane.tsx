@@ -4721,9 +4721,25 @@ export function AgentChatPane({
     return () => { cancelled = true; };
   }, [isTileActive, laneId, selectedSessionId, sessionProvider]);
 
-  // Fetch git diff stats when the session changes or a turn completes
+  const sessionDeltaTurnActiveRef = useRef(false);
+  const sessionDeltaSessionIdRef = useRef<string | null>(null);
+
+  // Fetch git diff stats when the session changes or a turn completes. Remote
+  // chats skip the mount-time decoration fetch; the bridge should stay focused
+  // on loading the transcript until the user actually runs a turn.
   useEffect(() => {
     if (!selectedSessionId || !isTileActive) { setSessionDelta(null); return; }
+    const sameSession = sessionDeltaSessionIdRef.current === selectedSessionId;
+    const previousTurnActive = sameSession ? sessionDeltaTurnActiveRef.current : false;
+    sessionDeltaSessionIdRef.current = selectedSessionId;
+    sessionDeltaTurnActiveRef.current = turnActive;
+    if (isRemoteProject) {
+      const completedTurn = sameSession && previousTurnActive && !turnActive;
+      if (!completedTurn) {
+        if (!turnActive) setSessionDelta(null);
+        return;
+      }
+    }
     let cancelled = false;
     const fetchDelta = () => {
       window.ade.sessions.getDelta(selectedSessionId)
@@ -4739,7 +4755,7 @@ export function AgentChatPane({
     };
     fetchDelta();
     return () => { cancelled = true; };
-  }, [isTileActive, selectedSessionId, turnActive]);
+  }, [isRemoteProject, isTileActive, selectedSessionId, turnActive]);
 
   const flushQueuedEvents = useCallback(() => {
     const queued = pendingEventQueueRef.current;
