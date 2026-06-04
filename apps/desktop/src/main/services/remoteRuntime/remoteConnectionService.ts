@@ -12,12 +12,18 @@ import type {
   RemoteRuntimeConnectionStatus,
   RemoteRuntimeConnectResult,
   RemoteRuntimeProjectRecord,
+  RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeTarget,
   RemoteRuntimeTargetInput,
+  RemoteRuntimeTrustSshHostKeyResult,
 } from "../../../shared/types";
 import { coerceProjects } from "./remoteBootstrap";
 import type { RemoteConnectionPool } from "./remoteConnectionPool";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
+import {
+  getSshHostKeyTrustForTarget,
+  trustSshHostKeyForTarget,
+} from "./sshTransport";
 
 type StatusPatch = Partial<Omit<RemoteRuntimeConnectionStatus, "target">>;
 
@@ -88,6 +94,21 @@ export class RemoteConnectionService {
     const removed = this.registry.remove(targetId);
     this.emit();
     return removed;
+  }
+
+  async getSshHostKeyTrust(
+    targetId: string,
+  ): Promise<RemoteRuntimeSshHostKeyTrustStatus> {
+    return await getSshHostKeyTrustForTarget(this.requireTarget(targetId));
+  }
+
+  async trustSshHostKey(
+    targetId: string,
+    fingerprintSha256: string,
+  ): Promise<RemoteRuntimeTrustSshHostKeyResult> {
+    const fingerprint = fingerprintSha256.trim();
+    if (!fingerprint) throw new Error("SSH host key fingerprint is required.");
+    return await trustSshHostKeyForTarget(this.requireTarget(targetId), fingerprint);
   }
 
   snapshot(): RemoteRuntimeConnectionSnapshot {

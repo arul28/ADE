@@ -1465,9 +1465,10 @@ app.whenReady().then(async () => {
         persistRecentProject(ctx.project, { recordLastProject: false, preserveRecentOrder: true });
       }
       if (!shouldUseInProcessProjectRuntime()) {
-        const projectRegistration = (options.foreground ?? true)
-          ? localRuntimePool.switchSyncHostForRoot(normalizedRoot)
-          : localRuntimePool.ensureProject(normalizedRoot);
+        // Desktop foregrounding is independent from phone sync project selection:
+        // registering the project lets desktop/TUI route RPC by projectId without
+        // stealing the singleton mobile sync host from a connected phone.
+        const projectRegistration = localRuntimePool.ensureProject(normalizedRoot);
         void projectRegistration.catch((error) => {
           localRuntimeLogger.warn("local_runtime.project_registration_failed", {
             rootPath: normalizedRoot,

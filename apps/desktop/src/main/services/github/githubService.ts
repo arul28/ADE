@@ -123,6 +123,37 @@ export function parseGitHubRepoFromRemoteUrl(remoteUrlRaw: string): GitHubRepoRe
   return null;
 }
 
+function repoIdentityFromGitHubResponse(
+  data: Record<string, unknown>,
+  fallbackOwner: string,
+  fallbackName: string,
+): { owner: string; name: string; fullName: string } {
+  const fullName = asString(data.full_name).trim();
+  const fullNameParts = fullName.split("/");
+  const repoFromFullName = fullNameParts.length >= 2
+    ? { owner: fullNameParts[0]!.trim(), name: fullNameParts[1]!.trim() }
+    : null;
+  const repoFromUrl =
+    parseGitHubRepoFromRemoteUrl(asString(data.clone_url)) ??
+    parseGitHubRepoFromRemoteUrl(asString(data.html_url)) ??
+    null;
+  const owner =
+    asString((data.owner as Record<string, unknown> | undefined)?.login).trim() ||
+    repoFromFullName?.owner ||
+    repoFromUrl?.owner ||
+    fallbackOwner;
+  const name =
+    asString(data.name).trim() ||
+    repoFromFullName?.name ||
+    repoFromUrl?.name ||
+    fallbackName;
+  return {
+    owner,
+    name,
+    fullName: fullName || (owner ? `${owner}/${name}` : name),
+  };
+}
+
 function readOriginUrlFromConfig(configPath: string): string | null {
   try {
     if (!fs.existsSync(configPath)) return null;
@@ -1098,10 +1129,11 @@ export function createGithubService({
   };
 
   const createRepository = async (args: {
+    owner?: string | null;
     name: string;
     description?: string;
     isPrivate: boolean;
-  }): Promise<{ cloneUrl: string; sshUrl: string; htmlUrl: string; defaultBranch: string }> => {
+  }): Promise<{ owner: string; name: string; fullName: string; cloneUrl: string; sshUrl: string; htmlUrl: string; defaultBranch: string }> => {
     const body: Record<string, unknown> = {
       name: args.name,
       private: args.isPrivate,
@@ -1110,12 +1142,31 @@ export function createGithubService({
     if (args.description != null && args.description.trim().length > 0) {
       body.description = args.description.trim();
     }
+    const owner = asString(args.owner).trim();
+    // GitHub's `/orgs/{owner}/repos` route only accepts organization owners; a
+    // personal account (the authenticated user's own login) must use
+    // `/user/repos`. The renderer now populates `owner` from the connected
+    // login, so detect that case and avoid the org route for personal publishes.
+    const authenticatedLogin = owner
+      ? ((await validateToken(readAuthToken().token ?? "").catch(() => ({ userLogin: null as string | null }))).userLogin?.trim() || null)
+      : null;
+    // Only take the org route when we POSITIVELY resolved the authenticated
+    // login and it differs from `owner`. If token validation failed (transient
+    // network error / rate limit), `authenticatedLogin` is null and we must not
+    // assume an org — fall back to `/user/repos`, since `owner` is almost always
+    // the pre-populated personal login. Routing a personal publish through the
+    // org-only endpoint would hard-fail.
+    const useOrgRoute = owner.length > 0 && authenticatedLogin != null && owner.toLowerCase() !== authenticatedLogin.toLowerCase();
     const { data } = await apiRequest<Record<string, unknown>>({
       method: "POST",
-      path: "/user/repos",
+      path: useOrgRoute ? `/orgs/${encodeURIComponent(owner)}/repos` : "/user/repos",
       body,
     });
+    const identity = repoIdentityFromGitHubResponse(data, owner, args.name);
     return {
+      owner: identity.owner,
+      name: identity.name,
+      fullName: identity.fullName,
       cloneUrl: asString(data.clone_url),
       sshUrl: asString(data.ssh_url),
       htmlUrl: asString(data.html_url),
@@ -1127,6 +1178,9 @@ export function createGithubService({
     owner: string,
     name: string,
   ): Promise<{
+    owner: string;
+    name: string;
+    fullName: string;
     cloneUrl: string;
     sshUrl: string;
     htmlUrl: string;
@@ -1137,7 +1191,11 @@ export function createGithubService({
       method: "GET",
       path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`,
     });
+    const identity = repoIdentityFromGitHubResponse(data, owner, name);
     return {
+      owner: identity.owner,
+      name: identity.name,
+      fullName: identity.fullName,
       cloneUrl: asString(data.clone_url),
       sshUrl: asString(data.ssh_url),
       htmlUrl: asString(data.html_url),
@@ -1147,8 +1205,8 @@ export function createGithubService({
   };
 
   const publishCurrentProject = async (
-    args: { name: string; description?: string; isPrivate: boolean },
-  ): Promise<{ state: "pushed" | "remote_added"; htmlUrl: string }> => {
+    args: { owner?: string; name: string; description?: string; isPrivate: boolean },
+  ): Promise<{ state: "pushed" | "remote_added"; owner: string; name: string; fullName: string; htmlUrl: string }> => {
     const token = readAuthToken().token;
     if (!token) {
       const err = new Error("GitHub is not connected. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.") as Error & { code?: string };
@@ -1168,9 +1226,11 @@ export function createGithubService({
     // already exists". Recover by GETting the existing repo and reusing its
     // cloneUrl — but only when it's empty (size=0), so we never overwrite
     // an unrelated user repo with the same name.
-    let created: { cloneUrl: string; sshUrl: string; htmlUrl: string; defaultBranch: string };
+    const requestedOwner = asString(args.owner).trim() || null;
+    let created: { owner: string; name: string; fullName: string; cloneUrl: string; sshUrl: string; htmlUrl: string; defaultBranch: string };
     try {
       created = await createRepository({
+        owner: requestedOwner,
         name: args.name,
         description: args.description,
         isPrivate: args.isPrivate,
@@ -1180,19 +1240,24 @@ export function createGithubService({
       const isNameTaken = /already exists/i.test(message);
       if (!isNameTaken) throw createErr;
 
-      const validated = await validateToken(token).catch(() => ({ userLogin: null as string | null }));
-      const owner = validated.userLogin;
+      const validated = requestedOwner
+        ? null
+        : await validateToken(token).catch(() => ({ userLogin: null as string | null }));
+      const owner = requestedOwner || validated?.userLogin;
       if (!owner) throw createErr;
 
       const existing = await getRepository(owner, args.name);
       if (existing.size > 0) {
         const taken = new Error(
-          `A GitHub repo named '${args.name}' already exists on your account and contains commits. Pick a different name.`,
+          `A GitHub repo named '${owner}/${args.name}' already exists and contains commits. Pick a different name.`,
         ) as Error & { code?: string };
         taken.code = "repo_name_taken";
         throw taken;
       }
       created = {
+        owner: existing.owner,
+        name: existing.name,
+        fullName: existing.fullName,
         cloneUrl: existing.cloneUrl,
         sshUrl: existing.sshUrl,
         htmlUrl: existing.htmlUrl,
@@ -1237,7 +1302,13 @@ export function createGithubService({
     cachedStatus = null;
     cachedAt = 0;
 
-    return { state: resultState, htmlUrl: created.htmlUrl };
+    return {
+      state: resultState,
+      owner: created.owner,
+      name: created.name,
+      fullName: created.fullName,
+      htmlUrl: created.htmlUrl,
+    };
   };
 
   return {

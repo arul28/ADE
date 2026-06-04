@@ -54,6 +54,10 @@ import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
 import { SyncDevicesSection } from "../settings/SyncDevicesSection";
 import { HeaderUsageControl } from "../usage/HeaderUsageControl";
 import { appResourcePressureLevel, getAppResourceUsageCoalesced, resourcePressureDescription } from "../../lib/resourcePressure";
+import {
+  ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
+  ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
+} from "../../lib/workSidebarBrowserResize";
 
 const RUNNING_LANE_PROCESS_STATES: ProcessRuntime["status"][] = [
   "starting",
@@ -968,6 +972,7 @@ export function TopBar() {
   const isProjectBusy = projectTransition != null || relocatingPath != null;
   const remoteBinding =
     projectBinding?.kind === "remote" ? projectBinding : null;
+  const chromePanelOccludesNativeBrowser = remotePanelOpen || phoneSyncOpen;
   const workspaceProjectOpen =
     projectHydrated === true &&
     showWelcome !== true &&
@@ -1166,6 +1171,14 @@ export function TopBar() {
     });
     return () => window.cancelAnimationFrame(frame);
   }, [remotePanelOpen]);
+
+  useEffect(() => {
+    if (!chromePanelOccludesNativeBrowser || typeof window === "undefined") return undefined;
+    window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT));
+    return () => {
+      window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT));
+    };
+  }, [chromePanelOccludesNativeBrowser]);
 
   // Re-fetch when app regains focus (catches external deletions).
   useEffect(() => {

@@ -58,6 +58,7 @@ import {
   type SyncHostService,
   type SyncRuntimeKind,
 } from "./syncHostService";
+import { createSyncPairingStore } from "./syncPairingStore";
 import { createSyncPeerService } from "./syncPeerService";
 import { createSyncPinStore } from "./syncPinStore";
 import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
@@ -423,6 +424,10 @@ export function createSyncService(args: SyncServiceArgs) {
   fs.mkdirSync(path.dirname(draftPath), { recursive: true });
 
   const pinStore = createSyncPinStore({ filePath: pinPath });
+  const pairingStore = createSyncPairingStore({
+    filePath: pairingSecretsPath,
+    pinStore,
+  });
 
   const deviceRegistryService = createDeviceRegistryService({
     db: args.db,
@@ -1092,6 +1097,7 @@ export function createSyncService(args: SyncServiceArgs) {
     },
 
     async forgetDevice(deviceId: string): Promise<SyncRoleSnapshot> {
+      pairingStore.revoke(deviceId);
       hostService?.revokePairedDevice(deviceId);
       deviceRegistryService.forgetDevice(deviceId);
       await emitStatus();

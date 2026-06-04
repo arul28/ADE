@@ -5,6 +5,8 @@ const {
   resolvePackagedRuntimeRoot,
 } = require("./runtimeBinaryPermissions.cjs");
 
+const appDir = path.resolve(__dirname, "..");
+
 function resolveUnpackedRuntimeRoot(context) {
   const productFilename = context?.packager?.appInfo?.productFilename || "ADE";
   const appBundlePath = path.join(context?.appOutDir || "", `${productFilename}.app`);
@@ -31,6 +33,77 @@ function requireFile(filePath, label) {
   if (!fs.existsSync(filePath)) {
     throw new Error(`[afterPack] Missing ${label}: ${filePath}`);
   }
+}
+
+function copyDirectoryIfPresent(sourcePath, targetPath) {
+  if (!fs.existsSync(sourcePath)) return false;
+  fs.rmSync(targetPath, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  fs.cpSync(sourcePath, targetPath, { recursive: true, force: true });
+  return true;
+}
+
+function openCodeNativePackagesForPlatform(platform) {
+  if (platform === "darwin") return ["opencode-darwin-arm64", "opencode-darwin-x64"];
+  if (platform === "win32") return ["opencode-windows-x64", "opencode-windows-arm64"];
+  if (platform === "linux") {
+    return [
+      "opencode-linux-arm64",
+      "opencode-linux-arm64-musl",
+      "opencode-linux-x64",
+      "opencode-linux-x64-baseline",
+      "opencode-linux-x64-baseline-musl",
+      "opencode-linux-x64-musl",
+    ];
+  }
+  return [];
+}
+
+function openCodeBinaryName(platform) {
+  return platform === "win32" ? "opencode.exe" : "opencode";
+}
+
+function ensureOpenCodeRuntimePackages(runtimeRoot, platform) {
+  const sourceNodeModules = path.join(appDir, "node_modules");
+  const targetNodeModules = path.join(runtimeRoot, "node_modules");
+  const copied = [];
+
+  if (copyDirectoryIfPresent(
+    path.join(sourceNodeModules, "opencode-ai"),
+    path.join(targetNodeModules, "opencode-ai"),
+  )) {
+    copied.push("opencode-ai");
+  }
+
+  for (const packageName of openCodeNativePackagesForPlatform(platform)) {
+    if (copyDirectoryIfPresent(
+      path.join(sourceNodeModules, packageName),
+      path.join(targetNodeModules, packageName),
+    )) {
+      copied.push(packageName);
+    }
+  }
+
+  if (!copied.includes("opencode-ai")) {
+    throw new Error(`[afterPack] Missing source OpenCode package: ${path.join(sourceNodeModules, "opencode-ai")}`);
+  }
+
+  const nativePackages = copied.filter((packageName) => (
+    packageName !== "opencode-ai" && packageName.startsWith("opencode-")
+  ));
+  if (nativePackages.length === 0) {
+    throw new Error(`[afterPack] Missing source OpenCode native package for ${platform}: ${sourceNodeModules}`);
+  }
+
+  const binaryName = openCodeBinaryName(platform);
+  for (const packageName of nativePackages) {
+    requireFile(
+      path.join(targetNodeModules, packageName, "bin", binaryName),
+      `bundled OpenCode native binary ${packageName}`,
+    );
+  }
+
+  console.log(`[afterPack] Bundled OpenCode runtime packages: ${copied.join(", ")}`);
 }
 
 function normalizePackageChannel(value) {
@@ -273,6 +346,7 @@ module.exports = async function afterPack(context) {
   }
 
   pruneUnneededRuntimePayload(runtimeRoot, platform);
+  ensureOpenCodeRuntimePackages(runtimeRoot, platform);
 
   const normalized = normalizeDesktopRuntimeBinaries(runtimeRoot);
   for (const entry of normalized) {

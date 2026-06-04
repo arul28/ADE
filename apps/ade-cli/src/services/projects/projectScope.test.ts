@@ -197,6 +197,50 @@ describe("ProjectScopeRegistry", () => {
     expect(secondDispose).toHaveBeenCalledTimes(1);
   });
 
+  it("can prepare a new phone sync host before retiring the previous host", async () => {
+    const { registry, first, second } = createRegistry();
+    const firstSyncService = {
+      initialize: vi.fn(async () => undefined),
+      setHostDiscoveryEnabled: vi.fn(),
+      setHostStartupEnabled: vi.fn(async () => undefined),
+    };
+    const secondSyncService = {
+      initialize: vi.fn(async () => undefined),
+      setHostDiscoveryEnabled: vi.fn(),
+      setHostStartupEnabled: vi.fn(async () => undefined),
+    };
+    createAdeRuntimeMock
+      .mockResolvedValueOnce({ dispose: vi.fn(), syncService: firstSyncService })
+      .mockResolvedValueOnce({ dispose: vi.fn(), syncService: secondSyncService });
+    const scopeRegistry = new ProjectScopeRegistry(registry, {
+      syncRuntime: {
+        enabled: true,
+        hostStartupEnabled: true,
+        hostDiscoveryEnabled: true,
+        forceHostRole: true,
+        runtimeKind: "daemon",
+      },
+    });
+
+    await scopeRegistry.switchSyncHost(first.projectId);
+    await scopeRegistry.switchSyncHost(second.projectId, {
+      deactivatePreviousHost: false,
+    });
+
+    expect(firstSyncService.setHostDiscoveryEnabled).not.toHaveBeenCalledWith(false);
+    expect(firstSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(false);
+    expect(secondSyncService.setHostDiscoveryEnabled).toHaveBeenCalledWith(true);
+    expect(secondSyncService.setHostStartupEnabled).toHaveBeenCalledWith(true);
+    expect(secondSyncService.initialize).toHaveBeenCalled();
+
+    await scopeRegistry.deactivateInactiveSyncHosts(second.projectId);
+
+    expect(firstSyncService.setHostDiscoveryEnabled).toHaveBeenCalledWith(false);
+    expect(firstSyncService.setHostStartupEnabled).toHaveBeenCalledWith(false);
+
+    await scopeRegistry.disposeAll();
+  });
+
   it("promotes an existing warm project when selecting the default sync host", async () => {
     const { registry, first, second } = createRegistry();
     const firstSyncService = {

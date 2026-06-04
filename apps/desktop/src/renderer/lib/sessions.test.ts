@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { isChatToolType, normalizeSessionLabel, preferredSessionLabel, shortToolTypeLabel } from "./sessions";
+import {
+  canBulkDeleteSession,
+  canBulkStopSession,
+  isChatToolType,
+  normalizeSessionLabel,
+  preferredSessionLabel,
+  shortToolTypeLabel,
+} from "./sessions";
 
 describe("isChatToolType", () => {
   it("returns false for null, undefined, or empty input", () => {
@@ -80,6 +87,19 @@ describe("shortToolTypeLabel", () => {
 
   it("replaces hyphens with spaces for unknown tool types", () => {
     expect(shortToolTypeLabel("my-custom-tool")).toBe("my custom tool");
+  });
+});
+
+describe("bulk session actions", () => {
+  it("treats running chats as deletable and running terminals as stoppable", () => {
+    expect(canBulkDeleteSession({ status: "running", toolType: "codex-chat" })).toBe(true);
+    expect(canBulkStopSession({ status: "running", toolType: "codex-chat" })).toBe(false);
+
+    expect(canBulkDeleteSession({ status: "running", toolType: "shell" })).toBe(false);
+    expect(canBulkStopSession({ status: "running", toolType: "shell" })).toBe(true);
+
+    expect(canBulkDeleteSession({ status: "completed", toolType: "shell" })).toBe(true);
+    expect(canBulkStopSession({ status: "completed", toolType: "shell" })).toBe(false);
   });
 });
 

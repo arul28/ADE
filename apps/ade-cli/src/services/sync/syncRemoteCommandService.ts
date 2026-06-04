@@ -1245,8 +1245,15 @@ function parseReopenPrArgs(value: Record<string, unknown>): ReopenPrArgs {
 function parseRequestReviewersArgs(value: Record<string, unknown>): RequestPrReviewersArgs {
   const prId = requirePrId(value, "prs.requestReviewers");
   const reviewers = asStringArray(value.reviewers);
-  if (reviewers.length === 0) throw new Error("prs.requestReviewers requires at least one reviewer.");
-  return { prId, reviewers };
+  const teamReviewers = asStringArray(value.teamReviewers);
+  if (reviewers.length === 0 && teamReviewers.length === 0) {
+    throw new Error("prs.requestReviewers requires at least one reviewer or team reviewer.");
+  }
+  return {
+    prId,
+    ...(reviewers.length ? { reviewers } : {}),
+    ...(teamReviewers.length ? { teamReviewers } : {}),
+  };
 }
 
 function parseRerunPrChecksArgs(value: Record<string, unknown>): RerunPrChecksArgs {

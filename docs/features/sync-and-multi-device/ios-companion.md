@@ -388,7 +388,9 @@ yet arrived in the catchup batch.
   `ade.sync.hostProfiles` `UserDefaults` blob so a phone that has
   paired with multiple machines can re-resolve the right token when
   the host initiates a project switch without re-bundling
-  credentials.
+  credentials. When discovered routes re-key a saved profile, the
+  token migrates to the new `hostKey` and the old-key slot is cleared
+  so the keychain does not accumulate orphaned per-route tokens.
 - Uses iOS Keychain Services API (`SecItemAdd` / `SecItemCopyMatching`
   / `SecItemUpdate` / `SecItemDelete`).
 

@@ -378,25 +378,6 @@ export function createMultiProjectRpcRequestHandler(
     return syncService;
   };
 
-  const switchSyncService = async (params: Record<string, unknown>) => {
-    const projectId = readProjectId(params);
-    if (!projectId) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.invalidParams,
-        "sync.switchHost requires params.projectId.",
-      );
-    }
-    const scope = await scopeRegistry.switchSyncHost(projectId);
-    const syncService = scope?.runtime.syncService ?? null;
-    if (!syncService) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.invalidRequest,
-        "Sync service is not available for that project.",
-      );
-    }
-    return syncService;
-  };
-
   const trimmedEnvOrNull = (key: string): string | null => {
     const value = process.env[key];
     return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -583,11 +564,6 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "runtimeEvents.unsubscribe") {
       return unsubscribeRuntimeEvents(params);
-    }
-
-    if (method === "sync.switchHost") {
-      await switchSyncService(params);
-      return { switched: true };
     }
 
     if (method === "sync.getStatus") {

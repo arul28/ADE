@@ -161,6 +161,18 @@ const sidebarProps = vi.hoisted(() => ({
   },
 }));
 
+type MockSessionListPaneProps = {
+  runningFiltered: TerminalSessionSummary[];
+  awaitingInputFiltered: TerminalSessionSummary[];
+  endedFiltered: TerminalSessionSummary[];
+  onSelectSession: (id: string, event: React.MouseEvent, visibleSessionIds: string[]) => void;
+  onBulkDelete?: () => void;
+};
+
+const sessionListPaneProps = vi.hoisted(() => ({
+  latest: null as null | MockSessionListPaneProps,
+}));
+
 vi.mock("../../state/appStore", () => ({
   useAppStore: <T,>(selector: (state: { selectedLaneId: string; project: { rootPath: string } | null }) => T): T =>
     selector({
@@ -186,7 +198,31 @@ vi.mock("../ui/PaneTilingLayout", () => ({
 }));
 
 vi.mock("./SessionListPane", () => ({
-  SessionListPane: () => <div data-testid="session-list-pane" />,
+  SessionListPane: (props: MockSessionListPaneProps) => {
+    sessionListPaneProps.latest = props;
+    const visibleSessions = [
+      ...props.runningFiltered,
+      ...props.awaitingInputFiltered,
+      ...props.endedFiltered,
+    ];
+    const visibleSessionIds = visibleSessions.map((session) => session.id);
+    return (
+      <div data-testid="session-list-pane">
+        {visibleSessions.map((session) => (
+          <button
+            key={session.id}
+            type="button"
+            onClick={(event) => props.onSelectSession(session.id, event, visibleSessionIds)}
+          >
+            select {session.id}
+          </button>
+        ))}
+        <button type="button" onClick={() => props.onBulkDelete?.()}>
+          bulk delete
+        </button>
+      </div>
+    );
+  },
 }));
 
 vi.mock("./WorkSidebar", () => ({
@@ -238,6 +274,7 @@ describe("TerminalsPage chat session activation", () => {
     workMocks.currentWork = { ...workMocks.baseWork, closingPtyIds: new Set<string>() };
     workMocks.projectRoot = null;
     sidebarProps.latest = null;
+    sessionListPaneProps.latest = null;
     vi.clearAllMocks();
   });
 
@@ -382,5 +419,54 @@ describe("TerminalsPage chat session activation", () => {
       toolType: "codex",
     });
     expect(sidebarProps.latest?.contextDisabledReason).toBeNull();
+  });
+
+  it("bulk deletes selected running chat sessions from the session list", async () => {
+    const runningCodexChat = workMocks.makeTerminalSession("chat-running-codex", "lane-primary", "codex-chat");
+    const runningClaudeChat = workMocks.makeTerminalSession("chat-running-claude", "lane-primary", "claude-chat", {
+      ptyId: null,
+    });
+    const runningShell = workMocks.makeTerminalSession("shell-running", "lane-primary", "shell");
+    const agentChatDelete = vi.fn().mockResolvedValue(undefined);
+    const sessionDelete = vi.fn().mockResolvedValue(undefined);
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        agentChat: { delete: agentChatDelete },
+        builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
+        sessions: { delete: sessionDelete },
+      },
+    });
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions: [runningCodexChat, runningClaudeChat, runningShell],
+      visibleSessions: [runningCodexChat, runningClaudeChat, runningShell],
+      runningFiltered: [runningCodexChat, runningClaudeChat, runningShell],
+      runningSessions: [runningCodexChat, runningClaudeChat, runningShell],
+      filtered: [runningCodexChat, runningClaudeChat, runningShell],
+      sessionsGroupedByLane: new Map([["lane-primary", [runningCodexChat, runningClaudeChat, runningShell]]]),
+      closingPtyIds: new Set<string>(),
+    };
+
+    render(<TerminalsPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "select chat-running-codex" }), { metaKey: true });
+    fireEvent.click(await screen.findByRole("button", { name: "select chat-running-claude" }), { metaKey: true });
+    fireEvent.click(await screen.findByRole("button", { name: "select shell-running" }), { metaKey: true });
+    fireEvent.click(await screen.findByRole("button", { name: "bulk delete" }));
+
+    await waitFor(() => {
+      expect(agentChatDelete).toHaveBeenCalledTimes(2);
+      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-running-codex" });
+      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-running-claude" });
+      expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("chat-running-codex");
+      expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("chat-running-claude");
+    });
+    expect(sessionDelete).not.toHaveBeenCalled();
+    expect(workMocks.currentWork.removeSessionFromList).not.toHaveBeenCalledWith("shell-running");
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("Delete 2 selected sessions?"));
+    confirmSpy.mockRestore();
   });
 });

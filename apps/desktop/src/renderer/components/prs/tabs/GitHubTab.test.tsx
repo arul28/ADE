@@ -2,7 +2,7 @@
 
 import React from "react";
 import { MemoryRouter } from "react-router-dom";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CreateLaneFromPrBranchPreflightResult, GitHubPrSnapshot, LaneSummary, MergeMethod, PrWithConflicts } from "../../../../shared/types";
@@ -822,11 +822,11 @@ describe("GitHubTab", () => {
       repoName: "ade",
       githubPrNumber: 200,
     });
-    expect(await screen.findByRole("dialog", { name: /create lane from pr branch/i })).toBeTruthy();
-    expect(screen.getByText(/#200 Unlinked PR/)).toBeTruthy();
-    expect(screen.getByText("origin/feature/open")).toBeTruthy();
-    expect(screen.getAllByText("Unlinked PR").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("main").length).toBeGreaterThan(0);
+    const dialog = await screen.findByRole("dialog", { name: /create lane from pr branch/i });
+    expect(within(dialog).getByText(/#200 Unlinked PR/)).toBeTruthy();
+    expect(within(dialog).getAllByText("origin/feature/open").length).toBeGreaterThan(0);
+    expect(within(dialog).getAllByText("Unlinked PR").length).toBeGreaterThan(0);
+    expect(within(dialog).getAllByText("main").length).toBeGreaterThan(0);
   });
 
   it("ignores stale create-lane preflight results from a previous PR", async () => {
@@ -909,7 +909,8 @@ describe("GitHubTab", () => {
 
     expect(await screen.findByText(/#201 Second PR/)).toBeTruthy();
     expect(screen.queryByText(/#200 First PR/)).toBeNull();
-    expect(screen.getByText("origin/feature/second")).toBeTruthy();
+    const secondDialog = await screen.findByRole("dialog", { name: /create lane from pr branch/i });
+    expect(within(secondDialog).getAllByText("origin/feature/second").length).toBeGreaterThan(0);
   });
 
   it("shows blocking preflight conflicts before creating a lane", async () => {

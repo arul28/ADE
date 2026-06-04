@@ -113,7 +113,6 @@ function isTrackedAdeFile(relativePath: string): boolean {
   const normalized = normalizeAdeRelativePath(relativePath);
   return normalized === ".gitignore"
     || normalized === "ade.yaml"
-    || normalized === "cto/identity.yaml"
     || normalized.startsWith("templates/")
     || normalized.startsWith("skills/")
     || normalized.startsWith("workflows/")

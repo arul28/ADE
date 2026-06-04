@@ -15,7 +15,7 @@ import type { LaneSummary } from "../../../../shared/types";
 import { COLORS } from "../../lanes/laneDesignTokens";
 import { ResizeGutter } from "../../ui/ResizeGutter";
 import { PrDetailMergeRail } from "./PrDetailMergeRail";
-import { PrDetailRightMetadataRail } from "./PrDetailRightMetadataRail";
+import { PrDetailRightMetadataRail, type ReviewerRequest } from "./PrDetailRightMetadataRail";
 import type { PrReviewEvent } from "./PrReviewSubmitModal";
 
 const MERGE_OPEN_DEFAULT_PX = 220;
@@ -42,7 +42,7 @@ export type PrDetailRightRailProps = {
   labelInput: string;
   setLabelInput: (value: string) => void;
   onMerge: (method: MergeMethod, options?: { bypassRules?: boolean }) => void;
-  onRequestReviewers: (reviewers: string[]) => void;
+  onRequestReviewers: (request: ReviewerRequest) => void;
   onSetLabels: (labels: string[]) => void;
   onDeleteBranch?: () => void;
   deleteBranchBusy?: boolean;

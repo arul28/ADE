@@ -28,7 +28,8 @@ ade help browser
 ade --socket browser panel --text
 ade --socket browser status --text
 ade --socket browser tabs --text
-ade --socket browser open <url> --new-tab --text
+ade --socket browser open <url> --text
+ade --socket browser open <url> --panel --text
 ade --socket browser session start --tab <id> --text
 ade --socket browser sessions --text
 ade --socket browser observe --browser-session <session-id> --map --text
@@ -70,10 +71,10 @@ ade --socket browser clear-selection --text
 
 ## Gotchas
 
-- Default agent workflow for browser tasks: run `ade --socket browser tabs --text`; reuse only a tab/session already owned by your current `ADE_CHAT_SESSION_ID`; otherwise open a fresh owned tab with `ade --socket browser open <url> --new-tab --text`, then `ade --socket browser session start --tab <tab-id> --text` and use `--browser-session <session-id>` for repeated actions.
+- Default agent workflow for browser tasks: run `ade --socket browser tabs --text`; reuse a tab/session already owned by your current `ADE_CHAT_SESSION_ID`. Plain `ade --socket browser open <url> --text` reuses your owned tab and only creates one when none exists, without revealing the Browser panel; use `--panel` only when the user should see it and `--new-tab` only when the task truly needs another tab. Then run `ade --socket browser session start --tab <tab-id> --text` and use `--browser-session <session-id>` for repeated actions.
 - Open localhost URLs and chat-output links in the ADE browser when the user expects them to show in the Work sidebar.
 - Because CLI bridge calls are project-scoped, confirm the target project has an ADE window or project tab open before taking a screenshot or selecting context.
-- Agent-facing tab actions can target hidden or non-active tabs by passing `--tab <id>` to observe/click/type/key/scroll/screenshot/select/reload/back/forward/stop. Inspect mode is still a visible-tab interaction.
+- Agent-facing tab actions run in the background when possible. Passing `--tab <id>` or `--browser-session <id>` targets hidden/non-active tabs directly; when ADE launched the agent and no tab is passed, browser actions prefer the tab owned by the current `ADE_CHAT_SESSION_ID` before falling back to the active visible tab. Inspect mode is still a visible-tab interaction.
 - For repeated agent work, start a browser session with `ade --socket browser session start --tab <id> --text`, then use either `--browser-session <session-id>` on observe/click/fill/clear-field/press/wait/trace/proof/screenshot/reload/back/forward/stop/select or the shorthand `ade --socket browser session <action> <session-id> ...`. The session is a lightweight pointer to one tab plus owner/last observation/last trace metadata; it ends explicitly with `browser session end <id>` or automatically when the tab closes.
 - Browser click/select/scroll coordinates are viewport coordinates. Prefer `click --selector`, `click --text-match`, `click --test-id`, `click --element <n>`, or `click --handle <ref>` from the current DOM list when available; ADE scrolls located elements into view before dispatching the click.
 - Use `wait`, `fill`, `clear-field`, and `press` for Playwright-like agent actions. These commands focus located elements and reject disabled targets; `wait` can target selectors/text/test ids, URL substrings, or load state. `wait --network-idle` waits for `document.readyState === "complete"`, no pending browser requests, and a quiet window controlled by `--network-idle-ms` (default 500).

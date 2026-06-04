@@ -73,6 +73,70 @@ function isOpenCodePlatformPackage(packageName) {
   return /^opencode-(?:darwin|linux|windows)-/.test(packageName);
 }
 
+function targetParts(target) {
+  const [platform, arch] = target.split("-");
+  return { platform, arch };
+}
+
+function platformPackageTarget(packageName) {
+  const patterns = [
+    /^@openai\/codex-(darwin|linux|win32)-(arm64|x64)$/,
+    /^@cursor\/sdk-(darwin|linux|win32)-(arm64|x64)$/,
+    /^@anthropic-ai\/claude-agent-sdk-(darwin|linux|win32)-(arm64|x64)(?:-musl)?$/,
+    /^opencode-(darwin|linux|windows)-(arm64|x64)$/,
+    /^@esbuild\/(darwin|linux|win32)-(arm64|x64)$/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = pattern.exec(packageName);
+    if (match) return { platform: match[1], arch: match[2] };
+  }
+  return null;
+}
+
+function isPackageForOtherTarget(packageName, target) {
+  const packageTarget = platformPackageTarget(packageName);
+  if (!packageTarget) return false;
+  const targetPlatform = packageTarget.platform === "win32" || packageTarget.platform === "windows"
+    ? "windows"
+    : packageTarget.platform;
+  const { platform, arch } = targetParts(target);
+  return targetPlatform !== platform || packageTarget.arch !== arch;
+}
+
+function nodePtyPrebuildTarget(target) {
+  const { platform, arch } = targetParts(target);
+  if (platform === "darwin") return `darwin-${arch}`;
+  if (platform === "linux") return `linux-${arch}`;
+  return target;
+}
+
+function shouldCopyPackageEntry(packageName, sourceRoot, entry, target) {
+  const relative = path.relative(sourceRoot, entry).split(path.sep).join("/");
+  if (!relative || relative.startsWith("..")) return true;
+
+  if (packageName === "node-pty") {
+    if (relative.startsWith("prebuilds/")) {
+      // The fs.cp filter receives the target directory entry itself
+      // (e.g. "prebuilds/darwin-arm64") with no trailing slash. Returning
+      // false for that entry would skip the ENTIRE subtree (pty.node +
+      // spawn-helper), shipping an empty prebuilds/ and breaking PTY in the
+      // remote runtime. Match the exact dir name as well as its contents.
+      const prebuildDir = `prebuilds/${nodePtyPrebuildTarget(target)}`;
+      return relative === "prebuilds" || relative === prebuildDir || relative.startsWith(`${prebuildDir}/`);
+    }
+    if (relative.startsWith("build/")) {
+      return target.startsWith("linux-");
+    }
+  }
+
+  if (packageName === "opencode-ai" && relative === "bin/opencode.exe") {
+    return false;
+  }
+
+  return true;
+}
+
 async function collectRuntimePackages(target) {
   const rootManifest = await readJson(path.join(packageRoot, "package.json"));
   const platformCursorPackage = `@cursor/sdk-${target}`;
@@ -87,6 +151,7 @@ async function collectRuntimePackages(target) {
     const packageName = queue.shift();
     if (!packageName || visited.has(packageName)) continue;
     if (isOpenCodePlatformPackage(packageName)) continue;
+    if (isPackageForOtherTarget(packageName, target)) continue;
     visited.add(packageName);
     const manifest = await readPackageManifest(packageName);
     if (!manifest) continue;
@@ -103,6 +168,9 @@ async function collectRuntimePackages(target) {
       if (isOpenCodePlatformPackage(dependencyName)) {
         continue;
       }
+      if (isPackageForOtherTarget(dependencyName, target)) {
+        continue;
+      }
       if (!visited.has(dependencyName)) queue.push(dependencyName);
     }
   }
@@ -110,7 +178,7 @@ async function collectRuntimePackages(target) {
   return packages.sort((a, b) => a.localeCompare(b));
 }
 
-async function copyPackage(packageName, destinationRoot) {
+async function copyPackage(packageName, destinationRoot, target) {
   const source = packagePath(packageName);
   if (!(await exists(source))) return false;
   const destination = path.join(destinationRoot, "node_modules", ...packageName.split("/"));
@@ -123,7 +191,8 @@ async function copyPackage(packageName, destinationRoot) {
       return !normalized.includes("/.cache/")
         && !normalized.includes("/test/")
         && !normalized.includes("/tests/")
-        && !normalized.endsWith(".map");
+        && !normalized.endsWith(".map")
+        && shouldCopyPackageEntry(packageName, source, entry, target);
     },
   });
   return true;
@@ -187,7 +256,7 @@ async function main() {
   const packageNames = await collectRuntimePackages(args.target);
   const copied = [];
   for (const packageName of packageNames) {
-    if (await copyPackage(packageName, bundleRoot)) {
+    if (await copyPackage(packageName, bundleRoot, args.target)) {
       copied.push(packageName);
     }
   }
@@ -196,10 +265,13 @@ async function main() {
 
   const archivePath = path.join(args.outDir, `ade-${args.target}.native.tar.gz`);
   await makeTarGz(bundleRoot, archivePath);
+  if (process.env.ADE_KEEP_NATIVE_RUNTIME_STAGING !== "1") {
+    await fs.rm(bundleRoot, { recursive: true, force: true });
+  }
   process.stdout.write(`${JSON.stringify({
     target: args.target,
     archivePath,
-    bundleRoot,
+    bundleRoot: process.env.ADE_KEEP_NATIVE_RUNTIME_STAGING === "1" ? bundleRoot : null,
     packages: copied,
   }, null, 2)}\n`);
 }

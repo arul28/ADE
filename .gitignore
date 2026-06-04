@@ -3,6 +3,7 @@
 node_modules
 /.npm-cache
 /apps/desktop/release-stable
+/apps/desktop/release-logs
 /apps/desktop/.cache
 
 # Temp/debug artifacts

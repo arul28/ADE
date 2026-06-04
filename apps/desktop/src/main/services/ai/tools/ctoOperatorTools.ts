@@ -1684,16 +1684,20 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   });
 
   tools.requestPrReviewers = tool({
-    description: "Request reviewers on an ADE-managed pull request.",
+    description: "Request user or team reviewers on an ADE-managed pull request.",
     inputSchema: z.object({
       prId: z.string().trim().min(1),
-      reviewers: z.array(z.string().trim().min(1)).min(1),
-    }),
-    execute: async ({ prId, reviewers }) => {
+      reviewers: z.array(z.string().trim().min(1)).optional(),
+      teamReviewers: z.array(z.string().trim().min(1)).optional(),
+    }).refine(
+      (value) => (value.reviewers?.length ?? 0) + (value.teamReviewers?.length ?? 0) > 0,
+      { message: "Provide at least one reviewer or team reviewer." },
+    ),
+    execute: async ({ prId, reviewers = [], teamReviewers = [] }) => {
       if (!deps.prService) return { success: false, error: "PR service is not available." };
       try {
-        await deps.prService.requestReviewers({ prId, reviewers });
-        return { success: true, prId, reviewers };
+        await deps.prService.requestReviewers({ prId, reviewers, teamReviewers });
+        return { success: true, prId, reviewers, teamReviewers };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }

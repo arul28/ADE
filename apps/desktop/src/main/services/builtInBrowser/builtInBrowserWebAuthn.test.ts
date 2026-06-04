@@ -116,19 +116,13 @@ describe("configureBuiltInBrowserWebAuthn", () => {
     }
   });
 
-  it("configures Touch ID WebAuthn by default in packaged macOS builds", async () => {
+  it("does not configure Touch ID WebAuthn by default in packaged macOS builds", async () => {
     fakes.app.isPackaged = true;
     const { configureBuiltInBrowserWebAuthn } = await loadModule();
 
     configureBuiltInBrowserWebAuthn();
 
-    if (process.platform === "darwin") {
-      expect(fakes.app.configureWebAuthn).toHaveBeenCalledWith({
-        touchID: { keychainAccessGroup: "VQ372F39G6.com.ade.desktop.webauthn" },
-      });
-    } else {
-      expect(fakes.app.configureWebAuthn).not.toHaveBeenCalled();
-    }
+    expect(fakes.app.configureWebAuthn).not.toHaveBeenCalled();
   });
 
   it("lets packaged builds disable Touch ID WebAuthn with an env override", async () => {

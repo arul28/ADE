@@ -22,6 +22,9 @@ const remoteCallSyncForTargetMock = vi.hoisted(() => vi.fn());
 const remoteListActionRegistryForTargetMock = vi.hoisted(() => vi.fn());
 const remoteCallMachineForTargetMock = vi.hoisted(() => vi.fn());
 const remoteDisconnectMock = vi.hoisted(() => vi.fn());
+const hasKnownSshHostKeyForTargetMock = vi.hoisted(() => vi.fn(() => false));
+const getSshHostKeyTrustForTargetMock = vi.hoisted(() => vi.fn());
+const trustSshHostKeyForTargetMock = vi.hoisted(() => vi.fn());
 
 vi.mock("electron", () => ({
   app: {
@@ -88,6 +91,12 @@ vi.mock("../remoteRuntime/remoteConnectionPool", () => ({
 
 vi.mock("../remoteRuntime/runtimeDiscovery", () => ({
   discoverLanRuntimes: vi.fn(() => ({ machines: [], diagnostics: [] })),
+}));
+
+vi.mock("../remoteRuntime/sshTransport", () => ({
+  hasKnownSshHostKeyForTarget: hasKnownSshHostKeyForTargetMock,
+  getSshHostKeyTrustForTarget: getSshHostKeyTrustForTargetMock,
+  trustSshHostKeyForTarget: trustSshHostKeyForTargetMock,
 }));
 
 vi.mock("../git/git", () => ({
@@ -157,6 +166,27 @@ describe("registerRuntimeBridge", () => {
     remoteListActionRegistryForTargetMock.mockReset();
     remoteCallMachineForTargetMock.mockReset();
     remoteDisconnectMock.mockReset();
+    hasKnownSshHostKeyForTargetMock.mockReset().mockReturnValue(false);
+    getSshHostKeyTrustForTargetMock.mockReset().mockResolvedValue({
+      state: "trusted",
+    });
+    trustSshHostKeyForTargetMock.mockReset().mockResolvedValue({
+      trusted: true,
+      identity: {
+        targetId: target.id,
+        host: target.hostname,
+        port: target.port ?? 22,
+        route: {
+          hostname: target.hostname,
+          port: target.port,
+          source: "manual",
+          lastSucceededAt: null,
+        },
+        keyType: "ssh-ed25519",
+        fingerprintSha256: "SHA256:test-key",
+        knownHostsPath: "/tmp/known_hosts",
+      },
+    });
     browserWindowFromWebContents.mockReturnValue({ id: 7 });
   });
 
@@ -785,8 +815,9 @@ describe("registerRuntimeBridge", () => {
     expect(bindRemoteProject).toHaveBeenCalledTimes(1);
   });
 
-  it("forwards a one-shot local GitHub auth header for remote clones", async () => {
+  it("forwards a one-shot local GitHub auth header for known remote clone hosts", async () => {
     remoteRegistryGetMock.mockReturnValue(target);
+    hasKnownSshHostKeyForTargetMock.mockReturnValue(true);
     remoteCallMachineForTargetMock.mockResolvedValue({
       projectId: "project-cloned",
       rootPath: "/srv/ADE",
@@ -822,6 +853,47 @@ describe("registerRuntimeBridge", () => {
         url: "https://github.com/example/ADE.git",
         parentDir: "/srv",
         githubAuthHeader: `basic ${expectedBasic}`,
+      },
+      { retryOnConnectionError: false },
+    );
+    expect(hasKnownSshHostKeyForTargetMock).toHaveBeenCalledWith(target);
+  });
+
+  it("does not forward clone auth headers to unknown remote hosts", async () => {
+    const getGitHubTokenForRemoteClone = vi.fn(() => "ghp_local_secret");
+    remoteRegistryGetMock.mockReturnValue(target);
+    remoteCallMachineForTargetMock.mockResolvedValue({
+      projectId: "project-cloned",
+      rootPath: "/srv/ADE",
+      displayName: "ADE",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: "https://github.com/example/ADE.git",
+    });
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+      getGitHubTokenForRemoteClone,
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.remoteRuntimeCloneProject)?.(eventForSender(), {
+        id: "target-1",
+        input: {
+          url: "https://github.com/example/ADE.git",
+          parentDir: "/srv",
+          githubAuthHeader: "basic renderer-supplied-secret",
+        },
+      }),
+    ).resolves.toMatchObject({ rootPath: "/srv/ADE" });
+
+    expect(getGitHubTokenForRemoteClone).not.toHaveBeenCalled();
+    expect(remoteCallMachineForTargetMock).toHaveBeenCalledWith(
+      target,
+      "projects.clone",
+      {
+        url: "https://github.com/example/ADE.git",
+        parentDir: "/srv",
       },
       { retryOnConnectionError: false },
     );

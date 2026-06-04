@@ -14,8 +14,12 @@ const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
 const productName = pkg.build?.productName ?? pkg.productName ?? "ADE";
 const DEFAULT_MAX_APP_ASAR_BYTES = 900 * 1024 * 1024;
 // The unpacked runtime includes x64 Codex, Claude, OpenCode, node-pty, and
-// ONNX payloads. Keep a ceiling, but size it to the current required toolset.
-const DEFAULT_MAX_UNPACKED_BYTES = 720 * 1024 * 1024;
+// ONNX payloads. The afterPack step now also materializes the bundled ADE
+// runtime's own OpenCode packages (opencode-ai + the platform native package,
+// ~150MB) into app.asar.unpacked so the packaged runtime can launch OpenCode,
+// which raises the legitimate unpacked size. Keep a ceiling to catch runaway
+// bloat, but size it to the current required toolset.
+const DEFAULT_MAX_UNPACKED_BYTES = 1000 * 1024 * 1024;
 const REMOTE_RUNTIME_TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
 const bundledAgentSkills = [
   "ade-cli-control-plane",
@@ -475,7 +479,11 @@ async function validatePackageHygiene(resourcesPath) {
     path.join(unpackedPath, "node_modules", "node-pty", "third_party", "conpty", "1.23.251008001", "win10-arm64"),
     "node-pty Windows arm64 conpty payload in Windows x64 package",
   );
-  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-x64"), "duplicate OpenCode Windows x64 payload in Windows package");
+  // The afterPack step (ensureOpenCodeRuntimePackages) now deliberately bundles
+  // the on-target OpenCode native package into app.asar.unpacked so opencode-ai
+  // can resolve its sibling `opencode.exe` at runtime. Require it present; the
+  // off-target / baseline / arm64 variants below must still be absent.
+  await assertPathExists(path.join(unpackedPath, "node_modules", "opencode-windows-x64"), "bundled OpenCode Windows x64 payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-x64-baseline"), "baseline OpenCode Windows x64 payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-arm64"), "OpenCode Windows arm64 payload in Windows x64 package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-darwin-arm64"), "OpenCode macOS arm64 payload in Windows package");

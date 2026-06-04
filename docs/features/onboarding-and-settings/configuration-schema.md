@@ -30,7 +30,7 @@ test suites, overlays, automations, environments, github/git/ai
 metadata, lane init, lane templates, lane cleanup, providers, linear
 sync, notifications, or a `project` block) calls
 `ensureSharedAdeProjectScaffold(projectRoot)` so the canonical
-`.ade/.gitignore`, `ade.yaml`, and `cto/identity.yaml` exist before the
+`.ade/.gitignore` and `ade.yaml` exist before the
 write hits disk and `.git/info/exclude` is scrubbed. Saves that only
 change `local` skip the shared write entirely (so a brand-new project
 can stay local-only) and re-run `initializeOrRepairAdeProject` in auto
@@ -419,7 +419,7 @@ name handled inside `registerIpc.ts`).
 
 ## Gotchas
 
-- `ade.yaml`, `cto/identity.yaml`, and the human-authored `templates/`
+- `.ade/.gitignore`, `ade.yaml`, and the human-authored `templates/`
   / `skills/` / `workflows/linear/` / `project-icons/` directories are
   the only `.ade/` paths under version control. The shared
   `.ade/.gitignore` is `*` with explicit allowlist entries, so any new

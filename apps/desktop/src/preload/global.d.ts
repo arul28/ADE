@@ -643,10 +643,12 @@ import type {
   RemoteRuntimeDiscoveryResult,
   RemoteRuntimeLocalWorkCheckResult,
   RemoteRuntimeProjectRecord,
+  RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeStreamEventsRequest,
   RemoteRuntimeStreamEventsResult,
   RemoteRuntimeTarget,
   RemoteRuntimeTargetInput,
+  RemoteRuntimeTrustSshHostKeyResult,
   ChatTerminalActiveForChatArgs,
   ChatTerminalListArgs,
   ChatTerminalPreviewArgs,
@@ -772,6 +774,13 @@ declare global {
           input: RemoteRuntimeTargetInput,
         ) => Promise<RemoteRuntimeTarget>;
         removeTarget: (id: string) => Promise<{ removed: boolean }>;
+        getSshHostKeyTrust: (
+          id: string,
+        ) => Promise<RemoteRuntimeSshHostKeyTrustStatus>;
+        trustSshHostKey: (
+          id: string,
+          fingerprintSha256: string,
+        ) => Promise<RemoteRuntimeTrustSshHostKeyResult>;
         connect: (id: string) => Promise<RemoteRuntimeConnectResult>;
         listProjects: (id: string) => Promise<RemoteRuntimeProjectRecord[]>;
         addProject: (

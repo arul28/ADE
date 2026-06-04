@@ -1280,6 +1280,9 @@ describe("runtime GitHub actions", () => {
   it("routes object-shaped publish args to the GitHub service", async () => {
     const publishCurrentProject = vi.fn(async () => ({
       state: "pushed" as const,
+      owner: "acme",
+      name: "ade",
+      fullName: "acme/ade",
       htmlUrl: "https://github.com/acme/ade",
     }));
     const runtime = {
@@ -1293,20 +1296,25 @@ describe("runtime GitHub actions", () => {
       },
     } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
     const githubService = getAdeActionDomainServices(runtime).github as {
-      publishCurrentProject(args?: { name?: string; description?: string; isPrivate?: boolean }): Promise<unknown>;
+      publishCurrentProject(args?: { owner?: string; name?: string; description?: string; isPrivate?: boolean }): Promise<unknown>;
     };
 
     await expect(githubService.publishCurrentProject({
+      owner: " acme ",
       name: " ade ",
       description: "Local-first agent desk",
       isPrivate: true,
     })).resolves.toEqual({
       state: "pushed",
+      owner: "acme",
+      name: "ade",
+      fullName: "acme/ade",
       htmlUrl: "https://github.com/acme/ade",
     });
     await expect(githubService.publishCurrentProject({ name: "ade" })).rejects.toThrow("Expected 'isPrivate' to be a boolean.");
 
     expect(publishCurrentProject).toHaveBeenCalledWith({
+      owner: "acme",
       name: "ade",
       description: "Local-first agent desk",
       isPrivate: true,

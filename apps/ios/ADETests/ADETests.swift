@@ -1085,6 +1085,10 @@ final class ADETests: XCTestCase {
       SyncRouteEndpoint(host: "100.75.20.63", port: 8788)
     )
     XCTAssertEqual(
+      syncParseRouteEndpoint("wss://sync.ade.example:443/sync"),
+      SyncRouteEndpoint(scheme: "wss", host: "sync.ade.example", port: 443)
+    )
+    XCTAssertEqual(
       syncParseRouteEndpoint("aruls-mac-studio.tail7497a6.ts.net:8788"),
       SyncRouteEndpoint(host: "aruls-mac-studio.tail7497a6.ts.net", port: 8788)
     )
@@ -1106,6 +1110,10 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(
       syncWebSocketURLString(host: "[fd7a:115c:a1e0::1]:8788", port: 8787),
       "ws://[fd7a:115c:a1e0::1]:8788"
+    )
+    XCTAssertEqual(
+      syncWebSocketURLString(host: "wss://sync.ade.example:443/sync", port: 8787),
+      "wss://sync.ade.example:443"
     )
   }
 
@@ -1388,6 +1396,16 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testSyncAuthFailureOnAmbiguousSavedLanRouteKeepsPairing() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+
+    XCTAssertFalse(service.shouldInvalidateSavedPairingAfterAuthFailureForTesting(address: "192.168.1.8"))
+    XCTAssertFalse(service.shouldInvalidateSavedPairingAfterAuthFailureForTesting(address: "mac.local"))
+    XCTAssertFalse(service.shouldInvalidateSavedPairingAfterAuthFailureForTesting(address: "ade-sync"))
+    XCTAssertTrue(service.shouldInvalidateSavedPairingAfterAuthFailureForTesting(address: "macbook.tailnet.ts.net"))
+  }
+
+  @MainActor
   func testSyncAutomaticReconnectDoesNotTreatGenericTailnetShortcutAsEverySavedHost() {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
     let profile = HostConnectionProfile(
@@ -1509,11 +1527,12 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
-  func testSyncPlaintextWebSocketAllowlistIncludesTrustedTailscaleRoutesOnly() {
+  func testSyncWebSocketAllowlistIncludesTrustedPlaintextAndSecureRoutes() {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
 
     XCTAssertTrue(service.syncCanAttemptPlaintextWebSocket("100.117.237.95"))
     XCTAssertTrue(service.syncCanAttemptPlaintextWebSocket("ws://100.117.237.95:8787"))
+    XCTAssertTrue(service.syncCanAttemptPlaintextWebSocket("wss://sync.ade.example"))
     XCTAssertTrue(service.syncCanAttemptPlaintextWebSocket("ade-sync"))
     XCTAssertTrue(service.syncCanAttemptPlaintextWebSocket("macbook.tailnet.ts.net"))
     XCTAssertTrue(service.syncCanAttemptPlaintextWebSocket("192.168.68.102"))
@@ -1622,7 +1641,7 @@ final class ADETests: XCTestCase {
     )
     XCTAssertEqual(
       SyncUserFacingError.message(for: ambiguousTailnetAuthError),
-      "Reached an ADE machine over Tailscale, but it did not match this saved machine. ADE kept the pairing and will keep trying other routes."
+      "Reached a different ADE machine on this route. ADE kept the saved pairing and will keep trying other routes."
     )
 
     let invalidHelloError = NSError(
@@ -2916,6 +2935,56 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(restartedAfterAck.outboundLocalDbVersionForTesting(), pendingLocalVersion)
 
     databaseAfterAck.close()
+  }
+
+  @MainActor
+  func testSyncServiceDoesNotAdvertiseUnackedPhoneChangesAsRemoteDbVersion() throws {
+    let outboundCursorKey = "ade.sync.outboundSyncCursors"
+    let pendingOutboundChangesetsKey = "ade.sync.pendingOutboundChangesets"
+    let activeProjectIdKey = "ade.sync.activeProjectId"
+    let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
+    UserDefaults.standard.removeObject(forKey: outboundCursorKey)
+    UserDefaults.standard.removeObject(forKey: pendingOutboundChangesetsKey)
+    UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+    UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: outboundCursorKey)
+      UserDefaults.standard.removeObject(forKey: pendingOutboundChangesetsKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+    }
+
+    let baseURL = makeTemporaryDirectory()
+    let database = makeProjectLaneForeignKeyDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values (
+        'project-1', '/tmp/project-one', 'Project One', 'main', '2026-03-15T00:00:00.000Z', '2026-03-15T00:00:00.000Z'
+      )
+    """)
+
+    let service = SyncService(database: database)
+    service.setActiveProjectForTesting(projectId: "project-1", rootPath: "/tmp/project-one")
+    service.setLatestRemoteDbVersionForTesting(0)
+    let initialCursor = service.outboundLocalDbVersionForTesting()
+
+    try database.executeSqlForTesting("""
+      insert into lanes (
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path, parent_lane_id, status, created_at, archived_at
+      ) values (
+        'lane-unacked', 'project-1', 'Unacked proof', null, 'worktree', 'origin/main', 'feature/unacked', '/tmp/unacked', null, 'active', '2026-03-15T00:00:00.000Z', null
+      )
+    """)
+
+    let pending = try XCTUnwrap(service.stageNextOutboundChangesetForTesting())
+    XCTAssertGreaterThan(pending.toDbVersion, initialCursor)
+    XCTAssertEqual(service.outboundLocalDbVersionForTesting(), initialCursor)
+    XCTAssertEqual(service.latestRemoteDbVersionForTesting(), 0)
+    XCTAssertEqual(service.currentPeerDbVersionForTesting(), 0)
+
+    database.close()
   }
 
   @MainActor

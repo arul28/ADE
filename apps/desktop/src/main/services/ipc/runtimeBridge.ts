@@ -23,16 +23,19 @@ import type {
   RemoteRuntimeLocalWorkCheckResult,
   RemoteRuntimeProjectRecord,
   RemoteRuntimeProjectWorkSummary,
+  RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeStreamEventsRequest,
   RemoteRuntimeStreamEventsResult,
   RemoteRuntimeTarget,
   RemoteRuntimeTargetInput,
+  RemoteRuntimeTrustSshHostKeyResult,
 } from "../../../shared/types";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import { RemoteConnectionPool } from "../remoteRuntime/remoteConnectionPool";
 import { RemoteConnectionService } from "../remoteRuntime/remoteConnectionService";
 import { discoverLanRuntimes } from "../remoteRuntime/runtimeDiscovery";
 import { RemoteTargetRegistry } from "../remoteRuntime/remoteTargetRegistry";
+import { hasKnownSshHostKeyForTarget } from "../remoteRuntime/sshTransport";
 import { runGit } from "../git/git";
 import { getProjectWorkSummary } from "../projects/projectDetailService";
 import { readGlobalState } from "../state/globalState";
@@ -259,6 +262,11 @@ function createGitHubAuthHeader(token: string | null | undefined): string | null
   return `basic ${basic}`;
 }
 
+function stripCloneAuthHeader(input: CloneProjectInput): CloneProjectInput {
+  const { githubAuthHeader: _githubAuthHeader, ...safeInput } = input;
+  return safeInput;
+}
+
 export function registerRuntimeBridge({
   appVersion,
   bindRemoteProject,
@@ -447,6 +455,39 @@ export function registerRuntimeBridge({
   );
 
   ipcMain.handle(
+    IPC.remoteRuntimeGetSshHostKeyTrust,
+    async (
+      _event,
+      arg: { id: string },
+    ): Promise<RemoteRuntimeSshHostKeyTrustStatus> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      if (!id) throw new Error("Remote target id is required.");
+      return await remoteConnectionService.getSshHostKeyTrust(id);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeTrustSshHostKey,
+    async (
+      _event,
+      arg: { id: string; fingerprintSha256: string },
+    ): Promise<RemoteRuntimeTrustSshHostKeyResult> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const fingerprintSha256 =
+        typeof arg?.fingerprintSha256 === "string"
+          ? arg.fingerprintSha256.trim()
+          : "";
+      if (!id) throw new Error("Remote target id is required.");
+      if (!fingerprintSha256)
+        throw new Error("SSH host key fingerprint is required.");
+      return await remoteConnectionService.trustSshHostKey(
+        id,
+        fingerprintSha256,
+      );
+    },
+  );
+
+  ipcMain.handle(
     IPC.remoteRuntimeConnect,
     async (
       _event,
@@ -541,19 +582,23 @@ export function registerRuntimeBridge({
     ): Promise<RemoteRuntimeProjectRecord> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
       const input = arg?.input ?? { url: "", parentDir: "" };
+      const safeInput = stripCloneAuthHeader(input);
       let githubAuthHeader: string | null = null;
-      try {
-        githubAuthHeader = createGitHubAuthHeader(
-          getGitHubTokenForRemoteClone?.() ?? null,
-        );
-      } catch {
-        githubAuthHeader = null;
+      const target = remoteConnectionService.getTarget(id);
+      if (target && hasKnownSshHostKeyForTarget(target)) {
+        try {
+          githubAuthHeader = createGitHubAuthHeader(
+            getGitHubTokenForRemoteClone?.() ?? null,
+          );
+        } catch {
+          githubAuthHeader = null;
+        }
       }
       return await remoteConnectionService.cloneProject(
         id,
-        githubAuthHeader && !input.githubAuthHeader
-          ? { ...input, githubAuthHeader }
-          : input,
+        githubAuthHeader
+          ? { ...safeInput, githubAuthHeader }
+          : safeInput,
       );
     },
   );

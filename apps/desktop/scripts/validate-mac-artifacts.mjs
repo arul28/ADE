@@ -188,6 +188,27 @@ async function assertRemoteRuntimeBundle(resourcesPath, description) {
       throw new Error(`[release:mac] Remote runtime native archive for ${target} does not contain ./node_modules/: ${nativeArchivePath}`);
     }
   }
+  const runtimeEntries = await fs.readdir(runtimeRoot, { withFileTypes: true });
+  const stagingDirectories = runtimeEntries
+    .filter((entry) => entry.isDirectory() && (entry.name === ".sea" || entry.name.endsWith(".native")))
+    .map((entry) => entry.name)
+    .sort();
+  if (stagingDirectories.length > 0) {
+    throw new Error(
+      `[release:mac] Remote runtime bundle for ${description} contains staging directories: ${stagingDirectories.join(", ")}`
+    );
+  }
+}
+
+async function assertBundledOpenCodeRuntime(nodeModulesPath, description) {
+  const requiredBinaries = [
+    path.join(nodeModulesPath, "opencode-darwin-arm64", "bin", "opencode"),
+    path.join(nodeModulesPath, "opencode-darwin-x64", "bin", "opencode"),
+  ];
+  for (const binaryPath of requiredBinaries) {
+    await assertPathExists(binaryPath, `bundled OpenCode runtime binary for ${description}`);
+    await assertExecutable(binaryPath, `bundled OpenCode runtime binary for ${description}`);
+  }
 }
 
 async function findFirstNodeAddon(rootPath) {
@@ -366,6 +387,7 @@ async function validatePackagedRuntime(appPath, description) {
   await assertExecutable(adeCliInstallerPath, "bundled ADE CLI PATH installer");
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
+  await assertBundledOpenCodeRuntime(nodeModulesPath, description);
   const adeCliTuiContents = await fs.readFile(adeCliTuiPath, "utf8");
   for (const token of ["__dirname", "__filename"]) {
     if (adeCliTuiContents.includes(token) && !adeCliTuiContents.includes(`const ${token} =`)) {

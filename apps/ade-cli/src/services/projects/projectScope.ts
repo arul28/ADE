@@ -2,6 +2,10 @@ import type { AdeRuntime, AdeRuntimeSyncOptions } from "../../bootstrap";
 import type { SyncCommandPayload } from "../../../../desktop/src/shared/types";
 import { ProjectRegistry, type ProjectId, type ProjectRecord } from "./projectRegistry";
 
+type SwitchSyncHostOptions = {
+  deactivatePreviousHost?: boolean;
+};
+
 export class ProjectScope {
   readonly registryProjectId: ProjectId;
   readonly record: ProjectRecord;
@@ -108,8 +112,11 @@ export class ProjectScopeRegistry {
     await Promise.all(projectIds.map((projectId) => this.dispose(projectId)));
   }
 
-  async ensureSyncHost(projectId?: ProjectId): Promise<ProjectScope | null> {
-    return projectId ? this.switchSyncHost(projectId) : this.resolveActiveSyncHost();
+  async ensureSyncHost(
+    projectId?: ProjectId,
+    options?: SwitchSyncHostOptions,
+  ): Promise<ProjectScope | null> {
+    return projectId ? this.switchSyncHost(projectId, options) : this.resolveActiveSyncHost();
   }
 
   async resolveActiveSyncHost(): Promise<ProjectScope | null> {
@@ -133,11 +140,15 @@ export class ProjectScopeRegistry {
     return record ? this.switchSyncHost(record.projectId) : null;
   }
 
-  async switchSyncHost(projectId: ProjectId): Promise<ProjectScope | null> {
+  async switchSyncHost(
+    projectId: ProjectId,
+    options: SwitchSyncHostOptions = {},
+  ): Promise<ProjectScope | null> {
     if (!this.options.syncRuntime?.enabled) return null;
-    const existingHostId = this.syncHostProjectId;
-    if (existingHostId && existingHostId !== projectId) {
-      await this.configureCachedSyncHost(existingHostId, false);
+    const previousHostId = this.syncHostProjectId;
+    const deactivatePreviousHost = options.deactivatePreviousHost ?? true;
+    if (previousHostId && previousHostId !== projectId && deactivatePreviousHost) {
+      await this.configureCachedSyncHost(previousHostId, false);
     }
     this.syncHostProjectId = projectId;
     try {
@@ -146,10 +157,19 @@ export class ProjectScopeRegistry {
       return scope;
     } catch (error) {
       if (this.syncHostProjectId === projectId) {
-        this.syncHostProjectId = null;
+        this.syncHostProjectId = deactivatePreviousHost ? null : previousHostId;
       }
       throw error;
     }
+  }
+
+  async deactivateInactiveSyncHosts(activeProjectId: ProjectId | null = this.syncHostProjectId): Promise<void> {
+    if (!activeProjectId) return;
+    await Promise.all(
+      [...this.scopes.keys()]
+        .filter((projectId) => projectId !== activeProjectId)
+        .map((projectId) => this.configureCachedSyncHost(projectId, false)),
+    );
   }
 
   private async configureCachedSyncHost(

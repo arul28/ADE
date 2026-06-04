@@ -328,7 +328,7 @@ describe("multi-project RPC server", () => {
     handler.dispose();
   });
 
-  it("switches the active sync host only through the explicit switch RPC", async () => {
+  it("rejects desktop/TUI sync host switches through the runtime RPC", async () => {
     const { root, projectRoot, registry } = createRegistry();
     const first = registry.add(projectRoot);
     const secondRoot = path.join(root, "second-project");
@@ -366,9 +366,12 @@ describe("multi-project RPC server", () => {
       id: 2,
       method: "sync.switchHost",
       params: { projectId: second.projectId },
-    })).resolves.toEqual({ switched: true });
+    })).rejects.toMatchObject({
+      code: -32601,
+      message: "Method not found: sync.switchHost",
+    });
 
-    expect(scopeRegistry.switchSyncHost).toHaveBeenCalledWith(second.projectId);
+    expect(scopeRegistry.switchSyncHost).not.toHaveBeenCalled();
     expect(scopeRegistry.resolveActiveSyncHost).not.toHaveBeenCalled();
     expect(scopeRegistry.ensureSyncHost).not.toHaveBeenCalled();
     expect(first.projectId).not.toBe(second.projectId);

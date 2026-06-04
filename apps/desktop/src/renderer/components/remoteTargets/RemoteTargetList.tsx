@@ -26,6 +26,7 @@ import type {
   RemoteRuntimeConnectionStatus,
   RemoteRuntimeConnectResult,
   RemoteRuntimeDiscoveredMachine,
+  RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeTarget,
   RemoteRuntimeTargetInput,
   RemoteRuntimeTargetRoute,
@@ -38,6 +39,10 @@ import {
 
 type RemoteTargetListProps = {
   onConnected?: (result: RemoteRuntimeConnectResult) => void;
+};
+
+type ConnectTargetOptions = {
+  skipHostKeyTrustCheck?: boolean;
 };
 
 const panelStyle: CSSProperties = {
@@ -224,10 +229,13 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
   const [loadingDiscovered, setLoadingDiscovered] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [trustingHostKey, setTrustingHostKey] = useState(false);
   const [formPrefill, setFormPrefill] =
     useState<RemoteTargetFormPrefill | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+  const [hostKeyTrust, setHostKeyTrust] =
+    useState<RemoteRuntimeSshHostKeyTrustStatus | null>(null);
 
   const selectedTarget = useMemo(
     () => targets.find((target) => target.id === selectedId) ?? null,
@@ -251,6 +259,10 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
     selectedConnection?.state === "error" ? selectedConnection.lastError : null;
   const selectedCompatibilityWarnings =
     selectedConnection?.compatibilityWarnings ?? connected?.compatibilityWarnings ?? [];
+  const selectedHostKeyTrust =
+    selectedTarget && hostKeyTrust?.targetId === selectedTarget.id
+      ? hostKeyTrust
+      : null;
 
   const loadTargets = useCallback(async () => {
     setLoading(true);
@@ -357,10 +369,27 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
     [],
   );
 
+  const ensureHostKeyTrust = useCallback(async (targetId: string) => {
+    const status = await window.ade.remoteRuntime.getSshHostKeyTrust(targetId);
+    if (status.state === "needs_trust" || status.state === "changed") {
+      setHostKeyTrust(status);
+      setError(null);
+      return false;
+    }
+    setHostKeyTrust((current) =>
+      current?.targetId === targetId ? null : current,
+    );
+    return true;
+  }, []);
+
   const connectTarget = useCallback(
-    async (targetId: string) => {
+    async (targetId: string, options: ConnectTargetOptions = {}) => {
       setBusyId(targetId);
       try {
+        if (!options.skipHostKeyTrustCheck) {
+          const trusted = await ensureHostKeyTrust(targetId);
+          if (!trusted) return;
+        }
         const result = await window.ade.remoteRuntime.connect(targetId);
         setConnected(result);
         setTargets((current) =>
@@ -423,6 +452,7 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
           };
         });
         setSelectedId(result.target.id);
+        setHostKeyTrust(null);
         setError(null);
         onConnected?.(result);
       } catch (err) {
@@ -431,8 +461,28 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
         setBusyId(null);
       }
     },
-    [onConnected, targets],
+    [ensureHostKeyTrust, onConnected, targets],
   );
+
+  const trustAndConnect = useCallback(async () => {
+    if (!selectedHostKeyTrust || selectedHostKeyTrust.state !== "needs_trust")
+      return;
+    setTrustingHostKey(true);
+    try {
+      await window.ade.remoteRuntime.trustSshHostKey(
+        selectedHostKeyTrust.targetId,
+        selectedHostKeyTrust.fingerprintSha256,
+      );
+      setHostKeyTrust(null);
+      await connectTarget(selectedHostKeyTrust.targetId, {
+        skipHostKeyTrustCheck: true,
+      });
+    } catch (err) {
+      setError(extractError(err));
+    } finally {
+      setTrustingHostKey(false);
+    }
+  }, [connectTarget, selectedHostKeyTrust]);
 
   const saveAndConnect = useCallback(
     async (input: RemoteRuntimeTargetInput) => {
@@ -868,6 +918,100 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
             </div>
           ) : null}
         </div>
+
+        {selectedHostKeyTrust ? (
+          <div
+            style={{
+              display: "grid",
+              gap: 10,
+              borderRadius: 8,
+              border: `1px solid ${
+                selectedHostKeyTrust.state === "changed"
+                  ? COLORS.danger
+                  : COLORS.warning
+              }`,
+              background:
+                selectedHostKeyTrust.state === "changed"
+                  ? `color-mix(in srgb, ${COLORS.danger} 10%, transparent)`
+                  : `color-mix(in srgb, ${COLORS.warning} 10%, transparent)`,
+              padding: "10px 12px",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                color:
+                  selectedHostKeyTrust.state === "changed"
+                    ? COLORS.danger
+                    : COLORS.warning,
+                fontFamily: SANS_FONT,
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+            >
+              <Warning size={15} weight="fill" />
+              {selectedHostKeyTrust.state === "changed"
+                ? "Machine identity changed"
+                : "Trust this machine"}
+            </div>
+            <div
+              style={{
+                color: COLORS.textMuted,
+                fontFamily: SANS_FONT,
+                fontSize: 12,
+                lineHeight: 1.45,
+              }}
+            >
+              {selectedHostKeyTrust.state === "changed"
+                ? `ADE found a different SSH identity for ${selectedHostKeyTrust.host}:${selectedHostKeyTrust.port}. Review ${selectedHostKeyTrust.knownHostsPath ?? "known_hosts"} before connecting.`
+                : `ADE found a new SSH identity for ${selectedHostKeyTrust.host}:${selectedHostKeyTrust.port}. Trust it once to connect over Wi-Fi or Tailscale.`}
+            </div>
+            <div
+              style={{
+                color: COLORS.textPrimary,
+                fontFamily: MONO_FONT,
+                fontSize: 11,
+                overflowWrap: "anywhere",
+              }}
+            >
+              {selectedHostKeyTrust.fingerprintSha256}
+            </div>
+            {selectedHostKeyTrust.state === "needs_trust" ? (
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  type="button"
+                  disabled={trustingHostKey || busyId != null}
+                  onClick={() => void trustAndConnect()}
+                  style={{
+                    ...primaryButton({
+                      height: 30,
+                      padding: "0 10px",
+                      fontSize: 11,
+                    }),
+                    opacity: trustingHostKey || busyId != null ? 0.65 : 1,
+                  }}
+                >
+                  <CheckCircle size={15} weight="bold" />
+                  {trustingHostKey ? "Trusting..." : "Trust & connect"}
+                </button>
+                <button
+                  type="button"
+                  disabled={trustingHostKey}
+                  onClick={() => setHostKeyTrust(null)}
+                  style={outlineButton({
+                    height: 30,
+                    padding: "0 10px",
+                    fontSize: 11,
+                  })}
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
         {error || selectedConnectionError ? (
           <div

@@ -4746,7 +4746,10 @@ describe("ADE CLI", () => {
     });
   });
 
-  it("browser commands map to built-in browser actions", () => {
+  it("browser commands map to built-in browser actions", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: undefined,
+  }, () => {
     const open = buildCliPlan([
       "browser",
       "open",
@@ -5207,7 +5210,7 @@ describe("ADE CLI", () => {
         ],
       },
     });
-  });
+  }));
 
   it("browser open and claim commands carry the agent lane claim", () => {
     const previousLane = process.env.ADE_LANE_ID;
@@ -5225,13 +5228,51 @@ describe("ADE CLI", () => {
           action: "navigate",
           args: {
             url: "localhost:5173",
+            activate: false,
+            reuseOwnedTab: true,
+            openPanel: false,
+            laneId: "lane-env-1",
+            chatSessionId: "chat-env-1",
+          },
+        },
+      });
+
+      const newTabOpen = buildCliPlan(["browser", "open", "localhost:5173", "--new-tab"]);
+      expect(newTabOpen.kind).toBe("execute");
+      if (newTabOpen.kind !== "execute") return;
+      expect(newTabOpen.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "built_in_browser",
+          action: "navigate",
+          args: {
+            url: "localhost:5173",
+            activate: false,
             newTab: true,
+            openPanel: false,
+            laneId: "lane-env-1",
+            chatSessionId: "chat-env-1",
+          },
+        },
+      });
+      expect((newTabOpen.steps[0]?.params as any).arguments.args.reuseOwnedTab).toBeUndefined();
+
+      const panelOpen = buildCliPlan(["browser", "open", "localhost:5173", "--panel"]);
+      expect(panelOpen.kind).toBe("execute");
+      if (panelOpen.kind !== "execute") return;
+      expect(panelOpen.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "built_in_browser",
+          action: "navigate",
+          args: {
+            url: "localhost:5173",
+            reuseOwnedTab: true,
             openPanel: true,
             laneId: "lane-env-1",
             chatSessionId: "chat-env-1",
           },
         },
       });
+      expect((panelOpen.steps[0]?.params as any).arguments.args.activate).toBeUndefined();
 
       const activeOpen = buildCliPlan(["browser", "open", "localhost:5173", "--active-tab"]);
       expect(activeOpen.kind).toBe("execute");
@@ -5242,13 +5283,28 @@ describe("ADE CLI", () => {
           action: "navigate",
           args: {
             url: "localhost:5173",
-            openPanel: true,
+            openPanel: false,
             laneId: "lane-env-1",
             chatSessionId: "chat-env-1",
           },
         },
       });
       expect((activeOpen.steps[0]?.params as any).arguments.args.newTab).toBeUndefined();
+      expect((activeOpen.steps[0]?.params as any).arguments.args.activate).toBeUndefined();
+
+      const ownedScreenshot = buildCliPlan(["browser", "screenshot"]);
+      expect(ownedScreenshot.kind).toBe("execute");
+      if (ownedScreenshot.kind !== "execute") return;
+      expect(ownedScreenshot.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "built_in_browser",
+          action: "captureScreenshot",
+          args: {
+            laneId: "lane-env-1",
+            chatSessionId: "chat-env-1",
+          },
+        },
+      });
 
       const panel = buildCliPlan(["browser", "panel"]);
       expect(panel.kind).toBe("execute");

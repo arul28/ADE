@@ -102,6 +102,49 @@ function buildNotarytoolArgs(dmgPath) {
   );
 }
 
+function readPositiveIntegerEnv(name, fallback) {
+  const rawValue = process.env[name];
+  if (!rawValue) return fallback;
+  const parsed = Number.parseInt(rawValue, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`[release:mac] ${name} must be a positive integer, received: ${rawValue}`);
+  }
+  return parsed;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function formatCommandOutput(error) {
+  const stdout = typeof error?.stdout === "string" ? error.stdout.trim() : "";
+  const stderr = typeof error?.stderr === "string" ? error.stderr.trim() : "";
+  return [stdout, stderr].filter(Boolean).join("\n");
+}
+
+async function stapleDmgWithRetry(dmgPath) {
+  const maxAttempts = readPositiveIntegerEnv("ADE_DMG_STAPLE_MAX_ATTEMPTS", 12);
+  const retryDelayMs = readPositiveIntegerEnv("ADE_DMG_STAPLE_RETRY_DELAY_MS", 30_000);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    console.log(`[release:mac] Stapling DMG ticket (${attempt}/${maxAttempts}): ${dmgPath}`);
+    try {
+      await execFileAsync("xcrun", ["stapler", "staple", dmgPath], { maxBuffer: 1024 * 1024 * 10 });
+      return;
+    } catch (error) {
+      if (attempt >= maxAttempts) {
+        throw error;
+      }
+      const output = formatCommandOutput(error);
+      const suffix = output ? `\n${output}` : "";
+      console.warn(
+        `[release:mac] DMG stapling failed; retrying in ${Math.round(retryDelayMs / 1000)}s.${suffix}`
+      );
+      await sleep(retryDelayMs);
+    }
+  }
+}
+
 const dmgPath =
   resolveAbsolute(readFlag("--dmg")) ?? (await findArtifact(/^ADE-.+-universal\.dmg$/, "mac dmg"));
 const dmgBlockmapPath = `${dmgPath}.blockmap`;
@@ -111,8 +154,7 @@ await assertPathExists(dmgPath, "mac dmg artifact");
 console.log(`[release:mac] Submitting DMG for notarization: ${dmgPath}`);
 await execFileAsync("xcrun", buildNotarytoolArgs(dmgPath), { maxBuffer: 1024 * 1024 * 10 });
 
-console.log(`[release:mac] Stapling DMG ticket: ${dmgPath}`);
-await execFileAsync("xcrun", ["stapler", "staple", dmgPath], { maxBuffer: 1024 * 1024 * 10 });
+await stapleDmgWithRetry(dmgPath);
 
 try {
   await fs.rm(dmgBlockmapPath, { force: true });
@@ -122,4 +164,3 @@ try {
 } catch {
   // ignore cleanup failures
 }
-

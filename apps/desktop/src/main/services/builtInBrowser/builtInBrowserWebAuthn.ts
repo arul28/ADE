@@ -13,7 +13,7 @@ function shouldConfigureTouchIdWebAuthn(): boolean {
   const value = process.env.ADE_ENABLE_TOUCH_ID_WEBAUTHN?.trim().toLowerCase();
   if (value === "0" || value === "false") return false;
   if (value === "1" || value === "true") return true;
-  return app.isPackaged;
+  return false;
 }
 
 export function configureBuiltInBrowserWebAuthn(args: {

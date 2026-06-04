@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AiProviderConnectionStatus,
@@ -12,6 +12,10 @@ import type {
 } from "../../../shared/types";
 import { HeaderUsageControl } from "./HeaderUsageControl";
 import { UsageQuotaPanel } from "./UsageQuotaPanel";
+import {
+  ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
+  ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
+} from "../../lib/workSidebarBrowserResize";
 
 type UsageComponentTestBridge = {
   usage: Pick<
@@ -353,6 +357,29 @@ describe("usage components", () => {
       await vi.advanceTimersByTimeAsync(120_000);
 
       expect(window.ade.usage.refresh).not.toHaveBeenCalled();
+    });
+
+    it("occludes the native browser while the usage drawer is open", async () => {
+      vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(makeHeaderUsageSnapshot());
+      const events: string[] = [];
+      const onStart = () => events.push("start");
+      const onEnd = () => events.push("end");
+      window.addEventListener(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT, onStart);
+      window.addEventListener(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT, onEnd);
+      try {
+        render(<HeaderUsageControl />);
+
+        fireEvent.click(await screen.findByRole("button", { name: /Usage .* Codex wk 19%, 5h 9%/ }));
+
+        await waitFor(() => expect(events).toEqual(["start"]));
+
+        fireEvent.click(screen.getByTitle("Close usage"));
+
+        await waitFor(() => expect(events).toEqual(["start", "end"]));
+      } finally {
+        window.removeEventListener(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT, onStart);
+        window.removeEventListener(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT, onEnd);
+      }
     });
   });
 });

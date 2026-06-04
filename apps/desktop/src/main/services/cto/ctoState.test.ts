@@ -44,7 +44,7 @@ describe("ctoStateService", () => {
     expect(fs.existsSync(path.join(fixture.adeDir, "cto", "identity.yaml"))).toBe(true);
     expect(fs.existsSync(path.join(fixture.adeDir, "cto", "CURRENT.md"))).toBe(true);
     expect(fs.existsSync(path.join(fixture.adeDir, "cto", "sessions.jsonl"))).toBe(false);
-    expect(buildAdeGitignore()).toContain("!cto/identity.yaml");
+    expect(buildAdeGitignore()).not.toContain("!cto/identity.yaml");
     expect(buildAdeGitignore()).not.toContain("cto/CURRENT.md");
 
     fixture.db.close();

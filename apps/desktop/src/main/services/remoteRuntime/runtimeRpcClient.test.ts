@@ -124,7 +124,7 @@ describe("RuntimeRpcClient", () => {
     await expect(client.call("projects.list", {})).rejects.toThrow("broken pipe");
   });
 
-  it("rejects only the timed-out call and keeps the connection open", async () => {
+  it("treats per-call timeouts as terminal connection failures", async () => {
     vi.useFakeTimers();
     try {
       const transport = new MockTransport();
@@ -139,12 +139,12 @@ describe("RuntimeRpcClient", () => {
       await vi.advanceTimersByTimeAsync(25);
 
       await assertion;
-      expect(onDisconnect).not.toHaveBeenCalled();
-
-      // Subsequent calls go out fine — connection is still alive.
-      const followup = client.call("projects.list", {});
-      transport.emitData({ jsonrpc: "2.0", id: 2, result: { ok: true } });
-      await expect(followup).resolves.toEqual({ ok: true });
+      expect(onDisconnect).toHaveBeenCalledWith(expect.objectContaining({
+        message: "Remote ADE service timed out waiting for method projects.list (25ms).",
+      }));
+      await expect(client.call("projects.list", {})).rejects.toThrow(
+        "Remote ADE service timed out waiting for method projects.list (25ms).",
+      );
     } finally {
       vi.useRealTimers();
     }

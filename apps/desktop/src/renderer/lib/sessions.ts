@@ -16,6 +16,14 @@ export function isChatToolType(toolType: string | null | undefined): boolean {
   );
 }
 
+export function canBulkStopSession(session: Pick<TerminalSessionSummary, "status" | "toolType">): boolean {
+  return session.status === "running" && !isChatToolType(session.toolType);
+}
+
+export function canBulkDeleteSession(session: Pick<TerminalSessionSummary, "status" | "toolType">): boolean {
+  return session.status !== "running" || isChatToolType(session.toolType);
+}
+
 export function chatToolTypeForProvider(provider: AgentChatProvider | string | null | undefined): TerminalToolType {
   switch (provider) {
     case "claude": return "claude-chat";
