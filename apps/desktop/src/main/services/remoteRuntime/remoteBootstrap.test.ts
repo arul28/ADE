@@ -28,6 +28,11 @@ const initializeMock = vi.hoisted(() => vi.fn());
 const callMock = vi.hoisted(() => vi.fn());
 const runtimeRpcClientMock = vi.hoisted(() => vi.fn());
 
+const guardedUploadCommandPattern = (remoteFilePattern: string): RegExp =>
+  new RegExp(
+    String.raw`^umask 077; cat >> ${remoteFilePattern} & ade_upload_pid=\$!; .*sleep 75; .*exit "\$ade_upload_status"$`,
+  );
+
 vi.mock("node:child_process", () => ({
   spawn: spawnMock,
 }));
@@ -522,7 +527,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
 
     expect(connectSshWithRouteMock).toHaveBeenCalledWith(targetFromSshConfig);
     expect(fakeSsh.exec).toHaveBeenCalledWith(
-      expect.stringMatching(/^umask 077; cat >> \$HOME\/\.ade\/bin\/ade\.upload-.*\.tmp$/),
+      expect.stringMatching(guardedUploadCommandPattern(String.raw`\$HOME/\.ade/bin/ade\.upload-.*\.tmp`)),
       expect.any(Function),
     );
     expect(spawnMock).not.toHaveBeenCalled();
@@ -609,7 +614,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     })).rejects.toThrow(/uploaded ade service version mismatch/i);
 
     expect(fakeSsh.exec).toHaveBeenCalledWith(
-      expect.stringMatching(/^umask 077; cat >> \$HOME\/\.ade\/bin\/ade\.upload-.*\.tmp$/),
+      expect.stringMatching(guardedUploadCommandPattern(String.raw`\$HOME/\.ade/bin/ade\.upload-.*\.tmp`)),
       expect.any(Function),
     );
     expect(spawnMock).not.toHaveBeenCalled();
@@ -655,12 +660,17 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     })).rejects.toThrow(/existing SSH session: SSH upload channel failed.*channel denied.*OpenSSH fallback failed: SSH upload process failed.*pipe broke/i);
 
     expect(fakeSsh.exec).toHaveBeenCalledWith(
-      expect.stringMatching(/^umask 077; cat >> \$HOME\/\.ade\/bin\/ade\.upload-.*\.tmp$/),
+      expect.stringMatching(guardedUploadCommandPattern(String.raw`\$HOME/\.ade/bin/ade\.upload-.*\.tmp`)),
       expect.any(Function),
     );
     expect(spawnMock).toHaveBeenCalledWith(
       "ssh",
-      expect.arrayContaining(["-p", "22", "ade@build-host.local", expect.stringMatching(/^umask 077; cat >> \$HOME\/\.ade\/bin\/ade\.upload-.*\.tmp$/)]),
+      expect.arrayContaining([
+        "-p",
+        "22",
+        "ade@build-host.local",
+        expect.stringMatching(guardedUploadCommandPattern(String.raw`\$HOME/\.ade/bin/ade\.upload-.*\.tmp`)),
+      ]),
       expect.objectContaining({ stdio: [expect.any(Number), "ignore", "pipe"] }),
     );
     expect(commands.some((command) => command.startsWith("rm -f $HOME/.ade/bin/ade.upload-"))).toBe(true);
@@ -724,11 +734,11 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     });
 
     expect(fakeSsh.exec).toHaveBeenCalledWith(
-      expect.stringMatching(/^umask 077; cat >> \$HOME\/\.ade-alpha\/bin\/ade\.upload-.*\.tmp$/),
+      expect.stringMatching(guardedUploadCommandPattern(String.raw`\$HOME/\.ade-alpha/bin/ade\.upload-.*\.tmp`)),
       expect.any(Function),
     );
     expect(fakeSsh.exec).toHaveBeenCalledWith(
-      expect.stringMatching(/^umask 077; cat >> \$HOME\/\.ade-alpha\/runtime\/ade-darwin-arm64\.native\.tar\.gz\.upload-.*\.tmp$/),
+      expect.stringMatching(guardedUploadCommandPattern(String.raw`\$HOME/\.ade-alpha/runtime/ade-darwin-arm64\.native\.tar\.gz\.upload-.*\.tmp`)),
       expect.any(Function),
     );
     expect(spawnMock).not.toHaveBeenCalled();

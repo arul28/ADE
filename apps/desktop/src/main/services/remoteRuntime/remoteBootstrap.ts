@@ -291,6 +291,19 @@ function remoteUploadTempSuffix(): string {
   return `upload-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}.tmp`;
 }
 
+function remoteUploadAppendCommand(remoteFileExpr: string): string {
+  return [
+    "umask 077",
+    `cat >> ${remoteFileExpr} & ade_upload_pid=$!`,
+    `( sleep ${REMOTE_ARTIFACT_UPLOAD_WATCHDOG_SECONDS}; kill "$ade_upload_pid" >/dev/null 2>&1 ) & ade_upload_watchdog=$!`,
+    "wait \"$ade_upload_pid\"",
+    "ade_upload_status=$?",
+    "kill \"$ade_upload_watchdog\" >/dev/null 2>&1 || true",
+    "wait \"$ade_upload_watchdog\" 2>/dev/null || true",
+    "exit \"$ade_upload_status\"",
+  ].join("; ");
+}
+
 async function execSshOrThrow(client: Client, command: string, fallback: string): Promise<void> {
   const result = await execSsh(client, command);
   if (result.code === 0) return;
@@ -310,6 +323,9 @@ function remoteFileMatchesCommand(fileExpr: string, expectedSize: number, expect
 
 const REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS = 10 * 60_000;
 const REMOTE_ARTIFACT_UPLOAD_IDLE_TIMEOUT_MS = 45_000;
+const REMOTE_ARTIFACT_UPLOAD_WATCHDOG_SECONDS = Math.ceil(
+  REMOTE_ARTIFACT_UPLOAD_IDLE_TIMEOUT_MS / 1000,
+) + 30;
 const REMOTE_ARTIFACT_UPLOAD_CHUNK_BYTES = 1024 * 1024;
 const REMOTE_ARTIFACT_UPLOAD_NO_PROGRESS_RETRIES = 2;
 
@@ -442,7 +458,7 @@ async function uploadSshChunkViaConnectedClient(
     timeout.unref?.();
     resetIdleTimer();
 
-    client.exec(`umask 077; cat >> ${remoteFileExpr}`, (error, channel) => {
+    client.exec(remoteUploadAppendCommand(remoteFileExpr), (error, channel) => {
       if (error) {
         settle(new Error(`SSH upload channel failed${uploadProgressSuffix()}: ${error.message}`));
         return;
@@ -502,7 +518,7 @@ async function uploadSshChunkViaOpenSsh(
   try {
     await new Promise<void>((resolve, reject) => {
       let settled = false;
-      const child = spawn("ssh", openSshArgsForRoute(target, route, connectedConfig, `umask 077; cat >> ${remoteFileExpr}`), {
+      const child = spawn("ssh", openSshArgsForRoute(target, route, connectedConfig, remoteUploadAppendCommand(remoteFileExpr)), {
         stdio: [chunkHandle.fd, "ignore", "pipe"],
       });
       let stderr = "";
