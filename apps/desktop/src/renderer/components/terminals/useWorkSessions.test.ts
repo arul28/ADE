@@ -1557,6 +1557,35 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
   });
 
+  it("does not refetch remote Work on focus without hidden changes", async () => {
+    fakeAppStoreState.projectBinding = {
+      kind: "remote",
+      key: "remote:target:project",
+      targetId: "target",
+      runtimeName: "Mac Studio",
+      projectId: "project",
+      rootPath: "/Users/admin/Projects/perf pass",
+      displayName: "perf pass",
+    };
+
+    renderHook(() => useWorkSessions());
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    listSessionsCachedMock.mockClear();
+    vi.mocked(invalidateSessionListCache).mockClear();
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await new Promise((r) => setTimeout(r, 140));
+    });
+
+    expect(invalidateSessionListCache).not.toHaveBeenCalled();
+    expect(listSessionsCachedMock).not.toHaveBeenCalled();
+  });
+
   it("does not subscribe or refresh while the kept-alive Work surface is inactive", async () => {
     const windowAddEventListenerSpy = vi.spyOn(window, "addEventListener");
     const documentAddEventListenerSpy = vi.spyOn(document, "addEventListener");

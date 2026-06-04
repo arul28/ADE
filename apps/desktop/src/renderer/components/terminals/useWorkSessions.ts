@@ -1126,6 +1126,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       if (document.visibilityState !== "visible") return;
       const hadHiddenChanges = pendingHiddenSessionRefreshRef.current;
       pendingHiddenSessionRefreshRef.current = false;
+      const remoteProject = useAppStore.getState().projectBinding?.kind === "remote";
+      if (remoteProject && !hadHiddenChanges) return;
       invalidateSessionListCache();
       scheduleBackgroundRefresh(hadHiddenChanges ? 20 : 120);
     };
