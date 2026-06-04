@@ -635,7 +635,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const stripUrlFilterParams = useCallback(() => {
     if (!isWorkRoute) return;
     const nextParams = new URLSearchParams(searchParams);
-    for (const key of ["laneId", "lane", "status"]) {
+    for (const key of ["laneId", "lane", "status", "sessionId"]) {
       nextParams.delete(key);
     }
     // Use URLSearchParams.toString() as the stable comparison anchor: if stripping
@@ -955,6 +955,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     const sessionParam = (searchParams.get("sessionId") ?? "").trim();
     const laneParam = (searchParams.get("laneId") ?? searchParams.get("lane") ?? "").trim();
     const statusParam = (searchParams.get("status") ?? "").trim();
+    if (pendingProjectSwitchRef.current != null) return;
     // When a sessionId is requested, only skip the lane/status fallback if
     // that session actually exists. If it's stale/missing (after the first
     // load completes) we fall through so the URL's laneId/status hints still
@@ -982,7 +983,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     if (!laneExists && !status) {
       appliedUrlFilterKeyRef.current = null;
       partiallyAppliedUrlFilterKeyRef.current = null;
-      if (laneParam || statusParam) stripUrlFilterParams();
+      if (sessionParam || laneParam || statusParam) stripUrlFilterParams();
       return;
     }
     // When the URL specifies a laneId but lanes haven't populated yet (e.g. on
@@ -1037,6 +1038,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       return;
     }
     if (appliedQuerySessionIdRef.current === sessionParam) return;
+    if (pendingProjectSwitchRef.current != null) return;
 
     const session = sessions.find((entry) => entry.id === sessionParam);
     if (!session) return;

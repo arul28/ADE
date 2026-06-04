@@ -889,7 +889,79 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
 
     // The stale session never existed, so focusSession must not fire for it.
     expect(focusSessionSpy).not.toHaveBeenCalledWith("missing-session");
-    expect(navigateSpy).toHaveBeenCalledWith("/work?sessionId=missing-session", { replace: true });
+    expect(navigateSpy).toHaveBeenCalledWith("/work", { replace: true });
+  });
+
+  it("does not replay a previous project's URL session during project switch", async () => {
+    const sessionA = makeSession("session-a", "lane-a");
+    const sessionB = makeSession("session-b", "lane-b");
+    listSessionsCachedMock
+      .mockResolvedValueOnce([sessionA])
+      .mockResolvedValue([sessionB]);
+
+    let currentSearchParams = new URLSearchParams("sessionId=session-a");
+    useSearchParamsMock.mockImplementation(() => [currentSearchParams, vi.fn()]);
+
+    const projectBWorkState = {
+      openItemIds: [] as string[],
+      activeItemId: null as string | null,
+      selectedItemId: null as string | null,
+      viewMode: "tabs" as const,
+      draftKind: "chat" as const,
+      laneFilter: "all",
+      statusFilter: "all" as const,
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [] as string[],
+      workCollapsedTabGroupIds: [] as string[],
+      workFocusSessionsHidden: false,
+    };
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      project: { rootPath: "/project/a" },
+      lanes: [{ id: "lane-a", name: "Lane A" }],
+    };
+    setWorkViewStateSpy.mockImplementation((projectRoot: string, next: any) => {
+      if (projectRoot !== "/project/b") return;
+      const resolved = typeof next === "function"
+        ? next(projectBWorkState)
+        : { ...projectBWorkState, ...next };
+      Object.assign(projectBWorkState, resolved);
+    });
+
+    const { rerender } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(focusSessionSpy).toHaveBeenCalledWith("session-a");
+    });
+
+    focusSessionSpy.mockClear();
+    selectLaneSpy.mockClear();
+    setWorkViewStateSpy.mockClear();
+    navigateSpy.mockClear();
+
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      project: { rootPath: "/project/b" },
+      lanes: [{ id: "lane-b", name: "Lane B" }],
+      workViewByProject: {
+        "/project/b": projectBWorkState,
+      },
+      sessionsCacheByProject: {},
+    };
+    currentSearchParams = new URLSearchParams("sessionId=session-a");
+
+    act(() => {
+      rerender();
+    });
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    expect(focusSessionSpy).not.toHaveBeenCalledWith("session-a");
+    expect(selectLaneSpy).not.toHaveBeenCalledWith("lane-a");
+    expect(projectBWorkState.openItemIds).not.toContain("session-a");
   });
 
   it("does not reapply the same URL filters after the Work route is parked on another ADE tab", async () => {
