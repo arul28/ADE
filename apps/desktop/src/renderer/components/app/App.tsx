@@ -698,6 +698,13 @@ function ProjectTabHost() {
       .map((root) => projectInfoByRoot[root] ?? (activeProject?.rootPath === root ? activeProject : null))
       .filter((project): project is ProjectInfo => project != null);
   }, [activeProject, openProjectTabRoots, projectInfoByRoot]);
+  const projectBindingsByRoot = React.useMemo(() => {
+    const bindings = new Map<string, OpenProjectBinding>();
+    for (const project of projects) {
+      bindings.set(project.rootPath, bindingForProject(project, activeProjectBinding));
+    }
+    return bindings;
+  }, [activeProjectBinding, projects]);
 
   const mountedProjects = React.useMemo(() => {
     const lru = lruRef.current;
@@ -718,9 +725,11 @@ function ProjectTabHost() {
 
   for (const project of mountedProjects) {
     if (!storesRef.current.has(project.rootPath)) {
+      const projectBinding = projectBindingsByRoot.get(project.rootPath)
+        ?? localProjectBindingForProject(project);
       storesRef.current.set(project.rootPath, createProjectAppStore(
         project,
-        bindingForProject(project, activeProjectBinding),
+        projectBinding,
       ));
     }
   }
@@ -768,7 +777,8 @@ function ProjectTabHost() {
         if (!store) return null;
         const liveRoute = project.rootPath === activeRoot ? serializeProjectRoute(location) : null;
         const route = liveRoute ?? routesByRoot[project.rootPath] ?? readStoredProjectRoute(project.rootPath) ?? "/work";
-        const projectBinding = bindingForProject(project, activeProjectBinding);
+        const projectBinding = projectBindingsByRoot.get(project.rootPath)
+          ?? localProjectBindingForProject(project);
         return (
           <ProjectSurface
             key={project.rootPath}
