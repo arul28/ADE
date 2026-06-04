@@ -1435,6 +1435,7 @@ async function subscribeToRuntimeEvents(
       cursor: clampCursor(request.cursor),
       limit: clampLimit(request.limit),
       ...(isRemoteRuntimeEventCategory(request.category) ? { category: request.category } : {}),
+      ...(typeof request.replay === "boolean" ? { replay: request.replay } : {}),
     });
     subscriptionId = readSubscriptionId(value);
     for (const notification of pendingNotifications) {

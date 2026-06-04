@@ -1020,6 +1020,7 @@ describe("RemoteConnectionPool", () => {
         cursor: 5,
         limit: 10,
         category: "pty",
+        replay: false,
       },
       onEvent,
     );
@@ -1029,6 +1030,7 @@ describe("RemoteConnectionPool", () => {
       cursor: 5,
       limit: 10,
       category: "pty",
+      replay: false,
     });
     expect(onEvent).toHaveBeenCalledTimes(1);
     expect(onEvent).toHaveBeenCalledWith({

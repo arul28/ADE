@@ -1632,6 +1632,7 @@ let remoteRuntimeEventBindingKey: string | null = null;
 let remoteRuntimeEventGeneration = -1;
 let remoteRuntimeEventEpoch: string | null = null;
 let remoteRuntimeEventStartedAtMs = 0;
+let remoteRuntimeEventReplaySuppressed = false;
 let remoteRuntimeEmptyPollCount = 0;
 let remoteRuntimeSeenEventBindingKey: string | null = null;
 const remoteRuntimeSeenEventIds = new Set<number>();
@@ -1767,6 +1768,7 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
       remoteRuntimeEventGeneration = projectBindingGeneration;
       remoteRuntimeEventEpoch = null;
       remoteRuntimeEventStartedAtMs = 0;
+      remoteRuntimeEventReplaySuppressed = false;
       resetRemoteRuntimeEmptyPolls();
       resetRemoteRuntimeEventDedup(null);
       return;
@@ -1782,6 +1784,7 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
       remoteRuntimeEventEpoch = null;
       remoteRuntimeEventStartedAtMs =
         binding.kind === "local" ? Date.now() : 0;
+      remoteRuntimeEventReplaySuppressed = binding.kind === "remote";
       resetRemoteRuntimeEmptyPolls();
       resetRemoteRuntimeEventDedup(binding.key);
     }
@@ -1791,6 +1794,9 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
     const request = {
       cursor: remoteRuntimeEventCursor,
       limit: 100,
+      ...(binding.kind === "remote" && remoteRuntimeEventReplaySuppressed && remoteRuntimeEventCursor === 0
+        ? { replay: false }
+        : {}),
     } satisfies RemoteRuntimeStreamEventsRequest;
     const batch =
       binding.kind === "remote"
@@ -1823,6 +1829,7 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
       remoteRuntimeEventEpoch = batchEpoch;
       if (epochChanged) {
         remoteRuntimeEventCursor = 0;
+        remoteRuntimeEventReplaySuppressed = binding.kind === "remote";
         resetRemoteRuntimeEmptyPolls();
         resetRemoteRuntimeEventDedup(binding.key);
         nextDelayMs = 0;

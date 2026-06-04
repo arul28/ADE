@@ -4104,7 +4104,7 @@ describe("preload OAuth bridge", () => {
     expect(usageUpdate).toHaveBeenCalledTimes(1);
   });
 
-  it("replays older remote runtime events during remote binding catch-up", async () => {
+  it("starts remote runtime event subscriptions without replaying buffered history", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-10T12:00:00.000Z"));
     try {
@@ -4128,15 +4128,8 @@ describe("preload OAuth bridge", () => {
         }
         if (channel === IPC.remoteRuntimeStreamEvents) {
           return {
-            events: [
-              {
-                id: 1,
-                timestamp: "2026-05-10T11:55:00.000Z",
-                category: "runtime",
-                payload: { type: "project_state_event", event: projectEvent },
-              },
-            ],
-            nextCursor: 1,
+            events: [],
+            nextCursor: 0,
             hasMore: false,
           };
         }
@@ -4170,9 +4163,9 @@ describe("preload OAuth bridge", () => {
       expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeStreamEvents, {
         id: "target-1",
         projectId: "project-1",
-        request: { cursor: 0, limit: 100 },
+        request: { cursor: 0, limit: 100, replay: false },
       });
-      expect(callback).toHaveBeenCalledWith(projectEvent);
+      expect(callback).not.toHaveBeenCalledWith(projectEvent);
 
       unsubscribe();
     } finally {
@@ -4354,7 +4347,7 @@ describe("preload OAuth bridge", () => {
       expect(streamRequests[1]).toEqual({
         id: "target-2",
         projectId: "project-2",
-        request: { cursor: 0, limit: 100 },
+        request: { cursor: 0, limit: 100, replay: false },
       });
 
       unsubscribeBinding();
@@ -4462,7 +4455,7 @@ describe("preload OAuth bridge", () => {
         {
           id: "target-1",
           projectId: "project-1",
-          request: { cursor: 0, limit: 100 },
+          request: { cursor: 0, limit: 100, replay: false },
         },
         {
           id: "target-1",
@@ -4472,7 +4465,7 @@ describe("preload OAuth bridge", () => {
         {
           id: "target-1",
           projectId: "project-1",
-          request: { cursor: 0, limit: 100 },
+          request: { cursor: 0, limit: 100, replay: false },
         },
       ]);
       expect(callback).toHaveBeenCalledWith(oldEvent);
@@ -4581,7 +4574,7 @@ describe("preload OAuth bridge", () => {
         {
           id: "target-1",
           projectId: "project-1",
-          request: { cursor: 0, limit: 100 },
+          request: { cursor: 0, limit: 100, replay: false },
         },
         {
           id: "target-1",
@@ -4591,7 +4584,7 @@ describe("preload OAuth bridge", () => {
         {
           id: "target-1",
           projectId: "project-1",
-          request: { cursor: 0, limit: 100 },
+          request: { cursor: 0, limit: 100, replay: false },
         },
       ]);
       expect(callback).toHaveBeenCalledWith(oldEvent);

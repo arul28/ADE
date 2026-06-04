@@ -195,6 +195,7 @@ export type RemoteRuntimeStreamEventsRequest = {
   cursor?: number;
   limit?: number;
   category?: RemoteRuntimeEventCategory;
+  replay?: boolean;
 };
 
 export type RemoteRuntimeStreamEventsResult = {

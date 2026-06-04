@@ -687,7 +687,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    if (!project?.rootPath || showWelcome) {
+    if (!project?.rootPath || showWelcome || isRemoteProject) {
       setOnboardingStatus(null);
       setOnboardingStatusLoading(false);
       return () => {
@@ -712,7 +712,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [project?.rootPath, showWelcome]);
+  }, [isRemoteProject, project?.rootPath, showWelcome]);
 
   useEffect(() => {
     const handler = (event: Event) => {

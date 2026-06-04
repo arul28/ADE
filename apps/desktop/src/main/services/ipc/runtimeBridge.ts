@@ -942,7 +942,7 @@ export function registerRuntimeBridge({
         ensureRuntimeEventSubscription(
           event.sender,
           bindingKey,
-          `${bindingKey}:${arg?.request?.category ?? "*"}`,
+          `${bindingKey}:${arg?.request?.category ?? "*"}:${arg?.request?.replay === false ? "live" : "replay"}`,
           (onEvent, onEnded) =>
             localRuntimeConnectionPool.subscribeEventsForRoot(
               rootPath,
@@ -950,6 +950,7 @@ export function registerRuntimeBridge({
                 cursor: arg?.request?.cursor,
                 limit: arg?.request?.limit,
                 category: arg?.request?.category,
+                replay: arg?.request?.replay,
               },
               onEvent,
               onEnded,
@@ -985,23 +986,31 @@ export function registerRuntimeBridge({
       if (!projectId) throw new Error("Remote project id is required.");
       const target = remoteConnectionService.getTarget(id);
       if (!target) throw new Error("Remote target was not found.");
-      const result = await remoteConnectionService.streamEvents(
-        target.id,
-        projectId,
-        arg?.request ?? {},
-      );
+      const request = arg?.request ?? {};
+      const result = request.replay === false
+        ? {
+            events: [],
+            nextCursor: request.cursor ?? 0,
+            hasMore: false,
+          }
+        : await remoteConnectionService.streamEvents(
+            target.id,
+            projectId,
+            request,
+          );
       ensureRuntimeEventSubscription(
         event.sender,
         `remote:${target.id}:${projectId}`,
-        `remote:${target.id}:${projectId}:${arg?.request?.category ?? "*"}`,
+        `remote:${target.id}:${projectId}:${request.category ?? "*"}:${request.replay === false ? "live" : "replay"}`,
         (onEvent, onEnded) =>
           remoteConnectionPool.subscribeEventsForTarget(
             target,
             projectId,
             {
-              cursor: arg?.request?.cursor,
-              limit: arg?.request?.limit,
-              category: arg?.request?.category,
+              cursor: request.cursor,
+              limit: request.limit,
+              category: request.category,
+              replay: request.replay,
             },
             onEvent,
             onEnded,
