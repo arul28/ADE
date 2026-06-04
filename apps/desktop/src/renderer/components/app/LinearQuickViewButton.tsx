@@ -134,6 +134,7 @@ export function LinearQuickViewButton({
   const batchConfigByIssueRef = useRef<Map<string, BatchLaunchIssueConfig>>(new Map());
   const activeProjectRoot =
     projectBinding?.kind === "remote" ? projectBinding.rootPath : project?.rootPath;
+  const shouldAutoCheckVisibility = variant === "icon" && projectBinding?.kind !== "remote";
   const visibilityRetryIntervalMs =
     projectBinding?.kind === "remote"
       ? REMOTE_VISIBILITY_RETRY_INTERVAL_MS
@@ -190,10 +191,14 @@ export function LinearQuickViewButton({
 
   useEffect(() => {
     if (variant !== "icon") return;
-    let cancelled = false;
     setVisible(false);
     setOpen(false);
     setQuickView(null);
+  }, [activeProjectRoot, variant]);
+
+  useEffect(() => {
+    if (!shouldAutoCheckVisibility) return;
+    let cancelled = false;
     const timer = window.setTimeout(() => {
       void loadVisibility()
       .then((nextVisible) => {
@@ -207,10 +212,10 @@ export function LinearQuickViewButton({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [loadVisibility, activeProjectRoot, variant]);
+  }, [loadVisibility, shouldAutoCheckVisibility]);
 
   useEffect(() => {
-    if (variant !== "icon") return;
+    if (!shouldAutoCheckVisibility) return;
     let timer: number | null = null;
     let cancelled = false;
     const onBridge = () => {
@@ -236,10 +241,10 @@ export function LinearQuickViewButton({
       if (timer != null) window.clearTimeout(timer);
       window.removeEventListener("ade:runtime-bridge-ready", onBridge);
     };
-  }, [loadVisibility, variant]);
+  }, [loadVisibility, shouldAutoCheckVisibility]);
 
   useEffect(() => {
-    if (variant !== "icon") return;
+    if (!shouldAutoCheckVisibility) return;
     if (!activeProjectRoot) return;
     let cancelled = false;
     const refresh = () => {
@@ -256,10 +261,10 @@ export function LinearQuickViewButton({
       cancelled = true;
       window.removeEventListener("focus", refresh);
     };
-  }, [loadVisibility, activeProjectRoot, variant]);
+  }, [loadVisibility, activeProjectRoot, shouldAutoCheckVisibility]);
 
   useEffect(() => {
-    if (variant !== "icon") return;
+    if (!shouldAutoCheckVisibility) return;
     if (visible) return;
     if (!activeProjectRoot) return;
     let cancelled = false;
@@ -275,7 +280,7 @@ export function LinearQuickViewButton({
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [loadVisibility, visible, activeProjectRoot, visibilityRetryIntervalMs, variant]);
+  }, [loadVisibility, visible, activeProjectRoot, visibilityRetryIntervalMs, shouldAutoCheckVisibility]);
 
   const openQuickView = useCallback(() => {
     if (cachedQuickViewRef.current) {

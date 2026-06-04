@@ -1041,7 +1041,7 @@ describe("TopBar", () => {
     }
   });
 
-  it("paces hidden Linear quick view retries on remote projects", async () => {
+  it("does not run automatic hidden Linear checks on remote projects", async () => {
     vi.useFakeTimers();
     useAppStore.setState({
       project: null,
@@ -1074,22 +1074,12 @@ describe("TopBar", () => {
       render(<TopBar />);
 
       await act(async () => {
-        vi.advanceTimersByTime(8_000);
+        window.dispatchEvent(new Event("ade:runtime-bridge-ready"));
+        window.dispatchEvent(new Event("focus"));
+        vi.advanceTimersByTime(30_000);
         await flushMicrotasks(2);
       });
-      expect(getLinearConnectionStatus).toHaveBeenCalledTimes(1);
-
-      await act(async () => {
-        vi.advanceTimersByTime(6_000);
-        await flushMicrotasks(2);
-      });
-      expect(getLinearConnectionStatus).toHaveBeenCalledTimes(1);
-
-      await act(async () => {
-        vi.advanceTimersByTime(1_000);
-        await flushMicrotasks(2);
-      });
-      expect(getLinearConnectionStatus).toHaveBeenCalledTimes(2);
+      expect(getLinearConnectionStatus).not.toHaveBeenCalled();
       expect(screen.queryByRole("button", { name: /linear quick view/i })).toBeNull();
     } finally {
       vi.useRealTimers();
