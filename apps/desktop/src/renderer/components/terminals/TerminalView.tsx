@@ -770,19 +770,24 @@ function writePtyInputNow(runtime: CachedRuntime, data: string) {
   window.ade.pty.write({ ptyId: runtime.ptyId, data }).catch(() => {});
 }
 
-function flushPendingPtyInput(runtime: CachedRuntime): void {
+function consumePendingPtyInput(runtime: CachedRuntime): string {
   clearPtyInputFlushTimer(runtime);
-  if (!runtime.inputWriteChunks.length || runtime.disposed) return;
+  if (!runtime.inputWriteChunks.length || runtime.disposed) return "";
   const data = runtime.inputWriteChunks.join("");
   runtime.inputWriteChunks.length = 0;
   runtime.inputWriteBytes = 0;
+  return data;
+}
+
+function flushPendingPtyInput(runtime: CachedRuntime): void {
+  const data = consumePendingPtyInput(runtime);
+  if (!data) return;
   writePtyInputNow(runtime, data);
 }
 
 function writePtyInput(runtime: CachedRuntime, data: string) {
   if (!data || runtime.disposed) return;
-  flushPendingPtyInput(runtime);
-  writePtyInputNow(runtime, data);
+  writePtyInputNow(runtime, `${consumePendingPtyInput(runtime)}${data}`);
 }
 
 function shouldFlushPtyInputImmediately(data: string): boolean {

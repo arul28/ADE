@@ -816,7 +816,7 @@ describe("TerminalView", () => {
     });
   });
 
-  it("preserves queued input order before direct control-key writes", async () => {
+  it("preserves queued input order inside direct control-key writes", async () => {
     const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
     const originalPlatform = window.navigator.platform;
     try {
@@ -854,13 +854,10 @@ describe("TerminalView", () => {
 
       expect(handled).toBe(false);
       expect(preventDefault).toHaveBeenCalledTimes(1);
-      expect(ptyWrite).toHaveBeenNthCalledWith(1, {
+      expect(ptyWrite).toHaveBeenCalledTimes(1);
+      expect(ptyWrite).toHaveBeenCalledWith({
         ptyId: "pty-input-control",
-        data: "p",
-      });
-      expect(ptyWrite).toHaveBeenNthCalledWith(2, {
-        ptyId: "pty-input-control",
-        data: "\x03",
+        data: "p\x03",
       });
     } finally {
       if (platformDescriptor) {
