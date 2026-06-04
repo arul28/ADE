@@ -367,6 +367,29 @@ function normalizeLaneWorkScopeKey(projectRoot: string | null | undefined, laneI
   return `${projectKey}::${normalizedLaneId}`;
 }
 
+function removeWorkViewStateForProject(
+  projectRoot: string | null | undefined,
+  workViewByProject: Record<string, WorkProjectViewState>,
+  laneWorkViewByScope: Record<string, WorkProjectViewState>,
+): {
+  workViewByProject: Record<string, WorkProjectViewState>;
+  laneWorkViewByScope: Record<string, WorkProjectViewState>;
+} {
+  const projectKey = normalizeProjectKey(projectRoot);
+  if (!projectKey) return { workViewByProject, laneWorkViewByScope };
+  const nextWorkViewByProject = { ...workViewByProject };
+  delete nextWorkViewByProject[projectKey];
+  const nextLaneWorkViewByScope = { ...laneWorkViewByScope };
+  const laneScopePrefix = `${projectKey}::`;
+  for (const key of Object.keys(nextLaneWorkViewByScope)) {
+    if (key.startsWith(laneScopePrefix)) delete nextLaneWorkViewByScope[key];
+  }
+  return {
+    workViewByProject: nextWorkViewByProject,
+    laneWorkViewByScope: nextLaneWorkViewByScope,
+  };
+}
+
 type WarmLaneCache = { lanes: LaneSummary[]; laneSnapshots: LaneListSnapshot[] };
 
 function laneCacheStorageKey(projectRoot: string): string {
@@ -1673,29 +1696,55 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       if (switchGeneration !== remoteProjectSwitchGeneration) {
         return binding;
       }
-      set({
-        project: {
-          rootPath: binding.rootPath,
-          displayName: binding.displayName,
-          baseRef: "main",
-        },
-        projectBinding: binding,
-        projectRevision: get().projectRevision + 1,
-        projectHydrated: true,
-        showWelcome: false,
-        projectTransition: null,
-        projectTransitionError: null,
-        isNewTabOpen: false,
-        laneSnapshots: [],
-        lanes: [],
-        lanesLoading: true,
-        laneDeleteProgressByLaneId: {},
-        selectedLaneId: null,
-        focusedSessionId: null,
-        laneInspectorTabs: {},
-        keybindings: null,
-        terminalAttention: EMPTY_TERMINAL_ATTENTION,
-        macosVmTabIndicator: null,
+      removePersistedLaneCache(binding.rootPath);
+      set((prev) => {
+        const projectKey = normalizeProjectKey(binding.rootPath);
+        const {
+          workViewByProject,
+          laneWorkViewByScope,
+        } = removeWorkViewStateForProject(
+          projectKey,
+          prev.workViewByProject,
+          prev.laneWorkViewByScope,
+        );
+        persistWorkViewState({ workViewByProject, laneWorkViewByScope });
+        const laneSelectionByProject = { ...prev.laneSelectionByProject };
+        const laneCacheByProject = { ...prev.laneCacheByProject };
+        const sessionsCacheByProject = { ...prev.sessionsCacheByProject };
+        if (projectKey) {
+          delete laneSelectionByProject[projectKey];
+          delete laneCacheByProject[projectKey];
+          delete sessionsCacheByProject[projectKey];
+        }
+        return {
+          project: {
+            rootPath: binding.rootPath,
+            displayName: binding.displayName,
+            baseRef: "main",
+          },
+          projectBinding: binding,
+          projectRevision: prev.projectRevision + 1,
+          projectHydrated: true,
+          showWelcome: false,
+          projectTransition: null,
+          projectTransitionError: null,
+          isNewTabOpen: false,
+          laneSnapshots: [],
+          lanes: [],
+          lanesLoading: true,
+          laneDeleteProgressByLaneId: {},
+          selectedLaneId: null,
+          focusedSessionId: null,
+          laneInspectorTabs: {},
+          keybindings: null,
+          terminalAttention: EMPTY_TERMINAL_ATTENTION,
+          macosVmTabIndicator: null,
+          workViewByProject,
+          laneWorkViewByScope,
+          laneSelectionByProject,
+          laneCacheByProject,
+          sessionsCacheByProject,
+        };
       });
       void get().refreshLanes({ includeStatus: false });
       return binding;

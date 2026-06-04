@@ -39,6 +39,12 @@ export function formatFilesError(err: unknown, fallback = "File operation failed
   );
 }
 
+export function isUnavailableGitDecorationsError(err: unknown): boolean {
+  const message = formatFilesError(err);
+  return /file\.refreshGitDecorations/i.test(message)
+    && /not callable|not exposed|unavailable/i.test(message);
+}
+
 export function isMissingWorkspaceRootError(message: string): boolean {
   return /(?:ENOENT|no such file or directory|worktree is missing|workspace is missing)/i.test(message);
 }

@@ -12,6 +12,7 @@ import {
   defaultFilesWorkspaceId,
   filesSessionKey,
   formatFilesError,
+  isUnavailableGitDecorationsError,
   mergeTreePreservingLoadedChildren,
   replaceTreeNodeChildren,
 } from "../treeHelpers";
@@ -168,7 +169,13 @@ export function FilesWorkbench({
         return merged;
       });
       setError(null);
-      const decorations = await window.ade.files.refreshGitDecorations({ workspaceId: reqId, forceFresh: true });
+      let decorations = null;
+      try {
+        decorations = await window.ade.files.refreshGitDecorations({ workspaceId: reqId, forceFresh: true });
+      } catch (decorationError) {
+        if (!isUnavailableGitDecorationsError(decorationError)) throw decorationError;
+      }
+      if (!decorations) return;
       if (workspaceIdRef.current !== reqId) return;
       setTree((prev) => {
         const decorated = applyGitStatusToTree(prev, decorations);

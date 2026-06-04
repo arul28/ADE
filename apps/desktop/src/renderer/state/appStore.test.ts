@@ -1233,5 +1233,85 @@ describe("appStore", () => {
       expect(useAppStore.getState().project?.rootPath).toBe("/remote/b");
       expect(useAppStore.getState().projectBinding).toEqual(bindingB);
     });
+
+    it("drops stale project-scoped Work and lane caches when opening a remote project", async () => {
+      const binding = {
+        kind: "remote" as const,
+        key: "remote:target-1:project-a",
+        targetId: "target-1",
+        runtimeName: "Remote",
+        projectId: "project-a",
+        rootPath: "/remote/a",
+        displayName: "Project A",
+      };
+      const defaultWorkState = useAppStore.getState().getWorkViewState("/remote/a");
+      (window.ade.remoteRuntime.openProject as any).mockResolvedValueOnce(binding);
+      useAppStore.setState({
+        project: { rootPath: "/local/project", displayName: "Local", baseRef: "main" } as any,
+        selectedLaneId: "local-lane",
+        focusedSessionId: "local-session",
+        workViewByProject: {
+          "/remote/a": {
+            ...defaultWorkState,
+            openItemIds: ["local-session"],
+            activeItemId: "local-session",
+            selectedItemId: "local-session",
+          },
+          "/local/project": {
+            ...defaultWorkState,
+            openItemIds: ["local-session"],
+            activeItemId: "local-session",
+          },
+        },
+        laneWorkViewByScope: {
+          "/remote/a::local-lane": {
+            ...defaultWorkState,
+            openItemIds: ["local-session"],
+          },
+          "/local/project::local-lane": {
+            ...defaultWorkState,
+            openItemIds: ["local-session"],
+          },
+        },
+        laneSelectionByProject: {
+          "/remote/a": { laneId: "local-lane", sessionId: "local-session" },
+          "/local/project": { laneId: "local-lane", sessionId: "local-session" },
+        },
+        laneCacheByProject: {
+          "/remote/a": { lanes: [{ id: "local-lane", name: "Local lane" }] as any[], laneSnapshots: [] },
+          "/local/project": { lanes: [{ id: "local-lane", name: "Local lane" }] as any[], laneSnapshots: [] },
+        },
+        sessionsCacheByProject: {
+          "/remote/a": [{ id: "local-session", laneId: "local-lane" }],
+          "/local/project": [{ id: "local-session", laneId: "local-lane" }],
+        },
+      } as any);
+
+      await useAppStore.getState().switchRemoteProject("target-1", "project-a");
+
+      const state = useAppStore.getState();
+      expect(state.project).toEqual({
+        rootPath: "/remote/a",
+        displayName: "Project A",
+        baseRef: "main",
+      });
+      expect(state.selectedLaneId).toBeNull();
+      expect(state.focusedSessionId).toBeNull();
+      expect(state.workViewByProject["/remote/a"]).toBeUndefined();
+      expect(state.laneWorkViewByScope["/remote/a::local-lane"]).toBeUndefined();
+      expect(state.laneSelectionByProject["/remote/a"]).toBeUndefined();
+      expect(state.laneCacheByProject["/remote/a"]).toBeUndefined();
+      expect(state.sessionsCacheByProject["/remote/a"]).toBeUndefined();
+      expect(state.workViewByProject["/local/project"]?.openItemIds).toEqual(["local-session"]);
+      expect(state.laneWorkViewByScope["/local/project::local-lane"]?.openItemIds).toEqual(["local-session"]);
+      expect(state.laneSelectionByProject["/local/project"]).toEqual({
+        laneId: "local-lane",
+        sessionId: "local-session",
+      });
+      expect(state.laneCacheByProject["/local/project"]?.lanes[0]?.id).toBe("local-lane");
+      expect(state.sessionsCacheByProject["/local/project"]).toEqual([
+        { id: "local-session", laneId: "local-lane" },
+      ]);
+    });
   });
 });

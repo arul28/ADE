@@ -600,6 +600,56 @@ describe("RemoteConnectionPool", () => {
     }, { timeoutMs: 25_000 });
   });
 
+  it("retries file git decoration refresh once after ECONNRESET", async () => {
+    const firstClient = createClient();
+    const firstSsh = createSsh();
+    firstClient.call.mockRejectedValueOnce(new Error("read ECONNRESET"));
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: firstClient,
+      ssh: firstSsh,
+      result: connectResult("1.0.0"),
+    });
+    const secondClient = createClient();
+    secondClient.call.mockResolvedValueOnce({
+      ok: true,
+      domain: "file",
+      action: "refreshGitDecorations",
+      result: { workspaceId: "primary", files: [], directories: [] },
+      statusHints: { reconnected: true },
+    });
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: secondClient,
+      ssh: createSsh(),
+      result: connectResult("1.0.1"),
+    });
+    const pool = new RemoteConnectionPool({ get: () => null } as unknown as RemoteTargetRegistry, "1.0.0");
+
+    await expect(
+      pool.callActionForTarget(target, "project-1", {
+        domain: "file",
+        action: "refreshGitDecorations",
+        args: { workspaceId: "primary", forceFresh: true },
+      }),
+    ).resolves.toEqual({
+      domain: "file",
+      action: "refreshGitDecorations",
+      result: { workspaceId: "primary", files: [], directories: [] },
+      statusHints: { reconnected: true },
+    });
+
+    expect(firstSsh.end).toHaveBeenCalledTimes(1);
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
+    expect(secondClient.call).toHaveBeenCalledWith("ade/actions/call", {
+      projectId: "project-1",
+      name: "run_ade_action",
+      arguments: {
+        domain: "file",
+        action: "refreshGitDecorations",
+        args: { workspaceId: "primary", forceFresh: true },
+      },
+    }, { timeoutMs: 25_000 });
+  });
+
   it("lists remote ADE actions as grouped registry entries", async () => {
     const client = createClient();
     client.call.mockResolvedValueOnce({

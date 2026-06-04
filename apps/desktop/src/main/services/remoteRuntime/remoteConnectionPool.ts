@@ -84,7 +84,10 @@ const RETRYABLE_REMOTE_ACTIONS = new Set([
   "chat.codexFuzzyFileSearch",
   "chat.fileSearch",
   "chat.modelCatalog",
+  "file.listTreeChildren",
   "file.quickOpen",
+  "file.readFileRange",
+  "file.refreshGitDecorations",
   "terminal.activeForChat",
   "terminal.preview",
 ]);
