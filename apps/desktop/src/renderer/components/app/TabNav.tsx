@@ -52,11 +52,14 @@ function githubProfileUrl(login: string): string {
 
 export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null }) {
   const project = useAppStore((s) => s.project);
+  const projectBinding = useAppStore((s) => s.projectBinding);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const terminalAttention = useAppStore((s) => s.terminalAttention);
   const macosVmTabIndicator = useAppStore((s) => s.macosVmTabIndicator);
   const location = useLocation();
-  const hasActiveProject = Boolean(project?.rootPath);
+  const activeProjectRoot =
+    projectBinding?.kind === "remote" ? projectBinding.rootPath : (project?.rootPath ?? null);
+  const hasActiveProject = Boolean(activeProjectRoot);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [avatarBroken, setAvatarBroken] = useState(false);
   const [isPackaged, setIsPackaged] = useState(false);
@@ -99,7 +102,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
     const onWelcomeLanding = showWelcome || !hasActiveProject;
     const isActive = !onWelcomeLanding && primaryTabPath(location.pathname) === it.to;
     const isActiveAllowed = !showWelcome && hasActiveProject;
-    const navTarget = it.to === "/prs" ? readStoredPrsRoute(project?.rootPath) ?? it.to : it.to;
+    const navTarget = it.to === "/prs" ? readStoredPrsRoute(activeProjectRoot) ?? it.to : it.to;
 
     if (!isActiveAllowed) {
       return (
@@ -130,6 +133,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
         data-active={isActive ? "true" : undefined}
         onClick={() => {
           logRendererDebugEvent("renderer.tab_nav.click", {
+            projectRoot: activeProjectRoot,
             from: location.pathname,
             to: navTarget,
             showWelcome,

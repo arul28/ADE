@@ -252,6 +252,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const keybindings = useAppStore((s) => s.keybindings);
   const lanes = useAppStore((s) => s.lanes);
   const project = useAppStore((s) => s.project);
+  const projectBinding = useAppStore((s) => s.projectBinding);
   const projectRevision = useAppStore((s) => s.projectRevision);
   const setShowWelcome = useAppStore((s) => s.setShowWelcome);
   const showWelcome = useAppStore((s) => s.showWelcome);
@@ -294,7 +295,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const dismissedGithubBannerRoots = useAppStore((s) => s.dismissedGithubBannerRoots);
   const dismissMissingAiBanner = useAppStore((s) => s.dismissMissingAiBanner);
   const dismissGithubBanner = useAppStore((s) => s.dismissGithubBanner);
-  const currentProjectRoot = project?.rootPath ?? null;
+  const currentProjectRoot =
+    projectBinding?.kind === "remote" ? projectBinding.rootPath : (project?.rootPath ?? null);
   const missingAiBannerDismissed = Boolean(
     currentProjectRoot && dismissedMissingAiBannerRoots[currentProjectRoot],
   );
@@ -311,7 +313,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const isLanesRoute = location.pathname.startsWith("/lanes");
   const isLanesRouteRef = useRef(isLanesRoute);
   const shouldTrackTerminalAttention =
-    Boolean(project?.rootPath) &&
+    Boolean(currentProjectRoot) &&
     !showWelcome &&
     (location.pathname === "/work" || location.pathname === "/lanes");
 
@@ -322,17 +324,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     logRendererDebugEvent("renderer.route_change", {
       pathname: location.pathname,
-      projectRoot: project?.rootPath ?? null,
+      projectRoot: currentProjectRoot,
       showWelcome,
     });
     console.info(
       `renderer.route_change ${JSON.stringify({
         pathname: location.pathname,
-        projectRoot: project?.rootPath ?? null,
+        projectRoot: currentProjectRoot,
         showWelcome,
       })}`,
     );
-  }, [location.pathname, project?.rootPath, showWelcome]);
+  }, [currentProjectRoot, location.pathname, showWelcome]);
 
   useEffect(() => {
     disposeTerminalRuntimesForProjectChange(project?.rootPath ?? null, projectRevision);

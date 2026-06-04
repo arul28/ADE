@@ -1041,6 +1041,61 @@ describe("TopBar", () => {
     }
   });
 
+  it("paces hidden Linear quick view retries on remote projects", async () => {
+    vi.useFakeTimers();
+    useAppStore.setState({
+      project: null,
+      projectBinding: {
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "Mac Studio",
+        projectId: "project-1",
+        rootPath: "/Users/admin/Projects/perf pass",
+        displayName: "perf pass",
+      },
+    } as any);
+    const getLinearConnectionStatus = vi.fn(async () => ({
+      tokenStored: true,
+      connected: false,
+      viewerId: null,
+      viewerName: null,
+      checkedAt: "2026-04-22T01:00:00.000Z",
+      authMode: "manual",
+      oauthAvailable: true,
+      tokenExpiresAt: null,
+      message: "Linear connection check is still starting.",
+    }));
+    globalThis.window.ade.cto = {
+      getLinearConnectionStatus,
+    } as any;
+
+    try {
+      render(<TopBar />);
+
+      await act(async () => {
+        vi.advanceTimersByTime(8_000);
+        await flushMicrotasks(2);
+      });
+      expect(getLinearConnectionStatus).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        vi.advanceTimersByTime(6_000);
+        await flushMicrotasks(2);
+      });
+      expect(getLinearConnectionStatus).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        vi.advanceTimersByTime(1_000);
+        await flushMicrotasks(2);
+      });
+      expect(getLinearConnectionStatus).toHaveBeenCalledTimes(2);
+      expect(screen.queryByRole("button", { name: /linear quick view/i })).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("shows project icon replacement errors", async () => {
     globalThis.window.ade.project.chooseIcon = vi.fn(async () => {
       throw new Error("Failed to set project icon: Project icon must be 10 MB or smaller.");

@@ -1933,6 +1933,92 @@ describe("preload OAuth bridge", () => {
     }
   });
 
+  it("ignores stale stream errors after switching event polling bindings", async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const localBinding = {
+        kind: "local",
+        key: "local:/repo",
+        rootPath: "/repo",
+        displayName: "Project",
+      };
+      const remoteBinding = {
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "Remote",
+        projectId: "project-1",
+        rootPath: "/remote/repo",
+        displayName: "Project",
+      };
+      let binding: typeof localBinding | typeof remoteBinding = localBinding;
+      let rejectLocalStream = (_error: Error): void => {
+        throw new Error("local stream was not started");
+      };
+      const invoke = vi.fn(async (channel: string) => {
+        if (channel === IPC.appGetWindowSession) {
+          return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+        }
+        if (channel === IPC.localRuntimeStreamEvents) {
+          return await new Promise((_resolve, reject) => {
+            rejectLocalStream = reject;
+          });
+        }
+        if (channel === IPC.remoteRuntimeStreamEvents) {
+          return { events: [], nextCursor: 0, hasMore: false };
+        }
+        throw new Error(`unexpected IPC: ${channel}`);
+      });
+      const on = vi.fn();
+      const removeListener = vi.fn();
+      const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+        (globalThis as any).__bridgeName = name;
+        (globalThis as any).__adeBridge = value;
+      });
+
+      vi.doMock("electron", () => ({
+        contextBridge: { exposeInMainWorld },
+        ipcRenderer: { invoke, on, removeListener },
+        webFrame: {
+          getZoomLevel: vi.fn(() => 0),
+          setZoomLevel: vi.fn(),
+          getZoomFactor: vi.fn(() => 1),
+        },
+      }));
+
+      await import("./preload");
+
+      const bridge = (globalThis as any).__adeBridge;
+      const unsubscribeState = bridge.project.onStateEvent(vi.fn());
+      const unsubscribeBinding = bridge.app.onProjectBindingChanged(vi.fn());
+      await vi.advanceTimersByTimeAsync(0);
+
+      const localStreamCallCount = () =>
+        invoke.mock.calls.filter(([channel]) => channel === IPC.localRuntimeStreamEvents).length;
+      const remoteStreamCallCount = () =>
+        invoke.mock.calls.filter(([channel]) => channel === IPC.remoteRuntimeStreamEvents).length;
+      expect(localStreamCallCount()).toBe(1);
+      expect(remoteStreamCallCount()).toBe(0);
+
+      const bindingListener = on.mock.calls.find(([channel]) => channel === IPC.appProjectBindingChanged)?.[1];
+      expect(typeof bindingListener).toBe("function");
+      binding = remoteBinding;
+      bindingListener({}, remoteBinding);
+      rejectLocalStream?.(new Error("Local runtime project is not available for this window."));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(warn).not.toHaveBeenCalled();
+      expect(remoteStreamCallCount()).toBe(1);
+
+      unsubscribeBinding();
+      unsubscribeState();
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("routes local project usage reads through the shared project runtime when bound", async () => {
     const binding = {
       kind: "local",
@@ -4087,6 +4173,75 @@ describe("preload OAuth bridge", () => {
         request: { cursor: 0, limit: 100 },
       });
       expect(callback).toHaveBeenCalledWith(projectEvent);
+
+      unsubscribe();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("backs off idle remote runtime event polling after empty batches", async () => {
+    vi.useFakeTimers();
+    try {
+      const binding = {
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "Remote",
+        projectId: "project-1",
+        rootPath: "/remote/project",
+        displayName: "Project",
+      };
+      const streamRequests: unknown[] = [];
+      const invoke = vi.fn(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.appGetWindowSession) {
+          return { windowId: 1, project: null, binding };
+        }
+        if (channel === IPC.remoteRuntimeStreamEvents) {
+          streamRequests.push(arg);
+          return {
+            events: [],
+            nextCursor: 0,
+            hasMore: false,
+            eventEpoch: "epoch-a",
+          };
+        }
+        return undefined;
+      });
+      const on = vi.fn();
+      const removeListener = vi.fn();
+      const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+        (globalThis as any).__bridgeName = name;
+        (globalThis as any).__adeBridge = value;
+      });
+
+      vi.doMock("electron", () => ({
+        contextBridge: { exposeInMainWorld },
+        ipcRenderer: { invoke, on, removeListener },
+        webFrame: {
+          getZoomLevel: vi.fn(() => 0),
+          setZoomLevel: vi.fn(),
+          getZoomFactor: vi.fn(() => 1),
+        },
+      }));
+
+      await import("./preload");
+
+      const bridge = (globalThis as any).__adeBridge;
+      const unsubscribe = bridge.project.onStateEvent(vi.fn());
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(streamRequests).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(2_499);
+      expect(streamRequests).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(streamRequests).toHaveLength(2);
+
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(streamRequests).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(streamRequests).toHaveLength(3);
 
       unsubscribe();
     } finally {

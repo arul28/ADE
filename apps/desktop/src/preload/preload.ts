@@ -1584,8 +1584,14 @@ let remoteRuntimeEventBindingKey: string | null = null;
 let remoteRuntimeEventGeneration = -1;
 let remoteRuntimeEventEpoch: string | null = null;
 let remoteRuntimeEventStartedAtMs = 0;
+let remoteRuntimeEmptyPollCount = 0;
 let remoteRuntimeSeenEventBindingKey: string | null = null;
 const remoteRuntimeSeenEventIds = new Set<number>();
+const LOCAL_RUNTIME_EVENT_IDLE_POLL_MS = 750;
+const REMOTE_RUNTIME_EVENT_ACTIVE_POLL_MS = 750;
+const REMOTE_RUNTIME_EVENT_INITIAL_IDLE_POLL_MS = 2_500;
+const REMOTE_RUNTIME_EVENT_IDLE_POLL_MS = 5_000;
+const REMOTE_RUNTIME_EVENT_CATCH_UP_POLL_MS = 50;
 
 function clearPendingRemoteRuntimeEventPoll(): void {
   if (!remoteRuntimeEventTimer) return;
@@ -1596,6 +1602,10 @@ function clearPendingRemoteRuntimeEventPoll(): void {
 function resetRemoteRuntimeEventDedup(bindingKey: string | null): void {
   remoteRuntimeSeenEventBindingKey = bindingKey;
   remoteRuntimeSeenEventIds.clear();
+}
+
+function resetRemoteRuntimeEmptyPolls(): void {
+  remoteRuntimeEmptyPollCount = 0;
 }
 
 function shouldDispatchRemoteRuntimeEvent(
@@ -1699,6 +1709,8 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
   if (remoteRuntimeEventInFlight || !hasRemoteRuntimeEventSubscribers()) return;
   remoteRuntimeEventInFlight = true;
   let nextDelayMs: number | null = null;
+  let pollingBindingKey: string | null = null;
+  let pollingGeneration = projectBindingGeneration;
   try {
     const binding = await getProjectRuntimeBinding();
     if (!binding) {
@@ -1707,6 +1719,7 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
       remoteRuntimeEventGeneration = projectBindingGeneration;
       remoteRuntimeEventEpoch = null;
       remoteRuntimeEventStartedAtMs = 0;
+      resetRemoteRuntimeEmptyPolls();
       resetRemoteRuntimeEventDedup(null);
       return;
     }
@@ -1721,11 +1734,12 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
       remoteRuntimeEventEpoch = null;
       remoteRuntimeEventStartedAtMs =
         binding.kind === "local" ? Date.now() : 0;
+      resetRemoteRuntimeEmptyPolls();
       resetRemoteRuntimeEventDedup(binding.key);
     }
 
-    const pollingBindingKey = binding.key;
-    const pollingGeneration = projectBindingGeneration;
+    pollingBindingKey = binding.key;
+    pollingGeneration = projectBindingGeneration;
     const request = {
       cursor: remoteRuntimeEventCursor,
       limit: 100,
@@ -1761,6 +1775,7 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
       remoteRuntimeEventEpoch = batchEpoch;
       if (epochChanged) {
         remoteRuntimeEventCursor = 0;
+        resetRemoteRuntimeEmptyPolls();
         resetRemoteRuntimeEventDedup(binding.key);
         nextDelayMs = 0;
         return;
@@ -1784,10 +1799,35 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
       if (!shouldDispatchRemoteRuntimeEvent(binding.key, event)) continue;
       dispatchRemoteRuntimeEventPayload(event.payload);
     }
-    nextDelayMs = batch.hasMore ? 50 : 750;
+    if (batch.hasMore) {
+      resetRemoteRuntimeEmptyPolls();
+      nextDelayMs = REMOTE_RUNTIME_EVENT_CATCH_UP_POLL_MS;
+    } else if (batch.events.length > 0) {
+      resetRemoteRuntimeEmptyPolls();
+      nextDelayMs =
+        binding.kind === "remote"
+          ? REMOTE_RUNTIME_EVENT_ACTIVE_POLL_MS
+          : LOCAL_RUNTIME_EVENT_IDLE_POLL_MS;
+    } else if (binding.kind === "remote") {
+      remoteRuntimeEmptyPollCount += 1;
+      nextDelayMs =
+        remoteRuntimeEmptyPollCount <= 1
+          ? REMOTE_RUNTIME_EVENT_INITIAL_IDLE_POLL_MS
+          : REMOTE_RUNTIME_EVENT_IDLE_POLL_MS;
+    } else {
+      nextDelayMs = LOCAL_RUNTIME_EVENT_IDLE_POLL_MS;
+    }
   } catch (error) {
-    console.warn("ADE runtime event polling failed", error);
-    nextDelayMs = 2_000;
+    const stalePoll =
+      pollingBindingKey != null &&
+      (currentProjectBinding?.key !== pollingBindingKey ||
+        projectBindingGeneration !== pollingGeneration);
+    if (stalePoll) {
+      nextDelayMs = 0;
+    } else {
+      console.warn("ADE runtime event polling failed", error);
+      nextDelayMs = 2_000;
+    }
   } finally {
     remoteRuntimeEventInFlight = false;
     if (
@@ -1806,6 +1846,7 @@ function handleRemoteRuntimeEventNotification(value: unknown): void {
   const payload = toRemoteRuntimeEventNotificationPayload(value);
   const binding = currentProjectBinding;
   if (!payload || !binding || payload.bindingKey !== binding.key) return;
+  resetRemoteRuntimeEmptyPolls();
   const eventTime = Date.parse(payload.event.timestamp);
   if (
     binding.kind === "local" &&
