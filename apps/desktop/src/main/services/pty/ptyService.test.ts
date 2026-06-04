@@ -5068,6 +5068,8 @@ describe("ptyService", () => {
         /No running terminal/,
       );
       expect(service.activeForChat({ chatSessionId: "no-such-chat" })).toBeNull();
+      expect(service.activeForChat({})).toBeNull();
+      expect(service.activeForChat(null)).toBeNull();
     });
 
     describe("reattachChatCli", () => {

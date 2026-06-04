@@ -4278,8 +4278,8 @@ export function createPtyService({
         });
     },
 
-    activeForChat(args: ChatTerminalActiveForChatArgs): ChatTerminalSession | null {
-      const chatSessionId = cleanOptionalId(args.chatSessionId);
+    activeForChat(args?: Partial<ChatTerminalActiveForChatArgs> | null): ChatTerminalSession | null {
+      const chatSessionId = cleanOptionalId(args?.chatSessionId);
       if (!chatSessionId) return null;
       const chatCli = activeChatCliEntryFor(chatSessionId);
       if (chatCli) {
