@@ -418,6 +418,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   }, []);
 
   useEffect(() => {
+    if (!open) return undefined;
     const appControlBridge = window.ade?.appControl;
     if (!appControlBridge) return undefined;
     let cancelled = false;
@@ -438,7 +439,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
       cancelled = true;
       unsubscribe();
     };
-  }, []);
+  }, [open]);
 
   const closeTab = useCallback((tabId: string) => {
     const entry = tabsRef.current.find((tab) => tab.id === tabId);

@@ -111,6 +111,7 @@ describe("ChatTerminalDrawer", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(window.ade.terminal.list).not.toHaveBeenCalled();
+    expect(window.ade.appControl.getStatus).not.toHaveBeenCalled();
   });
 
   it("switches restored terminal tabs", async () => {
