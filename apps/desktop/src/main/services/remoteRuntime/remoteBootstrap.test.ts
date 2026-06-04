@@ -23,9 +23,14 @@ import {
 const connectSshWithRouteMock = vi.hoisted(() => vi.fn());
 const execSshMock = vi.hoisted(() => vi.fn());
 const openSshRuntimeTransportMock = vi.hoisted(() => vi.fn());
+const spawnMock = vi.hoisted(() => vi.fn());
 const initializeMock = vi.hoisted(() => vi.fn());
 const callMock = vi.hoisted(() => vi.fn());
 const runtimeRpcClientMock = vi.hoisted(() => vi.fn());
+
+vi.mock("node:child_process", () => ({
+  spawn: spawnMock,
+}));
 
 vi.mock("./sshTransport", () => ({
   connectSshWithRoute: connectSshWithRouteMock,
@@ -87,6 +92,13 @@ describe("selectRemoteRuntimeVersion", () => {
       executableVersion: null,
     })).toBe("1.0.0");
   });
+
+  it("uses the marker when the executable reports the placeholder version", () => {
+    expect(selectRemoteRuntimeVersion({
+      markerVersion: "1.0.0",
+      executableVersion: "0.0.0",
+    })).toBe("1.0.0");
+  });
 });
 
 describe("shouldUploadBundledRuntime", () => {
@@ -108,6 +120,18 @@ describe("shouldUploadBundledRuntime", () => {
     })).toBe(false);
   });
 
+  it("skips upload when a placeholder executable has a matching marker and binary identity", () => {
+    expect(shouldUploadBundledRuntime({
+      localBinaryAvailable: true,
+      executableVersion: "0.0.0",
+      markerVersion: "1.0.0",
+      appVersion: "1.0.0",
+      localBinarySha256: "abc",
+      remoteBinarySha256: "abc",
+      remoteBinaryMatchesLocal: true,
+    })).toBe(false);
+  });
+
   it("uploads when the executable version matches but the binary hash changed", () => {
     expect(shouldUploadBundledRuntime({
       localBinaryAvailable: true,
@@ -115,6 +139,17 @@ describe("shouldUploadBundledRuntime", () => {
       appVersion: "1.0.0",
       localBinarySha256: "new",
       remoteBinarySha256: "old",
+    })).toBe(true);
+  });
+
+  it("uploads when marker files match but the actual remote binary does not", () => {
+    expect(shouldUploadBundledRuntime({
+      localBinaryAvailable: true,
+      executableVersion: "1.0.0",
+      appVersion: "1.0.0",
+      localBinarySha256: "abc",
+      remoteBinarySha256: "abc",
+      remoteBinaryMatchesLocal: false,
     })).toBe(true);
   });
 
@@ -281,6 +316,34 @@ function ok(stdout = "") {
   return { stdout, stderr: "", code: 0 };
 }
 
+function createFakeSpawnProcess(options: { closeCode?: number; error?: Error; stderr?: string } = {}) {
+  const child = new EventEmitter() as EventEmitter & {
+    stdin: EventEmitter & {
+      write: ReturnType<typeof vi.fn>;
+      end: ReturnType<typeof vi.fn>;
+      destroy: ReturnType<typeof vi.fn>;
+    };
+    stderr: EventEmitter;
+    kill: ReturnType<typeof vi.fn>;
+  };
+  child.stderr = new EventEmitter();
+  child.stdin = Object.assign(new EventEmitter(), {
+    write: vi.fn(() => true),
+    end: vi.fn(),
+    destroy: vi.fn(),
+  });
+  child.kill = vi.fn();
+  setImmediate(() => {
+    if (options.error) {
+      child.emit("error", options.error);
+      return;
+    }
+    if (options.stderr) child.stderr.emit("data", Buffer.from(options.stderr));
+    child.emit("close", options.closeCode ?? 0, null);
+  });
+  return child;
+}
+
 function createTempResources(
   archLabel = "linux-x64",
   options: { nativeDeps?: boolean } = {},
@@ -302,15 +365,24 @@ function createTempResources(
   };
 }
 
-function createFakeSsh() {
+function createFakeSsh(options: { execError?: Error; channelError?: Error; closeCode?: number; stderr?: string } = {}) {
   const exec = vi.fn((command: string, callback: (error: Error | null, channel: PassThrough & { stderr: PassThrough }) => void) => {
     const channel = new PassThrough() as PassThrough & { stderr: PassThrough };
     channel.stderr = new PassThrough();
     channel.resume();
+    if (options.execError) {
+      setImmediate(() => callback(options.execError!, channel));
+      return;
+    }
     channel.on("finish", () => {
       setImmediate(() => {
-        channel.emit("exit", 0, null);
-        channel.emit("close", 0, null);
+        if (options.channelError) {
+          channel.emit("error", options.channelError);
+          return;
+        }
+        if (options.stderr) channel.stderr.emit("data", Buffer.from(options.stderr));
+        channel.emit("exit", options.closeCode ?? 0, null);
+        channel.emit("close", options.closeCode ?? 0, null);
       });
     });
     callback(null, channel);
@@ -338,6 +410,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     connectSshWithRouteMock.mockReset();
     execSshMock.mockReset();
     openSshRuntimeTransportMock.mockReset();
+    spawnMock.mockReset();
     initializeMock.mockReset();
     callMock.mockReset();
     runtimeRpcClientMock.mockReset();
@@ -355,6 +428,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       write: vi.fn(),
       close: vi.fn(),
     });
+    spawnMock.mockImplementation(() => createFakeSpawnProcess());
     initializeMock.mockResolvedValue({
       runtimeInfo: { version: APP_VERSION, multiProject: true },
       capabilities: {
@@ -396,9 +470,23 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     cleanupResources = resources.cleanup;
     const fakeSsh = createFakeSsh();
     const registry = createRegistry();
+    const targetFromSshConfig: RemoteRuntimeTarget = {
+      ...uploadTarget,
+      sshUser: null,
+      port: null,
+    };
+    const connectedRoute = {
+      ...uploadRoute,
+      port: null,
+    };
     connectSshWithRouteMock.mockResolvedValue({
       client: fakeSsh.ssh,
-      route: uploadRoute,
+      route: connectedRoute,
+      config: {
+        host: "resolved-build-host.local",
+        port: 2200,
+        username: "admin",
+      },
     });
     const commands: string[] = [];
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
@@ -408,6 +496,12 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok("");
       if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok("");
       if (command === "mkdir -p $HOME/.ade/bin && chmod 700 $HOME/.ade/bin") return ok("");
+      if (command.match(/^rm -f \$HOME\/\.ade\/bin\/ade\.upload-.* && umask 077 && : > \$HOME\/\.ade\/bin\/ade\.upload-.* && chmod 600 \$HOME\/\.ade\/bin\/ade\.upload-/)) return ok("");
+      if (
+        command.includes("wc -c < $HOME/.ade/bin/ade.upload-") &&
+        !command.includes("shasum") &&
+        !command.includes("mv -f")
+      ) return ok(`${fs.statSync(resources.binaryPath).size}\n`);
       if (
         command.includes("wc -c < $HOME/.ade/bin/ade.upload-") &&
         command.includes("shasum -a 256 $HOME/.ade/bin/ade.upload-") &&
@@ -420,17 +514,18 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     });
 
     const connected = await bootstrapRemoteRuntime({
-      target: uploadTarget,
+      target: targetFromSshConfig,
       registry,
       resourcesPath: resources.resourcesPath,
       appVersion: APP_VERSION,
     });
 
-    expect(connectSshWithRouteMock).toHaveBeenCalledWith(uploadTarget);
+    expect(connectSshWithRouteMock).toHaveBeenCalledWith(targetFromSshConfig);
     expect(fakeSsh.exec).toHaveBeenCalledWith(
-      expect.stringMatching(/^umask 077; cat > \$HOME\/\.ade\/bin\/ade\.upload-.*\.tmp$/),
+      expect.stringMatching(/^umask 077; cat >> \$HOME\/\.ade\/bin\/ade\.upload-.*\.tmp$/),
       expect.any(Function),
     );
+    expect(spawnMock).not.toHaveBeenCalled();
     expect(commands.slice(0, 4)).toEqual([
       "uname -sm",
       "cat $HOME/.ade/bin/ade.version 2>/dev/null || true",
@@ -462,7 +557,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       routes: [
         {
           hostname: "build-host.local",
-          port: 22,
+          port: null,
           source: "manual",
           lastSucceededAt: expect.any(Number),
         },
@@ -491,6 +586,12 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok("");
       if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok("");
       if (command === "mkdir -p $HOME/.ade/bin && chmod 700 $HOME/.ade/bin") return ok("");
+      if (command.match(/^rm -f \$HOME\/\.ade\/bin\/ade\.upload-.* && umask 077 && : > \$HOME\/\.ade\/bin\/ade\.upload-.* && chmod 600 \$HOME\/\.ade\/bin\/ade\.upload-/)) return ok("");
+      if (
+        command.includes("wc -c < $HOME/.ade/bin/ade.upload-") &&
+        !command.includes("shasum") &&
+        !command.includes("mv -f")
+      ) return ok(`${fs.statSync(resources.binaryPath).size}\n`);
       if (
         command.includes("wc -c < $HOME/.ade/bin/ade.upload-") &&
         command.includes("mv -f $HOME/.ade/bin/ade.upload-") &&
@@ -508,28 +609,21 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     })).rejects.toThrow(/uploaded ade service version mismatch/i);
 
     expect(fakeSsh.exec).toHaveBeenCalledWith(
-      expect.stringMatching(/^umask 077; cat > \$HOME\/\.ade\/bin\/ade\.upload-.*\.tmp$/),
+      expect.stringMatching(/^umask 077; cat >> \$HOME\/\.ade\/bin\/ade\.upload-.*\.tmp$/),
       expect.any(Function),
     );
+    expect(spawnMock).not.toHaveBeenCalled();
     expect(openSshRuntimeTransportMock).not.toHaveBeenCalled();
     expect(initializeMock).not.toHaveBeenCalled();
     expect(registry.update).not.toHaveBeenCalled();
     expect(fakeSsh.end).toHaveBeenCalledTimes(1);
   });
 
-  it("fails closed when SSH disconnects during runtime upload", async () => {
+  it("falls back to OpenSSH only when the connected SSH upload fails before writing", async () => {
     const resources = createTempResources();
     cleanupResources = resources.cleanup;
-    const fakeSsh = createFakeSsh();
-    fakeSsh.exec.mockImplementation((_command: string, callback: (error: Error | null, channel: PassThrough & { stderr: PassThrough }) => void) => {
-      const channel = new PassThrough() as PassThrough & { stderr: PassThrough };
-      channel.stderr = new PassThrough();
-      channel.resume();
-      callback(null, channel);
-      setImmediate(() => {
-        (fakeSsh.ssh as unknown as EventEmitter).emit("close");
-      });
-    });
+    const fakeSsh = createFakeSsh({ execError: new Error("channel denied") });
+    spawnMock.mockImplementation(() => createFakeSpawnProcess({ error: new Error("pipe broke") }));
     const registry = createRegistry();
     connectSshWithRouteMock.mockResolvedValue({
       client: fakeSsh.ssh,
@@ -543,6 +637,12 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok("");
       if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok("");
       if (command === "mkdir -p $HOME/.ade/bin && chmod 700 $HOME/.ade/bin") return ok("");
+      if (command.match(/^rm -f \$HOME\/\.ade\/bin\/ade\.upload-.* && umask 077 && : > \$HOME\/\.ade\/bin\/ade\.upload-.* && chmod 600 \$HOME\/\.ade\/bin\/ade\.upload-/)) return ok("");
+      if (
+        command.includes("wc -c < $HOME/.ade/bin/ade.upload-") &&
+        !command.includes("shasum") &&
+        !command.includes("mv -f")
+      ) return ok("0\n");
       if (command.startsWith("rm -f $HOME/.ade/bin/ade.upload-")) return ok("");
       throw new Error(`Unexpected SSH command: ${command}`);
     });
@@ -552,8 +652,17 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       registry,
       resourcesPath: resources.resourcesPath,
       appVersion: APP_VERSION,
-    })).rejects.toThrow(/ssh connection closed while uploading ade service artifact/i);
+    })).rejects.toThrow(/existing SSH session: SSH upload channel failed.*channel denied.*OpenSSH fallback failed: SSH upload process failed.*pipe broke/i);
 
+    expect(fakeSsh.exec).toHaveBeenCalledWith(
+      expect.stringMatching(/^umask 077; cat >> \$HOME\/\.ade\/bin\/ade\.upload-.*\.tmp$/),
+      expect.any(Function),
+    );
+    expect(spawnMock).toHaveBeenCalledWith(
+      "ssh",
+      expect.arrayContaining(["-p", "22", "ade@build-host.local", expect.stringMatching(/^umask 077; cat >> \$HOME\/\.ade\/bin\/ade\.upload-.*\.tmp$/)]),
+      expect.objectContaining({ stdio: [expect.any(Number), "ignore", "pipe"] }),
+    );
     expect(commands.some((command) => command.startsWith("rm -f $HOME/.ade/bin/ade.upload-"))).toBe(true);
     expect(openSshRuntimeTransportMock).not.toHaveBeenCalled();
     expect(initializeMock).not.toHaveBeenCalled();
@@ -578,6 +687,18 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       if (command === "test -x $HOME/.ade-alpha/bin/ade && $HOME/.ade-alpha/bin/ade --version || true") return ok("");
       if (command === "mkdir -p $HOME/.ade-alpha/bin && chmod 700 $HOME/.ade-alpha/bin") return ok("");
       if (command === "mkdir -p $HOME/.ade-alpha/runtime") return ok("");
+      if (command.match(/^rm -f \$HOME\/\.ade-alpha\/bin\/ade\.upload-.* && umask 077 && : > \$HOME\/\.ade-alpha\/bin\/ade\.upload-.* && chmod 600 \$HOME\/\.ade-alpha\/bin\/ade\.upload-/)) return ok("");
+      if (command.match(/^rm -f \$HOME\/\.ade-alpha\/runtime\/ade-darwin-arm64\.native\.tar\.gz\.upload-.* && umask 077 && : > \$HOME\/\.ade-alpha\/runtime\/ade-darwin-arm64\.native\.tar\.gz\.upload-.* && chmod 600 \$HOME\/\.ade-alpha\/runtime\/ade-darwin-arm64\.native\.tar\.gz\.upload-/)) return ok("");
+      if (
+        command.includes("wc -c < $HOME/.ade-alpha/bin/ade.upload-") &&
+        !command.includes("shasum") &&
+        !command.includes("mv -f")
+      ) return ok(`${fs.statSync(resources.binaryPath).size}\n`);
+      if (
+        command.includes("wc -c < $HOME/.ade-alpha/runtime/ade-darwin-arm64.native.tar.gz.upload-") &&
+        !command.includes("shasum") &&
+        !command.includes("mv -f")
+      ) return ok(`${fs.statSync(path.join(resources.resourcesPath, "runtime", "ade-darwin-arm64.native.tar.gz")).size}\n`);
       if (
         command.includes("wc -c < $HOME/.ade-alpha/bin/ade.upload-") &&
         command.includes("mv -f $HOME/.ade-alpha/bin/ade.upload-") &&
@@ -603,13 +724,14 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     });
 
     expect(fakeSsh.exec).toHaveBeenCalledWith(
-      expect.stringMatching(/^umask 077; cat > \$HOME\/\.ade-alpha\/bin\/ade\.upload-.*\.tmp$/),
+      expect.stringMatching(/^umask 077; cat >> \$HOME\/\.ade-alpha\/bin\/ade\.upload-.*\.tmp$/),
       expect.any(Function),
     );
     expect(fakeSsh.exec).toHaveBeenCalledWith(
-      expect.stringMatching(/^umask 077; cat > \$HOME\/\.ade-alpha\/runtime\/ade-darwin-arm64\.native\.tar\.gz\.upload-.*\.tmp$/),
+      expect.stringMatching(/^umask 077; cat >> \$HOME\/\.ade-alpha\/runtime\/ade-darwin-arm64\.native\.tar\.gz\.upload-.*\.tmp$/),
       expect.any(Function),
     );
+    expect(spawnMock).not.toHaveBeenCalled();
     expect(execSshMock).toHaveBeenCalledWith(fakeSsh.ssh, "codesign --force --sign - $HOME/.ade-alpha/bin/ade");
     expect(openSshRuntimeTransportMock).toHaveBeenCalledWith(
       fakeSsh.ssh,
@@ -808,6 +930,11 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok("2.0.0\n");
       if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok(`${resources.binarySha256}\n`);
       if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok("ade 2.0.0\n");
+      if (
+        command.includes("wc -c < $HOME/.ade/bin/ade") &&
+        command.includes("shasum -a 256 $HOME/.ade/bin/ade") &&
+        command.includes("echo ok")
+      ) return ok("ok\n");
       if (command.includes("$HOME/.ade/bin/ade runtime stop --text")) return ok("");
       throw new Error(`Unexpected SSH command: ${command}`);
     });

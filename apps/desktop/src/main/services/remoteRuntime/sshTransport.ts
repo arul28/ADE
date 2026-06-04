@@ -39,6 +39,12 @@ export type BuildSshConfigOptions = {
 
 export type ConnectedSshRoute = RemoteRuntimeTargetRoute;
 
+export type ConnectedSshSession = {
+  client: Client;
+  route: ConnectedSshRoute;
+  config: ConnectConfig;
+};
+
 type KnownHostEntry = {
   marker: string | null;
   hosts: string;
@@ -541,7 +547,10 @@ export function buildSshConfig(target: RemoteRuntimeTarget, options: BuildSshCon
     port: endpoint.port,
     username: endpoint.username,
     readyTimeout: 20_000,
-    keepaliveInterval: 15_000,
+    // Runtime RPC calls and artifact uploads have their own timeouts. SSH-level
+    // keepalives can starve behind large channel writes and close otherwise
+    // healthy uploads, so keep the transport-level probe disabled.
+    keepaliveInterval: 0,
     keepaliveCountMax: 3,
   };
   const identityFile = target.sshKeyPath
@@ -755,14 +764,14 @@ function buildSshConnectionCandidates(
 
 export async function connectSshWithRoute(
   target: RemoteRuntimeTarget,
-): Promise<{ client: Client; route: ConnectedSshRoute }> {
+): Promise<ConnectedSshSession> {
   const configs = buildSshConnectionCandidates(target);
   let lastError: unknown = null;
   for (let index = 0; index < configs.length; index += 1) {
     const candidate = configs[index]!;
     try {
       const client = await connectSshWithConfig(candidate.config);
-      return { client, route: candidate.route };
+      return { client, route: candidate.route, config: candidate.config };
     } catch (error) {
       lastError = error;
       if (index >= configs.length - 1) break;

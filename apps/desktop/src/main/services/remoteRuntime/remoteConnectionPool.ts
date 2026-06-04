@@ -24,10 +24,36 @@ type PoolEntry = {
   dispose?: (closeClient: boolean, notify?: boolean) => void;
 };
 
+function closePoolEntryResources(
+  entry: PoolEntry,
+  closeClient: boolean,
+  forceSshDestroy = false,
+): void {
+  if (closeClient) {
+    try {
+      entry.client.close();
+    } catch {}
+  }
+  try {
+    entry.ssh.end();
+  } catch {}
+  if (forceSshDestroy) {
+    try {
+      (entry.ssh as unknown as { destroy?: () => void }).destroy?.();
+    } catch {}
+  }
+}
+
 type RuntimeEventNotification = {
   subscriptionId: string;
   projectId: string;
   event: RemoteRuntimeBufferedEvent;
+};
+
+type ConnectFailureBackoff = {
+  error: Error;
+  failureCount: number;
+  retryAfterMs: number;
 };
 
 function isRemoteRuntimeConnectionError(error: unknown): boolean {
@@ -38,6 +64,8 @@ function isRemoteRuntimeConnectionError(error: unknown): boolean {
 }
 
 const RETRYABLE_REMOTE_ACTION_RPC_TIMEOUT_MS = 25_000;
+const CONNECT_FAILURE_BASE_BACKOFF_MS = 3_000;
+const CONNECT_FAILURE_MAX_BACKOFF_MS = 15_000;
 
 const RETRYABLE_REMOTE_ACTION_PREFIXES = [
   "diagnosticsGet",
@@ -125,6 +153,12 @@ function assertMachineProjectCapability(entry: PoolEntry, method: string): void 
 
 export class RemoteConnectionPool {
   private readonly entries = new Map<string, Promise<PoolEntry>>();
+  private readonly pendingDisconnects = new Set<string>();
+  private readonly resolvedEntryPromises = new Set<Promise<PoolEntry>>();
+  private readonly connectFailureBackoffByTargetId = new Map<
+    string,
+    ConnectFailureBackoff
+  >();
   private readonly evictionListeners = new Set<
     (targetId: string, error: Error) => void
   >();
@@ -177,7 +211,11 @@ export class RemoteConnectionPool {
 
   private async connectEntry(target: RemoteRuntimeTarget): Promise<PoolEntry> {
     const existing = this.entries.get(target.id);
-    if (existing) return await existing;
+    if (existing) {
+      this.pendingDisconnects.delete(target.id);
+      return await existing;
+    }
+    this.assertConnectNotBackingOff(target.id);
     const pending = bootstrapRemoteRuntime({
       target,
       registry: this.registry,
@@ -187,6 +225,8 @@ export class RemoteConnectionPool {
     let entryPromise: Promise<PoolEntry>;
     entryPromise = pending.then(({ client, ssh, result }) => {
       const entry = { client, ssh, result };
+      this.connectFailureBackoffByTargetId.delete(target.id);
+      this.resolvedEntryPromises.add(entryPromise);
       this.attachEntryLifecycle(target.id, entryPromise, entry);
       return entry;
     });
@@ -195,6 +235,9 @@ export class RemoteConnectionPool {
       return await entryPromise;
     } catch (error) {
       this.entries.delete(target.id);
+      this.pendingDisconnects.delete(target.id);
+      this.resolvedEntryPromises.delete(entryPromise);
+      this.noteConnectFailure(target.id, error);
       throw error;
     }
   }
@@ -499,21 +542,42 @@ export class RemoteConnectionPool {
 
   disconnect(targetId: string): void {
     const existing = this.entries.get(targetId);
-    this.entries.delete(targetId);
+    if (!existing) return;
+    if (this.resolvedEntryPromises.has(existing)) {
+      this.entries.delete(targetId);
+      this.resolvedEntryPromises.delete(existing);
+      void existing
+        .then((entry) => {
+          if (entry.dispose) {
+            entry.dispose(true, false);
+            return;
+          }
+          closePoolEntryResources(entry, true, true);
+        })
+        .catch(() => {});
+      return;
+    }
+    this.pendingDisconnects.add(targetId);
     void existing
       ?.then((entry) => {
+        if (!this.pendingDisconnects.delete(targetId)) return;
+        if (this.entries.get(targetId) === existing) {
+          this.entries.delete(targetId);
+        }
+        this.resolvedEntryPromises.delete(existing);
         if (entry.dispose) {
           entry.dispose(true, false);
           return;
         }
-        try {
-          entry.client.close();
-        } catch {}
-        try {
-          entry.ssh.end();
-        } catch {}
+        closePoolEntryResources(entry, true, true);
       })
-      .catch(() => {});
+      .catch(() => {
+        this.pendingDisconnects.delete(targetId);
+        this.resolvedEntryPromises.delete(existing);
+        if (this.entries.get(targetId) === existing) {
+          this.entries.delete(targetId);
+        }
+      });
   }
 
   dispose(): void {
@@ -574,16 +638,10 @@ export class RemoteConnectionPool {
       if (this.entries.get(targetId) === entryPromise) {
         this.entries.delete(targetId);
       }
+      this.resolvedEntryPromises.delete(entryPromise);
       if (cleanedUp) return;
       cleanedUp = true;
-      if (closeClient) {
-        try {
-          entry.client.close();
-        } catch {}
-      }
-      try {
-        entry.ssh.end();
-      } catch {}
+      closePoolEntryResources(entry, closeClient, true);
       if (notify) notifyEvicted(error);
     };
 
@@ -591,6 +649,36 @@ export class RemoteConnectionPool {
     entry.ssh.once("close", () => evict(true));
     entry.ssh.once("error", (error) => evict(true, true, error instanceof Error ? error : new Error(String(error))));
     entry.dispose = evict;
+  }
+
+  private assertConnectNotBackingOff(targetId: string): void {
+    const backoff = this.connectFailureBackoffByTargetId.get(targetId);
+    if (!backoff) return;
+    const remainingMs = backoff.retryAfterMs - Date.now();
+    if (remainingMs <= 0) {
+      this.connectFailureBackoffByTargetId.delete(targetId);
+      return;
+    }
+    const seconds = Math.max(1, Math.ceil(remainingMs / 1000));
+    throw new Error(
+      `Remote ADE service connection failed recently (${backoff.error.message}). Retrying in ${seconds}s.`,
+    );
+  }
+
+  private noteConnectFailure(targetId: string, error: unknown): void {
+    const normalizedError =
+      error instanceof Error ? error : new Error(String(error));
+    const previous = this.connectFailureBackoffByTargetId.get(targetId);
+    const failureCount = (previous?.failureCount ?? 0) + 1;
+    const backoffMs = Math.min(
+      CONNECT_FAILURE_MAX_BACKOFF_MS,
+      CONNECT_FAILURE_BASE_BACKOFF_MS * 2 ** Math.max(0, failureCount - 1),
+    );
+    this.connectFailureBackoffByTargetId.set(targetId, {
+      error: normalizedError,
+      failureCount,
+      retryAfterMs: Date.now() + backoffMs,
+    });
   }
 }
 

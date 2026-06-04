@@ -5331,6 +5331,71 @@ describe("preload remote project binding", () => {
     });
   });
 
+  it("waits for remote project open before routing read-only project calls", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    let resolveOpen: (value: typeof binding) => void = () => {};
+    const remoteRuntimeProjects: string[] = [];
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding: null };
+      }
+      if (channel === IPC.remoteRuntimeOpenProject) {
+        return await new Promise<typeof binding>((resolve) => {
+          resolveOpen = resolve as (value: typeof binding) => void;
+        });
+      }
+      if (channel === IPC.remoteRuntimeCallAction) {
+        remoteRuntimeProjects.push(
+          (payload as { projectId?: string } | undefined)?.projectId ?? "",
+        );
+        return { result: [{ id: "lane-remote" }] };
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+
+    const pendingOpen = bridge.remoteRuntime.openProject("target-1", "project-1");
+    const pendingLaneList = bridge.lanes.list();
+    await Promise.resolve();
+
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.remoteRuntimeCallAction,
+      expect.anything(),
+    );
+    expect(invoke.mock.calls.some(([channel]) => channel === IPC.lanesList))
+      .toBe(false);
+
+    resolveOpen(binding);
+    await pendingOpen;
+    await expect(pendingLaneList).resolves.toEqual([{ id: "lane-remote" }]);
+    expect(remoteRuntimeProjects).toEqual(["project-1"]);
+  });
+
   it("blocks mutating sync calls while a remote project switch is in flight", async () => {
     let resolveOpen: (value: unknown) => void = () => {};
     const binding = {

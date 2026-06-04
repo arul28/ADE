@@ -12,6 +12,10 @@ import type {
   RemoteRuntimeConnectionStatus,
   RemoteRuntimeConnectResult,
   RemoteRuntimeProjectRecord,
+  RemoteRuntimeActionRequest,
+  RemoteRuntimeActionResult,
+  RemoteRuntimeStreamEventsRequest,
+  RemoteRuntimeStreamEventsResult,
   RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeTarget,
   RemoteRuntimeTargetInput,
@@ -329,6 +333,62 @@ export class RemoteConnectionService {
       "projects.listMyGitHubRepos",
       asRecord(input),
     )) as ListMyGitHubReposResult;
+  }
+
+  async callAction(
+    targetId: string,
+    projectId: string,
+    request: RemoteRuntimeActionRequest,
+  ): Promise<RemoteRuntimeActionResult> {
+    const target = this.requireTarget(targetId);
+    try {
+      const result = await this.pool.callActionForTarget(
+        target,
+        projectId,
+        request,
+      );
+      this.mergeStatus(targetId, {
+        state: "connected",
+        lastError: null,
+        lastAttemptedAt: Date.now(),
+      });
+      return result;
+    } catch (error) {
+      this.mergeStatus(targetId, {
+        state: "error",
+        lastError: errorMessage(error),
+        lastAttemptedAt: Date.now(),
+      });
+      throw error;
+    }
+  }
+
+  async streamEvents(
+    targetId: string,
+    projectId: string,
+    request: RemoteRuntimeStreamEventsRequest = {},
+  ): Promise<RemoteRuntimeStreamEventsResult> {
+    const target = this.requireTarget(targetId);
+    try {
+      const result = await this.pool.streamEventsForTarget(
+        target,
+        projectId,
+        request,
+      );
+      this.mergeStatus(targetId, {
+        state: "connected",
+        lastError: null,
+        lastAttemptedAt: Date.now(),
+      });
+      return result;
+    } catch (error) {
+      this.mergeStatus(targetId, {
+        state: "error",
+        lastError: errorMessage(error),
+        lastAttemptedAt: Date.now(),
+      });
+      throw error;
+    }
   }
 
   dispose(): void {

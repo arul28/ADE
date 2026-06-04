@@ -520,7 +520,7 @@ describe("registerRuntimeBridge", () => {
       ),
     ).resolves.toMatchObject({ result: { ptyId: "pty-1" } });
 
-    expect(remoteConnectMock).toHaveBeenCalledWith(target);
+    expect(remoteConnectMock).not.toHaveBeenCalled();
     expect(remoteCallActionForTargetMock).toHaveBeenCalledWith(
       target,
       "project-1",

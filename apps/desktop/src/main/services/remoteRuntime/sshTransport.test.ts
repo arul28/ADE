@@ -86,7 +86,7 @@ describe("buildSshConfig", () => {
       port: 22,
       username: "ade",
       readyTimeout: 20_000,
-      keepaliveInterval: 15_000,
+      keepaliveInterval: 0,
       keepaliveCountMax: 3,
       agent: "/tmp/ade-agent.sock",
     });

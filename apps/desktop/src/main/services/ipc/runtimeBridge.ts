@@ -727,13 +727,12 @@ export function registerRuntimeBridge({
       if (!projectId) throw new Error("Remote project is required.");
       if (!domain || !action)
         throw new Error("Remote action domain and action are required.");
-      await remoteConnectionService.connect(target.id);
       const actionRequest = withRuntimeActionClientMetadata(
         { ...request!, domain, action },
         event.sender.id,
       );
-      return await remoteConnectionPool.callActionForTarget(
-        target,
+      return await remoteConnectionService.callAction(
+        target.id,
         projectId,
         actionRequest,
       );
@@ -947,7 +946,11 @@ export function registerRuntimeBridge({
       if (!projectId) throw new Error("Remote project id is required.");
       const target = remoteConnectionService.getTarget(id);
       if (!target) throw new Error("Remote target was not found.");
-      await remoteConnectionService.connect(target.id);
+      const result = await remoteConnectionService.streamEvents(
+        target.id,
+        projectId,
+        arg?.request ?? {},
+      );
       ensureRuntimeEventSubscription(
         event.sender,
         `remote:${target.id}:${projectId}`,
@@ -965,11 +968,7 @@ export function registerRuntimeBridge({
             onEnded,
           ),
       );
-      return remoteConnectionPool.streamEventsForTarget(
-        target,
-        projectId,
-        arg?.request ?? {},
-      );
+      return result;
     },
   );
 

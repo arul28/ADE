@@ -38,6 +38,7 @@ type SshListener = (...args: unknown[]) => void;
 
 type FakeSshClient = Client & {
   emitOnce(event: "close" | "error", ...args: unknown[]): void;
+  destroy: ReturnType<typeof vi.fn>;
   end: ReturnType<typeof vi.fn>;
   once: ReturnType<typeof vi.fn>;
 };
@@ -127,9 +128,11 @@ function createSsh(): FakeSshClient {
   const listeners = new Map<string, SshListener[]>();
   const fake = {} as {
     emitOnce?: FakeSshClient["emitOnce"];
+    destroy?: ReturnType<typeof vi.fn>;
     end?: ReturnType<typeof vi.fn>;
     once?: ReturnType<typeof vi.fn>;
   };
+  fake.destroy = vi.fn();
   fake.end = vi.fn();
   fake.once = vi.fn((event: string, callback: SshListener): FakeSshClient => {
     const existing = listeners.get(event) ?? [];
@@ -207,7 +210,40 @@ describe("RemoteConnectionPool", () => {
 
     expect(client.close).toHaveBeenCalledTimes(1);
     expect(ssh.end).toHaveBeenCalledTimes(1);
+    expect(ssh.destroy).toHaveBeenCalledTimes(1);
     expect(onEvicted).not.toHaveBeenCalled();
+  });
+
+  it("reuses an in-flight bootstrap when reconnect follows disconnect", async () => {
+    const client = createClient();
+    const ssh = createSsh();
+    type BootstrapResolve = (value: {
+      client: RuntimeRpcClient;
+      ssh: Client;
+      result: RemoteRuntimeConnectResult;
+    }) => void;
+    let resolveBootstrap: BootstrapResolve | undefined;
+    bootstrapRemoteRuntimeMock.mockReturnValueOnce(new Promise((resolve) => {
+      resolveBootstrap = resolve;
+    }));
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+
+    const firstConnect = pool.connect(target);
+    pool.disconnect(target.id);
+    const secondConnect = pool.connect(target);
+
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(1);
+    const resolveBootstrapNow = resolveBootstrap as BootstrapResolve;
+    resolveBootstrapNow({
+      client,
+      ssh,
+      result: connectResult("1.0.0"),
+    });
+
+    await expect(firstConnect).resolves.toMatchObject({ version: "1.0.0" });
+    await expect(secondConnect).resolves.toMatchObject({ version: "1.0.0" });
+    expect(client.close).not.toHaveBeenCalled();
+    expect(ssh.end).not.toHaveBeenCalled();
   });
 
   it("evicts cached entries and closes the RPC client after SSH closes", async () => {
@@ -225,6 +261,7 @@ describe("RemoteConnectionPool", () => {
 
     expect(firstClient.close).toHaveBeenCalledTimes(1);
     expect(firstSsh.end).toHaveBeenCalledTimes(1);
+    expect(firstSsh.destroy).toHaveBeenCalledTimes(1);
 
     bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
       client: createClient(),
@@ -388,6 +425,19 @@ describe("RemoteConnectionPool", () => {
     expect(firstSsh.end).toHaveBeenCalledTimes(1);
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
     expect(secondClient.call).toHaveBeenCalledWith("projects.list", {});
+  });
+
+  it("backs off new SSH bootstraps after a connect failure", async () => {
+    bootstrapRemoteRuntimeMock.mockRejectedValueOnce(
+      new Error("kex_exchange_identification: read: Connection reset by peer"),
+    );
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+
+    await expect(pool.connect(target)).rejects.toThrow(
+      /kex_exchange_identification/i,
+    );
+    await expect(pool.connect(target)).rejects.toThrow(/Retrying in \d+s/i);
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(1);
   });
 
   it("does not replay non-idempotent machine calls after a connection interruption", async () => {

@@ -997,6 +997,7 @@ let projectBindingGeneration = 0;
 let projectBindingVersion = 0;
 let projectBindingRefreshPromise: Promise<OpenProjectBinding | null> | null = null;
 let projectRuntimeTransitionDepth = 0;
+let activeRemoteProjectOpenPromise: Promise<OpenProjectBinding> | null = null;
 
 function rememberProjectBinding(binding: OpenProjectBinding | null): void {
   const previousKey = currentProjectBinding?.key ?? null;
@@ -1281,7 +1282,19 @@ function shouldBypassProjectRuntimeDuringTransition(domain: string, action: stri
         : "changing project state";
     throw new Error(PROJECT_SWITCHING_MESSAGE.replace("changing project state", label));
   }
-  return activeRemoteProjectOpenGeneration !== null;
+  return false;
+}
+
+async function waitForRemoteProjectOpenIfActive(): Promise<boolean> {
+  const generation = activeRemoteProjectOpenGeneration;
+  const promise = activeRemoteProjectOpenPromise;
+  if (generation == null || !promise) return false;
+  try {
+    await promise;
+  } catch {
+    return false;
+  }
+  return activeRemoteProjectOpenGeneration !== generation;
 }
 
 async function callProjectRuntimeActionIfBound<T>(
@@ -1303,6 +1316,13 @@ async function callProjectRuntimeActionIfBound<T>(
   // their IPC fallback instead of binding to a possibly-stale runtime.
   if (freshBinding && !isMutatingChatAction && projectRuntimeTransitionDepth > 0) {
     return { handled: false };
+  }
+  if (
+    activeRemoteProjectOpenGeneration !== null &&
+    !isMutatingRuntimeAction(domain, action) &&
+    await waitForRemoteProjectOpenIfActive()
+  ) {
+    return callProjectRuntimeActionIfBound<T>(domain, action, request);
   }
   const remote = await callRemoteProjectActionIfBound<T>(
     domain,
@@ -3383,22 +3403,30 @@ contextBridge.exposeInMainWorld("ade", {
         const generation = ++openRemoteProjectGeneration;
         activeRemoteProjectOpenGeneration = generation;
         rememberProjectBinding(null);
+        const openPromise = ipcRenderer.invoke(IPC.remoteRuntimeOpenProject, {
+          id,
+          projectId,
+        }) as Promise<OpenProjectBinding>;
+        activeRemoteProjectOpenPromise = openPromise;
         try {
-          const binding = (await ipcRenderer.invoke(IPC.remoteRuntimeOpenProject, {
-            id,
-            projectId,
-          })) as OpenProjectBinding;
+          const binding = await openPromise;
           if (generation === openRemoteProjectGeneration) {
             rememberProjectBinding(binding);
             activeRemoteProjectOpenGeneration = null;
+            activeRemoteProjectOpenPromise = null;
           }
           return binding;
         } catch (error) {
           if (generation === openRemoteProjectGeneration) {
             await refreshProjectBinding().catch(() => {});
             activeRemoteProjectOpenGeneration = null;
+            activeRemoteProjectOpenPromise = null;
           }
           throw error;
+        } finally {
+          if (generation === openRemoteProjectGeneration) {
+            activeRemoteProjectOpenPromise = null;
+          }
         }
       });
     },

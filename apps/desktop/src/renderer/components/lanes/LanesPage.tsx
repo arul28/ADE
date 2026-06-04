@@ -249,9 +249,7 @@ function isTrustedGitHubUrl(rawUrl: string): boolean {
 }
 
 export function isLaneDeleteProgressActive(progress: LaneDeleteProgress | null | undefined): boolean {
-  return progress?.overallStatus === "running"
-    || progress?.overallStatus === "completed"
-    || progress?.overallStatus === "completed_with_warnings";
+  return progress?.overallStatus === "running";
 }
 
 export function buildLaneSplitColumnsKey(args: {

@@ -3059,7 +3059,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(wtStep?.detail).toContain("manual cleanup failed");
   });
 
-  it("keeps recent delete progress queryable for remounted renderers", async () => {
+  it("keeps only running delete progress queryable for remounted renderers", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();
     const { service } = await setupWithLane({ teardown: fake, events });
@@ -3088,9 +3088,10 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     await deletePromise;
 
     const completedProgress = service.listDeleteProgress();
-    expect(completedProgress).toHaveLength(1);
-    expect(completedProgress[0]?.laneId).toBe("lane-child");
-    expect(completedProgress[0]?.overallStatus).toBe("completed");
+    expect(completedProgress).toHaveLength(0);
+    const last = events[events.length - 1];
+    expect(last.progress.laneId).toBe("lane-child");
+    expect(last.progress.overallStatus).toBe("completed");
   });
 
   it("reports whether a lane delete is currently running", async () => {
