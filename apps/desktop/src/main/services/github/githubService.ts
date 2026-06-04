@@ -1148,9 +1148,15 @@ export function createGithubService({
     // `/user/repos`. The renderer now populates `owner` from the connected
     // login, so detect that case and avoid the org route for personal publishes.
     const authenticatedLogin = owner
-      ? ((await validateToken(readAuthToken().token ?? "").catch(() => ({ userLogin: null as string | null }))).userLogin?.trim() ?? "")
-      : "";
-    const useOrgRoute = owner.length > 0 && owner.toLowerCase() !== authenticatedLogin.toLowerCase();
+      ? ((await validateToken(readAuthToken().token ?? "").catch(() => ({ userLogin: null as string | null }))).userLogin?.trim() || null)
+      : null;
+    // Only take the org route when we POSITIVELY resolved the authenticated
+    // login and it differs from `owner`. If token validation failed (transient
+    // network error / rate limit), `authenticatedLogin` is null and we must not
+    // assume an org — fall back to `/user/repos`, since `owner` is almost always
+    // the pre-populated personal login. Routing a personal publish through the
+    // org-only endpoint would hard-fail.
+    const useOrgRoute = owner.length > 0 && authenticatedLogin != null && owner.toLowerCase() !== authenticatedLogin.toLowerCase();
     const { data } = await apiRequest<Record<string, unknown>>({
       method: "POST",
       path: useOrgRoute ? `/orgs/${encodeURIComponent(owner)}/repos` : "/user/repos",
