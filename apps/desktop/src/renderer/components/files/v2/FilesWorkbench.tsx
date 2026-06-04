@@ -32,7 +32,7 @@ import {
 } from "./editorGroupsStore";
 import { resolveViewerKind } from "./viewerRegistry";
 import { invalidateFileContent, primeFileContent } from "./useFileContent";
-import { getRecentFiles, recordRecentFile } from "./recentFiles";
+import { forgetRecentFile, getRecentFiles, recordRecentFile } from "./recentFiles";
 import { EditorGroups } from "./EditorGroups";
 import { StatusBar } from "./StatusBar";
 import { WarmEmptyState } from "./WarmEmptyState";
@@ -446,13 +446,17 @@ export function FilesWorkbench({
         setError("This workspace is read-only.");
         return;
       }
-      await window.ade.files.rename({ workspaceId, oldPath: sourcePath, newPath: destinationPath }).catch((err) => {
+      try {
+        await window.ade.files.rename({ workspaceId, oldPath: sourcePath, newPath: destinationPath });
+      } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
-      });
+        return;
+      }
+      forgetRecentFile(sessionKey, sourcePath);
       closeOpenTabsUnder(sourcePath); // old path/tabs are stale after rename
       await refreshRoot();
     },
-    [workspaceId, canEdit, refreshRoot, closeOpenTabsUnder],
+    [workspaceId, canEdit, sessionKey, refreshRoot, closeOpenTabsUnder],
   );
 
   const deletePath = useCallback(
@@ -466,13 +470,14 @@ export function FilesWorkbench({
       if (!ok) return;
       try {
         await window.ade.files.delete({ workspaceId, path });
+        forgetRecentFile(sessionKey, path);
         closeOpenTabsUnder(path);
         await refreshRoot();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [workspaceId, canEdit, refreshRoot, closeOpenTabsUnder],
+    [workspaceId, canEdit, sessionKey, refreshRoot, closeOpenTabsUnder],
   );
 
   const dirForNode = (menu: FilesExplorerContextMenuEvent): string =>
