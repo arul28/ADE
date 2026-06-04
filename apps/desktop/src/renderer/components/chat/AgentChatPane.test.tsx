@@ -16,6 +16,7 @@ import type {
   TerminalSessionDetail,
 } from "../../../shared/types";
 import { createDynamicCursorCliModelDescriptor, getModelById } from "../../../shared/modelRegistry";
+import { invalidateAgentChatSlashCommandsCache } from "../../lib/agentChatSlashCommandsCache";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { DRAFT_LAUNCH_JOB_STALE_AFTER_MS } from "../../lib/draftLaunchJobs";
 import { invalidateProjectConfigCache } from "../../lib/projectConfigCache";
@@ -684,6 +685,7 @@ function installMatchMediaMock(): void {
 
 beforeEach(() => {
   installMatchMediaMock();
+  invalidateAgentChatSlashCommandsCache();
   invalidateAiDiscoveryCache();
   invalidateProjectConfigCache();
   resetModelPickerRuntimeCatalogForTests();
@@ -713,6 +715,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  invalidateAgentChatSlashCommandsCache();
   invalidateAiDiscoveryCache();
   invalidateProjectConfigCache();
   resetModelPickerRuntimeCatalogForTests();

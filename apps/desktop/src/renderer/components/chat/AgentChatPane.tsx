@@ -136,6 +136,7 @@ import {
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { WorkSurfaceHeader } from "../work/WorkSurfaceHeader";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
+import { getAgentChatSlashCommandsCached } from "../../lib/agentChatSlashCommandsCache";
 import { getAgentChatModelsCached, getAiStatusCached, invalidateAiDiscoveryCache, peekAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
@@ -4703,7 +4704,7 @@ export function AgentChatPane({
     const args = selectedSessionId
       ? { sessionId: selectedSessionId }
       : { laneId, provider: sessionProvider };
-    window.ade.agentChat.slashCommands(args)
+    getAgentChatSlashCommandsCached(args)
       .then((cmds) => { if (!cancelled) setSdkSlashCommands(cmds); })
       .catch(() => { if (!cancelled) setSdkSlashCommands([]); });
     return () => { cancelled = true; };
@@ -4946,7 +4947,12 @@ export function AgentChatPane({
 
       if (shouldRefreshSlashCommands) {
         if (envelope.sessionId === selectedSessionIdRef.current) {
-          window.ade.agentChat.slashCommands({ sessionId: envelope.sessionId })
+          getAgentChatSlashCommandsCached(
+            { sessionId: envelope.sessionId },
+            {
+              force: envelope.event.type === "system_notice",
+            },
+          )
             .then(setSdkSlashCommands)
             .catch(() => {});
         }
@@ -8313,7 +8319,7 @@ export function AgentChatPane({
                   cursorModeId: updatedSession.cursorModeId,
                   cursorModeSnapshot: updatedSession.cursorModeSnapshot,
                 });
-                window.ade.agentChat.slashCommands({ sessionId: selectedSessionId })
+                getAgentChatSlashCommandsCached({ sessionId: selectedSessionId }, { force: true })
                   .then(setSdkSlashCommands)
                   .catch(() => {});
                 if (
