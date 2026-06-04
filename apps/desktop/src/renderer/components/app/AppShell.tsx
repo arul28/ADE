@@ -75,6 +75,16 @@ function shouldLoadShellGithubStatus(pathname: string, isRemoteProject: boolean)
     || pathname.startsWith("/settings/");
 }
 
+function shouldLoadShellAiStatus(pathname: string, isRemoteProject: boolean): boolean {
+  if (!isRemoteProject) return true;
+  return pathname === "/work"
+    || pathname.startsWith("/work/")
+    || pathname === "/lanes"
+    || pathname.startsWith("/lanes/")
+    || pathname === "/settings"
+    || pathname.startsWith("/settings/");
+}
+
 const PROJECT_ROUTE_STORAGE_PREFIX = "ade:project-route:";
 const AI_STATUS_STARTUP_DELAY_MS = 1_000;
 const AI_STATUS_CHAT_EVENT_REFRESH_MIN_GAP_MS = 30_000;
@@ -320,11 +330,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   githubBannerDismissedRef.current = githubBannerDismissed;
   const isOnboardingRoute = location.pathname === "/onboarding";
   const isLanesRoute = location.pathname.startsWith("/lanes");
+  const isWorkRoute = location.pathname === "/work" || location.pathname.startsWith("/work/");
+  const isWorkAdjacentRoute = isWorkRoute || isLanesRoute;
   const isLanesRouteRef = useRef(isLanesRoute);
   const shouldTrackTerminalAttention =
     Boolean(currentProjectRoot) &&
     !showWelcome &&
-    (location.pathname === "/work" || location.pathname === "/lanes");
+    isWorkAdjacentRoute;
 
   useEffect(() => {
     isLanesRouteRef.current = isLanesRoute;
@@ -615,13 +627,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [setTerminalAttention, shouldTrackTerminalAttention]);
 
   useEffect(() => {
-    if (!project?.rootPath || showWelcome) {
+    const projectRoot = project?.rootPath ?? null;
+    const shouldCheckStaleCliNotice =
+      Boolean(projectRoot) &&
+      !showWelcome &&
+      (!isRemoteProject || isWorkAdjacentRoute);
+    if (!shouldCheckStaleCliNotice) {
       setStaleCliNotice(null);
       dismissedStaleCliNoticeKeyRef.current = null;
       return;
     }
 
-    const projectRoot = project.rootPath;
+    if (!projectRoot) return;
     let cancelled = false;
     let refreshTimer: number | null = null;
 
@@ -683,7 +700,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [project?.rootPath, showWelcome]);
+  }, [isRemoteProject, isWorkAdjacentRoute, project?.rootPath, showWelcome]);
 
   useEffect(() => {
     let cancelled = false;
@@ -766,7 +783,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    if (!currentProjectRoot) {
+    if (!currentProjectRoot || !shouldLoadShellAiStatus(location.pathname, isRemoteProject)) {
       setAiStatus(null);
       setAiStatusLoaded(false);
       return;
@@ -836,7 +853,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       window.removeEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onAiStatusCacheInvalidated);
       unsubscribeChatEvents();
     };
-  }, [currentProjectRoot, isRemoteProject]);
+  }, [currentProjectRoot, isRemoteProject, location.pathname]);
 
   useEffect(() => {
     let cancelled = false;

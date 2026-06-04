@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope, AiSettingsStatus } from "../../../shared/types";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
+import { listSessionsCached } from "../../lib/sessionListCache";
 import { useAppStore } from "../../state/appStore";
 import { AppShell } from "./AppShell";
 
@@ -92,6 +93,7 @@ describe("AppShell AI provider status", () => {
     invalidateAiDiscoveryCache();
     getStatusMock.mockReset();
     githubGetStatusMock.mockReset();
+    vi.mocked(listSessionsCached).mockClear();
     githubGetStatusMock.mockResolvedValue(null);
     chatEventListener = null;
     Object.defineProperty(window, "ade", {
@@ -293,6 +295,49 @@ describe("AppShell AI provider status", () => {
     });
 
     expect(githubGetStatusMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips remote shell AI and stale-session polling on Files routes", async () => {
+    const remoteRoot = "/Users/admin/Projects/perf pass";
+    const remoteProject = { rootPath: remoteRoot, displayName: "perf pass", baseRef: "main" } as any;
+    const remoteBinding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      projectId: "project-1",
+      runtimeName: "Mac Studio",
+      displayName: "perf pass",
+      rootPath: remoteRoot,
+    } as any;
+    const refreshProviderMode = vi.fn(async () => undefined);
+    (window.ade.app.getWindowSession as any).mockResolvedValue({
+      project: remoteProject,
+      binding: remoteBinding,
+    });
+    useAppStore.setState({
+      project: remoteProject,
+      projectBinding: remoteBinding,
+      projectHydrated: true,
+      showWelcome: false,
+      refreshProviderMode,
+    } as any);
+
+    render(
+      <MemoryRouter initialEntries={["/files"]}>
+        <AppShell>
+          <div>Files content</div>
+        </AppShell>
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getStatusMock).not.toHaveBeenCalled();
+    expect(listSessionsCached).not.toHaveBeenCalled();
   });
 
   it("ignores stale auth-related chat history while remote AI status is cached", async () => {
