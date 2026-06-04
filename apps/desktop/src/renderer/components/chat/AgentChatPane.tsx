@@ -188,6 +188,7 @@ const COMPOSER_DRAFT_WRITE_DEBOUNCE_MS = 350;
 const SUBAGENT_AUTOOPEN_FIRED_KEY_PREFIX = "ade.chat.subagentAutoOpenFired";
 const SUBAGENT_AUTOOPEN_FIRED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const workCliStartupDelayMs = 180;
+const REMOTE_PARALLEL_LAUNCH_RECOVERY_DELAY_MS = 15_000;
 export const DEFAULT_PARALLEL_ATTACHMENT_REQUEST = "Please review the attached files.";
 
 const chatToolbarActionBase =
@@ -3138,67 +3139,80 @@ export function AgentChatPane({
     if (recoveredParallelLaunchKeyRef.current === recoveryKey) return;
     recoveredParallelLaunchKeyRef.current = recoveryKey;
     let cancelled = false;
+    let recoveryTimer: number | null = null;
 
-    void (async () => {
-      let pendingState: AgentChatParallelLaunchState | null = null;
-      try {
-        pendingState = await window.ade.agentChat.parallelLaunchState.get({
-          projectRoot,
-          parentLaneId: laneId,
-        });
-      } catch {
-        return;
-      }
-      if (!pendingState) return;
-      if (isCompletedParallelLaunchState(pendingState)) {
-        await persistParallelLaunchState(null);
-        return;
-      }
-
-      if (!pendingState.createdLaneIds.length) {
-        await persistParallelLaunchState(null);
-        return;
-      }
-
-      if (cancelled) return;
-      setParallelLaunchBusy(true);
-      setParallelLaunchStatus("Cleaning up unfinished parallel launch…");
-      const cleanupIssues = await cleanupTransientParallelLaunchLanes({
-        laneIds: pendingState.createdLaneIds,
-        deleteLane: (args) => window.ade.lanes.delete(args),
-        refreshLanes: refreshLanesStore,
-        onCleanupError: logParallelLaunchCleanupError,
-      });
-
-      if (cleanupIssues.length === 0) {
-        await persistParallelLaunchState(null);
-      } else {
-        await persistParallelLaunchState(buildParallelLaunchState({
-          parentLaneId: pendingState.parentLaneId,
-          createdLaneIds: pendingState.createdLaneIds,
-          sentLaneIds: pendingState.sentLaneIds,
-          status: "cleanup_pending",
-          lastError: pendingState.lastError,
-        }));
-        if (!cancelled) {
-          setError(formatParallelLaunchFailureMessage({
-            launchError: "Recovered an unfinished parallel launch from before ADE closed.",
-            cleanupIssues,
-          }));
+    const recoverParallelLaunchState = () => {
+      void (async () => {
+        let pendingState: AgentChatParallelLaunchState | null = null;
+        try {
+          pendingState = await window.ade.agentChat.parallelLaunchState.get({
+            projectRoot,
+            parentLaneId: laneId,
+          });
+        } catch {
+          return;
         }
-      }
+        if (!pendingState) return;
+        if (isCompletedParallelLaunchState(pendingState)) {
+          await persistParallelLaunchState(null);
+          return;
+        }
 
-      if (!cancelled) {
-        setParallelLaunchBusy(false);
-        setParallelLaunchStatus(null);
-      }
-    })();
+        if (!pendingState.createdLaneIds.length) {
+          await persistParallelLaunchState(null);
+          return;
+        }
+
+        if (cancelled) return;
+        setParallelLaunchBusy(true);
+        setParallelLaunchStatus("Cleaning up unfinished parallel launch…");
+        const cleanupIssues = await cleanupTransientParallelLaunchLanes({
+          laneIds: pendingState.createdLaneIds,
+          deleteLane: (args) => window.ade.lanes.delete(args),
+          refreshLanes: refreshLanesStore,
+          onCleanupError: logParallelLaunchCleanupError,
+        });
+
+        if (cleanupIssues.length === 0) {
+          await persistParallelLaunchState(null);
+        } else {
+          await persistParallelLaunchState(buildParallelLaunchState({
+            parentLaneId: pendingState.parentLaneId,
+            createdLaneIds: pendingState.createdLaneIds,
+            sentLaneIds: pendingState.sentLaneIds,
+            status: "cleanup_pending",
+            lastError: pendingState.lastError,
+          }));
+          if (!cancelled) {
+            setError(formatParallelLaunchFailureMessage({
+              launchError: "Recovered an unfinished parallel launch from before ADE closed.",
+              cleanupIssues,
+            }));
+          }
+        }
+
+        if (!cancelled) {
+          setParallelLaunchBusy(false);
+          setParallelLaunchStatus(null);
+        }
+      })();
+    };
+
+    if (isRemoteProject) {
+      recoveryTimer = window.setTimeout(recoverParallelLaunchState, REMOTE_PARALLEL_LAUNCH_RECOVERY_DELAY_MS);
+    } else {
+      recoverParallelLaunchState();
+    }
 
     return () => {
       cancelled = true;
+      if (recoveryTimer != null) {
+        window.clearTimeout(recoveryTimer);
+      }
     };
   }, [
     initialSessionId,
+    isRemoteProject,
     laneId,
     lockSessionId,
     persistParallelLaunchState,
@@ -4723,6 +4737,7 @@ export function AgentChatPane({
 
   const sessionDeltaTurnActiveRef = useRef(false);
   const sessionDeltaSessionIdRef = useRef<string | null>(null);
+  const remoteDeltaArmedSessionsRef = useRef<Set<string>>(new Set());
 
   // Fetch git diff stats when the session changes or a turn completes. Remote
   // chats skip the mount-time decoration fetch; the bridge should stay focused
@@ -4734,11 +4749,16 @@ export function AgentChatPane({
     sessionDeltaSessionIdRef.current = selectedSessionId;
     sessionDeltaTurnActiveRef.current = turnActive;
     if (isRemoteProject) {
-      const completedTurn = sameSession && previousTurnActive && !turnActive;
+      const completedTurn =
+        remoteDeltaArmedSessionsRef.current.has(selectedSessionId)
+        && sameSession
+        && previousTurnActive
+        && !turnActive;
       if (!completedTurn) {
         if (!turnActive) setSessionDelta(null);
         return;
       }
+      remoteDeltaArmedSessionsRef.current.delete(selectedSessionId);
     }
     let cancelled = false;
     const fetchDelta = () => {
@@ -4879,6 +4899,9 @@ export function AgentChatPane({
         envelope.event.type === "user_message"
         || (envelope.event.type === "status" && envelope.event.turnStatus === "started")
       ) {
+        if (isRemoteProject && envelope.event.type === "status") {
+          remoteDeltaArmedSessionsRef.current.add(envelope.sessionId);
+        }
         patchSessionSummary(envelope.sessionId, {
           status: "active",
           idleSinceAt: null,
@@ -4986,7 +5009,7 @@ export function AgentChatPane({
       }
     });
     return unsubscribe;
-  }, [isTileVisible, layoutVariant, lockSessionId, flushQueuedEvents, patchSessionSummary, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
+  }, [isRemoteProject, isTileVisible, layoutVariant, lockSessionId, flushQueuedEvents, patchSessionSummary, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
 
   useEffect(() => {
     if (!isTileActive) return undefined;

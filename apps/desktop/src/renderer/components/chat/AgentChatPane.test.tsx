@@ -995,6 +995,10 @@ function sessionTabTitles(expectedTitles: string[]) {
 }
 
 describe("AgentChatPane remote startup", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("uses the remote binding root for AI status cache lookups", async () => {
     const session = buildSession("session-1", { status: "idle" });
     installAdeMocks({ sessions: [session] });
@@ -1036,6 +1040,42 @@ describe("AgentChatPane remote startup", () => {
     await Promise.resolve();
 
     expect(window.ade.sessions.getDelta).not.toHaveBeenCalled();
+  });
+
+  it("defers unfinished parallel launch recovery on remote draft mount", async () => {
+    vi.useFakeTimers();
+    const { parallelLaunchStateGet } = installAdeMocks({ sessions: [] });
+    seedRemoteChatStore();
+
+    render(
+      <MemoryRouter initialEntries={["/work"]}>
+        <AgentChatPane
+          laneId="lane-1"
+          forceDraftMode
+          embeddedWorkLayout
+        />
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(parallelLaunchStateGet).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(14_999);
+      await Promise.resolve();
+    });
+    expect(parallelLaunchStateGet).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+      await Promise.resolve();
+    });
+    expect(parallelLaunchStateGet).toHaveBeenCalledWith({
+      projectRoot: "/Users/admin/Projects/perf pass",
+      parentLaneId: "lane-1",
+    });
   });
 
   it("fetches remote session delta after a turn completes", async () => {
