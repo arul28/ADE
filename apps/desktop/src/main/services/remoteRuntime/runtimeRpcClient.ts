@@ -205,7 +205,11 @@ export class RuntimeRpcClient {
     this.closedError = error;
     this.rejectAll(error);
     for (const callback of this.disconnectCallbacks) {
-      callback(error);
+      try {
+        callback(error);
+      } catch {
+        // Disconnect observers are best-effort; the connection is already failed.
+      }
     }
     this.disconnectCallbacks.clear();
   }

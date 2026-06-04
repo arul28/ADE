@@ -24,11 +24,24 @@ describe("ipcInvokeTimeoutMs", () => {
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeStreamEvents)).toBe(150_000);
   });
 
-  it("keeps ordinary remote runtime actions on the default timeout", () => {
+  it("gives retryable remote runtime actions enough time to reconnect", () => {
     expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
       id: "target-1",
       projectId: "project-1",
       request: { domain: "lane", action: "list" },
+    }])).toBe(75_000);
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "file", action: "readFile", args: {} },
+    }])).toBe(75_000);
+  });
+
+  it("keeps ordinary remote runtime actions on the default timeout", () => {
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "chat", action: "sendMessage" },
     }])).toBe(30_000);
   });
 

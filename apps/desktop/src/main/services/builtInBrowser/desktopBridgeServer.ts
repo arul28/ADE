@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import {
   JsonRpcError,
@@ -33,7 +34,6 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
   socketPath: string;
   service: BuiltInBrowserService;
   logger: Logger;
-  umask?: (mask?: number) => number;
 }): BuiltInBrowserDesktopBridgeServer {
   const { socketPath, service, logger } = args;
   const isNamedPipe = socketPath.startsWith("\\\\");
@@ -41,8 +41,11 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
   if (!isNamedPipe) {
     const socketDir = path.dirname(socketPath);
     try {
+      const existed = fs.existsSync(socketDir);
       fs.mkdirSync(socketDir, { recursive: true, mode: 0o700 });
-      fs.chmodSync(socketDir, 0o700);
+      if (!isSystemTempDir(socketDir) || !existed) {
+        fs.chmodSync(socketDir, 0o700);
+      }
     } catch (error) {
       logger.warn("built_in_browser_bridge.sockdir_create_failed", {
         socketPath,
@@ -92,27 +95,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     });
   });
 
-  let restoreSocketUmask: (() => void) | null = null;
-  if (!isNamedPipe && process.platform !== "win32") {
-    const setUmask = args.umask ?? process.umask.bind(process);
-    try {
-      const previousUmask = setUmask(0o177);
-      let restored = false;
-      restoreSocketUmask = () => {
-        if (restored) return;
-        restored = true;
-        setUmask(previousUmask);
-      };
-    } catch (error) {
-      logger.warn("built_in_browser_bridge.sock_umask_failed", {
-        socketPath,
-        reason: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
   server.on("error", (error) => {
-    restoreSocketUmask?.();
     logger.error("built_in_browser_bridge.server_error", {
       socketPath,
       reason: error instanceof Error ? error.message : String(error),
@@ -121,7 +104,6 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
 
   try {
     server.listen(socketPath, () => {
-      restoreSocketUmask?.();
       if (!isNamedPipe) {
         try {
           fs.chmodSync(socketPath, 0o600);
@@ -141,7 +123,6 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
       logger.info("built_in_browser_bridge.listening", { socketPath });
     });
   } catch (error) {
-    restoreSocketUmask?.();
     throw error;
   }
 
@@ -216,4 +197,11 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
       }
     },
   };
+}
+
+function isSystemTempDir(dirPath: string): boolean {
+  const normalized = path.resolve(dirPath);
+  return normalized === path.resolve(os.tmpdir())
+    || normalized === "/tmp"
+    || normalized === "/private/tmp";
 }

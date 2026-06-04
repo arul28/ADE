@@ -686,9 +686,54 @@ function isSshAuthenticationFailure(error: unknown): boolean {
 function connectSshWithConfig(config: ConnectConfig): Promise<Client> {
   return new Promise((resolve, reject) => {
     const client = new Client();
-    client.once("ready", () => resolve(client));
-    client.once("error", reject);
-    client.connect(config);
+    let settled = false;
+    const normalizeError = (error: unknown, fallback: string): Error =>
+      error instanceof Error ? error : new Error(String(error ?? fallback));
+    const cleanupConnectListeners = (options: { keepErrorListener?: boolean } = {}): void => {
+      client.off("ready", onReady);
+      if (!options.keepErrorListener) {
+        client.off("error", onError);
+      }
+      client.off("close", onClose);
+      client.off("end", onEnd);
+    };
+    const fail = (error: unknown, fallback: string): void => {
+      if (settled) return;
+      settled = true;
+      // ssh2 may emit a late socket error after close/end during a failed
+      // connect attempt. Keep onError attached as a sink so the late error is
+      // contained after the promise has already rejected.
+      cleanupConnectListeners({ keepErrorListener: true });
+      reject(normalizeError(error, fallback));
+    };
+    const onReady = (): void => {
+      if (settled) return;
+      settled = true;
+      cleanupConnectListeners();
+      // ssh2 can surface transport resets after ready and before the remote
+      // pool attaches its lifecycle listener. Keep a durable listener so those
+      // errors remain contained instead of becoming process-level exceptions.
+      client.on("error", () => {});
+      resolve(client);
+    };
+    const onError = (error: Error): void => {
+      fail(error, "SSH connection failed.");
+    };
+    const onClose = (): void => {
+      fail(null, "SSH connection closed before it became ready.");
+    };
+    const onEnd = (): void => {
+      fail(null, "SSH connection ended before it became ready.");
+    };
+    client.once("ready", onReady);
+    client.on("error", onError);
+    client.once("close", onClose);
+    client.once("end", onEnd);
+    try {
+      client.connect(config);
+    } catch (error) {
+      fail(error, "SSH connection failed.");
+    }
   });
 }
 

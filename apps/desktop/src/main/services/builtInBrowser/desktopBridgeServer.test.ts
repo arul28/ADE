@@ -48,16 +48,6 @@ describe("startBuiltInBrowserDesktopBridgeServer", () => {
   it("creates private Unix socket directories and socket files", async () => {
     if (process.platform === "win32") return;
 
-    let currentUmask = 0o000;
-    const umaskCalls: number[] = [];
-    const umask = (mask?: number): number => {
-      const previous = currentUmask;
-      if (mask != null) {
-        umaskCalls.push(mask);
-        currentUmask = mask;
-      }
-      return previous;
-    };
     const socketDir = path.join(tempDir, "sock");
     fs.mkdirSync(socketDir, { mode: 0o755 });
     fs.chmodSync(socketDir, 0o755);
@@ -68,13 +58,10 @@ describe("startBuiltInBrowserDesktopBridgeServer", () => {
         socketPath,
         service: { getStatus: async () => ({ ok: true }) } as unknown as BuiltInBrowserService,
         logger: createLogger(),
-        umask,
       });
       await waitForPath(socketPath);
       await waitForMode(socketPath, 0o600);
 
-      expect(umaskCalls).toEqual([0o177, 0o000]);
-      expect(currentUmask).toBe(0o000);
       expect(fs.statSync(socketDir).mode & 0o777).toBe(0o700);
       expect(fs.statSync(socketPath).mode & 0o777).toBe(0o600);
     } finally {

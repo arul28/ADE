@@ -32,10 +32,12 @@ type RuntimeEventNotification = {
 
 function isRemoteRuntimeConnectionError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /remote (?:runtime|ADE service) connection (?:closed|failed)|timed out waiting for method|stream closed|channel closed|connection lost|socket closed/i.test(
+  return /remote (?:runtime|ADE service) connection (?:closed|failed)|timed out waiting for method|stream closed|channel closed|connection lost|socket closed|ECONNRESET|ECONNABORTED|EPIPE|ENOTCONN/i.test(
     message,
   );
 }
+
+const RETRYABLE_REMOTE_ACTION_RPC_TIMEOUT_MS = 25_000;
 
 const RETRYABLE_REMOTE_ACTION_PREFIXES = [
   "diagnosticsGet",
@@ -100,6 +102,14 @@ function shouldRetryRemoteRuntimeAction(
   return RETRYABLE_REMOTE_ACTION_PREFIXES.some((prefix) =>
     request.action.startsWith(prefix),
   );
+}
+
+function remoteRuntimeActionCallOptions(
+  request: RemoteRuntimeActionRequest,
+): { timeoutMs?: number } | undefined {
+  return shouldRetryRemoteRuntimeAction(request)
+    ? { timeoutMs: RETRYABLE_REMOTE_ACTION_RPC_TIMEOUT_MS }
+    : undefined;
 }
 
 function assertMachineProjectCapability(entry: PoolEntry, method: string): void {
@@ -310,7 +320,7 @@ export class RemoteConnectionPool {
     projectId: string,
     request: RemoteRuntimeActionRequest,
   ): Promise<RemoteRuntimeActionResult> {
-    const value = await entry.client.call("ade/actions/call", {
+    const params = {
       projectId,
       name: "run_ade_action",
       arguments: {
@@ -322,7 +332,11 @@ export class RemoteConnectionPool {
           : {}),
         ...(request.argsList ? { argsList: request.argsList } : {}),
       },
-    });
+    };
+    const callOptions = remoteRuntimeActionCallOptions(request);
+    const value = callOptions
+      ? await entry.client.call("ade/actions/call", params, callOptions)
+      : await entry.client.call("ade/actions/call", params);
 
     if (value && typeof value === "object" && !Array.isArray(value)) {
       const record = value as Record<string, unknown>;

@@ -13,11 +13,9 @@ export async function probeLocalhostPort(
     const settle = (value: boolean) => {
       if (settled) return;
       settled = true;
-      try {
-        socket.destroy();
-      } catch {
-        // ignore
-      }
+      socket.removeAllListeners("connect");
+      socket.removeAllListeners("timeout");
+      try { socket.destroy(); } catch { /* ignore */ }
       resolve(value);
     };
 
@@ -25,6 +23,6 @@ export async function probeLocalhostPort(
     socket.setTimeout(timeoutMs);
     socket.once("connect", () => settle(true));
     socket.once("timeout", () => settle(false));
-    socket.once("error", () => settle(false));
+    socket.on("error", () => settle(false));
   });
 }

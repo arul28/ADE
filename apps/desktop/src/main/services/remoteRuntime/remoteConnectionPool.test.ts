@@ -490,11 +490,11 @@ describe("RemoteConnectionPool", () => {
     expect(secondClient.call).not.toHaveBeenCalled();
   });
 
-  it("retries read-only project actions once after reconnecting", async () => {
+  it("retries read-only project actions once after ECONNRESET", async () => {
     const firstClient = createClient();
     const firstSsh = createSsh();
     firstClient.call.mockRejectedValueOnce(
-      new Error("Remote runtime connection failed: stream closed"),
+      new Error("read ECONNRESET"),
     );
     bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
       client: firstClient,
@@ -538,7 +538,7 @@ describe("RemoteConnectionPool", () => {
         domain: "lane",
         action: "list",
       },
-    });
+    }, { timeoutMs: 25_000 });
     expect(secondClient.call).toHaveBeenCalledTimes(1);
     expect(secondClient.call).toHaveBeenCalledWith("ade/actions/call", {
       projectId: "project-1",
@@ -547,7 +547,7 @@ describe("RemoteConnectionPool", () => {
         domain: "lane",
         action: "list",
       },
-    });
+    }, { timeoutMs: 25_000 });
   });
 
   it("lists remote ADE actions as grouped registry entries", async () => {
@@ -651,7 +651,7 @@ describe("RemoteConnectionPool", () => {
         domain: "lane",
         action: "list",
       },
-    });
+    }, { timeoutMs: 25_000 });
   });
 
   it("calls project-scoped sync methods on the connected runtime", async () => {

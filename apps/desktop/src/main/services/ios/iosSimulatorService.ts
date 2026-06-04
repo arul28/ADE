@@ -1119,8 +1119,12 @@ async function waitForTcpPort(host: string, port: number, timeoutMs: number): Pr
   while (Date.now() < deadline) {
     const connected = await new Promise<boolean>((resolve) => {
       const socket = net.createConnection({ host, port });
+      let settled = false;
       const finish = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
         socket.removeAllListeners();
+        socket.on("error", () => {});
         socket.destroy();
         resolve(ok);
       };

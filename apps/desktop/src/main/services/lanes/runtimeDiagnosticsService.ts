@@ -48,10 +48,23 @@ export function createRuntimeDiagnosticsService({
   function checkPort(port: number, timeoutMs = 500): Promise<boolean> {
     return new Promise((resolve) => {
       const socket = new net.Socket();
+      let settled = false;
+      const settle = (ok: boolean): void => {
+        if (settled) return;
+        settled = true;
+        socket.removeAllListeners?.("connect");
+        socket.removeAllListeners?.("timeout");
+        try { socket.destroy(); } catch { /* ignore */ }
+        resolve(ok);
+      };
       socket.setTimeout(timeoutMs);
-      socket.once("connect", () => { socket.destroy(); resolve(true); });
-      socket.once("timeout", () => { socket.destroy(); resolve(false); });
-      socket.once("error", () => { socket.destroy(); resolve(false); });
+      socket.once("connect", () => settle(true));
+      socket.once("timeout", () => settle(false));
+      if (typeof socket.on === "function") {
+        socket.on("error", () => settle(false));
+      } else {
+        socket.once("error", () => settle(false));
+      }
       socket.connect(port, "127.0.0.1");
     });
   }
