@@ -862,7 +862,12 @@ function createBuiltInBrowserWindowService(args: {
 
   const reusableOwnedTabForInput = (input: BuiltInBrowserClaimArgs = {}): BrowserTabState | null => {
     pruneDestroyedTabs();
-    return tabs.find((entry) => tabMatchesOwnerInput(entry, input)) ?? null;
+    // Prefer the tab the user most recently activated for this lane; otherwise
+    // fall back to the newest matching tab (reverse creation order) so a lane
+    // with multiple owned tabs doesn't keep driving the oldest one.
+    const current = activeTab();
+    if (current && tabMatchesOwnerInput(current, input)) return current;
+    return [...tabs].reverse().find((entry) => tabMatchesOwnerInput(entry, input)) ?? null;
   };
 
   const clearSelectionInternal = (): void => {

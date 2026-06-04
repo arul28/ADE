@@ -141,7 +141,9 @@ function parseReviewerRequestInput(input: string): ReviewerRequest {
     const lower = value.toLowerCase();
     if (lower.startsWith("team:")) {
       value = value.slice("team:".length).trim();
-      if (value) teamReviewers.push(value);
+      const parts = value.split("/").map((part) => part.trim()).filter(Boolean);
+      const slug = parts[parts.length - 1];
+      if (slug) teamReviewers.push(slug);
       continue;
     }
     if (value.startsWith("@")) value = value.slice(1).trim();

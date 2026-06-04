@@ -501,17 +501,10 @@ export async function getSshHostKeyTrustForTarget(
   target: RemoteRuntimeTarget,
   options: SshHostKeyTrustOptions = {},
 ): Promise<RemoteRuntimeSshHostKeyTrustStatus> {
-  const endpoint = resolveSshEndpoint(target, options);
-  const entries = readKnownHostEntries(endpoint.knownHostsPath);
-  const existingCandidates = knownHostCandidates(endpoint.hostAliases, endpoint.port);
-  if (knownHostsHaveEntry(entries, existingCandidates)) {
-    return {
-      state: "trusted",
-      targetId: target.id,
-      knownHostsPath: endpoint.knownHostsPath,
-    };
-  }
-
+  // Always scan the live host key. A stored known_hosts entry only proves that
+  // *some* key was saved; if the machine now presents a different key we must
+  // report "changed" (not "trusted") so the UI can surface the mismatch before
+  // an SSH connect fails host verification.
   const { scanHostKey, ...buildOptions } = options;
   const scan = await (scanHostKey ?? scanSshHostKeyForTarget)(target, buildOptions);
   const scanEntries = readKnownHostEntries(scan.knownHostsPath);

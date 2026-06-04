@@ -5870,9 +5870,10 @@ final class SyncService: ObservableObject {
       let updatedKey = profileStorageKey(updated) ?? key
       profiles[updatedKey] = updated
       if let token, updatedKey != key {
-        if keychain.loadToken(hostKey: updatedKey) == nil {
-          keychain.saveToken(token, hostKey: updatedKey)
-        }
+        // Move the valid token to the new key, overwriting any stale token that
+        // may already be stored there (e.g. an older copy of the same machine);
+        // otherwise the stale token survives and the valid one is discarded.
+        keychain.saveToken(token, hostKey: updatedKey)
         // The profile was re-keyed; drop the token stored under the old key so
         // it is not orphaned in the keychain indefinitely.
         keychain.clearToken(hostKey: key)

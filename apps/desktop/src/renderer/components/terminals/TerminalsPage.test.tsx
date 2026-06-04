@@ -457,12 +457,14 @@ describe("TerminalsPage chat session activation", () => {
     fireEvent.click(await screen.findByRole("button", { name: "select shell-running" }), { metaKey: true });
     fireEvent.click(await screen.findByRole("button", { name: "bulk delete" }));
 
-    await waitFor(() => expect(agentChatDelete).toHaveBeenCalledTimes(2));
-    expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-running-codex" });
-    expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-running-claude" });
+    await waitFor(() => {
+      expect(agentChatDelete).toHaveBeenCalledTimes(2);
+      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-running-codex" });
+      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-running-claude" });
+      expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("chat-running-codex");
+      expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("chat-running-claude");
+    });
     expect(sessionDelete).not.toHaveBeenCalled();
-    expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("chat-running-codex");
-    expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("chat-running-claude");
     expect(workMocks.currentWork.removeSessionFromList).not.toHaveBeenCalledWith("shell-running");
     expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("Delete 2 selected sessions?"));
     confirmSpy.mockRestore();

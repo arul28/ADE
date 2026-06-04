@@ -591,14 +591,18 @@ function toChecksStatusFromCheckRuns(checkRuns: any[]): PrChecksStatus | null {
   return "none";
 }
 
-function computeReviewStatus(args: { requestedReviewers: string[]; reviewStatesByUser: Map<string, string> }): PrReviewStatus {
+function computeReviewStatus(args: {
+  requestedReviewers: string[];
+  requestedTeams?: string[];
+  reviewStatesByUser: Map<string, string>;
+}): PrReviewStatus {
   for (const state of args.reviewStatesByUser.values()) {
     if (state === "CHANGES_REQUESTED") return "changes_requested";
   }
   for (const state of args.reviewStatesByUser.values()) {
     if (state === "APPROVED") return "approved";
   }
-  if (args.requestedReviewers.length > 0) return "requested";
+  if (args.requestedReviewers.length > 0 || (args.requestedTeams?.length ?? 0) > 0) return "requested";
   return "none";
 }
 
@@ -2497,6 +2501,7 @@ export function createPrService({
         `PR #${args.githubPrNumber} is from a fork, but GitHub did not include a fetchable head repository.`,
       );
     }
+    const headRepoLabel = `${args.headRepoOwner}/${args.headRepoName}`;
 
     const localRemoteRef = `refs/remotes/${prHeadImportRef(args.githubPrNumber, args.headBranch)}`;
     const fetch = await runGit([
@@ -2511,7 +2516,7 @@ export function createPrService({
       const detail = (fetch.stderr || fetch.stdout).trim();
       return createLaneFromPrBranchBlock(
         "fork_unavailable",
-        `Fork PR branch '${args.headRepoOwner}/${args.headRepoName}:${args.headBranch}' could not be fetched from ${args.repo.owner}/${args.repo.name}${detail ? `: ${detail}` : "."}`,
+        `Fork PR branch '${headRepoLabel}:${args.headBranch}' could not be fetched from ${args.repo.owner}/${args.repo.name}${detail ? `: ${detail}` : "."}`,
       );
     }
 
@@ -2523,13 +2528,13 @@ export function createPrService({
     if (!fetchedSha) {
       return createLaneFromPrBranchBlock(
         "fork_unavailable",
-        `Fork PR branch '${args.headRepoOwner}/${args.headRepoName}:${args.headBranch}' was fetched, but ADE could not resolve the local PR head ref.`,
+        `Fork PR branch '${headRepoLabel}:${args.headBranch}' was fetched, but ADE could not resolve the local PR head ref.`,
       );
     }
     if (args.headSha && fetchedSha !== args.headSha) {
       return createLaneFromPrBranchBlock(
         "fork_unavailable",
-        `Fork PR branch '${args.headRepoOwner}/${args.headRepoName}:${args.headBranch}' fetched ${fetchedSha}, but PR #${args.githubPrNumber} is at ${args.headSha}. Refresh the PR and try again.`,
+        `Fork PR branch '${headRepoLabel}:${args.headBranch}' fetched ${fetchedSha}, but PR #${args.githubPrNumber} is at ${args.headSha}. Refresh the PR and try again.`,
       );
     }
     return null;
@@ -3249,6 +3254,7 @@ export function createPrService({
     const shouldFetchLiveStatus = isActivePrState(state);
     const mergeConflicts = shouldFetchLiveStatus ? mergeConflictsFromPull(pr) : null;
     const requestedReviewers = Array.isArray(pr?.requested_reviewers) ? pr.requested_reviewers.map((u: any) => asString(u?.login)).filter(Boolean) : [];
+    const requestedTeams = Array.isArray(pr?.requested_teams) ? pr.requested_teams.map((team: any) => asString(team?.slug)).filter(Boolean) : [];
 
     const [combinedStatus, checkRuns, reviews, compare] = shouldFetchLiveStatus
       ? await Promise.all([
@@ -3274,7 +3280,7 @@ export function createPrService({
       ? toChecksStatusFromCheckRuns(checkRuns) ?? toChecksStatus(combinedStatus.state)
       : (row.checks_status as PrChecksStatus | null) ?? "none";
     const reviewStatus = shouldFetchLiveStatus
-      ? computeReviewStatus({ requestedReviewers, reviewStatesByUser })
+      ? computeReviewStatus({ requestedReviewers, requestedTeams, reviewStatesByUser })
       : (row.review_status as PrReviewStatus | null) ?? "none";
     const additions = Number(pr?.additions ?? 0);
     const deletions = Number(pr?.deletions ?? 0);
@@ -3387,6 +3393,7 @@ export function createPrService({
     ]);
 
     const requestedReviewers = Array.isArray(pr?.requested_reviewers) ? pr.requested_reviewers.map((u: any) => asString(u?.login)).filter(Boolean) : [];
+    const requestedTeams = Array.isArray(pr?.requested_teams) ? pr.requested_teams.map((team: any) => asString(team?.slug)).filter(Boolean) : [];
     const reviewStatesByUser = new Map<string, string>();
     for (const review of reviews) {
       if (review.state === "approved") reviewStatesByUser.set(review.reviewer, "APPROVED");
@@ -3399,7 +3406,7 @@ export function createPrService({
       mergedAt: asString(pr?.merged_at) || null
     });
     const checksStatus = toChecksStatusFromCheckRuns(checkRuns) ?? toChecksStatus(combinedStatus.state);
-    const reviewStatus = computeReviewStatus({ requestedReviewers, reviewStatesByUser });
+    const reviewStatus = computeReviewStatus({ requestedReviewers, requestedTeams, reviewStatesByUser });
     const isMergeable = Boolean(pr?.mergeable) && checksStatus !== "failing" && reviewStatus !== "changes_requested";
     const behindBaseBy = compare.behindBy;
 

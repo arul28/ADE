@@ -1005,17 +1005,26 @@ describe("githubService.publishCurrentProject", () => {
 	      .mockResolvedValueOnce({ exitCode: 0, stdout: "abc123\n", stderr: "" })
 	      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" });
 
-	    mockFetch.mockResolvedValueOnce(
-	      jsonResponse(201, {
-	        owner: { login: "acme-inc" },
-	        name: "proj",
-	        full_name: "acme-inc/proj",
-	        clone_url: "https://github.com/acme-inc/proj.git",
-	        ssh_url: "git@github.com:acme-inc/proj.git",
-	        html_url: "https://github.com/acme-inc/proj",
-	        default_branch: "main",
-	      }),
-	    );
+	    // The publish path resolves the authenticated login (GET /user) so it can
+	    // tell a personal account from an org owner. Here the login (`alice`)
+	    // differs from the requested owner (`acme-inc`), so the org route is used.
+	    mockFetch.mockImplementation((rawUrl: string) => {
+	      const url = new URL(rawUrl);
+	      if (url.pathname === "/user") {
+	        return Promise.resolve(jsonResponse(200, { login: "alice" }));
+	      }
+	      return Promise.resolve(
+	        jsonResponse(201, {
+	          owner: { login: "acme-inc" },
+	          name: "proj",
+	          full_name: "acme-inc/proj",
+	          clone_url: "https://github.com/acme-inc/proj.git",
+	          ssh_url: "git@github.com:acme-inc/proj.git",
+	          html_url: "https://github.com/acme-inc/proj",
+	          default_branch: "main",
+	        }),
+	      );
+	    });
 
 	    const result = await makeService().publishCurrentProject({
 	      owner: "acme-inc",
@@ -1023,7 +1032,10 @@ describe("githubService.publishCurrentProject", () => {
 	      isPrivate: true,
 	    });
 
-	    expect(String(mockFetch.mock.calls[0]?.[0])).toContain("/orgs/acme-inc/repos");
+	    const createRepoCall = mockFetch.mock.calls.find(([rawUrl]) =>
+	      String(rawUrl).includes("/repos"),
+	    );
+	    expect(String(createRepoCall?.[0])).toContain("/orgs/acme-inc/repos");
 	    expect(result).toEqual({
 	      state: "pushed",
 	      owner: "acme-inc",
@@ -1037,6 +1049,44 @@ describe("githubService.publishCurrentProject", () => {
 	      "origin",
 	      "https://github.com/acme-inc/proj.git",
 	    ]);
+	  });
+
+	  it("uses /user/repos when the requested owner is the authenticated user", async () => {
+	    runGitMock
+	      .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "fatal: No such remote 'origin'" })
+	      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
+	      .mockResolvedValueOnce({ exitCode: 0, stdout: "abc123\n", stderr: "" })
+	      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" });
+
+	    mockFetch.mockImplementation((rawUrl: string) => {
+	      const url = new URL(rawUrl);
+	      if (url.pathname === "/user") {
+	        return Promise.resolve(jsonResponse(200, { login: "alice" }));
+	      }
+	      return Promise.resolve(
+	        jsonResponse(201, {
+	          owner: { login: "alice" },
+	          name: "proj",
+	          full_name: "alice/proj",
+	          clone_url: "https://github.com/alice/proj.git",
+	          ssh_url: "git@github.com:alice/proj.git",
+	          html_url: "https://github.com/alice/proj",
+	          default_branch: "main",
+	        }),
+	      );
+	    });
+
+	    await makeService().publishCurrentProject({
+	      owner: "alice",
+	      name: "proj",
+	      isPrivate: true,
+	    });
+
+	    const createRepoCall = mockFetch.mock.calls.find(([rawUrl]) =>
+	      String(rawUrl).includes("/repos"),
+	    );
+	    expect(String(createRepoCall?.[0])).toContain("/user/repos");
+	    expect(String(createRepoCall?.[0])).not.toContain("/orgs/");
 	  });
 
   it("returns state=remote_added when the project has no commits yet", async () => {

@@ -441,6 +441,43 @@ describe("buildSshConfig", () => {
     })).rejects.toThrow("different SSH host key saved");
   });
 
+  it("reports a trusted SSH host key when the scanned key matches known_hosts", async () => {
+    const key = Buffer.from("remote host key");
+    const { homeDir } = createSshHomeWithKnownHosts(
+      `remote.example.test ssh-ed25519 ${key.toString("base64")}\n`,
+    );
+
+    await expect(getSshHostKeyTrustForTarget(target, {
+      env: {},
+      homeDir,
+      sshConfigPath: null,
+      scanHostKey: async () => scannedHostKey({ homeDir, key }),
+    })).resolves.toMatchObject({
+      state: "trusted",
+      targetId: target.id,
+      host: target.hostname,
+    });
+  });
+
+  it("reports a changed SSH host key when known_hosts has a different key", async () => {
+    const knownKey = Buffer.from("known host key");
+    const scannedKey = Buffer.from("new host key");
+    const { homeDir } = createSshHomeWithKnownHosts(
+      `remote.example.test ssh-ed25519 ${knownKey.toString("base64")}\n`,
+    );
+
+    await expect(getSshHostKeyTrustForTarget(target, {
+      env: {},
+      homeDir,
+      sshConfigPath: null,
+      scanHostKey: async () => scannedHostKey({ homeDir, key: scannedKey }),
+    })).resolves.toMatchObject({
+      state: "changed",
+      targetId: target.id,
+      host: target.hostname,
+    });
+  });
+
   it("rejects unknown SSH host keys by default", () => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ssh-home-"));
     const config = buildSshConfig(target, {

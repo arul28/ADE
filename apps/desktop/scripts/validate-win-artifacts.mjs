@@ -14,8 +14,12 @@ const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
 const productName = pkg.build?.productName ?? pkg.productName ?? "ADE";
 const DEFAULT_MAX_APP_ASAR_BYTES = 900 * 1024 * 1024;
 // The unpacked runtime includes x64 Codex, Claude, OpenCode, node-pty, and
-// ONNX payloads. Keep a ceiling, but size it to the current required toolset.
-const DEFAULT_MAX_UNPACKED_BYTES = 720 * 1024 * 1024;
+// ONNX payloads. The afterPack step now also materializes the bundled ADE
+// runtime's own OpenCode packages (opencode-ai + the platform native package,
+// ~150MB) into app.asar.unpacked so the packaged runtime can launch OpenCode,
+// which raises the legitimate unpacked size. Keep a ceiling to catch runaway
+// bloat, but size it to the current required toolset.
+const DEFAULT_MAX_UNPACKED_BYTES = 1000 * 1024 * 1024;
 const REMOTE_RUNTIME_TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
 const bundledAgentSkills = [
   "ade-cli-control-plane",

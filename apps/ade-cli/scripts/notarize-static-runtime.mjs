@@ -83,6 +83,8 @@ async function isMachO(filePath) {
       "cffaedfe",
       "cafebabe",
       "bebafeca",
+      "cafebabf",
+      "bfbafeca",
     ].includes(buffer.toString("hex"));
   } finally {
     await handle.close();
@@ -127,8 +129,10 @@ async function signNativeArchiveIfPresent(binaryPath, identity) {
       console.log(`[runtime:notarize] Signed ${signed} Mach-O payload(s) in ${path.basename(archivePath)}`);
     }
 
-    await fs.rm(archivePath, { force: true });
-    await run("tar", ["-czf", archivePath, "-C", workDir, "."]);
+    const nextArchivePath = `${archivePath}.tmp`;
+    await fs.rm(nextArchivePath, { force: true });
+    await run("tar", ["-czf", nextArchivePath, "-C", workDir, "."]);
+    await fs.rename(nextArchivePath, archivePath);
   } finally {
     await fs.rm(workDir, { recursive: true, force: true });
   }

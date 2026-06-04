@@ -2194,7 +2194,10 @@ function parseReviewerRequestValues(args: string[]): {
     for (const part of entry.split(",")) {
       const value = part.trim();
       if (!value) continue;
-      if (value.toLowerCase().startsWith("team:") || value.includes("/")) {
+      if (value.toLowerCase().startsWith("team:")) {
+        const slug = value.slice("team:".length).trim();
+        if (slug) teamReviewers.push(slug);
+      } else if (value.includes("/")) {
         teamReviewers.push(value);
       } else {
         reviewers.push(value);

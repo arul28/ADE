@@ -2618,9 +2618,15 @@ describe("prService.requestReviewers", () => {
       teamReviewers: ["team:platform", "acme/qa"],
     });
 
-    expect(apiRequest).toHaveBeenCalledWith(expect.objectContaining({
-      method: "POST",
-      path: `/repos/${REPO.owner}/${REPO.name}/pulls/90/requested_reviewers`,
+    const reviewerPosts = apiRequest.mock.calls
+      .map(([call]) => call)
+      .filter((call) =>
+        call.method === "POST"
+        && call.path === `/repos/${REPO.owner}/${REPO.name}/pulls/90/requested_reviewers`
+      );
+
+    expect(reviewerPosts).toHaveLength(1);
+    expect(reviewerPosts[0]).toEqual(expect.objectContaining({
       body: {
         reviewers: ["alice"],
         team_reviewers: ["platform", "qa"],

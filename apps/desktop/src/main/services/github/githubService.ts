@@ -1143,9 +1143,17 @@ export function createGithubService({
       body.description = args.description.trim();
     }
     const owner = asString(args.owner).trim();
+    // GitHub's `/orgs/{owner}/repos` route only accepts organization owners; a
+    // personal account (the authenticated user's own login) must use
+    // `/user/repos`. The renderer now populates `owner` from the connected
+    // login, so detect that case and avoid the org route for personal publishes.
+    const authenticatedLogin = owner
+      ? ((await validateToken(readAuthToken().token ?? "").catch(() => ({ userLogin: null as string | null }))).userLogin?.trim() ?? "")
+      : "";
+    const useOrgRoute = owner.length > 0 && owner.toLowerCase() !== authenticatedLogin.toLowerCase();
     const { data } = await apiRequest<Record<string, unknown>>({
       method: "POST",
-      path: owner ? `/orgs/${encodeURIComponent(owner)}/repos` : "/user/repos",
+      path: useOrgRoute ? `/orgs/${encodeURIComponent(owner)}/repos` : "/user/repos",
       body,
     });
     const identity = repoIdentityFromGitHubResponse(data, owner, args.name);
