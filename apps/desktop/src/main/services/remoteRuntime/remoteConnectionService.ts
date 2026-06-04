@@ -53,6 +53,10 @@ function coerceConnectionProject(value: unknown): RemoteRuntimeProjectRecord {
   return project;
 }
 
+function shouldAutoconnectTarget(target: RemoteRuntimeTarget): boolean {
+  return target.lastConnectedAt != null;
+}
+
 export class RemoteConnectionService {
   private readonly statusById = new Map<string, StatusPatch>();
   private readonly listeners = new Set<
@@ -152,6 +156,7 @@ export class RemoteConnectionService {
 
   startAutoconnect(): void {
     for (const target of this.registry.list()) {
+      if (!shouldAutoconnectTarget(target)) continue;
       void this.connect(target.id).catch(() => {});
     }
     if (this.autoconnectTimer) return;
@@ -401,6 +406,7 @@ export class RemoteConnectionService {
     options: { pingTimeoutMs?: number } = {},
   ): Promise<void> {
     for (const target of this.registry.list()) {
+      if (!shouldAutoconnectTarget(target)) continue;
       const status = this.statusById.get(target.id);
       if (status?.state === "connecting") continue;
       if (status?.state === "connected") {
