@@ -752,7 +752,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [project?.rootPath]);
 
   useEffect(() => {
-    const projectRoot = project?.rootPath ?? null;
+    const projectRoot = currentProjectRoot;
     if (!projectRoot || showWelcome) return;
 
     if (lastRouteSaveProjectRootRef.current !== projectRoot) {
@@ -762,7 +762,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
     const route = serializeLocationRoute(location);
     if (route) writeStoredProjectRoute(projectRoot, route);
-  }, [location, project?.rootPath, showWelcome]);
+  }, [location, currentProjectRoot, showWelcome]);
 
   useEffect(() => {
     let cancelled = false;

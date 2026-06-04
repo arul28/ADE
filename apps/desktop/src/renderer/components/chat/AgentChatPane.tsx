@@ -121,7 +121,7 @@ import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { ChatActionsDrawerPanel, type ChatActionsTab } from "./ChatActionsDrawerPanel";
-import { useAppStore } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { buildChatAppearanceRootStyle } from "./chatAppearance";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
@@ -2342,11 +2342,7 @@ export function AgentChatPane({
   /** Callback when lane selection changes in empty state */
   onLaneChange?: (laneId: string) => void;
 }) {
-  const projectRoot = useAppStore((s) => (
-    s.projectBinding?.kind === "remote"
-      ? s.projectBinding.rootPath
-      : (s.project?.rootPath ?? null)
-  ));
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectTransition = useAppStore((s) => s.projectTransition);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const agentTurnCompletionSound = useAppStore((s) => s.agentTurnCompletionSound);

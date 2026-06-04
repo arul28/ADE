@@ -802,6 +802,13 @@ export type AppState = {
   closeProject: () => Promise<void>;
 };
 
+export function selectActiveProjectRoot(state: Pick<AppState, "project" | "projectBinding">): string | null {
+  const root = state.projectBinding?.kind === "remote"
+    ? state.projectBinding.rootPath
+    : state.project?.rootPath;
+  return root?.trim() || null;
+}
+
 export type LaneInspectorTab = "terminals" | "context" | "stack" | "merge";
 
 type LaneRefreshRequest = {
@@ -948,7 +955,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
 
   setProject: (project) =>
     set((prev) => {
-      const previousProjectRoot = prev.project?.rootPath ?? null;
+      const previousProjectRoot = selectActiveProjectRoot(prev);
       const nextProjectRoot = project?.rootPath ?? null;
       const projectChanged = previousProjectRoot !== nextProjectRoot;
       const warmLaneCache = projectChanged && nextProjectRoot
@@ -1028,7 +1035,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     })),
   selectLane: (laneId) =>
     set((prev) => {
-      const projectRoot = prev.project?.rootPath ?? null;
+      const projectRoot = selectActiveProjectRoot(prev);
       if (!projectRoot) return { selectedLaneId: laneId };
       const previousSelection =
         prev.laneSelectionByProject[projectRoot] ?? { laneId: null, sessionId: null };
@@ -1054,7 +1061,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     }),
   focusSession: (sessionId) =>
     set((prev) => {
-      const projectRoot = prev.project?.rootPath ?? null;
+      const projectRoot = selectActiveProjectRoot(prev);
       if (!projectRoot) return { focusedSessionId: sessionId };
       const previousSelection =
         prev.laneSelectionByProject[projectRoot] ?? { laneId: null, sessionId: null };
@@ -1263,7 +1270,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   refreshLanes: async (options) => {
     const request = normalizeLaneRefreshRequest(options);
     const runRefresh = async (currentRequest: LaneRefreshRequest) => {
-      const requestedProjectKey = normalizeProjectKey(get().project?.rootPath);
+      const requestedProjectKey = normalizeProjectKey(selectActiveProjectRoot(get()));
       activeLaneRefreshProjectKey = requestedProjectKey;
       const token = ++laneRefreshVersion;
       const previousLanesById = new Map(get().lanes.map((lane) => [lane.id, lane] as const));
@@ -1296,7 +1303,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       if (token !== laneRefreshVersion) {
         return;
       }
-      const projectKey = normalizeProjectKey(get().project?.rootPath);
+      const projectKey = normalizeProjectKey(selectActiveProjectRoot(get()));
       if (projectKey !== requestedProjectKey) {
         return;
       }
@@ -1334,7 +1341,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         });
         // Cache the lane list per project root so the next switch back to this
         // project can apply lanes immediately (no flicker, no chat unmount).
-        const activeProjectRoot = get().project?.rootPath ?? null;
+        const activeProjectRoot = selectActiveProjectRoot(get());
         const nextLaneCache = activeProjectRoot
           ? {
               ...prev.laneCacheByProject,
@@ -1365,7 +1372,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     if (laneRefreshInFlight) {
       const activeRequest = activeLaneRefreshRequest;
       const activeProjectKey = activeLaneRefreshProjectKey;
-      const requestProjectKey = normalizeProjectKey(get().project?.rootPath);
+      const requestProjectKey = normalizeProjectKey(selectActiveProjectRoot(get()));
       const activeSatisfies =
         activeRequest != null
         && activeProjectKey === requestProjectKey
@@ -1403,7 +1410,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   },
 
   refreshProviderMode: async () => {
-    const projectRoot = get().project?.rootPath ?? null;
+    const projectRoot = selectActiveProjectRoot(get());
     const [snapshot, aiStatus] = await Promise.all([
       getProjectConfigCached({ projectRoot }),
       getAiStatusCached({ projectRoot }).catch(() => null),
@@ -1416,7 +1423,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
 
   refreshKeybindings: async () => {
     const keybindings = await getKeybindingsCoalesced({
-      projectRoot: get().project?.rootPath ?? null,
+      projectRoot: selectActiveProjectRoot(get()),
     });
     set({ keybindings });
   },
@@ -1503,7 +1510,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     ++laneRefreshVersion;
     // Stash the OUTGOING project's lane/session selection so switching back
     // restores it instead of falling through to "first lane".
-    const outgoingProjectRoot = get().project?.rootPath ?? null;
+    const outgoingProjectRoot = selectActiveProjectRoot(get());
     const outgoingSelection = {
       laneId: get().selectedLaneId,
       sessionId: get().focusedSessionId,
@@ -1622,7 +1629,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       window.setTimeout(() => {
         void window.ade.project.listRecent().then((recentRows) => {
           const recentRoots = new Set(recentRows.map((r: { rootPath: string }) => r.rootPath));
-          const activeRoot = get().project?.rootPath ?? null;
+          const activeRoot = selectActiveProjectRoot(get());
           const openProjectRoots = new Set(get().openProjectTabRoots);
           const retainedRootSet = new Set<string>();
           for (const root of [activeRoot, ...recentRoots, ...openProjectRoots]) {
@@ -1761,7 +1768,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   },
 
   closeProject: async () => {
-    const closingProjectRoot = get().project?.rootPath ?? null;
+    const closingProjectRoot = selectActiveProjectRoot(get());
     ++laneRefreshVersion;
     set({
       projectTransition: {

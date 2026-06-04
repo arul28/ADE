@@ -21,7 +21,7 @@ import type {
   TerminalSessionSummary,
   TerminalToolType,
 } from "../../../shared/types";
-import { useAppStore, type WorkDraftKind, type WorkSidebarTab } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore, type WorkDraftKind, type WorkSidebarTab } from "../../state/appStore";
 import {
   formatAppControlContextForPrompt,
   formatBuiltInBrowserContextForPrompt,
@@ -213,7 +213,7 @@ export function WorkSidebar({
   const [appControlSession, setAppControlSession] = useState<AppControlSession | null>(null);
   const [iosSession, setIosSession] = useState<IosSimulatorSession | null>(null);
   const [browserStatus, setBrowserStatus] = useState<BuiltInBrowserStatus | null>(null);
-  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const sidebarRef = useRef<HTMLElement | null>(null);
   const [compactTabs, setCompactTabs] = useState(false);
 

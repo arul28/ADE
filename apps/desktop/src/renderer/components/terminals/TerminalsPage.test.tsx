@@ -174,6 +174,13 @@ const sessionListPaneProps = vi.hoisted(() => ({
 }));
 
 vi.mock("../../state/appStore", () => ({
+  selectActiveProjectRoot: (state: {
+    projectBinding?: { kind?: string; rootPath?: string | null } | null;
+    project?: { rootPath?: string | null } | null;
+  }) => {
+    if (state.projectBinding?.kind === "remote") return state.projectBinding.rootPath?.trim() || null;
+    return state.project?.rootPath?.trim() || null;
+  },
   useAppStore: <T,>(selector: (state: { selectedLaneId: string; project: { rootPath: string } | null }) => T): T =>
     selector({
       selectedLaneId: "lane-primary",

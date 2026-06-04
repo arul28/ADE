@@ -36,7 +36,7 @@ import { buildPrAiResolutionContextKey } from "../../../../shared/types";
 import { getModelById, resolveProviderGroupForModel, type ModelProviderGroup } from "../../../../shared/modelRegistry";
 import { parsePrsRouteState, resolvePrsActiveTab } from "../prsRouteState";
 import { resolveRouteRebaseSelection } from "../shared/rebaseNeedUtils";
-import { useAppStore } from "../../../state/appStore";
+import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
 import { refreshPrsCoalesced } from "../../../lib/prReadCache";
 
 type PrTab = "normal" | "queue" | "integration" | "rebase";
@@ -429,7 +429,7 @@ function diffPrIds(prev: PrWithConflicts[], next: PrWithConflicts[]): string[] {
 }
 
 export function PrsProvider({ active = true, children }: { active?: boolean; children: React.ReactNode }) {
-  const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const cacheKey = prsContextCacheKey(projectRoot);
   const warmCache = useMemo(() => readPrsContextWarmCache(projectRoot), [projectRoot]);
   const warmCacheHydratedAtRef = React.useRef(warmCache?.dataLoadedAt ?? warmCache?.cachedAt ?? 0);

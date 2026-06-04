@@ -95,6 +95,7 @@ import {
   AppStoreProvider,
   createProjectAppStore,
   hydrateProjectAppStore,
+  selectActiveProjectRoot,
   useAppStore,
   type AppStoreApi,
 } from "../../state/appStore";
@@ -359,7 +360,7 @@ function ProjectTransitionVeil({ label }: { label: string }) {
 
 function ProjectRouteContent({ active, route }: { active: boolean; route: string }) {
   const navigate = useNavigate();
-  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const workSurfaceRef = React.useRef<HTMLDivElement | null>(null);
   const lanesSurfaceRef = React.useRef<HTMLDivElement | null>(null);
@@ -978,11 +979,7 @@ function BrowserHashRouteBridge() {
 
 export function App() {
   const theme = useAppStore((s) => s.theme);
-  const projectRoot = useAppStore((s) => (
-    s.projectBinding?.kind === "remote"
-      ? s.projectBinding.rootPath
-      : (s.project?.rootPath ?? null)
-  ));
+  const projectRoot = useAppStore(selectActiveProjectRoot);
 
   React.useEffect(() => {
     const w = window as Window & { __ADE_GET_DIRTY_FILE_TEXT__?: (p: string) => string | undefined };

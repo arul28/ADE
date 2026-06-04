@@ -2,7 +2,7 @@ import type {
   AgentChatListArgs,
   AgentChatSessionSummary,
 } from "../../shared/types";
-import { useAppStore } from "../state/appStore";
+import { selectActiveProjectRoot, useAppStore } from "../state/appStore";
 
 type CacheEntry = {
   value?: AgentChatSessionSummary[];
@@ -22,9 +22,7 @@ function normalizeArgs(args?: AgentChatListArgs): AgentChatListArgs {
 }
 
 function activeProjectRoot(): string | null {
-  const state = useAppStore.getState();
-  if (state.projectBinding?.kind === "remote") return state.projectBinding.rootPath?.trim() || null;
-  return state.project?.rootPath?.trim() || null;
+  return selectActiveProjectRoot(useAppStore.getState());
 }
 
 function cacheKey(args?: AgentChatListArgs): string {

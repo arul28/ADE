@@ -27,7 +27,7 @@ import { rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
 import { filterRebaseAttentionStatuses } from "../shared/rebaseAttentionUtils";
 import { usePrs } from "../state/PrsContext";
 import { getQueueWorkflowBucket } from "./queueWorkflowModel";
-import { useAppStore } from "../../../state/appStore";
+import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
 
 const CATEGORY_THEMES = {
   integration: { color: "#8B5CF6", bg: "rgba(139, 92, 246, 0.08)", border: "rgba(139, 92, 246, 0.20)", bgSubtle: "rgba(139, 92, 246, 0.04)" },
@@ -673,7 +673,7 @@ export function WorkflowsTab({
   } = usePrs();
 
   const navigate = useNavigate();
-  const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const cacheKey = workflowsCacheKey(projectRoot);
   const warmCache = !WORKFLOWS_CACHE_DISABLED ? workflowsWarmCacheByProject.get(cacheKey) ?? null : null;
   const [view, setViewRaw] = React.useState<WorkflowView>(() => warmCache?.view ?? readWorkflowView(projectRoot));

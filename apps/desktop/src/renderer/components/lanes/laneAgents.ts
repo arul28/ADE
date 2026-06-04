@@ -5,7 +5,7 @@ import type {
   TerminalToolType,
 } from "../../../shared/types";
 import { listSessionsCached } from "../../lib/sessionListCache";
-import { useAppStore } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 
 /** Unified live state for an agent row, glanceable at a list level. */
 export type LaneAgentActivity = "working" | "awaiting-input" | "idle" | "ended";
@@ -134,7 +134,7 @@ export function buildLaneAgents(
  */
 export function useLaneAgents(laneIds: string[]): Map<string, LaneAgent[]> {
   const [byLane, setByLane] = useState<Map<string, LaneAgent[]>>(new Map());
-  const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const laneKey = useMemo(() => [...laneIds].sort().join(","), [laneIds]);
   const refreshTimerRef = useRef<number | null>(null);
   const refreshInFlightRef = useRef(false);

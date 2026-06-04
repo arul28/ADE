@@ -45,6 +45,13 @@ class MockIntersectionObserver {
 }
 
 vi.mock("../../state/appStore", () => ({
+  selectActiveProjectRoot: (state: {
+    projectBinding?: { kind?: string; rootPath?: string | null } | null;
+    project?: { rootPath?: string | null } | null;
+  }) => {
+    if (state.projectBinding?.kind === "remote") return state.projectBinding.rootPath?.trim() || null;
+    return state.project?.rootPath?.trim() || null;
+  },
   useAppStore: vi.fn((selector: (state: {
     theme: "dark";
     terminalPreferences: {

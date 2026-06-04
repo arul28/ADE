@@ -6,6 +6,7 @@ import { cn } from "../ui/cn";
 import {
   DEFAULT_TERMINAL_FONT_FAMILY,
   DEFAULT_TERMINAL_PREFERENCES,
+  selectActiveProjectRoot,
   useAppStore,
   type TerminalPreferences,
   type ThemeId,
@@ -1930,7 +1931,7 @@ export function TerminalView({
 }) {
   const appTheme = useAppStore((s) => s.theme);
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
-  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectRevision = useAppStore((s) => s.projectRevision);
   const runtimeProjectScopeRef = useRef<{
     sessionId: string;

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowLeft, ArrowsClockwise, CaretDown, CaretRight, Check, Folder, Stack, Trash, Upload, Warning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
-import { useAppStore } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { modifierKeyLabel } from "../../lib/platform";
 import { cn } from "../ui/cn";
@@ -601,7 +601,7 @@ export function LaneGitActionsPane({
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const selectLane = useAppStore((s) => s.selectLane);
-  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
 
   const lane = useMemo(() => lanes.find((entry) => entry.id === laneId) ?? null, [lanes, laneId]);
   const parentLane = useMemo(() => {

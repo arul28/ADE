@@ -9,7 +9,7 @@ import {
   Terminal,
   X,
 } from "@phosphor-icons/react";
-import { useAppStore } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import {
   COLORS,
   LABEL_STYLE,
@@ -690,7 +690,7 @@ export function RunPage() {
   const lanes = useAppStore((s) => s.lanes);
   const showWelcome = useAppStore((s) => s.showWelcome);
 
-  const projectRoot = project?.rootPath ?? null;
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const [persistedLaneState, setPersistedLaneState] =
     useState<PersistedRunPageLaneState>(() =>
       readRunPageLaneState(projectRoot),

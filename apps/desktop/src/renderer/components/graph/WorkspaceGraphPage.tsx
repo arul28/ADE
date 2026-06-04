@@ -48,7 +48,7 @@ import type {
   PrWithConflicts,
   IntegrationProposal
 } from "../../../shared/types";
-import { useAppStore } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import {
   buildIntegrationSourcesByLaneId,
   isIntegrationLaneFromMetadata,
@@ -163,7 +163,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const reactFlow = useReactFlow<Node<GraphNodeData>, Edge<GraphEdgeData>>();
   const project = useAppStore((s) => s.project);
-  const projectRoot = project?.rootPath ?? null;
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const lanes = useAppStore((s) => s.lanes);
   const lanesKey = React.useMemo(() => lanes.map((l) => l.id).join(","), [lanes]);
@@ -1202,7 +1202,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
       reportGraphIssue("Conflict prediction live updates are unavailable in the graph.", error);
     }
     try {
-      const currentProjectRoot = project?.rootPath ?? null;
+      const currentProjectRoot = projectRoot;
       const isCurrentProjectEvent = (event: { projectRoot?: string | null }) =>
         !event.projectRoot || event.projectRoot === currentProjectRoot;
       unsubPtyData = window.ade.pty.onData((event) => {

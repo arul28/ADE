@@ -14,7 +14,7 @@ import type { CtoLinearProject, GitHubAutolink, LinearConnectionStatus } from ".
 import { ADE_DEEPLINK_HTTPS_BASE_URL } from "../../../shared/deeplinks";
 import { COLORS, SANS_FONT, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 import { Button } from "../ui/Button";
-import { useAppStore } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 
 const LINEAR_BRAND = "#5E6AD2";
 const LINEAR_API_SETTINGS_URL = "https://linear.app/settings/api";
@@ -41,7 +41,7 @@ export function LinearSection() {
   // project (credentials are project-scoped). Re-run the loaders whenever the
   // active project changes so the autolink commands target the right repo and
   // Linear workspace instead of a stale previously-loaded project.
-  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const [connection, setConnection] = useState<LinearConnectionStatus | null>(null);
   const [projects, setProjects] = useState<CtoLinearProject[]>([]);
   const [githubRepo, setGithubRepo] = useState<{ owner: string; name: string } | null>(null);

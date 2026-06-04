@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import type { AgentChatSession, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import {
+  selectActiveProjectRoot,
   useAppStore,
   useAppStoreApi,
   type WorkDraftKind,
@@ -352,7 +353,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const appStore = useAppStoreApi();
-  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const lanes = useAppStore((s) => s.lanes);
   const focusSession = useAppStore((s) => s.focusSession);
   const selectLane = useAppStore((s) => s.selectLane);
