@@ -687,6 +687,39 @@ describe("registerRuntimeBridge", () => {
     );
   });
 
+  it("cleans a remote event subscription before disconnecting that target", async () => {
+    const cleanup = vi.fn();
+    remoteRegistryGetMock.mockReturnValue(target);
+    remoteSubscribeEventsForTargetMock.mockResolvedValue(cleanup);
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+    });
+    const webContents = sender(202);
+
+    await expect(
+      ipcHandlers.get(IPC.remoteRuntimeStreamEvents)?.(
+        eventForSender(webContents),
+        {
+          id: "target-1",
+          projectId: "project-1",
+          request: { cursor: 0, limit: 100, replay: false },
+        },
+      ),
+    ).resolves.toEqual({ events: [], nextCursor: 0, hasMore: false });
+    await Promise.resolve();
+
+    await expect(
+      ipcHandlers.get(IPC.remoteRuntimeDisconnect)?.(
+        eventForSender(webContents),
+        { id: "target-1" },
+      ),
+    ).resolves.toEqual({ disconnected: true });
+
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(remoteDisconnectMock).toHaveBeenCalledWith("target-1");
+  });
+
   it("rejects unexposed sync methods before calling local or remote runtimes", async () => {
     const localRuntimeConnectionPool = {
       callSyncForRoot: vi.fn(),

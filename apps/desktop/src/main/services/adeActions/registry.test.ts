@@ -72,6 +72,11 @@ describe("isAllowedAdeAction", () => {
     expect(isCtoOnlyAdeAction("ios_simulator", "ensurePreviewWorkspace")).toBe(false);
   });
 
+  it("exposes subagent transcript reads through the chat runtime action surface", () => {
+    expect(isAllowedAdeAction("chat", "getSubagentTranscript")).toBe(true);
+    expect(isCtoOnlyAdeAction("chat", "getSubagentTranscript")).toBe(false);
+  });
+
   it("rejects an unknown action on a known domain", () => {
     expect(isAllowedAdeAction("git", "rmRf")).toBe(false);
     expect(isAllowedAdeAction("issue", "deleteAllIssues")).toBe(false);
@@ -637,6 +642,32 @@ describe("runtime session actions", () => {
       ptyId: "pty-1",
       pid: 123,
       attachedLinearIssueIds: ["issue-1"],
+    });
+  });
+
+  it("forwards remote subagent transcript reads through chat actions", async () => {
+    const transcript = [{ role: "assistant", content: "subagent output" }];
+    const getSubagentTranscript = vi.fn(async () => transcript);
+    const runtime = {
+      agentChatService: {
+        getSubagentTranscript,
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const chatService = getAdeActionDomainServices(runtime).chat as {
+      getSubagentTranscript: (args: {
+        sessionId: string;
+        subagentId: string;
+      }) => Promise<Array<{ role: string; content: string }>>;
+    } & Record<string, unknown>;
+
+    expect(listAllowedAdeActionNames("chat", chatService)).toContain("getSubagentTranscript");
+    await expect(chatService.getSubagentTranscript({
+      sessionId: "chat-1",
+      subagentId: "subagent-1",
+    })).resolves.toEqual(transcript);
+    expect(getSubagentTranscript).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      subagentId: "subagent-1",
     });
   });
 

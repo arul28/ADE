@@ -4242,6 +4242,78 @@ describe("preload OAuth bridge", () => {
     }
   });
 
+  it("stops remote event polling after disconnecting the active remote target", async () => {
+    vi.useFakeTimers();
+    try {
+      const binding = {
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "Remote",
+        projectId: "project-1",
+        rootPath: "/remote/project",
+        displayName: "Project",
+      };
+      const streamRequests: unknown[] = [];
+      const invoke = vi.fn(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.appGetWindowSession) {
+          return { windowId: 1, project: null, binding };
+        }
+        if (channel === IPC.remoteRuntimeStreamEvents) {
+          streamRequests.push(arg);
+          return {
+            events: [],
+            nextCursor: 0,
+            hasMore: false,
+            eventEpoch: "epoch-a",
+          };
+        }
+        if (channel === IPC.remoteRuntimeDisconnect) {
+          return { disconnected: true };
+        }
+        return undefined;
+      });
+      const on = vi.fn();
+      const removeListener = vi.fn();
+      const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+        (globalThis as any).__bridgeName = name;
+        (globalThis as any).__adeBridge = value;
+      });
+
+      vi.doMock("electron", () => ({
+        contextBridge: { exposeInMainWorld },
+        ipcRenderer: { invoke, on, removeListener },
+        webFrame: {
+          getZoomLevel: vi.fn(() => 0),
+          setZoomLevel: vi.fn(),
+          getZoomFactor: vi.fn(() => 1),
+        },
+      }));
+
+      await import("./preload");
+
+      const bridge = (globalThis as any).__adeBridge;
+      const unsubscribe = bridge.project.onStateEvent(vi.fn());
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(streamRequests).toHaveLength(1);
+
+      await expect(bridge.remoteRuntime.disconnect("target-1")).resolves.toEqual({
+        disconnected: true,
+      });
+      expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeDisconnect, {
+        id: "target-1",
+      });
+
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(streamRequests).toHaveLength(1);
+
+      unsubscribe();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("drops stale remote runtime catch-up when the project binding changes mid-poll", async () => {
     vi.useFakeTimers();
     try {
