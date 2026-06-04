@@ -13,7 +13,7 @@ const mockState = vi.hoisted(() => ({
   lastContextLossHandler: null as (() => void) | null,
   ptyDataListeners: new Set<(event: { ptyId: string; sessionId?: string; projectRoot?: string; data: string }) => void>(),
   ptyExitListeners: new Set<(event: { ptyId: string; sessionId?: string; projectRoot?: string; exitCode: number | null }) => void>(),
-  projectRoot: "/project/a",
+  projectRoot: "/project/a" as string | null,
   projectRevision: 0,
   theme: "dark" as const,
   terminalPreferences: {
@@ -1299,6 +1299,43 @@ describe("TerminalView", () => {
     expect(firstTerminal?.dispose).not.toHaveBeenCalled();
     expect(readTranscriptTailMock.mock.calls).toHaveLength(1);
     expect(getTerminalRuntimeSnapshot("session-switch")).not.toBeNull();
+  });
+
+  it("does not tear down a mounted exited runtime while the active project clears", async () => {
+    const view = render(<TerminalView ptyId="pty-project-clear" sessionId="session-project-clear" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      dispose: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal).toBeTruthy();
+
+    for (const listener of mockState.ptyExitListeners) {
+      listener({
+        ptyId: "pty-project-clear",
+        sessionId: "session-project-clear",
+        projectRoot: "/project/a",
+        exitCode: 0,
+      });
+    }
+    await flushPromises();
+    expect(getTerminalRuntimeSnapshot("session-project-clear")?.exitCode).toBe(0);
+
+    mockState.projectRoot = null;
+    mockState.projectRevision += 1;
+    view.rerender(<TerminalView ptyId="pty-project-clear" sessionId="session-project-clear" isActive />);
+    await flushAnimationFrame();
+
+    expect(terminal?.dispose).not.toHaveBeenCalled();
+    expect(getTerminalRuntimeSnapshot("session-project-clear")).not.toBeNull();
+
+    view.unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_100);
+    });
+
+    expect(terminal?.dispose).toHaveBeenCalledTimes(1);
+    expect(getTerminalRuntimeSnapshot("session-project-clear")).toBeNull();
   });
 
   it("hydrates live terminals from serialized snapshots when structured rows are unavailable", async () => {

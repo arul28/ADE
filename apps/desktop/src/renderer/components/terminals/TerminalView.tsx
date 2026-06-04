@@ -633,7 +633,7 @@ function disposeStaleRuntimes(activeProjectRoot: string | null, activeProjectRev
   for (const runtime of runtimeCache.values()) {
     const isLiveRuntime = runtime.exitCode == null;
     if (activeProjectRoot == null) {
-      if (runtime.projectRoot != null && !isLiveRuntime) {
+      if (runtime.projectRoot != null && !isLiveRuntime && runtime.refs === 0) {
         teardownRuntime(runtime);
       }
       continue;
