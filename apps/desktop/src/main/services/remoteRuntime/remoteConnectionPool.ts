@@ -204,12 +204,56 @@ function assertMachineProjectCapability(entry: PoolEntry, method: string): void 
   );
 }
 
+function optionalRemoteActionFallbackResult(
+  request: RemoteRuntimeActionRequest,
+): RemoteRuntimeActionResult | null {
+  if (request.domain !== "file" || request.action !== "refreshGitDecorations") {
+    return null;
+  }
+  const args = request.args && typeof request.args === "object" && !Array.isArray(request.args)
+    ? request.args as Record<string, unknown>
+    : {};
+  const workspaceId = typeof args.workspaceId === "string" && args.workspaceId.trim()
+    ? args.workspaceId.trim()
+    : "primary";
+  return {
+    domain: "file",
+    action: "refreshGitDecorations",
+    result: {
+      workspaceId,
+      files: [],
+      directories: [],
+    },
+    statusHints: {
+      optionalActionMissing: true,
+    },
+  };
+}
+
+function isRemoteActionNotCallableMessage(message: string): boolean {
+  return /not callable|not exposed|not available|unknown action/i.test(message);
+}
+
+function isRemoteActionNotCallableError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return isRemoteActionNotCallableMessage(message);
+}
+
+function unsupportedOptionalActionKey(
+  targetId: string,
+  projectId: string,
+  request: RemoteRuntimeActionRequest,
+): string {
+  return `${targetId}\0${projectId}\0${request.domain}.${request.action}`;
+}
+
 export class RemoteConnectionPool {
   private readonly entries = new Map<string, Promise<PoolEntry>>();
   private readonly localPortForwards = new Map<
     string,
     Promise<LocalPortForwardEntry>
   >();
+  private readonly unsupportedOptionalActionKeys = new Set<string>();
   private readonly pendingDisconnects = new Set<string>();
   private readonly resolvedEntryPromises = new Set<Promise<PoolEntry>>();
   private readonly connectFailureBackoffByTargetId = new Map<
@@ -282,6 +326,7 @@ export class RemoteConnectionPool {
     let entryPromise: Promise<PoolEntry>;
     entryPromise = pending.then(({ client, ssh, result }) => {
       const entry = { client, ssh, result };
+      this.clearUnsupportedOptionalActionsForTarget(target.id);
       this.connectFailureBackoffByTargetId.delete(target.id);
       this.resolvedEntryPromises.add(entryPromise);
       this.attachEntryLifecycle(target.id, entryPromise, entry);
@@ -528,6 +573,17 @@ export class RemoteConnectionPool {
     projectId: string,
     request: RemoteRuntimeActionRequest,
   ): Promise<RemoteRuntimeActionResult> {
+    const optionalFallback = optionalRemoteActionFallbackResult(request);
+    const optionalFallbackKey = optionalFallback
+      ? unsupportedOptionalActionKey(entry.result.target.id, projectId, request)
+      : null;
+    if (
+      optionalFallback &&
+      optionalFallbackKey &&
+      this.unsupportedOptionalActionKeys.has(optionalFallbackKey)
+    ) {
+      return optionalFallback;
+    }
     const params = {
       projectId,
       name: "run_ade_action",
@@ -542,9 +598,18 @@ export class RemoteConnectionPool {
       },
     };
     const callOptions = remoteRuntimeActionCallOptions(request);
-    const value = callOptions
-      ? await entry.client.call("ade/actions/call", params, callOptions)
-      : await entry.client.call("ade/actions/call", params);
+    let value: unknown;
+    try {
+      value = callOptions
+        ? await entry.client.call("ade/actions/call", params, callOptions)
+        : await entry.client.call("ade/actions/call", params);
+    } catch (error) {
+      if (optionalFallback && optionalFallbackKey && isRemoteActionNotCallableError(error)) {
+        this.unsupportedOptionalActionKeys.add(optionalFallbackKey);
+        return optionalFallback;
+      }
+      throw error;
+    }
 
     if (value && typeof value === "object" && !Array.isArray(value)) {
       const record = value as Record<string, unknown>;
@@ -555,10 +620,15 @@ export class RemoteConnectionPool {
           !Array.isArray(record.error)
             ? (record.error as Record<string, unknown>)
             : {};
+        const message = typeof error.message === "string"
+          ? error.message
+          : "Remote ADE service action failed.";
+        if (optionalFallback && optionalFallbackKey && isRemoteActionNotCallableMessage(message)) {
+          this.unsupportedOptionalActionKeys.add(optionalFallbackKey);
+          return optionalFallback;
+        }
         throw new Error(
-          typeof error.message === "string"
-            ? error.message
-            : "Remote ADE service action failed.",
+          message,
         );
       }
       return {
@@ -766,6 +836,14 @@ export class RemoteConnectionPool {
           } catch {}
         })
         .catch(() => {});
+    }
+  }
+
+  private clearUnsupportedOptionalActionsForTarget(targetId: string): void {
+    for (const key of [...this.unsupportedOptionalActionKeys]) {
+      if (key.startsWith(`${targetId}\0`)) {
+        this.unsupportedOptionalActionKeys.delete(key);
+      }
     }
   }
 

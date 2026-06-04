@@ -333,6 +333,7 @@ describe("TopBar", () => {
     expect(await screen.findByTitle("Mac Studio: /srv/ade/remote-app")).toBeTruthy();
     expect(screen.getByText("Remote App")).toBeTruthy();
     expect(screen.getByLabelText("Remote: Mac Studio")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remote, connected" })).toBeTruthy();
     expect(globalThis.window.ade.sync.getStatus).not.toHaveBeenCalled();
     expect(screen.queryByTitle("Connect a phone to this machine")).toBeNull();
   });

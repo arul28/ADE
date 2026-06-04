@@ -1004,7 +1004,8 @@ export function TopBar() {
     hasGitHubRemote === false &&
     hasOrigin === false;
   const connectedRemoteCount = remoteSnapshot?.connectedCount ?? 0;
-  const remoteConnected = connectedRemoteCount > 0;
+  const remoteStatusCount = Math.max(connectedRemoteCount, remoteBinding ? 1 : 0);
+  const remoteConnected = remoteStatusCount > 0;
   const syncConnected = isSyncConnected(syncSnapshot);
   const showSyncControl = workspaceProjectOpen;
 
@@ -2150,14 +2151,14 @@ export function TopBar() {
           onClick={handleOpenNew}
           disabled={isProjectBusy}
           title={
-            connectedRemoteCount > 0
-              ? `${connectedRemoteCount} remote device${connectedRemoteCount === 1 ? "" : "s"} available`
+            remoteStatusCount > 0
+              ? `${remoteStatusCount} remote device${remoteStatusCount === 1 ? "" : "s"} available`
               : "Open another project"
           }
           style={
             {
               WebkitAppRegion: "no-drag",
-              ...(connectedRemoteCount > 0
+              ...(remoteStatusCount > 0
                 ? {
                     color: "#FBBF24",
                     borderColor: "rgba(245,158,11,0.58)",
@@ -2375,7 +2376,7 @@ export function TopBar() {
                     Remote machines
                   </div>
                   <div className="truncate text-[11px] text-white/55">
-                    {connectedRemoteCount} connected
+                    {remoteStatusCount} connected
                   </div>
                 </div>
               </div>
