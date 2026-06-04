@@ -381,6 +381,31 @@ describe("App Work route keep-alive", () => {
     expect(lanesLifecycle.unmounts).toBe(0);
   });
 
+  it("mounts the active remote project even when local project tabs are open", async () => {
+    appStoreState.project = { rootPath: "/remote/project", displayName: "Remote project" } as any;
+    appStoreState.openProjectTabRoots = ["/fake/project"];
+    appStoreState.projectInfoByRoot = {
+      "/fake/project": { rootPath: "/fake/project", displayName: "Fake" },
+    };
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    await waitFor(() => {
+      const remoteSurface = screen
+        .getAllByTestId("work-page")
+        .find((node) => node.closest("[data-project-root='/remote/project']"));
+      expect(remoteSurface).toBeTruthy();
+      expect(remoteSurface?.closest("[aria-hidden='true']")).toBeNull();
+      expect(remoteSurface?.getAttribute("data-active")).toBe("true");
+    });
+
+    const localSurface = screen
+      .getAllByTestId("work-page")
+      .find((node) => node.closest("[data-project-root='/fake/project']"));
+    expect(localSurface?.closest("[aria-hidden='true']")).not.toBeNull();
+  });
+
   it("converts legacy hash app routes into BrowserRouter paths", async () => {
     window.history.replaceState({}, "", "/work#/lanes");
     const { App } = await import("./App");

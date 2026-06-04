@@ -669,11 +669,14 @@ function ProjectTabHost() {
   }, [activeRoot, location]);
 
   const projects = React.useMemo(() => {
-    const roots = openProjectTabRoots.length > 0
+    const rootsFromTabs = openProjectTabRoots.length > 0
       ? openProjectTabRoots
       : activeProject?.rootPath
         ? [activeProject.rootPath]
         : [];
+    const roots = activeProject?.rootPath && !rootsFromTabs.includes(activeProject.rootPath)
+      ? [activeProject.rootPath, ...rootsFromTabs]
+      : rootsFromTabs;
     return roots
       .map((root) => projectInfoByRoot[root] ?? (activeProject?.rootPath === root ? activeProject : null))
       .filter((project): project is ProjectInfo => project != null);
