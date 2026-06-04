@@ -265,6 +265,19 @@ function connectionStateLabel(
   return "Not connected";
 }
 
+function formatRemoteTargetError(error: unknown): string {
+  const message = extractError(error)
+    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
+    .replace(/^Error:\s*/i, "")
+    .trim();
+
+  if (/^(?:read\s+)?ECONNRESET$/i.test(message)) {
+    return "SSH server closed the connection before ADE could finish the SSH handshake. Check that Remote Login/sshd is enabled on the remote machine and try again.";
+  }
+
+  return message || "Remote connection failed.";
+}
+
 export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
   const [targets, setTargets] = useState<RemoteRuntimeTarget[]>([]);
   const [connectionSnapshot, setConnectionSnapshot] =
@@ -336,7 +349,7 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
       setSelectedId((current) => current ?? next[0]?.id ?? null);
       setError(null);
     } catch (err) {
-      setError(extractError(err));
+      setError(formatRemoteTargetError(err));
     } finally {
       setLoading(false);
     }
@@ -514,7 +527,7 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
         setError(null);
         onConnected?.(result);
       } catch (err) {
-        setError(extractError(err));
+        setError(formatRemoteTargetError(err));
       } finally {
         setBusyId(null);
       }
@@ -536,7 +549,7 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
         skipHostKeyTrustCheck: true,
       });
     } catch (err) {
-      setError(extractError(err));
+      setError(formatRemoteTargetError(err));
     } finally {
       setTrustingHostKey(false);
     }
@@ -562,7 +575,7 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
         setError(null);
         await connectTarget(target.id);
       } catch (err) {
-        setError(extractError(err));
+        setError(formatRemoteTargetError(err));
       } finally {
         setSaving(false);
       }
@@ -585,7 +598,7 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
         if (formPrefill?.targetId === targetId) setFormPrefill(null);
         setError(null);
       } catch (err) {
-        setError(extractError(err));
+        setError(formatRemoteTargetError(err));
       } finally {
         setBusyId(null);
       }

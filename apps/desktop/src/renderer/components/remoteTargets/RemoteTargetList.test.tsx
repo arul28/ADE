@@ -202,6 +202,51 @@ describe("RemoteTargetList", () => {
     expect(screen.queryByRole("button", { name: "Open" })).toBeNull();
   });
 
+  it("shows an actionable message when the SSH host-key probe is reset", async () => {
+    const target = {
+      id: "target-1",
+      name: "Mac Studio",
+      hostname: "100.75.20.63",
+      sshUser: "admin",
+      port: 22,
+      sshKeyPath: null,
+      lastSeenArch: null,
+      runtimeBinaryVersion: null,
+      lastConnectedAt: null,
+    };
+    remoteRuntimeMock.listTargets.mockResolvedValue([target]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    installAdeMock();
+    remoteRuntimeMock.getSshHostKeyTrust.mockRejectedValue(
+      new Error(
+        "Error invoking remote method 'ade.remoteRuntime.getSshHostKeyTrust': Error: read ECONNRESET",
+      ),
+    );
+
+    render(<RemoteTargetList />);
+
+    await waitFor(() =>
+      expect(screen.getAllByText("Mac Studio").length).toBeGreaterThan(0),
+    );
+    const connectButton = screen
+      .getAllByRole("button", { name: "Connect" })
+      .find((button) => !button.hasAttribute("disabled"));
+    expect(connectButton).toBeTruthy();
+    fireEvent.click(connectButton!);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/SSH server closed the connection before ADE could finish the SSH handshake/),
+      ).toBeTruthy(),
+    );
+    expect(screen.queryByText(/Error invoking remote method/)).toBeNull();
+    expect(screen.queryByText(/read ECONNRESET/)).toBeNull();
+    expect(remoteRuntimeMock.connect).not.toHaveBeenCalled();
+  });
+
   it("prompts to trust a new machine identity before connecting", async () => {
     const target = {
       id: "target-1",

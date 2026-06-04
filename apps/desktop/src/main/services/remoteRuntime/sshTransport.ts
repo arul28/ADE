@@ -692,12 +692,87 @@ function isSshAuthenticationFailure(error: unknown): boolean {
     (typeof candidate.message === "string" && /authentication/i.test(candidate.message));
 }
 
+function sshEndpointLabel(config: ConnectConfig): string {
+  const host = typeof config.host === "string" && config.host.trim()
+    ? config.host.trim()
+    : "remote host";
+  const port = typeof config.port === "number" && Number.isFinite(config.port)
+    ? config.port
+    : 22;
+  return `${host}:${port}`;
+}
+
+function copySshErrorMetadata(source: unknown, target: Error): Error {
+  if (!source || typeof source !== "object") return target;
+  const candidate = source as {
+    code?: unknown;
+    errno?: unknown;
+    syscall?: unknown;
+    level?: unknown;
+  };
+  for (const key of ["code", "errno", "syscall", "level"] as const) {
+    if (candidate[key] !== undefined) {
+      Object.defineProperty(target, key, {
+        configurable: true,
+        enumerable: false,
+        value: candidate[key],
+      });
+    }
+  }
+  Object.defineProperty(target, "cause", {
+    configurable: true,
+    enumerable: false,
+    value: source,
+  });
+  return target;
+}
+
+function normalizeSshConnectError(
+  error: unknown,
+  fallback: string,
+  config: ConnectConfig,
+): Error {
+  const source = error instanceof Error
+    ? error
+    : new Error(String(error ?? fallback));
+  const message = source.message || fallback;
+  const endpoint = sshEndpointLabel(config);
+  const sourceMetadata = source as Error & { code?: unknown };
+  const code = typeof sourceMetadata.code === "string"
+    ? sourceMetadata.code
+    : "";
+
+  if (
+    code === "ECONNRESET" ||
+    /(?:^|\s)ECONNRESET(?:\s|$)|connection reset|connection closed by remote host|socket closed|connection lost before handshake/i.test(message) ||
+    /closed before (?:it became ready|ADE could complete the SSH handshake)/i.test(fallback)
+  ) {
+    return copySshErrorMetadata(
+      source,
+      new Error(
+        `SSH server at ${endpoint} closed the connection before ADE could finish the SSH handshake. ` +
+          "Check that Remote Login/sshd is enabled on the remote machine and that its firewall or Tailscale SSH policy allows this client.",
+      ),
+    );
+  }
+
+  if (/timed out while waiting for handshake|handshake.*timed out|ready timeout/i.test(message)) {
+    return copySshErrorMetadata(
+      source,
+      new Error(
+        `Timed out while waiting for the SSH handshake from ${endpoint}. ` +
+          "Check that the machine is online, reachable over this route, and accepting SSH connections.",
+      ),
+    );
+  }
+
+  return source;
+}
+
 function connectSshWithConfig(config: ConnectConfig): Promise<Client> {
   return new Promise((resolve, reject) => {
     const client = new Client();
     let settled = false;
-    const normalizeError = (error: unknown, fallback: string): Error =>
-      error instanceof Error ? error : new Error(String(error ?? fallback));
     const cleanupConnectListeners = (options: { keepErrorListener?: boolean } = {}): void => {
       client.off("ready", onReady);
       if (!options.keepErrorListener) {
@@ -713,7 +788,7 @@ function connectSshWithConfig(config: ConnectConfig): Promise<Client> {
       // connect attempt. Keep onError attached as a sink so the late error is
       // contained after the promise has already rejected.
       cleanupConnectListeners({ keepErrorListener: true });
-      reject(normalizeError(error, fallback));
+      reject(normalizeSshConnectError(error, fallback, config));
     };
     const onReady = (): void => {
       if (settled) return;

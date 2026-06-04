@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { createHmac } from "node:crypto";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -12,6 +13,7 @@ import {
   getSshHostKeyTrustForTarget,
   hasKnownSshHostKeyForTarget,
   parseOpenSshHostConfig,
+  scanSshHostKeyForTarget,
   trustSshHostKeyForTarget,
   type ScannedSshHostKey,
 } from "./sshTransport";
@@ -476,6 +478,36 @@ describe("buildSshConfig", () => {
       targetId: target.id,
       host: target.hostname,
     });
+  });
+
+  it("explains SSH servers that close before the handshake during host-key scan", async () => {
+    const server = net.createServer((socket) => {
+      socket.destroy();
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      server.close();
+      throw new Error("Expected TCP test server to bind an address.");
+    }
+
+    try {
+      await expect(scanSshHostKeyForTarget({
+        ...target,
+        hostname: "127.0.0.1",
+        port: address.port,
+      }, {
+        env: {},
+        sshConfigPath: null,
+      })).rejects.toThrow(
+        `SSH server at 127.0.0.1:${address.port} closed the connection before ADE could finish the SSH handshake.`,
+      );
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it("rejects unknown SSH host keys by default", () => {
