@@ -747,6 +747,133 @@ describe("TerminalView", () => {
     expect(terminal?.options.scrollback).toBe(20_000);
   });
 
+  it("batches rapid terminal input before writing to the PTY", async () => {
+    render(<TerminalView ptyId="pty-input-batch" sessionId="session-input-batch" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      onData: ReturnType<typeof vi.fn>;
+    } | undefined;
+    const onData = terminal?.onData.mock.calls.at(-1)?.[0] as ((data: string) => void) | undefined;
+    expect(onData).toBeTruthy();
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+
+    onData!("p");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8);
+    });
+    onData!("w");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8);
+    });
+    onData!("d");
+
+    expect(ptyWrite).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15);
+    });
+    expect(ptyWrite).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+
+    expect(ptyWrite).toHaveBeenCalledTimes(1);
+    expect(ptyWrite).toHaveBeenCalledWith({
+      ptyId: "pty-input-batch",
+      data: "pwd",
+    });
+  });
+
+  it("flushes queued terminal input immediately when Enter arrives", async () => {
+    render(<TerminalView ptyId="pty-input-enter" sessionId="session-input-enter" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      onData: ReturnType<typeof vi.fn>;
+    } | undefined;
+    const onData = terminal?.onData.mock.calls.at(-1)?.[0] as ((data: string) => void) | undefined;
+    expect(onData).toBeTruthy();
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+
+    onData!("pwd");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8);
+    });
+    expect(ptyWrite).not.toHaveBeenCalled();
+
+    onData!("\r");
+
+    expect(ptyWrite).toHaveBeenCalledTimes(1);
+    expect(ptyWrite).toHaveBeenCalledWith({
+      ptyId: "pty-input-enter",
+      data: "pwd\r",
+    });
+  });
+
+  it("preserves queued input order before direct control-key writes", async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
+    const originalPlatform = window.navigator.platform;
+    try {
+      Object.defineProperty(window.navigator, "platform", {
+        configurable: true,
+        value: "MacIntel",
+      });
+
+      render(<TerminalView ptyId="pty-input-control" sessionId="session-input-control" isActive />);
+      await flushAllTimers();
+
+      const terminal = mockState.terminalInstances.at(-1) as {
+        attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
+        onData: ReturnType<typeof vi.fn>;
+      } | undefined;
+      const onData = terminal?.onData.mock.calls.at(-1)?.[0] as ((data: string) => void) | undefined;
+      const keyHandler = terminal?.attachCustomKeyEventHandler.mock.calls.at(-1)?.[0] as ((ev: KeyboardEvent) => boolean) | undefined;
+      expect(onData).toBeTruthy();
+      expect(keyHandler).toBeTruthy();
+
+      const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+      ptyWrite.mockClear();
+
+      onData!("p");
+      const preventDefault = vi.fn();
+      const handled = keyHandler!({
+        type: "keydown",
+        key: "c",
+        metaKey: true,
+        ctrlKey: false,
+        altKey: false,
+        shiftKey: false,
+        preventDefault,
+      } as unknown as KeyboardEvent);
+
+      expect(handled).toBe(false);
+      expect(preventDefault).toHaveBeenCalledTimes(1);
+      expect(ptyWrite).toHaveBeenNthCalledWith(1, {
+        ptyId: "pty-input-control",
+        data: "p",
+      });
+      expect(ptyWrite).toHaveBeenNthCalledWith(2, {
+        ptyId: "pty-input-control",
+        data: "\x03",
+      });
+    } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(window.navigator, "platform", platformDescriptor);
+      } else {
+        Object.defineProperty(window.navigator, "platform", {
+          configurable: true,
+          value: originalPlatform,
+        });
+      }
+    }
+  });
+
   it("writes text paste contents directly to the PTY", async () => {
     render(<TerminalView ptyId="pty-text-paste" sessionId="session-text-paste" isActive />);
     await flushAllTimers();
