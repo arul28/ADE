@@ -1120,7 +1120,7 @@ export function ChatIosSimulatorPanel({
           ? matchedTargetId
           : current && targets.some((target) => target.id === current)
           ? current
-          : match.target?.id ?? targets[0]?.id ?? null
+          : targets[0]?.id ?? null
       ));
       if (!capability.supported) {
         setMessage(previewStatusLabel(capability, targets));
@@ -1696,7 +1696,6 @@ export function ChatIosSimulatorPanel({
         }
       } catch (error) {
         setMessage(error instanceof Error ? error.message : String(error));
-        setPreviewRefreshing(false);
         return;
       } finally {
         setPreviewRefreshing(false);

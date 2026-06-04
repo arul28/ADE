@@ -1225,6 +1225,7 @@ const READ_ONLY_RUNTIME_ACTIONS = new Set([
   "chat.fileSearch",
   "chat.modelCatalog",
   "file.quickOpen",
+  "ios_simulator.resolvePreviewMatch",
   "terminal.activeForChat",
   "terminal.preview",
 ]);

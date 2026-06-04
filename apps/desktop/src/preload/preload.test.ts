@@ -4839,12 +4839,21 @@ describe("preload OAuth bridge", () => {
       resolveSwitch = resolve;
     });
     const localRuntimeRoots: string[] = [];
+    const localRuntimeRequests: Array<{ domain?: string; action?: string }> = [];
     const invoke = vi.fn(async (channel: string, arg?: unknown) => {
       if (channel === IPC.projectSwitchToPath) {
         return switchPromise;
       }
       if (channel === IPC.localRuntimeCallAction) {
-        localRuntimeRoots.push((arg as { rootPath?: string }).rootPath ?? "");
+        const request = arg as {
+          rootPath?: string;
+          request?: { domain?: string; action?: string };
+        };
+        localRuntimeRoots.push(request.rootPath ?? "");
+        localRuntimeRequests.push({
+          domain: request.request?.domain,
+          action: request.request?.action,
+        });
         return { result: [] };
       }
       if (channel === IPC.appGetWindowSession) {
@@ -4884,14 +4893,19 @@ describe("preload OAuth bridge", () => {
     const pendingSwitch = bridge.project.switchToPath("/next");
 
     await expect(bridge.lanes.list()).resolves.toEqual([]);
+    await expect(bridge.iosSimulator.resolvePreviewMatch({ projectRoot: "/next" })).resolves.toEqual([]);
     expect(invoke).not.toHaveBeenCalledWith(IPC.lanesList, expect.anything());
-    expect(localRuntimeRoots).toEqual(["/next"]);
+    expect(localRuntimeRoots).toEqual(["/next", "/next"]);
+    expect(localRuntimeRequests).toEqual([
+      { domain: "lane", action: "list" },
+      { domain: "ios_simulator", action: "resolvePreviewMatch" },
+    ]);
 
     resolveSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
     await pendingSwitch;
 
     await expect(bridge.lanes.list()).resolves.toEqual([]);
-    expect(localRuntimeRoots).toEqual(["/next", "/next"]);
+    expect(localRuntimeRoots).toEqual(["/next", "/next", "/next"]);
   });
 
   it("rejects empty project switch paths before updating local runtime binding", async () => {

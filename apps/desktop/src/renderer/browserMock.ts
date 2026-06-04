@@ -53,6 +53,19 @@ const DEFAULT_BROWSER_MOCK_CODEX_MODEL =
   getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5";
 const DEFAULT_BROWSER_MOCK_CLAUDE_MODEL =
   getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
+const BROWSER_MOCK_PREVIEW_CAPABILITY_UNSUPPORTED = {
+  platform: "darwin",
+  supported: false,
+  docsUrl: "https://developer.apple.com/documentation/xcode",
+  xcodeVersion: null,
+  mcpbridgeAvailable: false,
+  xcodeRunning: false,
+  xcodeWindows: [],
+  selectedWindow: null,
+  setupSteps: ["Browser preview cannot manage Xcode."],
+  error: "Browser preview cannot manage Xcode.",
+  checkedAt: "1970-01-01T00:00:00.000Z",
+} as const;
 
 const BUILTIN_MOCK_PROJECT = {
   id: "browser-mock",
@@ -4763,19 +4776,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getScreenSnapshot: resolvedArg({} as any),
       getInspectorSnapshot: resolved(null),
       inspectPoint: resolvedArg({} as any),
-      getPreviewCapability: resolvedArg({
-        platform: "darwin",
-        supported: false,
-        docsUrl: "https://developer.apple.com/documentation/xcode",
-        xcodeVersion: null,
-        mcpbridgeAvailable: false,
-        xcodeRunning: false,
-        xcodeWindows: [],
-        selectedWindow: null,
-        setupSteps: ["Browser preview cannot manage Xcode."],
-        error: "Browser preview cannot manage Xcode.",
-        checkedAt: "1970-01-01T00:00:00.000Z",
-      } as any),
+      getPreviewCapability: resolvedArg(BROWSER_MOCK_PREVIEW_CAPABILITY_UNSUPPORTED as any),
       listPreviewTargets: resolved([]),
       resolvePreviewMatch: resolvedArg({
         status: "no-context",
@@ -4792,19 +4793,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         ok: false,
         opened: false,
         path: null,
-        capability: {
-          platform: "darwin",
-          supported: false,
-          docsUrl: "https://developer.apple.com/documentation/xcode",
-          xcodeVersion: null,
-          mcpbridgeAvailable: false,
-          xcodeRunning: false,
-          xcodeWindows: [],
-          selectedWindow: null,
-          setupSteps: ["Browser preview cannot manage Xcode."],
-          error: "Browser preview cannot manage Xcode.",
-          checkedAt: "1970-01-01T00:00:00.000Z",
-        },
+        capability: BROWSER_MOCK_PREVIEW_CAPABILITY_UNSUPPORTED,
         error: "Browser preview cannot manage Xcode.",
       } as any),
       renderPreview: resolvedArg({} as any),
