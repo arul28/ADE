@@ -117,10 +117,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
 
   const refreshStatus = useCallback(async () => {
     try {
-      const [, changes] = await Promise.all([
-        window.ade.git.listBranches({ laneId }),
-        window.ade.diff.getChanges({ laneId }),
-      ]);
+      const changes = await window.ade.diff.getChanges({ laneId });
       setDirtyCount(dirtyFileCount(changes));
     } catch {
       // best-effort

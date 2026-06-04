@@ -9,6 +9,7 @@ import {
   preferredSessionLabel,
 } from "../../lib/sessions";
 import { relativeTimeCompact } from "../../lib/format";
+import { useAppStore } from "../../state/appStore";
 import { useSessionDelta } from "./useSessionDelta";
 import { cn } from "../ui/cn";
 import { MONO_FONT } from "../lanes/laneDesignTokens";
@@ -137,7 +138,8 @@ export const SessionCard = React.memo(function SessionCard({
   compact?: boolean;
 }) {
   const dot = sessionStatusDot(session);
-  const delta = useSessionDelta(session.id, true);
+  const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
+  const delta = useSessionDelta(session.id, !isRemoteProject || isSelected);
   const primaryText = primarySessionLabel(session);
   const previewLine = getPreviewLine(session, primaryText);
   const staleAgeHours = getStaleRunningCliSessionAgeHours(session);

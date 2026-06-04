@@ -344,6 +344,9 @@ type UseWorkSessionsOptions = {
   active?: boolean;
 };
 
+const LOCAL_RUNNING_SESSION_REFRESH_INTERVAL_MS = 5_000;
+const REMOTE_RUNNING_SESSION_REFRESH_INTERVAL_MS = 15_000;
+
 export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -1073,11 +1076,15 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       if (event.projectRoot && event.projectRoot !== currentProjectRoot) return;
       markSessionListDirtyOrRefresh(120);
     });
+    const remoteProject = useAppStore.getState().projectBinding?.kind === "remote";
+    const intervalMs = remoteProject
+      ? REMOTE_RUNNING_SESSION_REFRESH_INTERVAL_MS
+      : LOCAL_RUNNING_SESSION_REFRESH_INTERVAL_MS;
     const t = setInterval(() => {
       if (document.visibilityState !== "visible") return;
       if (!hasRunningSessionsRef.current) return;
       scheduleBackgroundRefresh(180);
-    }, 5_000);
+    }, intervalMs);
     return () => {
       try {
         unsubExit();
@@ -1086,7 +1093,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       }
       clearInterval(t);
     };
-  }, [isWorkRoute, markSessionListDirtyOrRefresh, scheduleBackgroundRefresh]);
+  }, [isWorkRoute, markSessionListDirtyOrRefresh, projectRoot, scheduleBackgroundRefresh]);
 
   useEffect(() => {
     if (!isWorkRoute) return;

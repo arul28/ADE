@@ -250,6 +250,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
 
   useEffect(() => {
     if (!chatSessionId) return;
+    if (!open && !revealRequest) return;
     let cancelled = false;
     setRestoringTabs(true);
     window.ade.terminal.list({ chatSessionId, limit: 20 })
@@ -285,7 +286,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
     return () => {
       cancelled = true;
     };
-  }, [chatSessionId, uiStateKey]);
+  }, [chatSessionId, open, revealRequest, uiStateKey]);
 
   useEffect(() => {
     if (!revealRequest) return;

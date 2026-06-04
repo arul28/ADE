@@ -2338,6 +2338,7 @@ export function AgentChatPane({
 }) {
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
   const projectTransition = useAppStore((s) => s.projectTransition);
+  const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const agentTurnCompletionSound = useAppStore((s) => s.agentTurnCompletionSound);
   const agentTurnCompletionSoundVolume = useAppStore((s) => s.agentTurnCompletionSoundVolume);
   const agentTurnCompletionSoundQuietWhenFocused = useAppStore((s) => s.agentTurnCompletionSoundQuietWhenFocused);
@@ -2740,6 +2741,7 @@ export function AgentChatPane({
     const api = window.ade?.appControl;
     if (!api?.getStatus) return;
     if (!laneToolsVisible) return;
+    if (isRemoteProject && !effectiveAppControlOpen) return;
     let cancelled = false;
     void api.getStatus()
       .then((status) => {
@@ -2753,7 +2755,7 @@ export function AgentChatPane({
     return () => {
       cancelled = true;
     };
-  }, [laneToolsVisible]);
+  }, [effectiveAppControlOpen, isRemoteProject, laneToolsVisible]);
 
   useEffect(() => {
     companionHydrationKeyRef.current = companionStateKey;
@@ -4637,6 +4639,10 @@ export function AgentChatPane({
       setComputerUseSnapshot(null);
       return;
     }
+    if (isRemoteProject && !(chatActionsOpen && chatActionsTab === "proof")) {
+      setComputerUseSnapshot(null);
+      return;
+    }
     if (!lockedSingleSessionMode) {
       void refreshComputerUseSnapshot(selectedSessionId);
       return;
@@ -4645,7 +4651,15 @@ export function AgentChatPane({
       void refreshComputerUseSnapshot(selectedSessionId);
     }, 180);
     return () => window.clearTimeout(handle);
-  }, [isTileActive, lockedSingleSessionMode, refreshComputerUseSnapshot, selectedSessionId]);
+  }, [
+    chatActionsOpen,
+    chatActionsTab,
+    isRemoteProject,
+    isTileActive,
+    lockedSingleSessionMode,
+    refreshComputerUseSnapshot,
+    selectedSessionId,
+  ]);
 
   useEffect(() => {
     setPromptSuggestion(null);
@@ -4942,6 +4956,9 @@ export function AgentChatPane({
 
   useEffect(() => {
     if (!isTileActive) return undefined;
+    if (isRemoteProject && !(chatActionsOpen && chatActionsTab === "proof")) {
+      return undefined;
+    }
     const unsubscribe = window.ade.computerUse.onEvent((event) => {
       if (!selectedSessionId) return;
       if (event.owner?.kind === "chat_session" && event.owner.id === selectedSessionId) {
@@ -4949,7 +4966,14 @@ export function AgentChatPane({
       }
     });
     return unsubscribe;
-  }, [isTileActive, refreshComputerUseSnapshot, selectedSessionId]);
+  }, [
+    chatActionsOpen,
+    chatActionsTab,
+    isRemoteProject,
+    isTileActive,
+    refreshComputerUseSnapshot,
+    selectedSessionId,
+  ]);
 
   useEffect(() => {
     if (!selectedSessionId) {

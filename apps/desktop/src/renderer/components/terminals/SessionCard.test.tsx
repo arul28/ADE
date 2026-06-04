@@ -2,12 +2,18 @@
 
 import React from "react";
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
+import { useAppStore } from "../../state/appStore";
 import { SessionCard } from "./SessionCard";
 
+const useSessionDeltaMock = vi.hoisted(() =>
+  vi.fn((_sessionId: string | null, _enabled: boolean) => null),
+);
+
 vi.mock("./useSessionDelta", () => ({
-  useSessionDelta: () => null,
+  useSessionDelta: (sessionId: string | null, enabled: boolean) =>
+    useSessionDeltaMock(sessionId, enabled),
 }));
 
 function makeSession(overrides: Partial<TerminalSessionSummary> = {}): TerminalSessionSummary {
@@ -43,6 +49,18 @@ const lane = {
   archivedAt: null,
 } as LaneSummary;
 
+beforeEach(() => {
+  useSessionDeltaMock.mockClear();
+  useAppStore.setState({
+    projectBinding: {
+      kind: "local",
+      key: "local:/tmp/project",
+      rootPath: "/tmp/project",
+      displayName: "project",
+    },
+  });
+});
+
 describe("SessionCard orchestration identity", () => {
   it("uses the orchestration role as the primary sidebar label", () => {
     render(
@@ -63,5 +81,59 @@ describe("SessionCard orchestration identity", () => {
     expect(screen.getByText("Worker · ui")).toBeTruthy();
     expect(screen.getByText("WORKER · ui")).toBeTruthy();
     expect(screen.getByRole("button", { name: /Worker · ui: Build the plan panel/ })).toBeTruthy();
+  });
+
+  it("defers remote delta loading until a session card is selected", () => {
+    useAppStore.setState({
+      projectBinding: {
+        kind: "remote",
+        key: "remote:target:project",
+        targetId: "target",
+        runtimeName: "Mac Studio",
+        projectId: "project",
+        rootPath: "/Users/admin/Projects/perf pass",
+        displayName: "perf pass",
+      },
+    });
+
+    render(
+      <SessionCard
+        session={makeSession()}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onInfoClick={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(useSessionDeltaMock).toHaveBeenCalledWith("session-1", false);
+  });
+
+  it("loads deltas for the selected remote session card", () => {
+    useAppStore.setState({
+      projectBinding: {
+        kind: "remote",
+        key: "remote:target:project",
+        targetId: "target",
+        runtimeName: "Mac Studio",
+        projectId: "project",
+        rootPath: "/Users/admin/Projects/perf pass",
+        displayName: "perf pass",
+      },
+    });
+
+    render(
+      <SessionCard
+        session={makeSession()}
+        lane={lane}
+        isSelected
+        onSelect={vi.fn()}
+        onInfoClick={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(useSessionDeltaMock).toHaveBeenCalledWith("session-1", true);
   });
 });
