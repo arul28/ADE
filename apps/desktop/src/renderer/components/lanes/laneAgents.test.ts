@@ -62,6 +62,37 @@ describe("buildLaneAgents", () => {
     expect(agents).toHaveLength(0);
   });
 
+  it("prefers chat summaries when the same chat session is mirrored through sessions.list", () => {
+    const agents = buildLaneAgents(
+      [chat({ sessionId: "same-session", title: "Chat row", provider: "codex" })],
+      [cli({ id: "same-session", toolType: "codex-chat", title: "Terminal mirror" })],
+    );
+
+    expect(agents).toHaveLength(1);
+    expect(agents[0]).toMatchObject({
+      sessionId: "same-session",
+      kind: "chat",
+      name: "Chat row",
+    });
+  });
+
+  it("collapses duplicate terminal summaries for the same session", () => {
+    const agents = buildLaneAgents(
+      [],
+      [
+        cli({ id: "duplicated", title: "First terminal row" }),
+        cli({ id: "duplicated", title: "Second terminal row" }),
+      ],
+    );
+
+    expect(agents).toHaveLength(1);
+    expect(agents[0]).toMatchObject({
+      sessionId: "duplicated",
+      kind: "cli",
+      name: "First terminal row",
+    });
+  });
+
   it("merges chat + CLI agents and sorts live before ended", () => {
     const agents = buildLaneAgents(
       [

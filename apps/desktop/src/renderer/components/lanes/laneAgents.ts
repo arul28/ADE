@@ -103,14 +103,21 @@ export function buildLaneAgents(
   cliSessions: TerminalSessionSummary[],
 ): LaneAgent[] {
   const agents: LaneAgent[] = [];
+  const chatSessionIds = new Set<string>();
   for (const summary of chatSessions) {
     if (summary.archivedAt) continue;
+    if (chatSessionIds.has(summary.sessionId)) continue;
+    chatSessionIds.add(summary.sessionId);
     agents.push(chatAgentFrom(summary));
   }
+  const cliSessionIds = new Set<string>();
   for (const summary of cliSessions) {
     if (summary.archivedAt) continue;
     if (SHELL_TOOL_TYPES.has(summary.toolType ?? "shell")) continue;
     if (summary.chatSessionId) continue; // child terminal of a chat — not a standalone agent
+    if (chatSessionIds.has(summary.id)) continue; // persisted chat session mirrored through sessions.list
+    if (cliSessionIds.has(summary.id)) continue;
+    cliSessionIds.add(summary.id);
     agents.push(cliAgentFrom(summary));
   }
   // Live agents first (working → awaiting → idle), ended last; within a bucket,
