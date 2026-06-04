@@ -67,6 +67,14 @@ function primaryTabPath(pathname: string): string {
   return roots.find((root) => pathname === root || pathname.startsWith(`${root}/`)) ?? pathname;
 }
 
+function shouldLoadShellGithubStatus(pathname: string, isRemoteProject: boolean): boolean {
+  if (!isRemoteProject) return true;
+  return pathname === "/prs"
+    || pathname.startsWith("/prs/")
+    || pathname === "/settings"
+    || pathname.startsWith("/settings/");
+}
+
 const PROJECT_ROUTE_STORAGE_PREFIX = "ade:project-route:";
 const AI_STATUS_STARTUP_DELAY_MS = 1_000;
 const AI_STATUS_CHAT_EVENT_REFRESH_MIN_GAP_MS = 30_000;
@@ -297,6 +305,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const dismissGithubBanner = useAppStore((s) => s.dismissGithubBanner);
   const currentProjectRoot =
     projectBinding?.kind === "remote" ? projectBinding.rootPath : (project?.rootPath ?? null);
+  const isRemoteProject = projectBinding?.kind === "remote";
   const missingAiBannerDismissed = Boolean(
     currentProjectRoot && dismissedMissingAiBannerRoots[currentProjectRoot],
   );
@@ -824,7 +833,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    if (!currentProjectRoot) {
+    if (!currentProjectRoot || !shouldLoadShellGithubStatus(location.pathname, isRemoteProject)) {
       githubStatusProjectRootRef.current = null;
       setGithubStatus(null);
       return;
@@ -849,7 +858,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       cancelled = true;
       window.clearTimeout(githubTimer);
     };
-  }, [currentProjectRoot]);
+  }, [currentProjectRoot, isRemoteProject, location.pathname]);
 
   // Refresh the GitHub banner the moment Settings saves/clears a token, so the
   // shell does not lag behind the Settings UI (the original "banner stays up
