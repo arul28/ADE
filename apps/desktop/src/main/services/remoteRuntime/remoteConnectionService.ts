@@ -11,6 +11,8 @@ import type {
   RemoteRuntimeConnectionState,
   RemoteRuntimeConnectionStatus,
   RemoteRuntimeConnectResult,
+  RemoteRuntimePortForward,
+  RemoteRuntimePortForwardRequest,
   RemoteRuntimeProjectRecord,
   RemoteRuntimeActionRequest,
   RemoteRuntimeActionResult,
@@ -253,6 +255,15 @@ export class RemoteConnectionService {
       });
       throw error;
     }
+  }
+
+  async ensurePortForward(
+    targetId: string,
+    request: RemoteRuntimePortForwardRequest,
+  ): Promise<RemoteRuntimePortForward> {
+    const target = this.requireTarget(targetId);
+    await this.pool.connect(target);
+    return await this.pool.ensureLocalPortForward(target.id, request);
   }
 
   async browseDirectories(

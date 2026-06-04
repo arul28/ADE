@@ -1,4 +1,5 @@
 import type { Client } from "ssh2";
+import net from "node:net";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   RemoteRuntimeConnectResult,
@@ -40,6 +41,7 @@ type FakeSshClient = Client & {
   emitOnce(event: "close" | "error", ...args: unknown[]): void;
   destroy: ReturnType<typeof vi.fn>;
   end: ReturnType<typeof vi.fn>;
+  forwardOut: ReturnType<typeof vi.fn>;
   once: ReturnType<typeof vi.fn>;
 };
 
@@ -130,10 +132,22 @@ function createSsh(): FakeSshClient {
     emitOnce?: FakeSshClient["emitOnce"];
     destroy?: ReturnType<typeof vi.fn>;
     end?: ReturnType<typeof vi.fn>;
+    forwardOut?: ReturnType<typeof vi.fn>;
     once?: ReturnType<typeof vi.fn>;
   };
   fake.destroy = vi.fn();
   fake.end = vi.fn();
+  fake.forwardOut = vi.fn((
+    _sourceHost: string,
+    _sourcePort: number,
+    destinationHost: string,
+    destinationPort: number,
+    callback: (error: Error | undefined, stream?: net.Socket) => void,
+  ) => {
+    const stream = net.createConnection({ host: destinationHost, port: destinationPort });
+    stream.once("connect", () => callback(undefined, stream));
+    stream.once("error", (error) => callback(error));
+  });
   fake.once = vi.fn((event: string, callback: SshListener): FakeSshClient => {
     const existing = listeners.get(event) ?? [];
     existing.push(callback);
@@ -148,6 +162,31 @@ function createSsh(): FakeSshClient {
     }
   };
   return fake as unknown as FakeSshClient;
+}
+
+function listen(server: net.Server): Promise<number> {
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        reject(new Error("server did not bind to a TCP port"));
+        return;
+      }
+      resolve(address.port);
+    });
+  });
+}
+
+function closeServer(server: net.Server): Promise<void> {
+  return new Promise((resolve) => {
+    if (!server.listening) {
+      resolve();
+      return;
+    }
+    server.close(() => resolve());
+  });
 }
 
 describe("RemoteConnectionPool", () => {
@@ -273,6 +312,79 @@ describe("RemoteConnectionPool", () => {
       version: "1.0.1",
     });
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("opens a reusable local SSH forward and closes it on disconnect", async () => {
+    const upstream = net.createServer((socket) => {
+      socket.once("data", (chunk) => {
+        socket.end(`remote:${chunk.toString("utf8")}`);
+      });
+    });
+    const upstreamPort = await listen(upstream);
+    const client = createClient();
+    const ssh = createSsh();
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client,
+      ssh,
+      result: connectResult("1.0.0"),
+    });
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+
+    try {
+      await pool.connect(target);
+      const [firstForward, secondForward] = await Promise.all([
+        pool.ensureLocalPortForward(target.id, {
+          remotePort: upstreamPort,
+          label: "preview",
+        }),
+        pool.ensureLocalPortForward(target.id, {
+          remotePort: upstreamPort,
+          label: "preview",
+        }),
+      ]);
+
+      expect(secondForward.localPort).toBe(firstForward.localPort);
+      expect(ssh.forwardOut).not.toHaveBeenCalled();
+
+      const response = await new Promise<string>((resolve, reject) => {
+        const socket = net.createConnection({
+          host: firstForward.localHost,
+          port: firstForward.localPort,
+        });
+        socket.once("connect", () => socket.write("ok"));
+        socket.once("data", (chunk) => {
+          resolve(chunk.toString("utf8"));
+          socket.end();
+        });
+        socket.once("error", reject);
+      });
+
+      expect(response).toBe("remote:ok");
+      expect(ssh.forwardOut).toHaveBeenCalledWith(
+        "127.0.0.1",
+        0,
+        "127.0.0.1",
+        upstreamPort,
+        expect.any(Function),
+      );
+
+      pool.disconnect(target.id);
+      await Promise.resolve();
+      await expect(new Promise<void>((resolve, reject) => {
+        const socket = net.createConnection({
+          host: firstForward.localHost,
+          port: firstForward.localPort,
+        });
+        socket.once("connect", () => {
+          socket.destroy();
+          resolve();
+        });
+        socket.once("error", reject);
+      })).rejects.toBeTruthy();
+    } finally {
+      pool.dispose();
+      await closeServer(upstream);
+    }
   });
 
   it("connects before streaming events and reconnects after disconnect", async () => {

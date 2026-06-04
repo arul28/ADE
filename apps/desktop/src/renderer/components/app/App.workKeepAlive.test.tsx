@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as ReactNamespace from "react";
 import type * as RouterNamespace from "react-router-dom";
+import { ADE_OPEN_BUILT_IN_BROWSER_EVENT } from "../../lib/openExternal";
 
 const workLifecycle = vi.hoisted(() => ({
   mounts: 0,
@@ -38,6 +39,12 @@ const appStoreState = vi.hoisted(() => ({
   theme: "dark",
   launchPromptClipboardEnabled: true,
   launchPromptClipboardNoticeEnabled: true,
+  workViewByProject: {} as Record<string, Record<string, unknown>>,
+  setWorkViewState: vi.fn((projectRoot: string | null | undefined, next: Record<string, unknown>) => {
+    if (!projectRoot) return;
+    const current = appStoreState.workViewByProject[projectRoot] ?? {};
+    appStoreState.workViewByProject[projectRoot] = { ...current, ...next };
+  }),
   openProjectTabRoots: [] as string[],
   projectInfoByRoot: {} as Record<string, { rootPath: string; displayName?: string }>,
 }));
@@ -196,6 +203,8 @@ describe("App Work route keep-alive", () => {
     appStoreState.theme = "dark";
     appStoreState.launchPromptClipboardEnabled = true;
     appStoreState.launchPromptClipboardNoticeEnabled = true;
+    appStoreState.workViewByProject = {};
+    appStoreState.setWorkViewState.mockClear();
     appStoreState.openProjectTabRoots = [];
     appStoreState.projectInfoByRoot = {};
     window.localStorage.clear();
@@ -236,6 +245,30 @@ describe("App Work route keep-alive", () => {
     });
     expect(workLifecycle.mounts).toBe(1);
     expect(workLifecycle.unmounts).toBe(0);
+  });
+
+  it("reveals the Work browser pane when an ADE browser URL opens from another tab", async () => {
+    window.history.replaceState({}, "", "/files");
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    await screen.findByTestId("files-page");
+    fireEvent(window, new CustomEvent(ADE_OPEN_BUILT_IN_BROWSER_EVENT, {
+      detail: { url: "http://127.0.0.1:64054" },
+    }));
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/work");
+    });
+    expect(appStoreState.setWorkViewState).toHaveBeenCalledWith(
+      "/fake/project",
+      expect.objectContaining({
+        viewMode: "tabs",
+        workSidebarOpen: true,
+        workSidebarTab: "browser",
+      }),
+    );
   });
 
   it("hydrates project stores with launch clipboard reminder preferences", async () => {

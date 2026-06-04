@@ -45,6 +45,10 @@ describe("ipcInvokeTimeoutMs", () => {
     }])).toBe(30_000);
   });
 
+  it("lets remote port forwarding include a cold SSH/runtime bind", () => {
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeEnsurePortForward)).toBe(10 * 60_000);
+  });
+
   it("keeps iOS launch timeout separate from macOS VM provisioning", () => {
     expect(ipcInvokeTimeoutMs(IPC.iosSimulatorLaunch)).toBe(10 * 60_000);
     expect(ipcInvokeTimeoutMs(IPC.macosVmProvision)).toBe(120 * 60_000);

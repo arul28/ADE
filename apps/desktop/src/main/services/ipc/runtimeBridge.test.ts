@@ -19,6 +19,7 @@ const remoteConnectMock = vi.hoisted(() => vi.fn());
 const remoteProjectsForTargetMock = vi.hoisted(() => vi.fn());
 const remoteCallActionForTargetMock = vi.hoisted(() => vi.fn());
 const remoteCallSyncForTargetMock = vi.hoisted(() => vi.fn());
+const remoteEnsureLocalPortForwardMock = vi.hoisted(() => vi.fn());
 const remoteListActionRegistryForTargetMock = vi.hoisted(() => vi.fn());
 const remoteCallMachineForTargetMock = vi.hoisted(() => vi.fn());
 const remoteDisconnectMock = vi.hoisted(() => vi.fn());
@@ -82,6 +83,7 @@ vi.mock("../remoteRuntime/remoteConnectionPool", () => ({
     projectsForTarget: remoteProjectsForTargetMock,
     callActionForTarget: remoteCallActionForTargetMock,
     callSyncForTarget: remoteCallSyncForTargetMock,
+    ensureLocalPortForward: remoteEnsureLocalPortForwardMock,
     listActionRegistryForTarget: remoteListActionRegistryForTargetMock,
     callMachineForTarget: remoteCallMachineForTargetMock,
     disconnect: remoteDisconnectMock,
@@ -163,6 +165,7 @@ describe("registerRuntimeBridge", () => {
     remoteProjectsForTargetMock.mockReset();
     remoteCallActionForTargetMock.mockReset();
     remoteCallSyncForTargetMock.mockReset();
+    remoteEnsureLocalPortForwardMock.mockReset();
     remoteListActionRegistryForTargetMock.mockReset();
     remoteCallMachineForTargetMock.mockReset();
     remoteDisconnectMock.mockReset();
@@ -561,6 +564,51 @@ describe("registerRuntimeBridge", () => {
         domain: "pty",
         action: "create",
         args: { startupCommand: "codex login" },
+      },
+    );
+  });
+
+  it("creates remote port forwards through the selected target", async () => {
+    remoteRegistryGetMock.mockReturnValue(target);
+    remoteEnsureLocalPortForwardMock.mockResolvedValue({
+      targetId: "target-1",
+      remoteHost: "127.0.0.1",
+      remotePort: 3000,
+      localHost: "127.0.0.1",
+      localPort: 49152,
+      localUrl: "http://127.0.0.1:49152",
+      label: "preview",
+      createdAt: 1,
+      lastUsedAt: 1,
+    });
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.remoteRuntimeEnsurePortForward)?.(
+        eventForSender(sender(202)),
+        {
+          id: " target-1 ",
+          request: {
+            remoteHost: " 127.0.0.1 ",
+            remotePort: 3000,
+            label: " preview ",
+          },
+        },
+      ),
+    ).resolves.toMatchObject({
+      localUrl: "http://127.0.0.1:49152",
+    });
+
+    expect(remoteConnectMock).toHaveBeenCalledWith(target);
+    expect(remoteEnsureLocalPortForwardMock).toHaveBeenCalledWith(
+      target.id,
+      {
+        remoteHost: "127.0.0.1",
+        remotePort: 3000,
+        label: "preview",
       },
     );
   });

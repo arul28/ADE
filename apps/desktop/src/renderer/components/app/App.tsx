@@ -101,6 +101,7 @@ import {
 import { getDirtyFileTextForWindow } from "../../lib/dirtyWorkspaceBuffers";
 import { getAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { dispatchWorkSurfaceRevealed } from "../terminals/workSurfaceVisibility";
+import { ADE_OPEN_BUILT_IN_BROWSER_EVENT } from "../../lib/openExternal";
 import type { AppNavigationRequest, OpenProjectBinding, ProjectInfo } from "../../../shared/types";
 
 // Use path-based routes on http(s) (Vite in Chrome, Cursor Simple Browser, etc.).
@@ -314,6 +315,23 @@ function writeStoredProjectRoute(projectRoot: string, route: string): void {
   }
 }
 
+function browserEventProjectRoot(value: unknown): string | null | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if ("profileProjectRoot" in record) {
+    const root = record.profileProjectRoot;
+    return typeof root === "string" && root.trim().length > 0 ? root : null;
+  }
+  return browserEventProjectRoot(record.status);
+}
+
+function browserEventMatchesProject(event: unknown, projectRoot: string | null): boolean {
+  const root = browserEventProjectRoot(event);
+  if (root === undefined) return projectRoot == null;
+  if (!projectRoot) return root === null;
+  return root === projectRoot;
+}
+
 function projectNameFromRoot(rootPath: string | null | undefined): string | null {
   if (!rootPath) return null;
   const segments = rootPath.split(/[\\/]/).filter(Boolean);
@@ -340,6 +358,9 @@ function ProjectTransitionVeil({ label }: { label: string }) {
 }
 
 function ProjectRouteContent({ active, route }: { active: boolean; route: string }) {
+  const navigate = useNavigate();
+  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const workSurfaceRef = React.useRef<HTMLDivElement | null>(null);
   const lanesSurfaceRef = React.useRef<HTMLDivElement | null>(null);
   const isWorkRoute = isWorkRoutePath(route.split(/[?#]/, 1)[0] || "/work");
@@ -363,6 +384,34 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
     if (!isLanesRoute) return;
     setLanesRoute(route);
   }, [isLanesRoute, route]);
+
+  React.useEffect(() => {
+    if (!active || !projectRoot) return;
+    const revealWorkBrowser = () => {
+      setWorkViewState(projectRoot, {
+        viewMode: "tabs",
+        workSidebarOpen: true,
+        workSidebarTab: "browser",
+      });
+      if (!isWorkRoute) navigate("/work");
+    };
+    const handleBrowserEvent = (event: unknown) => {
+      if (
+        event
+        && typeof event === "object"
+        && (event as { type?: unknown }).type === "open-request"
+        && browserEventMatchesProject(event, projectRoot)
+      ) {
+        revealWorkBrowser();
+      }
+    };
+    window.addEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, revealWorkBrowser);
+    const unsubscribeBrowserEvents = window.ade?.builtInBrowser?.onEvent?.(handleBrowserEvent) ?? null;
+    return () => {
+      window.removeEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, revealWorkBrowser);
+      unsubscribeBrowserEvents?.();
+    };
+  }, [active, isWorkRoute, navigate, projectRoot, setWorkViewState]);
 
   React.useEffect(() => {
     const node = workSurfaceRef.current;

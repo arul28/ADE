@@ -80,6 +80,24 @@ export type RemoteRuntimeConnectResult = {
   projects: RemoteRuntimeProjectRecord[];
 };
 
+export type RemoteRuntimePortForwardRequest = {
+  remoteHost?: string | null;
+  remotePort: number;
+  label?: string | null;
+};
+
+export type RemoteRuntimePortForward = {
+  targetId: string;
+  remoteHost: string;
+  remotePort: number;
+  localHost: string;
+  localPort: number;
+  localUrl: string;
+  label: string | null;
+  createdAt: number;
+  lastUsedAt: number;
+};
+
 export type RemoteRuntimeSshHostKeyIdentity = {
   targetId: string;
   host: string;

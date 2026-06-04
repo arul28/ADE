@@ -1,4 +1,5 @@
 import { app } from "electron";
+import net from "node:net";
 import type { Client } from "ssh2";
 import type {
   RemoteRuntimeActionRequest,
@@ -6,6 +7,8 @@ import type {
   RemoteRuntimeBufferedEvent,
   RemoteRuntimeConnectResult,
   RemoteRuntimeEventCategory,
+  RemoteRuntimePortForward,
+  RemoteRuntimePortForwardRequest,
   RemoteRuntimeMachineProjectCapability,
   RemoteRuntimeStreamEventsRequest,
   RemoteRuntimeStreamEventsResult,
@@ -22,6 +25,10 @@ type PoolEntry = {
   ssh: Client;
   result: RemoteRuntimeConnectResult;
   dispose?: (closeClient: boolean, notify?: boolean) => void;
+};
+
+type LocalPortForwardEntry = RemoteRuntimePortForward & {
+  server: net.Server;
 };
 
 function closePoolEntryResources(
@@ -66,6 +73,7 @@ function isRemoteRuntimeConnectionError(error: unknown): boolean {
 const RETRYABLE_REMOTE_ACTION_RPC_TIMEOUT_MS = 25_000;
 const CONNECT_FAILURE_BASE_BACKOFF_MS = 3_000;
 const CONNECT_FAILURE_MAX_BACKOFF_MS = 15_000;
+const LOCAL_FORWARD_HOST = "127.0.0.1";
 
 const RETRYABLE_REMOTE_ACTION_PREFIXES = [
   "diagnosticsGet",
@@ -143,6 +151,48 @@ function remoteRuntimeActionCallOptions(
     : undefined;
 }
 
+function normalizeForwardRemoteHost(value: string | null | undefined): string {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  return trimmed || "127.0.0.1";
+}
+
+function normalizeForwardPort(value: unknown): number {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(`Remote port must be an integer from 1 to 65535 (received ${String(value)}).`);
+  }
+  return port;
+}
+
+function portForwardKey(targetId: string, remoteHost: string, remotePort: number): string {
+  return `${targetId}\0${remoteHost}\0${remotePort}`;
+}
+
+function snapshotPortForward(entry: LocalPortForwardEntry): RemoteRuntimePortForward {
+  const {
+    targetId,
+    remoteHost,
+    remotePort,
+    localHost,
+    localPort,
+    localUrl,
+    label,
+    createdAt,
+    lastUsedAt,
+  } = entry;
+  return {
+    targetId,
+    remoteHost,
+    remotePort,
+    localHost,
+    localPort,
+    localUrl,
+    label,
+    createdAt,
+    lastUsedAt,
+  };
+}
+
 function assertMachineProjectCapability(entry: PoolEntry, method: string): void {
   const capability = MACHINE_PROJECT_METHOD_CAPABILITY.get(method);
   if (!capability) return;
@@ -156,6 +206,10 @@ function assertMachineProjectCapability(entry: PoolEntry, method: string): void 
 
 export class RemoteConnectionPool {
   private readonly entries = new Map<string, Promise<PoolEntry>>();
+  private readonly localPortForwards = new Map<
+    string,
+    Promise<LocalPortForwardEntry>
+  >();
   private readonly pendingDisconnects = new Set<string>();
   private readonly resolvedEntryPromises = new Set<Promise<PoolEntry>>();
   private readonly connectFailureBackoffByTargetId = new Map<
@@ -311,6 +365,114 @@ export class RemoteConnectionPool {
       (entry) => this.callActionWithEntry(entry, projectId, request),
       { retryOnConnectionError: shouldRetryRemoteRuntimeAction(request) },
     );
+  }
+
+  async ensureLocalPortForward(
+    targetId: string,
+    request: RemoteRuntimePortForwardRequest,
+  ): Promise<RemoteRuntimePortForward> {
+    const remoteHost = normalizeForwardRemoteHost(request.remoteHost);
+    const remotePort = normalizeForwardPort(request.remotePort);
+    const key = portForwardKey(targetId, remoteHost, remotePort);
+    const existing = this.localPortForwards.get(key);
+    if (existing) {
+      const entry = await existing;
+      entry.lastUsedAt = Date.now();
+      return snapshotPortForward(entry);
+    }
+
+    const pending = (async (): Promise<LocalPortForwardEntry> => {
+      const entry = await this.requireEntry(targetId);
+      const createdAt = Date.now();
+      const label =
+        typeof request.label === "string" && request.label.trim()
+          ? request.label.trim()
+          : null;
+      const server = net.createServer((socket) => {
+        const activeEntry = this.entries.get(targetId);
+        if (!activeEntry) {
+          socket.destroy(new Error(`Remote target is not connected: ${targetId}`));
+          return;
+        }
+        entry.ssh.forwardOut(
+          LOCAL_FORWARD_HOST,
+          0,
+          remoteHost,
+          remotePort,
+          (error, stream) => {
+            if (error) {
+              socket.destroy(error);
+              return;
+            }
+            const closeBoth = () => {
+              try {
+                socket.destroy();
+              } catch {}
+              try {
+                stream.destroy();
+              } catch {}
+            };
+            socket.once("error", closeBoth);
+            stream.once("error", closeBoth);
+            socket.once("close", closeBoth);
+            stream.once("close", closeBoth);
+            socket.pipe(stream).pipe(socket);
+          },
+        );
+      });
+
+      return await new Promise<LocalPortForwardEntry>((resolve, reject) => {
+        let settled = false;
+        const rejectStart = (error: Error) => {
+          if (settled) return;
+          settled = true;
+          try {
+            server.close();
+          } catch {}
+          reject(error);
+        };
+        server.once("error", rejectStart);
+        server.listen(0, LOCAL_FORWARD_HOST, () => {
+          if (settled) return;
+          server.off("error", rejectStart);
+          const address = server.address();
+          if (!address || typeof address === "string") {
+            rejectStart(new Error("Local remote-preview forward did not bind to a TCP port."));
+            return;
+          }
+          settled = true;
+          const localPort = address.port;
+          const forward: LocalPortForwardEntry = {
+            targetId,
+            remoteHost,
+            remotePort,
+            localHost: LOCAL_FORWARD_HOST,
+            localPort,
+            localUrl: `http://${LOCAL_FORWARD_HOST}:${localPort}`,
+            label,
+            createdAt,
+            lastUsedAt: createdAt,
+            server,
+          };
+          resolve(forward);
+        });
+      });
+    })();
+    this.localPortForwards.set(key, pending);
+    try {
+      const forward = await pending;
+      forward.server.once("close", () => {
+        if (this.localPortForwards.get(key) === pending) {
+          this.localPortForwards.delete(key);
+        }
+      });
+      return snapshotPortForward(forward);
+    } catch (error) {
+      if (this.localPortForwards.get(key) === pending) {
+        this.localPortForwards.delete(key);
+      }
+      throw error;
+    }
   }
 
   async callSyncForTarget(
@@ -544,6 +706,7 @@ export class RemoteConnectionPool {
   }
 
   disconnect(targetId: string): void {
+    this.closeLocalPortForwardsForTarget(targetId);
     const existing = this.entries.get(targetId);
     if (!existing) return;
     if (this.resolvedEntryPromises.has(existing)) {
@@ -585,7 +748,24 @@ export class RemoteConnectionPool {
 
   dispose(): void {
     for (const targetId of [...this.entries.keys()]) {
+      this.closeLocalPortForwardsForTarget(targetId);
+    }
+    for (const targetId of [...this.entries.keys()]) {
       this.disconnect(targetId);
+    }
+  }
+
+  private closeLocalPortForwardsForTarget(targetId: string): void {
+    for (const [key, pending] of [...this.localPortForwards.entries()]) {
+      if (!key.startsWith(`${targetId}\0`)) continue;
+      this.localPortForwards.delete(key);
+      void pending
+        .then((entry) => {
+          try {
+            entry.server.close();
+          } catch {}
+        })
+        .catch(() => {});
     }
   }
 
@@ -644,6 +824,7 @@ export class RemoteConnectionPool {
       this.resolvedEntryPromises.delete(entryPromise);
       if (cleanedUp) return;
       cleanedUp = true;
+      this.closeLocalPortForwardsForTarget(targetId);
       closePoolEntryResources(entry, closeClient, true);
       if (notify) notifyEvicted(error);
     };

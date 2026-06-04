@@ -21,6 +21,8 @@ import type {
   RemoteRuntimeDiscoveryResult,
   RemoteRuntimeEventNotificationPayload,
   RemoteRuntimeLocalWorkCheckResult,
+  RemoteRuntimePortForward,
+  RemoteRuntimePortForwardRequest,
   RemoteRuntimeProjectRecord,
   RemoteRuntimeProjectWorkSummary,
   RemoteRuntimeSshHostKeyTrustStatus,
@@ -738,6 +740,41 @@ export function registerRuntimeBridge({
         projectId,
         actionRequest,
       );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeEnsurePortForward,
+    async (
+      _event,
+      arg: {
+        id: string;
+        request: RemoteRuntimePortForwardRequest;
+      },
+    ): Promise<RemoteRuntimePortForward> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const request =
+        arg?.request &&
+        typeof arg.request === "object" &&
+        !Array.isArray(arg.request)
+          ? arg.request
+          : null;
+      const remotePort = Number(request?.remotePort);
+      const remoteHost =
+        typeof request?.remoteHost === "string"
+          ? request.remoteHost.trim()
+          : null;
+      const label =
+        typeof request?.label === "string" ? request.label.trim() : null;
+      if (!id) throw new Error("Remote target id is required.");
+      if (!Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65_535) {
+        throw new Error("Remote port must be an integer from 1 to 65535.");
+      }
+      return await remoteConnectionService.ensurePortForward(id, {
+        remoteHost,
+        remotePort,
+        label,
+      });
     },
   );
 

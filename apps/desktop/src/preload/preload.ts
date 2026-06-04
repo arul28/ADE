@@ -659,6 +659,7 @@ import type {
   RemoteRuntimeDiscoveryResult,
   RemoteRuntimeEventNotificationPayload,
   RemoteRuntimeLocalWorkCheckResult,
+  RemoteRuntimePortForward,
   RemoteRuntimeProjectRecord,
   RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeStreamEventsRequest,
@@ -1135,6 +1136,33 @@ async function callRemoteProjectActionIfBound<T>(
     request: { domain, action, ...request },
   })) as RemoteRuntimeActionResult;
   return { handled: true, result: response.result as T };
+}
+
+function isValidPreviewTargetPort(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 65_535;
+}
+
+async function localizeRemoteLanePreviewInfo(
+  binding: Extract<OpenProjectBinding, { kind: "remote" }>,
+  info: LanePreviewInfo | null,
+): Promise<LanePreviewInfo | null> {
+  if (!info) return null;
+  if (!isValidPreviewTargetPort(info.targetPort)) return info;
+  const forward = (await ipcRenderer.invoke(IPC.remoteRuntimeEnsurePortForward, {
+    id: binding.targetId,
+    request: {
+      remoteHost: "127.0.0.1",
+      remotePort: info.targetPort,
+      label: `${binding.displayName}:${info.laneId}`,
+    },
+  })) as RemoteRuntimePortForward;
+  return {
+    ...info,
+    hostname: forward.localHost,
+    previewUrl: forward.localUrl,
+    proxyPort: forward.localPort,
+    active: true,
+  };
 }
 
 async function callLocalProjectActionIfBound<T>(
@@ -4679,13 +4707,24 @@ contextBridge.exposeInMainWorld("ade", {
     },
     proxyGetPreviewInfo: async (
       args: GetPreviewInfoArgs,
-    ): Promise<LanePreviewInfo | null> =>
-      callProjectRuntimeActionOr("lane", "proxyGetPreviewInfo", { args }, () =>
-        ipcRenderer.invoke(IPC.lanesProxyGetPreviewInfo, args),
-      ),
+    ): Promise<LanePreviewInfo | null> => {
+      const binding = await getProjectRuntimeBinding();
+      if (binding?.kind === "remote") {
+        const runtime =
+          await callProjectRuntimeActionIfBound<LanePreviewInfo | null>(
+            "lane",
+            "proxyGetPreviewInfo",
+            { args },
+          );
+        if (runtime.handled) {
+          return localizeRemoteLanePreviewInfo(binding, runtime.result);
+        }
+      }
+      return ipcRenderer.invoke(IPC.lanesProxyGetPreviewInfo, args);
+    },
     proxyOpenPreview: async (args: OpenPreviewArgs): Promise<void> => {
       const binding = await getProjectRuntimeBinding();
-      if (binding) {
+      if (binding?.kind === "remote") {
         const runtime =
           await callProjectRuntimeActionIfBound<LanePreviewInfo | null>(
             "lane",
@@ -4696,7 +4735,7 @@ contextBridge.exposeInMainWorld("ade", {
           await ipcRenderer.invoke(IPC.lanesProxyOpenPreview, args);
           return;
         }
-        const info = runtime.result;
+        const info = await localizeRemoteLanePreviewInfo(binding, runtime.result);
         if (!info) throw new Error(`No preview route for lane: ${args.laneId}`);
         await ipcRenderer.invoke(IPC.appOpenExternal, { url: info.previewUrl });
         return;
