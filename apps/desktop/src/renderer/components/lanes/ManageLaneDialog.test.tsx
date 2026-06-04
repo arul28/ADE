@@ -159,4 +159,68 @@ describe("ManageLaneDialog tabs", () => {
       expect(screen.getByText("1 chat session")).toBeTruthy();
     });
   });
+
+  it("allows a clean worktree-only delete without hidden confirmation text", async () => {
+    const onDelete = vi.fn();
+    render(
+      <ManageLaneDialog
+        {...makeProps({
+          deleteConfirmText: "",
+          onDelete,
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "Delete" }));
+
+    const deleteButton = await screen.findByRole("button", { name: /delete lane/i });
+    await waitFor(() => {
+      expect((deleteButton as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    fireEvent.click(deleteButton);
+
+    expect(onDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires typed confirmation for a dirty lane delete", async () => {
+    (window as any).ade.lanes.getDeleteRisk.mockResolvedValueOnce({
+      ...deleteRisk,
+      dirty: true,
+    });
+    const onDelete = vi.fn();
+    const { rerender } = render(
+      <ManageLaneDialog
+        {...makeProps({
+          deleteConfirmText: "",
+          onDelete,
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "Delete" }));
+
+    const deleteButton = await screen.findByRole("button", { name: /delete lane/i });
+    await waitFor(() => {
+      expect((deleteButton as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    rerender(
+      <ManageLaneDialog
+        {...makeProps({
+          deleteConfirmText: "delete Manage tabs",
+          onDelete,
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "Delete" }));
+    await waitFor(() => {
+      expect((screen.getByRole("button", { name: /delete lane/i }) as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /delete lane/i }));
+
+    expect(onDelete).toHaveBeenCalledTimes(1);
+  });
 });

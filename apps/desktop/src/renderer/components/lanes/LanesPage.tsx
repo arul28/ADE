@@ -1774,7 +1774,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     const targets = isBatchManage ? managedLanes : managedLane ? [managedLane] : [];
     const actionable = targets.filter((l) => l.laneType !== "primary");
     if (actionable.length === 0) return;
-    if (deleteConfirmText.trim().toLowerCase() !== deletePhrase.toLowerCase()) return;
 
     const deleteArgsByLaneId = new Map<string, DeleteLaneArgs>();
     for (const lane of actionable) {
