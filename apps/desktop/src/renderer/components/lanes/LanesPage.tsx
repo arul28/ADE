@@ -461,6 +461,19 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const projectBinding = useAppStore((s) => s.projectBinding);
   const activeProjectRoot =
     projectBinding?.kind === "remote" ? projectBinding.rootPath : (project?.rootPath ?? null);
+  const createLaneRuntimeCopy = useMemo(() => {
+    if (projectBinding?.kind !== "remote") {
+      return {
+        label: "Local Mac",
+        description: "Use this ADE runtime and local worktree.",
+      };
+    }
+    const runtimeName = projectBinding.runtimeName.trim();
+    return {
+      label: runtimeName || "Remote runtime",
+      description: "Use this connected remote ADE runtime and remote worktree.",
+    };
+  }, [projectBinding]);
   const getActiveProjectRoot = useCallback(() => {
     const state = appStore.getState();
     return state.projectBinding?.kind === "remote"
@@ -4431,6 +4444,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           // longer the canonical destination for opening a lane.
           navigate("/project");
         }}
+        localRuntimeLabel={createLaneRuntimeCopy.label}
+        localRuntimeDescription={createLaneRuntimeCopy.description}
         projectRoot={activeProjectRoot}
         createBranches={createBranches}
         lanes={lanes}

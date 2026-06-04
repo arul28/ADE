@@ -101,7 +101,7 @@ import {
 import { getDirtyFileTextForWindow } from "../../lib/dirtyWorkspaceBuffers";
 import { getAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { dispatchWorkSurfaceRevealed } from "../terminals/workSurfaceVisibility";
-import type { AppNavigationRequest, ProjectInfo } from "../../../shared/types";
+import type { AppNavigationRequest, OpenProjectBinding, ProjectInfo } from "../../../shared/types";
 
 // Use path-based routes on http(s) (Vite in Chrome, Cursor Simple Browser, etc.).
 // Use hash routes for non-http(s) surfaces (e.g. packaged Electron `file://`) where
@@ -250,6 +250,25 @@ const PROJECT_ROUTE_STORAGE_PREFIX = "ade:project-route:";
 const WARM_PROJECT_SURFACE_LIMIT = 8;
 const EMPTY_PROJECT_TAB_ROOTS: string[] = [];
 const EMPTY_PROJECT_INFO_BY_ROOT: Record<string, ProjectInfo> = {};
+
+function localProjectBindingForProject(project: ProjectInfo): OpenProjectBinding {
+  return {
+    kind: "local",
+    key: `local:${project.rootPath}`,
+    rootPath: project.rootPath,
+    displayName: project.displayName,
+  };
+}
+
+function bindingForProject(
+  project: ProjectInfo,
+  activeProjectBinding: OpenProjectBinding | null,
+): OpenProjectBinding {
+  if (activeProjectBinding?.rootPath === project.rootPath) {
+    return activeProjectBinding;
+  }
+  return localProjectBindingForProject(project);
+}
 
 function projectRouteStorageKey(projectRoot: string): string {
   return `${PROJECT_ROUTE_STORAGE_PREFIX}${projectRoot}`;
@@ -484,11 +503,13 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
 function ProjectSurface({
   active,
   project,
+  projectBinding,
   route,
   store,
 }: {
   active: boolean;
   project: ProjectInfo;
+  projectBinding: OpenProjectBinding;
   route: string;
   store: AppStoreApi;
 }) {
@@ -497,16 +518,11 @@ function ProjectSurface({
   React.useEffect(() => {
     hydrateProjectAppStore(store, {
       project,
-      projectBinding: {
-        kind: "local",
-        key: `local:${project.rootPath}`,
-        rootPath: project.rootPath,
-        displayName: project.displayName,
-      },
+      projectBinding,
       projectHydrated: true,
       showWelcome: false,
     });
-  }, [project, store]);
+  }, [project, projectBinding, store]);
 
   React.useEffect(() => {
     if (!active || !isWorkRoutePath(route.split(/[?#]/, 1)[0] || "/work")) return;
@@ -568,6 +584,7 @@ function ProjectTabHost() {
   const location = useLocation();
   const navigate = useNavigate();
   const activeProject = useAppStore((s) => s.project);
+  const activeProjectBinding = useAppStore((s) => s.projectBinding);
   const projectHydrated = useAppStore((s) => s.projectHydrated);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const projectTransition = useAppStore((s) => s.projectTransition);
@@ -701,7 +718,10 @@ function ProjectTabHost() {
 
   for (const project of mountedProjects) {
     if (!storesRef.current.has(project.rootPath)) {
-      storesRef.current.set(project.rootPath, createProjectAppStore(project));
+      storesRef.current.set(project.rootPath, createProjectAppStore(
+        project,
+        bindingForProject(project, activeProjectBinding),
+      ));
     }
   }
 
@@ -748,11 +768,13 @@ function ProjectTabHost() {
         if (!store) return null;
         const liveRoute = project.rootPath === activeRoot ? serializeProjectRoute(location) : null;
         const route = liveRoute ?? routesByRoot[project.rootPath] ?? readStoredProjectRoute(project.rootPath) ?? "/work";
+        const projectBinding = bindingForProject(project, activeProjectBinding);
         return (
           <ProjectSurface
             key={project.rootPath}
             active={project.rootPath === activeRoot}
             project={project}
+            projectBinding={projectBinding}
             route={route}
             store={store}
           />

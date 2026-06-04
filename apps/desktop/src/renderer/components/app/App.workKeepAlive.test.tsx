@@ -20,6 +20,20 @@ const appStoreState = vi.hoisted(() => ({
   projectHydrated: true,
   showWelcome: false,
   project: { rootPath: "/fake/project" },
+  projectBinding: {
+    kind: "local",
+    key: "local:/fake/project",
+    rootPath: "/fake/project",
+    displayName: "project",
+  } as {
+    kind: "local" | "remote";
+    key: string;
+    rootPath: string;
+    displayName: string;
+    targetId?: string;
+    runtimeName?: string;
+    projectId?: string;
+  },
   projectTransition: null as { kind: "opening" | "switching" | "closing"; rootPath: string | null; startedAtMs: number } | null,
   theme: "dark",
   launchPromptClipboardEnabled: true,
@@ -42,8 +56,11 @@ vi.mock("../../state/appStore", async () => {
   });
   return {
     useAppStore: vi.fn((selector: (state: typeof appStoreState) => unknown) => selector(appStoreState)),
-    createProjectAppStore: vi.fn((project) => {
-      let state = createScopedState(project);
+    createProjectAppStore: vi.fn((project, projectBinding) => {
+      let state = {
+        ...createScopedState(project),
+        projectBinding: projectBinding ?? appStoreState.projectBinding,
+      };
       return {
         getState: () => state,
         setState: (partial: unknown) => {
@@ -169,6 +186,12 @@ describe("App Work route keep-alive", () => {
     appStoreState.projectHydrated = true;
     appStoreState.showWelcome = false;
     appStoreState.project = { rootPath: "/fake/project" };
+    appStoreState.projectBinding = {
+      kind: "local",
+      key: "local:/fake/project",
+      rootPath: "/fake/project",
+      displayName: "project",
+    };
     appStoreState.projectTransition = null;
     appStoreState.theme = "dark";
     appStoreState.launchPromptClipboardEnabled = true;
@@ -383,10 +406,20 @@ describe("App Work route keep-alive", () => {
 
   it("mounts the active remote project even when local project tabs are open", async () => {
     appStoreState.project = { rootPath: "/remote/project", displayName: "Remote project" } as any;
+    appStoreState.projectBinding = {
+      kind: "remote",
+      key: "remote:studio:project-1",
+      targetId: "studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Remote project",
+    };
     appStoreState.openProjectTabRoots = ["/fake/project"];
     appStoreState.projectInfoByRoot = {
       "/fake/project": { rootPath: "/fake/project", displayName: "Fake" },
     };
+    const { createProjectAppStore, hydrateProjectAppStore } = await import("../../state/appStore");
     const { App } = await import("./App");
 
     render(<App />);
@@ -398,6 +431,26 @@ describe("App Work route keep-alive", () => {
       expect(remoteSurface).toBeTruthy();
       expect(remoteSurface?.closest("[aria-hidden='true']")).toBeNull();
       expect(remoteSurface?.getAttribute("data-active")).toBe("true");
+    });
+    expect(createProjectAppStore).toHaveBeenCalledWith(
+      expect.objectContaining({ rootPath: "/remote/project" }),
+      expect.objectContaining({
+        kind: "remote",
+        runtimeName: "Mac Studio",
+        rootPath: "/remote/project",
+      }),
+    );
+    await waitFor(() => {
+      expect(hydrateProjectAppStore).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          projectBinding: expect.objectContaining({
+            kind: "remote",
+            runtimeName: "Mac Studio",
+            rootPath: "/remote/project",
+          }),
+        }),
+      );
     });
 
     const localSurface = screen

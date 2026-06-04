@@ -1815,17 +1815,24 @@ export type AppStoreApi = StoreApi<AppState>;
 const rootAppStore = createStore<AppState>()(createAppState);
 const AppStoreContext = createContext<AppStoreApi | null>(null);
 
-export function createProjectAppStore(project: ProjectInfo): AppStoreApi {
+function createLocalProjectBinding(project: ProjectInfo): OpenProjectBinding {
+  return {
+    kind: "local",
+    key: `local:${project.rootPath}`,
+    rootPath: project.rootPath,
+    displayName: project.displayName,
+  };
+}
+
+export function createProjectAppStore(
+  project: ProjectInfo,
+  projectBinding: OpenProjectBinding = createLocalProjectBinding(project),
+): AppStoreApi {
   const store = createStore<AppState>()(createAppState);
   const rootState = rootAppStore.getState();
   store.setState({
     project,
-    projectBinding: {
-      kind: "local",
-      key: `local:${project.rootPath}`,
-      rootPath: project.rootPath,
-      displayName: project.displayName,
-    },
+    projectBinding,
     projectHydrated: true,
     showWelcome: false,
     isNewTabOpen: false,
