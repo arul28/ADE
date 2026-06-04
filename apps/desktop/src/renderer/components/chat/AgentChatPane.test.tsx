@@ -18,6 +18,7 @@ import type {
 import { createDynamicCursorCliModelDescriptor, getModelById } from "../../../shared/modelRegistry";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { DRAFT_LAUNCH_JOB_STALE_AFTER_MS } from "../../lib/draftLaunchJobs";
+import { invalidateProjectConfigCache } from "../../lib/projectConfigCache";
 import { useAppStore } from "../../state/appStore";
 import {
   rememberRuntimeCatalog,
@@ -684,6 +685,7 @@ function installMatchMediaMock(): void {
 beforeEach(() => {
   installMatchMediaMock();
   invalidateAiDiscoveryCache();
+  invalidateProjectConfigCache();
   resetModelPickerRuntimeCatalogForTests();
   window.localStorage.clear();
   window.sessionStorage.clear();
@@ -712,6 +714,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   invalidateAiDiscoveryCache();
+  invalidateProjectConfigCache();
   resetModelPickerRuntimeCatalogForTests();
   Object.defineProperty(window.navigator, "platform", {
     configurable: true,

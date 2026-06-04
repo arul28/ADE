@@ -137,6 +137,7 @@ import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { WorkSurfaceHeader } from "../work/WorkSurfaceHeader";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { getAgentChatModelsCached, getAiStatusCached, invalidateAiDiscoveryCache, peekAiStatusCached } from "../../lib/aiDiscoveryCache";
+import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import {
   isDraftLaunchJobStale,
@@ -4358,7 +4359,7 @@ export function AgentChatPane({
       setLoading(!hasRenderableSession);
       setPreferencesReady(false);
       try {
-        const snapshot = await window.ade.projectConfig.get();
+        const snapshot = await getProjectConfigCached({ projectRoot });
         const chat = snapshot.effective.ai?.chat;
         if (!cancelled) {
           // Don't auto-restore model — user must pick one explicitly each session
