@@ -576,6 +576,52 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     expect(fakeSsh.end).not.toHaveBeenCalled();
   });
 
+  it("tries a same-version runtime before replacing it for a hash-only mismatch", async () => {
+    const resources = createTempResources();
+    cleanupResources = resources.cleanup;
+    const fakeSsh = createFakeSsh();
+    const registry = createRegistry();
+    connectSshWithRouteMock.mockResolvedValue({
+      client: fakeSsh.ssh,
+      route: uploadRoute,
+    });
+    const commands: string[] = [];
+    execSshMock.mockImplementation(async (_client: Client, command: string) => {
+      commands.push(command);
+      if (command === "uname -sm") return ok("Linux x86_64\n");
+      if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok(`${APP_VERSION}\n`);
+      if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok("previous-local-build-sha\n");
+      if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok("ade 0.0.0\n");
+      if (
+        command.includes("wc -c < $HOME/.ade/bin/ade") &&
+        command.includes("shasum -a 256 $HOME/.ade/bin/ade") &&
+        command.includes("echo ok")
+      ) return ok("");
+      throw new Error(`Unexpected SSH command: ${command}`);
+    });
+
+    const connected = await bootstrapRemoteRuntime({
+      target: uploadTarget,
+      registry,
+      resourcesPath: resources.resourcesPath,
+      appVersion: APP_VERSION,
+    });
+
+    expect(fakeSsh.exec).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(commands).not.toContain("mkdir -p $HOME/.ade/bin && chmod 700 $HOME/.ade/bin");
+    expect(commands.some((command) => command.includes("$HOME/.ade/bin/ade.upload-"))).toBe(false);
+    expect(openSshRuntimeTransportMock).toHaveBeenCalledWith(
+      fakeSsh.ssh,
+      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" $HOME/.ade/bin/ade rpc --stdio',
+    );
+    expect(connected.result).toMatchObject({
+      arch: "linux-x64",
+      version: APP_VERSION,
+      projects: [{ projectId: "project-1", rootPath: "/srv/ade" }],
+    });
+  });
+
   it("fails closed when an uploaded runtime reports the wrong version", async () => {
     const resources = createTempResources();
     cleanupResources = resources.cleanup;
