@@ -218,6 +218,15 @@ function readPrsContextWarmCache(projectRoot?: string | null): PrsContextWarmCac
   return prsContextWarmCacheByProject.get(prsContextCacheKey(projectRoot)) ?? null;
 }
 
+async function listWorkflowQueueStates(): Promise<QueueLandingState[]> {
+  try {
+    return await window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 });
+  } catch (err) {
+    console.warn("[PrsContext] Failed to load workflow queue states:", err);
+    return [];
+  }
+}
+
 function readBoolLs(key: string, fallback: boolean): boolean {
   try {
     const raw = localStorage.getItem(key);
@@ -814,7 +823,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       window.ade.prs.listWithConflicts({ includeConflictAnalysis: shouldLoadWorkflowState }),
       window.ade.lanes.list({ includeStatus: false }),
       shouldLoadWorkflowState
-        ? window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 })
+        ? listWorkflowQueueStates()
         : Promise.resolve([] as QueueLandingState[]),
     ]);
     const changedPrIds = diffPrIds(prsRef.current, prList);
@@ -1493,16 +1502,13 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
   useEffect(() => {
     if (!active || activeTab === "normal") return;
     let cancelled = false;
-    window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 })
+    listWorkflowQueueStates()
       .then((states) => {
         if (cancelled) return;
         setQueueStates((prev) => {
           const next = Object.fromEntries(states.map((state) => [state.groupId, state] as const));
           return jsonEqual(prev, next) ? prev : next;
         });
-      })
-      .catch((err) => {
-        console.warn("[PrsContext] Failed to load workflow queue states:", err);
       });
     return () => {
       cancelled = true;
