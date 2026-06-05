@@ -819,7 +819,7 @@ export class RemoteConnectionPool {
     }
     this.pendingDisconnects.add(targetId);
     void existing
-      ?.then((entry) => {
+      .then((entry) => {
         if (!this.pendingDisconnects.delete(targetId)) return;
         if (this.entries.get(targetId) === existing) {
           this.entries.delete(targetId);
@@ -841,9 +841,6 @@ export class RemoteConnectionPool {
   }
 
   dispose(): void {
-    for (const targetId of [...this.entries.keys()]) {
-      this.closeLocalPortForwardsForTarget(targetId);
-    }
     for (const targetId of [...this.entries.keys()]) {
       this.disconnect(targetId);
     }

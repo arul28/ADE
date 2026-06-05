@@ -223,7 +223,7 @@ export class RemoteConnectionService {
     targetId: string,
     options: RemoteConnectionConnectOptions = {},
   ): Promise<RemoteRuntimeConnectResult> {
-    let target = this.requireTarget(targetId);
+    const target = this.requireTarget(targetId);
     const explicit = options.explicit === true;
     if (explicit) {
       this.manuallyDisconnectedTargetIds.delete(target.id);
@@ -760,11 +760,11 @@ export class RemoteConnectionService {
     return this.disconnectGenerationByTargetId.get(targetId) ?? 0;
   }
 
-  private bumpDisconnectGeneration(targetId: string): number {
-    const generation =
-      this.getDisconnectGeneration(targetId) + 1;
-    this.disconnectGenerationByTargetId.set(targetId, generation);
-    return generation;
+  private bumpDisconnectGeneration(targetId: string): void {
+    this.disconnectGenerationByTargetId.set(
+      targetId,
+      this.getDisconnectGeneration(targetId) + 1,
+    );
   }
 
   private isDisconnectGenerationCurrent(

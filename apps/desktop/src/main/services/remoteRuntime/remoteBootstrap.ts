@@ -856,7 +856,7 @@ async function uploadSshChunkViaOpenSsh(
       });
     });
   } finally {
-    await chunkHandle.close().catch(() => okIgnored());
+    await chunkHandle.close().catch(() => undefined);
     await chunkFile.remove();
   }
 }
@@ -987,12 +987,10 @@ async function uploadRuntimeBinary(
       `chmod 600 ${layout.sha256Expr}`,
     ].join(" && "), "Uploaded ADE service did not pass size and checksum verification.");
   } catch (error) {
-    await execSsh(client, `rm -f ${tempExpr}`).catch(() => okIgnored());
+    await execSsh(client, `rm -f ${tempExpr}`).catch(() => undefined);
     throw error;
   }
 }
-
-function okIgnored(): void {}
 
 async function uploadNativeDepsBundle(
   client: Client,
@@ -1031,7 +1029,7 @@ async function uploadNativeDepsBundle(
       throw new Error(extract.stderr.trim() || "Unable to unpack ADE service native dependencies on the remote machine.");
     }
   } catch (error) {
-    await execSsh(client, `rm -f ${tempExpr}`).catch(() => okIgnored());
+    await execSsh(client, `rm -f ${tempExpr}`).catch(() => undefined);
     throw error;
   }
 }
@@ -1062,7 +1060,7 @@ async function uploadPtyHostWorker(
       `chmod 600 ${layout.ptyHostWorkerSha256Expr}`,
     ].join(" && "), "Uploaded ADE PTY host worker did not pass size and checksum verification.");
   } catch (error) {
-    await execSsh(client, `rm -f ${tempExpr}`).catch(() => okIgnored());
+    await execSsh(client, `rm -f ${tempExpr}`).catch(() => undefined);
     throw error;
   }
 }

@@ -60,11 +60,7 @@ export function createRuntimeDiagnosticsService({
       socket.setTimeout(timeoutMs);
       socket.once("connect", () => settle(true));
       socket.once("timeout", () => settle(false));
-      if (typeof socket.on === "function") {
-        socket.on("error", () => settle(false));
-      } else {
-        socket.once("error", () => settle(false));
-      }
+      socket.once("error", () => settle(false));
       socket.connect(port, "127.0.0.1");
     });
   }

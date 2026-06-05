@@ -3460,14 +3460,12 @@ contextBridge.exposeInMainWorld("ade", {
           if (generation === openRemoteProjectGeneration) {
             rememberProjectBinding(binding);
             activeRemoteProjectOpenGeneration = null;
-            activeRemoteProjectOpenPromise = null;
           }
           return binding;
         } catch (error) {
           if (generation === openRemoteProjectGeneration) {
             await refreshProjectBinding().catch(() => {});
             activeRemoteProjectOpenGeneration = null;
-            activeRemoteProjectOpenPromise = null;
           }
           throw error;
         } finally {

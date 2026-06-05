@@ -4,7 +4,7 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
 import { Check, CaretDown, FileCode, GitPullRequest, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise, UsersThree, CircleNotch } from "@phosphor-icons/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
-import { useAppStore, useAppStoreApi, type LaneInspectorTab } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore, useAppStoreApi, type LaneInspectorTab } from "../../state/appStore";
 import { buildIntegrationSourcesByLaneId } from "../../lib/integrationLanes";
 import { EmptyState } from "../ui/EmptyState";
 import { Button } from "../ui/Button";
@@ -457,10 +457,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const clearLaneInspectorTab = useAppStore((s) => s.clearLaneInspectorTab);
   const setLaneWorkViewState = useAppStore((s) => s.setLaneWorkViewState);
   const keybindings = useAppStore((s) => s.keybindings);
-  const project = useAppStore((s) => s.project);
   const projectBinding = useAppStore((s) => s.projectBinding);
-  const activeProjectRoot =
-    projectBinding?.kind === "remote" ? projectBinding.rootPath : (project?.rootPath ?? null);
+  const activeProjectRoot = useAppStore(selectActiveProjectRoot);
   const createLaneRuntimeCopy = useMemo(() => {
     if (projectBinding?.kind !== "remote") {
       return {
@@ -475,12 +473,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     };
   }, [projectBinding]);
   const getActiveProjectRoot = useCallback(() => {
-    const state = appStore.getState();
-    return state.projectBinding?.kind === "remote"
-      ? state.projectBinding.rootPath
-      : (state.project?.rootPath ?? null);
+    return selectActiveProjectRoot(appStore.getState());
   }, [appStore]);
-  const laneProgressProjectRoot = activeProjectRoot;
   const activeTourId = useOnboardingStore((s) => s.activeTourId);
   const suppressTourDistractions = activeTourId === "first-journey";
 
@@ -599,7 +593,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const pendingLaneDeleteRefreshIdsRef = useRef<Set<string>>(new Set());
   const laneDeleteRefreshTimerRef = useRef<number | null>(null);
   const hydratedLaneDeleteProgressProjectRef = useRef<string | null>(null);
-  const deleteProgressProjectRootRef = useRef<string | null>(laneProgressProjectRoot);
+  const deleteProgressProjectRootRef = useRef<string | null>(activeProjectRoot);
   const activeLanePresenceSignatureRef = useRef<string | null>(null);
   // Refs for the onDeleteEvent IPC handler. Capturing high-churn values
   // (selectedLaneId, lanesById, managedLaneIds, manageOpen) in refs lets the
@@ -646,7 +640,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   useEffect(() => {
     if (!active) return;
-    const projectRoot = laneProgressProjectRoot;
+    const projectRoot = activeProjectRoot;
     const previousProjectRoot = deleteProgressProjectRootRef.current;
     deleteProgressProjectRootRef.current = projectRoot;
     hydratedLaneDeleteProgressProjectRef.current = null;
@@ -659,7 +653,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     if (previousProjectRoot !== projectRoot) {
       setDeleteProgressByLaneId({});
     }
-  }, [laneProgressProjectRoot, setDeleteProgressByLaneId]);
+  }, [activeProjectRoot, setDeleteProgressByLaneId]);
 
   const laneSnapshotByLaneId = useMemo(
     () => new Map(laneSnapshots.map((snapshot) => [snapshot.lane.id, snapshot] as const)),
@@ -1715,7 +1709,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   ]);
 
   useEffect(() => {
-    const projectRoot = laneProgressProjectRoot;
+    const projectRoot = activeProjectRoot;
     if (!projectRoot) return;
     if (hydratedLaneDeleteProgressProjectRef.current === projectRoot) return;
     hydratedLaneDeleteProgressProjectRef.current = projectRoot;
@@ -1781,7 +1775,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     return () => {
       cancelled = true;
     };
-  }, [active, appStore, laneProgressProjectRoot, moveAwayFromDeletingLanes, queueLaneDeleteRefresh, setDeleteProgressByLaneId]);
+  }, [active, activeProjectRoot, appStore, moveAwayFromDeletingLanes, queueLaneDeleteRefresh, setDeleteProgressByLaneId]);
 
   const deleteManagedLanes = async () => {
     const targets = isBatchManage ? managedLanes : managedLane ? [managedLane] : [];

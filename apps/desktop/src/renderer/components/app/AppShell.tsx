@@ -23,7 +23,7 @@ import {
 } from "./prToastPresentation";
 import { TabBackground } from "../ui/TabBackground";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
-import { useAppStore } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import type {
   AiSettingsStatus,
@@ -335,8 +335,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const dismissedGithubBannerRoots = useAppStore((s) => s.dismissedGithubBannerRoots);
   const dismissMissingAiBanner = useAppStore((s) => s.dismissMissingAiBanner);
   const dismissGithubBanner = useAppStore((s) => s.dismissGithubBanner);
-  const currentProjectRoot =
-    projectBinding?.kind === "remote" ? projectBinding.rootPath : (project?.rootPath ?? null);
+  const currentProjectRoot = useAppStore(selectActiveProjectRoot);
   const activeRemoteBinding =
     projectBinding?.kind === "remote" ? projectBinding : null;
   const isRemoteProject = projectBinding?.kind === "remote";
