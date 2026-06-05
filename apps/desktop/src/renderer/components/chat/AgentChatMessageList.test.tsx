@@ -880,7 +880,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     await waitFor(() => {
       expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
     });
-    expect(screen.getByTestId("location").textContent).toBe(
+    await expectLocationText(
       "/files::{\"openFilePath\":\"apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx\",\"laneId\":\"lane-123\"}",
     );
   });
