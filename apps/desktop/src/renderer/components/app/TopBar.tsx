@@ -1946,22 +1946,42 @@ export function TopBar() {
           <>
             {openRemoteProjectTabs.map((remoteTab) => {
               const isCurrentRemote = remoteBinding?.key === remoteTab.key;
+              const remoteTabConnection =
+                remoteSnapshot?.connections.find(
+                  (entry) => entry.target.id === remoteTab.targetId,
+                ) ?? null;
+              const remoteTabState = remoteTabConnection?.state ?? "idle";
+              const remoteTabConnected = remoteTabState === "connected";
+              const remoteTabConnecting = remoteTabState === "connecting";
+              const remoteTabDisconnected =
+                remoteTabState === "error" || remoteTabState === "idle";
+              const remoteTabStatusLabel = remoteTabConnected
+                ? "Connected"
+                : remoteTabConnecting
+                  ? "Reconnecting"
+                  : "Disconnected";
               return (
                 <div
                   key={remoteTab.key}
                   role="button"
                   tabIndex={0}
                   data-state={isCurrentRemote ? "active" : undefined}
+                  data-remote-state={remoteTabState}
                   aria-current={isCurrentRemote ? "true" : undefined}
                   className={cn(
                     "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 shrink-0 items-center gap-1.5 px-2.5",
                     "font-semibold transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
-                    "cursor-pointer border border-warning/40",
+                    "cursor-pointer border",
+                    remoteTabConnected
+                      ? "border-warning/40"
+                      : remoteTabConnecting
+                        ? "border-amber-400/60"
+                        : "border-red-400/60",
                   )}
                   style={
                     { WebkitAppRegion: "no-drag" } as React.CSSProperties
                   }
-                  title={`${remoteTab.runtimeName}: ${remoteTab.rootPath}`}
+                  title={`${remoteTab.runtimeName}: ${remoteTab.rootPath} (${remoteTabStatusLabel})`}
                   onClick={() => handleSwitchRemoteProject(remoteTab)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
@@ -1980,12 +2000,28 @@ export function TopBar() {
                   <span className="min-w-0 flex-1 truncate text-center text-[12px]">
                     {remoteTab.displayName}
                   </span>
-                  <DesktopTower
-                    size={11}
-                    weight="duotone"
-                    className="shrink-0 text-warning"
-                    aria-label={`Remote: ${remoteTab.runtimeName}`}
-                  />
+                  {remoteTabConnecting ? (
+                    <CircleNotch
+                      size={11}
+                      weight="bold"
+                      className="shrink-0 animate-spin text-amber-300"
+                      aria-label={`Reconnecting: ${remoteTab.runtimeName}`}
+                    />
+                  ) : remoteTabDisconnected ? (
+                    <WarningCircle
+                      size={11}
+                      weight="fill"
+                      className="shrink-0 text-red-300"
+                      aria-label={`Disconnected: ${remoteTab.runtimeName}`}
+                    />
+                  ) : (
+                    <DesktopTower
+                      size={11}
+                      weight="duotone"
+                      className="shrink-0 text-warning"
+                      aria-label={`Remote: ${remoteTab.runtimeName}`}
+                    />
+                  )}
                   <button
                     type="button"
                     className={cn(
@@ -2424,10 +2460,15 @@ export function TopBar() {
 
       {/* Overlay panels & modals — kept outside the gap-6 wrapper so they
           never participate in flex gap accounting when toggled open. */}
-      <ConfirmDialog
-        state={remoteDisconnectConfirmState}
-        onClose={closeRemoteDisconnectConfirm}
-      />
+      {typeof document !== "undefined"
+        ? createPortal(
+            <ConfirmDialog
+              state={remoteDisconnectConfirmState}
+              onClose={closeRemoteDisconnectConfirm}
+            />,
+            document.body,
+          )
+        : null}
       {remotePanelOpen ? (
         <div
           className="fixed inset-0 z-[80]"

@@ -218,9 +218,61 @@ describe("RemoteTargetList", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
     await waitFor(() =>
-      expect(remoteRuntimeMock.disconnect).toHaveBeenCalledWith("target-1"),
+      expect(remoteRuntimeMock.disconnect).toHaveBeenCalledWith("target-1", {
+        manual: true,
+      }),
     );
     expect(screen.getByText("Not connected")).toBeTruthy();
+  });
+
+  it("does not disconnect when the disconnect confirmation callback rejects it", async () => {
+    const target = {
+      id: "target-1",
+      name: "Mac Studio",
+      hostname: "studio.local",
+      sshUser: "ade",
+      port: 22,
+      sshKeyPath: null,
+      lastSeenArch: "darwin-arm64",
+      runtimeBinaryVersion: "1.0.0",
+      lastConnectedAt: null,
+    };
+    remoteRuntimeMock.listTargets.mockResolvedValue([target]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    remoteRuntimeMock.connect.mockResolvedValue({
+      target,
+      arch: "darwin-arm64",
+      version: "1.0.0",
+      projects: [],
+    });
+    const onDisconnectRequested = vi.fn(async () => false);
+    installAdeMock();
+
+    render(
+      <RemoteTargetList onDisconnectRequested={onDisconnectRequested} />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getAllByText("Mac Studio").length).toBeGreaterThan(0),
+    );
+    const connectButton = screen
+      .getAllByRole("button", { name: "Connect" })
+      .find((button) => !button.hasAttribute("disabled"));
+    fireEvent.click(connectButton!);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Disconnect" })).toBeTruthy(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+
+    await waitFor(() =>
+      expect(onDisconnectRequested).toHaveBeenCalledWith(target),
+    );
+    expect(remoteRuntimeMock.disconnect).not.toHaveBeenCalled();
+    expect(screen.getByText("Connected")).toBeTruthy();
   });
 
   it("toggles the saved machine edit details from the Edit button", async () => {

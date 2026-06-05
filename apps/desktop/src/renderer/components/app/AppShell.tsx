@@ -2,9 +2,11 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowSquareOut,
   CheckCircle,
+  CircleNotch,
   GitBranch,
   GithubLogo,
   GitPullRequest,
+  PlugsConnected,
   WarningCircle,
   XCircle,
 } from "@phosphor-icons/react";
@@ -31,6 +33,7 @@ import type {
   PrEventPayload,
   ProjectInfo,
   OpenProjectBinding,
+  RemoteRuntimeConnectionSnapshot,
   TerminalSessionSummary,
 } from "../../../shared/types";
 import {
@@ -140,6 +143,14 @@ type LinearWorkflowToast = {
     LinearWorkflowEventPayload,
     { type: "linear-workflow-notification" }
   >;
+};
+
+type RemoteConnectionNotice = {
+  key: string;
+  state: "connecting" | "error" | "idle";
+  badge: string;
+  title: string;
+  body: string;
 };
 
 type StaleCliNotice = {
@@ -256,6 +267,13 @@ function getPrToastIcon(kind: PrToast["event"]["kind"]) {
   return GitPullRequest;
 }
 
+function cleanRemoteConnectionError(message: string | null): string {
+  return (message ?? "")
+    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
+    .replace(/^Error:\s*/i, "")
+    .trim();
+}
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -297,6 +315,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [staleCliNotice, setStaleCliNotice] =
     useState<StaleCliNotice | null>(null);
   const dismissedStaleCliNoticeKeyRef = useRef<string | null>(null);
+  const [remoteSnapshot, setRemoteSnapshot] =
+    useState<RemoteRuntimeConnectionSnapshot | null>(null);
+  const [dismissedRemoteNoticeKey, setDismissedRemoteNoticeKey] =
+    useState<string | null>(null);
   const [aiFailure, setAiFailure] = useState<AiBannerState | null>(null);
   const [aiMockProvider, setAiMockProvider] = useState<{
     createdAt: string;
@@ -315,6 +337,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const dismissGithubBanner = useAppStore((s) => s.dismissGithubBanner);
   const currentProjectRoot =
     projectBinding?.kind === "remote" ? projectBinding.rootPath : (project?.rootPath ?? null);
+  const activeRemoteBinding =
+    projectBinding?.kind === "remote" ? projectBinding : null;
   const isRemoteProject = projectBinding?.kind === "remote";
   const missingAiBannerDismissed = Boolean(
     currentProjectRoot && dismissedMissingAiBannerRoots[currentProjectRoot],
@@ -356,6 +380,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       })}`,
     );
   }, [currentProjectRoot, location.pathname, showWelcome]);
+
+  useEffect(() => {
+    const remoteRuntime = window.ade.remoteRuntime;
+    if (!remoteRuntime?.getConnectionSnapshot) return;
+    let cancelled = false;
+    void remoteRuntime
+      .getConnectionSnapshot()
+      .then((snapshot) => {
+        if (!cancelled) setRemoteSnapshot(snapshot);
+      })
+      .catch(() => {
+        if (!cancelled) setRemoteSnapshot(null);
+      });
+    const unsubscribe =
+      remoteRuntime.onConnectionSnapshotChanged?.((snapshot) => {
+        if (!cancelled) setRemoteSnapshot(snapshot);
+      }) ?? (() => {});
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     disposeTerminalRuntimesForProjectChange(project?.rootPath ?? null, projectRevision);
@@ -1057,6 +1103,58 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     staleCliNotice && currentProjectRoot
       ? `${currentProjectRoot}:${staleCliNotice.count}:${staleCliNotice.oldestStartedAt}`
       : null;
+  const activeRemoteConnection =
+    activeRemoteBinding && remoteSnapshot
+      ? remoteSnapshot.connections.find(
+          (entry) => entry.target.id === activeRemoteBinding.targetId,
+        ) ?? null
+      : null;
+  const remoteConnectionNotice = useMemo<RemoteConnectionNotice | null>(() => {
+    if (!activeRemoteBinding || !remoteSnapshot) return null;
+    const state = activeRemoteConnection?.state ?? "idle";
+    if (state === "connected") return null;
+    const lastError = cleanRemoteConnectionError(
+      activeRemoteConnection?.lastError ?? null,
+    );
+    const key = [
+      activeRemoteBinding.key,
+      state,
+      activeRemoteConnection?.lastAttemptedAt ?? 0,
+      lastError,
+    ].join(":");
+    if (state === "connecting") {
+      return {
+        key,
+        state,
+        badge: "Reconnecting",
+        title: `Reconnecting to ${activeRemoteBinding.runtimeName}`,
+        body: "ADE is restoring the remote session. The project stays open while it retries.",
+      };
+    }
+    if (state === "error") {
+      return {
+        key,
+        state,
+        badge: "Disconnected",
+        title: `${activeRemoteBinding.runtimeName} is unreachable`,
+        body: lastError
+          ? `${lastError} ADE will keep trying to reconnect while this project is open.`
+          : "ADE will keep trying to reconnect while this project is open.",
+      };
+    }
+    return {
+      key,
+      state,
+      badge: "Disconnected",
+      title: `${activeRemoteBinding.runtimeName} is not connected`,
+      body: "ADE will try to reconnect when the remote project needs runtime data.",
+    };
+  }, [activeRemoteBinding, activeRemoteConnection, remoteSnapshot]);
+  const visibleRemoteConnectionNotice =
+    remoteConnectionNotice &&
+    remoteConnectionNotice.key !== dismissedRemoteNoticeKey
+      ? remoteConnectionNotice
+      : null;
   return (
     <div className="h-screen w-screen text-fg overflow-hidden flex flex-col bg-bg">
       <div className="shrink-0 relative z-20">
@@ -1238,8 +1336,99 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               children
             )}
           </div>
-          {staleCliNotice || prToasts.length > 0 ? (
+          {visibleRemoteConnectionNotice || staleCliNotice || prToasts.length > 0 ? (
             <div className="pointer-events-none absolute bottom-2 right-2 z-[95] flex w-[min(380px,calc(100vw-20px))] flex-col gap-1.5">
+              {visibleRemoteConnectionNotice ? (
+                <div
+                  className={cn(
+                    "pointer-events-auto overflow-hidden rounded-xl border bg-card/95 px-3 py-3 shadow-float backdrop-blur",
+                    visibleRemoteConnectionNotice.state === "connecting"
+                      ? "border-amber-500/25"
+                      : "border-red-500/25",
+                  )}
+                >
+                  <div className="flex items-start gap-3">
+                    <div
+                      className={cn(
+                        "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border",
+                        visibleRemoteConnectionNotice.state === "connecting"
+                          ? "border-amber-500/30 bg-amber-500/12"
+                          : "border-red-500/30 bg-red-500/12",
+                      )}
+                    >
+                      {visibleRemoteConnectionNotice.state === "connecting" ? (
+                        <CircleNotch
+                          size={16}
+                          weight="bold"
+                          className="animate-spin text-amber-300"
+                        />
+                      ) : (
+                        <WarningCircle
+                          size={16}
+                          weight="fill"
+                          className="text-red-300"
+                        />
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <span
+                            className={cn(
+                              "inline-flex items-center rounded-full border px-2 py-1 text-[10px] font-medium",
+                              visibleRemoteConnectionNotice.state === "connecting"
+                                ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+                                : "border-red-500/30 bg-red-500/10 text-red-300",
+                            )}
+                          >
+                            {visibleRemoteConnectionNotice.badge}
+                          </span>
+                          <div className="mt-2 line-clamp-2 text-[13px] font-semibold leading-tight text-fg">
+                            {visibleRemoteConnectionNotice.title}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="shrink-0 rounded p-1 text-muted-fg transition-colors hover:bg-fg/[0.05] hover:text-fg"
+                          onClick={() =>
+                            setDismissedRemoteNoticeKey(
+                              visibleRemoteConnectionNotice.key,
+                            )
+                          }
+                          aria-label="Dismiss remote connection notice"
+                          title="Dismiss"
+                        >
+                          ×
+                        </button>
+                      </div>
+                      <div className="mt-2 line-clamp-3 text-[12px] leading-relaxed text-muted-fg">
+                        {visibleRemoteConnectionNotice.body}
+                      </div>
+                      <div className="mt-3 flex justify-end">
+                        <button
+                          type="button"
+                          className={cn(
+                            "inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-[11px] font-medium text-[#0F0D14] transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60",
+                            visibleRemoteConnectionNotice.state === "connecting"
+                              ? "bg-amber-300"
+                              : "bg-red-300",
+                          )}
+                          disabled={visibleRemoteConnectionNotice.state === "connecting"}
+                          onClick={() => {
+                            if (!activeRemoteBinding) return;
+                            void window.ade.remoteRuntime
+                              .connect(activeRemoteBinding.targetId)
+                              .catch(() => {});
+                          }}
+                        >
+                          <PlugsConnected size={12} weight="bold" />
+                          Retry now
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
               {staleCliNotice ? (
                 <div className="pointer-events-auto overflow-hidden rounded-xl border border-amber-500/25 bg-card/95 px-3 py-3 shadow-float backdrop-blur">
                   <div className="flex items-start gap-3">
