@@ -72,6 +72,12 @@ function LocationProbe() {
   );
 }
 
+async function expectLocationText(expected: string): Promise<void> {
+  await waitFor(() => {
+    expect(screen.getByTestId("location").textContent).toBe(expected);
+  });
+}
+
 function renderMessageList(
   events: AgentChatEventEnvelope[],
   options?: {
@@ -818,7 +824,7 @@ describe("AgentChatMessageList transcript rendering", () => {
   // "absorbs tool summaries" test removed: tested old ChatWorkLogBlock
   // summary absorption rendering which changes with UI iterations.
 
-  it("makes workspace markdown links open the Files tab", () => {
+  it("makes workspace markdown links open the Files tab", async () => {
     renderMessageList(
       [
         {
@@ -839,7 +845,7 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "AgentChatMessageList.tsx" }));
 
-    expect(screen.getByTestId("location").textContent).toBe(
+    await expectLocationText(
       "/files::{\"openFilePath\":\"apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx\",\"laneId\":\"lane-123\"}",
     );
   });
@@ -916,7 +922,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     await waitFor(() => {
       expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
     });
-    expect(screen.getByTestId("location").textContent).toBe(
+    await expectLocationText(
       "/files::{\"openFilePath\":\"src/main.ts\",\"laneId\":\"lane-win\"}",
     );
   });
@@ -958,7 +964,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     await waitFor(() => {
       expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
     });
-    expect(screen.getByTestId("location").textContent).toBe(
+    await expectLocationText(
       "/files::{\"openFilePath\":\"src/main.ts\",\"laneId\":\"lane-win\"}",
     );
   });
@@ -1000,7 +1006,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     await waitFor(() => {
       expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
     });
-    expect(screen.getByTestId("location").textContent).toBe(
+    await expectLocationText(
       "/files::{\"openFilePath\":\"src/main.ts\",\"laneId\":\"lane-win\"}",
     );
   });
@@ -1042,7 +1048,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     await waitFor(() => {
       expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
     });
-    expect(screen.getByTestId("location").textContent).toBe(
+    await expectLocationText(
       "/files::{\"openFilePath\":\"src/main.ts\",\"laneId\":\"lane-win\",\"startLine\":42,\"startColumn\":5}",
     );
   });
@@ -1084,7 +1090,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     await waitFor(() => {
       expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
     });
-    expect(screen.getByTestId("location").textContent).toBe(
+    await expectLocationText(
       "/files::{\"openFilePath\":\"main.ts\",\"laneId\":\"lane-win\",\"startLine\":42}",
     );
   });
@@ -1126,7 +1132,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     await waitFor(() => {
       expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
     });
-    expect(screen.getByTestId("location").textContent).toBe(
+    await expectLocationText(
       "/files::{\"openFilePath\":\"src/main.ts\",\"laneId\":\"lane-unc\"}",
     );
   });
@@ -1168,7 +1174,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     await waitFor(() => {
       expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
     });
-    expect(screen.getByTestId("location").textContent).toBe(
+    await expectLocationText(
       "/files::{\"openFilePath\":\"src/main.ts\",\"laneId\":\"lane-unc\",\"startLine\":12}",
     );
   });
