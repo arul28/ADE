@@ -551,9 +551,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
 
   const workSidebarVisible = active && work.workSidebarOpen && work.viewMode !== "grid";
   const { setViewMode, setWorkSidebarTab, showDraftKind } = work;
+  const isRemoteProject = useAppStore((state) => state.projectBinding?.kind === "remote");
   useEffect(() => {
     if (!active) return;
     const openBrowserSidebar = () => {
+      if (isRemoteProject) return;
       setViewMode("tabs");
       setWorkSidebarTab("browser");
     };
@@ -578,7 +580,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       window.removeEventListener("ade:work:stop-orchestrator-chat", stopOrchestratorChat);
       unsubscribeBrowserEvents?.();
     };
-  }, [active, projectRoot, setViewMode, setWorkSidebarTab, showDraftKind]);
+  }, [active, isRemoteProject, projectRoot, setViewMode, setWorkSidebarTab, showDraftKind]);
 
   const toggleSessionsPane = useCallback(() => {
     work.setWorkFocusSessionsHidden(!work.workFocusSessionsHidden);
