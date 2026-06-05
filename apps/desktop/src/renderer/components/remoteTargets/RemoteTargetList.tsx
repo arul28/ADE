@@ -205,6 +205,21 @@ function discoveredSshRoutes(
   return routes;
 }
 
+function discoveredTargetInput(
+  machine: RemoteRuntimeDiscoveredMachine,
+): RemoteRuntimeTargetInput | null {
+  const route = discoveredRoute(machine);
+  if (!route) return null;
+  return {
+    name: machine.machineName,
+    hostname: route.replace(/\.$/, ""),
+    sshUser: null,
+    port: null,
+    sshKeyPath: null,
+    routes: discoveredSshRoutes(machine),
+  };
+}
+
 function targetFormPrefill(
   target: RemoteRuntimeTarget,
 ): RemoteTargetFormPrefill {
@@ -463,31 +478,6 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
     void loadDiscoveredMachines();
   }, [loadDiscoveredMachines]);
 
-  const toggleDiscoveredForm = useCallback(
-    (machine: RemoteRuntimeDiscoveredMachine) => {
-      const route = discoveredRoute(machine);
-      const key = `${machine.id}:${machine.lastSeenAt}`;
-      setSelectedId(null);
-      setError(null);
-      setHostKeyTrust(null);
-      setFormPrefill((current) =>
-        current?.key === key
-          ? null
-          : {
-              key,
-              targetId: null,
-              name: machine.machineName,
-              hostname: route?.replace(/\.$/, "") ?? "",
-              sshUser: null,
-              port: null,
-              sshKeyPath: null,
-              routes: discoveredSshRoutes(machine),
-            },
-      );
-    },
-    [],
-  );
-
   const openManualAddForm = useCallback(() => {
     setSelectedId(null);
     setFormPrefill({
@@ -503,6 +493,32 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
     setError(null);
     setHostKeyTrust(null);
   }, []);
+
+  const toggleDiscoveredForm = useCallback(
+    (machine: RemoteRuntimeDiscoveredMachine) => {
+      const key = `${machine.id}:${machine.lastSeenAt}`;
+      setSelectedId(null);
+      setError(null);
+      setHostKeyTrust(null);
+      setFormPrefill((current) =>
+        current?.key === key
+          ? null
+          : {
+              key,
+              targetId: null,
+              ...(discoveredTargetInput(machine) ?? {
+                name: machine.machineName,
+                hostname: "",
+                sshUser: null,
+                port: null,
+                sshKeyPath: null,
+                routes: discoveredSshRoutes(machine),
+              }),
+            },
+      );
+    },
+    [],
+  );
 
   const toggleEditForm = useCallback((target: RemoteRuntimeTarget) => {
     setSelectedId(target.id);
@@ -631,11 +647,13 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
     }
   }, [connectTarget, selectedHostKeyTrust]);
 
-  const saveAndConnect = useCallback(
-    async (input: RemoteRuntimeTargetInput) => {
+  const saveTargetAndConnect = useCallback(
+    async (
+      input: RemoteRuntimeTargetInput,
+      replacedTargetId: string | null = null,
+    ) => {
       setSaving(true);
       try {
-        const replacedTargetId = formPrefill?.targetId ?? null;
         const target = await window.ade.remoteRuntime.saveTarget(input);
         if (replacedTargetId && replacedTargetId !== target.id) {
           await window.ade.remoteRuntime.removeTarget(replacedTargetId);
@@ -656,7 +674,31 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
         setSaving(false);
       }
     },
-    [connectTarget, formPrefill?.targetId],
+    [connectTarget],
+  );
+
+  const saveAndConnect = useCallback(
+    async (input: RemoteRuntimeTargetInput) => {
+      await saveTargetAndConnect(input, formPrefill?.targetId ?? null);
+    },
+    [formPrefill?.targetId, saveTargetAndConnect],
+  );
+
+  const connectDiscoveredMachine = useCallback(
+    async (machine: RemoteRuntimeDiscoveredMachine) => {
+      const input = discoveredTargetInput(machine);
+      if (!input) return;
+      setBusyId(machine.id);
+      setSelectedId(null);
+      setHostKeyTrust(null);
+      setError(null);
+      try {
+        await saveTargetAndConnect(input);
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [saveTargetAndConnect],
   );
 
   const disconnectTarget = useCallback(async (targetId: string) => {
@@ -1186,25 +1228,43 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
                         {discoveredProjectLabel(machine)}
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      aria-controls={`remote-discovered-edit-${machine.id}`}
-                      aria-expanded={formOpen}
-                      disabled={busyId != null}
-                      onClick={() => toggleDiscoveredForm(machine)}
-                      style={outlineButton({
-                        height: 30,
-                        padding: "0 10px",
-                        fontSize: 11,
-                      })}
-                    >
-                      Edit
-                      {formOpen ? (
-                        <CaretUp size={12} weight="bold" />
-                      ) : (
-                        <CaretDown size={12} weight="bold" />
-                      )}
-                    </button>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      <button
+                        type="button"
+                        disabled={!route || busyId != null || saving}
+                        onClick={() => void connectDiscoveredMachine(machine)}
+                        style={{
+                          ...primaryButton({
+                            height: 30,
+                            padding: "0 10px",
+                            fontSize: 11,
+                          }),
+                          opacity: route && busyId == null && !saving ? 1 : 0.55,
+                        }}
+                      >
+                        <PlugsConnected size={14} weight="bold" />
+                        {busyId === machine.id ? "Connecting..." : "Connect"}
+                      </button>
+                      <button
+                        type="button"
+                        aria-controls={`remote-discovered-edit-${machine.id}`}
+                        aria-expanded={formOpen}
+                        disabled={busyId != null}
+                        onClick={() => toggleDiscoveredForm(machine)}
+                        style={outlineButton({
+                          height: 30,
+                          padding: "0 10px",
+                          fontSize: 11,
+                        })}
+                      >
+                        Edit
+                        {formOpen ? (
+                          <CaretUp size={12} weight="bold" />
+                        ) : (
+                          <CaretDown size={12} weight="bold" />
+                        )}
+                      </button>
+                    </div>
                   </div>
                 </div>
                 {formOpen ? (

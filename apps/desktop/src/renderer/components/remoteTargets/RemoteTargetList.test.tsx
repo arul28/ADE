@@ -105,8 +105,6 @@ describe("RemoteTargetList", () => {
     expect(editButton.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByText("Edit Studio")).toBeNull();
 
-    fireEvent.click(editButton);
-
     const savedTarget = {
       id: "target-1",
       name: "Studio",
@@ -146,7 +144,7 @@ describe("RemoteTargetList", () => {
       projects: [],
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Save and connect" }));
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
 
     await waitFor(() =>
       expect(remoteRuntimeMock.saveTarget).toHaveBeenCalledWith(
@@ -155,6 +153,9 @@ describe("RemoteTargetList", () => {
           routes: savedTarget.routes,
         }),
       ),
+    );
+    await waitFor(() =>
+      expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("target-1"),
     );
   });
 
