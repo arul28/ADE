@@ -231,6 +231,7 @@ export function buildRemoteRuntimeEnvironmentPrefix(args: {
   disableRuntimeServiceInstall?: boolean;
   ptyHostWorkerReady?: boolean;
   ptyHostWorkerNodePath?: string | null;
+  ptyHostWorkerCommandExpr?: string | null;
 }): string {
   const layout = args.layout ?? resolveRemoteRuntimeLayout();
   const parts = [
@@ -248,9 +249,11 @@ export function buildRemoteRuntimeEnvironmentPrefix(args: {
     parts.push(`NODE_PATH="${layout.runtimeDirExpr}/${args.archLabel}/node_modules${"${NODE_PATH:+:$NODE_PATH}"}"`);
   }
   if (args.ptyHostWorkerReady) {
-    parts.push(`ADE_PTY_HOST_WORKER_PATH="${layout.ptyHostWorkerExpr}"`);
     if (args.ptyHostWorkerNodePath) {
+      parts.push(`ADE_PTY_HOST_WORKER_PATH="${layout.ptyHostWorkerExpr}"`);
       parts.push(`ADE_PTY_HOST_WORKER_NODE=${shellQuote(args.ptyHostWorkerNodePath)}`);
+    } else if (args.ptyHostWorkerCommandExpr) {
+      parts.push(`ADE_PTY_HOST_WORKER_COMMAND="${args.ptyHostWorkerCommandExpr}"`);
     }
   }
   return `${parts.join(" ")} `;
@@ -1155,7 +1158,14 @@ export async function bootstrapRemoteRuntime(args: {
     let nativeDepsReady = await ensureNativeDepsReady(runtimeUploaded);
 
     let ptyHostWorkerNodePath: string | null = null;
+    let ptyHostWorkerCommandExpr: string | null = null;
     const ensurePtyHostWorkerReady = async (forceUpload: boolean): Promise<boolean> => {
+      const nodePathCheck = await execSsh(ssh, "command -v node || true");
+      ptyHostWorkerNodePath = nodePathCheck.stdout.trim().split(/\r?\n/u)[0]?.trim() || null;
+      if (!ptyHostWorkerNodePath) {
+        ptyHostWorkerCommandExpr = layout.binaryExpr;
+        return true;
+      }
       if (!localPtyHostWorker || !localPtyHostWorkerSha256) return false;
       const ptyHostWorkerCheck = await execSsh(ssh, [
         `test -f ${layout.ptyHostWorkerExpr}`,
@@ -1174,8 +1184,6 @@ export async function bootstrapRemoteRuntime(args: {
           localPtyHostWorkerSha256,
         );
       }
-      const nodePathCheck = await execSsh(ssh, "command -v node || true");
-      ptyHostWorkerNodePath = nodePathCheck.stdout.trim().split(/\r?\n/u)[0]?.trim() || null;
       return true;
     };
 
@@ -1188,6 +1196,7 @@ export async function bootstrapRemoteRuntime(args: {
       disableRuntimeServiceInstall: layout.homeDirName !== preferredLayout.homeDirName,
       ptyHostWorkerReady,
       ptyHostWorkerNodePath,
+      ptyHostWorkerCommandExpr,
     });
 
     const verifyUploadedRuntime = async (): Promise<void> => {

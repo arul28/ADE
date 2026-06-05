@@ -275,6 +275,12 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("recognizes the hidden PTY host worker entrypoint", () => {
+    expect(buildCliPlan(["__ade-pty-host-worker"])).toEqual({
+      kind: "pty-host-worker",
+    });
+  });
+
   it("classifies only ADE temp runtime sockets as ephemeral", () => {
     const tempSocket = path.join(os.tmpdir(), "ade-stdio-rpc-test", "sock", "ade.sock");
 

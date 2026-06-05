@@ -163,6 +163,7 @@ type CliPlan =
   | { kind: "runtime"; rest: string[] }
   | { kind: "serve"; rest: string[] }
   | { kind: "rpc-stdio"; rest: string[] }
+  | { kind: "pty-host-worker" }
   | { kind: "init"; targetPath: string | null }
   | { kind: "cursor-cloud"; rest: string[] }
   | { kind: "deeplink"; rest: string[] };
@@ -10422,6 +10423,9 @@ function buildCliPlan(command: string[]): CliPlan {
   if (primary === "version" || primary === "--version" || primary === "-v") {
     return { kind: "help", text: `ade ${VERSION}\n` };
   }
+  if (primary === "__ade-pty-host-worker") {
+    return { kind: "pty-host-worker" };
+  }
   if (primary === "code") {
     const rest = args;
     return { kind: "ade-code", rest };
@@ -15372,6 +15376,17 @@ async function runCli(
     }
     if (plan.kind === "rpc-stdio") {
       await runNativeRpcStdio(parsed.options);
+      return { output: "", exitCode: 0 };
+    }
+    if (plan.kind === "pty-host-worker") {
+      await import("../../desktop/src/main/services/pty/ptyHostWorker");
+      await new Promise<void>((resolve) => {
+        if (typeof process.send !== "function") {
+          resolve();
+          return;
+        }
+        process.once("disconnect", resolve);
+      });
       return { output: "", exitCode: 0 };
     }
     if (plan.kind === "desktop") {

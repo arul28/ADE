@@ -1,4 +1,4 @@
-import { fork, type ChildProcess } from "node:child_process";
+import { fork, spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
@@ -64,6 +64,7 @@ type HostChildState = {
 const HOST_KILL_GRACE_MS = 3_000;
 const HOST_SIGKILL_GRACE_MS = 500;
 const HOST_SPAWN_TIMEOUT_MS = 15_000;
+const INTERNAL_PTY_HOST_WORKER_ARG = "__ade-pty-host-worker";
 
 export type HostedPty = IPty & {
   __adePtyHostReady: Promise<void>;
@@ -98,6 +99,11 @@ function resolvePtyHostWorkerPath(): string {
 
 function resolvePtyHostWorkerNodePath(): string | undefined {
   const configured = process.env.ADE_PTY_HOST_WORKER_NODE?.trim();
+  return configured || undefined;
+}
+
+function resolvePtyHostWorkerCommand(): string | undefined {
+  const configured = process.env.ADE_PTY_HOST_WORKER_COMMAND?.trim();
   return configured || undefined;
 }
 
@@ -395,16 +401,23 @@ class SupervisedPtyHost {
 
   private startChildForPty(ptyId: string): HostChildState {
     const workerNodePath = resolvePtyHostWorkerNodePath();
-    const child = fork(this.workerPath, [], {
-      stdio: ["ignore", "pipe", "pipe", "ipc"],
-      execArgv: [],
-      ...(workerNodePath ? { execPath: workerNodePath } : {}),
-      env: {
-        ...process.env,
-        ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
-        ADE_PTY_HOST: "1",
-      },
-    });
+    const workerCommand = resolvePtyHostWorkerCommand();
+    const workerEnv = {
+      ...process.env,
+      ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
+      ADE_PTY_HOST: "1",
+    };
+    const child = workerCommand
+      ? spawn(workerCommand, [INTERNAL_PTY_HOST_WORKER_ARG], {
+          stdio: ["ignore", "pipe", "pipe", "ipc"],
+          env: workerEnv,
+        })
+      : fork(this.workerPath, [], {
+          stdio: ["ignore", "pipe", "pipe", "ipc"],
+          execArgv: [],
+          ...(workerNodePath ? { execPath: workerNodePath } : {}),
+          env: workerEnv,
+        });
     const childState: HostChildState = {
       child,
       ptyIds: new Set([ptyId]),
@@ -416,6 +429,7 @@ class SupervisedPtyHost {
     this.logger.info("pty.host_started", {
       workerPath: this.workerPath,
       workerNodePath: workerNodePath ?? null,
+      workerCommand: workerCommand ?? null,
       restartCount: this.restartCount,
       ptyId,
     });
