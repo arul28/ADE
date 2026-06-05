@@ -6,6 +6,8 @@ import {
   type CSSProperties,
 } from "react";
 import {
+  CaretDown,
+  CaretUp,
   CheckCircle,
   DesktopTower,
   PlugsConnected,
@@ -497,11 +499,13 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
     setHostKeyTrust(null);
   }, []);
 
-  const openEditForm = useCallback((target: RemoteRuntimeTarget) => {
+  const toggleEditForm = useCallback((target: RemoteRuntimeTarget) => {
     setSelectedId(target.id);
-    setFormPrefill(targetFormPrefill(target));
     setError(null);
     setHostKeyTrust(null);
+    setFormPrefill((current) =>
+      current?.targetId === target.id ? null : targetFormPrefill(target),
+    );
   }, []);
 
   const ensureHostKeyTrust = useCallback(async (targetId: string) => {
@@ -949,8 +953,10 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
                       )}
                       <button
                         type="button"
+                        aria-controls={`remote-target-edit-${target.id}`}
+                        aria-expanded={formOpen}
                         disabled={busyId != null}
-                        onClick={() => openEditForm(target)}
+                        onClick={() => toggleEditForm(target)}
                         style={outlineButton({
                           height: 30,
                           padding: "0 10px",
@@ -958,6 +964,11 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
                         })}
                       >
                         Edit
+                        {formOpen ? (
+                          <CaretUp size={12} weight="bold" />
+                        ) : (
+                          <CaretDown size={12} weight="bold" />
+                        )}
                       </button>
                       <button
                         type="button"
@@ -1099,7 +1110,10 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
                 </div>
 
                 {formOpen ? (
-                  <div style={inlineDetailStyle}>
+                  <div
+                    id={`remote-target-edit-${target.id}`}
+                    style={inlineDetailStyle}
+                  >
                     <div
                       style={{
                         color: COLORS.textPrimary,

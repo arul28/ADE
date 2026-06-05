@@ -210,6 +210,48 @@ describe("RemoteTargetList", () => {
     expect(screen.getByText("Not connected")).toBeTruthy();
   });
 
+  it("toggles the saved machine edit details from the Edit button", async () => {
+    const target = {
+      id: "target-1",
+      name: "Mac Studio",
+      hostname: "100.75.20.63",
+      sshUser: "admin",
+      port: 22,
+      sshKeyPath: "/Users/arul/.ssh/id_ed25519",
+      lastSeenArch: "darwin-arm64",
+      runtimeBinaryVersion: "1.0.0",
+      lastConnectedAt: null,
+    };
+    remoteRuntimeMock.listTargets.mockResolvedValue([target]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    installAdeMock();
+
+    render(<RemoteTargetList />);
+
+    await waitFor(() =>
+      expect(screen.getAllByText("Mac Studio").length).toBeGreaterThan(0),
+    );
+    const editButton = screen.getByRole("button", { name: "Edit" });
+    expect(editButton.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("Edit Mac Studio")).toBeNull();
+
+    fireEvent.click(editButton);
+
+    expect(editButton.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("Edit Mac Studio")).toBeTruthy();
+    expect((screen.getByLabelText("Host") as HTMLInputElement).value).toBe(
+      "100.75.20.63",
+    );
+
+    fireEvent.click(editButton);
+
+    expect(editButton.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("Edit Mac Studio")).toBeNull();
+  });
+
   it("shows an actionable message when the SSH host-key probe is reset", async () => {
     const target = {
       id: "target-1",
