@@ -65,13 +65,17 @@ Renderer:
 Related pages for the broader "home" experience:
 
 - `apps/desktop/src/renderer/components/app/App.tsx` — project tab host,
-  project-scoped route keep-alive, and cold-switch transition veil. The
-  shell keeps Work and Lanes mounted after first visit so switching away
+  binding-scoped route keep-alive, built-in browser view hiding/reveal routing,
+  and cold-switch transition veil. The shell keys surfaces by runtime binding
+  so a remote project and local project with the same root path keep separate
+  stores, and keeps Work and Lanes mounted after first visit so switching away
   and back preserves warm renderer state.
 - `apps/desktop/src/renderer/state/appStore.ts` — shared project-tab
   state. Warm project switches restore cached project/lane snapshots and
-  lane selection immediately, and cache pruning retains Work/lane/session
-  state for every open project tab root.
+  lane selection immediately, derive the active project root from the runtime
+  binding for remote projects, clear stale lane/session/work caches on remote
+  project open, and cache pruning retains Work/lane/session state for every
+  open project tab root.
 - `apps/desktop/src/renderer/components/app/AppShell.tsx` — top-level
   nav, routes `/run` to `RunPage`.
 - `apps/desktop/src/renderer/components/app/TabNav.tsx` — nav rail

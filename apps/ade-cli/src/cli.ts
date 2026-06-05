@@ -1244,7 +1244,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Chat commands use ADE agent chat sessions. Live provider-backed chat normally
   requires an attached runtime because the daemon owns provider/session state.
 
-    $ ade chat list --text                          List chat sessions
+    $ ade chat list --lane <lane> --text            List chat sessions
+    $ ade chat list --include-automation --no-archived --text
     $ ade chat create --lane <lane> --provider codex --model <model> [--fast]
     $ ade chat create --from-linear-issue ENG-431   Start a chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message
@@ -5760,7 +5761,30 @@ function buildChatPlan(args: string[]): CliPlan {
       ...base,
       ...(sessionId ? { sessionId } : {}),
     });
-  if (sub === "list" || sub === "ls")
+  if (sub === "list" || sub === "ls") {
+    const includeArchived = readFlag(args, ["--archived", "--include-archived"]);
+    const excludeArchived = readFlag(args, [
+      "--active",
+      "--no-archived",
+      "--exclude-archived",
+    ]);
+    if (includeArchived && excludeArchived) {
+      throw new CliUsageError(
+        "Use either --include-archived or --no-archived, not both.",
+      );
+    }
+    const laneId = readLaneId(args);
+    const input = collectGenericObjectArgs(args, {
+      ...(laneId ? { laneId } : {}),
+      ...(includeArchived ? { includeArchived: true } : {}),
+      ...(excludeArchived ? { includeArchived: false } : {}),
+      ...(readFlag(args, ["--automation", "--include-automation"])
+        ? { includeAutomation: true }
+        : {}),
+      ...(readFlag(args, ["--identity", "--include-identity"])
+        ? { includeIdentity: true }
+        : {}),
+    });
     return {
       kind: "execute",
       label: "chat list",
@@ -5769,10 +5793,11 @@ function buildChatPlan(args: string[]): CliPlan {
           "result",
           "chat",
           "listSessions",
-          collectGenericObjectArgs(args),
+          input,
         ),
       ],
     };
+  }
   if (sub === "show" || sub === "status")
     return {
       kind: "execute",

@@ -875,6 +875,37 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("maps chat list filters to the listSessions action", () => {
+    const plan = buildCliPlan([
+      "chat",
+      "list",
+      "--lane",
+      "lane-1",
+      "--include-automation",
+      "--include-identity",
+      "--no-archived",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "listSessions",
+        args: {
+          laneId: "lane-1",
+          includeAutomation: true,
+          includeIdentity: true,
+          includeArchived: false,
+        },
+      },
+    });
+
+    expect(() =>
+      buildCliPlan(["chat", "list", "--include-archived", "--no-archived"]),
+    ).toThrow(/Use either --include-archived or --no-archived/);
+  });
+
   it("requires a chat session id for chat show", () => {
     expect(() => buildCliPlan(["chat", "show"])).toThrow(
       /sessionId is required/,

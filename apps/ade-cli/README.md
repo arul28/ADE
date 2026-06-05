@@ -268,6 +268,7 @@ ade run start web --lane lane-id
 ade shell start --lane lane-id -- npm test
 ade shell start-cli codex --lane lane-id --permission-mode edit --message "fix failing tests"
 ade shell start-cli --provider claude --lane lane-id --permission-mode default
+ade chat list --lane lane-id --include-automation --no-archived --text
 ade chat create --lane lane-id --model gpt-5.5
 ade code
 ade code --embedded
