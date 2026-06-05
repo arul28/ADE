@@ -85,8 +85,13 @@ describe("RemoteTargetList", () => {
     ).toBeTruthy();
     expect(screen.getByText(/2 projects advertised/)).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    const editButton = screen.getByRole("button", { name: "Edit" });
+    expect(editButton.getAttribute("aria-expanded")).toBe("false");
 
+    fireEvent.click(editButton);
+
+    expect(editButton.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("Edit Studio")).toBeTruthy();
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe(
       "Studio",
     );
@@ -94,6 +99,13 @@ describe("RemoteTargetList", () => {
       "studio.tailnet.ts.net",
     );
     expect((screen.getByLabelText("Port") as HTMLInputElement).value).toBe("");
+
+    fireEvent.click(editButton);
+
+    expect(editButton.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("Edit Studio")).toBeNull();
+
+    fireEvent.click(editButton);
 
     const savedTarget = {
       id: "target-1",
@@ -134,7 +146,7 @@ describe("RemoteTargetList", () => {
       projects: [],
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save and connect" }));
 
     await waitFor(() =>
       expect(remoteRuntimeMock.saveTarget).toHaveBeenCalledWith(

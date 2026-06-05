@@ -123,7 +123,7 @@ function discoveredProjectLabel(
   machine: RemoteRuntimeDiscoveredMachine,
 ): string {
   if ((machine.runtimeKind ?? "").startsWith("tailscale-peer"))
-    return "Use host to add this SSH target";
+    return "Not saved yet";
   const count = machine.projectCount ?? machine.projectIds.length;
   if (count <= 0) return "No projects advertised";
   return `${count} project${count === 1 ? "" : "s"} advertised`;
@@ -463,22 +463,27 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
     void loadDiscoveredMachines();
   }, [loadDiscoveredMachines]);
 
-  const applyDiscoveredRoute = useCallback(
+  const toggleDiscoveredForm = useCallback(
     (machine: RemoteRuntimeDiscoveredMachine) => {
       const route = discoveredRoute(machine);
-      if (!route) return;
+      const key = `${machine.id}:${machine.lastSeenAt}`;
       setSelectedId(null);
-      setFormPrefill({
-        key: `${machine.id}:${machine.lastSeenAt}`,
-        targetId: null,
-        name: machine.machineName,
-        hostname: route.replace(/\.$/, ""),
-        sshUser: null,
-        port: null,
-        sshKeyPath: null,
-        routes: discoveredSshRoutes(machine),
-      });
       setError(null);
+      setHostKeyTrust(null);
+      setFormPrefill((current) =>
+        current?.key === key
+          ? null
+          : {
+              key,
+              targetId: null,
+              name: machine.machineName,
+              hostname: route?.replace(/\.$/, "") ?? "",
+              sshUser: null,
+              port: null,
+              sshKeyPath: null,
+              routes: discoveredSshRoutes(machine),
+            },
+      );
     },
     [],
   );
@@ -1183,23 +1188,30 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
                     </div>
                     <button
                       type="button"
-                      disabled={!route || busyId != null}
-                      onClick={() => applyDiscoveredRoute(machine)}
-                      style={{
-                        ...outlineButton({
-                          height: 30,
-                          padding: "0 10px",
-                          fontSize: 11,
-                        }),
-                        opacity: route ? 1 : 0.55,
-                      }}
+                      aria-controls={`remote-discovered-edit-${machine.id}`}
+                      aria-expanded={formOpen}
+                      disabled={busyId != null}
+                      onClick={() => toggleDiscoveredForm(machine)}
+                      style={outlineButton({
+                        height: 30,
+                        padding: "0 10px",
+                        fontSize: 11,
+                      })}
                     >
-                      Add
+                      Edit
+                      {formOpen ? (
+                        <CaretUp size={12} weight="bold" />
+                      ) : (
+                        <CaretDown size={12} weight="bold" />
+                      )}
                     </button>
                   </div>
                 </div>
                 {formOpen ? (
-                  <div style={inlineDetailStyle}>
+                  <div
+                    id={`remote-discovered-edit-${machine.id}`}
+                    style={inlineDetailStyle}
+                  >
                     <div
                       style={{
                         color: COLORS.textPrimary,
@@ -1208,12 +1220,12 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
                         fontWeight: 700,
                       }}
                     >
-                      Add {machine.machineName}
+                      Edit {machine.machineName}
                     </div>
                     <RemoteTargetForm
                       busy={saving || busyId != null}
                       prefill={formPrefill}
-                      submitLabel="Connect"
+                      submitLabel="Save and connect"
                       onSubmit={saveAndConnect}
                     />
                   </div>
