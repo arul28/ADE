@@ -4708,6 +4708,8 @@ export function createPtyService({
         if (!sessionId) return;
         const session = sessionService.get(sessionId);
         if (!session) return;
+        if (session.status && session.status !== "running") return;
+        if (session.ptyId && session.ptyId !== ptyId) return;
         if (
           ownerPid != null
           && session.ownerPid != null

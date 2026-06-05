@@ -4014,6 +4014,19 @@ describe("ptyService", () => {
       );
     });
 
+    it("ignores stale dispose after a PTY already exited", async () => {
+      const { service, mockPty, broadcastExit, sessionService } = createHarness();
+      const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
+      mockPty._emitter.emit("exit", { exitCode: 0 });
+      const endCalls = sessionService.end.mock.calls.length;
+      const exitCalls = broadcastExit.mock.calls.length;
+
+      service.dispose({ ptyId, sessionId });
+
+      expect(sessionService.end).toHaveBeenCalledTimes(endCalls);
+      expect(broadcastExit).toHaveBeenCalledTimes(exitCalls);
+    });
+
     it("marks session as failed when exit code is non-zero", async () => {
       const { service, mockPty, sessionService } = createHarness();
       const { sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });

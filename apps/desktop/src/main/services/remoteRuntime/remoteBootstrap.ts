@@ -171,6 +171,8 @@ type RemoteRuntimeLayout = {
   binaryRelative: string;
   versionExpr: string;
   sha256Expr: string;
+  ptyHostWorkerExpr: string;
+  ptyHostWorkerSha256Expr: string;
 };
 
 function normalizeRemoteRuntimeChannel(value: unknown): RemoteRuntimeChannel {
@@ -201,6 +203,8 @@ export function resolveRemoteRuntimeLayout(env: NodeJS.ProcessEnv = process.env)
     binaryRelative: `${homeDirName}/bin/ade`,
     versionExpr: `${binDirExpr}/ade.version`,
     sha256Expr: `${binDirExpr}/ade.sha256`,
+    ptyHostWorkerExpr: `${runtimeDirExpr}/ptyHostWorker.cjs`,
+    ptyHostWorkerSha256Expr: `${runtimeDirExpr}/ptyHostWorker.cjs.sha256`,
   };
 }
 
@@ -225,6 +229,8 @@ export function buildRemoteRuntimeEnvironmentPrefix(args: {
   nativeDepsReady: boolean;
   layout?: RemoteRuntimeLayout;
   disableRuntimeServiceInstall?: boolean;
+  ptyHostWorkerReady?: boolean;
+  ptyHostWorkerNodePath?: string | null;
 }): string {
   const layout = args.layout ?? resolveRemoteRuntimeLayout();
   const parts = [
@@ -240,6 +246,12 @@ export function buildRemoteRuntimeEnvironmentPrefix(args: {
   }
   if (args.nativeDepsReady) {
     parts.push(`NODE_PATH="${layout.runtimeDirExpr}/${args.archLabel}/node_modules${"${NODE_PATH:+:$NODE_PATH}"}"`);
+  }
+  if (args.ptyHostWorkerReady) {
+    parts.push(`ADE_PTY_HOST_WORKER_PATH="${layout.ptyHostWorkerExpr}"`);
+    if (args.ptyHostWorkerNodePath) {
+      parts.push(`ADE_PTY_HOST_WORKER_NODE=${shellQuote(args.ptyHostWorkerNodePath)}`);
+    }
   }
   return `${parts.join(" ")} `;
 }
@@ -270,6 +282,31 @@ function bundledNativeDepsPath(resourcesPath: string, archLabel: string): string
     path.join(resourcesPath, "app.asar.unpacked", "runtime", archiveName),
     path.resolve(process.cwd(), "resources", "runtime", archiveName),
   ];
+  return candidates.find((candidate) => {
+    try {
+      return fs.statSync(candidate).isFile();
+    } catch {
+      return false;
+    }
+  }) ?? null;
+}
+
+function bundledPtyHostWorkerPath(resourcesPath: string, localBinaryPath: string | null): string | null {
+  const candidates = [
+    path.join(resourcesPath, "ade-cli", "ptyHostWorker.cjs"),
+    path.join(resourcesPath, "app.asar.unpacked", "ade-cli", "ptyHostWorker.cjs"),
+  ];
+  if (localBinaryPath) {
+    const localBinaryDir = path.dirname(localBinaryPath);
+    const desktopRuntimeDir = path.resolve(process.cwd(), "resources", "runtime");
+    const repoRuntimeDir = path.resolve(process.cwd(), "apps", "desktop", "resources", "runtime");
+    if (localBinaryDir === desktopRuntimeDir) {
+      candidates.push(path.resolve(process.cwd(), "../ade-cli/dist/ptyHostWorker.cjs"));
+    }
+    if (localBinaryDir === repoRuntimeDir) {
+      candidates.push(path.resolve(process.cwd(), "apps/ade-cli/dist/ptyHostWorker.cjs"));
+    }
+  }
   return candidates.find((candidate) => {
     try {
       return fs.statSync(candidate).isFile();
@@ -872,6 +909,37 @@ async function uploadNativeDepsBundle(
   }
 }
 
+async function uploadPtyHostWorker(
+  client: Client,
+  target: RemoteRuntimeTarget,
+  route: ConnectedSshRoute,
+  connectedConfig: Pick<ConnectConfig, "host" | "port" | "username"> | null | undefined,
+  layout: RemoteRuntimeLayout,
+  localPath: string,
+  localSha256: string,
+): Promise<void> {
+  const tempSuffix = remoteUploadTempSuffix();
+  const tempExpr = `${layout.ptyHostWorkerExpr}.${tempSuffix}`;
+  await execSshOrThrow(
+    client,
+    `mkdir -p ${layout.runtimeDirExpr}`,
+    "Unable to create the remote ADE runtime artifact directory.",
+  );
+  try {
+    await uploadSshFile(client, target, route, connectedConfig, localPath, tempExpr);
+    await execSshOrThrow(client, [
+      remoteFileMatchesCommand(tempExpr, fileSizeBytes(localPath), localSha256),
+      `mv -f ${tempExpr} ${layout.ptyHostWorkerExpr}`,
+      `printf '%s\\n' ${shellQuote(localSha256)} > ${layout.ptyHostWorkerSha256Expr}`,
+      `chmod 600 ${layout.ptyHostWorkerExpr}`,
+      `chmod 600 ${layout.ptyHostWorkerSha256Expr}`,
+    ].join(" && "), "Uploaded ADE PTY host worker did not pass size and checksum verification.");
+  } catch (error) {
+    await execSsh(client, `rm -f ${tempExpr}`).catch(() => okIgnored());
+    throw error;
+  }
+}
+
 async function signUploadedRuntimeBinaryIfNeeded(client: Client, layout: RemoteRuntimeLayout, platform: string): Promise<void> {
   if (platform !== "darwin") return;
   const signed = await execSsh(client, `codesign --force --sign - ${layout.binaryExpr}`);
@@ -1000,6 +1068,8 @@ export async function bootstrapRemoteRuntime(args: {
     const localBinary = bundledRuntimePath(args.resourcesPath, arch.label);
     const localBinarySha256 = localBinary ? hashRuntimeBinary(localBinary) : null;
     const nativeDepsBundle = bundledNativeDepsPath(args.resourcesPath, arch.label);
+    const localPtyHostWorker = bundledPtyHostWorkerPath(args.resourcesPath, localBinary);
+    const localPtyHostWorkerSha256 = localPtyHostWorker ? hashRuntimeBinary(localPtyHostWorker) : null;
     let remoteBinaryMatchesLocal: boolean | null = null;
 
     if (!localBinary && !executableRuntimeVersion) {
@@ -1046,7 +1116,7 @@ export async function bootstrapRemoteRuntime(args: {
       }
     }
 
-    let shouldUploadRuntime = Boolean(localBinary && localBinarySha256 && shouldUploadBundledRuntime({
+    const shouldUploadRuntime = Boolean(localBinary && localBinarySha256 && shouldUploadBundledRuntime({
       localBinaryAvailable: true,
       executableVersion: executableRuntimeVersion,
       markerVersion: markedRuntimeVersion,
@@ -1055,16 +1125,6 @@ export async function bootstrapRemoteRuntime(args: {
       remoteBinarySha256,
       remoteBinaryMatchesLocal,
     }));
-    const deferSameVersionUpload = Boolean(
-      shouldUploadRuntime
-      && localBinary
-      && localBinarySha256
-      && runtimeVersion === args.appVersion
-      && executableRuntimeVersion,
-    );
-    if (deferSameVersionUpload) {
-      shouldUploadRuntime = false;
-    }
 
     const uploadBundledRuntime = async (): Promise<void> => {
       if (!localBinary || !localBinarySha256) return;
@@ -1094,11 +1154,40 @@ export async function bootstrapRemoteRuntime(args: {
 
     let nativeDepsReady = await ensureNativeDepsReady(runtimeUploaded);
 
+    let ptyHostWorkerNodePath: string | null = null;
+    const ensurePtyHostWorkerReady = async (forceUpload: boolean): Promise<boolean> => {
+      if (!localPtyHostWorker || !localPtyHostWorkerSha256) return false;
+      const ptyHostWorkerCheck = await execSsh(ssh, [
+        `test -f ${layout.ptyHostWorkerExpr}`,
+        `test "$(cat ${layout.ptyHostWorkerSha256Expr} 2>/dev/null)" = ${shellQuote(localPtyHostWorkerSha256)}`,
+        "echo ok",
+      ].join(" && ") + " || true");
+      const shouldUploadPtyHostWorker = forceUpload || ptyHostWorkerCheck.stdout.trim() !== "ok";
+      if (shouldUploadPtyHostWorker) {
+        await uploadPtyHostWorker(
+          ssh,
+          args.target,
+          connectedRoute,
+          connectedConfig,
+          layout,
+          localPtyHostWorker,
+          localPtyHostWorkerSha256,
+        );
+      }
+      const nodePathCheck = await execSsh(ssh, "command -v node || true");
+      ptyHostWorkerNodePath = nodePathCheck.stdout.trim().split(/\r?\n/u)[0]?.trim() || null;
+      return true;
+    };
+
+    const ptyHostWorkerReady = await ensurePtyHostWorkerReady(runtimeUploaded);
+
     let runtimeEnvPrefix = buildRemoteRuntimeEnvironmentPrefix({
       archLabel: arch.label,
       nativeDepsReady,
       layout,
       disableRuntimeServiceInstall: layout.homeDirName !== preferredLayout.homeDirName,
+      ptyHostWorkerReady,
+      ptyHostWorkerNodePath,
     });
 
     const verifyUploadedRuntime = async (): Promise<void> => {
@@ -1143,73 +1232,49 @@ export async function bootstrapRemoteRuntime(args: {
         expectedLayout: layout,
       });
     } catch (error) {
-      let sameVersionUploadRecovered = false;
-      if (deferSameVersionUpload && localBinary && localBinarySha256) {
-        await uploadBundledRuntime();
-        nativeDepsReady = await ensureNativeDepsReady(true);
-        runtimeEnvPrefix = buildRemoteRuntimeEnvironmentPrefix({
-          archLabel: arch.label,
-          nativeDepsReady,
-          layout,
-          disableRuntimeServiceInstall: layout.homeDirName !== preferredLayout.homeDirName,
-        });
-        await verifyUploadedRuntime();
-        await stopRemoteRuntimeDaemon(ssh, layout, runtimeEnvPrefix);
-        openedRuntime = await openValidatedRuntimeClient({
-          ssh,
-          command: `${runtimeEnvPrefix}${layout.binaryExpr} rpc --stdio`,
-          appVersion: args.appVersion,
-          expectedVersion,
-          expectedLayout: layout,
-        });
-        runtimeLayoutFallbackReason = `Updated remote runtime in ${layout.homeDirName} because the existing same-version ADE service could not start compatible RPC: ${runtimeErrorMessage(error)}`;
-        sameVersionUploadRecovered = true;
+      if (localBinary || runtimeUploaded) {
+        throw error;
       }
-      if (!sameVersionUploadRecovered) {
-        if (localBinary || runtimeUploaded) {
-          throw error;
-        }
-        const attempted = [{ layout: layout.homeDirName, error: runtimeErrorMessage(error) }];
-        for (const candidateLayout of resolveRemoteRuntimeLayoutCandidates().filter((candidate) => candidate.homeDirName !== layout.homeDirName)) {
-          const candidateVersionCheck = await execSsh(
+      const attempted = [{ layout: layout.homeDirName, error: runtimeErrorMessage(error) }];
+      for (const candidateLayout of resolveRemoteRuntimeLayoutCandidates().filter((candidate) => candidate.homeDirName !== layout.homeDirName)) {
+        const candidateVersionCheck = await execSsh(
+          ssh,
+          `test -x ${candidateLayout.binaryExpr} && ${candidateLayout.binaryExpr} --version || true`,
+        );
+        const candidateRuntimeVersion = normalizeRuntimeVersion(candidateVersionCheck.stdout);
+        if (!candidateRuntimeVersion) continue;
+        const candidateNativeDepsCheck = await execSsh(
+          ssh,
+          `test -d ${candidateLayout.runtimeDirExpr}/${arch.label}/node_modules && echo ok || true`,
+        );
+        const candidateRuntimeEnvPrefix = buildRemoteRuntimeEnvironmentPrefix({
+          archLabel: arch.label,
+          nativeDepsReady: candidateNativeDepsCheck.stdout.trim() === "ok",
+          layout: candidateLayout,
+          disableRuntimeServiceInstall: true,
+        });
+        const candidateCommand = `${candidateRuntimeEnvPrefix}ade rpc --stdio`;
+        try {
+          openedRuntime = await openValidatedRuntimeClient({
             ssh,
-            `test -x ${candidateLayout.binaryExpr} && ${candidateLayout.binaryExpr} --version || true`,
-          );
-          const candidateRuntimeVersion = normalizeRuntimeVersion(candidateVersionCheck.stdout);
-          if (!candidateRuntimeVersion) continue;
-          const candidateNativeDepsCheck = await execSsh(
-            ssh,
-            `test -d ${candidateLayout.runtimeDirExpr}/${arch.label}/node_modules && echo ok || true`,
-          );
-          const candidateRuntimeEnvPrefix = buildRemoteRuntimeEnvironmentPrefix({
-            archLabel: arch.label,
-            nativeDepsReady: candidateNativeDepsCheck.stdout.trim() === "ok",
-            layout: candidateLayout,
-            disableRuntimeServiceInstall: true,
+            command: candidateCommand,
+            appVersion: args.appVersion,
+            expectedVersion: null,
+            expectedLayout: candidateLayout,
           });
-          const candidateCommand = `${candidateRuntimeEnvPrefix}ade rpc --stdio`;
-          try {
-            openedRuntime = await openValidatedRuntimeClient({
-              ssh,
-              command: candidateCommand,
-              appVersion: args.appVersion,
-              expectedVersion: null,
-              expectedLayout: candidateLayout,
-            });
-            runtimeLayoutFallbackReason = `Using remote runtime home ${candidateLayout.homeDirName} because ${layout.homeDirName} could not start a compatible ADE RPC service: ${runtimeErrorMessage(error)}`;
-            layout = candidateLayout;
-            runtimeVersion = candidateRuntimeVersion;
-            break;
-          } catch (candidateError) {
-            attempted.push({ layout: candidateLayout.homeDirName, error: runtimeErrorMessage(candidateError) });
-          }
+          runtimeLayoutFallbackReason = `Using remote runtime home ${candidateLayout.homeDirName} because ${layout.homeDirName} could not start a compatible ADE RPC service: ${runtimeErrorMessage(error)}`;
+          layout = candidateLayout;
+          runtimeVersion = candidateRuntimeVersion;
+          break;
+        } catch (candidateError) {
+          attempted.push({ layout: candidateLayout.homeDirName, error: runtimeErrorMessage(candidateError) });
         }
-        if (!openedRuntime) {
-          throw new Error(
-            "Remote ADE service could not start a compatible RPC runtime. " +
-              `Tried ${attempted.map((attempt) => `${attempt.layout}: ${attempt.error}`).join("; ")}.`,
-          );
-        }
+      }
+      if (!openedRuntime) {
+        throw new Error(
+          "Remote ADE service could not start a compatible RPC runtime. " +
+            `Tried ${attempted.map((attempt) => `${attempt.layout}: ${attempt.error}`).join("; ")}.`,
+        );
       }
     }
     if (!openedRuntime) {

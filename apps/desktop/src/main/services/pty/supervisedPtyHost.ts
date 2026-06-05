@@ -81,6 +81,8 @@ function hostErrorToError(prefix: string, payload?: HostErrorPayload): Error {
 }
 
 function resolvePtyHostWorkerPath(): string {
+  const configured = process.env.ADE_PTY_HOST_WORKER_PATH?.trim();
+  if (configured) return configured;
   const candidates = [
     path.join(__dirname, "ptyHostWorker.cjs"),
     path.join(process.cwd(), "dist", "main", "ptyHostWorker.cjs"),
@@ -92,6 +94,11 @@ function resolvePtyHostWorkerPath(): string {
     if (fs.existsSync(candidate)) return candidate;
   }
   return candidates[0]!;
+}
+
+function resolvePtyHostWorkerNodePath(): string | undefined {
+  const configured = process.env.ADE_PTY_HOST_WORKER_NODE?.trim();
+  return configured || undefined;
 }
 
 function trimWorkerLogLine(text: string): string {
@@ -387,9 +394,11 @@ class SupervisedPtyHost {
   }
 
   private startChildForPty(ptyId: string): HostChildState {
+    const workerNodePath = resolvePtyHostWorkerNodePath();
     const child = fork(this.workerPath, [], {
       stdio: ["ignore", "pipe", "pipe", "ipc"],
       execArgv: [],
+      ...(workerNodePath ? { execPath: workerNodePath } : {}),
       env: {
         ...process.env,
         ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
@@ -406,6 +415,7 @@ class SupervisedPtyHost {
     this.restartCount += 1;
     this.logger.info("pty.host_started", {
       workerPath: this.workerPath,
+      workerNodePath: workerNodePath ?? null,
       restartCount: this.restartCount,
       ptyId,
     });

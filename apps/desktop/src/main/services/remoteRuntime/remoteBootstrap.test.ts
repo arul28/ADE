@@ -184,6 +184,16 @@ describe("buildRemoteRuntimeEnvironmentPrefix", () => {
     })).toContain('NODE_PATH="$HOME/.ade/runtime/darwin-arm64/node_modules${NODE_PATH:+:$NODE_PATH}"');
   });
 
+  it("adds the uploaded PTY host worker path when the worker artifact is ready", () => {
+    expect(buildRemoteRuntimeEnvironmentPrefix({
+      archLabel: "darwin-arm64",
+      nativeDepsReady: true,
+      ptyHostWorkerReady: true,
+      ptyHostWorkerNodePath: "/usr/local/bin/node",
+      layout: resolveRemoteRuntimeLayout({} as NodeJS.ProcessEnv),
+    })).toContain('ADE_PTY_HOST_WORKER_PATH="$HOME/.ade/runtime/ptyHostWorker.cjs" ADE_PTY_HOST_WORKER_NODE=\'/usr/local/bin/node\'');
+  });
+
   it("can suppress service installation for shared runtime fallback sessions", () => {
     expect(buildRemoteRuntimeEnvironmentPrefix({
       archLabel: "linux-x64",
@@ -356,8 +366,15 @@ function createFakeSpawnProcess(options: { closeCode?: number; error?: Error; st
 
 function createTempResources(
   archLabel = "linux-x64",
-  options: { nativeDeps?: boolean } = {},
-): { resourcesPath: string; binaryPath: string; binarySha256: string; cleanup: () => void } {
+  options: { nativeDeps?: boolean; ptyHostWorker?: boolean } = {},
+): {
+  resourcesPath: string;
+  binaryPath: string;
+  binarySha256: string;
+  ptyHostWorkerPath: string | null;
+  ptyHostWorkerSha256: string | null;
+  cleanup: () => void;
+} {
   const resourcesPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-remote-runtime-"));
   const runtimeDir = path.join(resourcesPath, "runtime");
   fs.mkdirSync(runtimeDir, { recursive: true });
@@ -366,11 +383,22 @@ function createTempResources(
   if (options.nativeDeps) {
     fs.writeFileSync(path.join(runtimeDir, `ade-${archLabel}.native.tar.gz`), "native deps fixture\n");
   }
+  let ptyHostWorkerPath: string | null = null;
+  let ptyHostWorkerSha256: string | null = null;
+  if (options.ptyHostWorker) {
+    const adeCliDir = path.join(resourcesPath, "ade-cli");
+    fs.mkdirSync(adeCliDir, { recursive: true });
+    ptyHostWorkerPath = path.join(adeCliDir, "ptyHostWorker.cjs");
+    fs.writeFileSync(ptyHostWorkerPath, "process.on('message', () => {});\n");
+    ptyHostWorkerSha256 = crypto.createHash("sha256").update(fs.readFileSync(ptyHostWorkerPath)).digest("hex");
+  }
   const binarySha256 = crypto.createHash("sha256").update(fs.readFileSync(binaryPath)).digest("hex");
   return {
     resourcesPath,
     binaryPath,
     binarySha256,
+    ptyHostWorkerPath,
+    ptyHostWorkerSha256,
     cleanup: () => fs.rmSync(resourcesPath, { recursive: true, force: true }),
   };
 }
@@ -606,8 +634,8 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     expect(fakeSsh.end).not.toHaveBeenCalled();
   });
 
-  it("tries a same-version runtime before replacing it for a hash-only mismatch", async () => {
-    const resources = createTempResources();
+  it("uploads the PTY host worker and points the remote runtime at it", async () => {
+    const resources = createTempResources("linux-x64", { ptyHostWorker: true });
     cleanupResources = resources.cleanup;
     const fakeSsh = createFakeSsh();
     const registry = createRegistry();
@@ -618,14 +646,31 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     const commands: string[] = [];
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
       commands.push(command);
+      const remotePath = resolvedRemotePath(command);
+      if (remotePath) return remotePath;
       if (command === "uname -sm") return ok("Linux x86_64\n");
       if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok(`${APP_VERSION}\n`);
-      if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok("previous-local-build-sha\n");
-      if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok("ade 0.0.0\n");
+      if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok(`${resources.binarySha256}\n`);
+      if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok(`ade ${APP_VERSION}\n`);
+      if (command === "command -v node || true") return ok("/usr/local/bin/node\n");
       if (
         command.includes("wc -c < $HOME/.ade/bin/ade") &&
         command.includes("shasum -a 256 $HOME/.ade/bin/ade") &&
         command.includes("echo ok")
+      ) return ok("ok\n");
+      if (command.includes("test -f $HOME/.ade/runtime/ptyHostWorker.cjs")) return ok("");
+      if (command === "mkdir -p $HOME/.ade/runtime") return ok("");
+      if (command.match(/^rm -f \$HOME\/\.ade\/runtime\/ptyHostWorker\.cjs\.upload-.* && umask 077 && : > \$HOME\/\.ade\/runtime\/ptyHostWorker\.cjs\.upload-.* && chmod 600 \$HOME\/\.ade\/runtime\/ptyHostWorker\.cjs\.upload-/)) return ok("");
+      if (
+        command.includes("wc -c < $HOME/.ade/runtime/ptyHostWorker.cjs.upload-") &&
+        !command.includes("shasum") &&
+        !command.includes("mv -f")
+      ) return ok(`${fs.statSync(resources.ptyHostWorkerPath!).size}\n`);
+      if (
+        command.includes("wc -c < $HOME/.ade/runtime/ptyHostWorker.cjs.upload-") &&
+        command.includes("shasum -a 256 $HOME/.ade/runtime/ptyHostWorker.cjs.upload-") &&
+        command.includes("mv -f $HOME/.ade/runtime/ptyHostWorker.cjs.upload-") &&
+        command.includes(`printf '%s\\n' '${resources.ptyHostWorkerSha256}' > $HOME/.ade/runtime/ptyHostWorker.cjs.sha256`)
       ) return ok("");
       throw new Error(`Unexpected SSH command: ${command}`);
     });
@@ -637,10 +682,148 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       appVersion: APP_VERSION,
     });
 
-    expect(fakeSsh.exec).not.toHaveBeenCalled();
+    expect(fakeSsh.sftpWrapper.fastPut).toHaveBeenCalledWith(
+      resources.ptyHostWorkerPath,
+      expect.stringMatching(/^\/home\/ade\/\.ade\/runtime\/ptyHostWorker\.cjs\.upload-.*\.tmp$/),
+      expect.objectContaining({ fileSize: fs.statSync(resources.ptyHostWorkerPath!).size, mode: 0o600 }),
+      expect.any(Function),
+    );
+    expect(commands.some((command) =>
+      command.includes("wc -c < $HOME/.ade/runtime/ptyHostWorker.cjs.upload-") &&
+      command.includes(`printf '%s\\n' '${resources.ptyHostWorkerSha256}' > $HOME/.ade/runtime/ptyHostWorker.cjs.sha256`) &&
+      command.includes("mv -f $HOME/.ade/runtime/ptyHostWorker.cjs.upload-"),
+    )).toBe(true);
+    expect(openSshRuntimeTransportMock).toHaveBeenCalledWith(
+      fakeSsh.ssh,
+      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ADE_PTY_HOST_WORKER_PATH="$HOME/.ade/runtime/ptyHostWorker.cjs" ADE_PTY_HOST_WORKER_NODE=\'/usr/local/bin/node\' $HOME/.ade/bin/ade rpc --stdio',
+    );
+    expect(connected.result).toMatchObject({
+      arch: "linux-x64",
+      version: APP_VERSION,
+      projects: [{ projectId: "project-1", rootPath: "/srv/ade" }],
+    });
+  });
+
+  it("uploads a same-version runtime when the bundled binary hash changed", async () => {
+    const resources = createTempResources();
+    cleanupResources = resources.cleanup;
+    const fakeSsh = createFakeSsh();
+    const registry = createRegistry();
+    connectSshWithRouteMock.mockResolvedValue({
+      client: fakeSsh.ssh,
+      route: uploadRoute,
+    });
+    const commands: string[] = [];
+    execSshMock.mockImplementation(async (_client: Client, command: string) => {
+      commands.push(command);
+      const remotePath = resolvedRemotePath(command);
+      if (remotePath) return remotePath;
+      if (command === "uname -sm") return ok("Linux x86_64\n");
+      if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok(`${APP_VERSION}\n`);
+      if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok("previous-local-build-sha\n");
+      if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok(`ade ${APP_VERSION}\n`);
+      if (
+        command.includes("wc -c < $HOME/.ade/bin/ade") &&
+        command.includes("shasum -a 256 $HOME/.ade/bin/ade") &&
+        command.includes("echo ok")
+      ) return ok("");
+      if (command === "mkdir -p $HOME/.ade/bin && chmod 700 $HOME/.ade/bin") return ok("");
+      if (command.match(/^rm -f \$HOME\/\.ade\/bin\/ade\.upload-.* && umask 077 && : > \$HOME\/\.ade\/bin\/ade\.upload-.* && chmod 600 \$HOME\/\.ade\/bin\/ade\.upload-/)) return ok("");
+      if (
+        command.includes("wc -c < $HOME/.ade/bin/ade.upload-") &&
+        !command.includes("shasum") &&
+        !command.includes("mv -f")
+      ) return ok(`${fs.statSync(resources.binaryPath).size}\n`);
+      if (
+        command.includes("wc -c < $HOME/.ade/bin/ade.upload-") &&
+        command.includes("shasum -a 256 $HOME/.ade/bin/ade.upload-") &&
+        command.includes("mv -f $HOME/.ade/bin/ade.upload-") &&
+        command.includes(`printf '%s\\n' '${APP_VERSION}' > $HOME/.ade/bin/ade.version`)
+      ) return ok("");
+      if (command.includes("$HOME/.ade/bin/ade --version")) return ok(`ade ${APP_VERSION}\n`);
+      if (command.includes("$HOME/.ade/bin/ade runtime stop --text")) return ok("");
+      throw new Error(`Unexpected SSH command: ${command}`);
+    });
+
+    const connected = await bootstrapRemoteRuntime({
+      target: uploadTarget,
+      registry,
+      resourcesPath: resources.resourcesPath,
+      appVersion: APP_VERSION,
+    });
+
     expect(spawnMock).not.toHaveBeenCalled();
-    expect(commands).not.toContain("mkdir -p $HOME/.ade/bin && chmod 700 $HOME/.ade/bin");
-    expect(commands.some((command) => command.includes("$HOME/.ade/bin/ade.upload-"))).toBe(false);
+    expect(commands).toContain("mkdir -p $HOME/.ade/bin && chmod 700 $HOME/.ade/bin");
+    expect(commands.some((command) =>
+      command.includes("wc -c < $HOME/.ade/bin/ade.upload-") &&
+      command.includes(`printf '%s\\n' '${resources.binarySha256}' > $HOME/.ade/bin/ade.sha256`) &&
+      command.includes("mv -f $HOME/.ade/bin/ade.upload-"),
+    )).toBe(true);
+    expect(openSshRuntimeTransportMock).toHaveBeenCalledWith(
+      fakeSsh.ssh,
+      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" $HOME/.ade/bin/ade rpc --stdio',
+    );
+    expect(connected.result).toMatchObject({
+      arch: "linux-x64",
+      version: APP_VERSION,
+      projects: [{ projectId: "project-1", rootPath: "/srv/ade" }],
+    });
+  });
+
+  it("replaces a placeholder runtime even when its marker matches the desktop version", async () => {
+    const resources = createTempResources();
+    cleanupResources = resources.cleanup;
+    const fakeSsh = createFakeSsh();
+    const registry = createRegistry();
+    connectSshWithRouteMock.mockResolvedValue({
+      client: fakeSsh.ssh,
+      route: uploadRoute,
+    });
+    const commands: string[] = [];
+    execSshMock.mockImplementation(async (_client: Client, command: string) => {
+      commands.push(command);
+      const remotePath = resolvedRemotePath(command);
+      if (remotePath) return remotePath;
+      if (command === "uname -sm") return ok("Linux x86_64\n");
+      if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok(`${APP_VERSION}\n`);
+      if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok("previous-local-build-sha\n");
+      if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok("ade 0.0.0\n");
+      if (
+        command.includes("wc -c < $HOME/.ade/bin/ade") &&
+        command.includes("shasum -a 256 $HOME/.ade/bin/ade") &&
+        command.includes("echo ok")
+      ) return ok("");
+      if (command === "mkdir -p $HOME/.ade/bin && chmod 700 $HOME/.ade/bin") return ok("");
+      if (command.match(/^rm -f \$HOME\/\.ade\/bin\/ade\.upload-.* && umask 077 && : > \$HOME\/\.ade\/bin\/ade\.upload-.* && chmod 600 \$HOME\/\.ade\/bin\/ade\.upload-/)) return ok("");
+      if (
+        command.includes("wc -c < $HOME/.ade/bin/ade.upload-") &&
+        !command.includes("shasum") &&
+        !command.includes("mv -f")
+      ) return ok(`${fs.statSync(resources.binaryPath).size}\n`);
+      if (
+        command.includes("wc -c < $HOME/.ade/bin/ade.upload-") &&
+        command.includes("shasum -a 256 $HOME/.ade/bin/ade.upload-") &&
+        command.includes("mv -f $HOME/.ade/bin/ade.upload-") &&
+        command.includes(`printf '%s\\n' '${APP_VERSION}' > $HOME/.ade/bin/ade.version`)
+      ) return ok("");
+      if (command.includes("$HOME/.ade/bin/ade --version")) return ok(`ade ${APP_VERSION}\n`);
+      if (command.includes("$HOME/.ade/bin/ade runtime stop --text")) return ok("");
+      throw new Error(`Unexpected SSH command: ${command}`);
+    });
+
+    const connected = await bootstrapRemoteRuntime({
+      target: uploadTarget,
+      registry,
+      resourcesPath: resources.resourcesPath,
+      appVersion: APP_VERSION,
+    });
+
+    expect(commands).toContain("mkdir -p $HOME/.ade/bin && chmod 700 $HOME/.ade/bin");
+    expect(commands.some((command) =>
+      command.includes("wc -c < $HOME/.ade/bin/ade.upload-") &&
+      command.includes(`printf '%s\\n' '${resources.binarySha256}' > $HOME/.ade/bin/ade.sha256`) &&
+      command.includes("mv -f $HOME/.ade/bin/ade.upload-"),
+    )).toBe(true);
     expect(openSshRuntimeTransportMock).toHaveBeenCalledWith(
       fakeSsh.ssh,
       'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" $HOME/.ade/bin/ade rpc --stdio',
