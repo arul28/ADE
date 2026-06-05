@@ -145,7 +145,7 @@ describe("buildSshConfig", () => {
   it("builds an admin retry candidate when no SSH user is configured", () => {
     expect(buildSshUsernameCandidates({
       ...target,
-      hostname: "100.75.20.63",
+      hostname: "203.0.113.10",
       sshUser: null,
       port: null,
     }, {
@@ -174,7 +174,7 @@ describe("buildSshConfig", () => {
   it("builds retry configs with distinct SSH usernames", () => {
     const configs = buildSshConfigCandidates({
       ...target,
-      hostname: "100.75.20.63",
+      hostname: "203.0.113.10",
       sshUser: null,
       port: null,
     }, {
@@ -183,13 +183,13 @@ describe("buildSshConfig", () => {
     });
 
     expect(configs.map((config) => config.username)).toEqual(Array.from(new Set([os.userInfo().username, "admin"])));
-    expect(configs.every((config) => config.host === "100.75.20.63" && config.port === 22)).toBe(true);
+    expect(configs.every((config) => config.host === "203.0.113.10" && config.port === 22)).toBe(true);
   });
 
   it("tries saved route fallbacks and prioritizes the last successful route", () => {
     const configs = buildSshConfigCandidates({
       ...target,
-      hostname: "studio.tailnet.ts.net",
+      hostname: "studio.tailnet.example",
       sshUser: null,
       port: null,
       routes: [
@@ -200,7 +200,7 @@ describe("buildSshConfig", () => {
           lastSucceededAt: 200,
         },
         {
-          hostname: "studio.tailnet.ts.net",
+          hostname: "studio.tailnet.example",
           port: null,
           source: "tailscale",
           lastSucceededAt: 100,
@@ -214,11 +214,11 @@ describe("buildSshConfig", () => {
     const usernames = Array.from(new Set([os.userInfo().username, "admin"]));
     expect(configs.map((config) => config.host)).toEqual([
       ...usernames.map(() => "192.168.1.42"),
-      ...usernames.map(() => "studio.tailnet.ts.net"),
+      ...usernames.map(() => "studio.tailnet.example"),
     ]);
     expect(buildSshRouteCandidates({
       ...target,
-      hostname: "studio.tailnet.ts.net",
+      hostname: "studio.tailnet.example",
       routes: [
         {
           hostname: "192.168.1.42",
@@ -229,7 +229,7 @@ describe("buildSshConfig", () => {
       ],
     }).map((route) => route.hostname)).toEqual([
       "192.168.1.42",
-      "studio.tailnet.ts.net",
+      "studio.tailnet.example",
     ]);
   });
 

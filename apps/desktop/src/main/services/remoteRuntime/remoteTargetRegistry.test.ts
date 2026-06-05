@@ -18,8 +18,8 @@ describe("RemoteTargetRegistry", () => {
 
     const registry = new RemoteTargetRegistry();
     const target = registry.save({
-      name: "Mac Studio",
-      hostname: "100.75.20.63",
+      name: "Build Server",
+      hostname: "203.0.113.10",
       sshUser: "admin",
       port: null,
       sshKeyPath: null,
@@ -38,14 +38,14 @@ describe("RemoteTargetRegistry", () => {
 
     const registry = new RemoteTargetRegistry();
     const target = registry.save({
-      name: "Mac Studio",
-      hostname: "studio.tailnet.ts.net",
+      name: "Build Server",
+      hostname: "studio.tailnet.example",
       sshUser: "admin",
       port: null,
       sshKeyPath: null,
       routes: [
         {
-          hostname: "studio.tailnet.ts.net",
+          hostname: "studio.tailnet.example",
           port: null,
           source: "tailscale",
           lastSucceededAt: null,
@@ -61,7 +61,7 @@ describe("RemoteTargetRegistry", () => {
 
     expect(target.routes).toEqual([
       {
-        hostname: "studio.tailnet.ts.net",
+        hostname: "studio.tailnet.example",
         port: null,
         source: "tailscale",
         lastSucceededAt: null,
